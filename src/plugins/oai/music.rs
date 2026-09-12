@@ -20,8 +20,9 @@ use std::time::Duration;
 /// 站点上加别的音乐服务商时改 `[oai] music_models` 即可。
 pub(super) const DEFAULT_MUSIC_MODELS: &[&str] = &["suno"];
 
-/// 兜底模型 id：模型列表还没拉回来（或列表里没有 Suno）时预设房间用它。
-pub(super) const FALLBACK_MODEL: &str = "suno_music";
+/// 兜底模型 id：模型列表还没拉回来（或列表里没有 Suno）时用它。
+/// 预设房间与群聊搭话的写歌工具都靠它兜底。
+pub(crate) const FALLBACK_MODEL: &str = "suno_music";
 
 /// 兜底版本号。中转站实际把 `chirp-v5` 映射到当前最新模型（返回里是 `v6` / `chirp-hawk`），
 /// 所以写 `chirp-v5` 拿到的就是最"新"的那一档；站点接上更新的版本时改 `[oai] music_version`。
@@ -75,62 +76,70 @@ pub(crate) fn is_music_model(model: &str, keywords: &[String]) -> bool {
 }
 
 /// 一次生成的产物：若干版本的歌。
-pub(super) struct Generated {
-    lyrics: String,
-    tags: String,
-    version: String,
-    cost: f64,
-    clips: Vec<Clip>,
+pub(crate) struct Generated {
+    pub(crate) lyrics: String,
+    pub(crate) tags: String,
+    pub(crate) version: String,
+    /// 站点给的计费数字（单位与站点标价一致）。
+    pub(crate) cost: f64,
+    pub(crate) clips: Vec<Clip>,
 }
 
 /// 去掉参数后剩下的正文，以及几个可选项。
+///
+/// 房间那条路径从一段文本里剥出它（[`Options::parse`]），群聊搭话那条路径拿到的是
+/// 结构化的工具参数，直接填字段——两条路最后都落到同一份选项与同一个 [`generate`]。
 #[derive(Debug, Default, PartialEq)]
-struct Options {
-    prompt: String,
-    title: String,
-    tags: String,
-    version: String,
-    instrumental: bool,
+pub(crate) struct Options {
+    pub(crate) prompt: String,
+    pub(crate) title: String,
+    pub(crate) tags: String,
+    /// 留空表示用 [`DEFAULT_VERSION`]（房间那边会用 `[oai] music_version` 先兜一层）。
+    pub(crate) version: String,
+    pub(crate) instrumental: bool,
 }
 
-/// 从提示词里剥离 `--标题/--title`、`--风格/--tags`、`--版本/--mv` 与 `--纯音乐/--instrumental`。
-/// 参数缺值时原样留在正文里，避免把用户想写的东西悄悄吃掉。
-fn parse_options(input: &str) -> Options {
-    let mut words: Vec<&str> = Vec::new();
-    let mut options = Options::default();
-    let mut tokens = input.split_whitespace().peekable();
+impl Options {
+    /// 从提示词里剥离 `--标题/--title`、`--风格/--tags`、`--版本/--mv` 与
+    /// `--纯音乐/--instrumental`。参数缺值时原样留在正文里，避免把用户想写的东西
+    /// 悄悄吃掉。
+    pub(crate) fn parse(input: &str) -> Self {
+        let mut words: Vec<&str> = Vec::new();
+        let mut options = Self::default();
+        let mut tokens = input.split_whitespace().peekable();
 
-    while let Some(token) = tokens.next() {
-        let lower = token.to_ascii_lowercase();
-        match lower.as_str() {
-            "--标题" | "--title" | "--歌名" => match tokens.peek() {
-                Some(value) => {
-                    options.title = (*value).to_string();
-                    tokens.next();
-                }
-                None => words.push(token),
-            },
-            "--风格" | "--tags" | "--tag" => match tokens.peek() {
-                Some(value) => {
-                    options.tags = (*value).to_string();
-                    tokens.next();
-                }
-                None => words.push(token),
-            },
-            "--版本" | "--mv" => match tokens.peek() {
-                Some(value) => {
-                    options.version = (*value).to_string();
-                    tokens.next();
-                }
-                None => words.push(token),
-            },
-            "--纯音乐" | "--instrumental" | "--instrument" => options.instrumental = true,
-            _ => words.push(token),
+        while let Some(token) = tokens.next() {
+            let lower = token.to_ascii_lowercase();
+            match lower.as_str() {
+                "--标题" | "--title" | "--歌名" => match tokens.peek() {
+                    Some(value) => {
+                        options.title = (*value).to_string();
+                        tokens.next();
+                    }
+                    None => words.push(token),
+                },
+                "--风格" | "--tags" | "--tag" => match tokens.peek() {
+                    Some(value) => {
+                        options.tags = (*value).to_string();
+                        tokens.next();
+                    }
+                    None => words.push(token),
+                },
+                "--版本" | "--mv" => match tokens.peek() {
+                    Some(value) => {
+                        options.version = (*value).to_string();
+                        tokens.next();
+                    }
+                    None => words.push(token),
+                },
+                "--纯音乐" | "--instrumental" | "--instrument" => options.instrumental = true,
+                _ => words.push(token),
+            }
         }
-    }
 
-    options.prompt = words.join(" ");
-    options
+        options.prompt = words.join(" ");
+        options
+    }
 }
 
 /// 正文是不是一段写好的歌词。Suno 的段落标记是 `[Verse]` / `[Chorus]` 这一族；
@@ -160,34 +169,22 @@ pub(super) async fn generate_reply(
     config: &super::OaiConfig,
 ) -> anyhow::Result<Reply> {
     let last = last_user(hist);
-    let options = parse_options(
+    let mut options = Options::parse(
         &match (agent.system_prompt.trim(), last.map(|m| m.content.as_str()).unwrap_or("")) {
             ("", user) => user.to_string(),
             (system, "") => system.to_string(),
             (system, user) => format!("{system}\n{user}"),
         },
     );
-    let prompt = options.prompt.trim().to_string();
-    if prompt.is_empty() {
+    if options.prompt.trim().is_empty() {
         return Err(anyhow!(
             "请说明想要一首什么样的歌，例如：唱一首关于秋天的民谣"
         ));
     }
-
-    let version = if options.version.trim().is_empty() {
-        config.music_version()
-    } else {
-        options.version.trim().to_string()
-    };
-    let generated = generate(
-        api_base,
-        api_key,
-        &prompt,
-        &version,
-        &options,
-        config.media_timeout(),
-    )
-    .await?;
+    if options.version.trim().is_empty() {
+        options.version = config.music_version();
+    }
+    let generated = generate(api_base, api_key, &options, config.media_timeout()).await?;
 
     let title = generated
         .clips
@@ -305,14 +302,24 @@ fn safe_name(name: &str) -> String {
 }
 
 /// 提交一次生成并等到出结果。
-async fn generate(
+///
+/// 与房间的回复构造解耦，供普通房间（[`generate_reply`]）与群聊搭话的写歌工具共用；
+/// 搭话那条路径拿不到 `Reply`，要的是落到本地、能随后用 `satori_action` 发出去的成品。
+pub(crate) async fn generate(
     api_base: &str,
     api_key: &str,
-    prompt: &str,
-    version: &str,
     options: &Options,
     deadline: Duration,
 ) -> anyhow::Result<Generated> {
+    let prompt = options.prompt.trim();
+    if prompt.is_empty() {
+        return Err(anyhow!("请说明想要一首什么样的歌"));
+    }
+    let version = if options.version.trim().is_empty() {
+        DEFAULT_VERSION
+    } else {
+        options.version.trim()
+    };
     let base = service_base(api_base);
     let custom = looks_like_lyrics(prompt);
     let body = json!({
@@ -436,23 +443,26 @@ impl Task {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct Clip {
+pub(crate) struct Clip {
+    /// 音频直链（`suno.day`，带签名）。
     #[serde(default, deserialize_with = "null_default")]
-    audio_url: String,
+    pub(crate) audio_url: String,
+    /// 封面直链（`cdn2.suno.ai`）。
     #[serde(default, deserialize_with = "null_default")]
-    image_url: String,
+    pub(crate) image_url: String,
     #[serde(default, deserialize_with = "null_default")]
-    title: String,
+    pub(crate) title: String,
     #[serde(default, deserialize_with = "null_default")]
-    tags: String,
+    pub(crate) tags: String,
+    /// 歌词。
     #[serde(default, deserialize_with = "null_default")]
-    prompt: String,
+    pub(crate) prompt: String,
     #[serde(default, deserialize_with = "null_default")]
     major_model_version: String,
     #[serde(default, deserialize_with = "null_default")]
     model_name: String,
     #[serde(default, deserialize_with = "null_default")]
-    duration: f64,
+    pub(crate) duration: f64,
 }
 
 impl Clip {
@@ -553,7 +563,7 @@ mod tests {
 
     #[test]
     fn parses_and_strips_music_flags() {
-        let options = parse_options("一首秋天的歌 --标题 落叶 --风格 folk,acoustic --版本 chirp-v5");
+        let options = Options::parse("一首秋天的歌 --标题 落叶 --风格 folk,acoustic --版本 chirp-v5");
         assert_eq!(options.prompt, "一首秋天的歌");
         assert_eq!(options.title, "落叶");
         assert_eq!(options.tags, "folk,acoustic");
@@ -563,7 +573,7 @@ mod tests {
 
     #[test]
     fn keeps_valueless_flags_and_reads_instrumental() {
-        let options = parse_options("钢琴小品 --纯音乐 --title");
+        let options = Options::parse("钢琴小品 --纯音乐 --title");
         assert_eq!(options.prompt, "钢琴小品 --title");
         assert!(options.instrumental);
         assert!(options.title.is_empty());

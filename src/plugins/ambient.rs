@@ -197,6 +197,12 @@ pub(crate) struct AmbientConfig {
     pub max_actions: usize,
     /// 每轮最多生成图片的张数；0 关闭绘图。绘图走 `[oai]` 配置的图像模型。
     pub draw_budget: usize,
+    /// 每轮最多写几首歌；0 关闭写歌。写歌走 `[oai]` 配置的 Suno 接口，一次生成
+    /// 两个版本，按站点计费约 $0.5——比绘图贵两个数量级，所以默认只给 1 次。
+    pub music_budget: usize,
+    /// 每轮最多拍几段视频；0 关闭拍片。拍片走 `[oai]` 配置的视频接口，一次约 $1.2，
+    /// 是这里最贵的一项；关掉它就是在群里收回这个能力。
+    pub video_budget: usize,
     /// 打字速度（字/分钟）。调低更像在慢慢敲。
     pub typing_cpm: u32,
     /// 长句改用语音输入时的等效速度（字/分钟）。
@@ -247,6 +253,8 @@ impl Default for AmbientConfig {
             split_chars: 60,
             max_actions: 6,
             draw_budget: 2,
+            music_budget: 1,
+            video_budget: 1,
             typing_cpm: 150,
             voice_cpm: 420,
             think_seconds: 3.0,
@@ -321,6 +329,8 @@ impl AmbientConfig {
             context_turns: (self.context_turns / 2).max(6),
             max_messages: self.max_messages.min(2),
             draw_budget: 0,
+            music_budget: 0,
+            video_budget: 0,
             lookup_budget: self.lookup_budget.min(1),
             // 高峰时段半价的是模型调用；联网搜索不便宜也更慢，这一句先不查。
             search_enabled: false,

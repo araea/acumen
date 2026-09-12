@@ -37,8 +37,9 @@ pub(super) const DEFAULT_VIDEO_MODELS: &[&str] = &[
     "luma_video",
 ];
 
-/// 兜底模型 id：模型列表还没拉回来时预设房间用它。
-pub(super) const FALLBACK_MODEL: &str = "veo3.1-fast";
+/// 兜底模型 id：模型列表还没拉回来时用它。
+/// 预设房间与群聊搭话的拍片工具都靠它兜底。
+pub(crate) const FALLBACK_MODEL: &str = "veo3.1-fast";
 
 /// 预设房间优先挑的那一档。刻意挑 fast：同一族的 pro 贵出好几倍（实测 $7 对 $1.2），
 /// 预设房间不该一上来就把账单顶上去。
@@ -50,8 +51,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 const TASK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 /// 默认时长与分辨率。短一点更便宜，长一点更好看，改 `[oai] video_seconds` 即可。
 const DEFAULT_SECONDS: &str = "5";
-const LANDSCAPE: &str = "1280x720";
-const PORTRAIT: &str = "720x1280";
+pub(crate) const LANDSCAPE: &str = "1280x720";
+pub(crate) const PORTRAIT: &str = "720x1280";
 
 /// 模型是否走视频任务接口。
 pub(crate) fn is_video_model(model: &str, keywords: &[String]) -> bool {
@@ -229,15 +230,18 @@ pub(super) async fn generate_reply(
 }
 
 /// 一次生成的产物。
-pub(super) struct Generated {
-    pub(super) video_url: String,
-    pub(super) model: String,
-    pub(super) seconds: Option<String>,
-    pub(super) cost: f64,
+pub(crate) struct Generated {
+    pub(crate) video_url: String,
+    pub(crate) model: String,
+    pub(crate) seconds: Option<String>,
+    /// 站点给的计费数字（单位与站点标价一致）。
+    pub(crate) cost: f64,
 }
 
 /// 提交一次生成并等到出片。
-async fn generate(
+///
+/// 与房间的回复构造解耦，供普通房间（[`generate_reply`]）与群聊搭话的拍片工具共用。
+pub(crate) async fn generate(
     api_base: &str,
     api_key: &str,
     model: &str,

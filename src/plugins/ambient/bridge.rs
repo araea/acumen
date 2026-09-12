@@ -176,6 +176,8 @@ struct Session {
     writes: usize,
     messages: usize,
     draws: usize,
+    music: usize,
+    videos: usize,
     memos: usize,
     lookups: usize,
     spoke: bool,
@@ -215,6 +217,8 @@ pub(crate) async fn start(
         writes: 0,
         messages: 0,
         draws: 0,
+        music: 0,
+        videos: 0,
         memos: 0,
         lookups: 0,
         spoke: false,
@@ -305,6 +309,8 @@ impl Session {
                     "writes_remaining":self.config.max_actions.clamp(1,12).saturating_sub(self.writes),
                     "messages_remaining":self.config.max_messages.clamp(1,5).saturating_sub(self.messages),
                     "draws_remaining":self.config.draw_budget.clamp(0,8).saturating_sub(self.draws),
+                    "music_remaining":self.config.music_budget.clamp(0,4).saturating_sub(self.music),
+                    "videos_remaining":self.config.video_budget.clamp(0,2).saturating_sub(self.videos),
                     "lookups_remaining":self.lookup_budget().saturating_sub(self.lookups),
                     "history_available":self.lookup_budget() > 0}),
                 )
@@ -541,37 +547,17 @@ impl Session {
                 let budget = self.config.draw_budget.clamp(0, 8);
                 ensure!(budget > 0, "本群已关闭绘图（[ambient] draw_budget = 0）");
                 ensure!(self.draws < budget, "本轮绘图额度已用完");
-                let (api_base, api_key, model) = {
-                    let mgr = crate::plugins::oai::data::MANAGER
-                        .get()
-                        .ok_or_else(|| anyhow::anyhow!("OAI 还没就绪，绘图这会儿用不了"))?;
-                    let config = mgr.config.read().await;
-                    let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
-                        &self.ctx,
-                        "oai",
-                    );
-                    let model = config
-                        .models
-                        .iter()
-                        .find(|model| {
-                            crate::plugins::oai::images::is_images_model(model, &oai.image_models)
-                        })
-                        .cloned()
-                        .or_else(|| {
-                            oai.image_models
-                                .iter()
-                                .find(|keyword| !keyword.trim().is_empty())
-                                .cloned()
-                        })
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("未配置图像模型，请在 [oai] image_models 指定")
-                        })?;
-                    (config.api_base.clone(), config.api_key.clone(), model)
-                };
-                ensure!(
-                    !api_base.is_empty() && !api_key.is_empty(),
-                    "OAI 接口地址或密钥未配置"
+                let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
+                    &self.ctx,
+                    "oai",
                 );
+                let (api_base, api_key, model) = media_endpoint(
+                    crate::plugins::oai::images::is_images_model,
+                    &oai.image_models,
+                    crate::plugins::oai::images::FALLBACK_MODEL,
+                    "图像",
+                )
+                .await?;
                 // 绘图是模型调用而不是平台写操作，不占用 writes/messages 额度；
                 // 单独设每轮张数上限，让语音/表情之外多一种表达不失控。
                 self.draws += 1;
@@ -600,6 +586,144 @@ impl Session {
                     "caption": generated.caption,
                     "model": generated.model,
                     "draws_remaining": budget.saturating_sub(self.draws),
+                }))
+            }
+            "music" => {
+                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
+                let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
+                ensure!(!prompt.is_empty(), "写歌得先说清楚写一首什么样的歌");
+                let budget = self.config.music_budget.clamp(0, 4);
+                ensure!(budget > 0, "本群已关闭写歌（[ambient] music_budget = 0）");
+                ensure!(self.music < budget, "本轮写歌额度已用完");
+                let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
+                    &self.ctx,
+                    "oai",
+                );
+                let (api_base, api_key, model) = media_endpoint(
+                    crate::plugins::oai::music::is_music_model,
+                    &oai.music_models,
+                    crate::plugins::oai::music::FALLBACK_MODEL,
+                    "音乐",
+                )
+                .await?;
+                let options = crate::plugins::oai::music::Options {
+                    prompt,
+                    title: request["title"].as_str().unwrap_or("").trim().to_string(),
+                    tags: request["tags"].as_str().unwrap_or("").trim().to_string(),
+                    version: oai.music_version(),
+                    instrumental: request["instrumental"].as_bool().unwrap_or(false),
+                };
+                // 写歌和绘图一样是模型调用，不占 writes/messages 额度；一次出两个版本，
+                // 两个都留，让模型自己挑一首发、或者两首都发。
+                self.music += 1;
+                let generated = crate::plugins::oai::music::generate(
+                    &api_base,
+                    &api_key,
+                    &options,
+                    self.media_deadline(),
+                )
+                .await?;
+                let stamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+                let mut songs = Vec::new();
+                for (index, clip) in generated.clips.iter().enumerate() {
+                    let mut song = json!({
+                        "title": clip.title.trim(),
+                        "duration": clip.duration.round() as i64,
+                        "lyrics": clip.prompt,
+                        "audio_url": clip.audio_url,
+                        "cover_url": clip.image_url,
+                    });
+                    if !clip.audio_url.trim().is_empty()
+                        && let Some(path) = self
+                            .save_remote(clip.audio_url.trim(), &format!("music-{stamp}-{index}.mp3"))
+                            .await
+                    {
+                        song["audio"] = json!(path);
+                    }
+                    if !clip.image_url.trim().is_empty()
+                        && let Some(path) = self
+                            .save_remote(clip.image_url.trim(), &format!("music-{stamp}-{index}.jpg"))
+                            .await
+                    {
+                        song["cover"] = json!(path);
+                    }
+                    songs.push(song);
+                }
+                ensure!(
+                    songs
+                        .iter()
+                        .any(|song| song["audio"].as_str().is_some_and(|path| !path.is_empty())),
+                    "歌出来了，但音频没能存到本地"
+                );
+                Ok(json!({
+                    "songs": songs,
+                    "tags": generated.tags,
+                    "version": generated.version,
+                    "cost": generated.cost,
+                    "model": model,
+                    "note": "两个版本是同一次生成的两首，各带本地 audio 与 cover 路径；发哪首、还是一起发，由你定。",
+                    "music_remaining": budget.saturating_sub(self.music),
+                }))
+            }
+            "video" => {
+                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
+                let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
+                ensure!(!prompt.is_empty(), "拍片得先说清楚要拍什么");
+                let budget = self.config.video_budget.clamp(0, 2);
+                ensure!(budget > 0, "本群已关闭拍片（[ambient] video_budget = 0）");
+                ensure!(self.videos < budget, "本轮拍片额度已用完");
+                let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
+                    &self.ctx,
+                    "oai",
+                );
+                let (api_base, api_key, model) = media_endpoint(
+                    crate::plugins::oai::video::is_video_model,
+                    &oai.video_models,
+                    crate::plugins::oai::video::FALLBACK_MODEL,
+                    "视频",
+                )
+                .await?;
+                // 时长与画面比例都从枚举里挑，别让模型把任意字符串塞进接口。
+                let seconds = request["seconds"]
+                    .as_u64()
+                    .filter(|value| (1..=30).contains(value))
+                    .unwrap_or(u64::from(oai.video_seconds()))
+                    .to_string();
+                let size = match request["size"].as_str().unwrap_or("") {
+                    "竖屏" | "portrait" | "9:16" => crate::plugins::oai::video::PORTRAIT,
+                    _ => crate::plugins::oai::video::LANDSCAPE,
+                };
+                self.videos += 1;
+                let generated = crate::plugins::oai::video::generate(
+                    &api_base,
+                    &api_key,
+                    &model,
+                    &prompt,
+                    &seconds,
+                    size,
+                    self.media_deadline(),
+                )
+                .await?;
+                let stamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+                let mut video = json!({
+                    "video_url": generated.video_url,
+                    "model": generated.model,
+                    "seconds": generated.seconds,
+                    "cost": generated.cost,
+                    "size": size,
+                });
+                if let Some(path) = self
+                    .save_remote(&generated.video_url, &format!("video-{stamp}.mp4"))
+                    .await
+                {
+                    video["video"] = json!(path);
+                }
+                Ok(json!({
+                    "video": video,
+                    "note": "有本地 video 路径时用它发；没有就只把 video_url 说给群友。",
+                    "videos_remaining": budget.saturating_sub(self.videos),
                 }))
             }
             "memo" => {
@@ -1149,45 +1273,116 @@ impl Session {
 
     /// 把生成的图片（远程直链或内联 base64）落盘到 ambient/media，供随后用工具发送。
     /// 直接发远程直链会受签名过期与防盗链影响，先下载下来再由 satori_action 上传更稳。
-    async fn save_image_to_media(&self, url: &str, index: usize) -> Result<String> {
-        use base64::Engine as _;
-        let bytes: Vec<u8> = if let Some((meta, payload)) = url.split_once(',')
-            && meta.starts_with("data:")
-        {
-            base64::engine::general_purpose::STANDARD
-                .decode(payload)
-                .context("解码内联图片失败")?
-        } else {
-            let response = crate::http::client()
-                .get(url)
-                .header(
-                    reqwest::header::USER_AGENT,
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                )
-                .timeout(std::time::Duration::from_secs(30))
-                .send()
-                .await
-                .context("下载生成图片失败")?;
-            if !response.status().is_success() {
-                anyhow::bail!("下载生成图片失败：HTTP {}", response.status().as_u16());
-            }
-            response.bytes().await.context("读取生成图片失败")?.to_vec()
-        };
-        if bytes.is_empty() {
-            anyhow::bail!("生成的图片为空");
-        }
+    /// 一次媒体生成的等待上限。
+    ///
+    /// 取本轮发言的总预算：生成得再久也不该超过这一轮自己能活的时间。外层还有一道
+    /// 同样的超时兜着，这里先到点就能给模型一句「等太久了」，而不是整轮被掐掉。
+    fn media_deadline(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.config.reply_timeout_seconds.clamp(30, 900))
+    }
+
+    /// 把成品写进 `ambient/media`，返回本地路径。
+    ///
+    /// 远端的直链多半带签名、过一会儿就失效，QQ 那边也未必拉得到；先落本地，
+    /// 模型随后用 `satori_action` 发出去时走的是 `upload.create`，稳。
+    async fn save_media(&self, bytes: &[u8], name: &str) -> Result<String> {
+        ensure!(!bytes.is_empty(), "成品是空的");
         tokio::fs::create_dir_all(&self.media)
             .await
-            .context("创建图片目录失败")?;
+            .context("创建素材目录失败")?;
+        let path = self.media.join(name);
+        tokio::fs::write(&path, bytes).await.context("写入成品失败")?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    /// 下载一份远端成品并存进本地素材目录。失败只让这一项缺席，不拖垮整次生成。
+    async fn save_remote(&self, url: &str, name: &str) -> Option<String> {
+        match fetch_media(url).await {
+            Ok(bytes) => match self.save_media(&bytes, name).await {
+                Ok(path) => Some(path),
+                Err(error) => {
+                    warn!(target: "Plugin/Ambient", "写入素材失败 {name}: {error:#}");
+                    None
+                }
+            },
+            Err(error) => {
+                warn!(target: "Plugin/Ambient", "下载素材失败 {url}: {error:#}");
+                None
+            }
+        }
+    }
+
+    async fn save_image_to_media(&self, url: &str, index: usize) -> Result<String> {
+        let bytes = fetch_media(url).await.context("下载生成图片失败")?;
         let name = format!(
             "draw-{}-{index}.{}",
             chrono::Local::now().format("%Y%m%d%H%M%S"),
             image_extension(&bytes)
         );
-        let path = self.media.join(&name);
-        tokio::fs::write(&path, bytes).await.context("写入生成图片失败")?;
-        Ok(path.to_string_lossy().into_owned())
+        self.save_media(&bytes, &name)
+            .await
+            .context("写入生成图片失败")
     }
+}
+
+/// 下载一份远端成品；`data:` 内联的也认。
+///
+/// 超时给得比图片宽：同一个函数也用来取几分钟的歌与几 MB 的视频。
+async fn fetch_media(url: &str) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    if let Some((meta, payload)) = url.split_once(',')
+        && meta.starts_with("data:")
+    {
+        return base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .context("解码内联媒体失败");
+    }
+    let response = crate::http::client()
+        .get(url)
+        .header(
+            reqwest::header::USER_AGENT,
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        )
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .context("下载成品失败")?;
+    if !response.status().is_success() {
+        anyhow::bail!("下载成品失败：HTTP {}", response.status().as_u16());
+    }
+    Ok(response.bytes().await.context("读完成品失败")?.to_vec())
+}
+
+/// 挑一个能用某个专用接口的模型，连同接口地址与密钥一起给出。
+///
+/// 先在站点实际在售的列表（`config.models` 是过滤后的那份）里按关键字挑，挑不到就用
+/// 兜底 id——音乐与视频的模型不在 `[oai] model_filter.keep` 里，兜底是常态而不是异常，
+/// 所以兜底必须是真实在售的 id，不能拿关键字顶上。
+async fn media_endpoint(
+    pick: fn(&str, &[String]) -> bool,
+    keywords: &[String],
+    fallback: &str,
+    label: &str,
+) -> Result<(String, String, String)> {
+    ensure!(
+        keywords.iter().any(|keyword| !keyword.trim().is_empty()),
+        "未配置{label}模型，请在 [oai] 里指定"
+    );
+    let mgr = crate::plugins::oai::data::MANAGER
+        .get()
+        .ok_or_else(|| anyhow::anyhow!("OAI 还没就绪，{label}这会儿用不了"))?;
+    let config = mgr.config.read().await;
+    ensure!(
+        !config.api_base.trim().is_empty() && !config.api_key.trim().is_empty(),
+        "OAI 接口地址或密钥未配置"
+    );
+    let model = config
+        .models
+        .iter()
+        .find(|model| pick(model, keywords))
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string());
+    Ok((config.api_base.clone(), config.api_key.clone(), model))
 }
 
 /// `@` 后面紧跟文字时要不要垫一个空格。
@@ -2407,61 +2602,100 @@ mod tests {
         server.abort();
     }
 
-    /// 绘图：调用 oai 图像接口生成并落盘到 ambient/media，不占平台写动作额度。
+    /// 三个生成类工具：绘图、写歌、拍片都调 oai 侧的专用接口，把成品落盘到
+    /// ambient/media 并返回本地路径，且都不占平台写动作额度。
+    ///
+    /// 三件事放在同一条测试里，是因为 `MANAGER` 是进程内单例——一个测试进程只能有
+    /// 一份 oai 配置，分成三个测试会互相抢初始化。
     #[tokio::test]
-    async fn draw_generates_saves_a_local_image_and_returns_its_path() {
+    async fn the_media_tools_generate_save_and_return_local_paths() {
         use crate::plugins::oai::data::Manager;
         use std::sync::Arc;
         use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-        // 假图像接口：生成路径返回内联 base64 PNG（免去下载外部直链）。
-        let image_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let image_addr = image_listener.local_addr().unwrap();
-        let image_server = tokio::spawn(async move {
-            let (stream, _) = image_listener.accept().await.unwrap();
-            let (rx, mut writer) = stream.into_split();
-            let mut reader = BufReader::new(rx);
-            let mut first = String::new();
-            reader.read_line(&mut first).await.unwrap();
-            let mut size = 0usize;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).await.unwrap();
-                if line == "\r\n" {
+        // 假中转站：按路径回不同的成品，够三个工具各跑一遍完整流程。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            // 请求条数不必数着来：闲下来就收摊，测试结束时不至于挂在最后一次 accept 上。
+            while let Ok(Ok((stream, _))) =
+                tokio::time::timeout(std::time::Duration::from_secs(3), listener.accept()).await
+            {
+                let (rx, mut writer) = stream.into_split();
+                let mut reader = BufReader::new(rx);
+                let mut first = String::new();
+                if reader.read_line(&mut first).await.is_err() {
                     break;
                 }
-                if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
-                    size = value.trim().parse().unwrap_or(0);
+                let path = first.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut size = 0usize;
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.is_err() {
+                        break;
+                    }
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_lowercase().strip_prefix("content-length:") {
+                        size = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut payload = vec![0u8; size];
+                let _ = reader.read_exact(&mut payload).await;
+                let (kind, body) = match path.as_str() {
+                    "/images/generations" => (
+                        "application/json",
+                        r#"{"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}],"model":"gpt-image-2.5-flare"}"#.to_string(),
+                    ),
+                    "/suno/submit/music" => (
+                        "application/json",
+                        r#"{"code":"success","data":"task-1","message":""}"#.to_string(),
+                    ),
+                    "/suno/fetch/task-1" => (
+                        "application/json",
+                        format!(
+                            r#"{{"code":"success","message":"","data":{{"status":"SUCCESS","fail_reason":"","progress":"100%","cost":0.5,"data":[{{"audio_url":"http://{addr}/audio.mp3","image_url":"http://{addr}/cover.jpg","title":"三点泡面","tags":"indie pop","prompt":"[Verse 1]\n凌晨三点","duration":143.2,"major_model_version":"v6"}}]}}}}"#
+                        ),
+                    ),
+                    "/audio.mp3" => ("audio/mpeg", "ID3-not-really-mp3".to_string()),
+                    "/cover.jpg" => ("image/jpeg", "not-really-jpeg".to_string()),
+                    "/video/generations" => (
+                        "application/json",
+                        r#"{"id":"v1","task_id":"v1","object":"video","model":"veo3.1-fast","status":"queued","seconds":"8"}"#.to_string(),
+                    ),
+                    "/video/generations/v1" => (
+                        "application/json",
+                        format!(
+                            r#"{{"code":"success","message":"","data":{{"status":"SUCCESS","progress":"100%","cost":1.2,"data":{{"video_url":"http://{addr}/v.mp4","model":"veo3.1-fast","seconds":""}}}}}}"#
+                        ),
+                    ),
+                    "/v.mp4" => ("video/mp4", "not-really-mp4".to_string()),
+                    _ => (
+                        "application/json",
+                        r#"{"error":{"message":"no such route"}}"#.to_string(),
+                    ),
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                if writer.write_all(response.as_bytes()).await.is_err() {
+                    break;
                 }
             }
-            let mut payload = vec![0u8; size];
-            reader.read_exact(&mut payload).await.unwrap();
-            let body = r#"{"data":[{"b64_json":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}],"model":"gpt-image-2.5-flare"}"#;
-            writer
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
         });
 
         let group = -8_000_106;
-        let (ctx, writer, _calls, server) = fixture(group).await;
-        let oai_dir = crate::plugins::oai::agent::ScratchDir::under(
-            &std::env::temp_dir(),
-            "oai-draw",
-        )
-        .unwrap();
+        let (ctx, writer, _calls, qq) = fixture(group).await;
+        let oai_dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "oai-media")
+                .unwrap();
         let oai_root = oai_dir.path().to_path_buf();
         tokio::fs::write(
             oai_root.join("config.json"),
             serde_json::json!({
-                "api_base": format!("http://{image_addr}"),
+                "api_base": format!("http://{addr}"),
                 "api_key": "sk-test",
                 "models": ["gpt-image-2.5-flare"],
                 "defaults_version": 999,
@@ -2479,30 +2713,99 @@ mod tests {
         let bridge = start(&ctx, &writer, group, 1, &config, &oai_root, &oai_root)
             .await
             .unwrap();
-        // 与人格一致：绘图前先读一次上下文（同步 revision 与可用额度）。
-        assert_eq!(
-            request(&bridge, json!({"id":"ctx","op":"context"})).await["ok"],
-            true
-        );
+        // 与人格一致：动手之前先读一次上下文（同步 revision 与可用额度）。
+        let opening = request(&bridge, json!({"id":"ctx","op":"context"})).await;
+        assert_eq!(opening["ok"], true, "{opening}");
+        assert_eq!(opening["result"]["music_remaining"], config.music_budget);
+        assert_eq!(opening["result"]["videos_remaining"], config.video_budget);
+
+        // 绘图。
         let drawn = request(
             &bridge,
             json!({"id":"draw","op":"draw","prompt":"一只橘猫","size":"1024x1024"}),
         )
         .await;
         assert_eq!(drawn["ok"], true, "{drawn}");
-        let result = &drawn["result"];
-        assert_eq!(result["caption"], "一只橘猫");
-        assert_eq!(result["model"], "gpt-image-2.5-flare");
-        let file = result["images"][0]["file"].as_str().unwrap();
+        let file = drawn["result"]["images"][0]["file"].as_str().unwrap();
         assert!(file.ends_with(".png"), "{file}");
         assert!(std::path::Path::new(file).is_file(), "{file}");
-        // 每轮默认 2 张，画了一张后剩 1 张。
-        assert_eq!(result["draws_remaining"], 1);
-        // 绘图是模型调用，不占平台写动作额度。
+        assert_eq!(drawn["result"]["draws_remaining"], 1);
+
+        // 写歌：一次两个版本那次也不例外，这里只回一首，够验证落盘与回执字段。
+        let written = request(
+            &bridge,
+            json!({"id":"music","op":"music","prompt":"写一首关于凌晨三点的歌"}),
+        )
+        .await;
+        assert_eq!(written["ok"], true, "{written}");
+        let song = &written["result"]["songs"][0];
+        assert_eq!(song["title"], "三点泡面");
+        assert_eq!(song["duration"], 143);
+        assert_eq!(written["result"]["version"], "v6");
+        assert_eq!(written["result"]["cost"], 0.5);
+        assert_eq!(written["result"]["music_remaining"], 0);
+        for key in ["audio", "cover"] {
+            let path = song[key].as_str().unwrap_or_else(|| panic!("{song}"));
+            assert!(std::path::Path::new(path).is_file(), "{path}");
+        }
+
+        // 拍片。
+        let shot = request(
+            &bridge,
+            json!({"id":"video","op":"video","prompt":"橘猫在窗台上看雨","size":"竖屏"}),
+        )
+        .await;
+        assert_eq!(shot["ok"], true, "{shot}");
+        let video = &shot["result"]["video"];
+        assert_eq!(video["model"], "veo3.1-fast");
+        assert_eq!(video["seconds"], "8");
+        assert_eq!(video["size"], crate::plugins::oai::video::PORTRAIT);
+        assert_eq!(shot["result"]["videos_remaining"], 0);
+        let path = video["video"].as_str().unwrap_or_else(|| panic!("{video}"));
+        assert!(std::path::Path::new(path).is_file(), "{path}");
+
+        // 三个工具都是模型调用，不占平台写动作额度。
         let context = request(&bridge, json!({"id":"ctx2","op":"context"})).await;
         assert_eq!(context["result"]["writes_remaining"], config.max_actions);
         drop(bridge);
+        qq.abort();
+        server.await.unwrap();
+    }
+
+    /// 额度为 0 的工具连模型接口都不碰：`music_budget = 0` 时写歌被挡在门外，
+    /// 报错里点明是哪个配置项，人格才改得回来。
+    #[tokio::test]
+    async fn media_tools_are_gated_by_their_budgets() {
+        let group = -8_000_107;
+        let (ctx, writer, _calls, server) = fixture(group).await;
+        let dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-gate")
+                .unwrap();
+        let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        config.music_budget = 0;
+        config.video_budget = 0;
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
+            .await
+            .unwrap();
+        // 与人格一致：动手之前先读一次上下文。额度检查排在时效检查之后，
+        // 所以少了这一步会先撞上「群聊已更新」而不是额度。
+        assert_eq!(
+            request(&bridge, json!({"id":"ctx","op":"context"})).await["ok"],
+            true
+        );
+        for (id, op, prompt) in [
+            ("m", "music", "写首歌"),
+            ("v", "video", "拍一段"),
+        ] {
+            let asked = request(&bridge, json!({"id":id,"op":op,"prompt":prompt})).await;
+            assert_eq!(asked["ok"], false, "{asked}");
+            let error = asked["error"].as_str().unwrap_or_default();
+            assert!(error.contains("budget"), "{error}");
+        }
+        // 参数为空就先拦下来，同样不该走到额度那一步。
+        let empty = request(&bridge, json!({"id":"e","op":"music","prompt":"  "})).await;
+        assert_eq!(empty["ok"], false, "{empty}");
+        drop(bridge);
         server.abort();
-        image_server.await.unwrap();
     }
 }

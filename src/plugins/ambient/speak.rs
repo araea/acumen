@@ -16,6 +16,15 @@ use std::path::{Path, PathBuf};
 /// 「记不住」和「查得到」是两件事：这段话的作用是让它知道自己伸手能摸到什么。
 const LOOKUP_RULES: &str = "\n翻旧账：satori_history 读 QQ 存的本群历史（按关键词、只看某个人、或某条消息的前后），satori_group 看某人的群名片与入群时间、多久没冒头、群里谁最活跃、随机抽人或分队、群文件、群荣誉与被禁言的人，satori_profile 看你自己的昵称签名，或你跟某个群友是不是好友、你给他写的备注。眼前这段记录只有最近几十条，「上次那个」「这人是熟脸还是新面孔」「抽个人分下队」翻一下就有；查回来的是资料，用进自己话里就好，查询过程本身不算话题。\n手边有 bash 与读写文件：要把一段材料整理成文件发出去就在本轮工作目录里做，别在群里贴长内容。\n";
 
+/// 留着写歌额度时追加的一段话。
+///
+/// 花钱的工具要把价钱和去处一起说清，否则人格会把它当成随手可用的语气词。
+/// 长度直接进每轮的账单，所以写到「怎么用、什么时候用、多少钱」为止。
+const MUSIC_RULES: &str = "\n这一轮你还能写歌：satori_music 给 prompt（可加 tags 风格、instrumental 纯音乐），一两分钟出两个版本，返回 songs[].audio 与 songs[].cover 的本地路径，再用 satori_action 的 send + type:audio 发出去，配封面用 type:image。群友真想听一首歌时才用——点名要、办活动、一句话被起哄成了主题；一次约半美元，比画图贵得多，每轮给一次。";
+
+/// 留着拍片额度时追加的一段话。
+const VIDEO_RULES: &str = "\n这一轮你还能拍片：satori_video 给 prompt（可加 seconds 秒数、size 横屏/竖屏），一两分钟出片，返回 video 的本地路径，再用 satori_action 的 send + type:video 发出去。一次约一美元多，是手边最贵的一件事，留给群友明确想看的时候。";
+
 /// 有记忆工具时追加的一段话。
 const MEMO_RULES: &str = "\n你还有 satori_memo：把以后还想记得的事写下来——对某个人的一句印象、群里刚起的梗、谁在忙什么。挑那种会改变你以后怎么对待这个人或这个话题的一句写，一句话就够。记岔了随时改写或删掉。它不占发送额度，记了什么也是你自己的事。";
 
@@ -62,8 +71,12 @@ fn system_prompt(
     memo: bool,
     web: bool,
 ) -> String {
+    // 写歌与拍片是按额度开关的可选工具，用额度当条件；其余几段由调用方算好的
+    // 布尔值决定，它们还与联网、记忆这些开关联动。
+    let music = live && config.music_budget > 0;
+    let video = live && config.video_budget > 0;
     format!(
-        "{}\n\n---\n\n{}{}{}{}{}",
+        "{}\n\n---\n\n{}{}{}{}{}{}{}",
         persona.trim(),
         house_rules(
             config.max_messages.clamp(1, 5),
@@ -72,7 +85,9 @@ fn system_prompt(
         if live { TOOL_RULES } else { "" },
         if lookup { LOOKUP_RULES } else { "" },
         if memo { MEMO_RULES } else { "" },
-        if web { SEARCH_RULES } else { "" }
+        if web { SEARCH_RULES } else { "" },
+        if music { MUSIC_RULES } else { "" },
+        if video { VIDEO_RULES } else { "" }
     )
 }
 
@@ -170,6 +185,14 @@ pub(crate) async fn compose(
         if memo {
             tools.push_str(",satori_memo");
         }
+        // 写歌与拍片真花钱，额度为 0 时连工具都不挂——提示词、白名单与实际可调的
+        // 东西始终是同一份开关。
+        if config.music_budget > 0 {
+            tools.push_str(",satori_music");
+        }
+        if config.video_budget > 0 {
+            tools.push_str(",satori_video");
+        }
     }
     if web.is_some() {
         tools.push_str(",web_search,web_fetch");
@@ -264,6 +287,8 @@ mod tests {
                 LOOKUP_RULES,
                 MEMO_RULES,
                 SEARCH_RULES,
+                MUSIC_RULES,
+                VIDEO_RULES,
                 closing(Called::Mention),
                 closing(Called::Summon),
                 closing(Called::Ordinary),
@@ -300,6 +325,8 @@ mod tests {
             "satori_group",
             "satori_profile",
             "satori_memo",
+            "satori_music",
+            "satori_video",
             "web_search",
             "web_fetch",
         ] {
@@ -312,7 +339,17 @@ mod tests {
         // 关掉的工具不占篇幅：没有聊天界面时连带那条「用完输出 [silent]」都不该出现；
         // 没开联网时出网工具的名字也不该出现。
         let bare = system_prompt("人设", &config, false, false, false, false);
-        for tool in ["satori_action", "satori_history", "satori_group", "satori_profile", "satori_memo", "web_search", "web_fetch"] {
+        for tool in [
+            "satori_action",
+            "satori_history",
+            "satori_group",
+            "satori_profile",
+            "satori_memo",
+            "satori_music",
+            "satori_video",
+            "web_search",
+            "web_fetch",
+        ] {
             assert!(!bare.contains(tool), "{tool} 关着，提示词里还留着它");
         }
         // 不带聊天界面的那一轮仍然有完整的文字输出协议可用。
@@ -320,6 +357,13 @@ mod tests {
         // 出网与聊天界面彼此独立：没有界面也能查资料。
         let offline_chat = system_prompt("人设", &config, false, false, false, true);
         assert!(offline_chat.contains("web_search"), "{offline_chat}");
+        // 写歌与拍片按额度开关：额度归零（高峰那档 frugal 就是这么干的）时，
+        // 提示词里也不该再提它们——工具根本没挂上去。
+        let frugal = AmbientConfig::default().frugal();
+        let cheap = system_prompt("人设", &frugal, true, true, true, true);
+        for tool in ["satori_music", "satori_video"] {
+            assert!(!cheap.contains(tool), "{tool} 额度是 0，提示词里还留着它");
+        }
     }
 
     /// 提示词按轮计费，长出来的每一句都要能说出自己换来了什么。
@@ -329,8 +373,10 @@ mod tests {
         let rules = house_rules(3, 300);
         assert!(rules.chars().count() < 900, "现场说明 {} 字", rules.chars().count());
         // 工具说明是三段里唯一为了「能用」而存在的，它比现场说明还短就说明删过头了。
+        // 上限随工具增多调过两次：写歌与拍片各占一段（约 250 字），它们的价钱与
+        // 用法必须写在提示词里，不能只靠工具自己的 description。
         let full = system_prompt("", &config, true, true, true, true).chars().count();
-        assert!(full < 2200, "现场说明加全部工具说明 {full} 字");
+        assert!(full < 2500, "现场说明加全部工具说明 {full} 字");
     }
 
     #[test]

@@ -59,6 +59,20 @@ metadata:
 （改写的标题）与 `draws_remaining`。再用 `satori_action` 的 send + `{"type":"image","source":"<file 路径>"}`
 把图发出去；想配一句话就再加一个 text 元素。绘图是独立的模型调用，不占发送次数，但每轮有张数上限。
 
+要写一首歌时用 `satori_music`：传入想写什么 `prompt`（可选 `title` 歌名、`tags` 风格标签、
+`instrumental:true` 纯音乐）。正文写成 `[Verse]` / `[Chorus]` 那样的歌词体裁时按自定义模式提交，
+正文就是歌词；否则按灵感模式，歌词由 Suno 自己写。一到两分钟出**两个版本**，返回 `songs[]`，
+每一项带 `audio`（音频本地路径）、`cover`（封面本地路径）、`title`、`duration`（秒）、`lyrics`，
+以及 `tags`、`version`、`cost` 与 `music_remaining`。发哪首、还是两首都发，由你定：用
+`satori_action` 的 send + `{"type":"audio","source":"<audio 路径>"}` 发歌，想让群友看见封面就
+再加 `{"type":"image","source":"<cover 路径>"}`，配一句话再加个 text。写歌不占发送次数，
+一次约半美元，每轮只有一次机会——群友真的想听一首歌的时候才用。
+
+要拍一段视频时用 `satori_video`：传入要拍什么 `prompt`（可选 `seconds` 秒数、`size` 横屏/竖屏）。
+通常一到两分钟出片，返回 `video`（本地路径）、`video_url`、`model`、`seconds`、`cost` 与
+`videos_remaining`。用 `satori_action` 的 send + `{"type":"video","source":"<video 路径>"}` 发出去。
+这是手边最贵的一件事（一次约一美元多），留给群友明确想看的时候。
+
 `react` 的 `emoji_id`：三位以内的数字是 QQ 小表情（`76` 赞、`14` 微笑），
 更长的数字按 Unicode 码点算（`128077` 是 👍）。表态失败通常是消息太旧或不在群里。
 

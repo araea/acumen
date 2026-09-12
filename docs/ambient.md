@@ -127,6 +127,10 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 - `satori_read` 查询窗口中的原消息，或完整展开它的合并转发
 - `satori_action` 执行一个结构化动作并返回回执，同一轮对话根据结果继续判断
 - `satori_draw` 调用 `[oai]` 配置的图像模型生成图片并保存到 `ambient/media`，返回本地路径、改写的标题与剩余额度，随后用 `satori_action` 的 send + image 发出。绘图是独立的模型调用，不占平台写动作额度，受 `draw_budget` 限流
+- `satori_music` 调用 `[oai]` 配置的 Suno 接口写歌，一次出两个版本，音频与封面都落到 `ambient/media` 并返回本地路径、歌词、时长与花费，随后用 `satori_action` 的 send + audio（想带封面再加 image）发出。同样不占平台写动作额度，受 `music_budget` 限流
+- `satori_video` 调用 `[oai]` 配置的视频接口拍片，把出片落到 `ambient/media` 并返回本地路径与花费，随后用 `satori_action` 的 send + video 发出。受 `video_budget` 限流（默认 1），这是手边唯一按美元计的单项，关掉它就是 0
+
+这三个生成类工具都在本轮发言的时间预算里跑，等待上限取 `reply_timeout_seconds`（默认 240 秒）：写歌与默认的 veo 出片各约一两分钟，够用；换成更慢的视频模型（万相那一档要三分钟）时把它一起调大。`music_budget` / `video_budget` 为 0 时工具连白名单都进不去，提示词里也不会提它们。
 - `satori_history` 查 QQ 保存的本群历史，`satori_group` 查这个群的现有资料，`satori_profile` 查自己的资料与跟某个群友的关系，三者都只读，受 `lookup_budget` 限流
 - `satori_memo` 写长期记忆：`people`（对某个群成员的一句印象，再写一次就是改写）、`notes`（这个群的一件旧事）、`forget_people` / `forget_notes`。不占发送额度，受 `memo_budget` 限流，关闭 `memory_enabled` 时不注册
 
@@ -264,6 +268,8 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 | `split_chars` | `60` | 一条消息大约多少字就该分段；超过约一条半时按断句切成几条依次发出，总数仍受 `max_messages` 约束；0 关闭 |
 | `max_actions` | `6` | 一轮平台写动作总数，限制在 1–12，失败尝试也计入 |
 | `draw_budget` | `2` | 每轮最多生成图片的张数；0 关闭绘图，绘图走 `[oai]` 配置的图像模型 |
+| `music_budget` | `1` | 每轮最多写几首歌；0 关闭 `satori_music`。一次生成两个版本、约 $0.5 |
+| `video_budget` | `1` | 每轮最多拍几段视频；0 关闭 `satori_video`。一次约 $1.2，是这里最贵的单项 |
 | `send_freshness_seconds` | `25` | 消息时效窗口：交给 QQ 之前群里又有人说话就整条不发；0 关闭 |
 | `typing_cpm` | `150` | 打字速度，字/分钟 |
 | `voice_cpm` | `420` | 长句等效语音输入速度 |

@@ -15,6 +15,12 @@ use std::time::Duration;
 /// 站点上新图像模型时改 `[oai] image_models` 即可，不必改代码。
 pub(super) const DEFAULT_IMAGE_MODELS: &[&str] = &["gpt-image-2.5"];
 
+/// 兜底模型 id：站点在售列表里挑不到图像模型时用它。
+///
+/// 挑不到是常态——`[oai] model_filter.keep` 只管聊天模型那一摊，图像模型关键字
+/// 未必在里面。写关键字当 id 会撞上一个不存在的模型名，所以兜底必须是真实 id。
+pub(crate) const FALLBACK_MODEL: &str = "gpt-image-2.5-flare";
+
 /// 单次绘图请求的上限。真正的总预算由 `[oai] request_timeout_seconds` 兜底，
 /// 这里略小一些，好让超时错误落在「图像接口」而不是笼统的「请求超时」。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(240);

@@ -21,10 +21,10 @@ pub(crate) const SECTION: &str = "画图预设";
 pub(crate) const PREFIX: &str = "画·";
 
 /// 预设房间优先选用的模型关键字；站点上有多个同系列 id 时取第一个。
-const MODEL_KEYWORD: &str = "gpt-image-2.5";
+const MODEL_KEYWORD: &str = super::images::DEFAULT_IMAGE_MODELS[0];
 
-/// 模型列表还没拉回来时用的兜底 id。
-const FALLBACK_MODEL: &str = "gpt-image-2.5-flare";
+/// 模型列表还没拉回来时用的兜底 id；与群聊搭话的绘图工具共用一份。
+const FALLBACK_MODEL: &str = super::images::FALLBACK_MODEL;
 
 /// 音乐预设独立成区，名字也用另一个前缀：`歌·`。
 ///
