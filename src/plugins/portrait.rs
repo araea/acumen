@@ -3,11 +3,12 @@
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
 //! 报告由三段拼成——[`collect`] 从库里取出可统计的事实与发言样本，
 //! [`persona`] 把素材交给模型换回一份结构化画像（模型不接时用统计量兜底），
-//! [`card`] 排成一张 HTML 报告图。
+//! [`card`] 排成一张 HTML 报告图；[`avatar`] 取对象的 QQ 头像配在报告开头。
 //!
 //! 两处刻意的保护：同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，
 //! 免得群里连着刷。这两道闸只影响发指令的人，不影响其它功能。
 
+pub mod avatar;
 pub mod card;
 pub mod collect;
 pub mod persona;
@@ -419,9 +420,11 @@ pub fn handle(
             }
         };
 
+        let avatar = avatar::data_url(material.user_id).await;
         let view = card::View {
             material: &material,
             persona: &profile,
+            avatar: avatar.as_deref(),
             model: &model,
             theme: &config.theme,
             offset: beijing(),
@@ -651,9 +654,11 @@ mod live_tests {
             );
         }
 
+        let avatar = avatar::data_url(material.user_id).await;
         let html = card::html(&card::View {
             material: &material,
             persona: &profile,
+            avatar: avatar.as_deref(),
             model: &model,
             theme: "auto",
             offset: beijing(),

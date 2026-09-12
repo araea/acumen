@@ -5,8 +5,9 @@
 //! 目标是「一屏读得下去」：正文 19.5px、行高 1.8、版心 720px，中文一行约 30 字，
 //! 手机上缩略图能读出标题，点开长文不累。
 //!
-//! 约束与本仓库其它卡片一致：不加载任何外部资源（字体、图片、脚本都不引），
-//! 所有动态文本一律转义，出图走 `TabGuard` 并在 45 秒处兜底。
+//! 约束与本仓库其它卡片一致：不加载任何外部资源（字体、图片、脚本都不引；
+//! 头像由 [`super::avatar`] 先下回来，以 data URL 内嵌），所有动态文本一律转义，
+//! 出图走 `TabGuard` 并在 45 秒处兜底。
 
 use super::collect::Material;
 use super::persona::Persona;
@@ -118,6 +119,8 @@ fn initial(name: &str) -> String {
 pub struct View<'a> {
     pub material: &'a Material,
     pub persona: &'a Persona,
+    /// 对象头像的 data URL，见 [`super::avatar`]；取不到时是 `None`，改用名字首字。
+    pub avatar: Option<&'a str>,
     pub model: &'a str,
     /// 主题模式：`auto` / `light` / `dark`，见 [`Theme::resolve`]。
     pub theme: &'a str,
@@ -201,9 +204,13 @@ fn hero(view: &View<'_>) -> String {
         format!("{} 起", date_of(material.first_time, view.offset)),
         format!("{} 条发言", fmt_num(material.total)),
     ];
+    // 有头像用头像，没有就用名字首字顶着，版位不变。
+    let face = match view.avatar {
+        Some(src) => format!(r#"<img src="{}" alt="">"#, esc(src)),
+        None => esc(&initial(&material.name)),
+    };
     format!(
-        r#"<div class="hero"><div class="avatar">{}</div><div class="who"><div class="who-name">{}</div><div class="who-meta">{}</div></div></div>"#,
-        esc(&initial(&material.name)),
+        r#"<div class="hero"><div class="avatar">{face}</div><div class="who"><div class="who-name">{}</div><div class="who-meta">{}</div></div></div>"#,
         esc(&material.name),
         bits.join(r#"<span class="sep">·</span>"#),
     )
@@ -484,7 +491,9 @@ const CSS: &str = r#"
 .hero{display:flex;align-items:center;gap:20px}
 .avatar{flex:none;display:flex;align-items:center;justify-content:center;width:86px;height:86px;
   border-radius:50%;font-size:36px;font-weight:800;color:__ACCENT__;
-  background:rgba(__RGB__,var(--chip-alpha));border:2px solid rgba(__RGB__,.30);letter-spacing:0}
+  background:rgba(__RGB__,var(--chip-alpha));border:2px solid rgba(__RGB__,.30);letter-spacing:0;
+  overflow:hidden}
+.avatar img{display:block;width:100%;height:100%;object-fit:cover}
 .who{min-width:0}
 .who-name{font-size:34px;line-height:1.28;font-weight:800;letter-spacing:-.015em;color:var(--title)}
 .who-meta{margin-top:9px;font-size:15.5px;line-height:1.6;font-weight:500;color:var(--muted)}
@@ -672,6 +681,7 @@ mod tests {
         View {
             material,
             persona,
+            avatar: None,
             model: "deepseek/deepseek-flash",
             theme: "auto",
             offset: offset(),
@@ -718,6 +728,25 @@ mod tests {
         assert!(!html.contains("阿<甲>"));
         assert!(html.contains("阿&lt;甲&gt;"));
         assert!(html.contains("测试&lt;群&gt;"));
+    }
+
+    /// 有头像时嵌图，没有时退回名字首字，两种都不改版位。
+    #[test]
+    fn the_avatar_replaces_the_initial_when_available() {
+        let material = material();
+        let persona = persona();
+        let base = view_at(&material, &persona, MORNING);
+
+        let without = html(&base);
+        assert!(without.contains(r#"<div class="avatar">阿</div>"#), "没有头像时用首字");
+
+        let data = "data:image/jpeg;base64,AAAA";
+        let with = html(&View {
+            avatar: Some(data),
+            ..view_at(&material, &persona, MORNING)
+        });
+        assert!(with.contains(&format!(r#"<div class="avatar"><img src="{data}" alt=""></div>"#)));
+        assert!(!with.contains(r#"<div class="avatar">阿</div>"#));
     }
 
     #[test]
