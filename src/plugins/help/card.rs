@@ -260,7 +260,8 @@ mod tests {
                 _ => None,
             });
         assert_eq!(cols, Some(OVERVIEW_COLS), "总览条目应为两列");
-        assert!(OVERVIEW_COLS > 1);
+        // 两列是这张卡的前提，所以钉在编译期而不是运行时再断言一次。
+        const { assert!(OVERVIEW_COLS > 1) };
     }
 
     #[test]
