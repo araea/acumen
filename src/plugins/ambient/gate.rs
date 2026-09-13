@@ -29,6 +29,12 @@ impl Verdict {
     /// 正在关注的话题被接住时门槛下调 `focus_relief` 分，而不是直接放行——
     /// 「聊得投机可以连着聊几轮」和「他每说一句我都接」之间只隔着这一点：
     /// 一旦绕过门槛，热闹的群里 continuation 会一直为真，人格就再也停不下来了。
+    ///
+    /// 硬冷却对续聊同样有效。原因和在门槛上打折不一样：`continuation` 在长期
+    /// 只有一个话题的群里几乎恒真（数码群整天聊手机），免掉冷却就等于放它两分钟
+    /// 里连说四轮——群友听到的正是这个。续聊该换来的是「门槛低一点」，不是
+    /// 「不用排队」。真正有人叫它走的不是这条路（`reply_on_mention` 在判定之前
+    /// 就把它接到了人格手里），所以被问到时不受影响。
     pub(crate) fn wants_composition(
         &self,
         threshold: u8,
@@ -40,10 +46,10 @@ impl Verdict {
         if self.score == 0 {
             return false;
         }
-        let continuing = focused && self.continuation;
-        if !continuing && silent_for.is_some_and(|elapsed| elapsed < cooldown) {
+        if silent_for.is_some_and(|elapsed| elapsed < cooldown) {
             return false;
         }
+        let continuing = focused && self.continuation;
         let bar = if continuing {
             threshold.saturating_sub(focus_relief).max(1)
         } else {
@@ -255,14 +261,24 @@ mod tests {
         assert!(!verdict.wants_composition(60, 15, true, Some(Duration::ZERO), Duration::ZERO));
         // 没在关注就是原价。
         assert!(!verdict.wants_composition(50, 15, false, Some(Duration::ZERO), Duration::ZERO));
-        // 续聊仍然绕过可选的硬冷却。
+        // 续聊换来的是门槛打折，不是免排队：硬冷却对续聊同样有效。
+        assert!(!verdict.wants_composition(
+            50,
+            15,
+            true,
+            Some(Duration::from_secs(5)),
+            Duration::from_secs(90)
+        ));
+        // 冷却过去之后，续聊照旧按打过折的门槛放行。
         assert!(verdict.wants_composition(
             50,
             15,
             true,
-            Some(Duration::ZERO),
+            Some(Duration::from_secs(120)),
             Duration::from_secs(90)
         ));
+        // 从没说过话（silent_for 为 None）时没有冷却可言。
+        assert!(verdict.wants_composition(50, 15, true, None, Duration::from_secs(90)));
         let zero = parse_verdict(r#"{"score":0,"continuation":true}"#).unwrap();
         assert!(!zero.wants_composition(0, 99, true, None, Duration::ZERO));
         let ordinary = parse_verdict(r#"{"score":60}"#).unwrap();
