@@ -168,6 +168,16 @@ fn strip_decoration(line: &str) -> &str {
     line.trim()
 }
 
+/// 工具参数里的一段文字 → 消息段。
+///
+/// 工具路径本该用结构化元素，但模型偶尔把兼容标记（`[at:…]`、`[face:…]`、
+/// `[img:…]`）写进 `text` 里。原样发出去群里就看见一串方括号——线上记录
+/// id 79077 的 `[face:277]` 就是这么漏的。这里复用文字路径的翻译：只认合法
+/// 标记，`[笑]` 这类不认识的方括号仍旧是文字。
+pub(crate) fn text_segments(text: &str) -> Message {
+    build_message(text).0
+}
+
 /// 一行文本 → 消息段 + 正文字数。
 fn build_message(body: &str) -> (Message, usize) {
     // 字面的 `\n` 在这儿就还原成真换行，后面按标记定位的字节下标才对得上。
@@ -357,6 +367,19 @@ mod tests {
                 .all(|item| text_of(item).matches('[').count() == text_of(item).matches(']').count()),
             "{items:?}"
         );
+    }
+
+    /// 工具路径传进来的文字也要走同一套标记翻译，否则 `[face:277]` 会原样进群。
+    #[test]
+    fn tool_text_gets_the_same_markup_translation() {
+        let message = text_segments("行 下次轮到你站中间那格[face:277]");
+        let kinds: Vec<&str> = message.0.iter().map(|s| s.type_.as_str()).collect();
+        assert_eq!(kinds, ["text", "face"]);
+        assert_eq!(message.0[1].data.get("id").unwrap(), "277");
+        // 认不出的方括号不动它。
+        let plain = text_segments("[笑] 收到");
+        assert_eq!(plain.0.len(), 1);
+        assert_eq!(plain.0[0].data.get("text").unwrap(), "[笑] 收到");
     }
 
     #[test]

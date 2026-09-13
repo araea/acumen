@@ -1037,7 +1037,8 @@ impl Session {
                 for (index, part) in parts.iter().enumerate() {
                     msg = match part {
                         Part::Text { text } => {
-                            msg.text(super::literal_newlines(text))
+                            msg.0.extend(super::pace::text_segments(text).0);
+                            msg
                         }
                         Part::At { user_id } => {
                             let msg = msg.at(user_id);
@@ -1082,7 +1083,7 @@ impl Session {
                     msg = msg.node_custom(
                         &self.ctx.bot.login_user.id,
                         self.ctx.bot.login_user.name.as_deref().unwrap_or("我"),
-                        Message::new().text(super::literal_newlines(text)),
+                        super::pace::text_segments(text),
                     );
                 }
                 return self.send(msg).await;
@@ -1160,7 +1161,11 @@ impl Session {
                         }
                     }
                     Part::Face { id } => message.face(id),
-                    Part::Text { text } => message.text(super::literal_newlines(text)),
+                    Part::Text { text } => {
+                        let mut message = message;
+                        message.0.extend(super::pace::text_segments(text).0);
+                        message
+                    }
                     _ => message,
                 };
             }
@@ -1955,6 +1960,50 @@ mod tests {
         drop(calls);
         assert_eq!(window::with_group(group, |s| s.spoken_last_hour()), 1);
         // 工具出口就在进程内：一轮结束时没有任何套接字或凭据需要回收。
+        drop(bridge);
+        server.abort();
+    }
+
+    /// 工具路径的 `text` 里混进兼容标记时，按文字协议翻成真正的段。
+    ///
+    /// 线上记录 id 79077 见过模型把 `[face:277]` 写进 `send` 的 text，原样发进群
+    /// 变成一串方括号。不认识的方括号（`[笑]`）仍旧当文字，别误伤。
+    #[tokio::test]
+    async fn compat_markup_inside_tool_text_becomes_real_segments() {
+        let group = -8_000_109;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir = crate::plugins::oai::agent::ScratchDir::under(
+            &std::env::temp_dir(),
+            "social-markup",
+        )
+        .unwrap();
+        tokio::fs::create_dir(dir.path().join("media")).await.unwrap();
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
+            .await
+            .unwrap();
+        // 先读一次 context，把 bridge 的 seq 对齐到窗口当前值，否则发送会被当成过时动作。
+        assert_eq!(
+            request(&bridge, json!({"id":"markup-context","op":"context"})).await["ok"],
+            true
+        );
+        let sent = action(
+            &bridge,
+            "markup",
+            json!({"action":"send","parts":[{"type":"text","text":"行 图我先收了 下次轮到你站中间那格[face:277] [笑]"}]}),
+        )
+        .await;
+        assert_eq!(sent["ok"], true, "{sent}");
+        let content = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(method, _)| method == "message.create")
+            .map(|(_, body)| body["content"].as_str().unwrap_or("").to_string())
+            .expect("应当发出一条消息");
+        assert!(content.contains("<emoji id=\"277\"/>"), "{content}");
+        assert!(!content.contains("[face:277]"), "{content}");
+        assert!(content.contains("[笑]"), "{content}");
         drop(bridge);
         server.abort();
     }

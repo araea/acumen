@@ -244,7 +244,7 @@ pub(crate) async fn compose(
         let focus = reply
             .text
             .lines()
-            .filter(|l| l.trim().starts_with("[focus:"))
+            .filter(|line| super::attention::is_control(line))
             .collect::<Vec<_>>()
             .join("\n");
         Ok(format!("{focus}\n[silent]"))

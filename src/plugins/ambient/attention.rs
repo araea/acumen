@@ -13,10 +13,54 @@ pub(crate) struct Focus {
 #[derive(Deserialize)]
 struct Request {
     #[serde(default)]
-    users: Vec<i64>,
+    users: Vec<Id>,
     #[serde(default)]
     topic: String,
     seconds: u64,
+}
+
+/// QQ 号在记录里是数字，模型有时写成字符串（`"416012267"`）。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Id {
+    Number(i64),
+    Text(String),
+}
+
+impl Id {
+    fn qq(&self) -> Option<i64> {
+        match self {
+            Id::Number(id) => Some(*id),
+            Id::Text(raw) => raw.trim().parse().ok(),
+        }
+    }
+}
+
+/// 去掉列表符号与首尾空白，供控制行判定使用。
+fn decorated(line: &str) -> &str {
+    line.trim()
+        .trim_start_matches("- ")
+        .trim_start_matches("* ")
+        .trim()
+}
+
+/// 这一行是不是「关注」控制行。
+///
+/// 文档与提示词都写方括号，但模型偶尔会仿着 Satori 的 XML 写成尖括号
+/// （`<focus:{…}>`）。两种都要认：控制行一旦漏判，就会原样发进群里。
+pub(crate) fn is_control(line: &str) -> bool {
+    let clean = decorated(line);
+    clean.starts_with("[focus:") || clean.starts_with("<focus:")
+}
+
+/// 取出控制行里的 JSON 正文；括号不闭合（或不是控制行）时给 None。
+fn body_of(line: &str) -> Option<&str> {
+    let clean = decorated(line);
+    let rest = clean
+        .strip_prefix("[focus:")
+        .or_else(|| clean.strip_prefix("<focus:"))?;
+    let rest = rest.trim_end();
+    rest.strip_suffix(']').or_else(|| rest.strip_suffix('>'))
 }
 
 /// None 保持现状，Some(None) 主动离场，Some(Some(..)) 更新关注。
@@ -29,20 +73,17 @@ pub(crate) fn extract(
     let mut lines = Vec::new();
     let mut update = None;
     for line in raw.lines() {
-        let clean = line
-            .trim()
-            .trim_start_matches("- ")
-            .trim_start_matches("* ");
-        if let Some(body) = clean.strip_prefix("[focus:") {
-            if let Some(body) = body.strip_suffix(']')
-                && let Ok(request) = serde_json::from_str::<Request>(body.trim())
+        if is_control(line) {
+            if let Some(body) = body_of(line)
+                && let Ok(request) = serde_json::from_str::<Request>(body)
             {
                 if request.seconds == 0 || max_seconds == 0 {
                     update = Some(None);
                 } else {
                     let users = request
                         .users
-                        .into_iter()
+                        .iter()
+                        .filter_map(Id::qq)
                         .filter(|id| {
                             *id > 0
                                 && turns
@@ -92,6 +133,33 @@ mod tests {
         assert!(focus.users.is_empty());
         assert_eq!(focus.topic, "这游戏");
         assert!(focus.until.saturating_duration_since(Instant::now()) <= Duration::from_secs(300));
+    }
+
+    /// 线上出过的一种漏判：模型把方括号写成尖括号、QQ 号写成字符串，
+    /// 整行就原样发进了群（记录 id 78949）。两种写法都得当控制行处理。
+    #[test]
+    fn angle_brackets_and_string_ids_are_still_control_lines() {
+        let raw = "<focus:{\"users\":[\"416012267\"],\"topic\":\"发言统计口径偏差、对错梗图\",\"seconds\":180}>";
+        assert!(is_control(raw));
+        let turns = [Turn {
+            user_id: 416012267,
+            name: "群友".into(),
+            text: "hi".into(),
+            images: vec![],
+            elements: crate::message::Message::new(),
+            message_id: 1,
+            from_me: false,
+            mentions_me: false,
+            at: 0,
+        }];
+        let (body, update) = extract(raw, &turns, 300);
+        assert_eq!(body, "");
+        let focus = update.unwrap().unwrap();
+        assert_eq!(focus.users, vec![416012267]);
+        assert_eq!(focus.topic, "发言统计口径偏差、对错梗图");
+        // 混用括号（`[focus:…>`）也认，别让它从缝里漏出去。
+        assert!(is_control("[focus:{\"seconds\":0}>"));
+        assert_eq!(extract("[focus:{\"seconds\":0}>", &[], 300).0, "");
     }
 
     #[test]

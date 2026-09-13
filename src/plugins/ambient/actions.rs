@@ -115,6 +115,11 @@ impl Action {
                             user(turns, user_id)?;
                         }
                         Part::Text { text } => {
+                            // 关注是给自己留的记号，写进正文就成了发出去的怪话。
+                            ensure!(
+                                !text.lines().any(super::attention::is_control),
+                                "关注指令写在最终输出里，不随消息正文发出"
+                            );
                             chars += text.chars().count();
                         }
                         Part::Face { id } => {
@@ -178,6 +183,12 @@ impl Action {
                 ensure!(
                     texts.iter().map(|s| s.chars().count()).sum::<usize>() <= 16000,
                     "转发正文过长"
+                );
+                ensure!(
+                    !texts
+                        .iter()
+                        .any(|text| text.lines().any(super::attention::is_control)),
+                    "关注指令写在最终输出里，不随转发正文发出"
                 );
                 for id in message_ids {
                     let turn = message(turns, id)?;
@@ -276,6 +287,33 @@ mod tests {
         )
         .unwrap();
         fresh.validate(&turns).unwrap();
+    }
+
+    /// 关注指令漏进消息正文时整条拦下：它该写在最终输出里，不该出现在群里。
+    #[test]
+    fn focus_control_lines_never_ride_along_with_a_message() {
+        for raw in [
+            r#"{"action":"send","parts":[{"type":"text","text":"<focus:{\"users\":[\"42\"],\"seconds\":180}>"}]}"#,
+            r#"{"action":"send","parts":[{"type":"text","text":"接着说\n[focus:{\"seconds\":0}]"}]}"#,
+            r#"{"action":"forward","texts":["[focus:{\"topic\":\"这游戏\",\"seconds\":30}]"]}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Action>(raw)
+                    .unwrap()
+                    .validate(&turns())
+                    .is_err(),
+                "{raw}"
+            );
+        }
+        // 普通正文里带方括号不算数，`[笑]` 这种照旧发。
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"action":"send","parts":[{"type":"text","text":"[笑] 收到"}]}"#
+            )
+            .unwrap()
+            .validate(&turns())
+            .is_ok()
+        );
     }
 
     #[test]
