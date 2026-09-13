@@ -4,8 +4,11 @@ use super::{Entry, Group, needs_prefix};
 use crate::plugins::Cmd;
 use crate::render::web::{self, Block, Doc, Item, Theme, Tone};
 
-/// 总览版心宽度（单列）
-const OVERVIEW_WIDTH: f32 = 640.0;
+/// 总览版心宽度。总览是「目录」，条目多、每条约两句，
+/// 版心放宽到两列并排，高度随之减半，一屏能扫完。
+const OVERVIEW_WIDTH: f32 = 920.0;
+/// 总览的列数：两列网格并排，条目左右对齐，同行的分隔线也齐平
+const OVERVIEW_COLS: usize = 2;
 /// 详情版心宽度（单栏，长指令自动换行）
 const DETAIL_WIDTH: f32 = 640.0;
 
@@ -36,7 +39,10 @@ impl Card {
     }
 }
 
-/// 总览卡：分区 → 单列清单，状态文字与颜色同时呈现。
+/// 总览卡：分区 → 两列目录，状态文字与颜色同时呈现。
+///
+/// 条目按两列网格排，而不是拉成一长串：目录的意义是「一眼扫全」，
+/// 单列会把 20 来个插件堆成一张需要往下翻很久的长图。
 pub fn overview(groups: &[Group], prefix: &str) -> Card {
     let mut blocks = vec![
         Block::Title {
@@ -55,8 +61,8 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
             en: group.en.into(),
             count: format!("{} 项", group.items.len()),
         });
-        blocks.push(Block::Items(
-            group
+        blocks.push(Block::Items {
+            items: group
                 .items
                 .iter()
                 .map(|e| Item {
@@ -66,7 +72,8 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
                     on: e.enabled,
                 })
                 .collect(),
-        ));
+            cols: OVERVIEW_COLS,
+        });
     }
 
     blocks.push(Block::Callout {
@@ -228,6 +235,32 @@ mod tests {
             println!("{name} 出图 {} 字节", bytes.len());
         }
         cdp_html_shot::Browser::shutdown_global().await;
+    }
+
+    /// 总览必须并排两列：退回单列会把 20 来个插件拉成一条长图，
+    /// 「一眼看全」就没了——这是本卡片最初要解决的问题。
+    #[test]
+    fn overview_lays_items_out_in_two_columns() {
+        let groups = vec![Group {
+            title: "分区",
+            en: "SECTION",
+            items: vec![Entry {
+                display: "插件",
+                name: "plugin",
+                desc: "说明",
+                enabled: true,
+            }],
+        }];
+        let cols = overview(&groups, "/")
+            .0
+            .blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Items { cols, .. } => Some(*cols),
+                _ => None,
+            });
+        assert_eq!(cols, Some(OVERVIEW_COLS), "总览条目应为两列");
+        assert!(OVERVIEW_COLS > 1);
     }
 
     #[test]

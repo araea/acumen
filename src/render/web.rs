@@ -49,7 +49,9 @@ pub enum Block {
         en: String,
         count: String,
     },
-    Items(Vec<Item>),
+    /// 条目清单。`cols` 为 1 时逐条竖排；大于 1 时排成多列网格
+    /// （目前样式只定义了 `.cols-2`），让「一眼看全」的目录不被撑成一张长图。
+    Items { items: Vec<Item>, cols: usize },
     Cmds(Vec<Cmd>),
     Rows(Vec<Row>),
     Code(Vec<String>),
@@ -103,11 +105,12 @@ pub fn html(doc: &Doc) -> String {
             Block::Rule => body.push_str("<hr>"),
             Block::Section { title, en, count } => body.push_str(&format!(
                 "<div class=section><h2>{}</h2><span class=section-en>{}</span><span class=count>{}</span></div>", esc(title), esc(en), esc(count))),
-            Block::Items(items) => {
-                body.push_str("<div class=items>");
+            Block::Items { items, cols } => {
+                let cols = (*cols).max(1);
+                body.push_str(&format!("<div class=\"items cols-{cols}\">"));
                 for item in items {
-                    body.push_str(&format!("<article class=item><div class=item-heading><h3>{}</h3>{}</div><div class=key>{}</div><p class=description>{}</p></article>",
-                        esc(&item.name), status(item.on), esc(&item.key), esc(&item.desc)));
+                    body.push_str(&format!("<article class=item><div class=item-heading><h3>{}</h3><span class=key>{}</span>{}</div><p class=description>{}</p></article>",
+                        esc(&item.name), esc(&item.key), status(item.on), esc(&item.desc)));
                 }
                 body.push_str("</div>");
             }

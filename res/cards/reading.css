@@ -41,6 +41,17 @@ h3 { font-size: 24px; font-weight: 600; line-height: 1.5; min-width: 0; }
 .badge.off { color: #676c69; background: #edf0ed; }
 .badge.off i { background: transparent; border: 1px solid currentColor; }
 .badge.pending { color: #855516; background: #fff1d6; }
+/* 总览的条目是「目录」：列窄、条数多，字号与间距各收一档，并排两列，
+   整页高度约为单列的一半，一屏能扫完，不必逐条往下翻。
+   用 grid 而不是 columns——同一行的分隔线对齐，也不会因列高不均留下空档。 */
+.items.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 44px; }
+.items.cols-2 .item { padding: 15px 0; }
+.items.cols-2 .item:last-child { padding-bottom: 6px; }
+.items.cols-2 .item-heading h3 { flex: 1; font-size: 23px; }
+/* 配置键贴着名字这一行的右端：它只是身份标注，单独占一行只会把目录拉长 */
+.items.cols-2 .item-heading .key { margin-top: 0; font-size: 16px; align-self: center; }
+.items.cols-2 .description { margin-top: 7px; font-size: 20px; line-height: 1.65; }
+.items.cols-2 .badge { padding: 2px 8px; font-size: 15px; }
 .commands { list-style: none; }
 .commands li { padding: 21px 0; border-bottom: 1px solid var(--line); }
 .commands li:last-child { border-bottom: 0; }
