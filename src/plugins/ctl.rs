@@ -690,7 +690,7 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{BotStatus, EventType, LoginUser};
+    use crate::event::{BotStatus, EventType};
     use crate::matcher::Matcher;
     use crate::scheduler::Scheduler;
     use sea_orm::Database;
@@ -712,7 +712,7 @@ mod tests {
             config: Arc::new(RwLock::new(config)), config_save_lock: Arc::new(Mutex::new(())),
             db: Database::connect("sqlite::memory:").await.unwrap(), scheduler: Arc::new(Scheduler::new()),
             matcher: Arc::new(Matcher::new()), config_path: Arc::from(path.to_str().unwrap()),
-            bot: Arc::new(BotStatus { adapter: if console { "console" } else { "satori-qq" }.into(), platform: if console { "console" } else { "qq" }.into(), login_user: LoginUser::default() }),
+            bot: Arc::new(BotStatus { adapter: if console { "console" } else { "satori-qq" }.into(), platform: if console { "console" } else { "qq" }.into(), login_user: Default::default() }),
         }
     }
     #[test]

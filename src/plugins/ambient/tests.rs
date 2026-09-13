@@ -128,7 +128,7 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
             login_user: LoginUser {
                 id: "10000".into(),
                 ..Default::default()
-            },
+            }.into(),
         }),
     };
     let writer = Arc::new(crate::adapters::satori::SatoriClient::console());

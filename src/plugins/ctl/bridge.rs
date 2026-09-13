@@ -306,7 +306,7 @@ pub fn client(command: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::event::{BotStatus, EventType, LoginUser};
+    use crate::event::{BotStatus, EventType};
     use crate::matcher::Matcher;
     use crate::scheduler::Scheduler;
     use sea_orm::Database;
@@ -346,7 +346,7 @@ mod tests {
             bot: Arc::new(BotStatus {
                 adapter: "satori-qq".into(),
                 platform: "qq".into(),
-                login_user: LoginUser::default(),
+                login_user: Default::default(),
             }),
         }
     }

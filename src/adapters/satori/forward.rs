@@ -558,7 +558,7 @@ mod tests {
             bot: std::sync::Arc::new(crate::event::BotStatus {
                 adapter: "satori-qq".into(),
                 platform: "red".into(),
-                login_user: crate::event::LoginUser::default(),
+                login_user: Default::default(),
             }),
         };
         // Satori 的每个调用都带登录身份，先问一次真实账号再继续。
@@ -572,7 +572,8 @@ mod tests {
             login_user: crate::event::LoginUser {
                 id: login["user"]["id"].as_str().unwrap_or_default().into(),
                 ..Default::default()
-            },
+            }
+            .into(),
         });
         let found: Value = writer
             .call(

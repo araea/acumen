@@ -4,9 +4,9 @@
 
 ## 连接
 
-ayjx 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。
+ayjx 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。这个登录账号放在共享单元里，插件判断「这条是不是自己发的」与出站请求的 `Satori-User-ID` 读的是同一份。
 
-- `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线。`login-updated` 不进流水线，只用来刷新出站请求的选择器
+- `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线。`login-updated` 不进流水线，只用来刷新登录账号
 - `PING`：本端每 10 秒发出，实现端回 `PONG`；收到反向 `PING` 也回 `PONG`
 - `META`：刷新代理路由列表
 - 连接关闭或失败：从 3 秒开始指数退避，最长 60 秒

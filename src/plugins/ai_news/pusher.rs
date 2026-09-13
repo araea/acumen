@@ -139,10 +139,9 @@ pub fn build_message(
         return msg.text(rendered.to_text());
     }
 
-    let bot_id = ctx.bot.login_user.id.parse::<i64>().unwrap_or(10000);
-    let bot_name = ctx
-        .bot
-        .login_user
+    let login = ctx.bot.login_user.get();
+    let bot_id = login.id.parse::<i64>().unwrap_or(10000);
+    let bot_name = login
         .name
         .clone()
         .unwrap_or_else(|| "AI 资讯".to_string());

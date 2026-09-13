@@ -331,16 +331,15 @@ pub fn handle(
                     record.group_name = Set("".to_string());
                 }
 
-                if let Ok(uid) = ctx.bot.login_user.id.parse::<i64>() {
+                let login = ctx.bot.login_user.get();
+                if let Ok(uid) = login.id.parse::<i64>() {
                     record.user_id = Set(uid);
                 }
-                record.user_name = Set(ctx.bot.login_user.name.clone().unwrap_or_default());
-                record.sender_nick = Set(ctx
-                    .bot
-                    .login_user
+                record.user_name = Set(login.name.clone().unwrap_or_default());
+                record.sender_nick = Set(login
                     .nick
                     .clone()
-                    .or(ctx.bot.login_user.name.clone())
+                    .or(login.name.clone())
                     .unwrap_or_default());
                 record.role = Set("self".to_string());
 

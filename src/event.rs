@@ -22,11 +22,45 @@ pub struct LoginUser {
     pub avatar: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// 登录账号的共享单元。
+///
+/// 实现端在连接期间可以用 `login-updated` 重新认定账号，而插件各处都按它判断「这条是不是
+/// 自己发的」，所以账号不能是 `READY` 时定死的快照。`Clone` 共享同一把锁，读到的一直是当前值。
+#[derive(Debug, Clone)]
+pub struct SharedLogin(Arc<RwLock<Arc<LoginUser>>>);
+
+impl SharedLogin {
+    pub fn new(user: LoginUser) -> Self {
+        Self(Arc::new(RwLock::new(Arc::new(user))))
+    }
+
+    /// 取当前账号。返回 `Arc` 是为了让调用方在解锁之后继续用，避免读锁跨过 await。
+    pub fn get(&self) -> Arc<LoginUser> {
+        self.0.read().unwrap().clone()
+    }
+
+    pub fn set(&self, user: LoginUser) {
+        *self.0.write().unwrap() = Arc::new(user);
+    }
+}
+
+impl Default for SharedLogin {
+    fn default() -> Self {
+        Self::new(LoginUser::default())
+    }
+}
+
+impl From<LoginUser> for SharedLogin {
+    fn from(user: LoginUser) -> Self {
+        Self::new(user)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct BotStatus {
     pub adapter: String,
     pub platform: String,
-    pub login_user: LoginUser,
+    pub login_user: SharedLogin,
 }
 
 /// 统一的上下文，包含事件数据、可变配置和任务调度器

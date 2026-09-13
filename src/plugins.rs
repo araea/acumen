@@ -332,7 +332,7 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
         writer.connection_key(),
         ctx.bot.adapter,
         ctx.bot.platform,
-        ctx.bot.login_user.id
+        ctx.bot.login_user.get().id
     );
     if !mark_connected(connection_key) {
         info!(
@@ -340,7 +340,7 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
             "Bot {}/{} ({}) 已完成 connected 生命周期，重连不重复注册任务。",
             ctx.bot.adapter,
             ctx.bot.platform,
-            ctx.bot.login_user.id
+            ctx.bot.login_user.get().id
         );
         return Ok(());
     }
@@ -561,7 +561,8 @@ mod satori_compat_tests {
                 id: "10000".to_string(),
                 name: Some("AuditBot".to_string()),
                 ..Default::default()
-            },
+            }
+            .into(),
         });
         let event = simd_json::serde::to_owned_value(json!({
             "post_type": "message",

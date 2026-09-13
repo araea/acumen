@@ -1923,7 +1923,7 @@ mod tests {
                 login_user: LoginUser {
                     id: "3373167460".into(),
                     ..Default::default()
-                },
+                }.into(),
             }),
         };
 

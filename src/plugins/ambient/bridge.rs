@@ -303,7 +303,7 @@ impl Session {
                     }
                 }
                 Ok(
-                    json!({"revision":seq,"group_id":self.group.to_string(),"self_id":self.ctx.bot.login_user.id,
+                    json!({"revision":seq,"group_id":self.group.to_string(),"self_id":self.ctx.bot.login_user.get().id,
                     "now":super::now_context(),"register":scene.register,"state":scene.state,"remember":scene.memory,
                     "capabilities":capabilities,"rhythm":rhythm,"messages":turns,"media":media,
                     "writes_remaining":self.config.max_actions.clamp(1,12).saturating_sub(self.writes),
@@ -906,7 +906,8 @@ impl Session {
         let Some(items) = data.and_then(Value::as_array) else {
             return Vec::new();
         };
-        let me = self.ctx.bot.login_user.id.as_str();
+        let login = self.ctx.bot.login_user.get();
+        let me = login.id.as_str();
         let resources = self.writer.resources();
         items
             .iter()
@@ -1090,10 +1091,11 @@ impl Session {
                     let t = actions::message(turns, id)?;
                     msg = msg.node_custom(t.user_id, &t.name, t.elements.clone());
                 }
+                let login = self.ctx.bot.login_user.get();
                 for text in texts {
                     msg = msg.node_custom(
-                        &self.ctx.bot.login_user.id,
-                        self.ctx.bot.login_user.name.as_deref().unwrap_or("我"),
+                        &login.id,
+                        login.name.as_deref().unwrap_or("我"),
                         super::pace::text_segments(text),
                     );
                 }
@@ -1247,7 +1249,7 @@ impl Session {
         Ok(json!({"status":"confirmed","message_id":id}))
     }
     fn record(&mut self, text: String, message_id: i64, elements: Message, success: bool) {
-        let me = self.ctx.bot.login_user.id.parse().unwrap_or(0);
+        let me = self.ctx.bot.login_user.get().id.parse().unwrap_or(0);
         info!(target: "Plugin/Ambient", "群 {} 动作：{}", self.group, text);
         if success && !self.spoke {
             // 锁不可重入：记忆与状态都在 window 的锁外面更新。
@@ -1743,7 +1745,7 @@ mod tests {
                     id: "10000".into(),
                     name: Some("我".into()),
                     ..Default::default()
-                },
+                }.into(),
             }),
         };
         window::with_group(group, |s| {

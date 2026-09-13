@@ -104,10 +104,6 @@ pub struct SatoriClient {
     console: bool,
     /// `READY` / `META` 下发的代理路由前缀，决定哪些平台链接要经 `/v1/proxy` 取。
     proxy_urls: RwLock<Arc<Vec<String>>>,
-    /// 实现端当前认定的登录账号，每个请求都作为 `Satori-User-ID` 带回。
-    /// `READY` 时写入，`login-updated` 到达时刷新：实现端换号或断线重连后重新认定账号，
-    /// 选择器不跟着走的话，请求会被它判成指向别的登录而全部失败。
-    login_user: RwLock<Arc<LoginUser>>,
 }
 
 impl SatoriClient {
@@ -118,7 +114,6 @@ impl SatoriClient {
             http: crate::http::client(),
             console: false,
             proxy_urls: RwLock::new(Arc::new(Vec::new())),
-            login_user: RwLock::new(Arc::new(LoginUser::default())),
         }
     }
 
@@ -129,16 +124,7 @@ impl SatoriClient {
             http: crate::http::client(),
             console: true,
             proxy_urls: RwLock::new(Arc::new(Vec::new())),
-            login_user: RwLock::new(Arc::new(LoginUser::default())),
         }
-    }
-
-    pub fn login_user(&self) -> Arc<LoginUser> {
-        self.login_user.read().unwrap().clone()
-    }
-
-    pub fn set_login_user(&self, user: LoginUser) {
-        *self.login_user.write().unwrap() = Arc::new(user);
     }
 
     pub fn set_proxy_urls(&self, urls: Vec<String>) {
@@ -183,7 +169,7 @@ impl SatoriClient {
             .http
             .post(url)
             .header("Satori-Platform", &ctx.bot.platform)
-            .header("Satori-User-ID", &self.login_user().id)
+            .header("Satori-User-ID", &ctx.bot.login_user.get().id)
             .json(&params);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
@@ -227,7 +213,7 @@ impl SatoriClient {
             .http
             .post(format!("{}/v1/upload.create", self.endpoint))
             .header("Satori-Platform", &ctx.bot.platform)
-            .header("Satori-User-ID", &self.login_user().id)
+            .header("Satori-User-ID", &ctx.bot.login_user.get().id)
             .multipart(form);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
@@ -388,12 +374,10 @@ async fn connect_and_listen(
             .and_then(Value::as_str)
             .unwrap_or("red")
             .to_string(),
-        login_user: login_user_of(user),
+        login_user: login_user_of(user).into(),
     });
     let writer = Arc::new(SatoriClient::new(endpoint.clone(), token));
     writer.set_proxy_urls(proxy_urls(&ready));
-    // 出站请求的选择器以 writer 记的为准，login-updated 到达时它会跟着刷新。
-    writer.set_login_user(bot_status.login_user.clone());
     let matcher = Arc::new(Matcher::new());
 
     info!(
@@ -402,7 +386,7 @@ async fn connect_and_listen(
         endpoint,
         bot_status.adapter,
         bot_status.platform,
-        bot_status.login_user.id
+        bot_status.login_user.get().id
     );
 
     let connected_ctx = Context {
@@ -488,10 +472,10 @@ async fn listen(
                         if let Some(sn) = body.get("sn").and_then(Value::as_i64) {
                             *session_sn = Some(sn);
                         }
-                        // 登录状态变化不是聊天事件，不进插件流水线；它只用来把出站选择器
-                        // 对齐到实现端当前认定的账号。
+                        // 登录状态变化不是聊天事件，不进插件流水线；它只用来把共享账号
+                        // 对齐到实现端当前认定的登录，出站选择器与插件的自我识别都读它。
                         if body.get("type").and_then(Value::as_str) == Some("login-updated") {
-                            apply_login_update(body, writer);
+                            apply_login_update(body, bot_status);
                             continue;
                         }
                         let event = match normalize_event(body, bot_status, &writer.resources()) {
@@ -547,20 +531,23 @@ async fn listen(
     Ok(())
 }
 
-/// `login-updated` 的 `login` 是实现端当前认定的登录。账号变了就把出站请求的选择器换过去，
-/// 否则实现端会把后续请求判成指向另一个登录，整条连接都发不出消息。
-fn apply_login_update(body: &Value, writer: &LockedWriter) {
+/// `login-updated` 的 `login` 是实现端当前认定的登录。账号变了就把共享账号换过去，
+/// 出站请求的选择器与插件的自我识别都跟着走；否则实现端会把请求判成指向另一个登录。
+fn apply_login_update(body: &Value, bot: &BotStatus) {
     let Some(login) = body.get("login") else {
         return;
     };
     let updated = login_user_of(login.get("user").unwrap_or(&Value::Null));
     if updated.id.is_empty() {
-        // 账号未知的快照给不出可用选择器，保留现有值。
+        // 账号未知的快照给不出可用账号，保留现有值。
         return;
     }
-    let previous = writer.login_user();
-    // 选择器只用账号，昵称之类的变化不影响出站请求。
-    if previous.id == updated.id {
+    let previous = bot.login_user.get();
+    if previous.id == updated.id
+        && previous.name == updated.name
+        && previous.nick == updated.nick
+        && previous.avatar == updated.avatar
+    {
         return;
     }
     info!(
@@ -569,7 +556,7 @@ fn apply_login_update(body: &Value, writer: &LockedWriter) {
         previous.id,
         updated.id
     );
-    writer.set_login_user(updated);
+    bot.login_user.set(updated);
 }
 
 /// `READY` 的 `logins[].user` 与 `login-updated` 的 `login.user` 是同一份结构。
@@ -959,12 +946,12 @@ fn normalize_event(
             .unwrap_or_default();
     }
     // 协议规定每个事件都自带 login 资源，多登录场景下它才是这条事件的归属账号；
-    // 缺失时退回 READY 时记录的登录号。
+    // 缺失时退回当前记录的登录号。
     let self_id = parse_id(body.pointer("/login/user/id"));
     let self_id = if self_id != 0 {
         self_id
     } else {
-        bot.login_user.id.parse::<i64>().unwrap_or_default()
+        bot.login_user.get().id.parse::<i64>().unwrap_or_default()
     };
     let mut out = json!({
         "time": timestamp,
@@ -1199,13 +1186,11 @@ mod tests {
                 login_user: LoginUser {
                     id: "10000".into(),
                     ..Default::default()
-                },
+                }
+                .into(),
             }),
         };
-        let writer = Arc::new(SatoriClient::new(endpoint, None));
-        // 与 connect 一致：READY 时把登录账号交给 writer 记着。
-        writer.set_login_user(ctx.bot.login_user.clone());
-        (ctx, writer, rx, server)
+        (ctx, Arc::new(SatoriClient::new(endpoint, None)), rx, server)
     }
 
     fn incoming(ctx: &Context, text: &str, user: i64, id: &str, timestamp: u64) -> Event {
@@ -1522,9 +1507,10 @@ mod tests {
         server.abort();
     }
 
-    // login-updated 换了账号，出站请求的选择器要跟着换；账号未知的快照不能把它清掉。
+    // login-updated 换了账号，共享账号要跟着换：出站请求的选择器与插件读到的自我识别
+    // 都取自它；账号未知的快照不能把它清掉。
     #[tokio::test]
-    async fn login_update_moves_the_outbound_selector() {
+    async fn login_update_moves_the_shared_account() {
         async fn selector(ctx: &Context, writer: &LockedWriter) -> String {
             let created: Vec<Value> = writer
                 .call(
@@ -1539,15 +1525,17 @@ mod tests {
 
         let (ctx, writer, _sent, server) = repeat_fixture().await;
         assert_eq!(selector(&ctx, &writer).await, "10000");
+        assert_eq!(ctx.bot.login_user.get().id, "10000");
         apply_login_update(
             &json!({"type": "login-updated", "login": {"user": {"id": "20000"}}}),
-            &writer,
+            &ctx.bot,
         );
         assert_eq!(selector(&ctx, &writer).await, "20000");
-        // 账号尚不可知的快照给不出选择器，保留现有的。
+        assert_eq!(ctx.bot.login_user.get().id, "20000");
+        // 账号尚不可知的快照给不出账号，保留现有的。
         apply_login_update(
             &json!({"type": "login-updated", "login": {"user": {}}}),
-            &writer,
+            &ctx.bot,
         );
         assert_eq!(selector(&ctx, &writer).await, "20000");
         server.abort();
@@ -1561,7 +1549,8 @@ mod tests {
             login_user: LoginUser {
                 id: "10000".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
         };
         let event = json!({
             "type": "message-created",
@@ -1590,7 +1579,8 @@ mod tests {
             login_user: LoginUser {
                 id: "10000".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
         };
         let event = json!({
             "type": "message-created",
@@ -1685,7 +1675,8 @@ mod tests {
             login_user: LoginUser {
                 id: "10000".to_string(),
                 ..Default::default()
-            },
+            }
+            .into(),
         }
     }
 }

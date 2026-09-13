@@ -287,7 +287,7 @@ pub fn handle(
         }
 
         let user_id = msg_event.user_id();
-        let self_id = ctx.bot.login_user.id.parse::<i64>().unwrap_or(0);
+        let self_id = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or(0);
 
         if user_id == self_id {
             return Ok(Some(ctx));

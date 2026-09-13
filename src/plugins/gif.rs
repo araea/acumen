@@ -235,7 +235,8 @@ pub fn handle(
 
 /// 发送合并转发消息
 async fn send_forward_msg(ctx: &Context, writer: LockedWriter, base64_list: Vec<String>) {
-    let bot_id = &ctx.bot.login_user.id;
+    let login = ctx.bot.login_user.get();
+    let bot_id = &login.id;
 
     // 预处理列表：防止风控
     let (process_list, is_truncated) = if base64_list.len() > 99 {

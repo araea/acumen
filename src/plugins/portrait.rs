@@ -258,7 +258,7 @@ pub fn handle(
             return Ok(Some(ctx));
         };
 
-        let (text, mentions) = read_message(event, ctx.bot.login_user.id.parse::<i64>().ok());
+        let (text, mentions) = read_message(event, ctx.bot.login_user.get().id.parse::<i64>().ok());
         let Some(content) = strip_prefix(&ctx, &text) else {
             return Ok(Some(ctx));
         };

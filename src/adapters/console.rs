@@ -70,7 +70,8 @@ pub fn entry(
                 name: Some("ConsoleBot".to_string()),
                 nick: Some("ConsoleBot".to_string()),
                 avatar: None,
-            },
+            }
+            .into(),
         });
 
         let mut message_id = 0;

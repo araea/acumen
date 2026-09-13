@@ -512,7 +512,7 @@ pub(crate) async fn observe(
         return;
     };
 
-    let me = ctx.bot.login_user.id.parse::<i64>().unwrap_or_default();
+    let me = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or_default();
     let mut turn = build_turn(&event, me);
     // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
     // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。
@@ -577,7 +577,7 @@ async fn observe_notice(
     else {
         return;
     };
-    let Some((turn, recalled)) = notice_turn(raw, ctx.bot.login_user.id.parse().unwrap_or(0))
+    let Some((turn, recalled)) = notice_turn(raw, ctx.bot.login_user.get().id.parse().unwrap_or(0))
     else {
         return;
     };
@@ -1179,7 +1179,7 @@ async fn speak_up(
     let pace = config.pace(mood::snapshot(group));
     tokio::time::sleep(pace.think_delay(started.elapsed())).await;
 
-    let me = ctx.bot.login_user.id.parse::<i64>().unwrap_or_default();
+    let me = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or_default();
     let mut sent = false;
     for (index, utterance) in utterances.into_iter().enumerate() {
         if index > 0 {

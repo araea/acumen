@@ -157,7 +157,8 @@ pub fn handle(
 
             match split_task.await {
                 Ok(Ok(base64_list)) => {
-                    let bot_id = &ctx.bot.login_user.id;
+                    let login = ctx.bot.login_user.get();
+                    let bot_id = &login.id;
                     let mut forward_node_msg = Message::new();
 
                     for (index, b64) in base64_list.into_iter().enumerate() {
