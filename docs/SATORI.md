@@ -6,7 +6,7 @@
 
 ayjx 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。
 
-- `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线
+- `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线。`login-updated` 不进流水线，只用来刷新出站请求的选择器
 - `PING`：本端每 10 秒发出，实现端回 `PONG`；收到反向 `PING` 也回 `PONG`
 - `META`：刷新代理路由列表
 - 连接关闭或失败：从 3 秒开始指数退避，最长 60 秒
@@ -17,7 +17,7 @@ ayjx 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送
 
 ## 鉴权
 
-token 的取值顺序是环境变量 `AYJX_SATORI_TOKEN`、`config.toml` 中 Satori bot 的 `access_token`，两者都为空时不鉴权。同一个 token 用于 WebSocket 的 `IDENTIFY.body.token` 和 HTTP 的 `Authorization: Bearer ...`。HTTP 请求另外带 `Satori-Platform` 和 `Satori-User-ID`，取值由 `READY` 返回的 login 决定。
+token 的取值顺序是环境变量 `AYJX_SATORI_TOKEN`、`config.toml` 中 Satori bot 的 `access_token`，两者都为空时不鉴权。同一个 token 用于 WebSocket 的 `IDENTIFY.body.token` 和 HTTP 的 `Authorization: Bearer ...`。HTTP 请求另外带 `Satori-Platform` 和 `Satori-User-ID`，取值由 `READY` 返回的 login 决定，`login-updated` 到达时跟着刷新。
 
 ## 资源链接
 
