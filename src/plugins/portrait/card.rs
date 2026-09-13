@@ -1,9 +1,9 @@
 //! 画像报告卡（HTML → 截图）。
 //!
-//! 版式借了三处现成的做法：年度报告那种「先给标签再给数字」的叙事顺序、
-//! 编辑型排版的字号与行高体系、以及本仓库资讯卡片已经调好的明暗双主题骨架。
-//! 目标是「一屏读得下去」：正文 19.5px、行高 1.8、版心 720px，中文一行约 30 字，
-//! 手机上缩略图能读出标题，点开长文不累。
+//! 版式按「一封信」来排，不按「仪表盘」来排：先给判断，再给三面侧写，
+//! 侧写后面落一签，最后才是刻度、引语与节律这些旁证。正文 19.5—20.5px、
+//! 行高 1.8—1.85、版心 720px，中文一行约 30 字；显示级的文字用衬线（签诗、
+//! 代号、引语），余下用无衬线，保证手机上缩略图能读出标题、点开长文不累。
 //!
 //! 约束与本仓库其它卡片一致：不加载任何外部资源（字体、图片、脚本都不引；
 //! 头像由 [`super::avatar`] 先下回来，以 data URL 内嵌），所有动态文本一律转义，
@@ -23,6 +23,7 @@ const WIDTH: u32 = 720;
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// 明暗两套主题。切换只动明度与文字三档灰，不动版式，切换后仍像同一份东西。
+/// 两套都是纸色：日读偏暖白，夜读偏墨黑，衬线字落在上面才不显生。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
     Light,
@@ -44,25 +45,25 @@ impl Theme {
         match self {
             Theme::Light => {
                 r#"color-scheme:light;
-  --canvas:#EDF0F4;--surface:#FFFFFF;
-  --title:#141922;--strong:#242B35;--body:#3A414C;
-  --subtle:#57606E;--muted:#69717E;--faint:#858D99;
-  --line:rgba(20,25,34,.09);--strong-line:rgba(20,25,34,.13);
-  --panel:rgba(20,25,34,.035);--panel-border:rgba(20,25,34,.075);
-  --chip:rgba(20,25,34,.05);--track:rgba(20,25,34,.075);
-  --pattern:rgba(20,25,34,.03);--shadow:0 18px 44px rgba(15,23,42,.10);
-  --glow-alpha:.13;--chip-alpha:.10;--quote-alpha:.05;--bar-alpha:.16"#
+  --canvas:#E9E3D9;--surface:#FCFAF6;
+  --title:#1C1A17;--strong:#2E2A24;--body:#45403A;
+  --subtle:#5C554C;--muted:#6E675D;--faint:#8A8276;
+  --line:rgba(28,26,23,.10);--strong-line:rgba(28,26,23,.15);
+  --panel:rgba(28,26,23,.032);--panel-border:rgba(28,26,23,.075);
+  --chip:rgba(28,26,23,.05);--track:rgba(28,26,23,.08);
+  --pattern:rgba(28,26,23,.028);--shadow:0 18px 44px rgba(40,32,20,.12);
+  --glow-alpha:.10;--chip-alpha:.09;--quote-alpha:.05;--bar-alpha:.15"#
             }
             Theme::Dark => {
                 r#"color-scheme:dark;
-  --canvas:#0E1218;--surface:#181D26;
-  --title:#F3F1EB;--strong:#E8E6E0;--body:#D4D3CE;
-  --subtle:#ADB3BD;--muted:#9DA4AF;--faint:#878F9B;
-  --line:rgba(232,234,238,.09);--strong-line:rgba(232,234,238,.13);
-  --panel:rgba(240,236,226,.05);--panel-border:rgba(232,234,238,.10);
-  --chip:rgba(232,234,238,.07);--track:rgba(232,234,238,.10);
-  --pattern:rgba(232,234,238,.026);--shadow:0 18px 48px rgba(0,0,0,.30);
-  --glow-alpha:.11;--chip-alpha:.13;--quote-alpha:.06;--bar-alpha:.20"#
+  --canvas:#0D0C0B;--surface:#171614;
+  --title:#F2EEE6;--strong:#E6E1D8;--body:#CFC9BF;
+  --subtle:#A8A198;--muted:#99928A;--faint:#837C74;
+  --line:rgba(240,236,228,.09);--strong-line:rgba(240,236,228,.14);
+  --panel:rgba(240,236,228,.05);--panel-border:rgba(240,236,228,.10);
+  --chip:rgba(240,236,228,.07);--track:rgba(240,236,228,.10);
+  --pattern:rgba(240,236,228,.024);--shadow:0 18px 48px rgba(0,0,0,.34);
+  --glow-alpha:.09;--chip-alpha:.12;--quote-alpha:.055;--bar-alpha:.20"#
             }
         }
     }
@@ -92,6 +93,27 @@ fn fmt_num(value: u64) -> String {
             out.push(',');
         }
         out.push(ch);
+    }
+    out
+}
+
+/// 签号写成汉字，第 47 签比第 47 个数字更像一支签。
+fn cn_num(value: i64) -> String {
+    const DIGITS: [&str; 10] = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+    let value = value.clamp(1, 100);
+    if value == 100 {
+        return "一百".to_string();
+    }
+    let (tens, ones) = (value / 10, value % 10);
+    let mut out = String::new();
+    if tens > 0 {
+        if tens > 1 {
+            out.push_str(DIGITS[tens as usize]);
+        }
+        out.push('十');
+    }
+    if ones > 0 {
+        out.push_str(DIGITS[ones as usize]);
     }
     out
 }
@@ -133,27 +155,15 @@ pub fn html(view: &View<'_>) -> String {
     let theme = Theme::resolve(view.theme, view.now);
     let accent = view.persona.accent(view.material.user_id);
     let dark = theme == Theme::Dark;
-    let css = format!(":root{{{}}}\n{CSS}", theme.vars())
+    // 显示级的文字用衬线：签诗、代号、引语、赠言。Android/Surface 上常见的
+    // 中宋是 Noto Serif CJK 与 OPPO Serif，兜底再退到系统 serif。
+    let serif = r#"--serif:"Noto Serif CJK SC","OPPO Serif SC","Source Han Serif SC","Songti SC","Noto Serif SC",Georgia,"Times New Roman",serif;"#;
+    let css = format!(":root{{{serif}{}}}\n{CSS}", theme.vars())
         .replace("__ACCENT__", accent.hex(dark))
         .replace("__RGB__", accent.rgb(dark));
 
     let material = view.material;
     let persona = view.persona;
-
-    let codename_pill = if persona.estimated {
-        r#"<span class="pill">纯统计版</span>"#.to_string()
-    } else {
-        String::new()
-    };
-    let codename_block = format!(
-        r#"<div class="codename-block"><div class="label-row"><span class="label">画像代号</span>{codename_pill}</div><div class="codename">{}</div><div class="tagline">{}</div></div>"#,
-        esc(if persona.codename.is_empty() {
-            "尚未命名"
-        } else {
-            &persona.codename
-        }),
-        esc(&persona.tagline),
-    );
 
     format!(
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -161,31 +171,40 @@ pub fn html(view: &View<'_>) -> String {
 <body><div class="shot"><div class="card">
 {eyebrow}
 {hero}
-{codename_block}
+{codename}
 {lead}
-{tiles}
+{readings}
+{facets}
+{lot}
 {traits}
 {interests}
-{rhythm}
-{groups}
 {quotes}
-{prose}
+{rhythm}
 {advice}
 {foot}
 </div></div></body></html>"#,
         css = css,
         eyebrow = eyebrow(view),
         hero = hero(view),
+        codename = codename(persona),
         lead = lead(&persona.summary),
-        tiles = tiles(view),
+        readings = readings(material),
+        facets = facets(persona),
+        lot = lot(persona),
         traits = traits(&persona.traits),
         interests = interests(&persona.interests),
-        rhythm = rhythm(view),
-        groups = groups(material),
         quotes = quotes(&persona.quotes),
-        prose = prose(persona),
+        rhythm = rhythm(view),
         advice = advice(&persona.advice),
         foot = foot(view),
+    )
+}
+
+fn sec_head(mark: &str, en: &str) -> String {
+    format!(
+        r#"<div class="sec-head"><span class="sec-mark">{}</span><span class="sec-en">{}</span></div>"#,
+        esc(mark),
+        esc(en)
     )
 }
 
@@ -202,7 +221,6 @@ fn hero(view: &View<'_>) -> String {
         format!("QQ {}", material.user_id),
         format!("{} 个群", material.groups.len().max(1)),
         format!("{} 起", date_of(material.first_time, view.offset)),
-        format!("{} 条发言", fmt_num(material.total)),
     ];
     // 有头像用头像，没有就用名字首字顶着，版位不变。
     let face = match view.avatar {
@@ -216,6 +234,23 @@ fn hero(view: &View<'_>) -> String {
     )
 }
 
+fn codename(persona: &Persona) -> String {
+    let pill = if persona.estimated {
+        r#"<span class="pill">纯统计版</span>"#.to_string()
+    } else {
+        String::new()
+    };
+    format!(
+        r#"<div class="codename-block"><div class="label-row"><span class="label">画像代号</span>{pill}</div><div class="codename">{}</div><div class="tagline">{}</div></div>"#,
+        esc(if persona.codename.is_empty() {
+            "尚未命名"
+        } else {
+            &persona.codename
+        }),
+        esc(&persona.tagline),
+    )
+}
+
 fn lead(summary: &str) -> String {
     if summary.trim().is_empty() {
         return String::new();
@@ -223,44 +258,95 @@ fn lead(summary: &str) -> String {
     format!(r#"<div class="lead">{}</div>"#, esc(summary))
 }
 
-fn tiles(view: &View<'_>) -> String {
-    let material = view.material;
+/// 一行读数。数字只做旁证，不铺成仪表盘，省下的版面留给侧写。
+fn readings(material: &Material) -> String {
     let items = [
-        (
-            fmt_num(material.total),
-            "发言".to_string(),
-            format!("{} 天里", material.span_days()),
-        ),
-        (
-            fmt_num(material.active_days),
-            "活跃天数".to_string(),
-            format!("平均每天 {:.1} 条", material.per_day()),
-        ),
-        (
-            format!("{} 点", material.peak_hour()),
-            "最活跃".to_string(),
-            format!("{} 条", material.hour[material.peak_hour()]),
-        ),
-        (
-            format!("{:.1} 字", material.avg_len()),
-            "平均每条".to_string(),
-            format!("最长 {} 字", material.longest),
-        ),
+        ("发言", fmt_num(material.total), ""),
+        ("活跃", fmt_num(material.active_days), "天"),
+        ("跨度", material.span_days().to_string(), "天"),
+        ("均长", format!("{:.1}", material.avg_len()), "字"),
+        ("最活跃", material.peak_hour().to_string(), "点"),
     ];
     let cells: String = items
         .into_iter()
-        .map(|(value, label, note)| {
+        .map(|(label, value, unit)| {
+            let unit = if unit.is_empty() {
+                String::new()
+            } else {
+                format!(r#"<span class="ru">{}</span>"#, esc(unit))
+            };
             format!(
-                r#"<div class="tile"><div class="tile-value">{}</div><div class="tile-label">{}</div><div class="tile-note">{}</div></div>"#,
-                esc(&value),
-                esc(&label),
-                esc(&note)
+                r#"<span class="reading"><span class="rk">{}</span><span class="rv">{}</span>{unit}</span>"#,
+                esc(label),
+                esc(&value)
             )
         })
         .collect();
-    format!(r#"<div class="tiles">{cells}</div>"#)
+    format!(r#"<div class="readings">{cells}</div>"#)
 }
 
+/// 三面侧写：报告的主体。空的面向不占版面。
+fn facets(persona: &Persona) -> String {
+    let blocks: String = persona
+        .live_facets()
+        .map(|facet| {
+            let title = if facet.title.trim().is_empty() {
+                String::new()
+            } else {
+                format!(r#"<div class="facet-title">{}</div>"#, esc(&facet.title))
+            };
+            let body = if facet.body.trim().is_empty() {
+                String::new()
+            } else {
+                format!(r#"<div class="facet-body">{}</div>"#, esc(&facet.body))
+            };
+            format!(
+                r#"<div class="facet"><div class="facet-key">{}</div>{title}{body}</div>"#,
+                esc(&facet.key)
+            )
+        })
+        .collect();
+    if blocks.is_empty() {
+        return String::new();
+    }
+    format!(
+        r#"<div class="sec">{}{blocks}</div>"#,
+        sec_head("侧写", "THREE ASPECTS")
+    )
+}
+
+/// 抽的那一签。排成一张签纸：上下细线、居中，签诗用衬线。
+fn lot(persona: &Persona) -> String {
+    if !persona.has_lot() {
+        return String::new();
+    }
+    let verse: String = persona
+        .lot
+        .verse
+        .iter()
+        .map(|line| format!(r#"<span class="verse-line">{}</span>"#, esc(line)))
+        .collect();
+    let reading = if persona.lot.reading.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="lot-reading">{}</div>"#,
+            esc(&persona.lot.reading)
+        )
+    };
+    format!(
+        r#"<div class="sec">{head}<div class="lot"><div class="lot-no">第{}签</div><div class="lot-grade">{}</div><div class="lot-verse">{verse}</div>{reading}</div></div>"#,
+        esc(&cn_num(persona.lot.no)),
+        esc(if persona.lot.grade.is_empty() {
+            "中平"
+        } else {
+            &persona.lot.grade
+        }),
+        head = sec_head("签", "THE LOT"),
+    )
+}
+
+/// 心理刻度。条形压细、颜色收暗，是旁证不是成绩单。
 fn traits(traits: &[super::persona::Trait]) -> String {
     if traits.is_empty() {
         return String::new();
@@ -278,7 +364,8 @@ fn traits(traits: &[super::persona::Trait]) -> String {
         })
         .collect();
     format!(
-        r#"<div class="sec"><div class="sec-head"><span class="bar-mark"></span>性格特质</div>{rows}</div>"#
+        r#"<div class="sec">{}{rows}</div>"#,
+        sec_head("刻度", "MEASURES")
     )
 }
 
@@ -291,7 +378,29 @@ fn interests(words: &[String]) -> String {
         .map(|word| format!(r#"<span class="chip">{}</span>"#, esc(word)))
         .collect();
     format!(
-        r#"<div class="sec"><div class="sec-head"><span class="bar-mark"></span>话题兴趣</div><div class="chips">{chips}</div></div>"#
+        r#"<div class="sec">{}{}<div class="chips">{chips}</div></div>"#,
+        sec_head("常谈的事", "SUBJECTS"),
+        r#"<div class="sec-lead">他反复提起的，多半是他放不下的。</div>"#,
+    )
+}
+
+fn quotes(quotes: &[super::persona::Quote]) -> String {
+    if quotes.is_empty() {
+        return String::new();
+    }
+    let items: String = quotes
+        .iter()
+        .map(|quote| {
+            format!(
+                r#"<figure class="quote"><blockquote class="quote-text">{}</blockquote><figcaption class="quote-why">{}</figcaption></figure>"#,
+                esc(&quote.text),
+                esc(&quote.why),
+            )
+        })
+        .collect();
+    format!(
+        r#"<div class="sec">{}{items}</div>"#,
+        sec_head("他自己的话", "IN HIS WORDS")
     )
 }
 
@@ -323,72 +432,12 @@ fn rhythm(view: &View<'_>) -> String {
         })
         .collect();
     format!(
-        r#"<div class="sec"><div class="sec-head"><span class="bar-mark"></span>活跃节律</div><div class="rhythm">{columns}</div><div class="caption">{} 前后最活跃，最活跃的一天是{}，夜间（0—6 点）占 {}。</div></div>"#,
+        r#"<div class="sec">{head}<div class="rhythm">{columns}</div><div class="caption">{} 前后最活跃，最活跃的一天是{}，夜间（0—6 点）占 {}。</div></div>"#,
         esc(&super::persona::hour_label(peak)),
         esc(super::persona::weekday_label(material.peak_weekday())),
         esc(&super::persona::percent(material.night_ratio())),
+        head = sec_head("活跃节律", "RHYTHM"),
     )
-}
-
-fn groups(material: &Material) -> String {
-    if material.groups.is_empty() {
-        return String::new();
-    }
-    let max = material.groups.iter().map(|g| g.count).max().unwrap_or(1).max(1);
-    let rows: String = material
-        .groups
-        .iter()
-        .take(4)
-        .map(|group| {
-            let share = group.count as f64 / max as f64 * 100.0;
-            format!(
-                r#"<div class="grow"><div class="grow-top"><span class="grow-name">{}</span><span class="grow-count">{} 条</span></div><div class="track slim"><i style="width:{:.1}%"></i></div></div>"#,
-                esc(&group.name),
-                fmt_num(group.count),
-                share.clamp(3.0, 100.0),
-            )
-        })
-        .collect();
-    format!(
-        r#"<div class="sec"><div class="sec-head"><span class="bar-mark"></span>常在的群</div>{rows}</div>"#
-    )
-}
-
-fn quotes(quotes: &[super::persona::Quote]) -> String {
-    if quotes.is_empty() {
-        return String::new();
-    }
-    let items: String = quotes
-        .iter()
-        .map(|quote| {
-            format!(
-                r#"<figure class="quote"><div class="quote-text">{}</div><figcaption class="quote-why">{}</figcaption></figure>"#,
-                esc(&quote.text),
-                esc(&quote.why),
-            )
-        })
-        .collect();
-    format!(
-        r#"<div class="sec"><div class="sec-head"><span class="bar-mark"></span>发言样本</div>{items}</div>"#
-    )
-}
-
-fn prose(persona: &Persona) -> String {
-    let mut blocks = String::new();
-    for (label, text) in [("群里的位置", &persona.role), ("说话风格", &persona.style)] {
-        if text.trim().is_empty() {
-            continue;
-        }
-        blocks.push_str(&format!(
-            r#"<div class="prose-row"><div class="prose-label">{}</div><div class="prose-text">{}</div></div>"#,
-            esc(label),
-            esc(text)
-        ));
-    }
-    if blocks.is_empty() {
-        return String::new();
-    }
-    format!(r#"<div class="sec prose">{blocks}</div>"#)
 }
 
 fn advice(advice: &str) -> String {
@@ -396,7 +445,7 @@ fn advice(advice: &str) -> String {
         return String::new();
     }
     format!(
-        r#"<div class="advice"><div class="advice-label">写在最后</div><div class="advice-text">{}</div></div>"#,
+        r#"<div class="advice"><div class="advice-label">赠言</div><div class="advice-text">{}</div></div>"#,
         esc(advice)
     )
 }
@@ -409,7 +458,7 @@ fn foot(view: &View<'_>) -> String {
         date_of(material.last_time, view.offset)
     );
     format!(
-        r#"<div class="foot"><div>统计区间 {range}<span class="sep">·</span>样本 {} 条<span class="sep">·</span>{model}</div><div class="foot-note">用模型读群聊记录推出来的，仅供娱乐</div></div>"#,
+        r#"<div class="foot"><div>统计区间 {range}<span class="sep">·</span>样本 {} 条<span class="sep">·</span>{model}</div><div class="foot-note">由模型读群聊记录推出，仅供娱乐，不作凭据</div></div>"#,
         material.samples.len(),
         range = esc(&range),
         model = esc(view.model),
@@ -440,7 +489,7 @@ pub async fn capture(html: &str, scale: f64) -> Result<String> {
             .as_f64()
             .unwrap_or(1200.0) as u32;
         let viewport =
-            Viewport::new(WIDTH, (height + 40).clamp(400, 14_000)).with_device_scale_factor(scale);
+            Viewport::new(WIDTH, (height + 40).clamp(400, 16_000)).with_device_scale_factor(scale);
         tab.set_viewport(&viewport).await?;
         tokio::time::sleep(Duration::from_millis(120)).await;
 
@@ -467,127 +516,143 @@ pub fn now(offset: FixedOffset) -> DateTime<FixedOffset> {
 const CSS: &str = r#"
 *{margin:0;padding:0;box-sizing:border-box}
 .shot{padding:22px;background:var(--canvas)}
-.card{position:relative;overflow:hidden;border-radius:24px;padding:40px 40px 30px;
+.card{position:relative;overflow:hidden;border-radius:20px;padding:42px 44px 34px;
   background:var(--surface);border:1px solid var(--strong-line);box-shadow:var(--shadow);
   background-image:radial-gradient(var(--pattern) 1px,transparent 1px);
-  background-size:26px 26px;
-  font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Zen Hei","Helvetica Neue",Arial,sans-serif;
+  background-size:28px 28px;
+  font-family:"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","WenQuanYi Zen Hei","Helvetica Neue",Arial,sans-serif;
   color:var(--body);-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
   overflow-wrap:anywhere;word-break:normal}
-.card::before{content:"";position:absolute;top:-240px;left:-140px;width:520px;height:520px;
-  border-radius:50%;background:rgba(__RGB__,var(--glow-alpha));filter:blur(100px);pointer-events:none}
+.card::before{content:"";position:absolute;top:-260px;left:-160px;width:540px;height:540px;
+  border-radius:50%;background:rgba(__RGB__,var(--glow-alpha));filter:blur(110px);pointer-events:none}
+.card::after{content:"";position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,transparent,rgba(__RGB__,.55) 22%,rgba(__RGB__,.55) 78%,transparent)}
 .card>*{position:relative}
 
 /* —— 页眉 —— */
-.eyebrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
-.kicker{display:flex;align-items:center;gap:11px;font-size:16px;font-weight:800;
-  letter-spacing:.16em;color:__ACCENT__}
-.dot{width:9px;height:9px;border-radius:50%;background:__ACCENT__;
+.eyebrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.kicker{display:flex;align-items:center;gap:11px;font-size:15.5px;font-weight:800;
+  letter-spacing:.18em;color:__ACCENT__}
+.dot{width:8px;height:8px;border-radius:50%;background:__ACCENT__;
   box-shadow:0 0 0 5px rgba(__RGB__,var(--glow-alpha))}
-.kicker-en{font-size:12px;font-weight:700;letter-spacing:.24em;color:var(--faint)}
-.stamp{font-size:14.5px;color:var(--faint);letter-spacing:.03em;font-variant-numeric:tabular-nums}
+.kicker-en{font-size:11.5px;font-weight:700;letter-spacing:.26em;color:var(--faint)}
+.stamp{font-size:14px;color:var(--faint);letter-spacing:.03em;font-variant-numeric:tabular-nums}
 
 /* —— 主体：头像 + 名字 —— */
 .hero{display:flex;align-items:center;gap:20px}
-.avatar{flex:none;display:flex;align-items:center;justify-content:center;width:86px;height:86px;
-  border-radius:50%;font-size:36px;font-weight:800;color:__ACCENT__;
-  background:rgba(__RGB__,var(--chip-alpha));border:2px solid rgba(__RGB__,.30);letter-spacing:0;
+.avatar{flex:none;display:flex;align-items:center;justify-content:center;width:84px;height:84px;
+  border-radius:50%;font-size:35px;font-weight:800;color:__ACCENT__;
+  background:rgba(__RGB__,var(--chip-alpha));border:2px solid rgba(__RGB__,.28);letter-spacing:0;
   overflow:hidden}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover}
 .who{min-width:0}
-.who-name{font-size:34px;line-height:1.28;font-weight:800;letter-spacing:-.015em;color:var(--title)}
-.who-meta{margin-top:9px;font-size:15.5px;line-height:1.6;font-weight:500;color:var(--muted)}
+.who-name{font-size:33px;line-height:1.28;font-weight:800;letter-spacing:-.015em;color:var(--title)}
+.who-meta{margin-top:9px;font-size:15px;line-height:1.6;font-weight:500;color:var(--muted)}
 .sep{margin:0 8px;color:var(--faint)}
 
 /* —— 代号 —— */
-.codename-block{margin-top:30px}
+.codename-block{margin-top:32px}
 .label-row{display:flex;align-items:center;gap:12px}
-.label{font-size:13.5px;font-weight:800;letter-spacing:.2em;color:var(--faint)}
-.pill{padding:3px 10px;border-radius:8px;font-size:13px;font-weight:700;letter-spacing:.02em;
+.label{font-size:13px;font-weight:800;letter-spacing:.22em;color:var(--faint)}
+.pill{padding:3px 10px;border-radius:8px;font-size:12.5px;font-weight:700;letter-spacing:.02em;
   color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
-.codename{margin-top:10px;font-size:46px;line-height:1.24;font-weight:800;
-  letter-spacing:-.02em;color:var(--title)}
-.tagline{margin-top:10px;font-size:21px;line-height:1.62;font-weight:600;color:__ACCENT__}
+.codename{margin-top:12px;font-family:var(--serif);font-size:46px;line-height:1.26;font-weight:700;
+  letter-spacing:.01em;color:var(--title)}
+.tagline{margin-top:12px;font-family:var(--serif);font-size:21px;line-height:1.66;font-weight:600;
+  color:__ACCENT__}
 
 /* —— 总评 —— */
-.lead{margin-top:24px;padding:21px 23px;border-radius:16px;
+.lead{margin-top:26px;padding:22px 24px;border-radius:14px;
   background:var(--panel);border:1px solid var(--panel-border);
-  font-size:20.5px;line-height:1.82;font-weight:500;color:var(--strong)}
+  font-family:var(--serif);font-size:20.5px;line-height:1.9;font-weight:500;color:var(--strong)}
 
-/* —— 数字条 —— */
-.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:26px}
-.tile{padding:17px 15px;border-radius:14px;background:var(--panel);
-  border:1px solid var(--panel-border)}
-.tile-value{font-size:31px;line-height:1.14;font-weight:800;letter-spacing:-.02em;
-  color:__ACCENT__;font-variant-numeric:tabular-nums}
-.tile-label{margin-top:7px;font-size:15.5px;font-weight:700;color:var(--strong)}
-.tile-note{margin-top:4px;font-size:13.5px;line-height:1.45;color:var(--faint)}
+/* —— 读数 —— */
+.readings{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:24px;padding:16px 2px;
+  border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+.reading{display:inline-flex;align-items:baseline;gap:5px;font-size:14.5px;line-height:1.5}
+.rk{color:var(--faint);letter-spacing:.06em}
+.rv{font-size:17px;font-weight:700;color:__ACCENT__;font-variant-numeric:tabular-nums}
+.ru{color:var(--faint)}
 
 /* —— 分节 —— */
-.sec{margin-top:32px;padding-top:26px;border-top:1px solid var(--line)}
-.sec-head{display:flex;align-items:center;gap:11px;margin-bottom:18px;
-  font-size:21px;font-weight:800;color:var(--title)}
-.bar-mark{width:5px;height:20px;border-radius:3px;background:__ACCENT__}
-.track{height:8px;border-radius:5px;background:var(--track);overflow:hidden}
-.track.slim{height:6px}
-.track i{display:block;height:100%;border-radius:5px;
-  background:linear-gradient(90deg,rgba(__RGB__,var(--bar-alpha)),__ACCENT__)}
+.sec{margin-top:34px;padding-top:28px;border-top:1px solid var(--line)}
+.sec-head{display:flex;align-items:center;gap:14px;margin-bottom:20px}
+.sec-mark{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:.04em;
+  color:var(--title);white-space:nowrap}
+.sec-en{font-size:10.5px;font-weight:700;letter-spacing:.3em;color:var(--faint);white-space:nowrap}
+.sec-head::after{content:"";flex:1;height:1px;background:var(--strong-line)}
+.sec-lead{margin:-8px 0 16px;font-size:16px;line-height:1.7;color:var(--faint)}
 
-/* 特质 */
+/* —— 三面侧写 —— */
+.facet+.facet{padding-top:22px;margin-top:22px;border-top:1px solid var(--line)}
+.facet-key{font-family:var(--serif);font-size:15px;font-weight:700;letter-spacing:.28em;
+  color:__ACCENT__}
+.facet-title{margin-top:11px;font-family:var(--serif);font-size:23px;line-height:1.56;font-weight:700;
+  color:var(--title)}
+.facet-body{margin-top:12px;font-family:var(--serif);font-size:20px;line-height:1.92;
+  color:var(--body)}
+
+/* —— 签 —— */
+.lot{position:relative;margin-top:2px;padding:30px 30px 26px;border-radius:14px;
+  background:var(--panel);border:1px solid var(--panel-border);text-align:center}
+.lot::before,.lot::after{content:"";position:absolute;left:22px;right:22px;height:1px;
+  background:var(--strong-line)}
+.lot::before{top:11px}
+.lot::after{bottom:11px}
+.lot-no{font-size:13px;font-weight:700;letter-spacing:.3em;color:var(--faint)}
+.lot-grade{margin-top:9px;font-family:var(--serif);font-size:38px;line-height:1.3;font-weight:700;
+  letter-spacing:.14em;color:__ACCENT__}
+.lot-verse{margin-top:14px;display:flex;flex-direction:column;gap:6px}
+.verse-line{font-family:var(--serif);font-size:21px;line-height:1.7;color:var(--strong);
+  letter-spacing:.08em}
+.lot-reading{margin-top:18px;padding-top:17px;border-top:1px solid var(--line);
+  font-size:17.5px;line-height:1.8;color:var(--subtle)}
+
+/* —— 刻度 —— */
+.track{height:6px;border-radius:4px;background:var(--track);overflow:hidden}
+.track i{display:block;height:100%;border-radius:4px;
+  background:linear-gradient(90deg,rgba(__RGB__,var(--bar-alpha)),__ACCENT__)}
 .trait{margin-bottom:19px}
 .trait:last-child{margin-bottom:2px}
 .trait-top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px}
-.trait-name{font-size:19.5px;font-weight:700;color:var(--strong)}
-.trait-score{font-size:19px;font-weight:800;color:__ACCENT__;font-variant-numeric:tabular-nums}
-.trait-note{margin-top:7px;font-size:16.5px;line-height:1.66;color:var(--subtle)}
+.trait-name{font-size:19px;font-weight:700;color:var(--strong)}
+.trait-score{font-size:18px;font-weight:700;color:__ACCENT__;font-variant-numeric:tabular-nums}
+.trait-note{margin-top:8px;font-size:16px;line-height:1.68;color:var(--subtle)}
 
-/* 兴趣 */
+/* —— 常谈的事 —— */
 .chips{display:flex;flex-wrap:wrap;gap:10px}
-.chip{padding:8px 15px;border-radius:10px;font-size:17.5px;font-weight:600;
+.chip{padding:8px 15px;border-radius:9px;font-size:17px;font-weight:600;
   color:var(--strong);background:var(--chip);border:1px solid var(--panel-border)}
 
-/* 节律 */
-.rhythm{display:grid;grid-template-columns:repeat(24,1fr);gap:4px;align-items:end}
+/* —— 节律 —— */
+.rhythm{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;align-items:end}
 .col{display:flex;flex-direction:column}
-.col-bar{display:flex;align-items:flex-end;height:104px}
-.col-bar i{display:block;width:100%;border-radius:4px 4px 2px 2px}
+.col-bar{display:flex;align-items:flex-end;height:96px}
+.col-bar i{display:block;width:100%;border-radius:3px 3px 2px 2px}
 .col-bar i.on{background:rgba(__RGB__,var(--bar-alpha))}
 .col-bar i.peak.on{background:__ACCENT__;box-shadow:0 0 0 2px rgba(__RGB__,var(--glow-alpha))}
-.col-tick{margin-top:7px;height:16px;font-size:12px;line-height:16px;text-align:center;
+.col-tick{margin-top:7px;height:15px;font-size:11.5px;line-height:15px;text-align:center;
   color:var(--faint);font-variant-numeric:tabular-nums}
 .col-tick.peak{font-weight:800;color:__ACCENT__}
-.caption{margin-top:13px;font-size:17px;line-height:1.7;color:var(--subtle)}
+.caption{margin-top:14px;font-size:16.5px;line-height:1.72;color:var(--subtle)}
 
-/* 群 */
-.grow{margin-bottom:17px}
-.grow:last-child{margin-bottom:2px}
-.grow-top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px}
-.grow-name{font-size:19px;font-weight:650;color:var(--strong)}
-.grow-count{font-size:16px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
+/* —— 他自己的话 —— */
+.quote{margin-bottom:20px;padding:4px 0 4px 20px;border-left:2px solid rgba(__RGB__,.5)}
+.quote:last-child{margin-bottom:0}
+.quote-text{margin:0;font-family:var(--serif);font-size:20px;line-height:1.86;color:var(--body)}
+.quote-why{margin-top:10px;font-size:15px;line-height:1.62;color:var(--faint)}
 
-/* 引用 */
-.quote{margin-bottom:18px;padding:17px 20px 15px;border-radius:0 12px 12px 0;
-  border-left:4px solid __ACCENT__;background:rgba(__RGB__,var(--quote-alpha))}
-.quote:last-child{margin-bottom:2px}
-.quote-text{font-size:19.5px;line-height:1.78;color:var(--body)}
-.quote-why{margin-top:9px;font-size:15.5px;line-height:1.6;color:var(--faint)}
+/* —— 赠言 —— */
+.advice{margin-top:34px;padding:24px 26px;border-radius:14px;
+  background:rgba(__RGB__,var(--quote-alpha));border:1px solid rgba(__RGB__,.22)}
+.advice-label{font-size:13px;font-weight:800;letter-spacing:.24em;color:__ACCENT__}
+.advice-text{margin-top:12px;font-family:var(--serif);font-size:22px;line-height:1.78;font-weight:600;
+  color:var(--title)}
 
-/* 散文块 */
-.prose-row{margin-bottom:20px}
-.prose-row:last-child{margin-bottom:2px}
-.prose-label{font-size:13.5px;font-weight:800;letter-spacing:.16em;color:__ACCENT__}
-.prose-text{margin-top:8px;font-size:19.5px;line-height:1.82;color:var(--body)}
-
-/* 结语 */
-.advice{margin-top:32px;padding:22px 24px;border-radius:16px;
-  background:rgba(__RGB__,var(--quote-alpha));border:1px solid rgba(__RGB__,.20)}
-.advice-label{font-size:13.5px;font-weight:800;letter-spacing:.18em;color:__ACCENT__}
-.advice-text{margin-top:10px;font-size:21px;line-height:1.76;font-weight:600;color:var(--title)}
-
-/* 页脚 */
-.foot{display:flex;flex-direction:column;gap:7px;margin-top:30px;padding-top:20px;
+/* —— 页脚 —— */
+.foot{display:flex;flex-direction:column;gap:7px;margin-top:32px;padding-top:20px;
   border-top:1px solid var(--strong-line);
-  font-size:14.5px;line-height:1.62;color:var(--faint)}
+  font-size:14px;line-height:1.62;color:var(--faint)}
 .foot-note{color:var(--faint);opacity:.85}
 .foot .sep{margin:0 7px}
 "#;
@@ -596,7 +661,7 @@ const CSS: &str = r#"
 mod tests {
     use super::*;
     use crate::plugins::portrait::collect::{GroupSlice, Kinds};
-    use crate::plugins::portrait::persona::{Quote, Trait};
+    use crate::plugins::portrait::persona::{Facet, Lot, Quote, Trait};
 
     fn offset() -> FixedOffset {
         FixedOffset::east_opt(8 * 3600).unwrap()
@@ -650,18 +715,43 @@ mod tests {
 
     fn persona() -> Persona {
         Persona {
-            codename: "夜行改稿人".into(),
-            tagline: "白天潜水，夜里冒泡".into(),
+            codename: "用忙碌挡空的人".into(),
+            tagline: "他把休息也算成一件事".into(),
             summary: "话不多，但每句都落在点上。".into(),
+            facets: vec![
+                Facet {
+                    key: "立身".into(),
+                    title: "把手艺当退路".into(),
+                    body: "他把手艺当退路。".into(),
+                },
+                Facet {
+                    key: "心相".into(),
+                    title: "怕停下来".into(),
+                    body: "夜里两点还在改。".into(),
+                },
+                Facet {
+                    key: "人群".into(),
+                    title: "不抢话".into(),
+                    body: "只在有人问到的时候接一句。".into(),
+                },
+            ],
             traits: vec![Trait {
-                name: "夜行".into(),
+                name: "秩序感".into(),
                 score: 92.0,
                 note: "深夜发言占了近三成".into(),
             }],
             interests: vec!["代码".into(), "咖啡".into()],
-            role: "群里的答疑位".into(),
-            style: "短句，少标点。".into(),
-            rhythm: "深夜出没".into(),
+            lot: Lot {
+                no: 47,
+                grade: "中吉".into(),
+                verse: vec![
+                    "石上栽花".into(),
+                    "未开先老".into(),
+                    "不如退步".into(),
+                    "另有路行".into(),
+                ],
+                reading: "他等的不是机会，是许可。".into(),
+            },
             quotes: vec![Quote {
                 text: "凌晨三点还在改代码，明天又要废了".into(),
                 why: "很有他".into(),
@@ -702,24 +792,31 @@ mod tests {
         let html = html(&view(&material, &persona));
         for needle in [
             "用户画像",
-            "夜行改稿人",
-            "白天潜水",
-            "1,234",          // 千分位
-            "性格特质",
-            "话题兴趣",
-            "活跃节律",
-            "常在的群",
-            "发言样本",
-            "群里的位置",
-            "写在最后",
+            "用忙碌挡空的人",
+            "他把休息也算成一件事",
+            r#"<span class="sec-mark">侧写</span>"#,
+            "立身",
+            "心相",
+            "人群",
+            "把手艺当退路",
+            "第四十七签",
+            "中吉",
+            "石上栽花",
+            r#"<span class="sec-mark">刻度</span>"#,
+            "秩序感",
+            r#"<span class="sec-mark">常谈的事</span>"#,
+            r#"<span class="sec-mark">他自己的话</span>"#,
+            r#"<span class="sec-mark">活跃节律</span>"#,
+            "赠言",
             "仅供娱乐",
+            "1,234",
             "deepseek/deepseek-flash",
         ] {
             assert!(html.contains(needle), "缺少 {needle}");
         }
     }
 
-    /// 昵称与群名来自群聊，必须转义；模型给的文本同理。
+    /// 昵称来自群聊，必须转义；模型给的文本同理。
     #[test]
     fn external_text_is_escaped() {
         let material = material();
@@ -727,7 +824,6 @@ mod tests {
         let html = html(&view(&material, &persona));
         assert!(!html.contains("阿<甲>"));
         assert!(html.contains("阿&lt;甲&gt;"));
-        assert!(html.contains("测试&lt;群&gt;"));
     }
 
     /// 有头像时嵌图，没有时退回名字首字，两种都不改版位。
@@ -767,20 +863,64 @@ mod tests {
             traits: Vec::new(),
             interests: Vec::new(),
             quotes: Vec::new(),
-            role: String::new(),
-            style: String::new(),
+            facets: Vec::new(),
+            lot: Lot::default(),
             advice: String::new(),
             summary: String::new(),
             ..persona()
         };
         let html = html(&view(&material, &persona));
-        assert!(!html.contains("性格特质"));
-        assert!(!html.contains("话题兴趣"));
-        assert!(!html.contains("发言样本"));
-        assert!(!html.contains("写在最后"));
-        // 代号与统计始终在。
-        assert!(html.contains("夜行改稿人"));
-        assert!(html.contains("活跃节律"));
+        assert!(!html.contains(r#"<span class="sec-mark">侧写</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">刻度</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">常谈的事</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">他自己的话</span>"#));
+        assert!(!html.contains(r#"<div class="advice">"#));
+        assert!(!html.contains(r#"<div class="lot">"#));
+        // 代号与读数始终在。
+        assert!(html.contains("用忙碌挡空的人"));
+        assert!(html.contains(r#"<span class="sec-mark">活跃节律</span>"#));
+        assert!(html.contains(r#"<div class="readings">"#));
+    }
+
+    /// 三面侧写里空掉的那一面不占版面。
+    #[test]
+    fn a_blank_facet_is_not_printed() {
+        let material = material();
+        let persona = Persona {
+            facets: vec![
+                Facet {
+                    key: "立身".into(),
+                    title: "把手艺当退路".into(),
+                    body: String::new(),
+                },
+                Facet {
+                    key: "心相".into(),
+                    title: String::new(),
+                    body: String::new(),
+                },
+                Facet {
+                    key: "人群".into(),
+                    title: "不抢话".into(),
+                    body: String::new(),
+                },
+            ],
+            ..persona()
+        };
+        let html = html(&view(&material, &persona));
+        assert_eq!(html.matches(r#"class="facet""#).count(), 2);
+        assert!(!html.contains("心相"));
+    }
+
+    #[test]
+    fn the_lot_number_reads_as_chinese_numerals() {
+        assert_eq!(cn_num(1), "一");
+        assert_eq!(cn_num(10), "十");
+        assert_eq!(cn_num(11), "十一");
+        assert_eq!(cn_num(20), "二十");
+        assert_eq!(cn_num(47), "四十七");
+        assert_eq!(cn_num(100), "一百");
+        assert_eq!(cn_num(0), "一");
+        assert_eq!(cn_num(480), "一百");
     }
 
     #[test]
@@ -808,7 +948,7 @@ mod tests {
             ..view_at(&material, &persona, MIDNIGHT)
         };
         let html = html(&pinned);
-        assert!(html.contains("--canvas:#EDF0F4"), "应当用日读配色");
+        assert!(html.contains("--canvas:#E9E3D9"), "应当用日读配色");
     }
 
     /// 把日读、夜读与降级三份报告写到 `PORTRAIT_CARD_DUMP` 指定的目录，肉眼校版用：

@@ -43,7 +43,8 @@ struct PortraitConfig {
     /// 分析用的模型，写 `供应商/模型`；供应商取自 `[oai.providers]`，
     /// 不带前缀则沿用 oai 默认接口。
     model: String,
-    /// 思考强度：`off` / `minimal` / `low` / `medium` / `high`，留空交给接口默认。
+    /// 思考强度：`off` / `minimal` / `low` / `medium` / `high` / `xhigh`，留空交给接口默认。
+    /// 侧写要读一百多条样本再落笔，默认给到 `high`；调低会明显变浅。
     thinking: String,
     /// 只统计最近多少天，0 表示全部留存记录。
     days: i64,
@@ -66,7 +67,7 @@ impl Default for PortraitConfig {
         Self {
             enabled: true,
             model: "deepseek/deepseek-flash".to_string(),
-            thinking: "low".to_string(),
+            thinking: "high".to_string(),
             days: 0,
             max_samples: 120,
             max_scan: 8_000,
@@ -496,7 +497,8 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 出图失败时的文字版：留下代号、总评与特质，够用户在群里看懂结论。
+/// 出图失败时的文字版：留下代号、总评、三面侧写与签，
+/// 够用户在群里看懂结论，不至于因为一张图没出成就什么都拿不到。
 fn text_report(
     material: &collect::Material,
     profile: &persona::Persona,
@@ -506,8 +508,25 @@ fn text_report(
         "【{}】{}\n{}\n",
         profile.codename, profile.tagline, profile.summary
     );
-    for item in profile.traits.iter().take(5) {
+    for facet in profile.live_facets() {
+        if !facet.title.trim().is_empty() {
+            out.push_str(&format!("\n{}｜{}\n", facet.key, facet.title));
+        }
+        if !facet.body.trim().is_empty() {
+            out.push_str(&format!("{}\n", facet.body));
+        }
+    }
+    for item in profile.traits.iter().take(4) {
         out.push_str(&format!("· {} {:.0}｜{}\n", item.name, item.score, item.note));
+    }
+    if profile.has_lot() {
+        out.push_str(&format!(
+            "\n第 {} 签 · {}｜{}\n{}\n",
+            profile.lot.no,
+            profile.lot.grade,
+            profile.lot.verse.join("，"),
+            profile.lot.reading
+        ));
     }
     if let Some(quote) = profile.quotes.first() {
         out.push_str(&format!("「{}」\n", quote.text));
@@ -618,7 +637,7 @@ mod live_tests {
                 content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
             },
         ];
-        let raw = crate::plugins::oai::llm::complete(&base, &key, &model, history, Some("low"))
+        let raw = crate::plugins::oai::llm::complete(&base, &key, &model, history, Some("high"))
             .await
             .expect("模型调用失败");
         println!("===== 模型原始输出 =====\n{raw}\n");
@@ -627,16 +646,25 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n代号：{}\n一句话：{}\n总评：{}\n特质：{:?}\n兴趣：{:?}\n引语：{:?}",
+            "===== 收口后的画像 =====\n代号：{}\n题记：{}\n总评：{}\n侧写：{}\n刻度：{:?}\n常谈：{:?}\n签：第 {} 签 · {}｜{}\n{}\n引语：{:?}",
             profile.codename,
             profile.tagline,
             profile.summary,
+            profile
+                .live_facets()
+                .map(|facet| format!("{}｜{}：{}", facet.key, facet.title, facet.body))
+                .collect::<Vec<_>>()
+                .join("\n      "),
             profile
                 .traits
                 .iter()
                 .map(|item| format!("{} {:.0}", item.name, item.score))
                 .collect::<Vec<_>>(),
             profile.interests,
+            profile.lot.no,
+            profile.lot.grade,
+            profile.lot.verse.join("，"),
+            profile.lot.reading,
             profile
                 .quotes
                 .iter()
@@ -644,7 +672,13 @@ mod live_tests {
                 .collect::<Vec<_>>(),
         );
         assert!(!profile.codename.is_empty(), "代号不该是空的");
-        assert!(!profile.traits.is_empty(), "特质不该是空的");
+        assert!(!profile.traits.is_empty(), "刻度不该是空的");
+        assert_eq!(profile.facets.len(), 3, "三面侧写要占满固定位置");
+        assert!(
+            profile.live_facets().count() >= 2,
+            "至少要有两面侧写写出来了"
+        );
+        assert!(profile.has_lot(), "签不该是空的");
         // 引语是被比对过的：要么没有，要么每一句都是原话。
         for quote in &profile.quotes {
             assert!(
@@ -891,11 +925,22 @@ mod tests {
             codename: "夜行改稿人".into(),
             tagline: "白天潜水夜里冒泡".into(),
             summary: "话不多。".into(),
+            facets: vec![persona::Facet {
+                key: "立身".into(),
+                title: "把手艺当退路".into(),
+                body: "他把手艺当退路。".into(),
+            }],
             traits: vec![persona::Trait {
                 name: "夜行".into(),
                 score: 90.0,
                 note: "深夜说话".into(),
             }],
+            lot: persona::Lot {
+                no: 7,
+                grade: "中平".into(),
+                verse: vec!["且慢".into(), "再看".into()],
+                reading: "不急。".into(),
+            },
             quotes: vec![persona::Quote {
                 text: "三点还在改".into(),
                 why: "很有他".into(),
@@ -907,5 +952,8 @@ mod tests {
         assert!(report.contains("夜行 90"));
         assert!(report.contains("三点还在改"));
         assert!(report.contains("100 条发言"));
+        // 三面侧写与那一签也要跟着落到文字版里。
+        assert!(report.contains("立身｜把手艺当退路"));
+        assert!(report.contains("第 7 签 · 中平"));
     }
 }

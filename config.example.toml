@@ -266,8 +266,9 @@ black = []
 enabled = true
 # 分析用的模型，写「供应商/模型」；供应商取自 [oai.providers]，不带前缀走 oai 默认接口。
 model = "deepseek/deepseek-flash"
-# 思考强度：off / minimal / low / medium / high，留空交给接口默认。
-thinking = "low"
+# 思考强度：off / minimal / low / medium / high / xhigh，留空交给接口默认。
+# 侧写要读一百多条样本再落笔，默认给到 high；调低会明显变浅。
+thinking = "high"
 # 只统计最近多少天，0 表示全部留存记录。
 days = 0
 # 交给模型的发言样本条数，以及一次最多读多少条原始记录。

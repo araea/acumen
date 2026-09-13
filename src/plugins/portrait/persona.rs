@@ -1,9 +1,10 @@
 //! 把采集到的素材交给模型，换回一份结构化的画像；模型不接时用统计量兜底。
 //!
-//! 这一层只认两件事：**模型的输出必须是一个 JSON 对象**，以及**引语必须是原话**。
-//! 前者靠宽松解析（模型喜欢在 JSON 外面裹一句「好的」或一层代码块），后者靠
-//! 归一化比对——对不上就丢掉，宁可少一条引语，也不让报告里出现一句编出来的
-//! 「他说过」。
+//! 这一层只认三件事：**模型的输出是一个 JSON 对象**、**引语必须是原话**、
+//! **三面侧写要落在固定的三个位置上**。前者靠宽松解析（模型喜欢在 JSON 外面裹一句
+//! 「好的」或一层代码块），第二条靠归一化比对——对不上就丢掉，宁可少一条引语，
+//! 也不让报告里出现一句编出来的「他说过」；第三条靠键名归一，模型给出的键名认不出
+//! 时按出现顺序补位，免得整块侧写因为一个键名写错而消失。
 
 use super::collect::Material;
 use serde::Deserialize;
@@ -51,42 +52,44 @@ impl Accent {
     }
 
     /// 主色（深色主题用亮一档的色，浅色主题用深一档的）。
+    /// 色值都往灰里压了一档，落在纸色上不跳，配得上这份报告的语速。
     pub fn hex(self, dark: bool) -> &'static str {
         match (self, dark) {
-            (Accent::Amber, false) => "#A86400",
-            (Accent::Amber, true) => "#DDBB74",
-            (Accent::Rose, false) => "#C1355A",
-            (Accent::Rose, true) => "#EE93AC",
-            (Accent::Mint, false) => "#168668",
-            (Accent::Mint, true) => "#72C9AE",
-            (Accent::Indigo, false) => "#5268D8",
-            (Accent::Indigo, true) => "#9AA8E8",
-            (Accent::Violet, false) => "#7B4BC9",
-            (Accent::Violet, true) => "#BFA2EE",
-            (Accent::Teal, false) => "#0F7C8C",
-            (Accent::Teal, true) => "#6FC3D0",
+            (Accent::Amber, false) => "#8A5A1E",
+            (Accent::Amber, true) => "#C9A063",
+            (Accent::Rose, false) => "#9E2F4C",
+            (Accent::Rose, true) => "#D98BA1",
+            (Accent::Mint, false) => "#1F6F5C",
+            (Accent::Mint, true) => "#7FBFA8",
+            (Accent::Indigo, false) => "#3E4E9E",
+            (Accent::Indigo, true) => "#9AA6DD",
+            (Accent::Violet, false) => "#5F3A96",
+            (Accent::Violet, true) => "#B49BDD",
+            (Accent::Teal, false) => "#14606E",
+            (Accent::Teal, true) => "#79B8C2",
         }
     }
 
     /// 同色的 `r,g,b` 字面量，供 CSS 里调透明度用，省得写死多份色值。
     pub fn rgb(self, dark: bool) -> &'static str {
         match (self, dark) {
-            (Accent::Amber, false) => "168,100,0",
-            (Accent::Amber, true) => "221,187,116",
-            (Accent::Rose, false) => "193,53,90",
-            (Accent::Rose, true) => "238,147,172",
-            (Accent::Mint, false) => "22,134,104",
-            (Accent::Mint, true) => "114,201,174",
-            (Accent::Indigo, false) => "82,104,216",
-            (Accent::Indigo, true) => "154,168,232",
-            (Accent::Violet, false) => "123,75,201",
-            (Accent::Violet, true) => "191,162,238",
-            (Accent::Teal, false) => "15,124,140",
-            (Accent::Teal, true) => "111,195,208",
+            (Accent::Amber, false) => "138,90,30",
+            (Accent::Amber, true) => "201,160,99",
+            (Accent::Rose, false) => "158,47,76",
+            (Accent::Rose, true) => "217,139,161",
+            (Accent::Mint, false) => "31,111,92",
+            (Accent::Mint, true) => "127,191,168",
+            (Accent::Indigo, false) => "62,78,158",
+            (Accent::Indigo, true) => "154,166,221",
+            (Accent::Violet, false) => "95,58,150",
+            (Accent::Violet, true) => "180,155,221",
+            (Accent::Teal, false) => "20,96,110",
+            (Accent::Teal, true) => "121,184,194",
         }
     }
 }
 
+/// 一个心理维度上的刻度。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Trait {
     #[serde(default)]
@@ -97,6 +100,7 @@ pub struct Trait {
     pub note: String,
 }
 
+/// 作者给出的原话，以及挑它的理由。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Quote {
     #[serde(default)]
@@ -104,6 +108,36 @@ pub struct Quote {
     #[serde(default)]
     pub why: String,
 }
+
+/// 侧写的一面。`key` 由本层归一成固定三个之一，不采信模型自己写的标签。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Facet {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+/// 抽的那一签。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Lot {
+    #[serde(default)]
+    pub no: i64,
+    #[serde(default)]
+    pub grade: String,
+    #[serde(default)]
+    pub verse: Vec<String>,
+    #[serde(default)]
+    pub reading: String,
+}
+
+/// 三面侧写的固定位置与键名。顺序就是报告里的呈现顺序。
+pub const FACET_KEYS: [&str; 3] = ["立身", "心相", "人群"];
+
+/// 签等只收这几个说法，模型写出别的（比如「凶」）就退回「中平」。
+const GRADES: [&str; 5] = ["上上", "上吉", "中吉", "中平", "中下"];
 
 /// 一份可以交给模板渲染的画像。
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -114,16 +148,15 @@ pub struct Persona {
     pub tagline: String,
     #[serde(default)]
     pub summary: String,
+    /// 三面侧写，恒定是「立身 / 心相 / 人群」这个顺序与这三个名字。
+    #[serde(default)]
+    pub facets: Vec<Facet>,
     #[serde(default)]
     pub traits: Vec<Trait>,
     #[serde(default)]
     pub interests: Vec<String>,
     #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub style: String,
-    #[serde(default)]
-    pub rhythm: String,
+    pub lot: Lot,
     #[serde(default)]
     pub quotes: Vec<Quote>,
     #[serde(default)]
@@ -138,19 +171,23 @@ pub struct Persona {
 /// 各字段的字数上限。模型偶尔会无视字数要求，这里统一收口，
 /// 免得一个超长字段把整张卡的版面顶乱。
 mod limit {
-    pub const CODENAME: usize = 8;
-    pub const TAGLINE: usize = 24;
-    pub const SUMMARY: usize = 96;
+    pub const CODENAME: usize = 9;
+    pub const TAGLINE: usize = 26;
+    pub const SUMMARY: usize = 110;
+    pub const FACET_TITLE: usize = 14;
+    pub const FACET_BODY: usize = 110;
     pub const TRAIT_NAME: usize = 6;
-    pub const TRAIT_NOTE: usize = 40;
-    pub const INTEREST: usize = 12;
-    pub const SECTION: usize = 64;
+    pub const TRAIT_NOTE: usize = 34;
+    pub const INTEREST: usize = 10;
+    pub const VERSE: usize = 12;
+    pub const READING: usize = 80;
     pub const QUOTE: usize = 90;
-    pub const QUOTE_WHY: usize = 28;
+    pub const QUOTE_WHY: usize = 26;
     pub const ADVICE: usize = 40;
-    pub const MAX_TRAITS: usize = 5;
-    pub const MAX_INTERESTS: usize = 8;
+    pub const MAX_TRAITS: usize = 4;
+    pub const MAX_INTERESTS: usize = 6;
     pub const MAX_QUOTES: usize = 3;
+    pub const MAX_VERSE: usize = 4;
 }
 
 /// 截到上限并补省略号。省略号前面不留空白，否则会变成「手机 root …」这种断口。
@@ -181,6 +218,25 @@ fn is_punctuation(ch: char) -> bool {
     ch.is_ascii_punctuation() || EXTRA.contains(ch)
 }
 
+/// 把模型写的面名认到固定的三个位置上。
+///
+/// 模型有时写「立身」、有时写「立身：与劳作的关系」，也可能干脆写成别的词。
+/// 认得出来按名归位，认不出来就按出现顺序补位——位置总比标签可靠。
+fn facet_slot(key: &str) -> Option<usize> {
+    const ALIASES: [&[&str]; 3] = [
+        &["立身", "做事", "谋事", "事业", "劳作", "职业", "工作"],
+        &["心相", "心理", "内心", "本心", "性情", "动机"],
+        &["人群", "人际", "社交", "人堆", "关系", "位置"],
+    ];
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    ALIASES
+        .iter()
+        .position(|names| names.iter().any(|name| key.contains(name)))
+}
+
 /// 宽松解析模型输出：取第一个花括号到最后一个花括号之间的内容。
 ///
 /// 开 JSON 模式能把可用模型限制在支持该参数的那几个上，为了一个字段的整洁
@@ -200,16 +256,39 @@ pub fn parse(raw: &str) -> anyhow::Result<Persona> {
     Ok(persona)
 }
 
+/// 把三面侧写摆回固定的三个位置，缺的补空。
+fn settle_facets(incoming: Vec<Facet>) -> Vec<Facet> {
+    let mut slots: [Option<Facet>; 3] = [None, None, None];
+    let mut leftover: Vec<Facet> = Vec::new();
+    for facet in incoming {
+        match facet_slot(&facet.key) {
+            Some(index) if slots[index].is_none() => slots[index] = Some(facet),
+            _ => leftover.push(facet),
+        }
+    }
+    let mut spare = leftover.into_iter();
+    let mut out = Vec::with_capacity(FACET_KEYS.len());
+    for (index, key) in FACET_KEYS.iter().enumerate() {
+        let mut facet = slots[index]
+            .take()
+            .or_else(|| spare.next())
+            .unwrap_or_default();
+        facet.key = (*key).to_string();
+        facet.title = clip(&facet.title, limit::FACET_TITLE);
+        facet.body = clip(&facet.body, limit::FACET_BODY);
+        out.push(facet);
+    }
+    out
+}
+
 impl Persona {
-    /// 收口：字数、条数、分数范围，以及引语必须出自样本。
+    /// 收口：字数、条数、分数范围、签等，以及引语必须出自样本。
     pub fn sanitize(mut self, material: &Material) -> Self {
         self.codename = clip(&self.codename, limit::CODENAME);
         self.tagline = clip(&self.tagline, limit::TAGLINE);
         self.summary = clip(&self.summary, limit::SUMMARY);
-        self.role = clip(&self.role, limit::SECTION);
-        self.style = clip(&self.style, limit::SECTION);
-        self.rhythm = clip(&self.rhythm, limit::SECTION);
         self.advice = clip(&self.advice, limit::ADVICE);
+        self.facets = settle_facets(std::mem::take(&mut self.facets));
 
         self.traits = self
             .traits
@@ -237,6 +316,29 @@ impl Persona {
             .filter(|word| seen.insert(word.clone()))
             .take(limit::MAX_INTERESTS)
             .collect();
+
+        // 签：签号夹回 1—100，签等只认白名单，签诗按四句收口。
+        self.lot.no = if self.lot.no > 0 {
+            self.lot.no.min(100)
+        } else {
+            (material.user_id.unsigned_abs() % 100 + 1) as i64
+        };
+        self.lot.grade = match GRADES
+            .iter()
+            .find(|grade| self.lot.grade.trim().contains(**grade))
+        {
+            Some(grade) => (*grade).to_string(),
+            None => "中平".to_string(),
+        };
+        self.lot.verse = self
+            .lot
+            .verse
+            .into_iter()
+            .map(|line| clip(&line, limit::VERSE))
+            .filter(|line| !line.is_empty())
+            .take(limit::MAX_VERSE)
+            .collect();
+        self.lot.reading = clip(&self.lot.reading, limit::READING);
 
         let samples: Vec<String> = material.samples.iter().map(|s| fingerprint(s)).collect();
         self.quotes = self
@@ -266,29 +368,18 @@ impl Persona {
     /// 模型完全没接上时的兜底画像：全部由统计量拼出来。
     ///
     /// 与其回一句「生成失败」，不如把数字本身排成一张能看的图——用户要的信息
-    /// 大半都在数字里，缺的只是文字评论。
+    /// 大半都在数字里，缺的只是文字评论。三面侧写照旧占位，好让版式不至于塌掉。
     pub fn from_stats(material: &Material) -> Self {
         let night = material.night_ratio();
         let media = material.media_ratio();
         let per_day = material.per_day();
         let avg = material.avg_len();
-        let engaging = material.reply_ratio()
-            + if material.total > 0 {
-                material.kinds.at as f64 / material.total as f64
-            } else {
-                0.0
-            };
 
         let traits = vec![
             meter("话量", (per_day / 40.0 * 100.0).min(99.0), "看平均每天发几条"),
             meter("夜行", night * 100.0, "0 点到 6 点的发言占比"),
             meter("图文", media * 100.0, "图片、表情包与小表情的占比"),
-            meter(
-                "长句",
-                (avg / 40.0 * 100.0).min(99.0),
-                "单条发言的平均字数",
-            ),
-            meter("爱接话", engaging * 100.0, "引用与 @ 别人的比例"),
+            meter("长句", (avg / 40.0 * 100.0).min(99.0), "单条发言的平均字数"),
         ]
         .into_iter()
         .map(|(name, score, note)| Trait {
@@ -311,6 +402,45 @@ impl Persona {
                 .collect()
         };
 
+        let groups = material
+            .groups
+            .first()
+            .map(|group| group.name.as_str())
+            .unwrap_or("未知群");
+        let facets = vec![
+            Facet {
+                key: FACET_KEYS[0].to_string(),
+                title: format!("{} 天，{} 句话", material.span_days(), material.total),
+                body: format!(
+                    "平均每天 {:.1} 条，单条平均 {:.1} 字，最长 {} 字。{} 的发言带图片或表情。",
+                    per_day,
+                    avg,
+                    material.longest,
+                    percent(media)
+                ),
+            },
+            Facet {
+                key: FACET_KEYS[1].to_string(),
+                title: "这次没有读到他的话".to_string(),
+                body: "模型没接上，只有数字可用。他的句子是什么样、为什么这样说话，这一版答不了，\
+                       不作推断。"
+                    .to_string(),
+            },
+            Facet {
+                key: FACET_KEYS[2].to_string(),
+                title: format!("在 {} 个群里说话", material.groups.len()),
+                body: format!(
+                    "最常出没的是「{groups}」。{} 的发言引用了别人，{} 的发言直接 @ 了别人。",
+                    percent(material.reply_ratio()),
+                    percent(if material.total > 0 {
+                        material.kinds.at as f64 / material.total as f64
+                    } else {
+                        0.0
+                    })
+                ),
+            },
+        ];
+
         Self {
             codename: "只按数字画的一张".to_string(),
             tagline: format!("{} 天里说了 {} 句话", material.span_days(), material.total),
@@ -324,32 +454,37 @@ impl Persona {
                 material.longest,
                 avg
             ),
+            facets,
             traits,
             interests: Vec::new(),
-            role: format!(
-                "在 {} 个群里说过话，最常出没的是「{}」。",
-                material.groups.len(),
-                material
-                    .groups
-                    .first()
-                    .map(|group| group.name.as_str())
-                    .unwrap_or("未知群")
-            ),
-            style: format!(
-                "{} 的发言里带图片或表情，{} 的发言引用了别人。",
-                percent(media),
-                percent(material.reply_ratio())
-            ),
-            rhythm: format!(
-                "{} 最活跃，夜间（0—6 点）占 {}。",
-                hour_label(material.peak_hour()),
-                percent(night)
-            ),
+            lot: Lot {
+                no: (material.user_id.unsigned_abs() % 100 + 1) as i64,
+                grade: "中平".to_string(),
+                verse: vec![
+                    "未见其言".to_string(),
+                    "难断其心".to_string(),
+                    "且留数目".to_string(),
+                    "他日再问".to_string(),
+                ],
+                reading: "这次只有数字，没有他的话，签不作数。等他再开口。".to_string(),
+            },
             quotes: longest,
             advice: "这次模型没接上，先按数字给你画了一张，过会儿再试一次。".to_string(),
             accent: Accent::pick(material.user_id).name().to_string(),
             estimated: true,
         }
+    }
+
+    /// 三面侧写里真正有内容的那几面。空的会在版面上隐去。
+    pub fn live_facets(&self) -> impl Iterator<Item = &Facet> {
+        self.facets
+            .iter()
+            .filter(|facet| !facet.title.trim().is_empty() || !facet.body.trim().is_empty())
+    }
+
+    /// 有没有一签可看。签诗与解语都空时不占版面。
+    pub fn has_lot(&self) -> bool {
+        !self.lot.verse.is_empty() || !self.lot.reading.trim().is_empty()
     }
 }
 
@@ -382,31 +517,49 @@ pub fn weekday_label(weekday: usize) -> &'static str {
     NAMES[weekday % 7]
 }
 
-const SYSTEM_PROMPT: &str = r#"你是群聊数据分析师，负责给一个 QQ 群成员写一份「用户画像」。
+const SYSTEM_PROMPT: &str = r#"你替人看相。看得慢，说得准，不奉承，也不吓人。
+你手里只有一个人在一个群里说过的话，和几组冷冰冰的数字。你从这些字句里读他的性情、处境与去处。
 
-你只看得到这个人在群里说过的话和一组统计数字，据此推断他的表达习惯、关心的话题和他在群里的位置。
+用三种眼光看他：
+- 立身：他怎样对待做事、秩序、体面与成就。不猜他做什么工作，只看他与劳作、规矩、输赢的关系。
+- 心相：他的欲望、恐惧、自欺，与他不肯承认的那一部分。他为什么这样说话，他在防什么，他在等什么。
+- 人群：他在人堆里的位置。他怎样靠近，怎样退开，拿什么换被需要，付出与索取各占多少。
 
-写法要求：
-- 只写从发言里看得出来的东西。不评价外貌、性别、年龄、职业、地域、收入、健康和政治倾向，也不去猜这些；看不出就不写。
-- 不要报告腔。不要写「该用户」「整体来看」「展现出」这类词，写成朋友之间看了会心一笑的大白话。
-- 引语必须逐字出自下发的发言样本，一个字都不能改；找不到合适的就不给引语。
-- 特质分数要拉开差距，别都堆在七八十分。
-- 只输出一个 JSON 对象，不要代码块、不要解释、不要前后缀。
+笔法：
+- 白描。写你看得见的，不写你感叹的。不用比喻堆叠，不用排比，不用感叹号。
+- 冷静、克制、精准。力道到了就停手。说穿，但不羞辱；不留情面，也不刻薄。
+- 不用网络流行语，不用「其实」「说到底」「值得一提的是」这类垫话。
+- 每句话都要有出处，出处就是下发的样本与数字。看不出就不写，宁可短。
+- 可以指出他未必愿意承认的事，但不下道德判断。
+- 不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、跟谁是什么关系。
+- 引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
+- 只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
 
 JSON 字段：
 {
-  "codename": "画像代号，2 到 6 个字，像外号或标签，要具体、有画面感，别用「热心群友」这种谁都能套的词",
-  "tagline": "一句话概括这个人，不超过 20 字",
-  "summary": "两三句话的总评，不超过 80 字",
-  "traits": [{"name":"特质名，2 到 4 字","score":0 到 100 的整数,"note":"这个特质的依据，不超过 30 字"}],
-  "interests": ["兴趣词，2 到 6 字，4 到 8 个，按重要程度排序"],
-  "role": "他在群里扮演的角色，不超过 30 字",
-  "style": "他的说话风格，不超过 40 字",
-  "rhythm": "他的活跃节律，不超过 30 字",
-  "quotes": [{"text":"逐字引用的一条发言","why":"为什么挑它，不超过 20 字"}],
-  "advice": "想对这个人说的一句话，不超过 30 字，可以损一点但要善意",
+  "codename": "代号，2 到 7 个字。要准，不要好听，像熟人背后对他的称呼",
+  "tagline": "题记，不超过 22 字。是结论，不是形容",
+  "summary": "总评，3 到 4 句，不超过 100 字。先给判断，再给依据",
+  "facets": [
+    {"key":"立身","title":"这一面的结论，不超过 12 字","body":"不超过 100 字，白描，要有细节"},
+    {"key":"心相","title":"这一面的结论，不超过 12 字","body":"不超过 100 字，白描，要有细节"},
+    {"key":"人群","title":"这一面的结论，不超过 12 字","body":"不超过 100 字，白描，要有细节"}
+  ],
+  "traits": [{"name":"心理维度，2 到 4 字，如 秩序感 / 表达欲 / 防御 / 攻击性","score":0 到 100 的整数,"note":"这个分数从哪个细节看出来，不超过 30 字"}],
+  "interests": ["他反复谈到的事，2 到 6 字，最多 6 个，按分量排序"],
+  "lot": {
+    "no": 1 到 100 的整数,
+    "grade": "从 上上 / 上吉 / 中吉 / 中平 / 中下 里选一个",
+    "verse": ["签诗四句，每句 5 到 9 个字，有古意，不掉书袋", "第二句", "第三句", "第四句"],
+    "reading": "解签，不超过 70 字。把它接回这个人的处境，别说吉祥话"
+  },
+  "quotes": [{"text":"逐字引用的一条发言","why":"为什么挑它，不超过 24 字"}],
+  "advice": "赠言，不超过 30 字。不劝善，不祝福，给他一样能带走的东西",
   "accent": "从 amber / rose / mint / indigo / violet / teal 里选一个当报告主色"
-}"#;
+}
+
+traits 给 4 个，分数要拉开，别都堆在七八十分。
+签要像抽出来的，不像量身定做的吉利话；中平、中下也可以，解语要落到实处。"#;
 
 /// 组装下发给模型的素材。统计在前、样本在后，模型先拿到骨架再看原文。
 pub fn user_prompt(material: &Material) -> String {
@@ -605,7 +758,111 @@ mod tests {
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(clipped.interests, vec!["abcdefghijk…".to_string()]);
+        assert_eq!(
+            clipped.interests,
+            vec!["abcdefghij…".to_string()],
+            "按 {} 字收口，省略号前不留空白",
+            limit::INTEREST
+        );
+    }
+
+    /// 三面侧写无论如何都要落在固定的三个位置上：键名写对、写别名、乱写都能兜住。
+    #[test]
+    fn facets_land_on_the_three_fixed_slots() {
+        let named = Persona {
+            facets: vec![
+                Facet {
+                    key: "人群".into(),
+                    title: "他不抢话".into(),
+                    body: "只在有人问到的时候接一句。".into(),
+                },
+                Facet {
+                    key: "立身：与劳作的关系".into(),
+                    title: "把手艺当退路".into(),
+                    body: "写代码的时候最安静。".into(),
+                },
+            ],
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(named.facets.len(), 3);
+        // 名字认得出，就按名字归位，不按顺序。
+        assert_eq!(named.facets[0].title, "把手艺当退路");
+        assert_eq!(named.facets[2].title, "他不抢话");
+        // 缺的一面留空，版面自己会隐去。
+        assert!(named.facets[1].title.is_empty());
+        assert_eq!(named.live_facets().count(), 2);
+
+        // 键名全认不出时按出现顺序补位。
+        let unnamed = Persona {
+            facets: vec![
+                Facet {
+                    key: String::new(),
+                    title: "甲".into(),
+                    body: String::new(),
+                },
+                Facet {
+                    key: String::new(),
+                    title: "乙".into(),
+                    body: String::new(),
+                },
+                Facet {
+                    key: String::new(),
+                    title: "丙".into(),
+                    body: String::new(),
+                },
+                Facet {
+                    key: String::new(),
+                    title: "丁".into(),
+                    body: String::new(),
+                },
+            ],
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(
+            unnamed
+                .facets
+                .iter()
+                .map(|facet| facet.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["甲", "乙", "丙"]
+        );
+        // 键名由本层统一写死，不采信模型。
+        assert!(unnamed.facets.iter().all(|f| FACET_KEYS.contains(&f.key.as_str())));
+    }
+
+    /// 签等只认白名单，乱写的退回中平；签号越界会被夹回来。
+    #[test]
+    fn lots_are_whitelisted_and_clamped() {
+        let persona = Persona {
+            lot: Lot {
+                no: 480,
+                grade: "大凶".into(),
+                verse: (0..6).map(|i| format!("第{i}句")).collect(),
+                reading: "长".repeat(200),
+            },
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(persona.lot.no, 100);
+        assert_eq!(persona.lot.grade, "中平");
+        assert_eq!(persona.lot.verse.len(), limit::MAX_VERSE);
+        assert!(persona.lot.reading.chars().count() <= limit::READING + 1);
+        assert!(persona.has_lot());
+
+        // 认得出签等就留原样。
+        let graded = Persona {
+            lot: Lot {
+                grade: "上吉".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(graded.lot.grade, "上吉");
+        // 没写签号时按用户号定一个，1 到 100 之间。
+        assert!((1..=100).contains(&graded.lot.no));
     }
 
     #[test]
@@ -628,11 +885,21 @@ mod tests {
     fn the_statistical_fallback_is_readable_on_its_own() {
         let persona = Persona::from_stats(&material());
         assert!(persona.estimated);
-        assert_eq!(persona.traits.len(), 5);
+        assert_eq!(persona.traits.len(), 4);
         assert!(persona.traits.iter().all(|t| (4.0..=99.0).contains(&t.score)));
         assert_eq!(persona.quotes.len(), 2);
+        assert_eq!(persona.facets.len(), 3);
+        assert_eq!(
+            persona
+                .facets
+                .iter()
+                .map(|facet| facet.key.as_str())
+                .collect::<Vec<_>>(),
+            FACET_KEYS.to_vec()
+        );
+        assert!(persona.facets.iter().all(|facet| !facet.body.is_empty()));
         assert!(persona.summary.contains("400"));
-        assert!(persona.rhythm.contains("深夜"));
+        assert!(persona.has_lot());
         assert!(Accent::from_name(&persona.accent).is_some());
     }
 
@@ -642,6 +909,12 @@ mod tests {
         assert!(prompt.contains("群聊发言 400 条"));
         assert!(prompt.contains("凌晨三点还在改代码"));
         assert!(prompt.contains("高频词"));
-        assert!(system_prompt().contains("逐字"));
+        // 提示词要点：三种眼光、逐字引用、白描。
+        let system = system_prompt();
+        assert!(system.contains("立身"));
+        assert!(system.contains("心相"));
+        assert!(system.contains("人群"));
+        assert!(system.contains("逐字"));
+        assert!(system.contains("白描"));
     }
 }
