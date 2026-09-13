@@ -161,8 +161,8 @@ mod tests {
         let (primary, aliases) = split_aliases("收 / 偷 / 存表情");
         assert_eq!(primary, "收");
         assert_eq!(aliases, vec!["偷", "存表情"]);
-        let (only, none) = split_aliases("ping");
-        assert_eq!(only, "ping");
+        let (only, none) = split_aliases("echo");
+        assert_eq!(only, "echo");
         assert!(none.is_empty());
     }
 

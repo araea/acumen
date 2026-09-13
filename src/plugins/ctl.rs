@@ -380,7 +380,7 @@ fn usage(prefix: &str) -> String {
 {prefix}ctl diff <插件> — 与默认值比较\n\
 中文操作：列表、开启、关闭、查看、默认、设置、重置、差异\n\
 插件名支持英文及中文显示名；多个名称以空格或逗号分隔。\n\
-例：{prefix}ctl on 帮助中心 ping\n\
+例：{prefix}ctl on 帮助中心 echo\n\
 例：{prefix}ctl set repeater channel.white [123456]\n\
 例：{prefix}ctl set oai plain_text_max_chars 120\n\
 配置查看/修改仅限 ctl.admins；控制台可管理。全局开关影响全部会话。\n\
@@ -480,7 +480,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
             .map(resolve)
             .collect::<Result<_, _>>()?;
         if names.is_empty() {
-            return Err("请指定插件，例如 ctl on help ping".into());
+            return Err("请指定插件，例如 ctl on help echo".into());
         }
         let on = ["on", "开启", "启用"].contains(&action);
         let text = change(ctx, |cfg| {
@@ -750,7 +750,7 @@ mod tests {
         assert!(execute(&ctx, "list").await.is_ok());
         for input in [
             "show ctl",
-            "on ping",
+            "on echo",
             "set help image_enabled false",
             "reset help --confirm",
         ] {
@@ -769,14 +769,14 @@ mod tests {
         let ctx = context(true).await;
         assert!(execute(&ctx, "off help unknown_plugin").await.is_err());
         assert!(enabled(&ctx.config.read().unwrap(), "help"));
-        execute(&ctx, "关闭 帮助中心,ping").await.unwrap();
+        execute(&ctx, "关闭 帮助中心,recall").await.unwrap();
         let disk: AppConfig = toml::from_str(
             &tokio::fs::read_to_string(ctx.config_path.as_ref())
                 .await
                 .unwrap(),
         )
         .unwrap();
-        assert!(!enabled(&disk, "help") && !enabled(&disk, "ping"));
+        assert!(!enabled(&disk, "help") && !enabled(&disk, "recall"));
         assert!(execute(&ctx, "off echo ctl").await.is_err());
         assert!(enabled(&ctx.config.read().unwrap(), "echo"));
         tokio::fs::remove_file(ctx.config_path.as_ref())

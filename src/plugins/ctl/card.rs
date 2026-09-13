@@ -68,7 +68,7 @@ pub fn usage(prefix: &str, cmds: &[crate::plugins::Cmd]) -> Card {
             count: String::new(),
         },
         Block::Code(vec![
-            format!("{prefix}ctl on 帮助中心 ping"),
+            format!("{prefix}ctl on 帮助中心 echo"),
             format!("{prefix}ctl set repeater channel.white [123456]"),
             format!("{prefix}ctl set oai plain_text_max_chars 120"),
             format!("{prefix}ctl reset ai_news --confirm"),
@@ -259,7 +259,7 @@ mod tests {
             ("list", list("/", "", &rows)),
             ("config", config("/", "ai_news", "", false, body, "下一条消息生效。")),
             ("diff", diff("/", "repeater", &diffs)),
-            ("diff_clean", diff("/", "ping", &[])),
+            ("diff_clean", diff("/", "help", &[])),
         ];
         for (name, card) in cases {
             std::fs::write(format!("{dir}/{name}.html"), web::html(&card.0)).unwrap();

@@ -75,13 +75,6 @@ register_plugins!(
         summary: "Bot 为群主时，给申请者设置群专属头衔",
         commands: cmds![("我要头衔 <文字>", "给自己申请一个群专属头衔")]
     },
-    ping {
-        display_name: "心跳测试",
-        section: "play",
-        summary: "心跳测试，统计全服 Ping 次数",
-        commands: cmds![("ping", "测试 Bot 在线状态")],
-        on_init: Some(ping::init)
-    },
     recall {
         display_name: "消息撤回",
         section: "message",

@@ -24,7 +24,7 @@ admins = [123456789] # 维护者 QQ 号，可填多个
 | `/ctl list` | 所有注册插件及全局开关 |
 | `/ctl list on`、`/ctl list off` | 按开关状态筛选 |
 | `/ctl list 统计` | 按英文名或中文名筛选 |
-| `/ctl on help ping` | 一次开启多个插件 |
+| `/ctl on help echo` | 一次开启多个插件 |
 | `/插件 关闭 复读机,网页截图` | 中文名与逗号分隔也可用 |
 | `/ctl show repeater` | 当前完整配置 |
 | `/ctl show oai model_filter` | 查看嵌套字段 |
@@ -113,7 +113,7 @@ ctl 操作 `config.toml` 中插件自己的配置。连接凭据、全局过滤�
 
 1. 编译并测试：`cargo test`、`cargo build --release`；也可以运行 `node tests/foreground.cjs` 验证隔离配置下的前台指令、进程管理与退出保存，运行 `node tests/restart.cjs` 验证保留 PID 的手动重启与定时重启
 2. 向正在运行的 ayjx 发送 SIGTERM，等待进程退出和「配置已保存」日志
-3. 备份并修改配置，开启所需插件。基础部署可以开启 `ctl`、`help`、`meta_filter`、`logger`、`recorder`、`ping`，按实际需求启用其他插件
+3. 备份并修改配置，开启所需插件。基础部署可以开启 `ctl`、`help`、`meta_filter`、`logger`、`recorder`，按实际需求启用其他插件
 4. 从仓库目录运行 `./bot start`，前台启动并临时开放本机控制台
 5. 检查日志中的插件初始化与 Satori READY / 登录状态，再通过 `/ctl list` 查看配置
 
