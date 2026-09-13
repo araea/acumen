@@ -60,17 +60,80 @@ pub struct Plugin {
 }
 
 static PLUGINS: OnceLock<Vec<Plugin>> = OnceLock::new();
-static STARTUP_ENABLED: OnceLock<HashSet<String>> = OnceLock::new();
+/// 已经跑过初始化的插件集合。启动时由 [`do_init`] 填入当时启用的插件；运行中经
+/// ctl 打开的插件由 [`start`] 补跑 `on_init` 后写入，于是不必重启。
+static STARTUP_ENABLED: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-/// Plugins with lifecycle hooks must have been enabled at startup.
+fn started() -> &'static Mutex<HashSet<String>> {
+    STARTUP_ENABLED.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// 插件是否带初始化钩子（注册表里的 `on_init`）。
+pub fn needs_init(name: &str) -> bool {
+    get_plugins()
+        .iter()
+        .any(|p| p.name == name && p.on_init.is_some())
+}
+
+/// 插件是否带生命周期钩子（`on_init` 或 `on_connected`）。
 pub fn needs_startup(name: &str) -> bool {
     get_plugins()
         .iter()
         .any(|p| p.name == name && (p.on_init.is_some() || p.on_connected.is_some()))
 }
 
+/// 有初始化钩子、但初始化还没跑过——此时消息处理必须等初始化完成。
+///
+/// `on_connected` 只在连接建立时触发，不属于这里的门槛：中途打开的插件即使还接不上
+/// 连接排期，消息指令也应当照常可用。`do_init` 未跑过（测试）时一律视为已就绪。
 pub fn pending_startup(name: &str) -> bool {
-    needs_startup(name) && STARTUP_ENABLED.get().is_some_and(|set| !set.contains(name))
+    needs_init(name)
+        && STARTUP_ENABLED
+            .get()
+            .is_some_and(|set| !set.lock().unwrap().contains(name))
+}
+
+/// 运行时启用一个带初始化钩子的插件：补跑一次 `on_init` 并记入已启动集合，
+/// 让它的消息指令立刻可用，不必等重启。
+///
+/// 初始化失败时不写入集合，插件维持「待重启」，由 `do_init` 在下次启动时重试。
+pub async fn start(ctx: &Context, name: &str) -> Result<(), String> {
+    let Some(plugin) = get_plugins().iter().find(|p| p.name == name) else {
+        return Err(format!("未找到插件「{name}」"));
+    };
+    let Some(init) = plugin.on_init else {
+        return Ok(());
+    };
+    // 同一插件只跑一次初始化：并发启用时在锁内复查。
+    static INIT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let _guard = INIT_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    if STARTUP_ENABLED
+        .get()
+        .is_some_and(|set| set.lock().unwrap().contains(name))
+    {
+        return Ok(());
+    }
+    let init_ctx = Context {
+        event: EventType::Init,
+        config: ctx.config.clone(),
+        config_save_lock: ctx.config_save_lock.clone(),
+        db: ctx.db.clone(),
+        scheduler: ctx.scheduler.clone(),
+        matcher: Arc::new(Matcher::new()),
+        config_path: ctx.config_path.clone(),
+        bot: Arc::new(BotStatus {
+            adapter: "system".to_string(),
+            platform: "internal".to_string(),
+            login_user: Default::default(),
+        }),
+    };
+    init(init_ctx).await.map_err(|error| error.to_string())?;
+    started().lock().unwrap().insert(name.to_string());
+    info!(target: "Plugin", "🔁 [{}] 运行时启用，已补跑初始化", name);
+    Ok(())
 }
 
 static CONNECTED_BOTS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -160,7 +223,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
     );
 
     // 一次性快照所有插件的 enabled 标记，避免每个插件单独锁
-    let _ = STARTUP_ENABLED.set({
+    let _ = STARTUP_ENABLED.set(Mutex::new({
         let cfg = ctx.config.read().unwrap();
         plugins
             .iter()
@@ -173,7 +236,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
             })
             .map(|p| p.name.to_string())
             .collect()
-    });
+    }));
     let enabled_set = collect_enabled_set(&ctx);
 
     let system_bot: Arc<BotStatus> = Arc::new(BotStatus {

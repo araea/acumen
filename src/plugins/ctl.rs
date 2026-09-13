@@ -268,6 +268,28 @@ pub(crate) fn validate(p: &Plugin, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// 把当前已启用、却还没跑过初始化的插件补启动，让 ctl 的开关不必等重启。
+///
+/// 返回初始化失败的插件名，交由反馈文本提示「待重启」。
+async fn activate_pending(ctx: &Context) -> Vec<&'static str> {
+    let pending: Vec<&'static str> = {
+        let cfg = ctx.config.read().unwrap();
+        get_plugins()
+            .iter()
+            .filter(|p| enabled(&cfg, p.name) && pending_startup(p.name))
+            .map(|p| p.name)
+            .collect()
+    };
+    let mut failed = Vec::new();
+    for name in pending {
+        if let Err(error) = crate::plugins::start(ctx, name).await {
+            warn!(target: "Plugin/Ctl", "插件 [{}] 运行时初始化失败，维持待重启：{}", name, error);
+            failed.push(name);
+        }
+    }
+    failed
+}
+
 /// Shared transaction for ctl edits. No in-memory changes on save failure.
 pub async fn change<F>(ctx: &Context, edit: F) -> Result<String, String>
 where
@@ -305,7 +327,16 @@ where
         "保存失败，内存配置未改变；请检查磁盘权限及空间。".to_string()
     })?;
     *ctx.config.write().unwrap() = next;
-    Ok(result)
+    // 释放保存锁后再补启动：初始化可能较慢，不必占着配置写锁。
+    drop(_lock);
+    let failed = activate_pending(ctx).await;
+    if failed.is_empty() {
+        return Ok(result);
+    }
+    Ok(format!(
+        "{result}\n{} 初始化失败，维持待重启；将在下次启动时重试。",
+        failed.join("、")
+    ))
 }
 pub async fn set_value(
     ctx: &Context,
@@ -328,10 +359,13 @@ pub async fn set_value(
     .await
 }
 pub(crate) fn effect(name: &str) -> &'static str {
-    if needs_startup(name) {
-        "消息开关立即生效；首次启用、初始化参数及定时排期需重启后完整生效，已在执行的任务不强制中断。"
-    } else {
-        "下一条消息生效。"
+    let plugin = get_plugins().iter().find(|p| p.name == name);
+    match plugin {
+        Some(p) if p.on_connected.is_some() => {
+            "开关立即生效，初始化无需重启；定时推送在下一次连接后恢复。"
+        }
+        Some(p) if p.on_init.is_some() => "开关立即生效，初始化无需重启。",
+        _ => "下一条消息生效。",
     }
 }
 fn usage(prefix: &str) -> String {
@@ -351,7 +385,7 @@ fn usage(prefix: &str) -> String {
 例：{prefix}ctl set oai plain_text_max_chars 120\n\
 配置查看/修改仅限 ctl.admins；控制台可管理。全局开关影响全部会话。\n\
 ctl 保留管理入口；修改它的 admins 请在私聊或控制台执行。\n\
-带生命周期的插件首次启用及排期修改需重启；状态标注“待重启”。"
+带初始化的插件在启用时补跑初始化，随即生效；只有连接期排期要等下一次连接。"
     )
 }
 fn word(text: &str) -> (&str, &str) {
@@ -449,7 +483,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
             return Err("请指定插件，例如 ctl on help ping".into());
         }
         let on = ["on", "开启", "启用"].contains(&action);
-        return change(ctx, |cfg| {
+        let text = change(ctx, |cfg| {
             for p in &names {
                 *cfg.plugins
                     .get_mut(p.name)
@@ -457,18 +491,22 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
                     .ok_or("缺少 enabled 配置")? = Value::Boolean(on);
             }
             Ok(format!(
-                "已全部{}并保存：{}。{}",
+                "已全部{}并保存：{}。",
                 if on { "开启" } else { "关闭" },
-                names.iter().map(|p| p.name).collect::<Vec<_>>().join("、"),
-                if names.iter().any(|p| needs_startup(p.name)) {
-                    effect(names.iter().find(|p| needs_startup(p.name)).unwrap().name)
-                } else {
-                    "下一条消息生效。"
-                }
+                names.iter().map(|p| p.name).collect::<Vec<_>>().join("、")
             ))
         })
-        .await
-        .map(Output::from);
+        .await?;
+        // 关掉是即时的；打开时如果有带初始化的插件，init 已在 change 里补跑。
+        let tail = if on {
+            names
+                .iter()
+                .find(|p| needs_startup(p.name))
+                .map_or("下一条消息生效。", |p| effect(p.name))
+        } else {
+            "下一条消息立即生效。"
+        };
+        return Ok(Output::from(format!("{text}{tail}")));
     }
     let (name, rest) = word(rest);
     let p = resolve(name)?;

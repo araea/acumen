@@ -57,8 +57,12 @@ async function main() {
   await until(() => output.includes('已保存 help.image_scale') && output.includes('已保存 help.image_enabled'), 'two immediate writes');
   child.stdin.write('/ctl on ping\n');
   await until(() => output.includes('已全部开启并保存'), 'enable lifecycle plugin');
+  // 运行时打开带初始化钩子的插件必须立刻可用：init 补跑，不再挂「待重启」。
+  child.stdin.write('/ping\n');
+  await until(() => output.includes('Pong！'), 'lifecycle plugin responds right after enable');
   child.stdin.write('/ctl list\n');
-  await until(() => output.includes('ping（心跳测试） · 待重启'), 'pending initialization status');
+  await until(() => output.includes('开 ping（心跳测试）'), 'enabled status without pending badge');
+  assert(!output.includes('ping（心跳测试） · 待重启'), 'enabled lifecycle plugin must not wait for restart');
   child.stdin.write('/help ctl\n');
   await until(() => output.includes('统一管理全部插件'), 'text help');
   child.stdin.write('/ctl set help image_enabled 开\n');
@@ -91,7 +95,7 @@ async function main() {
   assert(/\[\[bots\]\]\s+enabled = false\s+protocol = "console"/.test(saved), '--console must not persist');
   assert(/\[help\][\s\S]*?image_scale = 2\.0/.test(saved));
   assert(/\[ping\]\s+enabled = true/.test(saved));
-  console.log(`Foreground smoke passed: commands, persistence, pending lifecycle, help rendering/fallback, clean shutdown (${Date.now() - stopping} ms).`);
+  console.log(`Foreground smoke passed: commands, persistence, immediate lifecycle, help rendering/fallback, clean shutdown (${Date.now() - stopping} ms).`);
 }
 main().catch(error => {
   console.error(error);
