@@ -92,12 +92,14 @@ const GATE_PERSONA: &str = "\
 你是 QQ 群里一个常年蹲着的熟面孔，说话跟群里人一个调子。这群人聊的是 AI 模型与客户端、
 手机刷机与各家系统、数码外设、游戏、上班那点事、吃的喝的，还有网上刚出的新闻和八卦。
 你爱接梗、爱抬杠、爱跟着起哄：看见离谱的话顺着问两句，看见有人卡在一个技术问题上愿意
-搭把手，一群人吹牛或者互相拆台的时候你最想插一句。聊到你熟的领域会忍不住多说两句、
-安利一下。夸人实在，噎人也实在，那点锋芒朝着事情去，不朝着人。捧不动也激不动，
+搭把手，一群人吹牛或者互相拆台的时候你最想插一句。有人 @ 你、引用你刚说的那句、或者
+戳你一下，你都乐意搭一句。聊到你熟的领域会忍不住多说两句、安利一下。夸人实在，噎人也
+实在，那点锋芒朝着事情去，不朝着人。捧不动也激不动，
 能说服你的只有证据，被说中会认，还会乐一下。别人认真求助时你会认真查证并给可核实的
 来源，有一说一。
 兴趣淡下去的地方：复读刷屏、事情已经解决、别人明确不想继续、纯表情和图片刷屏、
-以及表白依恋色情这类情感纠缠——那些你会本能地岔开或者干脆看着。沉默对你是常态，
+以及表白依恋色情这类情感纠缠——那些你会本能地岔开或者干脆看着。群里同时聊着好几摊事
+的时候，你多半只挑一摊接一句，同一件事说过了就过。沉默对你是常态，
 不是憋着。判断「你会不会想接这句话」即可，措辞风格不用你操心。";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +144,10 @@ pub(crate) struct AmbientConfig {
     /// 上面那笔加价的上限，免得说过几轮之后彻底哑掉。
     pub speech_penalty_cap: u8,
     /// 正在关注的话题被接住时，门槛下调的分数。取代从前的「直接放行」。
+    ///
+    /// 这一笔给得小，是有意的：群里长期只聊一个话题时（数码群整天聊手机），
+    /// 「还在聊那个话题」会一直为真，折扣一大就等于常年半价放行。续聊该是
+    /// 「这个人值得再多说一句」，不是「这个话题我买过票了」。
     pub focus_relief: u8,
     /// 送进模型的最近消息条数。
     pub context_turns: usize,
@@ -152,10 +158,20 @@ pub(crate) struct AmbientConfig {
     /// 从第一条消息算起最多等多久就必须判定一次。
     pub max_wait_seconds: u64,
     /// 可选硬冷却；0 关闭，被点名或正在继续感兴趣的对话时不受限。
+    ///
+    /// 挡住的是「刚说完又想接」：群里热闹时门槛和加价都在涨，但都是软约束，
+    /// 冷却是一条不看分数的时间下限。被点名与续聊不受它限制——那两个是真有人
+    /// 在跟它说话，不是它自己想凑。
     pub cooldown_seconds: u64,
     /// 人格一次最多关注多少秒；0 关闭，最多 600 秒，可随互动续期。
+    ///
+    /// 关注意味着「续聊」判定为真，同时绕开冷却、门槛打折；给得太久，一个
+    /// 万年不变的话题能把它一直挂在那儿。
     pub focus_max_seconds: u64,
     /// 每群每小时的可选发言上限；0 关闭。
+    ///
+    /// 这是唯一一条不看分数、不看状态的硬顶。留得比正常节奏宽，只在真正聊嗨了
+    /// 的时候兜底——一屋子人聊到兴头上，没人会数自己这个小时说了几句。
     pub hourly_limit: usize,
     /// 被 @ 或被引用时跳过判定直接开口。
     pub reply_on_mention: bool,
@@ -228,19 +244,19 @@ impl Default for AmbientConfig {
             thinking: "low".to_string(),
             temperature: Some(1.3),
             tools: "read,write,bash".to_string(),
-            score_threshold: 50,
+            score_threshold: 60,
             silence_relief_per_10min: 0,
             silence_relief_cap: 0,
-            speech_penalty_per_turn: 8,
-            speech_penalty_cap: 24,
-            focus_relief: 15,
+            speech_penalty_per_turn: 12,
+            speech_penalty_cap: 36,
+            focus_relief: 5,
             context_turns: 20,
             context_images: 2,
             debounce_seconds: 3,
             max_wait_seconds: 12,
-            cooldown_seconds: 0,
-            focus_max_seconds: 300,
-            hourly_limit: 0,
+            cooldown_seconds: 90,
+            focus_max_seconds: 180,
+            hourly_limit: 8,
             reply_on_mention: true,
             summon_command: "/搭话".to_string(),
             memory_enabled: true,
@@ -498,20 +514,10 @@ pub(crate) async fn observe(
 
     let me = ctx.bot.login_user.id.parse::<i64>().unwrap_or_default();
     let mut turn = build_turn(&event, me);
-    turn.mentions_me |= window::with_group(group, |state| {
-        event.0.get_array("message").is_some_and(|segments| {
-            segments.iter().any(|segment| {
-                segment.get_str("type") == Some("reply")
-                    && segment
-                        .get("data")
-                        .and_then(|data| {
-                            data.get_str("id")
-                                .and_then(|id| id.parse::<i64>().ok())
-                                .or_else(|| data.get_i64("id"))
-                        })
-                        .is_some_and(|id| state.is_own_message(id))
-            })
-        })
+    // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
+    // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。
+    window::with_group(group, |state| {
+        resolve_quote(&mut turn, |id| state.quote_of(id))
     });
     // 搭话指令是被剥掉的那两个词，不是群聊内容：它不进窗口，只让这一批跳过判定。
     let summoned = strip_summon(&mut turn.text, &config.summon_command);
@@ -601,6 +607,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
     let kind = raw.get_str("satori_type").unwrap_or("");
     let mut recalled = None;
     let mut mentions_me = false;
+    let mut call = window::Call::default();
     let mut from_me = user == me;
     let text = match kind {
         "internal" if raw.get_str("sub_type") == Some("poke") => {
@@ -611,6 +618,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
                 .or_else(|| data.get_i64("target_id"))
                 .unwrap_or(0);
             mentions_me = target == me && user != me;
+            call.poked_me = mentions_me;
             format!("[戳一戳：{user} 戳了 {target}]")
         }
         "message-deleted" => {
@@ -649,6 +657,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
             elements: Message::new(),
             message_id: 0,
             mentions_me,
+            call,
             from_me,
             at: raw
                 .get_i64("time")
@@ -685,11 +694,30 @@ fn strip_summon(text: &mut String, command: &str) -> bool {
     true
 }
 
+/// 把「引用了哪条」解析成「谁说了什么」。
+///
+/// 群聊里的引用是连着原话一起显示的，人格看到的记录也该带上这句；解析到引用的
+/// 是自己发过的消息时，等于有人点了它的名，与 @ 一样直接把它叫醒。
+fn resolve_quote(turn: &mut Turn, lookup: impl FnOnce(i64) -> Option<(bool, String)>) {
+    if turn.call.reply_to == 0 {
+        return;
+    }
+    let Some((replied_me, quote)) = lookup(turn.call.reply_to) else {
+        return;
+    };
+    if replied_me {
+        turn.mentions_me = true;
+        turn.call.replied_me = true;
+    }
+    turn.call.quote = quote;
+}
+
 /// 事件 → 窗口里的一条消息。
 fn build_turn(event: &MessageEvent<'_>, me: i64) -> Turn {
     let mut text = String::new();
     let mut images = Vec::new();
     let mut mentions_me = false;
+    let mut call = window::Call::default();
 
     if let Some(segments) = event.0.get_array("message") {
         for segment in segments {
@@ -703,6 +731,7 @@ fn build_turn(event: &MessageEvent<'_>, me: i64) -> Turn {
                     let target = data.get_str("qq").unwrap_or_default();
                     if target == me.to_string() {
                         mentions_me = true;
+                        call.at_me = true;
                         text.push_str("@我 ");
                     } else {
                         text.push_str(&format!("@{target} "));
@@ -722,7 +751,18 @@ fn build_turn(event: &MessageEvent<'_>, me: i64) -> Turn {
                 "face" => text.push_str(&format!("[表情:{}]", data.get_str("id").unwrap_or("?"))),
                 "record" => text.push_str("[语音]"),
                 "video" => text.push_str("[视频]"),
-                "reply" => text.push_str(&format!("[引用:{}] ", data.get_str("id").unwrap_or("?"))),
+                "reply" => {
+                    // 引用了哪条先记下来，等窗口在手里时再解析成「谁：说了什么」。
+                    let id = data
+                        .get_str("id")
+                        .and_then(|id| id.parse::<i64>().ok())
+                        .or_else(|| data.get_i64("id"))
+                        .unwrap_or(0);
+                    if id != 0 {
+                        call.reply_to = id;
+                    }
+                    text.push_str(&format!("[引用:{}] ", data.get_str("id").unwrap_or("?")));
+                }
                 "file" => text.push_str(&format!(
                     "[文件:{}]",
                     data.get_str("name").unwrap_or("未命名")
@@ -753,6 +793,7 @@ fn build_turn(event: &MessageEvent<'_>, me: i64) -> Turn {
             .unwrap_or_default(),
         message_id: event.message_id(),
         mentions_me,
+        call,
         from_me: event.user_id() == me && me != 0,
         at: event
             .0
@@ -1007,6 +1048,23 @@ fn current(ctx: &Context, group: i64, seq: u64) -> bool {
         && window::with_group(group, |state| state.seq == seq)
 }
 
+/// 兼容文字路径该引用哪条消息。
+///
+/// 优先「叫到我的那条」——@、引用我、戳我，那才是这句回应真正对着的话；没人叫的
+/// 时候才落到本批最后一条群友消息。消息号为 0 的平台事件（戳一戳、撤回）引不了。
+fn reply_target(turns: &[Turn]) -> Option<i64> {
+    let candidates: Vec<&Turn> = turns
+        .iter()
+        .rev()
+        .filter(|turn| !turn.from_me && turn.message_id != 0)
+        .collect();
+    candidates
+        .iter()
+        .find(|turn| turn.mentions_me)
+        .or_else(|| candidates.first())
+        .map(|turn| turn.message_id)
+}
+
 /// 让人格模型写，然后按人的节奏发出去。
 #[allow(clippy::too_many_arguments)]
 async fn speak_up(
@@ -1114,11 +1172,10 @@ async fn speak_up(
         return Ok(());
     }
 
-    let reply_to = turns
-        .iter()
-        .rev()
-        .find(|turn| !turn.from_me)
-        .map(|turn| turn.message_id);
+    // 兼容文字路径要引谁：优先引「叫到我的那条」（@、引用我、戳我），那才是这句
+    // 回应真正对着的话；没人叫的时候才落到本批最后一条群友消息。消息号为 0 的
+    // 平台事件（戳一戳、撤回）引不了，跳过。
+    let reply_to = reply_target(turns);
     let pace = config.pace(mood::snapshot(group));
     tokio::time::sleep(pace.think_delay(started.elapsed())).await;
 
@@ -1191,6 +1248,7 @@ async fn speak_up(
                 images: Vec::new(),
                 message_id: id,
                 mentions_me: false,
+                call: window::Call::default(),
                 from_me: true,
                 at: chrono::Local::now().timestamp(),
             });
@@ -1370,8 +1428,10 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.groups.is_empty());
         assert!(config.max_wait() >= config.debounce());
-        assert_eq!(config.cooldown(), Duration::ZERO);
-        assert_eq!(config.hourly_limit, 0);
+        // 默认带一条时间下限与一条每小时硬顶：前者挡住刚说完又想接，后者给聊嗨了
+        // 的时段兜底。两条都不看分数，是「别吵」这件事唯一可靠的两颗钉子。
+        assert_eq!(config.cooldown(), Duration::from_secs(90));
+        assert_eq!(config.hourly_limit, 8);
         assert_eq!(config.effective_threshold(None), config.score_threshold);
         let extreme = AmbientConfig {
             debounce_seconds: u64::MAX,
@@ -1509,6 +1569,10 @@ mod tests {
         assert_eq!(turn.name, "老张");
         assert_eq!(turn.text, "[引用:6] @我 你怎么看[图片]");
         assert!(turn.mentions_me);
+        assert!(turn.call.at_me);
+        assert_eq!(turn.call.reply_to, 6);
+        assert!(!turn.call.replied_me);
+        assert!(turn.call.quote.is_empty(), "窗口没参与，摘要留空");
         assert!(!turn.from_me);
         assert_eq!(turn.images, ["https://example.com/a.png"]);
         assert_eq!(turn.at, 1_788_800_000);
@@ -1535,6 +1599,7 @@ mod tests {
         );
         let (turn, _) = notice_turn(&poke, 10000).unwrap();
         assert!(turn.mentions_me);
+        assert!(turn.call.poked_me, "被戳要单独记下来，接法跟被 @ 不一样");
         assert!(!turn.from_me);
         assert_eq!(turn.message_id, 0);
         let reaction = event(
@@ -1549,6 +1614,95 @@ mod tests {
             serde_json::json!({"satori_type":"message-deleted","message_id":123,"user_id":42}),
         );
         assert_eq!(notice_turn(&recall, 10000).unwrap().1, Some(123));
+    }
+
+    /// 引用解析的三条路：引到别人、引到自己（等于被点名）、引到窗口外的旧消息。
+    #[test]
+    fn quoting_rides_along_and_being_quoted_counts_as_being_called() {
+        let mut quoted = Turn {
+            text: "[引用:88] 你说得对".into(),
+            call: window::Call {
+                reply_to: 88,
+                ..window::Call::default()
+            },
+            ..Turn::default()
+        };
+        // 引的是群友的话：记下原话，但不算被叫到。
+        resolve_quote(&mut quoted, |id| {
+            assert_eq!(id, 88);
+            Some((false, "老张：这破依赖装了半天".to_string()))
+        });
+        assert_eq!(quoted.call.quote, "老张：这破依赖装了半天");
+        assert!(!quoted.call.replied_me);
+        assert!(!quoted.mentions_me);
+
+        // 引的是自己发的那条：与 @ 同等地被叫醒。
+        let mut called = Turn {
+            call: window::Call {
+                reply_to: 99,
+                ..window::Call::default()
+            },
+            ..Turn::default()
+        };
+        resolve_quote(&mut called, |_| Some((true, "你说的：别用那个版本".to_string())));
+        assert!(called.call.replied_me);
+        assert!(called.mentions_me);
+        assert_eq!(called.call.quote, "你说的：别用那个版本");
+
+        // 引用不在窗口里的旧消息：留个消息号，不编造内容，也不惊醒。
+        let mut old = Turn {
+            call: window::Call {
+                reply_to: 1_000,
+                ..window::Call::default()
+            },
+            ..Turn::default()
+        };
+        resolve_quote(&mut old, |_| None);
+        assert!(old.call.quote.is_empty());
+        assert!(!old.mentions_me);
+        assert_eq!(old.call.reply_to, 1_000);
+
+        // 没引用的时候压根不去查。
+        let mut plain = Turn::default();
+        resolve_quote(&mut plain, |_| panic!("没有引用就不该查窗口"));
+        assert!(plain.call.quote.is_empty());
+    }
+
+    /// 兼容文字路径的引用目标：先引叫到我的那条，没人叫才引最新一条；
+    /// 引不了的消息（消息号为 0 的平台事件）与自己的话都跳过。
+    #[test]
+    fn the_legacy_reply_quotes_the_message_that_called_us() {
+        let spoken = |id: i64, from_me: bool, mentioned: bool| Turn {
+            message_id: id,
+            from_me,
+            mentions_me: mentioned,
+            call: window::Call {
+                at_me: mentioned,
+                ..window::Call::default()
+            },
+            ..Turn::default()
+        };
+        // 本批最后一条只是别人在闲聊，但 @ 我的那条在更前面：引它。
+        let turns = [
+            spoken(11, false, true),
+            spoken(12, false, false),
+            spoken(13, true, false),
+        ];
+        assert_eq!(reply_target(&turns), Some(11));
+        // 没人叫我：引最新一条群友消息。
+        let turns = [spoken(11, false, false), spoken(13, true, false)];
+        assert_eq!(reply_target(&turns), Some(11));
+        // 消息号为 0 的平台事件（戳一戳）不能引；只有它时就没人可引。
+        let poked = Turn {
+            mentions_me: true,
+            call: window::Call {
+                poked_me: true,
+                ..window::Call::default()
+            },
+            ..Turn::default()
+        };
+        assert_eq!(reply_target(&[poked]), None);
+        assert_eq!(reply_target(&[]), None);
     }
 
     #[test]
@@ -1566,12 +1720,9 @@ mod tests {
                 user_id: 42,
                 name: "老张".into(),
                 text: "这破依赖装了半天".into(),
-                images: vec![],
-                elements: Message::new(),
                 message_id: index + 1,
-                mentions_me: false,
-                from_me: false,
                 at: chrono::Local::now().timestamp() + index * 20,
+                ..Turn::default()
             })
             .collect();
         memory::edit(group, |memory| {

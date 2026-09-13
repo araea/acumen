@@ -40,6 +40,12 @@ pub(crate) struct Person {
     /// 人格自己写的一句印象；空表示见过但没什么印象。
     #[serde(default)]
     pub note: String,
+    /// 平时怎么称呼他；空表示跟着群名片叫。
+    ///
+    /// 群里一个人的名片、昵称和「你俩之间怎么叫」是三回事：号主会管某个群友叫
+    /// 「大人」「兄弟」「坏猫」。记住这个称呼，开口时才是同一个人。
+    #[serde(default)]
+    pub address: String,
     #[serde(default)]
     pub first_seen: i64,
     #[serde(default)]
@@ -55,7 +61,10 @@ pub(crate) struct Person {
 impl Person {
     /// 刚冒头的新面孔：见过的话不多，第一次露面也没多久。
     fn stranger(&self, now: i64) -> bool {
-        self.note.is_empty() && self.messages < 6 && now - self.first_seen < 3 * 86_400
+        self.note.is_empty()
+            && self.address.is_empty()
+            && self.messages < 6
+            && now - self.first_seen < 3 * 86_400
     }
 }
 
@@ -129,6 +138,14 @@ impl GroupMemory {
         anyhow::ensure!(user_id > 0, "QQ 号无效");
         let person = self.people.entry(user_id).or_default();
         person.note = tidy(note);
+        Ok(())
+    }
+
+    /// 写下（或改写）平时怎么称呼他；空字符串等于回到跟着群名片叫。
+    pub(crate) fn address(&mut self, user_id: i64, address: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(user_id > 0, "QQ 号无效");
+        let person = self.people.entry(user_id).or_default();
+        person.address = tidy(address);
         Ok(())
     }
 
@@ -225,12 +242,18 @@ impl GroupMemory {
             } else {
                 format!("（{}）", facts.join("，"))
             };
-            let note = if person.note.is_empty() {
-                "眼熟，没什么具体印象".to_string()
-            } else {
-                person.note.clone()
-            };
-            cards.push(format!("- {name}：{note}{tail}"));
+            let mut parts = Vec::new();
+            if !person.note.is_empty() {
+                parts.push(person.note.clone());
+            }
+            // 称呼是「你俩之间怎么叫」，跟名片上的名字不一样，得单独说清楚。
+            if !person.address.is_empty() {
+                parts.push(format!("你平时叫他「{}」", person.address));
+            }
+            if parts.is_empty() {
+                parts.push("眼熟，没什么具体印象".to_string());
+            }
+            cards.push(format!("- {name}：{}{tail}", parts.join("；")));
         }
         if !cards.is_empty() {
             out.push_str("你记得的人：\n");
@@ -386,12 +409,8 @@ mod tests {
             user_id,
             name: name.into(),
             text: "在的".into(),
-            images: vec![],
-            elements: crate::message::Message::new(),
             message_id: user_id,
-            mentions_me: false,
-            from_me: false,
-            at: 0,
+            ..Turn::default()
         }
     }
 
@@ -411,6 +430,31 @@ mod tests {
         assert!(memory.remember(0, "x").is_err());
         assert!(memory.forget(42));
         assert!(!memory.forget(42));
+    }
+
+    /// 称呼是单独一格：写称呼不该动印象，反之亦然；写空就是回到跟着名片叫。
+    #[test]
+    fn how_you_call_someone_is_its_own_slot() {
+        let mut memory = GroupMemory::default();
+        memory.see(42, "冰糖狐禄", 0);
+        memory.address(42, "狐禄大人").unwrap();
+        memory.remember(42, "爱抬杠").unwrap();
+        assert_eq!(memory.people[&42].address, "狐禄大人");
+        assert_eq!(memory.people[&42].note, "爱抬杠");
+        // 只写称呼的人不再是「新面孔」；印象清空也不影响称呼。
+        assert!(!memory.people[&42].stranger(0));
+        // 印象与称呼同时存在时并成一句，中间不换行。
+        let brief = memory.brief(&[turn(42, "冰糖狐禄")], 0);
+        assert!(brief.contains("爱抬杠；你平时叫他「狐禄大人」"), "{brief}");
+        memory.remember(42, "").unwrap();
+        assert_eq!(memory.people[&42].address, "狐禄大人");
+        assert_eq!(
+            memory.brief(&[turn(42, "冰糖狐禄")], 0),
+            "你记得的人：\n- 冰糖狐禄(42)：你平时叫他「狐禄大人」\n"
+        );
+        memory.address(42, "").unwrap();
+        assert!(memory.people[&42].address.is_empty());
+        assert!(memory.address(0, "谁").is_err());
     }
 
     #[test]

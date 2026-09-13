@@ -230,12 +230,9 @@ mod tests {
             user_id: 42,
             name: "群友".into(),
             text: "hi".into(),
-            images: vec![],
             elements: Message::new().image("https://example.com/a.gif"),
             message_id: 123,
-            from_me: false,
-            mentions_me: false,
-            at: 0,
+            ..Turn::default()
         }]
     }
     #[test]
@@ -270,12 +267,9 @@ mod tests {
             user_id: 10_000,
             name: "我".into(),
             text: "那你重启一下路由器试试 不行再说".into(),
-            images: vec![],
-            elements: Message::new(),
             message_id: 124,
             from_me: true,
-            mentions_me: false,
-            at: 0,
+            ..Turn::default()
         });
         let echo: Action = serde_json::from_str(
             r#"{"action":"send","parts":[{"type":"text","text":"那你重启一下路由器试试，不行再说"}]}"#,

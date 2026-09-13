@@ -145,12 +145,8 @@ mod tests {
             user_id: 416012267,
             name: "群友".into(),
             text: "hi".into(),
-            images: vec![],
-            elements: crate::message::Message::new(),
             message_id: 1,
-            from_me: false,
-            mentions_me: false,
-            at: 0,
+            ..Turn::default()
         }];
         let (body, update) = extract(raw, &turns, 300);
         assert_eq!(body, "");

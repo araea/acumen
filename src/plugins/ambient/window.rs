@@ -18,8 +18,35 @@ const WINDOW_CAPACITY: usize = 80;
 /// 再短看不出是不是一直在接话，再长又会把半小时前的事算到现在头上。
 pub(crate) const RECENT_SPEECH: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// 一条消息「冲着谁来的」：@、引用，还是戳。
+///
+/// 三者在群里是三种不同的动作，接法也不一样——被 @ 是要你答话，被引用多半是追问
+/// 或吐槽你刚说的那句，被戳则是逗你。合成一个布尔值递进去，人格只能一律当作
+/// 「有人在叫我」，接出来的话就没有分寸。引用到的那条原话也一起记下来：人看见
+/// 「引用」是能直接看见被引内容的，模型也该看见。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Call {
+    /// @ 了我。
+    pub at_me: bool,
+    /// 引用了我发过的消息。
+    pub replied_me: bool,
+    /// 戳了我。
+    pub poked_me: bool,
+    /// 这条消息引用了哪条消息；0 表示没有引用。
+    pub reply_to: i64,
+    /// 被引用那条的摘要（`谁：说了什么`）；不在窗口里时为空。
+    pub quote: String,
+}
+
+impl Call {
+    /// 这一条是不是冲着我来的。
+    pub(crate) fn mine(&self) -> bool {
+        self.at_me || self.replied_me || self.poked_me
+    }
+}
+
 /// 群聊上下文里的一条消息。
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Turn {
     pub user_id: i64,
     pub name: String,
@@ -31,6 +58,8 @@ pub(crate) struct Turn {
     pub message_id: i64,
     /// 是否 @ 了机器人自己。
     pub mentions_me: bool,
+    /// 被叫到的细节：哪一种动作、引用的是哪条。
+    pub call: Call,
     /// 是否是机器人自己说的话。
     pub from_me: bool,
     /// Unix 秒。
@@ -197,12 +226,19 @@ impl GroupState {
         )
     }
 
-    pub(crate) fn is_own_message(&self, id: i64) -> bool {
-        id != 0
-            && self
-                .turns
-                .iter()
-                .any(|turn| turn.from_me && turn.message_id == id)
+    /// 窗口里被引用的那条消息，返回「是不是我自己说的」与一句摘要。
+    ///
+    /// 摘要是给模型读的：群里的引用显示的是被引原话，模型也该看见，而不是一个
+    /// 光秃秃的消息号。引用的是自己发的那条时换成「你说的」，好让它知道这是在
+    /// 追问或吐槽它刚说的话。
+    pub(crate) fn quote_of(&self, id: i64) -> Option<(bool, String)> {
+        if id == 0 {
+            return None;
+        }
+        self.turns
+            .iter()
+            .find(|turn| turn.message_id == id)
+            .map(|turn| (turn.from_me, summarize(&turn.text, QUOTE_PREVIEW_CHARS)))
     }
 
     /// 取走「上次开口多久才有人接」，只取一次。
@@ -282,10 +318,24 @@ impl GroupState {
     }
 }
 
+/// 引用摘要的字数上限。引用是打断句用的，长了会把上下文撑散。
+const QUOTE_PREVIEW_CHARS: usize = 40;
+
+/// 把一条消息压成单行的短摘要。
+fn summarize(text: &str, limit: usize) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= limit {
+        return flat;
+    }
+    let head: String = flat.chars().take(limit).collect();
+    format!("{head}…")
+}
+
 /// 群聊窗口 → 交给模型阅读的聊天记录。
 ///
 /// 带上 QQ 号是为了让回复能 `[at:]` 到人；带上时刻是为了让模型知道哪些话已经
-/// 凉了——隔了二十分钟的梗再接就不叫接梗了。
+/// 凉了——隔了二十分钟的梗再接就不叫接梗了。被叫到的原因也一并标出来：被 @、
+/// 被引用、被戳对应三种接法，混成一句「有人叫你」，接出来的话就没有分寸。
 pub(crate) fn transcript(turns: &[Turn]) -> String {
     let mut out = String::new();
     for turn in turns {
@@ -308,8 +358,17 @@ pub(crate) fn transcript(turns: &[Turn]) -> String {
         if !turn.images.is_empty() {
             out.push_str(&format!("〔图片 ×{}〕", turn.images.len()));
         }
-        if turn.mentions_me {
+        if turn.call.at_me {
             out.push_str("〔@了你〕");
+        }
+        if turn.call.replied_me {
+            out.push_str("〔引用了你的消息〕");
+        }
+        if turn.call.poked_me {
+            out.push_str("〔戳了你〕");
+        }
+        if !turn.call.quote.is_empty() {
+            out.push_str(&format!("〔引用 {}〕", turn.call.quote));
         }
         out.push('\n');
     }
@@ -337,12 +396,9 @@ mod tests {
             user_id: 1,
             name: "谁".into(),
             text: text.into(),
-            elements: crate::message::Message::new(),
-            images: Vec::new(),
             message_id: 1,
-            mentions_me: false,
             from_me,
-            at: 0,
+            ..Turn::default()
         }
     }
 
@@ -421,15 +477,67 @@ mod tests {
     }
 
     #[test]
-    fn transcript_names_speakers_and_marks_media() {
+    fn transcript_names_speakers_and_marks_media_and_how_it_was_called() {
         let mut mine = turn("嗯", true);
         mine.at = 1_788_800_000;
         let mut theirs = turn("看这个", false);
         theirs.images = vec!["https://example.com/a.png".into()];
         theirs.mentions_me = true;
+        theirs.call.at_me = true;
         let text = transcript(&[theirs, mine]);
         assert!(text.contains("谁(1): 看这个〔图片 ×1〕〔@了你〕"), "{text}");
         assert!(text.contains("你自己: 嗯"), "{text}");
+
+        // 三种叫法各标各的：被引用与被戳不该读成「@了你」。
+        let quoted = Turn {
+            call: Call {
+                replied_me: true,
+                reply_to: 7,
+                quote: "老张：这破依赖装了半天".into(),
+                ..Call::default()
+            },
+            ..turn("你说得对", false)
+        };
+        let poked = Turn {
+            call: Call {
+                poked_me: true,
+                ..Call::default()
+            },
+            ..turn("[戳一戳：42 戳了 10000]", false)
+        };
+        let text = transcript(&[quoted, poked]);
+        assert!(text.contains("〔引用了你的消息〕〔引用 老张：这破依赖装了半天〕"), "{text}");
+        assert!(text.contains("〔戳了你〕"), "{text}");
+        assert!(!text.contains("〔@了你〕"), "{text}");
+    }
+
+    /// 引用解析拿得到「谁说了什么」，引用到自己那条要认出来。
+    #[test]
+    fn quoting_resolves_who_said_what_and_whether_it_was_mine() {
+        let mut state = GroupState::default();
+        let mut old = turn("这破依赖装了半天 一直报错", false);
+        old.message_id = 88;
+        old.name = "老张".into();
+        state.push(old);
+        let mut mine = turn("别用那个版本了", true);
+        mine.message_id = 99;
+        state.push(mine);
+
+        assert_eq!(
+            state.quote_of(88),
+            Some((false, "这破依赖装了半天 一直报错".to_string()))
+        );
+        assert_eq!(state.quote_of(99), Some((true, "别用那个版本了".to_string())));
+        // 引用到窗口外或没引用，都解析不出来。
+        assert_eq!(state.quote_of(1_000), None);
+        assert_eq!(state.quote_of(0), None);
+        // 太长的话压到上限再加省略号。
+        let mut long = turn(&"错".repeat(120), false);
+        long.message_id = 77;
+        state.push(long);
+        let (_, quote) = state.quote_of(77).unwrap();
+        assert_eq!(quote.chars().count(), QUOTE_PREVIEW_CHARS + 1);
+        assert!(quote.ends_with('…'));
     }
 
     #[test]
@@ -444,8 +552,8 @@ mod tests {
         assert_eq!(t.text, "[消息已撤回]");
         assert!(t.images.is_empty());
         assert!(t.elements.0.is_empty());
-        assert!(!state.is_own_message(1));
         assert_eq!(t.message_id, 0);
+        assert_eq!(state.quote_of(1), None);
     }
 
     #[test]

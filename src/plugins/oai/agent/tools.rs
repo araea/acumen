@@ -568,7 +568,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_memo" => (
-            "把以后还想记得的事写进长期记忆：对某个群友的一句印象、群里刚起的梗。挑那种会改变你以后怎么对待这个人或这个话题的一句写，一句话就够。记岔了随时改写（同一个人再写一次即可）或删掉。不占发送额度，记了什么是你自己的事。",
+            "把以后还想记得的事写进长期记忆：对某个群友的一句印象、你平时怎么称呼他、群里刚起的梗。挑那种会改变你以后怎么对待这个人或这个话题的一句写，一句话就够。记岔了随时改写（同一个人再写一次即可）或删掉。不占发送额度，记了什么是你自己的事。",
             json!({
                 "type": "object",
                 "properties": {
@@ -576,10 +576,11 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                         "type": "object",
                         "properties": {
                             "user_id": {"type": "string"},
-                            "note": {"type": "string"}
+                            "note": {"type": "string", "description": "对某人的一句印象；传空串则抹掉印象但仍认得这个人"},
+                            "address": {"type": "string", "description": "你平时怎么称呼他（跟名片上的名字不一样）；传空串则回到跟着名片叫"}
                         },
-                        "required": ["user_id", "note"]
-                    }), "description": "对某人的印象；note 留空则抹掉印象但仍认得这个人"},
+                        "required": ["user_id"]
+                    }), "description": "对某人的记忆；note 与 address 至少给一个"},
                     "notes": {"type": "array", "maxItems": 8, "items": {"type": "string"}, "description": "群里的一件旧事/梗，一句话"},
                     "forget_people": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
                     "forget_notes": {"type": "array", "maxItems": 8, "items": {"type": "string"}, "description": "要忘掉的旧事，按内容匹配"}

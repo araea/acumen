@@ -146,12 +146,15 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
         user_id: 42,
         name: "群友".into(),
         text: "@你 测试话题".into(),
-        elements: crate::message::Message::new(),
-        images: vec![],
         message_id: id,
         mentions_me: true,
+        call: window::Call {
+            at_me: true,
+            ..Default::default()
+        },
         from_me: false,
         at: chrono::Local::now().timestamp(),
+        ..Turn::default()
     };
     window::with_group(group, |state| {
         *state = Default::default();
@@ -246,12 +249,9 @@ async fn live_persona_and_gate_dialogue() {
             user_id: 114514,
             name: "群友甲".into(),
             text: (*text).into(),
-            elements: crate::message::Message::new(),
-            images: vec![],
             message_id: index as i64 + 1,
-            mentions_me: false,
-            from_me: false,
             at: chrono::Local::now().timestamp(),
+            ..Turn::default()
         });
         let scene = Scene::build(group, &config, &turns, state.rhythm());
         let verdict = gate::judge(
@@ -313,12 +313,9 @@ async fn live_persona_and_gate_dialogue() {
                         user_id: 10000,
                         name: "我".into(),
                         text,
-                        elements: crate::message::Message::new(),
-                        images: vec![],
-                        message_id: 0,
-                        mentions_me: false,
                         from_me: true,
                         at: chrono::Local::now().timestamp(),
+                        ..Turn::default()
                     });
                 }
                 state.mark_spoke();
@@ -337,12 +334,9 @@ async fn live_persona_and_gate_dialogue() {
             user_id: 114514,
             name: "群友甲".into(),
             text: text.into(),
-            elements: crate::message::Message::new(),
-            images: vec![],
             message_id: 9,
-            mentions_me: false,
-            from_me: false,
             at: chrono::Local::now().timestamp(),
+            ..Turn::default()
         }];
         let verdict = gate::judge(
             &gate_base,

@@ -159,12 +159,10 @@ mod tests {
             user_id,
             name: format!("群友{user_id}"),
             text: text.into(),
-            images: vec![],
-            elements: crate::message::Message::new(),
             message_id: at,
-            mentions_me: false,
             from_me: user_id == 0,
             at,
+            ..Turn::default()
         }
     }
 
