@@ -59,10 +59,6 @@ pub struct StatsConfig {
     pub weekly_recap_enabled: bool,
     pub weekly_recap_time: String,
 
-    // —— 每周日 21:00 周末轻松榜（表情包） ——
-    pub weekend_fun_enabled: bool,
-    pub weekend_fun_time: String,
-
     // —— 每月 1 日 10:20 上月回顾（与周一 10:00 的周报错开，1 号恰逢周一时不会挤在一起）——
     pub monthly_recap_enabled: bool,
     pub monthly_recap_time: String,
@@ -88,8 +84,6 @@ impl Default for StatsConfig {
             noon_brief_time: "12:30:00".to_string(),
             weekly_recap_enabled: true,
             weekly_recap_time: "10:00:00".to_string(),
-            weekend_fun_enabled: true,
-            weekend_fun_time: "21:00:00".to_string(),
             monthly_recap_enabled: true,
             monthly_recap_time: "10:20:00".to_string(),
         }
@@ -249,7 +243,7 @@ pub fn on_connected(
         //
         // 排期与 ai_news 的资讯推送整体错开（见 `plugins::ai_news` 模块文档的时间表），
         // 同一时刻不会有两个插件同时往群里刷图。
-        let registrations: [(bool, &str, String, PushFrequency, PushFn); 6] = [
+        let registrations: [(bool, &str, String, PushFrequency, PushFn); 5] = [
             (
                 config.morning_recap_enabled,
                 "MorningRecap",
@@ -279,13 +273,6 @@ pub fn on_connected(
                 |c, w, gid, m| Box::pin(pusher::push_weekly_recap(c, w, gid, m)),
             ),
             (
-                config.weekend_fun_enabled,
-                "WeekendFun",
-                config.weekend_fun_time.clone(),
-                PushFrequency::Weekly(Weekday::Sun),
-                |c, w, gid, m| Box::pin(pusher::push_weekend_fun(c, w, gid, m)),
-            ),
-            (
                 config.monthly_recap_enabled,
                 "MonthlyRecap",
                 config.monthly_recap_time.clone(),
@@ -313,7 +300,6 @@ pub fn on_connected(
                         current.noon_brief_enabled,
                         current.daily_push_enabled,
                         current.weekly_recap_enabled,
-                        current.weekend_fun_enabled,
                         current.monthly_recap_enabled,
                     ];
                     if current.enabled && switches[index] && current.channel.allows_group(gid) {

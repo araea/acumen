@@ -174,25 +174,6 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) 
     send_chart(&c, w, gid, "发言", "走势", range, "本群 上周 发言 走势").await;
 }
 
-/// [周日 21:00] 周末轻松榜：本周表情包排行
-pub async fn push_weekend_fun(c: Context, w: LockedWriter, gid: i64, min: u64) {
-    let range = get_time_range("本周");
-    let label = "周末轻松榜";
-
-    let count = match precheck(&c, gid, range, min, label).await {
-        Some(n) => n,
-        None => return,
-    };
-
-    info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
-
-    send_text(&c, w.clone(), gid, format!(
-        "🎉 周末晚好！本周轻松一刻（共 {} 条消息）\n📊 看看这周谁最爱用表情包。",
-        count
-    )).await;
-    send_chart(&c, w, gid, "表情包", "排行榜", range, "本群 本周 表情包 排行榜").await;
-}
-
 /// [每月 1 日 10:20] 上月回顾：上月发言榜 + 上月走势 + 上月词云
 pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) {
     let range = get_time_range("上月");

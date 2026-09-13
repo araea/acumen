@@ -33,7 +33,6 @@
 //! | 12:30 | stats | 午间速览 |
 //! | 12:50 | ai_news | 精选速递（过去 24 小时精选，按群去重，只推新条目） |
 //! | 20:10 | ai_news | 精选速递 |
-//! | 21:00 周日 | stats | 周末轻松榜 |
 //! | 21:40 | ai_news | 当前热点榜（Top 10 快照） |
 //! | 23:30 | stats | 当日总结 |
 //!
@@ -696,7 +695,6 @@ fn warn_on_schedule_conflicts(ctx: &Context, cfg: &AiNewsConfig) {
         (stats.noon_brief_enabled, &stats.noon_brief_time, "统计 · 午间速览"),
         (stats.daily_push_enabled, &stats.daily_push_time, "统计 · 当日总结"),
         (stats.weekly_recap_enabled, &stats.weekly_recap_time, "统计 · 上周回顾"),
-        (stats.weekend_fun_enabled, &stats.weekend_fun_time, "统计 · 周末轻松榜"),
         (stats.monthly_recap_enabled, &stats.monthly_recap_time, "统计 · 上月回顾"),
     ]
     .into_iter()
