@@ -1112,6 +1112,13 @@ impl Session {
                 for (index, part) in parts.iter().enumerate() {
                     msg = match part {
                         Part::Text { text } => {
+                            // 落在这一条路径上说明这条 send 并不到此为止（后面挂着图片、
+                            // 文件、转发那类段落），只能整条发。模型把话分成几段文字时，
+                            // 段与段之间是它自己的换气：补一个换行，别让两句话黏成一句。
+                            if index > 0 && matches!(parts.get(index - 1), Some(Part::Text { .. }))
+                            {
+                                msg = msg.text("\n");
+                            }
                             msg.0.extend(super::pace::text_segments(text).0);
                             msg
                         }
@@ -1482,45 +1489,78 @@ fn at_needs_gap(parts: &[Part], index: usize) -> bool {
 
 /// 一条 `send` 要不要按换气切成几条；要切就给出每一条的元素表。
 ///
-/// 只有「恰好一段文字、后面没别的段」时才切：文字前面挂着的 `@`、表情跟着
-/// 第一条走，切出来的后续几条是同一口气里的话。带图片/文件/转发那类段的
-/// 一律不切——那些段的归属没法靠断句猜，宁可整条发。从前只认「整条只有一个
-/// 文字段」，于是 `@某人 + 一长段` 会原样发成一条长文。
+/// 换气有两处，都算数：模型自己把话分成了几段文字（`parts` 里不止一个 `Text`），
+/// 以及一段文字内部的句末标点、汉字之间的空格与句中逗号（见 [`super::breath`]）。
+/// 前者是它自己分好的版，先满足，这轮剩下的消息额度留给后者。`@` 与表情跟在它们
+/// 后面那段文字上，跟着那一条走。带图片/文件/转发那类段的一律不切——那些段的归属
+/// 没法靠断句猜，宁可整条发。
+///
+/// 从前只认「恰好一段文字」，模型分好的几段会被合并回一条消息、中间什么都不剩，
+/// 于是「扫码连热点就搬」和「不过跨品牌搬不全」连成了一句（线上记录 id 95426）。
 fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Part>>> {
-    let index = parts
-        .iter()
-        .position(|part| matches!(part, Part::Text { .. }))?;
-    if index + 1 != parts.len()
-        || parts.iter().filter(|p| matches!(p, Part::Text { .. })).count() != 1
-        || !parts[..index]
-            .iter()
-            .all(|part| matches!(part, Part::At { .. } | Part::Face { .. }))
-    {
+    if !parts.iter().all(|part| {
+        matches!(
+            part,
+            Part::At { .. } | Part::Face { .. } | Part::Text { .. }
+        )
+    }) {
         return None;
     }
-    let Part::Text { text } = &parts[index] else {
-        return None;
-    };
-    let pieces = super::breath::split(text, budget, target);
-    if pieces.len() <= 1 {
-        return None;
+    // 模型自己的分段：每一段文字起一条，走到它前面的 `@` 与表情跟着它。
+    // 空文字段（偶尔写成空串或一段光换行）不是一条消息，丢掉，别发一个空泡。
+    let mut rows: Vec<Vec<Part>> = Vec::new();
+    for part in parts {
+        if matches!(part, Part::Text { text } if text.trim().is_empty()) {
+            continue;
+        }
+        let starts_a_row = matches!(part, Part::Text { .. })
+            && rows
+                .last()
+                .is_none_or(|row| row.iter().any(|part| matches!(part, Part::Text { .. })));
+        if starts_a_row || rows.is_empty() {
+            rows.push(Vec::new());
+        }
+        rows.last_mut().expect("上面刚保证非空").push(part.clone());
     }
-    let prefix = &parts[..index];
-    Some(
-        pieces
-            .into_iter()
-            .enumerate()
-            .map(|(piece_index, piece)| {
-                let mut row: Vec<Part> = if piece_index == 0 {
-                    prefix.to_vec()
-                } else {
-                    Vec::new()
-                };
-                row.push(Part::Text { text: piece });
-                row
-            })
-            .collect(),
-    )
+    // 分出来的段比剩下的额度还多时，多出来的并进上一条：中间留一个换行，
+    // 免得并起来又黏成一句。额度是硬的，多一条都不发。
+    while rows.len() > budget.max(1) {
+        let tail = rows.pop().expect("上面刚判过非空");
+        let head = rows.last_mut().expect("额度至少为一");
+        match head.last_mut() {
+            Some(Part::Text { text }) => text.push('\n'),
+            _ => head.push(Part::Text { text: "\n".into() }),
+        }
+        head.extend(tail);
+    }
+    // 还有剩的额度就替写长了的那几段换气。
+    let mut spare = budget.saturating_sub(rows.len());
+    let mut out: Vec<Vec<Part>> = Vec::new();
+    for row in rows {
+        let text = match row.last() {
+            // 只有「文字收尾」的行切得动：后面还挂着 at/face 的行，切开之后
+            // 那几段归谁说不清。
+            Some(Part::Text { text }) => text,
+            _ => {
+                out.push(row);
+                continue;
+            }
+        };
+        let prefix = &row[..row.len() - 1];
+        let pieces = super::breath::split(text, spare + 1, target);
+        spare = spare.saturating_sub(pieces.len().saturating_sub(1));
+        for (index, piece) in pieces.into_iter().enumerate() {
+            let mut line: Vec<Part> = if index == 0 {
+                prefix.to_vec()
+            } else {
+                Vec::new()
+            };
+            line.push(Part::Text { text: piece });
+            out.push(line);
+        }
+    }
+    // 只切出一条就交回调用方按普通发送走，两条路径的结果一模一样。
+    (out.len() > 1).then_some(out)
 }
 
 /// 按文件头识别图片扩展名，用于给落盘的绘图结果起一个正确的文件名。
@@ -1580,6 +1620,60 @@ mod tests {
         assert_eq!(squash(&text_rows(&rows).concat()), squash(&long_line()));
     }
 
+    /// 一次 `send` 里写了几段文字，那就是模型自己分好的几条消息：合并回一条的话，
+    /// 段与段之间的换气就没了——线上记录 id 95426 的「扫码连热点就搬不过跨品牌搬不全」
+    /// 就是这么连住的。
+    #[test]
+    fn several_text_parts_leave_as_several_messages() {
+        let parts = vec![
+            Part::Text {
+                text: "华为那边装个手机克隆，OPPO 上也装一个，扫码连热点就搬".into(),
+            },
+            Part::Text {
+                text: "不过跨品牌搬不全，微信记录得自己单独迁哈".into(),
+            },
+        ];
+        let rows = split_send(&parts, 3, 60).expect("该切");
+        assert_eq!(
+            text_rows(&rows),
+            [
+                "华为那边装个手机克隆，OPPO 上也装一个，扫码连热点就搬",
+                "不过跨品牌搬不全，微信记录得自己单独迁哈"
+            ]
+        );
+        // 每段自己的短句照样按空格换气，额度是几条段共用的。
+        let parts = vec![
+            Part::Text { text: "第一步把依赖装上 第二步重跑一次".into() },
+            Part::Text { text: "第三步贴出错的第一行 别把整个日志都发出来".into() },
+        ];
+        assert_eq!(split_send(&parts, 4, 8).expect("该切").len(), 4);
+    }
+
+    /// 模型偶尔给一个空文字段（或一段光换行）：那不是一条消息，别在群里发一个空泡。
+    #[test]
+    fn empty_text_parts_are_not_messages() {
+        let parts = vec![
+            Part::Text { text: "第一句".into() },
+            Part::Text { text: "\n".into() },
+            Part::Text { text: "第二句".into() },
+        ];
+        let rows = split_send(&parts, 3, 60).expect("该切");
+        assert_eq!(text_rows(&rows), ["第一句", "第二句"]);
+        // 全是空段时交回调用方，由它按普通发送走。
+        assert!(split_send(&[Part::Text { text: " ".into() }], 3, 60).is_none());
+    }
+
+    /// 分出来的段比剩下的额度还多时，多出来的并进上一条，中间留一个换行。
+    #[test]
+    fn rows_beyond_the_budget_are_joined_with_a_break() {        let parts: Vec<Part> = ["一段", "二段", "三段"]
+            .iter()
+            .map(|text| Part::Text { text: (*text).into() })
+            .collect();
+        let rows = split_send(&parts, 2, 60).expect("该切");
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(text_rows(&rows)[1], "二段\n三段");
+    }
+
     /// `@` 和紧跟着的话之间要有一个空格：QQ 的 at 段自己不带，模型写的也是紧挨着的。
     #[test]
     fn an_at_glued_to_text_gets_one_gap() {
@@ -1620,7 +1714,7 @@ mod tests {
         assert!(!at_needs_gap(&rows[1], 0), "{rows:?}");
     }
 
-    /// 文字后面还挂着别的段，或者压根不止一段文字：整条发，不拿断句去猜段落归属。
+    /// 文字后面还挂着别的段：整条发，不拿断句去猜段落归属。
     #[test]
     fn sends_that_cannot_be_cleanly_split_stay_whole() {
         assert!(
@@ -1628,17 +1722,6 @@ mod tests {
                 &[
                     Part::Text { text: long_line() },
                     Part::Face { id: "178".into() },
-                ],
-                3,
-                14
-            )
-            .is_none()
-        );
-        assert!(
-            split_send(
-                &[
-                    Part::Text { text: "第一段".into() },
-                    Part::Text { text: long_line() },
                 ],
                 3,
                 14
@@ -2337,6 +2420,51 @@ mod tests {
                 .filter(|turn| turn.from_me)
                 .count()),
             2
+        );
+        drop(bridge);
+        server.abort();
+    }
+
+    /// 一条 `send` 里带着图片这类段时切不动，只能整条发；模型分好的几段文字之间
+    /// 补一个换行——还是那一条消息，但别连成一句。
+    #[tokio::test]
+    async fn a_send_with_media_keeps_a_break_between_its_texts() {
+        let group = -8_000_114;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-media")
+                .unwrap();
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            request(&bridge, json!({"id":"ctx0","op":"context"})).await["ok"],
+            true
+        );
+        let sent = action(
+            &bridge,
+            "with-image",
+            json!({"action":"send","parts":[
+                {"type":"text","text":"这段是配图的话"},
+                {"type":"text","text":"这段在图片后面"},
+                {"type":"image","source":"https://example.com/a.png"}]}),
+        )
+        .await;
+        assert_eq!(sent["ok"], true, "{sent}");
+        let bodies: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == "message.create")
+            .map(|(_, body)| body["content"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert!(bodies[0].contains("这段是配图的话"), "{bodies:?}");
+        assert!(bodies[0].contains("这段在图片后面"), "{bodies:?}");
+        assert!(
+            !bodies[0].contains("这段是配图的话这段在图片后面"),
+            "两段文字连住了：{bodies:?}"
         );
         drop(bridge);
         server.abort();
