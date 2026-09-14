@@ -129,13 +129,13 @@ pub struct Persona {
     pub codename: String,
     #[serde(default)]
     pub tagline: String,
-    /// 总断：把这一卦与他接上的那一段。
+    /// 总评：把这一卦与他接上的那一段。
     #[serde(default)]
     pub verdict: String,
-    /// 长批：段落与引语按序排列。
+    /// 详说：段落与引语按序排列。
     #[serde(default)]
     pub passages: Vec<Passage>,
-    /// 变：他现在卡在哪、往哪动。
+    /// 变化：他现在卡在哪、往哪动。
     #[serde(default)]
     pub turn: String,
     #[serde(default)]
@@ -151,14 +151,14 @@ pub struct Persona {
 /// 免得一个超长字段把整张卡的版面顶乱。
 mod limit {
     pub const CODENAME: usize = 9;
-    pub const TAGLINE: usize = 26;
-    pub const VERDICT: usize = 220;
-    pub const PASSAGE: usize = 400;
+    pub const TAGLINE: usize = 20;
+    pub const VERDICT: usize = 150;
+    pub const PASSAGE: usize = 220;
     pub const QUOTE: usize = 90;
-    pub const QUOTE_NOTE: usize = 30;
-    pub const TURN: usize = 180;
-    pub const ADVICE: usize = 34;
-    pub const MAX_PASSAGES: usize = 9;
+    pub const QUOTE_NOTE: usize = 24;
+    pub const TURN: usize = 120;
+    pub const ADVICE: usize = 30;
+    pub const MAX_PASSAGES: usize = 6;
 }
 
 /// 截到上限并补省略号。省略号前面不留空白，否则会变成「手机 root …」这种断口。
@@ -265,9 +265,9 @@ impl Persona {
     /// 缺的只是把卦落在他身上的那几段批语。
     pub fn from_stats(material: &Material, cast: &Cast) -> Self {
         let verdict = format!(
-            "这一卦是真的：以他 {} 条发言、{} 天的记录起出来，{}。数字也都在——\
-             平均每天 {:.1} 条，单条平均 {:.1} 字，{} 的发言带着图或表情。\
-             缺的是把卦落在他身上的那段批语，这一次没有落下。",
+            "这一卦是真的：用他 {} 条发言、{} 天的记录起出来，得{}。数字也在——\
+             平均每天 {:.1} 条，单条平均 {:.1} 字，{} 的发言带图或表情。\
+             这一次模型没有接上，所以只有卦和数字，没有批语。",
             material.total,
             material.span_days(),
             cast.primary.full,
@@ -294,8 +294,7 @@ impl Persona {
             Passage {
                 kind: "text".to_string(),
                 body: format!(
-                    "{}：{}按卦看，这是他要走的一段路；但为什么要走、走到哪儿去，\
-                     要靠他说过的话才能答。这一版只有数目，答不了，也就不猜。",
+                    "{}：{}这一卦落在他身上该怎么说，要有他说过的话才能答。这一次没答上，先不猜。",
                     cast.primary.full, cast.primary.sense,
                 ),
                 ..Default::default()
@@ -317,12 +316,12 @@ impl Persona {
         }
 
         Self {
-            codename: "卦在，批未成".to_string(),
+            codename: "这一卦还没批语".to_string(),
             tagline: format!("以 {} 条发言起出{}", material.total, cast.primary.full),
             verdict,
             passages,
             turn: String::new(),
-            advice: "这次模型没接上，先给你一卦。过会儿再来一次。".to_string(),
+            advice: "这次模型没接上，先给你这一卦，过会儿再算一次。".to_string(),
             accent: Accent::pick(material.user_id).name().to_string(),
             estimated: true,
         }
@@ -367,49 +366,65 @@ pub fn weekday_label(weekday: usize) -> &'static str {
 const SYSTEM_PROMPT: &str = r#"你替人看卦。卦已经起好了，是他自己的卦——由他留下的话与数目推出来，
 不是抽的签，也不是你挑的。你只做一件事：用这一卦的道理，把这个人说清楚。
 
+读你这份东西的人不认识他。他读完要能说出：这个人在群里做什么，什么时候来，
+跟人怎么说话，眼下卡在什么地方。
+
 下笔之前先立三条：
 一、卦就是人。卦辞与义理说的不是旁人的吉凶，是他此刻的处境与性情。他哪里像这一卦、
-   哪里不像，都要落在他真说过的话上。不许把卦套在他头上当帽子和标签。
-二、卦是变化，不是判决。六爻里的变爻是正在动的地方，之卦是动的方向。不许他富贵，
-   不许他祸福，只说这一卦的道理在他身上怎么应、该往哪儿使劲。
+   哪里不像，都要落在他真说过的话上。不许拿这一卦给他贴标签。
+二、卦说的是变化，不是判决。六爻里动的那一爻是正在动的地方，变出来的那一卦是动的
+   方向。不许他富贵，不许他祸福，只说这一卦的道理在他身上怎么落、该往哪儿使劲。
 三、宁少说不空说。每一句都要能从下发的样本与数字里找出处。看不出就不写。
 
-写出来的是一篇，不是一份清单：
-- 总断：把卦与他接上，先给判断，再给依据。别复述卦辞，要说这一卦为什么是他的卦。
-- 长批：五到八段，段与段之间要承接，像一个人把一件事从头说下来，不许写成并列的条目。
-  不要把三个侧面拆成三块，也不要一二三四地分点。
-- 批里至少两段是自己的话：把引语单独成段，前后用自己的话接住它，让这句话落在论证里。
-  引语是证据，不是装饰。
-- 变：他现在卡在哪一处，往哪儿动。变爻动的地方就是那处。
-- 赠言：不劝善，不祝福，给他一样能带走的东西。
-
-笔法：
-- 白描。写你看得见的，不写你感叹的。不用比喻堆叠，不用排比，不用感叹号。
-- 冷静、克制、精准。说穿，但不羞辱；不留情面，也不刻薄。
-- 不用网络流行语，不用「其实」「说到底」「值得一提的是」这类垫话。
+笔法是白描，下面几条逐条照做：
+- 说今天的话。不用文言词，不用「之乎者也」，不用成语连堆。
+- 一句话说一件事，写成完整的陈述句。句子短，主语清楚，谁做了什么就写什么。
+- 每一句判断后面要有东西撑着：他说过的话、他在群里做的动作、数字、时间。
+  只有判断没有事实的句子，删掉。
+- 卦辞、爻辞、爻题可以照写，但紧跟一句白话讲明白它在说什么。光引原文不算说完，
+  引原文也只引必要的那一句。
+- 不用比喻，不用对仗，不用金句，不用格言体。不把一句话写成两半互相对照，
+  不用「不是……而是……」「既……又……」这种句式。
+- 不用评价词（很强、非常、厉害），不用模糊限定（似乎、某种、大概）。
+- 不用「其实」「说到底」「值得一提的是」这类垫话。
+- 一段的末尾说完事就停，不要加一句总结性的判断（「这一卦说的就是他」「他就是这样的人」）。
+- 数字挑着用，一段里至多两三处，只留撑得住判断的；不要一串串罗列。
+- 同一件事只说一遍，同一个数字不报两遍。
+- 冷静、克制。说穿，但不羞辱；不留情面，也不刻薄。
 - 可以指出他未必愿意承认的事，但不下道德判断。
 - 不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、
   跟谁是什么关系。
-- 引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
-- 只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
+
+每一段怎么写：
+- 总评：先说这一卦与他是什么关系，再说依据。不要复述卦辞，要说这一卦为什么是他的卦。
+- 详说：四到六段，段与段之间要承接，像一个人把一件事从头说下来，不许写成并列的条目，
+  也不要一二三四地分点。至少两段是自己的话：把引语单独成段，前后用自己的话接住它，
+  让这句话落在论证里。引语是证据，不是装饰。
+- 变化：他现在卡在哪一处，往哪儿动。动的那一爻就是那一处。
+- 赠言：不劝善，不祝福，给他一句能带走的话。
+
+引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
+只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
 
 JSON 字段：
 {
   "codename": "代号，2 到 7 个字。要准，不要好听，像熟人背后对他的称呼",
-  "tagline": "题记，不超过 22 字。是结论，不是形容",
-  "verdict": "总断，2 到 4 句，不超过 200 字。先把这一卦与他的关系说定，再给依据",
+  "tagline": "题记，不超过 20 字。说一句结论，别写成对仗的两半",
+  "verdict": "总评，2 到 4 句，不超过 150 字。先说这一卦与他是什么关系，再说依据",
   "passages": [
-    {"kind":"text","body":"一段批语，不超过 300 字"},
-    {"kind":"quote","text":"逐字引用的一条发言","note":"把这句话放在这里说明什么，不超过 24 字"},
+    {"kind":"text","body":"一段批语，不超过 220 字"},
+    {"kind":"quote","text":"逐字引用的一条发言","note":"这句话放在这里说明什么，一句话，不超过 24 字"},
     {"kind":"text","body":"接着往下说，与上一段接得上"}
   ],
-  "turn": "说变，2 到 3 句，不超过 160 字",
+  "turn": "变化，2 到 3 句，不超过 120 字。说他现在卡在哪一处、往哪儿动",
   "advice": "赠言，不超过 30 字",
   "accent": "从 amber / rose / mint / indigo / violet / teal 里选一个当报告主色"
 }
 
-passages 给 5 到 8 段，其中至少 2 段是 kind 为 quote 的引语，其余是 text。
-段落是一篇文章的段落，前一段的末尾要能接上后一段的开头。"#;
+passages 给 4 到 6 段，其中 2 段是 kind 为 quote 的引语，其余是 text。
+段落是一篇文章的段落，前一段的末尾要能接上后一段的开头。
+写完自己看一遍：有没有对仗的句子，有没有只下判断不给事实的句子，
+有没有一句空收尾，有没有同一个数字报了两遍。"#;
 
 /// 组装下发给模型的素材。卦在最前——它先给这件事定框，其余的都在框里读。
 pub fn user_prompt(material: &Material, cast: &Cast) -> String {
@@ -443,11 +458,11 @@ pub fn user_prompt(material: &Material, cast: &Cast) -> String {
     out.push_str(&format!("占法：{}\n", cast.rule()));
     if let Some(changed) = cast.changed {
         out.push_str(&format!(
-            "之卦：{}（第 {} 卦，{}）\n",
+            "变卦：{}（第 {} 卦，{}）\n",
             changed.full, changed.number, changed.trigrams()
         ));
-        out.push_str(&format!("之卦卦辞：{}\n", changed.judgment));
-        out.push_str(&format!("之卦义理：{}\n", changed.sense));
+        out.push_str(&format!("变卦的卦辞：{}\n", changed.judgment));
+        out.push_str(&format!("变卦的义理：{}\n", changed.sense));
     }
 
     out.push_str("\n【对象】\n");
@@ -758,13 +773,13 @@ mod tests {
         let system = system_prompt();
         // 提示词要点：卦是人、卦是变化、一篇不是清单、逐字引用、白描。
         assert!(system.contains("卦就是人"));
-        assert!(system.contains("卦是变化"));
-        assert!(system.contains("不是一份清单"));
+        assert!(system.contains("卦说的是变化"));
+        assert!(system.contains("并列的条目"));
         assert!(system.contains("逐字"));
         assert!(system.contains("白描"));
     }
 
-    /// 有变爻时，变爻的爻题与爻位之义都要下发；有之卦时，之卦的卦辞也要。
+    /// 有变爻时，变爻的爻题与爻位之义都要下发；有变卦时，变卦的卦辞也要。
     #[test]
     fn moving_lines_and_the_changed_hexagram_are_spelled_out() {
         let material = material();
@@ -782,7 +797,7 @@ mod tests {
             assert!(prompt.contains(&title), "缺少变爻 {title}");
         }
         let changed = cast.changed.unwrap();
-        assert!(prompt.contains(&format!("之卦：{}", changed.full)));
+        assert!(prompt.contains(&format!("变卦：{}", changed.full)));
         assert!(prompt.contains(changed.judgment));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
 //! 报告由四段拼成——[`collect`] 从库里取出可统计的事实与发言样本，[`divine`] 用
-//! 大衍筮法从这些素材里起出本卦、变爻与之卦，[`persona`] 把卦与素材交给模型换回
+//! 大衍筮法从这些素材里起出本卦、变爻与变卦，[`persona`] 把卦与素材交给模型换回
 //! 一份画像（模型不接时只留卦象与数字），[`card`] 排成一张 HTML 报告图；
 //! [`avatar`] 取对象的 QQ 头像配在报告开头。
 //!
@@ -478,7 +478,7 @@ pub fn handle(
         let cast = divine::cast(&material);
         info!(
             target: LOG_TARGET,
-            "起卦：{}（第 {} 卦），变爻 {} 处，之卦 {}",
+            "起卦：{}（第 {} 卦），变爻 {} 处，变卦 {}",
             cast.primary.full,
             cast.primary.number,
             cast.changing.len(),
@@ -627,7 +627,7 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 出图失败时的文字版：卦、总断、详批、之变与赠言，
+/// 出图失败时的文字版：卦、总评、详说、变化与赠言，
 /// 够用户在群里看懂结论，不至于因为一张图没出成就什么都拿不到。
 fn text_report(
     material: &collect::Material,
@@ -651,7 +651,7 @@ fn text_report(
         cast.stalks_text()
     ));
     if cast.changing.is_empty() {
-        out.push_str("变爻：六爻皆静，无动\n");
+        out.push_str("变爻：六爻都不动\n");
     } else {
         let moving: Vec<String> = cast
             .changing
@@ -665,18 +665,18 @@ fn text_report(
     }
     if let Some(changed) = cast.changed {
         out.push_str(&format!(
-            "之卦：{} —— {}\n{}\n",
+            "变卦：{} —— {}\n{}\n",
             changed.full, changed.judgment, changed.sense
         ));
     }
-    out.push_str(&format!("占法：{}\n", cast.rule()));
+    out.push_str(&format!("看哪一爻：{}\n", cast.rule()));
 
     if !profile.verdict.trim().is_empty() {
-        out.push_str(&format!("\n〖总断〗\n{}\n", profile.verdict));
+        out.push_str(&format!("\n〖总评〗\n{}\n", profile.verdict));
     }
     let passages: Vec<&persona::Passage> = profile.live_passages().collect();
     if !passages.is_empty() {
-        out.push_str("\n〖详批〗\n");
+        out.push_str("\n〖详说〗\n");
         for passage in passages {
             if passage.is_quote() {
                 out.push_str(&format!("　「{}」\n", passage.text));
@@ -689,7 +689,7 @@ fn text_report(
         }
     }
     if !profile.turn.trim().is_empty() {
-        out.push_str(&format!("\n〖之变〗\n{}\n", profile.turn));
+        out.push_str(&format!("\n〖变化〗\n{}\n", profile.turn));
     }
     if !profile.advice.trim().is_empty() {
         out.push_str(&format!("\n赠言：{}\n", profile.advice));
@@ -794,7 +794,7 @@ mod live_tests {
 
         let cast = divine::cast(&material);
         println!(
-            "===== 起卦 =====\n本卦 {}（第 {} 卦，{}）\n{}\n{}\n得策 {}\n变爻 {:?}\n之卦 {}\n占法 {}",
+            "===== 起卦 =====\n本卦 {}（第 {} 卦，{}）\n{}\n{}\n得策 {}\n变爻 {:?}\n变卦 {}\n看哪一爻 {}",
             cast.primary.full,
             cast.primary.number,
             cast.primary.trigrams(),
@@ -825,7 +825,7 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n代号：{}\n题记：{}\n总断：{}\n详批：\n{}\n之变：{}\n赠言：{}",
+            "===== 收口后的画像 =====\n代号：{}\n题记：{}\n总评：{}\n详说：\n{}\n变化：{}\n赠言：{}",
             profile.codename,
             profile.tagline,
             profile.verdict,
@@ -842,11 +842,11 @@ mod live_tests {
             profile.advice,
         );
         assert!(!profile.codename.is_empty(), "代号不该是空的");
-        assert!(!profile.verdict.is_empty(), "总断不该是空的");
-        assert!(!profile.turn.is_empty(), "之变不该是空的");
+        assert!(!profile.verdict.is_empty(), "总评不该是空的");
+        assert!(!profile.turn.is_empty(), "变化不该是空的");
         assert!(
             profile.live_passages().count() >= 4,
-            "详批至少要有四段，这次只有 {} 段",
+            "详说至少要有四段，这次只有 {} 段",
             profile.live_passages().count()
         );
         // 引语是被比对过的：要么没有，要么每一句都是原话。
@@ -1248,14 +1248,14 @@ mod tests {
         assert!(report.contains("夜行改稿人"));
         assert!(report.contains("三点还在改"));
         assert!(report.contains("100 条发言"));
-        // 卦、总断、详批、之变与赠言都要跟着落到文字版里。
+        // 卦、总评、详说、变化与赠言都要跟着落到文字版里。
         assert!(report.contains(&format!("〖卦〗{}", cast.primary.full)));
         assert!(report.contains("大衍筮法"));
         assert!(report.contains(&cast.stalks_text()));
         assert!(report.contains(cast.rule()));
-        assert!(report.contains("〖总断〗"));
-        assert!(report.contains("〖详批〗"));
-        assert!(report.contains("〖之变〗"));
+        assert!(report.contains("〖总评〗"));
+        assert!(report.contains("〖详说〗"));
+        assert!(report.contains("〖变化〗"));
         assert!(report.contains("少熬点夜。"));
     }
 }

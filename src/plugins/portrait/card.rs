@@ -1,7 +1,7 @@
 //! 画像报告卡（HTML → 截图）。
 //!
-//! 版式按「一卦一判」来排，不按仪表盘来排：先落卦象，再给总断，然后是详批，
-//! 末了说一句变。读数的数字只做旁证，收在最上面一行，不另占版面。
+//! 版式按「一卦一判」来排，不按仪表盘来排：先落卦象，再给总评，然后是详说，
+//! 末了说一句变化。读数的数字只做旁证，收在最上面一行，不另占版面。
 //!
 //! 卦象是这张卡上唯一的图形：六爻自下而上，阳爻一整划、阴爻断开，动的那一爻上色。
 //! 它替代了从前的刻度条与 24 小时柱状图——那些是把一个人拆成指标，这一张是把一个人
@@ -288,7 +288,7 @@ fn hexagram(cast: &Cast) -> String {
     );
     if cast.changing.is_empty() {
         foot.push_str(
-            r#"<div class="hex-item"><span class="hex-k">变爻</span><span>六爻皆静，无动</span></div>"#,
+            r#"<div class="hex-item"><span class="hex-k">变爻</span><span>六爻都不动</span></div>"#,
         );
     } else {
         let moving: Vec<String> = cast
@@ -308,14 +308,14 @@ fn hexagram(cast: &Cast) -> String {
     if let Some(changed) = cast.changed {
         let _ = write!(
             foot,
-            r#"<div class="hex-item"><span class="hex-k">之卦</span><span>{} —— {}</span></div>"#,
+            r#"<div class="hex-item"><span class="hex-k">变卦</span><span>{} —— {}</span></div>"#,
             esc(changed.full),
             esc(changed.judgment)
         );
     }
     let _ = write!(
         foot,
-        r#"<div class="hex-item"><span class="hex-k">占法</span><span>{}</span></div>"#,
+        r#"<div class="hex-item"><span class="hex-k">看哪一爻</span><span>{}</span></div>"#,
         esc(cast.rule())
     );
 
@@ -330,19 +330,19 @@ fn hexagram(cast: &Cast) -> String {
     )
 }
 
-/// 总断。卦与人接上的那一段，给足分量。
+/// 总评。卦与人接上的那一段，给足分量。
 fn verdict(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
     }
     format!(
         r#"<div class="sec">{head}<div class="verdict">{text}</div></div>"#,
-        head = sec_head("总断", "THE VERDICT"),
+        head = sec_head("总评", "THE VERDICT"),
         text = esc(text)
     )
 }
 
-/// 详批。段落与引语同列一队，按序渲染——引语落在论证里，不贴到文末。
+/// 详说。段落与引语同列一队，按序渲染——引语落在论证里，不贴到文末。
 fn passages(persona: &Persona) -> String {
     let blocks: String = persona
         .live_passages()
@@ -367,18 +367,18 @@ fn passages(persona: &Persona) -> String {
     }
     format!(
         r#"<div class="sec">{head}{blocks}</div>"#,
-        head = sec_head("详批", "THE READING")
+        head = sec_head("详说", "THE READING")
     )
 }
 
-/// 之变。到现在还卡着的地方，与要去的方向。
+/// 变化。到现在还卡着的地方，与要去的方向。
 fn turn(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
     }
     format!(
         r#"<div class="sec">{head}<div class="turn">{text}</div></div>"#,
-        head = sec_head("之变", "THE TURNING"),
+        head = sec_head("变化", "THE TURNING"),
         text = esc(text)
     )
 }
@@ -543,14 +543,14 @@ const CSS: &str = r#"
 .hex-foot{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);
   display:flex;flex-direction:column;gap:8px}
 .hex-item{display:flex;gap:12px;font-size:15px;line-height:1.68;color:var(--subtle)}
-.hex-k{flex:none;width:38px;font-weight:800;letter-spacing:.08em;color:__ACCENT__}
+.hex-k{flex:none;width:68px;font-weight:800;letter-spacing:.08em;color:__ACCENT__}
 
-/* —— 总断 —— */
+/* —— 总评 —— */
 .verdict{padding:24px 26px;border-radius:14px;background:var(--panel);
   border:1px solid var(--panel-border);font-family:var(--serif);font-size:20.5px;
   line-height:1.94;font-weight:500;color:var(--strong)}
 
-/* —— 详批 —— */
+/* —— 详说 —— */
 .prose{margin-bottom:18px;font-family:var(--serif);font-size:20px;line-height:1.98;
   color:var(--body);text-indent:2em}
 .prose:last-child{margin-bottom:0}
@@ -560,7 +560,7 @@ const CSS: &str = r#"
   text-indent:0}
 .quote-note{margin-top:11px;font-size:15px;line-height:1.62;color:var(--faint)}
 
-/* —— 之变 —— */
+/* —— 变化 —— */
 .turn{padding:22px 24px;border-radius:14px;background:rgba(__RGB__,var(--chip-alpha));
   border:1px solid rgba(__RGB__,.22);font-family:var(--serif);font-size:19.5px;
   line-height:1.9;color:var(--strong)}
@@ -711,9 +711,9 @@ mod tests {
             "用忙碌挡空的人",
             "他把休息也算成一件事",
             r#"<span class="sec-mark">卦象</span>"#,
-            r#"<span class="sec-mark">总断</span>"#,
-            r#"<span class="sec-mark">详批</span>"#,
-            r#"<span class="sec-mark">之变</span>"#,
+            r#"<span class="sec-mark">总评</span>"#,
+            r#"<span class="sec-mark">详说</span>"#,
+            r#"<span class="sec-mark">变化</span>"#,
             "大衍筮法",
             "四十九策三变成爻",
             cast.primary.full,
@@ -758,7 +758,7 @@ mod tests {
         }
     }
 
-    /// 有变爻时版面要写出之卦；没有变爻时不写。
+    /// 有变爻时版面要写出变卦；没有变爻时不写。
     #[test]
     fn the_changed_hexagram_only_shows_when_there_is_one() {
         let material = material();
@@ -772,8 +772,8 @@ mod tests {
             seed += 1;
         };
         let still_html = html(&view(&material, &persona, &still));
-        assert!(still_html.contains("六爻皆静，无动"));
-        assert!(!still_html.contains(r#"<span class="hex-k">之卦</span>"#));
+        assert!(still_html.contains("六爻都不动"));
+        assert!(!still_html.contains(r#"<span class="hex-k">变卦</span>"#));
 
         let moved = loop {
             let candidate = divine::cast_from(seed);
@@ -784,7 +784,7 @@ mod tests {
         };
         let changed = moved.changed.unwrap();
         let moved_html = html(&view(&material, &persona, &moved));
-        assert!(moved_html.contains(r#"<span class="hex-k">之卦</span>"#));
+        assert!(moved_html.contains(r#"<span class="hex-k">变卦</span>"#));
         assert!(moved_html.contains(changed.full));
     }
 
@@ -843,9 +843,9 @@ mod tests {
             ..persona()
         };
         let html = html(&view(&material, &persona, &cast));
-        assert!(!html.contains(r#"<span class="sec-mark">总断</span>"#));
-        assert!(!html.contains(r#"<span class="sec-mark">详批</span>"#));
-        assert!(!html.contains(r#"<span class="sec-mark">之变</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">总评</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">详说</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">变化</span>"#));
         assert!(!html.contains(r#"<div class="advice">"#));
         // 卦象与读数始终在：卦不来自模型，模型不接也有一卦。
         assert!(html.contains(r#"<span class="sec-mark">卦象</span>"#));
