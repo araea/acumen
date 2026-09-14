@@ -50,6 +50,7 @@ mod peak;
 mod speak;
 mod tone;
 mod vision;
+mod voice;
 mod window;
 
 use speak::Called;
@@ -66,6 +67,12 @@ static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 /// 内置人设。首次启动写进数据目录，之后以磁盘上那份为准——人设是要被反复
 /// 打磨的东西，改一句话不该等一次编译。
 const PERSONA: &str = include_str!("../../res/ambient/persona.md");
+/// 本体档案的模板：首次启动写进数据目录，之后以磁盘上那份为准。
+///
+/// 仓库是公开的，所以这里只有格式说明；「这个号后面那个人」的事实（手边有什么
+/// 设备、平时在哪、作息、表过态的看法）由管理员写在数据目录那一份里，
+/// 每一轮发言带着它，为的是前后说法不打架。见 [`self_facts`]。
+const SELF: &str = include_str!("../../res/ambient/self.md");
 /// 随代码走的 skill：每次启动按目录名覆盖写入。
 ///
 /// 分成两份是照 pi 的渐进披露来的——常在提示词里的只有 skill 的一行描述，
@@ -393,6 +400,11 @@ pub(crate) struct Scene {
     pub state: String,
     /// 记得的人与旧事；关闭记忆时为空。
     pub memory: String,
+    /// 这个号后面那个人自己的事，以及他平时说话的原话样本。
+    ///
+    /// 这两样只影响「说出来的像不像他」，对「要不要接这句话」没用，所以不跟着
+    /// [`Scene::brief`] 一起递给判定侧——那是每条消息都要付一次的账。
+    pub own: String,
 }
 
 impl Scene {
@@ -412,6 +424,7 @@ impl Scene {
             } else {
                 String::new()
             },
+            own: format!("{}{}", self_facts(), voice::brief(turns)),
         }
     }
 
@@ -452,9 +465,45 @@ pub(crate) fn now_context() -> String {
     )
 }
 
+/// 本体档案 → 注入发言提示词的一段话。
+///
+/// 文件里 `#` 开头的行是注释，其余每行一条事实。缺失、只剩注释或者读不出来时返回
+/// 空串：没有档案，也好过凭空编一份档案。
+fn self_facts() -> String {
+    let Some(dir) = DATA_DIR.get() else {
+        return String::new();
+    };
+    match std::fs::read_to_string(self_path(dir)) {
+        Ok(raw) => facts_from(&raw),
+        Err(_) => String::new(),
+    }
+}
+
+/// 档案正文 → 提示词里那一段。单独拎出来，好在测试里钉住注释与空行的处理。
+fn facts_from(raw: &str) -> String {
+    let facts: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| format!("- {line}"))
+        .collect();
+    if facts.is_empty() {
+        return String::new();
+    }
+    format!(
+        "关于你自己的一些事（别人问起、自己聊到时照这个来）：\n{}\n",
+        facts.join("\n")
+    )
+}
+
 /// 人设文件位置。插件数据目录本身就是搭话的根，人设、skill、记忆、素材都在它下面。
 fn persona_path(base: &Path) -> PathBuf {
     base.join("persona.md")
+}
+
+/// 本体档案的位置。
+fn self_path(base: &Path) -> PathBuf {
+    base.join("self.md")
 }
 
 fn skills_root(base: &Path) -> PathBuf {
@@ -478,6 +527,12 @@ async fn setup(base: &Path) -> std::io::Result<()> {
     }
     if !persona.exists() {
         tokio::fs::write(&persona, PERSONA).await?;
+    }
+    // 档案跟人设一样只在缺失时写：它写的是这个人自己的事，覆盖等于把攒下来的
+    // 那点前后一致性抹掉。模板里只有格式说明，实际内容由管理员填。
+    let facts = self_path(base);
+    if !facts.exists() {
+        tokio::fs::write(&facts, SELF).await?;
     }
     for (name, body) in SKILLS {
         let dir = skills_root(base).join(name);
@@ -1410,6 +1465,39 @@ mod tests {
         assert!(GATE_PERSONA.len() < PERSONA.len());
         // 唯一的硬边界仍然写着。
         assert!(PERSONA.contains("色情"));
+    }
+
+    /// 本体档案只读事实证明行，注释与空行不进提示词；仓库里那份模板整篇都是说明，
+    /// 所以新装一份等于没有档案，不会凭空给谁安上几台设备。
+    #[test]
+    fn the_profile_reads_facts_and_keeps_the_template_out_of_the_prompt() {
+        let text = facts_from("# 说明\n\n- 手上是台安卓\n手边还有台平板\n# 又一行注释\n");
+        assert!(text.contains("- 手上是台安卓"), "{text}");
+        assert!(text.contains("- 手边还有台平板"), "{text}");
+        assert!(!text.contains("说明") && !text.contains("又一行注释"), "{text}");
+        assert!(facts_from("").is_empty());
+        assert!(
+            facts_from(SELF).is_empty(),
+            "模板里留了没注释掉的事实行：{}",
+            facts_from(SELF)
+        );
+    }
+
+    /// 发言那一轮带着他自己的说法与样本；判定那一轮不带——判定是每条消息都要
+    /// 付一次的账，而「说出来的像不像他」跟「要不要接这句话」是两码事。
+    #[test]
+    fn only_the_speaking_round_carries_his_own_words() {
+        let config = AmbientConfig::default();
+        let turns = vec![Turn {
+            user_id: 7,
+            name: "群友".into(),
+            text: "这台折叠屏值不值".into(),
+            ..Turn::default()
+        }];
+        let scene = Scene::build(-1, &config, &turns, "刚接了两次话".into());
+        assert!(scene.own.contains("你平时在群里就是这么说话的"), "{}", scene.own);
+        assert!(scene.own.contains("折叠"), "贴题的样本没被挑出来：{}", scene.own);
+        assert!(!scene.brief().contains("你平时在群里就是这么说话的"), "{}", scene.brief());
     }
 
     /// 模型把换行写成字面的 `\n` 时，群里不该看见一个反斜杠加一个 n。

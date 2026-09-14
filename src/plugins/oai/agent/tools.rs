@@ -534,19 +534,20 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_group" => (
-            "查这个群的现成资料：某人的群名片/头衔/入群时间/多久没冒头（member）、群人数与活跃概况（roster）、最活跃或最久没说话的人（activity）、快到入群周年的人（anniversary）、随机抽人（draw）、随机分队（teams）、群文件目录或某个文件的下载链接（files）、群荣誉榜如龙王与群聊之火（honor）、此刻被禁言的人（mute_list）。全是只读查询，不改群设置，每轮有查询次数上限。",
+            "查这个群的现成资料：某人的群名片/头衔/入群时间/多久没冒头（member）、按昵称/群名片/头衔/号码找群友（search）、群人数与活跃概况（roster）、最活跃或最久没说话的人（activity）、本群发言条数排行（rank，可给 days 与 limit）、快到入群周年的人（anniversary）、随机抽人（draw）、随机分队（teams）、群文件目录或某个文件的下载链接（files）、群荣誉榜如龙王与群聊之火（honor）、此刻被禁言的人（mute_list）。全是只读查询，不改群设置，每轮有查询次数上限。",
             json!({
                 "type": "object",
                 "properties": {
                     "what": {
                         "type": "string",
-                        "enum": ["member", "roster", "activity", "anniversary", "draw", "teams", "files", "honor", "mute_list"],
+                        "enum": ["member", "search", "roster", "activity", "rank", "anniversary", "draw", "teams", "files", "honor", "mute_list"],
                         "description": "要查什么"
                     },
+                    "query": {"type": "string", "description": "what=search：昵称、群名片、头衔或 QQ 号的一部分"},
                     "user_id": {"type": "string", "description": "what=member 时要查的 QQ 号"},
                     "order": {"type": "string", "enum": ["active", "inactive"], "description": "what=activity：最活跃还是最沉默"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                    "days": {"type": "integer", "minimum": 1, "maximum": 366, "description": "what=anniversary：往后看多少天"},
+                    "days": {"type": "integer", "minimum": 1, "maximum": 366, "description": "what=anniversary/rank：往前看多少天，rank 默认 1 就是今天"},
                     "count": {"type": "integer", "minimum": 1, "maximum": 10, "description": "what=draw：抽几个人"},
                     "team_count": {"type": "integer", "minimum": 2, "maximum": 8, "description": "what=teams：分几队"},
                     "names": {"type": "array", "items": {"type": "string"}, "maxItems": 8, "description": "what=teams：队名"},
