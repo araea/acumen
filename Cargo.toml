@@ -45,7 +45,7 @@ plotters = { version = "0.3", default-features = false, features = ["all_element
 ab_glyph = "0.2"      # 原生文字光栅化
 fontdb = "0.24"       # 字体处理
 araea-wordcloud = "0.1"   # 词云生成
-cdp-html-shot = "0.2.8"     # HTML 截图
+cdp-html-shot = "0.2.9"     # HTML 截图
 
 # 时间与随机数
 chrono = "0.4"
