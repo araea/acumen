@@ -235,11 +235,27 @@ fn read_message(event: &crate::event::Event, me: Option<i64>) -> (String, Vec<Me
 
 // ================= 频次闸门 =================
 
+/// 上一次真正发出去的那份成品。冷却期内再问，就把这份原样再发一次——同一批素材
+/// 起的还是同一卦，为它再花一次模型与出图的钱没有意义。
+#[derive(Clone)]
+enum Cached {
+    /// 卡片图，与消息里发出去的是同一份 base64。
+    Card(String),
+    /// 出图失败时退回的那段文字报告。
+    Report(String),
+}
+
 #[derive(Default)]
 struct Gate {
     busy: HashSet<i64>,
     last: HashMap<i64, Instant>,
+    /// 每个人最近一次的成品，按发出去的先后从旧到新排。卡片是几 MB 的 base64，
+    /// 所以只留最近这几个。
+    served: Vec<(i64, Cached)>,
 }
+
+/// 成品缓存留几个。冷却默认三分钟，够覆盖「同一批人反复问」的场面。
+const SERVED_KEEP: usize = 6;
 
 /// 开始生成时发的一张「票」，走到哪一步都不会忘了还——哪怕是提前 return
 /// 或者 panic，`Drop` 都会把忙碌标记摘掉。
@@ -282,6 +298,28 @@ fn enter(user_id: i64, cooldown: Duration) -> Entry {
     gate.busy.insert(user_id);
     gate.last.insert(user_id, now);
     Entry::Go(Ticket { user_id })
+}
+
+/// 记下这一次真正发出去的东西，冷却期内再问就直接重发它。
+fn remember(user_id: i64, result: Cached) {
+    let mut gate = gate().lock().unwrap();
+    gate.served.retain(|(id, _)| *id != user_id);
+    gate.served.push((user_id, result));
+    if gate.served.len() > SERVED_KEEP {
+        let drop = gate.served.len() - SERVED_KEEP;
+        gate.served.drain(..drop);
+    }
+}
+
+/// 上一次发出去的那份成品，没有就是没发过。
+fn served(user_id: i64) -> Option<Cached> {
+    gate()
+        .lock()
+        .unwrap()
+        .served
+        .iter()
+        .find(|(id, _)| *id == user_id)
+        .map(|(_, result)| result.clone())
 }
 
 // ================= 插件入口 =================
@@ -344,15 +382,38 @@ pub fn handle(
                 return Ok(None);
             }
             Entry::Cooling(left) => {
-                say(
-                    &ctx,
-                    writer,
-                    group_id,
-                    requester,
-                    message_id,
-                    format!("刚画过，{left} 秒后再来。"),
-                )
-                .await;
+                // 冷却期内再问，把上一次的成品原样再发一次：卦、批语、版式都在里面，
+                // 同一批素材再起一次还是同一卦。没发过东西（比如上次翻不到记录）
+                // 才退回原来那句。
+                match served(target) {
+                    Some(cached) => {
+                        let mut reply = Message::new();
+                        if message_id > 0 {
+                            reply = reply.reply(message_id);
+                        }
+                        reply = reply.text(format!("还是刚起的那一卦，{left} 秒后再算。"));
+                        reply = match cached {
+                            Cached::Card(base64) => reply.image(base64),
+                            Cached::Report(report) => reply.text(report),
+                        };
+                        if let Err(error) =
+                            send_msg(&ctx, writer, group_id, Some(requester), reply).await
+                        {
+                            warn!(target: LOG_TARGET, "冷却期内重发上次的画像失败：{error}");
+                        }
+                    }
+                    None => {
+                        say(
+                            &ctx,
+                            writer,
+                            group_id,
+                            requester,
+                            message_id,
+                            format!("刚画过，{left} 秒后再来。"),
+                        )
+                        .await;
+                    }
+                }
                 return Ok(None);
             }
             Entry::Go(ticket) => ticket,
@@ -498,13 +559,20 @@ pub fn handle(
 
         match card::capture(&html, config.image_scale).await {
             Ok(base64) => {
-                let reply = Message::new().image(base64);
-                let _ = send_msg(&ctx, writer, group_id, Some(requester), reply).await;
+                let reply = Message::new().image(base64.clone());
+                // 真发出去了才记：没发出去的那份，群里没人看见过。
+                if send_msg(&ctx, writer, group_id, Some(requester), reply)
+                    .await
+                    .is_ok()
+                {
+                    remember(target, Cached::Card(base64));
+                }
             }
             Err(error) => {
                 error!(target: LOG_TARGET, "画像出图失败：{error:#}");
                 // 出图失败不该等于没有结果：把报告里的关键几行退回成文字。
                 let summary = text_report(&material, &profile, &cast, &model);
+                remember(target, Cached::Report(summary.clone()));
                 say(&ctx, writer, group_id, requester, message_id, summary).await;
             }
         }
@@ -1079,6 +1147,44 @@ mod tests {
         assert!(matches!(enter(user_id, cooldown), Entry::Cooling(_)));
         // 关掉冷却（0 秒）之后立刻可以重来。
         assert!(matches!(enter(user_id, Duration::ZERO), Entry::Go(_)));
+    }
+
+    /// 冷却期内再问，拿回的是上一次那份成品，而不是一句「稍后再来」。
+    #[test]
+    fn a_cooling_request_gets_the_previous_result_back() {
+        let cooldown = Duration::from_secs(60);
+        // 另用一个不常见的号，别与其它用例共用静态闸门。
+        let user_id = 987_654_322;
+        assert!(served(user_id).is_none(), "还没发过东西，无从重发");
+        assert!(matches!(enter(user_id, cooldown), Entry::Go(_)));
+        // 正在画的那一轮还没落盘，缓存里也还没有。
+        assert!(served(user_id).is_none());
+
+        remember(user_id, Cached::Card("卡片".into()));
+        match enter(user_id, cooldown) {
+            Entry::Cooling(left) => assert!(left > 0, "冷却剩余应报出来"),
+            _ => panic!("冷却期内应当是 Cooling"),
+        }
+        match served(user_id) {
+            Some(Cached::Card(base64)) => assert_eq!(base64, "卡片"),
+            other => panic!("应当是上次那张卡片：{}", other.is_some()),
+        }
+        // 冷却过去之后照常重新生成，缓存留着不碍事。
+        assert!(matches!(enter(user_id, Duration::ZERO), Entry::Go(_)));
+    }
+
+    /// 缓存只留最近这几个：问过的人多了，最早的那份被挤掉。
+    #[test]
+    fn the_result_cache_keeps_only_the_most_recent_askers() {
+        let base = 987_656_000;
+        for offset in 0..=SERVED_KEEP as i64 {
+            remember(base + offset, Cached::Report(format!("第 {offset} 份")));
+        }
+        assert!(served(base).is_none(), "最早的那份该被挤掉");
+        assert!(matches!(
+            served(base + SERVED_KEEP as i64),
+            Some(Cached::Report(_))
+        ));
     }
 
     /// 卦的别名也要认：用户会直接说「算卦」「起卦」。
