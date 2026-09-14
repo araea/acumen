@@ -31,6 +31,8 @@ pub struct Config {
     pub ignore_domains: Vec<String>,
     /// 是否允许截图访问内网/本机地址。默认关闭——见 `check_url` 的说明。
     pub allow_private_hosts: bool,
+    /// 是否跳过需要登录才能看内容的站点。默认开启——见 `LOGIN_WALL_DOMAINS`。
+    pub block_login_walls: bool,
     /// 群名单：配了黑名单就对名单外的所有群截图，配了白名单则只对名单内的群截图。
     pub channel: ChannelConfig,
 }
@@ -46,6 +48,7 @@ impl Default for Config {
             device_scale_factor: 1.0,
             ignore_domains: vec![],
             allow_private_hosts: false,
+            block_login_walls: true,
             channel: ChannelConfig::default(),
         }
     }
@@ -63,6 +66,32 @@ static CAPTURE_GATE: Semaphore = Semaphore::const_new(2);
 
 /// 单张截图的像素上限（含 `device_scale_factor`），与 `render/web.rs` 保持一致。
 const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
+
+/// 需要登录才能看到内容的站点。浏览器里没有登录态，截出来只有登录墙、二维码或
+/// 「打开App」引导，发回群里没有意义，所以默认跳过（`block_login_walls` 可关）。
+///
+/// 只列**正文必须登录**的站点。B 站、YouTube、微信公众号、m.weibo.cn 未登录也能看，
+/// 不在此列。按域名后缀匹配，`douyin.com` 同时覆盖 `v.douyin.com`（分享短链的落点），
+/// 但覆盖不到 `iesdouyin.com`，同名的那条要单独列。
+const LOGIN_WALL_DOMAINS: &[&str] = &[
+    // 短视频与图文分享链：点开只有下载/打开 App 的引导
+    "douyin.com",
+    "iesdouyin.com",
+    "kuaishou.com",
+    "xiaohongshu.com",
+    "xhslink.com",
+    "tiktok.com",
+    // 海外社交平台：未登录一律登录页
+    "instagram.com",
+    "facebook.com",
+    "x.com",
+    "twitter.com",
+    "linkedin.com",
+    "pixiv.net",
+    // 中文社区：正文要登录
+    "weibo.com",
+    "zhihu.com",
+];
 
 /// 链接是否允许截图，不允许时返回可写进日志的原因。
 ///
@@ -85,6 +114,14 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
             .find(|rule| domain_matches(&name, rule))
         {
             return Err(format!("域名 {} 命中忽略名单 {}", name, rule.trim()));
+        }
+        // 放在解析之前：这类站点不必真去 DNS 查一遍，也省一次查询。
+        if config.block_login_walls
+            && let Some(rule) = LOGIN_WALL_DOMAINS
+                .iter()
+                .find(|rule| domain_matches(&name, rule))
+        {
+            return Err(format!("{} 需要登录才能看到内容，截图没有意义", rule));
         }
     }
 
@@ -423,6 +460,39 @@ mod tests {
         config.allow_private_hosts = true;
         assert!(check_url("http://192.168.1.1/", &config).await.is_ok());
         assert!(check_url("http://evil.com/", &config).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn login_walled_sites_are_skipped() {
+        let strict = config();
+        // 群友复制出来的抖音分享文案，链接落点是 v.douyin.com。
+        for raw in [
+            "https://v.douyin.com/c9EJkQ5hNz0/",
+            "https://www.douyin.com/video/7682536956487677802",
+            "https://www.iesdouyin.com/share/video/7682536956487677802/",
+            "https://www.xiaohongshu.com/explore/abc",
+            "https://xhslink.com/a/abc",
+            "https://www.tiktok.com/@a/video/123",
+            "https://x.com/a/status/1",
+            "https://www.zhihu.com/question/1",
+        ] {
+            assert!(check_url(raw, &strict).await.is_err(), "{raw} 不应放行");
+        }
+
+        // 未登录也能看正文的站点不受影响。
+        for raw in [
+            "https://www.bilibili.com/video/BV1xx",
+            "https://m.weibo.cn/detail/123",
+            "https://mp.weixin.qq.com/s/abc",
+            "https://www.youtube.com/watch?v=abc",
+        ] {
+            assert!(check_url(raw, &strict).await.is_ok(), "{raw} 不应被拦");
+        }
+
+        // 关掉开关后回到旧行为。
+        let mut relaxed = config();
+        relaxed.block_login_walls = false;
+        assert!(check_url("https://v.douyin.com/c9EJkQ5hNz0/", &relaxed).await.is_ok());
     }
 
     #[test]
