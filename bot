@@ -8,6 +8,16 @@ bot_script=$(realpath -- "${BASH_SOURCE[0]}")
 bot_dir=$(cd -- "$(dirname -- "$bot_script")" && pwd -P)
 bot_exe="$bot_dir/target/release/ayjx"
 bot_session=ayjx
+prefix=${PREFIX:-/data/data/com.termux/files/usr}
+svdir=${SVDIR:-$prefix/var/service}
+bot_log=${AYJX_LOG:-$prefix/var/log/sv/$bot_session/current}
+# sv/sv-enable/sv-disable 从 $SVDIR 找服务目录，非登录 shell 下可能没导出。
+export SVDIR="$svdir"
+# 根侧看守（Android 专用，脚本在仓库 scripts/ 下）的部署位置与日志。
+# /data/adb 是 700 root，普通用户连遍历都不行，所以用 /data/local/tmp 里可读的日志
+# 判断它是否在跑；没在跑就不在 help 里提这套东西。
+revive=${AYJX_REVIVE:-/data/adb/termux-revive/termux-revive.sh}
+revive_log=${AYJX_REVIVE_LOG:-/data/local/tmp/termux-revive.log}
 
 is_our_process() {
     local executable
@@ -26,8 +36,27 @@ running_pids() {
     done < <(pgrep -f '/target/release/ayjx' || true)
 }
 
+# 本仓库的 ayjx 是否由 runit 托管。托管时进程的生死归 runsv 管，
+# start/stop 必须走 sv，直接 kill 会被立刻拉回来。
+# 只判断「$SVDIR/ayjx 存在」不够：tests/ 会把这份脚本复制到临时目录里跑，
+# 那种情况必须按「未托管」处理，否则 start/stop 会去动真正在跑的那个服务。
+# 所以要求 run 脚本里出现本 checkout 的绝对路径（见 docs/CONTROL.md 的服务文件）。
+runit_managed() {
+    [[ -f "$svdir/$bot_session/run" ]] || return 1
+    grep -qF -- "$bot_dir" "$svdir/$bot_session/run" 2>/dev/null
+}
+
+wait_gone() {
+    local attempt
+    for ((attempt = 0; attempt < 35; attempt++)); do
+        [[ -z "$(running_pids)" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 stop_bot() {
-    local pids pid attempt
+    local pids pid
     pids=$(running_pids)
     if [[ -z "$pids" ]]; then
         printf 'ayjx 已停止。\n'
@@ -36,86 +65,144 @@ stop_bot() {
     while read -r pid; do
         if is_our_process "$pid"; then kill -TERM "$pid"; fi
     done <<< "$pids"
-    for ((attempt = 0; attempt < 35; attempt++)); do
-        if [[ -z "$(running_pids)" ]]; then
-            printf 'ayjx 进程已退出；请在前台日志确认配置保存结果。\n'
-            return
-        fi
-        sleep 1
-    done
+    if wait_gone; then
+        printf 'ayjx 进程已退出；请在前台日志确认配置保存结果。\n'
+        return
+    fi
     printf '停止超时，请检查前台日志；未强制杀死进程。\n' >&2
     return 1
 }
 
+# start 与 serve 共用的准备：定位、锁、代理绕行、termux-exec、唤醒锁。
+prepare_runtime() {
+    cd -- "$bot_dir"
+    if [[ ! -x "$bot_exe" ]]; then
+        printf '请先运行 cargo build --release。\n' >&2
+        exit 1
+    fi
+    if [[ -n "$(running_pids)" ]]; then
+        if runit_managed; then
+            printf 'ayjx 已由 runit 托管；用 ./bot logs 看日志，./bot restart 重启。\n' >&2
+        else
+            printf '本仓库的 ayjx 已运行；用 ./bot logs 看日志或 ./bot status 查看。\n' >&2
+        fi
+        exit 1
+    fi
+    exec 9>"$bot_dir/.bot.lock"
+    if ! flock -n 9; then
+        printf '启动锁已被占用，请先检查 ./bot status。\n' >&2
+        exit 1
+    fi
+    # Keep local Satori HTTP requests out of environment HTTP proxies.
+    export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost,::1"
+    export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost,::1"
+    # Termux app shells export termux-exec's $LD_PRELOAD; sessions started from
+    # elsewhere (widgets, cron, a tmux server inherited from another tool) do not.
+    # Without it the bot cannot spawn `#!/usr/bin/env` scripts from its tools.
+    if [[ -z "${LD_PRELOAD:-}" ]]; then
+        for lib in "$prefix/lib/libtermux-exec-ld-preload.so" "$prefix/lib/libtermux-exec.so"; do
+            if [[ -f "$lib" ]]; then
+                export LD_PRELOAD="$lib"
+                break
+            fi
+        done
+    fi
+    if [[ "${AYJX_WAKE_LOCK:-1}" == 1 ]] && command -v termux-wake-lock >/dev/null; then
+        termux-wake-lock || printf '未能取得 Termux 唤醒锁，请检查通知中的 Acquire wakelock。\n' >&2
+    fi
+}
+
+# tmux 里挂一个 tail -F $bot_log 的窗口。bot 本身由 runsv 托管，这里只负责看。
+open_log_view() {
+    command -v tmux >/dev/null || { printf '需要安装 tmux。\n' >&2; exit 1; }
+    if tmux has-session -t "=$bot_session-log" 2>/dev/null; then
+        printf '日志窗口已存在，使用 ./bot attach 进入。\n'
+        return
+    fi
+    tmux new-session -d -s "$bot_session-log" -c "$bot_dir" \
+        "tail -n 200 -F '$bot_log'"
+    printf '已创建日志窗口。使用 ./bot attach 进入；Ctrl+B 后按 D 暂离。\n'
+}
+
 case "${1:-open}" in
     open)
-        "$bot_script" session
+        open_log_view
         exec "$bot_script" attach
         ;;
+    # runit 的入口：与 start 同一套准备，但不带前台控制台。
+    serve)
+        prepare_runtime
+        exec "$bot_exe"
+        ;;
     start)
-        cd -- "$bot_dir"
-        if [[ ! -x "$bot_exe" ]]; then
-            printf '请先运行 cargo build --release。\n' >&2
-            exit 1
+        if runit_managed; then
+            sv up "$bot_session"
+            printf '已请求 runit 启动；日志见 ./bot logs。\n'
+            exit 0
         fi
-        if [[ -n "$(running_pids)" ]]; then
-            printf '本仓库的 ayjx 已运行；用 ./bot attach 进入会话或 ./bot status 查看。\n' >&2
-            exit 1
-        fi
-        exec 9>"$bot_dir/.bot.lock"
-        if ! flock -n 9; then
-            printf '启动锁已被占用，请先检查 ./bot status。\n' >&2
-            exit 1
-        fi
-        # Keep local Satori HTTP requests out of environment HTTP proxies.
-        export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost,::1"
-        export no_proxy="${no_proxy:+$no_proxy,}127.0.0.1,localhost,::1"
-        # Termux app shells export termux-exec's $LD_PRELOAD; sessions started from
-        # elsewhere (widgets, cron, a tmux server inherited from another tool) do not.
-        # Without it the bot cannot spawn `#!/usr/bin/env` scripts from its tools.
-        if [[ -z "${LD_PRELOAD:-}" ]]; then
-            for lib in "$PREFIX/lib/libtermux-exec-ld-preload.so" "$PREFIX/lib/libtermux-exec.so"; do
-                if [[ -f "$lib" ]]; then
-                    export LD_PRELOAD="$lib"
-                    break
-                fi
-            done
-        fi
-        if [[ "${AYJX_WAKE_LOCK:-1}" == 1 ]] && command -v termux-wake-lock >/dev/null; then
-            termux-wake-lock || printf '未能取得 Termux 唤醒锁，请检查通知中的 Acquire wakelock。\n' >&2
-        fi
+        prepare_runtime
+        exec "$bot_exe" --console
+        ;;
+    # 手动前台启动（带控制台），调试用。托管时请先 ./bot stop 再跑。
+    console)
+        prepare_runtime
         exec "$bot_exe" --console
         ;;
     status|s)
+        if runit_managed; then sv status "$bot_session" 2>&1 || true; fi
         pids=$(running_pids)
+        printf '日志：%s\n' "$bot_log"
         if [[ -n "$pids" ]]; then
             printf 'ayjx 运行中，PID：%s\n' "$pids"
-            printf '插件状态：进入控制台输入 /ctl list；连接状态请查看 Satori 日志。\n'
+            printf '插件状态：./bot logs 看日志；连接状态请查看 Satori 日志。\n'
         else
             printf 'ayjx 已停止。\n'
             exit 3
         fi
         ;;
-    stop|down) stop_bot ;;
-    restart)
-        stop_bot
-        exec "$bot_dir/bot" start
-        ;;
-    session|up)
-        command -v tmux >/dev/null || { printf '需要安装 tmux，或直接 ./bot start。\n' >&2; exit 1; }
-        if tmux has-session -t "=$bot_session" 2>/dev/null; then
-            printf '会话已存在，使用 ./bot attach 进入。\n'
-        elif [[ -n "$(running_pids)" ]]; then
-            printf 'ayjx 已在其他终端运行，请先停止再创建会话。\n' >&2
-            exit 1
+    stop|down)
+        if runit_managed; then
+            # 只能走 sv down：直接 kill 的话 runsv 会在一秒内把它拉回来。
+            # 根侧看守盯的是 Termux 监督树而不是 bot，所以这里停掉是稳的。
+            sv down "$bot_session"
+            if wait_gone; then
+                printf 'ayjx 已停止，runit 已置 down，不会被自动拉起。\n'
+                printf '恢复：./bot start（或 sv up %s）。\n' "$bot_session"
+            else
+                printf '停止超时，请用 ./bot logs 查看退出日志。\n' >&2
+                exit 1
+            fi
         else
-            tmux new-session -d -s "$bot_session" -c "$bot_dir" './bot start'
-            printf '已创建前台会话。使用 ./bot attach 进入；Ctrl+B 后按 D 暂离并保持运行。\n'
+            stop_bot
         fi
+        ;;
+    restart)
+        if runit_managed; then
+            sv restart "$bot_session"
+            printf '已请求 runit 重启；日志见 ./bot logs。\n'
+        else
+            stop_bot
+            exec "$bot_dir/bot" console
+        fi
+        ;;
+    enable|on)
+        sv-enable "$bot_session"
+        printf '已设为随 Termux 监督树自启。\n'
+        ;;
+    disable|off)
+        if [[ -n "$(running_pids)" ]]; then
+            printf 'bot 运行中，请先 ./bot stop。\n' >&2
+            exit 1
+        fi
+        sv-disable "$bot_session"
+        printf '已取消自启；当前会话内不会被拉起，Termux 重启后也不起。\n'
+        ;;
+    logs|log|session|up)
+        open_log_view
         ;;
     attach|a)
         if [[ -z "${TERM:-}" || "${TERM:-}" == dumb ]]; then export TERM=xterm-256color; fi
-        exec tmux attach-session -t "=$bot_session"
+        exec tmux attach-session -t "=$bot_session-log"
         ;;
     power)
         case "${2:-help}" in
@@ -131,11 +218,21 @@ case "${1:-open}" in
         esac
         ;;
     help|-h|--help)
-        printf './bot          打开控制台；未运行时创建 tmux 会话\n'
-        printf './bot start    当前终端前台启动，输入 /ctl 管理；Ctrl+C 停止\n'
-        printf './bot status   查看进程状态\n./bot stop     优雅停止\n./bot restart  停止后重新前台启动\n'
-        printf './bot session  创建可重新进入的 tmux 前台会话\n./bot attach   进入会话（Ctrl+B 后按 D 暂离）\n'
+        printf './bot          看日志（未创建日志窗口时先创建再进入）\n'
+        printf './bot logs     只看日志窗口，不进入\n./bot attach   进入日志窗口（Ctrl+B 后按 D 暂离）\n'
+        printf './bot status   查看 runit 与进程状态\n'
+        printf './bot stop     优雅停止；runit 托管时走 sv down，不会被自动拉起\n'
+        printf './bot restart  优雅重启\n./bot start    启动（runit 托管时等价 sv up）\n'
+        printf './bot console  手动前台启动（带控制台），调试用\n'
+        printf './bot enable   随 Termux 监督树自启；./bot disable 取消\n'
         printf './bot power    Termux 熄屏保活说明\n'
+        if [[ -e "$revive_log" ]]; then
+            printf '\n看守盯的是 Termux 监督树而不是 bot，所以 ./bot stop 不会被它抢回去。\n'
+            printf '要连 Termux 一起停，两种都算「你手动停」，看守不会复活它：\n'
+            printf '  强行停止 Termux（下次打开 Termux 即恢复），或\n'
+            printf '  su -c "%s hold"（一直别起来，要 resume 才恢复）。\n' "$revive"
+            printf '被动被杀（ColorOS 清理器 / 内存 / 崩溃）才会自动拉起来；判据自检 su -c "%s --check"。\n' "$revive"
+        fi
         ;;
     *) printf '未知操作，使用 ./bot help。\n' >&2; exit 2 ;;
 esac

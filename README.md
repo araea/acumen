@@ -38,7 +38,7 @@ Satori 默认地址是 `http://127.0.0.1:3001`。网页截图和资讯长图需�
 ./bot restart
 ```
 
-Termux 下 `./bot start` 会取得唤醒锁。需要用 tmux 时执行 `./bot session` 和 `./bot attach`。
+Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运行日志，`./bot attach` 进入。把 bot 交给 `termux-services`（runit）托管后，进程崩溃会自动重启，`start` / `stop` / `restart` 自动改走 `sv`，见[插件控制](docs/CONTROL.md)。
 
 ## 文档与测试
 
