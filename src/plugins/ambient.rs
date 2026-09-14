@@ -410,7 +410,6 @@ pub(crate) struct Scene {
 impl Scene {
     fn build(group: i64, config: &AmbientConfig, turns: &[Turn], rhythm: String) -> Self {
         // 状态算一次用两处：一句给模型看的「你现在的状态」，以及挑样本的调子。
-        // 关掉状态时按不上不下处理，两种调子的样本都能挑。
         let snapshot = config.mood_enabled.then(|| mood::snapshot(group));
         Self {
             rhythm,
@@ -426,12 +425,7 @@ impl Scene {
             own: format!(
                 "{}{}",
                 self_facts(),
-                voice::brief(
-                    turns,
-                    snapshot
-                        .map(mood::Snapshot::register)
-                        .unwrap_or(mood::Register::Even)
-                )
+                voice::brief(turns, voice_register(config, group))
             ),
         }
     }
@@ -471,6 +465,16 @@ pub(crate) fn now_context() -> String {
         weekday,
         now.format("%H:%M")
     )
+}
+
+/// 这一刻说话的调子：精神头定松紧，挑样本与写日志用的都是它。
+///
+/// 关掉状态（`mood_enabled = false`）时按不上不下处理，两档样本都能挑。
+fn voice_register(config: &AmbientConfig, group: i64) -> mood::Register {
+    config
+        .mood_enabled
+        .then(|| mood::snapshot(group).register())
+        .unwrap_or(mood::Register::Even)
 }
 
 /// 本体档案 → 注入发言提示词的一段话。
@@ -1293,7 +1297,12 @@ async fn speak_up(
         };
         // 出站日志里所有插件的消息长得一样，复读机复读一句群友原话与搭话开口无从分辨。
         // 记下自己说了什么，这一行既是回放，也是唯一能确认「它真的开口了」的凭据。
-        info!(target: LOG_TARGET, "群 {group} 说：{spoken}");
+        // 带上调子（活/平/静）：回头对「今天为什么这么说」时，这是第一眼要看的东西。
+        info!(
+            target: LOG_TARGET,
+            "群 {group} 说（{}）：{spoken}",
+            voice_register(config, group).label()
+        );
         window::with_group(group, |state| {
             if !sent {
                 state.mark_spoke();

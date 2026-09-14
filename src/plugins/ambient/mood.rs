@@ -87,6 +87,17 @@ pub(crate) enum Register {
     Calm,
 }
 
+impl Register {
+    /// 日志里用的一字标记，方便回头对「今天为什么这么说」。
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Register::Lively => "活",
+            Register::Even => "平",
+            Register::Calm => "静",
+        }
+    }
+}
+
 impl Mood {
     pub(crate) fn snapshot(&self, group: i64, now: i64) -> Snapshot {
         let hour = chrono::DateTime::from_timestamp(now, 0)
