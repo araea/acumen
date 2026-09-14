@@ -755,6 +755,56 @@ mod tests {
         assert!(seen.len() > 50, "四千次只起了 {} 卦", seen.len());
     }
 
+    /// 筮法的分布要落在经典的那一组数上。
+    ///
+    /// 三变各去掉五九、四八，理想值就是《周易》里那组老阳 3/16、少阴 7/16、
+    /// 少阳 5/16、老阴 1/16。真实的筹码数不是四的倍数，精确值会略偏一点点，
+    /// 所以下面把三变的转移概率逐个乘开算准，用它钉住「分二」取左堆的算法：
+    /// 想去掉八，左堆除以四得零或余三，四十四策里这样的左堆有 21/43，
+    /// 四十策 19/39，三十六策 17/35，三十二策 15/31。
+    /// 哪天有人把六爻改成各 1/4 直接摇，这条会立刻炸。
+    #[test]
+    fn the_four_line_values_fall_on_the_classic_odds() {
+        const ROUNDS: u64 = 60_000;
+        let mut counts = [0u64; 4];
+        for seed in 0..ROUNDS {
+            for line in cast_from(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)).lines {
+                counts[(line.value() - 6) as usize] += 1;
+            }
+        }
+        let total: u64 = counts.iter().sum();
+
+        let (a, b) = (21.0 / 43.0, 22.0 / 43.0); // 四十四策：去八 / 去四
+        let (c, d) = (19.0 / 39.0, 20.0 / 39.0); // 四十策
+        let (e, f) = (17.0 / 35.0, 18.0 / 35.0); // 三十六策
+        let (g, h) = (15.0 / 31.0, 16.0 / 31.0); // 三十二策
+        let odds = [
+            // 二十四策 → 六（老阴）
+            0.25 * c * g,
+            // 二十八策 → 七（少阳）
+            0.75 * a * e + 0.25 * c * h + 0.25 * d * e,
+            // 三十二策 → 八（少阴）
+            0.75 * a * f + 0.75 * b * c + 0.25 * d * f,
+            // 三十六策 → 九（老阳）
+            0.75 * b * d,
+        ];
+        let ideal = [1.0 / 16.0, 5.0 / 16.0, 7.0 / 16.0, 3.0 / 16.0];
+        for (index, (expected, ideal)) in odds.iter().zip(ideal).enumerate() {
+            let actual = counts[index] as f64 / total as f64;
+            assert!(
+                (actual - expected).abs() < 0.005,
+                "{} 占了 {actual:.4}，这套算法的精确值是 {expected:.4}",
+                index + 6
+            );
+            // 精确值本身也该贴着经典值；差太远说明算式抄错了。
+            assert!(
+                (expected - ideal).abs() < 0.03,
+                "{} 的精确值 {expected:.4} 离经典值 {ideal:.4} 太远了",
+                index + 6
+            );
+        }
+    }
+
     /// 画爻的行数与变爻标记都对得上。
     #[test]
     fn the_drawn_lines_carry_yin_yang_and_movement() {
