@@ -1,13 +1,16 @@
-//! 把采集到的素材交给模型，换回一份结构化的画像；模型不接时用统计量兜底。
+//! 把一卦与素材交给模型，换回一份画像；模型不接时只留卦象与数字。
 //!
+//! 卦不在这里起——它由 [`super::divine`] 从这个人留下的话里起出来，是既定的。
 //! 这一层只认三件事：**模型的输出是一个 JSON 对象**、**引语必须是原话**、
-//! **三面侧写要落在固定的三个位置上**。前者靠宽松解析（模型喜欢在 JSON 外面裹一句
-//! 「好的」或一层代码块），第二条靠归一化比对——对不上就丢掉，宁可少一条引语，
-//! 也不让报告里出现一句编出来的「他说过」；第三条靠键名归一，模型给出的键名认不出
-//! 时按出现顺序补位，免得整块侧写因为一个键名写错而消失。
+//! **批语是一篇文章的段落而不是条目**。第一条靠宽松解析（模型爱在 JSON 外面裹一句
+//! 「好的」或一层代码块），第二条靠归一化比对——对不上就丢掉，宁可少一段引语，
+//! 也不让报告里出现一句编出来的「他说过」；第三条落在 [`Passage`] 的形状上：
+//! 段落与引语同列一队，按序渲染，引语落在论证中间，不是贴在文末。
 
 use super::collect::Material;
+use super::divine::{self, Cast};
 use serde::Deserialize;
+use std::fmt::Write as _;
 
 /// 报告主色。色板是固定的，模型只能从中挑，省得它挑出一组刺眼或看不清的组合。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,76 +92,52 @@ impl Accent {
     }
 }
 
-/// 一个心理维度上的刻度。
+/// 批语里的一段。`kind` 决定它是自己的话还是自己的话。
+///
+/// 段落与引语排在同一列里，是为了让引语落在该落的地方：模型写完一段判断，
+/// 紧接着把那个人说过的一句原话放上来当证，再接着往下说。这样报告是一篇，
+/// 不是「正文一段 + 文末三条引语」。
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct Trait {
+pub struct Passage {
+    /// `text` 是批语，`quote` 是引语；认不出来的一律当批语。
     #[serde(default)]
-    pub name: String,
+    pub kind: String,
+    /// 批语的正文；引语时为空。
     #[serde(default)]
-    pub score: f64,
+    pub body: String,
+    /// 引语的原话，逐字出自样本。
+    #[serde(default)]
+    pub text: String,
+    /// 为什么把这句话放在这里。
     #[serde(default)]
     pub note: String,
 }
 
-/// 作者给出的原话，以及挑它的理由。
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Quote {
-    #[serde(default)]
-    pub text: String,
-    #[serde(default)]
-    pub why: String,
+impl Passage {
+    /// 这一段的 kind 认不认得出是引语。认不出的按批语处理。
+    pub fn is_quote(&self) -> bool {
+        const WORDS: [&str; 4] = ["quote", "引语", "引文", "他的话"];
+        let kind = self.kind.trim().to_ascii_lowercase();
+        WORDS.iter().any(|word| kind.contains(word))
+    }
 }
 
-/// 侧写的一面。`key` 由本层归一成固定三个之一，不采信模型自己写的标签。
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Facet {
-    #[serde(default)]
-    pub key: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub body: String,
-}
-
-/// 抽的那一签。
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct Lot {
-    #[serde(default)]
-    pub no: i64,
-    #[serde(default)]
-    pub grade: String,
-    #[serde(default)]
-    pub verse: Vec<String>,
-    #[serde(default)]
-    pub reading: String,
-}
-
-/// 三面侧写的固定位置与键名。顺序就是报告里的呈现顺序。
-pub const FACET_KEYS: [&str; 3] = ["立身", "心相", "人群"];
-
-/// 签等只收这几个说法，模型写出别的（比如「凶」）就退回「中平」。
-const GRADES: [&str; 5] = ["上上", "上吉", "中吉", "中平", "中下"];
-
-/// 一份可以交给模板渲染的画像。
+/// 一份可以交给模板渲染的画像。卦不在其中——它由代码起出来，另行带进模板。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Persona {
     #[serde(default)]
     pub codename: String,
     #[serde(default)]
     pub tagline: String,
+    /// 总断：把这一卦与他接上的那一段。
     #[serde(default)]
-    pub summary: String,
-    /// 三面侧写，恒定是「立身 / 心相 / 人群」这个顺序与这三个名字。
+    pub verdict: String,
+    /// 长批：段落与引语按序排列。
     #[serde(default)]
-    pub facets: Vec<Facet>,
+    pub passages: Vec<Passage>,
+    /// 变：他现在卡在哪、往哪动。
     #[serde(default)]
-    pub traits: Vec<Trait>,
-    #[serde(default)]
-    pub interests: Vec<String>,
-    #[serde(default)]
-    pub lot: Lot,
-    #[serde(default)]
-    pub quotes: Vec<Quote>,
+    pub turn: String,
     #[serde(default)]
     pub advice: String,
     #[serde(default)]
@@ -173,21 +152,13 @@ pub struct Persona {
 mod limit {
     pub const CODENAME: usize = 9;
     pub const TAGLINE: usize = 26;
-    pub const SUMMARY: usize = 110;
-    pub const FACET_TITLE: usize = 14;
-    pub const FACET_BODY: usize = 110;
-    pub const TRAIT_NAME: usize = 6;
-    pub const TRAIT_NOTE: usize = 34;
-    pub const INTEREST: usize = 10;
-    pub const VERSE: usize = 12;
-    pub const READING: usize = 80;
+    pub const VERDICT: usize = 220;
+    pub const PASSAGE: usize = 400;
     pub const QUOTE: usize = 90;
-    pub const QUOTE_WHY: usize = 26;
-    pub const ADVICE: usize = 40;
-    pub const MAX_TRAITS: usize = 4;
-    pub const MAX_INTERESTS: usize = 6;
-    pub const MAX_QUOTES: usize = 3;
-    pub const MAX_VERSE: usize = 4;
+    pub const QUOTE_NOTE: usize = 30;
+    pub const TURN: usize = 180;
+    pub const ADVICE: usize = 34;
+    pub const MAX_PASSAGES: usize = 9;
 }
 
 /// 截到上限并补省略号。省略号前面不留空白，否则会变成「手机 root …」这种断口。
@@ -218,25 +189,6 @@ fn is_punctuation(ch: char) -> bool {
     ch.is_ascii_punctuation() || EXTRA.contains(ch)
 }
 
-/// 把模型写的面名认到固定的三个位置上。
-///
-/// 模型有时写「立身」、有时写「立身：与劳作的关系」，也可能干脆写成别的词。
-/// 认得出来按名归位，认不出来就按出现顺序补位——位置总比标签可靠。
-fn facet_slot(key: &str) -> Option<usize> {
-    const ALIASES: [&[&str]; 3] = [
-        &["立身", "做事", "谋事", "事业", "劳作", "职业", "工作"],
-        &["心相", "心理", "内心", "本心", "性情", "动机"],
-        &["人群", "人际", "社交", "人堆", "关系", "位置"],
-    ];
-    let key = key.trim();
-    if key.is_empty() {
-        return None;
-    }
-    ALIASES
-        .iter()
-        .position(|names| names.iter().any(|name| key.contains(name)))
-}
-
 /// 宽松解析模型输出：取第一个花括号到最后一个花括号之间的内容。
 ///
 /// 开 JSON 模式能把可用模型限制在支持该参数的那几个上，为了一个字段的整洁
@@ -256,105 +208,47 @@ pub fn parse(raw: &str) -> anyhow::Result<Persona> {
     Ok(persona)
 }
 
-/// 把三面侧写摆回固定的三个位置，缺的补空。
-fn settle_facets(incoming: Vec<Facet>) -> Vec<Facet> {
-    let mut slots: [Option<Facet>; 3] = [None, None, None];
-    let mut leftover: Vec<Facet> = Vec::new();
-    for facet in incoming {
-        match facet_slot(&facet.key) {
-            Some(index) if slots[index].is_none() => slots[index] = Some(facet),
-            _ => leftover.push(facet),
-        }
-    }
-    let mut spare = leftover.into_iter();
-    let mut out = Vec::with_capacity(FACET_KEYS.len());
-    for (index, key) in FACET_KEYS.iter().enumerate() {
-        let mut facet = slots[index]
-            .take()
-            .or_else(|| spare.next())
-            .unwrap_or_default();
-        facet.key = (*key).to_string();
-        facet.title = clip(&facet.title, limit::FACET_TITLE);
-        facet.body = clip(&facet.body, limit::FACET_BODY);
-        out.push(facet);
-    }
-    out
-}
-
 impl Persona {
-    /// 收口：字数、条数、分数范围、签等，以及引语必须出自样本。
+    /// 收口：字数、段数，以及引语必须出自样本。
     pub fn sanitize(mut self, material: &Material) -> Self {
         self.codename = clip(&self.codename, limit::CODENAME);
         self.tagline = clip(&self.tagline, limit::TAGLINE);
-        self.summary = clip(&self.summary, limit::SUMMARY);
+        self.verdict = clip(&self.verdict, limit::VERDICT);
+        self.turn = clip(&self.turn, limit::TURN);
         self.advice = clip(&self.advice, limit::ADVICE);
-        self.facets = settle_facets(std::mem::take(&mut self.facets));
-
-        self.traits = self
-            .traits
-            .into_iter()
-            .filter(|item| !item.name.trim().is_empty())
-            .take(limit::MAX_TRAITS)
-            .map(|mut item| {
-                item.name = clip(&item.name, limit::TRAIT_NAME);
-                item.note = clip(&item.note, limit::TRAIT_NOTE);
-                item.score = if item.score.is_finite() {
-                    item.score.clamp(0.0, 100.0)
-                } else {
-                    0.0
-                };
-                item
-            })
-            .collect();
-
-        let mut seen = std::collections::HashSet::new();
-        self.interests = self
-            .interests
-            .into_iter()
-            .map(|word| clip(&word, limit::INTEREST))
-            .filter(|word| !word.is_empty())
-            .filter(|word| seen.insert(word.clone()))
-            .take(limit::MAX_INTERESTS)
-            .collect();
-
-        // 签：签号夹回 1—100，签等只认白名单，签诗按四句收口。
-        self.lot.no = if self.lot.no > 0 {
-            self.lot.no.min(100)
-        } else {
-            (material.user_id.unsigned_abs() % 100 + 1) as i64
-        };
-        self.lot.grade = match GRADES
-            .iter()
-            .find(|grade| self.lot.grade.trim().contains(**grade))
-        {
-            Some(grade) => (*grade).to_string(),
-            None => "中平".to_string(),
-        };
-        self.lot.verse = self
-            .lot
-            .verse
-            .into_iter()
-            .map(|line| clip(&line, limit::VERSE))
-            .filter(|line| !line.is_empty())
-            .take(limit::MAX_VERSE)
-            .collect();
-        self.lot.reading = clip(&self.lot.reading, limit::READING);
 
         let samples: Vec<String> = material.samples.iter().map(|s| fingerprint(s)).collect();
-        self.quotes = self
-            .quotes
+        self.passages = self
+            .passages
             .into_iter()
-            .filter(|quote| {
-                let finger = fingerprint(&quote.text);
-                finger.chars().count() >= 4
-                    && samples.iter().any(|sample| sample.contains(&finger))
+            .filter_map(|passage| {
+                if passage.is_quote() {
+                    let finger = fingerprint(&passage.text);
+                    // 引语要像一句话，也要真的在样本里。
+                    if finger.chars().count() < 4
+                        || !samples.iter().any(|sample| sample.contains(&finger))
+                    {
+                        return None;
+                    }
+                    return Some(Passage {
+                        kind: "quote".to_string(),
+                        body: String::new(),
+                        text: clip(&passage.text, limit::QUOTE),
+                        note: clip(&passage.note, limit::QUOTE_NOTE),
+                    });
+                }
+                let body = clip(&passage.body, limit::PASSAGE);
+                if body.is_empty() {
+                    return None;
+                }
+                Some(Passage {
+                    kind: "text".to_string(),
+                    body,
+                    text: String::new(),
+                    note: String::new(),
+                })
             })
-            .take(limit::MAX_QUOTES)
-            .map(|mut quote| {
-                quote.text = clip(&quote.text, limit::QUOTE);
-                quote.why = clip(&quote.why, limit::QUOTE_WHY);
-                quote
-            })
+            .take(limit::MAX_PASSAGES)
             .collect();
 
         self
@@ -365,132 +259,85 @@ impl Persona {
         Accent::from_name(&self.accent).unwrap_or_else(|| Accent::pick(seed))
     }
 
-    /// 模型完全没接上时的兜底画像：全部由统计量拼出来。
+    /// 模型完全没接上时的兜底：卦已经起好了，交给版面的只剩数字与一句实话。
     ///
-    /// 与其回一句「生成失败」，不如把数字本身排成一张能看的图——用户要的信息
-    /// 大半都在数字里，缺的只是文字评论。三面侧写照旧占位，好让版式不至于塌掉。
-    pub fn from_stats(material: &Material) -> Self {
-        let night = material.night_ratio();
-        let media = material.media_ratio();
-        let per_day = material.per_day();
-        let avg = material.avg_len();
+    /// 卦不依赖模型，所以哪怕模型整个不接，用户拿到的仍是一张真卦——
+    /// 缺的只是把卦落在他身上的那几段批语。
+    pub fn from_stats(material: &Material, cast: &Cast) -> Self {
+        let verdict = format!(
+            "这一卦是真的：以他 {} 条发言、{} 天的记录起出来，{}。数字也都在——\
+             平均每天 {:.1} 条，单条平均 {:.1} 字，{} 的发言带着图或表情。\
+             缺的是把卦落在他身上的那段批语，这一次没有落下。",
+            material.total,
+            material.span_days(),
+            cast.primary.full,
+            material.per_day(),
+            material.avg_len(),
+            percent(material.media_ratio()),
+        );
 
-        let traits = vec![
-            meter("话量", (per_day / 40.0 * 100.0).min(99.0), "看平均每天发几条"),
-            meter("夜行", night * 100.0, "0 点到 6 点的发言占比"),
-            meter("图文", media * 100.0, "图片、表情包与小表情的占比"),
-            meter("长句", (avg / 40.0 * 100.0).min(99.0), "单条发言的平均字数"),
-        ]
-        .into_iter()
-        .map(|(name, score, note)| Trait {
-            name: name.to_string(),
-            score: score.round(),
-            note: note.to_string(),
-        })
-        .collect();
-
-        let longest: Vec<Quote> = {
-            let mut sorted: Vec<&String> = material.samples.iter().collect();
-            sorted.sort_by_key(|text| std::cmp::Reverse(text.chars().count()));
-            sorted
-                .into_iter()
-                .take(2)
-                .map(|text| Quote {
-                    text: text.clone(),
-                    why: "他写得最长的一条".to_string(),
-                })
-                .collect()
-        };
-
-        let groups = material
-            .groups
-            .first()
-            .map(|group| group.name.as_str())
-            .unwrap_or("未知群");
-        let facets = vec![
-            Facet {
-                key: FACET_KEYS[0].to_string(),
-                title: format!("{} 天，{} 句话", material.span_days(), material.total),
+        let mut passages = vec![
+            Passage {
+                kind: "text".to_string(),
                 body: format!(
-                    "平均每天 {:.1} 条，单条平均 {:.1} 字，最长 {} 字。{} 的发言带图片或表情。",
-                    per_day,
-                    avg,
+                    "统计窗口内共 {} 条群聊发言，覆盖 {} 天，活跃 {} 天。\
+                     单条最长 {} 字，平均 {:.1} 字，{} 前后最活跃。",
+                    material.total,
+                    material.span_days(),
+                    material.active_days,
                     material.longest,
-                    percent(media)
+                    material.avg_len(),
+                    hour_label(material.peak_hour()),
                 ),
+                ..Default::default()
             },
-            Facet {
-                key: FACET_KEYS[1].to_string(),
-                title: "这次没有读到他的话".to_string(),
-                body: "模型没接上，只有数字可用。他的句子是什么样、为什么这样说话，这一版答不了，\
-                       不作推断。"
-                    .to_string(),
-            },
-            Facet {
-                key: FACET_KEYS[2].to_string(),
-                title: format!("在 {} 个群里说话", material.groups.len()),
+            Passage {
+                kind: "text".to_string(),
                 body: format!(
-                    "最常出没的是「{groups}」。{} 的发言引用了别人，{} 的发言直接 @ 了别人。",
-                    percent(material.reply_ratio()),
-                    percent(if material.total > 0 {
-                        material.kinds.at as f64 / material.total as f64
-                    } else {
-                        0.0
-                    })
+                    "{}：{}按卦看，这是他要走的一段路；但为什么要走、走到哪儿去，\
+                     要靠他说过的话才能答。这一版只有数目，答不了，也就不猜。",
+                    cast.primary.full, cast.primary.sense,
                 ),
+                ..Default::default()
             },
         ];
+        // 最长的那句原话当引语：它必然出自样本，用来撑住版面最省事。
+        if let Some(text) = material
+            .samples
+            .iter()
+            .filter(|text| !text.trim().is_empty())
+            .max_by_key(|text| text.chars().count())
+        {
+            passages.push(Passage {
+                kind: "quote".to_string(),
+                text: clip(text, limit::QUOTE),
+                note: "他写得最长的一条".to_string(),
+                ..Default::default()
+            });
+        }
 
         Self {
-            codename: "只按数字画的一张".to_string(),
-            tagline: format!("{} 天里说了 {} 句话", material.span_days(), material.total),
-            summary: format!(
-                "统计窗口内共 {} 条群聊发言，覆盖 {} 天，活跃 {} 天，平均每天 {:.1} 条。\
-                 单条最长 {} 字，平均 {:.1} 字。",
-                material.total,
-                material.span_days(),
-                material.active_days,
-                per_day,
-                material.longest,
-                avg
-            ),
-            facets,
-            traits,
-            interests: Vec::new(),
-            lot: Lot {
-                no: (material.user_id.unsigned_abs() % 100 + 1) as i64,
-                grade: "中平".to_string(),
-                verse: vec![
-                    "未见其言".to_string(),
-                    "难断其心".to_string(),
-                    "且留数目".to_string(),
-                    "他日再问".to_string(),
-                ],
-                reading: "这次只有数字，没有他的话，签不作数。等他再开口。".to_string(),
-            },
-            quotes: longest,
-            advice: "这次模型没接上，先按数字给你画了一张，过会儿再试一次。".to_string(),
+            codename: "卦在，批未成".to_string(),
+            tagline: format!("以 {} 条发言起出{}", material.total, cast.primary.full),
+            verdict,
+            passages,
+            turn: String::new(),
+            advice: "这次模型没接上，先给你一卦。过会儿再来一次。".to_string(),
             accent: Accent::pick(material.user_id).name().to_string(),
             estimated: true,
         }
     }
 
-    /// 三面侧写里真正有内容的那几面。空的会在版面上隐去。
-    pub fn live_facets(&self) -> impl Iterator<Item = &Facet> {
-        self.facets
-            .iter()
-            .filter(|facet| !facet.title.trim().is_empty() || !facet.body.trim().is_empty())
+    /// 批语里真正有内容的那几段。空的会在版面上隐去。
+    pub fn live_passages(&self) -> impl Iterator<Item = &Passage> {
+        self.passages.iter().filter(|passage| {
+            if passage.is_quote() {
+                !passage.text.trim().is_empty()
+            } else {
+                !passage.body.trim().is_empty()
+            }
+        })
     }
-
-    /// 有没有一签可看。签诗与解语都空时不占版面。
-    pub fn has_lot(&self) -> bool {
-        !self.lot.verse.is_empty() || !self.lot.reading.trim().is_empty()
-    }
-}
-
-fn meter<'a>(name: &'a str, score: f64, note: &'a str) -> (&'a str, f64, &'a str) {
-    // 分数太贴近 0 时条形几乎看不见，也给不出信息量，抬到 4 起步。
-    (name, score.clamp(4.0, 99.0), note)
 }
 
 pub fn percent(ratio: f64) -> String {
@@ -517,21 +364,32 @@ pub fn weekday_label(weekday: usize) -> &'static str {
     NAMES[weekday % 7]
 }
 
-const SYSTEM_PROMPT: &str = r#"你替人看相。看得慢，说得准，不奉承，也不吓人。
-你手里只有一个人在一个群里说过的话，和几组冷冰冰的数字。你从这些字句里读他的性情、处境与去处。
+const SYSTEM_PROMPT: &str = r#"你替人看卦。卦已经起好了，是他自己的卦——由他留下的话与数目推出来，
+不是抽的签，也不是你挑的。你只做一件事：用这一卦的道理，把这个人说清楚。
 
-用三种眼光看他：
-- 立身：他怎样对待做事、秩序、体面与成就。不猜他做什么工作，只看他与劳作、规矩、输赢的关系。
-- 心相：他的欲望、恐惧、自欺，与他不肯承认的那一部分。他为什么这样说话，他在防什么，他在等什么。
-- 人群：他在人堆里的位置。他怎样靠近，怎样退开，拿什么换被需要，付出与索取各占多少。
+下笔之前先立三条：
+一、卦就是人。卦辞与义理说的不是旁人的吉凶，是他此刻的处境与性情。他哪里像这一卦、
+   哪里不像，都要落在他真说过的话上。不许把卦套在他头上当帽子和标签。
+二、卦是变化，不是判决。六爻里的变爻是正在动的地方，之卦是动的方向。不许他富贵，
+   不许他祸福，只说这一卦的道理在他身上怎么应、该往哪儿使劲。
+三、宁少说不空说。每一句都要能从下发的样本与数字里找出处。看不出就不写。
+
+写出来的是一篇，不是一份清单：
+- 总断：把卦与他接上，先给判断，再给依据。别复述卦辞，要说这一卦为什么是他的卦。
+- 长批：五到八段，段与段之间要承接，像一个人把一件事从头说下来，不许写成并列的条目。
+  不要把三个侧面拆成三块，也不要一二三四地分点。
+- 批里至少两段是自己的话：把引语单独成段，前后用自己的话接住它，让这句话落在论证里。
+  引语是证据，不是装饰。
+- 变：他现在卡在哪一处，往哪儿动。变爻动的地方就是那处。
+- 赠言：不劝善，不祝福，给他一样能带走的东西。
 
 笔法：
 - 白描。写你看得见的，不写你感叹的。不用比喻堆叠，不用排比，不用感叹号。
-- 冷静、克制、精准。力道到了就停手。说穿，但不羞辱；不留情面，也不刻薄。
+- 冷静、克制、精准。说穿，但不羞辱；不留情面，也不刻薄。
 - 不用网络流行语，不用「其实」「说到底」「值得一提的是」这类垫话。
-- 每句话都要有出处，出处就是下发的样本与数字。看不出就不写，宁可短。
 - 可以指出他未必愿意承认的事，但不下道德判断。
-- 不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、跟谁是什么关系。
+- 不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、
+  跟谁是什么关系。
 - 引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
 - 只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
 
@@ -539,32 +397,60 @@ JSON 字段：
 {
   "codename": "代号，2 到 7 个字。要准，不要好听，像熟人背后对他的称呼",
   "tagline": "题记，不超过 22 字。是结论，不是形容",
-  "summary": "总评，3 到 4 句，不超过 100 字。先给判断，再给依据",
-  "facets": [
-    {"key":"立身","title":"这一面的结论，不超过 12 字","body":"不超过 100 字，白描，要有细节"},
-    {"key":"心相","title":"这一面的结论，不超过 12 字","body":"不超过 100 字，白描，要有细节"},
-    {"key":"人群","title":"这一面的结论，不超过 12 字","body":"不超过 100 字，白描，要有细节"}
+  "verdict": "总断，2 到 4 句，不超过 200 字。先把这一卦与他的关系说定，再给依据",
+  "passages": [
+    {"kind":"text","body":"一段批语，不超过 300 字"},
+    {"kind":"quote","text":"逐字引用的一条发言","note":"把这句话放在这里说明什么，不超过 24 字"},
+    {"kind":"text","body":"接着往下说，与上一段接得上"}
   ],
-  "traits": [{"name":"心理维度，2 到 4 字，如 秩序感 / 表达欲 / 防御 / 攻击性","score":0 到 100 的整数,"note":"这个分数从哪个细节看出来，不超过 30 字"}],
-  "interests": ["他反复谈到的事，2 到 6 字，最多 6 个，按分量排序"],
-  "lot": {
-    "no": 1 到 100 的整数,
-    "grade": "从 上上 / 上吉 / 中吉 / 中平 / 中下 里选一个",
-    "verse": ["签诗四句，每句 5 到 9 个字，有古意，不掉书袋", "第二句", "第三句", "第四句"],
-    "reading": "解签，不超过 70 字。把它接回这个人的处境，别说吉祥话"
-  },
-  "quotes": [{"text":"逐字引用的一条发言","why":"为什么挑它，不超过 24 字"}],
-  "advice": "赠言，不超过 30 字。不劝善，不祝福，给他一样能带走的东西",
+  "turn": "说变，2 到 3 句，不超过 160 字",
+  "advice": "赠言，不超过 30 字",
   "accent": "从 amber / rose / mint / indigo / violet / teal 里选一个当报告主色"
 }
 
-traits 给 4 个，分数要拉开，别都堆在七八十分。
-签要像抽出来的，不像量身定做的吉利话；中平、中下也可以，解语要落到实处。"#;
+passages 给 5 到 8 段，其中至少 2 段是 kind 为 quote 的引语，其余是 text。
+段落是一篇文章的段落，前一段的末尾要能接上后一段的开头。"#;
 
-/// 组装下发给模型的素材。统计在前、样本在后，模型先拿到骨架再看原文。
-pub fn user_prompt(material: &Material) -> String {
-    let mut out = String::with_capacity(8_192);
-    out.push_str("【对象】\n");
+/// 组装下发给模型的素材。卦在最前——它先给这件事定框，其余的都在框里读。
+pub fn user_prompt(material: &Material, cast: &Cast) -> String {
+    let mut out = String::with_capacity(12_288);
+
+    out.push_str("【卦】卦已经起好，是照他留下的话与数目起的，不用你再起\n");
+    out.push_str(&format!(
+        "本卦：{}（第 {} 卦，{}）\n",
+        cast.primary.full,
+        cast.primary.number,
+        cast.primary.trigrams()
+    ));
+    out.push_str(&format!("卦辞：{}\n", cast.primary.judgment));
+    out.push_str(&format!("义理：{}\n", cast.primary.sense));
+    out.push_str(&format!(
+        "筮法：大衍筮法，四十九策三变成爻，初爻到上爻的策数为 {}\n",
+        cast.stalks_text()
+    ));
+    let mut titles = cast.changing_titles();
+    if titles.is_empty() {
+        out.push_str("变爻：无\n");
+    } else {
+        for (index, title) in titles.drain(..).enumerate() {
+            let position = cast.changing[index];
+            out.push_str(&format!(
+                "变爻：{}，{}（{}）\n",
+                title, divine::POSITION_SENSE[position], position_label(position)
+            ));
+        }
+    }
+    out.push_str(&format!("占法：{}\n", cast.rule()));
+    if let Some(changed) = cast.changed {
+        out.push_str(&format!(
+            "之卦：{}（第 {} 卦，{}）\n",
+            changed.full, changed.number, changed.trigrams()
+        ));
+        out.push_str(&format!("之卦卦辞：{}\n", changed.judgment));
+        out.push_str(&format!("之卦义理：{}\n", changed.sense));
+    }
+
+    out.push_str("\n【对象】\n");
     out.push_str(&format!("群名片：{}\n", material.name));
     out.push_str(&format!("QQ：{}\n\n", material.user_id));
 
@@ -623,10 +509,15 @@ pub fn user_prompt(material: &Material) -> String {
         out.push_str("（没有可读的发言样本）\n");
     } else {
         for (index, sample) in material.samples.iter().enumerate() {
-            out.push_str(&format!("{}. {}\n", index + 1, sample));
+            let _ = writeln!(out, "{}. {}", index + 1, sample);
         }
     }
     out
+}
+
+fn position_label(index: usize) -> &'static str {
+    const LABELS: [&str; 6] = ["初爻", "二爻", "三爻", "四爻", "五爻", "上爻"];
+    LABELS[index.min(5)]
 }
 
 pub fn system_prompt() -> &'static str {
@@ -637,6 +528,7 @@ pub fn system_prompt() -> &'static str {
 mod tests {
     use super::*;
     use crate::plugins::portrait::collect::{GroupSlice, Kinds};
+    use crate::plugins::portrait::divine;
 
     fn material() -> Material {
         Material {
@@ -681,6 +573,10 @@ mod tests {
         }
     }
 
+    fn cast() -> Cast {
+        divine::cast(&material())
+    }
+
     #[test]
     fn json_is_found_behind_fences_and_chatter() {
         let raw = "好的，这是画像：\n```json\n{\"codename\":\"夜行改稿人\",\"tagline\":\"白天潜水夜里冒泡\"}\n```\n希望有帮助";
@@ -693,176 +589,113 @@ mod tests {
         assert!(parse("我觉得他挺好的").is_err());
     }
 
+    /// 引语必须逐字出自样本；编出来的一句都留不下。批语不受这条限制。
     #[test]
     fn quotes_must_appear_in_the_samples() {
         let persona = Persona {
-            quotes: vec![
-                Quote {
-                    text: "凌晨三点还在改代码，明天又要废了".into(),
-                    why: "原话".into(),
+            passages: vec![
+                Passage {
+                    kind: "text".into(),
+                    body: "他说话像在收尾。".into(),
+                    ..Default::default()
                 },
-                Quote {
+                Passage {
+                    kind: "quote".into(),
+                    text: "凌晨三点还在改代码，明天又要废了".into(),
+                    note: "原话".into(),
+                    ..Default::default()
+                },
+                Passage {
+                    kind: "quote".into(),
                     text: "我从来没说过这句话".into(),
-                    why: "编的".into(),
+                    note: "编的".into(),
+                    ..Default::default()
                 },
             ],
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(persona.quotes.len(), 1);
-        assert!(persona.quotes[0].text.starts_with("凌晨三点"));
+        assert_eq!(persona.passages.len(), 2);
+        assert_eq!(persona.passages[0].kind, "text");
+        assert_eq!(persona.passages[1].kind, "quote");
+        assert!(persona.passages[1].text.starts_with("凌晨三点"));
     }
 
     /// 标点与空白的差别不该让一条真原话被误判成编的。
     #[test]
     fn quotes_tolerate_punctuation_differences() {
         let persona = Persona {
-            quotes: vec![Quote {
+            passages: vec![Passage {
+                kind: "引语".into(),
                 text: "今天这个雨，下得没完没了！".into(),
-                why: "原话".into(),
+                note: "原话".into(),
+                ..Default::default()
             }],
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(persona.quotes.len(), 1);
+        assert_eq!(persona.passages.len(), 1);
+        assert_eq!(persona.passages[0].kind, "quote");
     }
 
+    /// 认不出来的 kind 当批语处理；空的段落一律丢掉。
     #[test]
-    fn overlong_fields_are_clipped_and_scores_clamped() {
+    fn unknown_kinds_become_prose_and_blanks_disappear() {
         let persona = Persona {
-            codename: "这是一个特别特别长的代号".into(),
-            traits: vec![
-                Trait {
-                    name: "话痨".into(),
-                    score: 480.0,
-                    note: "长".repeat(80),
+            passages: vec![
+                Passage {
+                    kind: "段落".into(),
+                    body: "他说事就说事。".into(),
+                    ..Default::default()
                 },
-                Trait {
-                    score: 50.0,
+                Passage {
+                    kind: "text".into(),
+                    body: "   ".into(),
+                    ..Default::default()
+                },
+                Passage {
+                    kind: String::new(),
+                    body: "下一段接着说。".into(),
                     ..Default::default()
                 },
             ],
-            interests: vec!["同一个词".into(), "同一个词".into(), " ".into()],
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(persona.passages.len(), 2);
+        assert!(persona.passages.iter().all(|p| p.kind == "text"));
+        assert_eq!(persona.passages[1].body, "下一段接着说。");
+    }
+
+    #[test]
+    fn overlong_fields_are_clipped_and_passages_are_capped() {
+        let persona = Persona {
+            codename: "这是一个特别特别长的代号".into(),
+            verdict: "长".repeat(600),
+            passages: (0..20)
+                .map(|index| Passage {
+                    kind: "text".into(),
+                    body: format!("第{index}段"),
+                    ..Default::default()
+                })
+                .collect(),
             ..Default::default()
         }
         .sanitize(&material());
         assert_eq!(persona.codename.chars().count(), limit::CODENAME + 1);
-        // 空名字的特质被丢掉。
-        assert_eq!(persona.traits.len(), 1);
-        assert_eq!(persona.traits[0].score, 100.0);
-        assert!(persona.traits[0].note.chars().count() <= limit::TRAIT_NOTE + 1);
-        assert_eq!(persona.interests, vec!["同一个词".to_string()]);
-        // 省略号前不留空白，别剪出「手机 root …」这种断口。
+        assert!(persona.verdict.chars().count() <= limit::VERDICT + 1);
+        assert_eq!(persona.passages.len(), limit::MAX_PASSAGES);
+
         let clipped = Persona {
-            interests: vec!["abcdefghijk lmnop".into()],
-            ..Default::default()
-        }
-        .sanitize(&material());
-        assert_eq!(
-            clipped.interests,
-            vec!["abcdefghij…".to_string()],
-            "按 {} 字收口，省略号前不留空白",
-            limit::INTEREST
-        );
-    }
-
-    /// 三面侧写无论如何都要落在固定的三个位置上：键名写对、写别名、乱写都能兜住。
-    #[test]
-    fn facets_land_on_the_three_fixed_slots() {
-        let named = Persona {
-            facets: vec![
-                Facet {
-                    key: "人群".into(),
-                    title: "他不抢话".into(),
-                    body: "只在有人问到的时候接一句。".into(),
-                },
-                Facet {
-                    key: "立身：与劳作的关系".into(),
-                    title: "把手艺当退路".into(),
-                    body: "写代码的时候最安静。".into(),
-                },
-            ],
-            ..Default::default()
-        }
-        .sanitize(&material());
-        assert_eq!(named.facets.len(), 3);
-        // 名字认得出，就按名字归位，不按顺序。
-        assert_eq!(named.facets[0].title, "把手艺当退路");
-        assert_eq!(named.facets[2].title, "他不抢话");
-        // 缺的一面留空，版面自己会隐去。
-        assert!(named.facets[1].title.is_empty());
-        assert_eq!(named.live_facets().count(), 2);
-
-        // 键名全认不出时按出现顺序补位。
-        let unnamed = Persona {
-            facets: vec![
-                Facet {
-                    key: String::new(),
-                    title: "甲".into(),
-                    body: String::new(),
-                },
-                Facet {
-                    key: String::new(),
-                    title: "乙".into(),
-                    body: String::new(),
-                },
-                Facet {
-                    key: String::new(),
-                    title: "丙".into(),
-                    body: String::new(),
-                },
-                Facet {
-                    key: String::new(),
-                    title: "丁".into(),
-                    body: String::new(),
-                },
-            ],
-            ..Default::default()
-        }
-        .sanitize(&material());
-        assert_eq!(
-            unnamed
-                .facets
-                .iter()
-                .map(|facet| facet.title.as_str())
-                .collect::<Vec<_>>(),
-            vec!["甲", "乙", "丙"]
-        );
-        // 键名由本层统一写死，不采信模型。
-        assert!(unnamed.facets.iter().all(|f| FACET_KEYS.contains(&f.key.as_str())));
-    }
-
-    /// 签等只认白名单，乱写的退回中平；签号越界会被夹回来。
-    #[test]
-    fn lots_are_whitelisted_and_clamped() {
-        let persona = Persona {
-            lot: Lot {
-                no: 480,
-                grade: "大凶".into(),
-                verse: (0..6).map(|i| format!("第{i}句")).collect(),
-                reading: "长".repeat(200),
-            },
-            ..Default::default()
-        }
-        .sanitize(&material());
-        assert_eq!(persona.lot.no, 100);
-        assert_eq!(persona.lot.grade, "中平");
-        assert_eq!(persona.lot.verse.len(), limit::MAX_VERSE);
-        assert!(persona.lot.reading.chars().count() <= limit::READING + 1);
-        assert!(persona.has_lot());
-
-        // 认得出签等就留原样。
-        let graded = Persona {
-            lot: Lot {
-                grade: "上吉".into(),
+            passages: vec![Passage {
+                kind: "text".into(),
+                body: "字".repeat(900),
                 ..Default::default()
-            },
+            }],
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(graded.lot.grade, "上吉");
-        // 没写签号时按用户号定一个，1 到 100 之间。
-        assert!((1..=100).contains(&graded.lot.no));
+        assert!(clipped.passages[0].body.chars().count() <= limit::PASSAGE + 1);
     }
 
     #[test]
@@ -881,40 +714,75 @@ mod tests {
         assert_eq!(Accent::ALL.len(), 6);
     }
 
+    /// 兜底画像带着真卦：模型不接，卦仍在，且引语一定出自样本。
     #[test]
-    fn the_statistical_fallback_is_readable_on_its_own() {
-        let persona = Persona::from_stats(&material());
+    fn the_fallback_keeps_the_hexagram_and_a_real_quote() {
+        let material = material();
+        let cast = cast();
+        let persona = Persona::from_stats(&material, &cast);
         assert!(persona.estimated);
-        assert_eq!(persona.traits.len(), 4);
-        assert!(persona.traits.iter().all(|t| (4.0..=99.0).contains(&t.score)));
-        assert_eq!(persona.quotes.len(), 2);
-        assert_eq!(persona.facets.len(), 3);
-        assert_eq!(
-            persona
-                .facets
+        assert!(persona.verdict.contains(&cast.primary.full));
+        assert!(persona.passages.len() >= 2);
+        assert!(persona.live_passages().count() >= 2);
+        assert!(persona.verdict.contains("400"));
+        let quotes: Vec<&Passage> = persona
+            .passages
+            .iter()
+            .filter(|passage| passage.is_quote())
+            .collect();
+        assert_eq!(quotes.len(), 1);
+        assert!(
+            material
+                .samples
                 .iter()
-                .map(|facet| facet.key.as_str())
-                .collect::<Vec<_>>(),
-            FACET_KEYS.to_vec()
+                .any(|sample| sample.contains(&quotes[0].text))
         );
-        assert!(persona.facets.iter().all(|facet| !facet.body.is_empty()));
-        assert!(persona.summary.contains("400"));
-        assert!(persona.has_lot());
-        assert!(Accent::from_name(&persona.accent).is_some());
     }
 
+    /// 提示词要把卦摆在最前，连同卦辞、义理、策数、变爻与占法一起下发。
     #[test]
-    fn the_prompt_carries_both_numbers_and_samples() {
-        let prompt = user_prompt(&material());
+    fn the_prompt_opens_with_the_hexagram() {
+        let material = material();
+        let cast = cast();
+        let prompt = user_prompt(&material, &cast);
+        assert!(prompt.starts_with("【卦】"));
+        assert!(prompt.contains(&cast.primary.full));
+        assert!(prompt.contains(cast.primary.judgment));
+        assert!(prompt.contains("大衍筮法"));
+        assert!(prompt.contains(&cast.stalks_text()));
+        assert!(prompt.contains(cast.rule()));
         assert!(prompt.contains("群聊发言 400 条"));
         assert!(prompt.contains("凌晨三点还在改代码"));
         assert!(prompt.contains("高频词"));
-        // 提示词要点：三种眼光、逐字引用、白描。
+
         let system = system_prompt();
-        assert!(system.contains("立身"));
-        assert!(system.contains("心相"));
-        assert!(system.contains("人群"));
+        // 提示词要点：卦是人、卦是变化、一篇不是清单、逐字引用、白描。
+        assert!(system.contains("卦就是人"));
+        assert!(system.contains("卦是变化"));
+        assert!(system.contains("不是一份清单"));
         assert!(system.contains("逐字"));
         assert!(system.contains("白描"));
+    }
+
+    /// 有变爻时，变爻的爻题与爻位之义都要下发；有之卦时，之卦的卦辞也要。
+    #[test]
+    fn moving_lines_and_the_changed_hexagram_are_spelled_out() {
+        let material = material();
+        // 找一个有变爻的种子。
+        let mut seed = 1u64;
+        let cast = loop {
+            let candidate = divine::cast_from(seed);
+            if !candidate.changing.is_empty() && candidate.changed.is_some() {
+                break candidate;
+            }
+            seed += 1;
+        };
+        let prompt = user_prompt(&material, &cast);
+        for title in cast.changing_titles() {
+            assert!(prompt.contains(&title), "缺少变爻 {title}");
+        }
+        let changed = cast.changed.unwrap();
+        assert!(prompt.contains(&format!("之卦：{}", changed.full)));
+        assert!(prompt.contains(changed.judgment));
     }
 }

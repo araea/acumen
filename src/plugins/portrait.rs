@@ -1,9 +1,13 @@
-//! 用户画像：读一个群成员的历史发言，生成一份图文报告。
+//! 用户画像：读一个群成员的历史发言，为他起一卦，写一份图文报告。
 //!
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
-//! 报告由三段拼成——[`collect`] 从库里取出可统计的事实与发言样本，
-//! [`persona`] 把素材交给模型换回一份结构化画像（模型不接时用统计量兜底），
-//! [`card`] 排成一张 HTML 报告图；[`avatar`] 取对象的 QQ 头像配在报告开头。
+//! 报告由四段拼成——[`collect`] 从库里取出可统计的事实与发言样本，[`divine`] 用
+//! 大衍筮法从这些素材里起出本卦、变爻与之卦，[`persona`] 把卦与素材交给模型换回
+//! 一份画像（模型不接时只留卦象与数字），[`card`] 排成一张 HTML 报告图；
+//! [`avatar`] 取对象的 QQ 头像配在报告开头。
+//!
+//! 卦不由模型决定，这是这份报告的骨头：同一个人、同一批素材起出来的是同一卦，
+//! 模型只负责把卦落在他身上。
 //!
 //! 两处刻意的保护：同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，
 //! 免得群里连着刷。这两道闸只影响发指令的人，不影响其它功能。
@@ -11,10 +15,10 @@
 pub mod avatar;
 pub mod card;
 pub mod collect;
+pub mod divine;
 pub mod persona;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::command::strip_prefix;
 use crate::config::build_config;
 use crate::event::{Context, EventType};
 use crate::message::Message;
@@ -92,12 +96,16 @@ pub fn validate_config(value: &Value) -> Result<(), String> {
 // ================= 指令解析 =================
 
 /// 画像的别名。长的写在前面，前缀匹配才不会被短的抢走。
-const KEYWORDS: [&str; 6] = [
+const KEYWORDS: [&str; 10] = [
     "用户画像报告",
+    "易经画像",
     "用户画像",
     "人物画像",
     "我的画像",
     "画像报告",
+    "卜卦",
+    "起卦",
+    "算卦",
     "画像",
 ];
 
@@ -121,6 +129,10 @@ pub enum Request {
 /// 判定很严：关键词之后只允许空白、`@`、一串数字，或者「报告」两个字。宁可漏认，
 /// 也不要在日常闲聊里把「画像」这个普通词吃掉——群里说一句「这游戏的画像有点丑」
 /// 不该触发一次模型调用。
+///
+/// 唯一的例外是消息里带了明确的 `@`：平台会把「@某人的名字」也写进文本段，
+/// 于是关键词后面跟的常常是「黑猫警长」加他随口的半句话。目标是谁已经写在
+/// `mentions` 里，这时候不再挑剔后面那点尾巴。
 pub fn parse_command(content: &str, mentions: &[Mention]) -> Option<Request> {
     let compact: String = crate::plugins::oai::utils::normalize(content)
         .chars()
@@ -132,7 +144,7 @@ pub fn parse_command(content: &str, mentions: &[Mention]) -> Option<Request> {
     let rest = rest.trim_start_matches('@');
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     let tail = rest[digits.len()..].trim();
-    if !tail.is_empty() && tail != "报告" {
+    if !tail.is_empty() && tail != "报告" && mentions.is_empty() {
         return None;
     }
     if let Some(mention) = mentions.first() {
@@ -146,10 +158,40 @@ pub fn parse_command(content: &str, mentions: &[Mention]) -> Option<Request> {
     Some(Request::Mine)
 }
 
+/// 取出指令正文。
+///
+/// 平台把「@某人」的名字也写进文本段，于是群里看到的正文常常长这样：
+/// 「/画像 @小黑 你说呢」或者「@小黑 /画像」。前一种靠前缀剥离就够，
+/// 后一种的前缀躲在这个名字后面，得跳过名字再剥一次。
+fn command_body<'a>(ctx: &Context, text: &'a str) -> Option<&'a str> {
+    body_after_prefixes(&crate::command::get_prefixes(ctx), text)
+}
+
+/// [`command_body`] 的本体，抽出来是为了能单测。语义与 `command::strip_prefix` 一致，
+/// 只在剥不动的时候多试一次「跳过开头那个 @名字」。
+fn body_after_prefixes<'a>(prefixes: &[String], text: &'a str) -> Option<&'a str> {
+    let strip = |value: &'a str| -> Option<&'a str> {
+        let value = value.trim();
+        if prefixes.is_empty() {
+            return Some(value);
+        }
+        prefixes
+            .iter()
+            .find_map(|p| value.strip_prefix(p.as_str()).map(|rest| rest.trim_start()))
+    };
+    if let Some(rest) = strip(text) {
+        return Some(rest);
+    }
+    let rest = text.trim_start().strip_prefix('@')?;
+    let boundary = rest.find(char::is_whitespace)?;
+    strip(&rest[boundary..])
+}
+
 /// 从事件的消息段里取出纯文本与 @ 目标。
 ///
 /// 直接用 `raw_message` 不行：它把 @ 渲染成一个名字，关键词就不在开头了，
 /// 前缀匹配会失效。这里跳过 @ 与引用段自己拼文本，顺带把 @ 的目标捞出来。
+/// **注意平台不填 `name`**，@ 的显示名字会混在文本段里，由 [`parse_command`] 容忍。
 ///
 /// `me` 是机器人自己的 QQ 号：群里喊指令习惯先 @ 一下机器人，那个 @ 不是画像的
 /// 对象，要排除掉，否则「@机器人 画像」会去分析机器人自己。
@@ -165,7 +207,12 @@ fn read_message(event: &crate::event::Event, me: Option<i64>) -> (String, Vec<Me
         match kind {
             "text" => text.push_str(data.and_then(|d| d.get_str("text")).unwrap_or_default()),
             "at" => {
-                let qq = data.and_then(|d| d.get_str("qq")).unwrap_or_default();
+                // qq 可能是字符串，也可能是数字，与 command.rs 里的取法保持一致。
+                let qq = data
+                    .and_then(|d| d.get_str("qq").map(str::to_string))
+                    .or_else(|| data.and_then(|d| d.get_i64("qq")).map(|v| v.to_string()))
+                    .or_else(|| data.and_then(|d| d.get_u64("qq")).map(|v| v.to_string()))
+                    .unwrap_or_default();
                 if qq.eq_ignore_ascii_case("all") {
                     continue;
                 }
@@ -259,7 +306,7 @@ pub fn handle(
         };
 
         let (text, mentions) = read_message(event, ctx.bot.login_user.get().id.parse::<i64>().ok());
-        let Some(content) = strip_prefix(&ctx, &text) else {
+        let Some(content) = command_body(&ctx, &text) else {
             return Ok(Some(ctx));
         };
         let Some(request) = parse_command(content, &mentions) else {
@@ -322,7 +369,7 @@ pub fn handle(
             group_id,
             requester,
             message_id,
-            format!("正在翻 {who} 的发言记录…"),
+            format!("正在翻 {who} 的发言记录，起一卦…"),
         )
         .await;
 
@@ -365,6 +412,18 @@ pub fn handle(
             }
         };
 
+        // 卦先起出来：它不依赖模型，是这份报告的骨头。模型整个不接时，
+        // 用户拿到的仍是一张真卦，缺的只是批语。
+        let cast = divine::cast(&material);
+        info!(
+            target: LOG_TARGET,
+            "起卦：{}（第 {} 卦），变爻 {} 处，之卦 {}",
+            cast.primary.full,
+            cast.primary.number,
+            cast.changing.len(),
+            cast.changed.map(|hex| hex.full).unwrap_or("无")
+        );
+
         let (base, key, model) = match endpoint(&ctx, &config.model).await {
             Ok(triple) => triple,
             Err(error) => {
@@ -388,7 +447,9 @@ pub fn handle(
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(
+                    &material, &cast,
+                )))],
             },
         ];
         let completion = tokio::time::timeout(
@@ -407,17 +468,17 @@ pub fn handle(
             Ok(Ok(raw)) => match persona::parse(&raw) {
                 Ok(parsed) => parsed.sanitize(&material),
                 Err(error) => {
-                    warn!(target: LOG_TARGET, "画像 JSON 解析失败，改用统计版：{error:#}");
-                    persona::Persona::from_stats(&material)
+                    warn!(target: LOG_TARGET, "画像 JSON 解析失败，只留卦象：{error:#}");
+                    persona::Persona::from_stats(&material, &cast)
                 }
             },
             Ok(Err(error)) => {
-                warn!(target: LOG_TARGET, "模型调用失败，改用统计版：{error:#}");
-                persona::Persona::from_stats(&material)
+                warn!(target: LOG_TARGET, "模型调用失败，只留卦象：{error:#}");
+                persona::Persona::from_stats(&material, &cast)
             }
             Err(_) => {
-                warn!(target: LOG_TARGET, "模型调用超过 {} 秒，改用统计版", COMPLETION_TIMEOUT.as_secs());
-                persona::Persona::from_stats(&material)
+                warn!(target: LOG_TARGET, "模型调用超过 {} 秒，只留卦象", COMPLETION_TIMEOUT.as_secs());
+                persona::Persona::from_stats(&material, &cast)
             }
         };
 
@@ -425,6 +486,7 @@ pub fn handle(
         let view = card::View {
             material: &material,
             persona: &profile,
+            cast: &cast,
             avatar: avatar.as_deref(),
             model: &model,
             theme: &config.theme,
@@ -442,7 +504,7 @@ pub fn handle(
             Err(error) => {
                 error!(target: LOG_TARGET, "画像出图失败：{error:#}");
                 // 出图失败不该等于没有结果：把报告里的关键几行退回成文字。
-                let summary = text_report(&material, &profile, &model);
+                let summary = text_report(&material, &profile, &cast, &model);
                 say(&ctx, writer, group_id, requester, message_id, summary).await;
             }
         }
@@ -497,42 +559,75 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 出图失败时的文字版：留下代号、总评、三面侧写与签，
+/// 出图失败时的文字版：卦、总断、详批、之变与赠言，
 /// 够用户在群里看懂结论，不至于因为一张图没出成就什么都拿不到。
 fn text_report(
     material: &collect::Material,
     profile: &persona::Persona,
+    cast: &divine::Cast,
     model: &str,
 ) -> String {
     let mut out = format!(
-        "【{}】{}\n{}\n",
-        profile.codename, profile.tagline, profile.summary
+        "【{}】{}\n\n",
+        profile.codename, profile.tagline
     );
-    for facet in profile.live_facets() {
-        if !facet.title.trim().is_empty() {
-            out.push_str(&format!("\n{}｜{}\n", facet.key, facet.title));
-        }
-        if !facet.body.trim().is_empty() {
-            out.push_str(&format!("{}\n", facet.body));
-        }
+
+    out.push_str(&format!(
+        "〖卦〗{}（第 {} 卦，{}）\n{}\n{}\n\
+         起卦：大衍筮法，四十九策三变成爻，得策 {}（初爻至上爻）\n",
+        cast.primary.full,
+        cast.primary.number,
+        cast.primary.trigrams(),
+        cast.primary.judgment,
+        cast.primary.sense,
+        cast.stalks_text()
+    ));
+    if cast.changing.is_empty() {
+        out.push_str("变爻：六爻皆静，无动\n");
+    } else {
+        let moving: Vec<String> = cast
+            .changing
+            .iter()
+            .map(|index| {
+                let title = divine::line_title(*index, cast.lines[*index].yang());
+                format!("{title}（{}）", divine::POSITION_SENSE[*index])
+            })
+            .collect();
+        out.push_str(&format!("变爻：{}\n", moving.join("；")));
     }
-    for item in profile.traits.iter().take(4) {
-        out.push_str(&format!("· {} {:.0}｜{}\n", item.name, item.score, item.note));
-    }
-    if profile.has_lot() {
+    if let Some(changed) = cast.changed {
         out.push_str(&format!(
-            "\n第 {} 签 · {}｜{}\n{}\n",
-            profile.lot.no,
-            profile.lot.grade,
-            profile.lot.verse.join("，"),
-            profile.lot.reading
+            "之卦：{} —— {}\n{}\n",
+            changed.full, changed.judgment, changed.sense
         ));
     }
-    if let Some(quote) = profile.quotes.first() {
-        out.push_str(&format!("「{}」\n", quote.text));
+    out.push_str(&format!("占法：{}\n", cast.rule()));
+
+    if !profile.verdict.trim().is_empty() {
+        out.push_str(&format!("\n〖总断〗\n{}\n", profile.verdict));
+    }
+    let passages: Vec<&persona::Passage> = profile.live_passages().collect();
+    if !passages.is_empty() {
+        out.push_str("\n〖详批〗\n");
+        for passage in passages {
+            if passage.is_quote() {
+                out.push_str(&format!("　「{}」\n", passage.text));
+                if !passage.note.trim().is_empty() {
+                    out.push_str(&format!("　——{}\n", passage.note));
+                }
+            } else {
+                out.push_str(&format!("{}\n", passage.body));
+            }
+        }
+    }
+    if !profile.turn.trim().is_empty() {
+        out.push_str(&format!("\n〖之变〗\n{}\n", profile.turn));
+    }
+    if !profile.advice.trim().is_empty() {
+        out.push_str(&format!("\n赠言：{}\n", profile.advice));
     }
     out.push_str(&format!(
-        "共 {} 条发言，覆盖 {} 天。\n出图失败，先给你一份文字版（{}）。",
+        "\n共 {} 条发言，覆盖 {} 天。出图失败，先给你一份文字版（{}）。",
         material.total,
         material.span_days(),
         model
@@ -629,12 +724,28 @@ mod live_tests {
             .expect("查询失败")
             .expect("这个人没有群聊记录");
 
+        let cast = divine::cast(&material);
+        println!(
+            "===== 起卦 =====\n本卦 {}（第 {} 卦，{}）\n{}\n{}\n得策 {}\n变爻 {:?}\n之卦 {}\n占法 {}",
+            cast.primary.full,
+            cast.primary.number,
+            cast.primary.trigrams(),
+            cast.primary.judgment,
+            cast.primary.sense,
+            cast.stalks_text(),
+            cast.changing_titles(),
+            cast.changed.map(|hex| hex.full).unwrap_or("无"),
+            cast.rule(),
+        );
+
         let history = vec![
             LlmMessage::System {
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(
+                    &material, &cast,
+                )))],
             },
         ];
         let raw = crate::plugins::oai::llm::complete(&base, &key, &model, history, Some("high"))
@@ -646,45 +757,39 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n代号：{}\n题记：{}\n总评：{}\n侧写：{}\n刻度：{:?}\n常谈：{:?}\n签：第 {} 签 · {}｜{}\n{}\n引语：{:?}",
+            "===== 收口后的画像 =====\n代号：{}\n题记：{}\n总断：{}\n详批：\n{}\n之变：{}\n赠言：{}",
             profile.codename,
             profile.tagline,
-            profile.summary,
+            profile.verdict,
             profile
-                .live_facets()
-                .map(|facet| format!("{}｜{}：{}", facet.key, facet.title, facet.body))
+                .live_passages()
+                .map(|passage| if passage.is_quote() {
+                    format!("　「{}」——{}", passage.text, passage.note)
+                } else {
+                    format!("　{}", passage.body)
+                })
                 .collect::<Vec<_>>()
-                .join("\n      "),
-            profile
-                .traits
-                .iter()
-                .map(|item| format!("{} {:.0}", item.name, item.score))
-                .collect::<Vec<_>>(),
-            profile.interests,
-            profile.lot.no,
-            profile.lot.grade,
-            profile.lot.verse.join("，"),
-            profile.lot.reading,
-            profile
-                .quotes
-                .iter()
-                .map(|quote| quote.text.clone())
-                .collect::<Vec<_>>(),
+                .join("\n"),
+            profile.turn,
+            profile.advice,
         );
         assert!(!profile.codename.is_empty(), "代号不该是空的");
-        assert!(!profile.traits.is_empty(), "刻度不该是空的");
-        assert_eq!(profile.facets.len(), 3, "三面侧写要占满固定位置");
+        assert!(!profile.verdict.is_empty(), "总断不该是空的");
+        assert!(!profile.turn.is_empty(), "之变不该是空的");
         assert!(
-            profile.live_facets().count() >= 2,
-            "至少要有两面侧写写出来了"
+            profile.live_passages().count() >= 4,
+            "详批至少要有四段，这次只有 {} 段",
+            profile.live_passages().count()
         );
-        assert!(profile.has_lot(), "签不该是空的");
         // 引语是被比对过的：要么没有，要么每一句都是原话。
-        for quote in &profile.quotes {
+        for passage in profile.live_passages().filter(|passage| passage.is_quote()) {
             assert!(
-                material.samples.iter().any(|sample| sample.contains(&quote.text)),
+                material
+                    .samples
+                    .iter()
+                    .any(|sample| sample.contains(&passage.text)),
                 "引语不在样本里：{}",
-                quote.text
+                passage.text
             );
         }
 
@@ -692,6 +797,7 @@ mod live_tests {
         let html = card::html(&card::View {
             material: &material,
             persona: &profile,
+            cast: &cast,
             avatar: avatar.as_deref(),
             model: &model,
             theme: "auto",
@@ -877,6 +983,78 @@ mod tests {
         assert!(mentions.is_empty());
     }
 
+    /// 这是线上真实踩到的那一条：平台把「@某人的名字」也写进了文本段，
+    /// 于是正文成了「/画像  @黑猫警长 职业目标是抓捕萨摩耶」，尾巴把那道严格的
+    /// 校验顶掉了，指令整条不生效（2026-09-14 群 818965288 的日志）。
+    #[test]
+    fn a_mention_whose_name_leaks_into_the_body_still_fires() {
+        let event: crate::event::Event = simd_json::serde::to_owned_value(serde_json::json!({
+            "post_type": "message",
+            "message": [
+                {"type": "text", "data": {"text": "/画像  "}},
+                {"type": "at", "data": {"qq": "3201735089"}},
+                {"type": "text", "data": {"text": "@爱捡漏的黑猫警长 职业目标是抓捕萨摩耶"}},
+            ]
+        }))
+        .unwrap();
+        let (text, mentions) = read_message(&event, Some(3373167460));
+        assert_eq!(mentions.len(), 1);
+        assert_eq!(mentions[0].user_id, 3201735089);
+
+        let prefixes = vec!["/".to_string()];
+        let body = body_after_prefixes(&prefixes, &text).expect("前缀应当剥得掉");
+        assert_eq!(
+            parse_command(body, &mentions),
+            Some(Request::Other(3201735089, None))
+        );
+        // 同一个正文，没有 @ 时照旧不算指令。
+        assert_eq!(parse_command(body, &[]), None);
+    }
+
+    /// 前缀躲在「@名字」后面时也要认。
+    #[test]
+    fn the_prefix_may_hide_behind_a_leading_mention() {
+        let prefixes = vec!["/".to_string()];
+        assert_eq!(body_after_prefixes(&prefixes, "@小黑 /画像"), Some("画像"));
+        assert_eq!(
+            body_after_prefixes(&prefixes, "/画像 @小黑"),
+            Some("画像 @小黑")
+        );
+        assert_eq!(body_after_prefixes(&prefixes, "  /画像  "), Some("画像"));
+        // 剥不出前缀就是普通聊天。
+        assert_eq!(body_after_prefixes(&prefixes, "@小黑 你好"), None);
+        assert_eq!(body_after_prefixes(&prefixes, "你好"), None);
+        // 名字后面没有空白，认不出边界，就不硬猜。
+        assert_eq!(body_after_prefixes(&prefixes, "@小黑/画像"), None);
+        // 没配前缀时整条消息就是正文，与 command::strip_prefix 的语义一致。
+        assert_eq!(body_after_prefixes(&[], "画像 @小黑"), Some("画像 @小黑"));
+    }
+
+    /// @ 段里的 qq 可能是字符串也可能是数字，两种都要认得。
+    #[test]
+    fn a_numeric_qq_is_read_as_well_as_a_string_one() {
+        let event: crate::event::Event = simd_json::serde::to_owned_value(serde_json::json!({
+            "post_type": "message",
+            "message": [
+                {"type": "text", "data": {"text": "画像"}},
+                {"type": "at", "data": {"qq": 3201735089_u64}},
+            ]
+        }))
+        .unwrap();
+        let (text, mentions) = read_message(&event, None);
+        assert_eq!(
+            mentions,
+            vec![Mention {
+                user_id: 3201735089,
+                name: None
+            }]
+        );
+        assert_eq!(
+            parse_command(&text, &mentions),
+            Some(Request::Other(3201735089, None))
+        );
+    }
+
     #[test]
     fn the_window_starts_at_the_first_record_by_default() {
         assert_eq!(window_start(0, 1_700_000_000), 0);
@@ -903,6 +1081,23 @@ mod tests {
         assert!(matches!(enter(user_id, Duration::ZERO), Entry::Go(_)));
     }
 
+    /// 卦的别名也要认：用户会直接说「算卦」「起卦」。
+    #[test]
+    fn the_hexagram_aliases_are_commands_too() {
+        for input in ["算卦", "起卦", "卜卦", "易经画像"] {
+            assert_eq!(parse_command(input, &[]), Some(Request::Mine), "{input}");
+        }
+        let mentions = [mention(10001, "某人")];
+        assert_eq!(
+            parse_command("算卦", &mentions),
+            Some(Request::Other(10001, Some("某人".to_string())))
+        );
+        // 闲聊里说到这两个词不算指令。
+        for input in ["你会算卦吗", "起卦了吗", "算卦的"] {
+            assert_eq!(parse_command(input, &[]), None, "{input}");
+        }
+    }
+
     #[test]
     fn the_text_report_carries_the_conclusion() {
         let material = crate::plugins::portrait::collect::Material {
@@ -921,39 +1116,40 @@ mod tests {
             words: Vec::new(),
             samples: Vec::new(),
         };
+        let cast = divine::cast(&material);
         let profile = persona::Persona {
             codename: "夜行改稿人".into(),
             tagline: "白天潜水夜里冒泡".into(),
-            summary: "话不多。".into(),
-            facets: vec![persona::Facet {
-                key: "立身".into(),
-                title: "把手艺当退路".into(),
-                body: "他把手艺当退路。".into(),
-            }],
-            traits: vec![persona::Trait {
-                name: "夜行".into(),
-                score: 90.0,
-                note: "深夜说话".into(),
-            }],
-            lot: persona::Lot {
-                no: 7,
-                grade: "中平".into(),
-                verse: vec!["且慢".into(), "再看".into()],
-                reading: "不急。".into(),
-            },
-            quotes: vec![persona::Quote {
-                text: "三点还在改".into(),
-                why: "很有他".into(),
-            }],
+            verdict: "屯是开头难。".into(),
+            passages: vec![
+                persona::Passage {
+                    kind: "text".into(),
+                    body: "他把手艺当退路。".into(),
+                    ..Default::default()
+                },
+                persona::Passage {
+                    kind: "quote".into(),
+                    text: "三点还在改".into(),
+                    note: "很有他".into(),
+                    ..Default::default()
+                },
+            ],
+            turn: "他不动的那一爻在最底下。".into(),
+            advice: "少熬点夜。".into(),
             ..Default::default()
         };
-        let report = text_report(&material, &profile, "deepseek/deepseek-flash");
+        let report = text_report(&material, &profile, &cast, "deepseek/deepseek-flash");
         assert!(report.contains("夜行改稿人"));
-        assert!(report.contains("夜行 90"));
         assert!(report.contains("三点还在改"));
         assert!(report.contains("100 条发言"));
-        // 三面侧写与那一签也要跟着落到文字版里。
-        assert!(report.contains("立身｜把手艺当退路"));
-        assert!(report.contains("第 7 签 · 中平"));
+        // 卦、总断、详批、之变与赠言都要跟着落到文字版里。
+        assert!(report.contains(&format!("〖卦〗{}", cast.primary.full)));
+        assert!(report.contains("大衍筮法"));
+        assert!(report.contains(&cast.stalks_text()));
+        assert!(report.contains(cast.rule()));
+        assert!(report.contains("〖总断〗"));
+        assert!(report.contains("〖详批〗"));
+        assert!(report.contains("〖之变〗"));
+        assert!(report.contains("少熬点夜。"));
     }
 }

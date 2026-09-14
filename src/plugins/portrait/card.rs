@@ -1,20 +1,24 @@
 //! 画像报告卡（HTML → 截图）。
 //!
-//! 版式按「一封信」来排，不按「仪表盘」来排：先给判断，再给三面侧写，
-//! 侧写后面落一签，最后才是刻度、引语与节律这些旁证。正文 19.5—20.5px、
-//! 行高 1.8—1.85、版心 720px，中文一行约 30 字；显示级的文字用衬线（签诗、
-//! 代号、引语），余下用无衬线，保证手机上缩略图能读出标题、点开长文不累。
+//! 版式按「一卦一判」来排，不按仪表盘来排：先落卦象，再给总断，然后是详批，
+//! 末了说一句变。读数的数字只做旁证，收在最上面一行，不另占版面。
+//!
+//! 卦象是这张卡上唯一的图形：六爻自下而上，阳爻一整划、阴爻断开，动的那一爻上色。
+//! 它替代了从前的刻度条与 24 小时柱状图——那些是把一个人拆成指标，这一张是把一个人
+//! 收成一件事。
 //!
 //! 约束与本仓库其它卡片一致：不加载任何外部资源（字体、图片、脚本都不引；
 //! 头像由 [`super::avatar`] 先下回来，以 data URL 内嵌），所有动态文本一律转义，
 //! 出图走 `TabGuard` 并在 45 秒处兜底。
 
 use super::collect::Material;
+use super::divine::{Cast, POSITION_SENSE};
 use super::persona::Persona;
 use crate::render::web::TabGuard;
 use anyhow::Result;
 use cdp_html_shot::{Browser, CaptureOptions, Viewport};
 use chrono::{DateTime, FixedOffset, Timelike, Utc};
+use std::fmt::Write as _;
 use std::time::Duration;
 
 /// 卡片渲染宽度（CSS 像素）。出图宽度 = `WIDTH × scale`。
@@ -50,9 +54,9 @@ impl Theme {
   --subtle:#5C554C;--muted:#6E675D;--faint:#8A8276;
   --line:rgba(28,26,23,.10);--strong-line:rgba(28,26,23,.15);
   --panel:rgba(28,26,23,.032);--panel-border:rgba(28,26,23,.075);
-  --chip:rgba(28,26,23,.05);--track:rgba(28,26,23,.08);
+  --track:rgba(28,26,23,.08);
   --pattern:rgba(28,26,23,.028);--shadow:0 18px 44px rgba(40,32,20,.12);
-  --glow-alpha:.10;--chip-alpha:.09;--quote-alpha:.05;--bar-alpha:.15"#
+  --glow-alpha:.10;--chip-alpha:.09;--bar-alpha:.15"#
             }
             Theme::Dark => {
                 r#"color-scheme:dark;
@@ -61,9 +65,9 @@ impl Theme {
   --subtle:#A8A198;--muted:#99928A;--faint:#837C74;
   --line:rgba(240,236,228,.09);--strong-line:rgba(240,236,228,.14);
   --panel:rgba(240,236,228,.05);--panel-border:rgba(240,236,228,.10);
-  --chip:rgba(240,236,228,.07);--track:rgba(240,236,228,.10);
+  --track:rgba(240,236,228,.10);
   --pattern:rgba(240,236,228,.024);--shadow:0 18px 48px rgba(0,0,0,.34);
-  --glow-alpha:.09;--chip-alpha:.12;--quote-alpha:.055;--bar-alpha:.20"#
+  --glow-alpha:.09;--chip-alpha:.12;--bar-alpha:.20"#
             }
         }
     }
@@ -97,27 +101,6 @@ fn fmt_num(value: u64) -> String {
     out
 }
 
-/// 签号写成汉字，第 47 签比第 47 个数字更像一支签。
-fn cn_num(value: i64) -> String {
-    const DIGITS: [&str; 10] = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
-    let value = value.clamp(1, 100);
-    if value == 100 {
-        return "一百".to_string();
-    }
-    let (tens, ones) = (value / 10, value % 10);
-    let mut out = String::new();
-    if tens > 0 {
-        if tens > 1 {
-            out.push_str(DIGITS[tens as usize]);
-        }
-        out.push('十');
-    }
-    if ones > 0 {
-        out.push_str(DIGITS[ones as usize]);
-    }
-    out
-}
-
 fn stamp(now: DateTime<FixedOffset>) -> String {
     now.format("%Y-%m-%d %H:%M").to_string()
 }
@@ -141,6 +124,8 @@ fn initial(name: &str) -> String {
 pub struct View<'a> {
     pub material: &'a Material,
     pub persona: &'a Persona,
+    /// 起好的那一卦。卦不来自模型，由 [`super::divine`] 从素材起出。
+    pub cast: &'a Cast,
     /// 对象头像的 data URL，见 [`super::avatar`]；取不到时是 `None`，改用名字首字。
     pub avatar: Option<&'a str>,
     pub model: &'a str,
@@ -155,15 +140,12 @@ pub fn html(view: &View<'_>) -> String {
     let theme = Theme::resolve(view.theme, view.now);
     let accent = view.persona.accent(view.material.user_id);
     let dark = theme == Theme::Dark;
-    // 显示级的文字用衬线：签诗、代号、引语、赠言。Android/Surface 上常见的
+    // 显示级的文字用衬线：卦名、爻题、代号、卦辞、批语、引语。Android/Surface 上常见的
     // 中宋是 Noto Serif CJK 与 OPPO Serif，兜底再退到系统 serif。
     let serif = r#"--serif:"Noto Serif CJK SC","OPPO Serif SC","Source Han Serif SC","Songti SC","Noto Serif SC",Georgia,"Times New Roman",serif;"#;
     let css = format!(":root{{{serif}{}}}\n{CSS}", theme.vars())
         .replace("__ACCENT__", accent.hex(dark))
         .replace("__RGB__", accent.rgb(dark));
-
-    let material = view.material;
-    let persona = view.persona;
 
     format!(
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -172,30 +154,24 @@ pub fn html(view: &View<'_>) -> String {
 {eyebrow}
 {hero}
 {codename}
-{lead}
 {readings}
-{facets}
-{lot}
-{traits}
-{interests}
-{quotes}
-{rhythm}
+{hexagram}
+{verdict}
+{passages}
+{turn}
 {advice}
 {foot}
 </div></div></body></html>"#,
         css = css,
         eyebrow = eyebrow(view),
         hero = hero(view),
-        codename = codename(persona),
-        lead = lead(&persona.summary),
-        readings = readings(material),
-        facets = facets(persona),
-        lot = lot(persona),
-        traits = traits(&persona.traits),
-        interests = interests(&persona.interests),
-        quotes = quotes(&persona.quotes),
-        rhythm = rhythm(view),
-        advice = advice(&persona.advice),
+        codename = codename(view.persona),
+        readings = readings(view.material),
+        hexagram = hexagram(view.cast),
+        verdict = verdict(&view.persona.verdict),
+        passages = passages(view.persona),
+        turn = turn(&view.persona.turn),
+        advice = advice(&view.persona.advice),
         foot = foot(view),
     )
 }
@@ -210,7 +186,7 @@ fn sec_head(mark: &str, en: &str) -> String {
 
 fn eyebrow(view: &View<'_>) -> String {
     format!(
-        r#"<div class="eyebrow"><div class="kicker"><span class="dot"></span>用户画像<span class="kicker-en">PORTRAIT</span></div><div class="stamp">{}</div></div>"#,
+        r#"<div class="eyebrow"><div class="kicker"><span class="dot"></span>易经画像<span class="kicker-en">THE BOOK OF CHANGES</span></div><div class="stamp">{}</div></div>"#,
         esc(&stamp(view.now)),
     )
 }
@@ -236,7 +212,7 @@ fn hero(view: &View<'_>) -> String {
 
 fn codename(persona: &Persona) -> String {
     let pill = if persona.estimated {
-        r#"<span class="pill">纯统计版</span>"#.to_string()
+        r#"<span class="pill">批语未落</span>"#.to_string()
     } else {
         String::new()
     };
@@ -251,14 +227,7 @@ fn codename(persona: &Persona) -> String {
     )
 }
 
-fn lead(summary: &str) -> String {
-    if summary.trim().is_empty() {
-        return String::new();
-    }
-    format!(r#"<div class="lead">{}</div>"#, esc(summary))
-}
-
-/// 一行读数。数字只做旁证，不铺成仪表盘，省下的版面留给侧写。
+/// 一行读数。数字只做旁证，不铺成仪表盘，省下的版面留给批语。
 fn readings(material: &Material) -> String {
     let items = [
         ("发言", fmt_num(material.total), ""),
@@ -285,158 +254,132 @@ fn readings(material: &Material) -> String {
     format!(r#"<div class="readings">{cells}</div>"#)
 }
 
-/// 三面侧写：报告的主体。空的面向不占版面。
-fn facets(persona: &Persona) -> String {
-    let blocks: String = persona
-        .live_facets()
-        .map(|facet| {
-            let title = if facet.title.trim().is_empty() {
-                String::new()
-            } else {
-                format!(r#"<div class="facet-title">{}</div>"#, esc(&facet.title))
+/// 卦象。六爻自下而上排，画出来却是从上往下读——所以显示时把初爻放在最底下。
+fn hexagram(cast: &Cast) -> String {
+    let lines = cast.drawn();
+    let rows: String = (0..6)
+        .rev()
+        .map(|index| {
+            let line = lines[index];
+            let class = match (line.yang, line.changing) {
+                (true, true) => "yang moving",
+                (true, false) => "yang",
+                (false, true) => "yin moving",
+                (false, false) => "yin",
             };
-            let body = if facet.body.trim().is_empty() {
-                String::new()
+            let segments = if line.yang {
+                r#"<i></i>"#.to_string()
             } else {
-                format!(r#"<div class="facet-body">{}</div>"#, esc(&facet.body))
+                r#"<i></i><i></i>"#.to_string()
             };
+            let row_class = if line.changing { " moving" } else { "" };
             format!(
-                r#"<div class="facet"><div class="facet-key">{}</div>{title}{body}</div>"#,
-                esc(&facet.key)
+                r#"<div class="hex-row{row_class}"><span class="hex-pos">{}</span><span class="hex-bar {class}">{segments}</span></div>"#,
+                esc(&super::divine::line_title(index, line.yang)),
             )
+        })
+        .collect();
+
+    let mut foot = String::new();
+    let _ = write!(
+        foot,
+        r#"<div class="hex-item"><span class="hex-k">起卦</span><span>大衍筮法，四十九策三变成爻，得策 {}（初爻至上爻）</span></div>"#,
+        esc(&cast.stalks_text())
+    );
+    if cast.changing.is_empty() {
+        foot.push_str(
+            r#"<div class="hex-item"><span class="hex-k">变爻</span><span>六爻皆静，无动</span></div>"#,
+        );
+    } else {
+        let moving: Vec<String> = cast
+            .changing
+            .iter()
+            .map(|index| {
+                let title = super::divine::line_title(*index, cast.lines[*index].yang());
+                format!("{title}（{}）", POSITION_SENSE[*index])
+            })
+            .collect();
+        let _ = write!(
+            foot,
+            r#"<div class="hex-item"><span class="hex-k">变爻</span><span>{}</span></div>"#,
+            esc(&moving.join("；"))
+        );
+    }
+    if let Some(changed) = cast.changed {
+        let _ = write!(
+            foot,
+            r#"<div class="hex-item"><span class="hex-k">之卦</span><span>{} —— {}</span></div>"#,
+            esc(changed.full),
+            esc(changed.judgment)
+        );
+    }
+    let _ = write!(
+        foot,
+        r#"<div class="hex-item"><span class="hex-k">占法</span><span>{}</span></div>"#,
+        esc(cast.rule())
+    );
+
+    format!(
+        r#"<div class="sec">{head}<div class="hex"><div class="hex-figure">{rows}</div><div class="hex-body"><div class="hex-name">{name}</div><div class="hex-meta">第 {number} 卦<span class="sep">·</span>{trigrams}</div><div class="hex-judgment">{judgment}</div><div class="hex-sense">{sense}</div></div></div><div class="hex-foot">{foot}</div></div>"#,
+        head = sec_head("卦象", "THE HEXAGRAM"),
+        name = esc(cast.primary.full),
+        number = cast.primary.number,
+        trigrams = esc(&cast.primary.trigrams()),
+        judgment = esc(cast.primary.judgment),
+        sense = esc(cast.primary.sense),
+    )
+}
+
+/// 总断。卦与人接上的那一段，给足分量。
+fn verdict(text: &str) -> String {
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    format!(
+        r#"<div class="sec">{head}<div class="verdict">{text}</div></div>"#,
+        head = sec_head("总断", "THE VERDICT"),
+        text = esc(text)
+    )
+}
+
+/// 详批。段落与引语同列一队，按序渲染——引语落在论证里，不贴到文末。
+fn passages(persona: &Persona) -> String {
+    let blocks: String = persona
+        .live_passages()
+        .map(|passage| {
+            if passage.is_quote() {
+                let note = if passage.note.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(r#"<figcaption class="quote-note">{}</figcaption>"#, esc(&passage.note))
+                };
+                format!(
+                    r#"<figure class="quote"><blockquote class="quote-text">{}</blockquote>{note}</figure>"#,
+                    esc(&passage.text)
+                )
+            } else {
+                format!(r#"<p class="prose">{}</p>"#, esc(&passage.body))
+            }
         })
         .collect();
     if blocks.is_empty() {
         return String::new();
     }
     format!(
-        r#"<div class="sec">{}{blocks}</div>"#,
-        sec_head("侧写", "THREE ASPECTS")
+        r#"<div class="sec">{head}{blocks}</div>"#,
+        head = sec_head("详批", "THE READING")
     )
 }
 
-/// 抽的那一签。排成一张签纸：上下细线、居中，签诗用衬线。
-fn lot(persona: &Persona) -> String {
-    if !persona.has_lot() {
+/// 之变。到现在还卡着的地方，与要去的方向。
+fn turn(text: &str) -> String {
+    if text.trim().is_empty() {
         return String::new();
     }
-    let verse: String = persona
-        .lot
-        .verse
-        .iter()
-        .map(|line| format!(r#"<span class="verse-line">{}</span>"#, esc(line)))
-        .collect();
-    let reading = if persona.lot.reading.trim().is_empty() {
-        String::new()
-    } else {
-        format!(
-            r#"<div class="lot-reading">{}</div>"#,
-            esc(&persona.lot.reading)
-        )
-    };
     format!(
-        r#"<div class="sec">{head}<div class="lot"><div class="lot-no">第{}签</div><div class="lot-grade">{}</div><div class="lot-verse">{verse}</div>{reading}</div></div>"#,
-        esc(&cn_num(persona.lot.no)),
-        esc(if persona.lot.grade.is_empty() {
-            "中平"
-        } else {
-            &persona.lot.grade
-        }),
-        head = sec_head("签", "THE LOT"),
-    )
-}
-
-/// 心理刻度。条形压细、颜色收暗，是旁证不是成绩单。
-fn traits(traits: &[super::persona::Trait]) -> String {
-    if traits.is_empty() {
-        return String::new();
-    }
-    let rows: String = traits
-        .iter()
-        .map(|item| {
-            format!(
-                r#"<div class="trait"><div class="trait-top"><span class="trait-name">{}</span><span class="trait-score">{:.0}</span></div><div class="track"><i style="width:{:.1}%"></i></div><div class="trait-note">{}</div></div>"#,
-                esc(&item.name),
-                item.score,
-                item.score.clamp(2.0, 100.0),
-                esc(&item.note)
-            )
-        })
-        .collect();
-    format!(
-        r#"<div class="sec">{}{rows}</div>"#,
-        sec_head("刻度", "MEASURES")
-    )
-}
-
-fn interests(words: &[String]) -> String {
-    if words.is_empty() {
-        return String::new();
-    }
-    let chips: String = words
-        .iter()
-        .map(|word| format!(r#"<span class="chip">{}</span>"#, esc(word)))
-        .collect();
-    format!(
-        r#"<div class="sec">{}{}<div class="chips">{chips}</div></div>"#,
-        sec_head("常谈的事", "SUBJECTS"),
-        r#"<div class="sec-lead">他反复提起的，多半是他放不下的。</div>"#,
-    )
-}
-
-fn quotes(quotes: &[super::persona::Quote]) -> String {
-    if quotes.is_empty() {
-        return String::new();
-    }
-    let items: String = quotes
-        .iter()
-        .map(|quote| {
-            format!(
-                r#"<figure class="quote"><blockquote class="quote-text">{}</blockquote><figcaption class="quote-why">{}</figcaption></figure>"#,
-                esc(&quote.text),
-                esc(&quote.why),
-            )
-        })
-        .collect();
-    format!(
-        r#"<div class="sec">{}{items}</div>"#,
-        sec_head("他自己的话", "IN HIS WORDS")
-    )
-}
-
-fn rhythm(view: &View<'_>) -> String {
-    let material = view.material;
-    let peak = material.peak_hour();
-    let max = material.hour.iter().copied().max().unwrap_or(0).max(1);
-    let columns: String = material
-        .hour
-        .iter()
-        .enumerate()
-        .map(|(hour, count)| {
-            let ratio = *count as f64 / max as f64;
-            let height = (ratio * 100.0).max(if *count > 0 { 4.0 } else { 0.0 });
-            let peak_class = if hour == peak { " peak" } else { "" };
-            let label = if hour % 6 == 0 {
-                format!("{hour}")
-            } else {
-                String::new()
-            };
-            format!(
-                r#"<div class="col"><div class="col-bar"><i class="{}{}" style="height:{:.1}%"></i></div><div class="col-tick{}">{}</div></div>"#,
-                if *count > 0 { "on" } else { "off" },
-                peak_class,
-                height,
-                peak_class,
-                esc(&label),
-            )
-        })
-        .collect();
-    format!(
-        r#"<div class="sec">{head}<div class="rhythm">{columns}</div><div class="caption">{} 前后最活跃，最活跃的一天是{}，夜间（0—6 点）占 {}。</div></div>"#,
-        esc(&super::persona::hour_label(peak)),
-        esc(super::persona::weekday_label(material.peak_weekday())),
-        esc(&super::persona::percent(material.night_ratio())),
-        head = sec_head("活跃节律", "RHYTHM"),
+        r#"<div class="sec">{head}<div class="turn">{text}</div></div>"#,
+        head = sec_head("之变", "THE TURNING"),
+        text = esc(text)
     )
 }
 
@@ -458,7 +401,7 @@ fn foot(view: &View<'_>) -> String {
         date_of(material.last_time, view.offset)
     );
     format!(
-        r#"<div class="foot"><div>统计区间 {range}<span class="sep">·</span>样本 {} 条<span class="sep">·</span>{model}</div><div class="foot-note">由模型读群聊记录推出，仅供娱乐，不作凭据</div></div>"#,
+        r#"<div class="foot"><div>统计区间 {range}<span class="sep">·</span>样本 {} 条<span class="sep">·</span>{model}</div><div class="foot-note">卦由本人在群里的发言起出，批语由模型写成，仅供娱乐，不作凭据</div></div>"#,
         material.samples.len(),
         range = esc(&range),
         model = esc(view.model),
@@ -530,13 +473,15 @@ const CSS: &str = r#"
 .card>*{position:relative}
 
 /* —— 页眉 —— */
-.eyebrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:24px}
+.eyebrow{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:24px}
 .kicker{display:flex;align-items:center;gap:11px;font-size:15.5px;font-weight:800;
-  letter-spacing:.18em;color:__ACCENT__}
-.dot{width:8px;height:8px;border-radius:50%;background:__ACCENT__;
+  letter-spacing:.18em;color:__ACCENT__;white-space:nowrap}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:__ACCENT__;
   box-shadow:0 0 0 5px rgba(__RGB__,var(--glow-alpha))}
-.kicker-en{font-size:11.5px;font-weight:700;letter-spacing:.26em;color:var(--faint)}
-.stamp{font-size:14px;color:var(--faint);letter-spacing:.03em;font-variant-numeric:tabular-nums}
+.kicker-en{font-size:10px;font-weight:700;letter-spacing:.2em;color:var(--faint);
+  line-height:1.4;max-width:190px}
+.stamp{font-size:14px;color:var(--faint);letter-spacing:.03em;white-space:nowrap;
+  font-variant-numeric:tabular-nums}
 
 /* —— 主体：头像 + 名字 —— */
 .hero{display:flex;align-items:center;gap:20px}
@@ -551,7 +496,7 @@ const CSS: &str = r#"
 .sep{margin:0 8px;color:var(--faint)}
 
 /* —— 代号 —— */
-.codename-block{margin-top:32px}
+.codename-block{margin-top:30px}
 .label-row{display:flex;align-items:center;gap:12px}
 .label{font-size:13px;font-weight:800;letter-spacing:.22em;color:var(--faint)}
 .pill{padding:3px 10px;border-radius:8px;font-size:12.5px;font-weight:700;letter-spacing:.02em;
@@ -560,11 +505,6 @@ const CSS: &str = r#"
   letter-spacing:.01em;color:var(--title)}
 .tagline{margin-top:12px;font-family:var(--serif);font-size:21px;line-height:1.66;font-weight:600;
   color:__ACCENT__}
-
-/* —— 总评 —— */
-.lead{margin-top:26px;padding:22px 24px;border-radius:14px;
-  background:var(--panel);border:1px solid var(--panel-border);
-  font-family:var(--serif);font-size:20.5px;line-height:1.9;font-weight:500;color:var(--strong)}
 
 /* —— 读数 —— */
 .readings{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:24px;padding:16px 2px;
@@ -577,75 +517,58 @@ const CSS: &str = r#"
 /* —— 分节 —— */
 .sec{margin-top:34px;padding-top:28px;border-top:1px solid var(--line)}
 .sec-head{display:flex;align-items:center;gap:14px;margin-bottom:20px}
-.sec-mark{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:.04em;
+.sec-mark{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:.14em;
   color:var(--title);white-space:nowrap}
 .sec-en{font-size:10.5px;font-weight:700;letter-spacing:.3em;color:var(--faint);white-space:nowrap}
 .sec-head::after{content:"";flex:1;height:1px;background:var(--strong-line)}
-.sec-lead{margin:-8px 0 16px;font-size:16px;line-height:1.7;color:var(--faint)}
 
-/* —— 三面侧写 —— */
-.facet+.facet{padding-top:22px;margin-top:22px;border-top:1px solid var(--line)}
-.facet-key{font-family:var(--serif);font-size:15px;font-weight:700;letter-spacing:.28em;
-  color:__ACCENT__}
-.facet-title{margin-top:11px;font-family:var(--serif);font-size:23px;line-height:1.56;font-weight:700;
-  color:var(--title)}
-.facet-body{margin-top:12px;font-family:var(--serif);font-size:20px;line-height:1.92;
-  color:var(--body)}
+/* —— 卦象 —— */
+.hex{display:flex;gap:26px;padding:26px 26px 24px;border-radius:14px;
+  background:var(--panel);border:1px solid var(--panel-border)}
+.hex-figure{flex:none;width:104px;display:flex;flex-direction:column;justify-content:center;gap:7px}
+.hex-row{display:flex;align-items:center;gap:8px}
+.hex-pos{flex:none;width:28px;text-align:right;font-family:var(--serif);font-size:12px;
+  letter-spacing:.02em;color:var(--faint);white-space:nowrap}
+.hex-bar{flex:1;display:flex;gap:7px;height:11px}
+.hex-bar i{flex:1;display:block;height:100%;border-radius:2px;background:var(--strong)}
+.hex-bar.moving i{background:__ACCENT__;box-shadow:0 0 0 2px rgba(__RGB__,var(--glow-alpha))}
+.hex-row.moving .hex-pos{font-weight:700;color:__ACCENT__}
+.hex-body{flex:1;min-width:0}
+.hex-name{font-family:var(--serif);font-size:32px;line-height:1.3;font-weight:700;
+  letter-spacing:.06em;color:var(--title)}
+.hex-meta{margin-top:8px;font-size:14.5px;font-weight:600;letter-spacing:.04em;color:var(--faint)}
+.hex-judgment{margin-top:15px;font-family:var(--serif);font-size:19px;line-height:1.78;
+  color:var(--strong)}
+.hex-sense{margin-top:11px;font-size:17px;line-height:1.76;color:var(--subtle)}
+.hex-foot{margin-top:20px;padding-top:16px;border-top:1px solid var(--line);
+  display:flex;flex-direction:column;gap:8px}
+.hex-item{display:flex;gap:12px;font-size:15px;line-height:1.68;color:var(--subtle)}
+.hex-k{flex:none;width:38px;font-weight:800;letter-spacing:.08em;color:__ACCENT__}
 
-/* —— 签 —— */
-.lot{position:relative;margin-top:2px;padding:30px 30px 26px;border-radius:14px;
-  background:var(--panel);border:1px solid var(--panel-border);text-align:center}
-.lot::before,.lot::after{content:"";position:absolute;left:22px;right:22px;height:1px;
-  background:var(--strong-line)}
-.lot::before{top:11px}
-.lot::after{bottom:11px}
-.lot-no{font-size:13px;font-weight:700;letter-spacing:.3em;color:var(--faint)}
-.lot-grade{margin-top:9px;font-family:var(--serif);font-size:38px;line-height:1.3;font-weight:700;
-  letter-spacing:.14em;color:__ACCENT__}
-.lot-verse{margin-top:14px;display:flex;flex-direction:column;gap:6px}
-.verse-line{font-family:var(--serif);font-size:21px;line-height:1.7;color:var(--strong);
-  letter-spacing:.08em}
-.lot-reading{margin-top:18px;padding-top:17px;border-top:1px solid var(--line);
-  font-size:17.5px;line-height:1.8;color:var(--subtle)}
+/* —— 总断 —— */
+.verdict{padding:24px 26px;border-radius:14px;background:var(--panel);
+  border:1px solid var(--panel-border);font-family:var(--serif);font-size:20.5px;
+  line-height:1.94;font-weight:500;color:var(--strong)}
 
-/* —— 刻度 —— */
-.track{height:6px;border-radius:4px;background:var(--track);overflow:hidden}
-.track i{display:block;height:100%;border-radius:4px;
-  background:linear-gradient(90deg,rgba(__RGB__,var(--bar-alpha)),__ACCENT__)}
-.trait{margin-bottom:19px}
-.trait:last-child{margin-bottom:2px}
-.trait-top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:9px}
-.trait-name{font-size:19px;font-weight:700;color:var(--strong)}
-.trait-score{font-size:18px;font-weight:700;color:__ACCENT__;font-variant-numeric:tabular-nums}
-.trait-note{margin-top:8px;font-size:16px;line-height:1.68;color:var(--subtle)}
+/* —— 详批 —— */
+.prose{margin-bottom:18px;font-family:var(--serif);font-size:20px;line-height:1.98;
+  color:var(--body);text-indent:2em}
+.prose:last-child{margin-bottom:0}
+.quote{margin:22px 0;padding:20px 22px;border-radius:12px;background:rgba(__RGB__,var(--chip-alpha));
+  border-left:3px solid rgba(__RGB__,.55)}
+.quote-text{margin:0;font-family:var(--serif);font-size:20.5px;line-height:1.86;color:var(--strong);
+  text-indent:0}
+.quote-note{margin-top:11px;font-size:15px;line-height:1.62;color:var(--faint)}
 
-/* —— 常谈的事 —— */
-.chips{display:flex;flex-wrap:wrap;gap:10px}
-.chip{padding:8px 15px;border-radius:9px;font-size:17px;font-weight:600;
-  color:var(--strong);background:var(--chip);border:1px solid var(--panel-border)}
-
-/* —— 节律 —— */
-.rhythm{display:grid;grid-template-columns:repeat(24,1fr);gap:3px;align-items:end}
-.col{display:flex;flex-direction:column}
-.col-bar{display:flex;align-items:flex-end;height:96px}
-.col-bar i{display:block;width:100%;border-radius:3px 3px 2px 2px}
-.col-bar i.on{background:rgba(__RGB__,var(--bar-alpha))}
-.col-bar i.peak.on{background:__ACCENT__;box-shadow:0 0 0 2px rgba(__RGB__,var(--glow-alpha))}
-.col-tick{margin-top:7px;height:15px;font-size:11.5px;line-height:15px;text-align:center;
-  color:var(--faint);font-variant-numeric:tabular-nums}
-.col-tick.peak{font-weight:800;color:__ACCENT__}
-.caption{margin-top:14px;font-size:16.5px;line-height:1.72;color:var(--subtle)}
-
-/* —— 他自己的话 —— */
-.quote{margin-bottom:20px;padding:4px 0 4px 20px;border-left:2px solid rgba(__RGB__,.5)}
-.quote:last-child{margin-bottom:0}
-.quote-text{margin:0;font-family:var(--serif);font-size:20px;line-height:1.86;color:var(--body)}
-.quote-why{margin-top:10px;font-size:15px;line-height:1.62;color:var(--faint)}
+/* —— 之变 —— */
+.turn{padding:22px 24px;border-radius:14px;background:rgba(__RGB__,var(--chip-alpha));
+  border:1px solid rgba(__RGB__,.22);font-family:var(--serif);font-size:19.5px;
+  line-height:1.9;color:var(--strong)}
 
 /* —— 赠言 —— */
 .advice{margin-top:34px;padding:24px 26px;border-radius:14px;
-  background:rgba(__RGB__,var(--quote-alpha));border:1px solid rgba(__RGB__,.22)}
-.advice-label{font-size:13px;font-weight:800;letter-spacing:.24em;color:__ACCENT__}
+  background:var(--panel);border:1px solid var(--panel-border)}
+.advice-label{font-size:13px;font-weight:800;letter-spacing:.24em;color:var(--faint)}
 .advice-text{margin-top:12px;font-family:var(--serif);font-size:22px;line-height:1.78;font-weight:600;
   color:var(--title)}
 
@@ -661,7 +584,8 @@ const CSS: &str = r#"
 mod tests {
     use super::*;
     use crate::plugins::portrait::collect::{GroupSlice, Kinds};
-    use crate::plugins::portrait::persona::{Facet, Lot, Quote, Trait};
+    use crate::plugins::portrait::divine;
+    use crate::plugins::portrait::persona::Passage;
 
     fn offset() -> FixedOffset {
         FixedOffset::east_opt(8 * 3600).unwrap()
@@ -713,49 +637,34 @@ mod tests {
         }
     }
 
+    fn cast(material: &Material) -> Cast {
+        divine::cast(material)
+    }
+
     fn persona() -> Persona {
         Persona {
             codename: "用忙碌挡空的人".into(),
             tagline: "他把休息也算成一件事".into(),
-            summary: "话不多，但每句都落在点上。".into(),
-            facets: vec![
-                Facet {
-                    key: "立身".into(),
-                    title: "把手艺当退路".into(),
-                    body: "他把手艺当退路。".into(),
+            verdict: "屯是开头难。他卡在开头已经很久，久到他自己都不再提。".into(),
+            passages: vec![
+                Passage {
+                    kind: "text".into(),
+                    body: "他把每件事都当成一件要交的活。".into(),
+                    ..Default::default()
                 },
-                Facet {
-                    key: "心相".into(),
-                    title: "怕停下来".into(),
-                    body: "夜里两点还在改。".into(),
+                Passage {
+                    kind: "quote".into(),
+                    text: "凌晨三点还在改代码，明天又要废了".into(),
+                    note: "他自己知道在拿什么换".into(),
+                    ..Default::default()
                 },
-                Facet {
-                    key: "人群".into(),
-                    title: "不抢话".into(),
-                    body: "只在有人问到的时候接一句。".into(),
+                Passage {
+                    kind: "text".into(),
+                    body: "说这话的时候他不带怨气，像在报账。".into(),
+                    ..Default::default()
                 },
             ],
-            traits: vec![Trait {
-                name: "秩序感".into(),
-                score: 92.0,
-                note: "深夜发言占了近三成".into(),
-            }],
-            interests: vec!["代码".into(), "咖啡".into()],
-            lot: Lot {
-                no: 47,
-                grade: "中吉".into(),
-                verse: vec![
-                    "石上栽花".into(),
-                    "未开先老".into(),
-                    "不如退步".into(),
-                    "另有路行".into(),
-                ],
-                reading: "他等的不是机会，是许可。".into(),
-            },
-            quotes: vec![Quote {
-                text: "凌晨三点还在改代码，明天又要废了".into(),
-                why: "很有他".into(),
-            }],
+            turn: "他不动的那一爻在最底下，是开头。".into(),
             advice: "少熬点夜。".into(),
             accent: "indigo".into(),
             estimated: false,
@@ -767,10 +676,16 @@ mod tests {
     /// 北京时间 00:13，用来让 `auto` 落在夜读一侧。
     const MIDNIGHT: i64 = 1_700_064_800;
 
-    fn view_at<'a>(material: &'a Material, persona: &'a Persona, timestamp: i64) -> View<'a> {
+    fn view_at<'a>(
+        material: &'a Material,
+        persona: &'a Persona,
+        cast: &'a Cast,
+        timestamp: i64,
+    ) -> View<'a> {
         View {
             material,
             persona,
+            cast,
             avatar: None,
             model: "deepseek/deepseek-flash",
             theme: "auto",
@@ -781,34 +696,36 @@ mod tests {
         }
     }
 
-    fn view<'a>(material: &'a Material, persona: &'a Persona) -> View<'a> {
-        view_at(material, persona, MORNING)
+    fn view<'a>(material: &'a Material, persona: &'a Persona, cast: &'a Cast) -> View<'a> {
+        view_at(material, persona, cast, MORNING)
     }
 
     #[test]
     fn every_section_renders_with_its_content() {
         let material = material();
         let persona = persona();
-        let html = html(&view(&material, &persona));
+        let cast = cast(&material);
+        let html = html(&view(&material, &persona, &cast));
         for needle in [
-            "用户画像",
+            "易经画像",
             "用忙碌挡空的人",
             "他把休息也算成一件事",
-            r#"<span class="sec-mark">侧写</span>"#,
-            "立身",
-            "心相",
-            "人群",
-            "把手艺当退路",
-            "第四十七签",
-            "中吉",
-            "石上栽花",
-            r#"<span class="sec-mark">刻度</span>"#,
-            "秩序感",
-            r#"<span class="sec-mark">常谈的事</span>"#,
-            r#"<span class="sec-mark">他自己的话</span>"#,
-            r#"<span class="sec-mark">活跃节律</span>"#,
-            "赠言",
-            "仅供娱乐",
+            r#"<span class="sec-mark">卦象</span>"#,
+            r#"<span class="sec-mark">总断</span>"#,
+            r#"<span class="sec-mark">详批</span>"#,
+            r#"<span class="sec-mark">之变</span>"#,
+            "大衍筮法",
+            "四十九策三变成爻",
+            cast.primary.full,
+            cast.primary.judgment,
+            cast.primary.sense,
+            cast.rule(),
+            "他把每件事都当成一件要交的活。",
+            "凌晨三点还在改代码，明天又要废了",
+            "他自己知道在拿什么换",
+            "屯是开头难",
+            "少熬点夜。",
+            "不作凭据",
             "1,234",
             "deepseek/deepseek-flash",
         ] {
@@ -816,12 +733,68 @@ mod tests {
         }
     }
 
+    /// 卦象要画满六爻，动的那一爻单独上色。
+    #[test]
+    fn the_hexagram_is_drawn_line_by_line() {
+        let material = material();
+        let persona = persona();
+        let cast = cast(&material);
+        let html = html(&view(&material, &persona, &cast));
+        assert_eq!(html.matches(r#"class="hex-row"#).count(), 6);
+        // 阳爻一整划，阴爻断开：两种数量加起来就是六爻里的阴爻数×2 + 阳爻数。
+        let yang = cast.drawn().iter().filter(|line| line.yang).count();
+        assert_eq!(html.matches("<i></i>").count(), yang + (6 - yang) * 2);
+        // 变爻都带上 moving（样式表里也有一处 .moving，所以只数爻上的）。
+        let moving = cast.drawn().iter().filter(|line| line.changing).count();
+        assert_eq!(
+            html.matches(r#"class="hex-bar yang moving""#).count()
+                + html.matches(r#"class="hex-bar yin moving""#).count(),
+            moving
+        );
+        // 爻题从下往上写全。
+        for index in 0..6 {
+            let title = divine::line_title(index, cast.lines[index].yang());
+            assert!(html.contains(&title), "缺少爻题 {title}");
+        }
+    }
+
+    /// 有变爻时版面要写出之卦；没有变爻时不写。
+    #[test]
+    fn the_changed_hexagram_only_shows_when_there_is_one() {
+        let material = material();
+        let persona = persona();
+        let mut seed = 0u64;
+        let still = loop {
+            let candidate = divine::cast_from(seed);
+            if candidate.changing.is_empty() {
+                break candidate;
+            }
+            seed += 1;
+        };
+        let still_html = html(&view(&material, &persona, &still));
+        assert!(still_html.contains("六爻皆静，无动"));
+        assert!(!still_html.contains(r#"<span class="hex-k">之卦</span>"#));
+
+        let moved = loop {
+            let candidate = divine::cast_from(seed);
+            if !candidate.changing.is_empty() {
+                break candidate;
+            }
+            seed += 1;
+        };
+        let changed = moved.changed.unwrap();
+        let moved_html = html(&view(&material, &persona, &moved));
+        assert!(moved_html.contains(r#"<span class="hex-k">之卦</span>"#));
+        assert!(moved_html.contains(changed.full));
+    }
+
     /// 昵称来自群聊，必须转义；模型给的文本同理。
     #[test]
     fn external_text_is_escaped() {
         let material = material();
         let persona = persona();
-        let html = html(&view(&material, &persona));
+        let cast = cast(&material);
+        let html = html(&view(&material, &persona, &cast));
         assert!(!html.contains("阿<甲>"));
         assert!(html.contains("阿&lt;甲&gt;"));
     }
@@ -831,7 +804,8 @@ mod tests {
     fn the_avatar_replaces_the_initial_when_available() {
         let material = material();
         let persona = persona();
-        let base = view_at(&material, &persona, MORNING);
+        let cast = cast(&material);
+        let base = view_at(&material, &persona, &cast, MORNING);
 
         let without = html(&base);
         assert!(without.contains(r#"<div class="avatar">阿</div>"#), "没有头像时用首字");
@@ -839,7 +813,7 @@ mod tests {
         let data = "data:image/jpeg;base64,AAAA";
         let with = html(&View {
             avatar: Some(data),
-            ..view_at(&material, &persona, MORNING)
+            ..view_at(&material, &persona, &cast, MORNING)
         });
         assert!(with.contains(&format!(r#"<div class="avatar"><img src="{data}" alt=""></div>"#)));
         assert!(!with.contains(r#"<div class="avatar">阿</div>"#));
@@ -848,79 +822,66 @@ mod tests {
     #[test]
     fn estimated_reports_are_labelled() {
         let material = material();
+        let cast = cast(&material);
         let persona = Persona {
             estimated: true,
             ..persona()
         };
-        let html = html(&view(&material, &persona));
-        assert!(html.contains("纯统计版"));
+        let html = html(&view(&material, &persona, &cast));
+        assert!(html.contains("批语未落"));
     }
 
     #[test]
     fn empty_optional_sections_disappear() {
         let material = material();
+        let cast = cast(&material);
         let persona = Persona {
-            traits: Vec::new(),
-            interests: Vec::new(),
-            quotes: Vec::new(),
-            facets: Vec::new(),
-            lot: Lot::default(),
+            passages: Vec::new(),
+            verdict: String::new(),
+            turn: String::new(),
             advice: String::new(),
-            summary: String::new(),
             ..persona()
         };
-        let html = html(&view(&material, &persona));
-        assert!(!html.contains(r#"<span class="sec-mark">侧写</span>"#));
-        assert!(!html.contains(r#"<span class="sec-mark">刻度</span>"#));
-        assert!(!html.contains(r#"<span class="sec-mark">常谈的事</span>"#));
-        assert!(!html.contains(r#"<span class="sec-mark">他自己的话</span>"#));
+        let html = html(&view(&material, &persona, &cast));
+        assert!(!html.contains(r#"<span class="sec-mark">总断</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">详批</span>"#));
+        assert!(!html.contains(r#"<span class="sec-mark">之变</span>"#));
         assert!(!html.contains(r#"<div class="advice">"#));
-        assert!(!html.contains(r#"<div class="lot">"#));
-        // 代号与读数始终在。
+        // 卦象与读数始终在：卦不来自模型，模型不接也有一卦。
+        assert!(html.contains(r#"<span class="sec-mark">卦象</span>"#));
+        assert!(html.contains(&cast.primary.full));
         assert!(html.contains("用忙碌挡空的人"));
-        assert!(html.contains(r#"<span class="sec-mark">活跃节律</span>"#));
         assert!(html.contains(r#"<div class="readings">"#));
     }
 
-    /// 三面侧写里空掉的那一面不占版面。
+    /// 批语里空掉的那一段不占版面。
     #[test]
-    fn a_blank_facet_is_not_printed() {
+    fn blank_passages_are_not_printed() {
         let material = material();
+        let cast = cast(&material);
         let persona = Persona {
-            facets: vec![
-                Facet {
-                    key: "立身".into(),
-                    title: "把手艺当退路".into(),
-                    body: String::new(),
+            passages: vec![
+                Passage {
+                    kind: "text".into(),
+                    body: "第一段。".into(),
+                    ..Default::default()
                 },
-                Facet {
-                    key: "心相".into(),
-                    title: String::new(),
-                    body: String::new(),
+                Passage {
+                    kind: "quote".into(),
+                    text: "  ".into(),
+                    ..Default::default()
                 },
-                Facet {
-                    key: "人群".into(),
-                    title: "不抢话".into(),
+                Passage {
+                    kind: "text".into(),
                     body: String::new(),
+                    ..Default::default()
                 },
             ],
             ..persona()
         };
-        let html = html(&view(&material, &persona));
-        assert_eq!(html.matches(r#"class="facet""#).count(), 2);
-        assert!(!html.contains("心相"));
-    }
-
-    #[test]
-    fn the_lot_number_reads_as_chinese_numerals() {
-        assert_eq!(cn_num(1), "一");
-        assert_eq!(cn_num(10), "十");
-        assert_eq!(cn_num(11), "十一");
-        assert_eq!(cn_num(20), "二十");
-        assert_eq!(cn_num(47), "四十七");
-        assert_eq!(cn_num(100), "一百");
-        assert_eq!(cn_num(0), "一");
-        assert_eq!(cn_num(480), "一百");
+        let html = html(&view(&material, &persona, &cast));
+        assert_eq!(html.matches(r#"class="prose""#).count(), 1);
+        assert!(!html.contains(r#"class="quote""#));
     }
 
     #[test]
@@ -943,9 +904,10 @@ mod tests {
     fn a_pinned_theme_overrides_the_clock() {
         let material = material();
         let persona = persona();
+        let cast = cast(&material);
         let pinned = View {
             theme: "light",
-            ..view_at(&material, &persona, MIDNIGHT)
+            ..view_at(&material, &persona, &cast, MIDNIGHT)
         };
         let html = html(&pinned);
         assert!(html.contains("--canvas:#E9E3D9"), "应当用日读配色");
@@ -962,20 +924,21 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let material = material();
         let persona = persona();
+        let cast = cast(&material);
         std::fs::write(
             format!("{dir}/portrait-light.html"),
-            html(&view_at(&material, &persona, MORNING)),
+            html(&view_at(&material, &persona, &cast, MORNING)),
         )
         .unwrap();
         std::fs::write(
             format!("{dir}/portrait-dark.html"),
-            html(&view_at(&material, &persona, MIDNIGHT)),
+            html(&view_at(&material, &persona, &cast, MIDNIGHT)),
         )
         .unwrap();
-        let fallback = Persona::from_stats(&material);
+        let fallback = Persona::from_stats(&material, &cast);
         std::fs::write(
             format!("{dir}/portrait-fallback.html"),
-            html(&view_at(&material, &fallback, MORNING)),
+            html(&view_at(&material, &fallback, &cast, MORNING)),
         )
         .unwrap();
     }
@@ -985,11 +948,12 @@ mod tests {
     async fn captures_complete_cards() {
         let material = material();
         let persona = persona();
-        let fallback = Persona::from_stats(&material);
+        let cast = cast(&material);
+        let fallback = Persona::from_stats(&material, &cast);
         let cases = [
-            ("light", view_at(&material, &persona, MORNING)),
-            ("dark", view_at(&material, &persona, MIDNIGHT)),
-            ("fallback", view_at(&material, &fallback, MORNING)),
+            ("light", view_at(&material, &persona, &cast, MORNING)),
+            ("dark", view_at(&material, &persona, &cast, MIDNIGHT)),
+            ("fallback", view_at(&material, &fallback, &cast, MORNING)),
         ];
         for (name, view) in cases {
             let base64 = capture(&html(&view), 2.0).await.unwrap();

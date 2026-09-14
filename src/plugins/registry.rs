@@ -115,12 +115,12 @@ register_plugins!(
         on_connected: Some(stats::on_connected)
     },
     portrait {
-        display_name: "用户画像",
+        display_name: "易经画像",
         section: "insight",
-        summary: "读群成员的历史发言生成一份图文画像报告；不带参数查自己，@ 或报 QQ 号查别人",
+        summary: "以大衍筮法从群成员的历史发言里起一卦，再用这一卦的道理写一份图文画像；不带参数查自己，@ 或报 QQ 号查别人",
         commands: cmds![
-            ("画像 / 用户画像 / 我的画像", "查看自己的画像报告"),
-            ("画像 @某人", "查看对方的画像报告"),
+            ("画像 / 易经画像 / 算卦 / 起卦 / 卜卦", "为自己起一卦，写一份画像"),
+            ("画像 @某人", "为对方起卦画像"),
             ("画像 <QQ号>", "按 QQ 号查看"),
         ]
     },
