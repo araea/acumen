@@ -138,6 +138,7 @@ ctl 操作 `config.toml` 中插件自己的配置。连接凭据、全局过滤�
 | `./bot attach` | 进入该日志窗口 |
 | `./bot` | 无参数时先 `logs` 再 `attach` |
 | `./bot enable` / `./bot disable` | 是否随 Termux 监督树自启（仅托管时有意义） |
+| `./bot reap` | 收掉父进程已不在的 cdp-shot 浏览器进程（每次启动也会自动做） |
 | `./bot power on/off` | Termux 唤醒锁：熄屏保持网络，`off` 需先停止 bot |
 | `./bot help` | 启动脚本帮助 |
 
@@ -146,6 +147,8 @@ ctl 操作 `config.toml` 中插件自己的配置。连接凭据、全局过滤�
 未托管时按 `Ctrl+C` 停止 bot，`tmux` 会话里跑的就是 bot 本身；托管后 bot 由 runsv 管，`./bot logs` 的窗口只是 `tail -F` 日志，关掉它不影响 bot。无论哪种方式，脚本都通过进程可执行文件路径识别本仓库实例，不要绕过脚本另外启动第二份程序。
 
 手动启动时还会用 `.bot.lock` 加文件锁防止重复启动；托管路径（`serve`）不加锁——runsv 已保证同一时刻只有一个 `run` 实例，而且那把锁的 fd 会被 bot 派生出的 Chromium 继承，浏览器可能比 bot 活得久，锁就被一个已经无关的进程攥住，后续启动全部报「锁被占用」（2026-09-14 因此出现过托管服务连续退出码 1 起不来）。
+
+每次启动还会先收掉浏览器僵尸。`cdp-html-shot` 只在正常析构时 kill 浏览器（`BrowserProcess::drop`），所以 bot 被 SIGKILL、panic-abort、或走 `std::process::exit()` 时不会执行，浏览器会变成孤儿一直占内存又没有任何作用。判据是三条同时成立：命令行带 `--user-data-dir=` 与 `cdp-shot_`（即该 crate 拉起的浏览器及其 renderer/gpu 子进程）、不在本进程的祖先链上、往上找不到活着的 ayjx 祖先——有祖先说明正被某个 bot 或测试用着（认 ayjx 用可执行文件名，临时目录里跑的测试实例也算）。启动时自动做，也可以 `./bot reap` 手动收一次。
 
 ## 交给 termux-services（runit）托管
 

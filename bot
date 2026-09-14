@@ -73,6 +73,75 @@ stop_bot() {
     return 1
 }
 
+# 收掉 cdp-html-shot 留下的浏览器僵尸。
+#
+# crate 只在正常析构时 kill 浏览器（BrowserProcess::drop，见 cdp-html-shot
+# src/browser.rs），所以 bot 被 SIGKILL、panic-abort、或走 std::process::exit()
+# 时不会执行——浏览器变成孤儿，一直占内存又没有任何作用。
+#
+# 判据三条，缺一不可：
+#   1. 命令行同时带 --user-data-dir= 与 cdp-shot_，也就是 cdp-html-shot 拉起的
+#      那棵浏览器（主进程和它的 renderer/gpu 子进程都带）。只按 cdp-shot_ 匹配
+#      会误伤「命令行里恰好提到这个字符串」的无关进程——我自己就被这么打死过一次。
+#   2. 不在本进程的祖先链上。reap 可能被命令行里带这个字符串的 shell 调起来。
+#   3. 往上找不到活着的 ayjx 祖先。不用「ppid 是不是 1」——孤儿 reparent 到哪
+#      取决于链路上有没有 subreaper（实测有落到别的进程而非 init 的情况）。
+#      认 ayjx 用可执行文件名而不是路径，这样从临时目录跑的测试实例也算祖先，
+#      不会误杀测试中的浏览器。
+own_ancestors() {
+    local pid=$$ hops=0 out=""
+    while [[ -n "$pid" && "$pid" != "0" && "$pid" != "1" && "$hops" -lt 40 ]]; do
+        out="$out $pid"
+        pid=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2)
+        [[ -n "$pid" ]] || break
+        hops=$((hops + 1))
+    done
+    printf '%s' "$out"
+}
+
+is_ayjx_pid() {
+    local exe
+    exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
+    exe=${exe% (deleted)}
+    [[ $(basename -- "$exe") == ayjx* ]]
+}
+
+has_live_ayjx_ancestor() {
+    local pid=$1 hops=0
+    while [[ -n "$pid" && "$pid" != "0" && "$pid" != "1" && "$hops" -lt 40 ]]; do
+        pid=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2)
+        [[ -n "$pid" ]] || return 1
+        is_ayjx_pid "$pid" && return 0
+        hops=$((hops + 1))
+    done
+    return 1
+}
+
+reap_orphan_browsers() {
+    local pass pid reaped total=0 ancestors
+    ancestors=$(own_ancestors)
+    # Chromium 会派生 renderer/gpu 等子进程，杀掉主进程后它们可能再被 reparent，
+    # 所以多跑几轮直到没有新的可收。
+    for pass in 1 2 3; do
+        reaped=0
+        while read -r pid; do
+            [[ -n "$pid" ]] || continue
+            grep -qa -- '--user-data-dir=.*cdp-shot_' "/proc/$pid/cmdline" 2>/dev/null || continue
+            case " $ancestors " in *" $pid "*) continue ;; esac
+            has_live_ayjx_ancestor "$pid" && continue
+            if kill -KILL "$pid" 2>/dev/null; then
+                reaped=$((reaped + 1))
+            fi
+        done < <(pgrep -f 'cdp-shot_' 2>/dev/null || true)
+        total=$((total + reaped))
+        [[ "$reaped" -gt 0 ]] || break
+        sleep 1
+    done
+    if [[ "$total" -gt 0 ]]; then
+        printf 'bot: 收掉 %s 个孤儿浏览器进程（没有活着的 ayjx 祖先的 cdp-shot 浏览器）\n' "$total"
+    fi
+}
+
 # start / console / serve 共用的准备：定位、锁、代理绕行、termux-exec、唤醒锁。
 # 参数 lock / nolock：runsv 保证同一时刻只有一个 run 实例，所以托管路径（serve）
 # 不加锁。加锁那支只在手动启动时用，而且它有已知副作用——见下面的注释。
@@ -91,6 +160,8 @@ prepare_runtime() {
         fi
         exit 1
     fi
+    # 上一次 bot 非正常退出可能留下浏览器僵尸，先收掉再起新的。
+    reap_orphan_browsers
     # flock 的 fd 会被 bot 派生出的 Chromium 继承，而那个浏览器可能比 bot 活得久，
     # 于是锁被一个已经无关的进程攥着，后续启动全部报「锁被占用」（2026-09-14 踩过，
     # 表现是托管服务连续退出码 1 起不来）。所以托管路径不加锁；手动路径保留加锁，
@@ -217,6 +288,11 @@ case "${1:-open}" in
         if [[ -z "${TERM:-}" || "${TERM:-}" == dumb ]]; then export TERM=xterm-256color; fi
         exec tmux attach-session -t "=$bot_session-log"
         ;;
+    # 手动收一次浏览器僵尸（启动时也会自动收，见 reap_orphan_browsers）。
+    reap)
+        reap_orphan_browsers
+        printf '已检查并清理孤儿浏览器进程。\n'
+        ;;
     power)
         case "${2:-help}" in
             on) termux-wake-lock ;;
@@ -238,6 +314,7 @@ case "${1:-open}" in
         printf './bot restart  优雅重启\n./bot start    启动（runit 托管时等价 sv up）\n'
         printf './bot console  手动前台启动（带控制台），调试用\n'
         printf './bot enable   随 Termux 监督树自启；./bot disable 取消\n'
+        printf './bot reap     收掉父进程已不在的 cdp-shot 浏览器进程（启动时自动做）\n'
         printf './bot power    Termux 熄屏保活说明\n'
         if [[ -e "$revive_log" ]]; then
             printf '\n看守盯的是 Termux 监督树而不是 bot，所以 ./bot stop 不会被它抢回去。\n'
