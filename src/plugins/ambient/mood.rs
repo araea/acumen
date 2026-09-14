@@ -72,6 +72,21 @@ pub(crate) struct Snapshot {
     pub warmth: f32,
 }
 
+/// 说话的调子。同一个人状态不同，出口的话是两个样子：活跃的时候语气词多、想到
+/// 哪说到哪，有点冗余也没关系；冷静克制下来就收紧，短、利落、一句话交代完就停。
+///
+/// 它由 [`Snapshot`] 算出来，只用来挑说话样本（见 [`super::voice`]）——判定侧不
+/// 看它，「要不要接这句话」跟口吻无关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Register {
+    /// 精神好、聊得顺：话头松。
+    Lively,
+    /// 不上不下：两边的样本都能用。
+    Even,
+    /// 冷静、没劲或提不起兴致：话头紧。
+    Calm,
+}
+
 impl Mood {
     pub(crate) fn snapshot(&self, group: i64, now: i64) -> Snapshot {
         let hour = chrono::DateTime::from_timestamp(now, 0)
@@ -140,6 +155,17 @@ impl Snapshot {
             _ => "刚聊得挺顺，还想接着扯",
         };
         format!("你现在的状态：{body}；{mood}。这只是精神头，不是发言配额，是给你自己看的。")
+    }
+
+    /// 这会儿说话的调子。精神头是主，兴致是微调——聊得顺的时候人本来就松，
+    /// 被冷落一阵子会自己收紧。
+    pub(crate) fn register(self) -> Register {
+        let liveliness = self.energy + (self.warmth - WARMTH_BASE) * 0.4;
+        match liveliness {
+            l if l >= 0.70 => Register::Lively,
+            l if l < 0.50 => Register::Calm,
+            _ => Register::Even,
+        }
     }
 
     /// 判定门槛的微调。精神好、兴致高就更容易开口，反之更沉默。
@@ -246,6 +272,20 @@ pub(crate) async fn flush() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 调子跟着精神头走，兴致再往上带一点——同一个人松和紧是两副样子，
+    /// 挑样本的时候得分得清。
+    #[test]
+    fn the_register_follows_energy_and_warmth() {
+        let at = |energy: f32, warmth: f32| Snapshot { energy, warmth }.register();
+        assert_eq!(at(0.90, WARMTH_BASE), Register::Lively);
+        assert_eq!(at(0.60, WARMTH_BASE), Register::Even);
+        assert_eq!(at(0.30, WARMTH_BASE), Register::Calm);
+        // 聊得顺也把调子往上带：精神一般但兴致高，照样是松的那一档。
+        assert_eq!(at(0.65, 0.90), Register::Lively);
+        // 被冷落一阵子会自己收紧。
+        assert_eq!(at(0.55, 0.05), Register::Calm);
+    }
 
     /// 取一个本机时间落在指定小时的时间戳。
     fn at_hour(hour: u32) -> i64 {

@@ -409,14 +409,13 @@ pub(crate) struct Scene {
 
 impl Scene {
     fn build(group: i64, config: &AmbientConfig, turns: &[Turn], rhythm: String) -> Self {
+        // 状态算一次用两处：一句给模型看的「你现在的状态」，以及挑样本的调子。
+        // 关掉状态时按不上不下处理，两种调子的样本都能挑。
+        let snapshot = config.mood_enabled.then(|| mood::snapshot(group));
         Self {
             rhythm,
             register: tone::register(turns),
-            state: if config.mood_enabled {
-                mood::snapshot(group).describe()
-            } else {
-                String::new()
-            },
+            state: snapshot.map(mood::Snapshot::describe).unwrap_or_default(),
             memory: if config.memory_enabled {
                 memory::with_group(group, |memory| {
                     memory.brief(turns, chrono::Local::now().timestamp())
@@ -424,7 +423,16 @@ impl Scene {
             } else {
                 String::new()
             },
-            own: format!("{}{}", self_facts(), voice::brief(turns)),
+            own: format!(
+                "{}{}",
+                self_facts(),
+                voice::brief(
+                    turns,
+                    snapshot
+                        .map(mood::Snapshot::register)
+                        .unwrap_or(mood::Register::Even)
+                )
+            ),
         }
     }
 
@@ -1495,9 +1503,28 @@ mod tests {
             ..Turn::default()
         }];
         let scene = Scene::build(-1, &config, &turns, "刚接了两次话".into());
-        assert!(scene.own.contains("你平时在群里就是这么说话的"), "{}", scene.own);
-        assert!(scene.own.contains("折叠"), "贴题的样本没被挑出来：{}", scene.own);
-        assert!(!scene.brief().contains("你平时在群里就是这么说话的"), "{}", scene.brief());
+        // 调子按当下状态浮动，所以认的是「哪一段在不在」，不是具体一句话。
+        let tones = [mood::Register::Lively, mood::Register::Even, mood::Register::Calm];
+        assert!(
+            tones.iter().any(|tone| scene.own.contains(voice::opening(*tone))),
+            "{}",
+            scene.own
+        );
+        assert!(
+            scene
+                .own
+                .lines()
+                .any(|line| line.starts_with("- ") && line.contains("折叠")),
+            "贴题的样本没被挑出来：{}",
+            scene.own
+        );
+        for tone in tones {
+            assert!(
+                !scene.brief().contains(voice::opening(tone)),
+                "判定侧不该带上样本段：{}",
+                scene.brief()
+            );
+        }
     }
 
     /// 模型把换行写成字面的 `\n` 时，群里不该看见一个反斜杠加一个 n。
