@@ -73,8 +73,11 @@ stop_bot() {
     return 1
 }
 
-# start 与 serve 共用的准备：定位、锁、代理绕行、termux-exec、唤醒锁。
+# start / console / serve 共用的准备：定位、锁、代理绕行、termux-exec、唤醒锁。
+# 参数 lock / nolock：runsv 保证同一时刻只有一个 run 实例，所以托管路径（serve）
+# 不加锁。加锁那支只在手动启动时用，而且它有已知副作用——见下面的注释。
 prepare_runtime() {
+    local want_lock=${1:-lock}
     cd -- "$bot_dir"
     if [[ ! -x "$bot_exe" ]]; then
         printf '请先运行 cargo build --release。\n' >&2
@@ -88,10 +91,19 @@ prepare_runtime() {
         fi
         exit 1
     fi
-    exec 9>"$bot_dir/.bot.lock"
-    if ! flock -n 9; then
-        printf '启动锁已被占用，请先检查 ./bot status。\n' >&2
-        exit 1
+    # flock 的 fd 会被 bot 派生出的 Chromium 继承，而那个浏览器可能比 bot 活得久，
+    # 于是锁被一个已经无关的进程攥着，后续启动全部报「锁被占用」（2026-09-14 踩过，
+    # 表现是托管服务连续退出码 1 起不来）。所以托管路径不加锁；手动路径保留加锁，
+    # 但把失败原因写清楚。
+    if [[ "$want_lock" == lock ]]; then
+        exec 9>"$bot_dir/.bot.lock"
+        if ! flock -n 9; then
+            printf '启动锁 .bot.lock 被占用。\n' >&2
+            printf '多半是上一次的 bot 或它派生的 Chromium 还活着——Chromium 会继承这把锁的 fd，\n' >&2
+            printf '即使 bot 已经退出也可能继续攥着。./bot status 看进程；确认没有 ayjx 后，\n' >&2
+            printf '按 --user-data-dir 里的 cdp-shot_* 目录找到残留 chromium 杀掉再试。\n' >&2
+            exit 1
+        fi
     fi
     # Keep local Satori HTTP requests out of environment HTTP proxies.
     export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost,::1"
@@ -129,9 +141,10 @@ case "${1:-open}" in
         open_log_view
         exec "$bot_script" attach
         ;;
-    # runit 的入口：与 start 同一套准备，但不带前台控制台。
+    # runit 的入口：与 start 同一套准备，但不带前台控制台、不加启动锁
+    # （runsv 已保证单实例；加锁会被派生出的 Chromium 继承，见 prepare_runtime）。
     serve)
-        prepare_runtime
+        prepare_runtime nolock
         exec "$bot_exe"
         ;;
     start)

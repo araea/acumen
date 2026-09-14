@@ -143,27 +143,31 @@ ctl 操作 `config.toml` 中插件自己的配置。连接凭据、全局过滤�
 
 `status`、`stop`、`attach` 分别可以简写为 `s`、`down`、`a`；`logs` 也可以写 `session` 或 `up`；`enable` / `disable` 可以写 `on` / `off`。把脚本链接到 `$PREFIX/bin/bot`（Termux）或 `~/.local/bin/bot` 后，任意目录都能直接使用。`./bot start` 在 Termux 上会自动取得唤醒锁以避免熄屏断网，`AYJX_WAKE_LOCK=0` 可以关闭；唤醒锁由整个 Termux 共享，`./bot power off` 会影响其他 Termux 任务，因此要求先停止 bot。
 
-未托管时按 `Ctrl+C` 停止 bot，`tmux` 会话里跑的就是 bot 本身；托管后 bot 由 runsv 管，`./bot logs` 的窗口只是 `tail -F` 日志，关掉它不影响 bot。无论哪种方式，脚本都通过进程可执行文件路径识别本仓库实例，并用文件锁防止重复启动，不要绕过脚本另外启动第二份程序。
+未托管时按 `Ctrl+C` 停止 bot，`tmux` 会话里跑的就是 bot 本身；托管后 bot 由 runsv 管，`./bot logs` 的窗口只是 `tail -F` 日志，关掉它不影响 bot。无论哪种方式，脚本都通过进程可执行文件路径识别本仓库实例，不要绕过脚本另外启动第二份程序。
+
+手动启动时还会用 `.bot.lock` 加文件锁防止重复启动；托管路径（`serve`）不加锁——runsv 已保证同一时刻只有一个 `run` 实例，而且那把锁的 fd 会被 bot 派生出的 Chromium 继承，浏览器可能比 bot 活得久，锁就被一个已经无关的进程攥住，后续启动全部报「锁被占用」（2026-09-14 因此出现过托管服务连续退出码 1 起不来）。
 
 ## 交给 termux-services（runit）托管
 
-Termux 上可以让 `termux-services` 常驻监督 bot：进程一退出 runsv 就把它拉起来，日志交给 `svlogd` 落盘。服务目录 `$PREFIX/var/service/ayjx/`，两个文件都设为 755。
-
-`run`：
+Termux 上可以让 `termux-services` 常驻监督 bot：进程一退出 runsv 就把它拉起来，日志交给 `svlogd` 落盘。服务文件在 `scripts/service/ayjx/`，装到 `$PREFIX/var/service/ayjx/`，权限都设 755：
 
 ```sh
-#!/data/data/com.termux/files/usr/bin/sh
-# 由 runsv 监督：进程一退出就重启。停止走 `sv down ayjx`（或 ./bot stop）。
-export PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
-export HOME=${HOME:-/data/data/com.termux/files/home}
-export PATH="$PREFIX/bin:$PATH"
-
-exec /绝对路径/到/本/checkout/bot serve
+mkdir -p "$PREFIX/var/service/ayjx/log"
+cp scripts/service/ayjx/run scripts/service/ayjx/finish "$PREFIX/var/service/ayjx/"
+cp scripts/service/ayjx/log/run "$PREFIX/var/service/ayjx/log/"
+chmod 755 "$PREFIX/var/service/ayjx/run" "$PREFIX/var/service/ayjx/finish" "$PREFIX/var/service/ayjx/log/run"
+# 再把 run 最后一行换成这个 checkout 的绝对路径
 ```
 
-`log/run` 与 `termux-services` 其他服务一致，取服务名后用 `svlogd -tt "$LOGDIR/sv/$service"` 输出到 `$PREFIX/var/log/sv/ayjx`。
+| 文件 | 作用 |
+| --- | --- |
+| `run` | runsv 启动 bot（`bot serve`）。`./bot` 靠这个文件里出现本 checkout 的绝对路径判断自己是否被托管，所以那行不能写成 `$HOME/...` |
+| `finish` | runsv 在服务终止后、重启前执行。秒退（低于 `AYJX_MIN_UPTIME`，默认 20 秒）就退避同样时长；人为停止不退避 |
+| `log/run` | `svlogd -tt` 输出到 `$PREFIX/var/log/sv/ayjx` |
 
-`./bot` 靠 `run` 里出现**本 checkout 的绝对路径**判断自己是否被托管，所以上面那行不能写成 `$HOME/...`；`tests/` 会把脚本复制到临时目录运行，那种情况按未托管处理，`start` / `stop` 不会去动真正在跑的服务。改完 `run` 后 `runsv` 会在下次启动时读取新内容。
+`runsv` 没有内置退避，`run` 秒退时它会约每 1.25 秒重启一次（实测 20 秒起 16 次）——配置解析失败、二进制缺失、启动锁被占这类情况会一直热循环。`finish` 的退避把重试压到每分钟几次；活得久说明是运行中偶发退出，立刻重启，不影响正常崩溃恢复。人为停止不退避：实测 bot 接住 SIGTERM/SIGINT 后是正常退出（退出码 0、信号 0，日志以「Bye!」结尾），所以判据是退出码 0 而不是信号。注意 `runsv` 在 `finish` 里跑 sleep 时 `sv up` 要等 sleep 结束才生效，这也是人为停止必须走豁免的原因。
+
+`tests/` 会把启动脚本复制到临时目录运行，那种情况按未托管处理，`start` / `stop` 不会去动真正在跑的服务。改完 `run` 后 `runsv` 会在下次启动时读取新内容。
 
 托管后：停止用 `./bot stop`（等价 `sv down ayjx`，runsv 不会再拉起来），恢复用 `./bot start`；`./bot logs` 跟的是 `$PREFIX/var/log/sv/ayjx/current`；想让 Termux 重启后也不自启，用 `./bot disable`。
 
@@ -176,7 +180,7 @@ ColorOS 之类的清理器会连整个 Termux 应用一起杀掉，Termux 里的
 | `scripts/97-termux-revive.sh` | `/data/adb/service.d/97-termux-revive.sh`（KernelSU / Magisk 开机拉起） |
 | `scripts/termux-revive.sh` | `/data/adb/termux-revive/termux-revive.sh`（看守本体） |
 
-看守每 60 秒看一次 `runsvdir` 在不在，不在就拉起 Termux。它区分「你手动停的」和「被动被杀」——前者不复活，判据是 `dumpsys package` 的 `stopped` 状态与 `ApplicationExitInfo` 的 `reason`。`--check` 打印全部判据，`hold` / `resume` 暂停与恢复。细节见两个脚本的头部注释。
+看守每 60 秒看一次 `runsvdir` 在不在，不在就拉起 Termux。它区分「你手动停的」和「被动被杀」——前者不复活，判据是 `dumpsys package` 的 `stopped` 状态与 `ApplicationExitInfo` 的 `reason`。连续拉不起来时退避（`RECOVER_WAIT` 翻倍，封顶 `MAX_WAIT`，默认 30 分钟），不会每 65 秒反复拉一次。`--check` 打印全部判据，`hold` / `resume` 暂停与恢复。细节见两个脚本的头部注释。
 
 进程「运行中」不代表 QQ 已经连接，连接成功应看到 Satori READY / 登录就绪日志。`/ctl list` 查看插件开关，`/ctl show <插件>` 查看配置。
 

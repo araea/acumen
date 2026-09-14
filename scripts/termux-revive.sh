@@ -42,6 +42,9 @@ SVDIR=${TERMUX_REVIVE_SVDIR:-$PREFIX/var/service}
 SERVICE=${TERMUX_REVIVE_SERVICE:-ayjx}
 INTERVAL=${TERMUX_REVIVE_INTERVAL:-60}
 RECOVER_WAIT=${TERMUX_REVIVE_RECOVER_WAIT:-60}
+# 连续拉不起来时的退避上限（秒）。runsvdir 一直起不来说明不是被清理器杀一次，
+# 而是别的地方坏了，这时不该每 65 秒反复拉起一次。
+MAX_WAIT=${TERMUX_REVIVE_MAX_WAIT:-1800}
 # 视为「用户主动杀」的 ApplicationExitInfo.reason 集合。
 USER_REASONS=${TERMUX_REVIVE_USER_REASONS:-"10 11"}
 MAX_LOG_BYTES=${TERMUX_REVIVE_MAX_LOG_BYTES:-2000000}
@@ -122,7 +125,7 @@ user_requested_exit() {
 }
 
 # 拉起 Termux。monkey 走 launcher activity（与 qq-revive 拉 QQ 同一套）；
-# 5 秒后还没起监督树就再点名 activity 一次兜底。
+# 5 秒后还没起监督树就再点名 activity 一次兜底。返回 0 表示监督树回来了。
 revive_termux() {
     log "revive: $1"
     monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
@@ -131,6 +134,7 @@ revive_termux() {
         am start-activity -n "$PKG/com.termux.app.TermuxActivity" >/dev/null 2>&1
     fi
     sleep "$RECOVER_WAIT"
+    runsvdir_pid >/dev/null
 }
 
 # 只看一轮判据、不动 Termux，用来确认探针本身工作正常。
@@ -190,6 +194,7 @@ log "watchdog start pid=$$ pkg=$PKG svdir=$SVDIR interval=${INTERVAL}s user_reas
 
 held_logged=0
 stop_reason=""
+revive_fails=0
 
 while true; do
     # 硬开关：暂停。跨重启有效，只有 resume 才解除。
@@ -209,6 +214,7 @@ while true; do
             log "cleared: 监督树回来了（此前判为 $stop_reason），恢复正常巡检"
             stop_reason=""
         fi
+        revive_fails=0
         sleep "$INTERVAL"
         continue
     fi
@@ -236,4 +242,17 @@ while true; do
     else
         revive_termux "Termux 应用不在了"
     fi
+
+    # 拉不起来就退避，别每 65 秒反复拉：连续失败次数翻倍，封顶 MAX_WAIT。
+    if runsvdir_pid >/dev/null; then
+        revive_fails=0
+        continue
+    fi
+    revive_fails=$((revive_fails + 1))
+    shift_n=$revive_fails
+    [ "$shift_n" -gt 6 ] && shift_n=6
+    wait=$(( RECOVER_WAIT * (1 << shift_n) ))
+    [ "$wait" -gt "$MAX_WAIT" ] && wait=$MAX_WAIT
+    log "revive 未成功（连续 $revive_fails 次），${wait}s 后再试；Termux 起不来时要手动查"
+    sleep "$wait"
 done
