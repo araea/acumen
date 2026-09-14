@@ -31,8 +31,8 @@ pub struct Config {
     pub ignore_domains: Vec<String>,
     /// 是否允许截图访问内网/本机地址。默认关闭——见 `check_url` 的说明。
     pub allow_private_hosts: bool,
-    /// 是否跳过需要登录才能看内容的站点。默认开启——见 `LOGIN_WALL_DOMAINS`。
-    pub block_login_walls: bool,
+    /// 是否跳过截出来没有内容的站点。默认开启——见 `WALLED_DOMAINS`。
+    pub block_walled_sites: bool,
     /// 群名单：配了黑名单就对名单外的所有群截图，配了白名单则只对名单内的群截图。
     pub channel: ChannelConfig,
 }
@@ -48,7 +48,7 @@ impl Default for Config {
             device_scale_factor: 1.0,
             ignore_domains: vec![],
             allow_private_hosts: false,
-            block_login_walls: true,
+            block_walled_sites: true,
             channel: ChannelConfig::default(),
         }
     }
@@ -67,30 +67,36 @@ static CAPTURE_GATE: Semaphore = Semaphore::const_new(2);
 /// 单张截图的像素上限（含 `device_scale_factor`），与 `render/web.rs` 保持一致。
 const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
 
-/// 需要登录才能看到内容的站点。浏览器里没有登录态，截出来只有登录墙、二维码或
-/// 「打开App」引导，发回群里没有意义，所以默认跳过（`block_login_walls` 可关）。
+/// 截出来没有内容的站点。两种成因，结果一样——发给群里的图不是登录页就是验证页，
+/// 所以默认跳过（`block_walled_sites` 可关）。
 ///
-/// 只列**正文必须登录**的站点。B 站、YouTube、微信公众号、m.weibo.cn 未登录也能看，
-/// 不在此列。按域名后缀匹配，`douyin.com` 同时覆盖 `v.douyin.com`（分享短链的落点），
-/// 但覆盖不到 `iesdouyin.com`，同名的那条要单独列。
-const LOGIN_WALL_DOMAINS: &[&str] = &[
-    // 短视频与图文分享链：点开只有下载/打开 App 的引导
+/// 只列**稳定**如此、且正文必须登录的站点。实测能正常渲染的（CSDN、虎扑、豆瓣、
+/// 今日头条、淘宝、闲鱼、BOSS直聘、AcFun、晋江、起点、番茄、Tumblr、Threads、
+/// B 站含直播、`m.weibo.cn`）都不在此列；贴吧的「百度安全验证」是偶发的，重测
+/// 三次有两次能出内容，也不列。按域名后缀匹配，`douyin.com` 覆盖分享短链的落点
+/// `v.douyin.com`，但覆盖不到 `iesdouyin.com`，同名的那条要单独列。
+const WALLED_DOMAINS: &[&str] = &[
+    // 登录墙：没有登录态只能看到登录表单或「打开App」引导
     "douyin.com",
     "iesdouyin.com",
     "kuaishou.com",
     "xiaohongshu.com",
     "xhslink.com",
     "tiktok.com",
-    // 海外社交平台：未登录一律登录页
     "instagram.com",
     "facebook.com",
     "x.com",
     "twitter.com",
     "linkedin.com",
-    "pixiv.net",
-    // 中文社区：正文要登录
     "weibo.com",
     "zhihu.com",
+    "xueqiu.com",
+    "nga.cn",
+    "ngabbs.com",
+    // 风控墙：从本机（Termux，出口走代理）打开只有验证页或 block 页。
+    // 跟登录无关，换出口 IP 后可能又能开，届时把这两条摘掉即可。
+    "reddit.com",
+    "quora.com",
 ];
 
 /// 链接是否允许截图，不允许时返回可写进日志的原因。
@@ -116,12 +122,10 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
             return Err(format!("域名 {} 命中忽略名单 {}", name, rule.trim()));
         }
         // 放在解析之前：这类站点不必真去 DNS 查一遍，也省一次查询。
-        if config.block_login_walls
-            && let Some(rule) = LOGIN_WALL_DOMAINS
-                .iter()
-                .find(|rule| domain_matches(&name, rule))
+        if config.block_walled_sites
+            && let Some(rule) = WALLED_DOMAINS.iter().find(|rule| domain_matches(&name, rule))
         {
-            return Err(format!("{} 需要登录才能看到内容，截图没有意义", rule));
+            return Err(format!("{} 截出来是登录墙或验证页，没有内容", rule));
         }
     }
 
@@ -463,7 +467,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_walled_sites_are_skipped() {
+    async fn walled_sites_are_skipped() {
         let strict = config();
         // 群友复制出来的抖音分享文案，链接落点是 v.douyin.com。
         for raw in [
@@ -475,6 +479,10 @@ mod tests {
             "https://www.tiktok.com/@a/video/123",
             "https://x.com/a/status/1",
             "https://www.zhihu.com/question/1",
+            "https://xueqiu.com/S/SH600519",
+            "https://bbs.nga.cn/thread.php?fid=-7",
+            "https://www.reddit.com/r/rust/",
+            "https://www.quora.com/What-is-rust",
         ] {
             assert!(check_url(raw, &strict).await.is_err(), "{raw} 不应放行");
         }
@@ -485,13 +493,16 @@ mod tests {
             "https://m.weibo.cn/detail/123",
             "https://mp.weixin.qq.com/s/abc",
             "https://www.youtube.com/watch?v=abc",
+            "https://www.pixiv.net/artworks/91475850",
+            "https://tieba.baidu.com/f?kw=rust",
+            "https://www.hupu.com/",
         ] {
             assert!(check_url(raw, &strict).await.is_ok(), "{raw} 不应被拦");
         }
 
         // 关掉开关后回到旧行为。
         let mut relaxed = config();
-        relaxed.block_login_walls = false;
+        relaxed.block_walled_sites = false;
         assert!(check_url("https://v.douyin.com/c9EJkQ5hNz0/", &relaxed).await.is_ok());
     }
 

@@ -298,11 +298,11 @@ ignore_domains = []
 # 允许截图访问内网/本机地址。默认关闭：截图会原样发回群里，开启后群友发一条
 # http://127.0.0.1:6520/ 之类的链接就能把本机面板、路由器后台渲染成图片读走。
 allow_private_hosts = false
-# 跳过需要登录才能看内容的站点（抖音/快手/小红书、Instagram/X/知乎等）。浏览器里
-# 没有登录态，这类链接截出来只有登录墙或「打开App」引导，发回群里没有意义。
-# 名单写在 src/plugins/webshot.rs 的 LOGIN_WALL_DOMAINS，要额外拉黑别的域名用上面的
+# 跳过截出来没有内容的站点：没登录只能看到登录墙（抖音/快手/小红书、Instagram/X、
+# 知乎、雪球、NGA 等），以及从本机打开会被风控拦下的（Reddit、Quora）。
+# 名单写在 src/plugins/webshot.rs 的 WALLED_DOMAINS，要额外拉黑别的域名用上面的
 # ignore_domains。
-block_login_walls = true
+block_walled_sites = true
 
 # 语义同 [stats.channel]。
 [webshot.channel]
