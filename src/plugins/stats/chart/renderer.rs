@@ -2,15 +2,26 @@ use std::collections::HashMap;
 
 use super::data_loader::{BarData, SeriesData};
 use super::utils::{
-    ColorScheme, draw_rounded_rect, format_percent, format_thousands, get_contrast_color,
-    get_font, get_font_family,
-    get_font_with_color, mix_with_white, overlay_image, save_rgba_to_base64, truncate_text_to_fit,
+    ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, format_percent,
+    format_thousands, get_contrast_color, get_font, get_font_family, get_font_with_color,
+    harmonize_theme, mix_with_color, mix_with_white, overlay_image, save_rgba_to_base64,
+    truncate_text_to_fit,
 };
 use crate::plugins::stats::StatsConfig;
 use chrono::Local;
 use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
+
+/// 一行的几何与配色：位置、条尾、以及从同一支色相里分出来的四个调子。
+struct RowStyle {
+    y: i32,
+    bar_end_x: i32,
+    bar: RGBColor,
+    track: RGBColor,
+    value_ink: RGBColor,
+    pct_ink: RGBColor,
+}
 
 /// 排行榜的刻度竖线：一组等距的浅色竖线，只刻在每行的色带里。
 ///
@@ -34,7 +45,7 @@ impl ScaleGrid {
         root: &DrawingArea<DB, plotters::coord::Shift>,
         row_tops: impl Iterator<Item = i32> + Clone,
     ) -> Result<(), String> {
-        let color = RGBAColor(0, 0, 0, 0.12);
+        let color = RGBAColor(0, 0, 0, 0.08);
         let mut x = self.first_x;
         while x <= self.end_x {
             // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
@@ -91,6 +102,8 @@ pub fn draw_bar_chart(
     let avatar_gap = 6 * s;
     let gap_text = 14 * s;
     let text_inset = 10 * s; // 文字距条端/轨道端的内缩
+    // 色带的圆角：约条高的两成，够软但仍是一根条，不至于圆成胶囊
+    let bar_radius = 10 * s as i32;
 
     // 标题区：标题在最上，时间、榜单范围与合计并成一行小字跟在下面。
     // 把时间挪到标题之下是 iOS/Material 一类版式的通行做法——先看清这是什么，
@@ -176,29 +189,42 @@ pub fn draw_bar_chart(
         root.draw_text(&meta, &meta_style, (canvas_width as i32 / 2, meta_y as i32))
             .map_err(|e| e.to_string())?;
 
-        // 每行的行位与条长只算一次，三趟绘制（轨道 → 刻度 → 实条与文字）共用。
-        let rows: Vec<(i32, i32)> = data
+        // 每行的行位、条长与这一行的四个色调只算一次，后面几趟共用。
+        // 一行四色全部出自同一支色相：实色条 → 淡色轨道 → 条外的数值 → 占比，
+        // 明度依次拉开，底淡字深，二十行也就是二十套同构的配色。
+        let rows: Vec<RowStyle> = data
             .iter()
             .enumerate()
             .map(|(i, item)| {
                 let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
                 let ratio = item.value as f64 / max_val as f64;
                 let bar_w = (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
-                (y, track_start_x + bar_w)
+                let bar = harmonize_theme(item.theme_color);
+                let track = mix_with_white(bar, 0.5);
+                let value_ink = deep_tone(bar, 0.34);
+                RowStyle {
+                    y,
+                    bar_end_x: track_start_x + bar_w,
+                    bar,
+                    track,
+                    value_ink,
+                    // 占比是次要信息：把数值的墨往底色里调一点，同一支色相退半档
+                    pct_ink: mix_with_color(value_ink, track, 0.64),
+                }
             })
             .collect();
 
         // 头像底下垫一圈发丝细的暗边：浅色头像贴在暖白纸上边缘会化掉，
         // 一圈 8% 的灰正好把圆形收住（iOS 给头像与应用图标描内边同理）。
         let ring_color = RGBAColor(0, 0, 0, 0.08);
-        for ((y, _), item) in rows.iter().zip(data.iter()) {
+        for (row, item) in rows.iter().zip(data.iter()) {
             if item.avatar_img.is_none() {
                 continue;
             }
             root.draw(&Circle::new(
                 (
                     padding as i32 + (avatar_width / 2) as i32,
-                    y + (row_height / 2) as i32,
+                    row.y + (row_height / 2) as i32,
                 ),
                 (avatar_width / 2) as i32 + s as i32,
                 ring_color.filled(),
@@ -206,42 +232,64 @@ pub fn draw_bar_chart(
             .map_err(|e| e.to_string())?;
         }
 
-        // 第一趟：淡色轨道（条尾到轨道尽头的那一段）
-        for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
-            if *bar_end_x < track_end_x {
-                root.draw(&Rectangle::new(
-                    [(*bar_end_x, *y), (track_end_x, y + row_height as i32)],
-                    mix_with_white(item.theme_color, 0.5).filled(),
-                ))
-                .map_err(|e| e.to_string())?;
-            }
+        // 第一趟：整条色带（淡色轨道）。先整条铺满再让实色条盖上去，四角的圆
+        // 只需在这里做一次，实色条与轨道交界处自然是平切，不会露出豁口。
+        for row in rows.iter() {
+            draw_rounded_rect(
+                &root,
+                track_start_x,
+                row.y,
+                track_end_x,
+                row.y + row_height as i32,
+                bar_radius,
+                row.track,
+            )?;
         }
 
         // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认实色条盖住刻度，
         // 每根条是完整的一块颜色；打开则刻度画在最上层，每行的色带都被刻满。
         // 无论哪种，刻度只落在色带上、不越进行距的纸面，文字也都在最后一趟画。
         //
-        // 刻度间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道，直到轨道
-        // 尽头，正好是原版那八道等距刻度；首尾两道就是这张表的左右边界。
+        // 刻度间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道。右端那道
+        // 收在圆角之前——它若落在圆角上，方头的线会戳出色带的轮廓；色带自己的
+        // 圆角就是这张表的右边界，不必再描一道。
         let grid = ScaleGrid {
             first_x: track_start_x + base_bar_min_width as i32,
-            end_x: track_end_x,
+            end_x: track_end_x - bar_radius,
             step: 100 * s as i32,
-            width: 3 * s as i32,
+            width: 2 * s as i32,
             row_height: row_height as i32,
         };
-        let row_tops = || rows.iter().map(|(y, _)| *y);
+        let row_tops = || rows.iter().map(|row| row.y);
 
         // 第二趟：条与刻度，孰上孰下看配置
         if !config.ranking_grid_over_bars {
             grid.draw(&root, row_tops())?;
         }
-        for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
-            root.draw(&Rectangle::new(
-                [(track_start_x, *y), (*bar_end_x, y + row_height as i32)],
-                item.theme_color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
+        for row in rows.iter() {
+            // 条没铺满整条色带时右端平切，与后面的轨道接成一条；铺满了（榜首）
+            // 就连右边两个角一起圆，正好落在色带的轮廓上。
+            if row.bar_end_x >= track_end_x {
+                draw_rounded_rect(
+                    &root,
+                    track_start_x,
+                    row.y,
+                    track_end_x,
+                    row.y + row_height as i32,
+                    bar_radius,
+                    row.bar,
+                )?;
+            } else {
+                draw_left_accent_bar(
+                    &root,
+                    track_start_x,
+                    row.y,
+                    row.bar_end_x,
+                    row.y + row_height as i32,
+                    bar_radius,
+                    row.bar,
+                )?;
+            }
         }
 
         if config.ranking_grid_over_bars {
@@ -250,14 +298,14 @@ pub fn draw_bar_chart(
 
         // 第三趟：行内文字（昵称、数值、占比），始终画在最上层
         for (i, item) in data.iter().enumerate() {
-            let (y, bar_end_x) = rows[i];
+            let row = &rows[i];
+            let (y, bar_end_x) = (row.y, row.bar_end_x);
             let start_x = track_start_x;
-            let theme_color = item.theme_color;
 
             // 昵称：一律写在实色条内，放不下就截断。名字挪到条外读起来反而费劲，
             // 短条那几行宁可截，也保持每行同一个视线落点。
             let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
-            let name_color = get_contrast_color(theme_color);
+            let name_color = get_contrast_color(row.bar);
             let max_name_width = (bar_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
             let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
             if !display_name.is_empty() {
@@ -274,13 +322,13 @@ pub fn draw_bar_chart(
             // 数值与占比：紧跟在自己那根条的尾巴右边，值与条连着读最直观。
             let (value_text, pct_text) = &formatted_counts[i];
             let count_x = bar_end_x + text_inset as i32;
-            let count_style = get_font_with_color(config, font_size, &ink)
+            let count_style = get_font_with_color(config, font_size, &row.value_ink)
                 .pos(Pos::new(HPos::Left, VPos::Center));
             root.draw_text(value_text, &count_style, (count_x, text_mid_y))
                 .map_err(|e| e.to_string())?;
 
             let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
-            let pct_style = get_font_with_color(config, pct_font_size, &ink_soft)
+            let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
                 .pos(Pos::new(HPos::Left, VPos::Center));
             root.draw_text(
                 pct_text,
@@ -299,24 +347,23 @@ pub fn draw_bar_chart(
                 continue;
             };
 
-            let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
             let cx = padding as i32 + (avatar_width / 2) as i32;
-            let cy = y + (row_height / 2) as i32;
+            let cy = rows[i].y + (row_height / 2) as i32;
             let radius = (avatar_width as f32 * 0.46) as i32;
 
-            // 外圈淡色光晕 + 主题色圆底
-            let halo_color = mix_with_white(item.theme_color, 0.35);
+            // 外圈淡色光晕 + 主题色圆底，用的是与这一行同一支色相
+            let accent = rows[i].bar;
             root.draw(&Circle::new(
                 (cx, cy),
                 radius + (3 * s as i32),
-                halo_color.filled(),
+                mix_with_white(accent, 0.35).filled(),
             ))
             .map_err(|e| e.to_string())?;
-            root.draw(&Circle::new((cx, cy), radius, item.theme_color.filled()))
+            root.draw(&Circle::new((cx, cy), radius, accent.filled()))
                 .map_err(|e| e.to_string())?;
 
-            // 圆内字符 (自动根据底色选择黑/白)
-            let icon_color = get_contrast_color(item.theme_color);
+            // 圆内字符 (同色相的深调/浅调)
+            let icon_color = get_contrast_color(accent);
             let icon_style = get_font_with_color(config, 24 * s, &icon_color)
                 .pos(Pos::new(HPos::Center, VPos::Center));
             root.draw_text(icon_char, &icon_style, (cx, cy + (2 * s as i32)))
@@ -1221,6 +1268,8 @@ mod tests {
             "晚来天欲雪",
             "卖火柴的小女孩",
         ];
+        // 前八种是常见的中间调，后四种是极端：雪白的自拍、近黑的剪影、
+        // 荧光的二次元图、以及一张灰度头像——收调之后这四行也要站得住。
         let tints = [
             (86, 104, 128),
             (150, 120, 96),
@@ -1230,8 +1279,10 @@ mod tests {
             (104, 132, 156),
             (140, 112, 112),
             (96, 118, 96),
-            (120, 120, 132),
-            (158, 132, 112),
+            (238, 234, 228),
+            (26, 24, 30),
+            (255, 64, 160),
+            (140, 140, 140),
         ];
         let data: Vec<BarData> = names
             .iter()

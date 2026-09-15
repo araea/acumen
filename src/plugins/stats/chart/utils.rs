@@ -270,14 +270,97 @@ pub fn format_percent(value: i64, total: i64) -> String {
     }
 }
 
-pub fn get_contrast_color(bg_color: RGBColor) -> RGBColor {
-    let (r, g, b) = (bg_color.0 as u32, bg_color.1 as u32, bg_color.2 as u32);
-    // YIQ brightness formula
-    let yiq = (r * 299 + g * 587 + b * 114) / 1000;
-    if yiq >= 128 {
-        RGBColor(0, 0, 0)
+// ================= 同一支色相里的调子 =================
+//
+// 条色是从头像里取的平均色，什么都有：雪白的自拍、全黑的剪影、荧光的二次元图。
+// 直接拿来铺条，一张二十行的榜就是二十种互不相干的颜色，字色也只能碰运气。
+// 这里按 Material 3 的 tonal 思路收一道：色相留给个人，饱和度与明度收进一条窄带，
+// 条上的浅字、条外的深字都从同一支色相里取——底淡字深，对比稳定，通篇一套调子。
+
+/// RGB → HSL，H 为 0—360，S/L 为 0—1。
+fn to_hsl(c: RGBColor) -> (f32, f32, f32) {
+    let (r, g, b) = (
+        c.0 as f32 / 255.0,
+        c.1 as f32 / 255.0,
+        c.2 as f32 / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d.abs() < f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
     } else {
-        RGBColor(255, 255, 255)
+        d / (max + min)
+    };
+    let h = if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    ((h + 360.0) % 360.0, s, l)
+}
+
+/// HSL → RGB。
+fn from_hsl(h: f32, s: f32, l: f32) -> RGBColor {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = (h % 360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to8 = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    RGBColor(to8(r), to8(g), to8(b))
+}
+
+/// 主题色的明度与饱和度收进窄带，只留色相。
+/// 明度上限压在 0.5：条上的浅色字才有足够对比；下限 0.36：不至于黑成一块煤。
+pub fn harmonize_theme(color: RGBColor) -> RGBColor {
+    let (h, s, l) = to_hsl(color);
+    // 本来就没有色相的头像（纯灰、纯白、纯黑）保持中性：HSL 里它们的 H 一律是 0，
+    // 硬给饱和度会凭空染出一条粉红，与头像对不上。中性色只压明度。
+    if s < 0.06 {
+        return from_hsl(0.0, 0.0, l.clamp(0.36, 0.50));
+    }
+    from_hsl(h, s.clamp(0.18, 0.42), l.clamp(0.36, 0.50))
+}
+
+/// 同色相的深调：`strength` 越小越深。给淡底上的字用。
+/// 一次压暗对本来就很浅的色还不够，再压到 YIQ 亮度 96 以下为止。
+pub fn deep_tone(color: RGBColor, strength: f32) -> RGBColor {
+    let black = RGBColor(0, 0, 0);
+    let mut c = mix_with_color(color, black, strength.clamp(0.05, 1.0));
+    for _ in 0..4 {
+        if yiq_brightness(c) <= 96 {
+            break;
+        }
+        c = mix_with_color(c, black, 0.75);
+    }
+    c
+}
+
+fn yiq_brightness(c: RGBColor) -> u32 {
+    (c.0 as u32 * 299 + c.1 as u32 * 587 + c.2 as u32 * 114) / 1000
+}
+
+/// 实色条上的字色。纯白/纯黑盖在彩色上像两片贴纸；取同色相的极浅调或极深调，
+/// 对比度一样够，字却像是从这块颜色里长出来的。
+pub fn get_contrast_color(bg_color: RGBColor) -> RGBColor {
+    if yiq_brightness(bg_color) >= 128 {
+        deep_tone(bg_color, 0.26)
+    } else {
+        mix_with_white(bg_color, 0.10)
     }
 }
 
@@ -510,6 +593,39 @@ pub fn overlay_image(base: &mut RgbaImage, overlay: &RgbaImage, x: i32, y: i32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 收调之后，一行里「条 → 轨道 → 数字」的明度必须始终拉得开：
+    /// 头像什么颜色都可能，拉不开的那一行数字就糊在轨道上看不清。
+    #[test]
+    fn every_avatar_color_lands_in_the_same_tonal_band() {
+        let samples = [
+            RGBColor(238, 234, 228), // 雪白自拍
+            RGBColor(26, 24, 30),    // 近黑剪影
+            RGBColor(255, 64, 160),  // 荧光二次元
+            RGBColor(140, 140, 140), // 纯灰
+            RGBColor(62, 111, 151),  // 本来就合适的中间调
+        ];
+        for raw in samples {
+            let bar = harmonize_theme(raw);
+            let track = mix_with_white(bar, 0.5);
+            let ink = deep_tone(bar, 0.34);
+
+            let luma = |c: RGBColor| (c.0 as u32 * 299 + c.1 as u32 * 587 + c.2 as u32 * 114) / 1000;
+            assert!((80..=170).contains(&luma(bar)), "条色应落在中间调: {:?}", bar);
+            assert!(luma(track) > luma(bar), "轨道要比条浅");
+            assert!(
+                luma(track) - luma(ink) > 90,
+                "数字与轨道的明度差不够: ink={:?} track={:?}",
+                ink,
+                track
+            );
+        }
+
+        // 灰头像不该被凭空染上色相
+        let gray = harmonize_theme(RGBColor(140, 140, 140));
+        assert_eq!(gray.0, gray.1);
+        assert_eq!(gray.1, gray.2);
+    }
 
     #[test]
     fn percents_round_to_whole_numbers() {
