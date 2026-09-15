@@ -398,13 +398,13 @@ pub fn truncate_text_to_fit(
     let mut s = text.to_string();
     while !s.is_empty() {
         s.pop();
-        let candidate = format!("{}...", s);
+        let candidate = format!("{}…", s);
         let (w, _) = font.box_size(&candidate).unwrap_or((0, 0));
         if w <= max_width {
             return candidate;
         }
     }
-    "...".to_string()
+    "…".to_string()
 }
 
 pub fn get_average_color(img: &RgbaImage) -> RGBColor {

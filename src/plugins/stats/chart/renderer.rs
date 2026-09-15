@@ -13,6 +13,11 @@ use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
 /// 绘制水平条形图 (排行榜)
+///
+/// 版式分成四个纵列：头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
+/// 横条本身的画法（实色 + 半淡轨道、条内写名字）保持不变；排版上只做三件事：
+/// 数值与占比各自右对齐成固定的一列（不再跟着条尾走成一串阶梯，也不再压在
+/// 淡色轨道上）、条太窄放不下的名字改写到轨道上、刻度线只留有意义的三道。
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
@@ -27,6 +32,13 @@ pub fn draw_bar_chart(
     // === 1. 预计算与布局参数 (Scaling) ===
     let padding = 24 * s;
 
+    // 纸面不用纯白：整屏 2000 px 的高亮白在手机上看久了刺眼，退半档到暖白，
+    // 淡色轨道与横条反而更浮得出来。与走势图同一张纸。
+    let page_bg = RGBColor(251, 250, 247);
+    let colors = ColorScheme::default();
+    let ink = colors.text_primary; // 正文墨色：纯黑太硬，统一用深蓝灰
+    let ink_soft = colors.text_secondary;
+
     // 内部尺寸也随之放大。`row_height` 是条本身的高度，`row_pitch` 是相邻两行的
     // 行距：之间留一道空档，条与条才分得开——紧挨着排会连成一整块三色板，
     // 排行读起来反而费劲。
@@ -35,16 +47,21 @@ pub fn draw_bar_chart(
     let row_pitch = row_height + row_gap;
     let font_size = 30 * s;
     let avatar_width = 50 * s;
-    let gap_text = 10 * s;
+    // 头像与横条之间留一道窄缝：圆头像直接贴着实色条会挤成一团。
+    let avatar_gap = 6 * s;
+    let gap_text = 14 * s;
+    let text_inset = 10 * s; // 文字距条端/轨道端的内缩
 
     // 标题区域
     let title_font_size = 32 * s;
     let header_font_size = 20 * s;
+    let sub_font_size = 20 * s;
 
     let header_margin = 10 * s;
-    let title_margin = 15 * s; // 标题和列表的间距
-    let top_area_height =
-        padding + header_font_size + header_margin + title_font_size + title_margin;
+    let sub_margin = 10 * s; // 标题与副标题
+    let title_margin = 22 * s; // 副标题和列表的间距
+    let sub_y = padding + header_font_size + header_margin + title_font_size + sub_margin;
+    let top_area_height = sub_y + sub_font_size + title_margin;
 
     let base_bar_min_width = 150.0 * (s as f64);
     let base_bar_scale_width = 700.0 * (s as f64);
@@ -58,9 +75,12 @@ pub fn draw_bar_chart(
     let pct_font_size = 20 * s;
     let pct_font_obj = (font_family, pct_font_size).into_font();
 
-    // 每行都展示 "数值 + 百分比"，百分比用更小的灰色字体，提升可读性
+    // 每行都展示 "数值 + 百分比"，百分比用更小的灰色字体，提升可读性。
+    // 两者各自量出最宽的一条，好让它们各占一列、右对齐——一列对齐的数字才扫得动。
     let mut formatted_counts: Vec<(String, String)> = Vec::new();
-    let mut max_count_text_width = 0u32;
+    let mut value_col_w = 0u32;
+    let mut pct_col_w = 0u32;
+    let pct_gap = 8 * s;
 
     for item in data.iter() {
         let value_text = format_thousands(item.value);
@@ -68,20 +88,31 @@ pub fn draw_bar_chart(
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
         let (pw, _) = pct_font_obj.box_size(&pct_text).unwrap_or((0, 0));
-        let total_w = vw + (8 * s) + pw;
-        max_count_text_width = max_count_text_width.max(total_w);
+        value_col_w = value_col_w.max(vw);
+        pct_col_w = pct_col_w.max(pw);
         formatted_counts.push((value_text, pct_text));
     }
 
     // 计算内容区域尺寸
-    let content_width = avatar_width + max_possible_bar_width + gap_text + max_count_text_width;
+    let content_width = avatar_width
+        + avatar_gap
+        + max_possible_bar_width
+        + gap_text
+        + value_col_w
+        + pct_gap
+        + pct_col_w;
     // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
-    let content_height =
-        data.len() as u32 * row_pitch - row_gap + top_area_height;
+    let content_height = data.len() as u32 * row_pitch - row_gap + top_area_height;
 
     // 计算画布尺寸 (增加四周边距)
     let canvas_width = content_width + padding * 2;
     let canvas_height = content_height + padding; // 底部留白
+
+    // 横条与数字的纵向分界线：轨道到此为止，右边整列留给数字。
+    let track_start_x = (padding + avatar_width + avatar_gap) as i32;
+    let track_end_x = track_start_x + max_possible_bar_width as i32;
+    let value_right_x = track_end_x + (gap_text + value_col_w) as i32;
+    let pct_right_x = value_right_x + (pct_gap + pct_col_w) as i32;
 
     // === 2. 绘图 ===
     let mut buffer = vec![0u8; (canvas_width * canvas_height * 3) as usize];
@@ -89,13 +120,11 @@ pub fn draw_bar_chart(
         let root = BitMapBackend::with_buffer(&mut buffer, (canvas_width, canvas_height))
             .into_drawing_area();
 
-        root.fill(&RGBColor(255, 255, 255))
-            .map_err(|e| e.to_string())?;
+        root.fill(&page_bg).map_err(|e| e.to_string())?;
 
         let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let header_style = get_font(config, header_font_size)
-            .pos(Pos::new(HPos::Center, VPos::Top))
-            .color(&RGBColor(100, 116, 139));
+        let header_style = get_font_with_color(config, header_font_size, &ink_soft)
+            .pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(
             &now_str,
             &header_style,
@@ -105,7 +134,8 @@ pub fn draw_bar_chart(
 
         // 绘制标题 (Header 下方)
         let title_y = padding + header_font_size + header_margin;
-        let title_style = get_font(config, title_font_size).pos(Pos::new(HPos::Center, VPos::Top));
+        let title_style = get_font_with_color(config, title_font_size, &ink)
+            .pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(
             title,
             &title_style,
@@ -113,17 +143,55 @@ pub fn draw_bar_chart(
         )
         .map_err(|e| e.to_string())?;
 
-        // 刻度竖线。必须画在条之前：条是实心的，画在后面会有一条条灰线压在
-        // 进度条上，看上去像被划了几刀。落在浅色底上时才露出来，正好当刻度用。
-        let vertical_line_color = RGBAColor(0, 0, 0, 0.12);
-        let line_width = 3 * s as i32;
-        let content_end_y = top_area_height as i32
-            + (data.len() as u32 * row_pitch - row_gap) as i32;
-        let mut line_x = padding as i32 + (200 * s as i32);
-        for _ in 0..8 {
-            if line_x >= (canvas_width - padding) as i32 {
-                break;
+        // 副标题：说清楚这张榜的范围与总量——每行的百分比正是以它为基数。
+        let subtitle = if data.len() > 1 {
+            format!("前 {} 名 · 合计 {}", data.len(), format_thousands(total_val))
+        } else {
+            format!("合计 {}", format_thousands(total_val))
+        };
+        let sub_style = get_font_with_color(config, sub_font_size, &ink_soft)
+            .pos(Pos::new(HPos::Center, VPos::Top));
+        root.draw_text(
+            &subtitle,
+            &sub_style,
+            (canvas_width as i32 / 2, sub_y as i32),
+        )
+        .map_err(|e| e.to_string())?;
+
+        // 每行的行位与条长只算一次，三趟绘制（轨道 → 刻度 → 实条与文字）共用。
+        let rows: Vec<(i32, i32)> = data
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
+                let ratio = item.value as f64 / max_val as f64;
+                let bar_w = (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
+                (y, track_start_x + bar_w)
+            })
+            .collect();
+
+        // 第一趟：淡色轨道。先铺满，刻度线才有底可落。
+        for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
+            if *bar_end_x < track_end_x {
+                root.draw(&Rectangle::new(
+                    [(*bar_end_x, *y), (track_end_x, y + row_height as i32)],
+                    mix_with_white(item.theme_color, 0.5).filled(),
+                ))
+                .map_err(|e| e.to_string())?;
             }
+        }
+
+        // 第二趟：刻度竖线。夹在轨道与实条之间——画在实条之前，条上才不会留下
+        // 几道像被划过的灰线；画在轨道之后，线才真的落在浅色底上当刻度用
+        // （原先画在轨道之前，被每行的轨道盖住，只在行距里露出几段）。
+        // 位置取榜首长度的 1/4、1/2、3/4：条尾停在哪道线之间，是榜首的几成一目了然。
+        let vertical_line_color = RGBAColor(0, 0, 0, 0.1);
+        let line_width = 3 * s as i32;
+        let content_end_y =
+            top_area_height as i32 + (data.len() as u32 * row_pitch - row_gap) as i32;
+        for q in [0.25f64, 0.5, 0.75] {
+            let line_x =
+                track_start_x + (base_bar_min_width + base_bar_scale_width * q).round() as i32;
             root.draw(&Rectangle::new(
                 [
                     (line_x, top_area_height as i32),
@@ -132,94 +200,52 @@ pub fn draw_bar_chart(
                 vertical_line_color.filled(),
             ))
             .map_err(|e| e.to_string())?;
-            line_x += 100 * s as i32;
         }
 
-        // 绘制每一行
+        // 第三趟：实色进度条与行内文字
         for (i, item) in data.iter().enumerate() {
-            // Y坐标向下偏移 top_area_height
-            let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
-            // X坐标向右偏移 padding + avatar_width
-            let start_x = padding as i32 + avatar_width as i32;
-
-            // 1. 计算当前条的实际宽度
-            let ratio = item.value as f64 / max_val as f64;
-            let current_bar_width =
-                (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
-
+            let (y, bar_end_x) = rows[i];
+            let start_x = track_start_x;
             let theme_color = item.theme_color;
-            let faded_color = mix_with_white(theme_color, 0.5);
-
-            // 2. 绘制背景条 (Faded)
-            let remaining_start_x = start_x + current_bar_width;
-            let faded_bar_end_x = (padding + avatar_width + max_possible_bar_width) as i32;
-
-            if remaining_start_x < faded_bar_end_x {
-                root.draw(&Rectangle::new(
-                    [
-                        (remaining_start_x, y),
-                        (faded_bar_end_x, y + row_height as i32),
-                    ],
-                    faded_color.filled(),
-                ))
-                .map_err(|e| e.to_string())?;
-            }
 
             // 3. 绘制进度条 (Solid)
             root.draw(&Rectangle::new(
-                [
-                    (start_x, y),
-                    (start_x + current_bar_width, y + row_height as i32),
-                ],
+                [(start_x, y), (bar_end_x, y + row_height as i32)],
                 theme_color.filled(),
             ))
             .map_err(|e| e.to_string())?;
 
-            // 4. 绘制昵称 (Bar 内部左侧)
-            let name_color = get_contrast_color(theme_color);
-            let name_style = get_font_with_color(config, font_size, &name_color)
-                .pos(Pos::new(HPos::Left, VPos::Center));
-
-            // 稍微留白
-            let max_name_width = if current_bar_width > (20 * s as i32) {
-                (current_bar_width - (20 * s as i32)) as u32
+            // 4. 绘制昵称：条里写得下就写在条里（老样子），写不下才挪到轨道上。
+            let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
+            let (name_w, _) = font_obj.box_size(&item.label).unwrap_or((0, 0));
+            let slot = name_slot(start_x, bar_end_x, track_end_x, text_inset as i32, name_w);
+            // 条内按底色挑黑白，落到淡色轨道上就用正文墨色
+            let name_color = if slot.inside {
+                get_contrast_color(theme_color)
             } else {
-                0
+                ink
             };
 
-            let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
-
+            let display_name = truncate_text_to_fit(&font_obj, &item.label, slot.width);
             if !display_name.is_empty() {
-                root.draw_text(
-                    &display_name,
-                    &name_style,
-                    (
-                        start_x + (10 * s as i32),
-                        y + (row_height / 2) as i32 + (2 * s as i32),
-                    ),
-                )
-                .map_err(|e| e.to_string())?;
+                let name_style = get_font_with_color(config, font_size, &name_color)
+                    .pos(Pos::new(HPos::Left, VPos::Center));
+                root.draw_text(&display_name, &name_style, (slot.x, text_mid_y))
+                    .map_err(|e| e.to_string())?;
             }
 
-            // 5. 绘制数值 (Bar 外部右侧，黑色) + 百分比 (灰色小字号)
+            // 5. 数值与占比：各自右对齐成一列，落在轨道右侧的空白上。
+            //    跟着条尾走的写法会让数字排成一道阶梯，还要压着淡色轨道念。
             let (value_text, pct_text) = &formatted_counts[i];
-            let count_x = start_x + current_bar_width + (10 * s as i32);
-            let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
-
-            let count_style = get_font_with_color(config, font_size, &BLACK)
-                .pos(Pos::new(HPos::Left, VPos::Center));
-            root.draw_text(value_text, &count_style, (count_x, text_mid_y))
+            let count_style = get_font_with_color(config, font_size, &ink)
+                .pos(Pos::new(HPos::Right, VPos::Center));
+            root.draw_text(value_text, &count_style, (value_right_x, text_mid_y))
                 .map_err(|e| e.to_string())?;
 
-            let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
-            let pct_style = get_font_with_color(config, pct_font_size, &RGBColor(100, 116, 139))
-                .pos(Pos::new(HPos::Left, VPos::Center));
-            root.draw_text(
-                pct_text,
-                &pct_style,
-                (count_x + vw as i32 + (8 * s as i32), text_mid_y),
-            )
-            .map_err(|e| e.to_string())?;
+            let pct_style = get_font_with_color(config, pct_font_size, &ink_soft)
+                .pos(Pos::new(HPos::Right, VPos::Center));
+            root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
+                .map_err(|e| e.to_string())?;
         }
 
         // 7. 绘制图标徽章 (消息类型等无头像条目：主题色圆底 + 类型字符)
@@ -238,8 +264,12 @@ pub fn draw_bar_chart(
 
             // 外圈淡色光晕 + 主题色圆底
             let halo_color = mix_with_white(item.theme_color, 0.35);
-            root.draw(&Circle::new((cx, cy), radius + (3 * s as i32), halo_color.filled()))
-                .map_err(|e| e.to_string())?;
+            root.draw(&Circle::new(
+                (cx, cy),
+                radius + (3 * s as i32),
+                halo_color.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
             root.draw(&Circle::new((cx, cy), radius, item.theme_color.filled()))
                 .map_err(|e| e.to_string())?;
 
@@ -276,6 +306,44 @@ pub fn draw_bar_chart(
     }
 
     save_rgba_to_base64(rgba_image)
+}
+
+/// 昵称的落位：写在实色条里，还是写到条尾右边的淡色轨道上。
+///
+/// 条内是本来的写法，也是首选；但榜尾那几行的条只有最小长度，长昵称塞进去会被
+/// 截成 "很长的…" 两三个字，而右手边整条轨道都空着。于是改成「哪边宽用哪边」：
+/// 条里放得下就放条里，放不下时取更宽的一侧，一样宽仍旧留在条里——榜首的条占满
+/// 轨道，外侧宽度为零，写法与从前完全一致。
+struct NameSlot {
+    x: i32,
+    width: u32,
+    inside: bool,
+}
+
+fn name_slot(
+    bar_start_x: i32,
+    bar_end_x: i32,
+    track_end_x: i32,
+    inset: i32,
+    name_width: u32,
+) -> NameSlot {
+    let inside_w = (bar_end_x - bar_start_x - 2 * inset).max(0) as u32;
+    let outside_x = bar_end_x + inset;
+    let outside_w = (track_end_x - inset - outside_x).max(0) as u32;
+
+    if name_width <= inside_w || inside_w >= outside_w {
+        NameSlot {
+            x: bar_start_x + inset,
+            width: inside_w,
+            inside: true,
+        }
+    } else {
+        NameSlot {
+            x: outside_x,
+            width: outside_w,
+            inside: false,
+        }
+    }
 }
 
 /// 消息类型排行榜：标题区 + 构成条 + 竖排信息卡。
@@ -794,7 +862,8 @@ pub fn draw_line_chart(
     {
         let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
 
-        root.fill(&RGBColor(255, 254, 250))
+        // 与排行榜同一张暖白纸，两张图连着看不会一亮一暗
+        root.fill(&RGBColor(251, 250, 247))
             .map_err(|e| e.to_string())?;
 
         // 4.1 时间戳 + 标题 (与柱状图一致)
@@ -1029,6 +1098,28 @@ mod tests {
     }
 
     #[test]
+    fn a_name_moves_onto_the_track_only_when_the_bar_cannot_hold_it() {
+        // 轨道 100..1800，条内外都留 10 的内缩
+        let (start, track_end, inset) = (100, 1800, 10);
+
+        // 条够长：仍旧写在条里
+        let wide = name_slot(start, 900, track_end, inset, 400);
+        assert!(wide.inside);
+        assert_eq!((wide.x, wide.width), (110, 780));
+
+        // 榜尾的短条塞不下长名字：挪到右边的轨道上，能完整显示
+        let narrow = name_slot(start, 400, track_end, inset, 700);
+        assert!(!narrow.inside);
+        assert_eq!((narrow.x, narrow.width), (410, 1380));
+        assert!(narrow.width >= 700, "轨道要能放下整个名字");
+
+        // 榜首的条占满轨道：外侧没有空间，维持条内写法
+        let leading = name_slot(start, track_end, track_end, inset, 9_000);
+        assert!(leading.inside);
+        assert_eq!(leading.x, 110);
+    }
+
+    #[test]
     fn strip_segments_fill_the_width_exactly() {
         let data = vec![
             sample("文本", 8_120),
@@ -1084,6 +1175,105 @@ mod tests {
         let out =
             draw_bar_chart(&config, "本群 今日 发言 排行榜", data).expect("发言排行榜应当能渲染");
         save_preview(&out, "AYJX_CHART_PREVIEW_BAR");
+    }
+
+    /// 圆形假头像：用于本地样张，颜色与线上「头像均色」取到的调子接近。
+    fn fake_avatar(color: (u8, u8, u8)) -> image::RgbaImage {
+        let size = 100u32;
+        let mut img = image::RgbaImage::new(size, size);
+        let center = size as f32 / 2.0;
+        for y in 0..size {
+            for x in 0..size {
+                let (dx, dy) = (x as f32 - center + 0.5, y as f32 - center + 0.5);
+                if (dx * dx + dy * dy).sqrt() <= center - 1.0 {
+                    let shade = 1.0 - (y as f32 / size as f32) * 0.25;
+                    img.put_pixel(
+                        x,
+                        y,
+                        Rgba([
+                            (color.0 as f32 * shade) as u8,
+                            (color.1 as f32 * shade) as u8,
+                            (color.2 as f32 * shade) as u8,
+                            255,
+                        ]),
+                    );
+                }
+            }
+        }
+        img
+    }
+
+    /// 线上最常见的一张榜：20 人、长尾陡峭、昵称长短不一、头像色各异。
+    /// 三行的小样看不出短条那几行的排版问题，样张要按真实规模来看。
+    #[test]
+    #[ignore = "生成本地排行榜样张"]
+    fn dump_full_ranking_sample() {
+        let Ok(dir) = std::env::var("STATS_CARD_DUMP") else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let names = [
+            "★ 每天读一点书的阿青",
+            "夜航船",
+            "把咖啡当水喝的老周同学",
+            "琉璃",
+            "不想上班只想睡觉的猫猫头",
+            "Mira",
+            "山有木兮",
+            "阿吱",
+            "很长很长的群昵称依然保留清晰的阅读位置",
+            "清风徐来",
+            "十七",
+            "写代码的小陈",
+            "月半",
+            "秋刀鱼的滋味",
+            "Tom",
+            "南山南",
+            "一只会摸鱼的水母",
+            "小满",
+            "晚来天欲雪",
+            "卖火柴的小女孩",
+        ];
+        let tints = [
+            (86, 104, 128),
+            (150, 120, 96),
+            (92, 126, 110),
+            (128, 106, 140),
+            (176, 152, 104),
+            (104, 132, 156),
+            (140, 112, 112),
+            (96, 118, 96),
+            (120, 120, 132),
+            (158, 132, 112),
+        ];
+        let data: Vec<BarData> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let value = (4200.0 * 0.72f64.powi(i as i32)).round() as i64 + 1;
+                BarData {
+                    label: name.to_string(),
+                    value,
+                    user_id: Some(10_000 + i as i64),
+                    avatar_url: None,
+                    avatar_img: Some(fake_avatar(tints[i % tints.len()])),
+                    theme_color: {
+                        let t = tints[i % tints.len()];
+                        RGBColor(t.0, t.1, t.2)
+                    },
+                    icon_char: None,
+                }
+            })
+            .collect();
+
+        let out = draw_bar_chart(&StatsConfig::default(), "本群 今日 发言 排行榜", data)
+            .expect("排行榜样张应当能渲染");
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(out.trim_start_matches("base64://"))
+            .unwrap();
+        std::fs::write(format!("{dir}/ranking-full.png"), bytes).unwrap();
     }
 
     #[test]

@@ -15,6 +15,7 @@ export AYJX_CHART_PREVIEW="$STATS_CARD_DUMP/types.png"
 export AYJX_CHART_PREVIEW_BAR="$STATS_CARD_DUMP/ranking.png"
 cargo test --locked renders_sample_cards_to_png -- --ignored --test-threads=1
 cargo test --locked dump_sample_cards -- --ignored --test-threads=1
+cargo test --locked dump_full_ranking_sample -- --ignored --test-threads=1
 cargo test --locked stats::chart::renderer::tests -- --test-threads=1
 node tests/cards.cjs
 printf '样张与布局报告：%s/index.html\n' "$CARD_ARTIFACTS"
