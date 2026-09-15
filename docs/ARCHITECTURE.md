@@ -22,7 +22,7 @@ src/
   event.rs         Context / EventType / MessageEvent 定义
   http.rs          全局 reqwest 客户端（Android CA 兼容），download_bytes
   log.rs           控制台与文件日志的统一输出
-  matcher.rs       事件去重
+  matcher.rs       交互消息等待与分发（取消时自动清理）
   message.rs       Message 消息构建器（text/image/node_custom 等）
   plugins.rs       插件框架核心：Plugin 定义、注册宏、流水线、配置读写
   plugins/         各插件；registry.rs 为注册表（唯一的插件清单）
@@ -133,7 +133,7 @@ render::web::shoot(
 篇幅长的画像与资讯用 JPEG）。量高度、等字体、尺寸护栏、并发闸门都在 `shoot` 里，
 调用方不重复实现。
 
-`shoot` 只对页面做一趟 `evaluate`：字体用 `document.fonts.ready` 与一个 900 ms 定时器
+`shoot` 只对页面做一趟 `evaluate`：字体和内嵌图片用 `document.fonts.ready` / `img.decode()` 与一个 900 ms 定时器
 赛跑，再让出一轮宏任务提交布局，然后一次量出盒模型，最后用带 clip 的整页截图取下来。
 等布局靠观测而不是靠固定睡眠，所以没有「睡少了量到偏小的高度、卡片底部被切」这一类
 偶发问题。**不要退回 `requestAnimationFrame`**：headless 下它不保证触发，拿它等布局
@@ -156,7 +156,18 @@ help 和 ctl 另有一层结构化文档模型（`Doc` / `Block`）与共用样�
 个网格的最后一条，会让右列末条有线、左列末条没线。所有动态内容都做 HTML 转义，页面不
 执行脚本，也不加载外部资源，截图前等待字体和布局完成。
 
-字重：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档，向系统请求 Bold 得到的仍是 400 字重。两条出图路径都会自行合成粗体（浏览器原生支持，原生绘制使用 `Typeface.embolden` 做形态学膨胀），但外扩轮廓无法补出笔画的粗细对比。运行 `sh scripts/install-cjk-weights.sh` 把真实的 Bold(700) 和 Black(900) 安装到 `~/.fonts` 后，fontconfig 和 fontdb 会自动使用它们，合成量为零，代码不需要改动。不安装也能运行，只是标题会细一档。网页卡片用 `font-weight: 900` 表达。字体是设备本地状态，仓库里无法恢复，换机器需要重新运行脚本。
+字重：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档，向系统请求 Bold 得到的仍是 400 字重。两条出图路径都会自行合成粗体（浏览器原生支持，原生绘制使用 `Typeface.embolden` 做形态学膨胀），但外扩轮廓无法补出笔画的粗细对比。运行 `sh scripts/install-cjk-weights.sh` 把真实的 Bold(700) 和 Black(900) 安装到 `~/.fonts` 后，fontconfig 和 fontdb 会自动使用它们，合成量为零，代码不需要改动。不安装也能运行，只是标题会细一档。网页卡片标题按用途使用 700—800 字重。字体是设备本地状态，仓库里无法恢复，换机器需要重新运行脚本。
+
+CPU 图像工作统一通过 `render/worker.rs::run`：统计绘图、词云、GIF（包括信息和拆帧）、
+图片切分共享两条阻塞执行槽。先异步等待许可，再提交 `spawn_blocking`；许可归计算闭包
+持有，调用方被取消后也不会提前放开并发。网络请求与发送消息不占执行槽。
+
+词云直接编码一次 PNG，保留固定画布与暖白留白，横向排词；不再解码 PNG 扫描像素、
+裁切后重新编码。GIF 的单次处理上限为 256 帧和合计 3200 万像素；缩放、拼图也在
+分配输出画布前检查尺寸。图片切分按相邻网格边界分配余数，完整保留原图边缘。
+
+智能回复表格使用固定表布局与单元格换行，来源标题完整折行；资讯标题取消 CSS 行数
+裁切（摘要仍遵循插件配置的字符预算）。资讯、画像固定 720 CSS px，滚动条不影响版心。
 
 原生工具 `render/font.rs`、`canvas.rs`、`kit.rs` 保留供原生绘图使用。是否迁移渲染方式以实际阅读质量为准，ai_news 保持网页日夜主题。
 

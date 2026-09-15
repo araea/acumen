@@ -4,11 +4,11 @@
 
 ## 安装
 
-需要 Rust 1.85 或更高版本。先准备配置，再构建：
+需要 Rust 1.94 或更高版本。先准备配置，再构建：
 
 ```sh
 cp config.example.toml config.toml
-cargo build --release
+cargo build --release --locked
 ./bot start
 ```
 
@@ -49,8 +49,9 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 - [用户画像](docs/portrait.md)
 - [视频解析](docs/video_parse.md)
 - [架构说明](docs/ARCHITECTURE.md)
+- [架构与渲染审计](docs/AUDIT.md)
 
 ```sh
-cargo test
-cargo build --release
+cargo test --locked
+cargo build --release --locked
 ```
