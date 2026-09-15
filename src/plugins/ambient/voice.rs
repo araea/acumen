@@ -259,6 +259,28 @@ mod tests {
         }
     }
 
+    /// 样本库的胖瘦也是形状。他手打的消息多数只有几个字，十八个字以上的是少数；
+    /// 库里短句不够时，模型会把该分两条说的话并成一条长的——2026-09-15 线上实测
+    /// bot 发言长度中位 12–14，他本人是 4–6，根子就在这儿。改样本时别把库养胖。
+    #[test]
+    fn the_bank_stays_lean_enough_to_write_short() {
+        let samples = parse(VOICE);
+        let total = samples.len();
+        let short = samples
+            .iter()
+            .filter(|sample| sample.text.chars().count() <= 8)
+            .count();
+        let long = samples
+            .iter()
+            .filter(|sample| sample.text.chars().count() >= 18)
+            .count();
+        assert!(short * 2 >= total, "八个字以内的样本只有 {short}/{total}");
+        assert!(long * 6 <= total, "十八个字以上的样本有 {long}/{total}");
+        // 兴奋时的「！」与话尾的「～」各有实物，否则模型会当它们不存在。
+        assert!(samples.iter().any(|sample| sample.text.contains('！')));
+        assert!(samples.iter().any(|sample| sample.text.contains('～')));
+    }
+
     /// 话题贴题：聊折叠屏的时候，折叠那几条该排在前面。
     #[test]
     fn the_topic_decides_which_samples_come_first() {
