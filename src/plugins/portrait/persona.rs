@@ -1,15 +1,14 @@
-//! 把一卦与素材交给模型，换回一份画像；模型不接时只留卦象与数字。
+//! 把素材交给模型，换回一份用户画像；模型不接时退回统计直出的标签。
 //!
-//! 卦不在这里起——它由 [`super::divine`] 从这个人留下的话里起出来，是既定的。
-//! 这一层只认三件事：**模型的输出是一个 JSON 对象**、**引语必须是原话**、
-//! **批语是一篇文章的段落而不是条目**。第一条靠宽松解析（模型爱在 JSON 外面裹一句
-//! 「好的」或一层代码块），第二条靠归一化比对——对不上就丢掉，宁可少一段引语，
-//! 也不让报告里出现一句编出来的「他说过」；第三条落在 [`Passage`] 的形状上：
-//! 段落与引语同列一队，按序渲染，引语落在论证中间，不是贴在文末。
+//! 用户画像是从行为数据里抽象出来的**标签化模型**：一组能被数据撑住的标签，加一段把
+//! 它们串起来的话。这一层只认三件事——**输出是一个 JSON 对象**、**引语必须是原话**、
+//! **标签分得清层级**。第一条靠宽松解析（模型爱在 JSON 外面裹一句「好的」或者一层
+//! 代码块），第二条靠归一化比对，对不上就丢掉；第三条落在 [`Tag`] 的形状上：维度只有
+//! 四个，层级只有三层，认不出的那一维直接不印——版面宁可少一块，也不印一条没有出处的标签。
 
 use super::collect::Material;
-use super::divine::{self, Cast};
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 /// 报告主色。色板是固定的，模型只能从中挑，省得它挑出一组刺眼或看不清的组合。
@@ -92,17 +91,114 @@ impl Accent {
     }
 }
 
-/// 批语里的一段。`kind` 决定它是自己的话还是自己的话。
+/// 标签的四个维度。这一层是画像的骨架，**不许模型自创**——多出来的维度一律不印。
+pub const DIMENSIONS: [(&str, &str); 4] = [
+    ("活跃", "ACTIVITY"),
+    ("内容", "CONTENT"),
+    ("交互", "INTERACTION"),
+    ("表达", "EXPRESSION"),
+];
+
+/// 标签的三层抽象。事实是观测即得，统计是按阈值归纳，推断是从语义里读出来的；
+/// 三层从硬到软，读者对它们的信任度该跟着往下走，版式上也是这么排的。
+pub const LAYERS: [(&str, &str); 3] = [
+    ("事实", "OBSERVED"),
+    ("统计", "DERIVED"),
+    ("推断", "INFERRED"),
+];
+
+/// 认一个维度名。模型常写成「活跃度」「内容偏好」这类，含关键字就算它。
+fn dimension_of(name: &str) -> Option<&'static str> {
+    const TABLE: [(&str, &[&str]); 4] = [
+        ("活跃", &["活跃", "activity", "active"]),
+        ("内容", &["内容", "话题", "兴趣", "content"]),
+        (
+            "交互",
+            &["交互", "互动", "社交", "关系", "interaction", "social"],
+        ),
+        (
+            "表达",
+            &["表达", "风格", "语言", "媒介", "expression", "style"],
+        ),
+    ];
+    let name = name.trim().to_ascii_lowercase();
+    TABLE
+        .iter()
+        .find_map(|(canon, keys)| keys.iter().any(|key| name.contains(key)).then_some(*canon))
+}
+
+/// 认一层抽象。认不出来的一律算**推断**——没标「观测即得」的，本来就不该按事实读。
+fn layer_of(name: &str) -> &'static str {
+    const TABLE: [(&str, &[&str]); 3] = [
+        ("事实", &["事实", "观测", "fact", "observ"]),
+        ("统计", &["统计", "模型", "阈值", "归纳", "derived", "statis"]),
+        ("推断", &["推断", "预测", "语义", "infer", "predict"]),
+    ];
+    let name = name.trim().to_ascii_lowercase();
+    TABLE
+        .iter()
+        .find_map(|(canon, keys)| keys.iter().any(|key| name.contains(key)).then_some(*canon))
+        .unwrap_or("推断")
+}
+
+/// 一条标签。`dimension` 与 `layer` 由模型写，收口时归一到白名单里的取值。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Tag {
+    #[serde(default, alias = "维度", alias = "dim")]
+    pub dimension: String,
+    #[serde(default, alias = "类别", alias = "level", alias = "tier")]
+    pub layer: String,
+    #[serde(default, alias = "名称", alias = "标签", alias = "tag")]
+    pub label: String,
+    #[serde(default, alias = "证据", alias = "basis")]
+    pub evidence: String,
+}
+
+impl Tag {
+    fn new(dimension: &str, layer: &str, label: String, evidence: String) -> Self {
+        Self {
+            dimension: dimension.to_string(),
+            layer: layer.to_string(),
+            label,
+            evidence,
+        }
+    }
+
+    /// 归一之后的维度。认不出的这一条会被丢掉。
+    pub fn dim(&self) -> Option<&'static str> {
+        dimension_of(&self.dimension)
+    }
+
+    /// 归一之后的层级。
+    pub fn tier(&self) -> &'static str {
+        layer_of(&self.layer)
+    }
+
+    /// 层级对应的样式名，卡片按它给徽章上色。
+    pub fn tier_class(&self) -> &'static str {
+        tier_class(self.tier())
+    }
+}
+
+/// 层级对应的样式名，卡片的图例与徽章都用它。
+pub fn tier_class(tier: &str) -> &'static str {
+    match tier {
+        "事实" => "observed",
+        "统计" => "derived",
+        _ => "inferred",
+    }
+}
+
+/// 综述里的一段。`kind` 决定它是自己的话还是他的话。
 ///
-/// 段落与引语排在同一列里，是为了让引语落在该落的地方：模型写完一段判断，
-/// 紧接着把那个人说过的一句原话放上来当证，再接着往下说。这样报告是一篇，
-/// 不是「正文一段 + 文末三条引语」。
+/// 段落与引语排在同一列里，是为了让引语落在该落的地方：写完一段判断，紧接着把那句原话
+/// 放上来当证，再接着往下说。这样报告是一篇，不是「正文一段 + 文末三条引语」。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Passage {
-    /// `text` 是批语，`quote` 是引语；认不出来的一律当批语。
+    /// `text` 是综述，`quote` 是引语；认不出来的一律当综述。
     #[serde(default)]
     pub kind: String,
-    /// 批语的正文；引语时为空。
+    /// 综述的正文；引语时为空。
     #[serde(default)]
     pub body: String,
     /// 引语的原话，逐字出自样本。
@@ -114,7 +210,7 @@ pub struct Passage {
 }
 
 impl Passage {
-    /// 这一段的 kind 认不认得出是引语。认不出的按批语处理。
+    /// 这一段的 kind 认不认得出是引语。认不出的按综述处理。
     pub fn is_quote(&self) -> bool {
         const WORDS: [&str; 4] = ["quote", "引语", "引文", "他的话"];
         let kind = self.kind.trim().to_ascii_lowercase();
@@ -122,27 +218,24 @@ impl Passage {
     }
 }
 
-/// 一份可以交给模板渲染的画像。卦不在其中——它由代码起出来，另行带进模板。
+/// 一份可以交给模板渲染的画像。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Persona {
-    #[serde(default)]
-    pub codename: String,
-    #[serde(default)]
-    pub tagline: String,
-    /// 总评：把这一卦与他接上的那一段。
-    #[serde(default)]
-    pub verdict: String,
-    /// 详说：段落与引语按序排列。
-    #[serde(default)]
-    pub passages: Vec<Passage>,
-    /// 变化：他现在卡在哪、往哪动。
-    #[serde(default)]
-    pub turn: String,
-    #[serde(default)]
-    pub advice: String,
+    /// 综合标签：一句话把他归成一类，2—7 字。
+    #[serde(default, alias = "称谓", alias = "name")]
+    pub title: String,
+    /// 一句话概括。
+    #[serde(default, alias = "题记", alias = "一句话", alias = "summary")]
+    pub note: String,
+    /// 四个维度下的标签，收口后按维度分组渲染。
+    #[serde(default, alias = "标签", alias = "labels")]
+    pub tags: Vec<Tag>,
+    /// 综述：段落与引语按序排列。
+    #[serde(default, alias = "综述", alias = "passages")]
+    pub profile: Vec<Passage>,
     #[serde(default)]
     pub accent: String,
-    /// 这份画像是模型写的，还是从统计量拼出来的。
+    /// 这份画像是模型写的，还是从统计量直接拼出来的。
     #[serde(skip)]
     pub estimated: bool,
 }
@@ -150,14 +243,16 @@ pub struct Persona {
 /// 各字段的字数上限。模型偶尔会无视字数要求，这里统一收口，
 /// 免得一个超长字段把整张卡的版面顶乱。
 mod limit {
-    pub const CODENAME: usize = 9;
-    pub const TAGLINE: usize = 20;
-    pub const VERDICT: usize = 150;
+    pub const TITLE: usize = 9;
+    pub const NOTE: usize = 30;
+    pub const LABEL: usize = 12;
+    pub const EVIDENCE: usize = 44;
+    /// 一个维度最多印几条。四个维度都得有位置，不能由着一个维度铺满。
+    pub const TAGS_PER_DIM: usize = 4;
+    pub const MAX_TAGS: usize = 16;
     pub const PASSAGE: usize = 220;
     pub const QUOTE: usize = 90;
     pub const QUOTE_NOTE: usize = 24;
-    pub const TURN: usize = 120;
-    pub const ADVICE: usize = 30;
     pub const MAX_PASSAGES: usize = 6;
 }
 
@@ -209,17 +304,41 @@ pub fn parse(raw: &str) -> anyhow::Result<Persona> {
 }
 
 impl Persona {
-    /// 收口：字数、段数，以及引语必须出自样本。
+    /// 收口：字数、条数、维度与层级，以及引语必须出自样本。
     pub fn sanitize(mut self, material: &Material) -> Self {
-        self.codename = clip(&self.codename, limit::CODENAME);
-        self.tagline = clip(&self.tagline, limit::TAGLINE);
-        self.verdict = clip(&self.verdict, limit::VERDICT);
-        self.turn = clip(&self.turn, limit::TURN);
-        self.advice = clip(&self.advice, limit::ADVICE);
+        self.title = clip(&self.title, limit::TITLE);
+        self.note = clip(&self.note, limit::NOTE);
+
+        // 标签：维度认不出的丢掉，一个维度超额的丢掉，第一条必须是「事实」——
+        // 没有观测打底的推断不配印在画像上。
+        let mut used: HashMap<&'static str, usize> = HashMap::new();
+        let tags = std::mem::take(&mut self.tags);
+        self.tags = tags
+            .into_iter()
+            .filter_map(|tag| {
+                let dimension = tag.dim()?;
+                let label = clip(&tag.label, limit::LABEL);
+                if label.is_empty() {
+                    return None;
+                }
+                let slot = used.entry(dimension).or_insert(0);
+                if *slot >= limit::TAGS_PER_DIM {
+                    return None;
+                }
+                *slot += 1;
+                Some(Tag::new(
+                    dimension,
+                    tag.tier(),
+                    label,
+                    clip(&tag.evidence, limit::EVIDENCE),
+                ))
+            })
+            .take(limit::MAX_TAGS)
+            .collect();
 
         let samples: Vec<String> = material.samples.iter().map(|s| fingerprint(s)).collect();
-        self.passages = self
-            .passages
+        let passages = std::mem::take(&mut self.profile);
+        self.profile = passages
             .into_iter()
             .filter_map(|passage| {
                 if passage.is_quote() {
@@ -259,47 +378,92 @@ impl Persona {
         Accent::from_name(&self.accent).unwrap_or_else(|| Accent::pick(seed))
     }
 
-    /// 模型完全没接上时的兜底：卦已经起好了，交给版面的只剩数字与一句实话。
+    /// 模型完全没接上时的兜底。
     ///
-    /// 卦不依赖模型，所以哪怕模型整个不接，用户拿到的仍是一张真卦——
-    /// 缺的只是把卦落在他身上的那几段批语。
-    pub fn from_stats(material: &Material, cast: &Cast) -> Self {
-        let verdict = format!(
-            "这一卦是真的：用他 {} 条发言、{} 天的记录起出来，得{}。数字也在——\
-             平均每天 {:.1} 条，单条平均 {:.1} 字，{} 的发言带图或表情。\
-             这一次模型没有接上，所以只有卦和数字，没有批语。",
-            material.total,
-            material.span_days(),
-            cast.primary.full,
-            material.per_day(),
-            material.avg_len(),
-            percent(material.media_ratio()),
-        );
-
-        let mut passages = vec![
-            Passage {
-                kind: "text".to_string(),
-                body: format!(
-                    "统计窗口内共 {} 条群聊发言，覆盖 {} 天，活跃 {} 天。\
-                     单条最长 {} 字，平均 {:.1} 字，{} 前后最活跃。",
-                    material.total,
+    /// 画像的骨头是数据，不是模型：统计量本来就在手里，照它把标签打出来，仍然是一份
+    /// 用户画像，缺的只是推断层与那段综述。版面上会标出「标签由统计直出」。
+    pub fn from_stats(material: &Material) -> Self {
+        let mut tags = vec![
+            Tag::new(
+                "活跃",
+                "事实",
+                format!("发言 {} 条", material.total),
+                format!(
+                    "覆盖 {} 天，活跃 {} 天",
                     material.span_days(),
-                    material.active_days,
-                    material.longest,
-                    material.avg_len(),
+                    material.active_days
+                ),
+            ),
+            Tag::new(
+                "活跃",
+                "统计",
+                format!("日均 {:.1} 条", material.per_day()),
+                format!(
+                    "{}最密；夜间（0—6 点）占 {}",
                     hour_label(material.peak_hour()),
+                    percent(material.night_ratio())
                 ),
-                ..Default::default()
-            },
-            Passage {
-                kind: "text".to_string(),
-                body: format!(
-                    "{}：{}这一卦落在他身上该怎么说，要有他说过的话才能答。这一次没答上，先不猜。",
-                    cast.primary.full, cast.primary.sense,
-                ),
-                ..Default::default()
-            },
+            ),
+            Tag::new(
+                "交互",
+                "事实",
+                format!("引用 {} 次", material.kinds.reply),
+                format!("@ 别人 {} 次", material.kinds.at),
+            ),
+            Tag::new(
+                "表达",
+                "事实",
+                format!("平均 {:.1} 字", material.avg_len()),
+                format!("单条最长 {} 字", material.longest),
+            ),
         ];
+        // 媒介这一条是「统计」层的样子：一条观测加一条归出来的类，阈值一并写上。
+        tags.push(Tag::new(
+            "表达",
+            "统计",
+            if material.media_ratio() >= 0.5 {
+                "图与表情过半".to_string()
+            } else {
+                "以文字为主".to_string()
+            },
+            format!(
+                "图与表情占 {}；纯文字 {} 条、图片 {}、表情包 {}、小表情 {}、语音 {}",
+                percent(material.media_ratio()),
+                material.kinds.text,
+                material.kinds.image,
+                material.kinds.anim_emoji,
+                material.kinds.face,
+                material.kinds.voice
+            ),
+        ));
+        if !material.words.is_empty() {
+            let top: Vec<String> = material
+                .words
+                .iter()
+                .take(3)
+                .map(|(word, count)| format!("{word}×{count}"))
+                .collect();
+            tags.push(Tag::new(
+                "内容",
+                "事实",
+                format!("常提 {}", top.join("、")),
+                "同一批记录里的高频词，按次数排".to_string(),
+            ));
+        }
+
+        let mut profile = vec![Passage {
+            kind: "text".to_string(),
+            body: format!(
+                "这一次模型没有接上，所以没有推断出来的标签，也没有综述。\
+                 下面这些标签是照着他本人在群里的统计量直接排的：{} 条发言，\
+                 覆盖 {} 天，单条平均 {:.1} 字，平均每天 {:.1} 条。",
+                material.total,
+                material.span_days(),
+                material.avg_len(),
+                material.per_day(),
+            ),
+            ..Default::default()
+        }];
         // 最长的那句原话当引语：它必然出自样本，用来撑住版面最省事。
         if let Some(text) = material
             .samples
@@ -307,7 +471,7 @@ impl Persona {
             .filter(|text| !text.trim().is_empty())
             .max_by_key(|text| text.chars().count())
         {
-            passages.push(Passage {
+            profile.push(Passage {
                 kind: "quote".to_string(),
                 text: clip(text, limit::QUOTE),
                 note: "他写得最长的一条".to_string(),
@@ -316,20 +480,30 @@ impl Persona {
         }
 
         Self {
-            codename: "这一卦还没批语".to_string(),
-            tagline: format!("以 {} 条发言起出{}", material.total, cast.primary.full),
-            verdict,
-            passages,
-            turn: String::new(),
-            advice: "这次模型没接上，先给你这一卦，过会儿再算一次。".to_string(),
+            title: "未归纳的观测".to_string(),
+            note: format!(
+                "{} 条发言、{} 天的观测，模型这次没接上",
+                material.total,
+                material.span_days()
+            ),
+            tags,
+            profile,
             accent: Accent::pick(material.user_id).name().to_string(),
             estimated: true,
         }
     }
 
-    /// 批语里真正有内容的那几段。空的会在版面上隐去。
+    /// 一个维度下的标签，按模型给的先后。
+    pub fn tags_of(&self, dimension: &str) -> Vec<&Tag> {
+        self.tags
+            .iter()
+            .filter(|tag| tag.dim() == Some(dimension))
+            .collect()
+    }
+
+    /// 综述里真正有内容的那几段。空的会在版面上隐去。
     pub fn live_passages(&self) -> impl Iterator<Item = &Passage> {
-        self.passages.iter().filter(|passage| {
+        self.profile.iter().filter(|passage| {
             if passage.is_quote() {
                 !passage.text.trim().is_empty()
             } else {
@@ -363,109 +537,78 @@ pub fn weekday_label(weekday: usize) -> &'static str {
     NAMES[weekday % 7]
 }
 
-const SYSTEM_PROMPT: &str = r#"你替人看卦。卦已经起好了，是他自己的卦——由他留下的话与数目推出来，
-不是抽的签，也不是你挑的。你只做一件事：用这一卦的道理，把这个人说清楚。
+/// 这份东西是什么，先把它说清楚——画像有两个面：可核验，也有损。
+const SYSTEM_PROMPT: &str = r#"你在做一份用户画像。
 
-读你这份东西的人不认识他。他读完要能说出：这个人在群里做什么，什么时候来，
-跟人怎么说话，眼下卡在什么地方。
+用户画像是从用户的行为数据里抽象出来的一个标签化模型。它不等于这个人：它只是一组能被
+数据撑住的标签，加一段把这些标签串起来的话。它的好处是可核验，每一条都能回到他做过的
+事上；它的短处是有损，没观测到的部分一句话也不许有。
 
-下笔之前先立三条：
-一、卦就是人。卦辞与义理说的不是旁人的吉凶，是他此刻的处境与性情。他哪里像这一卦、
-   哪里不像，都要落在他真说过的话上。不许拿这一卦给他贴标签。
-二、卦说的是变化，不是判决。六爻里动的那一爻是正在动的地方，变出来的那一卦是动的
-   方向。不许他富贵，不许他祸福，只说这一卦的道理在他身上怎么落、该往哪儿使劲。
-三、宁少说不空说。每一句都要能从下发的样本与数字里找出处。看不出就不写。
+读你这份东西的人不认识他。他读完要能说出：这个人什么时候来，说什么，跟谁说话，怎么说话。
 
-笔法是白描，下面几条逐条照做：
-- 说今天的话。不用文言词，不用「之乎者也」，不用成语连堆。
-- 一句话说一件事，写成完整的陈述句。句子短，主语清楚，谁做了什么就写什么。
-- 每一句判断后面要有东西撑着：他说过的话、他在群里做的动作、数字、时间。
-  只有判断没有事实的句子，删掉。
-- 卦辞、爻辞、爻题可以照写，但紧跟一句白话讲明白它在说什么。光引原文不算说完，
-  引原文也只引必要的那一句。
-- 不用比喻，不用对仗，不用金句，不用格言体。不把一句话写成两半互相对照，
-  不用「不是……而是……」「既……又……」这种句式。
+【标签】
+标签是这份画像的骨架。四个维度都要给，每个 2 到 4 条，整个画像 8 到 16 条：
+- 活跃：什么时候出现，去得勤不勤，密度如何。
+- 内容：说什么，反复说什么，哪些话题从来不碰。
+- 交互：跟谁说话，主动发起还是接话，他说的时候别人接不接。
+- 表达：怎么说。长短、句读、用不用图片表情语音。
+
+每条标签都要标出它的抽象层级，只许用这三种：
+- 事实：观测即得，不做推断。条数、时刻、占比、媒介构成、原话都算这一类。照着下发的统计量
+  写，不要另编数字。
+- 统计：把观测按一个阈值归成一类。写的时候把阈值带出来，「夜里发言占四成」是观测，
+  「作息偏晚」是归出来的类，两个都要有。
+- 推断：从样本的意思里读出来的。这一类最容易编，所以一条必须有一条原话或一组数字顶在下面；
+  顶不住的不要写。推断标签不超过总数的一半。
+
+标签要说得出依据，别写成绰号。写「夜里出现，白天基本不在」，不写「夜猫子」。
+
+【综述】
+综述是血肉，四到六段，笔法是白描：照着事实写，不加修饰。
+- 说今天的话。不用文言词，不用成语连堆。
+- 一句话说一件事，写成完整的陈述句。句子短，主语清楚。
+- 每一句判断后面要有东西撑着：他说过的话、他做过的动作、数字、时间。只有判断没有事实的
+  句子，删掉。
+- 至少两段把引语单独成段，前后用自己的话接住它，让这句话落在论证里。引语是证据，不是
+  装饰。引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
+- 不用比喻，不用对仗，不用金句，不用格言体。不把一句话写成两半互相对照，不用「不是……
+  而是……」「既……又……」这种句式。
 - 不用评价词（很强、非常、厉害），不用模糊限定（似乎、某种、大概）。
 - 不用「其实」「说到底」「值得一提的是」这类垫话。
-- 一段的末尾说完事就停，不要加一句总结性的判断（「这一卦说的就是他」「他就是这样的人」）。
+- 一段的末尾说完事就停，不要加一句总结性的判断。
 - 数字挑着用，一段里至多两三处，只留撑得住判断的；不要一串串罗列。
 - 同一件事只说一遍，同一个数字不报两遍。
 - 冷静、克制。说穿，但不羞辱；不留情面，也不刻薄。
-- 可以指出他未必愿意承认的事，但不下道德判断。
 - 不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、
   跟谁是什么关系。
 
-每一段怎么写：
-- 总评：先说这一卦与他是什么关系，再说依据。不要复述卦辞，要说这一卦为什么是他的卦。
-- 详说：四到六段，段与段之间要承接，像一个人把一件事从头说下来，不许写成并列的条目，
-  也不要一二三四地分点。至少两段是自己的话：把引语单独成段，前后用自己的话接住它，
-  让这句话落在论证里。引语是证据，不是装饰。
-- 变化：他现在卡在哪一处，往哪儿动。动的那一爻就是那一处。
-- 赠言：不劝善，不祝福，给他一句能带走的话。
-
-引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
 只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
 
 JSON 字段：
 {
-  "codename": "代号，2 到 7 个字。要准，不要好听，像熟人背后对他的称呼",
-  "tagline": "题记，不超过 20 字。说一句结论，别写成对仗的两半",
-  "verdict": "总评，2 到 4 句，不超过 150 字。先说这一卦与他是什么关系，再说依据",
-  "passages": [
-    {"kind":"text","body":"一段批语，不超过 220 字"},
-    {"kind":"quote","text":"逐字引用的一条发言","note":"这句话放在这里说明什么，一句话，不超过 24 字"},
-    {"kind":"text","body":"接着往下说，与上一段接得上"}
+  "title": "综合标签，2 到 7 个字。是概括，不是夸赞",
+  "note": "一句话概括，不超过 30 字",
+  "tags": [
+    {"dimension":"活跃","layer":"事实","label":"标签，不超过 12 字","evidence":"撑住它的数字、时刻或原话，不超过 44 字"}
   ],
-  "turn": "变化，2 到 3 句，不超过 120 字。说他现在卡在哪一处、往哪儿动",
-  "advice": "赠言，不超过 30 字",
+  "profile": [
+    {"kind":"text","body":"一段综述，不超过 220 字"},
+    {"kind":"quote","text":"逐字引用的一条发言","note":"这句话说明什么，不超过 24 字"}
+  ],
   "accent": "从 amber / rose / mint / indigo / violet / teal 里选一个当报告主色"
 }
 
-passages 给 4 到 6 段，其中 2 段是 kind 为 quote 的引语，其余是 text。
-段落是一篇文章的段落，前一段的末尾要能接上后一段的开头。
-写完自己看一遍：有没有对仗的句子，有没有只下判断不给事实的句子，
-有没有一句空收尾，有没有同一个数字报了两遍。"#;
+tags 的 dimension 只能写 活跃 / 内容 / 交互 / 表达，layer 只能写 事实 / 统计 / 推断。
+profile 给 4 到 6 段，其中 2 段是 kind 为 quote 的引语，其余是 text。
+写完自己看一遍：有没有对仗的句子，有没有只下判断不给事实的句子，有没有一句空收尾，
+有没有同一个数字报了两遍，有没有把没观测到的事当事实写进去。"#;
 
-/// 组装下发给模型的素材。卦在最前——它先给这件事定框，其余的都在框里读。
-pub fn user_prompt(material: &Material, cast: &Cast) -> String {
+/// 组装下发给模型的素材。统计在前，样本在后——标签的「事实」与「统计」两层都从统计量里取，
+/// 「推断」那一层才用得着样本。
+pub fn user_prompt(material: &Material) -> String {
     let mut out = String::with_capacity(12_288);
 
-    out.push_str("【卦】卦已经起好，是照他留下的话与数目起的，不用你再起\n");
-    out.push_str(&format!(
-        "本卦：{}（第 {} 卦，{}）\n",
-        cast.primary.full,
-        cast.primary.number,
-        cast.primary.trigrams()
-    ));
-    out.push_str(&format!("卦辞：{}\n", cast.primary.judgment));
-    out.push_str(&format!("义理：{}\n", cast.primary.sense));
-    out.push_str(&format!(
-        "筮法：大衍筮法，四十九策三变成爻，初爻到上爻的策数为 {}\n",
-        cast.stalks_text()
-    ));
-    let mut titles = cast.changing_titles();
-    if titles.is_empty() {
-        out.push_str("变爻：无\n");
-    } else {
-        for (index, title) in titles.drain(..).enumerate() {
-            let position = cast.changing[index];
-            out.push_str(&format!(
-                "变爻：{}，{}（{}）\n",
-                title, divine::POSITION_SENSE[position], position_label(position)
-            ));
-        }
-    }
-    out.push_str(&format!("占法：{}\n", cast.rule()));
-    if let Some(changed) = cast.changed {
-        out.push_str(&format!(
-            "变卦：{}（第 {} 卦，{}）\n",
-            changed.full, changed.number, changed.trigrams()
-        ));
-        out.push_str(&format!("变卦的卦辞：{}\n", changed.judgment));
-        out.push_str(&format!("变卦的义理：{}\n", changed.sense));
-    }
-
-    out.push_str("\n【对象】\n");
+    out.push_str("【对象】\n");
     out.push_str(&format!("群名片：{}\n", material.name));
     out.push_str(&format!("QQ：{}\n\n", material.user_id));
 
@@ -483,7 +626,7 @@ pub fn user_prompt(material: &Material, cast: &Cast) -> String {
         material.avg_len()
     ));
     out.push_str(&format!(
-        "- 活跃时段：{} 前后最活跃；夜间（0—6 点）占 {}；最活跃的一天是{}\n",
+        "- 活跃时段：{}前后最密；夜间（0—6 点）占 {}；最活跃的一天是{}\n",
         hour_label(material.peak_hour()),
         percent(material.night_ratio()),
         weekday_label(material.peak_weekday())
@@ -530,11 +673,6 @@ pub fn user_prompt(material: &Material, cast: &Cast) -> String {
     out
 }
 
-fn position_label(index: usize) -> &'static str {
-    const LABELS: [&str; 6] = ["初爻", "二爻", "三爻", "四爻", "五爻", "上爻"];
-    LABELS[index.min(5)]
-}
-
 pub fn system_prompt() -> &'static str {
     SYSTEM_PROMPT
 }
@@ -543,7 +681,6 @@ pub fn system_prompt() -> &'static str {
 mod tests {
     use super::*;
     use crate::plugins::portrait::collect::{GroupSlice, Kinds};
-    use crate::plugins::portrait::divine;
 
     fn material() -> Material {
         Material {
@@ -580,7 +717,7 @@ mod tests {
             },
             longest: 210,
             avg_len: 18.0,
-            words: vec![("天气".into(), 12)],
+            words: vec![("天气".into(), 12), ("代码".into(), 8)],
             samples: vec![
                 "今天这个雨下得没完没了".to_string(),
                 "凌晨三点还在改代码，明天又要废了".to_string(),
@@ -588,15 +725,21 @@ mod tests {
         }
     }
 
-    fn cast() -> Cast {
-        divine::cast(&material())
+    fn tag(dimension: &str, layer: &str, label: &str) -> Tag {
+        Tag {
+            dimension: dimension.into(),
+            layer: layer.into(),
+            label: label.into(),
+            evidence: "夜间占 41%".into(),
+        }
     }
 
     #[test]
     fn json_is_found_behind_fences_and_chatter() {
-        let raw = "好的，这是画像：\n```json\n{\"codename\":\"夜行改稿人\",\"tagline\":\"白天潜水夜里冒泡\"}\n```\n希望有帮助";
+        let raw = "好的，这是画像：\n```json\n{\"title\":\"夜里的常客\",\"note\":\"白天基本不在\"}\n```\n希望有帮助";
         let persona = parse(raw).unwrap();
-        assert_eq!(persona.codename, "夜行改稿人");
+        assert_eq!(persona.title, "夜里的常客");
+        assert_eq!(persona.note, "白天基本不在");
     }
 
     #[test]
@@ -604,11 +747,67 @@ mod tests {
         assert!(parse("我觉得他挺好的").is_err());
     }
 
-    /// 引语必须逐字出自样本；编出来的一句都留不下。批语不受这条限制。
+    /// 维度只认白名单里的四个，写成「活跃度」「内容偏好」也要归到正名上。
+    #[test]
+    fn dimensions_are_normalised_onto_the_four() {
+        let persona = Persona {
+            tags: vec![
+                tag("活跃度", "观测", "夜里出现"),
+                tag("内容偏好", "statistical", "常聊天气"),
+                tag("社交关系", "推断", "爱接别人的话"),
+                tag("表达风格", "inferred", "句子短"),
+            ],
+            ..Default::default()
+        }
+        .sanitize(&material());
+        let dims: Vec<&str> = persona.tags.iter().filter_map(|tag| tag.dim()).collect();
+        assert_eq!(dims, vec!["活跃", "内容", "交互", "表达"]);
+        assert_eq!(
+            persona.tags.iter().map(|tag| tag.tier()).collect::<Vec<_>>(),
+            vec!["事实", "统计", "推断", "推断"],
+            "层级要归一到事实/统计/推断"
+        );
+    }
+
+    /// 认不出维度的标签直接丢掉，版面宁可少一块，也不印一条没有归处的标签。
+    #[test]
+    fn a_tag_outside_the_taxonomy_is_dropped() {
+        let persona = Persona {
+            tags: vec![
+                tag("活跃", "事实", "夜里出现"),
+                tag("星座", "推断", "大概是天蝎座"),
+                Tag {
+                    dimension: "内容".into(),
+                    layer: "事实".into(),
+                    label: "   ".into(),
+                    evidence: String::new(),
+                },
+            ],
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(persona.tags.len(), 1);
+        assert_eq!(persona.tags[0].label, "夜里出现");
+    }
+
+    /// 一个维度最多四条：四个维度都得有位置，不能由着一个维度铺满。
+    #[test]
+    fn one_dimension_cannot_fill_the_whole_card() {
+        let persona = Persona {
+            tags: (0..9)
+                .map(|index| tag("活跃", "事实", &format!("第{index}条")))
+                .collect(),
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(persona.tags.len(), limit::TAGS_PER_DIM);
+    }
+
+    /// 引语必须逐字出自样本；编出来的一句都留不下。综述不受这条限制。
     #[test]
     fn quotes_must_appear_in_the_samples() {
         let persona = Persona {
-            passages: vec![
+            profile: vec![
                 Passage {
                     kind: "text".into(),
                     body: "他说话像在收尾。".into(),
@@ -630,17 +829,17 @@ mod tests {
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(persona.passages.len(), 2);
-        assert_eq!(persona.passages[0].kind, "text");
-        assert_eq!(persona.passages[1].kind, "quote");
-        assert!(persona.passages[1].text.starts_with("凌晨三点"));
+        assert_eq!(persona.profile.len(), 2);
+        assert_eq!(persona.profile[0].kind, "text");
+        assert_eq!(persona.profile[1].kind, "quote");
+        assert!(persona.profile[1].text.starts_with("凌晨三点"));
     }
 
     /// 标点与空白的差别不该让一条真原话被误判成编的。
     #[test]
     fn quotes_tolerate_punctuation_differences() {
         let persona = Persona {
-            passages: vec![Passage {
+            profile: vec![Passage {
                 kind: "引语".into(),
                 text: "今天这个雨，下得没完没了！".into(),
                 note: "原话".into(),
@@ -649,15 +848,15 @@ mod tests {
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(persona.passages.len(), 1);
-        assert_eq!(persona.passages[0].kind, "quote");
+        assert_eq!(persona.profile.len(), 1);
+        assert_eq!(persona.profile[0].kind, "quote");
     }
 
-    /// 认不出来的 kind 当批语处理；空的段落一律丢掉。
+    /// 认不出来的 kind 当综述处理；空的段落一律丢掉。
     #[test]
     fn unknown_kinds_become_prose_and_blanks_disappear() {
         let persona = Persona {
-            passages: vec![
+            profile: vec![
                 Passage {
                     kind: "段落".into(),
                     body: "他说事就说事。".into(),
@@ -677,17 +876,17 @@ mod tests {
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(persona.passages.len(), 2);
-        assert!(persona.passages.iter().all(|p| p.kind == "text"));
-        assert_eq!(persona.passages[1].body, "下一段接着说。");
+        assert_eq!(persona.profile.len(), 2);
+        assert!(persona.profile.iter().all(|p| p.kind == "text"));
+        assert_eq!(persona.profile[1].body, "下一段接着说。");
     }
 
     #[test]
-    fn overlong_fields_are_clipped_and_passages_are_capped() {
+    fn overlong_fields_are_clipped_and_paragraphs_are_capped() {
         let persona = Persona {
-            codename: "这是一个特别特别长的代号".into(),
-            verdict: "长".repeat(600),
-            passages: (0..20)
+            title: "这是一个特别特别长的综合标签".into(),
+            note: "长".repeat(200),
+            profile: (0..20)
                 .map(|index| Passage {
                     kind: "text".into(),
                     body: format!("第{index}段"),
@@ -697,12 +896,18 @@ mod tests {
             ..Default::default()
         }
         .sanitize(&material());
-        assert_eq!(persona.codename.chars().count(), limit::CODENAME + 1);
-        assert!(persona.verdict.chars().count() <= limit::VERDICT + 1);
-        assert_eq!(persona.passages.len(), limit::MAX_PASSAGES);
+        assert_eq!(persona.title.chars().count(), limit::TITLE + 1);
+        assert!(persona.note.chars().count() <= limit::NOTE + 1);
+        assert_eq!(persona.profile.len(), limit::MAX_PASSAGES);
 
         let clipped = Persona {
-            passages: vec![Passage {
+            tags: vec![Tag {
+                dimension: "表达".into(),
+                layer: "事实".into(),
+                label: "字".repeat(60),
+                evidence: "据".repeat(200),
+            }],
+            profile: vec![Passage {
                 kind: "text".into(),
                 body: "字".repeat(900),
                 ..Default::default()
@@ -710,7 +915,9 @@ mod tests {
             ..Default::default()
         }
         .sanitize(&material());
-        assert!(clipped.passages[0].body.chars().count() <= limit::PASSAGE + 1);
+        assert!(clipped.tags[0].label.chars().count() <= limit::LABEL + 1);
+        assert!(clipped.tags[0].evidence.chars().count() <= limit::EVIDENCE + 1);
+        assert!(clipped.profile[0].body.chars().count() <= limit::PASSAGE + 1);
     }
 
     #[test]
@@ -729,19 +936,23 @@ mod tests {
         assert_eq!(Accent::ALL.len(), 6);
     }
 
-    /// 兜底画像带着真卦：模型不接，卦仍在，且引语一定出自样本。
+    /// 兜底画像也是一份真画像：四个维度里至少有三个有标签，引语一定出自样本。
     #[test]
-    fn the_fallback_keeps_the_hexagram_and_a_real_quote() {
+    fn the_fallback_is_still_a_profile_made_of_tags() {
         let material = material();
-        let cast = cast();
-        let persona = Persona::from_stats(&material, &cast);
+        let persona = Persona::from_stats(&material);
         assert!(persona.estimated);
-        assert!(persona.verdict.contains(&cast.primary.full));
-        assert!(persona.passages.len() >= 2);
-        assert!(persona.live_passages().count() >= 2);
-        assert!(persona.verdict.contains("400"));
+        assert!(persona.tags.len() >= 5);
+        for dimension in ["活跃", "交互", "表达", "内容"] {
+            assert!(
+                !persona.tags_of(dimension).is_empty(),
+                "{dimension} 没有标签"
+            );
+        }
+        assert!(persona.note.contains("400"));
+        assert!(persona.profile[0].body.contains("400"));
         let quotes: Vec<&Passage> = persona
-            .passages
+            .profile
             .iter()
             .filter(|passage| passage.is_quote())
             .collect();
@@ -754,50 +965,31 @@ mod tests {
         );
     }
 
-    /// 提示词要把卦摆在最前，连同卦辞、义理、策数、变爻与占法一起下发。
+    /// 提示词要把画像是什么、四个维度、三层抽象与白描笔法都写清楚。
     #[test]
-    fn the_prompt_opens_with_the_hexagram() {
-        let material = material();
-        let cast = cast();
-        let prompt = user_prompt(&material, &cast);
-        assert!(prompt.starts_with("【卦】"));
-        assert!(prompt.contains(&cast.primary.full));
-        assert!(prompt.contains(cast.primary.judgment));
-        assert!(prompt.contains("大衍筮法"));
-        assert!(prompt.contains(&cast.stalks_text()));
-        assert!(prompt.contains(cast.rule()));
-        assert!(prompt.contains("群聊发言 400 条"));
-        assert!(prompt.contains("凌晨三点还在改代码"));
-        assert!(prompt.contains("高频词"));
-
+    fn the_prompt_states_the_model_of_a_user_profile() {
         let system = system_prompt();
-        // 提示词要点：卦是人、卦是变化、一篇不是清单、逐字引用、白描。
-        assert!(system.contains("卦就是人"));
-        assert!(system.contains("卦说的是变化"));
-        assert!(system.contains("并列的条目"));
-        assert!(system.contains("逐字"));
+        assert!(system.contains("标签化模型"));
+        assert!(system.contains("可核验"));
+        assert!(system.contains("有损"));
+        assert!(system.contains("活跃"));
+        assert!(system.contains("交互"));
+        assert!(system.contains("推断标签不超过总数的一半"));
         assert!(system.contains("白描"));
+        assert!(system.contains("逐字"));
     }
 
-    /// 有变爻时，变爻的爻题与爻位之义都要下发；有变卦时，变卦的卦辞也要。
+    /// 统计量必须随提示词一起下发——标签里的「事实」与「统计」两层全靠它。
     #[test]
-    fn moving_lines_and_the_changed_hexagram_are_spelled_out() {
+    fn the_prompt_carries_the_numbers_the_facts_come_from() {
         let material = material();
-        // 找一个有变爻的种子。
-        let mut seed = 1u64;
-        let cast = loop {
-            let candidate = divine::cast_from(seed);
-            if !candidate.changing.is_empty() && candidate.changed.is_some() {
-                break candidate;
-            }
-            seed += 1;
-        };
-        let prompt = user_prompt(&material, &cast);
-        for title in cast.changing_titles() {
-            assert!(prompt.contains(&title), "缺少变爻 {title}");
-        }
-        let changed = cast.changed.unwrap();
-        assert!(prompt.contains(&format!("变卦：{}", changed.full)));
-        assert!(prompt.contains(changed.judgment));
+        let prompt = user_prompt(&material);
+        assert!(prompt.contains("群名片：甲"));
+        assert!(prompt.contains("群聊发言 400 条"));
+        assert!(prompt.contains("夜间（0—6 点）占"));
+        assert!(prompt.contains("引用别人的消息 60 次"));
+        assert!(prompt.contains("高频词"));
+        assert!(prompt.contains("凌晨三点还在改代码"));
+        assert!(!prompt.contains("卦"), "画像里不该再出现筮法的说法");
     }
 }

@@ -1,13 +1,14 @@
-//! 用户画像：读一个群成员的历史发言，为他起一卦，写一份图文报告。
+//! 用户画像：读一个群成员的历史发言，给他打一份标签化的画像，出一张图文报告。
 //!
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
-//! 报告由四段拼成——[`collect`] 从库里取出可统计的事实与发言样本，[`divine`] 用
-//! 大衍筮法从这些素材里起出本卦、变爻与变卦，[`persona`] 把卦与素材交给模型换回
-//! 一份画像（模型不接时只留卦象与数字），[`card`] 排成一张 HTML 报告图；
-//! [`avatar`] 取对象的 QQ 头像配在报告开头。
+//! 报告由三段拼成——[`collect`] 从库里取出可统计的事实与发言样本，[`persona`] 把素材
+//! 交给模型换回一份画像（综合标签、四个维度的标签、一段综述），[`card`] 排成一张 HTML
+//! 报告图；[`avatar`] 取对象的 QQ 头像配在报告开头。
 //!
-//! 卦不由模型决定，这是这份报告的骨头：同一个人、同一批素材起出来的是同一卦，
-//! 模型只负责把卦落在他身上。
+//! 用户画像是从行为数据里抽象出来的**标签化模型**，这一层不做事的是三件：不编数字（统计量
+//! 由 [`collect`] 从库里算出来），不编原话（引语逐字比对样本），不编维度（四个维度与三层
+//! 抽象写死在 [`persona`] 里）。模型不接时画像仍在——标签退回统计直出，缺的只是推断层与
+//! 那段综述。
 //!
 //! 两处刻意的保护：同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，
 //! 免得群里连着刷。这两道闸只影响发指令的人，不影响其它功能。
@@ -15,7 +16,6 @@
 pub mod avatar;
 pub mod card;
 pub mod collect;
-pub mod divine;
 pub mod persona;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
@@ -96,16 +96,12 @@ pub fn validate_config(value: &Value) -> Result<(), String> {
 // ================= 指令解析 =================
 
 /// 画像的别名。长的写在前面，前缀匹配才不会被短的抢走。
-const KEYWORDS: [&str; 10] = [
+const KEYWORDS: [&str; 6] = [
     "用户画像报告",
-    "易经画像",
     "用户画像",
     "人物画像",
     "我的画像",
     "画像报告",
-    "卜卦",
-    "起卦",
-    "算卦",
     "画像",
 ];
 
@@ -382,8 +378,8 @@ pub fn handle(
                 return Ok(None);
             }
             Entry::Cooling(left) => {
-                // 冷却期内再问，把上一次的成品原样再发一次：卦、批语、版式都在里面，
-                // 同一批素材再起一次还是同一卦。没发过东西（比如上次翻不到记录）
+                // 冷却期内再问，把上一次的成品原样再发一次：标签、综述、版式都在里面，
+                // 同一批素材再跑一次还是这一份。没发过东西（比如上次翻不到记录）
                 // 才退回原来那句。
                 match served(target) {
                     Some(cached) => {
@@ -391,7 +387,7 @@ pub fn handle(
                         if message_id > 0 {
                             reply = reply.reply(message_id);
                         }
-                        reply = reply.text(format!("还是刚起的那一卦，{left} 秒后再算。"));
+                        reply = reply.text(format!("还是刚才那份画像，{left} 秒后再看。"));
                         reply = match cached {
                             Cached::Card(base64) => reply.image(base64),
                             Cached::Report(report) => reply.text(report),
@@ -430,7 +426,7 @@ pub fn handle(
             group_id,
             requester,
             message_id,
-            format!("正在翻 {who} 的发言记录，起一卦…"),
+            format!("正在读 {who} 的发言记录，整理画像…"),
         )
         .await;
 
@@ -473,18 +469,7 @@ pub fn handle(
             }
         };
 
-        // 卦先起出来：它不依赖模型，是这份报告的骨头。模型整个不接时，
-        // 用户拿到的仍是一张真卦，缺的只是批语。
-        let cast = divine::cast(&material);
-        info!(
-            target: LOG_TARGET,
-            "起卦：{}（第 {} 卦），变爻 {} 处，变卦 {}",
-            cast.primary.full,
-            cast.primary.number,
-            cast.changing.len(),
-            cast.changed.map(|hex| hex.full).unwrap_or("无")
-        );
-
+        // 标签里的「事实」与「统计」两层全从统计量里来，模型只负责推断层与那段综述。
         let (base, key, model) = match endpoint(&ctx, &config.model).await {
             Ok(triple) => triple,
             Err(error) => {
@@ -508,9 +493,7 @@ pub fn handle(
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(
-                    &material, &cast,
-                )))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
             },
         ];
         let completion = tokio::time::timeout(
@@ -529,17 +512,17 @@ pub fn handle(
             Ok(Ok(raw)) => match persona::parse(&raw) {
                 Ok(parsed) => parsed.sanitize(&material),
                 Err(error) => {
-                    warn!(target: LOG_TARGET, "画像 JSON 解析失败，只留卦象：{error:#}");
-                    persona::Persona::from_stats(&material, &cast)
+                    warn!(target: LOG_TARGET, "画像 JSON 解析失败，退回统计直出：{error:#}");
+                    persona::Persona::from_stats(&material)
                 }
             },
             Ok(Err(error)) => {
-                warn!(target: LOG_TARGET, "模型调用失败，只留卦象：{error:#}");
-                persona::Persona::from_stats(&material, &cast)
+                warn!(target: LOG_TARGET, "模型调用失败，退回统计直出：{error:#}");
+                persona::Persona::from_stats(&material)
             }
             Err(_) => {
-                warn!(target: LOG_TARGET, "模型调用超过 {} 秒，只留卦象", COMPLETION_TIMEOUT.as_secs());
-                persona::Persona::from_stats(&material, &cast)
+                warn!(target: LOG_TARGET, "模型调用超过 {} 秒，退回统计直出", COMPLETION_TIMEOUT.as_secs());
+                persona::Persona::from_stats(&material)
             }
         };
 
@@ -547,7 +530,6 @@ pub fn handle(
         let view = card::View {
             material: &material,
             persona: &profile,
-            cast: &cast,
             avatar: avatar.as_deref(),
             model: &model,
             theme: &config.theme,
@@ -571,7 +553,7 @@ pub fn handle(
             Err(error) => {
                 error!(target: LOG_TARGET, "画像出图失败：{error:#}");
                 // 出图失败不该等于没有结果：把报告里的关键几行退回成文字。
-                let summary = text_report(&material, &profile, &cast, &model);
+                let summary = text_report(&material, &profile, &model);
                 remember(target, Cached::Report(summary.clone()));
                 say(&ctx, writer, group_id, requester, message_id, summary).await;
             }
@@ -627,56 +609,38 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 出图失败时的文字版：卦、总评、详说、变化与赠言，
-/// 够用户在群里看懂结论，不至于因为一张图没出成就什么都拿不到。
-fn text_report(
-    material: &collect::Material,
-    profile: &persona::Persona,
-    cast: &divine::Cast,
-    model: &str,
-) -> String {
-    let mut out = format!(
-        "【{}】{}\n\n",
-        profile.codename, profile.tagline
-    );
-
+/// 出图失败时的文字版：综合标签、四个维度下的标签、综述与那句边界说明，
+/// 够用户在群里看懂这份画像，不至于因为一张图没出成就什么都拿不到。
+fn text_report(material: &collect::Material, profile: &persona::Persona, model: &str) -> String {
+    let mut out = format!("【{}】{}\n", profile.title, profile.note);
     out.push_str(&format!(
-        "〖卦〗{}（第 {} 卦，{}）\n{}\n{}\n\
-         起卦：大衍筮法，四十九策三变成爻，得策 {}（初爻至上爻）\n",
-        cast.primary.full,
-        cast.primary.number,
-        cast.primary.trigrams(),
-        cast.primary.judgment,
-        cast.primary.sense,
-        cast.stalks_text()
+        "\n〖读数〗共 {} 条群聊发言，覆盖 {} 天（活跃 {} 天），单条平均 {:.1} 字，\
+         {}前后最密。样本充分性：{}。\n",
+        material.total,
+        material.span_days(),
+        material.active_days,
+        material.avg_len(),
+        persona::hour_label(material.peak_hour()),
+        material.sufficiency().label(),
     ));
-    if cast.changing.is_empty() {
-        out.push_str("变爻：六爻都不动\n");
-    } else {
-        let moving: Vec<String> = cast
-            .changing
-            .iter()
-            .map(|index| {
-                let title = divine::line_title(*index, cast.lines[*index].yang());
-                format!("{title}（{}）", divine::POSITION_SENSE[*index])
-            })
-            .collect();
-        out.push_str(&format!("变爻：{}\n", moving.join("；")));
-    }
-    if let Some(changed) = cast.changed {
-        out.push_str(&format!(
-            "变卦：{} —— {}\n{}\n",
-            changed.full, changed.judgment, changed.sense
-        ));
-    }
-    out.push_str(&format!("看哪一爻：{}\n", cast.rule()));
 
-    if !profile.verdict.trim().is_empty() {
-        out.push_str(&format!("\n〖总评〗\n{}\n", profile.verdict));
+    for (dimension, _) in persona::DIMENSIONS {
+        let tags = profile.tags_of(dimension);
+        if tags.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n〖{dimension}〗\n"));
+        for tag in tags {
+            out.push_str(&format!("　{}｜{}\n", tag.tier(), tag.label));
+            if !tag.evidence.trim().is_empty() {
+                out.push_str(&format!("　　{}\n", tag.evidence));
+            }
+        }
     }
+
     let passages: Vec<&persona::Passage> = profile.live_passages().collect();
     if !passages.is_empty() {
-        out.push_str("\n〖详说〗\n");
+        out.push_str("\n〖画像综述〗\n");
         for passage in passages {
             if passage.is_quote() {
                 out.push_str(&format!("　「{}」\n", passage.text));
@@ -688,17 +652,10 @@ fn text_report(
             }
         }
     }
-    if !profile.turn.trim().is_empty() {
-        out.push_str(&format!("\n〖变化〗\n{}\n", profile.turn));
-    }
-    if !profile.advice.trim().is_empty() {
-        out.push_str(&format!("\n赠言：{}\n", profile.advice));
-    }
+
     out.push_str(&format!(
-        "\n共 {} 条发言，覆盖 {} 天。出图失败，先给你一份文字版（{}）。",
-        material.total,
-        material.span_days(),
-        model
+        "\n画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。\
+         出图失败，先给你一份文字版（{model}）。"
     ));
     out
 }
@@ -762,7 +719,7 @@ mod live_tests {
     /// 端到端跑一遍：真库取素材、真模型出画像、真截图。
     ///
     /// 给运维用：换模型或改提示词之后，确认素材读得出来、模型给的是合法 JSON、
-    /// 引语确实出自样本、出图不是一张空白。目标默认取记录最多的人，
+    /// 标签落在四个维度里、引语确实出自样本、出图不是一张空白。目标默认取记录最多的人，
     /// 也可以 `PORTRAIT_LIVE_USER=<QQ号>` 指定。
     /// `cargo test --release portrait_live -- --ignored --nocapture`
     #[tokio::test]
@@ -791,19 +748,11 @@ mod live_tests {
             .await
             .expect("查询失败")
             .expect("这个人没有群聊记录");
-
-        let cast = divine::cast(&material);
         println!(
-            "===== 起卦 =====\n本卦 {}（第 {} 卦，{}）\n{}\n{}\n得策 {}\n变爻 {:?}\n变卦 {}\n看哪一爻 {}",
-            cast.primary.full,
-            cast.primary.number,
-            cast.primary.trigrams(),
-            cast.primary.judgment,
-            cast.primary.sense,
-            cast.stalks_text(),
-            cast.changing_titles(),
-            cast.changed.map(|hex| hex.full).unwrap_or("无"),
-            cast.rule(),
+            "===== 素材 =====\n{} 条发言，覆盖 {} 天，样本充分性 {}",
+            material.total,
+            material.span_days(),
+            material.sufficiency().label()
         );
 
         let history = vec![
@@ -811,9 +760,7 @@ mod live_tests {
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(
-                    &material, &cast,
-                )))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
             },
         ];
         let raw = crate::plugins::oai::llm::complete(&base, &key, &model, history, Some("high"))
@@ -825,10 +772,15 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n代号：{}\n题记：{}\n总评：{}\n详说：\n{}\n变化：{}\n赠言：{}",
-            profile.codename,
-            profile.tagline,
-            profile.verdict,
+            "===== 收口后的画像 =====\n综合标签：{}\n一句话：{}\n标签：\n{}\n综述：\n{}",
+            profile.title,
+            profile.note,
+            profile
+                .tags
+                .iter()
+                .map(|tag| format!("　{}｜{}｜{}｜{}", tag.dim().unwrap_or("?"), tag.tier(), tag.label, tag.evidence))
+                .collect::<Vec<_>>()
+                .join("\n"),
             profile
                 .live_passages()
                 .map(|passage| if passage.is_quote() {
@@ -838,15 +790,18 @@ mod live_tests {
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
-            profile.turn,
-            profile.advice,
         );
-        assert!(!profile.codename.is_empty(), "代号不该是空的");
-        assert!(!profile.verdict.is_empty(), "总评不该是空的");
-        assert!(!profile.turn.is_empty(), "变化不该是空的");
+        assert!(!profile.title.is_empty(), "综合标签不该是空的");
+        assert!(!profile.note.is_empty(), "一句话概括不该是空的");
+        // 四个维度里至少三个有标签，否则这份画像没成形。
+        let covered = persona::DIMENSIONS
+            .iter()
+            .filter(|(name, _)| !profile.tags_of(name).is_empty())
+            .count();
+        assert!(covered >= 3, "只有 {covered} 个维度有标签");
         assert!(
             profile.live_passages().count() >= 4,
-            "详说至少要有四段，这次只有 {} 段",
+            "综述至少要有四段，这次只有 {} 段",
             profile.live_passages().count()
         );
         // 引语是被比对过的：要么没有，要么每一句都是原话。
@@ -865,7 +820,6 @@ mod live_tests {
         let html = card::html(&card::View {
             material: &material,
             persona: &profile,
-            cast: &cast,
             avatar: avatar.as_deref(),
             model: &model,
             theme: "auto",
@@ -996,6 +950,14 @@ mod tests {
             "画像 这个 那个",
             "画像12abc",
         ] {
+            assert_eq!(parse_command(input, &[]), None, "{input}");
+        }
+    }
+
+    /// 画像只做一件事：筮法那一套别名已经拿掉了，说到也不算指令。
+    #[test]
+    fn the_divination_aliases_are_gone() {
+        for input in ["算卦", "起卦", "卜卦", "易经画像"] {
             assert_eq!(parse_command(input, &[]), None, "{input}");
         }
     }
@@ -1187,23 +1149,6 @@ mod tests {
         ));
     }
 
-    /// 卦的别名也要认：用户会直接说「算卦」「起卦」。
-    #[test]
-    fn the_hexagram_aliases_are_commands_too() {
-        for input in ["算卦", "起卦", "卜卦", "易经画像"] {
-            assert_eq!(parse_command(input, &[]), Some(Request::Mine), "{input}");
-        }
-        let mentions = [mention(10001, "某人")];
-        assert_eq!(
-            parse_command("算卦", &mentions),
-            Some(Request::Other(10001, Some("某人".to_string())))
-        );
-        // 闲聊里说到这两个词不算指令。
-        for input in ["你会算卦吗", "起卦了吗", "算卦的"] {
-            assert_eq!(parse_command(input, &[]), None, "{input}");
-        }
-    }
-
     #[test]
     fn the_text_report_carries_the_conclusion() {
         let material = crate::plugins::portrait::collect::Material {
@@ -1222,12 +1167,24 @@ mod tests {
             words: Vec::new(),
             samples: Vec::new(),
         };
-        let cast = divine::cast(&material);
         let profile = persona::Persona {
-            codename: "夜行改稿人".into(),
-            tagline: "白天潜水夜里冒泡".into(),
-            verdict: "屯是开头难。".into(),
-            passages: vec![
+            title: "夜行改稿人".into(),
+            note: "白天潜水夜里冒泡".into(),
+            tags: vec![
+                persona::Tag {
+                    dimension: "活跃".into(),
+                    layer: "事实".into(),
+                    label: "夜里出现".into(),
+                    evidence: "夜间发言占 41%".into(),
+                },
+                persona::Tag {
+                    dimension: "表达".into(),
+                    layer: "推断".into(),
+                    label: "句子短".into(),
+                    evidence: String::new(),
+                },
+            ],
+            profile: vec![
                 persona::Passage {
                     kind: "text".into(),
                     body: "他把手艺当退路。".into(),
@@ -1240,22 +1197,22 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            turn: "他不动的那一爻在最底下。".into(),
-            advice: "少熬点夜。".into(),
             ..Default::default()
         };
-        let report = text_report(&material, &profile, &cast, "deepseek/deepseek-flash");
+        let report = text_report(&material, &profile, "deepseek/deepseek-flash");
         assert!(report.contains("夜行改稿人"));
+        assert!(report.contains("白天潜水夜里冒泡"));
         assert!(report.contains("三点还在改"));
-        assert!(report.contains("100 条发言"));
-        // 卦、总评、详说、变化与赠言都要跟着落到文字版里。
-        assert!(report.contains(&format!("〖卦〗{}", cast.primary.full)));
-        assert!(report.contains("大衍筮法"));
-        assert!(report.contains(&cast.stalks_text()));
-        assert!(report.contains(cast.rule()));
-        assert!(report.contains("〖总评〗"));
-        assert!(report.contains("〖详说〗"));
-        assert!(report.contains("〖变化〗"));
-        assert!(report.contains("少熬点夜。"));
+        assert!(report.contains("共 100 条群聊发言"));
+        // 四个维度的小标题、三条层级、标签与证据都要跟着落到文字版里。
+        assert!(report.contains("〖活跃〗"));
+        assert!(report.contains("〖表达〗"));
+        assert!(!report.contains("〖内容〗"), "没有内容的维度不印");
+        assert!(report.contains("事实｜夜里出现"));
+        assert!(report.contains("夜间发言占 41%"));
+        assert!(report.contains("推断｜句子短"));
+        assert!(report.contains("〖画像综述〗"));
+        assert!(report.contains("他把手艺当退路。"));
+        assert!(report.contains("不等于本人"));
     }
 }

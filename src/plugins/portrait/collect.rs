@@ -127,6 +127,40 @@ fn ratio(part: u64, whole: u64) -> f64 {
     }
 }
 
+/// 样本充分性：一份画像能信到什么程度，先看证据有多少。
+///
+/// 阈值是拍出来的，不是算出来的：两百条以上、铺满两周以上，四个维度才都站得住；
+/// 五十条、五天以上勉强能读出活跃与表达；再少就只剩几条事实标签。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sufficiency {
+    Enough,
+    Fair,
+    Thin,
+}
+
+impl Sufficiency {
+    pub fn label(self) -> &'static str {
+        match self {
+            Sufficiency::Enough => "充分",
+            Sufficiency::Fair => "一般",
+            Sufficiency::Thin => "有限",
+        }
+    }
+}
+
+impl Material {
+    /// 这份素材够不够撑起一份画像。
+    pub fn sufficiency(&self) -> Sufficiency {
+        if self.total >= 200 && self.active_days >= 14 {
+            Sufficiency::Enough
+        } else if self.total >= 50 && self.active_days >= 5 {
+            Sufficiency::Fair
+        } else {
+            Sufficiency::Thin
+        }
+    }
+}
+
 fn peak_index(values: &[u64]) -> usize {
     let mut best = 0usize;
     for (index, value) in values.iter().enumerate() {
@@ -595,6 +629,35 @@ mod tests {
         // 首末跨 9 个整天 → 跨度为 10 天。
         assert_eq!(material.span_days(), 10);
         assert!((material.per_day() - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn sufficiency_follows_how_much_evidence_there_is() {
+        let mut material = Material {
+            user_id: 1,
+            name: "甲".into(),
+            total: 0,
+            first_time: 0,
+            last_time: 0,
+            active_days: 0,
+            hour: [0; 24],
+            weekday: [0; 7],
+            groups: Vec::new(),
+            kinds: Default::default(),
+            longest: 0,
+            avg_len: 0.0,
+            words: Vec::new(),
+            samples: Vec::new(),
+        };
+        assert_eq!(material.sufficiency(), Sufficiency::Thin);
+        material.total = 60;
+        assert_eq!(material.sufficiency(), Sufficiency::Thin, "条数够但天数不够");
+        material.active_days = 6;
+        assert_eq!(material.sufficiency(), Sufficiency::Fair);
+        material.total = 200;
+        material.active_days = 14;
+        assert_eq!(material.sufficiency(), Sufficiency::Enough);
+        assert_eq!(Sufficiency::Enough.label(), "充分");
     }
 
     async fn seeded_db() -> DatabaseConnection {
