@@ -308,6 +308,36 @@ pub struct GroupInfo {
     pub max_member_count: Option<i32>,
 }
 
+/// 单个群的资料（`guild.get`）。
+///
+/// 只为一个群名去翻 `guild.list` 那张分页整表不划算，而群名恰恰是每条群消息的
+/// 上下文里都用得上的一样东西。
+pub async fn get_guild_info(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: i64,
+) -> Result<GroupInfo, ApiError> {
+    let value: Value = writer
+        .call(ctx, "guild.get", json!({"guild_id": group_id.to_string()}))
+        .await?;
+    Ok(GroupInfo {
+        group_id,
+        group_name: value
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        member_count: value
+            .get("member_count")
+            .and_then(Value::as_i64)
+            .map(|n| n as i32),
+        max_member_count: value
+            .get("max_member_count")
+            .and_then(Value::as_i64)
+            .map(|n| n as i32),
+    })
+}
+
 /// `guild.list` 是标准分页列表：跟着 `next` 令牌翻到底，否则群多时会漏群。
 pub async fn get_group_list(
     ctx: &Context,

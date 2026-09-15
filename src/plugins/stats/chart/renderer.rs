@@ -12,6 +12,40 @@ use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
+/// 排行榜的刻度竖线：一组等距的浅色竖线，从榜首画到榜尾。
+///
+/// 单独拎出来是因为它要么画在实色条之前（被条盖住），要么画在之后（压在条上），
+/// 由 `stats.ranking_grid_over_bars` 决定，两处调用同一份几何。
+struct ScaleGrid {
+    first_x: i32,
+    end_x: i32,
+    step: i32,
+    width: i32,
+    y0: i32,
+    y1: i32,
+}
+
+impl ScaleGrid {
+    fn draw<DB: DrawingBackend>(
+        &self,
+        root: &DrawingArea<DB, plotters::coord::Shift>,
+    ) -> Result<(), String> {
+        let color = RGBAColor(0, 0, 0, 0.12);
+        let mut x = self.first_x;
+        while x <= self.end_x {
+            // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
+            let x0 = x.min(self.end_x - self.width);
+            root.draw(&Rectangle::new(
+                [(x0, self.y0), (x0 + self.width, self.y1)],
+                color.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+            x += self.step;
+        }
+        Ok(())
+    }
+}
+
 /// 绘制水平条形图 (排行榜)
 ///
 /// 版式分成四个纵列：头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
@@ -172,7 +206,25 @@ pub fn draw_bar_chart(
             }
         }
 
-        // 第二趟：实色进度条
+        // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认刻度在最上层，
+        // 整条格子从榜首通到榜尾；关掉则由实色条盖住刻度，每根条是完整的一块颜色。
+        // 无论哪种，文字都在最后一趟画，线不会压到名字和数字上。
+        //
+        // 刻度间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道，直到轨道
+        // 尽头，正好是原版那八道等距刻度；首尾两道就是这张表的左右边界。
+        let grid = ScaleGrid {
+            first_x: track_start_x + base_bar_min_width as i32,
+            end_x: track_end_x,
+            step: 100 * s as i32,
+            width: 3 * s as i32,
+            y0: top_area_height as i32,
+            y1: top_area_height as i32 + (data.len() as u32 * row_pitch - row_gap) as i32,
+        };
+
+        // 第二趟：条与刻度，孰上孰下看配置
+        if !config.ranking_grid_over_bars {
+            grid.draw(&root)?;
+        }
         for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
             root.draw(&Rectangle::new(
                 [(track_start_x, *y), (*bar_end_x, y + row_height as i32)],
@@ -181,28 +233,11 @@ pub fn draw_bar_chart(
             .map_err(|e| e.to_string())?;
         }
 
-        // 第三趟：刻度竖线，压在条与轨道之上，整条从上通到下不被任何一根条打断。
-        // 间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道，直到轨道尽头，
-        // 正好是原版那八道等距刻度；首尾两道就是这张表的左右边界。
-        // 文字留到最后一趟画，所以线只压条，不会压到名字和数字上。
-        let vertical_line_color = RGBAColor(0, 0, 0, 0.12);
-        let line_width = 3 * s as i32;
-        let line_step = 100 * s as i32;
-        let content_end_y =
-            top_area_height as i32 + (data.len() as u32 * row_pitch - row_gap) as i32;
-        let mut line_x = track_start_x + base_bar_min_width as i32;
-        while line_x <= track_end_x {
-            // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
-            let x = line_x.min(track_end_x - line_width);
-            root.draw(&Rectangle::new(
-                [(x, top_area_height as i32), (x + line_width, content_end_y)],
-                vertical_line_color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
-            line_x += line_step;
+        if config.ranking_grid_over_bars {
+            grid.draw(&root)?;
         }
 
-        // 第四趟：行内文字（昵称、数值、占比），画在最上层
+        // 第三趟：行内文字（昵称、数值、占比），始终画在最上层
         for (i, item) in data.iter().enumerate() {
             let (y, bar_end_x) = rows[i];
             let start_x = track_start_x;
@@ -1056,6 +1091,20 @@ mod tests {
     }
 
     #[test]
+    fn the_grid_toggle_renders_either_way() {
+        for over in [true, false] {
+            let config = StatsConfig {
+                ranking_grid_over_bars: over,
+                ..StatsConfig::default()
+            };
+            let data = vec![sample("文本", 8_120), sample("图片", 3)];
+            let out = draw_bar_chart(&config, "本群 今日 发言 排行榜", data)
+                .expect("两种遮挡关系都应当能渲染");
+            assert!(out.starts_with("base64://"));
+        }
+    }
+
+    #[test]
     fn strip_segments_fill_the_width_exactly() {
         let data = vec![
             sample("文本", 8_120),
@@ -1203,13 +1252,35 @@ mod tests {
             })
             .collect();
 
-        let out = draw_bar_chart(&StatsConfig::default(), "本群 今日 发言 排行榜", data)
-            .expect("排行榜样张应当能渲染");
-        use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(out.trim_start_matches("base64://"))
-            .unwrap();
-        std::fs::write(format!("{dir}/ranking-full.png"), bytes).unwrap();
+        // 刻度压在条上（默认）与被条盖住两种，各出一张，好并排比
+        for (over, name) in [(true, "ranking-full"), (false, "ranking-full-bars-on-top")] {
+            let config = StatsConfig {
+                ranking_grid_over_bars: over,
+                ..StatsConfig::default()
+            };
+            let out = draw_bar_chart(&config, "本群 今日 发言 排行榜", clone_rows(&data))
+                .expect("排行榜样张应当能渲染");
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(out.trim_start_matches("base64://"))
+                .unwrap();
+            std::fs::write(format!("{dir}/{name}.png"), bytes).unwrap();
+        }
+    }
+
+    /// `BarData` 不是 Clone（带着一张头像位图），样张要画两遍，这里手工复制一份。
+    fn clone_rows(data: &[BarData]) -> Vec<BarData> {
+        data.iter()
+            .map(|d| BarData {
+                label: d.label.clone(),
+                value: d.value,
+                user_id: d.user_id,
+                avatar_url: d.avatar_url.clone(),
+                avatar_img: d.avatar_img.clone(),
+                theme_color: d.theme_color,
+                icon_char: d.icon_char.clone(),
+            })
+            .collect()
     }
 
     #[test]

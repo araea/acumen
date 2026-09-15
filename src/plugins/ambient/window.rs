@@ -32,6 +32,11 @@ pub(crate) struct Call {
     pub replied_me: bool,
     /// 戳了我。
     pub poked_me: bool,
+    /// 直接叫了我的名字（名片、账号昵称或 `aliases` 里的小名）。
+    ///
+    /// 与前三者不同，这一条是猜出来的而不是协议里的明码，所以它只加一个记号，
+    /// 不进 [`Call::mine`]——见 [`super::identity::called_by_name`]。
+    pub named_me: bool,
     /// 这条消息引用了哪条消息；0 表示没有引用。
     pub reply_to: i64,
     /// 被引用那条的摘要（`谁：说了什么`）；不在窗口里时为空。
@@ -366,6 +371,9 @@ pub(crate) fn transcript(turns: &[Turn]) -> String {
         }
         if turn.call.poked_me {
             out.push_str("〔戳了你〕");
+        }
+        if turn.call.named_me {
+            out.push_str("〔叫了你的名字〕");
         }
         if !turn.call.quote.is_empty() {
             out.push_str(&format!("〔引用 {}〕", turn.call.quote));

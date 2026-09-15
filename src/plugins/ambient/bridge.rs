@@ -5,7 +5,7 @@
 use super::{
     AmbientConfig,
     actions::{self, Action, FileAction, Part},
-    memory, mood, stickers,
+    identity, memory, mood, stickers,
     window::{self, Turn},
 };
 use crate::{
@@ -372,8 +372,14 @@ impl Session {
                         }
                     }
                 }
+                let identity = identity::of(self.group).map(|identity| json!({
+                    "name": identity.name, "card": identity.card, "display": identity.display(),
+                    "title": identity.title, "role": identity.role, "joined_at": identity.joined_at,
+                    "group_name": identity.group_name, "avatar": identity.avatar,
+                }));
                 Ok(
                     json!({"revision":seq,"group_id":self.group.to_string(),"self_id":self.ctx.bot.login_user.get().id,
+                    "identity":identity,
                     "now":super::now_context(),"register":scene.register,"state":scene.state,"remember":scene.memory,
                     "capabilities":capabilities,"rhythm":rhythm,"messages":turns,"media":media,
                     "writes_remaining":self.config.max_actions.clamp(1,12).saturating_sub(self.writes),

@@ -40,6 +40,7 @@ mod attention;
 mod breath;
 pub(crate) mod bridge;
 mod gate;
+mod identity;
 #[cfg(test)]
 #[path = "ambient/tests.rs"]
 mod integration_tests;
@@ -185,6 +186,12 @@ pub(crate) struct AmbientConfig {
     pub hourly_limit: usize,
     /// 被 @ 或被引用时跳过判定直接开口。
     pub reply_on_mention: bool,
+    /// 群友还会怎么叫它：名片之外的小名、简称。
+    ///
+    /// 名片是「A宝好腻害！」，群里喊的却是「A宝」——平台不会告诉你这件事，只能写在
+    /// 这里。认出来只是在记录上加一个「叫了你的名字」的记号（见 [`identity`]），
+    /// 不像 @ 那样直接把人格叫醒：猜错一次的代价是它冲着一句不相干的话接了嘴。
+    pub aliases: Vec<String>,
     /// 搭话指令：群里一条带它的消息跳过判定，直接把最近这段群聊交给人格。
     ///
     /// 指令本身不进窗口（`/搭话` 是命令，剥掉之后那一条消息才是群聊内容），
@@ -274,6 +281,7 @@ impl Default for AmbientConfig {
             focus_max_seconds: 180,
             hourly_limit: 8,
             reply_on_mention: true,
+            aliases: Vec::new(),
             summon_command: "/搭话".to_string(),
             memory_enabled: true,
             mood_enabled: true,
@@ -402,6 +410,11 @@ impl AmbientConfig {
 /// 全部由本地数据算出，不额外调用模型：群里此刻的语感、自己的精神头、参与节奏、
 /// 以及记得的人和旧事。小模型对这种具体锚点的反应，比再加十条抽象规则好得多。
 pub(crate) struct Scene {
+    /// 「我在这个群里是谁」：群里看到的那个名字、头衔、进群多久、群名与头像。
+    ///
+    /// 它跟着 [`Scene::brief`] 一起递给判定侧——判定要认出「有人在叫我」，
+    /// 而群里叫人用的是名片上的字，不是 QQ 号。
+    pub identity: String,
     /// 自己的发言节奏与当前关注。
     pub rhythm: String,
     /// 本群此刻的说话方式。
@@ -422,6 +435,7 @@ impl Scene {
         // 状态算一次用两处：一句给模型看的「你现在的状态」，以及挑样本的调子。
         let snapshot = config.mood_enabled.then(|| mood::snapshot(group));
         Self {
+            identity: identity::brief(group),
             rhythm,
             register: tone::register(turns),
             state: snapshot.map(mood::Snapshot::describe).unwrap_or_default(),
@@ -443,7 +457,7 @@ impl Scene {
 
     /// 现场 → 注入提示词的一段话。
     pub(crate) fn brief(&self) -> String {
-        let mut out = format!("{}\n{}\n", now_context(), self.register);
+        let mut out = format!("{}\n{}{}\n", now_context(), self.identity, self.register);
         if !self.state.is_empty() {
             out.push_str(&self.state);
             out.push('\n');
@@ -567,6 +581,7 @@ async fn setup(base: &Path) -> std::io::Result<()> {
     memory::attach(base);
     mood::attach(base);
     stickers::attach(base);
+    identity::attach(base);
     Ok(())
 }
 
@@ -613,6 +628,10 @@ pub(crate) async fn observe(
     if is_command {
         return;
     }
+    // 群里叫人多数时候是直接打名字，不是 @。协议里没有这件事，只能自己认一遍；
+    // 认出来只在记录上留个记号，不当作点名（见 [`identity::called_by_name`]）。
+    turn.call.named_me =
+        !turn.from_me && identity::called_by_name(group, &config, &turn.text);
     // 剥掉指令后空无一物的那条消息没有内容可给模型看；它只是按了一次键。
     let empty = turn.text.is_empty() && turn.images.is_empty();
     if empty && !summoned {
@@ -1134,6 +1153,9 @@ async fn consider_batch(
             _ => {}
         });
     }
+    // 「我在这个群里是谁」在判定之前就要在手上：判定要认出「有人在叫我」，而群里
+    // 叫人用的是名片上那几个字。资料按小时缓存，所以这一句绝大多数时候不出网。
+    identity::refresh(ctx, writer, mgr, config, group).await;
     let scene = Scene::build(group, config, turns, rhythm.to_string());
     if summoned {
         // 指令是人按下的：判定那一步整个不发生，这一批直接进第三步。
@@ -2128,6 +2150,39 @@ mod tests {
         assert!(brief.contains("本群此刻："), "{brief}");
         assert!(!brief.contains("你现在的状态："), "{brief}");
         assert!(!brief.contains("在修驾校那台破电脑"), "{brief}");
+    }
+
+    /// 身份跟着现场一起递给判定：群里叫人用的是名片上的字，判定要认得出来。
+    ///
+    /// 还没问到平台之前这一段是空的——宁可不带，也不能摆一份空表让模型去填。
+    #[test]
+    fn the_scene_carries_the_name_the_room_sees() {
+        let group = -9_100_002;
+        let turns = [Turn {
+            user_id: 42,
+            name: "老张".into(),
+            text: "A宝在吗".into(),
+            ..Turn::default()
+        }];
+        let config = AmbientConfig::default();
+        let bare = Scene::build(group, &config, &turns, "尚未发言".into()).brief();
+        assert!(!bare.contains("你自己："), "{bare}");
+        identity::seed(
+            group,
+            identity::Identity {
+                user_id: 3373167460,
+                name: "nawyjx".into(),
+                card: "A宝好腻害！".into(),
+                group_name: "②群心情管家•助手".into(),
+                ..identity::Identity::default()
+            },
+        );
+        let brief = Scene::build(group, &config, &turns, "尚未发言".into()).brief();
+        assert!(brief.contains("群里看到的你叫「A宝好腻害！」"), "{brief}");
+        assert!(brief.contains("②群心情管家•助手"), "{brief}");
+        // 现在与语感照旧在它前后，身份只是插进来的一段。
+        assert!(brief.starts_with("现在："), "{brief}");
+        assert!(brief.contains("本群此刻："), "{brief}");
     }
 
     #[test]

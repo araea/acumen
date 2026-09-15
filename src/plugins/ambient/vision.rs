@@ -78,16 +78,7 @@ pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<String> {
     }
     let mut out = Vec::new();
     for url in turns.iter().rev().flat_map(|turn| turn.images.iter().rev()) {
-        let usable = match cached(url) {
-            Some(hit) => hit,
-            None => {
-                let data_url = crate::plugins::oai::logic::to_data_url(url).await;
-                let usable = normalize(&data_url);
-                remember(url, usable.clone());
-                usable
-            }
-        };
-        if let Some(usable) = usable {
+        if let Some(usable) = usable_image(url).await {
             out.push(usable);
             if out.len() >= limit {
                 break;
@@ -96,6 +87,20 @@ pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<String> {
     }
     out.reverse();
     out
+}
+
+/// 一张图片直链 → 模型能收下的 data URL；下不动或解不开时返回 `None`。
+///
+/// 聊天记录之外的图走这条：头像就是一张——它不在任何一条消息里，却是人格
+/// 「自己长什么样」的唯一实物（见 [`super::identity`]）。
+pub(super) async fn usable_image(url: &str) -> Option<String> {
+    if let Some(hit) = cached(url) {
+        return hit;
+    }
+    let data_url = crate::plugins::oai::logic::to_data_url(url).await;
+    let usable = normalize(&data_url);
+    remember(url, usable.clone());
+    usable
 }
 
 /// data URL → 模型可接受的 data URL；无法使用时返回 `None`。
