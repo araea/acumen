@@ -1679,4 +1679,129 @@ mod tests {
             .into(),
         }
     }
+
+    /// 只够发 HTTP 请求的最小上下文：不装插件，也不连真库。
+    async fn bare_context(endpoint: &str) -> (Context, LockedWriter) {
+        let ctx = Context {
+            event: EventType::Init,
+            config: Arc::new(RwLock::new(AppConfig::default())),
+            config_save_lock: Arc::new(AsyncMutex::new(())),
+            db: sea_orm::Database::connect("sqlite::memory:").await.unwrap(),
+            scheduler: Arc::new(Scheduler::new()),
+            matcher: Arc::new(Matcher::new()),
+            config_path: Arc::from("unused-compat-test.toml"),
+            bot: Arc::new(test_bot()),
+        };
+        let writer: LockedWriter = Arc::new(SatoriClient::new(endpoint.to_string(), None));
+        (ctx, writer)
+    }
+
+    /// 按脚本回包的本地对端：把每个请求记成 `路径 请求体`，再按顺序吐准备好的响应。
+    ///
+    /// 用来钉住 ayjx 依赖的实现端形状——列表信封与错误体是实现端单方面改一下就会
+    /// 静默对不上的东西，本地跑一遍比事后到群里找症状便宜。
+    async fn scripted_peer(
+        replies: Vec<(u16, String)>,
+    ) -> (
+        String,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            for (status, body) in replies {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut bytes = Vec::new();
+                let mut buf = [0; 4096];
+                while let Ok(n) = stream.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buf[..n]);
+                    let Some(start) = bytes.windows(4).position(|s| s == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&bytes[..start]).to_string();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            if key.eq_ignore_ascii_case("content-length") {
+                                value.trim().parse().ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() < start + 4 + len {
+                        continue;
+                    }
+                    let path = head
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split_whitespace().nth(1))
+                        .unwrap_or_default()
+                        .to_string();
+                    let payload = String::from_utf8_lossy(&bytes[start + 4..start + 4 + len]);
+                    let _ = tx.send(format!("{path} {payload}"));
+                    let response = format!(
+                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    break;
+                }
+            }
+        });
+        (endpoint, rx, server)
+    }
+
+    /// 列表接口统一是 `{data, next}`，`next` 是下一次要带回去的分页令牌。
+    ///
+    /// satori-qq 0.8.9.38 起 `guild.list`、`guild.member.list`、`friend.list` 都是这个
+    /// 信封；只读第一页会在群多的时候静默漏群，所以这里连翻三页钉一遍。
+    #[tokio::test]
+    async fn a_paged_list_is_followed_until_the_token_runs_out() {
+        let (endpoint, mut seen, server) = scripted_peer(vec![
+            (200, r#"{"data":[{"id":"1","name":"一群"}],"next":"1"}"#.into()),
+            (200, r#"{"data":[{"id":"2","name":"二群"}],"next":"2"}"#.into()),
+            (200, r#"{"data":[{"id":"3","name":"三群"}]}"#.into()),
+        ])
+        .await;
+        let (ctx, writer) = bare_context(&endpoint).await;
+        let groups = api::get_group_list(&ctx, writer, true).await.unwrap();
+        assert_eq!(
+            groups.iter().map(|group| group.group_id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        // 每次回包给的令牌原样带回去；最后一页没有 next，就不再追问。
+        assert_eq!(seen.try_recv().unwrap(), "/v1/guild.list {}");
+        assert_eq!(seen.try_recv().unwrap(), r#"/v1/guild.list {"next":"1"}"#);
+        assert_eq!(seen.try_recv().unwrap(), r#"/v1/guild.list {"next":"2"}"#);
+        assert!(seen.try_recv().is_err(), "没有 next 时不该再发一次请求");
+        server.abort();
+    }
+
+    /// 实现端的错误回包是 JSON，`message` 要能取出来，而不是把整段原文糊在错误里。
+    #[tokio::test]
+    async fn a_json_error_body_surfaces_its_message() {
+        let (endpoint, _seen, server) =
+            scripted_peer(vec![(404, r#"{"message":"API not found: message.update"}"#.into())])
+                .await;
+        let (ctx, writer) = bare_context(&endpoint).await;
+        let error = writer
+            .call::<_, Value>(&ctx, "message.update", json!({}))
+            .await
+            .expect_err("404 不该被当成成功")
+            .to_string();
+        assert!(error.contains("API not found"), "{error}");
+        // 实现端把 404 的响应体从纯文本改成 JSON 之后，取 message 的这条路必须仍然通。
+        assert!(!error.contains("{\"message\""), "整段 JSON 原文不该出现在错误里：{error}");
+        server.abort();
+    }
 }

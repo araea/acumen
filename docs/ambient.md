@@ -92,7 +92,9 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 滚动窗口只有 80 条，重启就清空；熟人记忆记的是印象，不是聊天记录。QQ 自己保存着这个群的完整历史和整份成员名册，所以「记不住」和「查不到」应该是两件事，否则人格被问到「上次那个」时只有两条路：说不记得，或者编一段。
 
 - `satori_history` 查本群历史（`internal/message_search` / `message_context`）。可以按关键词、只看某个人、限定最近多少小时，或直接看某条消息的前后几条。返回与窗口同一种格式的逐条记录（`[时刻 id=…] 谁: 说了什么`），不是原始 JSON，模型不需要为读旧消息再学一种格式。带 `next` 游标可以继续向更早翻。关键词按原文包含匹配，短词更有效；搜不到说明本地历史里确实没有
-- `satori_group` 查现有资料，`what` 选一种：`member`（群名片、头衔、角色、入群时间、`silent_days` 多久没出现）、`search`（按昵称、群名片、头衔或号码找群友——记得住脸记不住号时的入口）、`roster`（人数与活跃概况）、`activity`（最活跃或最沉默的人）、`rank`（本群发言条数排行，`days` 默认 1 就是今天，口径与群里的 `/排行榜` 指令一致）、`anniversary`（快到入群周年的人）、`draw`（随机抽人）、`teams`（随机分队）、`files`（群文件目录，或某个文件的下载链接）、`honor`（群荣誉榜，龙王与群聊之火这类）、`mute_list`（此刻被禁言的人）。其中 `rank` 读的是本机 `data/bot.db` 里记着的群消息，不问 QQ，所以快也不占平台侧的开销；其余都走平台接口
+- `satori_group` 查现有资料，`what` 选一种：`member`（群名片、头衔、角色、入群时间、`silent_days` 多久没出现，外加群身份那一层——群内等级、群头衔、龙王与群聊之火这类互动标签、名册之外的扩展字段；这几层一次问齐，算一次额度）、`search`（按昵称、群名片、头衔或号码找群友——记得住脸记不住号时的入口）、`roster`（人数与活跃概况）、`essence`（被群主设成精华的消息，谁说的什么时候说的原话都在）、`activity`（最活跃或最沉默的人）、`rank`（本群发言条数排行，`days` 默认 1 就是今天，口径与群里的 `/排行榜` 指令一致）、`anniversary`（快到入群周年的人）、`draw`（随机抽人）、`teams`（随机分队）、`files`（群文件目录，或某个文件的下载链接）、`honor`（群荣誉榜，龙王与群聊之火这类）、`mute_list`（此刻被禁言的人）。其中 `rank` 读的是本机 `data/bot.db` 里记着的群消息，不问 QQ，所以快也不占平台侧的开销；其余都走平台接口
+
+实现端还有几个群查询入口没接进来：`group_detail`、`group_bulletin`、`group_statistic` 回的是「成功但没有内容」，`group_member_level` 要等满 15 秒超时，`group_medal` 在没有勋章的群上只回一个错误码。这些列进 `what` 只会让人格查一次空手还把额度花掉，所以只在实现端修好之后再考虑。判据是 `live_bridge_reads_the_new_dossiers_from_the_real_module` 这条用例，加 `what` 之前先照着它跑一遍。
 - `satori_profile` 查自己或与某个群友的关系（`internal/profile_self` / `friend_relation`）。不给 `user_id` 返回自己的昵称、个性签名与在线状态；给了就返回 QQ 记的关系——是不是好友、有没有互相拉黑、给对方写的备注。只在需要分清「熟人是好友还是只是同群」时用，属于私下的那份资料，不必往外说
 
 三者都是只读的：不发消息、不改群设置、不占 `max_actions`，但每轮共用 `lookup_budget` 次（默认 4，高峰被点名醒来时降到 1）。参数写错不扣额度，真正发出查询时才扣。`lookup_budget = 0` 就当这三个工具不存在，白名单与 `capabilities.lookups` / `capabilities.profile` 会一起去掉它们。
@@ -130,14 +132,14 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 人格通过本轮专属的聊天界面工具参与群聊（实现在 `src/plugins/oai/agent/tools.rs` 与 `ambient/bridge.rs`，都在进程内运行）：
 
 - `satori_context` 读取最新窗口、精确消息 ID、原始资源、当前平台能力与剩余额度
-- `satori_read` 查询窗口中的原消息，或完整展开它的合并转发
+- `satori_read` 查询窗口中的原消息，或完整展开它的合并转发；语音消息另外带回 `voice_text`（QQ 听写出来的原话），记录里的「[语音]」只是占位。不是语音的消息不会为此多问一次内核
 - `satori_action` 执行一个结构化动作并返回回执，同一轮对话根据结果继续判断
 - `satori_draw` 调用 `[oai]` 配置的图像模型生成图片并保存到 `ambient/media`，返回本地路径、改写的标题与剩余额度，随后用 `satori_action` 的 send + image 发出。绘图是独立的模型调用，不占平台写动作额度，受 `draw_budget` 限流
 - `satori_music` 调用 `[oai]` 配置的 Suno 接口写歌，一次出两个版本，音频与封面都落到 `ambient/media` 并返回本地路径、歌词、时长与花费，随后用 `satori_action` 的 send + audio（想带封面再加 image）发出。同样不占平台写动作额度，受 `music_budget` 限流
 - `satori_video` 调用 `[oai]` 配置的视频接口拍片，把出片落到 `ambient/media` 并返回本地路径与花费，随后用 `satori_action` 的 send + video 发出。受 `video_budget` 限流（默认 1），这是手边唯一按美元计的单项，关掉它就是 0
 
 这三个生成类工具都在本轮发言的时间预算里跑，等待上限取 `reply_timeout_seconds`（默认 240 秒）：写歌与默认的 veo 出片各约一两分钟，够用；换成更慢的视频模型（万相那一档要三分钟）时把它一起调大。`music_budget` / `video_budget` 为 0 时工具连白名单都进不去，提示词里也不会提它们。
-- `satori_history` 查 QQ 保存的本群历史，`satori_group` 查这个群的现有资料，`satori_profile` 查自己的资料与跟某个群友的关系，三者都只读，受 `lookup_budget` 限流
+- `satori_history` 查 QQ 保存的本群历史，`satori_group` 查这个群的现有资料，`satori_profile` 查资料与关系（`what` 选一种：`me` 自己那份、`relation` 跟某个群友的关系、`detail` 资料详情与等级、`vas` 会员与铭牌、`status` 在线状态与设备、`intimate` 亲密关系、`flags` 拉黑与置顶与免打扰这些开关；不给 `what` 时按有没有 `user_id` 走 `me` 或 `relation`），三者都只读，受 `lookup_budget` 限流。`lookup_budget` 每轮上限 12 次
 - `satori_memo` 写长期记忆：`people`（对某个群成员的一句印象，再写一次就是改写）、`notes`（这个群的一件旧事）、`forget_people` / `forget_notes`。不占发送额度，受 `memo_budget` 限流，关闭 `memory_enabled` 时不注册
 
 `satori_context` 除消息与额度外还带回 `register`（本群当前的语感）、`state`（当前的精神头）与 `remember`（记得的人与旧事），让使用工具的那一轮重新读上下文时看到的内容与开场一致。
@@ -215,7 +217,7 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 
 这两段都在 `Scene::own` 里，只有发言那一轮取用（`scene.brief()` 给判定侧看，不含它们）；`only_the_speaking_round_carries_his_own_words` 钉住这条界线。人设的示例对话已经搬进 `voice.md` 的实物样本，人设正文不再放长篇示例。
 
-同一条规则下有一样东西不能省：工具的名字。删掉某个工具唯一的一次出场，它还在白名单里，模型却再也想不起来用它，这种「工具静默失效」在日志里看不出来。`every_tool_that_is_switched_on_is_named_in_the_prompt` 按开关逐个检查。
+同一条规则下有一样东西不能省：工具的名字。删掉某个工具唯一的一次出场，它还在白名单里，模型却再也想不起来用它，这种「工具静默失效」在日志里看不出来。`every_chat_tool_that_is_switched_on_is_named_in_the_prompt` 按开关逐个检查。
 
 人设、现场说明（`house_rules`）、判定画像与两份 skill 都按同一条规则写：描述能力与倾向，而不是列禁令。理由有两条。效果上，一长串「不复述、不总结、不解释玩笑、不端着、不阴阳怪气、不刺人、不补刀」读下来，模型的注意力全在不要犯规上，剩不下多少给「这句话怎么接才有趣」；把同一件事写成正面的（「说清楚就停，留白比再补一句好看」），它就知道该往哪走。模型上，否定式指令本来就效果不好，「不要写小作文」里最显眼的词是「小作文」。所以现在的写法是给出材料与余地：本群的梗是现成的材料，可以顺手接住、换个用法，也可以自己起一个新的；手上那十来种接法是「手边的东西，不是轮着来的清单」，并明确写着「你也随时可以想出一种这里没写的接法」。
 
