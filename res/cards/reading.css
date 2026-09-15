@@ -1,11 +1,18 @@
-/* 640px 纸面：字号与行高按手机缩略图校准，内容自然撑高，不截断。 */
+/* 640px 纸面：字号与行高按手机缩略图校准，内容自然撑高，不截断。
+   排版约定：
+   - 正文与标题不等宽对齐，靠「字号 + 字重 + 颜色」拉开三档，不靠加粗堆叠；
+   - 行高按中文校准（正文 1.7 起），长段落不挤；
+   - 数字一律 tabular-nums，换行时列不会跳；
+   - 分割线只用一种（--line 的 1px），分隔靠留白与线，不靠背景块；
+   - 断行交给浏览器：标题 text-wrap:balance、正文 text-wrap:pretty。 */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   --paper: #fffefa; --canvas: #edf1ed; --ink: #253b37; --body: #40534f;
   --muted: #63736d; --line: #dce4dd; --accent: #236855; --soft: #edf5ef;
   color-scheme: light; background: var(--canvas); color: var(--ink);
   font-family: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 22px; line-height: 1.65; overflow-wrap: anywhere; word-break: normal;
+  font-size: 22px; line-height: 1.7; overflow-wrap: anywhere; word-break: normal;
+  font-kerning: normal; font-variant-numeric: tabular-nums;
   text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased;
 }
 body.control {
@@ -15,27 +22,34 @@ body.control {
 .shot { padding: 16px; }
 .card { padding: 28px; background: var(--paper); border: 1px solid var(--line);
   border-radius: 20px; box-shadow: 0 4px 12px #23332b08; }
-.eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+.eyebrow { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
   color: var(--muted); font-size: 13px; font-weight: 500; letter-spacing: .12em; margin-bottom: 24px; }
 .brand { color: var(--accent); font-size: 18px; font-weight: 700; letter-spacing: .16em; }
 .heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-h1 { font-size: 38px; font-weight: 700; line-height: 1.3; letter-spacing: -.025em; }
-.subtitle { margin-top: 12px; color: var(--muted); font-size: 19px; line-height: 1.7; white-space: pre-wrap; }
+h1 { font-size: 38px; font-weight: 700; line-height: 1.3; letter-spacing: -.025em;
+  text-wrap: balance; }
+.subtitle { margin-top: 12px; color: var(--muted); font-size: 19px; line-height: 1.72;
+  white-space: pre-wrap; text-wrap: pretty; }
 hr { border: 0; height: 1px; background: var(--line); margin: 24px 0 0; }
 .summary { display: flex; flex-wrap: wrap; gap: 10px 24px; margin-top: 20px; font-size: 18px; color: var(--muted); }
-.summary b { color: var(--accent); font-size: 22px; margin-left: 5px; font-variant-numeric: tabular-nums; }
+.summary b { color: var(--accent); font-size: 22px; margin-left: 5px;
+  font-variant-numeric: tabular-nums; }
 .section { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; margin: 28px 0 8px; }
-h2 { font-size: 24px; line-height: 1.5; font-weight: 700; }
+h2 { font-size: 24px; line-height: 1.5; font-weight: 700; letter-spacing: -.01em;
+  text-wrap: balance; }
 .section-en { font-size: 12px; color: var(--muted); letter-spacing: .06em; }
-.count { margin-left: auto; color: var(--muted); font-size: 17px; }
+/* 条数是元信息，不是标题的一部分：给一块浅底，扫一眼能找到，也不会与标题抢注意力。 */
+.count { margin-left: auto; padding: 2px 10px; border-radius: 999px; background: var(--soft);
+  color: var(--muted); font-size: 16px; line-height: 1.6; font-variant-numeric: tabular-nums; }
 .item { padding: 19px 0; border-bottom: 1px solid var(--line); }
 .item:last-child { border-bottom: 0; padding-bottom: 8px; }
 .item-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 h3 { font-size: 24px; font-weight: 600; line-height: 1.5; min-width: 0; }
 .key { font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace; font-size: 17px; color: var(--muted); line-height: 1.55; margin-top: 2px; }
-.description { margin-top: 9px; color: var(--body); font-size: 22px; line-height: 1.7; white-space: pre-wrap; }
-.badge { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; border-radius: 7px;
-  padding: 3px 9px; font-size: 16px; line-height: 1.6; font-weight: 500; letter-spacing: 0; white-space: nowrap; }
+.description { margin-top: 9px; color: var(--body); font-size: 22px; line-height: 1.72;
+  white-space: pre-wrap; text-wrap: pretty; }
+.badge { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; border-radius: 8px;
+  padding: 3px 10px; font-size: 16px; line-height: 1.6; font-weight: 500; letter-spacing: 0; white-space: nowrap; }
 .badge i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge.on { color: #286247; background: #eaf3eb; }
 .badge.off { color: #676c69; background: #edf0ed; }
@@ -44,26 +58,36 @@ h3 { font-size: 24px; font-weight: 600; line-height: 1.5; min-width: 0; }
 /* 总览的条目是「目录」：列窄、条数多，字号与间距各收一档，并排两列，
    整页高度约为单列的一半，一屏能扫完，不必逐条往下翻。
    用 grid 而不是 columns——同一行的分隔线对齐，也不会因列高不均留下空档。 */
-.items.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 44px; }
-.items.cols-2 .item { padding: 15px 0; }
-.items.cols-2 .item:last-child { padding-bottom: 6px; }
+.items.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* 分隔线两种都行，但不能「最后一条没有、倒数第二条有」——那是 item 级
+   `:last-child` 在网格里的老毛病（它只命中整个网格的最后一条，于是右列末条有线、
+   左列末条没线）。改成给每条加顶线、只让第一行的两条不画，任何条数都左右对称。 */
+.items.cols-2 .item { padding: 15px 22px 15px 0; border-top: 1px solid var(--line); border-bottom: 0; }
+.items.cols-2 .item:nth-child(-n+2) { padding-top: 3px; border-top: 0; }
+/* 右列自带一条竖线，两列之间有可见的界：眼睛横着扫不会串到隔壁去。 */
+.items.cols-2 .item:nth-child(even) { padding-left: 22px; padding-right: 0;
+  border-left: 1px solid var(--line); }
 .items.cols-2 .item-heading h3 { flex: 1; font-size: 23px; }
 /* 配置键贴着名字这一行的右端：它只是身份标注，单独占一行只会把目录拉长 */
 .items.cols-2 .item-heading .key { margin-top: 0; font-size: 16px; align-self: center; }
-.items.cols-2 .description { margin-top: 7px; font-size: 20px; line-height: 1.65; }
+.items.cols-2 .description { margin-top: 7px; font-size: 20px; line-height: 1.68; }
 .items.cols-2 .badge { padding: 2px 8px; font-size: 15px; }
 .commands { list-style: none; }
 .commands li { padding: 21px 0; border-bottom: 1px solid var(--line); }
 .commands li:last-child { border-bottom: 0; }
 code { font-family: "Noto Sans Mono", "DejaVu Sans Mono", "Noto Sans CJK SC", monospace;
   font-variant-ligatures: none; overflow-wrap: anywhere; word-break: normal; white-space: pre-wrap; }
+/* 指令是可以直接抄走去用的东西：浅底之外再补一道带主色的描边，
+   把「这一行能抄」和「这一段是说明」分开（说明段落只有左界的一条竖线）。 */
 .command { display: block; font-size: 22px; line-height: 1.7; color: var(--accent); font-weight: 600;
-  background: var(--soft); border-radius: 9px; padding: 10px 14px; }
+  background: var(--soft); border: 1px solid var(--line);
+  border-color: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-radius: 10px; padding: 10px 14px; }
 .aliases { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 18px; color: var(--muted); margin-top: 10px; }
 .aliases code { min-width: 0; color: var(--body); }
 .callout { margin-top: 24px; padding: 16px 18px; border-radius: 0 10px 10px 0;
   background: var(--soft); border-left: 3px solid var(--accent); color: var(--body);
-  font-size: 20px; line-height: 1.8; white-space: pre-wrap; }
+  font-size: 20px; line-height: 1.78; white-space: pre-wrap; text-wrap: pretty; }
 .callout.empty { border: 1px dashed var(--line); border-radius: 10px; padding: 24px 18px; background: transparent; }
 .status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 16px 0; border-bottom: 1px solid var(--line); }
@@ -71,8 +95,11 @@ code { font-family: "Noto Sans Mono", "DejaVu Sans Mono", "Noto Sans CJK SC", mo
 .identity { min-width: 0; flex: 1; }
 .states { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; max-width: 188px; }
 .tiles { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 22px; }
-.tiles>div { padding: 13px 10px; background: var(--soft); border-radius: 10px; text-align: center; }
-.tiles b { display: block; color: var(--accent); font-size: 30px; font-weight: 600; line-height: 1.4; font-variant-numeric: tabular-nums; }
+.tiles>div { padding: 13px 10px; background: var(--soft); border-radius: 10px; text-align: center;
+  border: 1px solid var(--line);
+  border-color: color-mix(in srgb, var(--accent) 10%, transparent); }
+.tiles b { display: block; color: var(--accent); font-size: 30px; font-weight: 600; line-height: 1.4;
+  font-variant-numeric: tabular-nums; }
 .tiles span { color: var(--muted); font-size: 18px; }
 .code-panel { margin-top: 24px; background: var(--soft); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
 .code-line { font-size: 21px; line-height: 1.85; min-height: 1.85em; }
@@ -81,4 +108,4 @@ footer { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 20px;
 .next { display: flex; flex-direction: column; gap: 7px; }
 .next span { font-size: 18px; color: var(--muted); }
 .next code { font-size: 21px; color: var(--accent); font-weight: 600; line-height: 1.65; }
-footer p { margin-top: 14px; font-size: 16px; line-height: 1.7; color: var(--muted); }
+footer p { margin-top: 14px; font-size: 16px; line-height: 1.7; color: var(--muted); text-wrap: pretty; }

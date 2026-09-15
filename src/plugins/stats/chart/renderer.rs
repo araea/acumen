@@ -27,8 +27,12 @@ pub fn draw_bar_chart(
     // === 1. 预计算与布局参数 (Scaling) ===
     let padding = 24 * s;
 
-    // 内部尺寸也随之放大
+    // 内部尺寸也随之放大。`row_height` 是条本身的高度，`row_pitch` 是相邻两行的
+    // 行距：之间留一道空档，条与条才分得开——紧挨着排会连成一整块三色板，
+    // 排行读起来反而费劲。
     let row_height = 50 * s;
+    let row_gap = 10 * s;
+    let row_pitch = row_height + row_gap;
     let font_size = 30 * s;
     let avatar_width = 50 * s;
     let gap_text = 10 * s;
@@ -71,7 +75,9 @@ pub fn draw_bar_chart(
 
     // 计算内容区域尺寸
     let content_width = avatar_width + max_possible_bar_width + gap_text + max_count_text_width;
-    let content_height = data.len() as u32 * row_height + top_area_height;
+    // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
+    let content_height =
+        data.len() as u32 * row_pitch - row_gap + top_area_height;
 
     // 计算画布尺寸 (增加四周边距)
     let canvas_width = content_width + padding * 2;
@@ -107,10 +113,32 @@ pub fn draw_bar_chart(
         )
         .map_err(|e| e.to_string())?;
 
+        // 刻度竖线。必须画在条之前：条是实心的，画在后面会有一条条灰线压在
+        // 进度条上，看上去像被划了几刀。落在浅色底上时才露出来，正好当刻度用。
+        let vertical_line_color = RGBAColor(0, 0, 0, 0.12);
+        let line_width = 3 * s as i32;
+        let content_end_y = top_area_height as i32
+            + (data.len() as u32 * row_pitch - row_gap) as i32;
+        let mut line_x = padding as i32 + (200 * s as i32);
+        for _ in 0..8 {
+            if line_x >= (canvas_width - padding) as i32 {
+                break;
+            }
+            root.draw(&Rectangle::new(
+                [
+                    (line_x, top_area_height as i32),
+                    (line_x + line_width, content_end_y),
+                ],
+                vertical_line_color.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+            line_x += 100 * s as i32;
+        }
+
         // 绘制每一行
         for (i, item) in data.iter().enumerate() {
             // Y坐标向下偏移 top_area_height
-            let y = top_area_height as i32 + (i as u32 * row_height) as i32;
+            let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
             // X坐标向右偏移 padding + avatar_width
             let start_x = padding as i32 + avatar_width as i32;
 
@@ -194,28 +222,6 @@ pub fn draw_bar_chart(
             .map_err(|e| e.to_string())?;
         }
 
-        // 6. 绘制竖线装饰
-        let vertical_line_color = RGBAColor(0, 0, 0, 0.12);
-        let first_line_x = padding as i32 + (200 * s as i32);
-        let line_width = 3 * s as i32;
-        let mut line_x = first_line_x;
-        let content_end_y = top_area_height as i32 + (data.len() as u32 * row_height) as i32;
-
-        for _ in 0..8 {
-            if line_x >= (canvas_width - padding) as i32 {
-                break;
-            }
-            root.draw(&Rectangle::new(
-                [
-                    (line_x, top_area_height as i32),
-                    (line_x + line_width, content_end_y),
-                ],
-                vertical_line_color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
-            line_x += 100 * s as i32;
-        }
-
         // 7. 绘制图标徽章 (消息类型等无头像条目：主题色圆底 + 类型字符)
         for (i, item) in data.iter().enumerate() {
             if item.avatar_img.is_some() {
@@ -225,7 +231,7 @@ pub fn draw_bar_chart(
                 continue;
             };
 
-            let y = top_area_height as i32 + (i as u32 * row_height) as i32;
+            let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
             let cx = padding as i32 + (avatar_width / 2) as i32;
             let cy = y + (row_height / 2) as i32;
             let radius = (avatar_width as f32 * 0.46) as i32;
@@ -263,7 +269,7 @@ pub fn draw_bar_chart(
     // 叠加头像 (注意边距偏移)
     for (i, item) in data.iter().enumerate() {
         if let Some(avatar) = &item.avatar_img {
-            let y_pos = top_area_height as i32 + (i as u32 * row_height) as i32;
+            let y_pos = top_area_height as i32 + (i as u32 * row_pitch) as i32;
             let x_pos = padding as i32;
             overlay_image(&mut rgba_image, avatar, x_pos, y_pos);
         }
