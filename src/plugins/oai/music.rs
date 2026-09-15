@@ -36,6 +36,8 @@ const TASK_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const MAX_CLIPS: usize = 2;
 /// 回复里最多带几行歌词当引子。
 const LYRICS_LINES: usize = 4;
+/// 风格那一行最多留几个字。
+const STYLE_MAX_CHARS: usize = 60;
 
 /// 音频怎么发进群。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +56,25 @@ impl SendMode {
             "voice" | "语音" => Self::Voice,
             "file" | "文件" | "群文件" => Self::File,
             _ => Self::Both,
+        }
+    }
+
+    /// 提示词里的开关。`None` 表示这句话没说怎么发，照 `[oai] music_send` 走。
+    fn flag(token: &str) -> Option<Self> {
+        match token.to_ascii_lowercase().as_str() {
+            "--语音" | "--voice" => Some(Self::Voice),
+            "--文件" | "--群文件" | "--file" => Some(Self::File),
+            "--都发" | "--both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    /// 卡片上标一句这一单是怎么发的，换个发法不用去猜配置里写的是什么。
+    fn label(self) -> &'static str {
+        match self {
+            Self::File => "群文件",
+            Self::Voice => "语音",
+            Self::Both => "群文件 + 语音",
         }
     }
 
@@ -97,11 +118,13 @@ pub(crate) struct Options {
     /// 留空表示用 [`DEFAULT_VERSION`]（房间那边会用 `[oai] music_version` 先兜一层）。
     pub(crate) version: String,
     pub(crate) instrumental: bool,
+    /// 这一句自己指定的发法（`--语音` / `--文件` / `--都发`），没写就照配置走。
+    pub(crate) send: Option<SendMode>,
 }
 
 impl Options {
-    /// 从提示词里剥离 `--标题/--title`、`--风格/--tags`、`--版本/--mv` 与
-    /// `--纯音乐/--instrumental`。参数缺值时原样留在正文里，避免把用户想写的东西
+    /// 从提示词里剥离 `--标题/--title`、`--风格/--tags`、`--版本/--mv`、`--纯音乐/--instrumental`
+    /// 与 `--语音/--文件/--都发`。参数缺值时原样留在正文里，避免把用户想写的东西
     /// 悄悄吃掉。
     pub(crate) fn parse(input: &str) -> Self {
         let mut words: Vec<&str> = Vec::new();
@@ -133,7 +156,10 @@ impl Options {
                     None => words.push(token),
                 },
                 "--纯音乐" | "--instrumental" | "--instrument" => options.instrumental = true,
-                _ => words.push(token),
+                _ => match SendMode::flag(token) {
+                    Some(mode) => options.send = Some(mode),
+                    None => words.push(token),
+                },
             }
         }
 
@@ -186,37 +212,11 @@ pub(super) async fn generate_reply(
     }
     let generated = generate(api_base, api_key, &options, config.media_timeout()).await?;
 
-    let title = generated
-        .clips
-        .iter()
-        .map(|clip| clip.title.trim())
-        .find(|title| !title.is_empty())
-        .unwrap_or("生成完成")
-        .to_string();
-    let durations: Vec<String> = generated
-        .clips
-        .iter()
-        .map(|clip| mmss(clip.duration))
-        .collect();
+    // 这一句带 `--语音` / `--文件` 就听它的，没带才照 `[oai] music_send` 走。
+    let send = options.send.unwrap_or_else(|| config.music_send());
 
-    let mut text = format!("🎵 **{title}** · {}", durations.join(" / "));
-    // 新版 Suno 回的 tags 是一整段风格描述，整段贴进群太长，截一行够看就行。
-    let tags = super::utils::truncate_str(generated.tags.trim(), 80);
-    if !tags.is_empty() {
-        text.push('\n');
-        text.push_str(&tags);
-    }
-    if !generated.version.trim().is_empty() {
-        text.push_str(&format!(" · Suno {}", generated.version.trim()));
-    }
-    if generated.cost > 0.0 {
-        text.push_str(&format!(" · ${:.2}", generated.cost));
-    }
-    let lyrics = lyrics_excerpt(&generated.lyrics);
-    if !lyrics.is_empty() {
-        text.push_str("\n\n");
-        text.push_str(&lyrics);
-    }
+    let title = title_of(&generated);
+    let text = summary(&generated, &title, send, options.send.is_some());
 
     Ok(Reply {
         text,
@@ -225,19 +225,78 @@ pub(super) async fn generate_reply(
         trace_overflow: 0,
         model: Some(agent.model.clone()),
         plain: true,
-        media: media_messages(&generated.clips, &title, config.music_send()),
+        media: media_messages(&generated.clips, &title, send),
     })
 }
 
+/// 卡片上写哪个歌名：Suno 两个版本一般共用同一个标题，取第一个非空的。
+fn title_of(generated: &Generated) -> String {
+    generated
+        .clips
+        .iter()
+        .map(|clip| clip.title.trim())
+        .find(|title| !title.is_empty())
+        .unwrap_or("生成完成")
+        .to_string()
+}
+
+/// 正文。这一轮是纯文本（不渲染卡片），所以一个 markdown 记号都不能用——`**` 会原样
+/// 出现在群里。一行一件事：第一行歌名，第二行两个版本各自的时长与这一单的账，第三行
+/// 风格，然后隔一行点明这是歌词。`show_send` 只在用户自己写了发法时打开。
+fn summary(generated: &Generated, title: &str, send: SendMode, show_send: bool) -> String {
+    let durations: Vec<String> = generated
+        .clips
+        .iter()
+        .map(|clip| mmss(clip.duration))
+        .collect();
+    let mut text = format!("🎵 {title}");
+    let mut meta = if generated.clips.len() > 1 {
+        format!("两个版本：{}", durations.join(" / "))
+    } else {
+        durations.join(" / ")
+    };
+    if !generated.version.trim().is_empty() {
+        meta.push_str(&format!(" · Suno {}", generated.version.trim()));
+    }
+    if generated.cost > 0.0 {
+        meta.push_str(&format!(" · ${:.2}", generated.cost));
+    }
+    // 照配置走是常态，不必每张卡片都念一遍发法。
+    if show_send {
+        meta.push_str(&format!(" · {}", send.label()));
+    }
+    text.push('\n');
+    text.push_str(&meta);
+    let style = style_line(&generated.tags);
+    if !style.is_empty() {
+        text.push_str("\n风格：");
+        text.push_str(&style);
+    }
+    let lyrics = lyrics_excerpt(&generated.lyrics);
+    if !lyrics.is_empty() {
+        text.push_str("\n\n歌词\n");
+        text.push_str(&lyrics);
+    }
+    text
+}
+
 /// 每个版本一条消息：封面 + 音频。`both` 模式再为每一版补一条语音气泡。
+///
+/// 两个版本的文件名带上序号——Suno 给同一单两首曲子的是同一个标题，照原样发出去
+/// 群里会出现两个同名文件，谁是谁分不出来。
 fn media_messages(clips: &[Clip], title: &str, mode: SendMode) -> Vec<MediaMessage> {
-    let name = format!("{}.mp3", safe_name(title));
+    let base = safe_name(title);
     let mut messages = Vec::new();
-    for clip in clips {
+    for (index, clip) in clips.iter().enumerate() {
         let audio = clip.audio_url.trim();
         if audio.is_empty() {
             continue;
         }
+        let name = if clips.len() > 1 {
+            format!("{} {}.mp3", base, index + 1)
+        } else {
+            format!("{base}.mp3")
+        };
         let mut segments = Vec::new();
         if !clip.image_url.trim().is_empty() {
             segments.push(Media::Image {
@@ -265,6 +324,21 @@ fn media_messages(clips: &[Clip], title: &str, mode: SendMode) -> Vec<MediaMessa
         }
     }
     messages
+}
+
+/// 风格那一行。Suno 回的 tags 是一整段风格描述（v6 起尤其长），整段贴进群没人读；
+/// 截到 [`STYLE_MAX_CHARS`] 内最后一个逗号或分号为止，让句子断在能读懂的地方——
+/// 从前是硬截到 80 字再挂个省略号，常断在半个词上。
+fn style_line(tags: &str) -> String {
+    let tags = tags.trim();
+    if tags.chars().count() <= STYLE_MAX_CHARS {
+        return tags.to_string();
+    }
+    let head: String = tags.chars().take(STYLE_MAX_CHARS).collect();
+    match head.rfind(|c| matches!(c, ',' | ';' | '，' | '；' | '/')) {
+        Some(at) if !head[..at].trim().is_empty() => head[..at].trim_end().to_string(),
+        _ => head.trim_end().to_string(),
+    }
 }
 
 /// 歌词引子：最多几行，末尾空行与段落标记丢掉，让回复读起来像人写的摘要。
@@ -580,6 +654,33 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_send_flag_out_of_the_prompt() {
+        let voice = Options::parse("唱一首秋天的民谣 --语音");
+        assert_eq!(voice.prompt, "唱一首秋天的民谣");
+        assert_eq!(voice.send, Some(SendMode::Voice));
+
+        let file = Options::parse("唱一首秋天的民谣 --文件");
+        assert_eq!(file.prompt, "唱一首秋天的民谣");
+        assert_eq!(file.send, Some(SendMode::File));
+
+        assert_eq!(
+            Options::parse("秋天的民谣 --both").send,
+            Some(SendMode::Both)
+        );
+        // 没写就不替用户决定，留给 `[oai] music_send`。
+        assert_eq!(Options::parse("唱一首秋天的民谣").send, None);
+        // 别把 `--语音` 当歌词或描述留下来。
+        assert_eq!(Options::parse("--语音 秋天的民谣").prompt, "秋天的民谣");
+    }
+
+    #[test]
+    fn send_modes_are_labelled_on_the_card() {
+        assert_eq!(SendMode::File.label(), "群文件");
+        assert_eq!(SendMode::Voice.label(), "语音");
+        assert_eq!(SendMode::Both.label(), "群文件 + 语音");
+    }
+
+    #[test]
     fn recognizes_written_lyrics() {
         assert!(looks_like_lyrics("[Verse 1]\nSun on the table"));
         assert!(looks_like_lyrics("[副歌]\n啦啦啦"));
@@ -625,7 +726,12 @@ mod tests {
         assert!(matches!(messages[0].segments[0], Media::Image { .. }));
         assert!(matches!(
             &messages[0].segments[1],
-            Media::File { name, .. } if name == "落叶.mp3"
+            Media::File { name, .. } if name == "落叶 1.mp3"
+        ));
+        // 两版各带序号，群里不会出现两个同名文件。
+        assert!(matches!(
+            &messages[1].segments[1],
+            Media::File { name, .. } if name == "落叶 2.mp3"
         ));
         // both：每版再补一条语音。
         assert_eq!(media_messages(&clips, "落叶", SendMode::Both).len(), 4);
@@ -636,6 +742,36 @@ mod tests {
     }
 
     #[test]
+    fn a_single_clip_keeps_a_plain_file_name() {
+        let clips = vec![Clip {
+            audio_url: "https://a/1.mp3".into(),
+            title: "落叶".into(),
+            duration: 143.2,
+            ..Default::default()
+        }];
+        let messages = media_messages(&clips, "落叶", SendMode::File);
+        assert!(matches!(
+            &messages[0].segments[0],
+            Media::File { name, .. } if name == "落叶.mp3"
+        ));
+    }
+
+    #[test]
+    fn cuts_the_style_line_at_a_clause_not_a_word() {
+        // 短的开头原样留着。
+        assert_eq!(style_line("folk, acoustic"), "folk, acoustic");
+        assert_eq!(style_line("   "), "");
+        // 长的断在最后一个逗号上，不带省略号，也不断在半个词里。
+        let long = "Future bass / kawaii J-pop with a bouncy 140 BPM half-step feel, \
+                    glittery synths, sweet music box, sparkling effects";
+        let cut = style_line(long);
+        assert!(cut.chars().count() <= STYLE_MAX_CHARS);
+        assert!(cut.starts_with("Future bass"));
+        assert!(!cut.ends_with(','));
+        assert!(!cut.contains("glittery"));
+    }
+
+    #[test]
     fn formats_durations_and_lyrics_as_a_short_lead_in() {
         assert_eq!(mmss(143.2), "2:23");
         assert_eq!(mmss(0.0), "0:00");
@@ -643,6 +779,42 @@ mod tests {
             lyrics_excerpt("[Verse 1]\nSun on the table\n\nSteam in my mug\n[Chorus]"),
             "Sun on the table\nSteam in my mug"
         );
+    }
+
+    #[test]
+    fn lays_the_summary_out_one_thing_per_line() {
+        let generated = Generated {
+            lyrics: "[Verse]\nSun on the table\nSteam in my mug".into(),
+            tags: "folk, acoustic, close-mic vocal".into(),
+            version: "v6".into(),
+            cost: 0.5,
+            clips: vec![
+                Clip {
+                    title: "落叶".into(),
+                    duration: 191.0,
+                    ..Default::default()
+                },
+                Clip {
+                    title: "落叶".into(),
+                    duration: 176.0,
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_eq!(title_of(&generated), "落叶");
+        // 照配置走时不提发法：卡片上只有歌名、时长、账与风格。
+        assert_eq!(
+            summary(&generated, "落叶", SendMode::File, false),
+            "🎵 落叶\n两个版本：3:11 / 2:56 · Suno v6 · $0.50\n风格：folk, acoustic, \
+             close-mic vocal\n\n歌词\nSun on the table\nSteam in my mug"
+        );
+        // 自己指定了发法就标出来，省得回头猜这一单是怎么发的。
+        assert!(
+            summary(&generated, "落叶", SendMode::Voice, true)
+                .contains("· Suno v6 · $0.50 · 语音\n")
+        );
+        // 正文是纯文本，一个 markdown 记号都不能有。
+        assert!(!summary(&generated, "落叶", SendMode::File, false).contains("**"));
     }
 
     #[test]

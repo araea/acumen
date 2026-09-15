@@ -619,8 +619,11 @@ async fn chat(
 
             // 音乐、视频这类成品由插件附在正文外，按段发出去。一条媒体消息里的片段
             // 一起发：失败只影响这一条，已经发出去的封面/文件不受牵连。
+            //
+            // 这里**不带引用**：正文卡片已经把用户那句话引住了，成品再各引一次只是
+            // 把一单拆成四条带引用的气泡；语音气泡尤其不该跟引用绑在一起。
             for message in reply_data.media {
-                let mut msg = Message::new().reply(event.message_id());
+                let mut msg = Message::new();
                 for segment in message.segments {
                     msg = match segment {
                         Media::Image { url } => msg.image(url),

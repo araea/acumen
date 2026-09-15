@@ -128,7 +128,7 @@ impl Default for OaiConfig {
                 .map(|keyword| (*keyword).to_string())
                 .collect(),
             music_version: music::DEFAULT_VERSION.to_string(),
-            music_send: "both".to_string(),
+            music_send: "file".to_string(),
             video_models: video::DEFAULT_VIDEO_MODELS
                 .iter()
                 .map(|keyword| (*keyword).to_string())

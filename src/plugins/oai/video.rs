@@ -207,9 +207,13 @@ pub(super) async fn generate_reply(
         .seconds
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(seconds);
-    let mut text = format!("🎬 **{caption}** · {}秒", shown_seconds.trim());
-    text.push('\n');
-    text.push_str(generated.model.trim());
+    // 正文是纯文本（不渲染卡片），所以这里一个 markdown 记号都不能用——`**` 会原样
+    // 出现在群里。第一行是用户自己那句话，第二行是时长、模型与这一单的账。
+    let mut text = format!("🎬 {caption}");
+    text.push_str(&format!("\n时长：{} 秒", shown_seconds.trim()));
+    if !generated.model.trim().is_empty() {
+        text.push_str(&format!(" · {}", generated.model.trim()));
+    }
     if generated.cost > 0.0 {
         text.push_str(&format!(" · ${:.2}", generated.cost));
     }

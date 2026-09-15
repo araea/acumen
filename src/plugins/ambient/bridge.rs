@@ -691,6 +691,9 @@ impl Session {
                     tags: request["tags"].as_str().unwrap_or("").trim().to_string(),
                     version: oai.music_version(),
                     instrumental: request["instrumental"].as_bool().unwrap_or(false),
+                    // 发法由人格自己挑（成品存到本地后走 satori_action 的 audio / file），
+                    // 这里那一栏是房间路径的提示词开关，搭话用不上。
+                    send: None,
                 };
                 // 写歌和绘图一样是模型调用，不占 writes/messages 额度；一次出两个版本，
                 // 两个都留，让模型自己挑一首发、或者两首都发。
