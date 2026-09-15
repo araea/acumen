@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use super::data_loader::{BarData, SeriesData};
 use super::utils::{
-    ColorScheme, draw_rounded_rect, format_percent, format_thousands, get_contrast_color,
-    get_font, get_font_family, get_font_with_color, mix_with_white, overlay_image,
-    save_rgba_to_base64, truncate_text_to_fit,
+    ColorScheme, draw_rounded_rect, format_percent, format_thousands, get_font, get_font_family,
+    get_font_with_color, mix_with_white, overlay_image, save_rgba_to_base64, truncate_text_to_fit,
 };
 use crate::plugins::stats::StatsConfig;
 use chrono::Local;
@@ -12,270 +11,148 @@ use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
-/// 绘制水平条形图 (排行榜)
+/// 发言排行：姓名、数值与占比分列，细条只表达比例，避免短条挤掉昵称。
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
     data: Vec<BarData>,
 ) -> Result<String, String> {
     if data.is_empty() {
-        return Err("暂无数据".to_string());
+        return Err("暂无数据".into());
     }
-
-    let s = 2u32; // Scale factor
-
-    // === 1. 预计算与布局参数 (Scaling) ===
-    let padding = 24 * s;
-
-    // 内部尺寸也随之放大。`row_height` 是条本身的高度，`row_pitch` 是相邻两行的
-    // 行距：之间留一道空档，条与条才分得开——紧挨着排会连成一整块三色板，
-    // 排行读起来反而费劲。
-    let row_height = 50 * s;
-    let row_gap = 10 * s;
-    let row_pitch = row_height + row_gap;
-    let font_size = 30 * s;
-    let avatar_width = 50 * s;
-    let gap_text = 10 * s;
-
-    // 标题区域
-    let title_font_size = 32 * s;
-    let header_font_size = 20 * s;
-
-    let header_margin = 10 * s;
-    let title_margin = 15 * s; // 标题和列表的间距
-    let top_area_height =
-        padding + header_font_size + header_margin + title_font_size + title_margin;
-
-    let base_bar_min_width = 150.0 * (s as f64);
-    let base_bar_scale_width = 700.0 * (s as f64);
-    let max_possible_bar_width = (base_bar_min_width + base_bar_scale_width) as u32;
-
-    let max_val = data.iter().map(|d| d.value).max().unwrap_or(1).max(1);
-    let total_val: i64 = data.iter().map(|d| d.value).sum();
-
-    let font_family = get_font_family(config);
-    let font_obj = (font_family, font_size).into_font();
-    let pct_font_size = 20 * s;
-    let pct_font_obj = (font_family, pct_font_size).into_font();
-
-    // 每行都展示 "数值 + 百分比"，百分比用更小的灰色字体，提升可读性
-    let mut formatted_counts: Vec<(String, String)> = Vec::new();
-    let mut max_count_text_width = 0u32;
-
-    for item in data.iter() {
-        let value_text = format_thousands(item.value);
-        let pct_text = format_percent(item.value, total_val);
-
-        let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
-        let (pw, _) = pct_font_obj.box_size(&pct_text).unwrap_or((0, 0));
-        let total_w = vw + (8 * s) + pw;
-        max_count_text_width = max_count_text_width.max(total_w);
-        formatted_counts.push((value_text, pct_text));
+    let scale = 2u32;
+    let width = 760 * scale;
+    let padding = 32 * scale;
+    let top = 134 * scale;
+    let pitch = 84 * scale;
+    let height = top + data.len() as u32 * pitch + padding;
+    if u64::from(width) * u64::from(height) > 32_000_000 {
+        return Err("排行榜条目过多".into());
     }
-
-    // 计算内容区域尺寸
-    let content_width = avatar_width + max_possible_bar_width + gap_text + max_count_text_width;
-    // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
-    let content_height =
-        data.len() as u32 * row_pitch - row_gap + top_area_height;
-
-    // 计算画布尺寸 (增加四周边距)
-    let canvas_width = content_width + padding * 2;
-    let canvas_height = content_height + padding; // 底部留白
-
-    // === 2. 绘图 ===
-    let mut buffer = vec![0u8; (canvas_width * canvas_height * 3) as usize];
+    let total: i64 = data.iter().map(|d| d.value.max(0)).sum();
+    let max = data.iter().map(|d| d.value).max().unwrap_or(1).max(1);
+    let ink = RGBColor(37, 59, 55);
+    let muted = RGBColor(99, 115, 109);
+    let paper = RGBColor(255, 254, 250);
+    let track = RGBColor(232, 238, 232);
+    let name_font = (get_font_family(config), 25 * scale).into_font();
+    let mut buffer = vec![0u8; (width * height * 3) as usize];
     {
-        let root = BitMapBackend::with_buffer(&mut buffer, (canvas_width, canvas_height))
-            .into_drawing_area();
-
-        root.fill(&RGBColor(255, 255, 255))
+        let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
+        root.fill(&paper).map_err(|e| e.to_string())?;
+        let left = padding as i32;
+        let right = (width - padding) as i32;
+        let header = get_font_with_color(config, 16 * scale, &muted);
+        root.draw_text("AYJX  /  群聊统计", &header, (left, 28 * scale as i32))
             .map_err(|e| e.to_string())?;
-
-        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let header_style = get_font(config, header_font_size)
-            .pos(Pos::new(HPos::Center, VPos::Top))
-            .color(&RGBColor(100, 116, 139));
         root.draw_text(
-            &now_str,
-            &header_style,
-            (canvas_width as i32 / 2, padding as i32),
+            &Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            &header.pos(Pos::new(HPos::Right, VPos::Top)),
+            (right, 28 * scale as i32),
         )
         .map_err(|e| e.to_string())?;
-
-        // 绘制标题 (Header 下方)
-        let title_y = padding + header_font_size + header_margin;
-        let title_style = get_font(config, title_font_size).pos(Pos::new(HPos::Center, VPos::Top));
+        let heading = get_font_with_color(config, 30 * scale, &ink);
+        let title_font = (get_font_family(config), 30 * scale).into_font();
         root.draw_text(
-            title,
-            &title_style,
-            (canvas_width as i32 / 2, title_y as i32),
+            &truncate_text_to_fit(&title_font, title, width - 2 * padding),
+            &heading,
+            (left, 66 * scale as i32),
         )
         .map_err(|e| e.to_string())?;
-
-        // 刻度竖线。必须画在条之前：条是实心的，画在后面会有一条条灰线压在
-        // 进度条上，看上去像被划了几刀。落在浅色底上时才露出来，正好当刻度用。
-        let vertical_line_color = RGBAColor(0, 0, 0, 0.12);
-        let line_width = 3 * s as i32;
-        let content_end_y = top_area_height as i32
-            + (data.len() as u32 * row_pitch - row_gap) as i32;
-        let mut line_x = padding as i32 + (200 * s as i32);
-        for _ in 0..8 {
-            if line_x >= (canvas_width - padding) as i32 {
-                break;
-            }
-            root.draw(&Rectangle::new(
-                [
-                    (line_x, top_area_height as i32),
-                    (line_x + line_width, content_end_y),
-                ],
-                vertical_line_color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
-            line_x += 100 * s as i32;
-        }
-
-        // 绘制每一行
         for (i, item) in data.iter().enumerate() {
-            // Y坐标向下偏移 top_area_height
-            let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
-            // X坐标向右偏移 padding + avatar_width
-            let start_x = padding as i32 + avatar_width as i32;
-
-            // 1. 计算当前条的实际宽度
-            let ratio = item.value as f64 / max_val as f64;
-            let current_bar_width =
-                (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
-
-            let theme_color = item.theme_color;
-            let faded_color = mix_with_white(theme_color, 0.5);
-
-            // 2. 绘制背景条 (Faded)
-            let remaining_start_x = start_x + current_bar_width;
-            let faded_bar_end_x = (padding + avatar_width + max_possible_bar_width) as i32;
-
-            if remaining_start_x < faded_bar_end_x {
-                root.draw(&Rectangle::new(
-                    [
-                        (remaining_start_x, y),
-                        (faded_bar_end_x, y + row_height as i32),
-                    ],
-                    faded_color.filled(),
+            let y = (top + i as u32 * pitch) as i32;
+            let label_x = left + 110 * scale as i32;
+            let value_x = right - 92 * scale as i32;
+            let baseline = y + 20 * scale as i32;
+            let number = get_font_with_color(config, 18 * scale, &muted)
+                .pos(Pos::new(HPos::Left, VPos::Center));
+            root.draw_text(&format!("{:02}", i + 1), &number, (left, baseline))
+                .map_err(|e| e.to_string())?;
+            let avatar_x = left + 40 * scale as i32;
+            if item.avatar_img.is_none() {
+                root.draw(&Circle::new(
+                    (avatar_x + 25 * scale as i32, y + 25 * scale as i32),
+                    24 * scale as i32,
+                    track.filled(),
                 ))
                 .map_err(|e| e.to_string())?;
-            }
-
-            // 3. 绘制进度条 (Solid)
-            root.draw(&Rectangle::new(
-                [
-                    (start_x, y),
-                    (start_x + current_bar_width, y + row_height as i32),
-                ],
-                theme_color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
-
-            // 4. 绘制昵称 (Bar 内部左侧)
-            let name_color = get_contrast_color(theme_color);
-            let name_style = get_font_with_color(config, font_size, &name_color)
-                .pos(Pos::new(HPos::Left, VPos::Center));
-
-            // 稍微留白
-            let max_name_width = if current_bar_width > (20 * s as i32) {
-                (current_bar_width - (20 * s as i32)) as u32
-            } else {
-                0
-            };
-
-            let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
-
-            if !display_name.is_empty() {
+                let initial = item
+                    .icon_char
+                    .clone()
+                    .unwrap_or_else(|| item.label.chars().take(1).collect());
                 root.draw_text(
-                    &display_name,
-                    &name_style,
-                    (
-                        start_x + (10 * s as i32),
-                        y + (row_height / 2) as i32 + (2 * s as i32),
-                    ),
+                    &initial,
+                    &get_font_with_color(config, 22 * scale, &ink)
+                        .pos(Pos::new(HPos::Center, VPos::Center)),
+                    (avatar_x + 25 * scale as i32, y + 25 * scale as i32),
                 )
                 .map_err(|e| e.to_string())?;
             }
-
-            // 5. 绘制数值 (Bar 外部右侧，黑色) + 百分比 (灰色小字号)
-            let (value_text, pct_text) = &formatted_counts[i];
-            let count_x = start_x + current_bar_width + (10 * s as i32);
-            let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
-
-            let count_style = get_font_with_color(config, font_size, &BLACK)
-                .pos(Pos::new(HPos::Left, VPos::Center));
-            root.draw_text(value_text, &count_style, (count_x, text_mid_y))
-                .map_err(|e| e.to_string())?;
-
-            let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
-            let pct_style = get_font_with_color(config, pct_font_size, &RGBColor(100, 116, 139))
-                .pos(Pos::new(HPos::Left, VPos::Center));
+            let name = truncate_text_to_fit(
+                &name_font,
+                &item.label,
+                (value_x - label_x - 130 * scale as i32).max(0) as u32,
+            );
             root.draw_text(
-                pct_text,
-                &pct_style,
-                (count_x + vw as i32 + (8 * s as i32), text_mid_y),
+                &name,
+                &get_font_with_color(config, 25 * scale, &ink)
+                    .pos(Pos::new(HPos::Left, VPos::Center)),
+                (label_x, baseline),
             )
             .map_err(|e| e.to_string())?;
-        }
-
-        // 7. 绘制图标徽章 (消息类型等无头像条目：主题色圆底 + 类型字符)
-        for (i, item) in data.iter().enumerate() {
-            if item.avatar_img.is_some() {
-                continue;
+            root.draw_text(
+                &format_thousands(item.value),
+                &get_font_with_color(config, 26 * scale, &ink)
+                    .pos(Pos::new(HPos::Right, VPos::Center)),
+                (value_x, baseline),
+            )
+            .map_err(|e| e.to_string())?;
+            root.draw_text(
+                &format_percent(item.value, total),
+                &get_font_with_color(config, 18 * scale, &muted)
+                    .pos(Pos::new(HPos::Right, VPos::Center)),
+                (right, baseline),
+            )
+            .map_err(|e| e.to_string())?;
+            let bar_y = y + 48 * scale as i32;
+            draw_rounded_rect(
+                &root,
+                label_x,
+                bar_y,
+                right,
+                bar_y + 6 * scale as i32,
+                3 * scale as i32,
+                track,
+            )?;
+            let end = label_x
+                + ((right - label_x) as f64 * item.value.max(0) as f64 / max as f64).round() as i32;
+            if end > label_x {
+                draw_rounded_rect(
+                    &root,
+                    label_x,
+                    bar_y,
+                    end,
+                    bar_y + 6 * scale as i32,
+                    3 * scale as i32,
+                    item.theme_color,
+                )?;
             }
-            let Some(icon_char) = item.icon_char.as_deref() else {
-                continue;
-            };
-
-            let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
-            let cx = padding as i32 + (avatar_width / 2) as i32;
-            let cy = y + (row_height / 2) as i32;
-            let radius = (avatar_width as f32 * 0.46) as i32;
-
-            // 外圈淡色光晕 + 主题色圆底
-            let halo_color = mix_with_white(item.theme_color, 0.35);
-            root.draw(&Circle::new((cx, cy), radius + (3 * s as i32), halo_color.filled()))
-                .map_err(|e| e.to_string())?;
-            root.draw(&Circle::new((cx, cy), radius, item.theme_color.filled()))
-                .map_err(|e| e.to_string())?;
-
-            // 圆内字符 (自动根据底色选择黑/白)
-            let icon_color = get_contrast_color(item.theme_color);
-            let icon_style = get_font_with_color(config, 24 * s, &icon_color)
-                .pos(Pos::new(HPos::Center, VPos::Center));
-            root.draw_text(icon_char, &icon_style, (cx, cy + (2 * s as i32)))
-                .map_err(|e| e.to_string())?;
         }
-
         root.present().map_err(|e| e.to_string())?;
     }
-
-    // === 3. 转换并叠加头像 ===
-    let mut rgba_image = RgbaImage::new(canvas_width, canvas_height);
-    for y in 0..canvas_height {
-        for x in 0..canvas_width {
-            let idx = ((y * canvas_width + x) * 3) as usize;
-            let r = buffer[idx];
-            let g = buffer[idx + 1];
-            let b = buffer[idx + 2];
-            rgba_image.put_pixel(x, y, Rgba([r, g, b, 255]));
-        }
-    }
-
-    // 叠加头像 (注意边距偏移)
+    let rgb = image::RgbImage::from_raw(width, height, buffer).ok_or("图表尺寸异常")?;
+    let mut canvas = image::DynamicImage::ImageRgb8(rgb).into_rgba8();
     for (i, item) in data.iter().enumerate() {
         if let Some(avatar) = &item.avatar_img {
-            let y_pos = top_area_height as i32 + (i as u32 * row_pitch) as i32;
-            let x_pos = padding as i32;
-            overlay_image(&mut rgba_image, avatar, x_pos, y_pos);
+            overlay_image(
+                &mut canvas,
+                avatar,
+                (padding + 40 * scale) as i32,
+                (top + i as u32 * pitch) as i32,
+            );
         }
     }
-
-    save_rgba_to_base64(rgba_image)
+    save_rgba_to_base64(canvas)
 }
 
 /// 消息类型排行榜：标题区 + 构成条 + 竖排信息卡。
@@ -297,14 +174,14 @@ pub fn draw_message_type_ranking(
     }
 
     let s = 2u32;
-    let page_bg = RGBColor(248, 250, 252);
+    let page_bg = RGBColor(242, 245, 241);
     let card_face = RGBColor(255, 255, 255);
     let card_border = RGBColor(226, 232, 240);
-    let card_shadow = RGBColor(228, 233, 240);
+    let card_shadow = RGBColor(235, 239, 233);
     let track_bg = RGBColor(237, 241, 246);
     let text_primary = RGBColor(15, 23, 42);
     let text_secondary = RGBColor(100, 116, 139);
-    let text_muted = RGBColor(148, 163, 184);
+    let text_muted = RGBColor(103, 118, 112);
 
     // —— 布局常量：一切间距都是 s 的整数倍，缩放后不会出现半像素毛边 ——
     let padding = 30 * s;
@@ -384,8 +261,12 @@ pub fn draw_message_type_ranking(
 
         let title_style = get_font_with_color(config, title_font_size, &text_primary)
             .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(title, &title_style, (canvas_width as i32 / 2, title_y as i32))
-            .map_err(|e| e.to_string())?;
+        root.draw_text(
+            title,
+            &title_style,
+            (canvas_width as i32 / 2, title_y as i32),
+        )
+        .map_err(|e| e.to_string())?;
 
         let subtitle = format!(
             "共 {} 条消息 · {} 种类型",
@@ -498,10 +379,7 @@ pub fn draw_message_type_ranking(
                 root.draw_text(
                     icon_char,
                     &icon_style,
-                    (
-                        icon_x0 + (icon_size / 2) as i32,
-                        cy + (2 * s) as i32,
-                    ),
+                    (icon_x0 + (icon_size / 2) as i32, cy + (2 * s) as i32),
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -526,8 +404,7 @@ pub fn draw_message_type_ranking(
 
             // 上行左侧：类型名，与数值同基线；过长按可用宽度截断
             let name_x = icon_x1 + icon_gap as i32;
-            let name_max_w =
-                (value_right - vw as i32 - (20 * s) as i32 - name_x).max(0) as u32;
+            let name_max_w = (value_right - vw as i32 - (20 * s) as i32 - name_x).max(0) as u32;
             let display_name = truncate_text_to_fit(&name_font, &item.label, name_max_w);
             if !display_name.is_empty() {
                 let name_style = get_font_with_color(config, name_font_size, &text_primary)
@@ -622,10 +499,10 @@ fn allocate_strip_widths(
 
 // ================= 走势图 (与排行榜统一的手绘风格) =================
 
-/// 将坐标轴刻度取整为 1/2/5×10^k 的"美观"步长，返回 (步长, 格数)
+/// 将坐标轴刻度取整为 1/2/2.5/5×10^k 的"美观"步长，返回 (步长, 格数)
 fn nice_axis(max_val: i64) -> (f64, usize) {
     let target = (max_val.max(1) as f64) * 1.05;
-    let raw_step = target / 4.0;
+    let raw_step = (target / 5.0).max(1.0);
     let exp = raw_step.log10().floor() as i32;
     let base = 10f64.powi(exp);
     let frac = raw_step / base;
@@ -633,6 +510,8 @@ fn nice_axis(max_val: i64) -> (f64, usize) {
         base
     } else if frac <= 2.0 {
         2.0 * base
+    } else if frac <= 2.5 {
+        2.5 * base
     } else if frac <= 5.0 {
         5.0 * base
     } else {
@@ -656,11 +535,20 @@ fn format_y_label(v: f64) -> String {
 
 /// X 轴标签：去掉日期前缀中的年份部分 (如 "2026-08-01" -> "08-01")
 fn short_x_label(label: &str) -> String {
-    if label.len() >= 10 && label.contains('-') {
+    if label.is_ascii() && label.len() >= 10 && label.as_bytes()[4] == b'-' {
         label[5..].to_string()
     } else {
         label.to_string()
     }
+}
+
+fn timeline(series: &[SeriesData]) -> Vec<String> {
+    series
+        .iter()
+        .flat_map(|s| s.points.iter().map(|p| p.label.clone()))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// 绘制折线图 (支持单线/多线)。
@@ -676,26 +564,22 @@ pub fn draw_line_chart(
     }
 
     let s = 2u32;
+    if !(480..=2400).contains(&config.width) || !(360..=2400).contains(&config.height) {
+        return Err("走势图尺寸应为宽 480—2400、高 360—2400 像素".into());
+    }
     let width = config.width * s;
     let height = config.height * s;
 
     let colors = ColorScheme::default();
     let multi = series_list.len() > 1;
 
-    // === 1. 统一 X 轴：合并所有系列的标签（按首次出现顺序去重），
-    //        保证多系列的稀疏数据点也按真实时间位置对齐 ===
-    let mut x_labels: Vec<String> = Vec::new();
-    let mut label_index: HashMap<&str, usize> = HashMap::new();
-    for series in &series_list {
-        for p in &series.points {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                label_index.entry(p.label.as_str())
-            {
-                e.insert(x_labels.len());
-                x_labels.push(p.label.clone());
-            }
-        }
-    }
+    // 时间标签来自固定宽度的日期或时刻，排序后稀疏系列不会折回到较早的日期。
+    let x_labels = timeline(&series_list);
+    let label_index: HashMap<&str, usize> = x_labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| (label.as_str(), i))
+        .collect();
     let point_count = x_labels.len().max(1);
 
     let max_val = series_list
@@ -769,7 +653,9 @@ pub fn draw_line_chart(
         title_y + title_font_size + (24 * s)
     };
     let x_label_area = axis_font_size + 14 * s;
-    let chart_bottom = height.saturating_sub(padding + x_label_area).max(chart_top + 40 * s);
+    let chart_bottom = height
+        .saturating_sub(padding + x_label_area)
+        .max(chart_top + 40 * s);
     let chart_left = padding + y_label_w + (14 * s);
     let chart_right = width.saturating_sub(padding).max(chart_left + 40 * s);
 
@@ -785,7 +671,8 @@ pub fn draw_line_chart(
     {
         let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
 
-        root.fill(&RGBColor(255, 255, 255)).map_err(|e| e.to_string())?;
+        root.fill(&RGBColor(255, 254, 250))
+            .map_err(|e| e.to_string())?;
 
         // 4.1 时间戳 + 标题 (与柱状图一致)
         let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
@@ -795,27 +682,35 @@ pub fn draw_line_chart(
         root.draw_text(&now_str, &header_style, (width as i32 / 2, padding as i32))
             .map_err(|e| e.to_string())?;
 
-        let title_style =
-            get_font(config, title_font_size).pos(Pos::new(HPos::Center, VPos::Top));
+        let title_style = get_font(config, title_font_size).pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(title, &title_style, (width as i32 / 2, title_y as i32))
             .map_err(|e| e.to_string())?;
 
         // 4.2 图例
         for (row_i, row) in legend_rows.iter().enumerate() {
-            let row_total: u32 = row.iter().map(|(_, w)| *w).sum::<u32>() + item_gap * (row.len() as u32 - 1);
+            let row_total: u32 =
+                row.iter().map(|(_, w)| *w).sum::<u32>() + item_gap * (row.len() as u32 - 1);
             let mut x = (width.saturating_sub(row_total)) as i32 / 2;
             let row_mid_y = legend_y + row_i as u32 * legend_row_h + legend_row_h / 2;
 
             for &(idx, item_w) in row {
                 let color = series_list[idx].color;
-                root.draw(&Circle::new((x + dot_r as i32, row_mid_y as i32), dot_r as i32, color.filled()))
-                    .map_err(|e| e.to_string())?;
-                let legend_style = get_font_with_color(config, legend_font_size, &colors.text_primary)
-                    .pos(Pos::new(HPos::Left, VPos::Center));
+                root.draw(&Circle::new(
+                    (x + dot_r as i32, row_mid_y as i32),
+                    dot_r as i32,
+                    color.filled(),
+                ))
+                .map_err(|e| e.to_string())?;
+                let legend_style =
+                    get_font_with_color(config, legend_font_size, &colors.text_primary)
+                        .pos(Pos::new(HPos::Left, VPos::Center));
                 root.draw_text(
                     &series_list[idx].name,
                     &legend_style,
-                    (x + 2 * dot_r as i32 + (8 * s as i32), row_mid_y as i32 + (2 * s as i32)),
+                    (
+                        x + 2 * dot_r as i32 + (8 * s as i32),
+                        row_mid_y as i32 + (2 * s as i32),
+                    ),
                 )
                 .map_err(|e| e.to_string())?;
                 x += item_w as i32 + item_gap as i32;
@@ -832,11 +727,19 @@ pub fn draw_line_chart(
             let line_color = if i == 0 {
                 RGBAColor(0, 0, 0, 0.12)
             } else {
-                RGBAColor(colors.grid_line.0, colors.grid_line.1, colors.grid_line.2, 1.0)
+                RGBAColor(
+                    colors.grid_line.0,
+                    colors.grid_line.1,
+                    colors.grid_line.2,
+                    1.0,
+                )
             };
             root.draw(&PathElement::new(
-                vec![(chart_left as i32, y as i32), (chart_right as i32, y as i32)],
-                line_color.stroke_width(2 * s),
+                vec![
+                    (chart_left as i32, y as i32),
+                    (chart_right as i32, y as i32),
+                ],
+                line_color.stroke_width(s),
             ))
             .map_err(|e| e.to_string())?;
 
@@ -875,7 +778,11 @@ pub fn draw_line_chart(
             let pts: Vec<(f64, f64)> = series
                 .points
                 .iter()
-                .filter_map(|p| label_index.get(p.label.as_str()).map(|&i| (x_pos(i), y_pos(p.value))))
+                .filter_map(|p| {
+                    label_index
+                        .get(p.label.as_str())
+                        .map(|&i| (x_pos(i), y_pos(p.value)))
+                })
                 .collect();
             if pts.is_empty() {
                 continue;
@@ -907,8 +814,12 @@ pub fn draw_line_chart(
             // 数据点：白底圆 + 主题色内圆
             for &(x, y) in &pts {
                 let (xi, yi) = (x.round() as i32, y.round() as i32);
-                root.draw(&Circle::new((xi, yi), (6 * s) as i32, RGBColor(255, 255, 255).filled()))
-                    .map_err(|e| e.to_string())?;
+                root.draw(&Circle::new(
+                    (xi, yi),
+                    (6 * s) as i32,
+                    RGBColor(255, 255, 255).filled(),
+                ))
+                .map_err(|e| e.to_string())?;
                 root.draw(&Circle::new((xi, yi), (4 * s) as i32, color.filled()))
                     .map_err(|e| e.to_string())?;
             }
@@ -965,8 +876,33 @@ mod tests {
             avatar_url: None,
             avatar_img: None,
             theme_color: color,
-            icon_char: Some(icon.to_string()),
+            icon_char: (icon != "?").then(|| icon.to_string()),
         }
+    }
+
+    #[test]
+    fn sparse_series_share_a_chronological_axis() {
+        let series = |days: &[&str]| SeriesData {
+            name: "测试".into(),
+            color: BLACK,
+            points: days
+                .iter()
+                .map(|d| super::super::data_loader::ChartDataPoint {
+                    label: d.to_string(),
+                    value: 1,
+                })
+                .collect(),
+        };
+        assert_eq!(
+            timeline(&[
+                series(&["2026-09-01", "2026-09-03"]),
+                series(&["2026-09-02"])
+            ]),
+            ["2026-09-01", "2026-09-02", "2026-09-03"]
+        );
+        let (step, count) = nice_axis(195);
+        assert!(step * count as f64 >= 195.0 && step * count as f64 <= 250.0);
+        assert_eq!(short_x_label("中文标题-日期"), "中文标题-日期");
     }
 
     #[test]
@@ -1018,13 +954,43 @@ mod tests {
     fn bar_chart_still_renders_with_the_shared_number_formatting() {
         let config = StatsConfig::default();
         let data = vec![
-            sample("文本", 12_345),
-            sample("图片", 678),
-            sample("语音", 3),
+            sample("每天读一点书的阿青", 12_345),
+            sample("喜欢散步和咖啡的朋友", 678),
+            sample("很长很长的群昵称依然保留清晰的阅读位置", 3),
         ];
-        let out = draw_bar_chart(&config, "本群 今日 发言 排行榜", data)
-            .expect("发言排行榜应当能渲染");
+        let out =
+            draw_bar_chart(&config, "本群 今日 发言 排行榜", data).expect("发言排行榜应当能渲染");
         save_preview(&out, "AYJX_CHART_PREVIEW_BAR");
+    }
+
+    #[test]
+    #[ignore = "生成本地走势图样张"]
+    fn dump_sample_cards() {
+        let Ok(dir) = std::env::var("STATS_CARD_DUMP") else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let series = ["文本", "图片", "语音"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| SeriesData {
+                name: name.to_string(),
+                color: message_type_style(name).0,
+                points: (1..=7)
+                    .map(|day| super::super::data_loader::ChartDataPoint {
+                        label: format!("2026-09-{day:02}"),
+                        value: ((day * 73 + i as i64 * 47) % 190 + 20) / (i as i64 + 1),
+                    })
+                    .collect(),
+            })
+            .collect();
+        let out =
+            draw_line_chart(&StatsConfig::default(), "本群 · 近 7 天消息走势", series).unwrap();
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(out.trim_start_matches("base64://"))
+            .unwrap();
+        std::fs::write(format!("{dir}/trend.png"), bytes).unwrap();
     }
 
     /// 断言产物是 PNG；设了环境变量时顺手落盘一份，方便人工看效果。

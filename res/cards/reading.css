@@ -43,7 +43,10 @@ h2 { font-size: 24px; line-height: 1.5; font-weight: 700; letter-spacing: -.01em
   color: var(--muted); font-size: 16px; line-height: 1.6; font-variant-numeric: tabular-nums; }
 .item { padding: 19px 0; border-bottom: 1px solid var(--line); }
 .item:last-child { border-bottom: 0; padding-bottom: 8px; }
-.item-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.item-heading { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 4px 12px; }
+.item-heading h3 { grid-column: 1; grid-row: 1; }
+.item-heading .badge { grid-column: 2; grid-row: 1; justify-self: end; }
+.item-heading .key { grid-column: 1 / -1; grid-row: 2; }
 h3 { font-size: 24px; font-weight: 600; line-height: 1.5; min-width: 0; }
 .key { font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace; font-size: 17px; color: var(--muted); line-height: 1.55; margin-top: 2px; }
 .description { margin-top: 9px; color: var(--body); font-size: 22px; line-height: 1.72;
@@ -68,7 +71,7 @@ h3 { font-size: 24px; font-weight: 600; line-height: 1.5; min-width: 0; }
 .items.cols-2 .item:nth-child(even) { padding-left: 22px; padding-right: 0;
   border-left: 1px solid var(--line); }
 .items.cols-2 .item-heading h3 { flex: 1; font-size: 23px; }
-/* 配置键贴着名字这一行的右端：它只是身份标注，单独占一行只会把目录拉长 */
+/* 配置键另起次要一行，长名字和状态都有稳定的对齐位置。 */
 .items.cols-2 .item-heading .key { margin-top: 0; font-size: 16px; align-self: center; }
 .items.cols-2 .description { margin-top: 7px; font-size: 20px; line-height: 1.68; }
 .items.cols-2 .badge { padding: 2px 8px; font-size: 15px; }

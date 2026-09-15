@@ -136,17 +136,17 @@ fn stamp() -> String {
 
 const CSS: &str = r#"
 *{margin:0;padding:0;box-sizing:border-box}
+body{width:720px}
 .shot{padding:20px;background:var(--canvas)}
 .card{position:relative;overflow:hidden;border-radius:22px;padding:42px 40px 32px;
   background:var(--surface);border:1px solid var(--strong-line);box-shadow:var(--shadow);
-  background-image:radial-gradient(var(--pattern) 1px,transparent 1px);
-  background-size:28px 28px;
+  background-image:linear-gradient(145deg,var(--panel),transparent 420px);
   font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Zen Hei","Helvetica Neue",Arial,sans-serif;
   color:var(--strong);-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
   overflow-wrap:anywhere;word-break:normal}
 /* 左上角一团主色微光，给深底一点纵深，不喧宾夺主 */
 .card::before{content:"";position:absolute;top:-230px;left:-130px;width:480px;height:480px;
-  border-radius:50%;background:rgba(__RGB__,var(--glow-alpha));filter:blur(95px);pointer-events:none}
+  border-radius:50%;background:radial-gradient(circle,rgba(__RGB__,var(--glow-alpha)),transparent 70%);pointer-events:none}
 .card>*{position:relative}
 
 .eyebrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
@@ -156,7 +156,7 @@ const CSS: &str = r#"
   box-shadow:0 0 0 5px rgba(__RGB__,var(--dot-alpha))}
 .stamp{font-size:14px;color:var(--faint);letter-spacing:.04em;font-variant-numeric:tabular-nums}
 
-.title{font-size:42px;line-height:1.25;font-weight:800;letter-spacing:-.015em;color:var(--title)}
+.title{text-wrap:balance;font-size:42px;line-height:1.25;font-weight:800;letter-spacing:-.015em;color:var(--title)}
 .subtitle{margin-top:12px;font-size:19px;line-height:1.65;font-weight:500;color:var(--subtle)}
 .rule{height:2px;margin:28px 0 2px;border-radius:2px;
   background:linear-gradient(90deg,__ACCENT__,rgba(__RGB__,.35) 38%,var(--line))}
@@ -174,7 +174,7 @@ const CSS: &str = r#"
   box-shadow:0 6px 18px rgba(__RGB__,.28)}
 
 .h{font-size:27px;line-height:1.5;font-weight:700;letter-spacing:-.01em;color:var(--title);
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  text-wrap:pretty}
 .meta{margin-top:12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;
   font-size:16px;font-weight:500;color:var(--muted)}
 .sep{color:var(--sep)}
@@ -182,11 +182,11 @@ const CSS: &str = r#"
   color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
 .chip.plain{color:var(--subtle);background:var(--plain-chip)}
 .sum{margin-top:13px;font-size:19.5px;line-height:1.76;color:var(--body);
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  text-wrap:pretty}
 .why{margin-top:14px;padding:12px 16px;border-left:4px solid __ACCENT__;
   border-radius:0 10px 10px 0;background:rgba(__RGB__,var(--quote-alpha));
   font-size:18px;line-height:1.7;color:var(--body);
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  text-wrap:pretty}
 .why b{color:__ACCENT__;font-weight:800;letter-spacing:.02em}
 
 .lead{margin:26px 0 4px;padding:20px 22px;border-radius:14px;
@@ -196,7 +196,7 @@ const CSS: &str = r#"
 .sec:last-of-type{border-bottom:none}
 .sec-h{display:flex;align-items:center;gap:12px;font-size:23px;font-weight:800;color:var(--title)}
 .bar{width:5px;height:22px;border-radius:3px;background:__ACCENT__}
-.li{margin-top:17px;padding-left:20px;position:relative;font-size:20px;line-height:1.68;color:var(--body)}
+.li{text-wrap:pretty;margin-top:17px;padding-left:20px;position:relative;font-size:20px;line-height:1.68;color:var(--body)}
 .li::before{content:"";position:absolute;left:2px;top:12px;width:7px;height:7px;
   border-radius:50%;background:__ACCENT__}
 .li b{color:var(--title);font-weight:700}
@@ -258,7 +258,8 @@ fn shell(
     };
 
     format!(
-        r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>{css}</style></head>
+        r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{css}</style></head>
 <body><div class="shot"><div class="card">
 <div class="eyebrow"><div class="kicker"><span class="dot"></span>{kicker}</div><div class="stamp">{stamp}</div></div>
 <div class="title">{title}</div>{subtitle}
@@ -773,7 +774,7 @@ mod tests {
     ///   AI_NEWS_CARD_DUMP=/tmp/cards cargo test card::tests::captures -- --ignored
     #[tokio::test]
     #[ignore = "需要可用的无头浏览器"]
-    async fn captures_a_card_to_png() {
+    async fn captures_a_card_to_jpeg() {
         let Ok(dir) = std::env::var("AI_NEWS_CARD_DUMP") else {
             return;
         };
@@ -785,8 +786,9 @@ mod tests {
 
         use base64::{Engine, engine::general_purpose::STANDARD};
         let bytes = STANDARD.decode(&b64).expect("截图应是合法 base64");
-        std::fs::write(format!("{}/captured.png", dir), &bytes).unwrap();
+        std::fs::write(format!("{}/captured.jpg", dir), &bytes).unwrap();
         println!("出图 {} 字节", bytes.len());
+        cdp_html_shot::Browser::shutdown_global().await;
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! [`crate::render::web::shoot`]——量高、等字体、尺寸护栏与闸门都在那一处。
 
 use super::collect::Material;
-use super::persona::{Persona, Tag, DIMENSIONS, LAYERS};
+use super::persona::{DIMENSIONS, LAYERS, Persona, Tag};
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Timelike, Utc};
 
@@ -46,7 +46,7 @@ impl Theme {
                 r#"color-scheme:light;
   --canvas:#E9E3D9;--surface:#FCFAF6;
   --title:#1C1A17;--strong:#2E2A24;--body:#45403A;
-  --subtle:#5C554C;--muted:#6E675D;--faint:#8A8276;
+  --subtle:#5C554C;--muted:#6E675D;--faint:#736C61;
   --line:rgba(28,26,23,.10);--strong-line:rgba(28,26,23,.15);
   --panel:rgba(28,26,23,.032);--panel-border:rgba(28,26,23,.075);
   --track:rgba(28,26,23,.08);
@@ -57,7 +57,7 @@ impl Theme {
                 r#"color-scheme:dark;
   --canvas:#0D0C0B;--surface:#171614;
   --title:#F2EEE6;--strong:#E6E1D8;--body:#CFC9BF;
-  --subtle:#A8A198;--muted:#99928A;--faint:#837C74;
+  --subtle:#A8A198;--muted:#99928A;--faint:#A19A90;
   --line:rgba(240,236,228,.09);--strong-line:rgba(240,236,228,.14);
   --panel:rgba(240,236,228,.05);--panel-border:rgba(240,236,228,.10);
   --track:rgba(240,236,228,.10);
@@ -142,7 +142,8 @@ pub fn html(view: &View<'_>) -> String {
 
     format!(
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><style>{css}</style></head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{css}</style></head>
 <body><div class="shot"><div class="card">
 {eyebrow}
 {hero}
@@ -376,16 +377,16 @@ pub fn now(offset: FixedOffset) -> DateTime<FixedOffset> {
 
 const CSS: &str = r#"
 *{margin:0;padding:0;box-sizing:border-box}
+body{width:720px}
 .shot{padding:22px;background:var(--canvas)}
 .card{position:relative;overflow:hidden;border-radius:20px;padding:42px 44px 34px;
   background:var(--surface);border:1px solid var(--strong-line);box-shadow:var(--shadow);
-  background-image:radial-gradient(var(--pattern) 1px,transparent 1px);
-  background-size:28px 28px;
+  background-image:linear-gradient(145deg,var(--panel),transparent 420px);
   font-family:"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","WenQuanYi Zen Hei","Helvetica Neue",Arial,sans-serif;
   color:var(--body);-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
   overflow-wrap:anywhere;word-break:normal}
 .card::before{content:"";position:absolute;top:-260px;left:-160px;width:540px;height:540px;
-  border-radius:50%;background:rgba(__RGB__,var(--glow-alpha));filter:blur(110px);pointer-events:none}
+  border-radius:50%;background:radial-gradient(circle,rgba(__RGB__,var(--glow-alpha)),transparent 70%);filter:blur(110px);pointer-events:none}
 .card::after{content:"";position:absolute;top:0;left:0;right:0;height:3px;
   background:linear-gradient(90deg,transparent,rgba(__RGB__,.55) 22%,rgba(__RGB__,.55) 78%,transparent)}
 .card>*{position:relative}
@@ -409,7 +410,7 @@ const CSS: &str = r#"
   overflow:hidden}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover}
 .who{min-width:0}
-.who-name{font-size:33px;line-height:1.28;font-weight:800;letter-spacing:-.015em;color:var(--title)}
+.who-name{text-wrap:balance;font-size:33px;line-height:1.28;font-weight:800;letter-spacing:-.015em;color:var(--title)}
 .who-meta{margin-top:9px;font-size:15px;line-height:1.6;font-weight:500;color:var(--muted)}
 .sep{margin:0 8px;color:var(--faint)}
 
@@ -423,7 +424,7 @@ const CSS: &str = r#"
 .label{font-size:13px;font-weight:800;letter-spacing:.22em;color:var(--faint)}
 .pill{padding:3px 10px;border-radius:8px;font-size:12.5px;font-weight:700;letter-spacing:.02em;
   color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
-.composite{margin-top:12px;font-family:var(--serif);font-size:46px;line-height:1.26;font-weight:700;
+.composite{text-wrap:balance;margin-top:12px;font-family:var(--serif);font-size:46px;line-height:1.26;font-weight:700;
   letter-spacing:.01em;color:var(--title)}
 .note{margin-top:12px;font-family:var(--serif);font-size:21px;line-height:1.66;font-weight:600;
   color:__ACCENT__}
@@ -468,17 +469,17 @@ const CSS: &str = r#"
 .dim-en{font-size:10px;font-weight:700;letter-spacing:.26em;color:var(--faint)}
 .tag{display:flex;gap:13px;padding:12px 0;border-bottom:1px dashed var(--line)}
 .tag:last-child{border-bottom:none}
-.tag-layer{flex:none;align-self:flex-start;width:46px;padding:3px 0;margin-top:2px;
-  text-align:center;border-radius:7px;font-size:11.5px;font-weight:800;letter-spacing:.06em}
+.tag-layer{flex:none;align-self:flex-start;width:50px;padding:3px 0;margin-top:2px;
+  text-align:center;border-radius:7px;font-size:13px;font-weight:700;letter-spacing:.06em}
 .tag-layer.observed{color:var(--muted);background:var(--track)}
 .tag-layer.derived{color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
 .tag-layer.inferred{color:var(--surface);background:rgba(__RGB__,.82)}
 .tag-main{flex:1;min-width:0}
-.tag-label{display:block;font-size:16.5px;line-height:1.5;font-weight:700;color:var(--strong)}
-.tag-ev{display:block;margin-top:5px;font-size:14.5px;line-height:1.62;color:var(--muted)}
+.tag-label{display:block;font-size:19px;line-height:1.6;font-weight:700;color:var(--strong)}
+.tag-ev{display:block;margin-top:5px;font-size:17px;line-height:1.75;color:var(--muted)}
 
 /* —— 综述 —— */
-.prose{margin-bottom:18px;font-family:var(--serif);font-size:20px;line-height:1.98;
+.prose{margin-bottom:18px;font-family:var(--serif);font-size:21px;line-height:1.88;
   color:var(--body);text-indent:2em}
 .prose:last-child{margin-bottom:0}
 .quote{margin:22px 0;padding:20px 22px;border-radius:12px;background:rgba(__RGB__,var(--chip-alpha));
@@ -491,7 +492,7 @@ const CSS: &str = r#"
 .foot{display:flex;flex-direction:column;gap:7px;margin-top:32px;padding-top:20px;
   border-top:1px solid var(--strong-line);
   font-size:14px;line-height:1.62;color:var(--faint)}
-.foot-note{color:var(--faint);opacity:.85}
+.foot-note{color:var(--muted)}
 .foot .sep{margin:0 7px}
 "#;
 
@@ -597,11 +598,7 @@ mod tests {
     /// 北京时间 00:13，用来让 `auto` 落在夜读一侧。
     const MIDNIGHT: i64 = 1_700_064_800;
 
-    fn view_at<'a>(
-        material: &'a Material,
-        persona: &'a Persona,
-        timestamp: i64,
-    ) -> View<'a> {
+    fn view_at<'a>(material: &'a Material, persona: &'a Persona, timestamp: i64) -> View<'a> {
         View {
             material,
             persona,
@@ -658,7 +655,10 @@ mod tests {
         assert!(!one.contains(r#"<span class="dim-name">交互</span>"#));
         assert!(!one.contains(r#"<span class="dim-name">表达</span>"#));
         let at = |name: &str| one.find(&format!(r#"<span class="dim-name">{name}</span>"#));
-        assert!(at("活跃").unwrap() < at("内容").unwrap(), "维度要先活跃后内容");
+        assert!(
+            at("活跃").unwrap() < at("内容").unwrap(),
+            "维度要先活跃后内容"
+        );
 
         let all = Persona {
             tags: vec![
@@ -672,7 +672,10 @@ mod tests {
         let html = html(&view(&material, &all));
         let order: Vec<usize> = ["活跃", "内容", "交互", "表达"]
             .iter()
-            .map(|name| html.find(&format!(r#"<span class="dim-name">{name}</span>"#)).unwrap())
+            .map(|name| {
+                html.find(&format!(r#"<span class="dim-name">{name}</span>"#))
+                    .unwrap()
+            })
             .collect();
         assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
     }
@@ -717,14 +720,19 @@ mod tests {
         let base = view_at(&material, &persona, MORNING);
 
         let without = html(&base);
-        assert!(without.contains(r#"<div class="avatar">阿</div>"#), "没有头像时用首字");
+        assert!(
+            without.contains(r#"<div class="avatar">阿</div>"#),
+            "没有头像时用首字"
+        );
 
         let data = "data:image/jpeg;base64,AAAA";
         let with = html(&View {
             avatar: Some(data),
             ..view_at(&material, &persona, MORNING)
         });
-        assert!(with.contains(&format!(r#"<div class="avatar"><img src="{data}" alt=""></div>"#)));
+        assert!(with.contains(&format!(
+            r#"<div class="avatar"><img src="{data}" alt=""></div>"#
+        )));
         assert!(!with.contains(r#"<div class="avatar">阿</div>"#));
     }
 
@@ -867,5 +875,6 @@ mod tests {
             std::fs::write(&path, &bytes).ok();
             println!("出图已写入 {}", path.display());
         }
+        cdp_html_shot::Browser::shutdown_global().await;
     }
 }
