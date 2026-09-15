@@ -184,22 +184,28 @@ pub fn draw_bar_chart(
         // 第二趟：刻度竖线。夹在轨道与实条之间——画在实条之前，条上才不会留下
         // 几道像被划过的灰线；画在轨道之后，线才真的落在浅色底上当刻度用
         // （原先画在轨道之前，被每行的轨道盖住，只在行距里露出几段）。
-        // 位置取榜首长度的 1/4、1/2、3/4：条尾停在哪道线之间，是榜首的几成一目了然。
+        //
+        // 间距沿用原来的 100*s：起于条的零点（最小条长处），每隔一格一道，直到轨道
+        // 尽头，正好是原版那八道等距刻度。首尾两道是这张表的左右边界，少了哪一道都
+        // 不像制过表的样子；条尾停在哪两道之间，是榜首的几成也一目了然。
         let vertical_line_color = RGBAColor(0, 0, 0, 0.1);
         let line_width = 3 * s as i32;
+        let line_step = 100 * s as i32;
         let content_end_y =
             top_area_height as i32 + (data.len() as u32 * row_pitch - row_gap) as i32;
-        for q in [0.25f64, 0.5, 0.75] {
-            let line_x =
-                track_start_x + (base_bar_min_width + base_bar_scale_width * q).round() as i32;
+        let mut line_x = track_start_x + base_bar_min_width as i32;
+        while line_x <= track_end_x {
+            // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
+            let x = line_x.min(track_end_x - line_width);
             root.draw(&Rectangle::new(
                 [
-                    (line_x, top_area_height as i32),
-                    (line_x + line_width, content_end_y),
+                    (x, top_area_height as i32),
+                    (x + line_width, content_end_y),
                 ],
                 vertical_line_color.filled(),
             ))
             .map_err(|e| e.to_string())?;
+            line_x += line_step;
         }
 
         // 第三趟：实色进度条与行内文字
