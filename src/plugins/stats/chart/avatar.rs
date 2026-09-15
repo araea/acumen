@@ -1,6 +1,7 @@
 use super::data_loader::BarData;
 use super::utils::{create_default_avatar, get_average_color, make_circular_avatar};
 use crate::plugins::get_data_dir;
+use futures_util::StreamExt;
 use image::RgbaImage;
 use image::imageops::FilterType;
 use std::path::PathBuf;
@@ -9,6 +10,13 @@ use tokio::fs;
 
 const AVATAR_SIZE: u32 = 100;
 const CACHE_EXPIRE_DAYS: u64 = 3;
+
+/// 头像下载的并发上限。
+///
+/// 一张榜最多几十个人，`join_all` 会让他们同时开连接——手机上几十套 TLS 状态一起
+/// 握手，既拖慢自己也把这一轮的全部结果拖到最慢的那一张图。六个是够用的档位：
+/// 浏览器对同域名的并发本来也就这个量级，何况绝大多数命中本地缓存、根本不发请求。
+const AVATAR_CONCURRENCY: usize = 6;
 
 /// 批量处理头像下载与主题色提取
 pub async fn prepare_avatars(data: &mut [BarData]) {
@@ -53,7 +61,11 @@ pub async fn prepare_avatars(data: &mut [BarData]) {
         })
         .collect();
 
-    let avatar_results = futures_util::future::join_all(futures).await;
+    // `buffered` 而不是 `join_all`：结果顺序不变，但在飞请求有上限。
+    let avatar_results: Vec<_> = futures_util::stream::iter(futures)
+        .buffered(AVATAR_CONCURRENCY)
+        .collect()
+        .await;
 
     for (i, avatar) in avatar_results.into_iter().enumerate() {
         // 图标条目（如消息类型统计）不使用头像，由渲染器按主题色绘制图标徽章
@@ -100,13 +112,14 @@ async fn download_avatar_cached(
                 }
         }
 
-    // 2. 下载
-    let client = crate::http::builder()
+    // 2. 下载。用进程级共享客户端，只在这一次请求上盖一个短超时：原先每张头像都
+    //    `builder().build()` 一个新客户端，几十张就是几十套连接池；Android 上还要
+    //    重复把系统 CA 包整份解析一遍，代价远大于下载一张 40 KB 的图。
+    if let Ok(resp) = crate::http::client()
+        .get(url)
         .timeout(Duration::from_secs(8))
-        .build()
-        .ok()?;
-
-    if let Ok(resp) = client.get(url).send().await
+        .send()
+        .await
         && let Ok(bytes) = resp.bytes().await
         && let Ok(img) = image::load_from_memory(&bytes)
     {
