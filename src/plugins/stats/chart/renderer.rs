@@ -86,16 +86,16 @@ pub fn draw_bar_chart(
     let gap_text = 14 * s;
     let text_inset = 10 * s; // 文字距条端/轨道端的内缩
 
-    // 标题区域
+    // 标题区：标题在最上，时间、榜单范围与合计并成一行小字跟在下面。
+    // 把时间挪到标题之下是 iOS/Material 一类版式的通行做法——先看清这是什么，
+    // 再看它是什么时候、多大范围的数据，层级比"小字压在标题头上"顺。
     let title_font_size = 32 * s;
-    let header_font_size = 20 * s;
-    let sub_font_size = 20 * s;
+    let meta_font_size = 18 * s;
 
-    let header_margin = 10 * s;
-    let sub_margin = 10 * s; // 标题与副标题
-    let title_margin = 22 * s; // 副标题和列表的间距
-    let sub_y = padding + header_font_size + header_margin + title_font_size + sub_margin;
-    let top_area_height = sub_y + sub_font_size + title_margin;
+    let meta_margin = 12 * s; // 标题与元信息行
+    let title_margin = 24 * s; // 元信息行与列表
+    let meta_y = padding + title_font_size + meta_margin;
+    let top_area_height = meta_y + meta_font_size + title_margin;
 
     let base_bar_min_width = 150.0 * (s as f64);
     let base_bar_scale_width = 700.0 * (s as f64);
@@ -147,41 +147,28 @@ pub fn draw_bar_chart(
 
         root.fill(&page_bg).map_err(|e| e.to_string())?;
 
-        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let header_style = get_font_with_color(config, header_font_size, &ink_soft)
-            .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(
-            &now_str,
-            &header_style,
-            (canvas_width as i32 / 2, padding as i32),
-        )
-        .map_err(|e| e.to_string())?;
-
-        // 绘制标题 (Header 下方)
-        let title_y = padding + header_font_size + header_margin;
         let title_style = get_font_with_color(config, title_font_size, &ink)
             .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(
-            title,
-            &title_style,
-            (canvas_width as i32 / 2, title_y as i32),
-        )
-        .map_err(|e| e.to_string())?;
+        root.draw_text(title, &title_style, (canvas_width as i32 / 2, padding as i32))
+            .map_err(|e| e.to_string())?;
 
-        // 副标题：说清楚这张榜的范围与总量——每行的百分比正是以它为基数。
-        let subtitle = if data.len() > 1 {
-            format!("前 {} 名 · 合计 {}", data.len(), format_thousands(total_val))
+        // 元信息行：榜单范围 + 合计（每行的百分比正是以它为基数）+ 出图时间。
+        // 「·」在这套 CJK 字体里自带右侧空腔，所以只在它左边补一个空格，两边才等宽。
+        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let meta = if data.len() > 1 {
+            format!(
+                "前 {} 名 ·合计 {} ·{}",
+                data.len(),
+                format_thousands(total_val),
+                now_str
+            )
         } else {
-            format!("合计 {}", format_thousands(total_val))
+            format!("合计 {} ·{}", format_thousands(total_val), now_str)
         };
-        let sub_style = get_font_with_color(config, sub_font_size, &ink_soft)
+        let meta_style = get_font_with_color(config, meta_font_size, &ink_soft)
             .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(
-            &subtitle,
-            &sub_style,
-            (canvas_width as i32 / 2, sub_y as i32),
-        )
-        .map_err(|e| e.to_string())?;
+        root.draw_text(&meta, &meta_style, (canvas_width as i32 / 2, meta_y as i32))
+            .map_err(|e| e.to_string())?;
 
         // 每行的行位与条长只算一次，三趟绘制（轨道 → 刻度 → 实条与文字）共用。
         let rows: Vec<(i32, i32)> = data
@@ -194,6 +181,24 @@ pub fn draw_bar_chart(
                 (y, track_start_x + bar_w)
             })
             .collect();
+
+        // 头像底下垫一圈发丝细的暗边：浅色头像贴在暖白纸上边缘会化掉，
+        // 一圈 8% 的灰正好把圆形收住（iOS 给头像与应用图标描内边同理）。
+        let ring_color = RGBAColor(0, 0, 0, 0.08);
+        for ((y, _), item) in rows.iter().zip(data.iter()) {
+            if item.avatar_img.is_none() {
+                continue;
+            }
+            root.draw(&Circle::new(
+                (
+                    padding as i32 + (avatar_width / 2) as i32,
+                    y + (row_height / 2) as i32,
+                ),
+                (avatar_width / 2) as i32 + s as i32,
+                ring_color.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+        }
 
         // 第一趟：淡色轨道（条尾到轨道尽头的那一段）
         for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
@@ -365,7 +370,6 @@ pub fn draw_message_type_ranking(
     let track_bg = RGBColor(237, 241, 246);
     let text_primary = RGBColor(15, 23, 42);
     let text_secondary = RGBColor(100, 116, 139);
-    let text_muted = RGBColor(103, 118, 112);
 
     // —— 布局常量：一切间距都是 s 的整数倍，缩放后不会出现半像素毛边 ——
     let padding = 30 * s;
@@ -381,9 +385,8 @@ pub fn draw_message_type_ranking(
     let inner_pad = 22 * s;
     let bar_h = 8 * s;
 
-    let header_font_size = 20 * s;
     let title_font_size = 32 * s;
-    let sub_font_size = 20 * s;
+    let meta_font_size = 18 * s;
     let name_font_size = 27 * s;
     let value_font_size = 32 * s;
     let pct_font_size = 21 * s;
@@ -393,10 +396,11 @@ pub fn draw_message_type_ranking(
     let strip_h = 16 * s;
     let strip_gap = 4 * s;
 
-    // 标题区：时间戳 → 标题 → 概览副标题 → 构成条
-    let title_y = padding + header_font_size + 8 * s;
-    let sub_y = title_y + title_font_size + 10 * s;
-    let strip_y = sub_y + sub_font_size + 24 * s;
+    // 标题区：标题 → 元信息行（总量、种数、出图时间）→ 构成条。
+    // 与排行榜同一套写法：标题在最上，小字跟在下面，不再把时间压在标题头上。
+    let title_y = padding;
+    let meta_y = title_y + title_font_size + 12 * s;
+    let strip_y = meta_y + meta_font_size + 26 * s;
     let top_area = strip_y + strip_h + 28 * s;
 
     let canvas_width = 760 * s;
@@ -433,16 +437,6 @@ pub fn draw_message_type_ranking(
         root.fill(&page_bg).map_err(|e| e.to_string())?;
 
         // === 标题区 ===
-        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let header_style = get_font_with_color(config, header_font_size, &text_muted)
-            .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(
-            &now_str,
-            &header_style,
-            (canvas_width as i32 / 2, padding as i32),
-        )
-        .map_err(|e| e.to_string())?;
-
         let title_style = get_font_with_color(config, title_font_size, &text_primary)
             .pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(
@@ -452,19 +446,18 @@ pub fn draw_message_type_ranking(
         )
         .map_err(|e| e.to_string())?;
 
-        let subtitle = format!(
-            "共 {} 条消息 · {} 种类型",
+        // 「·」在这套 CJK 字体里自带右侧空腔，只在它左边补空格，两边才等宽
+        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let meta = format!(
+            "共 {} 条消息 ·{} 种类型 ·{}",
             format_thousands(total_val),
-            data.len()
+            data.len(),
+            now_str
         );
-        let sub_style = get_font_with_color(config, sub_font_size, &text_secondary)
+        let meta_style = get_font_with_color(config, meta_font_size, &text_secondary)
             .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(
-            &subtitle,
-            &sub_style,
-            (canvas_width as i32 / 2, sub_y as i32),
-        )
-        .map_err(|e| e.to_string())?;
+        root.draw_text(&meta, &meta_style, (canvas_width as i32 / 2, meta_y as i32))
+            .map_err(|e| e.to_string())?;
 
         // === 构成条：整体占比的一眼概览 ===
         let strip_radius = (strip_h / 2) as i32;
@@ -776,7 +769,7 @@ pub fn draw_line_chart(
 
     // === 2. 布局 (与柱状图一致的字号与边距) ===
     let padding = 24 * s;
-    let header_font_size = 20 * s;
+    let meta_font_size = 18 * s;
     let title_font_size = 32 * s;
     let axis_font_size = 20 * s;
     let legend_font_size = 20 * s;
@@ -794,7 +787,9 @@ pub fn draw_line_chart(
         y_label_w = y_label_w.max(w);
     }
 
-    let title_y = padding + header_font_size + gap;
+    // 标题在最上，出图时间跟在下面，与排行榜、类型卡同一套层级
+    let title_y = padding;
+    let meta_y = title_y + title_font_size + gap;
 
     // === 3. 图例布局 (多系列时)：圆点 + 名称，水平排列，超宽自动换行 ===
     let dot_r = 6 * s;
@@ -830,11 +825,11 @@ pub fn draw_line_chart(
         legend_h = legend_rows.len() as u32 * legend_row_h;
     }
 
-    let legend_y = title_y + title_font_size + gap;
+    let legend_y = meta_y + meta_font_size + gap;
     let chart_top = if multi {
         legend_y + legend_h + (12 * s)
     } else {
-        title_y + title_font_size + (24 * s)
+        meta_y + meta_font_size + (24 * s)
     };
     let x_label_area = axis_font_size + 14 * s;
     let chart_bottom = height
@@ -859,16 +854,16 @@ pub fn draw_line_chart(
         root.fill(&RGBColor(251, 250, 247))
             .map_err(|e| e.to_string())?;
 
-        // 4.1 时间戳 + 标题 (与柱状图一致)
-        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let header_style = get_font(config, header_font_size)
-            .pos(Pos::new(HPos::Center, VPos::Top))
-            .color(&RGBColor(100, 116, 139));
-        root.draw_text(&now_str, &header_style, (width as i32 / 2, padding as i32))
-            .map_err(|e| e.to_string())?;
-
+        // 4.1 标题 + 出图时间 (与柱状图一致)
         let title_style = get_font(config, title_font_size).pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(title, &title_style, (width as i32 / 2, title_y as i32))
+            .map_err(|e| e.to_string())?;
+
+        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
+        let meta_style = get_font(config, meta_font_size)
+            .pos(Pos::new(HPos::Center, VPos::Top))
+            .color(&colors.text_secondary);
+        root.draw_text(&now_str, &meta_style, (width as i32 / 2, meta_y as i32))
             .map_err(|e| e.to_string())?;
 
         // 4.2 图例
@@ -1098,7 +1093,7 @@ mod tests {
                 ..StatsConfig::default()
             };
             let data = vec![sample("文本", 8_120), sample("图片", 3)];
-            let out = draw_bar_chart(&config, "本群 今日 发言 排行榜", data)
+            let out = draw_bar_chart(&config, "本群今日发言排行榜", data)
                 .expect("两种遮挡关系都应当能渲染");
             assert!(out.starts_with("base64://"));
         }
@@ -1144,7 +1139,7 @@ mod tests {
             sample("语音", 21),
             sample("视频", 2),
         ];
-        let out = draw_message_type_ranking(&config, "本群 今日 消息类型 排行榜", data)
+        let out = draw_message_type_ranking(&config, "本群今日消息类型排行榜", data)
             .expect("消息类型排行榜应当能渲染");
         save_preview(&out, "AYJX_CHART_PREVIEW");
     }
@@ -1158,7 +1153,7 @@ mod tests {
             sample("很长很长的群昵称依然保留清晰的阅读位置", 3),
         ];
         let out =
-            draw_bar_chart(&config, "本群 今日 发言 排行榜", data).expect("发言排行榜应当能渲染");
+            draw_bar_chart(&config, "本群今日发言排行榜", data).expect("发言排行榜应当能渲染");
         save_preview(&out, "AYJX_CHART_PREVIEW_BAR");
     }
 
@@ -1258,7 +1253,7 @@ mod tests {
                 ranking_grid_over_bars: over,
                 ..StatsConfig::default()
             };
-            let out = draw_bar_chart(&config, "本群 今日 发言 排行榜", clone_rows(&data))
+            let out = draw_bar_chart(&config, "本群今日发言排行榜", clone_rows(&data))
                 .expect("排行榜样张应当能渲染");
             use base64::Engine as _;
             let bytes = base64::engine::general_purpose::STANDARD
@@ -1305,7 +1300,7 @@ mod tests {
             })
             .collect();
         let out =
-            draw_line_chart(&StatsConfig::default(), "本群 · 近 7 天消息走势", series).unwrap();
+            draw_line_chart(&StatsConfig::default(), "本群近 7 天消息走势", series).unwrap();
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(out.trim_start_matches("base64://"))

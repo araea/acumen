@@ -108,7 +108,7 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: i64, min: u64)
         "📅 {} · 今日群聊小结\n📊 全天共 {} 条消息，{} 位群友活跃。",
         date_str, count, users
     )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群 今日 发言 排行榜").await;
+    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群今日发言排行榜").await;
     send_wordcloud(&c, w, gid, range).await;
 }
 
@@ -130,8 +130,8 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
         "🌅 早安！昨日（{}）群活跃回顾\n📊 共 {} 条消息，{} 位群友参与。",
         yest, count, users
     )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群 昨日 发言 排行榜").await;
-    send_chart(&c, w, gid, "发言", "走势", range, "本群 昨日 24小时活跃走势").await;
+    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群昨日发言排行榜").await;
+    send_chart(&c, w, gid, "发言", "走势", range, "本群昨日 24 小时活跃走势").await;
 }
 
 /// [12:30 每日] 午间速览：今日上半场发言榜
@@ -150,7 +150,7 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: i64, min: u64) {
         "☀️ 中午好！今日上半场战报\n📊 截至现在共 {} 条发言。",
         count
     )).await;
-    send_chart(&c, w, gid, "发言", "排行榜", range, "本群 今日上午 发言 排行榜").await;
+    send_chart(&c, w, gid, "发言", "排行榜", range, "本群今日上午发言排行榜").await;
 }
 
 /// [周一 10:00] 上周回顾：上周发言榜 + 上周走势
@@ -170,8 +170,8 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) 
         "🗓 新一周开工！上周群聊回顾\n📊 全周 {} 条消息，{} 位群友活跃。",
         count, users
     )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群 上周 发言 排行榜").await;
-    send_chart(&c, w, gid, "发言", "走势", range, "本群 上周 发言 走势").await;
+    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群上周发言排行榜").await;
+    send_chart(&c, w, gid, "发言", "走势", range, "本群上周发言走势").await;
 }
 
 /// [每月 1 日 10:20] 上月回顾：上月发言榜 + 上月走势 + 上月词云
@@ -193,7 +193,7 @@ pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
         "📆 月度回顾 · {}月\n📊 上月共 {} 条消息，{} 位群友活跃。",
         last_month, count, users
     )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群 上月 发言 排行榜").await;
-    send_chart(&c, w.clone(), gid, "发言", "走势", range, "本群 上月 发言 走势").await;
+    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群上月发言排行榜").await;
+    send_chart(&c, w.clone(), gid, "发言", "走势", range, "本群上月发言走势").await;
     send_wordcloud(&c, w, gid, range).await;
 }

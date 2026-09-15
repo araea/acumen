@@ -13,3 +13,7 @@
 /run-ayjx.log
 /.bot.lock
 /config.toml.backup-*
+
+# Python 字节码：scripts/ 下的工具被 import 时会落下
+__pycache__/
+*.pyc

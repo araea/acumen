@@ -260,11 +260,14 @@ mod tests {
         }
     }
 
-    /// 样本库的胖瘦也是形状。他手打的消息多数只有几个字，十八个字以上的是少数；
-    /// 库里短句不够时，模型会把该分两条说的话并成一条长的——2026-09-15 线上实测
-    /// bot 发言长度中位 12–14，他本人是 4–6，根子就在这儿。改样本时别把库养胖。
+    /// 样本库的胖瘦也是形状，而形状的标尺是他本人，不是一个好记的整数。
+    ///
+    /// 2026-09-15 用 `scripts/mine-voice.py --shape` 量过（滤掉词意猜词之后）：
+    /// 他手打的消息 46.7% 在八个字以内、16.6% 在十八个字以上，中位数 9 个字。
+    /// 所以库要落在他附近——养胖了，模型会把该分两条说的话并成一条长的；
+    /// 修得太瘦，它连一句完整的话都写不出来，那同样不是他。
     #[test]
-    fn the_bank_stays_lean_enough_to_write_short() {
+    fn the_bank_keeps_the_same_shape_as_the_man() {
         let samples = parse(VOICE);
         let total = samples.len();
         let short = samples
@@ -275,8 +278,15 @@ mod tests {
             .iter()
             .filter(|sample| sample.text.chars().count() >= 18)
             .count();
-        assert!(short * 2 >= total, "八个字以内的样本只有 {short}/{total}");
-        assert!(long * 6 <= total, "十八个字以上的样本有 {long}/{total}");
+        let short_share = short * 100 / total;
+        assert!(
+            (40..=55).contains(&short_share),
+            "八个字以内的样本占 {short_share}%（{short}/{total}），他本人是 46.7%"
+        );
+        assert!(
+            long * 100 / total <= 17,
+            "十八个字以上的样本有 {long}/{total}，他本人是 16.6%"
+        );
         // 兴奋时的「！」与话尾的「～」各有实物，否则模型会当它们不存在。
         assert!(samples.iter().any(|sample| sample.text.contains('！')));
         assert!(samples.iter().any(|sample| sample.text.contains('～')));

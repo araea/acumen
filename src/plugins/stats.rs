@@ -190,10 +190,12 @@ pub fn handle(
             _ => (None, None),
         };
 
+        // 中文标题不靠空格断词：连写成一句「本群今日发言排行榜」像一行标题，
+        // 用空格隔开则像四个并排的关键词。范围、总量、时间都在图里的元信息行上。
         let title = if is_all_groups {
-            format!("所有群 {} {} {}", time_str, data_type, chart_type)
+            format!("所有群{}{}{}", time_str, data_type, chart_type)
         } else {
-            format!("{} {} {} {}", scope, time_str, data_type, chart_type)
+            format!("{}{}{}{}", scope, time_str, data_type, chart_type)
         };
 
         let result_img = chart::generate(

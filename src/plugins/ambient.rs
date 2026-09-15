@@ -632,6 +632,8 @@ pub(crate) async fn observe(
     // 认出来只在记录上留个记号，不当作点名（见 [`identity::called_by_name`]）。
     turn.call.named_me =
         !turn.from_me && identity::called_by_name(group, &config, &turn.text);
+    // 每条群消息都带着群名，而 `guild.get` 未必给得出——记下来当兜底。
+    identity::note_group_name(group, event.0.get_str("group_name").unwrap_or_default());
     // 剥掉指令后空无一物的那条消息没有内容可给模型看；它只是按了一次键。
     let empty = turn.text.is_empty() && turn.images.is_empty();
     if empty && !summoned {

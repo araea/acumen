@@ -639,3 +639,97 @@ async fn live_agent_uses_the_new_card_action() {
     assert!(raw.contains("[silent]"));
     server.abort();
 }
+
+/// 「我在这个群里是谁」走的是真平台：名片、头衔、群名与那张头像都得真取回来。
+///
+/// 这一步没法用 mock 证明——mock 里塞什么它就回什么，而这件事的全部价值在于
+/// **平台上写的到底是什么**。所以拿沙箱群真问一遍，顺带确认判定模型收得下头像：
+/// 收不下的话，头像那一句会安静地变成空串，线上看不出任何异常。只读，不改任何东西。
+#[tokio::test]
+#[ignore = "AYJX_AMBIENT_LIVE_GROUP=280183116；只读地问一遍自己的群身份，并让判定模型看一眼头像"]
+async fn live_identity_reads_the_name_the_room_sees() {
+    assert_eq!(
+        std::env::var("AYJX_AMBIENT_LIVE_GROUP").as_deref(),
+        Ok("280183116")
+    );
+    let group = 280183116;
+    let (ctx, _, _, mock) = fixture(group).await;
+    mock.abort();
+    let disk: toml::Value = toml::from_str(&tokio::fs::read_to_string("config.toml").await.unwrap())
+        .unwrap();
+    let connection = disk["bots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["protocol"].as_str() == Some("satori"))
+        .unwrap();
+    let endpoint = connection["url"]
+        .as_str()
+        .unwrap()
+        .trim_end_matches('/')
+        .trim_end_matches("/v1/events");
+    let token = std::env::var("AYJX_SATORI_TOKEN").ok().or_else(|| {
+        connection
+            .get("access_token")
+            .and_then(toml::Value::as_str)
+            .map(str::to_string)
+    });
+    ctx.bot.login_user.set(LoginUser::default());
+    let writer: LockedWriter = Arc::new(crate::adapters::satori::SatoriClient::new(
+        endpoint.into(),
+        token,
+    ));
+    let login: Value = writer.call(&ctx, "login.get", json!({})).await.unwrap();
+    let me: i64 = login["user"]["id"].as_str().unwrap().parse().unwrap();
+    ctx.bot.login_user.set(LoginUser {
+        id: me.to_string(),
+        name: login["user"]["name"].as_str().map(str::to_string),
+        avatar: login["user"]["avatar"].as_str().map(str::to_string),
+        ..Default::default()
+    });
+
+    // 这个群的 `guild.get` 只回 id 和头像，不回群名——群名的兜底是群消息自己带的那个。
+    super::super::identity::note_group_name(group, "浅金黄昏");
+    let identity = super::super::identity::probe(
+        &ctx,
+        &writer,
+        group,
+        me,
+        login["user"]["name"].as_str().unwrap_or_default().to_string(),
+    )
+    .await;
+    println!("群身份：{identity:?}");
+    assert_eq!(identity.user_id, me);
+    // 群里看到的那个名字必须真拿到了：这一段的全部意义就是它。
+    assert!(!identity.display().is_empty(), "{identity:?}");
+    assert_eq!(identity.group_name, "浅金黄昏", "{identity:?}");
+    assert!(identity.joined_at > 0, "{identity:?}");
+    let brief = identity.brief(group, chrono::Local::now().timestamp());
+    println!("注入提示词的那一段：\n{brief}");
+    assert!(brief.contains(identity.display()), "{brief}");
+    assert!(brief.contains(&identity.group_name), "{brief}");
+
+    // 头像：先下下来转成模型收得下的样子，再让判定模型看一眼。
+    let avatar = login["user"]["avatar"].as_str().unwrap();
+    let image = super::super::vision::usable_image(avatar)
+        .await
+        .expect("头像下不下来或者解不开");
+    // 判定模型与接口都照 config.toml 那份读：夹具里的 ctx 拿的是默认配置，
+    // 而这个测试要问的恰恰是「线上这台机器配的那个模型收不收得下图」。
+    let oai: crate::plugins::oai::OaiConfig =
+        disk["oai"].clone().try_into().expect("[oai] 读不出来");
+    let gate: AmbientConfig = disk["ambient"].clone().try_into().expect("[ambient] 读不出来");
+    let (provider, model) = crate::plugins::oai::utils::split_provider(&gate.gate_model);
+    // 不带供应商前缀时接口在 oai 的运行时配置里（不在 config.toml），那种配法这个
+    // 测试覆盖不到——线上判定模型写的是 `deepseek/…`，接口取自 [oai.providers]。
+    let (base, key) =
+        crate::plugins::oai::resolve_endpoint(&oai.providers, "", "", provider.as_deref())
+            .filter(|(base, key)| !base.is_empty() && !key.is_empty())
+            .expect("判定模型的接口没配好：gate_model 要写成 `供应商/模型`");
+    let note = super::super::identity::describe(&base, &key, &model, &image)
+        .await
+        .expect("判定模型看不了图：头像那一句会安静地变成空串");
+    println!("头像：{note}");
+    assert!(!note.is_empty());
+    assert!(note.chars().count() <= 60, "{note}");
+}

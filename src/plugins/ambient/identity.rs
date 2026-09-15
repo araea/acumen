@@ -134,7 +134,7 @@ impl Identity {
         out.push_str(self.standing());
         let tenure = self.tenure(now);
         if !tenure.is_empty() {
-            out.push_str("，");
+            out.push('，');
             out.push_str(&tenure);
         }
         out.push_str("。\n");
@@ -162,6 +162,8 @@ struct Store {
     /// 头像描述的落盘位置。
     path: Option<PathBuf>,
     groups: HashMap<i64, Entry>,
+    /// 群消息自己带着的群名（见 [`note_group_name`]）。
+    seen_names: HashMap<i64, String>,
     /// 已读过磁盘上那份头像描述。
     loaded: bool,
     avatar: Avatar,
@@ -193,6 +195,7 @@ pub(crate) fn attach(base: &Path) {
     let mut store = lock();
     store.path = Some(base.join("identity.json"));
     store.groups.clear();
+    store.seen_names.clear();
     store.avatar = Avatar::default();
     store.loaded = false;
 }
@@ -209,6 +212,27 @@ fn ensure_loaded(store: &mut Store) {
         .and_then(|raw| serde_json::from_str::<Avatar>(&raw).ok())
     {
         store.avatar = avatar;
+    }
+}
+
+/// 记下群消息自己带着的群名。
+///
+/// `guild.get` 并不总给得出 `name`——沙箱群 280183116 就只回 id 和头像，而同一个群的
+/// 每条消息都带着群名。平台那边问不到的时候，用群友刚发的那条消息上写的就是了。
+pub(crate) fn note_group_name(group: i64, name: &str) {
+    if name.is_empty() {
+        return;
+    }
+    let mut store = lock();
+    if store.seen_names.get(&group).is_some_and(|had| had == name) {
+        return;
+    }
+    store.seen_names.insert(group, name.to_string());
+    // 已经缓存着一份没有群名的身份时顺手补上，不必等它过期。
+    if let Some(entry) = store.groups.get_mut(&group)
+        && entry.identity.group_name.is_empty()
+    {
+        entry.identity.group_name = name.to_string();
     }
 }
 
@@ -283,18 +307,47 @@ pub(crate) async fn refresh(
     let Ok(me) = login.id.parse::<i64>() else {
         return;
     };
-    let mut identity = Identity {
-        user_id: me,
-        name: login
+    let mut identity = probe(
+        ctx,
+        writer,
+        group,
+        me,
+        login
             .name
             .clone()
             .or_else(|| login.nick.clone())
             .unwrap_or_default(),
+    )
+    .await;
+    identity.avatar = avatar_note(ctx, mgr, config, login.avatar.as_deref()).await;
+    let mut store = lock();
+    store.groups.insert(
+        group,
+        Entry {
+            identity,
+            at: Instant::now(),
+        },
+    );
+}
+
+/// 问平台「我在这个群里是谁」。
+///
+/// 三样里任何一样问不到都只是那一项空着——名片问不到不该让整轮搭话失败。整体也有
+/// 一个预算：平台卡住的时候，这一轮宁可不带身份，也不能让群聊等着。
+pub(super) async fn probe(
+    ctx: &Context,
+    writer: &LockedWriter,
+    group: i64,
+    me: i64,
+    account_name: String,
+) -> Identity {
+    let mut identity = Identity {
+        user_id: me,
+        name: account_name,
         ..Identity::default()
     };
-    let probe = async {
-        if let Ok(member) =
-            api::get_group_member_info(ctx, writer.clone(), group, me, false).await
+    let ask = async {
+        if let Ok(member) = api::get_group_member_info(ctx, writer.clone(), group, me, false).await
         {
             if !member.nickname.is_empty() {
                 identity.name = member.nickname;
@@ -308,22 +361,19 @@ pub(crate) async fn refresh(
             identity.group_name = guild.group_name;
         }
     };
-    if tokio::time::timeout(FETCH_TIMEOUT, probe).await.is_err() {
+    if tokio::time::timeout(FETCH_TIMEOUT, ask).await.is_err() {
         debug!(target: super::LOG_TARGET, "群 {group} 取自己的群身份超时，这一轮先不带");
     }
     // 名片和昵称一样时它不是「另一个名字」，留着只会在提示词里重复一遍。
     if identity.card == identity.name {
         identity.card.clear();
     }
-    identity.avatar = avatar_note(ctx, mgr, config, login.avatar.as_deref()).await;
-    let mut store = lock();
-    store.groups.insert(
-        group,
-        Entry {
-            identity,
-            at: Instant::now(),
-        },
-    );
+    if identity.group_name.is_empty()
+        && let Some(seen) = lock().seen_names.get(&group)
+    {
+        identity.group_name = seen.clone();
+    }
+    identity
 }
 
 /// 头像那一句：磁盘上有且还是同一张图就直接用，换了才重新看一眼。
@@ -347,29 +397,34 @@ async fn avatar_note(
             return store.avatar.note.clone();
         }
     }
-    let note = match describe(ctx, mgr, config, &image).await {
-        Ok(note) => note,
+    let endpoint = super::gate_endpoint(ctx, mgr, &config.gate_model).await;
+    let note = match endpoint {
         Err(error) => {
             debug!(target: super::LOG_TARGET, "看不成自己的头像：{error:#}");
             return remembered_note();
         }
+        Ok((api_base, api_key, model)) => match describe(&api_base, &api_key, &model, &image).await {
+            Ok(note) => note,
+            Err(error) => {
+                debug!(target: super::LOG_TARGET, "看不成自己的头像：{error:#}");
+                return remembered_note();
+            }
+        },
     };
     if note.is_empty() {
         return remembered_note();
     }
+    let remembered = Avatar {
+        digest,
+        note: note.clone(),
+    };
     let path = {
         let mut store = lock();
-        store.avatar = Avatar {
-            digest,
-            note: note.clone(),
-        };
+        store.avatar = remembered.clone();
         store.path.clone()
     };
     if let Some(path) = path
-        && let Ok(json) = serde_json::to_string(&Avatar {
-            digest: format!("{:x}", md5::compute(image.as_bytes())),
-            note: note.clone(),
-        })
+        && let Ok(json) = serde_json::to_string(&remembered)
     {
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -390,16 +445,15 @@ fn remembered_note() -> String {
 }
 
 /// 把头像交给判定模型，换回一句话。
-async fn describe(
-    ctx: &Context,
-    mgr: &std::sync::Arc<crate::plugins::oai::data::Manager>,
-    config: &AmbientConfig,
+pub(super) async fn describe(
+    api_base: &str,
+    api_key: &str,
+    model: &str,
     image: &str,
 ) -> anyhow::Result<String> {
     use rig_core::completion::Message;
     use rig_core::completion::message::{DocumentSourceKind, Image, Text, UserContent};
 
-    let (api_base, api_key, model) = super::gate_endpoint(ctx, mgr, &config.gate_model).await?;
     let messages = vec![
         Message::System {
             content: AVATAR_RUBRIC.to_string(),
@@ -418,7 +472,7 @@ async fn describe(
     ];
     let raw = tokio::time::timeout(
         AVATAR_TIMEOUT,
-        crate::plugins::oai::llm::complete(&api_base, &api_key, &model, messages, None),
+        crate::plugins::oai::llm::complete(api_base, api_key, model, messages, None),
     )
     .await
     .map_err(|_| anyhow::anyhow!("看头像超时"))??;

@@ -253,21 +253,20 @@ pub fn format_thousands(value: i64) -> String {
     out
 }
 
-/// 统一的占比文案：非零的极小占比不塌成 "0%"，达到 1% 后不再拖小数尾巴。
+/// 统一的占比文案：一律四舍五入到整数，一列百分数里不夹小数点看着才干净；
+/// 不足半个百分点的写 "<1%"，免得非零的零头被舍成一个没意义的 "0%"。
 /// 排行榜与信息卡共用，避免同一批数据在两张图里写法不一致。
 pub fn format_percent(value: i64, total: i64) -> String {
     if total <= 0 || value <= 0 {
         return "0%".to_string();
     }
     let pct = value as f64 / total as f64 * 100.0;
-    if pct < 0.01 {
-        "<0.01%".to_string()
-    } else if pct < 1.0 {
-        format!("{:.2}%", pct)
-    } else if pct < 10.0 {
-        format!("{:.1}%", pct)
+    // `{:.0}` 是「四舍六入五成双」，2.5 会写成 2；这里要的是四舍五入，先 round 再写
+    let rounded = pct.round() as i64;
+    if rounded == 0 {
+        "<1%".to_string()
     } else {
-        format!("{:.0}%", pct)
+        format!("{}%", rounded)
     }
 }
 
@@ -505,5 +504,27 @@ pub fn overlay_image(base: &mut RgbaImage, overlay: &RgbaImage, x: i32, y: i32) 
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percents_round_to_whole_numbers() {
+        // 四舍五入，不是「五成双」：2.5% 写作 3%
+        assert_eq!(format_percent(25, 1000), "3%");
+        assert_eq!(format_percent(54, 1000), "5%");
+        assert_eq!(format_percent(280, 1000), "28%");
+        assert_eq!(format_percent(1, 1), "100%");
+
+        // 不足半个百分点的零头不塌成 "0%"
+        assert_eq!(format_percent(4, 1000), "<1%");
+        assert_eq!(format_percent(1, 1_000_000), "<1%");
+
+        // 真正的零与无效总数仍写 0%
+        assert_eq!(format_percent(0, 1000), "0%");
+        assert_eq!(format_percent(5, 0), "0%");
     }
 }
