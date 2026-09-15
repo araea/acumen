@@ -18,11 +18,8 @@
 use super::api::{DailyBlock, DailyReport, HotTopic, Item, category_label};
 use super::leaderboard::{Board, Trend};
 use super::render::{RenderOptions, fmt_time, truncate};
-use crate::render::web::TabGuard;
 use anyhow::Result;
-use cdp_html_shot::{Browser, CaptureOptions, Viewport};
 use chrono::{DateTime, Timelike, Utc};
-use std::time::Duration;
 
 /// 卡片主色。`rgb` 供 `rgba()` 调透明度用，避免写死多份色值。
 #[derive(Clone, Copy)]
@@ -206,7 +203,9 @@ const CSS: &str = r#"
 .li .t{margin-top:6px;font-size:18px;line-height:1.72;color:var(--subtle)}
 
 /* —— 模型榜 —— */
-.mrow{display:grid;grid-template-columns:50px minmax(0,1fr) 142px;gap:17px;align-items:center;
+/* 行内三列都从顶端对齐：名次方块与分数跟标题的第一行齐平，而不是各自在行高里
+   垂直居中——居中会让名次掉到来源那一行去，读起来像标错了对象。 */
+.mrow{display:grid;grid-template-columns:50px minmax(0,1fr) 142px;gap:17px;align-items:start;
   padding:23px 0;border-bottom:1px solid var(--line)}
 .mrow:last-of-type{border-bottom:none}
 .mname{display:flex;align-items:baseline;flex-wrap:wrap;gap:10px;
@@ -599,52 +598,22 @@ pub fn daily_card(report: &DailyReport, max_blocks: usize, theme: CardTheme) -> 
     shell(DAILY, theme, "AI DAILY", &title, subtitle, &body, FOOT_LINKS)
 }
 
-/// 把卡片 HTML 截成图，返回 base64（PNG/JPEG 由截图端决定）。
-///
-/// 先按固定宽度定版，量出实际高度后再放大视口重截，
-/// 保证长卡片一次出完，不会被视口截断。
+/// 把卡片 HTML 截成图，返回 base64（JPEG）。
 ///
 /// `scale` 是设备像素比：版心宽度不变、出图分辨率翻倍，字形边缘更实，
-/// 群里放大看不至于发虚。取值过大只会把图撑肥，这里限制在 1—4 倍。
+/// 群里放大看不至于发虚。取值过大只会把图撑肥，限制在 1—4 倍。
+///
+/// 量高度、等字体与尺寸护栏都在 [`crate::render::web::shoot`] 里；这条路径曾经
+/// 自己写「先量高度再重设视口、中间睡两觉」，改走同一处之后少了两趟视口往返与
+/// 230 ms 固定等待，也顺带接上了那一道并发闸门（此前没有）。
 pub async fn capture(html: &str, scale: f64) -> Result<String> {
-    let scale = if scale.is_finite() {
-        scale.clamp(1.0, 4.0)
-    } else {
-        3.0
-    };
-    let browser = Browser::instance().await;
-    // 标签页交给守卫：下面那道 timeout 触发时会把这段流程整个取消，`close()` 便执行
-    // 不到；守卫的 Drop 保证页面一定被关掉。
-    let guard = TabGuard::new(browser.new_tab().await.map_err(|e| anyhow::anyhow!(e))?);
-
-    // CDP/Chromium 在 Android 锁屏或进程调度异常时可能永远等不到响应。
-    // 给整段截图流程设硬上限，确保定时推送最终能进入文本兜底而非永久卡住。
-    let result = tokio::time::timeout(Duration::from_secs(45), async {
-        let tab = guard.tab();
-        tab.set_viewport(&Viewport::new(WIDTH, 600).with_device_scale_factor(scale))
-            .await?;
-        tab.set_content(html).await?;
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let height = tab
-            .evaluate("document.body.scrollHeight")
-            .await?
-            .as_f64()
-            .unwrap_or(1200.0) as u32;
-        let viewport =
-            Viewport::new(WIDTH, (height + 40).clamp(400, 12000)).with_device_scale_factor(scale);
-        tab.set_viewport(&viewport).await?;
-        tokio::time::sleep(Duration::from_millis(80)).await;
-
-        let opts = CaptureOptions::new().with_viewport(viewport).with_quality(92);
-        let b64 = tab.find_element(".shot").await?.screenshot_with_options(opts).await?;
-        Ok::<String, anyhow::Error>(b64)
-    })
+    crate::render::web::shoot(
+        crate::render::web::Shot::new(html, WIDTH)
+            .scale(scale)
+            .jpeg(92)
+            .max_height(12_000.0),
+    )
     .await
-    .map_err(|_| anyhow::anyhow!("卡片截图超时（45 秒）"))?;
-
-    guard.close().await;
-    result
 }
 
 #[cfg(test)]

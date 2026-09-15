@@ -1,45 +1,28 @@
 //! Markdown → 回复卡片图片。
 //!
-//! 两处改造：
-//!
-//! **速度**——旧流程是「设视口 → 注入 → 睡 200ms → 量高度 → 再设视口 → 睡 100ms
-//! → 查元素 → 取盒模型 → 截图」，两次固定睡眠与多次 CDP 往返都花在等一个本来
-//! 可以被观测到的状态上。现在只保留「设一次视口 → 注入 → 一次 evaluate（等字体
-//! 就绪并量出卡片盒子）→ 带 clip 的整页截图」，睡眠与重复往返一并去掉。
+//! **出图**——量高度、等字体、尺寸护栏与并发闸门都收在
+//! [`crate::render::web::shoot`] 一处，本模块只声明这张卡片的宽度、格式与出图范围。
+//! 早年那套「设视口 → 注入 → 睡 200ms → 量高度 → 再设视口 → 睡 100ms → 查元素 →
+//! 取盒模型 → 截图」现在已无处可寻：两次固定睡眠与多次 CDP 往返都花在等一个本来
+//! 可以被观测到的状态上。
 //!
 //! **可读性**——排版按聊天里「一屏读完」来调：正文行高放宽、层级用色块而非纯字号
 //! 区分、代码块深色高对比、表格斑马纹、长 URL 强制断行；正文之外还能挂来源列表
 //! 与耗时页脚，让读者一眼看清结论出处与代价。
 
-use crate::render::web::TabGuard;
-use cdp_html_shot::{Browser, CaptureOptions, ClipRegion, ImageFormat, Viewport};
+use crate::render::web as render;
 use pulldown_cmark::{Options, Parser, html};
 use regex::Regex;
 use std::sync::OnceLock;
-use std::time::Duration;
-use tokio::sync::Semaphore;
 
 /// 卡片 CSS 宽度；配合 2 倍像素密度即 1040px 位图，在手机聊天窗口里既清晰又不糊。
 const CARD_WIDTH: u32 = 520;
 /// 视口留出的左右留白。
 const VIEWPORT_WIDTH: u32 = CARD_WIDTH + 40;
+/// 设备像素比。2 倍即 1040px 位图，与 520px 的版心配在一起最省体积又不糊。
 const DEVICE_SCALE: f64 = 2.0;
-/// 单张图片的高度上限（CSS 像素），超出部分裁掉，避免生成超大图拖垮发送。
+/// 单张图片的高度上限（CSS 像素），超出就退回纯文本，避免超大图拖垮发送。
 const MAX_CARD_HEIGHT: f64 = 20_000.0;
-/// 整个渲染流程的上限，含浏览器获取与建标签页。
-///
-/// CDP 的每条命令都没有自带超时，浏览器一旦起不来或卡住就是永久阻塞——那意味着
-/// 用户等到的不是一张丑图，而是彻底没有回复。兜这一道底，渲染失败就退化成纯文本，
-/// 消息一定发得出去。
-const RENDER_TIMEOUT: Duration = Duration::from_secs(45);
-/// 等待网页字体就绪的上限。字体没到位会让 CJK 行高算错、卡片底部被切。
-const FONT_WAIT_MS: u32 = 800;
-/// 同时进行的卡片渲染上限。
-///
-/// 群里多个房间、多个人同时发问时，每一轮回复都要截一张卡片；没有闸门的写法就是
-/// 一人一个标签页一起开，浏览器被压垮之后每个渲染又都卡到超时——那正是页面关不掉
-/// 的温床。webshot 与 help/ctl 的卡片各有自己的闸门，这里补上同一道。
-static RENDER_GATE: Semaphore = Semaphore::const_new(2);
 
 /// 卡片内容。
 pub(crate) struct Card<'a> {
@@ -67,87 +50,16 @@ pub(crate) struct Footer {
 /// 渲染成 base64 JPEG。
 pub(crate) async fn render_card(card: Card<'_>) -> anyhow::Result<String> {
     let html = build_html(&card);
-    // 排队在超时之外：等闸门的时间不算渲染预算，否则高峰期排在后头的必然失败。
-    let _permit = RENDER_GATE
-        .acquire()
-        .await
-        .map_err(|_| anyhow::anyhow!("卡片渲染闸门不可用"))?;
-    match tokio::time::timeout(RENDER_TIMEOUT, render_html(&html)).await {
-        Ok(result) => result,
-        Err(_) => Err(anyhow::anyhow!(
-            "卡片渲染超过 {} 秒未完成（浏览器无响应）",
-            RENDER_TIMEOUT.as_secs()
-        )),
-    }
-}
-
-async fn render_html(html: &str) -> anyhow::Result<String> {
-    let browser = Browser::instance().await;
-    // 标签页交给守卫：上面那道 timeout 一旦触发就会把本函数整个取消，原先写在末尾的
-    // `close()` 便执行不到，页面会留在浏览器里。守卫的 Drop 补上这一步。
-    let guard = TabGuard::new(browser.new_tab().await?);
-    let result = capture(guard.tab(), html).await;
-    guard.close().await;
-    result
-}
-
-async fn capture(tab: &cdp_html_shot::Tab, html: &str) -> anyhow::Result<String> {
-    // 视口只设一次；最终尺寸由截图的 clip 决定，所以初始高度给个占位值即可。
-    tab.set_viewport(&Viewport::new(VIEWPORT_WIDTH, 800).with_device_scale_factor(DEVICE_SCALE))
-        .await?;
-    tab.set_content(html).await?;
-
-    // 等字体真正可用再量尺寸：CJK 字体换算前后的行高差别足以让卡片底部被切掉。
-    //
-    // 但每一步都必须有界。`Runtime.evaluate` 带 `awaitPromise` 时，promise 不落地
-    // 就是永久挂起，而 headless 下 `requestAnimationFrame` 并不保证会触发——用它
-    // 等布局提交，等来的往往是死锁。这里改用超时兜底的 `document.fonts.ready`
-    // 加一次宏任务让位，正常情况下毫秒级返回。
-    let measured = tab
-        .evaluate(&format!(
-            r#"(async () => {{
-                const deadline = new Promise(resolve => setTimeout(resolve, {FONT_WAIT_MS}));
-                try {{ await Promise.race([document.fonts.ready, deadline]); }} catch (_) {{}}
-                await new Promise(resolve => setTimeout(resolve, 0));
-                const card = document.querySelector('.card');
-                if (!card) return null;
-                const box = card.getBoundingClientRect();
-                return {{
-                    x: box.left + window.scrollX,
-                    y: box.top + window.scrollY,
-                    width: box.width,
-                    height: box.height,
-                }};
-            }})()"#
-        ))
-        .await?;
-
-    let number = |key: &str| measured.get(key).and_then(|value| value.as_f64());
-    let width = number("width")
-        .filter(|value| *value > 1.0)
-        .unwrap_or(f64::from(CARD_WIDTH));
-    let height = number("height")
-        .filter(|value| *value > 1.0)
-        .unwrap_or(800.0)
-        .min(MAX_CARD_HEIGHT);
-
-    let clip = ClipRegion::new(
-        number("x").unwrap_or(0.0),
-        number("y").unwrap_or(0.0),
-        width,
-        height,
-    );
-    let base64 = tab
-        .screenshot(
-            CaptureOptions::new()
-                .with_format(ImageFormat::Jpeg)
-                .with_quality(88)
-                // 卡片通常远高于视口，必须允许越界捕获，否则底部会是空白。
-                .with_full_page(true)
-                .with_clip(clip),
-        )
-        .await?;
-    Ok(base64)
+    // 量高度、等字体、尺寸护栏与并发闸门都在 `render::web::shoot` 一处。
+    // 出图范围是 `.card`（正文的 20px 留白由 body 提供，不进图）。
+    render::shoot(
+        render::Shot::new(&html, VIEWPORT_WIDTH)
+            .selector(".card")
+            .scale(DEVICE_SCALE)
+            .jpeg(88)
+            .max_height(MAX_CARD_HEIGHT),
+    )
+    .await
 }
 
 fn build_html(card: &Card<'_>) -> String {

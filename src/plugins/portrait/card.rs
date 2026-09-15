@@ -8,21 +8,18 @@
 //! 全部的说服力所在——三层从硬到软，读者一眼就知道哪几条能拿去用，哪几条只是读出来的。
 //!
 //! 约束与本仓库其它卡片一致：不加载任何外部资源（字体、图片、脚本都不引；头像由
-//! [`super::avatar`] 先下回来，以 data URL 内嵌），所有动态文本一律转义，出图走 `TabGuard`
-//! 并在 45 秒处兜底。
+//! [`super::avatar`] 先下回来，以 data URL 内嵌），所有动态文本一律转义，出图交给
+//! [`crate::render::web::shoot`]——量高、等字体、尺寸护栏与闸门都在那一处。
 
 use super::collect::Material;
 use super::persona::{Persona, Tag, DIMENSIONS, LAYERS};
-use crate::render::web::TabGuard;
 use anyhow::Result;
-use cdp_html_shot::{Browser, CaptureOptions, Viewport};
 use chrono::{DateTime, FixedOffset, Timelike, Utc};
-use std::time::Duration;
 
 /// 卡片渲染宽度（CSS 像素）。出图宽度 = `WIDTH × scale`。
 const WIDTH: u32 = 720;
-/// 截图上限，与其它卡片保持一致。
-const CAPTURE_TIMEOUT: Duration = Duration::from_secs(45);
+/// 高度上限（CSS 像素），与其它卡片一致。
+const CAPTURE_MAX_HEIGHT: f64 = 16_000.0;
 
 /// 明暗两套主题。切换只动明度与文字三档灰，不动版式，切换后仍像同一份东西。
 /// 两套都是纸色：日读偏暖白，夜读偏墨黑，衬线字落在上面才不显生。
@@ -359,46 +356,17 @@ fn foot(view: &View<'_>) -> String {
 }
 
 /// 出图。`scale` 是设备像素比，限制在 1—4 倍，与其它卡片一致。
+///
+/// 量高度、等字体、尺寸护栏与并发闸门都在 [`crate::render::web::shoot`] 里，
+/// 这里只声明这张卡片自己的宽度、格式与选择器。
 pub async fn capture(html: &str, scale: f64) -> Result<String> {
-    let scale = if scale.is_finite() {
-        scale.clamp(1.0, 4.0)
-    } else {
-        3.0
-    };
-    let browser = Browser::instance().await;
-    let guard = TabGuard::new(browser.new_tab().await.map_err(|e| anyhow::anyhow!(e))?);
-
-    let result = tokio::time::timeout(CAPTURE_TIMEOUT, async {
-        let tab = guard.tab();
-        tab.set_viewport(&Viewport::new(WIDTH, 800).with_device_scale_factor(scale))
-            .await?;
-        tab.set_content(html).await?;
-        // 字体就绪之前量高度会算出偏小的值，底部会被切掉；给一帧让布局落地。
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        let height = tab
-            .evaluate("document.body.scrollHeight")
-            .await?
-            .as_f64()
-            .unwrap_or(1200.0) as u32;
-        let viewport =
-            Viewport::new(WIDTH, (height + 40).clamp(400, 16_000)).with_device_scale_factor(scale);
-        tab.set_viewport(&viewport).await?;
-        tokio::time::sleep(Duration::from_millis(120)).await;
-
-        let options = CaptureOptions::new().with_viewport(viewport).with_quality(90);
-        let shot = tab
-            .find_element(".shot")
-            .await?
-            .screenshot_with_options(options)
-            .await?;
-        Ok::<String, anyhow::Error>(shot)
-    })
+    crate::render::web::shoot(
+        crate::render::web::Shot::new(html, WIDTH)
+            .scale(scale)
+            .jpeg(90)
+            .max_height(CAPTURE_MAX_HEIGHT),
+    )
     .await
-    .map_err(|_| anyhow::anyhow!("画像卡片截图超时（{} 秒）", CAPTURE_TIMEOUT.as_secs()))?;
-
-    guard.close().await;
-    result
 }
 
 /// 页面主色取当前的北京时刻，与 `html()` 里的主题判定保持同一条规则。
@@ -461,8 +429,10 @@ const CSS: &str = r#"
   color:__ACCENT__}
 
 /* —— 读数 —— */
+/* 只画上缘那一条。下缘再画一条的话，紧跟着的分节自己还有一条上缘线，中间空着
+   34px 的两道平行细线，看着像漏了一行内容。全篇的分隔线统一「块首一条」。 */
 .readings{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:24px;padding:16px 2px;
-  border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
+  border-top:1px solid var(--line)}
 .reading{display:inline-flex;align-items:baseline;gap:5px;font-size:14.5px;line-height:1.5}
 .rk{color:var(--faint);letter-spacing:.06em}
 .rv{font-size:17px;font-weight:700;color:__ACCENT__;font-variant-numeric:tabular-nums}

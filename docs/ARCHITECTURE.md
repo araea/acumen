@@ -26,7 +26,7 @@ src/
   message.rs       Message 消息构建器（text/image/node_custom 等）
   plugins.rs       插件框架核心：Plugin 定义、注册宏、流水线、配置读写
   plugins/         各插件；registry.rs 为注册表（唯一的插件清单）
-  render/          卡片渲染层：网页阅读卡片、原生字体与画布
+  render/          卡片渲染层：web.rs 是全部 HTML 卡片的唯一出图入口，另含原生字体与画布
   scheduler.rs     定时任务（daily / interval / 周期推送，带 Pace 错峰）
   db/              sea-orm 实体与查询（SQLite，data/bot.db）
 ```
@@ -116,13 +116,45 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 | 路线 | 依赖 | 使用方 | 适用 |
 | --- | --- | --- | --- |
-| 网页阅读卡片 `render/web.rs` | Chrome/Chromium、系统 CJK 字体 | help、ctl | 插件手册、状态清单、配置与差异 |
+| HTML 卡片 `render/web.rs` | Chrome/Chromium、系统 CJK 字体 | help、ctl、portrait、ai_news、oai | 插件手册、状态清单、配置与差异、用户画像、资讯长图、Markdown 回复 |
 | 图表 plotters | 无 | stats、wordcloud | 坐标轴、折线、柱状、词云 |
-| 浏览器截图 cdp_html_shot | Chrome/Chromium | webshot、ai_news、oai | 真实网页、资讯长图、Markdown |
+| 真实网页截图 | Chrome/Chromium | webshot | 把链接本身截下来 |
 
-help 和 ctl 共用 `render/web.rs` 的结构化文档和 `res/cards/reading.css`，由浏览器完成字体塑形、标点和长文本换行：640 CSS px 版心、22px 正文、1.7 倍行高，默认输出 3 倍 PNG。帮助用青绿色点缀，控制用暖棕色点缀。清单单列显示，停用项保持正常文字对比度，状态同时用文字和颜色表示。所有动态内容都做 HTML 转义，页面不执行脚本，也不加载外部资源，截图前等待字体和布局完成。
+需要出图的插件只声明「宽度 / 出图范围 / 格式」，剩下的都交给 `render::web::shoot`：
 
-系统卡片串行截图。排队、浏览器初始化、建页和截图共用 45 秒超时，任何结果都尝试关闭页面。最大高度 16000 CSS px，位图最多 6400 万像素，超出时回复完整文本而不裁剪内容。`image_scale` 限制在 1—4 倍，非有限值回退到 3 倍。
+```rust
+render::web::shoot(
+    render::web::Shot::new(&html, 720).scale(scale).jpeg(92),
+).await
+```
+
+`Shot` 的三个关键取值是宽度（视口与成图宽度，决定文字怎么换行）、选择器（命中的元素
+的外接矩形就是成图边界，默认 `.shot`，oai 的回复卡片用 `.card`）和格式（help/ctl 用 PNG，
+篇幅长的画像与资讯用 JPEG）。量高度、等字体、尺寸护栏、并发闸门都在 `shoot` 里，
+调用方不重复实现。
+
+`shoot` 只对页面做一趟 `evaluate`：字体用 `document.fonts.ready` 与一个 900 ms 定时器
+赛跑，再让出一轮宏任务提交布局，然后一次量出盒模型，最后用带 clip 的整页截图取下来。
+等布局靠观测而不是靠固定睡眠，所以没有「睡少了量到偏小的高度、卡片底部被切」这一类
+偶发问题。**不要退回 `requestAnimationFrame`**：headless 下它不保证触发，拿它等布局
+等来的往往是死锁。
+
+排队在超时之外：`CARD_GATE` 在 45 秒预算之前获取，排在后头的请求不会因为前面那张慢
+而被判超时。超时、量不到盒子、超过高度上限（16000 CSS px）或像素预算（6400 万）
+都返回错误，由调用方回退成完整文本，不产出一张截掉一半的图。`image_scale` 限制在
+1—4 倍，非有限值回退到 3 倍。
+
+闸门按「一类工作」划分，不按调用点划分：`render/web.rs` 的 `CARD_GATE`（3）管自家
+生成的卡片，`webshot` 自己的闸门（2）管真实网页。两者混进同一道的话，一条慢网页会把
+一张帮助卡挡住两分钟。
+
+help 和 ctl 另有一层结构化文档模型（`Doc` / `Block`）与共用样式 `res/cards/reading.css`，
+由浏览器完成字体塑形、标点和长文本换行：640 CSS px 版心、22px 正文、1.7 倍行高，默认
+输出 3 倍 PNG。帮助用青绿色点缀，控制用暖棕色点缀。清单单列显示，停用项保持正常文字
+对比度，状态同时用文字和颜色表示。总览用 920 px 两列网格，列间有一条竖线；条目的分隔
+线用「每条加顶线、首行两条不画」，任何条数都左右对称——`:last-child` 在网格里只命中整
+个网格的最后一条，会让右列末条有线、左列末条没线。所有动态内容都做 HTML 转义，页面不
+执行脚本，也不加载外部资源，截图前等待字体和布局完成。
 
 字重：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档，向系统请求 Bold 得到的仍是 400 字重。两条出图路径都会自行合成粗体（浏览器原生支持，原生绘制使用 `Typeface.embolden` 做形态学膨胀），但外扩轮廓无法补出笔画的粗细对比。运行 `sh scripts/install-cjk-weights.sh` 把真实的 Bold(700) 和 Black(900) 安装到 `~/.fonts` 后，fontconfig 和 fontdb 会自动使用它们，合成量为零，代码不需要改动。不安装也能运行，只是标题会细一档。网页卡片用 `font-weight: 900` 表达。字体是设备本地状态，仓库里无法恢复，换机器需要重新运行脚本。
 

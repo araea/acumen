@@ -189,4 +189,4 @@ ColorOS 之类的清理器会连整个 Termux 应用一起杀掉，Termux 里的
 
 ctl 与 help 使用 Chromium 网页卡片。插件总览是「目录」，版心 920px、条目按两列网格并排，便于一屏看全；插件详情与 ctl 的卡片版心 640px，单栏呈现。开关与待重启状态有文字标签，指令、别名、配置与差异自动换行并保留完整内容。`image_scale` 控制 PNG 分辨率（1—4 倍，默认 3），`image_enabled = false` 可以使用纯文本。
 
-安装 Chrome/Chromium 与系统中日韩字体，并在全局 `browser_path` 指定浏览器路径。出图含排队最多等待 45 秒，结束后清理页面；缺少浏览器、超时或图片超出安全尺寸时自动回复完整文本。`on` / `off` / `set` / `reset` 的确认及错误继续以文本回复。
+安装 Chrome/Chromium 与系统中日韩字体，并在全局 `browser_path` 指定浏览器路径。单张卡片最多渲染 45 秒（排队不计入，见 [ARCHITECTURE.md](ARCHITECTURE.md) 的出图与渲染），结束后清理页面；缺少浏览器、超时或图片超出安全尺寸时自动回复完整文本。`on` / `off` / `set` / `reset` 的确认及错误继续以文本回复。

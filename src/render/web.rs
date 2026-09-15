@@ -1,7 +1,7 @@
 //! help / ctl 共用的网页阅读卡片。动态内容始终作为文本转义，不加载外部资源。
 
 use anyhow::{Result, anyhow, ensure};
-use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, Viewport};
+use cdp_html_shot::{Browser, CaptureOptions, ClipRegion, ImageFormat, Viewport};
 use futures_util::FutureExt;
 use std::{panic::AssertUnwindSafe, time::Duration};
 use tokio::{sync::Semaphore, time::timeout};
@@ -51,7 +51,10 @@ pub enum Block {
     },
     /// 条目清单。`cols` 为 1 时逐条竖排；大于 1 时排成多列网格
     /// （目前样式只定义了 `.cols-2`），让「一眼看全」的目录不被撑成一张长图。
-    Items { items: Vec<Item>, cols: usize },
+    Items {
+        items: Vec<Item>,
+        cols: usize,
+    },
     Cmds(Vec<Cmd>),
     Rows(Vec<Row>),
     Code(Vec<String>),
@@ -177,9 +180,25 @@ pub fn html(doc: &Doc) -> String {
     )
 }
 
-// 系统卡片串行截图，避免群聊同时请求时抢占大量内存。排队时间计入超时。
-static CAPTURE_GATE: Semaphore = Semaphore::const_new(1);
+/// 网页卡片的并发闸门。同一时刻最多三张卡片在渲染。
+///
+/// 一张卡片要占几十 MB（页面 + 位图），群聊里同时触发时不能各自开一页。三个是
+/// 本机（手机，可用内存约 900 MB）实测安全的档位：再多也只是排队，还挤占截图本身。
+///
+/// **闸门按「一类工作」划分，不按调用点划分**。此前 help/ctl 一道、oai 一道、
+/// ai_news 与 portrait 没有闸门，同一个 Chromium 进程被五套口径同时使唤。现在
+/// 只有两道：这一道管**自家生成的卡片**（help / ctl / portrait / ai_news / oai，
+/// 页面简单、渲染有 45 秒上限），[`crate::plugins::webshot`] 那道管**真实网页**
+/// （不可信内容、可能加载几 MB 资源、预算可到两分钟）。两者混进同一道会让一条
+/// 慢网页把一张帮助卡挡住两分钟。
+pub(crate) static CARD_GATE: Semaphore = Semaphore::const_new(3);
+
+/// 单张卡片的渲染预算。**排队时间不计入**——闸门在超时之外获取，排在后面的请求
+/// 不会因为前面那张慢而被判超时。
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// 等网页字体就绪的上限（毫秒）。字体没到位时 CJK 行高会算小，卡片底部被切。
+const FONT_WAIT_MS: u32 = 900;
 
 /// 浏览器标签页的清理守卫。
 ///
@@ -232,54 +251,188 @@ fn scale_factor(scale: f64) -> f64 {
     }
 }
 
-pub async fn capture(doc: &Doc, scale: f64, browser_path: Option<&str>) -> Result<String> {
-    capture_html(&html(doc), doc.width as u32, scale, browser_path).await
+/// 一张网页卡片的出图参数。
+///
+/// 出图范围由 [`Shot::selector`] 命中的元素决定：它的外接矩形就是成图边界。
+/// 这样调用方只要保证页面里有那一个元素，不必关心视口该开多大、高度怎么量。
+pub struct Shot<'a> {
+    pub html: &'a str,
+    /// 决定出图范围的选择器，必须命中一个元素。
+    pub selector: &'a str,
+    /// 页面布局宽度（CSS 像素）。文字按它换行，成图宽度也是它。
+    pub width: u32,
+    pub scale: f64,
+    pub format: ImageFormat,
+    /// 仅 JPEG / WebP 生效，PNG 忽略。
+    pub quality: u8,
+    /// 高度上限（CSS 像素），超过就报错交给调用方回退文本。
+    pub max_height: f64,
+    pub browser_path: Option<&'a str>,
 }
 
-/// 把一段自带样式的整页 HTML 截成 PNG base64。
+impl<'a> Shot<'a> {
+    /// 默认出一张 PNG，选择器 `.shot`（本仓库所有卡片的统一约定）。
+    pub fn new(html: &'a str, width: u32) -> Self {
+        Self {
+            html,
+            selector: ".shot",
+            width,
+            scale: 3.0,
+            format: ImageFormat::Png,
+            quality: 92,
+            max_height: 16_000.0,
+            browser_path: None,
+        }
+    }
+
+    pub fn selector(mut self, selector: &'a str) -> Self {
+        self.selector = selector;
+        self
+    }
+
+    pub fn scale(mut self, scale: f64) -> Self {
+        self.scale = scale;
+        self
+    }
+
+    /// 改出 JPEG（体积小一个量级，长报告走这条）。
+    pub fn jpeg(mut self, quality: u8) -> Self {
+        self.format = ImageFormat::Jpeg;
+        self.quality = quality;
+        self
+    }
+
+    pub fn max_height(mut self, max_height: f64) -> Self {
+        self.max_height = max_height;
+        self
+    }
+
+    pub fn browser(mut self, browser_path: Option<&'a str>) -> Self {
+        self.browser_path = browser_path;
+        self
+    }
+}
+
+pub async fn capture(doc: &Doc, scale: f64, browser_path: Option<&str>) -> Result<String> {
+    shoot(
+        Shot::new(&html(doc), doc.width as u32)
+            .scale(scale)
+            .browser(browser_path),
+    )
+    .await
+}
+
+/// 把一段自带样式的整页 HTML 截成图片的 base64。
 ///
-/// 与 [`capture`] 走同一道串行闸门与同一套尺寸护栏，只是版面由调用方自己写——
-/// help / ctl 的 `Doc` 模型排不出来的卡片（如篇幅很长的插件手册）走这里。
-/// 页面里必须有一个 `.shot` 元素，它的外接矩形就是出图范围。
-pub async fn capture_html(
-    html: &str,
-    width: u32,
-    scale: f64,
-    browser_path: Option<&str>,
-) -> Result<String> {
+/// 本仓库所有网页卡片（help / ctl / 画像 / 资讯 / 智能体回复）都走这一条，只有
+/// [`Shot`] 的取值不同。三件事只在这里做一次：
+///
+/// 1. **量一次就够**。旧写法是「设占位视口 → 注入 → 固定睡 150–320 ms → 量高度 →
+///    再设一次视口 → 再睡一觉 → 截元素」，两次固定睡眠与两趟视口往返全花在等一个
+///    本来可以观测到的状态上。[`oai::render`](crate::plugins::oai::render) 的写法
+///    被证明更稳：把「等字体」和「量盒子」合并成一次 `evaluate`，字体用
+///    `document.fonts.ready` 与一个定时器赛跑（headless 下 `requestAnimationFrame`
+///    不保证触发，不能拿它等布局），量完直接用 clip 整页截图。少了两次睡眠，
+///    也少了「量到的高度偏小、卡片底部被切」这一类偶发问题。
+/// 2. **尺寸有护栏**。高度上限与像素预算都在这儿收口，超了返回错误，由调用方回退
+///    纯文本，不产出一张截掉一半的图。
+/// 3. **闸门在超时之外**。排队不是渲染失败。
+pub async fn shoot(shot: Shot<'_>) -> Result<String> {
+    let Shot {
+        html,
+        selector,
+        width,
+        scale,
+        format,
+        quality,
+        max_height,
+        browser_path,
+    } = shot;
     let scale = scale_factor(scale);
+    // 排队在超时之外：等闸门的时间不算渲染预算，否则高峰期排在后头的必然失败。
+    let _permit = CARD_GATE
+        .acquire()
+        .await
+        .map_err(|_| anyhow!("卡片渲染闸门不可用"))?;
+
     let mut page = None;
     // cdp-html-shot 的全局实例初始化失败会 panic，转换为可回退的普通错误。
     let result = AssertUnwindSafe(timeout(CAPTURE_TIMEOUT, async {
-        let _permit = CAPTURE_GATE.acquire().await?;
         let browser = match browser_path.filter(|p| !p.is_empty()) {
             Some(path) => Browser::instance_with_path(path).await,
             None => Browser::instance().await,
         };
         page = Some(TabGuard::new(browser.new_tab().await?));
         let tab = page.as_ref().unwrap().tab();
-        tab.set_viewport(&Viewport::new(width, 600).with_device_scale_factor(scale)).await?;
+        // 视口只设一次：布局宽度要准，高度由后面的 clip 决定。
+        tab.set_viewport(&Viewport::new(width, 600).with_device_scale_factor(scale))
+            .await?;
         tab.set_content(html).await?;
-        tab.evaluate("document.fonts.ready.then(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)))))").await?;
-        let height = tab.evaluate("Math.ceil(document.querySelector('.shot').getBoundingClientRect().height)").await?
-            .as_f64().ok_or_else(|| anyhow!("无法测量卡片高度"))?;
-        ensure!(height.is_finite() && height > 0.0 && height <= 16000.0
-            && f64::from(width) * height * scale * scale <= 64_000_000.0,
-            "卡片超出安全出图尺寸，改用完整文本");
-        let viewport = Viewport::new(width, height as u32).with_device_scale_factor(scale);
-        tab.set_viewport(&viewport).await?;
-        let opts = CaptureOptions::new().with_viewport(viewport).with_format(ImageFormat::Png);
-        tab.find_element(".shot").await?.screenshot_with_options(opts).await
-    })).catch_unwind().await;
+
+        let measured = tab
+            .evaluate(&format!(
+                r#"(async () => {{
+                    const deadline = new Promise(resolve => setTimeout(resolve, {FONT_WAIT_MS}));
+                    try {{ await Promise.race([document.fonts.ready, deadline]); }} catch (_) {{}}
+                    // 让出一轮宏任务，把上一步的样式与布局提交掉。
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                    const el = document.querySelector({selector});
+                    if (!el) return null;
+                    const box = el.getBoundingClientRect();
+                    return {{
+                        x: box.left + window.scrollX,
+                        y: box.top + window.scrollY,
+                        width: box.width,
+                        height: box.height,
+                    }};
+                }})()"#,
+                selector = serde_json::to_string(selector)?
+            ))
+            .await?;
+
+        let number = |key: &str| measured.get(key).and_then(|value| value.as_f64());
+        let box_width = number("width").ok_or_else(|| anyhow!("无法测量卡片宽度"))?;
+        let height = number("height").ok_or_else(|| anyhow!("无法测量卡片高度"))?;
+        ensure!(
+            box_width.is_finite() && box_width > 1.0,
+            "卡片宽度异常，改用完整文本"
+        );
+        ensure!(
+            height.is_finite()
+                && height > 0.0
+                && height <= max_height
+                && box_width * height * scale * scale <= 64_000_000.0,
+            "卡片超出安全出图尺寸，改用完整文本"
+        );
+
+        let clip = ClipRegion::new(
+            number("x").unwrap_or(0.0),
+            number("y").unwrap_or(0.0),
+            box_width,
+            height,
+        );
+        tab.screenshot(
+            CaptureOptions::new()
+                .with_format(format)
+                .with_quality(quality)
+                .with_full_page(true)
+                .with_clip(clip),
+        )
+        .await
+    }))
+    .catch_unwind()
+    .await;
+
     // 成功、错误和超时均清理页面；不能在 timeout 的 ? 之后才安排清理。
     // 即便整个 future 被外层取消，TabGuard 的 Drop 也会把关闭补上。
     if let Some(guard) = page {
         guard.close().await;
     }
     match result {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err(anyhow!("网页卡片截图超时（45 秒）")),
-        Err(_) => Err(anyhow!("浏览器初始化失败")),
+        // 内层错误原样往外抛，调用方按文案回退（尺寸超限、量不到盒子等）。
+        Ok(Ok(image)) => image,
+        Ok(Err(_elapsed)) => Err(anyhow!("网页卡片截图超时（45 秒）")),
+        Err(_panic) => Err(anyhow!("浏览器初始化失败")),
     }
 }
 
