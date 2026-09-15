@@ -36,14 +36,18 @@ const ACTION_KINDS: [&str; 6] = ["send", "poke", "like", "react", "recall", "for
 /// 前半段是「这个群是什么」，后半段是「这个群里有什么人、正在发生什么」。两者都
 /// 只读，接梗或答话时顺口用得上，所以共用同一个查询额度。
 ///
-/// 只有真能答上的才列在这里。实现端还有几个群查询入口（`group_detail`、
-/// `group_bulletin`、`group_statistic`、`group_member_level`、`group_medal`），
-/// 它们在 9.3.60 上要么只回一个成功码、没有内容，要么等满超时——列进来只会让
-/// 人格查一次空手，还把额度花掉。
-const LOOKUP_KINDS: [&str; 12] = [
+/// 只有真能答上的才列在这里。实现端还有两个群查询入口回的是「成功但没有内容」
+/// （`group_bulletin`、`group_member_level`）——列进来只会让人格查一次空手，还把额度
+/// 花掉，所以等它们在实现端有载荷之后再说。
+///
+/// 判据是 [`tests::live_bridge_reads_the_new_dossiers_from_the_real_module`]：
+/// 加 `what` 之前先照着它对着真机跑一遍。
+const LOOKUP_KINDS: [&str; 14] = [
     "member",
     "search",
     "roster",
+    "detail",
+    "statistic",
     "essence",
     "activity",
     "rank",
@@ -494,6 +498,9 @@ impl Session {
                         "internal/group_overview",
                         json!({"guild_id":guild,"include_files":false}),
                     ),
+                    // 群本身那一份：容量与等级、群主、消息提醒方式、扩展标志。
+                    "detail" => ("internal/group_detail", json!({"guild_id":guild})),
+                    "statistic" => ("internal/group_statistic", json!({"guild_id":guild})),
                     // 被群主或管理员设成精华的消息：谁说的、什么时候、原话都在，
                     // 接「之前置顶过什么」「这条为什么在精华里」时用得着。
                     "essence" => (
@@ -549,7 +556,7 @@ impl Session {
                     "honor" => ("internal/group_honor", json!({"guild_id":guild})),
                     "mute_list" => ("internal/group_shut_up_list", json!({"guild_id":guild})),
                     other => anyhow::bail!(
-                        "未知的 what「{other}」；可用：member/search/roster/essence/activity/rank/anniversary/draw/teams/files/honor/mute_list"
+                        "未知的 what「{other}」；可用：member/search/roster/detail/statistic/essence/activity/rank/anniversary/draw/teams/files/honor/mute_list"
                     ),
                 };
                 self.spend_lookup()?;
@@ -1939,6 +1946,13 @@ mod tests {
                         "members":[{"user_id":"43","name":"小王","until":1_788_879_900}]}),
                     // 群与个人档案：字段照真机那几层的形状给一层就够，测的是桥怎么
                     // 取用，不是 QQ 自己填什么。
+                    "internal/group_detail" => json!({
+                        "guild_id":body["guild_id"],"ok":true,"result":"code=0 success",
+                        "detail":{"groupName":"折腾群","memberMax":200,"groupGrade":12,
+                                  "ownerUin":"42","cmdUinPrivilege":"OWNER"}}),
+                    "internal/group_statistic" => json!({
+                        "guild_id":body["guild_id"],"ok":true,"result":"code=0",
+                        "active_member_num":18,"member_num":42,"member_max":200}),
                     "internal/group_essence_list" => json!({
                         "guild_id":body["guild_id"],"ok":true,"result":"code=0 success",
                         "messages":{"total":1,
@@ -2766,7 +2780,11 @@ mod tests {
             "{no_user}"
         );
 
-        for (what, id, path) in [("essence", "g3", "messages")] {
+        for (what, id, path) in [
+            ("detail", "g1", "detail"),
+            ("statistic", "g2", "active_member_num"),
+            ("essence", "g3", "messages"),
+        ] {
             let out = request(&bridge, json!({"id":id,"op":"group","what":what})).await;
             assert_eq!(out["ok"], true, "{what}: {out}");
             assert!(
@@ -2812,6 +2830,8 @@ mod tests {
 
         let methods: Vec<String> = calls.lock().unwrap().iter().map(|(m, _)| m.clone()).collect();
         for wanted in [
+            "internal/group_detail",
+            "internal/group_statistic",
             "internal/group_essence_list",
             "internal/user_detail",
             "internal/vas_info",

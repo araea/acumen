@@ -534,13 +534,13 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_group" => (
-            "查这个群的现成资料。看人：某人的群名片/头衔/入群时间/多久没冒头/群内等级与群头衔与互动标签（member，一次问齐）、按昵称/群名片/头衔/号码找群友（search）、随机抽人（draw）、随机分队（teams）。看群：群人数与活跃概况（roster）、被群主设成精华的消息（essence）、群文件目录或某个文件的下载链接（files）、群荣誉榜如龙王与群聊之火（honor）、此刻被禁言的人（mute_list）。看气氛：最活跃或最久没说话的人（activity）、本群发言条数排行（rank，可给 days 与 limit）、快到入群周年的人（anniversary）。全是只读查询，不改群设置，每轮有查询次数上限。",
+            "查这个群的现成资料。看人：某人的群名片/头衔/入群时间/多久没冒头/群内等级与群头衔与互动标签（member，一次问齐）、按昵称/群名片/头衔/号码找群友（search）、随机抽人（draw）、随机分队（teams）。看群：群人数与活跃概况（roster）、群容量与等级与群主与提醒方式（detail）、群统计（statistic，活跃人数与成员数）、被群主设成精华的消息（essence）、群文件目录或某个文件的下载链接（files）、群荣誉榜如龙王与群聊之火（honor）、此刻被禁言的人（mute_list）。看气氛：最活跃或最久没说话的人（activity）、本群发言条数排行（rank，可给 days 与 limit）、快到入群周年的人（anniversary）。全是只读查询，不改群设置，每轮有查询次数上限。",
             json!({
                 "type": "object",
                 "properties": {
                     "what": {
                         "type": "string",
-                        "enum": ["member", "search", "roster", "essence", "activity", "rank", "anniversary", "draw", "teams", "files", "honor", "mute_list"],
+                        "enum": ["member", "search", "roster", "detail", "statistic", "essence", "activity", "rank", "anniversary", "draw", "teams", "files", "honor", "mute_list"],
                         "description": "要查什么"
                     },
                     "query": {"type": "string", "description": "what=search：昵称、群名片、头衔或 QQ 号的一部分"},
