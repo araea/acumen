@@ -44,12 +44,12 @@ pub struct MessageTypeStyle {
 }
 
 pub const MESSAGE_TYPE_STYLES: [MessageTypeStyle; 6] = [
-    MessageTypeStyle { label: "文本", color: RGBColor(100, 116, 139), icon: "文" },
-    MessageTypeStyle { label: "图片", color: RGBColor(59, 130, 246), icon: "图" },
-    MessageTypeStyle { label: "语音", color: RGBColor(16, 185, 129), icon: "语" },
-    MessageTypeStyle { label: "视频", color: RGBColor(139, 92, 246), icon: "视" },
-    MessageTypeStyle { label: "动画表情", color: RGBColor(249, 115, 22), icon: "动" },
-    MessageTypeStyle { label: "表情", color: RGBColor(234, 179, 8), icon: "表" },
+    MessageTypeStyle { label: "文本", color: RGBColor(80, 105, 112), icon: "文" },
+    MessageTypeStyle { label: "图片", color: RGBColor(62, 111, 151), icon: "图" },
+    MessageTypeStyle { label: "语音", color: RGBColor(51, 125, 102), icon: "语" },
+    MessageTypeStyle { label: "视频", color: RGBColor(117, 101, 159), icon: "视" },
+    MessageTypeStyle { label: "动画表情", color: RGBColor(177, 111, 71), icon: "动" },
+    MessageTypeStyle { label: "表情", color: RGBColor(166, 137, 65), icon: "表" },
 ];
 
 /// 按类型名查找视觉样式，未知类型回退到主题蓝
@@ -59,19 +59,19 @@ pub fn message_type_style(label: &str) -> (RGBColor, &'static str) {
             return (st.color, st.icon);
         }
     }
-    (RGBColor(59, 130, 246), "?")
+    (RGBColor(62, 111, 151), "?")
 }
 
 /// 调色板助手
 fn get_palette_color(idx: usize) -> RGBColor {
     let colors = [
-        RGBColor(59, 130, 246), // Blue
-        RGBColor(16, 185, 129), // Green
-        RGBColor(249, 115, 22), // Orange
+        RGBColor(62, 111, 151), // Blue
+        RGBColor(51, 125, 102), // Green
+        RGBColor(177, 111, 71), // Orange
         RGBColor(239, 68, 68),  // Red
-        RGBColor(139, 92, 246), // Purple
+        RGBColor(117, 101, 159), // Purple
         RGBColor(236, 72, 153), // Pink
-        RGBColor(234, 179, 8),  // Yellow
+        RGBColor(166, 137, 65),  // Yellow
         RGBColor(14, 165, 233), // Sky
     ];
     colors[idx % colors.len()]
@@ -233,7 +233,7 @@ pub async fn fetch_line_data(
 
     series_list.push(SeriesData {
         name: "消息量".to_string(),
-        color: RGBColor(59, 130, 246), // Primary Blue
+        color: RGBColor(62, 111, 151), // Primary Blue
         points: chart_data,
     });
 
@@ -312,7 +312,7 @@ pub async fn fetch_bar_data(
                 user_id: None,
                 avatar_url: Some(url),
                 avatar_img: None,
-                theme_color: RGBColor(59, 130, 246),
+                theme_color: RGBColor(62, 111, 151),
                 icon_char: None,
             });
         }
@@ -333,7 +333,7 @@ pub async fn fetch_bar_data(
                 user_id: None,
                 avatar_url: Some(url),
                 avatar_img: None,
-                theme_color: RGBColor(59, 130, 246),
+                theme_color: RGBColor(62, 111, 151),
                 icon_char: None,
             });
         }
@@ -369,7 +369,7 @@ pub async fn fetch_bar_data(
             user_id: Some(r.user_id),
             avatar_url: Some(url),
             avatar_img: None,
-            theme_color: RGBColor(59, 130, 246),
+            theme_color: RGBColor(62, 111, 151),
             icon_char: None,
         });
     }
@@ -432,7 +432,7 @@ pub async fn fetch_bar_data(
                 user_id: Some(sender_id),
                 avatar_url: Some(url),
                 avatar_img: None,
-                theme_color: RGBColor(59, 130, 246),
+                theme_color: RGBColor(62, 111, 151),
                 icon_char: None,
             });
         }
