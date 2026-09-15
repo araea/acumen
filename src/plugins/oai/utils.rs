@@ -564,6 +564,26 @@ pub fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// 发进群的成品文件叫什么名字：路径分隔符、引号与换行一律换成下划线，再截到 60 字。
+///
+/// 音乐房间拿歌名、视频房间拿用户自己那句话来命名，两处过的是同一个函数。名字里的
+/// 分隔符与引号会让 QQ 的群文件列表看着乱，空名下坠到一个中性名字。
+pub fn safe_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' => '_',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim().trim_matches('.').to_string();
+    if cleaned.is_empty() {
+        "media".to_string()
+    } else {
+        truncate_str(&cleaned, 60)
+    }
+}
+
 pub fn format_export_txt(
     agent_name: &str,
     model: &str,
@@ -669,8 +689,22 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ModelFilterConfig, model_vendor, openai_api_base, split_provider, split_thinking,
+        ModelFilterConfig, model_vendor, openai_api_base, safe_file_name, split_provider,
+        split_thinking, truncate_str,
     };
+
+    #[test]
+    fn sanitizes_the_media_file_name() {
+        assert_eq!(safe_file_name("落叶 / 秋"), "落叶 _ 秋");
+        assert_eq!(safe_file_name(" 猫在打字  "), "猫在打字");
+        assert_eq!(safe_file_name("a:b*c?d\"e<f>g|h\ni"), "a_b_c_d_e_f_g_h_i");
+        // 空名或只剩点号的下坠到一个中性名字，别发出一个没有名字的文件。
+        assert_eq!(safe_file_name("   "), "media");
+        assert_eq!(safe_file_name("."), "media");
+        // 长名字截到 60 字。
+        let long = "猫".repeat(80);
+        assert_eq!(truncate_str(&safe_file_name(&long), 63).chars().count(), 63);
+    }
 
     #[test]
     fn thinking_suffix_is_only_stripped_when_it_names_a_real_level() {

@@ -99,6 +99,8 @@ pub(crate) struct OaiConfig {
     pub(crate) video_models: Vec<String>,
     /// 没写 `--秒数` 时的默认时长。视频按秒计费，短一点更省。
     pub(crate) video_seconds: u32,
+    /// 拍好的片子怎么发进群：`file`（群文件）、`video`（视频气泡）、`both`。
+    pub(crate) video_send: String,
     /// 音乐、视频这类异步任务房间的等待上限；它们出成品常常要几分钟。
     pub(crate) media_timeout_seconds: u64,
     /// 可选供应商表：模型写 `供应商/模型` 时按名字取这里的接口与密钥。
@@ -128,12 +130,13 @@ impl Default for OaiConfig {
                 .map(|keyword| (*keyword).to_string())
                 .collect(),
             music_version: music::DEFAULT_VERSION.to_string(),
-            music_send: "file".to_string(),
+            music_send: "both".to_string(),
             video_models: video::DEFAULT_VIDEO_MODELS
                 .iter()
                 .map(|keyword| (*keyword).to_string())
                 .collect(),
             video_seconds: 5,
+            video_send: "both".to_string(),
             media_timeout_seconds: 900,
             providers: HashMap::new(),
             search: search::SearchConfig::default(),
@@ -188,6 +191,10 @@ impl OaiConfig {
             1..=30 => self.video_seconds,
             _ => 5,
         }
+    }
+
+    pub(crate) fn video_send(&self) -> video::SendMode {
+        video::SendMode::parse(&self.video_send)
     }
 
     pub(crate) fn show_trace_footer(&self) -> bool {

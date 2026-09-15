@@ -63,15 +63,58 @@ pub(crate) fn is_video_model(model: &str, keywords: &[String]) -> bool {
         .any(|keyword| lower.contains(&keyword.trim().to_lowercase()))
 }
 
+/// 拍好的片子怎么发进群。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SendMode {
+    /// 只发群文件：能存能下载，QQ 里是个文件卡片。
+    File,
+    /// 只发视频气泡：点开就播。
+    Bubble,
+    /// 先发群文件，再补一条视频气泡：一个能存能转，一个点开就看。
+    Both,
+}
+
+impl SendMode {
+    pub(super) fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "file" | "文件" | "群文件" => Self::File,
+            "video" | "bubble" | "气泡" | "视频" => Self::Bubble,
+            _ => Self::Both,
+        }
+    }
+
+    /// 提示词里的开关。`None` 表示这句没说怎么发，照 `[oai] video_send` 走。
+    fn flag(token: &str) -> Option<Self> {
+        match token.to_ascii_lowercase().as_str() {
+            "--文件" | "--群文件" | "--file" => Some(Self::File),
+            "--视频" | "--气泡" | "--video" | "--bubble" => Some(Self::Bubble),
+            "--都发" | "--both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    /// 卡片上标一句这一单是怎么发的。
+    fn label(self) -> &'static str {
+        match self {
+            Self::File => "群文件",
+            Self::Bubble => "视频",
+            Self::Both => "群文件 + 视频",
+        }
+    }
+}
+
 /// 去掉参数后剩下的正文，以及可选的时长与画面比例。
 #[derive(Debug, Default, PartialEq)]
 struct Options {
     prompt: String,
     seconds: Option<String>,
     size: Option<String>,
+    /// 这一句自己指定的发法，没写就照配置走。
+    send: Option<SendMode>,
 }
 
-/// 从提示词里剥离 `--秒数 8` / `--seconds`、`--竖屏` / `--横屏`、`--尺寸 1280x720`。
+/// 从提示词里剥离 `--秒数 8` / `--seconds`、`--竖屏` / `--横屏`、`--尺寸 1280x720`
+/// 与 `--文件` / `--视频` / `--都发`。
 fn parse_options(input: &str) -> Options {
     let mut options = Options::default();
     let mut words: Vec<&str> = Vec::new();
@@ -102,7 +145,10 @@ fn parse_options(input: &str) -> Options {
             },
             "--竖屏" | "--portrait" | "--vertical" => options.size = Some(PORTRAIT.to_string()),
             "--横屏" | "--landscape" | "--horizontal" => options.size = Some(LANDSCAPE.to_string()),
-            _ => words.push(token),
+            _ => match SendMode::flag(token) {
+                Some(mode) => options.send = Some(mode),
+                None => words.push(token),
+            },
         }
     }
 
@@ -207,16 +253,24 @@ pub(super) async fn generate_reply(
         .seconds
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(seconds);
+    // 这一句带 `--视频` / `--文件` / `--都发` 就听它的，没带才照 `[oai] video_send` 走。
+    let send = options.send.unwrap_or_else(|| config.video_send());
     // 正文是纯文本（不渲染卡片），所以这里一个 markdown 记号都不能用——`**` 会原样
     // 出现在群里。第一行是用户自己那句话，第二行是时长、模型与这一单的账。
     let mut text = format!("🎬 {caption}");
-    text.push_str(&format!("\n时长：{} 秒", shown_seconds.trim()));
+    let mut meta = format!("时长：{} 秒", shown_seconds.trim());
     if !generated.model.trim().is_empty() {
-        text.push_str(&format!(" · {}", generated.model.trim()));
+        meta.push_str(&format!(" · {}", generated.model.trim()));
     }
     if generated.cost > 0.0 {
-        text.push_str(&format!(" · ${:.2}", generated.cost));
+        meta.push_str(&format!(" · ${:.2}", generated.cost));
     }
+    // 照配置走是常态，不必每张卡片都念一遍发法。
+    if options.send.is_some() {
+        meta.push_str(&format!(" · {}", send.label()));
+    }
+    text.push('\n');
+    text.push_str(&meta);
 
     Ok(Reply {
         text,
@@ -225,12 +279,33 @@ pub(super) async fn generate_reply(
         trace_overflow: 0,
         model: Some(agent.model.clone()),
         plain: true,
-        media: vec![MediaMessage {
-            segments: vec![Media::Video {
-                url: generated.video_url,
-            }],
-        }],
+        media: media_messages(&generated.video_url, &caption, send),
     })
+}
+
+/// 拍好的片子按发法发出去：文件名拿用户那句话来取，跟音乐房间同一个规矩。
+fn media_messages(url: &str, caption: &str, mode: SendMode) -> Vec<MediaMessage> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Vec::new();
+    }
+    let mut messages = Vec::new();
+    if mode != SendMode::Bubble {
+        messages.push(MediaMessage {
+            segments: vec![Media::File {
+                url: url.to_string(),
+                name: format!("{}.mp4", super::utils::safe_file_name(caption)),
+            }],
+        });
+    }
+    if mode != SendMode::File {
+        messages.push(MediaMessage {
+            segments: vec![Media::Video {
+                url: url.to_string(),
+            }],
+        });
+    }
+    messages
 }
 
 /// 一次生成的产物。
@@ -471,6 +546,58 @@ mod tests {
         assert_eq!(options.prompt, "一张画 --秒数 很久 --size");
         assert!(options.seconds.is_none());
         assert!(options.size.is_none());
+    }
+
+    #[test]
+    fn reads_the_send_flag_out_of_the_prompt() {
+        let file = parse_options("雪山日出 --文件");
+        assert_eq!(file.prompt, "雪山日出");
+        assert_eq!(file.send, Some(SendMode::File));
+
+        let bubble = parse_options("雪山日出 --视频");
+        assert_eq!(bubble.prompt, "雪山日出");
+        assert_eq!(bubble.send, Some(SendMode::Bubble));
+
+        assert_eq!(parse_options("雪山日出 --都发").send, Some(SendMode::Both));
+        // 没写就不替用户决定，留给 `[oai] video_send`。
+        assert_eq!(parse_options("雪山日出").send, None);
+    }
+
+    #[test]
+    fn send_modes_parse_and_are_labelled() {
+        assert_eq!(SendMode::parse("file"), SendMode::File);
+        assert_eq!(SendMode::parse("群文件"), SendMode::File);
+        assert_eq!(SendMode::parse("video"), SendMode::Bubble);
+        assert_eq!(SendMode::parse("气泡"), SendMode::Bubble);
+        assert_eq!(SendMode::parse("both"), SendMode::Both);
+        // 写错的值当成 both：宁可多发一条，也别把片子吞掉。
+        assert_eq!(SendMode::parse("whatever"), SendMode::Both);
+        assert_eq!(SendMode::File.label(), "群文件");
+        assert_eq!(SendMode::Bubble.label(), "视频");
+        assert_eq!(SendMode::Both.label(), "群文件 + 视频");
+    }
+
+    #[test]
+    fn both_sends_the_file_first_then_the_bubble() {
+        let messages = media_messages("https://cdn/v.mp4", "一只橘猫坐在窗台上看雨", SendMode::Both);
+        assert_eq!(messages.len(), 2);
+        // 文件名拿用户那句话来取，跟音乐房间同一个规矩。
+        assert!(matches!(
+            &messages[0].segments[0],
+            Media::File { name, .. } if name == "一只橘猫坐在窗台上看雨.mp4"
+        ));
+        assert!(matches!(messages[1].segments[0], Media::Video { .. }));
+
+        assert_eq!(
+            media_messages("https://cdn/v.mp4", "猫", SendMode::File).len(),
+            1
+        );
+        assert!(matches!(
+            media_messages("https://cdn/v.mp4", "猫", SendMode::Bubble)[0].segments[0],
+            Media::Video { .. }
+        ));
+        // 没有地址就什么都不发，别发出一个空消息。
+        assert!(media_messages("  ", "猫", SendMode::Both).is_empty());
     }
 
     #[test]
