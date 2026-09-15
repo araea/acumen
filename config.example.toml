@@ -277,10 +277,10 @@ max_delay_ms = 3000
 [stats]
 enabled = true
 # 排行榜的刻度竖线与发言条谁盖谁。
-# true：刻度画在最上层，从榜首通到榜尾，格子不被任何一根条打断；
-# false：实色条盖住刻度，每根条都是完整的一块颜色。
-#   /ctl set stats ranking_grid_over_bars false
-ranking_grid_over_bars = true
+# false：实色条盖住刻度，每根条都是完整的一块颜色；
+# true：刻度画在最上层，从榜首通到榜尾，格子不被任何一根条打断。
+#   /ctl set stats ranking_grid_over_bars true
+ranking_grid_over_bars = false
 
 # 群名单：查询指令与主动推送共用这一份，语义对所有带名单的插件一致——
 # 只配 black：除名单内的群以外，所有群都生效并推送；
