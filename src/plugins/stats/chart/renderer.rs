@@ -15,9 +15,9 @@ use plotters::style::text_anchor::{HPos, Pos, VPos};
 /// 绘制水平条形图 (排行榜)
 ///
 /// 版式分成四个纵列：头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
-/// 横条本身的画法（实色 + 半淡轨道、条内写名字）保持不变；排版上只做三件事：
-/// 数值与占比各自右对齐成固定的一列（不再跟着条尾走成一串阶梯，也不再压在
-/// 淡色轨道上）、条太窄放不下的名字改写到轨道上、刻度线只留有意义的三道。
+/// 横条本身的画法（实色 + 半淡轨道、名字一律写在条内、放不下就截断）保持不变；
+/// 排版上只做两件事：数值与占比各自右对齐成固定的一列（不再跟着条尾走成一串
+/// 阶梯，也不再压在淡色轨道上），刻度线只留榜首长度 1/4、1/2、3/4 三道。
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
@@ -215,23 +215,21 @@ pub fn draw_bar_chart(
             ))
             .map_err(|e| e.to_string())?;
 
-            // 4. 绘制昵称：条里写得下就写在条里（老样子），写不下才挪到轨道上。
+            // 4. 绘制昵称：一律写在实色条内，放不下就截断。名字挪到条外读起来
+            //    反而费劲，短条那几行宁可截，也保持每行同一个视线落点。
             let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
-            let (name_w, _) = font_obj.box_size(&item.label).unwrap_or((0, 0));
-            let slot = name_slot(start_x, bar_end_x, track_end_x, text_inset as i32, name_w);
-            // 条内按底色挑黑白，落到淡色轨道上就用正文墨色
-            let name_color = if slot.inside {
-                get_contrast_color(theme_color)
-            } else {
-                ink
-            };
-
-            let display_name = truncate_text_to_fit(&font_obj, &item.label, slot.width);
+            let name_color = get_contrast_color(theme_color);
+            let max_name_width = (bar_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
+            let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
             if !display_name.is_empty() {
                 let name_style = get_font_with_color(config, font_size, &name_color)
                     .pos(Pos::new(HPos::Left, VPos::Center));
-                root.draw_text(&display_name, &name_style, (slot.x, text_mid_y))
-                    .map_err(|e| e.to_string())?;
+                root.draw_text(
+                    &display_name,
+                    &name_style,
+                    (start_x + text_inset as i32, text_mid_y),
+                )
+                .map_err(|e| e.to_string())?;
             }
 
             // 5. 数值与占比：各自右对齐成一列，落在轨道右侧的空白上。
@@ -306,44 +304,6 @@ pub fn draw_bar_chart(
     }
 
     save_rgba_to_base64(rgba_image)
-}
-
-/// 昵称的落位：写在实色条里，还是写到条尾右边的淡色轨道上。
-///
-/// 条内是本来的写法，也是首选；但榜尾那几行的条只有最小长度，长昵称塞进去会被
-/// 截成 "很长的…" 两三个字，而右手边整条轨道都空着。于是改成「哪边宽用哪边」：
-/// 条里放得下就放条里，放不下时取更宽的一侧，一样宽仍旧留在条里——榜首的条占满
-/// 轨道，外侧宽度为零，写法与从前完全一致。
-struct NameSlot {
-    x: i32,
-    width: u32,
-    inside: bool,
-}
-
-fn name_slot(
-    bar_start_x: i32,
-    bar_end_x: i32,
-    track_end_x: i32,
-    inset: i32,
-    name_width: u32,
-) -> NameSlot {
-    let inside_w = (bar_end_x - bar_start_x - 2 * inset).max(0) as u32;
-    let outside_x = bar_end_x + inset;
-    let outside_w = (track_end_x - inset - outside_x).max(0) as u32;
-
-    if name_width <= inside_w || inside_w >= outside_w {
-        NameSlot {
-            x: bar_start_x + inset,
-            width: inside_w,
-            inside: true,
-        }
-    } else {
-        NameSlot {
-            x: outside_x,
-            width: outside_w,
-            inside: false,
-        }
-    }
 }
 
 /// 消息类型排行榜：标题区 + 构成条 + 竖排信息卡。
@@ -1095,28 +1055,6 @@ mod tests {
         let (step, count) = nice_axis(195);
         assert!(step * count as f64 >= 195.0 && step * count as f64 <= 250.0);
         assert_eq!(short_x_label("中文标题-日期"), "中文标题-日期");
-    }
-
-    #[test]
-    fn a_name_moves_onto_the_track_only_when_the_bar_cannot_hold_it() {
-        // 轨道 100..1800，条内外都留 10 的内缩
-        let (start, track_end, inset) = (100, 1800, 10);
-
-        // 条够长：仍旧写在条里
-        let wide = name_slot(start, 900, track_end, inset, 400);
-        assert!(wide.inside);
-        assert_eq!((wide.x, wide.width), (110, 780));
-
-        // 榜尾的短条塞不下长名字：挪到右边的轨道上，能完整显示
-        let narrow = name_slot(start, 400, track_end, inset, 700);
-        assert!(!narrow.inside);
-        assert_eq!((narrow.x, narrow.width), (410, 1380));
-        assert!(narrow.width >= 700, "轨道要能放下整个名字");
-
-        // 榜首的条占满轨道：外侧没有空间，维持条内写法
-        let leading = name_slot(start, track_end, track_end, inset, 9_000);
-        assert!(leading.inside);
-        assert_eq!(leading.x, 110);
     }
 
     #[test]
