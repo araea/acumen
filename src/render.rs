@@ -10,6 +10,7 @@ pub mod canvas;
 pub mod font;
 pub mod kit;
 pub mod web;
+pub mod worker;
 
 pub use canvas::{Canvas, Ink};
 pub use font::Fonts;

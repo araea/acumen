@@ -147,7 +147,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
     };
-    if AssertUnwindSafe(browser_init).catch_unwind().await.is_err() {
+    if !matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            AssertUnwindSafe(browser_init).catch_unwind()
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
         warn!("浏览器不可用，继续启动；帮助可退回文字，截图功能需安装 Chrome/Chromium。");
     }
 

@@ -6,7 +6,6 @@ use crate::http::download_bytes;
 use crate::message::Message;
 use crate::plugins::{PluginError, PluginResult};
 use futures_util::future::BoxFuture;
-use tokio::task;
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
@@ -147,30 +146,43 @@ pub fn handle(
                 // 上等于把那一个线程扣死，期间消息入库、出图、别的指令全排在它后面。
                 // 同目录的 image_split 与 wordcloud 一直是这么做的，这里补齐。
                 let res: PluginResult<Option<String>> = match cmd {
-                    // 只读元信息，不解码整帧，留在当前任务里。
-                    "gif信息" => match gif_ops::gif_info(img_bytes) {
-                        Ok(info) => {
-                            let _ =
-                                send_msg(&ctx, writer.clone(), group_id, Some(user_id), info).await;
-                            Ok(None)
+                    // 元信息也需要遍历解码帧，和拆帧一样进入工作池。
+                    "gif信息" => {
+                        match crate::render::worker::run(move || gif_ops::gif_info(img_bytes))
+                            .await
+                            .map_err(|e| Box::new(e) as PluginError)?
+                        {
+                            Ok(info) => {
+                                let _ =
+                                    send_msg(&ctx, writer.clone(), group_id, Some(user_id), info)
+                                        .await;
+                                Ok(None)
+                            }
+                            Err(e) => Err(e),
                         }
-                        Err(e) => Err(e),
-                    },
-                    // 拆帧的产物是多张图，发送本身要 await，留在当前任务里。
-                    "gif拆分" => match gif_ops::gif_to_frames(img_bytes) {
-                        Ok(list) => {
-                            send_forward_msg(&ctx, writer.clone(), list).await;
-                            Ok(None)
+                    }
+                    // 解码拆帧也交给渲染工作池，返回后再异步发送。
+                    "gif拆分" => {
+                        match crate::render::worker::run(move || gif_ops::gif_to_frames(img_bytes))
+                            .await
+                            .map_err(|e| Box::new(e) as PluginError)?
+                        {
+                            Ok(list) => {
+                                send_forward_msg(&ctx, writer.clone(), list).await;
+                                Ok(None)
+                            }
+                            Err(e) => Err(e),
                         }
-                        Err(e) => Err(e),
-                    },
+                    }
                     _ => {
                         let cmd_owned = cmd.to_string();
                         let args_owned: Vec<String> =
                             args.iter().map(|s| (*s).to_string()).collect();
-                        task::spawn_blocking(move || raster_op(&cmd_owned, &args_owned, img_bytes))
-                            .await
-                            .map_err(|e| Box::new(e) as PluginError)?
+                        crate::render::worker::run(move || {
+                            raster_op(&cmd_owned, &args_owned, img_bytes)
+                        })
+                        .await
+                        .map_err(|e| Box::new(e) as PluginError)?
                     }
                 };
 
@@ -212,7 +224,9 @@ fn raster_op(cmd: &str, args: &[String], img_bytes: Vec<u8>) -> PluginResult<Opt
             let (rows, cols) = arg(0).and_then(utils::parse_grid_dim).unwrap_or((3, 3));
             let interval = arg(1).and_then(|s| s.parse().ok()).unwrap_or(0.1);
             let margin = arg(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-            Some(gif_ops::grid_to_gif(img_bytes, rows, cols, interval, margin)?)
+            Some(gif_ops::grid_to_gif(
+                img_bytes, rows, cols, interval, margin,
+            )?)
         }
         "gif变速" => {
             let factor = arg(0).and_then(|s| s.parse().ok()).unwrap_or(2.0);
@@ -221,7 +235,10 @@ fn raster_op(cmd: &str, args: &[String], img_bytes: Vec<u8>) -> PluginResult<Opt
                 gif_ops::Transform::Speed(factor),
             )?)
         }
-        "gif倒放" => Some(gif_ops::process_gif(img_bytes, gif_ops::Transform::Reverse)?),
+        "gif倒放" => Some(gif_ops::process_gif(
+            img_bytes,
+            gif_ops::Transform::Reverse,
+        )?),
         "gif缩放" => {
             let op = arg(0).map_or(gif_ops::Transform::Scale(0.5), |s| {
                 if let Some((w, h)) = utils::parse_grid_dim(s) {
@@ -234,19 +251,23 @@ fn raster_op(cmd: &str, args: &[String], img_bytes: Vec<u8>) -> PluginResult<Opt
         }
         "gif旋转" => {
             let deg = arg(0).and_then(|s| s.parse().ok()).unwrap_or(90);
-            Some(gif_ops::process_gif(img_bytes, gif_ops::Transform::Rotate(deg))?)
+            Some(gif_ops::process_gif(
+                img_bytes,
+                gif_ops::Transform::Rotate(deg),
+            )?)
         }
         "gif翻转" => {
-            let op = arg(0)
-                .map(str::to_lowercase)
-                .as_deref()
-                .map_or(gif_ops::Transform::FlipH, |s| {
-                    if matches!(s, "垂直" | "v" | "vertical" | "纵向") {
-                        gif_ops::Transform::FlipV
-                    } else {
-                        gif_ops::Transform::FlipH
-                    }
-                });
+            let op =
+                arg(0)
+                    .map(str::to_lowercase)
+                    .as_deref()
+                    .map_or(gif_ops::Transform::FlipH, |s| {
+                        if matches!(s, "垂直" | "v" | "vertical" | "纵向") {
+                            gif_ops::Transform::FlipV
+                        } else {
+                            gif_ops::Transform::FlipH
+                        }
+                    });
             Some(gif_ops::process_gif(img_bytes, op)?)
         }
         "gif拼图" => {

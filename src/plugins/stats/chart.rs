@@ -48,6 +48,8 @@ pub async fn generate(
     let db = &ctx.db;
     let config: StatsConfig = get_config_or_default(ctx, "stats");
 
+    let title = title.to_owned();
+
     // 1. 走势图
     if chart_type == "走势" {
         let chart_data: Vec<SeriesData> = fetch_line_data(
@@ -61,9 +63,11 @@ pub async fn generate(
         )
         .await?;
 
-        return draw_with_font_panic_guard(&config, || {
-            draw_line_chart(&config, title, chart_data)
-        });
+        return crate::render::worker::run(move || {
+            draw_with_font_panic_guard(&config, || draw_line_chart(&config, &title, chart_data))
+        })
+        .await
+        .map_err(|e| format!("图表任务失败: {e}"))?;
     }
 
     // 2. 柱状图 / 排行榜
@@ -83,11 +87,16 @@ pub async fn generate(
     prepare_avatars(&mut bar_data).await;
 
     // 4. 绘图：消息类型用竖排信息卡，其余沿用头像条形榜
-    draw_with_font_panic_guard(&config, || {
-        if data_type == "消息类型" {
-            draw_message_type_ranking(&config, title, bar_data)
-        } else {
-            draw_bar_chart(&config, title, bar_data)
-        }
+    let message_types = data_type == "消息类型";
+    crate::render::worker::run(move || {
+        draw_with_font_panic_guard(&config, || {
+            if message_types {
+                draw_message_type_ranking(&config, &title, bar_data)
+            } else {
+                draw_bar_chart(&config, &title, bar_data)
+            }
+        })
     })
+    .await
+    .map_err(|e| format!("图表任务失败: {e}"))?
 }

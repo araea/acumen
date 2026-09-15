@@ -25,6 +25,14 @@ struct Waiter {
     sender: oneshot::Sender<Event>,
 }
 
+struct WaitRegistration<'a>(&'a Matcher, u64);
+
+impl Drop for WaitRegistration<'_> {
+    fn drop(&mut self) {
+        self.0.drop_waiter(self.1);
+    }
+}
+
 /// 单调递增 id，用于超时后定位并移除自身条目
 fn next_waiter_id() -> u64 {
     static WAITER_ID: AtomicUsize = AtomicUsize::new(1);
@@ -78,18 +86,12 @@ impl Matcher {
             self.waiter_count.store(guard.len(), Ordering::Release);
         }
 
-        match tokio::time::timeout(timeout_duration, rx).await {
-            Ok(Ok(event)) => Some(event),
-            _ => {
-                // 超时或被取消：主动清理自身条目，避免内存累积
-                self.drop_waiter(id);
-                None
-            }
-        }
+        let _registration = WaitRegistration(self, id);
+        tokio::time::timeout(timeout_duration, rx).await.ok()?.ok()
     }
 
     /// 尝试分发事件给等待者。如果事件被消费（匹配成功），返回 None；否则返回原事件。
-    pub fn dispatch(&self, event: Event) -> Option<Event> {
+    pub fn dispatch(&self, mut event: Event) -> Option<Event> {
         // 快速路径：当前没有等待者，直接放行
         if self.waiter_count.load(Ordering::Acquire) == 0 {
             return Some(event);
@@ -106,31 +108,75 @@ impl Matcher {
             return Some(event);
         }
 
-        let waiter_opt = {
-            let mut guard = self.waiters.lock().unwrap();
+        loop {
+            let waiter_opt = {
+                let mut guard = self.waiters.lock().unwrap();
 
-            // 寻找匹配者
-            let index = guard.iter().position(|w| {
-                let match_group = w.group_id.is_none() || w.group_id == g_id;
-                let match_user = w.user_id.is_none() || w.user_id == u_id;
-                match_group && match_user
-            });
+                // 寻找匹配者
+                let index = guard.iter().position(|w| {
+                    let match_group = w.group_id.is_none() || w.group_id == g_id;
+                    let match_user = w.user_id.is_none() || w.user_id == u_id;
+                    match_group && match_user
+                });
 
-            if let Some(idx) = index {
-                let waiter = guard.swap_remove(idx);
-                self.waiter_count.store(guard.len(), Ordering::Release);
-                Some(waiter)
+                if let Some(idx) = index {
+                    let waiter = guard.swap_remove(idx);
+                    self.waiter_count.store(guard.len(), Ordering::Release);
+                    Some(waiter)
+                } else {
+                    None
+                }
+            };
+
+            if let Some(waiter) = waiter_opt {
+                // 接收者可能恰好被取消：发送失败时保留事件，继续寻找活着的等待者。
+                match waiter.sender.send(event) {
+                    Ok(()) => return None,
+                    Err(undelivered) => event = undelivered,
+                }
             } else {
-                None
+                return Some(event); // 无匹配，返还事件
             }
-        };
-
-        if let Some(waiter) = waiter_opt {
-            // 发送事件给等待者。忽略错误（如等待者已超时）
-            let _ = waiter.sender.send(event);
-            None // 事件被消费
-        } else {
-            Some(event) // 无匹配，返还事件
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cancelled_wait_removes_registration() {
+        let matcher = Matcher::new();
+        let mut waiting = Box::pin(matcher.wait(Some(7), Some(9), Duration::from_secs(60)));
+        assert!(futures_util::poll!(&mut waiting).is_pending());
+        assert_eq!(matcher.waiter_count.load(Ordering::Acquire), 1);
+        drop(waiting);
+        assert_eq!(matcher.waiter_count.load(Ordering::Acquire), 0);
+        let event = simd_json::json!({"group_id":7,"user_id":9});
+        assert!(matcher.dispatch(event).is_some());
+    }
+
+    #[tokio::test]
+    async fn closed_receiver_does_not_swallow_a_message() {
+        let matcher = Matcher::new();
+        let (tx, rx) = oneshot::channel();
+        drop(rx);
+        matcher.waiters.lock().unwrap().push(Waiter {
+            id: 0,
+            group_id: Some(7),
+            user_id: None,
+            sender: tx,
+        });
+        matcher.waiter_count.store(1, Ordering::Release);
+        let mut live = Box::pin(matcher.wait(Some(7), None, Duration::from_secs(1)));
+        assert!(futures_util::poll!(&mut live).is_pending());
+        assert!(
+            matcher
+                .dispatch(simd_json::json!({"group_id":7,"user_id":9}))
+                .is_none()
+        );
+        assert!(live.await.is_some());
+        assert_eq!(matcher.waiter_count.load(Ordering::Acquire), 0);
     }
 }

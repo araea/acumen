@@ -224,8 +224,10 @@ impl TabGuard {
 
     /// 主动关闭。正常情况下走这里，让清理发生在当前任务里。
     pub(crate) async fn close(mut self) {
-        if let Some(tab) = self.0.take() {
+        if let Some(tab) = self.0.as_ref() {
             let _ = timeout(Duration::from_secs(3), tab.close()).await;
+            // await 期间仍保留所有权，外层取消 close 时 Drop 才能继续清理。
+            self.0.take();
         }
     }
 }
@@ -373,7 +375,11 @@ pub async fn shoot(shot: Shot<'_>) -> Result<String> {
             .evaluate(&format!(
                 r#"(async () => {{
                     const deadline = new Promise(resolve => setTimeout(resolve, {FONT_WAIT_MS}));
-                    try {{ await Promise.race([document.fonts.ready, deadline]); }} catch (_) {{}}
+                    const assets = Promise.all([
+                        document.fonts.ready,
+                        ...Array.from(document.images, img => img.decode().catch(() => {{}}))
+                    ]);
+                    try {{ await Promise.race([assets, deadline]); }} catch (_) {{}}
                     // 让出一轮宏任务，把上一步的样式与布局提交掉。
                     await new Promise(resolve => setTimeout(resolve, 0));
                     const el = document.querySelector({selector});

@@ -9,7 +9,6 @@ use futures_util::future::BoxFuture;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use tokio::task;
 use toml::Value;
 
 pub mod processing;
@@ -151,7 +150,7 @@ pub fn handle(
                 }
             };
 
-            let split_task = task::spawn_blocking(move || {
+            let split_task = crate::render::worker::run(move || {
                 processing::split_image_blocking(img_bytes, rows, cols)
             });
 

@@ -144,7 +144,7 @@ pub async fn generate_image(
     let height = config.height;
 
     // 在阻塞线程中生成图片
-    let task_result = tokio::task::spawn_blocking(move || {
+    let task_result = crate::render::worker::run(move || {
         image::generate_word_cloud(corpus, font_path, font_family, limit, width, height)
     })
     .await;
