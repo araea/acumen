@@ -103,6 +103,15 @@ const WALLED_DOMAINS: &[&str] = &[
     "quora.com",
 ];
 
+/// 这条消息是不是机器人自己发出去的那份回声。
+///
+/// 号主与机器人共用同一个 QQ 号：他在客户端手打的消息同样带着这个号进来，
+/// satori-qq 会给这类事件打上 `manual_self`。只跳过机器人自己的回声，
+/// 号主贴的链接要照常截图——从前只看 `user_id == self_id`，把他一起漏掉了。
+fn is_own_echo(msg: &crate::event::MessageEvent<'_>, self_id: i64) -> bool {
+    msg.user_id() == self_id && !msg.is_manual_self()
+}
+
 /// 链接是否允许截图，不允许时返回可写进日志的原因。
 ///
 /// 机器人跑在本机，`[webshot]` 又把截图原样发回群里，所以任意群友都能借一条链接
@@ -339,9 +348,8 @@ pub fn handle(
         }
 
         let user_id = msg_event.user_id();
-        let self_id = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or(0);
-
-        if user_id == self_id {
+        if is_own_echo(&msg_event, ctx.bot.login_user.get().id.parse::<i64>().unwrap_or(0))
+        {
             return Ok(Some(ctx));
         }
 
@@ -529,6 +537,35 @@ mod tests {
         ] {
             assert!(check_url(raw, &config()).await.is_err(), "{raw} 不该截图");
         }
+    }
+
+    /// 号主与机器人共用同一个 QQ 号，判定要看 `manual_self`。
+    #[test]
+    fn the_owners_own_messages_are_not_treated_as_echoes() {
+        let event = |user_id: i64, manual_self: bool| {
+            simd_json::serde::to_owned_value(serde_json::json!({
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 1,
+                "user_id": user_id,
+                "manual_self": manual_self,
+                "message_id": 1,
+                "message": [{"type": "text", "data": {"text": "https://example.com"}}]
+            }))
+            .unwrap()
+        };
+        let typed = event(7, true);
+        assert!(
+            !is_own_echo(&crate::event::MessageEvent(&typed), 7),
+            "号主手打的消息不该被当成回声"
+        );
+        let echoed = event(7, false);
+        assert!(
+            is_own_echo(&crate::event::MessageEvent(&echoed), 7),
+            "机器人自己的回声要跳过"
+        );
+        let member = event(42, false);
+        assert!(!is_own_echo(&crate::event::MessageEvent(&member), 7));
     }
 
     #[test]
