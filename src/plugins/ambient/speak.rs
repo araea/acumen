@@ -58,7 +58,7 @@ fn house_rules(max_messages: usize, focus_max_seconds: u64) -> String {
 ///
 /// 这段没法再省：每一句都对应一个拿不到就用不上的机制——工具叫什么、
 /// 回执才算数、用过工具之后输出 `[silent]` 免得再发一遍。
-const TOOL_RULES: &str = "\n本轮接通了真实的聊天界面。satori_context 看最新记录和手边的资源，satori_action 发送或互动，satori_read 查原消息，forward:true 把合并转发（含嵌套）整段读出来——记录里的「[合并转发]」只是个占位，正文都在里面，读一眼就知道；语音消息同理，记录里写「[语音]」，读了会连听写出来的原话一起拿回来。一段话里有两三个意思就分两次 send，一条一个意思，每条各算一次消息额度。\n回执才算数：拿到成功回执才算真做了，失败或上下文更新就重新看一眼再决定。用过工具之后最终输出 [silent]（可附 focus）即可，群友已经看见你做的事了。只点个表态、只戳一下、只发一张图，或者什么都不做，都是完整的一轮。文本元素里的换行会原样保留，想怎么排都行；聊天界面上的事都走这些工具，bash 和 curl 是干别的用的。\n想画点什么就用 satori_draw：传入画什么的提示词（可选尺寸/画质/垫图），图会存到本轮 ambient/media 并返回本地路径，再用 satori_action 的 send + type:image 发出去。配一句话就再加个 text。绘图是独立的模型调用，不占发送额度，每轮有张数上限。";
+const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、自己的群角色和可用能力；satori_action 发送或互动；satori_read 读原消息，forward:true 展开含嵌套的合并转发，语音会附听写结果。入退群、禁言、名片变化和表态也是现场，未知身份和无载荷查询就按未知理解。\n签到、改自己的名片、整理群文件、只点个表态或戳一下，都是完整的一轮。管理动作用于明确的管理请求与群规则，按 management_enabled 和 QQ 权限执行。用法见 satori-reply。\n回执才算数：成功才算做了；失败或群聊更新就重新看现场，超时表示结果未知。聊天动作走这些工具，bash 用来整理材料。用过工具之后最终输出 [silent]（可附 focus）。\n两三个意思分成几次 send，一条一个意思，每条计消息额度；text 保留空格与换行。satori_draw 给画面描述，可选尺寸、画质和参考图，生成到 ambient/media；拿返回的本地路径用 send 的 type:image 发出，配字加 text。绘图不占发送额度，有张数上限。";
 
 /// 把人设、现场说明和这一轮真正挂上去的工具说明拼成系统提示词。
 ///
@@ -198,7 +198,14 @@ pub(crate) async fn compose(
     if web.is_some() {
         tools.push_str(",web_search,web_fetch");
     }
-    let system = system_prompt(persona, config, bridge.is_some(), lookup, memo, web.is_some());
+    let system = system_prompt(
+        persona,
+        config,
+        bridge.is_some(),
+        lookup,
+        memo,
+        web.is_some(),
+    );
     let prompt = format!(
         "{}{}最近的群聊记录：\n{}\n{}",
         scene.brief(),
@@ -280,8 +287,22 @@ mod tests {
     fn the_house_rules_describe_affordances_rather_than_prohibitions() {
         let rules = house_rules(3, 300);
         for word in [
-            "禁止", "不得", "严禁", "必须", "不允许", "不要", "不能", "别再", "别急", "别把",
-            "不准", "切勿", "切莫", "只能", "仅能", "唯一",
+            "禁止",
+            "不得",
+            "严禁",
+            "必须",
+            "不允许",
+            "不要",
+            "不能",
+            "别再",
+            "别急",
+            "别把",
+            "不准",
+            "切勿",
+            "切莫",
+            "只能",
+            "仅能",
+            "唯一",
         ] {
             for text in [
                 rules.as_str(),
@@ -373,11 +394,17 @@ mod tests {
     fn the_situation_briefing_stays_cheap() {
         let config = AmbientConfig::default();
         let rules = house_rules(3, 300);
-        assert!(rules.chars().count() < 900, "现场说明 {} 字", rules.chars().count());
+        assert!(
+            rules.chars().count() < 900,
+            "现场说明 {} 字",
+            rules.chars().count()
+        );
         // 工具说明是三段里唯一为了「能用」而存在的，它比现场说明还短就说明删过头了。
         // 上限随工具增多调过两次：写歌与拍片各占一段（约 250 字），它们的价钱与
         // 用法必须写在提示词里，不能只靠工具自己的 description。
-        let full = system_prompt("", &config, true, true, true, true).chars().count();
+        let full = system_prompt("", &config, true, true, true, true)
+            .chars()
+            .count();
         assert!(full < 2500, "现场说明加全部工具说明 {full} 字");
     }
 

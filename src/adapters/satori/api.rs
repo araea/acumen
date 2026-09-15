@@ -125,7 +125,11 @@ pub async fn get_forward_msg(
     id: String,
 ) -> Result<ForwardMsgData, ApiError> {
     let value: Value = writer
-        .call(ctx, "internal/get_forward", json!({"id": id}))
+        .call(
+            ctx,
+            "internal/get_forward",
+            json!({"id": id, "channel_id": channel_id(ctx)?}),
+        )
         .await?;
     let resources = writer.resources();
     let mut chain = Message::new();
@@ -414,6 +418,9 @@ pub(crate) fn channel_id(ctx: &Context) -> Result<String, ApiError> {
         EventType::Init => None,
     }
     .ok_or("当前上下文没有 Satori 频道")?;
+    if let Some(channel) = event.get_str("channel_id").filter(|id| !id.is_empty()) {
+        return Ok(channel.to_string());
+    }
     let group_id = event
         .get_i64("group_id")
         .or_else(|| event.get_u64("group_id").map(|value| value as i64))

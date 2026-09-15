@@ -116,6 +116,8 @@ pub(crate) struct AmbientConfig {
     pub enabled: bool,
     /// 开启搭话的群号；空列表等于不开启。
     pub groups: Vec<i64>,
+    /// 允许人格执行群管理的群；还须具备 QQ 对应权限。
+    pub management_groups: Vec<i64>,
     /// 判定模型：便宜、快、能看图。写 `供应商/模型` 时按 `[oai.providers]` 取接口，
     /// 默认走 DeepSeek 官方接口。
     pub gate_model: String,
@@ -245,6 +247,7 @@ impl Default for AmbientConfig {
         Self {
             enabled: false,
             groups: Vec::new(),
+            management_groups: Vec::new(),
             gate_model: "deepseek/deepseek-flash".to_string(),
             gate_persona: GATE_PERSONA.to_string(),
             reply_model: "deepseek/deepseek-flash".to_string(),
@@ -579,7 +582,13 @@ pub(crate) async fn observe(
         return;
     };
 
-    let me = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or_default();
+    let me = ctx
+        .bot
+        .login_user
+        .get()
+        .id
+        .parse::<i64>()
+        .unwrap_or_default();
     let mut turn = build_turn(&event, me);
     // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
     // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。
@@ -655,6 +664,10 @@ async fn observe_notice(
         if let Some(id) = recalled {
             state.recall(id);
         }
+        // 平台变化使已准备的动作过时，但不单独唤醒人格。
+        if turn.from_me && turn.user_id == 0 {
+            state.seq += 1;
+        }
         state.receive(turn)
     });
     if start {
@@ -692,7 +705,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
             recalled = Some(mid);
             format!("[消息 {mid} 已撤回]")
         }
-        "reaction-added" | "reaction-removed" => {
+        "reaction-added" | "reaction-removed" | "reaction-deleted" => {
             let emoji = raw
                 .get("_satori")?
                 .get("emoji")?
@@ -709,12 +722,55 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
                 }
             )
         }
+        "guild-member-added" => format!("[群成员 {user} 加入了群聊]"),
+        "guild-member-removed" => format!(
+            "[群成员 {user} 离开了群聊；操作者 {}]",
+            raw.get_i64("operator_id").unwrap_or(0)
+        ),
+        "guild-member-updated" => {
+            // 管理动作的事件只更新现场，避免自己管理→自己评论的循环。
+            from_me = true;
+            if raw.get_str("notice_type") == Some("group_ban") {
+                let target = if user == 0 {
+                    "全体成员".into()
+                } else {
+                    user.to_string()
+                };
+                let duration = raw.get_i64("duration").unwrap_or(0);
+                if duration == 0 {
+                    format!("[{target} 已解除禁言]")
+                } else {
+                    format!("[{target} 被禁言 {duration} 秒]")
+                }
+            } else {
+                let member = raw.get("_satori").and_then(|s| s.get("member"));
+                format!(
+                    "[群成员 {user} 的资料更新：{}]",
+                    member
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "具体变化未知".into())
+                )
+            }
+        }
+        "guild-updated" | "channel-updated" => {
+            from_me = true;
+            let source = raw.get("_satori")?;
+            let detail = source.get(if kind == "guild-updated" {
+                "guild"
+            } else {
+                "channel"
+            });
+            format!(
+                "[群资料更新：{}]",
+                detail.map(ToString::to_string).unwrap_or_default()
+            )
+        }
         _ => return None,
     };
     Some((
         Turn {
-            user_id: user,
-            name: if from_me && user == 0 {
+            user_id: if from_me && user != me { 0 } else { user },
+            name: if from_me && user != me {
                 "平台事件".into()
             } else {
                 user.to_string()
@@ -962,12 +1018,14 @@ async fn gate_endpoint(
 ) -> anyhow::Result<(String, String, String)> {
     let (provider, model) = crate::plugins::oai::utils::split_provider(gate_model);
     let providers =
-        crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai").providers;
+        crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai")
+            .providers;
     let (base, key) = {
         let config = mgr.config.read().await;
         (config.api_base.clone(), config.api_key.clone())
     };
-    let Some((base, key)) = crate::plugins::oai::resolve_endpoint(&providers, &base, &key, provider.as_deref())
+    let Some((base, key)) =
+        crate::plugins::oai::resolve_endpoint(&providers, &base, &key, provider.as_deref())
     else {
         anyhow::bail!(
             "未知供应商：{}（在 [oai.providers] 里配置）",
@@ -1038,7 +1096,9 @@ async fn consider_batch(
         }
         peak::Stance::Awake => config,
     };
-    let turns = &turns[turns.len().saturating_sub(config.context_turns.clamp(1, 80))..];
+    let turns = &turns[turns
+        .len()
+        .saturating_sub(config.context_turns.clamp(1, 80))..];
 
     // 上一次开口是被接住了还是掉在地上，只在这里结算一次。
     if config.mood_enabled
@@ -1058,9 +1118,17 @@ async fn consider_batch(
         let (api_base, api_key, gate_model) = gate_endpoint(ctx, mgr, &config.gate_model).await?;
         let recent = window::with_group(group, |state| state.spoken_within(window::RECENT_SPEECH));
         let threshold = config.threshold(silent_for, mood::snapshot(group), recent);
-        let verdict =
-            gate::judge(&api_base, &api_key, &gate_model, config, turns, &persona, &scene, None)
-                .await?;
+        let verdict = gate::judge(
+            &api_base,
+            &api_key,
+            &gate_model,
+            config,
+            turns,
+            &persona,
+            &scene,
+            None,
+        )
+        .await?;
         if !verdict.wants_composition(
             threshold,
             config.focus_relief,
@@ -1218,13 +1286,14 @@ async fn speak_up(
     if let Some(focus) = focus {
         window::with_group(group, |state| state.focus = focus);
     }
-    let mut utterances = match pace::parse(&raw, config.max_messages.clamp(1, 5), config.split_chars) {
-        pace::Speech::Silent => {
-            info!(target: LOG_TARGET, "群 {group} 想了想，还是没说话");
-            return Ok(());
-        }
-        pace::Speech::Say(items) => items,
-    };
+    let mut utterances =
+        match pace::parse(&raw, config.max_messages.clamp(1, 5), config.split_chars) {
+            pace::Speech::Silent => {
+                info!(target: LOG_TARGET, "群 {group} 想了想，还是没说话");
+                return Ok(());
+            }
+            pace::Speech::Say(items) => items,
+        };
     // 人不会把刚说过的话换个标点再说一遍；小模型在同一段上下文里被反复唤起时会。
     let history = window::with_group(group, |state| state.recent(40));
     utterances.retain(|utterance| {
@@ -1246,7 +1315,13 @@ async fn speak_up(
     let pace = config.pace(mood::snapshot(group));
     tokio::time::sleep(pace.think_delay(started.elapsed())).await;
 
-    let me = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or_default();
+    let me = ctx
+        .bot
+        .login_user
+        .get()
+        .id
+        .parse::<i64>()
+        .unwrap_or_default();
     let mut sent = false;
     for (index, utterance) in utterances.into_iter().enumerate() {
         if index > 0 {
@@ -1491,7 +1566,10 @@ mod tests {
         let text = facts_from("# 说明\n\n- 手上是台安卓\n手边还有台平板\n# 又一行注释\n");
         assert!(text.contains("- 手上是台安卓"), "{text}");
         assert!(text.contains("- 手边还有台平板"), "{text}");
-        assert!(!text.contains("说明") && !text.contains("又一行注释"), "{text}");
+        assert!(
+            !text.contains("说明") && !text.contains("又一行注释"),
+            "{text}"
+        );
         assert!(facts_from("").is_empty());
         assert!(
             facts_from(SELF).is_empty(),
@@ -1513,9 +1591,15 @@ mod tests {
         }];
         let scene = Scene::build(-1, &config, &turns, "刚接了两次话".into());
         // 调子按当下状态浮动，所以认的是「哪一段在不在」，不是具体一句话。
-        let tones = [mood::Register::Lively, mood::Register::Even, mood::Register::Calm];
+        let tones = [
+            mood::Register::Lively,
+            mood::Register::Even,
+            mood::Register::Calm,
+        ];
         assert!(
-            tones.iter().any(|tone| scene.own.contains(voice::opening(*tone))),
+            tones
+                .iter()
+                .any(|tone| scene.own.contains(voice::opening(*tone))),
             "{}",
             scene.own
         );
@@ -1539,7 +1623,10 @@ mod tests {
     /// 模型把换行写成字面的 `\n` 时，群里不该看见一个反斜杠加一个 n。
     #[test]
     fn literal_backslash_n_becomes_a_real_newline() {
-        assert_eq!(literal_newlines("先看第一步\\n1. 关掉自动更新"), "先看第一步\n1. 关掉自动更新");
+        assert_eq!(
+            literal_newlines("先看第一步\\n1. 关掉自动更新"),
+            "先看第一步\n1. 关掉自动更新"
+        );
         assert_eq!(literal_newlines("a\\r\\nb"), "a\nb");
         // 没有转义的正文不动，包括普通的反斜杠。
         assert_eq!(literal_newlines("就这?没了"), "就这?没了");
@@ -1740,6 +1827,47 @@ mod tests {
         assert_eq!(notice_turn(&recall, 10000).unwrap().1, Some(123));
     }
 
+    #[test]
+    fn environment_notices_keep_subjects_separate_from_the_bot() {
+        for (raw, expected) in [
+            (
+                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_ban","user_id":42,"duration":60}),
+                "42 被禁言 60 秒",
+            ),
+            (
+                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_ban","user_id":0,"duration":0}),
+                "全体成员 已解除禁言",
+            ),
+            (
+                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_member_update","user_id":42,"_satori":{"member":{"nick":"新名片"}}}),
+                "新名片",
+            ),
+            (
+                serde_json::json!({"satori_type":"channel-updated","_satori":{"channel":{"name":"新群名"}}}),
+                "新群名",
+            ),
+            (
+                serde_json::json!({"satori_type":"reaction-deleted","message_id":123,"_satori":{"emoji":{"id":"76"}}}),
+                "减少表态",
+            ),
+        ] {
+            let (turn, _) = notice_turn(&event(raw), 10000).unwrap();
+            assert!(turn.text.contains(expected), "{}", turn.text);
+            assert_eq!(turn.user_id, 0);
+            assert!(turn.from_me && !turn.mentions_me);
+            assert!(!window::transcript(&[turn]).contains("你自己"));
+        }
+        for kind in ["guild-member-added", "guild-member-removed"] {
+            let (turn, _) = notice_turn(
+                &event(serde_json::json!({"satori_type":kind,"user_id":42})),
+                10000,
+            )
+            .unwrap();
+            assert!(!turn.from_me);
+            assert_eq!(turn.user_id, 42);
+        }
+    }
+
     /// 引用解析的三条路：引到别人、引到自己（等于被点名）、引到窗口外的旧消息。
     #[test]
     fn quoting_rides_along_and_being_quoted_counts_as_being_called() {
@@ -1768,7 +1896,9 @@ mod tests {
             },
             ..Turn::default()
         };
-        resolve_quote(&mut called, |_| Some((true, "你说的：别用那个版本".to_string())));
+        resolve_quote(&mut called, |_| {
+            Some((true, "你说的：别用那个版本".to_string()))
+        });
         assert!(called.call.replied_me);
         assert!(called.mentions_me);
         assert_eq!(called.call.quote, "你说的：别用那个版本");
@@ -1895,7 +2025,10 @@ mod tests {
             mood_enabled: false,
             ..AmbientConfig::default()
         };
-        assert_eq!(fixed.threshold(None, tired, 0), fixed.threshold(None, lively, 0));
+        assert_eq!(
+            fixed.threshold(None, tired, 0),
+            fixed.threshold(None, lively, 0)
+        );
         assert_eq!(fixed.pace(tired).typing_cpm, fixed.typing_cpm);
     }
 

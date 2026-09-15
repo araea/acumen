@@ -124,7 +124,7 @@ metadata:
 工具失败时错误里通常写着原因：改参数、换一种表达，或者干脆看着，都行。
 超时和断线是「结果未确认」——那一下可能已经送达，换个请求再打一遍，群友就会看到你戳了两次。
 拿到成功回执，才算得上「发了」「撤了」。
-聊天界面上的事都走这些工具；bash 和 curl 是干别的用的，管理员设置是管理员那边的事。
+聊天界面上的事都走这些工具；bash 和 curl 是干别的用的，管理动作按本群配置和实际 QQ 权限执行。
 
 用过动作工具后，最终输出 `[silent]` 即可——群友已经看见你做的事了，工具日志是系统和你
 之间的事，群里看不到。尚未使用动作工具时，最终纯文字仍兼容旧路径（一行一条，最多系统设定条数），
@@ -146,3 +146,30 @@ metadata:
 `[focus:{"users":[114514],"topic":"刚聊的游戏机制","seconds":180}]`。
 最多三位当前群成员；也可以 users=[] 只关注话题。期限按系统上限，到期自然结束，
 `[focus:{"seconds":0}]` 主动结束。省略保持原状，可与 `[silent]` 同用，不发送到群里。
+
+## 群内新动作
+
+`context.capabilities.environment.self_member` 是 QQ 给的自己在本群的角色、名片等信息；取不到就是未知。`management_enabled` 表示这个群是否开放人格管理动作。管理员角色不等于配置开放，配置开放也不等于 QQ 服务端授权。
+
+这些动作同样放进 `satori_action.request`，所有群目标由工具固定为当前群：
+
+| action | 参数与用途 |
+| --- | --- |
+| `sign` | 本群签到 |
+| `card` | `card` 修改自己的群名片，空字符串清除；`user_id` 改别人需开放管理 |
+| `title` | `user_id`、`title` 设置头衔，空字符串清除；需管理且 QQ 群主权限 |
+| `essence` | `message_id` 设置精华，`remove:true` 取消；需管理 |
+| `mute` | `user_id`、`duration_seconds` 禁言，0 解禁，上限 30 天；需管理 |
+| `kick` | `user_id` 移出成员，默认允许再次入群；`permanent:true` 拒绝再次加入；需管理 |
+| `mute_all` | `duration_seconds` 全员禁言，0 解除，上限 30 天；需管理 |
+| `rename_group` | `name` 修改群名；需管理 |
+| `mark_read` | 标记本群消息已读 |
+| `session_top` | `enable` 置顶或取消置顶本群会话，仅影响本账号 |
+| `group_remark` | `remark` 修改自己看到的群备注，空字符串清除 |
+| `group_notify` | `mask` 为 notify、assistant、shield、receive，修改自己的群消息提醒方式 |
+| `react_clear` | `message_id` 清掉自己给这条消息的表态；可给 `emoji_id` 只清一种 |
+| `group_file` | `operation` 上传、建目录或管理文件，见下 |
+
+群文件先用 `satori_group` 的 `files` 读取，文件和目录 ID 照着返回值用，不猜名字。`operation.op` 可用 upload、create_folder、rename_folder、delete_folder、rename_file、move_file、delete_file。`upload` 给 source/name/folder_id，`create_folder` 给 name/parent_id；重命名给 file_id 或 folder_id 与 name，移动给 file_id/parent_id/dest_id，删除给对应 ID。文件操作可原样携带读取到的 busid。修改和删除需要本群开放管理。不能改删根目录。上传会在群里产生文件消息，计入消息额度。
+
+管理动作留给具体的管理请求和明确的群规则。拿踢人、禁言或修改别人名片接梗，会把一次聊天变成真实的管理后果。工具的 HTTP 成功也可能是内核失败；只认工具最终回执，不自行重试结果未知的写操作。

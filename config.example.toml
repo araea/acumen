@@ -154,6 +154,8 @@ results = 8
 enabled = false
 # 开启搭话的群号；空列表等于不开启。
 groups = []
+# 允许人格进行群管理的群号（禁言、踢人、改群名/他人名片、精华、群文件修改）。还须 QQ 权限。
+management_groups = []
 # 判定模型（便宜、能看图）。写 `供应商/模型` 时按 [oai.providers] 取接口；
 # 默认走 DeepSeek 官方接口的 deepseek-flash。
 gate_model = "deepseek/deepseek-flash"

@@ -191,7 +191,8 @@ impl SatoriClient {
                 .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
             return Err(format!("Satori API {method} 失败 ({status}): {detail}").into());
         }
-        Ok(serde_json::from_slice(&bytes)?)
+        let value = decode_response(method, &bytes)?;
+        Ok(serde_json::from_value(value)?)
     }
 
     /// 使用标准 `upload.create` multipart 把 ayjx 侧文件传给实现端。
@@ -235,6 +236,18 @@ impl SatoriClient {
         }
         Ok(serde_json::from_slice(&bytes)?)
     }
+}
+
+/// HTTP 成功只代表 RPC 已应答；QQ 内核可以在 JSON 中报告失败。
+fn decode_response(method: &str, bytes: &[u8]) -> Result<Value, BotError> {
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Value::Null); // Satori 的无返回值方法可以回 204。
+    }
+    let value: Value = serde_json::from_slice(bytes)?;
+    if method.starts_with("internal/") && value.get("ok") == Some(&Value::Bool(false)) {
+        return Err(format!("Satori API {method} 内核失败: {value}").into());
+    }
+    Ok(value)
 }
 
 pub fn entry(
@@ -938,7 +951,7 @@ fn normalize_event(
     } else {
         0
     };
-    let mut user_id = parse_id(user.get("id"));
+    let mut user_id = parse_id(user.get("id").or_else(|| member.pointer("/user/id")));
     if user_id == 0 {
         user_id = body
             .pointer("/satori_qq/actual_user_id")
@@ -947,7 +960,10 @@ fn normalize_event(
     }
     // 协议规定每个事件都自带 login 资源，多登录场景下它才是这条事件的归属账号；
     // 缺失时退回当前记录的登录号。
-    let self_id = parse_id(body.pointer("/login/user/id"));
+    let self_id = parse_id(
+        body.pointer("/login/user/id")
+            .or_else(|| body.get("self_id")),
+    );
     let self_id = if self_id != 0 {
         self_id
     } else {
@@ -957,6 +973,7 @@ fn normalize_event(
         "time": timestamp,
         "self_id": self_id,
         "satori_type": event_type,
+        "channel_id": raw_id(channel.get("id")),
         "_satori": body,
     });
 
@@ -1014,7 +1031,12 @@ fn normalize_event(
             "message-deleted" => ("notice", "message_recall", "", ""),
             "guild-member-added" => ("notice", "group_increase", "", "approve"),
             "guild-member-removed" => ("notice", "group_decrease", "", "leave"),
-            "guild-member-updated" => ("notice", "group_ban", "", "ban"),
+            "guild-member-updated"
+                if body.get("_type").and_then(Value::as_str) == Some("satori-qq/mute") =>
+            {
+                ("notice", "group_ban", "", "ban")
+            }
+            "guild-member-updated" => ("notice", "group_member_update", "", ""),
             "friend-request" => ("request", "", "friend", ""),
             "guild-request" => ("request", "", "group", "invite"),
             "guild-member-request" => ("request", "", "group", "add"),
@@ -1105,6 +1127,39 @@ fn value_id(value: &Value) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rpc_distinguishes_empty_success_kernel_failure_and_absent_payload() {
+        assert!(decode_response("message.delete", b" ").unwrap().is_null());
+        assert!(
+            decode_response(
+                "internal/group_medal",
+                br#"{"ok":false,"result":"code=2 system error"}"#
+            )
+            .is_err()
+        );
+        assert_eq!(
+            decode_response("internal/group_bulletin", br#"{"ok":true,"payload":false}"#).unwrap()
+                ["payload"],
+            false
+        );
+        assert!(decode_response("message.get", b"not-json").is_err());
+    }
+
+    #[test]
+    fn member_profiles_are_not_mutes_and_flat_identity_is_preserved() {
+        let bot = BotStatus {
+            adapter: "satori-qq".into(),
+            platform: "red".into(),
+            login_user: Default::default(),
+        };
+        let event = normalize_event(&json!({"type":"guild-member-updated","self_id":"10000","channel":{"id":"123","type":0},"member":{"user":{"id":"42"},"nick":"新名片"}}), &bot, &Default::default()).unwrap();
+        assert_eq!(event.get_str("notice_type"), Some("group_member_update"));
+        assert_eq!(event.get_i64("self_id"), Some(10000));
+        assert_eq!(event.get_i64("user_id"), Some(42));
+        assert_eq!(event.get_str("channel_id"), Some("123"));
+        assert_eq!(event.get_i64("duration"), None);
+    }
 
     // A local HTTP peer exercises the actual BeforeSend -> message.create path.
     // It never contacts QQ or sends messages to a real chat.
@@ -1768,15 +1823,24 @@ mod tests {
     #[tokio::test]
     async fn a_paged_list_is_followed_until_the_token_runs_out() {
         let (endpoint, mut seen, server) = scripted_peer(vec![
-            (200, r#"{"data":[{"id":"1","name":"一群"}],"next":"1"}"#.into()),
-            (200, r#"{"data":[{"id":"2","name":"二群"}],"next":"2"}"#.into()),
+            (
+                200,
+                r#"{"data":[{"id":"1","name":"一群"}],"next":"1"}"#.into(),
+            ),
+            (
+                200,
+                r#"{"data":[{"id":"2","name":"二群"}],"next":"2"}"#.into(),
+            ),
             (200, r#"{"data":[{"id":"3","name":"三群"}]}"#.into()),
         ])
         .await;
         let (ctx, writer) = bare_context(&endpoint).await;
         let groups = api::get_group_list(&ctx, writer, true).await.unwrap();
         assert_eq!(
-            groups.iter().map(|group| group.group_id).collect::<Vec<_>>(),
+            groups
+                .iter()
+                .map(|group| group.group_id)
+                .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
         // 每次回包给的令牌原样带回去；最后一页没有 next，就不再追问。
@@ -1790,9 +1854,11 @@ mod tests {
     /// 实现端的错误回包是 JSON，`message` 要能取出来，而不是把整段原文糊在错误里。
     #[tokio::test]
     async fn a_json_error_body_surfaces_its_message() {
-        let (endpoint, _seen, server) =
-            scripted_peer(vec![(404, r#"{"message":"API not found: message.update"}"#.into())])
-                .await;
+        let (endpoint, _seen, server) = scripted_peer(vec![(
+            404,
+            r#"{"message":"API not found: message.update"}"#.into(),
+        )])
+        .await;
         let (ctx, writer) = bare_context(&endpoint).await;
         let error = writer
             .call::<_, Value>(&ctx, "message.update", json!({}))
@@ -1801,7 +1867,10 @@ mod tests {
             .to_string();
         assert!(error.contains("API not found"), "{error}");
         // 实现端把 404 的响应体从纯文本改成 JSON 之后，取 message 的这条路必须仍然通。
-        assert!(!error.contains("{\"message\""), "整段 JSON 原文不该出现在错误里：{error}");
+        assert!(
+            !error.contains("{\"message\""),
+            "整段 JSON 原文不该出现在错误里：{error}"
+        );
         server.abort();
     }
 }

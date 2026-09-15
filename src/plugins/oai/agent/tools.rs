@@ -51,9 +51,7 @@ pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .filter(|name| {
-                LOCAL.contains(name)
-                    || (chat && CHAT.contains(name))
-                    || (web && WEB.contains(name))
+                LOCAL.contains(name) || (chat && CHAT.contains(name)) || (web && WEB.contains(name))
             })
             .collect(),
     };
@@ -124,9 +122,7 @@ pub(crate) async fn execute(
 }
 
 /// 这一轮没有联网工具时，两个出网工具都要给出说得清的拒绝，而不是「未知工具」。
-fn web<'a>(
-    run: &super::AgentRun<'a>,
-) -> anyhow::Result<&'a super::super::search::Search> {
+fn web<'a>(run: &super::AgentRun<'a>) -> anyhow::Result<&'a super::super::search::Search> {
     run.web
         .ok_or_else(|| anyhow::anyhow!("这一轮没有开联网搜索"))
 }
@@ -299,7 +295,10 @@ async fn glob(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
         }
     }
     if hits.is_empty() {
-        return Ok(format!("（{} 下没有匹配 {pattern} 的文件）", root.display()));
+        return Ok(format!(
+            "（{} 下没有匹配 {pattern} 的文件）",
+            root.display()
+        ));
     }
     hits.sort();
     Ok(hits.join("\n"))
@@ -362,7 +361,10 @@ async fn grep(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
         }
     }
     if hits.is_empty() {
-        return Ok(format!("（{} 下没有匹配 {pattern} 的内容）", root.display()));
+        return Ok(format!(
+            "（{} 下没有匹配 {pattern} 的内容）",
+            root.display()
+        ));
     }
     Ok(hits.join("\n"))
 }
@@ -534,13 +536,13 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_group" => (
-            "查这个群的现成资料。看人：某人的群名片/头衔/入群时间/多久没冒头/群内等级与群头衔与互动标签（member，一次问齐）、按昵称/群名片/头衔/号码找群友（search）、随机抽人（draw）、随机分队（teams）。看群：群人数与活跃概况（roster）、群容量与等级与群主与提醒方式（detail）、群统计（statistic，活跃人数与成员数）、被群主设成精华的消息（essence）、群文件目录或某个文件的下载链接（files）、群荣誉榜如龙王与群聊之火（honor）、此刻被禁言的人（mute_list）。看气氛：最活跃或最久没说话的人（activity）、本群发言条数排行（rank，可给 days 与 limit）、快到入群周年的人（anniversary）。全是只读查询，不改群设置，每轮有查询次数上限。",
+            "查这个群的现成资料。看人：某人的群名片/头衔/入群时间/多久没冒头/群内等级与群头衔与互动标签（member，一次问齐）、按昵称/群名片/头衔/号码找群友（search）、随机抽人（draw）、随机分队（teams）。看群：群人数与活跃概况（roster）、群容量与等级与群主与提醒方式（detail）、群统计（statistic，活跃人数与成员数）、被群主设成精华的消息（essence）、群文件目录或某个文件的下载链接（files）、群荣誉榜如龙王与群聊之火（honor）、此刻被禁言的人（mute_list）。看气氛：最活跃或最久没说话的人（activity）、本群发言条数排行（rank，可给 days 与 limit）、快到入群周年的人（anniversary）。还可查询群容量 capacity、发言限制 message_limit、自己的签到 signin、加群短链 join_link、群应用 apps、群文件用量 file_info、本群未读 unread/first_unread、最近 QQ 表情 faces、消息表态名单 reactions/reaction_users。next 续成员搜索，start 翻精华。全是只读查询，每轮有次数上限；没有载荷和查询失败都表示未知。",
             json!({
                 "type": "object",
                 "properties": {
                     "what": {
                         "type": "string",
-                        "enum": ["member", "search", "roster", "detail", "statistic", "essence", "activity", "rank", "anniversary", "draw", "teams", "files", "honor", "mute_list"],
+                        "enum": crate::plugins::ambient::bridge::LOOKUP_KINDS,
                         "description": "要查什么"
                     },
                     "query": {"type": "string", "description": "what=search：昵称、群名片、头衔或 QQ 号的一部分"},
@@ -554,7 +556,12 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                     "user_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 50, "description": "what=teams：只在这些人里分队"},
                     "active_within_days": {"type": "integer", "minimum": 0, "description": "只算最近这些天说过话的人"},
                     "folder": {"type": "string", "description": "what=files：目录 ID，默认根目录"},
-                    "file_id": {"type": "string", "description": "what=files：给了就返回这个文件的下载链接"}
+                    "file_id": {"type": "string", "description": "what=files：给了就返回这个文件的下载链接"},
+                    "next": {"type":"string","description":"what=search：原样传回上页的 next"},
+                    "start": {"type":"integer","minimum":0,"description":"what=essence：起始偏移"},
+                    "page": {"type":"integer","minimum":1,"description":"what=apps：页码"},
+                    "message_id": {"type":"string","description":"what=reactions/reaction_users：本群窗口里的消息 ID"},
+                    "emoji_id": {"type":"string","description":"what=reactions/reaction_users：QQ 表态 ID"}
                 },
                 "required": ["what"]
             }),
@@ -625,7 +632,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
 }
 
 /// `satori_action` 的 request 参数：与聊天界面那一侧接受的写法一一对应。
-fn satori_action_schema() -> Value {
+pub(crate) fn satori_action_schema() -> Value {
     let id = |description: &str| json!({"type": "string", "description": description});
     let mut part = vec![
         json!({"type": "object", "properties": {"type": {"const": "text"}, "text": {"type": "string"}}, "required": ["type", "text"]}),
@@ -655,7 +662,7 @@ fn satori_action_schema() -> Value {
         "required": ["type", "source", "name"]
     }));
 
-    json!({
+    let mut schema = json!({
         "oneOf": [
             {"type": "object", "properties": {
                 "action": {"const": "send"},
@@ -668,7 +675,110 @@ fn satori_action_schema() -> Value {
             {"type": "object", "properties": {"action": {"const": "recall"}, "message_id": id("撤回作用于自己发出的消息")}, "required": ["action", "message_id"]},
             {"type": "object", "properties": {"action": {"const": "forward"}, "message_ids": {"type": "array", "maxItems": 12, "items": {"type": "string"}}, "texts": {"type": "array", "maxItems": 12, "items": {"type": "string"}}}, "required": ["action"]}
         ]
-    })
+    });
+    let choices = schema["oneOf"].as_array_mut().unwrap();
+    for (name, properties, required) in [
+        ("sign", json!({}), vec![]),
+        (
+            "card",
+            json!({"card":id("群名片，空串清除"),"user_id":id("留空修改自己，改他人须启用管理")}),
+            vec!["card"],
+        ),
+        (
+            "title",
+            json!({"title":id("群头衔，空串清除"),"user_id":id("本群成员")}),
+            vec!["user_id", "title"],
+        ),
+        (
+            "essence",
+            json!({"message_id":id("本群消息"),"remove":{"type":"boolean"}}),
+            vec!["message_id"],
+        ),
+        (
+            "mute",
+            json!({"user_id":id("本群成员"),"duration_seconds":{"type":"integer","minimum":0,"maximum":2592000,"description":"秒；0 解禁"}}),
+            vec!["user_id", "duration_seconds"],
+        ),
+        (
+            "kick",
+            json!({"user_id":id("本群成员"),"permanent":{"type":"boolean","description":"拒绝再次入群，默认 false"}}),
+            vec!["user_id"],
+        ),
+        (
+            "mute_all",
+            json!({"duration_seconds":{"type":"integer","minimum":0,"maximum":2592000,"description":"秒；0 解禁"}}),
+            vec!["duration_seconds"],
+        ),
+        ("rename_group", json!({"name":id("新群名")}), vec!["name"]),
+        ("mark_read", json!({}), vec![]),
+        (
+            "session_top",
+            json!({"enable":{"type":"boolean"}}),
+            vec!["enable"],
+        ),
+        (
+            "group_remark",
+            json!({"remark":id("仅自己可见的群备注，空串清除")}),
+            vec!["remark"],
+        ),
+        (
+            "group_notify",
+            json!({"mask":{"type":"string","enum":["notify","assistant","shield","receive"]}}),
+            vec!["mask"],
+        ),
+        (
+            "react_clear",
+            json!({"message_id":id("清除自己在本群这条消息上的表态"),"emoji_id":id("留空清除自己的全部表态")}),
+            vec!["message_id"],
+        ),
+        (
+            "group_file",
+            json!({"operation":file_action_schema()}),
+            vec!["operation"],
+        ),
+    ] {
+        let mut properties = properties;
+        properties["action"] = json!({"const":name});
+        let mut required = required;
+        required.push("action");
+        choices.push(json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}));
+    }
+    schema
+}
+
+fn file_action_schema() -> Value {
+    let text = || json!({"type":"string"});
+    let mut choices = Vec::new();
+    for (op, required, optional) in [
+        ("upload", vec!["source", "name"], vec!["folder_id"]),
+        ("create_folder", vec!["name"], vec!["parent_id"]),
+        ("rename_folder", vec!["folder_id", "name"], vec![]),
+        ("delete_folder", vec!["folder_id"], vec![]),
+        (
+            "rename_file",
+            vec!["file_id", "name"],
+            vec!["parent_id", "busid"],
+        ),
+        (
+            "move_file",
+            vec!["file_id", "dest_id"],
+            vec!["parent_id", "busid"],
+        ),
+        ("delete_file", vec!["file_id"], vec!["busid"]),
+    ] {
+        let mut properties = json!({"op":{"const":op}});
+        for field in required.iter().chain(&optional) {
+            properties[*field] = if *field == "busid" {
+                json!({"type":"integer","minimum":0})
+            } else {
+                text()
+            };
+        }
+        let mut required = required;
+        required.push("op");
+        choices.push(json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}));
+    }
+    json!({"oneOf":choices})
 }
 
 #[cfg(test)]
@@ -761,7 +871,13 @@ mod tests {
             assert!(is_side_effecting(name), "{name}");
         }
         for name in [
-            "read", "glob", "grep", "satori_context", "satori_read", "web_search", "web_fetch",
+            "read",
+            "glob",
+            "grep",
+            "satori_context",
+            "satori_read",
+            "web_search",
+            "web_fetch",
         ] {
             assert!(!is_side_effecting(name), "{name}");
         }
@@ -773,9 +889,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
 
-        write(&json!({"path": "note.txt", "content": "第一行\n第二行\n"}), &ctx)
-            .await
-            .unwrap();
+        write(
+            &json!({"path": "note.txt", "content": "第一行\n第二行\n"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
         let text = read(&json!({"path": "note.txt"}), &ctx).await.unwrap();
         assert!(text.contains("第一行"), "{text}");
         assert!(text.contains("2\t第二行"), "行号要对得上：{text}");
@@ -802,7 +921,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
 
-        let error = read(&json!({"path": "nope.txt"}), &ctx).await.unwrap_err().to_string();
+        let error = read(&json!({"path": "nope.txt"}), &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("读取"), "{error}");
 
         write(&json!({"path": "dup.txt", "content": "甲\n甲\n"}), &ctx)
@@ -828,9 +950,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(dir.join("deep/er")).unwrap();
         let ctx = run(&dir);
-        write(&json!({"path": "deep/er/a.md", "content": "暗号 AYJX_NEEDLE\n"}), &ctx)
-            .await
-            .unwrap();
+        write(
+            &json!({"path": "deep/er/a.md", "content": "暗号 AYJX_NEEDLE\n"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
         write(&json!({"path": "b.txt", "content": "无关\n"}), &ctx)
             .await
             .unwrap();
@@ -839,7 +964,9 @@ mod tests {
         assert!(found.contains("a.md"), "{found}");
         assert!(!found.contains("b.txt"), "{found}");
 
-        let hits = grep(&json!({"pattern": "AYJX_NEEDLE"}), &ctx).await.unwrap();
+        let hits = grep(&json!({"pattern": "AYJX_NEEDLE"}), &ctx)
+            .await
+            .unwrap();
         assert!(hits.contains("a.md:1:"), "{hits}");
         assert!(
             grep(&json!({"pattern": "AYJX_NEEDLE", "glob": "*.txt"}), &ctx)
@@ -866,7 +993,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
-        assert!(execute("nope", &json!({}), &ctx, "x").await.contains("未知工具"));
+        assert!(
+            execute("nope", &json!({}), &ctx, "x")
+                .await
+                .contains("未知工具")
+        );
         assert!(
             execute("bash", &json!({"command": "  "}), &ctx, "x")
                 .await
@@ -883,7 +1014,13 @@ mod tests {
         let ctx = run(&dir);
         let text = execute("web_search", &json!({"query": "IG 战况"}), &ctx, "x").await;
         assert!(text.contains("没有开联网搜索"), "{text}");
-        let text = execute("web_fetch", &json!({"url": "https://example.com"}), &ctx, "x").await;
+        let text = execute(
+            "web_fetch",
+            &json!({"url": "https://example.com"}),
+            &ctx,
+            "x",
+        )
+        .await;
         assert!(text.contains("没有开联网搜索"), "{text}");
         // url 为空时先报参数错，不会走到网络。
         let text = execute("web_fetch", &json!({"url": "  "}), &ctx, "x").await;
