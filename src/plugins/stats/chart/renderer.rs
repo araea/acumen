@@ -76,10 +76,9 @@ pub fn draw_bar_chart(
     let pct_font_obj = (font_family, pct_font_size).into_font();
 
     // 每行都展示 "数值 + 百分比"，百分比用更小的灰色字体，提升可读性。
-    // 两者各自量出最宽的一条，好让它们各占一列、右对齐——一列对齐的数字才扫得动。
+    // 两者紧跟在各自条尾的右边，值与条连在一起读最直观；画布按最宽的一行预留。
     let mut formatted_counts: Vec<(String, String)> = Vec::new();
-    let mut value_col_w = 0u32;
-    let mut pct_col_w = 0u32;
+    let mut max_count_text_width = 0u32;
     let pct_gap = 8 * s;
 
     for item in data.iter() {
@@ -88,19 +87,13 @@ pub fn draw_bar_chart(
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
         let (pw, _) = pct_font_obj.box_size(&pct_text).unwrap_or((0, 0));
-        value_col_w = value_col_w.max(vw);
-        pct_col_w = pct_col_w.max(pw);
+        max_count_text_width = max_count_text_width.max(vw + pct_gap + pw);
         formatted_counts.push((value_text, pct_text));
     }
 
     // 计算内容区域尺寸
-    let content_width = avatar_width
-        + avatar_gap
-        + max_possible_bar_width
-        + gap_text
-        + value_col_w
-        + pct_gap
-        + pct_col_w;
+    let content_width =
+        avatar_width + avatar_gap + max_possible_bar_width + gap_text + max_count_text_width;
     // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
     let content_height = data.len() as u32 * row_pitch - row_gap + top_area_height;
 
@@ -108,11 +101,9 @@ pub fn draw_bar_chart(
     let canvas_width = content_width + padding * 2;
     let canvas_height = content_height + padding; // 底部留白
 
-    // 横条与数字的纵向分界线：轨道到此为止，右边整列留给数字。
+    // 轨道的左右端：条与淡色轨道都在这之间，右边的留白留给贴着条尾的数字。
     let track_start_x = (padding + avatar_width + avatar_gap) as i32;
     let track_end_x = track_start_x + max_possible_bar_width as i32;
-    let value_right_x = track_end_x + (gap_text + value_col_w) as i32;
-    let pct_right_x = value_right_x + (pct_gap + pct_col_w) as i32;
 
     // === 2. 绘图 ===
     let mut buffer = vec![0u8; (canvas_width * canvas_height * 3) as usize];
@@ -170,7 +161,7 @@ pub fn draw_bar_chart(
             })
             .collect();
 
-        // 第一趟：淡色轨道。先铺满，刻度线才有底可落。
+        // 第一趟：淡色轨道（条尾到轨道尽头的那一段）
         for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
             if *bar_end_x < track_end_x {
                 root.draw(&Rectangle::new(
@@ -181,14 +172,20 @@ pub fn draw_bar_chart(
             }
         }
 
-        // 第二趟：刻度竖线。夹在轨道与实条之间——画在实条之前，条上才不会留下
-        // 几道像被划过的灰线；画在轨道之后，线才真的落在浅色底上当刻度用
-        // （原先画在轨道之前，被每行的轨道盖住，只在行距里露出几段）。
-        //
-        // 间距沿用原来的 100*s：起于条的零点（最小条长处），每隔一格一道，直到轨道
-        // 尽头，正好是原版那八道等距刻度。首尾两道是这张表的左右边界，少了哪一道都
-        // 不像制过表的样子；条尾停在哪两道之间，是榜首的几成也一目了然。
-        let vertical_line_color = RGBAColor(0, 0, 0, 0.1);
+        // 第二趟：实色进度条
+        for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
+            root.draw(&Rectangle::new(
+                [(track_start_x, *y), (*bar_end_x, y + row_height as i32)],
+                item.theme_color.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+        }
+
+        // 第三趟：刻度竖线，压在条与轨道之上，整条从上通到下不被任何一根条打断。
+        // 间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道，直到轨道尽头，
+        // 正好是原版那八道等距刻度；首尾两道就是这张表的左右边界。
+        // 文字留到最后一趟画，所以线只压条，不会压到名字和数字上。
+        let vertical_line_color = RGBAColor(0, 0, 0, 0.12);
         let line_width = 3 * s as i32;
         let line_step = 100 * s as i32;
         let content_end_y =
@@ -198,31 +195,21 @@ pub fn draw_bar_chart(
             // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
             let x = line_x.min(track_end_x - line_width);
             root.draw(&Rectangle::new(
-                [
-                    (x, top_area_height as i32),
-                    (x + line_width, content_end_y),
-                ],
+                [(x, top_area_height as i32), (x + line_width, content_end_y)],
                 vertical_line_color.filled(),
             ))
             .map_err(|e| e.to_string())?;
             line_x += line_step;
         }
 
-        // 第三趟：实色进度条与行内文字
+        // 第四趟：行内文字（昵称、数值、占比），画在最上层
         for (i, item) in data.iter().enumerate() {
             let (y, bar_end_x) = rows[i];
             let start_x = track_start_x;
             let theme_color = item.theme_color;
 
-            // 3. 绘制进度条 (Solid)
-            root.draw(&Rectangle::new(
-                [(start_x, y), (bar_end_x, y + row_height as i32)],
-                theme_color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
-
-            // 4. 绘制昵称：一律写在实色条内，放不下就截断。名字挪到条外读起来
-            //    反而费劲，短条那几行宁可截，也保持每行同一个视线落点。
+            // 昵称：一律写在实色条内，放不下就截断。名字挪到条外读起来反而费劲，
+            // 短条那几行宁可截，也保持每行同一个视线落点。
             let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
             let name_color = get_contrast_color(theme_color);
             let max_name_width = (bar_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
@@ -238,18 +225,23 @@ pub fn draw_bar_chart(
                 .map_err(|e| e.to_string())?;
             }
 
-            // 5. 数值与占比：各自右对齐成一列，落在轨道右侧的空白上。
-            //    跟着条尾走的写法会让数字排成一道阶梯，还要压着淡色轨道念。
+            // 数值与占比：紧跟在自己那根条的尾巴右边，值与条连着读最直观。
             let (value_text, pct_text) = &formatted_counts[i];
+            let count_x = bar_end_x + text_inset as i32;
             let count_style = get_font_with_color(config, font_size, &ink)
-                .pos(Pos::new(HPos::Right, VPos::Center));
-            root.draw_text(value_text, &count_style, (value_right_x, text_mid_y))
+                .pos(Pos::new(HPos::Left, VPos::Center));
+            root.draw_text(value_text, &count_style, (count_x, text_mid_y))
                 .map_err(|e| e.to_string())?;
 
+            let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
             let pct_style = get_font_with_color(config, pct_font_size, &ink_soft)
-                .pos(Pos::new(HPos::Right, VPos::Center));
-            root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
-                .map_err(|e| e.to_string())?;
+                .pos(Pos::new(HPos::Left, VPos::Center));
+            root.draw_text(
+                pct_text,
+                &pct_style,
+                (count_x + vw as i32 + pct_gap as i32, text_mid_y),
+            )
+            .map_err(|e| e.to_string())?;
         }
 
         // 7. 绘制图标徽章 (消息类型等无头像条目：主题色圆底 + 类型字符)
