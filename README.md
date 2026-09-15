@@ -47,6 +47,7 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 - [内置 Agent 房间](docs/agent.md)
 - [群聊搭话](docs/ambient.md)
 - [易经画像](docs/portrait.md)
+- [视频解析](docs/video_parse.md)
 - [架构说明](docs/ARCHITECTURE.md)
 
 ```sh

@@ -313,10 +313,36 @@ allow_private_hosts = false
 # 知乎、雪球、NGA 等），以及从本机打开会被风控拦下的（Reddit、Quora）。
 # 名单写在 src/plugins/webshot.rs 的 WALLED_DOMAINS，要额外拉黑别的域名用上面的
 # ignore_domains。
+# 视频站的稿件链接（B 站 /video/BV…、b23.tv 短链）由 [video_parse] 接，这里自动跳过。
 block_walled_sites = true
 
 # 语义同 [stats.channel]。
 [webshot.channel]
+white = []
+black = []
+
+[video_parse]
+enabled = true
+# 预览里那行「引用本条并回复「视频」可取原片」。关掉就只发封面与信息。
+hint = true
+# 取片时最多下载多大（MB）。按这个数挑画质：放得下就取最清楚的一档，
+# 连最低一档都超了就只回一句「最小的 360P 也有多少 MB」。
+max_size_mb = 80
+# 想要的最高画质：80=1080P / 64=720P / 32=480P / 16=360P。
+# 未登录时 B 站只放 360P—720P（多数稿件是 720P），1080P 及以上要登录态。
+prefer_quality = 64
+# 成品怎么发：both（先群文件再视频气泡）/ file / bubble。与 [oai] video_send 同一套写法。
+send = "both"
+# 一次取片的总预算（秒），含挑画质、下载与上传。
+timeout_seconds = 300
+# 超过这么久还没取完，就先回一句「正在取片」，免得群里以为没反应。0 表示什么都不说。
+ack_after_seconds = 20
+# B 站登录 Cookie，留空即匿名。填上自己浏览器的 Cookie 才能取到 1080P。
+# 形如 "SESSDATA=…; bili_jct=…; buvid3=…"，整行贴进来即可。
+cookie = ""
+
+# 语义同 [stats.channel]。
+[video_parse.channel]
 white = []
 black = []
 

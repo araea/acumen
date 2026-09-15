@@ -59,6 +59,26 @@ pub fn strip_prefix<'a>(ctx: &Context, text: &'a str) -> Option<&'a str> {
         .find_map(|p| text.strip_prefix(p.as_str()).map(|rest| rest.trim_start()))
 }
 
+/// 取消息里的引用回复 ID（`reply` 段的 `id`）。
+///
+/// 「引用某条消息再回复」这类隐式交互（AI 资讯的序号提取、视频解析的取片）
+/// 都从这一处取被引消息的 ID，实现端把它写成字符串还是数字都认。
+pub fn message_reply_id(ctx: &Context) -> Option<String> {
+    let arr = ctx.as_message()?.0.get_array("message")?;
+    for segment in arr.iter() {
+        if segment.get_str("type") != Some("reply") {
+            continue;
+        }
+        let data = segment.get("data")?;
+        return data
+            .get_str("id")
+            .map(String::from)
+            .or_else(|| data.get_i64("id").map(|v| v.to_string()))
+            .or_else(|| data.get_u64("id").map(|v| v.to_string()));
+    }
+    None
+}
+
 /// 提取文本中第一个 http(s) URL。
 ///
 /// 群聊里的链接几乎从不独占一行：前后粘着中文，后面跟着全角逗号、句号、引号或者

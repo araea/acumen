@@ -147,10 +147,18 @@ register_plugins!(
         summary: "将一张图按行列切片",
         commands: cmds![("裁剪 <行>x<列> / 切图 / 分割", "如：裁剪 3x3")]
     },
+    video_parse {
+        display_name: "视频解析",
+        section: "message",
+        summary: "视频站链接（B 站稿件、分享短链）先回一条预览图，引用预览并回复「视频」才把原片取进群；链接准入与网页截图共用一份判据",
+        commands: cmds![
+            ("引用预览 + 视频 / 原片 / 下载", "把这条链接的原片取进群（群文件 + 视频气泡）"),
+        ]
+    },
     webshot {
         display_name: "网页截图",
         section: "message",
-        summary: "自动对消息中的网页链接进行截图"
+        summary: "自动对消息中的网页链接进行截图（视频站链接交给「视频解析」）"
     },
     oai {
         display_name: "智能对话",

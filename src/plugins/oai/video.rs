@@ -75,7 +75,9 @@ pub(crate) enum SendMode {
 }
 
 impl SendMode {
-    pub(super) fn parse(value: &str) -> Self {
+    /// 与 `[oai] video_send` 同一套写法；视频解析插件也读这里，两处的
+    /// 「文件 / 气泡 / 都发」是同一个意思。
+    pub(crate) fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "file" | "文件" | "群文件" => Self::File,
             "video" | "bubble" | "气泡" | "视频" => Self::Bubble,

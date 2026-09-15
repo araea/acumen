@@ -70,7 +70,7 @@
 //! 本插件只作展示，不参与任何指令解析。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::command::{extract_text_arg, get_prefixes, match_command};
+use crate::command::{extract_text_arg, get_prefixes, match_command, message_reply_id};
 use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
@@ -78,7 +78,6 @@ use crate::plugins::{PluginError, get_config, update_config};
 use futures_util::future::BoxFuture;
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
-use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -902,23 +901,6 @@ async fn handle_extraction_reply(
             pusher::build_message(ctx, config, &selected, Some(message_id), fresh.len() > 1)
         }
     }
-}
-
-/// 提取消息里的引用回复 ID（reply 段的 id），与指令匹配共用同一套解析。
-fn message_reply_id(ctx: &Context) -> Option<String> {
-    let arr = ctx.as_message()?.0.get_array("message")?;
-    for segment in arr.iter() {
-        if segment.get_str("type") != Some("reply") {
-            continue;
-        }
-        let data = segment.get("data")?;
-        return data
-            .get_str("id")
-            .map(String::from)
-            .or_else(|| data.get_i64("id").map(|v| v.to_string()))
-            .or_else(|| data.get_u64("id").map(|v| v.to_string()));
-    }
-    None
 }
 
 /// 判断引用卡片后回复的文本是否是一条「序号提取请求」。

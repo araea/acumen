@@ -72,9 +72,13 @@ const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
 ///
 /// 只列**稳定**如此、且正文必须登录的站点。实测能正常渲染的（CSDN、虎扑、豆瓣、
 /// 今日头条、淘宝、闲鱼、BOSS直聘、AcFun、晋江、起点、番茄、Tumblr、Threads、
-/// B 站含直播、`m.weibo.cn`）都不在此列；贴吧的「百度安全验证」是偶发的，重测
+/// B 站的番剧与直播页、`m.weibo.cn`）都不在此列；贴吧的「百度安全验证」是偶发的，重测
 /// 三次有两次能出内容，也不列。按域名后缀匹配，`douyin.com` 覆盖分享短链的落点
 /// `v.douyin.com`，但覆盖不到 `iesdouyin.com`，同名的那条要单独列。
+///
+/// B 站的**稿件页**（`/video/BV…`）本来也能渲染，但它现在不问这里了：链接准入先经
+/// [`crate::plugins::video_parse::is_video_link`]，那类链接直接跳过截图，改由视频解析
+/// 插件回一条预览。
 const WALLED_DOMAINS: &[&str] = &[
     // 登录墙：没有登录态只能看到登录表单或「打开App」引导
     "douyin.com",
@@ -111,6 +115,13 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
         return Err(format!("不支持的协议 {}", url.scheme()));
     }
     let host = url.host().ok_or_else(|| "链接缺少主机名".to_string())?;
+
+    // 视频站的链接交给 video_parse：那边先回一条预览，用户引用预览再开口取片。
+    // 这里跳过不截——稿件页要等播放器起画面，截出来又慢又没什么有效信息。
+    // 判据与那边共用一份，两处不会各截一次又取一次。
+    if crate::plugins::video_parse::is_video_link(raw) {
+        return Err("视频站链接由视频解析插件接".to_string());
+    }
 
     if let Host::Domain(name) = host {
         let name = name.trim_end_matches('.').to_ascii_lowercase();
@@ -489,7 +500,8 @@ mod tests {
 
         // 未登录也能看正文的站点不受影响。
         for raw in [
-            "https://www.bilibili.com/video/BV1xx",
+            "https://www.bilibili.com/bangumi/play/ep307580",
+            "https://live.bilibili.com/12345",
             "https://m.weibo.cn/detail/123",
             "https://mp.weixin.qq.com/s/abc",
             "https://www.youtube.com/watch?v=abc",
@@ -504,6 +516,19 @@ mod tests {
         let mut relaxed = config();
         relaxed.block_walled_sites = false;
         assert!(check_url("https://v.douyin.com/c9EJkQ5hNz0/", &relaxed).await.is_ok());
+    }
+
+    /// 视频站的稿件链接改由 video_parse 接：预览 + 引用取片。这里必须跳过，
+    /// 否则同一条链接既回一条预览又被截一张图。
+    #[tokio::test]
+    async fn video_links_are_left_to_the_video_parser() {
+        for raw in [
+            "https://www.bilibili.com/video/BV1GJ411x7h7",
+            "https://b23.tv/BV1GJ411x7h7",
+            "https://m.bilibili.com/video/av80433022",
+        ] {
+            assert!(check_url(raw, &config()).await.is_err(), "{raw} 不该截图");
+        }
     }
 
     #[test]
