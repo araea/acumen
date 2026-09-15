@@ -12,7 +12,10 @@ use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
-/// 排行榜的刻度竖线：一组等距的浅色竖线，从榜首画到榜尾。
+/// 排行榜的刻度竖线：一组等距的浅色竖线，只刻在每行的色带里。
+///
+/// 只画在色带上、不穿过行距的纸面：线是刻在条上的记号，不是铺在纸上的网格，
+/// 行与行之间留白干净，整张图也就轻快。
 ///
 /// 单独拎出来是因为它要么画在实色条之前（被条盖住），要么画在之后（压在条上），
 /// 由 `stats.ranking_grid_over_bars` 决定，两处调用同一份几何。
@@ -21,25 +24,28 @@ struct ScaleGrid {
     end_x: i32,
     step: i32,
     width: i32,
-    y0: i32,
-    y1: i32,
+    row_height: i32,
 }
 
 impl ScaleGrid {
+    /// `row_tops` 是各行色带的上沿，逐行画出该行高度内的那一段。
     fn draw<DB: DrawingBackend>(
         &self,
         root: &DrawingArea<DB, plotters::coord::Shift>,
+        row_tops: impl Iterator<Item = i32> + Clone,
     ) -> Result<(), String> {
         let color = RGBAColor(0, 0, 0, 0.12);
         let mut x = self.first_x;
         while x <= self.end_x {
             // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
             let x0 = x.min(self.end_x - self.width);
-            root.draw(&Rectangle::new(
-                [(x0, self.y0), (x0 + self.width, self.y1)],
-                color.filled(),
-            ))
-            .map_err(|e| e.to_string())?;
+            for y in row_tops.clone() {
+                root.draw(&Rectangle::new(
+                    [(x0, y), (x0 + self.width, y + self.row_height)],
+                    color.filled(),
+                ))
+                .map_err(|e| e.to_string())?;
+            }
             x += self.step;
         }
         Ok(())
@@ -212,8 +218,8 @@ pub fn draw_bar_chart(
         }
 
         // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认实色条盖住刻度，
-        // 每根条是完整的一块颜色；打开则刻度画在最上层，整条格子从榜首通到榜尾。
-        // 无论哪种，文字都在最后一趟画，线不会压到名字和数字上。
+        // 每根条是完整的一块颜色；打开则刻度画在最上层，每行的色带都被刻满。
+        // 无论哪种，刻度只落在色带上、不越进行距的纸面，文字也都在最后一趟画。
         //
         // 刻度间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道，直到轨道
         // 尽头，正好是原版那八道等距刻度；首尾两道就是这张表的左右边界。
@@ -222,13 +228,13 @@ pub fn draw_bar_chart(
             end_x: track_end_x,
             step: 100 * s as i32,
             width: 3 * s as i32,
-            y0: top_area_height as i32,
-            y1: top_area_height as i32 + (data.len() as u32 * row_pitch - row_gap) as i32,
+            row_height: row_height as i32,
         };
+        let row_tops = || rows.iter().map(|(y, _)| *y);
 
         // 第二趟：条与刻度，孰上孰下看配置
         if !config.ranking_grid_over_bars {
-            grid.draw(&root)?;
+            grid.draw(&root, row_tops())?;
         }
         for ((y, bar_end_x), item) in rows.iter().zip(data.iter()) {
             root.draw(&Rectangle::new(
@@ -239,7 +245,7 @@ pub fn draw_bar_chart(
         }
 
         if config.ranking_grid_over_bars {
-            grid.draw(&root)?;
+            grid.draw(&root, row_tops())?;
         }
 
         // 第三趟：行内文字（昵称、数值、占比），始终画在最上层
