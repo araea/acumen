@@ -1,8 +1,9 @@
 //! 群聊工具的类型化动作；目标固定在本群，管理动作另按配置启用。
 use super::window::Turn;
-use crate::message::Message;
+use crate::message::Segment;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+use simd_json::base::ValueAsScalar;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -29,11 +30,20 @@ pub(crate) enum Part {
     Video {
         source: String,
     },
-    /// 复用当前群某条消息中的图片/商城表情，保留原始参数。
+    /// 表情包：要么从眼前这条记录里偷（`message_id` + `index`），要么从自己攒的库里取
+    /// （`id`）。参数只带 QQ 号那种原始元素，保留原样再发一遍。
     Sticker {
+        #[serde(default)]
         message_id: String,
         #[serde(default)]
         index: usize,
+        /// 库里的编号；与 `message_id` 二选一。
+        #[serde(default)]
+        id: Option<u32>,
+        /// 一句话说明这张是什么、什么时候发。偷的时候顺手写，进库当标签；
+        /// 配上 `id` 是给库里那张改名。
+        #[serde(default)]
+        note: String,
     },
     Dice,
     Rps,
@@ -292,8 +302,19 @@ impl Action {
                         Part::Face { id } => {
                             ensure!(id.parse::<u32>().is_ok(), "表情 ID 用数字");
                         }
-                        Part::Sticker { message_id, index } => {
-                            sticker(message(turns, message_id)?, *index)?;
+                        Part::Sticker {
+                            message_id,
+                            index,
+                            id,
+                            ..
+                        } => {
+                            ensure!(
+                                id.is_some() || !message_id.is_empty(),
+                                "表情包要么给 id（自己攒的那张），要么给 message_id（从记录里偷）"
+                            );
+                            if id.is_none() {
+                                sticker(message(turns, message_id)?, *index)?;
+                            }
                         }
                         Part::File { name, .. } => {
                             ensure!(
@@ -466,20 +487,33 @@ impl Action {
     }
 }
 
-pub(crate) fn sticker(turn: &Turn, index: usize) -> Result<Message> {
-    let segment = turn
-        .elements
+/// 这条消息里的第 `index` 张图或商城表情，原样取出来。
+///
+/// 取出来是为着再发一遍（偷），或者抄进表情包库（见 [`super::stickers`]）。
+pub(crate) fn sticker(turn: &Turn, index: usize) -> Result<Segment> {
+    turn.elements
         .0
         .iter()
         .filter(|s| matches!(s.type_.as_str(), "image" | "mface"))
         .nth(index)
-        .ok_or_else(|| anyhow::anyhow!("这条消息没有对应的图片/表情包"))?;
-    Ok(Message(vec![segment.clone()]))
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("这条消息没有对应的图片/表情包"))
+}
+
+/// 图那种段落在网上的位置。商城表情没有这一项——它靠参数重发，不必下载。
+pub(crate) fn image_source(segment: &Segment) -> Option<&str> {
+    segment
+        .data
+        .get("url")
+        .or_else(|| segment.data.get("file"))
+        .and_then(|value| value.as_str())
+        .filter(|url| url.starts_with("http"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Message;
     fn turns() -> Vec<Turn> {
         vec![Turn {
             user_id: 42,
@@ -575,7 +609,7 @@ mod tests {
         }
         .validate(&ts)
         .unwrap();
-        assert_eq!(sticker(&ts[0], 0).unwrap().0[0].type_, "image");
+        assert_eq!(sticker(&ts[0], 0).unwrap().type_, "image");
         assert!(sticker(&ts[0], 1).is_err());
     }
 }

@@ -48,6 +48,7 @@ mod mood;
 mod pace;
 mod peak;
 mod speak;
+mod stickers;
 mod tone;
 mod vision;
 mod voice;
@@ -230,6 +231,11 @@ pub(crate) struct AmbientConfig {
     /// 每轮最多拍几段视频；0 关闭拍片。拍片走 `[oai]` 配置的视频接口，一次约 $1.2，
     /// 是这里最贵的一项；关掉它就是在群里收回这个能力。
     pub video_budget: usize,
+    /// 偷来的表情包最多留几张；0 表示不攒（窗口里照样偷，只是转身就没了）。
+    ///
+    /// 群友发的图与商城表情在偷的那一刻会被抄进 `data/ambient/stickers/`，往后每轮
+    /// 挑几张贴进发言提示词，人格想发就发。库满了先丢最没人用的那几张。
+    pub sticker_max: usize,
     /// 打字速度（字/分钟）。调低更像在慢慢敲。
     pub typing_cpm: u32,
     /// 长句改用语音输入时的等效速度（字/分钟）。
@@ -283,6 +289,7 @@ impl Default for AmbientConfig {
             draw_budget: 2,
             music_budget: 1,
             video_budget: 1,
+            sticker_max: 120,
             typing_cpm: 150,
             voice_cpm: 420,
             think_seconds: 3.0,
@@ -426,9 +433,10 @@ impl Scene {
                 String::new()
             },
             own: format!(
-                "{}{}",
+                "{}{}{}",
                 self_facts(),
-                voice::brief(turns, voice_register(config, group))
+                voice::brief(turns, voice_register(config, group)),
+                stickers::brief(turns, config.sticker_max)
             ),
         }
     }
@@ -558,6 +566,7 @@ async fn setup(base: &Path) -> std::io::Result<()> {
     tokio::fs::create_dir_all(base.join("memory")).await?;
     memory::attach(base);
     mood::attach(base);
+    stickers::attach(base);
     Ok(())
 }
 
@@ -841,15 +850,28 @@ fn build_turn(event: &MessageEvent<'_>, me: i64) -> Turn {
     let mut images = Vec::new();
     let mut mentions_me = false;
     let mut call = window::Call::default();
-
+    // 平台在 at 段后面又跟着一条「@名字 正文」的文本段，那个 `@名字` 是 QQ 客户端的
+    // 显示方式，不是群友打的字。留着它，人格就会学着写 `@某某`（线上记录 id 61150 的
+    // 「@子屿 什么样不行」），而它能发得出去的写法只有 `[at:QQ号]`；摘掉那个 `@`，
+    // 名字本身不动——多字昵称没法猜到哪里为止，宁可留个名字也不啃掉半截。
+    let mut after_at = false;
     if let Some(segments) = event.0.get_array("message") {
         for segment in segments {
             let kind = segment.get_str("type").unwrap_or_default();
+            // 这一条是不是紧跟在 at 段后面——是，才轮到上面那条规则。
+            let follows_at = std::mem::replace(&mut after_at, kind == "at");
             let Some(data) = segment.get("data") else {
                 continue;
             };
             match kind {
-                "text" => text.push_str(data.get_str("text").unwrap_or_default()),
+                "text" => {
+                    let body = data.get_str("text").unwrap_or_default();
+                    text.push_str(if follows_at {
+                        body.strip_prefix('@').unwrap_or(body)
+                    } else {
+                        body
+                    });
+                }
                 "at" => {
                     let target = data.get_str("qq").unwrap_or_default();
                     if target == me.to_string() {
@@ -857,7 +879,9 @@ fn build_turn(event: &MessageEvent<'_>, me: i64) -> Turn {
                         call.at_me = true;
                         text.push_str("@我 ");
                     } else {
-                        text.push_str(&format!("@{target} "));
+                        // 用与发言同一种写法渲染：人格照着眼前的记录写话，记录里写成
+                        // `@QQ号`，它就会把这串号码原样抄进正文（记录 id 105888）。
+                        text.push_str(&format!("[at:{target}] "));
                     }
                 }
                 "image" | "mface" => {
@@ -1428,6 +1452,26 @@ pub(crate) fn literal_newlines(text: &str) -> String {
     text.replace("\\r\\n", "\n").replace("\\n", "\n")
 }
 
+/// 从字节认图片的扩展名。
+///
+/// 生成图与偷来的表情包都按这个给落盘的文件起名：存下来的这份要跟内容对得上，
+/// 上传给 QQ 与本地回看都靠它。
+pub(crate) fn image_extension(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "jpg"
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        "gif"
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "webp"
+    } else if bytes.starts_with(b"BM") {
+        "bmp"
+    } else {
+        "png"
+    }
+}
+
 /// 消息链 → 记进窗口的文字形态。
 fn plain_text(message: &Message) -> String {
     let mut out = String::new();
@@ -1440,8 +1484,10 @@ fn plain_text(message: &Message) -> String {
                     .and_then(|v| v.as_str())
                     .unwrap_or(""),
             ),
+            // 与入站记录、发言标记同一个写法：自己过去那句里的 @ 也读成 `[at:QQ号]`，
+            // 人格在自己说过的话里学到的就是能用的那一种。
             "at" => out.push_str(&format!(
-                "@{} ",
+                "[at:{}] ",
                 segment
                     .data
                     .get("qq")
@@ -1618,6 +1664,44 @@ mod tests {
                 scene.brief()
             );
         }
+    }
+
+    /// 偷来的表情包摆在发言那一轮，判定那一轮不摆——判定看的是「要不要接这句话」，
+    /// 货架上有什么对它没用，而那是每条消息都要付一次的账。
+    #[test]
+    fn the_sticker_shelf_is_only_in_the_speaking_round() {
+        let _guard = memory::exclusive();
+        let dir = stickers::tests::scratch("scene");
+        let source = Turn {
+            user_id: 7,
+            name: "老张".into(),
+            text: "笑死".into(),
+            ..Turn::default()
+        };
+        let mut data = simd_json::owned::Object::new();
+        data.insert("emoji_id".into(), simd_json::owned::Value::from("296f"));
+        data.insert("emoji_package_id".into(), simd_json::owned::Value::from("241904"));
+        let segment = crate::message::Segment::new("mface", data);
+        stickers::keep(&segment, &source, -1, "捂着嘴笑", None, 20);
+
+        let config = AmbientConfig::default();
+        let turns = vec![Turn {
+            user_id: 7,
+            name: "群友".into(),
+            text: "这台折叠屏值不值".into(),
+            ..Turn::default()
+        }];
+        let scene = Scene::build(-1, &config, &turns, "刚接了两次话".into());
+        assert!(scene.own.contains("捂着嘴笑"), "{}", scene.own);
+        assert!(!scene.brief().contains("捂着嘴笑"), "{}", scene.brief());
+        // 库关掉（`sticker_max = 0`）时这一段整个不出现。
+        let off = AmbientConfig {
+            sticker_max: 0,
+            ..AmbientConfig::default()
+        };
+        let scene = Scene::build(-1, &off, &turns, "刚接了两次话".into());
+        assert!(!scene.own.contains("捂着嘴笑"), "{}", scene.own);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// 模型把换行写成字面的 `\n` 时，群里不该看见一个反斜杠加一个 n。
@@ -1962,7 +2046,48 @@ mod tests {
     #[test]
     fn spoken_messages_are_written_back_as_readable_text() {
         let message = Message::new().at(114_514).text("这步缺前提").face(178);
-        assert_eq!(plain_text(&message), "@114514 这步缺前提[表情]");
+        // at 用发言侧那种标记写法回写：它自己在记录里看到的、能再用的就是这种。
+        assert_eq!(plain_text(&message), "[at:114514] 这步缺前提[表情]");
+    }
+
+    /// 别人 @ 谁，记录里写成 `[at:QQ号]`——与发言侧同一种写法。写 `@QQ号` 时人格会
+    /// 照着抄进正文，群里冒出一串光秃秃的号码（线上记录 id 105888）。
+    #[test]
+    fn a_mention_of_someone_else_is_written_the_way_the_persona_may_write_it() {
+        let raw = event(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 1,
+            "user_id": 42,
+            "message_id": 8,
+            "time": 1_788_800_000_i64,
+            "sender": {"nickname": "张三", "card": "老张"},
+            "message": [
+                {"type": "at", "data": {"qq": "3938463481"}},
+                {"type": "text", "data": {"text": "兄弟说到点子上了"}},
+            ],
+        }));
+        let turn = build_turn(&MessageEvent(&raw), 3_373_167_460);
+        assert_eq!(turn.text, "[at:3938463481] 兄弟说到点子上了");
+        assert!(!turn.mentions_me && !turn.call.at_me);
+        assert!(window::transcript(&[turn]).contains("[at:3938463481] 兄弟说到点子上了"));
+
+        // 平台在 at 段后面又写了一遍「@名字」：那个 `@` 要摘掉，否则人格会跟着学。
+        let echoed = event(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 1,
+            "user_id": 42,
+            "message_id": 9,
+            "time": 1_788_800_000_i64,
+            "sender": {"nickname": "张三", "card": "老张"},
+            "message": [
+                {"type": "at", "data": {"qq": "3938463481"}},
+                {"type": "text", "data": {"text": "@呜呜呜呜云 兄弟说到点子上了"}},
+            ],
+        }));
+        let turn = build_turn(&MessageEvent(&echoed), 3_373_167_460);
+        assert_eq!(turn.text, "[at:3938463481] 呜呜呜呜云 兄弟说到点子上了");
     }
 
     #[test]

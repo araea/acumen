@@ -140,6 +140,10 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
         c.api_key = "test-only".into();
         mgr.save(&c);
     }
+    // 铺开的是进程级的那几样（搭话记忆、心情、偷来的表情包库）：动同一批全局数据的
+    // 用例要串行，否则一边在写、一边被重铺，谁先谁后看运气。`memory::exclusive()`
+    // 就是那把锁——几样状态共用它。
+    let _guard = memory::exclusive();
     setup(dir.path()).await.unwrap();
     let base = dir.path().to_path_buf();
     let turn = |id| Turn {
@@ -211,6 +215,10 @@ async fn live_persona_and_gate_dialogue() {
     let credentials = mgr.config.read().await;
     let dir =
         crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-live").unwrap();
+    // 铺开的是进程级的那几样（搭话记忆、心情、偷来的表情包库）：动同一批全局数据的
+    // 用例要串行，否则一边在写、一边被重铺，谁先谁后看运气。`memory::exclusive()`
+    // 就是那把锁——几样状态共用它。
+    let _guard = memory::exclusive();
     setup(dir.path()).await.unwrap();
     let config = AmbientConfig {
         tools: "read".into(),

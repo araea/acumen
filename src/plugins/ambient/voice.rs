@@ -68,7 +68,8 @@ fn parse(raw: &str) -> Vec<Sample<'_>> {
 ///
 /// 用字组而不是词，是因为群聊样本又短又口语，切词器在「降噪还是很顶的」这种
 /// 半截话上切不出什么可靠的东西；字组重叠已经够把「也在聊手机」认出来了。
-fn grams(text: &str) -> HashSet<String> {
+/// 偷来的表情包挑贴题的那几张时用的是同一把尺子（见 [`super::stickers`]）。
+pub(super) fn grams(text: &str) -> HashSet<String> {
     let chars: Vec<char> = text
         .chars()
         .filter(|c| c.is_alphanumeric())
@@ -93,7 +94,7 @@ fn grams(text: &str) -> HashSet<String> {
 ///
 /// 除以平方根是为了不让长句单靠长就赢——样本长短差得不多，但「牛逼克拉斯」和
 /// 「运存高一点还是有点用的 毕竟我有时候会在手机上玩盖世游戏」不该按长度排座次。
-fn affinity(sample: &str, topic: &HashSet<String>) -> f32 {
+pub(super) fn affinity(sample: &str, topic: &HashSet<String>) -> f32 {
     let own = grams(sample);
     if own.is_empty() || topic.is_empty() {
         return 0.0;

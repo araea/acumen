@@ -37,6 +37,48 @@ fn markup() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\[(at|face|img):([^\]]{1,512})\]").unwrap())
 }
 
+/// 模型自己写出来的 `@QQ号`。
+///
+/// 记录里同一个人有两种写法：`[at:QQ号]` 是标记，`@QQ号` 是历史遗留的渲染（入站消息
+/// 与它自己过去那句都这么显示过）。人格照着第二种抄的时候，正文里就留下了一串光秃秃
+/// 的号码（记录 id 105888）。渲染前把这种写法收进标记，两种抄法都能落到真 at 上。
+fn bare_at() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"@(\d{5,12})").unwrap())
+}
+
+/// `@QQ号` → `[at:QQ号]`。
+///
+/// 只认五到十二位数字：QQ 号是这个长度，而正常的群里说话不会在 `@` 后面跟一串这么长的
+/// 数字（`pass@1` 不够五位，邮箱的 `@` 后面不是数字）。前面紧挨着字母数字或 `[` 的也不动
+/// ——`user@12345`、`[@12345]` 那是在说别的，改了就多出一层方括号。
+fn mark_bare_ats<'a>(body: &'a str) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+    if !bare_at().is_match(body) {
+        return Cow::Borrowed(body);
+    }
+    let mut out = String::with_capacity(body.len() + 8);
+    let mut cursor = 0;
+    let mut changed = false;
+    for found in bare_at().find_iter(body) {
+        let before = body[..found.start()].chars().next_back();
+        if before.is_some_and(|c| c.is_alphanumeric() || c == '[' || c == '@') {
+            continue;
+        }
+        out.push_str(&body[cursor..found.start()]);
+        out.push_str("[at:");
+        out.push_str(&found.as_str()[1..]);
+        out.push(']');
+        cursor = found.end();
+        changed = true;
+    }
+    if !changed {
+        return Cow::Borrowed(body);
+    }
+    out.push_str(&body[cursor..]);
+    Cow::Owned(out)
+}
+
 /// 一行里所有标记所占的字符区间（半开），交给 [`breath`] 护住。
 fn markup_spans(line: &str) -> Vec<std::ops::Range<usize>> {
     markup()
@@ -182,7 +224,8 @@ pub(crate) fn text_segments(text: &str) -> Message {
 fn build_message(body: &str) -> (Message, usize) {
     // 字面的 `\n` 在这儿就还原成真换行，后面按标记定位的字节下标才对得上。
     let body = super::literal_newlines(body);
-    let body = body.as_str();
+    let body = mark_bare_ats(&body);
+    let body: &str = &body;
     let mut message = Message::new();
     let mut chars = 0usize;
     let mut cursor = 0usize;
@@ -380,6 +423,41 @@ mod tests {
         let plain = text_segments("[笑] 收到");
         assert_eq!(plain.0.len(), 1);
         assert_eq!(plain.0[0].data.get("text").unwrap(), "[笑] 收到");
+    }
+
+    /// 模型把 `@QQ号` 照着记录抄进正文时，也得变成真的 at：线上记录 id 105888 的
+    /// 「@3938463481 兄弟说到点子上了」就是这么漏出去的。
+    #[test]
+    fn a_bare_qq_mention_becomes_a_real_at() {
+        let items = say("@3938463481 兄弟说到点子上了");
+        let kinds: Vec<&str> = items[0]
+            .message
+            .0
+            .iter()
+            .map(|segment| segment.type_.as_str())
+            .collect();
+        assert_eq!(kinds, ["at", "text"]);
+        assert_eq!(items[0].message.0[0].data.get("qq").unwrap(), "3938463481");
+        assert_eq!(text_of(&items[0]), " 兄弟说到点子上了");
+        // 工具路径传进来的 text 走同一套翻译。
+        let message = text_segments("@3938463481 行 下次");
+        assert_eq!(message.0[0].type_, "at");
+    }
+
+    /// 只有「@ + 五到十二位数字」才算提及：短数字、邮箱、已经是标记的都不动。
+    #[test]
+    fn only_a_long_standalone_number_after_at_reads_as_a_mention() {
+        for raw in [
+            "75 pass@1 有点离谱",
+            "发我 user@12345 那个邮箱",
+            "[@3938463481] 这是别处的写法",
+        ] {
+            let message = text_segments(raw);
+            assert!(
+                message.0.iter().all(|segment| segment.type_ == "text"),
+                "{raw} 被改成了 {message:?}"
+            );
+        }
     }
 
     #[test]

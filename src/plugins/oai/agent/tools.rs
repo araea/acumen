@@ -638,7 +638,7 @@ pub(crate) fn satori_action_schema() -> Value {
         json!({"type": "object", "properties": {"type": {"const": "text"}, "text": {"type": "string"}}, "required": ["type", "text"]}),
         json!({"type": "object", "properties": {"type": {"const": "at"}, "user_id": id("当前群成员 QQ 号，字符串")}, "required": ["type", "user_id"]}),
         json!({"type": "object", "properties": {"type": {"const": "face"}, "id": id("QQ 表情 ID，例如 76 赞")}, "required": ["type", "id"]}),
-        json!({"type": "object", "properties": {"type": {"const": "sticker"}, "message_id": id("复用群消息中的原始图片/表情包"), "index": {"type": "integer", "minimum": 0}}, "required": ["type", "message_id"]}),
+        json!({"type": "object", "properties": {"type": {"const": "sticker"}, "message_id": id("从这条群消息里偷：它的消息 ID"), "index": {"type": "integer", "minimum": 0, "description": "这条消息里的第几张图/表情包，默认 0"}, "id": {"type": "integer", "minimum": 1, "description": "从自己攒的表情包里取，编号见提示词里那几行"}, "note": id("一句话说清这张是什么、什么场合发；偷新的时候写给库里当标签，配 id 用时是给它改名")}, "required": ["type"]}),
         json!({"type": "object", "properties": {"type": {"const": "dice"}}, "required": ["type"]}),
         json!({"type": "object", "properties": {"type": {"const": "rps"}}, "required": ["type"]}),
     ];

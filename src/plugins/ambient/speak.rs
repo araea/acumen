@@ -58,7 +58,7 @@ fn house_rules(max_messages: usize, focus_max_seconds: u64) -> String {
 ///
 /// 这段没法再省：每一句都对应一个拿不到就用不上的机制——工具叫什么、
 /// 回执才算数、用过工具之后输出 `[silent]` 免得再发一遍。
-const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、自己的群角色和可用能力；satori_action 发送或互动；satori_read 读原消息，forward:true 展开含嵌套的合并转发，语音会附听写结果。入退群、禁言、名片变化和表态也是现场，未知身份和无载荷查询就按未知理解。\n签到、改自己的名片、整理群文件、只点个表态或戳一下，都是完整的一轮。管理动作用于明确的管理请求与群规则，按 management_enabled 和 QQ 权限执行。用法见 satori-reply。\n回执才算数：成功才算做了；失败或群聊更新就重新看现场，超时表示结果未知。聊天动作走这些工具，bash 用来整理材料。用过工具之后最终输出 [silent]（可附 focus）。\n两三个意思分成几次 send，一条一个意思，每条计消息额度；text 保留空格与换行。satori_draw 给画面描述，可选尺寸、画质和参考图，生成到 ambient/media；拿返回的本地路径用 send 的 type:image 发出，配字加 text。绘图不占发送额度，有张数上限。";
+const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、群角色与可用能力；satori_action 发送或互动；satori_read 读原消息（forward:true 展开转发，语音附听写）；入退群、禁言、名片变化、表态也是现场；未知身份与无载荷查询按未知理解。\n签到、改自己的名片、整理群文件、点个表态或戳一下都算完整的一轮；管理动作按 management_enabled 与 QQ 权限执行，用法见 satori-reply。\n回执才算数：失败或群聊更新就重看现场，超时表示结果未知；用过工具之后最终输出 [silent]（可附 focus）；bash 整理材料。\n两三个意思分几次 send，一条一个意思，每条计额度；text 保留空格与换行。群里的图与商城表情能再发一遍：send 里 sticker 配 message_id 与 index 就是从记录里偷，顺手在 note 写一句它长什么样、什么场合发；偷走的会进你的表情包库（编号就在现场里），往后写 id 就取得到。satori_draw 给画面描述（尺寸、画质、参考图可选），生成到 ambient/media，用 type:image 发出去，配字加 text。绘图不占发送额度，有张数上限。";
 
 /// 把人设、现场说明和这一轮真正挂上去的工具说明拼成系统提示词。
 ///

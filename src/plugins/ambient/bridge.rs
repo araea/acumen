@@ -5,13 +5,13 @@
 use super::{
     AmbientConfig,
     actions::{self, Action, FileAction, Part},
-    memory, mood,
+    memory, mood, stickers,
     window::{self, Turn},
 };
 use crate::{
     adapters::satori::{LockedWriter, forward, freshness_for, send_fresh_msg_id},
     event::Context,
-    message::Message,
+    message::{Message, Segment},
 };
 use anyhow::{Context as _, Result, ensure};
 use serde_json::{Value, json};
@@ -235,6 +235,8 @@ struct Session {
     config: AmbientConfig,
     scratch: PathBuf,
     media: PathBuf,
+    /// 偷来的表情包那份库（全局一份，见 [`super::stickers`]）。
+    stickers: PathBuf,
     seq: Arc<AtomicU64>,
     attempted: Arc<AtomicBool>,
     writes: usize,
@@ -277,6 +279,7 @@ pub(crate) async fn start(
         config: config.clone(),
         scratch: scratch.to_path_buf(),
         media: base.join("media"),
+        stickers: base.join("stickers"),
         seq: seq.clone(),
         attempted: attempted.clone(),
         writes: 0,
@@ -1335,6 +1338,54 @@ impl Session {
         );
         Ok(data)
     }
+
+    /// 一条 `sticker` 段落 → 真能发出去的段落。
+    ///
+    /// 两个来路。`id` 是库里的那张：商城表情照原样再发一遍，图那份文件是当初偷的时候
+    /// 抄下来的，早就不在窗口里了，所以走上传。没有 `id` 就是从眼前这条记录里偷——
+    /// 偷到手的同时抄进库，往后窗口滑过去、进程重启，它还认得这张图；`note` 是人格
+    /// 顺手写的那句说明，进库当标签，以后才挑得出来。
+    async fn sticker(
+        &self,
+        turns: &[Turn],
+        id: Option<u32>,
+        message_id: &str,
+        index: usize,
+        note: &str,
+    ) -> Result<Message> {
+        let Some(id) = id else {
+            let source = actions::message(turns, message_id)?;
+            let segment = actions::sticker(source, index)?;
+            // 商城表情没有下载这一说：重发靠参数，字节存下来也没用。
+            let bytes = match actions::image_source(&segment) {
+                Some(url) => fetch_media(url).await.ok(),
+                None => None,
+            };
+            if let Some(id) = stickers::keep(
+                &segment,
+                source,
+                self.group,
+                note,
+                bytes.as_deref(),
+                self.config.sticker_max,
+            ) {
+                info!(target: "Plugin/Ambient", "偷来的表情包，第 {id} 张进库了");
+            }
+            return Ok(Message(vec![segment]));
+        };
+        let entry = stickers::take(id, note)
+            .ok_or_else(|| anyhow::anyhow!("库里没有编号 {id} 那张表情包"))?;
+        match &entry.kind {
+            stickers::Kind::Shop { data } => Ok(Message(vec![Segment::new("mface", data.clone())])),
+            stickers::Kind::Image { file } => {
+                let path = stickers::file_of(&entry)
+                    .ok_or_else(|| anyhow::anyhow!("第 {id} 张表情包的文件不在了"))?;
+                Ok(Message::new().image(
+                    self.source(&path.to_string_lossy(), file).await?,
+                ))
+            }
+        }
+    }
     async fn source(&self, source: &str, name: &str) -> Result<String> {
         if source.starts_with("https://") || source.starts_with("http://") {
             let url = url::Url::parse(source)?;
@@ -1354,9 +1405,12 @@ impl Session {
         .await?;
         let scratch = tokio::fs::canonicalize(&self.scratch).await?;
         let media = tokio::fs::canonicalize(&self.media).await.ok();
+        let stickers = tokio::fs::canonicalize(&self.stickers).await.ok();
         ensure!(
-            path.starts_with(scratch) || media.is_some_and(|root| path.starts_with(root)),
-            "本地资源取自本轮工作目录或 ambient/media，Termux 私有路径 QQ 读不到"
+            path.starts_with(scratch)
+                || media.is_some_and(|root| path.starts_with(root))
+                || stickers.is_some_and(|root| path.starts_with(root)),
+            "本地资源取自本轮工作目录、ambient/media 或自己攒的表情包，Termux 私有路径 QQ 读不到"
         );
         let meta = tokio::fs::metadata(&path).await?;
         ensure!(
@@ -1427,10 +1481,14 @@ impl Session {
                         Part::Video { source } => {
                             msg.video(self.source(source, "video.mp4").await?)
                         }
-                        Part::Sticker { message_id, index } => {
-                            msg.0.extend(
-                                actions::sticker(actions::message(turns, message_id)?, *index)?.0,
-                            );
+                        Part::Sticker {
+                            message_id,
+                            index,
+                            id,
+                            note,
+                        } => {
+                            msg.0
+                                .extend(self.sticker(turns, *id, message_id, *index, note).await?.0);
                             msg
                         }
                         Part::Dice => msg.dice(),
@@ -1875,7 +1933,7 @@ impl Session {
         let name = format!(
             "draw-{}-{index}.{}",
             chrono::Local::now().format("%Y%m%d%H%M%S"),
-            image_extension(&bytes)
+            super::image_extension(&bytes)
         );
         self.save_media(&bytes, &name)
             .await
@@ -2032,23 +2090,6 @@ fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Pa
     }
     // 只切出一条就交回调用方按普通发送走，两条路径的结果一模一样。
     (out.len() > 1).then_some(out)
-}
-
-/// 按文件头识别图片扩展名，用于给落盘的绘图结果起一个正确的文件名。
-fn image_extension(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        "png"
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "jpg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "gif"
-    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        "webp"
-    } else if bytes.starts_with(b"BM") {
-        "bmp"
-    } else {
-        "png"
-    }
 }
 
 #[cfg(test)]
@@ -2504,6 +2545,100 @@ mod tests {
     }
     async fn action(bridge: &Bridge, id: &str, value: Value) -> Value {
         bridge.call(id, "action", json!({"request": value})).await
+    }
+
+    /// 偷来的表情包落进库，之后凭编号取出来发——窗口滑过去也还在。
+    ///
+    /// 商城表情走的是「参数原样再发一遍」：它没有文件可存，所以这条用例不必碰网络。
+    #[tokio::test]
+    async fn a_stolen_sticker_stays_in_the_library_and_comes_back_by_id() {
+        let _guard = stickers::tests::exclusive();
+        let group = -8_000_110;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-sticker")
+                .unwrap();
+        tokio::fs::create_dir(dir.path().join("media")).await.unwrap();
+        // 库就落在这轮的 base 下，与 `start` 给会话的那份是同一个目录。
+        stickers::attach(dir.path());
+        // 这条用例只会碰到商城表情那条路：图要下载，这里不该为它去连网。
+        window::with_group(group, |s| {
+            *s = Default::default();
+            s.receive(Turn {
+                user_id: 42,
+                name: "老张".into(),
+                text: "笑死".into(),
+                elements: Message::new().mface("296f8d87", "241904", "k1"),
+                message_id: 321,
+                ..Turn::default()
+            });
+        });
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
+            .await
+            .unwrap();
+        let stolen = action(
+            &bridge,
+            "steal",
+            json!({"action":"send","parts":[
+                {"type":"text","text":"这图我收下了"},
+                {"type":"sticker","message_id":"321","note":"捂着嘴笑"}]}),
+        )
+        .await;
+        assert_eq!(stolen["ok"], true, "{stolen}");
+        assert_eq!(stickers::count(), 1);
+        let created: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == "message.create")
+            .map(|(_, body)| body["content"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert!(
+            created.iter().any(|content| content.contains("mface")),
+            "偷来的那张要按原参数发出去：{created:?}"
+        );
+
+        // 那条消息滑出窗口了：编号仍然取得到，库里存的是它自己那一份。
+        // `seq` 拨回来只是为了不撞上「群聊已更新」那道时效闸——这条用例测的是库，不是时效。
+        window::with_group(group, |s| {
+            *s = Default::default();
+            s.seq = 1;
+        });
+        let again = action(
+            &bridge,
+            "shelf",
+            json!({"action":"send","parts":[{"type":"sticker","id":1}]}),
+        )
+        .await;
+        assert_eq!(again["ok"], true, "{again}");
+        // 编号不存在时说清楚，而不是发一段空白。
+        let missing = action(
+            &bridge,
+            "no-such-id",
+            json!({"action":"send","parts":[{"type":"sticker","id":99}]}),
+        )
+        .await;
+        assert_eq!(missing["ok"], false, "{missing}");
+        assert!(
+            missing["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("表情包"),
+            "{missing}"
+        );
+        // 用的时候顺手改名：库里那行的名字跟着换。
+        let renamed = action(
+            &bridge,
+            "rename",
+            json!({"action":"send","parts":[{"type":"sticker","id":1,"note":"看着就想笑"}]}),
+        )
+        .await;
+        assert_eq!(renamed["ok"], true, "{renamed}");
+        let shelf = stickers::brief(&[], 20);
+        assert!(shelf.contains("看着就想笑"), "{shelf}");
+        drop(bridge);
+        server.abort();
     }
 
     /// `#[ignore]` 的 live 用例打真实模型：端点与密钥从环境变量取，
