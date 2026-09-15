@@ -1,10 +1,8 @@
 use super::stopwords::get_stop_words;
 use araea_wordcloud::{WordCloudBuilder, WordInput};
 use base64::{Engine as _, engine::general_purpose};
-use image::{GenericImageView, ImageFormat};
 use rand::RngExt;
 use std::collections::HashMap;
-use std::io::Cursor;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -27,6 +25,12 @@ pub fn generate_word_cloud(
     height: u32,
 ) -> Result<String, String> {
     let start = Instant::now();
+    if !(64..=2048).contains(&width)
+        || !(64..=2048).contains(&height)
+        || u64::from(width) * u64::from(height) > 4_000_000
+    {
+        return Err("词云尺寸应在 64—2048 像素之间，面积不超过 400 万像素".into());
+    }
 
     let stop_words = get_stop_words();
     let mut freq_map: HashMap<String, f64> = HashMap::new();
@@ -55,14 +59,17 @@ pub fn generate_word_cloud(
 
     let top_words: Vec<WordInput> = word_vec
         .into_iter()
-        .take(limit)
+        .take(limit.clamp(1, 200))
         .map(|(text, size)| WordInput::new(text, size as f32))
         .collect();
 
     let mut rng = rand::rng();
     let mut builder = WordCloudBuilder::new()
         .size(width, height)
-        .seed(rng.random());
+        .seed(rng.random())
+        .background("#FFFEFA")
+        .colors(["#285E53", "#3E6578", "#785C40", "#536747", "#655A7B"])
+        .padding(4);
 
     // 字体加载逻辑
     if let Some(path) = font_path {
@@ -86,8 +93,8 @@ pub fn generate_word_cloud(
     }
 
     let wordcloud = builder
-        .angles(vec![0.0, 90.0])
-        .vertical_writing(true)
+        .angles(vec![0.0])
+        .vertical_writing(false)
         .build(&top_words)
         .map_err(|e| format!("Build Error: {}", e))?;
 
@@ -95,59 +102,8 @@ pub fn generate_word_cloud(
         .to_png(2.0)
         .map_err(|e| format!("PNG Encode Error: {}", e))?;
 
-    let img = image::load_from_memory(&png_data).map_err(|e| format!("Image Load Error: {}", e))?;
-
-    let (img_w, img_h) = img.dimensions();
-    let mut min_x = img_w;
-    let mut min_y = img_h;
-    let mut max_x = 0;
-    let mut max_y = 0;
-    let mut found_content = false;
-
-    for y in 0..img_h {
-        for x in 0..img_w {
-            let pixel = img.get_pixel(x, y);
-            if pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250 {
-                if x < min_x {
-                    min_x = x;
-                }
-                if x > max_x {
-                    max_x = x;
-                }
-                if y < min_y {
-                    min_y = y;
-                }
-                if y > max_y {
-                    max_y = y;
-                }
-                found_content = true;
-            }
-        }
-    }
-
-    let final_data = if found_content {
-        let padding = 20;
-        let crop_min_x = min_x.saturating_sub(padding);
-        let crop_min_y = min_y.saturating_sub(padding);
-        let crop_max_x = (max_x + padding).min(img_w - 1);
-        let crop_max_y = (max_y + padding).min(img_h - 1);
-
-        let crop_width = crop_max_x - crop_min_x + 1;
-        let crop_height = crop_max_y - crop_min_y + 1;
-
-        let cropped_img = img.crop_imm(crop_min_x, crop_min_y, crop_width, crop_height);
-
-        let mut buffer = Cursor::new(Vec::new());
-        cropped_img
-            .write_to(&mut buffer, ImageFormat::Png)
-            .map_err(|e| format!("Image Write Error: {}", e))?;
-        buffer.into_inner()
-    } else {
-        png_data
-    };
-
-    let b64_str = general_purpose::STANDARD.encode(&final_data);
-    info!(target: "Plugin/WordCloud", "Generated & Cropped in {:?}", start.elapsed());
+    let b64_str = general_purpose::STANDARD.encode(&png_data);
+    info!(target: "Plugin/WordCloud", "Generated in {:?}", start.elapsed());
 
     Ok(format!("base64://{}", b64_str))
 }
@@ -169,4 +125,36 @@ fn load_font_by_family(family: &str) -> Result<Vec<u8>, String> {
     // with_face_data 会自动处理文件 IO 或内存引用，并返回闭包的结果
     db.with_face_data(id, |data, _face_index| data.to_vec())
         .ok_or_else(|| "无法获取字体数据".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_oversized_cloud_before_allocating() {
+        assert!(generate_word_cloud(vec![], None, None, 50, u32::MAX, 600).is_err());
+    }
+    #[test]
+    #[ignore = "生成本地词云样张"]
+    fn dump_sample_cards() {
+        let Ok(dir) = std::env::var("WORDCLOUD_CARD_DUMP") else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let words = [
+            "生活", "阅读", "设计", "分享", "周末", "音乐", "天气", "咖啡", "散步", "编程", "朋友",
+            "电影", "旅行", "日常", "摄影", "星空", "故事", "灵感", "晚安", "城市",
+        ];
+        let corpus = words
+            .iter()
+            .enumerate()
+            .flat_map(|(i, w)| std::iter::repeat_n(w.to_string(), 24 - i))
+            .collect();
+        let out = generate_word_cloud(corpus, None, None, 50, 800, 600).unwrap();
+        let bytes = general_purpose::STANDARD
+            .decode(out.trim_start_matches("base64://"))
+            .unwrap();
+        assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 1600);
+        std::fs::write(format!("{dir}/wordcloud.png"), bytes).unwrap();
+    }
 }
