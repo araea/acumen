@@ -10,6 +10,7 @@
 
 use reqwest::{Certificate, Client, ClientBuilder};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Termux 与常见发行版的 CA 包位置；`SSL_CERT_FILE` 优先。
 const CA_BUNDLES: &[&str] = &[
@@ -33,9 +34,25 @@ fn ca_bundle() -> Option<&'static [u8]> {
         .as_deref()
 }
 
+/// 兜底超时。
+///
+/// 从前全局客户端一个超时都不设，全靠每个调用点自己写。绝大多数点确实写了，
+/// 漏掉的（例如后台刷模型列表）一旦撞上对端不回包就会永久挂住一个任务与一条连接，
+/// 而且完全无声——表现是「这个东西一直不变」。这两个数字只做兜底，不打算替代
+/// 调用点的取值：单次请求上写的 `.timeout()` 会覆盖它们（视频、音乐生成这些
+/// 分钟级的接口各自写了自己的）。
+///
+/// 用总时限而不是只限连接：不设总时限的话，「连上了、但服务端不吭声」这种更常见
+/// 的挂法依然会一直等下去。仓库里没有任何流式响应（长连接只有 Satori 的 WebSocket，
+/// 不走 reqwest），所以总时限不会误伤正在传输的大文件。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// 带正确根证书配置的客户端构建器，供需要自定超时/UA 的调用方使用。
 pub fn builder() -> ClientBuilder {
-    let builder = Client::builder();
+    let builder = Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT);
     #[cfg(target_os = "android")]
     {
         if let Some(certs) = ca_bundle().and_then(|pem| Certificate::from_pem_bundle(pem).ok())

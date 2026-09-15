@@ -15,6 +15,20 @@ pub type PluginError = Box<dyn std::error::Error + Send + Sync>;
 
 pub type PluginResult<T> = std::result::Result<T, PluginError>;
 
+/// 把 `catch_unwind` 接住的 panic 载荷转成一行能读的文字。
+///
+/// panic 的载荷是 `&str` 或 `String` 两种（前者是 `panic!("字面量")`，后者是带
+/// 格式参数的 `panic!`）；认不出来时给一句兜底，不为了日志再去 unwrap 一次。
+pub fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_string()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "未知名目的 panic".to_string()
+    }
+}
+
 pub type PluginHandler =
     fn(Context, LockedWriter) -> BoxFuture<'static, Result<Option<Context>, PluginError>>;
 

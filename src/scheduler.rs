@@ -3,9 +3,11 @@
 use crate::adapters::satori::{LockedWriter, api};
 use crate::event::Context;
 use chrono::{DateTime, Datelike, Local, TimeZone, Weekday};
+use futures_util::FutureExt;
 use rand::RngExt;
 use std::collections::HashMap;
 use std::future::Future;
+use std::panic::AssertUnwindSafe;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -134,8 +136,17 @@ impl Scheduler {
                     tokio::time::sleep(duration).await;
                 }
 
-                // 执行任务
-                task_gen().await;
+                // 执行任务。任务体在原地接住 panic：这个 while 循环是 sleep 与执行
+                // 交错的一条长命任务，一次 panic 会把它整个终结，而排期表里还挂着
+                // 它的句柄——表现是「这个推送从某天起再也不出现」，日志里什么都不留。
+                // 接住之后记一笔，排期按原节奏继续，下一个时刻照常计算。
+                if let Err(panic) = AssertUnwindSafe(task_gen()).catch_unwind().await {
+                    error!(
+                        target: "System",
+                        "定时任务抛错（本次跳过，排期继续）: {}",
+                        crate::plugins::panic_text(panic.as_ref())
+                    );
+                }
 
                 // 计算下一次
                 next_time = next_run_calculator(Local::now());
