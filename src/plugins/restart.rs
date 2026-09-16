@@ -188,7 +188,7 @@ pub fn handle(
                 let msg = ctx.as_message().unwrap();
                 let reply = Message::new()
                     .reply(msg.message_id())
-                    .text("⚠️ 重启指令未开放，可用 /设置 restart allow_manual_restart true 开启。");
+                    .text("⚠️ 重启指令未开放，可用 /ctl set restart allow_manual_restart true 开启");
                 let _ = send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await;
                 return Ok(None);
             }
@@ -206,7 +206,7 @@ pub fn handle(
 
             let reply = Message::new()
                 .reply(message_id)
-                .text(format!("⏳ 收到，{} 秒后重启，稍等片刻~", delay));
+                .text(format!("⏳ {} 秒后重启", delay));
             if let Err(e) = send_msg(&ctx, writer.clone(), group_id, Some(user_id), reply).await {
                 error!(target: "Plugin/Restart", "重启通知发送失败: {}", e);
             }

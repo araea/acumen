@@ -56,7 +56,7 @@ async function main() {
   child.stdin.write('/ctl set help image_scale 2\n/ctl set help image_enabled 关\n');
   await until(() => output.includes('已保存 help.image_scale') && output.includes('已保存 help.image_enabled'), 'two immediate writes');
   child.stdin.write('/ctl on ai_news\n');
-  await until(() => output.includes('已全部开启并保存'), 'enable lifecycle plugin');
+  await until(() => output.includes('已全部启用并保存'), 'enable lifecycle plugin');
   // 运行时打开带初始化钩子的插件必须立刻可用：init 补跑，不再挂「待重启」。
   child.stdin.write('/ai推送列表\n');
   await until(() => output.includes('AI 资讯推送目标'), 'lifecycle plugin responds right after enable');

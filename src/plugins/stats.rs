@@ -169,7 +169,7 @@ pub fn handle(
                 writer,
                 None,
                 Some(user_id),
-                r#"请在群聊中使用"本群"相关指令。"#,
+                r#"请在群里使用"本群"相关指令"#,
             )
             .await?;
             return Ok(None);

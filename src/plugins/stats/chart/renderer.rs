@@ -83,11 +83,12 @@ pub fn draw_bar_chart(
     // === 1. 预计算与布局参数 (Scaling) ===
     let padding = 24 * s;
 
-    // 纸面不用纯白：整屏 2000 px 的高亮白在手机上看久了刺眼，退半档到暖白，
-    // 淡色轨道与横条反而更浮得出来。与走势图同一张纸。
-    let page_bg = RGBColor(251, 250, 247);
     let colors = ColorScheme::default();
-    let ink = colors.text_primary; // 正文墨色：纯黑太硬，统一用深蓝灰
+    // 纸面不用纯白：整屏 2000 px 的高亮白在手机上看久了刺眼，退半档到暖白，
+    // 淡色轨道与横条反而更浮得出来。取设计系统的卡面（`scheme-manual` 的
+    // surface），不另写一个色——图表与卡片得是同一张纸。与走势图同一张纸。
+    let page_bg = colors.card_background;
+    let ink = colors.text_primary; // 正文墨色：不写纯黑，与卡片同一个墨色
     let ink_soft = colors.text_secondary;
 
     // 内部尺寸也随之放大。`row_height` 是条本身的高度，`row_pitch` 是相邻两行的
@@ -172,17 +173,17 @@ pub fn draw_bar_chart(
             .map_err(|e| e.to_string())?;
 
         // 元信息行：榜单范围 + 合计（每行的百分比正是以它为基数）+ 出图时间。
-        // 「·」在这套 CJK 字体里自带右侧空腔，所以只在它左边补一个空格，两边才等宽。
+        // 「·」在这套 CJK 字体里自带右侧空腔，两侧各补一个空格才等宽。
         let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let meta = if data.len() > 1 {
             format!(
-                "前 {} 名 ·合计 {} ·{}",
+                "前 {} 名 · 合计 {} 次 · {}",
                 data.len(),
                 format_thousands(total_val),
                 now_str
             )
         } else {
-            format!("合计 {} ·{}", format_thousands(total_val), now_str)
+            format!("合计 {} 次 · {}", format_thousands(total_val), now_str)
         };
         let meta_style = get_font_with_color(config, meta_font_size, &ink_soft)
             .pos(Pos::new(HPos::Center, VPos::Top));
@@ -499,10 +500,10 @@ pub fn draw_message_type_ranking(
         )
         .map_err(|e| e.to_string())?;
 
-        // 「·」在这套 CJK 字体里自带右侧空腔，只在它左边补空格，两边才等宽
+        // 「·」在这套 CJK 字体里自带右侧空腔，两侧各补一个空格才等宽
         let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let meta = format!(
-            "共 {} 条消息 ·{} 种类型 ·{}",
+            "共 {} 条消息 · {} 种类型 · {}",
             format_thousands(total_val),
             data.len(),
             now_str
@@ -795,12 +796,14 @@ pub fn draw_line_chart(
 
     let s = 2u32;
     if !(480..=2400).contains(&config.width) || !(360..=2400).contains(&config.height) {
-        return Err("走势图尺寸应为宽 480—2400、高 360—2400 像素".into());
+        return Err("走势图尺寸应为宽 480—2400、高 360—2400 像素；改 stats.width 与 stats.height".into());
     }
     let width = config.width * s;
     let height = config.height * s;
 
     let colors = ColorScheme::default();
+    // 与排行榜、与卡片同一张纸（见 ColorScheme::default 的说明）
+    let page_bg = colors.card_background;
     let multi = series_list.len() > 1;
 
     // 时间标签来自固定宽度的日期或时刻，排序后稀疏系列不会折回到较早的日期。
@@ -904,7 +907,7 @@ pub fn draw_line_chart(
         let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
 
         // 与排行榜同一张暖白纸，两张图连着看不会一亮一暗
-        root.fill(&RGBColor(251, 250, 247))
+        root.fill(&page_bg)
             .map_err(|e| e.to_string())?;
 
         // 4.1 标题 + 出图时间 (与柱状图一致)

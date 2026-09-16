@@ -259,7 +259,7 @@ pub(super) async fn generate_reply(
     let send = options.send.unwrap_or_else(|| config.video_send());
     // 正文是纯文本（不渲染卡片），所以这里一个 markdown 记号都不能用——`**` 会原样
     // 出现在群里。第一行是用户自己那句话，第二行是时长、模型与这一单的账。
-    let mut text = format!("🎬 {caption}");
+    let mut text = caption.clone();
     let mut meta = format!("时长：{} 秒", shown_seconds.trim());
     if !generated.model.trim().is_empty() {
         meta.push_str(&format!(" · {}", generated.model.trim()));

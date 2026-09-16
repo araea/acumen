@@ -53,40 +53,20 @@ impl Accent {
         Self::ALL[(seed.unsigned_abs() as usize) % Self::ALL.len()]
     }
 
-    /// 主色（深色主题用亮一档的色，浅色主题用深一档的）。
-    /// 色值都往灰里压了一档，落在纸色上不跳，配得上这份报告的语速。
-    pub fn hex(self, dark: bool) -> &'static str {
-        match (self, dark) {
-            (Accent::Amber, false) => "#8A5A1E",
-            (Accent::Amber, true) => "#C9A063",
-            (Accent::Rose, false) => "#9E2F4C",
-            (Accent::Rose, true) => "#D98BA1",
-            (Accent::Mint, false) => "#1F6F5C",
-            (Accent::Mint, true) => "#7FBFA8",
-            (Accent::Indigo, false) => "#3E4E9E",
-            (Accent::Indigo, true) => "#9AA6DD",
-            (Accent::Violet, false) => "#5F3A96",
-            (Accent::Violet, true) => "#B49BDD",
-            (Accent::Teal, false) => "#14606E",
-            (Accent::Teal, true) => "#79B8C2",
-        }
-    }
-
-    /// 同色的 `r,g,b` 字面量，供 CSS 里调透明度用，省得写死多份色值。
-    pub fn rgb(self, dark: bool) -> &'static str {
-        match (self, dark) {
-            (Accent::Amber, false) => "138,90,30",
-            (Accent::Amber, true) => "201,160,99",
-            (Accent::Rose, false) => "158,47,76",
-            (Accent::Rose, true) => "217,139,161",
-            (Accent::Mint, false) => "31,111,92",
-            (Accent::Mint, true) => "127,191,168",
-            (Accent::Indigo, false) => "62,78,158",
-            (Accent::Indigo, true) => "154,166,221",
-            (Accent::Violet, false) => "95,58,150",
-            (Accent::Violet, true) => "180,155,221",
-            (Accent::Teal, false) => "20,96,110",
-            (Accent::Teal, true) => "121,184,194",
+    /// 主色的种子类名（页面上的 `seed-amber` 这种）。
+    ///
+    /// 色值本身在 `res/cards/m3e.css`：六个种子各一对（日读一份、夜读一份），
+    /// 容器色与淡色叠层由 `color-mix()` 从种子里现算。这里只带一个名字过去——
+    /// 从前色值写在这个文件里，卡片的 CSS 再把十六进制与 `r,g,b` 两份字面量
+    /// 替换进去，同一支色在三个地方各存了一份。
+    pub fn seed_class(self) -> &'static str {
+        match self {
+            Accent::Amber => "seed-amber",
+            Accent::Rose => "seed-rose",
+            Accent::Mint => "seed-mint",
+            Accent::Indigo => "seed-indigo",
+            Accent::Violet => "seed-violet",
+            Accent::Teal => "seed-teal",
         }
     }
 }

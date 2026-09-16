@@ -286,7 +286,7 @@ async fn chat(
             ctx,
             writer,
             &event,
-            "❌ 这间内置房间还没指定模型：用 `房间%供应商/模型` 设一个，或配置 [oai] agent_default_model。",
+            "❌ 这间内置房间还没指定模型：用 `房间%供应商/模型` 设一个，或配置 [oai] agent_default_model",
         )
         .await;
         return;
@@ -333,7 +333,7 @@ async fn chat(
                 ctx,
                 writer,
                 &event,
-                "⏳ 正在生成中，请等待，或使用「智能体!」停止。",
+                "⏳ 正在生成中，请等待，或使用「智能体!」停止",
             )
             .await;
             return;
@@ -341,12 +341,12 @@ async fn chat(
     }
 
     if api_base.is_empty() || api_key.is_empty() {
-        reply_text(ctx, writer, &event, "❌ API 未配置。").await;
+        reply_text(ctx, writer, &event, "❌ API 未配置").await;
         return;
     }
 
     if !regen && prompt.is_empty() && imgs.is_empty() {
-        reply_text(ctx, writer, &event, "💬 请输入内容。").await;
+        reply_text(ctx, writer, &event, "💡 请输入内容").await;
         return;
     }
     let (hist, gen_id) = if temp_mode {
@@ -363,7 +363,7 @@ async fn chat(
                 ctx,
                 writer,
                 &event,
-                "⏳ 正在生成中，请等待，或使用「智能体!」停止。",
+                "⏳ 正在生成中，请等待，或使用「智能体!」停止",
             )
             .await;
             return;
@@ -486,7 +486,7 @@ async fn chat(
                 writer,
                 &event,
                 format!(
-                    "⏳ 请求超时：模型响应超过 {} 秒，已强制停止。",
+                    "⏳ 请求超时：模型响应超过 {} 秒，已强制停止",
                     budget.as_secs()
                 ),
             )
@@ -669,11 +669,14 @@ fn search_state(agent: &Agent, global: bool) -> String {
     if !agent.uses_pi() {
         return "不适用（普通房间）".to_string();
     }
+    // 两件事分开说：**现在开没开**（有效值）与**这个值是谁定的**。
+    // 只写「跟随全局」的话，读者看不出当下到底是开还是关——而那是这一行最要紧的
+    // 信息，不能为了让词表短一档就丢掉。
     match (agent.web_search(global), agent.search) {
-        (true, Some(true)) => "开（这间房自己定的）".to_string(),
-        (true, _) => "开（跟随全局）".to_string(),
-        (false, Some(false)) => "关（这间房自己定的）".to_string(),
-        (false, _) => "关（跟随全局）".to_string(),
+        (true, Some(true)) => "已打开（本房间设置）".to_string(),
+        (true, _) => "已打开（跟随全局）".to_string(),
+        (false, Some(false)) => "已关闭（本房间设置）".to_string(),
+        (false, _) => "已关闭（跟随全局）".to_string(),
     }
 }
 
@@ -929,7 +932,7 @@ pub async fn execute(
                         ctx,
                         writer,
                         &msg_event,
-                        format!("📋 验证成功，已获取 {} 个模型。", models.len()),
+                        format!("验证成功，已获取 {} 个模型", models.len()),
                     )
                     .await
                 }
@@ -956,7 +959,7 @@ pub async fn execute(
             if let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) {
                 a.generation_id += 1;
                 mgr.save(&c);
-                reply_text(ctx, writer, &msg_event, "🛑 已停止。").await;
+                reply_text(ctx, writer, &msg_event, "已停止").await;
             } else {
                 reply_text(
                     ctx,
@@ -1003,7 +1006,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("📑 已复制 {} → {}", name, cmd.args),
+                    format!("已复制 {} → {}", name, cmd.args),
                 )
                 .await;
             } else {
@@ -1045,7 +1048,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("🏷️ 已重命名 {} → {}", name, cmd.args),
+                    format!("已重命名 {} → {}", name, cmd.args),
                 )
                 .await;
             } else {
@@ -1061,7 +1064,7 @@ pub async fn execute(
             if let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) {
                 a.description = cmd.args.clone();
                 mgr.save(&c);
-                reply_text(ctx, writer, &msg_event, format!("📝 {} 描述已更新", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("{} 描述已更新", name)).await;
             } else {
                 reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
             }
@@ -1074,7 +1077,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 请指定模型：`智能体%模型名`；交给内置 agent 用 `智能体%pi` 或 `智能体%pi 模型`。",
+                    "❌ 请指定模型：`智能体%模型名`；交给内置智能体用 `智能体%pi` 或 `智能体%pi 模型`",
                 )
                 .await;
                 return;
@@ -1102,7 +1105,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 无效模型。`/%` 查看中转站模型，或用 `智能体%pi 模型` 交给内置 agent。",
+                    "❌ 无效模型。`/%` 查看中转站模型，或用 `智能体%pi 模型` 交给内置智能体。",
                 )
                 .await;
                 return;
@@ -1123,7 +1126,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("🔄 {} 模型：{} → {}", name, old, new),
+                format!("{} 模型：{} → {}", name, old, new),
             )
             .await;
         }
@@ -1143,7 +1146,7 @@ pub async fn execute(
                     writer,
                     &msg_event,
                     format!(
-                        "❌ {} 是普通房间，联网搜索只挂在内置 agent 上；先 `{}%pi` 把它转过来。",
+                        "❌ {} 是普通房间，联网搜索只挂在内置智能体上；先 `{}%pi` 把它转过来",
                         name, name
                     ),
                 )
@@ -1166,8 +1169,8 @@ pub async fn execute(
             let state = match choice {
                 Some(true) => "已打开（按需触发）",
                 Some(false) => "已关闭",
-                None if now => "跟随全局（当前开，按需触发）",
-                None => "跟随全局（当前关）",
+                None if now => "已打开（跟随全局）",
+                None => "已关闭（跟随全局）",
             };
             // 打开时顺带说一句会打到哪个后端，省得去翻配置确认密钥有没有生效。
             let backends = if now {
@@ -1179,7 +1182,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("🔍 {} 联网搜索：{}{}", name, state, backends),
+                format!("{} 联网搜索：{}{}", name, state, backends),
             )
             .await;
         }
@@ -1189,9 +1192,9 @@ pub async fn execute(
                 a.system_prompt = cmd.args.clone();
                 mgr.save(&c);
                 if cmd.args.is_empty() {
-                    reply_text(ctx, writer, &msg_event, format!("📝 {} 提示词已清空", name)).await;
+                    reply_text(ctx, writer, &msg_event, format!("{} 提示词已清空", name)).await;
                 } else {
-                    reply_text(ctx, writer, &msg_event, format!("📝 {} 提示词已更新", name)).await;
+                    reply_text(ctx, writer, &msg_event, format!("{} 提示词已更新", name)).await;
                 }
             } else {
                 reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
@@ -1243,7 +1246,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "📋 暂无智能体，使用 ##名称 模型 提示词 创建",
+                    "📭 暂无智能体，使用 ##名称 模型 提示词 创建",
                 )
                 .await;
                 return;
@@ -1262,9 +1265,9 @@ pub async fn execute(
                 groups.entry(key).or_default().push((i + 1, a));
             }
             let mut html_parts = Vec::new();
-            for ((plain, model), mut agents) in groups {
+            for ((_, model), mut agents) in groups {
                 agents.sort_by_key(|a| a.1.name.to_lowercase());
-                html_parts.push(format!(r#"<div class="model-group"><div class="model-header"><span>{} {}</span><span class="model-count">{}</span></div><div class="agent-grid">"#, if plain { "📦" } else { "🎨" }, model, agents.len()));
+                html_parts.push(format!(r#"<div class="model-group"><div class="model-header"><span>{}</span><span class="model-count">{}</span></div><div class="agent-grid">"#, model, agents.len()));
                 for (real_idx, a) in agents {
                     let desc_display = if !a.description.is_empty() {
                         super::utils::truncate_str(&a.description, 20)
@@ -1273,9 +1276,9 @@ pub async fn execute(
                     } else {
                         "无描述".to_string()
                     };
-                    // 联网的房间挂个放大镜：一眼看出哪几间会出去查资料。
+                    // 联网的房间标一句：一眼看出哪几间会出去查资料。
                     let desc_display = if a.uses_pi() && a.web_search(search_default) {
-                        format!("🔍 {}", desc_display)
+                        format!("联网 · {}", desc_display)
                     } else {
                         desc_display
                     };
@@ -1289,7 +1292,7 @@ pub async fn execute(
                 &msg_event,
                 &html_parts.join("\n"),
                 cmd.text_mode,
-                &format!("📋 智能体列表 (共{}个)", c.agents.len()),
+                &format!("智能体列表 (共{}个)", c.agents.len()),
             )
             .await;
         }
@@ -1299,7 +1302,7 @@ pub async fn execute(
                 mgr.generating.write().await.cancel_room(name);
                 c.agents.remove(idx);
                 mgr.save(&c);
-                reply_text(ctx, writer, &msg_event, format!("🗑️ 已删除 {}", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("已删除 {}", name)).await;
             } else {
                 reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
             }
@@ -1307,7 +1310,7 @@ pub async fn execute(
         Action::ListModels => {
             // 每次查看都强制刷新，确保能获取最新模型
             // 先发送提示，避免 API 响应慢导致用户以为无反应
-            reply_text(ctx, writer, &msg_event, "⏳ 正在刷新模型列表...").await;
+            reply_text(ctx, writer, &msg_event, "⏳ 正在刷新模型列表…").await;
 
             // 尝试获取，如果失败则仅提示警告，后续继续尝试展示缓存
             let filter = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai")
@@ -1386,7 +1389,7 @@ pub async fn execute(
                 &msg_event,
                 &html,
                 cmd.text_mode,
-                &format!("🧩 模型列表 (共{}个)", models.len()),
+                &format!("模型列表 (共{}个)", models.len()),
             )
             .await;
         }
@@ -1434,10 +1437,10 @@ pub async fn execute(
                 for i in &cmd.indices {
                     if *i > 0 && *i <= hist.len() {
                         let m = &hist[i - 1];
-                        let emoji = match m.role.as_str() {
-                            "user" => "👤",
-                            "assistant" => "🤖",
-                            _ => "❓",
+                        let role_label = match m.role.as_str() {
+                            "user" => "用户",
+                            "assistant" => "助手",
+                            _ => "未知",
                         };
                         let mut content = m.content.clone();
                         let mut msg_imgs = extract_image_urls(&content);
@@ -1471,11 +1474,11 @@ pub async fn execute(
                             }
                         }
                         extra_images.extend(msg_imgs);
-                        results.push(format!("**#{} {}**\n{}", i, emoji, content));
+                        results.push(format!("**#{} {}**\n{}", i, role_label, content));
                     }
                 }
                 if results.is_empty() {
-                    reply_text(ctx, writer, &msg_event, "❌ 索引无效。").await;
+                    reply_text(ctx, writer, &msg_event, "❌ 索引无效").await;
                 } else {
                     reply(
                         ctx,
@@ -1554,7 +1557,7 @@ pub async fn execute(
                                         ctx,
                                         writer,
                                         &msg_event,
-                                        format!("📤 已导出：{}", fname),
+                                        format!("已导出：{}", fname),
                                     )
                                     .await
                                 }
@@ -1569,7 +1572,7 @@ pub async fn execute(
                                 }
                             }
                         } else {
-                            reply_text(ctx, writer, &msg_event, "❌ 写入失败。").await;
+                            reply_text(ctx, writer, &msg_event, "❌ 写入失败").await;
                         }
                     }
                     Err(e) => {
@@ -1586,7 +1589,7 @@ pub async fn execute(
                 return;
             }
             if cmd.args.is_empty() {
-                reply_text(ctx, writer, &msg_event, "❌ 请提供新内容。").await;
+                reply_text(ctx, writer, &msg_event, "❌ 请提供新内容").await;
                 return;
             }
             let idx = cmd.indices[0];
@@ -1599,9 +1602,9 @@ pub async fn execute(
                         .await
                         .set_generating(name, priv_scope, &uid, false);
                     mgr.save(&c);
-                    reply_text(ctx, writer, &msg_event, format!("✏️ 已编辑第 {} 条", idx)).await;
+                    reply_text(ctx, writer, &msg_event, format!("已编辑第 {} 条", idx)).await;
                 } else {
-                    reply_text(ctx, writer, &msg_event, format!("❌ 索引 {} 无效。", idx)).await;
+                    reply_text(ctx, writer, &msg_event, format!("❌ 索引 {} 无效", idx)).await;
                 }
             } else {
                 reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
@@ -1629,7 +1632,7 @@ pub async fn execute(
                         .set_generating(name, priv_scope, &uid, false);
                 }
                 if deleted.is_empty() {
-                    reply_text(ctx, writer, &msg_event, "❌ 索引无效。").await;
+                    reply_text(ctx, writer, &msg_event, "❌ 索引无效").await;
                 } else {
                     mgr.save(&c);
                     let s = deleted
@@ -1641,7 +1644,7 @@ pub async fn execute(
                         ctx,
                         writer,
                         &msg_event,
-                        format!("🗑️ 已删除第 {} 条（共 {} 条）", s, deleted.len()),
+                        format!("已删除第 {} 条（共 {} 条）", s, deleted.len()),
                     )
                     .await;
                 }
@@ -1668,7 +1671,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("🧹 {} {}历史已清空", name, s),
+                    format!("{} {}历史已清空", name, s),
                 )
                 .await;
             } else {
@@ -1690,7 +1693,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("🧹 已清空 {} 个智能体的公有历史", cnt),
+                format!("已清空 {} 个智能体的公有历史", cnt),
             )
             .await;
         }
@@ -1741,7 +1744,7 @@ pub async fn execute(
 | `智能体%模型` | 修改模型/引擎 | `助手%gpt-5.6-luna` |
 | `智能体%供应商/模型` | 指定供应商 | `助手%deepseek/deepseek-flash` |
 | `智能体%模型:强度` | 顺带设思考强度 | `助手%deepseek-flash:high` |
-| `智能体$提示词` | 修改提示词 | `助手$你是...` |
+| `智能体$提示词` | 修改提示词 | `助手$你是…` |
 | `智能体$` | 清空提示词 | `助手$` |
 | `智能体/$` | 查看提示词 | `助手/$` |
 | `智能体?` | 联网搜索换一边 | `研究?` |
@@ -1763,13 +1766,13 @@ pub async fn execute(
 | `智能体~` | 重新生成上一条 |
 | `智能体!` | 停止生成 |
 
-## 内置 Agent 房间
+## 内置智能体房间
 | 指令 | 效果 | 示例 |
 |------|------|------|
-| `##名称 pi` | 建一间 Agent 房间 | `##研究 pi` |
+| `##名称 pi` | 建一间内置智能体房间 | `##研究 pi` |
 | `##名称 pi/模型` | 建房并指定模型 | `##研究 pi/deepseek/deepseek-flash` |
-| `智能体%pi` | 已有房间转 Agent | `助手%pi` |
-| `智能体%pi 模型` | 换 Agent 用的模型 | `助手%pi apilio/kimi-k3` |
+| `智能体%pi` | 已有房间转内置智能体 | `助手%pi` |
+| `智能体%pi 模型` | 换内置智能体用的模型 | `助手%pi apilio/kimi-k3` |
 | `智能体%中转站模型` | 转回中转站房间 | `助手%gpt-5.6-luna` |
 
 > 房间名可以随便取，中文也行；决定引擎的是这条指令，不是名字。旧的 `pi` / `pi-*`
@@ -1808,7 +1811,7 @@ pub async fn execute(
 {{presets}}
 
 > 用法：`画·手办 一只戴眼镜的橘猫`；发图、引用图片或房间名后 @某人，就以那张图为垫图改图。
-> 可选参数同上：`--size 1536x1024`、`--quality high`；加 `~` 前缀（`~画·手办 ...`）不留历史。
+> 可选参数同上：`--size 1536x1024`、`--quality high`；加 `~` 前缀（`~画·手办 …`）不留历史。
 > 预设就是房间的系统提示词：`画·手办/$` 看一眼，`画·手办$自己的提示词` 改掉，
 > `画·手办~#我的手办` 复制一份再改。删掉的房间不会在下次启动时复活。
 
@@ -1849,7 +1852,7 @@ pub async fn execute(
                 &msg_event,
                 &help,
                 cmd.text_mode,
-                "🤖 OAI 符号指令帮助",
+                "OAI 符号指令帮助",
             )
             .await;
         }
@@ -1880,7 +1883,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "✅ 所有智能体均已有描述，无需处理。",
+                    "✅ 所有智能体均已有描述，无需处理",
                 )
                 .await;
                 return;
@@ -1895,7 +1898,7 @@ pub async fn execute(
                 writer,
                 &msg_event,
                 format!(
-                    "🤖 开始使用 [{}] 为 {} 个智能体生成描述，请稍候...",
+                    "开始使用 [{}] 为 {} 个智能体生成描述…",
                     use_model,
                     target_agents.len()
                 ),
@@ -1935,7 +1938,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("✅ 批量处理完成，已更新 {} 个智能体的描述。", success_count),
+                format!("✅ 批量处理完成，已更新 {} 个智能体的描述", success_count),
             )
             .await;
         }
@@ -1995,7 +1998,7 @@ pub async fn handle_create(
             ctx,
             writer,
             &msg_event,
-            format!("📝 已更新 {}（模型：{}）", name, updated_model),
+            format!("已更新 {}（模型：{}）", name, updated_model),
         )
         .await;
     } else {
@@ -2016,7 +2019,7 @@ pub async fn handle_create(
             ctx,
             writer,
             &msg_event,
-            format!("🤖 已创建 {}（模型：{}）", name, label),
+            format!("已创建 {}（模型：{}）", name, label),
         )
         .await;
     }

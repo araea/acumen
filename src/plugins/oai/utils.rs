@@ -496,11 +496,11 @@ pub fn format_history(
     hist.iter()
         .enumerate()
         .map(|(i, m)| {
-            let emoji = match m.role.as_str() {
-                "user" => "👤",
-                "assistant" => "🤖",
-                "system" => "⚙️",
-                _ => "❓",
+            let role_label = match m.role.as_str() {
+                "user" => "用户",
+                "assistant" => "助手",
+                "system" => "系统",
+                _ => "未知",
             };
             let time = chrono::DateTime::from_timestamp(m.timestamp, 0)
                 .map(|dt| {
@@ -549,7 +549,7 @@ pub fn format_history(
             if body.trim().is_empty() {
                 body = "(无内容)".to_string();
             }
-            format!("**#{} {} {}**\n{}", offset + i + 1, emoji, time, body)
+            format!("**#{} {} {}**\n{}", offset + i + 1, role_label, time, body)
         })
         .collect::<Vec<_>>()
         .join("\n\n---\n\n")
@@ -560,7 +560,7 @@ pub fn truncate_str(s: &str, max_chars: usize) -> String {
     if chars.len() <= max_chars {
         s.to_string()
     } else {
-        chars[..max_chars].iter().collect::<String>() + "..."
+        chars[..max_chars].iter().collect::<String>() + "…"
     }
 }
 
@@ -618,9 +618,9 @@ pub fn format_export_txt(
             .unwrap_or_else(|| "未知时间".to_string());
 
         let role_name = match m.role.as_str() {
-            "user" => "👤 用户",
-            "assistant" => "🤖 助手",
-            "system" => "⚙️ 系统",
+            "user" => "用户",
+            "assistant" => "助手",
+            "system" => "系统",
             _ => &m.role,
         };
 
@@ -632,7 +632,7 @@ pub fn format_export_txt(
         content.push('\n');
 
         if !m.images.is_empty() {
-            content.push_str(&format!("\n📷 附图 ({} 张):\n", m.images.len()));
+            content.push_str(&format!("\n附图 ({} 张):\n", m.images.len()));
             for (j, url) in m.images.iter().enumerate() {
                 if url.starts_with("data:") {
                     content.push_str(&format!("   {}. [Base64 Image Data]\n", j + 1));
@@ -690,7 +690,7 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::{
         ModelFilterConfig, model_vendor, openai_api_base, safe_file_name, split_provider,
-        split_thinking, truncate_str,
+        split_thinking,
     };
 
     #[test]
@@ -701,9 +701,12 @@ mod tests {
         // 空名或只剩点号的下坠到一个中性名字，别发出一个没有名字的文件。
         assert_eq!(safe_file_name("   "), "media");
         assert_eq!(safe_file_name("."), "media");
-        // 长名字截到 60 字。
+        // 长名字截到 60 字，末尾接一个省略号。钉住「60」而不是「61」——
+        // 这个数字是群文件列表里能看全的上限，省略号是附加的那个字符。
         let long = "猫".repeat(80);
-        assert_eq!(truncate_str(&safe_file_name(&long), 63).chars().count(), 63);
+        let name = safe_file_name(&long);
+        assert_eq!(name.chars().count(), 61, "60 字 + 省略号：{name}");
+        assert!(name.ends_with('…'), "{name}");
     }
 
     #[test]

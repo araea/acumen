@@ -10,7 +10,7 @@ pub fn split_image_blocking(img_bytes: Vec<u8>, rows: u32, cols: u32) -> PluginR
         return Err("切分行列必须为正数，最多 100 块".into());
     }
     let img = image::load_from_memory(&img_bytes)
-        .map_err(|e| format!("Failed to load image from memory: {}", e))?;
+        .map_err(|e| format!("图片读取失败：{}", e))?;
 
     let (width, height) = img.dimensions();
     let tile_width = width / cols;
@@ -36,7 +36,7 @@ pub fn split_image_blocking(img_bytes: Vec<u8>, rows: u32, cols: u32) -> PluginR
             let mut buffer = Cursor::new(Vec::new());
             sub_img
                 .write_to(&mut buffer, image::ImageFormat::Png)
-                .map_err(|e| format!("Failed to encode sub-image: {}", e))?;
+                .map_err(|e| format!("切片生成失败：{}", e))?;
 
             let b64 = general_purpose::STANDARD.encode(buffer.get_ref());
             base64_list.push(b64);

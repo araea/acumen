@@ -105,7 +105,7 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: i64, min: u64)
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
     send_text(&c, w.clone(), gid, format!(
-        "📅 {} · 今日群聊小结\n📊 全天共 {} 条消息，{} 位群友活跃。",
+        "{} · 今日群聊小结\n全天共 {} 条消息，{} 位群友活跃",
         date_str, count, users
     )).await;
     send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群今日发言排行榜").await;
@@ -127,7 +127,7 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
     send_text(&c, w.clone(), gid, format!(
-        "🌅 早安！昨日（{}）群活跃回顾\n📊 共 {} 条消息，{} 位群友参与。",
+        "早安，昨日（{}）群活跃回顾\n共 {} 条消息，{} 位群友参与",
         yest, count, users
     )).await;
     send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群昨日发言排行榜").await;
@@ -147,7 +147,7 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: i64, min: u64) {
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
     send_text(&c, w.clone(), gid, format!(
-        "☀️ 中午好！今日上半场战报\n📊 截至现在共 {} 条发言。",
+        "中午好，今日上半场战报\n截至现在共 {} 条发言",
         count
     )).await;
     send_chart(&c, w, gid, "发言", "排行榜", range, "本群今日上午发言排行榜").await;
@@ -167,7 +167,7 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
     send_text(&c, w.clone(), gid, format!(
-        "🗓 新一周开工！上周群聊回顾\n📊 全周 {} 条消息，{} 位群友活跃。",
+        "新一周开工，上周群聊回顾\n全周 {} 条消息，{} 位群友活跃",
         count, users
     )).await;
     send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群上周发言排行榜").await;
@@ -190,7 +190,7 @@ pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
     send_text(&c, w.clone(), gid, format!(
-        "📆 月度回顾 · {}月\n📊 上月共 {} 条消息，{} 位群友活跃。",
+        "月度回顾 · {}月\n上月共 {} 条消息，{} 位群友活跃",
         last_month, count, users
     )).await;
     send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群上月发言排行榜").await;

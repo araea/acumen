@@ -67,7 +67,7 @@ pub fn handle(
 
             if scope_str == "本群" && query_group_id.is_none() && msg.group_id().is_none() {
                 let reply =
-                    Message::new().text("请在群聊中使用“本群”指令，或使用“我的”查看个人词云。");
+                    Message::new().text("请在群里使用“本群”指令，或用“我的”查看个人词云");
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
@@ -84,7 +84,7 @@ pub fn handle(
                 target_user,
                 Message::new()
                     .reply(reply_id)
-                    .text(format!("⏳ 正在生成 {}...", title)),
+                    .text(format!("⏳ 正在生成 {}…", title)),
             )
             .await?;
 
@@ -119,16 +119,16 @@ pub async fn generate_image(
     let config: WordCloudConfig = get_config_or_default(ctx, "wordcloud");
 
     if !config.enabled {
-        return Err("词云插件未启用".to_string());
+        return Err("词云插件已停用".to_string());
     }
 
     let db = &ctx.db;
     let mut corpus = get_text_corpus(db, query_group_id, query_user_id, start_time, end_time)
         .await
-        .map_err(|e| format!("DB Error: {}", e))?;
+        .map_err(|e| format!("读取聊天记录失败：{}", e))?;
 
     if corpus.is_empty() {
-        return Err("该时间段内没有足够的聊天记录".to_string());
+        return Err("该时间段内没有足够的聊天记录，换一个时间范围再试".to_string());
     }
 
     // 截断过多消息
@@ -151,7 +151,7 @@ pub async fn generate_image(
 
     match task_result {
         Ok(res) => res,
-        Err(e) => Err(format!("Task Join Error: {}", e)),
+        Err(e) => Err(format!("任务中断：{}", e)),
     }
 }
 

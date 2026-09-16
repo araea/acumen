@@ -296,7 +296,7 @@ pub async fn collect(
     .into_iter()
     .map(|row| GroupSlice {
         name: if row.name.trim().is_empty() {
-            "未知群".to_string()
+            "（未知群）".to_string()
         } else {
             row.name
         },

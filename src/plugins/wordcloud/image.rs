@@ -6,6 +6,25 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+/// 词云的纸色。取设计系统的卡面（`res/cards/m3e.css` 的 `scheme-manual`），
+/// 与六张卡片、与统计图同一张纸——词云常常就插在一张统计卡片后面。
+const PAPER: &str = "#FFFEFA";
+
+/// 词的五个色相。
+///
+/// 五个都取自设计系统那张色表：主色、画像种子的靛与紫、控制卡的三级橄榄、警告赭金。
+/// 选它们是因为在这张纸上**彼此分得开**——云里相邻的词常常不同色，色相挨太近就糊成
+/// 一片；同时又都在同一个低彩度的家族里，不会像从前那样冒出一支与全站无关的蓝。
+/// 换个说法：不是新造一套配色，是把系统里已有的色按「能分辨」这个唯一标准挑五个。
+/// `the_word_hues_come_from_the_design_system` 那条单测钉着它们都还在样式表里。
+const WORD_COLORS: [&str; 5] = [
+    "#1F6350", // 主色（scheme-manual 的 primary）
+    "#3E4E9E", // 画像种子 indigo
+    "#5F3A96", // 画像种子 violet
+    "#4A5B3A", // 控制卡的三级色（橄榄）
+    "#7A5300", // 警告赭金
+];
+
 static FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();
 
 fn get_font_db() -> &'static fontdb::Database {
@@ -29,7 +48,7 @@ pub fn generate_word_cloud(
         || !(64..=2048).contains(&height)
         || u64::from(width) * u64::from(height) > 4_000_000
     {
-        return Err("词云尺寸应在 64—2048 像素之间，面积不超过 400 万像素".into());
+        return Err("词云尺寸须在 64—2048 像素之间，总面积不超过 400 万像素".into());
     }
 
     let stop_words = get_stop_words();
@@ -67,8 +86,8 @@ pub fn generate_word_cloud(
     let mut builder = WordCloudBuilder::new()
         .size(width, height)
         .seed(rng.random())
-        .background("#FFFEFA")
-        .colors(["#285E53", "#3E6578", "#785C40", "#536747", "#655A7B"])
+        .background(PAPER)
+        .colors(WORD_COLORS)
         .padding(4);
 
     // 字体加载逻辑
@@ -78,7 +97,7 @@ pub fn generate_word_cloud(
                 builder = builder.font(font_data);
             }
             Err(e) => {
-                return Err(format!("加载字体文件失败: {} - {}", path, e));
+                return Err(format!("加载字体文件失败：{}（{}）", path, e));
             }
         }
     } else if let Some(family) = font_family {
@@ -96,11 +115,11 @@ pub fn generate_word_cloud(
         .angles(vec![0.0])
         .vertical_writing(false)
         .build(&top_words)
-        .map_err(|e| format!("Build Error: {}", e))?;
+        .map_err(|e| format!("词云布局失败：{}", e))?;
 
     let png_data = wordcloud
         .to_png(2.0)
-        .map_err(|e| format!("PNG Encode Error: {}", e))?;
+        .map_err(|e| format!("PNG 编码失败：{}", e))?;
 
     let b64_str = general_purpose::STANDARD.encode(&png_data);
     info!(target: "Plugin/WordCloud", "Generated in {:?}", start.elapsed());
@@ -120,7 +139,7 @@ fn load_font_by_family(family: &str) -> Result<Vec<u8>, String> {
 
     let id = db
         .query(&query)
-        .ok_or_else(|| format!("未找到匹配的字体族: {}", family))?;
+        .ok_or_else(|| format!("未找到匹配的字体族：{}", family))?;
 
     // with_face_data 会自动处理文件 IO 或内存引用，并返回闭包的结果
     db.with_face_data(id, |data, _face_index| data.to_vec())
@@ -130,6 +149,21 @@ fn load_font_by_family(family: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// 词云用的六个色值（纸色 + 五个色相）都得在设计系统的样式表里找得到。
+    ///
+    /// 这条测试挡的是「顺手加一个好看的颜色」：加了就不再是同一套系统，
+    /// 而词云与卡片经常同时出现在一条消息里，一眼能看出不是一个人做的。
+    #[test]
+    fn the_word_hues_come_from_the_design_system() {
+        let sheet = crate::render::web::DESIGN_SYSTEM.to_ascii_uppercase();
+        for color in std::iter::once(PAPER).chain(WORD_COLORS) {
+            assert!(
+                sheet.contains(color),
+                "{color} 不在 res/cards/m3e.css 里：词云的配色要取自系统那张色表"
+            );
+        }
+    }
+
     #[test]
     fn rejects_oversized_cloud_before_allocating() {
         assert!(generate_word_cloud(vec![], None, None, 50, u32::MAX, 600).is_err());

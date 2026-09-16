@@ -25,7 +25,7 @@ where
                 .or_else(|| e.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown rendering error".to_string());
             Err(format!(
-                "图表渲染失败（当前字体可能不支持中文渲染。font_path='{}', font_family='{}'。请通过 font_path 指定字体文件，或安装并配置 font_family）: {}",
+                "图表渲染失败（当前字体可能不支持中文渲染。font_path='{}', font_family='{}'。请通过 font_path 指定字体文件，或安装并配置 font_family）：{}",
                 config.font_path, config.font_family, msg
             ))
         }
@@ -67,7 +67,7 @@ pub async fn generate(
             draw_with_font_panic_guard(&config, || draw_line_chart(&config, &title, chart_data))
         })
         .await
-        .map_err(|e| format!("图表任务失败: {e}"))?;
+        .map_err(|e| format!("图表任务失败：{e}"))?;
     }
 
     // 2. 柱状图 / 排行榜
@@ -98,5 +98,5 @@ pub async fn generate(
         })
     })
     .await
-    .map_err(|e| format!("图表任务失败: {e}"))?
+    .map_err(|e| format!("图表任务失败：{e}"))?
 }

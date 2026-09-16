@@ -1,0 +1,1102 @@
+/* ============================================================================
+   ayjx 卡片设计系统 · Material 3 Expressive 口径
+   ----------------------------------------------------------------------------
+   本仓库有六种卡片图：手册（help）、控制（ctl）、回复（oai）、资讯（ai_news，
+   日读／夜读）、画像（portrait，日读／夜读）。它们要像同一个产品里的六张纸，
+   而不是六个团队各做一张。这个文件把「同一张纸」该有的一致收在一处：字阶、
+   形状、高度、间距、配色角色、组件基元。
+
+   用法（两层，顺序不能换）：
+
+       format!("{}{}", DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <style> 的 body
+
+   注意一个坑：样式表最终是塞在 `<style>` 元素里的，而 HTML 的 raw text 解析
+   在遇到闭合的 style 标签时就结束——注释里写一整个闭合标签，整张样式表会被
+   截断成半句话，页面悄悄退回无样式。所以这个文件与各卡版式里**不许出现
+   HTML 的成对标签字面量**。
+
+   第一层是这个文件：令牌与组件基元，只描述「是什么」——一个标题多大、
+   一枚徽章什么形状、一张卡面什么颜色角色。第二层是各卡的版式文件，只描述
+   「摆在哪儿」——栏宽、网格、分隔线走向。**第二层里不许再出现色值、字号、
+   圆角、阴影的字面量，一律 `var()` 取令牌**；出现了就是又长出一套私有的
+   视觉语言，这个文件的全部意义就没了。
+
+   与本仓库三条既有约束的关系：
+   - 不加载任何外部资源（字体、图片、脚本），所以字体族只列系统里真的有的；
+   - 出图是静态位图，没有悬停与按压，所以 M3 的状态层（state layer）在这里
+     没有用武之地——「选中／激活」这类状态一律用容器色表达（见 §7）；
+   - 卡片要在群聊里当缩略图看，字号按中文字面与手机屏幕校准过，不照搬
+     M3 的拉丁字号（见 §2 的说明）。
+
+   —— 与 M3 的三处刻意偏离，写在这儿免得后来者当成笔误 ——
+   1. 字阶数值：M3 的字号是给拉丁文的。中文没有升部降部撑行高，同号数下
+      视觉更小、更挤，所以每一级的字号与行高都按中文字面放大了一档半，
+      但**级与级之间的跳档比例保持 M3 的关系**（相邻级约 1.18—1.35）。
+   2. 字重：M3 用可变字重（Roboto Flex 400—900 连续可取）。本机可及的中日韩
+      字体只有 400／500／600／700／800／900 六个离散面，写 650 会被浏览器
+      就近落到 600 或 700——等于没写。所以这个系统只用 **500 / 600 / 700 / 800**
+      四档，别在版式里写中间值。
+   3. 阴影：M3 的 1—3 级阴影是按「白底上浮起一小块」定的，不透明度对整屏
+      铺开的卡片偏重，浅色纸面上会显脏。这里保留层级差（一级比一级重、
+      一级比一级散），把不透明度收回到纸面的量级。
+   ========================================================================== */
+
+/* ==================== §1 复位 ==================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ==================== §2 字阶（type scale） ==================== */
+
+/* 一个角色四件套：字号 / 行高 / 字重 / 字距。行高与字号分开写而不是用
+   `font:` 简写——版式文件常常只需要改其中一项（比如把正文行高放宽一档），
+   分开写才不会把其余三项一起冲掉。 */
+:root {
+  /* 展示级：卡片上最响的一行，一张只有一处 */
+  --md-type-display-medium-size: 46px;
+  --md-type-display-medium-line: 1.26;
+  --md-type-display-medium-weight: 800;
+  --md-type-display-medium-track: -0.02em;
+
+  --md-type-display-small-size: 42px;
+  --md-type-display-small-line: 1.24;
+  --md-type-display-small-weight: 800;
+  --md-type-display-small-track: -0.015em;
+
+  /* 标题级 */
+  --md-type-headline-large-size: 38px;
+  --md-type-headline-large-line: 1.32;
+  --md-type-headline-large-weight: 700;
+  --md-type-headline-large-track: -0.022em;
+
+  --md-type-headline-medium-size: 33px;
+  --md-type-headline-medium-line: 1.28;
+  --md-type-headline-medium-weight: 800;
+  --md-type-headline-medium-track: -0.015em;
+
+  --md-type-headline-small-size: 27px;
+  --md-type-headline-small-line: 1.46;
+  --md-type-headline-small-weight: 700;
+  --md-type-headline-small-track: -0.01em;
+
+  /* 小节与正文标题 */
+  --md-type-title-large-size: 24px;
+  --md-type-title-large-line: 1.5;
+  --md-type-title-large-weight: 700;
+  --md-type-title-large-track: 0;
+
+  --md-type-title-medium-size: 22px;
+  --md-type-title-medium-line: 1.56;
+  --md-type-title-medium-weight: 600;
+  --md-type-title-medium-track: 0;
+
+  --md-type-title-small-size: 19px;
+  --md-type-title-small-line: 1.58;
+  --md-type-title-small-weight: 600;
+  --md-type-title-small-track: 0.004em;
+
+  /* 正文级：一段话读下去的地方，行高最松 */
+  --md-type-body-large-size: 20px;
+  --md-type-body-large-line: 1.72;
+  --md-type-body-large-weight: 500;
+  --md-type-body-large-track: 0;
+
+  --md-type-body-medium-size: 18px;
+  --md-type-body-medium-line: 1.72;
+  --md-type-body-medium-weight: 500;
+  --md-type-body-medium-track: 0;
+
+  --md-type-body-small-size: 16px;
+  --md-type-body-small-line: 1.66;
+  --md-type-body-small-weight: 500;
+  --md-type-body-small-track: 0.008em;
+
+  /* 标签级：字段名、徽章、页脚。字重比正文重，字号比正文小，
+     靠这两件事在小尺寸上保住可读性。 */
+  --md-type-label-large-size: 16px;
+  --md-type-label-large-line: 1.5;
+  --md-type-label-large-weight: 700;
+  --md-type-label-large-track: 0.01em;
+
+  --md-type-label-medium-size: 14px;
+  --md-type-label-medium-line: 1.45;
+  --md-type-label-medium-weight: 700;
+  --md-type-label-medium-track: 0.04em;
+
+  /* 眉标：全篇唯一的「小字距放开」用法，一眼认出是页眉不是内容 */
+  --md-type-label-small-size: 11px;
+  --md-type-label-small-line: 1.4;
+  --md-type-label-small-weight: 800;
+  --md-type-label-small-track: 0.18em;
+}
+
+/* ==================== §3 形状（shape） ==================== */
+
+:root {
+  --md-shape-none: 0;
+  --md-shape-xs: 4px;
+  --md-shape-s: 8px;
+  --md-shape-m: 12px;
+  --md-shape-l: 16px;
+  --md-shape-l-plus: 20px;
+  --md-shape-xl: 28px;
+  --md-shape-2xl: 48px;
+  --md-shape-full: 999px;
+
+  /* 角形处理（corner treatment）：M3 Expressive 的记认——一块面上只收一个角，
+     收的那个角指向这块面「从哪儿开始读」。用在强调块与引语上，
+     整张卡片外壳仍是四角等圆，免得像缺了一角。 */
+  --md-corner-notched: var(--md-shape-l) var(--md-shape-l) var(--md-shape-l)
+    var(--md-shape-xs);
+  --md-corner-notched-end: var(--md-shape-l) var(--md-shape-l) var(--md-shape-xs)
+    var(--md-shape-l);
+}
+
+/* ==================== §4 高度（elevation） ==================== */
+
+/* 数值见 §2 末尾的第 3 条偏离。scrim 走令牌，深色主题下用它混出来的阴影
+   才是黑，不是一层灰。 */
+:root {
+  --md-elevation-0: none;
+  --md-elevation-1: 0 1px 2px color-mix(in srgb, var(--md-sys-color-scrim) 6%, transparent),
+    0 1px 3px 1px color-mix(in srgb, var(--md-sys-color-scrim) 4%, transparent);
+  --md-elevation-2: 0 2px 4px color-mix(in srgb, var(--md-sys-color-scrim) 7%, transparent),
+    0 4px 10px 2px color-mix(in srgb, var(--md-sys-color-scrim) 5%, transparent);
+  --md-elevation-3: 0 6px 14px color-mix(in srgb, var(--md-sys-color-scrim) 10%, transparent),
+    0 2px 4px color-mix(in srgb, var(--md-sys-color-scrim) 6%, transparent);
+}
+
+/* ==================== §5 间距（spacing） ==================== */
+
+/* 4 的倍数（M3 的 4dp 网格）。34 是唯一一个不在网格上的值：中文段落之间
+   「看着断开」所需的空当比 32 多两像素、比 36 少两像素，实测 34 最稳。 */
+:root {
+  --md-space-1: 4px;
+  --md-space-2: 8px;
+  --md-space-3: 12px;
+  --md-space-4: 16px;
+  --md-space-5: 20px;
+  --md-space-6: 24px;
+  --md-space-7: 28px;
+  --md-space-8: 34px;
+  --md-space-9: 42px;
+}
+
+/* ==================== §6 字体族 ==================== */
+
+/* 一族到底，不做拉丁／中日韩混排。理由：手机可及的字体里，只有 Noto Sans CJK
+   同时覆盖中日韩与拉丁、且带 500—900 四档真字重；把 Roboto 摆在前头会让拉丁
+   与数字走另一张脸，同一行里出现两套骨架，卡片看着就散了。
+   等宽只用于代码与命令，中文仍落回主族（等宽 CJK 字面在手机上偏窄，不好读）。 */
+:root {
+  --md-font-plain: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC",
+    "OPPO Sans SC", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --md-font-serif: "Noto Serif CJK SC", "OPPO Serif SC", "Source Han Serif SC",
+    "Songti SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
+  --md-font-mono: "Noto Sans Mono", "DejaVu Sans Mono", "Roboto Mono", ui-monospace,
+    "Noto Sans CJK SC", monospace;
+  /* 显示级文字用的族。默认与正文同族；画像卡要衬线，由那一套方案覆盖
+     （见 scheme-portrait）——所以版式里写 `var(--md-font-display)`，
+     不要去写死 serif，否则「换一套方案就换一张脸」这件事又被写死了。 */
+  --md-font-display: var(--md-font-plain);
+}
+
+/* ==================== §7 配色角色（color roles） ==================== */
+
+/* 角色的名字取自 M3：primary / on-* / surface-container-* / outline-*。
+   版式一律按角色的**语义**取色（「这是主色」），不按色相取色（「这是绿色」），
+   换一套方案时版式一行都不用动。
+
+   三档文字是这个系统的骨架，也是六张卡从前最不齐的地方——有的卡有六级灰。
+   M3 基线只有 on-surface 与 on-surface-variant 两级，卡片还需要第三级来放
+   时间戳、单位、页脚这类「存在但不该被读到」的信息，所以补一个扩展角色
+   on-surface-faint（M3 的 outline 是给描边的，拿它当文字对比度不够）。
+   三级之外**不再有第四级**，需要更弱就减字重或缩字号，不要再调浅颜色。 */
+
+:root {
+  color-scheme: light;
+
+  /* 三档文字 */
+  --md-sys-color-on-surface: #1f2a27;
+  --md-sys-color-on-surface-variant: #4f5c57;
+  --md-sys-color-on-surface-faint: #6d7a74;
+
+  /* 描边：outline 给需要看清的界（指令框、输入位），variant 给分隔线 */
+  --md-sys-color-outline: #a3b2aa;
+  --md-sys-color-outline-variant: #dee5df;
+
+  /* 表面：dim 是卡片外的相纸，surface 是卡面，container 三级由浅到深 */
+  --md-sys-color-surface: #fffefa;
+  --md-sys-color-surface-dim: #edf1ed;
+  --md-sys-color-surface-container-low: #f7f9f6;
+  --md-sys-color-surface-container: #f1f4f1;
+  --md-sys-color-surface-container-high: #e7ece8;
+
+  /* 反色面：代码块、反色徽章。M3 的 inverse-surface 就是这个用途。 */
+  --md-sys-color-inverse-surface: #1c2421;
+  --md-sys-color-on-inverse-surface: #e8ede9;
+
+  /* 主色（由各方案给种子，容器色由下面的派生规则混出来） */
+  --md-sys-color-primary: #1f6350;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-tertiary: #4a44b8;
+
+  /* 次要容器：中性色块，放行内代码、工具轨迹这类「是代码但不是重点」的东西 */
+  --md-sys-color-secondary-container: #e4ebe4;
+  --md-sys-color-on-secondary-container: #333c36;
+
+  /* 语义色。M3 只定义了 error，另两个是本仓库的扩展角色：
+     成功与警告在机器人的回执里出现得太频繁，缺了它们就只能拿主色顶，
+     而「已发送」用主色一顶就和「正在发送」分不开了。 */
+  --md-sys-color-success: #2e6b45;
+  --md-sys-color-success-container: #d9efe0;
+  --md-sys-color-on-success-container: #06291a;
+  --md-sys-color-warning: #7a5300;
+  --md-sys-color-warning-container: #ffe9bc;
+  --md-sys-color-on-warning-container: #2a1c00;
+  --md-sys-color-error: #b3261e;
+  --md-sys-color-error-container: #f9dedc;
+  --md-sys-color-on-error-container: #410e0b;
+
+  /* 阴影用的黑。深色主题下若不是纯黑，叠出来的阴影会发灰。 */
+  --md-sys-color-scrim: #0b1512;
+
+  /* —— 派生：容器色 —— */
+  /* M3 的 *-container 是同色相、亮两档（浅色主题）或暗两档（深色主题）的调子。
+     与其给每个种子手写一份容器色表（六套方案 × 六个种子 × 两个主题），
+     不如按比例从种子里混出来：换种子只要改一行。两个比例由方案给——
+     浅色主题的容器要亮（混得少），深色主题的容器要沉（混得多）；
+     on-container 在浅色主题下是「主色再压深」，深色主题下是「主色再提亮」，
+     所以混的目标色用 on-surface（它自己会随主题翻面）。 */
+  --md-role-container-mix: 13%;
+  --md-role-on-container-mix: 82%;
+  --md-sys-color-primary-container: color-mix(
+    in srgb,
+    var(--md-sys-color-primary) var(--md-role-container-mix),
+    var(--md-sys-color-surface)
+  );
+  --md-sys-color-on-primary-container: color-mix(
+    in srgb,
+    var(--md-sys-color-primary) var(--md-role-on-container-mix),
+    var(--md-sys-color-on-surface)
+  );
+  --md-sys-color-tertiary-container: color-mix(
+    in srgb,
+    var(--md-sys-color-tertiary) var(--md-role-container-mix),
+    var(--md-sys-color-surface)
+  );
+  --md-sys-color-on-tertiary-container: color-mix(
+    in srgb,
+    var(--md-sys-color-tertiary) var(--md-role-on-container-mix),
+    var(--md-sys-color-on-surface)
+  );
+
+  /* —— 派生：淡色叠层 —— */
+  /* 引语底、微光、滑过时的浅底都用这一族。从前各卡自己写 rgba(色值, .06)
+     这种字面量，色值一改就有地方漏掉。 */
+  --md-sys-color-primary-tint: color-mix(
+    in srgb,
+    var(--md-sys-color-primary) 7%,
+    transparent
+  );
+  --md-sys-color-primary-tint-strong: color-mix(
+    in srgb,
+    var(--md-sys-color-primary) 15%,
+    transparent
+  );
+  --md-sys-color-primary-line: color-mix(
+    in srgb,
+    var(--md-sys-color-primary) 34%,
+    transparent
+  );
+}
+
+/* —— 方案：手册（help） ——
+   纸白底 + 松绿主色。手册是「查一条就走」的东西，底子要最不抢眼，
+   绿色只出现在品牌行、指令框和分区标记上。 */
+body.scheme-manual {
+  --md-sys-color-surface: #fffefa;
+  --md-sys-color-surface-dim: #edf1ed;
+  --md-sys-color-surface-container-low: #f7f9f6;
+  --md-sys-color-surface-container: #f1f4f1;
+  --md-sys-color-surface-container-high: #e7ece8;
+  --md-sys-color-on-surface: #1f2a27;
+  --md-sys-color-on-surface-variant: #4f5c57;
+  --md-sys-color-on-surface-faint: #6d7a74;
+  --md-sys-color-outline: #a3b2aa;
+  --md-sys-color-outline-variant: #dee5df;
+  --md-sys-color-primary: #1f6350;
+  --md-sys-color-tertiary: #4a44b8;
+  --md-sys-color-secondary-container: #e4ebe4;
+  --md-sys-color-on-secondary-container: #333c36;
+}
+
+/* —— 方案：控制（ctl） ——
+   暖纸底 + 赭棕主色。控制卡是「动配置」的地方，和手册卡必须一眼分得开，
+   否则改完开关再看手册会以为没跳页。 */
+body.scheme-control {
+  --md-sys-color-surface: #fffdfa;
+  --md-sys-color-surface-dim: #f1eee8;
+  --md-sys-color-surface-container-low: #faf6f0;
+  --md-sys-color-surface-container: #f6f0e5;
+  --md-sys-color-surface-container-high: #ede5d8;
+  --md-sys-color-on-surface: #332c24;
+  --md-sys-color-on-surface-variant: #5f5546;
+  --md-sys-color-on-surface-faint: #7b6f5e;
+  --md-sys-color-outline: #b7a894;
+  --md-sys-color-outline-variant: #e7dfd3;
+  --md-sys-color-primary: #7a4e1e;
+  --md-sys-color-tertiary: #4a5b3a;
+  --md-sys-color-secondary-container: #ede6da;
+  --md-sys-color-on-secondary-container: #3b3325;
+  --md-sys-color-inverse-surface: #2b241c;
+  --md-sys-color-on-inverse-surface: #f0e9de;
+  --md-sys-color-scrim: #241c12;
+}
+
+/* —— 方案：回复（oai） ——
+   和手册同底（都是「读一段话」的场合，换底反而像换了产品），但主色更深、
+   多一枚靛色 tertiary：回复卡里有「参考来源」与「工具轨迹」两类小标记，
+   它们既不是正文也不是主色，需要第三个角色才分得开。 */
+body.scheme-reply {
+  --md-sys-color-surface: #fffefa;
+  --md-sys-color-surface-dim: #edf1ed;
+  --md-sys-color-surface-container-low: #f7faf7;
+  --md-sys-color-surface-container: #f1f4f1;
+  --md-sys-color-surface-container-high: #e6ece7;
+  --md-sys-color-on-surface: #1d2724;
+  --md-sys-color-on-surface-variant: #4c5954;
+  --md-sys-color-on-surface-faint: #6b7873;
+  --md-sys-color-outline: #a0afa8;
+  --md-sys-color-outline-variant: #e0e7e1;
+  --md-sys-color-primary: #1f6350;
+  --md-sys-color-tertiary: #4442ab;
+  --md-sys-color-secondary-container: #e6ebe8;
+  --md-sys-color-on-secondary-container: #33403b;
+  /* 代码块走反色面，不另开一套深色变量 */
+  --md-sys-color-inverse-surface: #1b2320;
+  --md-sys-color-on-inverse-surface: #e6ece8;
+  --md-sys-color-scrim: #0b1512;
+}
+
+/* —— 方案：资讯（ai_news） ——
+   蓝灰底，日读偏白、夜读偏墨。四类内容各有一个种子（速递靛蓝、热点橙、
+   日报绿、模型榜琥珀），种子只换主色三件套，中性面一概不动——所以换分类
+   时整张卡的语气是稳的，只有重点色换了一件衣服。 */
+body.scheme-news {
+  --md-role-container-mix: 15%;
+  --md-sys-color-surface: #fbfcfe;
+  --md-sys-color-surface-dim: #e9edf3;
+  --md-sys-color-surface-container-low: #f3f6fa;
+  --md-sys-color-surface-container: #edf1f7;
+  --md-sys-color-surface-container-high: #e4e9f1;
+  --md-sys-color-on-surface: #202a38;
+  --md-sys-color-on-surface-variant: #4e5a6c;
+  --md-sys-color-on-surface-faint: #6e7a8c;
+  --md-sys-color-outline: #8b96a6;
+  --md-sys-color-outline-variant: #dce2eb;
+  --md-sys-color-secondary-container: #e9edf5;
+  --md-sys-color-on-secondary-container: #333d4c;
+  --md-sys-color-inverse-surface: #202a38;
+  --md-sys-color-on-inverse-surface: #eef1f7;
+  --md-sys-color-success: #168447;
+  --md-sys-color-success-container: #d8f0e1;
+  --md-sys-color-on-success-container: #032b17;
+  --md-sys-color-scrim: #11151c;
+
+  /* 四类内容的种子（日读）。 */
+  --md-seed-brief: #5268d8;
+  --md-seed-hot: #c9562b;
+  --md-seed-daily: #168668;
+  --md-seed-models: #a86400;
+  --md-sys-color-primary: var(--md-seed-brief);
+  --md-sys-color-tertiary: var(--md-seed-hot);
+}
+
+body.scheme-news.dark {
+  color-scheme: dark;
+  --md-sys-color-surface: #1a202a;
+  --md-sys-color-surface-dim: #11151c;
+  --md-sys-color-surface-container-low: #1f262f;
+  --md-sys-color-surface-container: #242c36;
+  --md-sys-color-surface-container-high: #2b333f;
+  --md-sys-color-on-surface: #edebe6;
+  --md-sys-color-on-surface-variant: #c4c3c0;
+  --md-sys-color-on-surface-faint: #a6aab2;
+  --md-sys-color-outline: #8a919c;
+  --md-sys-color-outline-variant: #3a424e;
+  --md-sys-color-secondary-container: #2a323d;
+  --md-sys-color-on-secondary-container: #dfe2e8;
+  --md-sys-color-inverse-surface: #edebe6;
+  --md-sys-color-on-inverse-surface: #1a202a;
+  --md-sys-color-success: #75c995;
+  --md-sys-color-success-container: #10361f;
+  --md-sys-color-on-success-container: #c8f0d6;
+  --md-role-on-container-mix: 44%;
+
+  --md-seed-brief: #9aa8e8;
+  --md-seed-hot: #e9a07b;
+  --md-seed-daily: #72c9ae;
+  --md-seed-models: #ddbb74;
+}
+
+/* 分类换种子。写成四个短块而不是让 Rust 拼 `--md-sys-color-primary` 内联样式：
+   种子属于配色方案，摆在这里才和其余五套方案放在一张桌上比。 */
+body.seed-brief {
+  --md-sys-color-primary: var(--md-seed-brief);
+}
+body.seed-hot {
+  --md-sys-color-primary: var(--md-seed-hot);
+}
+body.seed-daily {
+  --md-sys-color-primary: var(--md-seed-daily);
+}
+body.seed-models {
+  --md-sys-color-primary: var(--md-seed-models);
+}
+
+/* —— 方案：画像（portrait） ——
+   纸色底 + 衬线。这是六张卡里唯一用衬线的：画像是一份「写下来的东西」，
+   衬线在纸色上才立得住——这一点与 M3 无关，是版面的选择，所以单独写在这儿，
+   免得有人为了「统一」把它换成无衬线。主色由被画像的人决定（六个种子之一，
+   同一人每次同色），所以这里只给中性面，主色由 Rust 内联一个种子进来。 */
+body.scheme-portrait {
+  --md-role-container-mix: 10%;
+  --md-font-display: var(--md-font-serif);
+  --md-sys-color-surface: #fcfaf6;
+  --md-sys-color-surface-dim: #e9e3d9;
+  --md-sys-color-surface-container-low: #f7f4ee;
+  --md-sys-color-surface-container: #f1ede4;
+  --md-sys-color-surface-container-high: #e8e3d8;
+  --md-sys-color-on-surface: #1c1a17;
+  --md-sys-color-on-surface-variant: #524b41;
+  --md-sys-color-on-surface-faint: #6e675d;
+  --md-sys-color-outline: #a79e90;
+  --md-sys-color-outline-variant: #e2dcd0;
+  --md-sys-color-secondary-container: #ebe6dd;
+  --md-sys-color-on-secondary-container: #38322a;
+  --md-sys-color-scrim: #241f18;
+}
+
+body.scheme-portrait.dark {
+  color-scheme: dark;
+  --md-sys-color-surface: #171614;
+  --md-sys-color-surface-dim: #0d0c0b;
+  --md-sys-color-surface-container-low: #1d1b19;
+  --md-sys-color-surface-container: #221f1c;
+  --md-sys-color-surface-container-high: #2a2723;
+  --md-sys-color-on-surface: #f2eee6;
+  --md-sys-color-on-surface-variant: #bdb6ab;
+  --md-sys-color-on-surface-faint: #9c948a;
+  --md-sys-color-outline: #7a7468;
+  --md-sys-color-outline-variant: #3a3833;
+  --md-sys-color-secondary-container: #2a2723;
+  --md-sys-color-on-secondary-container: #ded8cd;
+  --md-sys-color-inverse-surface: #f2eee6;
+  --md-sys-color-on-inverse-surface: #171614;
+  --md-sys-color-scrim: #000000;
+  --md-role-on-container-mix: 46%;
+}
+
+/* 画像的六个主色种子（同一人在深浅两套主题下各一份）。
+   Rust 侧只负责在这两个里挑一个塞进 `--md-sys-color-primary`。 */
+body.seed-amber {
+  --md-sys-color-primary: #8a5a1e;
+}
+body.seed-rose {
+  --md-sys-color-primary: #9e2f4c;
+}
+body.seed-mint {
+  --md-sys-color-primary: #1f6f5c;
+}
+body.seed-indigo {
+  --md-sys-color-primary: #3e4e9e;
+}
+body.seed-violet {
+  --md-sys-color-primary: #5f3a96;
+}
+body.seed-teal {
+  --md-sys-color-primary: #14606e;
+}
+body.dark.seed-amber {
+  --md-sys-color-primary: #c9a063;
+}
+body.dark.seed-rose {
+  --md-sys-color-primary: #d98ba1;
+}
+body.dark.seed-mint {
+  --md-sys-color-primary: #7fbfa8;
+}
+body.dark.seed-indigo {
+  --md-sys-color-primary: #9aa6dd;
+}
+body.dark.seed-violet {
+  --md-sys-color-primary: #b49bdd;
+}
+body.dark.seed-teal {
+  --md-sys-color-primary: #79b8c2;
+}
+
+/* 深色主题对整体配色只改两件事：文字与表面翻面、容器混色比例换档。
+   语义色在浅色主题下就能用（同为深底浅字那一套），不必各写一遍——
+   本文件里只有 news 与 portrait 两套方案自带深色，其余四套按「日读」一种。 */
+body.dark {
+  color-scheme: dark;
+  --md-role-container-mix: 22%;
+  --md-role-on-container-mix: 44%;
+}
+
+/* ==================== §8 排字约定 ==================== */
+
+/* 中文断行的三件事，全系统统一，版式文件不要再各写一遍：
+   - 换行交给浏览器，标题 balance、正文 pretty；
+   - 长 URL 与英文长词允许在任意处断开（卡片不能横向滚动）；
+   - 数字一律等宽（`tabular-nums`），换行时列不会跳。 */
+.md-text {
+  font-family: var(--md-font-plain);
+  overflow-wrap: anywhere;
+  word-break: normal;
+  font-kerning: normal;
+  font-variant-numeric: tabular-nums;
+  text-wrap: pretty;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.md-balance {
+  text-wrap: balance;
+}
+
+/* 字阶的取用类。版式文件里写 `class="md-type-headline-small"` 比在
+   选择器里重复四行属性更短，也不容易漏掉一项。 */
+.md-type-display-medium {
+  font-size: var(--md-type-display-medium-size);
+  line-height: var(--md-type-display-medium-line);
+  font-weight: var(--md-type-display-medium-weight);
+  letter-spacing: var(--md-type-display-medium-track);
+}
+.md-type-display-small {
+  font-size: var(--md-type-display-small-size);
+  line-height: var(--md-type-display-small-line);
+  font-weight: var(--md-type-display-small-weight);
+  letter-spacing: var(--md-type-display-small-track);
+}
+.md-type-headline-large {
+  font-size: var(--md-type-headline-large-size);
+  line-height: var(--md-type-headline-large-line);
+  font-weight: var(--md-type-headline-large-weight);
+  letter-spacing: var(--md-type-headline-large-track);
+}
+.md-type-headline-medium {
+  font-size: var(--md-type-headline-medium-size);
+  line-height: var(--md-type-headline-medium-line);
+  font-weight: var(--md-type-headline-medium-weight);
+  letter-spacing: var(--md-type-headline-medium-track);
+}
+.md-type-headline-small {
+  font-size: var(--md-type-headline-small-size);
+  line-height: var(--md-type-headline-small-line);
+  font-weight: var(--md-type-headline-small-weight);
+  letter-spacing: var(--md-type-headline-small-track);
+}
+.md-type-title-large {
+  font-size: var(--md-type-title-large-size);
+  line-height: var(--md-type-title-large-line);
+  font-weight: var(--md-type-title-large-weight);
+  letter-spacing: var(--md-type-title-large-track);
+}
+.md-type-title-medium {
+  font-size: var(--md-type-title-medium-size);
+  line-height: var(--md-type-title-medium-line);
+  font-weight: var(--md-type-title-medium-weight);
+  letter-spacing: var(--md-type-title-medium-track);
+}
+.md-type-title-small {
+  font-size: var(--md-type-title-small-size);
+  line-height: var(--md-type-title-small-line);
+  font-weight: var(--md-type-title-small-weight);
+  letter-spacing: var(--md-type-title-small-track);
+}
+.md-type-body-large {
+  font-size: var(--md-type-body-large-size);
+  line-height: var(--md-type-body-large-line);
+  font-weight: var(--md-type-body-large-weight);
+  letter-spacing: var(--md-type-body-large-track);
+}
+.md-type-body-medium {
+  font-size: var(--md-type-body-medium-size);
+  line-height: var(--md-type-body-medium-line);
+  font-weight: var(--md-type-body-medium-weight);
+  letter-spacing: var(--md-type-body-medium-track);
+}
+.md-type-body-small {
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+  font-weight: var(--md-type-body-small-weight);
+  letter-spacing: var(--md-type-body-small-track);
+}
+.md-type-label-large {
+  font-size: var(--md-type-label-large-size);
+  line-height: var(--md-type-label-large-line);
+  font-weight: var(--md-type-label-large-weight);
+  letter-spacing: var(--md-type-label-large-track);
+}
+.md-type-label-medium {
+  font-size: var(--md-type-label-medium-size);
+  line-height: var(--md-type-label-medium-line);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: var(--md-type-label-medium-track);
+}
+.md-type-label-small {
+  font-size: var(--md-type-label-small-size);
+  line-height: var(--md-type-label-small-line);
+  font-weight: var(--md-type-label-small-weight);
+  letter-spacing: var(--md-type-label-small-track);
+}
+
+/* 三档文字。位置固定：`.md-ink` 是主体，`.md-ink-muted` 是说明，
+   `.md-ink-faint` 是页脚与单位。 */
+.md-ink {
+  color: var(--md-sys-color-on-surface);
+}
+.md-ink-muted {
+  color: var(--md-sys-color-on-surface-variant);
+}
+.md-ink-faint {
+  color: var(--md-sys-color-on-surface-faint);
+}
+.md-ink-accent {
+  color: var(--md-sys-color-primary);
+}
+
+/* ==================== §9 组件基元 ==================== */
+
+/* —— 卡面 —— */
+.md-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--md-shape-xl);
+  background: var(--md-sys-color-surface);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: var(--md-elevation-2);
+  color: var(--md-sys-color-on-surface);
+}
+/* 卡面左上角一层主色微光：给平面一点纵深，且只在一角，
+   不至于把整张卡染成主色的。 */
+.md-card::before {
+  content: "";
+  position: absolute;
+  top: -240px;
+  left: -150px;
+  width: 520px;
+  height: 520px;
+  border-radius: var(--md-shape-full);
+  background: radial-gradient(
+    circle,
+    var(--md-sys-color-primary-tint-strong),
+    transparent 70%
+  );
+  pointer-events: none;
+}
+.md-card > * {
+  position: relative;
+}
+
+/* —— 页眉 —— */
+/* 六张卡的页眉同形：左边「品牌 + 这张卡是什么」，右边「什么时候出的」。
+   眉标一律 label-small（小字放开字距），是全篇唯一允许这么大字距的地方。 */
+.md-eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--md-space-4);
+  margin-bottom: var(--md-space-5);
+}
+.md-kicker {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-3);
+  font-size: var(--md-type-label-small-size);
+  line-height: var(--md-type-label-small-line);
+  font-weight: var(--md-type-label-small-weight);
+  letter-spacing: var(--md-type-label-small-track);
+  color: var(--md-sys-color-primary);
+  white-space: nowrap;
+}
+/* 眉标前的那颗点：主色实心 + 一圈同色淡环，是「这张卡属于谁」的记认 */
+.md-kicker .md-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-primary);
+  box-shadow: 0 0 0 5px var(--md-sys-color-primary-tint);
+}
+.md-kicker-en {
+  font-size: var(--md-type-label-small-size);
+  font-weight: var(--md-type-label-small-weight);
+  letter-spacing: 0.2em;
+  color: var(--md-sys-color-on-surface-faint);
+}
+.md-stamp {
+  font-size: var(--md-type-label-medium-size);
+  line-height: var(--md-type-label-medium-line);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: 0.03em;
+  color: var(--md-sys-color-on-surface-faint);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* —— 标题块 —— */
+.md-title {
+  color: var(--md-sys-color-on-surface);
+}
+.md-subtitle {
+  margin-top: var(--md-space-3);
+  color: var(--md-sys-color-on-surface-variant);
+}
+/* 主色短横：一块内容与上一块的分界。比整条分割线轻，比纯留白重。 */
+.md-rule {
+  height: 2px;
+  border: 0;
+  border-radius: var(--md-shape-full);
+  background: linear-gradient(
+    90deg,
+    var(--md-sys-color-primary),
+    var(--md-sys-color-primary-line) 38%,
+    var(--md-sys-color-outline-variant)
+  );
+}
+
+/* —— 分节 —— */
+.md-section {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--md-space-2) var(--md-space-3);
+}
+.md-section-title {
+  color: var(--md-sys-color-on-surface);
+}
+.md-section-en {
+  font-size: var(--md-type-label-small-size);
+  font-weight: var(--md-type-label-small-weight);
+  letter-spacing: 0.06em;
+  color: var(--md-sys-color-on-surface-faint);
+}
+/* 条数是元信息，不是标题的一部分：给一块浅底让它扫得到，
+   又不会与标题抢注意力。 */
+.md-count {
+  margin-left: auto;
+  padding: 2px var(--md-space-3);
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.6;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* —— 徽章：状态 —— */
+/* 「已启用 / 已停用 / 待重启」这类状态。形状一律 full 圆角，
+   颜色一律走语义容器色——状态色不许版式文件自己挑。 */
+.md-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  border-radius: var(--md-shape-full);
+  padding: 3px var(--md-space-3);
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.6;
+  font-weight: var(--md-type-label-medium-weight);
+  white-space: nowrap;
+}
+.md-badge i {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--md-shape-full);
+  background: currentColor;
+}
+.md-badge-on {
+  color: var(--md-sys-color-on-success-container);
+  background: var(--md-sys-color-success-container);
+}
+.md-badge-off {
+  color: var(--md-sys-color-on-surface-variant);
+  background: var(--md-sys-color-surface-container-high);
+}
+/* 停用那颗点是空心圈，不是实心：形状本身也说「没在跑」 */
+.md-badge-off i {
+  background: transparent;
+  border: 1px solid currentColor;
+}
+.md-badge-pending {
+  color: var(--md-sys-color-on-warning-container);
+  background: var(--md-sys-color-warning-container);
+}
+
+/* —— 芯片：分类、元信息、键名 —— */
+.md-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  padding: 3px var(--md-space-3);
+  border-radius: var(--md-shape-s);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+/* 中性芯片：不是重点、但需要一块底把文字从正文里拎出来 */
+.md-chip-plain {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+/* 键名芯片：配置键、模型名、命令。等宽字，比正文小一档。 */
+.md-chip-key {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-family: var(--md-font-mono);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* —— 读数行 —— */
+/* 一行「标签 + 数字 + 单位」。数字用主色、比标签大两档；单位与标签同色同号，
+   免得「3 天」里的「天」跳出来。两端对齐用 baseline，数字换行时列不跳。 */
+.md-readings {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--md-space-2) var(--md-space-6);
+}
+.md-readings-bordered {
+  padding-top: var(--md-space-4);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+.md-reading {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.5;
+  color: var(--md-sys-color-on-surface-faint);
+}
+.md-reading-key {
+  letter-spacing: 0.06em;
+}
+.md-reading-value {
+  font-size: var(--md-type-title-small-size);
+  font-weight: 700;
+  color: var(--md-sys-color-primary);
+  font-variant-numeric: tabular-nums;
+}
+.md-reading-unit {
+  color: var(--md-sys-color-on-surface-faint);
+}
+
+/* —— 指令：一整条可以抄走的命令 —— */
+/* 形状用「半芯片」：圆角小、等宽字、主色的字与描边，一眼看出「这一行和上面那段话
+   不是一类东西——它是能整条复制去用的」。块级，长命令自己折行。
+   底色只给 7% 的主色淡层而不用 primary-container：手册卡里指令是连着十几条排的，
+   每条都铺一块实色容器，整张卡会变成一摞色块，反而看不出哪条是哪条。 */
+.md-command {
+  display: block;
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-m);
+  background: var(--md-sys-color-primary-tint);
+  border: 1px solid var(--md-sys-color-primary-line);
+  color: var(--md-sys-color-primary);
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-title-medium-size);
+  font-weight: 700;
+  line-height: 1.7;
+}
+
+/* —— 配置面板 —— */
+/* 键值清单。中性容器底而不是主色底：这是一段「照着核对」的资料，
+   不是要读者去点的东西，主色留给真正的指令。 */
+.md-code-panel {
+  padding: var(--md-space-4) var(--md-space-5);
+  border-radius: var(--md-shape-m);
+  background: var(--md-sys-color-secondary-container);
+  border: 1px solid var(--md-sys-color-outline-variant);
+}
+.md-code-line {
+  font-size: var(--md-type-body-medium-size);
+  line-height: 1.85;
+  min-height: 1.85em;
+  color: var(--md-sys-color-on-secondary-container);
+}
+/* 分区名那一行（`[oai]` 这种）抬一档；读者找分区时只看这一列 */
+.md-code-key {
+  color: var(--md-sys-color-primary);
+  font-weight: 700;
+}
+
+/* —— 分隔线 —— */
+/* 只用一种：1px、outline-variant、从内容起点开始、右侧留出一段空。
+   留出右端是为了让「线到哪儿」和「字到哪儿」错开，视觉上不被切齐。 */
+.md-divider {
+  border: 0;
+  height: 1px;
+  background: var(--md-sys-color-outline-variant);
+}
+.md-divider-inset {
+  margin-right: var(--md-space-6);
+}
+
+/* —— 强调块（callout） —— */
+/* 形状用角形处理：左上角正常圆，右下角收成 4px——收的那个角指向「读完了」。
+   背景走主色淡层，不做实色块，以免在长文里压力过大。 */
+.md-callout {
+  border-radius: var(--md-corner-notched);
+  padding: var(--md-space-4) var(--md-space-5);
+  background: var(--md-sys-color-primary-tint);
+  border-left: 3px solid var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-body-medium-size);
+  line-height: 1.78;
+  white-space: pre-wrap;
+  text-wrap: pretty;
+}
+/* 空态：没有内容不是错误，所以不挂主色，只给一条虚线界 */
+.md-callout-empty {
+  background: transparent;
+  border: 1px dashed var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-m);
+  color: var(--md-sys-color-on-surface-variant);
+  text-align: center;
+}
+
+/* —— 代码 —— */
+.md-code-inline {
+  padding: 1px 6px;
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-family: var(--md-font-mono);
+  font-size: 0.86em;
+  font-weight: 600;
+}
+/* 深色代码块走反色面。M3 的 inverse-surface 就是干这个的，
+   深色主题下它会翻转成浅底深字——仍然是一块「和正文不同的面」。 */
+.md-pre {
+  position: relative;
+  margin: var(--md-space-3) 0;
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-m);
+  background: var(--md-sys-color-inverse-surface);
+  overflow-wrap: anywhere;
+}
+.md-pre code {
+  display: block;
+  padding: 0;
+  background: none;
+  color: var(--md-sys-color-on-inverse-surface);
+  font-family: var(--md-font-mono);
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 语言标签由 Rust 侧改写成 `data-lang`，纯 CSS 拿不到子元素的类名 */
+.md-pre[data-lang] {
+  padding-top: 26px;
+}
+.md-pre[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 6px;
+  left: var(--md-space-4);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(
+    in srgb,
+    var(--md-sys-color-on-inverse-surface) 55%,
+    transparent
+  );
+}
+
+/* —— 读数格 —— */
+.md-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--md-space-3);
+}
+.md-tile {
+  padding: var(--md-space-3) var(--md-space-2);
+  border-radius: var(--md-shape-m);
+  background: var(--md-sys-color-primary-tint);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  text-align: center;
+}
+.md-tile b {
+  display: block;
+  color: var(--md-sys-color-primary);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+.md-tile span {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-body-small-size);
+}
+
+/* —— 页脚 —— */
+.md-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-2);
+  margin-top: var(--md-space-7);
+  padding-top: var(--md-space-5);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface-faint);
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.62;
+}
+/* 页脚也可以是一行：左边说出处，右边说下一步。资讯卡用它。 */
+.md-foot-row {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 22px;
+}
+/* 引导行：告诉读者下一步能做什么。左边是「做什么」，右边是「怎么打」，
+   分两行写而不是拼成一句——命令要能一眼整条抄走。 */
+.md-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.md-hint span {
+  font-size: var(--md-type-label-medium-size);
+  color: var(--md-sys-color-on-surface-faint);
+}
+.md-hint code {
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-body-small-size);
+  font-weight: 700;
+  line-height: 1.65;
+  color: var(--md-sys-color-primary);
+  overflow-wrap: anywhere;
+}
+.md-note {
+  color: var(--md-sys-color-on-surface-variant);
+}
+.md-sep {
+  margin: 0 var(--md-space-2);
+  color: var(--md-sys-color-outline);
+}

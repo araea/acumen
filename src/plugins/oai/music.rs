@@ -249,7 +249,7 @@ fn summary(generated: &Generated, title: &str, send: SendMode, show_send: bool) 
         .iter()
         .map(|clip| mmss(clip.duration))
         .collect();
-    let mut text = format!("🎵 {title}");
+    let mut text = title.to_string();
     let mut meta = if generated.clips.len() > 1 {
         format!("两个版本：{}", durations.join(" / "))
     } else {
@@ -805,7 +805,7 @@ mod tests {
         // 照配置走时不提发法：卡片上只有歌名、时长、账与风格。
         assert_eq!(
             summary(&generated, "落叶", SendMode::File, false),
-            "🎵 落叶\n两个版本：3:11 / 2:56 · Suno v6 · $0.50\n风格：folk, acoustic, \
+            "落叶\n两个版本：3:11 / 2:56 · Suno v6 · $0.50\n风格：folk, acoustic, \
              close-mic vocal\n\n歌词\nSun on the table\nSteam in my mug"
         );
         // 自己指定了发法就标出来，省得回头猜这一单是怎么发的。

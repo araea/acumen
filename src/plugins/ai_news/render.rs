@@ -167,9 +167,9 @@ impl Rendered {
     }
 }
 
-/// 北京时间（UTC+8）
+/// 北京时间（UTC+8）。实现在 [`crate::render::beijing`]——六张卡片共用同一个口径。
 pub(super) fn beijing() -> FixedOffset {
-    FixedOffset::east_opt(8 * 3600).expect("UTC+8 是合法时区偏移")
+    crate::render::beijing()
 }
 
 /// ISO8601 → `MM-DD HH:MM`（北京时间）
@@ -286,7 +286,7 @@ pub fn render_items(header: &str, items: &[Item], opts: &RenderOptions) -> Rende
 
     for (idx, item) in items.iter().enumerate() {
         let mut out = String::new();
-        let title = item.title.as_deref().unwrap_or("(无标题)").trim();
+        let title = item.title.as_deref().unwrap_or("（无标题）").trim();
         let mut entry_links = EntryLinks {
             title: title.to_string(),
             links: Vec::new(),
@@ -340,7 +340,7 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
     for (idx, topic) in topics.iter().enumerate() {
         let mut out = String::new();
         let rank = topic.rank.unwrap_or((idx + 1) as u32);
-        let title = topic.title.as_deref().unwrap_or("(无标题)").trim();
+        let title = topic.title.as_deref().unwrap_or("（无标题）").trim();
         let mut entry_links = EntryLinks {
             title: title.to_string(),
             links: Vec::new(),
@@ -383,7 +383,7 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
     }
 
     Rendered {
-        header: "🔥 AI 当前热点榜".to_string(),
+        header: "AI 当前热点榜".to_string(),
         entries,
         footer: super::api::ATTRIBUTION.to_string(),
         links,
@@ -454,7 +454,7 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
 
 /// 模型榜标题行：带上「汇总几家榜单」与站点标注的更新时间
 pub(super) fn models_header(board: &Board) -> String {
-    let mut header = String::from("🏆 AIHOT 大模型排行榜");
+    let mut header = String::from("AIHOT 大模型排行榜");
     let mut meta: Vec<String> = Vec::new();
     if let Some(count) = board.source_count {
         meta.push(format!("综合 {} 家公开榜单", count));
@@ -494,10 +494,10 @@ fn render_block(out: &mut String, block: &DailyBlock, depth: usize, budget: &mut
 /// AI 日报：保留 lead / sections / flashes 的原有结构，不重排成普通列表
 pub fn render_daily(report: &DailyReport, max_blocks: usize) -> Rendered {
     let header = match (report.date.as_deref(), report.title.as_deref()) {
-        (Some(date), Some(title)) => format!("📰 AI 日报 · {}\n{}", date, title),
-        (Some(date), None) => format!("📰 AI 日报 · {}", date),
-        (None, Some(title)) => format!("📰 AI 日报 · {}", title),
-        (None, None) => "📰 AI 日报".to_string(),
+        (Some(date), Some(title)) => format!("AI 日报 · {}\n{}", date, title),
+        (Some(date), None) => format!("AI 日报 · {}", date),
+        (None, Some(title)) => format!("AI 日报 · {}", title),
+        (None, None) => "AI 日报".to_string(),
     };
 
     let mut entries: Vec<String> = Vec::new();
@@ -520,7 +520,7 @@ pub fn render_daily(report: &DailyReport, max_blocks: usize) -> Rendered {
     }
 
     if budget > 0 && !report.flashes.is_empty() {
-        let mut block = String::from("⚡ 快讯\n");
+        let mut block = String::from("快讯\n");
         for flash in &report.flashes {
             if budget == 0 {
                 break;
@@ -599,7 +599,7 @@ mod tests {
             show_reason: false,
             show_original_link: false,
         };
-        let text = render_items("🤖 测试", &[sample_item()], &opts).to_text();
+        let text = render_items("测试", &[sample_item()], &opts).to_text();
         assert!(text.contains("某模型发布"));
         assert!(text.contains("https://aihot.virxact.com/i/1"));
         assert!(!text.contains("值得关注的理由"));
@@ -617,7 +617,7 @@ mod tests {
             show_reason: true,
             show_original_link: true,
         };
-        let text = render_items("🤖 测试", &[item], &opts).to_text();
+        let text = render_items("测试", &[item], &opts).to_text();
         assert!(!text.contains("💡"));
         assert!(text.contains("📄 https://example.com/post"));
     }
@@ -630,12 +630,12 @@ mod tests {
             show_original_link: false,
         };
         let items: Vec<Item> = (0..6).map(|_| sample_item()).collect();
-        let rendered = render_items("🤖 测试", &items, &opts);
+        let rendered = render_items("测试", &items, &opts);
 
         let nodes = rendered.nodes(120);
         assert!(nodes.len() > 1, "超长内容应拆成多个节点");
         // 标题进首节点、落款独占末节点
-        assert!(nodes[0].starts_with("🤖 测试"));
+        assert!(nodes[0].starts_with("测试"));
         assert_eq!(nodes.last().unwrap(), &rendered.footer);
         // 六条都在，一条不落
         let joined = nodes.join("\n");

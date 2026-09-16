@@ -114,13 +114,13 @@ pub async fn handle_agent(
         (config.api_base.clone(), config.api_key.clone())
     };
     if configured_base.trim().is_empty() || key.trim().is_empty() {
-        reply_text(ctx, writer, &event, "❌ API 未配置。").await;
+        reply_text(ctx, writer, &event, "❌ API 未配置").await;
         return;
     }
 
     let prompt = join_prompt(&agent.system_prompt, user_prompt);
     if prompt.trim().is_empty() {
-        reply_text(ctx, writer, &event, "💬 请输入绘图提示词。").await;
+        reply_text(ctx, writer, &event, "💡 请输入绘图提示词").await;
         return;
     }
 
@@ -314,7 +314,7 @@ async fn deliver_task(
         writer,
         &event,
         if text.is_empty() {
-            "✅ MJ 任务已完成。".to_string()
+            "✅ MJ 任务已完成".to_string()
         } else {
             text
         },
@@ -400,7 +400,7 @@ pub async fn try_handle_upscale_reply(
         (config.api_base.clone(), config.api_key.clone())
     };
     if configured_base.trim().is_empty() || key.trim().is_empty() {
-        reply_text(ctx, writer, &event, "❌ API 未配置。").await;
+        reply_text(ctx, writer, &event, "❌ API 未配置").await;
         return true;
     }
     let bases = if source.api_base.is_empty() {
@@ -428,14 +428,14 @@ pub async fn try_handle_upscale_reply(
         }
 
         let Some(custom_id) = source.upscale_buttons.get(&index) else {
-            reply_text(ctx, writer, &event, format!("❌ 这张图没有可用的 U{index} 放大操作。"))
+            reply_text(ctx, writer, &event, format!("❌ 这张图没有可用的 U{index} 放大操作"))
                 .await;
             continue;
         };
         {
             let mut inflight = mgr.mj_inflight.write().await;
             if !inflight.insert(cache_key.clone()) {
-                reply_text(ctx, writer, &event, format!("⏳ 第 {index} 张正在放大，请稍候。"))
+                reply_text(ctx, writer, &event, format!("⏳ 第 {index} 张正在放大"))
                     .await;
                 continue;
             }
@@ -463,10 +463,10 @@ pub async fn try_handle_upscale_reply(
                     mgr.save_mj_cache(&cache);
                 }
                 if !send_cached_image(ctx, writer, &cached, event.message_id()).await {
-                    reply_text(ctx, writer, &event, "❌ 放大完成，但结果图片发送失败。").await;
+                    reply_text(ctx, writer, &event, "❌ 放大完成，但结果图片发送失败").await;
                 }
             }
-            Ok(_) => reply_text(ctx, writer, &event, "❌ 放大完成，但接口未返回图片。").await,
+            Ok(_) => reply_text(ctx, writer, &event, "❌ 放大完成，但接口未返回图片").await,
             Err(error) => {
                 warn!(target: "Plugin/OAI/MJ", "MJ U{} 放大失败: {:#}", index, error);
                 reply_text(ctx, writer, &event, format!("❌ 第 {index} 张放大失败：{error}"))

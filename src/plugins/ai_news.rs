@@ -891,10 +891,10 @@ async fn handle_extraction_reply(
 ) -> Message {
     match state::extract_entries(target.state_id(), reply_id, wanted).await {
         state::ExtractionOutcome::Missing => Message::new().reply(message_id).text(
-            "没有找到这张卡片对应的资讯。请确认引用的是本插件近 30 天发送的 AI 资讯图片。",
+            "没有找到这张卡片对应的资讯。请确认引用的是本插件近 30 天发送的 AI 资讯图片",
         ),
         state::ExtractionOutcome::AlreadyExtracted => Message::new().reply(message_id).text(
-            "这些条目刚才已经提取过了，无需重复提取。",
+            "这些条目刚才已经提取过了，无需重复提取",
         ),
         state::ExtractionOutcome::Ready(rendered, fresh) => {
             let selected = build_extraction_view(&rendered, &fresh);
@@ -914,7 +914,7 @@ fn parse_extraction_wanted(input: &str, total: usize) -> Option<Result<Vec<usize
         return None;
     }
     if total == 0 {
-        return Some(Err("这张卡片没有可提取的资讯条目。".to_string()));
+        return Some(Err("这张卡片没有可提取的资讯条目".to_string()));
     }
     if matches!(input.to_ascii_lowercase().as_str(), "0" | "全部" | "所有" | "all") {
         return Some(Ok((0..total).collect()));
@@ -962,7 +962,7 @@ fn build_extraction_view(rendered: &Rendered, indices: &[usize]) -> Rendered {
 fn select_extraction(rendered: &Rendered, input: &str) -> Result<Rendered, String> {
     let total = rendered.entries.len();
     if total == 0 {
-        return Err("这张卡片没有可提取的资讯条目。".to_string());
+        return Err("这张卡片没有可提取的资讯条目".to_string());
     }
 
     let input = input.trim();
@@ -984,7 +984,7 @@ fn link_extraction(rendered: &Rendered, indices: &[usize]) -> Rendered {
     for index in indices {
         let links = rendered.entry_links(*index);
         let title = if links.title.trim().is_empty() {
-            "(无标题)".to_string()
+            "（无标题）".to_string()
         } else {
             links.title.trim().to_string()
         };
@@ -1045,7 +1045,7 @@ fn parse_extraction_indices(input: &str, total: usize) -> Result<Vec<usize>, Str
             let start = parse_extraction_index(start, total)?;
             let end = parse_extraction_index(end, total)?;
             if start > end {
-                return Err(format!("序号范围 {} 无效：起始序号不能大于结束序号。", token));
+                return Err(format!("序号范围 {} 无效：起始序号不能大于结束序号", token));
             }
             selected.extend(start..=end);
         } else {
@@ -1054,7 +1054,7 @@ fn parse_extraction_indices(input: &str, total: usize) -> Result<Vec<usize>, Str
     }
 
     if selected.is_empty() {
-        return Err("请输入要提取的序号，例如 2、1,3-5，或 0（提取全部）。".to_string());
+        return Err("请输入要提取的序号，例如 2、1,3-5，或 0（提取全部）".to_string());
     }
     Ok(selected.into_iter().map(|index| index - 1).collect())
 }
@@ -1063,9 +1063,9 @@ fn parse_extraction_index(input: &str, total: usize) -> Result<usize, String> {
     let index = input
         .trim()
         .parse::<usize>()
-        .map_err(|_| format!("无法识别序号“{}”。", input.trim()))?;
+        .map_err(|_| format!("无法识别序号“{}”", input.trim()))?;
     if !(1..=total).contains(&index) {
-        return Err(format!("序号 {} 超出范围，这张卡片共有 {} 条。", index, total));
+        return Err(format!("序号 {} 超出范围，这张卡片共有 {} 条", index, total));
     }
     Ok(index)
 }
@@ -1085,7 +1085,7 @@ async fn query_brief(config: &AiNewsConfig, target: Option<PushTarget>) -> Paylo
         Ok(Some(items)) if !items.is_empty() => {
             let opts = pusher::render_options(config);
             let rendered =
-                render::render_items(&format!("🤖 AI 资讯速递 · {}", window), &items, &opts);
+                render::render_items(&format!("AI 资讯速递 · {}", window), &items, &opts);
             let html = card::items_card(
                 "AI 资讯速递",
                 window,
@@ -1095,7 +1095,7 @@ async fn query_brief(config: &AiNewsConfig, target: Option<PushTarget>) -> Paylo
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice(format!("📭 {}内暂无 AI 资讯。", window)),
+        Ok(_) => notice(format!("📭 {}内暂无 AI 资讯", window)),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询精选失败: {}", e);
             notice(format!("❌ 获取 AI 资讯失败：{}", e))
@@ -1113,7 +1113,7 @@ async fn query_hot_topics(config: &AiNewsConfig) -> Payload {
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice("📭 当前没有热点条目。"),
+        Ok(_) => notice("📭 当前没有热点条目"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询热点榜失败: {}", e);
             notice(format!("❌ 获取 AI 热点榜失败：{}", e))
@@ -1132,7 +1132,7 @@ async fn query_daily(config: &AiNewsConfig) -> Payload {
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(None) => notice("📭 当前没有可用的 AI 日报。"),
+        Ok(None) => notice("📭 当前没有可用的 AI 日报"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询日报失败: {}", e);
             notice(format!("❌ 获取 AI 日报失败：{}", e))
@@ -1158,7 +1158,7 @@ async fn query_models(config: &AiNewsConfig) -> Payload {
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice("📭 AIHOT 模型榜当前没有可展示的条目。"),
+        Ok(_) => notice("📭 AIHOT 模型榜当前没有可展示的条目"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询模型榜失败: {}", e);
             notice(format!("❌ 获取 AI 模型排行榜失败：{}", e))
@@ -1172,7 +1172,7 @@ async fn query_search(config: &AiNewsConfig, keyword: &str) -> Payload {
         return notice("用法：/ai搜索 <关键词>（关键词至少 2 个字）");
     }
     if keyword.chars().count() > 200 {
-        return notice("关键词太长了，请控制在 200 字以内。");
+        return notice("关键词太长了，请控制在 200 字以内");
     }
 
     match pusher::search(config, keyword).await {
@@ -1180,12 +1180,12 @@ async fn query_search(config: &AiNewsConfig, keyword: &str) -> Payload {
             let opts = pusher::render_options(config);
             let (header, subtitle) = if from_all_pool {
                 (
-                    format!("🔎 「{}」近 7 天相关动态（未进入精选）", keyword),
+                    format!("「{}」近 7 天相关动态（未进入精选）", keyword),
                     format!("「{}」· 近 7 天 · 未进入精选", keyword),
                 )
             } else {
                 (
-                    format!("🔎 「{}」近 7 天精选", keyword),
+                    format!("「{}」近 7 天精选", keyword),
                     format!("「{}」· 近 7 天精选", keyword),
                 )
             };
@@ -1199,7 +1199,7 @@ async fn query_search(config: &AiNewsConfig, keyword: &str) -> Payload {
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice(format!("📭 近 7 天没有找到与「{}」相关的 AI 资讯。", keyword)),
+        Ok(_) => notice(format!("📭 近 7 天没有找到与「{}」相关的 AI 资讯", keyword)),
         Err(e) => {
             warn!(target: LOG_TARGET, "搜索 [{}] 失败: {}", keyword, e);
             notice(format!("❌ 搜索失败：{}", e))
@@ -1244,14 +1244,14 @@ async fn handle_push_admin(
             "全部" | "全量" | "全部资讯" | "all" | "full" => "all",
             "" | "状态" => {
                 return format!(
-                    "当前实时快报仅推送{}。用法：/ai实时模式 <精选|全部>。",
+                    "当前实时快报仅推送{}。用法：/ai实时模式 <精选|全部>",
                     config.realtime_mode_label()
                 );
             }
-            _ => return "模式无效。用法：/ai实时模式 <精选|全部>。".to_string(),
+            _ => return "模式无效。用法：/ai实时模式 <精选|全部>".to_string(),
         };
         if (normalized == "all") == config.realtime_uses_all() {
-            return format!("实时快报当前已经只推送{}。", config.realtime_mode_label());
+            return format!("实时快报当前已经只推送{}", config.realtime_mode_label());
         }
 
         let mode = normalized.to_string();
@@ -1269,9 +1269,9 @@ async fn handle_push_admin(
                     state::align_realtime_baseline(target.state_id()).await;
                 }
                 if normalized == "all" {
-                    "⚠️ 实时快报已切换为全部资讯；消息量会明显增加，可随时用 /ai实时模式 精选 恢复低干扰模式。".to_string()
+                    "⚠️ 实时快报已切换为全部资讯；消息量会明显增加，可随时用 /ai实时模式 精选 恢复低干扰模式".to_string()
                 } else {
-                    "✅ 实时快报已切换为精选资讯，并已清理旧待发队列；日报、精选速递与热点榜不受影响。".to_string()
+                    "✅ 实时快报已切换为精选资讯，并已清理旧待发队列；日报、精选速递与热点榜不受影响".to_string()
                 }
             }
             Err(e) => format!("❌ 保存配置失败：{}", e),
@@ -1280,7 +1280,7 @@ async fn handle_push_admin(
 
     let target = if matches!(trigger, "ai分类" | "ai静默") {
         let Some(target) = current_target else {
-            return "无法识别当前会话。".to_string();
+            return "这个指令只在群或私聊里生效".to_string();
         };
         target
     } else {
@@ -1293,7 +1293,7 @@ async fn handle_push_admin(
     match trigger {
         "ai推送添加" | "ai推送开启" => {
             if config.contains_target(target) {
-                return format!("{} 已经开启 AI 资讯推送。", target);
+                return format!("{} 已开启推送", target);
             }
             let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
                 match target {
@@ -1309,14 +1309,14 @@ async fn handle_push_admin(
             match result {
                 Ok(_) => {
                     state::align_realtime_baseline(target.state_id()).await;
-                    format!("✅ 已添加 {} 的 AI 资讯推送权限。", target)
+                    format!("✅ 已添加 {} 的 AI 资讯推送权限", target)
                 }
                 Err(e) => format!("❌ 保存配置失败：{}", e),
             }
         }
         "ai推送删除" | "ai推送关闭" => {
             if !config.contains_target(target) {
-                return format!("{} 当前未开启 AI 资讯推送。", target);
+                return format!("{} 未开启推送", target);
             }
             let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
                 match target {
@@ -1334,7 +1334,7 @@ async fn handle_push_admin(
             })
             .await;
             match result {
-                Ok(_) => format!("✅ 已删除 {} 的 AI 资讯推送权限。", target),
+                Ok(_) => format!("✅ 已删除 {} 的 AI 资讯推送权限", target),
                 Err(e) => format!("❌ 保存配置失败：{}", e),
             }
         }
@@ -1342,7 +1342,7 @@ async fn handle_push_admin(
             state::reset_group(target.state_id()).await;
             format!(
                 "✅ 已清空 {} 的推送去重记录，下次推送会重新发送近期资讯。\
-                 实时快报会重新建立基线，只推此刻之后的新资讯。",
+                 实时快报会重新建立基线，只推此刻之后的新资讯",
                 target
             )
         }
@@ -1353,16 +1353,16 @@ async fn handle_push_admin(
                     .cloned()
                     .unwrap_or_else(|| "/".into());
                 return format!(
-                    "⚠️ 实时推送的总开关当前是关闭的。\
-                     可用 {}ctl set ai_news realtime_enabled true 打开，目标随即生效。",
+                    "⚠️ 实时推送的总开关已停用。\
+                     可用 {}ctl set ai_news realtime_enabled true 恢复，目标随即生效",
                     prefix
                 );
             }
             if !config.contains_target(target) {
-                return format!("{} 尚未开启 AI 资讯推送，请先添加该目标。", target);
+                return format!("{} 未开启推送，请先添加该目标", target);
             }
             if !config.target_realtime_muted(target) {
-                return format!("{} 已经在接收实时快报。", target);
+                return format!("{} 已经在接收实时快报", target);
             }
             let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
                 match target {
@@ -1377,14 +1377,14 @@ async fn handle_push_admin(
             match result {
                 Ok(_) => {
                     state::align_realtime_baseline(target.state_id()).await;
-                    format!("⚡ 已开启 {} 的实时快报，从现在起的新资讯将及时送达。", target)
+                    format!("已开启 {} 的实时快报，从现在起的新资讯将及时送达", target)
                 }
                 Err(e) => format!("❌ 保存配置失败：{}", e),
             }
         }
         "ai实时关闭" => {
             if config.target_realtime_muted(target) {
-                return format!("{} 当前只接收定时推送。", target);
+                return format!("{} 当前只接收定时推送", target);
             }
             let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
                 match target {
@@ -1402,7 +1402,7 @@ async fn handle_push_admin(
             })
             .await;
             match result {
-                Ok(_) => format!("✅ 已关闭 {} 的实时快报；日报、精选速递与热点榜照常推送。", target),
+                Ok(_) => format!("✅ 已关闭 {} 的实时快报；日报、精选速递与热点榜照常推送", target),
                 Err(e) => format!("❌ 保存配置失败：{}", e),
             }
         }
@@ -1415,13 +1415,13 @@ async fn handle_push_admin(
 fn parse_push_target(raw: &str, current: Option<PushTarget>) -> Result<PushTarget, String> {
     let raw = raw.trim();
     if raw.is_empty() || matches!(raw, "当前" | "本群" | "本会话") {
-        return current.ok_or_else(|| "无法识别当前会话，请显式指定目标。".to_string());
+        return current.ok_or_else(|| "未指定目标：请写明群或私聊，例如 /ai推送添加 群 123456".to_string());
     }
 
     let normalized = raw.replace(['：', ':', ',', '，'], " ");
     let parts: Vec<&str> = normalized.split_whitespace().collect();
     let usage = || {
-        "目标格式不正确。用法：/ai推送添加 <群|私聊> <ID>（如：/ai推送添加 群 123456）。"
+        "目标格式不正确。用法：/ai推送添加 <群|私聊> <ID>（如：/ai推送添加 群 123456）"
             .to_string()
     };
 
@@ -1484,7 +1484,7 @@ fn render_target_list(config: &AiNewsConfig) -> String {
         .filter(|id| *id > 0)
         .collect();
     let mut out = format!(
-        "🤖 AI 资讯推送目标（{} 个群聊，{} 个私聊）",
+        "AI 资讯推送目标（{} 个群聊，{} 个私聊）",
         groups.len(),
         private_users.len()
     );
@@ -1518,7 +1518,7 @@ fn render_target_list(config: &AiNewsConfig) -> String {
 async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) -> String {
     let config = load_config(ctx);
     if !config.contains_target(target) {
-        return format!("{} 尚未开启 AI 资讯推送，请先添加该目标。", target);
+        return format!("{} 未开启推送，请先添加该目标", target);
     }
 
     let raw = raw.trim();
@@ -1544,7 +1544,7 @@ async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) ->
         "全部" | "不限" | "all" | "off" => Some(String::new()),
         "默认" | "继承" | "default" | "inherit" => None,
         _ => {
-            return "未识别该分类。可选：模型、产品、行业、论文、技巧、全部或默认。"
+            return "未识别该分类。可选：模型、产品、行业、论文、技巧、全部或默认"
                 .to_string();
         }
     };
@@ -1570,7 +1570,7 @@ async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) ->
             } else {
                 api::category_label(current)
             };
-            format!("✅ {} 的资讯分类已设为：{}。", target, label)
+            format!("✅ {} 的资讯分类已设为：{}", target, label)
         }
         Err(e) => format!("❌ 保存配置失败：{}", e),
     }
@@ -1579,7 +1579,7 @@ async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) ->
 async fn update_target_quiet(ctx: &Context, target: PushTarget, raw: &str) -> String {
     let config = load_config(ctx);
     if !config.contains_target(target) {
-        return format!("{} 尚未开启 AI 资讯推送，请先添加该目标。", target);
+        return format!("{} 未开启推送，请先添加该目标", target);
     }
 
     let raw = raw.trim();
@@ -1599,16 +1599,16 @@ async fn update_target_quiet(ctx: &Context, target: PushTarget, raw: &str) -> St
     } else {
         let normalized = raw.replace(['—', '–', '~', '～'], "-");
         let Some((start, end)) = normalized.split_once('-') else {
-            return "时间格式不正确，请使用「23:30-07:30」。".to_string();
+            return "时间格式不正确，请使用「23:30-07:30」".to_string();
         };
         let (Some(start), Some(end)) = (
             realtime::parse_clock(start),
             realtime::parse_clock(end),
         ) else {
-            return "时间格式不正确，请使用 00:00—23:59 范围内的时间。".to_string();
+            return "时间格式不正确，请使用 00:00—23:59 范围内的时间".to_string();
         };
         if start == end {
-            return "起止时间不能相同；如需全天接收，请发送「/ai静默 关闭」。".to_string();
+            return "起止时间不能相同；如需全天接收，请发送「/ai静默 关闭」".to_string();
         }
         let start = start.format("%H:%M").to_string();
         let end = end.format("%H:%M").to_string();
@@ -1629,7 +1629,7 @@ async fn update_target_quiet(ctx: &Context, target: PushTarget, raw: &str) -> St
     .await;
 
     match result {
-        Ok(_) => format!("✅ {} {}。", target, message),
+        Ok(_) => format!("✅ {} {}", target, message),
         Err(e) => format!("❌ 保存配置失败：{}", e),
     }
 }
@@ -1645,13 +1645,14 @@ fn render_status(
         .cloned()
         .unwrap_or_else(|| "/".into());
 
-    let switch = |on: bool| if on { "✅" } else { "⬜" };
+    // 状态用词不用字形：这一块每行本来就写着「已启用／已停用」，再挂一个符号是
+    // 同一件事说两遍；而且 ⬜ 不在那六个状态图标里，留着就是自己破自己的例。
+    let switch = |on: bool| if on { "已启用" } else { "已停用" };
 
-    let mut out = String::from("🤖 AI 资讯推送\n");
+    let mut out = String::from("AI 资讯推送\n");
     out.push_str(&format!(
-        "总开关：{} {}\n",
-        switch(config.enabled),
-        if config.enabled { "已启用" } else { "已禁用" }
+        "总开关：{}\n",
+        switch(config.enabled)
     ));
 
     if let Some(target) = target {
@@ -1672,19 +1673,21 @@ fn render_status(
         config.private_users.len()
     ));
 
-    out.push_str("\n⚡ 实时快报\n");
+    out.push_str("\n实时快报\n");
     if config.realtime_enabled {
         let target_enabled = target.is_none_or(|target| config.contains_target(target));
         let muted = target.is_some_and(|target| config.target_realtime_muted(target));
+        // 一行只给一个状态词打头，后面接一句「所以会怎样」。
+        // 从前是「字形 + 另一句话」，两半都在说状态，合起来读还会自相矛盾
+        // （`⬜ 该目标未开启推送`）。
         out.push_str(&format!(
-            "{} {}\n",
-            switch(target_enabled && !muted),
+            "{}\n",
             if !target_enabled {
-                "该目标未开启推送"
+                "未开启推送"
             } else if muted {
-                "该目标已关闭，只收定时档"
+                "已停用（只收定时档）"
             } else {
-                "新资讯进池即推"
+                "已启用，新资讯进池即推"
             }
         ));
         out.push_str(&format!(
@@ -1704,17 +1707,17 @@ fn render_status(
             out.push_str(&format!("   待发队列：{} 条\n", pending_items));
         }
     } else {
-        out.push_str("⬜ 已关闭（只按下方排期推送）\n");
+        out.push_str("已停用　实时快报，只按下方排期推送\n");
     }
 
-    out.push_str("\n📅 定时推送\n");
+    out.push_str("\n定时推送\n");
     out.push_str(&format!(
-        "{} AI 日报　{}\n",
+        "{}　AI 日报　{}\n",
         switch(config.daily_enabled),
         config.daily_time
     ));
     out.push_str(&format!(
-        "{} 精选速递　{}\n   {} · 每次至多 {} 条\n",
+        "{}　精选速递　{}\n   {} · 每次至多 {} 条\n",
         switch(config.brief_enabled),
         config.brief_times.join(" / "),
         pusher::window_label(&config.window),
@@ -1724,7 +1727,7 @@ fn render_status(
         out.push_str("   （与实时线独立去重，用于精选回顾）\n");
     }
     out.push_str(&format!(
-        "{} 热点榜　{}\n",
+        "{}　热点榜　{}\n",
         switch(config.hot_topics_enabled),
         config.hot_topics_time
     ));
@@ -1754,7 +1757,7 @@ fn render_status(
     }
     out.push('\n');
     out.push_str(&format!(
-        "⌨️ 引用卡片回复 0全部/序号 提取\n   {p}ai资讯 · {p}ai热点 · {p}ai日报\n   {p}ai模型榜 · {p}ai搜索 <关键词>\n   {p}ai推送添加/删除 <群|私聊> <ID>\n   {p}ai推送列表 · {p}ai实时开启/关闭 · {p}ai实时模式 精选|全部\n   {p}ai分类 · {p}ai静默\n",
+        "引用卡片回复 0全部/序号 提取\n   {p}ai资讯 · {p}ai热点 · {p}ai日报\n   {p}ai模型榜 · {p}ai搜索 <关键词>\n   {p}ai推送添加/删除 <群|私聊> <ID>\n   {p}ai推送列表 · {p}ai实时开启/关闭 · {p}ai实时模式 精选|全部\n   {p}ai分类 · {p}ai静默\n",
         p = prefix
     ));
     out.push_str(api::ATTRIBUTION);
@@ -1932,7 +1935,7 @@ mod tests {
     #[test]
     fn extraction_returns_links_only_when_available() {
         let rendered = Rendered {
-            header: "🤖 AI 资讯速递 · 过去 24 小时".into(),
+            header: "AI 资讯速递 · 过去 24 小时".into(),
             entries: vec![
                 "1. 第一条\n   官方博客 · 08-21 09:00\n   一大段摘要\n   💡 理由\n   🔗 https://aihot.virxact.com/i/1\n   📄 https://example.com/1".into(),
                 "2. 第二条\n   🔗 https://aihot.virxact.com/i/2".into(),
@@ -1964,7 +1967,7 @@ mod tests {
 
         let selected = select_extraction(&rendered, "2").unwrap();
         let text = selected.to_text();
-        assert!(text.contains("🤖 AI 资讯速递 · 过去 24 小时 · 链接"), "{}", text);
+        assert!(text.contains("AI 资讯速递 · 过去 24 小时 · 链接"), "{}", text);
         assert!(text.contains("2. 第二条"), "{}", text);
         assert!(text.contains("🔗 AIHOT：https://aihot.virxact.com/i/2"), "{}", text);
         assert!(!text.contains("一大段摘要"), "正文不应重现: {}", text);
@@ -2167,7 +2170,7 @@ mod tests {
                 "每条都应能算出去重键"
             );
 
-            let header = format!("🤖 AI 资讯速递 · {}", pusher::window_label(&cfg.window));
+            let header = format!("AI 资讯速递 · {}", pusher::window_label(&cfg.window));
             println!(
                 "{}",
                 render::render_items(&header, &items, &pusher::render_options(&cfg)).to_text()

@@ -94,7 +94,7 @@ pub fn handle(
                     msg.group_id(),
                     Some(msg.user_id()),
                     format!(
-                        "❌ 切片数量过多，最大支持 {}x{}。",
+                        "❌ 切片数量过多，最多 {} 行 × {} 列",
                         config.max_rows, config.max_cols
                     ),
                 )
@@ -117,7 +117,7 @@ pub fn handle(
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        "⚠️ 请在发送指令时附带图片，或引用一张图片。",
+                        "⚠️ 请在发送指令时附带图片，或引用一张图片",
                     )
                     .await?;
                     return Ok(None);
@@ -129,7 +129,7 @@ pub fn handle(
                 writer.clone(),
                 msg.group_id(),
                 Some(msg.user_id()),
-                format!("🔪 正在将图片切成 {} 行 × {} 列，请稍候...", rows, cols),
+                format!("⏳ 正在切成 {} 行 × {} 列…", rows, cols),
             )
             .await?;
 
@@ -143,7 +143,7 @@ pub fn handle(
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        "❌ 图片下载失败。",
+                        "❌ 图片下载失败",
                     )
                     .await?;
                     return Ok(None);
@@ -181,7 +181,7 @@ pub fn handle(
                             writer,
                             msg.group_id(),
                             Some(msg.user_id()),
-                            "❌ 发送合并转发消息失败，可能是风控或API不支持。",
+                            "❌ 发送合并转发消息失败，可能是风控或接口不支持",
                         )
                         .await?;
                     }

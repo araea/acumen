@@ -150,7 +150,7 @@ async fn live_takes_the_video_into_the_sandbox_group() {
                 message["id"].as_str().unwrap_or_default().to_string()
             })
     };
-    let caption = find("🎬");
+    let caption = find(" MB");
     let file = find("<file");
     let bubble = find("<video");
     assert!(caption.is_some(), "正文没到群里");

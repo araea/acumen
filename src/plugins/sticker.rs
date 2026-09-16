@@ -58,7 +58,7 @@ pub fn handle(
                             Some(msg.user_id()),
                             Message::new()
                                 .reply(msg.message_id())
-                                .text("❌ 请【引用】你想要保存的表情包，然后发送此指令。"),
+                                .text("❌ 请【引用】你想要保存的表情包，然后发送此指令"),
                         )
                         .await;
                         return Ok(None);
@@ -88,7 +88,7 @@ pub fn handle(
                                 Some(msg.user_id()),
                                 Message::new()
                                     .reply(msg.message_id())
-                                    .text("⚠️ 检测不到图片或表情，可能是商城表情等特殊格式。"),
+                                    .text("⚠️ 检测不到图片或表情，可能是商城表情等特殊格式"),
                             )
                             .await;
                         } else {
@@ -120,7 +120,7 @@ pub fn handle(
                             writer,
                             msg.group_id(),
                             Some(msg.user_id()),
-                            Message::new().text("❌ 获取原消息失败，消息可能已过期。"),
+                            Message::new().text("❌ 获取原消息失败，消息可能已过期"),
                         )
                         .await;
                     }

@@ -372,7 +372,7 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    "正在画了，等这张出来再看。".to_string(),
+                    "这张画像正在生成，画完会自动发出".to_string(),
                 )
                 .await;
                 return Ok(None);
@@ -387,7 +387,7 @@ pub fn handle(
                         if message_id > 0 {
                             reply = reply.reply(message_id);
                         }
-                        reply = reply.text(format!("还是刚才那份画像，{left} 秒后再看。"));
+                        reply = reply.text(format!("还是刚才那份画像，{left} 秒后可重新生成"));
                         reply = match cached {
                             Cached::Card(base64) => reply.image(base64),
                             Cached::Report(report) => reply.text(report),
@@ -405,7 +405,7 @@ pub fn handle(
                             group_id,
                             requester,
                             message_id,
-                            format!("刚画过，{left} 秒后再来。"),
+                            format!("刚画过，{left} 秒后可重新生成"),
                         )
                         .await;
                     }
@@ -449,7 +449,7 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    format!("翻遍了记录，没找到 {who} 在群里的发言。"),
+                    format!("没有找到 {who} 在群里的发言记录"),
                 )
                 .await;
                 return Ok(None);
@@ -573,8 +573,9 @@ fn window_start(days: i64, now: i64) -> i64 {
     }
 }
 
+/// 北京时间。实现在 [`crate::render::beijing`]——六张卡片共用同一个口径。
 fn beijing() -> chrono::FixedOffset {
-    chrono::FixedOffset::east_opt(8 * 3600).expect("北京时区偏移合法")
+    crate::render::beijing()
 }
 
 /// 解析模型接口：`供应商/模型` 走 `[oai.providers]`，不带前缀沿用 oai 默认接口。

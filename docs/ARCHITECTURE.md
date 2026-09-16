@@ -148,13 +148,48 @@ render::web::shoot(
 生成的卡片，`webshot` 自己的闸门（2）管真实网页。两者混进同一道的话，一条慢网页会把
 一张帮助卡挡住两分钟。
 
-help 和 ctl 另有一层结构化文档模型（`Doc` / `Block`）与共用样式 `res/cards/reading.css`，
-由浏览器完成字体塑形、标点和长文本换行：640 CSS px 版心、22px 正文、1.7 倍行高，默认
-输出 3 倍 PNG。帮助用青绿色点缀，控制用暖棕色点缀。清单单列显示，停用项保持正常文字
-对比度，状态同时用文字和颜色表示。总览用 920 px 两列网格，列间有一条竖线；条目的分隔
-线用「每条加顶线、首行两条不画」，任何条数都左右对称——`:last-child` 在网格里只命中整
-个网格的最后一条，会让右列末条有线、左列末条没线。所有动态内容都做 HTML 转义，页面不
-执行脚本，也不加载外部资源，截图前等待字体和布局完成。
+### 卡片设计系统
+
+六种卡片图（手册、控制、回复、资讯、画像，后两者各含日读与夜读）共用一套样式，
+分两层，顺序不能换：
+
+```rust
+format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <style> 的 body
+```
+
+- **系统层** `res/cards/m3e.css`（`render::web::DESIGN_SYSTEM`）：按 Material 3
+  Expressive 的口径定义字阶、形状、高度、间距、配色角色与组件基元（`.md-card`、
+  `.md-badge`、`.md-chip`、`.md-callout`、`.md-command`…）。六套配色方案
+  （`scheme-manual` / `scheme-control` / `scheme-reply` / `scheme-news` /
+  `scheme-portrait`，后两者有深色档）也在这一个文件里，放在一起才好横向比。
+- **版式层**：`res/cards/reading.css`（help / ctl 的 `Doc` 模型）与各插件里那份
+  `const CSS`。**只写「摆在哪儿」，不许出现色值、字号、圆角、阴影的字面量**，
+  一律 `var(--md-*)` 取令牌——写了就是又长出一套私有的视觉语言。
+
+三条与 M3 的刻意偏离（字阶按中文字面放大、字重只用 500/600/700/800 四档、
+阴影不透明度收回到纸面量级）与「为什么不引外部字体」都写在 `m3e.css` 的开头。
+
+字体只列系统里真有的：`Noto Sans CJK SC` 一族到底，不做拉丁与中日韩混排；画像卡是
+唯一的例外，显示级文字走 `--md-font-display`（衬线）。装真字重见
+`scripts/install-cjk-weights.sh`。
+
+图表（plotters，位图，取不到 CSS）与词云的配色对照同一张色表：`stats` 的
+`ColorScheme` / `HUES` 与 `wordcloud` 的 `WORD_COLORS` 都从 `m3e.css` 里抄了字面量，
+由 `a_chart_is_painted_in_the_card_scheme`、`the_word_hues_come_from_the_design_system`
+两条单测**从样式表里读回来比对**——改了 CSS 没改代码，测试会红。
+
+文案与这层是一件事的两面，规范在 [`docs/CONTENT.md`](CONTENT.md)：声音、语气、
+标点、状态词表、术语表、六个状态图标。
+
+一个容易踩的坑：样式表是塞在 `style` 元素里的，HTML 的 raw text 解析遇到闭合标签
+就结束。**任何注释里都不许出现 HTML 的成对标签字面量**，否则整张样式表被截成半句话，
+页面不报错、只是静悄悄退回无样式。`render::web::assert_embeddable` 钉着这一条。
+
+另外：所有动态内容都做 HTML 转义，页面不执行脚本，也不加载外部资源，截图前等待字体
+和布局完成。help / ctl 的 `Doc` 模型由浏览器完成字体塑形、标点和长文本换行，默认输出
+3 倍 PNG；总览用 920 px 两列网格，条目的分隔线用「每条加顶线、首行两条不画」，
+任何条数都左右对称——`:last-child` 在网格里只命中整个网格的最后一条，会让右列末条有线、
+左列末条没线。
 
 字重：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档，向系统请求 Bold 得到的仍是 400 字重。两条出图路径都会自行合成粗体（浏览器原生支持，原生绘制使用 `Typeface.embolden` 做形态学膨胀），但外扩轮廓无法补出笔画的粗细对比。运行 `sh scripts/install-cjk-weights.sh` 把真实的 Bold(700) 和 Black(900) 安装到 `~/.fonts` 后，fontconfig 和 fontdb 会自动使用它们，合成量为零，代码不需要改动。不安装也能运行，只是标题会细一档。网页卡片标题按用途使用 700—800 字重。字体是设备本地状态，仓库里无法恢复，换机器需要重新运行脚本。
 

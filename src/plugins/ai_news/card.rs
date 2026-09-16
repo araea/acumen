@@ -21,39 +21,19 @@ use super::render::{RenderOptions, fmt_time, truncate};
 use anyhow::Result;
 use chrono::{DateTime, Timelike, Utc};
 
-/// 卡片主色。`rgb` 供 `rgba()` 调透明度用，避免写死多份色值。
+/// 卡片主色：四类内容各一个种子。
+///
+/// 色值本身不在这里——`res/cards/m3e.css` 的 `--md-seed-*` 里写着日读与夜读
+/// 各一份，这个类型只带一个类名过去。从前是「浅色一份十六进制 + 一份 `r,g,b`
+/// 字面量、深色再来一份」，于是透明度要另立变量、容器色与淡色叠层没法自动跟着
+/// 主色走，换一次主色得在四处对同样的值。现在透明度一律 `color-mix()` 现算。
 #[derive(Clone, Copy)]
-pub struct Accent {
-    dark_hex: &'static str,
-    dark_rgb: &'static str,
-    light_hex: &'static str,
-    light_rgb: &'static str,
-}
+pub struct Accent(&'static str);
 
-const BRIEF: Accent = Accent {
-    dark_hex: "#9AA8E8",
-    dark_rgb: "154,168,232",
-    light_hex: "#5268D8",
-    light_rgb: "82,104,216",
-};
-const HOT: Accent = Accent {
-    dark_hex: "#E9A07B",
-    dark_rgb: "233,160,123",
-    light_hex: "#C9562B",
-    light_rgb: "201,86,43",
-};
-const DAILY: Accent = Accent {
-    dark_hex: "#72C9AE",
-    dark_rgb: "114,201,174",
-    light_hex: "#168668",
-    light_rgb: "22,134,104",
-};
-const MODELS: Accent = Accent {
-    dark_hex: "#DDBB74",
-    dark_rgb: "221,187,116",
-    light_hex: "#A86400",
-    light_rgb: "168,100,0",
-};
+const BRIEF: Accent = Accent("seed-brief");
+const HOT: Accent = Accent("seed-hot");
+const DAILY: Accent = Accent("seed-daily");
+const MODELS: Accent = Accent("seed-models");
 
 /// 最终用于截图的主题。`auto` 在 07:00—18:59 使用日读，其余时间使用夜读。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,26 +43,11 @@ pub enum CardTheme {
 }
 
 impl CardTheme {
-    fn vars(self) -> &'static str {
+    /// 深色主题在页面上落成 `dark` 这个类名，配色方案在 `m3e.css` 里按它分档。
+    fn class(self) -> &'static str {
         match self {
-            Self::Dark => r#"color-scheme:dark;
-  --canvas:#11151C;--surface:#1A202A;--title:#F2F0EA;--body:#D1D0CB;
-  --strong:#E8E6E0;--subtle:#B8BBC2;--muted:#A2A8B2;--faint:#8992A0;
-  --line:rgba(226,229,235,.09);--strong-line:rgba(226,229,235,.12);
-  --pattern:rgba(226,229,235,.022);--panel:rgba(238,234,224,.045);
-  --panel-border:rgba(226,229,235,.09);--plain-chip:rgba(226,229,235,.07);
-  --sep:rgba(226,229,235,.18);--top-rank:#151A22;--up:#75C995;--down:#E38A8D;
-  --glow-alpha:.10;--dot-alpha:.12;--chip-alpha:.11;--quote-alpha:.065;
-  --shadow:0 18px 48px rgba(0,0,0,.24)"#,
-            Self::Light => r#"color-scheme:light;
-  --canvas:#E9EDF3;--surface:#FBFCFE;--title:#17202E;--body:#3D4858;
-  --strong:#202A38;--subtle:#596679;--muted:#687487;--faint:#7A8596;
-  --line:rgba(25,37,55,.10);--strong-line:rgba(25,37,55,.13);
-  --pattern:rgba(31,48,72,.045);--panel:rgba(38,54,78,.045);
-  --panel-border:rgba(29,43,63,.10);--plain-chip:rgba(37,51,72,.07);
-  --sep:rgba(31,44,63,.20);--top-rank:#FFFFFF;--up:#168447;--down:#C33E46;
-  --glow-alpha:.20;--dot-alpha:.16;--chip-alpha:.14;--quote-alpha:.09;
-  --shadow:0 16px 42px rgba(35,47,65,.10)"#,
+            Self::Light => "",
+            Self::Dark => " dark",
         }
     }
 
@@ -128,147 +93,159 @@ fn esc(text: &str) -> String {
 
 /// 出图时刻（北京时间），放在页眉右上角
 fn stamp() -> String {
-    Utc::now()
-        .with_timezone(&super::render::beijing())
-        .format("%Y-%m-%d %H:%M")
-        .to_string()
+    crate::render::beijing_now().format("%Y-%m-%d %H:%M").to_string()
 }
 
+/// 资讯卡的版式。
+///
+/// 令牌与组件基元在 `res/cards/m3e.css`（`crate::render::web::DESIGN_SYSTEM`），
+/// 这里只写这张卡自己的位置，**不写色值与字号字面量**。四类内容的主色由页面的
+/// `seed-*` 类名换，这个文件不参与——所以「换分类」与「换版式」是两件互不牵连的事。
 const CSS: &str = r#"
 *{margin:0;padding:0;box-sizing:border-box}
 body{width:720px}
-.shot{padding:20px;background:var(--canvas)}
-.card{position:relative;overflow:hidden;border-radius:22px;padding:42px 40px 32px;
-  background:var(--surface);border:1px solid var(--strong-line);box-shadow:var(--shadow);
-  background-image:linear-gradient(145deg,var(--panel),transparent 420px);
-  font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC","WenQuanYi Zen Hei","Helvetica Neue",Arial,sans-serif;
-  color:var(--strong);-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
-  overflow-wrap:anywhere;word-break:normal}
-/* 左上角一团主色微光，给深底一点纵深，不喧宾夺主 */
-.card::before{content:"";position:absolute;top:-230px;left:-130px;width:480px;height:480px;
-  border-radius:50%;background:radial-gradient(circle,rgba(__RGB__,var(--glow-alpha)),transparent 70%);pointer-events:none}
-.card>*{position:relative}
+.shot{padding:var(--md-space-5)}
+.card{padding:var(--md-space-9) 40px var(--md-space-8)}
 
-.eyebrow{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
-.kicker{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:800;
-  letter-spacing:.18em;color:__ACCENT__}
-.dot{width:9px;height:9px;border-radius:50%;background:__ACCENT__;
-  box-shadow:0 0 0 5px rgba(__RGB__,var(--dot-alpha))}
-.stamp{font-size:14px;color:var(--faint);letter-spacing:.04em;font-variant-numeric:tabular-nums}
+/* —— 标题块 —— */
+.title{margin-top:0}
+.rule{margin:var(--md-space-7) 0 2px}
 
-.title{text-wrap:balance;font-size:42px;line-height:1.25;font-weight:800;letter-spacing:-.015em;color:var(--title)}
-.subtitle{margin-top:12px;font-size:19px;line-height:1.65;font-weight:500;color:var(--subtle)}
-.rule{height:2px;margin:28px 0 2px;border-radius:2px;
-  background:linear-gradient(90deg,__ACCENT__,rgba(__RGB__,.35) 38%,var(--line))}
-
-.row{display:grid;grid-template-columns:50px minmax(0,1fr);gap:17px;padding:27px 0;
-  border-bottom:1px solid var(--line)}
-.row:last-child{border-bottom:none;padding-bottom:8px}
-.idx{font-size:27px;font-weight:800;line-height:1.4;color:rgba(__RGB__,.88);
-  font-variant-numeric:tabular-nums;text-align:right;letter-spacing:-.02em}
+/* —— 条目 —— */
+/* 一条一格，格与格之间靠留白与一条细线分开，不靠背景块——资讯卡是一条条
+   读下去的，每格都上底色会把整页切成一片瓦。 */
+.row{display:grid;grid-template-columns:50px minmax(0,1fr);gap:17px;
+  padding:27px 0;border-bottom:1px solid var(--md-sys-color-outline-variant)}
+.row:last-child{border-bottom:none;padding-bottom:var(--md-space-2)}
+/* 序号：比标题还大一档，只上主色不加底——它是一条的入口，不是内容 */
+.idx{font-size:var(--md-type-headline-small-size);line-height:1.4;font-weight:800;
+  color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums;
+  text-align:right;letter-spacing:-.02em}
+/* 名次牌：前三名填实，其余仅描边。靠「有没有底」分梯队，不靠换个颜色 */
 .rank{display:flex;align-items:center;justify-content:center;width:42px;height:42px;
-  margin-left:auto;border-radius:12px;font-size:20px;font-weight:800;
-  font-variant-numeric:tabular-nums;
-  color:rgba(__RGB__,.95);background:rgba(__RGB__,.12);border:1px solid rgba(__RGB__,.28)}
-.rank.top{color:var(--top-rank);background:__ACCENT__;border-color:transparent;
-  box-shadow:0 6px 18px rgba(__RGB__,.28)}
+  margin-left:auto;border-radius:var(--md-shape-m);font-size:var(--md-type-title-small-size);
+  font-weight:800;font-variant-numeric:tabular-nums;
+  color:var(--md-sys-color-on-primary-container);
+  background:var(--md-sys-color-primary-container);
+  border:1px solid var(--md-sys-color-primary-line)}
+.rank.top{color:var(--md-sys-color-on-primary);background:var(--md-sys-color-primary);
+  border-color:transparent}
 
-.h{font-size:27px;line-height:1.5;font-weight:700;letter-spacing:-.01em;color:var(--title);
-  text-wrap:pretty}
-.meta{margin-top:12px;display:flex;flex-wrap:wrap;align-items:center;gap:10px;
-  font-size:16px;font-weight:500;color:var(--muted)}
-.sep{color:var(--sep)}
-.chip{padding:3px 11px;border-radius:7px;font-size:14px;font-weight:700;letter-spacing:.02em;
-  color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
-.chip.plain{color:var(--subtle);background:var(--plain-chip)}
-.sum{margin-top:13px;font-size:19.5px;line-height:1.76;color:var(--body);
-  text-wrap:pretty}
-.why{margin-top:14px;padding:12px 16px;border-left:4px solid __ACCENT__;
-  border-radius:0 10px 10px 0;background:rgba(__RGB__,var(--quote-alpha));
-  font-size:18px;line-height:1.7;color:var(--body);
-  text-wrap:pretty}
-.why b{color:__ACCENT__;font-weight:800;letter-spacing:.02em}
+.h{font-size:var(--md-type-headline-small-size);line-height:1.5;font-weight:700;
+  color:var(--md-sys-color-on-surface);text-wrap:pretty}
+.meta{margin-top:var(--md-space-3);display:flex;flex-wrap:wrap;align-items:center;
+  gap:10px;font-size:var(--md-type-body-small-size);font-weight:500;
+  color:var(--md-sys-color-on-surface-variant)}
+.sum{margin-top:var(--md-space-3);font-size:var(--md-type-body-medium-size);
+  line-height:1.76;color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+/* 推荐理由用引语块：主色淡底 + 左界 + 收一个角（M3 的角形处理） */
+.why{margin-top:var(--md-space-3);padding:var(--md-space-3) var(--md-space-4);
+  border-left:4px solid var(--md-sys-color-primary);
+  border-radius:0 var(--md-shape-m) var(--md-shape-m) 0;
+  background:var(--md-sys-color-primary-tint);
+  font-size:var(--md-type-body-medium-size);line-height:1.7;
+  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+.why b{color:var(--md-sys-color-primary);font-weight:800;letter-spacing:.02em}
 
-.lead{margin:26px 0 4px;padding:20px 22px;border-radius:14px;
-  background:var(--panel);border:1px solid var(--panel-border);
-  font-size:21px;line-height:1.78;font-weight:500;color:var(--body)}
-.sec{padding:27px 0 7px;border-bottom:1px solid var(--line)}
+/* —— 日报 —— */
+.lead{margin:var(--md-space-7) 0 var(--md-space-1);padding:var(--md-space-5) 22px;
+  border-radius:var(--md-shape-l);background:var(--md-sys-color-surface-container-low);
+  border:1px solid var(--md-sys-color-outline-variant);
+  font-size:var(--md-type-body-large-size);line-height:1.78;
+  color:var(--md-sys-color-on-surface-variant)}
+.sec{padding:27px 0 7px;border-bottom:1px solid var(--md-sys-color-outline-variant)}
 .sec:last-of-type{border-bottom:none}
-.sec-h{display:flex;align-items:center;gap:12px;font-size:23px;font-weight:800;color:var(--title)}
-.bar{width:5px;height:22px;border-radius:3px;background:__ACCENT__}
-.li{text-wrap:pretty;margin-top:17px;padding-left:20px;position:relative;font-size:20px;line-height:1.68;color:var(--body)}
+.sec-h{display:flex;align-items:center;gap:var(--md-space-3);
+  font-size:var(--md-type-title-large-size);font-weight:800;
+  color:var(--md-sys-color-on-surface)}
+.bar{width:5px;height:22px;border-radius:3px;background:var(--md-sys-color-primary)}
+.li{margin-top:17px;padding-left:var(--md-space-5);position:relative;
+  font-size:var(--md-type-body-medium-size);line-height:1.68;
+  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
 .li::before{content:"";position:absolute;left:2px;top:12px;width:7px;height:7px;
-  border-radius:50%;background:__ACCENT__}
-.li b{color:var(--title);font-weight:700}
-.li .t{margin-top:6px;font-size:18px;line-height:1.72;color:var(--subtle)}
+  border-radius:var(--md-shape-full);background:var(--md-sys-color-primary)}
+.li b{color:var(--md-sys-color-on-surface);font-weight:700}
+.li .t{margin-top:6px;font-size:var(--md-type-body-small-size);line-height:1.72;
+  color:var(--md-sys-color-on-surface-faint)}
 
 /* —— 模型榜 —— */
 /* 行内三列都从顶端对齐：名次方块与分数跟标题的第一行齐平，而不是各自在行高里
    垂直居中——居中会让名次掉到来源那一行去，读起来像标错了对象。 */
-.mrow{display:grid;grid-template-columns:50px minmax(0,1fr) 142px;gap:17px;align-items:start;
-  padding:23px 0;border-bottom:1px solid var(--line)}
+.mrow{display:grid;grid-template-columns:50px minmax(0,1fr) 142px;gap:17px;
+  align-items:start;padding:23px 0;
+  border-bottom:1px solid var(--md-sys-color-outline-variant)}
 .mrow:last-of-type{border-bottom:none}
 .mname{display:flex;align-items:baseline;flex-wrap:wrap;gap:10px;
-  font-size:26px;line-height:1.4;font-weight:700;color:var(--title)}
-.trend{font-size:15px;font-weight:800;letter-spacing:.02em;
-  font-variant-numeric:tabular-nums;color:var(--faint)}
-.trend.up{color:var(--up)}
-.trend.down{color:var(--down)}
-.trend.new{color:__ACCENT__}
-.meter{margin-top:12px;height:7px;border-radius:4px;background:var(--line);overflow:hidden}
-.meter i{display:block;height:100%;border-radius:4px;
-  background:linear-gradient(90deg,rgba(__RGB__,.55),__ACCENT__)}
+  font-size:var(--md-type-headline-small-size);line-height:1.4;font-weight:700;
+  color:var(--md-sys-color-on-surface)}
+.trend{font-size:var(--md-type-label-large-size);font-weight:800;letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;color:var(--md-sys-color-on-surface-faint)}
+.trend.up{color:var(--md-sys-color-success)}
+.trend.down{color:var(--md-sys-color-error)}
+.trend.new{color:var(--md-sys-color-primary)}
+.meter{margin-top:var(--md-space-3);height:7px;border-radius:var(--md-shape-full);
+  background:var(--md-sys-color-surface-container-high);overflow:hidden}
+/* 分数条：浅头深尾的一条主色渐变。长度即分数，不做二次拉伸。 */
+.meter i{display:block;height:100%;border-radius:var(--md-shape-full);
+  background:linear-gradient(90deg,var(--md-sys-color-primary-line),var(--md-sys-color-primary))}
 .mscore{text-align:right}
-.mscore strong{display:block;font-size:34px;line-height:1;font-weight:800;
-  letter-spacing:-.02em;color:__ACCENT__;font-variant-numeric:tabular-nums}
-.mscore small{display:block;margin-top:6px;font-size:14px;line-height:1.4;color:var(--muted);white-space:nowrap}
-.note{margin-top:22px;font-size:16px;line-height:1.72;color:var(--muted)}
+/* 共识分是这张图唯一要「一眼看到」的数字，给到 headline-medium，其余都压在灰阶里 */
+.mscore strong{display:block;font-size:var(--md-type-headline-medium-size);line-height:1;
+  font-weight:800;letter-spacing:-.02em;color:var(--md-sys-color-primary);
+  font-variant-numeric:tabular-nums}
+.mscore small{display:block;margin-top:6px;font-size:var(--md-type-label-medium-size);
+  line-height:1.4;color:var(--md-sys-color-on-surface-faint);white-space:nowrap}
+.note{margin-top:22px;font-size:var(--md-type-body-small-size);line-height:1.72;
+  color:var(--md-sys-color-on-surface-variant)}
 
-.foot{display:flex;align-items:center;justify-content:space-between;
-  gap:22px;margin-top:30px;padding-top:20px;border-top:1px solid var(--strong-line);
-  font-size:15px;line-height:1.55;font-weight:500;color:var(--faint);letter-spacing:.02em}
-.foot>div:last-child{text-align:right}.foot .src{display:flex;align-items:center;gap:10px;white-space:nowrap}
-.mark{width:5px;height:5px;margin-right:18px;flex:0 0 5px;border-radius:50%;background:rgba(__RGB__,.7);
-  box-shadow:9px 0 0 var(--sep),18px 0 0 var(--line)}
+/* —— 页脚 —— */
+.foot>div:last-child{text-align:right}
+.foot .src{display:flex;align-items:center;gap:10px;white-space:nowrap}
+/* 出处前的一串三级点：主色一颗，往后两档渐弱，是「这张图有出处」的记认 */
+.mark{width:5px;height:5px;margin-right:18px;flex:0 0 5px;border-radius:50%;
+  background:color-mix(in srgb,var(--md-sys-color-primary) 70%,transparent);
+  box-shadow:9px 0 0 var(--md-sys-color-outline),18px 0 0 var(--md-sys-color-outline-variant)}
 "#;
 
 /// 套上统一的卡片外壳：页眉（主色标签 + 出图时间）、大标题、正文、页脚。
 ///
+/// `kicker` 是页眉左边那两行字——`(中文, 英文简写)`。中文说「这是什么」，
+/// 英文是眉标的固定装饰，六张卡片都这么配（手册卡用的是品牌名 AYJX）。
 /// `foot_note` 是页脚右侧的操作提示。
 fn shell(
     accent: Accent,
     theme: CardTheme,
-    kicker: &str,
+    kicker: (&str, &str),
     title: &str,
     subtitle: &str,
     body: &str,
     foot_note: &str,
 ) -> String {
-    let (accent_hex, accent_rgb) = match theme {
-        CardTheme::Dark => (accent.dark_hex, accent.dark_rgb),
-        CardTheme::Light => (accent.light_hex, accent.light_rgb),
-    };
-    let css = format!(":root{{{}}}\n{}", theme.vars(), CSS)
-        .replace("__ACCENT__", accent_hex)
-        .replace("__RGB__", accent_rgb);
+    let css = format!("{}{}", crate::render::web::DESIGN_SYSTEM, CSS);
     let subtitle = if subtitle.is_empty() {
         String::new()
     } else {
-        format!(r#"<div class="subtitle">{}</div>"#, esc(subtitle))
+        format!(
+            r#"<div class="subtitle md-subtitle md-type-title-small">{}</div>"#,
+            esc(subtitle)
+        )
     };
 
     format!(
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{css}</style></head>
-<body><div class="shot"><div class="card">
-<div class="eyebrow"><div class="kicker"><span class="dot"></span>{kicker}</div><div class="stamp">{stamp}</div></div>
-<div class="title">{title}</div>{subtitle}
-<div class="rule"></div>
+<body class="scheme-news md-text {seed}{theme_class}"><div class="shot"><div class="card md-card">
+<div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>{kicker}<span class="md-kicker-en">{kicker_en}</span></div><span class="md-stamp">{stamp}</span></div>
+<div class="title md-title md-type-display-small md-balance">{title}</div>{subtitle}
+<hr class="rule md-rule">
 {body}
-<div class="foot"><div class="src"><span class="mark"></span>AIHOT · aihot.virxact.com</div><div>{foot_note}</div></div>
+<div class="foot md-foot md-foot-row"><div class="src"><span class="mark"></span>AIHOT · aihot.virxact.com</div><div>{foot_note}</div></div>
 </div></div></body></html>"#,
         css = css,
-        kicker = esc(kicker),
+        seed = accent.0,
+        theme_class = theme.class(),
+        kicker = esc(kicker.0),
+        kicker_en = esc(kicker.1),
         stamp = stamp(),
         title = esc(title),
         subtitle = subtitle,
@@ -294,7 +271,7 @@ fn meta_html(item: &Item) -> String {
         parts.push(format!(r#"<span>{}</span>"#, esc(name)));
     }
     if let Some(cat) = item.category.as_deref().filter(|c| !c.trim().is_empty()) {
-        parts.push(format!(r#"<span class="chip">{}</span>"#, esc(category_label(cat))));
+        parts.push(format!(r#"<span class="md-chip">{}</span>"#, esc(category_label(cat))));
     }
     // 拿不到原文发布时间时退回收录时间，并如实标注，不冒充发布时间
     let time = item
@@ -316,7 +293,7 @@ fn meta_html(item: &Item) -> String {
     }
     format!(
         r#"<div class="meta">{}</div>"#,
-        parts.join(r#"<span class="sep">·</span>"#)
+        parts.join(r#"<span class="md-sep">·</span>"#)
     )
 }
 
@@ -363,7 +340,7 @@ pub fn items_card(
         true => format!("共 {} 条", items.len()),
         false => format!("{} · 共 {} 条", subtitle, items.len()),
     };
-    shell(BRIEF, theme, "AI NEWS", title, &subtitle, &body, FOOT_LINKS)
+    shell(BRIEF, theme, ("AI 资讯", "AI NEWS"), title, &subtitle, &body, FOOT_LINKS)
 }
 
 /// 热点榜卡片：前三名用实心序号牌，其余描边，一眼看出梯队
@@ -385,7 +362,7 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(count) = topic.source_count.filter(|c| *c > 0) {
-            meta.push(format!(r#"<span class="chip">{} 个信源</span>"#, count));
+            meta.push(format!(r#"<span class="md-chip">{} 个信源</span>"#, count));
         }
         let names: Vec<String> = topic
             .source_names
@@ -393,7 +370,7 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .take(3)
-            .map(|s| format!(r#"<span class="chip plain">{}</span>"#, esc(s)))
+            .map(|s| format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(s)))
             .collect();
         meta.extend(names);
         if let Some(t) = topic.latest_at.as_deref().and_then(fmt_time) {
@@ -413,7 +390,15 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
     }
 
     let subtitle = format!("跨信源聚合 · TOP {}", topics.len());
-    shell(HOT, theme, "AI HOTLIST", "当前热点榜", &subtitle, &body, FOOT_LINKS)
+    shell(
+        HOT,
+        theme,
+        ("热点榜", "AI HOTLIST"),
+        "当前热点榜",
+        &subtitle,
+        &body,
+        FOOT_LINKS,
+    )
 }
 
 /// 模型榜卡片：一行一个模型，左名次、中模型与价格、右共识分。
@@ -448,7 +433,7 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(provider) = model.provider_name() {
-            meta.push(format!(r#"<span class="chip">{}</span>"#, esc(provider)));
+            meta.push(format!(r#"<span class="md-chip">{}</span>"#, esc(provider)));
         }
         if let Some(date) = model.released_date() {
             meta.push(format!(r#"<span>上线 {}</span>"#, esc(date)));
@@ -503,7 +488,7 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
     shell(
         MODELS,
         theme,
-        "MODEL CONSENSUS",
+        ("模型榜", "AI MODEL CONSENSUS"),
         "AIHOT 大模型排行榜",
         &subtitle.join(" · "),
         &body,
@@ -596,7 +581,7 @@ pub fn daily_card(report: &DailyReport, max_blocks: usize, theme: CardTheme) -> 
     };
     let subtitle = report.date.as_deref().unwrap_or_default();
 
-    shell(DAILY, theme, "AI DAILY", &title, subtitle, &body, FOOT_LINKS)
+    shell(DAILY, theme, ("AI 日报", "AI DAILY"), &title, subtitle, &body, FOOT_LINKS)
 }
 
 /// 把卡片 HTML 截成图，返回 base64（JPEG）。
@@ -620,6 +605,13 @@ pub async fn capture(html: &str, scale: f64) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 版式里不许出现 HTML 的成对标签——样式表塞进 `style` 元素时会被截断，
+    /// 而页面不会报错（见 [`crate::render::web::assert_embeddable`]）。
+    #[test]
+    fn stylesheet_stays_embeddable() {
+        crate::render::web::assert_embeddable("ai_news", CSS);
+    }
 
     /// 把三种卡片的 HTML 落到 `AI_NEWS_CARD_DUMP` 指定的目录，方便肉眼校版：
     ///   AI_NEWS_CARD_DUMP=/tmp/cards cargo test card::tests::dump -- --ignored

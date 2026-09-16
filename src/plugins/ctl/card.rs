@@ -83,15 +83,15 @@ pub fn usage(prefix: &str, cmds: &[crate::plugins::Cmd]) -> Card {
         },
         Block::Callout {
             tone: Tone::Info,
-            text: "带生命周期的插件（有 on_init / on_connected 的）首次启用与排期改动需重启才完整生效，\
-                   状态清单里标注「待重启」；其余改动下一条消息即生效。"
+            text: "带生命周期的插件（有 on_init / on_connected 的）首次启用与排期改动要等下次启动才完整生效，\
+                   状态清单里标注「待重启」；其余改动下一条消息即生效"
                 .into(),
         },
     ];
     doc(
         "AYJX · CONTROL",
         blocks,
-        "状态以当前配置为准 · 待重启项需重启生效",
+        "状态以当前配置为准 · 标「待重启」的等下次启动",
         ("查看全局状态".into(), format!("{prefix}ctl list")),
     )
 }
@@ -154,7 +154,7 @@ pub fn list(prefix: &str, filter: &str, rows: &[Status]) -> Card {
     doc(
         "CONTROL · STATUS",
         blocks,
-        "状态以当前配置为准 · 待重启项需重启生效",
+        "状态以当前配置为准 · 标「待重启」的等下次启动",
         ("查看用法".into(), format!("{prefix}ctl")),
     )
 }

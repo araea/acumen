@@ -10,6 +10,18 @@ pub enum Theme {
     Help,
     Control,
 }
+
+/// 卡片设计系统（令牌与组件基元）。
+///
+/// 本仓库六种卡片图共用这一份样式：手册、控制、回复、资讯（日读／夜读）、
+/// 画像（日读／夜读）。各卡的版式文件只写「摆在哪儿」，色值、字号、圆角、
+/// 阴影一律从这里的 `--md-*` 令牌取——两层的分工与三条刻意偏离都写在
+/// 这个文件的开头，改版式前先读那一段。
+///
+/// 用它拼 `<style>` 时顺序不能换，版式在后：
+/// `format!("{}{}", render::DESIGN_SYSTEM, 本卡版式)`。
+pub(crate) const DESIGN_SYSTEM: &str = include_str!("../../res/cards/m3e.css");
+
 pub struct Item {
     pub name: String,
     pub key: String,
@@ -82,7 +94,7 @@ fn esc(text: &str) -> String {
 }
 fn badge(label: &str, state: &str) -> String {
     format!(
-        r#"<span class="badge {state}"><i></i>{}</span>"#,
+        r#"<span class="md-badge md-badge-{state}"><i></i>{}</span>"#,
         esc(label)
     )
 }
@@ -93,26 +105,47 @@ fn status(on: bool) -> String {
     )
 }
 
+/// 出图时刻，落在页眉右端。
+///
+/// 六张卡的页眉同形：左边「品牌 + 这张卡是什么」，右边「什么时候出的」。
+/// 手册与控制这两张从前右边空着——补上时刻是为了让「开关状态以当前配置为准」
+/// 这句有个可核对的落点：图是什么时候出的，一眼就知道该不该重新查一遍。
+fn stamp() -> String {
+    crate::render::beijing_now()
+        .format("%Y-%m-%d %H:%M")
+        .to_string()
+}
+
+/// 页眉右侧的眉标。调用方传的是完整眉标（`AYJX · MANUAL`），这里剥掉品牌前缀，
+/// 品牌由版式固定写在左边，眉标只留后面那截。
+fn kicker_en(kicker: &str) -> &str {
+    kicker
+        .strip_prefix("AYJX · ")
+        .or_else(|| kicker.strip_prefix("AYJX·"))
+        .unwrap_or(kicker)
+        .trim()
+}
+
 pub fn html(doc: &Doc) -> String {
     let mut body = String::new();
     for block in &doc.blocks {
         match block {
             Block::Title { title, pill, sub } => {
-                body.push_str(&format!("<header><div class=heading><h1>{}</h1>{}</div><p class=subtitle>{}</p></header>",
+                body.push_str(&format!("<header class=head><div class=heading><h1 class=\"md-title md-type-headline-large md-balance\">{}</h1>{}</div><p class=\"subtitle md-subtitle md-type-title-small\">{}</p></header>",
                     esc(title), pill.as_ref().map(|(label, on)| badge(label, if *on { "on" } else { "off" })).unwrap_or_default(), esc(sub)));
             }
             Block::Meter(states) => {
                 let on = states.iter().filter(|s| **s).count();
-                body.push_str(&format!("<div class=summary><span>全部 <b>{}</b></span><span>已启用 <b>{on}</b></span><span>已停用 <b>{}</b></span></div>", states.len(), states.len() - on));
+                body.push_str(&format!("<div class=\"summary md-readings\"><span class=md-reading><span class=md-reading-key>全部</span><b class=md-reading-value>{}</b></span><span class=md-reading><span class=md-reading-key>已启用</span><b class=md-reading-value>{on}</b></span><span class=md-reading><span class=md-reading-key>已停用</span><b class=md-reading-value>{}</b></span></div>", states.len(), states.len() - on));
             }
-            Block::Rule => body.push_str("<hr>"),
+            Block::Rule => body.push_str("<hr class=\"md-divider\">"),
             Block::Section { title, en, count } => body.push_str(&format!(
-                "<div class=section><h2>{}</h2><span class=section-en>{}</span><span class=count>{}</span></div>", esc(title), esc(en), esc(count))),
+                "<div class=\"section md-section\"><h2 class=\"md-title md-type-title-large md-balance\">{}</h2><span class=md-section-en>{}</span><span class=md-count>{}</span></div>", esc(title), esc(en), esc(count))),
             Block::Items { items, cols } => {
                 let cols = (*cols).max(1);
                 body.push_str(&format!("<div class=\"items cols-{cols}\">"));
                 for item in items {
-                    body.push_str(&format!("<article class=item><div class=item-heading><h3>{}</h3><span class=key>{}</span>{}</div><p class=description>{}</p></article>",
+                    body.push_str(&format!("<article class=item><div class=item-heading><h3 class=\"md-title md-type-title-large\">{}</h3><span class=key>{}</span>{}</div><p class=\"description md-type-body-large\">{}</p></article>",
                         esc(&item.name), esc(&item.key), status(item.on), esc(&item.desc)));
                 }
                 body.push_str("</div>");
@@ -120,8 +153,8 @@ pub fn html(doc: &Doc) -> String {
             Block::Cmds(cmds) => {
                 body.push_str("<ol class=commands>");
                 for cmd in cmds {
-                    body.push_str(&format!("<li><code class=command>{}{}</code>", esc(&cmd.prefix), esc(&cmd.cmd)));
-                    if !cmd.note.is_empty() { body.push_str(&format!("<p class=description>{}</p>", esc(&cmd.note))); }
+                    body.push_str(&format!("<li><code class=\"command md-command\">{}{}</code>", esc(&cmd.prefix), esc(&cmd.cmd)));
+                    if !cmd.note.is_empty() { body.push_str(&format!("<p class=\"description md-type-body-large\">{}</p>", esc(&cmd.note))); }
                     if !cmd.aliases.is_empty() {
                         body.push_str("<div class=aliases><span>别名</span>");
                         for alias in &cmd.aliases { body.push_str(&format!("<code>{}</code>", esc(alias))); }
@@ -134,50 +167,70 @@ pub fn html(doc: &Doc) -> String {
             Block::Rows(rows) => {
                 body.push_str("<div class=status-list>");
                 for row in rows {
-                    body.push_str(&format!("<div class=status-row><div class=identity><h3>{}</h3><div class=key>{}</div></div><div class=states>{}{}</div></div>",
+                    body.push_str(&format!("<div class=status-row><div class=identity><h3 class=\"md-title md-type-title-large\">{}</h3><div class=key>{}</div></div><div class=states>{}{}</div></div>",
                         esc(&row.main), esc(&row.sub), status(row.on),
                         if row.tail.is_empty() { String::new() } else { badge(&row.tail, "pending") }));
                 }
                 body.push_str("</div>");
             }
             Block::Code(lines) => {
-                body.push_str("<div class=code-panel>");
+                body.push_str("<div class=\"code-panel md-code-panel\">");
                 for line in lines {
-                    let class = if line.trim().starts_with('[') { "code-line table-key" } else { "code-line" };
+                    let class = if line.trim().starts_with('[') { "code-line md-code-line md-code-key" } else { "code-line md-code-line" };
                     body.push_str(&format!("<div class=\"{class}\"><code>{}</code></div>", if line.is_empty() { "&#8203;".into() } else { esc(line) }));
                 }
                 body.push_str("</div>");
             }
             Block::Tiles(tiles) => {
-                body.push_str("<div class=tiles>");
-                for tile in tiles { body.push_str(&format!("<div><b>{}</b><span>{}</span></div>", esc(&tile.value), esc(&tile.label))); }
+                body.push_str("<div class=\"tiles md-tiles\">");
+                for tile in tiles { body.push_str(&format!("<div class=md-tile><b>{}</b><span>{}</span></div>", esc(&tile.value), esc(&tile.label))); }
                 body.push_str("</div>");
             }
-            Block::Callout { tone, text } => body.push_str(&format!("<aside class=\"callout {}\">{}</aside>",
-                match tone { Tone::Info => "info", Tone::Empty => "empty" }, esc(text))),
+            Block::Callout { tone, text } => body.push_str(&format!("<aside class=\"callout md-callout md-type-body-medium {}\">{}</aside>",
+                match tone { Tone::Info => "info", Tone::Empty => "md-callout-empty" }, esc(text))),
         }
     }
-    let theme = match doc.theme {
-        Theme::Help => "help",
-        Theme::Control => "control",
+    let scheme = match doc.theme {
+        Theme::Help => "scheme-manual",
+        Theme::Control => "scheme-control",
     };
     format!(
         r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:">
-<title>AYJX · {title}</title><style>{css}</style></head>
-<body class="{theme}" style="width:{width}px"><main class="shot"><div class="card">
-<div class="eyebrow"><span class="brand">AYJX</span><span>{kicker}</span></div>
-{body}<footer><div class="next"><span>{hint}</span><code>{command}</code></div><p>{foot}</p></footer>
+<title>AYJX · {title}</title><style>{system}{css}</style></head>
+<body class="{scheme} md-text" style="width:{width}px"><main class=shot><div class="card md-card">
+<div class=md-eyebrow><div class=md-kicker><span class=md-dot></span>AYJX<span class=md-kicker-en>{kicker}</span></div><span class=md-stamp>{stamp}</span></div>
+{body}<footer class=md-foot><div class=md-hint><span>{hint}</span><code>{command}</code></div><p class=md-note>{foot}</p></footer>
 </div></main></body></html>"#,
+        system = DESIGN_SYSTEM,
         title = esc(&doc.kicker),
         css = include_str!("../../res/cards/reading.css"),
         width = doc.width,
-        kicker = esc(&doc.kicker.replace("AYJX · ", "")),
+        kicker = esc(kicker_en(&doc.kicker)),
+        stamp = esc(&stamp()),
         hint = esc(&doc.hint.0),
         command = esc(&doc.hint.1),
         foot = esc(&doc.foot)
     )
+}
+
+/// 断言一张样式表能安全地塞进 `style` 元素里。
+///
+/// 样式表是塞在 `style` 元素里的，HTML 的 raw text 解析遇到闭合标签就结束——
+/// 如果哪份注释里写了一个完整的闭合标签，整张样式表会被截成半句话，页面
+/// **不报错**、只是静悄悄退回无样式。这个坑踩过一次：六张卡片全部变成裸 HTML，
+/// 而出图的宽度与溢出检查还是全绿。
+///
+/// 供各卡自己的测试模块调用（它们的版式常量是模块私有的）。
+#[cfg(test)]
+pub(crate) fn assert_embeddable(name: &str, sheet: &str) {
+    for tag in ["</style>", "</head>", "</body>", "</html>", "<!--"] {
+        assert!(
+            !sheet.contains(tag),
+            "{name} 里出现了 {tag}：样式表会被 HTML 解析截断"
+        );
+    }
 }
 
 /// 网页卡片的并发闸门。同一时刻最多三张卡片在渲染。
@@ -445,6 +498,12 @@ pub async fn shoot(shot: Shot<'_>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stylesheets_carry_no_html_end_tags() {
+        assert_embeddable("m3e.css", DESIGN_SYSTEM);
+        assert_embeddable("reading.css", include_str!("../../res/cards/reading.css"));
+    }
     #[test]
     fn dynamic_content_is_text_and_long_content_is_complete() {
         let payload = "<script>alert('x')</script> & \"配置\"";

@@ -51,7 +51,7 @@ const EXTRACT_WORDS: &[&str] = &[
     "视频", "原片", "原视频", "下载", "下载视频", "发视频", "取片", "文件", "video", "mp4",
 ];
 
-const ALREADY_MESSAGE: &str = "这条的片子已经取过了。";
+const ALREADY_MESSAGE: &str = "这条的片子已经取过了";
 const HINT_LINE: &str = "引用本条并回复「视频」可取原片";
 
 // ================= Config =================
@@ -294,7 +294,7 @@ fn preview_text(video: &bilibili::Video, config: &Config) -> String {
     if video.pages > 1 {
         title.push_str(&format!("（P{}/{}）", video.page, video.pages));
     }
-    let mut text = format!("📺 {}", truncate_str(&title, 64));
+    let mut text = truncate_str(&title, 64);
 
     let mut meta = vec![
         one_line(&video.owner),
@@ -315,7 +315,7 @@ fn preview_text(video: &bilibili::Video, config: &Config) -> String {
 /// 取片成品的正文：片名与这一单的实际参数。
 fn caption_text(preview: &state::Preview, quality: u32, size: u64) -> String {
     format!(
-        "🎬 {}\n{} · {} · {:.1} MB",
+        "{}\n{} · {} · {:.1} MB",
         truncate_str(&one_line(&preview.title), 64),
         duration_text(preview.duration),
         bilibili::quality_label(quality),
@@ -513,7 +513,7 @@ where
     tokio::select! {
         result = &mut work => result,
         _ = time::sleep(Duration::from_secs(config.ack_after_seconds)) => {
-            let body = Message::new().reply(request_id).text("正在取片，稍等…");
+            let body = Message::new().reply(request_id).text("正在取片…");
             if let Err(error) = send_msg(ctx, writer.clone(), group_id, Some(user_id), body).await {
                 warn!(target: LOG_TARGET, "取片提示发送失败: {}", error);
             }
@@ -620,7 +620,7 @@ mod tests {
     #[test]
     fn the_preview_names_the_video_and_how_to_get_it() {
         let text = preview_text(&video(), &config());
-        assert!(text.starts_with("📺 【官方 MV】Never Gonna Give You Up - Rick Astley\n"));
+        assert!(text.starts_with("【官方 MV】Never Gonna Give You Up - Rick Astley\n"));
         assert!(text.contains("索尼音乐中国 · 3:33 · 播放 1.1亿"));
         assert!(text.ends_with(HINT_LINE));
 
@@ -674,7 +674,7 @@ mod tests {
             extracted: true,
         };
         let text = caption_text(&preview, 64, 25_847_808);
-        assert_eq!(text, "🎬 测试稿件\n3:33 · 720P · 24.7 MB");
+        assert_eq!(text, "测试稿件\n3:33 · 720P · 24.7 MB");
     }
 
     #[test]

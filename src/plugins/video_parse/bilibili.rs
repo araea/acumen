@@ -310,7 +310,7 @@ pub(crate) async fn plan(
     }
 
     Err(anyhow!(
-        "最小的 {} 也有 {:.0} MB",
+        "最小的 {} 也有 {:.0} MB，超过了大小上限",
         quality_label(smallest.quality),
         smallest.size as f64 / 1_048_576.0
     ))

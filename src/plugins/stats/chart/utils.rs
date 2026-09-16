@@ -207,14 +207,88 @@ pub struct ColorScheme {
 }
 
 impl Default for ColorScheme {
+    /// 配色取卡片设计系统里的「手册」一套（`res/cards/m3e.css` 的 `scheme-manual`）。
+    ///
+    /// 统计图与卡片经常在同一条消息里前后出现，纸色、墨色与主色不一致，看起来就是
+    /// 两个产品各画各的：从前这里是一套 Tailwind 蓝（`#3B82F6` + 石板灰），与全站
+    /// 的松绿毫无关系，一张排行榜接在一张绿卡片后面，像换了个人做的。
+    ///
+    /// **对不上 CSS 的地方只有一处**：这里必须是字面量——plotters 画的是位图，
+    /// 拿不到 CSS 的自定义属性。改了 `m3e.css` 的 `scheme-manual`，这一组要跟着改
+    /// （六个数：surface / surface-dim / primary / on-surface / on-surface-variant /
+    /// outline-variant），`a_chart_is_painted_in_the_card_scheme` 那条单测钉着它们。
     fn default() -> Self {
         Self {
-            background: RGBColor(255, 255, 255),
-            card_background: RGBColor(255, 255, 255),
-            primary: RGBColor(59, 130, 246),
-            text_primary: RGBColor(30, 41, 59),
-            text_secondary: RGBColor(100, 116, 139),
-            grid_line: RGBColor(226, 232, 240),
+            // 相纸：卡片外的底
+            background: RGBColor(237, 241, 237),
+            // 卡面：统计图自己就是一张纸，用卡面那档
+            card_background: RGBColor(255, 254, 250),
+            primary: RGBColor(31, 99, 80),
+            text_primary: RGBColor(31, 42, 39),
+            text_secondary: RGBColor(79, 92, 87),
+            grid_line: RGBColor(222, 229, 223),
+        }
+    }
+}
+
+#[cfg(test)]
+mod color_scheme_guard {
+    use super::*;
+
+    /// 图表的六个色值必须与 `res/cards/m3e.css` 的 `scheme-manual` 一致。
+    ///
+    /// 这条测试把两个世界的同一个决定绑在一起：CSS 那边改了纸色而这边没跟，
+    /// 群里就会出现「绿卡片 + 另一套配色的图表」。断言方式是从样式表里**读**
+    /// 那几个令牌，而不是把十六进制再抄一遍——抄一遍就等于没钉。
+    #[test]
+    fn a_chart_is_painted_in_the_card_scheme() {
+        let sheet = crate::render::web::DESIGN_SYSTEM;
+        let scheme = sheet
+            .split("body.scheme-manual {")
+            .nth(1)
+            .expect("样式表里应当有 scheme-manual")
+            .split('}')
+            .next()
+            .unwrap();
+        let token = |name: &str| -> String {
+            let at = scheme
+                .find(&format!("{name}:"))
+                .unwrap_or_else(|| panic!("scheme-manual 里没有 {name}"));
+            let rest = &scheme[at + name.len() + 1..];
+            rest[..rest.find(';').expect("令牌应当以分号结束")]
+                .trim()
+                .to_string()
+        };
+        let hex = |value: &str| -> RGBColor {
+            let raw = value.trim_start_matches('#');
+            assert_eq!(raw.len(), 6, "{value} 应当是六位十六进制");
+            RGBColor(
+                u8::from_str_radix(&raw[0..2], 16).unwrap(),
+                u8::from_str_radix(&raw[2..4], 16).unwrap(),
+                u8::from_str_radix(&raw[4..6], 16).unwrap(),
+            )
+        };
+        let colors = ColorScheme::default();
+        assert_eq!(colors.card_background, hex(&token("--md-sys-color-surface")));
+        assert_eq!(colors.background, hex(&token("--md-sys-color-surface-dim")));
+        assert_eq!(colors.primary, hex(&token("--md-sys-color-primary")));
+        assert_eq!(colors.text_primary, hex(&token("--md-sys-color-on-surface")));
+        assert_eq!(
+            colors.text_secondary,
+            hex(&token("--md-sys-color-on-surface-variant"))
+        );
+        assert_eq!(
+            colors.grid_line,
+            hex(&token("--md-sys-color-outline-variant"))
+        );
+        // 色相表（排行榜、走势图、消息类型共用的一套）也得整表在样式表里找得到，
+        // 否则某天有人「顺手加一个好看的颜色」，图表就悄悄脱离系统了。
+        for hue in super::super::data_loader::HUES {
+            let literal = format!("#{:02X}{:02X}{:02X}", hue.0, hue.1, hue.2);
+            assert!(
+                sheet.to_ascii_uppercase().contains(&literal),
+                "{literal} 不在 res/cards/m3e.css 里：图表的色相要取自系统那张色表"
+            );
         }
     }
 }
@@ -462,7 +536,7 @@ pub fn save_rgba_to_base64(img: RgbaImage) -> Result<String, String> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     dynamic_image
         .write_to(&mut cursor, ImageFormat::Png)
-        .map_err(|e| format!("图片编码失败: {}", e))?;
+        .map_err(|e| format!("图片编码失败：{}", e))?;
     let b64 = general_purpose::STANDARD.encode(cursor.into_inner());
     Ok(format!("base64://{}", b64))
 }

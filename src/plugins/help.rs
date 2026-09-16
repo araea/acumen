@@ -161,7 +161,7 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
         .count();
 
     let mut out = format!(
-        "🧩 ayjx 插件总览\n已启用 {} / {} 个插件 · 指令前缀 {}\n{}\n",
+        "ayjx 插件总览\n已启用 {} / {} 个插件 · 指令前缀 {}\n{}\n",
         enabled, total, prefix, DIVIDER
     );
 
@@ -169,7 +169,7 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
     for group in groups {
         out.push_str(&format!("\n▍{}（{} 项）\n", group.title, group.items.len()));
         for item in &group.items {
-            let mark = if item.enabled { "✅" } else { "⬜" };
+            let mark = if item.enabled { "已启用" } else { "已停用" };
             out.push_str(&format!(
                 "{} {}（{}）\n   {}\n",
                 mark, item.display, item.name, item.desc
@@ -179,7 +179,7 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
 
     out.push_str(&format!("\n{}", DIVIDER));
     out.push_str(&format!(
-        "\n💡 看全部指令：{p}help <插件名>\n管理开关与配置：{p}ctl（聊天）\n连接：Satori v1；状态为配置开关，初始化及排期修改需重启。",
+        "\n💡 看全部指令：{p}help <插件名>\n管理开关与配置：{p}ctl（聊天）\n连接：Satori v1；状态为配置开关，初始化及排期修改待重启。",
         p = prefix
     ));
     out
@@ -189,18 +189,18 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
 fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
     let prefix = prefix_of(ctx);
     let status = if entry.enabled {
-        "✅ 已启用"
+        "已启用"
     } else {
-        "⬜ 已禁用"
+        "已停用"
     };
 
     let mut out = format!(
-        "🧩 {}（{}）\n状态：{}\n{}\n📖 {}\n{}\n",
+        "{}（{}）\n状态：{}\n{}\n{}\n{}\n",
         entry.display, entry.name, status, DIVIDER, entry.desc, DIVIDER
     );
 
     if cmds.is_empty() {
-        out.push_str("该插件在后台自动工作，没有需要手动触发的指令。");
+        out.push_str("该插件自动工作，没有需要手动触发的指令。");
         out.push_str(&format!(
             "\n管理：{prefix}ctl show {}；{prefix}ctl on/off {}",
             entry.name, entry.name
@@ -208,7 +208,7 @@ fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
         return out;
     }
 
-    out.push_str("⌨️ 指令\n");
+    out.push_str("指令\n");
     for c in cmds {
         let full = if needs_prefix(c.cmd) {
             format!("{}{}", prefix, c.cmd)
@@ -222,13 +222,13 @@ fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
         }
     }
     out.pop();
-    out.push_str(&format!("\n管理：{prefix}ctl show {}；{prefix}ctl on/off {}\n生命周期参数与首次初始化需重启；详见 {prefix}ctl list。", entry.name, entry.name));
+    out.push_str(&format!("\n管理：{prefix}ctl show {}；{prefix}ctl on/off {}\n首次初始化与定时排期修改待重启；详见 {prefix}ctl list", entry.name, entry.name));
     out
 }
 
 fn not_found(ctx: &Context, name: &str) -> String {
     format!(
-        "🔍 没有找到插件「{}」\n{}\n发送 {}help 可以查看全部插件。",
+        "没有找到插件「{}」\n{}\n发送 {}help 可以查看全部插件。",
         name,
         DIVIDER,
         prefix_of(ctx)

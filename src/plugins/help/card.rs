@@ -79,7 +79,7 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
     blocks.push(Block::Callout {
         tone: Tone::Info,
         text: format!(
-            "Satori v1 · 管理开关与配置：{prefix}ctl（聊天）\n状态为配置开关；首次初始化及定时排期修改需重启。"
+            "Satori v1 · 管理开关与配置：{prefix}ctl（聊天）\n状态为配置开关；初始化及排期修改待重启"
         ),
     });
 
@@ -110,7 +110,7 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
     if cmds.is_empty() {
         blocks.push(Block::Callout {
             tone: Tone::Empty,
-            text: "该插件在后台自动工作，没有需要手动触发的指令。".into(),
+            text: "该插件自动工作，没有需要手动触发的指令".into(),
         });
     } else {
         blocks.push(Block::Section {
@@ -136,7 +136,7 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
     blocks.push(Block::Callout {
         tone: Tone::Info,
         text: format!(
-            "管理：{p}ctl show {n}\n开关：{p}ctl on/off {n}\n首次初始化及定时排期修改需重启；详见 {p}ctl list。",
+            "管理：{p}ctl show {n}\n开关：{p}ctl on/off {n}\n首次初始化与定时排期修改待重启；详见 {p}ctl list",
             p = prefix,
             n = entry.name
         ),

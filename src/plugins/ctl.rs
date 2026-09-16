@@ -43,7 +43,7 @@ pub fn default_config() -> Value {
 pub fn validate_config(value: &Value) -> Result<(), String> {
     Config::deserialize(value.clone())
         .map(|_| ())
-        .map_err(|_| "admins 必须是 QQ 号整数数组，pi_control/image_enabled 必须是布尔值，image_scale 必须是数字".into())
+        .map_err(|_| "admins 必须是 QQ 号整数数组，pi_control、image_enabled 必须是布尔值，image_scale 必须是数字".into())
 }
 pub fn is_manager(ctx: &Context) -> bool {
     if ctx.bot.adapter == "console" && ctx.bot.platform == "console" {
@@ -59,13 +59,13 @@ pub fn is_manager(ctx: &Context) -> bool {
         admins.is_some_and(|ids| ids.iter().any(|id| id.as_integer() == Some(msg.user_id())))
     })
 }
-pub const DENIED: &str = "此操作仅限 ctl.admins 中的全局管理员；请由本机维护者在 config.toml 的 [ctl] 中配置 admins = [QQ号]。";
+pub const DENIED: &str = "此操作仅限 ctl.admins 中的全局管理员；请由本机维护者在 config.toml 的 [ctl] 中配置 admins = [QQ号]";
 
 pub(crate) fn resolve(name: &str) -> Result<&'static Plugin, String> {
     get_plugins()
         .iter()
         .find(|p| p.name.eq_ignore_ascii_case(name) || p.display_name == name)
-        .ok_or_else(|| format!("未找到插件「{name}」，请用 ctl list 查看名称。"))
+        .ok_or_else(|| format!("未找到插件「{name}」，请用 ctl list 查看名称"))
 }
 pub(crate) fn enabled(cfg: &AppConfig, name: &str) -> bool {
     cfg.plugins
@@ -148,7 +148,7 @@ fn parse(raw: &str, old: &Value) -> Result<Value, String> {
         }
     }
     let wrapper: Value = toml::from_str(&format!("value = {raw}")).map_err(|_| {
-        "值格式错误；数组用 [1, 2]，表用 { key = \"值\" }，空字符串用 \"\"。".to_string()
+        "值格式错误；数组用 [1, 2]，表用 { key = \"值\" }，空字符串用 \"\"".to_string()
     })?;
     let table = wrapper.as_table().ok_or("值格式错误")?;
     if table.len() != 1 {
@@ -308,7 +308,7 @@ where
         }
     }
     if !enabled(&next, "ctl") {
-        return Err("为保留管理入口，ctl 不能通过聊天关闭；需要时请停机编辑配置。".into());
+        return Err("为保留管理入口，ctl 不能通过聊天停用；需要时请停机编辑配置".into());
     }
     let console = ctx.bot.adapter == "console" && ctx.bot.platform == "console";
     if !console && let Some(msg) = ctx.as_message() {
@@ -319,12 +319,12 @@ where
             .and_then(Value::as_array)
             .is_some_and(|ids| ids.iter().any(|id| id.as_integer() == Some(msg.user_id())));
         if !retained {
-            return Err("不能移除自己的管理权限；请先交由另一位管理员操作或停机编辑配置。".into());
+            return Err("不能移除自己的管理权限；请先交由另一位管理员操作或停机编辑配置".into());
         }
     }
     next.save(&ctx.config_path).await.map_err(|e| {
         error!(target: "Plugin/Ctl", "保存失败: {}", e);
-        "保存失败，内存配置未改变；请检查磁盘权限及空间。".to_string()
+        "保存失败，内存配置未改变；请检查磁盘权限及空间".to_string()
     })?;
     *ctx.config.write().unwrap() = next;
     // 释放保存锁后再补启动：初始化可能较慢，不必占着配置写锁。
@@ -372,7 +372,7 @@ fn usage(prefix: &str) -> String {
     format!(
         "插件控制 ctl（别名：插件、控制）\n\
 {prefix}ctl list [on|off|关键词] — 状态列表\n\
-{prefix}ctl on <插件...> / off <插件...> — 批量开关\n\
+{prefix}ctl on <插件…> / off <插件…> — 批量开关\n\
 {prefix}ctl show <插件> [路径] — 当前值（敏感项隐藏）\n\
 {prefix}ctl defaults <插件> [路径] — 默认值\n\
 {prefix}ctl set <插件> <路径> <值> — 修改并保存\n\
@@ -383,7 +383,7 @@ fn usage(prefix: &str) -> String {
 例：{prefix}ctl on 帮助中心 echo\n\
 例：{prefix}ctl set repeater channel.white [123456]\n\
 例：{prefix}ctl set oai plain_text_max_chars 120\n\
-配置查看/修改仅限 ctl.admins；控制台可管理。全局开关影响全部会话。\n\
+配置查看与修改仅限 ctl.admins；控制台可管理。全局开关影响全部群与私聊。\n\
 ctl 保留管理入口；修改它的 admins 请在私聊或控制台执行。\n\
 带初始化的插件在启用时补跑初始化，随即生效；只有连接期排期要等下一次连接。"
     )
@@ -480,7 +480,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
             .map(resolve)
             .collect::<Result<_, _>>()?;
         if names.is_empty() {
-            return Err("请指定插件，例如 ctl on help echo".into());
+            return Err(format!("请指定插件，例如 {prefix}ctl on help echo"));
         }
         let on = ["on", "开启", "启用"].contains(&action);
         let text = change(ctx, |cfg| {
@@ -491,8 +491,8 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
                     .ok_or("缺少 enabled 配置")? = Value::Boolean(on);
             }
             Ok(format!(
-                "已全部{}并保存：{}。",
-                if on { "开启" } else { "关闭" },
+                "已全部{}并保存：{}",
+                if on { "启用" } else { "停用" },
                 names.iter().map(|p| p.name).collect::<Vec<_>>().join("、")
             ))
         })
@@ -514,7 +514,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
     match action {
         "show" | "get" | "查看" | "defaults" | "默认" => {
             if !tail.is_empty() {
-                return Err("用法：ctl show/defaults <插件> [路径]".into());
+                return Err(format!("用法：{prefix}ctl show/defaults <插件> [路径]"));
             }
             let defaults = (p.default_config)();
             let cfg = ctx.config.read().unwrap();
@@ -534,7 +534,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
         }
         "diff" | "差异" => {
             if !rest.is_empty() {
-                return Err("用法：ctl diff <插件>".into());
+                return Err(format!("用法：{prefix}ctl diff <插件>"));
             }
             let cfg = ctx.config.read().unwrap();
             let current = cfg.plugins.get(p.name).ok_or("配置不存在")?;
@@ -550,13 +550,13 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
         }
         "set" | "设置" => {
             if path.is_empty() || tail.is_empty() {
-                return Err("用法：ctl set <插件> <路径> <值>".into());
+                return Err(format!("用法：{prefix}ctl set <插件> <路径> <值>"));
             }
             if (sensitive(path)
                 || (p.name == "ctl" && (path == "admins" || path.starts_with("admins."))))
                 && ctx.as_message().is_some_and(|m| m.group_id().is_some())
             {
-                return Err("此项请在私聊或本机控制台修改。".into());
+                return Err("此项请在私聊或本机控制台修改".into());
             }
             let old = {
                 let cfg = ctx.config.read().unwrap();
@@ -576,7 +576,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
             } else if tail == "--confirm" {
                 path
             } else {
-                return Err("重置会覆盖现有值；查看 ctl defaults 后，追加 --confirm 确认。".into());
+                return Err(format!("重置会覆盖现有值；查看 {prefix}ctl defaults 后，追加 --confirm 确认"));
             };
             let defaults = (p.default_config)();
             if path.is_empty() {
@@ -608,7 +608,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
                 .map(Output::from)
             }
         }
-        _ => Err(format!("未知操作「{action}」。发送 {prefix}ctl 查看用法。")),
+        _ => Err(format!("未知操作「{action}」，发送 {prefix}ctl 查看用法")),
     }
 }
 pub(crate) fn differences(default: &Value, current: &Value, path: &str, out: &mut Vec<String>) {
@@ -630,7 +630,7 @@ pub(crate) fn differences(default: &Value, current: &Value, path: &str, out: &mu
         }
     } else {
         out.push(format!(
-            "{path}: {} → {}",
+            "{path}：{} → {}",
             display(default, path),
             display(current, path)
         ));

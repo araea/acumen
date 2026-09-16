@@ -247,7 +247,7 @@ async fn handle(request: Request) -> Response {
         warn!(target: LOG_TARGET, "控制通道拒绝了一个无效凭据");
         return Response {
             ok: false,
-            text: "凭据无效或已过期：控制授权只在发起它的那一轮对话内有效。".to_string(),
+            text: "凭据无效或已过期：控制授权只在发起它的那一轮对话内有效".to_string(),
         };
     };
     let command = request.command.trim().to_string();
@@ -272,9 +272,9 @@ pub fn client(command: &str) -> Result<String, String> {
     use std::os::unix::net::UnixStream;
 
     let socket = std::env::var("AYJX_CTL_SOCK")
-        .map_err(|_| "缺少 AYJX_CTL_SOCK：控制通道只在 ayjx 的 agent 房间对话内可用。")?;
+        .map_err(|_| "缺少 AYJX_CTL_SOCK：控制通道只在 ayjx 的智能体房间对话内可用")?;
     let token = std::env::var("AYJX_CTL_TOKEN")
-        .map_err(|_| "缺少 AYJX_CTL_TOKEN：本轮对话没有获得控制授权。")?;
+        .map_err(|_| "缺少 AYJX_CTL_TOKEN：本轮对话没有获得控制授权")?;
 
     let mut stream = UnixStream::connect(&socket)
         .map_err(|error| format!("无法连接控制通道（{socket}）：{error}"))?;

@@ -57,7 +57,7 @@ pub struct ModelEntry {
 
 impl ModelEntry {
     pub fn display_name(&self) -> &str {
-        self.name.as_deref().map(str::trim).unwrap_or("(未知模型)")
+        self.name.as_deref().map(str::trim).unwrap_or("（未知模型）")
     }
 
     pub fn provider_name(&self) -> Option<&str> {

@@ -43,38 +43,54 @@ pub struct MessageTypeStyle {
     pub icon: &'static str,
 }
 
-pub const MESSAGE_TYPE_STYLES: [MessageTypeStyle; 6] = [
-    MessageTypeStyle { label: "文本", color: RGBColor(80, 105, 112), icon: "文" },
-    MessageTypeStyle { label: "图片", color: RGBColor(62, 111, 151), icon: "图" },
-    MessageTypeStyle { label: "语音", color: RGBColor(51, 125, 102), icon: "语" },
-    MessageTypeStyle { label: "视频", color: RGBColor(117, 101, 159), icon: "视" },
-    MessageTypeStyle { label: "动画表情", color: RGBColor(177, 111, 71), icon: "动" },
-    MessageTypeStyle { label: "表情", color: RGBColor(166, 137, 65), icon: "表" },
+/// 图表用的五个色相：**一套色表，全站共用**。
+///
+/// 值与 `res/cards/m3e.css` 里那张色表逐字一致（主色、画像种子的靛与紫、
+/// 控制卡的三级橄榄、警告赭金），词云用的也是这五个。选它们不是为了好看，
+/// 是因为在这张暖白纸上**彼此分得开**——排行榜里相邻两行常常不同色，
+/// 色相挨太近就糊成一片；同时又都在同一个低彩度家族里。
+///
+/// 从前这里散着两套 Tailwind 色（一份 `MESSAGE_TYPE_STYLES`、一份
+/// `get_palette_color`），还夹着 `#EF4444` 红与 `#EC4899` 粉：那些颜色在
+/// 一张偏绿的卡片旁边格外跳，而且和词云、和卡片没有任何关系。
+/// `every_swatch_matches_the_stylesheet` 那条单测钉着这五支色都还在样式表里。
+pub const HUES: [RGBColor; 5] = [
+    RGBColor(31, 99, 80),   // 主色（scheme-manual 的 primary）
+    RGBColor(62, 78, 158),  // 画像种子 indigo
+    RGBColor(95, 58, 150),  // 画像种子 violet
+    RGBColor(74, 91, 58),   // 控制卡的三级色（橄榄）
+    RGBColor(122, 83, 0),   // 警告赭金
 ];
 
-/// 按类型名查找视觉样式，未知类型回退到主题蓝
+/// 取不到头像色时的兜底色：就用主色。
+///
+/// 从前是一支与全站无关的钢蓝 —— 于是「没头像的那几行」在一张绿卡片后面
+/// 格外扎眼，看着像是另一套系统画错了地方。
+pub const FALLBACK_THEME: RGBColor = HUES[0];
+
+pub const MESSAGE_TYPE_STYLES: [MessageTypeStyle; 6] = [
+    // 文本取 on-surface-variant：它就是「没有别的东西」的那一类，不该抢眼
+    MessageTypeStyle { label: "文本", color: RGBColor(79, 92, 87), icon: "文" },
+    MessageTypeStyle { label: "图片", color: HUES[0], icon: "图" },
+    MessageTypeStyle { label: "语音", color: HUES[1], icon: "语" },
+    MessageTypeStyle { label: "视频", color: HUES[2], icon: "视" },
+    MessageTypeStyle { label: "动画表情", color: HUES[3], icon: "动" },
+    MessageTypeStyle { label: "表情", color: HUES[4], icon: "表" },
+];
+
+/// 按类型名查找视觉样式，未知类型回退到主色
 pub fn message_type_style(label: &str) -> (RGBColor, &'static str) {
     for st in MESSAGE_TYPE_STYLES.iter() {
         if st.label == label {
             return (st.color, st.icon);
         }
     }
-    (RGBColor(62, 111, 151), "?")
+    (FALLBACK_THEME, "?")
 }
 
-/// 调色板助手
+/// 走势图的多条线按序取色：从同一张色表里循环，线条再多也不会冒出表外的颜色。
 fn get_palette_color(idx: usize) -> RGBColor {
-    let colors = [
-        RGBColor(62, 111, 151), // Blue
-        RGBColor(51, 125, 102), // Green
-        RGBColor(177, 111, 71), // Orange
-        RGBColor(239, 68, 68),  // Red
-        RGBColor(117, 101, 159), // Purple
-        RGBColor(236, 72, 153), // Pink
-        RGBColor(166, 137, 65),  // Yellow
-        RGBColor(14, 165, 233), // Sky
-    ];
-    colors[idx % colors.len()]
+    HUES[idx % HUES.len()]
 }
 
 /// 获取走势图数据
@@ -233,7 +249,7 @@ pub async fn fetch_line_data(
 
     series_list.push(SeriesData {
         name: "消息量".to_string(),
-        color: RGBColor(62, 111, 151), // Primary Blue
+        color: FALLBACK_THEME, // Primary Blue
         points: chart_data,
     });
 
@@ -312,7 +328,7 @@ pub async fn fetch_bar_data(
                 user_id: None,
                 avatar_url: Some(url),
                 avatar_img: None,
-                theme_color: RGBColor(62, 111, 151),
+                theme_color: FALLBACK_THEME,
                 icon_char: None,
             });
         }
@@ -333,7 +349,7 @@ pub async fn fetch_bar_data(
                 user_id: None,
                 avatar_url: Some(url),
                 avatar_img: None,
-                theme_color: RGBColor(62, 111, 151),
+                theme_color: FALLBACK_THEME,
                 icon_char: None,
             });
         }
@@ -369,7 +385,7 @@ pub async fn fetch_bar_data(
             user_id: Some(r.user_id),
             avatar_url: Some(url),
             avatar_img: None,
-            theme_color: RGBColor(62, 111, 151),
+            theme_color: FALLBACK_THEME,
             icon_char: None,
         });
     }
@@ -432,7 +448,7 @@ pub async fn fetch_bar_data(
                 user_id: Some(sender_id),
                 avatar_url: Some(url),
                 avatar_img: None,
-                theme_color: RGBColor(62, 111, 151),
+                theme_color: FALLBACK_THEME,
                 icon_char: None,
             });
         }

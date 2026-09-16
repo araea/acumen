@@ -42,28 +42,8 @@ impl Theme {
 
     fn vars(self) -> &'static str {
         match self {
-            Theme::Light => {
-                r#"color-scheme:light;
-  --canvas:#E9E3D9;--surface:#FCFAF6;
-  --title:#1C1A17;--strong:#2E2A24;--body:#45403A;
-  --subtle:#5C554C;--muted:#6E675D;--faint:#736C61;
-  --line:rgba(28,26,23,.10);--strong-line:rgba(28,26,23,.15);
-  --panel:rgba(28,26,23,.032);--panel-border:rgba(28,26,23,.075);
-  --track:rgba(28,26,23,.08);
-  --pattern:rgba(28,26,23,.028);--shadow:0 18px 44px rgba(40,32,20,.12);
-  --glow-alpha:.10;--chip-alpha:.09;--bar-alpha:.15"#
-            }
-            Theme::Dark => {
-                r#"color-scheme:dark;
-  --canvas:#0D0C0B;--surface:#171614;
-  --title:#F2EEE6;--strong:#E6E1D8;--body:#CFC9BF;
-  --subtle:#A8A198;--muted:#99928A;--faint:#A19A90;
-  --line:rgba(240,236,228,.09);--strong-line:rgba(240,236,228,.14);
-  --panel:rgba(240,236,228,.05);--panel-border:rgba(240,236,228,.10);
-  --track:rgba(240,236,228,.10);
-  --pattern:rgba(240,236,228,.024);--shadow:0 18px 48px rgba(0,0,0,.34);
-  --glow-alpha:.09;--chip-alpha:.12;--bar-alpha:.20"#
-            }
+            Theme::Light => "",
+            Theme::Dark => " dark",
         }
     }
 }
@@ -132,19 +112,13 @@ pub struct View<'a> {
 pub fn html(view: &View<'_>) -> String {
     let theme = Theme::resolve(view.theme, view.now);
     let accent = view.persona.accent(view.material.user_id);
-    let dark = theme == Theme::Dark;
-    // 显示级的文字用衬线：综合标签、维度名、综述与引语。Android/Surface 上常见的
-    // 中宋是 Noto Serif CJK 与 OPPO Serif，兜底再退到系统 serif。
-    let serif = r#"--serif:"Noto Serif CJK SC","OPPO Serif SC","Source Han Serif SC","Songti SC","Noto Serif SC",Georgia,"Times New Roman",serif;"#;
-    let css = format!(":root{{{serif}{}}}\n{CSS}", theme.vars())
-        .replace("__ACCENT__", accent.hex(dark))
-        .replace("__RGB__", accent.rgb(dark));
+    let css = format!("{}{}", crate::render::web::DESIGN_SYSTEM, CSS);
 
     format!(
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{css}</style></head>
-<body><div class="shot"><div class="card">
+<body class="scheme-portrait md-text {seed}{theme_class}"><div class="shot"><div class="card md-card">
 {eyebrow}
 {hero}
 {deck}
@@ -158,6 +132,8 @@ pub fn html(view: &View<'_>) -> String {
         eyebrow = eyebrow(view),
         hero = hero(view),
         deck = deck(),
+        seed = accent.seed_class(),
+        theme_class = theme.vars(),
         composite = composite(view.persona),
         readings = readings(view.material),
         taxonomy = taxonomy(view.persona),
@@ -176,7 +152,7 @@ fn sec_head(mark: &str, en: &str) -> String {
 
 fn eyebrow(view: &View<'_>) -> String {
     format!(
-        r#"<div class="eyebrow"><div class="kicker"><span class="dot"></span>用户画像<span class="kicker-en">USER PROFILE</span></div><div class="stamp">{}</div></div>"#,
+        r#"<div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>用户画像<span class="md-kicker-en">USER PROFILE</span></div><span class="md-stamp">{}</span></div>"#,
         esc(&stamp(view.now)),
     )
 }
@@ -196,7 +172,7 @@ fn hero(view: &View<'_>) -> String {
     format!(
         r#"<div class="hero"><div class="avatar">{face}</div><div class="who"><div class="who-name">{}</div><div class="who-meta">{}</div></div></div>"#,
         esc(&material.name),
-        bits.join(r#"<span class="sep">·</span>"#),
+        bits.join(r#"<span class="md-sep">·</span>"#),
     )
 }
 
@@ -208,7 +184,7 @@ fn deck() -> String {
 
 fn composite(persona: &Persona) -> String {
     let pill = if persona.estimated {
-        r#"<span class="pill">模型未接，标签由统计直出</span>"#.to_string()
+        r#"<span class="md-chip">模型未接，标签由统计直出</span>"#.to_string()
     } else {
         String::new()
     };
@@ -244,16 +220,16 @@ fn readings(material: &Material) -> String {
             let unit = if unit.is_empty() {
                 String::new()
             } else {
-                format!(r#"<span class="ru">{}</span>"#, esc(unit))
+                format!(r#"<span class="md-reading-unit">{}</span>"#, esc(unit))
             };
             format!(
-                r#"<span class="reading"><span class="rk">{}</span><span class="rv">{}</span>{unit}</span>"#,
+                r#"<span class="md-reading"><span class="md-reading-key">{}</span><b class="md-reading-value">{}</b>{unit}</span>"#,
                 esc(label),
                 esc(&value)
             )
         })
         .collect();
-    format!(r#"<div class="readings">{cells}</div>"#)
+    format!(r#"<div class="md-readings md-readings-bordered">{cells}</div>"#)
 }
 
 /// 标签体系。四个维度按固定次序排，空的维度不占版面；每条标签先给层级徽章，再给标签与证据。
@@ -349,7 +325,7 @@ fn foot(view: &View<'_>) -> String {
         date_of(material.last_time, view.offset)
     );
     format!(
-        r#"<div class="foot"><div>观测区间 {range}<span class="sep">·</span>样本 {} 条<span class="sep">·</span>模型 {model}</div><div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。仅供娱乐，不作凭据。</div></div>"#,
+        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>模型 {model}</div><div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。仅供娱乐，不作凭据。</div></div>"#,
         material.samples.len(),
         range = esc(&range),
         model = esc(view.model),
@@ -376,129 +352,144 @@ pub fn now(offset: FixedOffset) -> DateTime<FixedOffset> {
 }
 
 const CSS: &str = r#"
-*{margin:0;padding:0;box-sizing:border-box}
-body{width:720px}
-.shot{padding:22px;background:var(--canvas)}
-.card{position:relative;overflow:hidden;border-radius:20px;padding:42px 44px 34px;
-  background:var(--surface);border:1px solid var(--strong-line);box-shadow:var(--shadow);
-  background-image:linear-gradient(145deg,var(--panel),transparent 420px);
-  font-family:"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","WenQuanYi Zen Hei","Helvetica Neue",Arial,sans-serif;
-  color:var(--body);-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision;
-  overflow-wrap:anywhere;word-break:normal}
-.card::before{content:"";position:absolute;top:-260px;left:-160px;width:540px;height:540px;
-  border-radius:50%;background:radial-gradient(circle,rgba(__RGB__,var(--glow-alpha)),transparent 70%);filter:blur(110px);pointer-events:none}
-.card::after{content:"";position:absolute;top:0;left:0;right:0;height:3px;
-  background:linear-gradient(90deg,transparent,rgba(__RGB__,.55) 22%,rgba(__RGB__,.55) 78%,transparent)}
-.card>*{position:relative}
+/* 画像卡的版式。
+   令牌与组件基元在 `res/cards/m3e.css`（`crate::render::web::DESIGN_SYSTEM`），
+   这里只写这张卡自己的位置，**不写色值与字号字面量**。
 
-/* —— 页眉 —— */
-.eyebrow{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:24px}
-.kicker{display:flex;align-items:center;gap:11px;font-size:15.5px;font-weight:800;
-  letter-spacing:.18em;color:__ACCENT__;white-space:nowrap}
-.dot{flex:none;width:8px;height:8px;border-radius:50%;background:__ACCENT__;
-  box-shadow:0 0 0 5px rgba(__RGB__,var(--glow-alpha))}
-.kicker-en{font-size:10px;font-weight:700;letter-spacing:.2em;color:var(--faint);
-  line-height:1.4}
-.stamp{font-size:14px;color:var(--faint);letter-spacing:.03em;white-space:nowrap;
-  font-variant-numeric:tabular-nums}
+   与另外五张卡的唯一差别是字体：显示级的文字用衬线（综合标签、维度名、
+   综述与引语）。这是版面选择不是设计系统的分歧——衬线落在纸色上才像一份
+   「写下来的东西」，而这份报告正是要读成一份东西，不是一块仪表盘。
+   衬线在 46px 上要把字重收到 700：Black(800) 的字脚在纸上会糊成一团。 */
+body{width:720px}
+.shot{padding:22px}
+.card{padding:var(--md-space-9) 44px var(--md-space-8)}
+/* 顶沿一条主色细线：这张卡与手册、资讯两张同尺寸的卡一眼分开 */
+.card::after{content:"";position:absolute;top:0;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,transparent,var(--md-sys-color-primary-line) 22%,
+    var(--md-sys-color-primary-line) 78%,transparent)}
 
 /* —— 主体：头像 + 名字 —— */
-.hero{display:flex;align-items:center;gap:20px}
+.hero{display:flex;align-items:center;gap:var(--md-space-5)}
 .avatar{flex:none;display:flex;align-items:center;justify-content:center;width:84px;height:84px;
-  border-radius:50%;font-size:35px;font-weight:800;color:__ACCENT__;
-  background:rgba(__RGB__,var(--chip-alpha));border:2px solid rgba(__RGB__,.28);letter-spacing:0;
-  overflow:hidden}
+  border-radius:var(--md-shape-full);font-size:var(--md-type-headline-medium-size);
+  font-weight:800;letter-spacing:0;overflow:hidden;
+  color:var(--md-sys-color-primary);
+  background:var(--md-sys-color-primary-container);
+  border:2px solid var(--md-sys-color-primary-line)}
 .avatar img{display:block;width:100%;height:100%;object-fit:cover}
 .who{min-width:0}
-.who-name{text-wrap:balance;font-size:33px;line-height:1.28;font-weight:800;letter-spacing:-.015em;color:var(--title)}
-.who-meta{margin-top:9px;font-size:15px;line-height:1.6;font-weight:500;color:var(--muted)}
-.sep{margin:0 8px;color:var(--faint)}
+.who-name{font-size:var(--md-type-headline-medium-size);line-height:var(--md-type-headline-medium-line);
+  font-weight:var(--md-type-headline-medium-weight);letter-spacing:var(--md-type-headline-medium-track);
+  color:var(--md-sys-color-on-surface)}
+.who-meta{margin-top:9px;font-size:var(--md-type-label-medium-size);line-height:1.6;
+  font-weight:500;color:var(--md-sys-color-on-surface-variant)}
 
 /* —— 定义行 —— */
-.deck{margin-top:22px;font-size:15.5px;line-height:1.72;color:var(--muted)}
-.deck b{font-weight:700;color:var(--subtle)}
+/* 这句话是这份东西的定义（它是什么、边界在哪），不是标题的补充说明，
+   所以压在标题下方一档，不抢读，但要读得到。 */
+.deck{margin-top:22px;font-size:var(--md-type-label-large-size);line-height:1.72;
+  color:var(--md-sys-color-on-surface-variant)}
+.deck b{font-weight:700;color:var(--md-sys-color-on-surface)}
 
 /* —— 综合标签 —— */
 .title-block{margin-top:26px}
-.label-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.label{font-size:13px;font-weight:800;letter-spacing:.22em;color:var(--faint)}
-.pill{padding:3px 10px;border-radius:8px;font-size:12.5px;font-weight:700;letter-spacing:.02em;
-  color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
-.composite{text-wrap:balance;margin-top:12px;font-family:var(--serif);font-size:46px;line-height:1.26;font-weight:700;
-  letter-spacing:.01em;color:var(--title)}
-.note{margin-top:12px;font-family:var(--serif);font-size:21px;line-height:1.66;font-weight:600;
-  color:__ACCENT__}
+.label-row{display:flex;align-items:center;gap:var(--md-space-3);flex-wrap:wrap}
+.label{font-size:var(--md-type-label-small-size);font-weight:var(--md-type-label-small-weight);
+  letter-spacing:.22em;color:var(--md-sys-color-on-surface-faint)}
+.composite{margin-top:var(--md-space-3);font-family:var(--md-font-display);
+  font-size:var(--md-type-display-medium-size);line-height:var(--md-type-display-medium-line);
+  font-weight:700;letter-spacing:-.005em;color:var(--md-sys-color-on-surface)}
+/* 模型的补充说明用主色衬线：它是这份画像里唯一「说出来的话」 */
+.note{margin-top:var(--md-space-3);font-family:var(--md-font-display);
+  font-size:var(--md-type-title-small-size);line-height:1.66;font-weight:600;
+  color:var(--md-sys-color-primary)}
 
 /* —— 读数 —— */
-/* 只画上缘那一条。下缘再画一条的话，紧跟着的分节自己还有一条上缘线，中间空着
-   34px 的两道平行细线，看着像漏了一行内容。全篇的分隔线统一「块首一条」。 */
-.readings{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:24px;padding:16px 2px;
-  border-top:1px solid var(--line)}
-.reading{display:inline-flex;align-items:baseline;gap:5px;font-size:14.5px;line-height:1.5}
-.rk{color:var(--faint);letter-spacing:.06em}
-.rv{font-size:17px;font-weight:700;color:__ACCENT__;font-variant-numeric:tabular-nums}
-.ru{color:var(--faint)}
+.readings{margin-top:var(--md-space-6)}
 
 /* —— 分节 —— */
-.sec{margin-top:34px;padding-top:28px;border-top:1px solid var(--line)}
-.sec-head{display:flex;align-items:center;gap:14px;margin-bottom:20px}
-.sec-mark{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:.14em;
-  color:var(--title);white-space:nowrap}
-.sec-en{font-size:10.5px;font-weight:700;letter-spacing:.3em;color:var(--faint);white-space:nowrap}
-.sec-head::after{content:"";flex:1;height:1px;background:var(--strong-line)}
+.sec{margin-top:var(--md-space-8);padding-top:var(--md-space-7);
+  border-top:1px solid var(--md-sys-color-outline-variant)}
+.sec-head{display:flex;align-items:center;gap:var(--md-space-4);margin-bottom:var(--md-space-5)}
+.sec-mark{font-family:var(--md-font-display);font-size:var(--md-type-title-medium-size);
+  line-height:var(--md-type-title-medium-line);font-weight:700;letter-spacing:.14em;
+  color:var(--md-sys-color-on-surface);white-space:nowrap}
+.sec-en{font-size:var(--md-type-label-small-size);font-weight:var(--md-type-label-small-weight);
+  letter-spacing:.3em;color:var(--md-sys-color-on-surface-faint);white-space:nowrap}
+.sec-head::after{content:"";flex:1;height:1px;background:var(--md-sys-color-outline-variant)}
 
-/* —— 标签体系的图例 —— */
-.legend{display:flex;flex-wrap:wrap;gap:8px 22px;margin-bottom:18px}
-.legend-item{display:inline-flex;align-items:baseline;gap:8px}
-.legend-item b{display:inline-block;padding:2px 9px;border-radius:6px;font-size:12px;
-  font-weight:800;letter-spacing:.06em}
-.legend-item b.observed{color:var(--muted);background:var(--track)}
-.legend-item b.derived{color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
-.legend-item b.inferred{color:var(--surface);background:rgba(__RGB__,.82)}
-.legend-item i{font-style:normal;font-size:10px;font-weight:700;letter-spacing:.2em;
-  color:var(--faint)}
+/* —— 标签的层级：图例与徽章同一套三种形态 ——
+   事实＝浅底（观测到的）、统计＝主色淡底（算出来的）、推断＝主色实心（读出来的）。
+   从硬到软一条线，读者一眼知道哪几条能拿去用、哪几条只是读出来的。 */
+.legend{display:flex;flex-wrap:wrap;gap:var(--md-space-2) 22px;margin-bottom:18px}
+.legend-item{display:inline-flex;align-items:baseline;gap:var(--md-space-2)}
+.legend-item b,.tag-layer{display:inline-block;padding:2px 9px;border-radius:var(--md-shape-s);
+  font-size:var(--md-type-label-medium-size);font-weight:800;letter-spacing:.06em}
+.legend-item i{font-style:normal;font-size:var(--md-type-label-small-size);
+  font-weight:var(--md-type-label-small-weight);letter-spacing:.2em;
+  color:var(--md-sys-color-on-surface-faint)}
+/* 浅底那一档用 container-high 而不是 container：它要与卡面分得开，
+   差一档的话在纸色上几乎看不见。 */
+.observed{color:var(--md-sys-color-on-surface-variant);
+  background:var(--md-sys-color-surface-container-high)}
+.derived{color:var(--md-sys-color-on-primary-container);
+  background:var(--md-sys-color-primary-container)}
+.inferred{color:var(--md-sys-color-on-primary);background:var(--md-sys-color-primary)}
 
 /* —— 标签体系 —— */
-.dims{display:flex;flex-direction:column;gap:16px}
-.dim{padding:16px 22px 4px;border-radius:14px;background:var(--panel);
-  border:1px solid var(--panel-border)}
+.dims{display:flex;flex-direction:column;gap:var(--md-space-4)}
+.dim{padding:var(--md-space-4) 22px var(--md-space-1);border-radius:var(--md-shape-l);
+  background:var(--md-sys-color-surface-container-low);
+  border:1px solid var(--md-sys-color-outline-variant)}
 .dim-head{display:flex;align-items:baseline;gap:11px;padding-bottom:11px;
-  border-bottom:1px solid var(--line)}
-.dim-name{font-family:var(--serif);font-size:19px;font-weight:700;letter-spacing:.14em;
-  color:var(--title)}
-.dim-en{font-size:10px;font-weight:700;letter-spacing:.26em;color:var(--faint)}
-.tag{display:flex;gap:13px;padding:12px 0;border-bottom:1px dashed var(--line)}
+  border-bottom:1px solid var(--md-sys-color-outline-variant)}
+.dim-name{font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
+  line-height:var(--md-type-title-small-line);font-weight:700;letter-spacing:.14em;
+  color:var(--md-sys-color-on-surface)}
+.dim-en{font-size:var(--md-type-label-small-size);font-weight:var(--md-type-label-small-weight);
+  letter-spacing:.26em;color:var(--md-sys-color-on-surface-faint)}
+.tag{display:flex;gap:13px;padding:var(--md-space-3) 0;
+  border-bottom:1px dashed var(--md-sys-color-outline-variant)}
 .tag:last-child{border-bottom:none}
-.tag-layer{flex:none;align-self:flex-start;width:50px;padding:3px 0;margin-top:2px;
-  text-align:center;border-radius:7px;font-size:13px;font-weight:700;letter-spacing:.06em}
-.tag-layer.observed{color:var(--muted);background:var(--track)}
-.tag-layer.derived{color:__ACCENT__;background:rgba(__RGB__,var(--chip-alpha))}
-.tag-layer.inferred{color:var(--surface);background:rgba(__RGB__,.82)}
+.tag-layer{flex:none;align-self:flex-start;width:56px;padding:3px 0;margin-top:2px;
+  text-align:center}
 .tag-main{flex:1;min-width:0}
-.tag-label{display:block;font-size:19px;line-height:1.6;font-weight:700;color:var(--strong)}
-.tag-ev{display:block;margin-top:5px;font-size:17px;line-height:1.75;color:var(--muted)}
+.tag-label{display:block;font-size:var(--md-type-title-small-size);
+  line-height:var(--md-type-title-small-line);font-weight:700;
+  color:var(--md-sys-color-on-surface)}
+.tag-ev{display:block;margin-top:5px;font-size:var(--md-type-body-small-size);
+  line-height:1.75;color:var(--md-sys-color-on-surface-variant)}
 
 /* —— 综述 —— */
-.prose{margin-bottom:18px;font-family:var(--serif);font-size:21px;line-height:1.88;
-  color:var(--body);text-indent:2em}
+/* 衬线长文的行高要比无衬线再放一格（1.86），字面小一档也更耐读 */
+.prose{margin-bottom:18px;font-family:var(--md-font-display);
+  font-size:var(--md-type-body-large-size);line-height:1.86;
+  color:var(--md-sys-color-on-surface-variant);text-indent:2em}
 .prose:last-child{margin-bottom:0}
-.quote{margin:22px 0;padding:20px 22px;border-radius:12px;background:rgba(__RGB__,var(--chip-alpha));
-  border-left:3px solid rgba(__RGB__,.55)}
-.quote-text{margin:0;font-family:var(--serif);font-size:20.5px;line-height:1.86;color:var(--strong);
-  text-indent:0}
-.quote-note{margin-top:11px;font-size:15px;line-height:1.62;color:var(--faint)}
+/* 引语：主色淡底 + 左界 + 收一个角，与资讯卡的「推荐理由」同一形 */
+.quote{margin:22px 0;padding:var(--md-space-5) 22px;border-radius:var(--md-shape-m);
+  background:var(--md-sys-color-primary-tint);
+  border-left:3px solid var(--md-sys-color-primary-line)}
+.quote-text{margin:0;font-family:var(--md-font-display);
+  font-size:var(--md-type-body-large-size);line-height:1.86;
+  color:var(--md-sys-color-on-surface);text-indent:0}
+.quote-note{margin-top:11px;font-size:var(--md-type-label-medium-size);line-height:1.62;
+  color:var(--md-sys-color-on-surface-faint)}
 
 /* —— 页脚 —— */
-.foot{display:flex;flex-direction:column;gap:7px;margin-top:32px;padding-top:20px;
-  border-top:1px solid var(--strong-line);
-  font-size:14px;line-height:1.62;color:var(--faint)}
-.foot-note{color:var(--muted)}
-.foot .sep{margin:0 7px}
+.foot-note{color:var(--md-sys-color-on-surface-variant)}
 "#;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 版式里不许出现 HTML 的成对标签——样式表塞进 `style` 元素时会被截断，
+    /// 而页面不会报错（见 [`crate::render::web::assert_embeddable`]）。
+    #[test]
+    fn stylesheet_stays_embeddable() {
+        crate::render::web::assert_embeddable("portrait", CSS);
+    }
     use crate::plugins::portrait::collect::{GroupSlice, Kinds};
     use crate::plugins::portrait::persona::Passage;
 
@@ -760,7 +751,7 @@ mod tests {
         let html = html(&view(&material, &persona));
         assert!(!html.contains(r#"<span class="sec-mark">标签体系</span>"#));
         assert!(!html.contains(r#"<span class="sec-mark">画像综述</span>"#));
-        assert!(html.contains(r#"<div class="readings">"#));
+        assert!(html.contains(r#"<div class="md-readings md-readings-bordered">"#));
         assert!(html.contains("用忙碌挡空的人"));
     }
 
@@ -817,8 +808,26 @@ mod tests {
             theme: "light",
             ..view_at(&material, &persona, MIDNIGHT)
         };
-        let html = html(&pinned);
-        assert!(html.contains("--canvas:#E9E3D9"), "应当用日读配色");
+        // 主题现在落成 body 上的一个类名（配色方案在 res/cards/m3e.css 里按它分档），
+        // 不再是往页面里塞一段变量。整个页面里也含样式表，「dark」在 CSS 里到处都是，
+        // 所以只取 body 那一段来判。
+        let body_class = |page: &str| {
+            let head = "<body class=\"";
+            let start = page.find(head).expect("页面应当有 body") + head.len();
+            let end = start + page[start..].find('"').expect("class 属性应当闭合");
+            page[start..end].to_string()
+        };
+        let light = body_class(&html(&pinned));
+        assert!(light.contains("scheme-portrait md-text seed-"), "{light}");
+        assert!(!light.contains("dark"), "固定日读时不该带深色类名：{light}");
+        let dark = body_class(&html(&View {
+            theme: "dark",
+            ..view_at(&material, &persona, MIDNIGHT)
+        }));
+        assert!(dark.contains(" dark"), "固定夜读时应当带深色类名：{dark}");
+        // 自动档：同一份素材在上午与午夜应当落在两套配色上
+        assert!(!body_class(&html(&view_at(&material, &persona, MORNING))).contains("dark"));
+        assert!(body_class(&html(&view_at(&material, &persona, MIDNIGHT))).contains("dark"));
     }
 
     /// 把日读、夜读与降级三份报告写到 `PORTRAIT_CARD_DUMP` 指定的目录，肉眼校版用：

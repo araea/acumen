@@ -487,7 +487,7 @@ pub async fn push_brief(
         .filter_map(|item| item.dedupe_key().map(|key| (key, item)))
         .collect();
     let subtitle = window_label(&cfg.window);
-    let header = format!("🤖 AI 资讯速递 · {}", subtitle);
+    let header = format!("AI 资讯速递 · {}", subtitle);
 
     let mut attempted_any = false;
     for target in targets {

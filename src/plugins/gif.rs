@@ -17,24 +17,24 @@ pub mod utils;
 // =============================
 
 /// 帮助信息
-const HELP_TEXT: &str = r#"📝 指令列表 (大小写均可):
+const HELP_TEXT: &str = r#"💡 指令列表（大小写均可）
 
-• gif帮助 / gifhelp - 显示本帮助
-• 合成gif [行x列] [间隔秒] [边距]
+· gif帮助 / gifhelp - 显示本帮助
+· 合成gif [行x列] [间隔秒] [边距]
     将网格图合成为动图
-    示例: 合成gif 3x3 0.1 0
-• gif拼图 [列数] - 将动图转为网格图
-• gif拆分 - 将动图拆成多张静态图
-• gif变速 [倍率] - 调整播放速度
-    示例: gif变速 2 (加速2倍)
-• gif倒放 - 倒序播放
-• gif缩放 [倍率|尺寸]
-    示例: gif缩放 0.5 或 gif缩放 100x100
-• gif旋转 [角度] - 旋转 (90/180/270/-90)
-• gif翻转 [水平|垂直] - 镜像翻转
-• gif信息 - 查看 GIF 详情
+    示例：合成gif 3x3 0.1 0
+· gif拼图 [列数] - 将动图转为网格图
+· gif拆分 - 将动图拆成多张静态图
+· gif变速 [倍率] - 调整播放速度
+    示例：gif变速 2（加速 2 倍）
+· gif倒放 - 倒序播放
+· gif缩放 [倍率|尺寸]
+    示例：gif缩放 0.5 或 gif缩放 100x100
+· gif旋转 [角度] - 旋转（90、180、270、-90）
+· gif翻转 [水平|垂直] - 镜像翻转
+· gif信息 - 查看 GIF 详情
 
-💡 使用时请附带图片或引用图片消息"#;
+使用时请附带图片或引用图片消息"#;
 
 /// 支持的指令
 const COMMANDS: &[&str] = &[
@@ -108,7 +108,7 @@ pub fn handle(
                             writer,
                             group_id,
                             Some(user_id),
-                            "❌ 请附带图片或引用图片消息。",
+                            "❌ 请附带图片或引用图片消息",
                         )
                         .await;
                         return Ok(None);
@@ -120,7 +120,7 @@ pub fn handle(
                     writer.clone(),
                     group_id,
                     Some(user_id),
-                    "⏳ 处理中...",
+                    "⏳ 处理中…",
                 )
                 .await;
 
@@ -300,7 +300,7 @@ async fn send_forward_msg(ctx: &Context, writer: LockedWriter, base64_list: Vec<
             writer.clone(),
             group_id,
             Some(user_id),
-            "⚠️ 切片数量过多，为防止风控，仅发送前 99 张。",
+            "⚠️ 切片数量过多，为防止风控，仅发送前 99 张",
         )
         .await;
     }

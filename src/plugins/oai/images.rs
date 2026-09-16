@@ -187,7 +187,7 @@ pub(super) async fn generate_reply(
         .collect();
 
     Ok(Reply {
-        text: format!("🎨 **{caption}**\n\n{}", links.join("\n")),
+        text: format!("**{caption}**\n\n{}", links.join("\n")),
         sources: Vec::new(),
         trace: Vec::new(),
         trace_overflow: 0,

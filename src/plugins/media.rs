@@ -73,7 +73,7 @@ async fn handle_to_url(
     if let Some((url, type_name)) = find_media_in_segments(&matched.args) {
         let reply = Message::new()
             .reply(msg.message_id())
-            .text(format!("🔗 已提取{}：\n{}", type_name, url));
+            .text(format!("✅ 已提取{}：\n{}", type_name, url));
         send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
         return Ok(None);
     }
@@ -89,7 +89,7 @@ async fn handle_to_url(
                 if let Some(url) = seg.data.get("url").and_then(|v| v.as_str()) {
                     let reply = Message::new()
                         .reply(msg.message_id())
-                        .text(format!("🔗 已提取图片：\n{}", url));
+                        .text(format!("✅ 已提取图片：\n{}", url));
                     send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                     return Ok(None);
                 }
@@ -103,7 +103,7 @@ async fn handle_to_url(
                 if let Some(url) = url_opt {
                     let reply = Message::new()
                         .reply(msg.message_id())
-                        .text(format!("🔗 已提取视频：\n{}", url));
+                        .text(format!("✅ 已提取视频：\n{}", url));
                     send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                     return Ok(None);
                 }
@@ -117,7 +117,7 @@ async fn handle_to_url(
         msg.group_id(),
         Some(msg.user_id()),
         Message::new().reply(msg.message_id()).text(
-            "⚠️ 未检测到媒体文件。\n请【引用】一条包含图片或视频的消息，或在发送指令时附带图片。",
+            "⚠️ 未检测到媒体文件\n请【引用】一条包含图片或视频的消息，或在发送指令时附带图片",
         ),
     )
     .await?;
@@ -197,7 +197,7 @@ async fn handle_to_media(
             Some(msg.user_id()),
             Message::new()
                 .reply(msg.message_id())
-                .text("⚠️ 未检测到有效链接。\n请在指令后附带 URL，或【引用】一条包含 URL 的消息。"),
+                .text("⚠️ 未检测到有效链接\n请在指令后附带 URL，或【引用】一条包含 URL 的消息"),
         )
         .await?;
     }
