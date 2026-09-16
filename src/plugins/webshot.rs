@@ -107,6 +107,13 @@ const WALLED_DOMAINS: &[&str] = &[
     // 跟登录无关，换出口 IP 后可能又能开，届时把这两条摘掉即可。
     "reddit.com",
     "quora.com",
+    // 1688 的两条风控墙只点名主机，不能写成 `1688.com`：桌面站能正常出内容。
+    // `qr.1688.com` 是群友复制分享文案里的短链，`m.1688.com` 是它跳转的落点，
+    // 两者实测都停在阿里的滑块验证页（`_____tmd_____/punish`），
+    // 而 `detail.1688.com/offer/…` 与 `www.1688.com` 未登录也能看到标题、价格、
+    // 店铺和主图。2026-09-16 连测两轮都是同一张验证页。
+    "qr.1688.com",
+    "m.1688.com",
 ];
 
 /// 这条消息是不是机器人自己发出去的那份回声。
@@ -508,6 +515,9 @@ mod tests {
             "https://bbs.nga.cn/thread.php?fid=-7",
             "https://www.reddit.com/r/rust/",
             "https://www.quora.com/What-is-rust",
+            // 1688 分享短链与它跳转的移动站落点，都停在滑块验证页。
+            "https://qr.1688.com/s/7HOhG7uS",
+            "https://m.1688.com/offer/1046051827096.html",
         ] {
             assert!(check_url(raw, &strict).await.is_err(), "{raw} 不应放行");
         }
@@ -522,6 +532,9 @@ mod tests {
             "https://www.pixiv.net/artworks/91475850",
             "https://tieba.baidu.com/f?kw=rust",
             "https://www.hupu.com/",
+            // 1688 的桌面站不在名单里：商品页未登录也有内容。
+            "https://detail.1688.com/offer/1046051827096.html",
+            "https://www.1688.com/",
         ] {
             assert!(check_url(raw, &strict).await.is_ok(), "{raw} 不应被拦");
         }
