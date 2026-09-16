@@ -33,20 +33,22 @@
      界面是「一屏里尽量多放信息」的场合，用同一支字阶会偏大，所以在这一层整体
      收一档。**只覆盖这里列出的级**，级与级之间的比例关系不动，字重与字距也不动
      ——那些是字阶的性格，收字号不该把性格一起收掉。 */
-  --md-type-display-small-size: 34px;
-  --md-type-headline-large-size: 30px;
-  --md-type-headline-medium-size: 26px;
-  --md-type-headline-small-size: 22px;
-  --md-type-title-large-size: 19px;
-  --md-type-title-medium-size: 17px;
-  --md-type-title-small-size: 15px;
-  --md-type-body-large-size: 16px;
+  --md-type-display-small-size: 32px;
+  --md-type-headline-large-size: 28px;
+  --md-type-headline-medium-size: 24px;
+  --md-type-headline-small-size: 20px;
+  --md-type-title-large-size: 18px;
+  --md-type-title-medium-size: 15px;
+  --md-type-title-small-size: 14px;
+  --md-type-body-large-size: 14px;
   --md-type-body-large-line: 1.62;
-  --md-type-body-medium-size: 15px;
+  --md-type-body-medium-size: 13px;
   --md-type-body-medium-line: 1.62;
-  --md-type-body-small-size: 13.5px;
+  --md-type-body-small-size: 12px;
   --md-type-body-small-line: 1.6;
-  --md-type-label-large-size: 14px;
+  --md-type-label-large-size: 13px;
+  --md-type-label-small-size: 11px;
+  --md-type-input-size: 16px;
   --md-type-label-medium-size: 12px;
   --md-type-label-medium-track: 0.03em;
 
@@ -56,7 +58,7 @@
   --zy-bar-height: 60px;
   --zy-nav-height: 64px;
   --zy-rail-width: 96px;
-  --zy-drawer-width: 264px;
+  --zy-drawer-width: 216px;
   --zy-page-width: 960px;
   --zy-page-wide: 1200px;
 
@@ -106,6 +108,17 @@
   --zy-ease-spatial-slow: cubic-bezier(0.38, 1.21, 0.22, 1);
   /* 只给那些「一直在动」的东西（加载指示的旋转）。 */
   --zy-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* 两档共用所有组件；舒适档不缩小触控目标。 */
+:root[data-density="comfortable"] {
+  --md-type-title-medium-size: 17px;
+  --md-type-title-small-size: 15px;
+  --md-type-body-large-size: 16px;
+  --md-type-body-medium-size: 15px;
+  --md-type-body-small-size: 14px;
+  --md-type-label-large-size: 14px;
+  --md-type-label-medium-size: 13px;
 }
 
 /* ==================== §A 外壳与断点 ==================== */
@@ -838,8 +851,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
   background: var(--md-sys-color-surface);
   border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-shape-xl);
-  box-shadow: var(--md-elevation-1);
-  padding: var(--md-space-4) var(--md-space-4) var(--md-space-5);
+  box-shadow: var(--md-elevation-0);
+  padding: var(--md-space-4);
   display: flex;
   flex-direction: column;
   gap: var(--md-space-3);
@@ -1303,6 +1316,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
 }
 
 body.dark .log {
@@ -1317,7 +1332,7 @@ body.dark .log {
     minmax(0, var(--zy-log-target)) minmax(0, 1fr);
   gap: 0 var(--md-space-3);
   align-items: baseline;
-  padding-left: var(--md-space-3);
+  padding: var(--md-space-1) var(--md-space-2);
   font-variant-numeric: tabular-nums;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1853,7 +1868,7 @@ button.row-plain { cursor: pointer; }
   .toolbar .seg { width: 100%; }
   .seg[data-connected] .seg-item { padding-inline: var(--md-space-2); }
   .overview-metrics .reading { padding: var(--md-space-2); }
-  .input, .area { font-size: var(--md-type-body-large-size); }
+  .input, .area, .search input { font-size: var(--md-type-input-size); }
 }
 @media (min-width: 1100px) {
   /* 两列之后每格只按自己的内容长。默认的 stretch 会把「连接」那张卡撑到与
@@ -1863,8 +1878,8 @@ button.row-plain { cursor: pointer; }
     align-items: start;
   }
   .overview-recent .log-short { max-height: 320px; }
-  .overview-recent .log-line { grid-template-columns: var(--zy-log-time) var(--zy-log-level) minmax(0, 1fr); }
-  .overview-recent .log-text { grid-column: 1 / -1; }
+  .overview-recent .log-line { grid-template-columns: var(--zy-log-time) var(--zy-log-level) minmax(0, var(--zy-log-target)) minmax(0, 1fr); }
+  .overview-recent .log-text { grid-column: auto; }
 }
 
 :where(button, a, input, textarea, [tabindex="0"]):focus-visible {
@@ -1883,4 +1898,95 @@ button.row-plain { cursor: pointer; }
 @media (max-width: 599px) {
   .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
   .bar-title { min-width: 0; }
+}
+
+/* 工作台：色调区分导航、内容和编辑容器；高对比只留给主动作。 */
+.bar { background: var(--md-sys-color-surface-container-low); border-bottom-color: transparent; }
+.nav { border-color: transparent; }
+.card { border-color: transparent; }
+.card .panel, .card .inset { background: var(--md-sys-color-surface-container-low); }
+.page-head { padding-block: var(--md-space-2); }
+.page-title { color: var(--md-sys-color-primary); }
+.row-title { font-size: var(--md-type-title-small-size); }
+.list .row { padding-block: var(--md-space-2); }
+#plugin-list { padding: var(--md-space-2); }
+#plugin-list .row { border-radius: var(--md-shape-m); }
+#plugin-list .row[aria-selected="true"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+.overview-metrics { background: var(--md-sys-color-surface-container-low); }
+.overview-metrics .reading { background: var(--md-sys-color-surface); }
+.overview-connections, .overview-recent { grid-column: 1 / -1; }
+.overview-recent .log-short { max-height: 240px; }
+
+/* 日志是一块完整的工作区；工具、连接状态、内容和计数各有固定位置。 */
+.log-workspace {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--md-sys-color-surface);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-xl);
+  overflow: hidden;
+}
+.log-tools {
+  position: static;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--md-space-2);
+  padding: var(--md-space-3);
+  background: var(--md-sys-color-surface-container-low);
+}
+.log-tools .search { flex: 1 1 200px; }
+.log-tools .seg { width: auto; }
+.log-actions { display: flex; gap: var(--md-space-1); align-items: center; flex-wrap: wrap; }
+.log-tools .seg-item { padding-inline: var(--md-space-3); }
+.log-tools .chip[aria-pressed="true"] {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+.log-workspace .log-meta, .log-footer {
+  padding: var(--md-space-2) var(--md-space-3);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--md-space-1) var(--md-space-3);
+  font-size: var(--md-type-label-medium-size);
+  color: var(--md-sys-color-on-surface-variant);
+}
+#log-status { font-weight: var(--md-type-label-large-weight); }
+.log-workspace .log { border-radius: var(--md-shape-none); padding: var(--md-space-2); }
+.page[data-page="logs"] {
+  height: calc(100dvh - var(--zy-bar) - var(--zy-nav) - var(--md-space-6));
+  min-height: 540px;
+}
+.page[data-page="logs"] .log-workspace { flex: 1; }
+.log-workspace .log { flex: 1; min-height: 160px; }
+.log-line:nth-child(even) { background: color-mix(in srgb, var(--md-sys-color-log-text) 3%, transparent); }
+.log-workspace .jump {
+  position: absolute;
+  bottom: var(--md-space-8);
+  right: var(--md-space-3);
+  box-shadow: var(--md-elevation-2);
+}
+@media (min-width: 600px) {
+  .main { padding: var(--md-space-4) var(--md-space-5); }
+  .page[data-page="logs"] { height: calc(100dvh - var(--zy-bar) - var(--md-space-8)); min-height: 480px; }
+  .page[data-page="logs"] .log-workspace { flex: 1; }
+  .log-workspace .log { flex: 1; min-height: 160px; }
+  .nav { gap: var(--md-space-2); }
+}
+@media (max-width: 599px) {
+  .log-tools { padding: var(--md-space-2); gap: var(--md-space-1); }
+  .log-tools .search { flex-basis: 100%; }
+  .log-tools .seg { width: 100%; }
+  .log-actions { width: 100%; justify-content: flex-end; }
+  .log-actions #log-follow { margin-right: auto; }
+  .log-workspace .log { height: 52dvh; }
+  .log-target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log-line { padding-block: var(--md-space-1); }
 }

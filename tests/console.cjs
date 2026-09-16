@@ -18,7 +18,7 @@ const plugins = [
 const sections = [{ code: 'system', name: '系统' }];
 const settings = { bots: [{ enabled: true, protocol: 'satori', url: 'http://127.0.0.1:3001', has_token: false }],
   command_prefix: ['/'], browser_path: '', global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: false, whitelist: [] } };
-let posts = [], streams = new Set(), sequence = 0, detailDelay = false;
+let posts = [], streams = new Set(), sequence = 0, detailDelay = false, rejectStreams = false;
 const token = 'fixture';
 const line = text => ({ at: '12:30:00', level: ['INFO','WARN','ERRO','DEBG'][sequence++ % 4], target: 'Plugin/Console', text });
 let history = Array.from({ length: 80 }, (_, i) => line(`运行记录 ${i} · 已完成处理`));
@@ -62,6 +62,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/api/logs') return reply({ lines: history.slice(-Number(url.searchParams.get('limit') || 2000)) });
   if (url.pathname === '/api/logs/stream') {
+    if (rejectStreams) return reply({ error: 'restarting' }, 503);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     res.write(`event: snapshot\ndata: ${JSON.stringify({ lines: history })}\n\n`);
     streams.add(res); res.on('close', () => streams.delete(res)); return;
@@ -164,25 +165,55 @@ async function shot(name) {
   assert.equal(posts.filter(p => p.path === '/api/settings/bot').length, saves, 'removing a draft must not write to the config');
   await route('logs'); await until(() => streams.size === 1, 'SSE connected');
   await until(() => js('return document.querySelectorAll("#log-box .log-line").length > 0'), 'snapshot');
+  // The latest row must stay visible when the viewport/keyboard changes its height,
+  // even when no new log arrives to trigger another pin.
+  await js('document.querySelector("#log-box").style.flex="0 0 240px"; document.querySelector("#log-box").style.height="240px"');
+  await sleep(200);
+  assert(await js('const b=document.querySelector("#log-box"); return b.scrollHeight-b.scrollTop-b.clientHeight<3'), 'resize keeps the newest line visible');
+  await js('document.querySelector("#log-box").style.flex=""; document.querySelector("#log-box").style.height=""');
+  await sleep(200);
   await js(`window.longTasks=[]; new PerformanceObserver(list=>window.longTasks.push(...list.getEntries().map(e=>e.duration))).observe({type:'longtask'});
     window.logMutations=0; new MutationObserver(()=>window.logMutations++).observe(document.querySelector('#log-box'),{childList:true});`);
   emit(2400); await sleep(600);
   assert.equal(await js('return document.querySelector("#log-box").children.length'), 80);
   assert.equal(await js('return !!window.injected'), false);
   assert.equal(await js('return document.querySelector("#log-follow").getAttribute("aria-pressed")'), 'true');
+  assert.equal(await js('return document.querySelector("#log-box .log-line:last-child .log-text").textContent'), history.at(-1).text, 'burst shows the newest row');
   await click('#log-follow');
+  await js('document.querySelector("#log-box").dispatchEvent(new Event("scroll"))');
+  assert.equal(await js('return document.querySelector("#log-follow").getAttribute("aria-pressed")'), 'false', 'late programmatic scroll must not undo an explicit pause');
   const paused = await js('return document.querySelector("#log-box").innerHTML');
   emit(30); await sleep(180);
   assert.equal(await js('return document.querySelector("#log-box").innerHTML'), paused, 'paused DOM must stay stable');
   await click('#log-jump');
   await click('[data-level=WARN]');
   assert.equal(await js('return [...document.querySelectorAll("#log-box .log-line")].every(n=>n.classList.contains("log-warn"))'), true);
+  const sparse = [{ ...line('rare warning at the start of a burst'), level: 'WARN' },
+    ...Array.from({length: 300}, () => ({ ...line('routine information'), level: 'INFO' }))];
+  history = history.concat(sparse).slice(-2000);
+  for (const response of streams) response.write(`event: batch\ndata: ${JSON.stringify({lines:sparse})}\n\n`);
+  await sleep(350);
+  assert.equal(await js('return document.querySelector("#log-box .log-line:last-child .log-text").textContent'), sparse[0].text, 'filter before queue truncation preserves latest matching row');
+  await js(`window.makeURL=URL.createObjectURL; window.anchorClick=HTMLAnchorElement.prototype.click;
+    URL.createObjectURL=blob=>{window.exportedLog=blob;return window.makeURL(blob)};
+    HTMLAnchorElement.prototype.click=function(){window.exportedName=this.download};
+    document.querySelector('#log-export').click();
+    URL.createObjectURL=window.makeURL; HTMLAnchorElement.prototype.click=window.anchorClick;`);
+  const exported = await cmd('POST', '/execute/async', { script: 'window.exportedLog.text().then(arguments[arguments.length-1])', args: [] });
+  assert(exported.includes(sparse[0].text) && !exported.includes('[INFO]'), 'export includes filtered buffer, not only the DOM');
+  assert.match(await js('return window.exportedName'), /^zhiwei-logs-.*\.txt$/);
+  await js('document.querySelector("#log-box").scrollTop=0');
+  await until(() => js('return document.querySelector("#log-follow").getAttribute("aria-pressed")==="false"'), 'reading older rows pauses');
+  await js('const b=document.querySelector("#log-box"); b.scrollTop=b.scrollHeight');
+  await until(() => js('return document.querySelector("#log-follow").getAttribute("aria-pressed")==="true"'), 'scrolling to bottom resumes');
   // Changing filters must preserve toolbar nodes, focus and the SSE subscription.
   await js('window.searchNode=document.querySelector("#log-search")');
   await click('[data-level=""]');
   assert.equal(await js('return window.searchNode===document.querySelector("#log-search")'), true);
   await route('plugins'); await until(() => streams.size === 0, 'SSE closes on navigation');
   await route('logs'); await until(() => streams.size === 1, 'SSE reconnects');
+  await click('#log-follow');
+  const beforeBackground = await js('const b=document.querySelector("#log-box"); return {html:b.innerHTML,top:b.scrollTop}');
   const original = await cmd('GET', '/window');
   const tab = await cmd('POST', '/window/new', { type: 'tab' });
   await cmd('POST', '/window', { handle: tab.handle });
@@ -191,12 +222,31 @@ async function shot(name) {
   await cmd('DELETE', '/window'); await cmd('POST', '/window', { handle: original });
   await until(() => streams.size === 1, 'visible tab resumes');
   await sleep(150);
+  assert.deepEqual(await js('const b=document.querySelector("#log-box"); return {html:b.innerHTML,top:b.scrollTop}'), beforeBackground, 'paused reading survives hidden tab and new snapshot');
+  await click('#log-jump');
+  assert.equal(await js('return document.querySelector("#log-box .log-line:last-child .log-text").textContent'), history.at(-1).text);
   const metrics = await js('return {longTasks:window.longTasks, logMutations:window.logMutations}');
   // 这一批改动的中心就是「2400 行突发不长任务、DOM 按 100ms 合批」。
   // 数字采到了就要判定，否则把 DOM 上限调回 500、或改回逐条写 DOM，测试照样全绿。
   assert(Math.max(0, ...metrics.longTasks) < 50, `no long task over 50ms (got ${JSON.stringify(metrics.longTasks)})`);
   assert(metrics.logMutations <= 30, `log DOM stays batched (got ${metrics.logMutations} mutations)`);
-  history = Array.from({length:20},(_,i)=>line(['已连接实现端，开始接收消息','配置已保存，下一条消息生效','请求暂未回应，等待重试','已完成本轮消息处理'][i%4]));
+  // A non-SSE response closes EventSource permanently; the app must reopen it.
+  rejectStreams = true;
+  for (const response of streams) response.end();
+  await until(() => js('return document.querySelector("#log-status").textContent.includes("秒后重试")'), 'closed SSE backoff');
+  rejectStreams = false;
+  await until(() => streams.size === 1, 'closed SSE recovers');
+  await route('settings');
+  await click('[data-density-choice=comfortable]');
+  assert.equal(await js('return getComputedStyle(document.documentElement).getPropertyValue("--md-type-body-medium-size").trim()'), '15px');
+  await cmd('POST', '/refresh', {});
+  await until(() => js('return document.documentElement.dataset.density==="comfortable" && !!document.querySelector("[data-density-choice]")'), 'density persists across reload');
+  await click('[data-density-choice=compact]');
+  assert.equal(await js('return getComputedStyle(document.documentElement).getPropertyValue("--md-type-body-medium-size").trim()'), '13px');
+  history = Array.from({length:20},(_,i)=>{
+    const [level,text] = [['INFO','已连接实现端，开始接收消息'],['INFO','配置已保存，下一条消息生效'],['WARN','请求暂未回应，等待重试'],['INFO','已完成本轮消息处理'],['ERRO','图片下载失败，请稍后重试']][i%5];
+    return {...line(text),level};
+  });
   const screenshots = ['overview','plugins','plugins/oai','plugins/console','ambient','logs','command','settings'];
   for (const [label, width, height] of [['compact',390,844],['narrow',320,740],['medium',800,1000],['expanded',1400,900]]) {
     await viewport(width,height);
@@ -205,6 +255,7 @@ async function shot(name) {
       for (const page of screenshots) {
         await route(page); await js('window.scrollTo(0,0)'); await sleep(150);
         assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `overflow: ${label}/${theme}/${page}`);
+        if (page === 'logs') assert(await js('const b=document.querySelector("#log-box"); const t=document.querySelector(".log-tools"); return b.scrollHeight-b.scrollTop-b.clientHeight<3 && t.getBoundingClientRect().bottom <= b.getBoundingClientRect().top'), `latest visible and toolbar does not cover logs: ${label}/${theme}`);
         await shot(`${label}-${theme}-${page.replace('/','-')}`);
       }
     }
@@ -230,10 +281,10 @@ async function shot(name) {
   assert.equal(await js('return document.querySelectorAll(".ripple").length'), 0, 'reduced motion: no ripple');
   await route('plugins');
   assert(await js('return [...document.querySelectorAll("button:not([disabled])")].filter(e=>e.getClientRects().length).every(e=>e.getBoundingClientRect().height >= 48)'), '48px button touch targets');
-  const errors = (await cmd('POST', '/log', { type:'browser' })).filter(e => e.level === 'SEVERE' && !e.message.includes('404'));
+  const errors = (await cmd('POST', '/log', { type:'browser' })).filter(e => e.level === 'SEVERE' && !e.message.includes('404') && !e.message.includes('503'));
   assert.deepEqual(errors, [], 'no JavaScript errors');
   if (out) fs.writeFileSync(path.join(out, 'metrics.json'), JSON.stringify(metrics, null, 2));
-  console.log('Console browser checks passed: navigation, switches, stale responses, dialogs, forms, bounded logs, pause, visibility, themes, 320–1400px and reduced motion.');
+  console.log('Console browser checks passed: navigation, switches, stale responses, dialogs, forms, bounded logs, sparse filters, export, resize pinning, pause, visibility, reconnect, density persistence, themes, 320–1400px and reduced motion.');
   console.log(JSON.stringify(metrics));
 })().catch(error => { console.error(error); process.exitCode=1; }).finally(async () => {
   if (session) await cmd('DELETE','').catch(()=>{});

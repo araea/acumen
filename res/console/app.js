@@ -298,7 +298,7 @@
     { id: "command", label: "命令", title: "命令" },
   ];
 
-  const NAV_HINT = "知微";
+  const NAV_HINT = "知微 · 工作台";
 
   /** 导航只搭一次：每次重画都会把选中态的过渡打断，看着像闪。 */
   function buildNav() {
@@ -412,6 +412,7 @@
     const changed = lastPage !== pageKey;
     lastPage = pageKey;
     view.innerHTML = html;
+    view.dataset.page = route.page;
     view.removeAttribute("aria-busy");
     if (route.detail) {
       const display = layout() === "expanded"
@@ -924,26 +925,11 @@
   }
 
   /* ---- 日志 ----
-     这个面板的四条口径：
-
-     1. **贴底就是跟随。** 判定只看「面板是不是贴在底部」，不看手势：贴在底部
-        就是跟，离开底部就是停。程序化滚动、换宽度、折行都会触发 scroll，用
-        手势判定会把它们一并算成暂停意图，停了还不会自己回来（旧写法就是栽在
-        这里：800ms 内的手势加距底 48px 就暂停，之后只能手点「回到最新」）。
-        现在滚回底部就自己恢复，不需要任何一处额外状态。
-     2. **行高必须是真的。** 旧写法给屏外行 `content-visibility: auto` 加
-        48px 的估值，面板的 `scrollHeight` 因此比实际矮，插进新行之后
-        「贴到底部」落在一个已经过时的高度上，看得见的就是「没显示最新那几行」。
-        窗口只有几十行，省下来的重排本来就不值得，这一条整个去掉。
-     3. **暂停就是暂停。** 暂停期间 DOM 一个字节都不动，新行只进有界缓冲，
-        屏上还留着选区与滚动位置；恢复时按缓冲重画一次补齐。
-     4. **断了要自己接回来。** `EventSource` 只在网络抖动时自动重连；服务端
-        回 401／503 这种「非事件流」响应时它会直接进入 CLOSED，从此一声不响。
-        所以 CLOSED 要自己退避重开，否则这一页会永远停在「连接中断」上。
-
-     行高做真的是有代价的：屏外行照样要排版要画。所以 DOM 窗口收到 80 行，
-     而且一次最多插 40 行——突发 2400 行时单次任务的节点增删量因此有上限，
-     剩下的留在队列里下一个 100ms 接着插，屏幕上始终是最近的那一段。 */
+     跟随是阅读意图，不从每一次布局产生的 scroll 事件反推。
+     真实向上滚动暂停；回到底部恢复。面板尺寸变化只在跟随时重新贴底。
+     暂停保留 DOM、选区和位置，后台关闭连接，回来以快照补齐有界缓冲。
+     筛选必须先于显示队列截断，避免密集 INFO 淹没最新一条 WARN。
+  */
   const DOM_LINES = 80;
   const LOG_BATCH_MS = 100;
   const LOG_INSERT_MAX = 40;
@@ -956,7 +942,7 @@
   const logState = {
     lines: [], level: "", text: "", follow: true, source: null,
     limit: 2000, queue: [], frame: 0, mounted: false, status: "正在连接…",
-    fresh: 0, failures: 0, retry: 0, overview: 0,
+    fresh: 0, failures: 0, retry: 0, overview: 0, resize: null, scrollTop: 0,
   };
 
   function logLine(entry) {
@@ -984,10 +970,15 @@
   /** 贴到底部。读 scrollHeight 会强制一次布局，拿到的就是刚插进去那一行的真实高度。 */
   function logPin(box) {
     box.scrollTop = box.scrollHeight;
+    logState.scrollTop = box.scrollTop;
   }
 
   /** 面板上下两处跟着状态走的东西：暂停按钮上的字，与「回到最新」上的条数。 */
   function syncLogChrome() {
+    const countLabel = $("#log-count");
+    if (countLabel) countLabel.textContent = `${$("#log-box")?.querySelectorAll(".log-line").length || 0} 行可见 · ${logState.lines.length} 行缓冲`;
+    const latest = $("#log-latest");
+    if (latest) latest.textContent = logState.lines.length ? `最近收到 ${logState.lines.at(-1).at}` : "等待记录";
     const button = $("#log-follow");
     if (button) {
       button.setAttribute("aria-pressed", String(logState.follow));
@@ -1008,6 +999,8 @@
   function paintLog() {
     const box = $("#log-box");
     if (!box || document.hidden) return;
+    clearTimeout(logState.frame);
+    logState.frame = 0;
     logState.queue = [];
     const shown = logState.lines.filter(logMatches).slice(-DOM_LINES);
     box.innerHTML = shown.length
@@ -1028,6 +1021,7 @@
 
   /** 跟随开关。恢复时按缓冲重画一次：暂停期间新行只进了缓冲，没进 DOM。 */
   function setFollow(on) {
+    logState.scrollTop = $("#log-box")?.scrollTop || 0;
     if (logState.follow !== on) {
       logState.follow = on;
       if (on) logState.fresh = 0;
@@ -1048,7 +1042,7 @@
       syncLogChrome();
       return;
     }
-    logState.queue.push(...entries);
+    logState.queue.push(...entries.filter(logMatches));
     if (logState.queue.length > DOM_LINES) {
       logState.queue.splice(0, logState.queue.length - DOM_LINES);
     }
@@ -1070,37 +1064,45 @@
       while (box.children.length > DOM_LINES) box.firstElementChild.remove();
       logPin(box);
     }
+    syncLogChrome();
     if (rest) logState.frame = setTimeout(flushLog, LOG_BATCH_MS);
   }
 
   function paintLogs() {
     const levels = [["", "全部"], ["INFO", "信息"], ["WARN", "警告"], ["ERRO", "错误"], ["DEBG", "调试"]];
     return `
-      ${pageHead("日志", "查看运行记录；暂停后可停留阅读，滚回底部或点「回到最新」就继续跟随。")}
-      <div class="toolbar">
+      ${pageHead("日志", "运行的每一步，都在这里。向上翻阅暂停，回到底部继续跟随。")}
+      <section class="log-workspace" aria-label="日志工作区">
+      <div class="toolbar log-tools">
         <div class="search">${ICONS.search}
           <input id="log-search" type="search" placeholder="搜索内容或来源"
                  value="${esc(logState.text)}" aria-label="过滤日志">
         </div>
-        <div class="seg" data-connected role="group" aria-label="日志级别">
+        <div class="seg log-levels" data-connected role="group" aria-label="日志级别">
           ${levels.map(([value, label]) => `<button class="seg-item" type="button" data-level="${value}"
             aria-pressed="${logState.level === value}">${label}</button>`).join("")}
         </div>
+        <div class="log-actions">
         <button class="chip" type="button" id="log-follow" aria-pressed="${logState.follow}">
           ${logState.follow ? "跟随最新" : "已暂停"}</button>
+        <button class="btn" type="button" id="log-export">导出记录</button>
         <button class="btn btn-icon" type="button" id="log-clear" title="清空这一屏"
                 aria-label="清空这一屏">${ICONS.trash}</button>
       </div>
+      </div>
       <div class="log-meta"><span id="log-status" role="status">${esc(logState.status)}</span>
-        <span>最近 ${DOM_LINES} 行 · 收到即更新</span></div>
+        <span id="log-latest">等待记录</span></div>
       <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志"></div>
       <button class="btn btn-filled jump ${logState.follow ? "" : "jump-on"}" type="button"
               id="log-jump" data-fresh="${logState.fresh || ""}"><span>回到最新</span></button>
-      <p class="note">离开日志页或切到后台时暂停接收，返回后补齐最近记录。
-        完整日志可在终端用 <span class="key">./bot logs</span> 查看。</p>`;
+      <div class="log-footer"><span id="log-count"></span><span>显示最近 ${DOM_LINES} 条匹配记录</span></div>
+      </section>
+      <p class="note">离开或切到后台时暂停接收，返回后补齐最近记录。导出当前筛选的缓冲记录；完整日志用 <span class="key">./bot logs</span> 查看。</p>`;
   }
 
   function stopLogs() {
+    logState.resize?.disconnect();
+    logState.resize = null;
     logState.source?.close();
     logState.source = null;
     logState.mounted = false;
@@ -1112,7 +1114,6 @@
     logState.overview = 0;
     logState.failures = 0;
     logState.queue = [];
-    logState.fresh = 0;
   }
 
   /** 建一条新的日志流。事件都在 `source === logState.source` 时才认，避免旧流的尾巴改到新状态。 */
@@ -1131,6 +1132,7 @@
         logState.lines = data.lines.slice(-logState.limit);
         logState.queue = [];
         if (logState.follow || !$("#log-box")?.querySelector(".log-line")) paintLog();
+        syncLogChrome();
         if (data.dropped) logStatus(`追不上了，中间跳过 ${data.dropped} 行`);
       } catch { logStatus("记录未能读取，刷新重试"); }
     });
@@ -1175,12 +1177,22 @@
       return;
     }
     logState.mounted = true;
-    paintLog();
-    // 贴底就是跟随。这一条是自愈的——程序化滚动之后停在底部，判定自然还是「跟随」。
+    // 同一页面从后台回来且已暂停时保留选区；新页面才需要首次绘制。
+    if (logState.follow || !box.dataset.initialized) paintLog();
+    box.dataset.initialized = "true";
+    logState.scrollTop = box.scrollTop;
     box.onscroll = () => {
-      const stuck = logStuck(box);
-      if (stuck !== logState.follow) setFollow(stuck);
+      const previous = logState.scrollTop;
+      logState.scrollTop = box.scrollTop;
+      if (Math.abs(box.scrollTop - previous) < 1) return;
+      if (logState.follow && box.scrollTop < previous && !logStuck(box)) setFollow(false);
+      else if (!logState.follow && box.scrollTop > previous && logStuck(box)) setFollow(true);
     };
+    logState.resize?.disconnect();
+    logState.resize = new ResizeObserver(() => {
+      if (logState.follow && box.isConnected && !document.hidden) logPin(box);
+    });
+    logState.resize.observe(box);
     if (document.hidden) return;
     connectLogs();
   }
@@ -1263,6 +1275,14 @@
         <div class="section-title">装到桌面
           <span class="count">${standalone() ? "已经装上了" : "可选"}</span></div>
         ${installBody()}
+      </section>
+
+      <section class="card">
+        <div class="section-title">阅读密度</div>
+        <p class="note">紧凑字号在一屏呈现更多信息，舒适字号适合长时间阅读。仅保存在当前浏览器。</p>
+        <div class="seg" data-connected role="group" aria-label="阅读密度">
+          ${[["compact", "紧凑"], ["comfortable", "舒适"]].map(([value, label]) => `<button class="seg-item" type="button" data-density-choice="${value}" aria-pressed="${(document.documentElement.dataset.density || "compact") === value}">${label}</button>`).join("")}
+        </div>
       </section>
 
       <section class="card">
@@ -1696,6 +1716,13 @@
         return;
       }
 
+      const density = target.closest("[data-density-choice]");
+      if (density) {
+        applyDensity(density.dataset.densityChoice);
+        try { localStorage.setItem("zhiwei.density", density.dataset.densityChoice); } catch { /* private mode */ }
+        return;
+      }
+
       if (target.closest("[data-install]")) {
         await install();
         return;
@@ -1725,6 +1752,17 @@
 
       if (target.closest("#log-jump")) {
         setFollow(true);
+        return;
+      }
+
+      if (target.closest("#log-export")) {
+        const text = logState.lines.filter(logMatches).map(line => `[${line.at}] [${line.level}] [${line.target}] ${line.text}`).join("\n");
+        const url = URL.createObjectURL(new Blob([text + "\n"], { type: "text/plain;charset=utf-8" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `zhiwei-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
         return;
       }
 
@@ -1897,7 +1935,15 @@
     render();
   }
 
+  function applyDensity(value) {
+    document.documentElement.dataset.density = value === "comfortable" ? "comfortable" : "compact";
+    for (const button of document.querySelectorAll("[data-density-choice]")) {
+      button.setAttribute("aria-pressed", String(button.dataset.densityChoice === document.documentElement.dataset.density));
+    }
+  }
+
   function boot() {
+    try { applyDensity(localStorage.getItem("zhiwei.density")); } catch { applyDensity("compact"); }
     applyTheme();
     applyLayout();
 
