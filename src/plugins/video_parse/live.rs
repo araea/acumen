@@ -255,9 +255,106 @@ async fn live_sends_the_preview_into_the_sandbox_group() {
         .unwrap();
 }
 
+/// 群里发的是卡片（QQ 小程序卡 / 分享卡）时走通同一条路：从 `json` 段取落地地址、
+/// 跟短链、拉稿件信息、回预览。载荷照真机收到的形状造，只有里面的 b23 短链换成
+/// 样品那条——真卡片指向的稿件随时可能被删，自检不能靠它。
+#[tokio::test]
+#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条预览并撤回"]
+async fn live_reads_a_card_from_the_sandbox_group() {
+    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+    let (ctx, writer) = live_context().await;
+
+    // 卡片必须引用一条真实存在的消息，预览才建立得起来。
+    let trigger: serde_json::Value = writer
+        .call(
+            &ctx,
+            "message.create",
+            json!({"channel_id": group.to_string(), "content": "[分享]视频"}),
+        )
+        .await
+        .unwrap();
+    let trigger_id: i64 = trigger[0]["id"].as_str().unwrap().parse().unwrap();
+
+    // 封面地址是不转义的（正则先撞上它），落地地址是转义的（正则撞不上）——
+    // 所以这条测试只有在卡片地址真的被取到时才会通过。
+    let payload = r#"{"ver":"1.0.0.19","prompt":"[QQ小程序]测试稿件","app":"com.tencent.miniapp_01",
+        "meta":{"detail_1":{"title":"哔哩哔哩","appid":"1109937557",
+        "icon":"http://miniapp.gtimg.cn/public/appicon/test.jpg",
+        "preview":"https://qq.ugcimg.cn/v1/test",
+        "url":"m.q.qq.com/a/s/test",
+        "qqdocurl":"https:\/\/b23.tv\/BV1GJ411x7h7"}}}"#;
+    let (ctx, writer) = card_context(ctx, writer, group, trigger_id, payload).await;
+
+    let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
+    assert!(consumed.is_none(), "卡片该由本插件吃掉");
+
+    // 群里到底有没有：看实现端记下来的内容，不看日志。
+    let listed: serde_json::Value = writer
+        .call(&ctx, "message.list", json!({"channel_id": group.to_string()}))
+        .await
+        .unwrap();
+    let messages = listed["data"].as_array().cloned().unwrap_or_default();
+    let preview = messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains(HINT_LINE))
+        })
+        .expect("卡片没有换来预览");
+    let content = preview["content"].as_str().unwrap_or_default().to_string();
+    println!("{content}");
+    assert!(content.contains("索尼音乐中国"), "预览里没有 UP 主");
+    assert!(
+        content.contains(&format!("<quote id=\"{trigger_id}\"/>")),
+        "预览没有引用那条卡片"
+    );
+
+    // 收工：这次发出去的连同引用目标一起撤回。
+    for id in [trigger_id.to_string(), preview["id"].as_str().unwrap().to_string()] {
+        let _: serde_json::Value = writer
+            .call(
+                &ctx,
+                "message.delete",
+                json!({"channel_id": group.to_string(), "message_id": id}),
+            )
+            .await
+            .unwrap();
+    }
+    state::release(group, preview["id"].as_str().unwrap()).await;
+}
+
+/// 把[`live_context`]给的上下文换成「一条卡片消息」：正文为空，`json` 段带着载荷，
+/// `raw_message` 是与实现端一致的 CQ 形态（`[CQ:json,data=…]`）。
+async fn card_context(
+    mut ctx: Context,
+    writer: LockedWriter,
+    group: i64,
+    message_id: i64,
+    payload: &str,
+) -> (Context, LockedWriter) {
+    ctx.event = EventType::Satori(
+        simd_json::serde::to_owned_value(json!({
+            "post_type": "message",
+            "satori_type": "message-created",
+            "message_type": "group",
+            "group_id": group,
+            "user_id": 1,
+            "message_id": message_id,
+            "raw_message": format!("[CQ:json,data={payload}]"),
+            "sender": {"nickname": "自检", "role": "member"},
+            "message": [{"type": "json", "data": {"data": payload}}]
+        }))
+        .unwrap(),
+    );
+    (ctx, writer)
+}
+
 /// 一个够用的 Context：配置、数据库与登录账号，事件本身用不上。
-async fn live_context() -> (Context, LockedWriter) {
-    let db = Database::connect("sqlite::memory:").await.unwrap();
+async fn live_context() -> (Context, LockedWriter) {    let db = Database::connect("sqlite::memory:").await.unwrap();
     let text = tokio::fs::read_to_string("config.toml")
         .await
         .expect("要在仓库根目录跑");

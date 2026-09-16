@@ -95,7 +95,7 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 指令匹配统一走 `crate::command`：
 
-前缀类指令用 `match_command(ctx, cmd)` 或 `first_command_match(ctx, &[cmd])`。要求指令名后为空白或消息末尾的（ctl）用 `match_word_command`。自带正则匹配的（词云、stats 式）用 `strip_prefix`。参数用 `extract_text_arg(&matched.args)` 拼成纯文本，取图用 `get_image_url(ctx, writer, &args, reply_id)`，从文本里提第一个 URL 用 `find_url(text)`。
+前缀类指令用 `match_command(ctx, cmd)` 或 `first_command_match(ctx, &[cmd])`。要求指令名后为空白或消息末尾的（ctl）用 `match_word_command`。自带正则匹配的（词云、stats 式）用 `strip_prefix`。参数用 `extract_text_arg(&matched.args)` 拼成纯文本，取图用 `get_image_url(ctx, writer, &args, reply_id)`，从文本里提第一个 URL 用 `find_url(text)`，要连卡片段一起看用 `message_links(ctx)`（卡片里的落地地址排在正文前面，`card_target_url` 单独用可按载荷取地址）。
 
 匹配到就处理并返回 `Ok(None)`，不属于本插件就返回 `Ok(Some(ctx))` 放行。
 

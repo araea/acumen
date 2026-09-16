@@ -21,7 +21,7 @@ mod state;
 mod live;
 
 use crate::adapters::satori::{LockedWriter, send_msg, send_msg_id};
-use crate::command::{find_url, message_reply_id};
+use crate::command::{message_links, message_reply_id};
 use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
@@ -212,12 +212,12 @@ pub fn handle(
         }
 
         // 二、群里出现视频站链接：只回一条预览，片子等用户开口。
-        let Some(candidate) = find_url(msg.text()) else {
+        // 链接不一定写在正文里：QQ 的小程序卡与分享卡是一段落在 `json` 元素里的
+        // 载荷，落地地址要从里面取（见 `message_links`）。两种来源都收，取第一个
+        // 认得的稿件页。
+        let Some(candidate) = take_candidate(&ctx) else {
             return Ok(Some(ctx));
         };
-        if !is_video_link(&candidate) {
-            return Ok(Some(ctx));
-        }
         match preview(&ctx, &writer, &config, &candidate, group_id, user_id, msg.message_id()).await
         {
             Ok(record) => {
@@ -227,6 +227,14 @@ pub fn handle(
         }
         Ok(None)
     })
+}
+
+/// 这条消息里第一个本插件接得住的链接。
+///
+/// [`message_links`] 把卡片里的落地地址排在正文前面，这里逐个过一遍
+/// [`is_video_link`]——卡片载荷里还混着封面与图标的地址，第一个能用的才作数。
+fn take_candidate(ctx: &Context) -> Option<String> {
+    message_links(ctx).into_iter().find(|url| is_video_link(url))
 }
 
 /// 会话标识：群聊用群号，私聊取用户号的负数。
@@ -706,19 +714,43 @@ mod tests {
             message.push(serde_json::json!({"type": "reply", "data": {"id": id}}));
         }
         message.push(serde_json::json!({"type": "text", "data": {"text": text}}));
-        let event = simd_json::serde::to_owned_value(serde_json::json!({
+        stage(
+            serde_json::json!({
+                "post_type": "message",
+                "satori_type": "message-created",
+                "message_type": "group",
+                "group_id": GROUP,
+                "user_id": user_id,
+                "manual_self": manual_self,
+                "message_id": 9001,
+                "raw_message": text,
+                "sender": {"nickname": "群友", "role": "member"},
+                "message": message
+            }),
+        )
+        .await
+    }
+
+    /// 一条卡片消息：正文是空的，链接在 `json` 段里，`raw_message` 是与实现端一致的
+    /// CQ 形态（`[CQ:json,data=…]`）。
+    async fn card_event(payload: &str) -> (Context, LockedWriter) {
+        stage(serde_json::json!({
             "post_type": "message",
             "satori_type": "message-created",
             "message_type": "group",
             "group_id": GROUP,
-            "user_id": user_id,
-            "manual_self": manual_self,
-            "message_id": 9001,
-            "raw_message": text,
+            "user_id": 42,
+            "message_id": 9002,
+            "raw_message": format!("[CQ:json,data={payload}]"),
             "sender": {"nickname": "群友", "role": "member"},
-            "message": message
+            "message": [{"type": "json", "data": {"data": payload}}]
         }))
-        .unwrap();
+        .await
+    }
+
+    /// 拿一份事件造一个可用的上下文；写回执走控制台适配器，不发真群。
+    async fn stage(event: serde_json::Value) -> (Context, LockedWriter) {
+        let event = simd_json::serde::to_owned_value(event).unwrap();
 
         let mut config = AppConfig::default();
         for plugin in crate::plugins::get_plugins() {
@@ -812,5 +844,35 @@ mod tests {
             handle(ctx, writer).await.unwrap().is_some(),
             "机器人自己的回声不该被处理"
         );
+    }
+
+    /// 卡片消息：正文是空的，链接在 `json` 段里——QQ 的小程序卡与分享卡都是这个
+    /// 形态。载荷里封面与图标的地址排在前面，不能让它把卡片真正打开的那页顶掉。
+    #[tokio::test]
+    async fn a_card_is_read_for_the_page_it_opens() {
+        // 小程序卡：地址是转义过的（`https:\/\/`），正则抓不到。
+        let miniapp = r#"{"app":"com.tencent.miniapp_01","prompt":"[QQ小程序]琵琶曲",
+            "meta":{"detail_1":{"title":"哔哩哔哩",
+            "icon":"http:\/\/miniapp.gtimg.cn\/public\/appicon\/432b.jpg",
+            "preview":"https:\/\/qq.ugcimg.cn\/v1\/gio99kjvll3gl6baq",
+            "qqdocurl":"https:\/\/b23.tv\/czQoMIg?share_medium=android&share_source=qq"}}}"#;
+        let (ctx, _writer) = card_event(miniapp).await;
+        assert_eq!(
+            take_candidate(&ctx).as_deref(),
+            Some("https://b23.tv/czQoMIg?share_medium=android&share_source=qq")
+        );
+
+        // 分享卡：落地地址在 `meta.news.jumpUrl`。
+        let news = r#"{"app":"com.tencent.tuwen.lua","view":"news",
+            "meta":{"news":{"jumpUrl":"https://b23.tv/DONRtWF",
+            "preview":"https://qq.ugcimg.cn/v1/odu6is84rije659prqcbgoornfg14q"}}}"#;
+        let (ctx, _writer) = card_event(news).await;
+        assert_eq!(take_candidate(&ctx).as_deref(), Some("https://b23.tv/DONRtWF"));
+
+        // 卡片指向的页面不归本插件，事件原样放行给后面的插件。
+        let other = r#"{"app":"com.tencent.structmsg","view":"news",
+            "meta":{"news":{"jumpUrl":"https://mp.weixin.qq.com/s/abc"}}}"#;
+        let (ctx, _writer) = card_event(other).await;
+        assert_eq!(take_candidate(&ctx), None);
     }
 }

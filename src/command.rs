@@ -4,7 +4,7 @@ use crate::adapters::satori::{LockedWriter, api};
 use crate::event::Context;
 use regex::Regex;
 use simd_json::OwnedValue;
-use simd_json::base::ValueAsScalar;
+use simd_json::base::{ValueAsObject, ValueAsScalar};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::sync::OnceLock;
 
@@ -121,6 +121,111 @@ fn trim_tail(url: &str) -> &str {
 fn balanced(url: &str, open: u8, close: u8) -> bool {
     let count = |target: u8| url.bytes().filter(|byte| *byte == target).count();
     count(open) >= count(close)
+}
+
+/// 卡片载荷里「点开这张卡会去哪」的地址。
+///
+/// 群里的链接有一半不是以正文出现的：QQ 的小程序卡与分享卡都是一段 JSON，
+/// 整段落在 `<json>` 元素里。载荷里的斜杠常被转义成 `\/`，所以这里按 JSON 解析，
+/// 不在字符串上找字面的 `https://`。
+///
+/// 字段按可信度取：`qqdocurl` 是小程序真正打开的那个页面，`jumpUrl` 是分享卡的
+/// 落地地址；载荷里那些 `icon` / `preview` 只是图，不取。已知路径都没命中时，
+/// 再按字段名在整段载荷里找一遍——卡片的外层结构换得勤。
+pub fn card_target_url(payload: &str) -> Option<String> {
+    /// 已知的落地地址路径，按可信度排列（`meta` 底下那几种外层都见过）。
+    const PATHS: &[&[&str]] = &[
+        &["meta", "detail_1", "qqdocurl"],
+        &["meta", "detail", "qqdocurl"],
+        &["meta", "news", "qqdocurl"],
+        &["meta", "miniapp", "qqdocurl"],
+        &["meta", "detail_1", "jumpUrl"],
+        &["meta", "detail", "jumpUrl"],
+        &["meta", "news", "jumpUrl"],
+        &["meta", "miniapp", "jumpUrl"],
+        &["qqdocurl"],
+        &["jumpUrl"],
+    ];
+    /// 兜底按字段名找时认的键，同样分先后。
+    const KEYS: &[&str] = &["qqdocurl", "jumpUrl"];
+
+    let mut bytes = payload.as_bytes().to_vec();
+    let value = simd_json::to_owned_value(&mut bytes).ok()?;
+    PATHS
+        .iter()
+        .find_map(|path| nested_str(&value, path))
+        .or_else(|| KEYS.iter().find_map(|key| search_card_key(&value, key, 0)))
+}
+
+/// 按路径取值，中间断在哪一层都算没取到。
+fn nested_str(value: &OwnedValue, path: &[&str]) -> Option<String> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    non_empty(current)
+}
+
+/// 从外往里找第一个同名的字符串字段。层数有个上限，免得碰上畸形载荷把栈走深。
+fn search_card_key(value: &OwnedValue, key: &str, depth: usize) -> Option<String> {
+    const MAX_DEPTH: usize = 6;
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let Some(object) = value.as_object() else {
+        return None;
+    };
+    if let Some(found) = object.get(key).and_then(non_empty) {
+        return Some(found);
+    }
+    object
+        .values()
+        .find_map(|child| search_card_key(child, key, depth + 1))
+}
+
+fn non_empty(value: &OwnedValue) -> Option<String> {
+    let text = value.as_str()?.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// 一条消息里的链接候选，按可信度排序。
+///
+/// 卡片给出的落地地址排在正文前面：它是「点开卡片会去哪」，而 `raw_message`
+/// 里那串载荷还混着封面与图标的地址，正则先抓到的多半不是它。
+///
+/// 正文只取第一个，与 [`find_url`] 在同一处；卡片可以有好几张，按出现顺序排。
+pub fn message_links(ctx: &Context) -> Vec<String> {
+    let mut links = Vec::new();
+    let Some(message) = ctx.as_message() else {
+        return links;
+    };
+    if let Some(segments) = message.0.get_array("message") {
+        for segment in segments.iter() {
+            if segment.get_str("type") != Some("json") {
+                continue;
+            }
+            let Some(data) = segment.get("data") else {
+                continue;
+            };
+            let payload = data
+                .get_str("data")
+                .or_else(|| data.get_str("content"))
+                .unwrap_or("");
+            if let Some(url) = card_target_url(payload) {
+                push_unique(&mut links, url);
+            }
+        }
+    }
+    if let Some(url) = find_url(message.text()) {
+        push_unique(&mut links, url);
+    }
+    links
+}
+
+fn push_unique(links: &mut Vec<String>, url: String) {
+    if !links.iter().any(|seen| seen == &url) {
+        links.push(url);
+    }
 }
 
 /// 从指令参数或引用回复中提取第一张图片的 URL
@@ -257,7 +362,7 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::find_url;
+    use super::{card_target_url, find_url};
 
     #[test]
     fn urls_stop_where_the_sentence_resumes() {
@@ -315,5 +420,61 @@ mod tests {
         assert_eq!(find_url("没有链接的一句话"), None);
         assert_eq!(find_url("裸域名 example.com 不算"), None);
         assert_eq!(find_url("https://。"), None);
+    }
+
+    /// 样例取自真机收到的卡片（B 站小程序卡与 B 站分享卡各一份），只裁掉不影响
+    /// 取地址的字段。
+    #[test]
+    fn a_card_gives_up_the_page_it_opens() {
+        // 小程序卡：斜杠是转义的，正则抓不到 `https://`，只有按 JSON 解析才拿得到。
+        // 拿 `qqdocurl` 而不是 `url`——后者是小程序自己的路由页。
+        let miniapp = r#"{"ver":"1.0.0.19","prompt":"[QQ小程序]琵琶曲","app":"com.tencent.miniapp_01",
+            "meta":{"detail_1":{"title":"哔哩哔哩","desc":"琵琶曲","appid":"1109937557",
+            "icon":"http:\/\/miniapp.gtimg.cn\/public\/appicon\/432b.jpg",
+            "preview":"https:\/\/qq.ugcimg.cn\/v1\/gio99kjvll3gl6baq",
+            "url":"m.q.qq.com\/a\/s\/7cbaf275098703ebfccdf98701b6bcd3",
+            "qqdocurl":"https:\/\/b23.tv\/czQoMIg?share_medium=android&share_source=qq"}}}"#;
+        assert_eq!(
+            card_target_url(miniapp).as_deref(),
+            Some("https://b23.tv/czQoMIg?share_medium=android&share_source=qq")
+        );
+
+        // 分享卡：落地地址在 `meta.news.jumpUrl`，同一张卡里还有封面与图标两个地址。
+        let news = r#"{"app":"com.tencent.tuwen.lua","prompt":"[分享]视频","view":"news",
+            "meta":{"news":{"appid":100951776,"desc":"Agent 工作时，人类可以做什么",
+            "jumpUrl":"https://b23.tv/DONRtWF",
+            "preview":"https://qq.ugcimg.cn/v1/odu6is84rije659prqcbgoornfg14q",
+            "tagIcon":"https://open.gtimg.cn/open/app_icon/00/95/17/76/x.png"}}}"#;
+        assert_eq!(
+            card_target_url(news).as_deref(),
+            Some("https://b23.tv/DONRtWF")
+        );
+    }
+
+    /// 外层结构换个名字也要认，但只要「点开会去哪」的那两个字段，不碰图片地址。
+    #[test]
+    fn a_card_is_searched_by_field_name_when_the_shape_is_new() {
+        let unknown = r#"{"app":"com.tencent.other","meta":{"foo":{"bar":{
+            "title":"哔哩哔哩","icon":"https://example.com/icon.png",
+            "jumpUrl":"https://b23.tv/abc123"}}}}"#;
+        assert_eq!(
+            card_target_url(unknown).as_deref(),
+            Some("https://b23.tv/abc123")
+        );
+
+        // 只有封面与图标的卡片不是链接卡，取不到地址。
+        let plain = r#"{"app":"com.tencent.other","meta":{"detail_1":{
+            "title":"没有链接","icon":"https://example.com/a.png",
+            "preview":"https://example.com/b.png"}}}"#;
+        assert_eq!(card_target_url(plain), None);
+    }
+
+    #[test]
+    fn a_card_that_is_not_json_is_left_alone() {
+        assert_eq!(card_target_url(""), None);
+        assert_eq!(card_target_url("不是一个 JSON"), None);
+        assert_eq!(card_target_url("<msg serviceID=\"1\"></msg>"), None);
+        // 字段为空串同样不算数。
+        assert_eq!(card_target_url(r#"{"meta":{"news":{"jumpUrl":""}}}"#), None);
     }
 }
