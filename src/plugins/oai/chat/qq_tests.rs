@@ -603,7 +603,7 @@ async fn live_agent_uses_the_new_card_action() {
         &api_key,
         &reply_model,
         dir.path(),
-        &crate::plugins::ambient::skill_dirs(dir.path()),
+        &crate::plugins::ambient::skill_dirs(dir.path(), true),
         crate::plugins::ambient::PERSONA,
         &config,
         &Default::default(),

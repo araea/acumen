@@ -622,9 +622,16 @@ fn skills_root(base: &Path) -> PathBuf {
 }
 
 /// 这一轮随身的 skill 目录清单。
-pub(crate) fn skill_dirs(base: &Path) -> Vec<PathBuf> {
+///
+/// 查询额度为 0 时不带上 `satori-lookup`：它讲的那三个工具这一轮根本没挂上，
+/// 那一行描述与那份正文（虽然只在模型自己去读时才花 token）都是白带的。
+pub(crate) fn skill_dirs(base: &Path, lookup: bool) -> Vec<PathBuf> {
     let root = skills_root(base);
-    SKILLS.iter().map(|(name, _)| root.join(name)).collect()
+    SKILLS
+        .iter()
+        .filter(|(name, _)| lookup || *name != "satori-lookup")
+        .map(|(name, _)| root.join(name))
+        .collect()
 }
 
 /// 铺开人设与 skill。
@@ -1225,7 +1232,7 @@ async fn speak_up(
         &api_key,
         &reply_model,
         base,
-        &skill_dirs(base),
+        &skill_dirs(base, config.lookup_budget > 0),
         persona,
         config,
         &oai.search,

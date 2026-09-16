@@ -787,7 +787,67 @@ fn room_tools(config: &super::chat::ChatConfig) -> String {
             .into_iter()
             .map(str::to_string),
     );
+    // 出网工具写不写都行：这一轮没开联网时 `definitions` 会把它们滤掉（白名单是
+    // 过滤器）。写上是因为房间确实该有它们——漏写就等于把联网从房间里摘掉了。
+    names.extend(["web_search".to_string(), "web_fetch".to_string()]);
     names.join(",")
+}
+
+/// 房间里这一轮的工具块：名字清单、出网工具在不在，以及它的体量。
+///
+/// 工具定义跟着每一次请求走（一轮最多 24 次），它涨一点就是每一次请求都涨。
+/// 2026-09-17 量的：私聊 1.9k 字；群里 15.4k 字；加联网 16.2k 字。其中
+/// `satori_action` 一份 6.9k——19 个动作变体的严格结构，换的是「一次填对参数」。
+#[cfg(test)]
+mod tool_block_tests {
+    use super::*;
+
+    fn measure(names: &str, chat: bool, web: bool) -> usize {
+        serde_json::to_string(&super::super::agent::tools::definitions(
+            Some(names),
+            chat,
+            web,
+        ))
+        .unwrap()
+        .chars()
+        .count()
+    }
+
+    #[test]
+    fn a_room_gets_the_tools_its_budget_allows_and_the_web_pair() {
+        let config = super::super::chat::ChatConfig::default();
+        let names = room_tools(&config);
+        for name in [
+            "bash",
+            "satori_context",
+            "satori_action",
+            "satori_music",
+            "web_search",
+        ] {
+            assert!(names.contains(name), "缺了 {name}：{names}");
+        }
+        // 拍片默认额度是 0：工具不挂给模型。
+        assert!(!names.contains("satori_video"), "{names}");
+        // 管理动作没有单独的工具，靠 satori_action + 按群授权，白名单里不分。
+        assert!(!names.contains("mute"), "{names}");
+    }
+
+    /// 这份清单的体量。写新工具或加长说明之前先看一眼这条：它是每请求的固定开销。
+    #[test]
+    fn the_tool_block_stays_within_its_budget() {
+        let private = super::super::agent::tools::local_names().join(",");
+        assert!(
+            measure(&private, false, false) < 2_400,
+            "私聊那一份 {} 字",
+            measure(&private, false, false)
+        );
+        let group = room_tools(&super::super::chat::ChatConfig::default());
+        assert!(
+            measure(&group, true, true) < 17_500,
+            "群里那一份 {} 字",
+            measure(&group, true, true)
+        );
+    }
 }
 
 /// 内置 agent 房间走带工具的多轮循环，普通房间走单轮 Chat Completions。
