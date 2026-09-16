@@ -12,13 +12,14 @@ if (out) fs.mkdirSync(out, { recursive: true });
 const plugins = [
   ['logger', '日志', '记录运行日志'], ['oai', '智能对话', '与模型对话，管理房间与预设'],
   ['console', '控制台', '查看本机运行状态'], ['ambient', '搭话', '参与群聊，记住熟悉的人'],
-].map(([name, display, summary]) => ({ name, display, summary, section: 'system', on: true,
+].map(([name, display, summary], index) => ({ name, display, summary, section: 'system', on: index !== 2,
   pending: false, effect: '下一条消息生效', commands: [], configurable: true,
   config: { enabled: true, model: '示例模型', retries: 2 }, defaults: {}, diff: [] }));
 const sections = [{ code: 'system', name: '系统' }];
 const settings = { bots: [{ enabled: true, protocol: 'satori', url: 'http://127.0.0.1:3001', has_token: false }],
   command_prefix: ['/'], browser_path: '', global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: false, whitelist: [] } };
 let posts = [], streams = new Set(), sequence = 0, detailDelay = false;
+const token = 'fixture';
 const line = text => ({ at: '12:30:00', level: ['INFO','WARN','ERRO','DEBG'][sequence++ % 4], target: 'Plugin/Console', text });
 let history = Array.from({ length: 80 }, (_, i) => line(`运行记录 ${i} · 已完成处理`));
 function emit(count) {
@@ -32,6 +33,11 @@ function emit(count) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const reply = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+  // 夹具也认口令：凭证发错（请求头或 ?t=）要当场变红，而不是静默放行。
+  if (url.pathname.startsWith('/api')
+      && req.headers['x-zhiyan-token'] !== token && url.searchParams.get('t') !== token) {
+    return reply({ error: '口令不对' }, 401);
+  }
   if (req.method === 'POST') {
     let data = ''; for await (const chunk of req) data += chunk;
     const body = JSON.parse(data); posts.push({ path: url.pathname, body });
@@ -49,7 +55,11 @@ const server = http.createServer(async (req, res) => {
     return reply(plugin || {}, plugin ? 200 : 404);
   }
   if (url.pathname === '/api/settings') return reply(settings);
-  if (url.pathname === '/api/ambient') return reply({ ready: true, persona: '自然参与群聊，先听懂，再开口。', self: '知言', memory: [], stickers: [] });
+  if (url.pathname === '/api/ambient') return reply({ ready: true, persona: '自然参与群聊，先听懂，再开口。', self: '知言', memory: [], stickers: [{ id: 1, label: '示例表情包', image: true, uses: 1 }] });
+  if (url.pathname === '/api/ambient/sticker/1') {
+    res.writeHead(200, { 'Content-Type': 'image/png' });
+    return res.end(Buffer.from('89504e470d0a1a0a', 'hex'));
+  }
   if (url.pathname === '/api/logs') return reply({ lines: history.slice(-Number(url.searchParams.get('limit') || 2000)) });
   if (url.pathname === '/api/logs/stream') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -139,6 +149,15 @@ async function shot(name) {
   await click('#bot-form-0 [type=submit]');
   await until(() => posts.some(p => p.path === '/api/settings/bot'), 'connection save');
   assert.equal(posts.find(p => p.path === '/api/settings/bot').body.enabled, false);
+  // 草稿那一条（还没落过配置）的「删掉这条」不能当成第 0 条：那会删掉配置里第一条真连接。
+  // 用脚本点：这一步测的是处理逻辑，底部那条消息条会挡住真实点击的落点。
+  await js('document.querySelector("[data-add-bot]").click()');
+  assert.equal(await js('return !!document.querySelector(\'[data-index=""]\')'), true, 'draft bot form appears');
+  const saves = posts.filter(p => p.path === '/api/settings/bot').length;
+  await js('document.querySelector(\'[data-index=""] [data-drop-bot]\').click()');
+  await sleep(200);
+  assert.equal(await js('return !!document.querySelector(\'[data-index=""]\')'), false, 'draft leaves the page');
+  assert.equal(posts.filter(p => p.path === '/api/settings/bot').length, saves, 'removing a draft must not write to the config');
   await route('logs'); await until(() => streams.size === 1, 'SSE connected');
   await until(() => js('return document.querySelectorAll("#log-box .log-line").length > 0'), 'snapshot');
   await js(`window.longTasks=[]; new PerformanceObserver(list=>window.longTasks.push(...list.getEntries().map(e=>e.duration))).observe({type:'longtask'});
@@ -169,8 +188,12 @@ async function shot(name) {
   await until(() => streams.size === 1, 'visible tab resumes');
   await sleep(150);
   const metrics = await js('return {longTasks:window.longTasks, logMutations:window.logMutations}');
+  // 这一批改动的中心就是「2400 行突发不长任务、DOM 按 100ms 合批」。
+  // 数字采到了就要判定，否则把 DOM 上限调回 500、或改回逐条写 DOM，测试照样全绿。
+  assert(Math.max(0, ...metrics.longTasks) < 50, `no long task over 50ms (got ${JSON.stringify(metrics.longTasks)})`);
+  assert(metrics.logMutations <= 30, `log DOM stays batched (got ${metrics.logMutations} mutations)`);
   history = Array.from({length:20},(_,i)=>line(['已连接实现端，开始接收消息','配置已保存，下一条消息生效','请求暂未回应，等待重试','已完成本轮消息处理'][i%4]));
-  const screenshots = ['overview','plugins','plugins/oai','ambient','logs','command','settings'];
+  const screenshots = ['overview','plugins','plugins/oai','plugins/console','ambient','logs','command','settings'];
   for (const [label, width, height] of [['compact',390,844],['narrow',320,740],['medium',800,1000],['expanded',1400,900]]) {
     await viewport(width,height);
     for (const theme of ['light','dark']) {
@@ -182,9 +205,25 @@ async function shot(name) {
       }
     }
   }
+  // 「减少动态效果」要测的是 app.js 自己那两处降级，不是 CSS：换页动画整条写在
+  // @media (prefers-reduced-motion: no-preference) 里，只看 computed 的话，
+  // 把 JS 侧的守卫删掉也永远是 none。两条各配一个正对照。
+  const pressRefresh = () => js('document.querySelector("#refresh").dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,button:0,isPrimary:true}))');
+  const enterAnimates = () => js('return document.querySelector("#view").dataset.enter === ""');
+  await media([{ name:'prefers-reduced-motion', value:'no-preference' }]);
+  await route('logs'); await route('overview');
+  assert.equal(await enterAnimates(), true, 'motion allowed: page enter animation is set');
+  await pressRefresh();
+  assert((await js('return document.querySelectorAll(".ripple").length')) >= 1, 'motion allowed: ripple appears');
   await media([{ name:'prefers-reduced-motion', value:'reduce' }]);
-  await route('overview');
+  await js('document.querySelector("#view").removeAttribute("data-enter")');
+  // 上一轮留下的涟漪在 reduce 下动画被关掉，等不到 animationend 自行消失，先清干净。
+  await js('for (const node of document.querySelectorAll(".ripple")) node.remove()');
+  await route('logs'); await route('overview');
+  assert.equal(await enterAnimates(), false, 'reduced motion: no page enter animation');
   assert.equal(await js('return getComputedStyle(document.querySelector("#view")).animationName'), 'none');
+  await pressRefresh();
+  assert.equal(await js('return document.querySelectorAll(".ripple").length'), 0, 'reduced motion: no ripple');
   await route('plugins');
   assert(await js('return [...document.querySelectorAll("button:not([disabled])")].filter(e=>e.getClientRects().length).every(e=>e.getBoundingClientRect().height >= 48)'), '48px button touch targets');
   const errors = (await cmd('POST', '/log', { type:'browser' })).filter(e => e.level === 'SEVERE' && !e.message.includes('404'));

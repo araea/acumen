@@ -44,7 +44,7 @@ pub(crate) struct Config {
     port: u16,
     /// 访问口令。留空表示首次启动自动生成一个，保存在 data/console/token，权限 0600。
     token: String,
-    /// 日志面板往回保留的行数。
+    /// 日志面板往回保留的行数。上限是 2000（`state::HISTORY_LIMIT`），写更大也只按 2000 收。
     log_lines: usize,
 }
 

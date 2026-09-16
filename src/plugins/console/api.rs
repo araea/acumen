@@ -360,9 +360,7 @@ async fn sticker_image(
     State(_console): State<Arc<Console>>,
     AxumPath(id): AxumPath<u32>,
 ) -> Response {
-    let entry = crate::plugins::ambient::stickers::gallery()
-        .into_iter()
-        .find(|entry| entry.id == id);
+    let entry = crate::plugins::ambient::stickers::by_id(id);
     let Some(entry) = entry else {
         return missing(&format!("#{id}"));
     };
@@ -384,7 +382,16 @@ async fn sticker_image(
                 "webp" => "image/webp",
                 _ => "image/jpeg",
             };
-            ([(axum::http::header::CONTENT_TYPE, mime)], bytes).into_response()
+            // 文件名就是内容的 md5，同一张图永远是同一个地址，可以放心长缓存：
+            // 画廊一屏几十张，每次回访重下一遍纯属浪费。
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, mime),
+                    (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                ],
+                bytes,
+            )
+                .into_response()
         }
         Err(error) => super::server::fail(
             StatusCode::NOT_FOUND,
@@ -604,8 +611,8 @@ async fn log_history(
     State(console): State<Arc<Console>>,
     Query(query): Query<LogQuery>,
 ) -> Response {
-    Json(json!({ "lines": console.recent(query.limit.unwrap_or(2000).clamp(1, 2000)) }))
-        .into_response()
+    let limit = query.limit.unwrap_or(super::state::HISTORY_LIMIT).min(super::state::HISTORY_LIMIT);
+    Json(json!({ "lines": console.recent(limit) })).into_response()
 }
 
 async fn log_stream(State(console): State<Arc<Console>>) -> Response {
@@ -630,14 +637,16 @@ async fn log_stream(State(console): State<Arc<Console>>) -> Response {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     let mut entries = vec![entry];
                     let mut snapshot = false;
+                    let mut skipped = 0u64;
                     while entries.len() < 128 {
                         match receiver.try_recv() {
                             Ok(entry) => entries.push(entry),
-                            Err(TryRecvError::Lagged(_)) => {
+                            Err(TryRecvError::Lagged(dropped)) => {
                                 let (history, fresh) = console.snapshot();
                                 receiver = fresh;
                                 entries = history;
                                 snapshot = true;
+                                skipped = dropped;
                                 break;
                             }
                             Err(_) => break,
@@ -645,16 +654,18 @@ async fn log_stream(State(console): State<Arc<Console>>) -> Response {
                     }
                     Event::default()
                         .event(if snapshot { "snapshot" } else { "batch" })
-                        .json_data(json!({ "lines": entries }))
+                        // 落后时把落下的行数一并报上去，页面在状态行上写明，
+                        // 「不静默跳行」才是真的（缓冲本身只有 HISTORY_LIMIT 行）。
+                        .json_data(json!({ "lines": entries, "dropped": skipped }))
                         .unwrap_or_default()
                 }
                 // 消费者跟不上时补一份有界快照，不能静默漏掉错误日志。
-                Err(RecvError::Lagged(_)) => {
+                Err(RecvError::Lagged(dropped)) => {
                     let (history, fresh) = console.snapshot();
                     receiver = fresh;
                     Event::default()
                         .event("snapshot")
-                        .json_data(json!({ "lines": history }))
+                        .json_data(json!({ "lines": history, "dropped": dropped }))
                         .unwrap_or_default()
                 }
                 Err(RecvError::Closed) => return None,

@@ -398,11 +398,13 @@
         return;
       }
       view.removeAttribute("aria-busy");
-      view.innerHTML = empty(
-        error && error.status === 503
-          ? error.message
-          : `这一页没能读出来：${error && error.message ? error.message : "原因不明"}`
-      );
+      view.innerHTML =
+        pageHead("读不出来") +
+        empty(
+          error && error.status === 503
+            ? error.message
+            : `这一页没能读出来：${error && error.message ? error.message : "原因不明"}`
+        );
       return;
     }
     if (seq !== renderSeq) return;
@@ -901,7 +903,7 @@
   const LOG_BATCH_MS = 100;
   const logState = {
     lines: [], level: "", text: "", follow: true, source: null,
-    limit: 2000, queue: [], frame: 0, mounted: false,
+    limit: 2000, queue: [], frame: 0, mounted: false, status: "正在连接…",
   };
 
   function logLine(entry) {
@@ -931,6 +933,9 @@
   }
 
   function logStatus(text) {
+    // 状态记在状态里、由渲染读出来。整屏重画（顶栏刷新、跨断点）时连接还在，
+    // 若写死字面量，重画之后就会永远停在「正在连接…」。
+    logState.status = text;
     const status = $("#log-status");
     if (status) status.textContent = text;
   }
@@ -990,7 +995,7 @@
         <button class="btn btn-icon" type="button" id="log-clear" title="清空这一屏"
                 aria-label="清空这一屏">${ICONS.trash}</button>
       </div>
-      <div class="log-meta"><span id="log-status" role="status">正在连接…</span>
+      <div class="log-meta"><span id="log-status" role="status">${esc(logState.status)}</span>
         <span>最近 ${DOM_LINES} 行</span></div>
       <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志"></div>
       <button class="btn btn-filled jump ${logState.follow ? "" : "jump-on"}" type="button"
@@ -1033,9 +1038,11 @@
     source.addEventListener("snapshot", (event) => {
       if (source !== logState.source) return;
       try {
-        logState.lines = JSON.parse(event.data).lines.slice(-logState.limit);
+        const data = JSON.parse(event.data);
+        logState.lines = data.lines.slice(-logState.limit);
         logState.queue = [];
         if (logState.follow || !box.querySelector(".log-line")) paintLog();
+        if (data.dropped) logStatus(`追不上了，中间跳过 ${data.dropped} 行`);
       } catch { logStatus("记录未能读取，刷新重试"); }
     });
     source.addEventListener("batch", (event) => {
@@ -1328,9 +1335,14 @@
     renderSeq++;
     $("#view").removeAttribute("aria-busy");
     $("#nav").innerHTML = "";
+    // 地址栏里那份口令是旧的就别再留着：它会盖掉刚存下的新的那份（见 §3 的取值顺序），
+    // 于是刷新一次又退回这里。抹掉之后只认 localStorage。
+    if (new URLSearchParams(location.search).has("t")) {
+      history.replaceState(null, "", location.pathname + location.hash);
+    }
     $("#view").innerHTML = `
       <form class="lock" id="lock-form">
-        <div class="section-title">${esc(NAME)}</div>
+        <h1 class="section-title">${esc(NAME)}</h1>
         <p class="note">${esc(reason || "需要口令才能看这台机器的数据。")}
         启动日志里那条带 <span class="key">?t=</span> 的地址可以直接打开；
         口令本体在 <span class="key">data/console/token</span>。</p>
@@ -1505,7 +1517,14 @@
 
       const drop = target.closest("[data-drop-bot]");
       if (drop) {
-        const index = Number(drop.dataset.dropBot);
+        // 草稿（还没落过配置的那一条）的 index 是空串，Number("") 会静默变成 0，
+        // 于是「删草稿」会去删配置里的第一条真连接。草稿只活在 DOM 里，直接撤掉表单。
+        const raw = drop.dataset.dropBot;
+        if (raw === "") {
+          drop.closest("form")?.remove();
+          return;
+        }
+        const index = Number(raw);
         const ok = await ask({
           title: `删掉第 ${index + 1} 条连接？`,
           body: "删掉之后这一条不再连；改动要下次启动才生效。",

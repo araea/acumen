@@ -92,15 +92,15 @@ fn authorized(token: &str, request: &Request) -> bool {
     {
         return true;
     }
+    // 查询串里的口令是百分号编码过的（EventSource 那边必然编码），比对前要先解回来，
+    // 否则含空格、`+`、`%`、`#`、`&` 与非 ASCII 的口令永远对不上。
     request.uri().query().is_some_and(|query| {
-        query
-            .split('&')
-            .filter_map(|pair| pair.strip_prefix("t="))
-            .any(|value| same(value, token))
+        url::form_urlencoded::parse(query.as_bytes())
+            .any(|(key, value)| key == "t" && same(&value, token))
     })
 }
 
-/// 定长比较：口令是十六进制，长度一致时逐字节走完，不提前返回。
+/// 定长比较：长度一致时逐字节走完，不提前返回。
 fn same(left: &str, right: &str) -> bool {
     let (left, right) = (left.as_bytes(), right.as_bytes());
     if left.len() != right.len() {
@@ -153,6 +153,18 @@ mod tests {
         ));
         assert!(authorized(TOKEN, &request(&format!("/api/overview?t={TOKEN}"), &[])));
         assert!(authorized(TOKEN, &request(&format!("/api/overview?a=1&t={TOKEN}&b=2"), &[])));
+    }
+
+    /// 口令可以带需要转义的字符（空格、`+`、`%`、`&`…）。查询串是编码过的，
+    /// 比对前要先解回来，否则地址栏与 EventSource 这两条路永远对不上。
+    #[test]
+    fn a_token_that_needs_escaping_survives_the_query_string() {
+        let token = "a b+c%/d&e";
+        let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+        assert!(authorized(token, &request(&format!("/api/overview?t={encoded}"), &[])));
+        // 浏览器那侧用 encodeURIComponent，空格写 %20；解回来是同一个口令。
+        assert!(authorized("a b", &request("/api/overview?t=a%20b", &[])));
+        assert!(!authorized("a b", &request("/api/overview?t=ab", &[])));
     }
 
     /// 少一个字符、多一个字符、差一位都不行；没有口令的请求一律挡在外面。

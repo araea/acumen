@@ -132,6 +132,11 @@ pub(crate) fn gallery() -> Vec<Entry> {
     entries
 }
 
+/// 按编号取一条。控制台按图取用走这里：不需要顺序，也就不必整库克隆再排序。
+pub(crate) fn by_id(id: u32) -> Option<Entry> {
+    lock().library.entries.iter().find(|entry| entry.id == id).cloned()
+}
+
 /// 收下一张偷来的表情包，返回它的编号；`max` 为 0 表示不攒。
 ///
 /// `bytes` 只有图那一路要：商城表情重发靠参数，字节没用。`label` 是人格在偷的那一刻

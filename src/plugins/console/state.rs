@@ -23,6 +23,10 @@ pub(crate) struct Entry {
     pub text: String,
 }
 
+/// 一次能给出去的行数上限。它是三个地方的同一个口径：`/api/logs` 的返回、
+/// SSE 快照、以及环形缓冲本身（配置写再大也按这个收）。改数字只改这里。
+pub(crate) const HISTORY_LIMIT: usize = 2000;
+
 pub(crate) struct Console {
     /// 装起来的那份上下文：配置、数据库、保存锁、配置路径都在里面。
     ctx: Context,
@@ -60,7 +64,9 @@ pub(super) async fn install(ctx: Context, cfg: Config) -> Result<(), String> {
     let port = options.port.unwrap_or(cfg.port);
     let token = resolve_token(&cfg.token).await?;
     let now = chrono::Local::now();
-    let url = format!("http://{}:{}/?t={}", display_host(&cfg.bind), port, token);
+    // 口令可能带空格、`#`、`&` 这类字符，拼地址时要编码，否则打印出来那条地址自己就是坏的。
+    let encoded: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+    let url = format!("http://{}:{}/?t={encoded}", display_host(&cfg.bind), port);
 
     let (feed, _) = broadcast::channel(512);
     let console = Arc::new(Console {
@@ -69,8 +75,8 @@ pub(super) async fn install(ctx: Context, cfg: Config) -> Result<(), String> {
         started_at: now.format("%Y-%m-%d %H:%M:%S").to_string(),
         url,
         token,
-        capacity: cfg.log_lines.clamp(50, 5000),
-        logs: Mutex::new(VecDeque::with_capacity(cfg.log_lines.clamp(50, 5000))),
+        capacity: cfg.log_lines.clamp(50, HISTORY_LIMIT),
+        logs: Mutex::new(VecDeque::with_capacity(cfg.log_lines.clamp(50, HISTORY_LIMIT))),
         feed,
         bots: Mutex::new(Vec::new()),
         stopping: Mutex::new(None),
@@ -232,7 +238,7 @@ impl Console {
         let receiver = self.feed.subscribe();
         let history = logs
             .iter()
-            .skip(logs.len().saturating_sub(2000))
+            .skip(logs.len().saturating_sub(HISTORY_LIMIT))
             .cloned()
             .collect();
         (history, receiver)

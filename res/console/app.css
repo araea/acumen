@@ -844,6 +844,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   align-items: baseline;
   gap: var(--md-space-3);
   flex-wrap: wrap;
+  margin: 0;
   font-size: var(--md-type-title-medium-size);
   font-weight: var(--md-type-title-medium-weight);
   letter-spacing: var(--md-type-title-medium-track);
@@ -896,7 +897,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 .reading-unit {
-  color: var(--md-sys-color-on-surface-faint);
+  color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-type-label-large-size);
   font-weight: var(--md-type-label-large-weight);
   margin-left: var(--md-space-1);
@@ -930,7 +931,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 .badge-off {
   background: var(--md-sys-color-surface-container-high);
-  color: var(--md-sys-color-on-surface-faint);
+  color: var(--md-sys-color-on-surface-variant);
 }
 
 .badge-pending {
@@ -1734,6 +1735,8 @@ button.row-plain { cursor: pointer; }
   outline-offset: 2px;
 }
 .row-hit:focus-visible { outline-offset: -3px; }
+/* 分段按钮自己的盒子贴着带 overflow: hidden 的容器，画在外面的环会被裁掉。 */
+.seg-item:focus-visible { outline-offset: -3px; }
 .log:focus-visible { outline-color: var(--md-sys-color-primary); }
 /* 并排详情是一块窄容器，不能用整个窗口的宽度判断字段是否并列。 */
 .panes[data-split] .kv {
