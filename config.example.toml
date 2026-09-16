@@ -1,11 +1,29 @@
-command_prefix = ["/"]
+# ayjx 配置示例。
+#
+# 复制成 config.toml 后即可启动：首次启动会把缺的字段按默认值补进去，不会覆盖已有取值，
+# 解析失败也不会覆盖原文件。每一项的完整说明在源码里该字段的 /// 注释，这份文件解释的是
+# 「这一项做什么、取什么值、为什么是这个默认值」。
+#
+# 段落按注册表顺序排（也就是 /help 与 /ctl list 的顺序）。写法约定：
+#   - 键名与 [oai]/[ambient] 这类配置键一律照原样写，不翻译、不改写；
+#   - 指令写在正文里时带当前前缀（默认 /），能整条抄走。
+# 改配置前先 ./bot stop：运行中的实例退出时会用内存里那份配置覆盖文件。
 
+# 指令前缀，可配多个。改掉之后所有指令与提示里的前缀跟着变。
+command_prefix = ["/"]
+# 网页截图与卡片出图的 Chrome/Chromium 路径；留空即自动查找。
+# browser_path = "/data/data/com.termux/files/usr/bin/chromium-browser"
+
+# 全局群黑白名单。语义与各插件自己的 channel 一致，这里是所有插件之上的一层。
+# 只配 black：除名单内的群以外都生效；只配 white：只有名单内的群生效；都空：全部生效。
+# 同时出现在两边时黑名单优先。
 [global_filter]
 enable_blacklist = false
 blacklist = []
 enable_whitelist = false
 whitelist = []
 
+# Satori 连接实现端。console 是本地测试用的假适配器，不连 QQ。
 [[bots]]
 enabled = false
 protocol = "console"
@@ -17,6 +35,188 @@ url = "http://127.0.0.1:3001"
 # 留空表示不鉴权；也可设置环境变量 AYJX_SATORI_TOKEN（优先级更高）。
 access_token = ""
 
+# ============================================================================
+# 系统 · 运维
+# ============================================================================
+
+# 过滤心跳与元事件。开着不会有任何可见输出，只在流水线最前面挡掉噪声。
+[meta_filter]
+enabled = true
+
+# 插件控制：全局开关与配置的统一入口，也是唯一一条写配置的路径。
+# 聊天里走 /ctl，agent 房间里走 `ayjx --ctl`（一次性凭据）。两者都按这份 admins 判权。
+[ctl]
+enabled = true
+# 维护者 QQ 号。空列表表示只允许本机控制台管理，聊天里谁也不许改。
+# 例如 [123456789]。改这一项要在私聊或控制台里做——群里的 ctl 动不了 admins。
+admins = []
+# 允许管理员在 agent 房间里用自然语言驱动 ctl（凭据仅本轮有效，见 docs/CONTROL.md）。
+pi_control = true
+# 用法、状态、配置与差异是否排版成卡片图；短反馈（开关、设置、重置、报错）始终走纯文本。
+# 网页卡片需要 Chrome/Chromium 与系统中日韩字体；出图失败时自动回退纯文本。
+image_enabled = true
+image_scale = 3.0
+
+# 把收到的消息打印到控制台日志。排查「到底有没有收到」时开它，平时关掉免得刷屏。
+[logger]
+enabled = true
+debug = false
+
+# 消息记录：落库到 data/bot.db，是词云、统计、画像三个插件的共同数据源。
+# 关掉它，那三个插件只会回答「没有记录」。
+[recorder]
+enabled = true
+# 是否连机器人自己发的消息一起记。搭话的风格分析要用到自己的发言，所以默认开。
+record_self = true
+# 原始消息保留多少天，超期清理；0 表示不清理。清理不影响已算出的统计结果。
+retention_days = 180
+
+# 自动重启：每日定时重启 + 内存阈值监控。长时间运行后卡顿时用得上。
+[restart]
+enabled = true
+# 每日自动重启时间（HH:MM，24 小时制）。默认凌晨 4 点，是群聊低峰期。
+time = "04:00"
+# 手动 /restart 指令是否开放。默认关闭，免得群友误触发一次整机重启。
+allow_manual_restart = false
+# 进程 RSS 内存阈值（MB），超过就提前重启；0 表示不做内存监控。
+memory_threshold_mb = 0
+# 内存巡检间隔（分钟）。
+memory_check_interval_minutes = 5
+# 重启前等待多少秒，让「即将重启」那句通知先刷到 WebSocket。
+restart_delay_seconds = 3
+# 外部重启命令（如 "systemctl restart ayjx"）。配了就优先用它，代替进程自我拉起。
+restart_command = ""
+
+# 帮助中心：按当前注册表列出全部插件与开关状态，配置管理交给 ctl。
+[help]
+enabled = true
+# 只在私聊应答：帮助是自己翻手册，留在群里只会刷屏。
+# 打开后群里的 help 原样放行，不消耗事件；需要群内也能用时设为 false。
+private_only = false
+# 是否把帮助排版成卡片图；关掉或渲染失败时退回纯文本，内容与图一致。
+image_enabled = true
+image_scale = 3.0
+
+# ============================================================================
+# 消息 · 媒体
+# ============================================================================
+
+# 媒体与链接互转：图片或视频 → 直链，链接 → 图片或视频。
+[media]
+enabled = true
+
+# 表情收藏：引用一条表情或图片后把它收下来（后来搭话的表情包库就是从这儿来的）。
+[sticker]
+enabled = true
+
+# 消息撤回：引用要撤回的那条后发送 /撤回。只撤回机器人自己或明确引用到的消息。
+[recall]
+enabled = true
+
+# 消息回显：把参数原样发回来，支持图片等富文本。测试与做卡片时用。
+[echo]
+enabled = true
+
+# GIF 工具箱：合成、变速、倒放、缩放、旋转、翻转、拆分、拼图。
+[gif]
+enabled = true
+
+# 图片切分：把一张图按行列切开。行列各有上限，防止一次切出上百张图刷屏。
+[image_split]
+enabled = true
+max_rows = 10
+max_cols = 10
+
+# 视频解析：视频站链接先回一条预览，引用预览后发「视频」才把原片取进群。
+[video_parse]
+enabled = true
+# 预览里那行「引用本条并回复「视频」可取原片」。关掉就只发封面与信息。
+hint = true
+# 取片时最多下载多大（MB）。按这个数挑画质：放得下就取最清楚的一档，
+# 连最低一档都超了就只回一句「最小的 360P 也有多少 MB」。
+max_size_mb = 80
+# 想要的最高画质：80=1080P / 64=720P / 32=480P / 16=360P。
+# 未登录时 B 站只放 360P—720P（多数稿件是 720P），1080P 及以上要登录态。
+prefer_quality = 64
+# 成品怎么发：both（先群文件再视频气泡）/ file / bubble。与 [oai] video_send 同一套写法。
+send = "both"
+# 一次取片的总预算（秒），含挑画质、下载与上传。
+timeout_seconds = 300
+# 超过这么久还没取完，就先回一句「正在取片」，免得群里以为没反应。0 表示什么都不说。
+ack_after_seconds = 20
+# B 站登录 Cookie，留空即匿名。填上自己浏览器的 Cookie 才能取到 1080P。
+# 形如 "SESSDATA=…; bili_jct=…; buvid3=…"，整行贴进来即可。
+cookie = ""
+
+# 语义同 [stats.channel]。
+[video_parse.channel]
+white = []
+black = []
+
+# 网页截图：消息里的网页链接自动截成图。视频站链接交给 [video_parse]，这里跳过。
+[webshot]
+enabled = true
+# 命中这些域名的链接不截图。按域名后缀匹配，example.com 同时覆盖 a.example.com。
+ignore_domains = []
+# 允许截图访问内网/本机地址。默认关闭：截图会原样发回群里，开启后群友发一条
+# http://127.0.0.1:6520/ 之类的链接就能把本机面板、路由器后台渲染成图片读走。
+allow_private_hosts = false
+# 跳过截出来没有内容的站点：没登录只能看到登录墙（抖音/快手/小红书、Instagram/X、
+# 知乎、雪球、NGA 等），以及从本机打开会被风控拦下的（Reddit、Quora）。
+# 名单写在 src/plugins/webshot.rs 的 WALLED_DOMAINS，要额外拉黑别的域名用上面的
+# ignore_domains。
+block_walled_sites = true
+# 截图视口宽度（CSS 像素）与出图倍率。1.0 即与视口同宽，调大更清晰、体积更大。
+viewport_width = 1280
+device_scale_factor = 1.0
+# 成图的高度上限（像素），超出就截断，免得一张长图撑爆发送。
+max_height = 5000
+# JPEG 画质（0—100）。
+quality = 80
+# 单次截图的超时（秒）。
+timeout_seconds = 30
+
+# 语义同 [stats.channel]。
+[webshot.channel]
+white = []
+black = []
+
+# ============================================================================
+# 互动 · 娱乐
+# ============================================================================
+
+# 群头衔：机器人为群主时，给申请者设置群专属头衔。
+[group_title]
+enabled = true
+
+# 复读机：同一句话接力到阈值就跟读一次，带冷却、概率与打断复读。
+[repeater]
+enabled = true
+# 「同一句话」的判定：允许带图片一起复读。
+allow_media = true
+# 自己复读自己算不算接力。默认不算，否则一个人刷两遍就能触发。
+allow_same_user = false
+# 至少几个人接力才复读。
+min_times = 2
+# 达到阈值后复读的概率（0—1）。
+probability = 1.0
+# 加进上下文的最长字符数，超过的不参与判定。
+max_chars = 200
+# 复读超过有效期就丢弃，避免消息补推或发送排队后迟到跟读。
+max_delay_ms = 3000
+# 两次复读之间的静默期（秒），防止连着玩。
+cooldown_seconds = 15
+# 指令消息不参与复读（两个人发 /help，机器人不必跟着刷）。
+ignore_commands = true
+# 被打断时插一句的概率（0—1）。默认不打断。
+interrupt_probability = 0.0
+interrupt_texts = ["打断复读", "打断施法"]
+
+[repeater.channel]
+white = []
+black = []
+
+# 智能对话：多智能体房间、模型与历史管理；内置 agent 房间能自己调工具。
 [oai]
 enabled = true
 # 内置 agent 房间（`##研究 pi`）没写模型时用哪个：留空或写 `pi` 的房间都取这里的值。
@@ -26,9 +226,14 @@ agent_default_model = "deepseek/deepseek-flash"
 request_timeout_seconds = 300
 # 单次模型请求静默这么多秒算卡死，掐掉重来一次（没有中间事件可看，所以这是单次
 # 请求的上限）；卡住且还没动过工具才会重试，动过就不再重放。0 关闭。
-pi_stall_seconds = 180
+request_stall_seconds = 180
 # 不含标题/列表/代码块的短回复直接发文本，不渲染图片；置 0 表示始终渲染图片。
+# 一句话的答复走文本既快又便于复制。
 plain_text_max_chars = 120
+# 是否把回复排版成卡片图。关掉后一律发纯文本（渲染失败本来也退回纯文本）。
+image_enabled = true
+# 出图倍率（1—4）。版心 520 CSS px，2 倍即 1040px 位图，最省体积又不糊。
+image_scale = 2.0
 # 在回复卡片页脚显示模型、耗时与工具调用轨迹。
 show_trace_footer = true
 
@@ -177,7 +382,7 @@ temperature = 1.3
 tools = "read,write,bash"
 # 搭话指令：群里发一条以它打头的消息就跳过判定，直接把最近这段群聊交给人格。
 # 指令本身不进上下文（人格只看到群友聊了什么），后面跟着的话照常算群聊内容。
-# 想关掉就写空字符串；peak.mode = "pause" 与 hourly_limit 仍然拦得住它。
+# 想关掉就写空字符串；peak.mode = "pause" 与 max_per_hour 仍然拦得住它。
 summon_command = "/搭话"
 # 群友还会怎么叫它：名片之外的小名、简称。名片是「A宝好腻害！」，群里喊的却是
 # 「A宝」——名片与账号昵称代码自己会去问平台，这里只补平台看不见的那些。
@@ -195,6 +400,10 @@ focus_relief = 5
 # 每轮最多 3 条消息、6 个平台写动作（含消息、点赞、撤回和失败尝试）。
 max_messages = 3
 max_actions = 6
+# 送进模型的最近消息条数，以及随上下文一起给的图片张数（置 0 关闭图片判读）。
+# 这两项决定判定与发言各自看到的「眼前这一段」有多长，也直接决定每轮花的 token。
+context_turns = 20
+context_images = 2
 # 一条消息大约多少字就该换气：一段话长过约一条半时，在句末标点、汉字之间的空格或
 # 句中逗号处切成几条依次发出（总数仍受 max_messages 约束，带换行和标记的不切）。
 # 给得宽是有意的：群里的长句多半像「语音输入一条说完」，短句才像手打；只有真成了
@@ -234,14 +443,28 @@ silence_relief_cap = 0
 # 以及每群每小时的硬顶。只有被点名绕过冷却（那是真有人叫它），硬顶则不绕。真嫌吵就往大调；
 # 想要完全由人格自主控制节奏，两个都写 0。
 cooldown_seconds = 90
-hourly_limit = 8
+max_per_hour = 8
 # 人格可选择短期跟进某位群友或话题，并在互动中续期。
 # 关注意味着续聊判定为真、门槛打折（冷却照旧），给太久会让一个不变的话题一直挂着。
 focus_max_seconds = 180
 debounce_seconds = 3
-max_wait_seconds = 12
+max_pending_seconds = 12
+# 判定一轮最多花多少秒；超时按「不说话」算。这是每群固定要付的等待成本，
+# 调大只会让群里等得久，不会让它更聪明。
+gate_timeout_seconds = 45
+# 一轮发言的总预算（秒），含模型思考与工具调用。
+reply_timeout_seconds = 240
+# 判定完到真正开口之间大约想几秒（拟人停顿）。
+think_seconds = 3.0
 # 打字速度（字/分钟），调低更像在慢慢敲。
 typing_cpm = 150
+# 语音条的播放速度（字/分钟），只影响发语音时的时长换算。
+voice_cpm = 420
+# 联网搜索（走 [oai.search] 配的后端）与每轮预算；0 关闭。
+search_enabled = true
+search_budget = 3
+# 别人 @ 它时是否必答。关掉之后点名也要过判定。
+reply_on_mention = true
 
 # 跟着 DeepSeek 的计价时段作息：官方接口空闲时段半价，高峰是北京时间周一至周五
 # 9:00-12:00、14:00-18:00。搭话是这里唯一无人触发的付费功能，最值得挑时段。
@@ -258,29 +481,146 @@ doze_gate_seconds = 300
 # 这条给高峰时段真正花钱的发言一个硬上限。写 0 表示不额外限制。
 doze_reply_limit = 2
 
-# 全局插件控制：空列表仅允许本机控制台管理。
-[ctl]
+# AI 资讯推送：资讯、热点、日报与模型榜（数据源 AIHOT），引用卡片后回序号取链接。
+[ai_news]
 enabled = true
-admins = [] # 填写维护者 QQ 号，例如 [123456789]
-# 允许管理员在 pi 房间里用自然语言驱动 ctl（凭据仅本轮有效，见 docs/CONTROL.md）。
-pi_control = true
-# 用法、状态、配置与差异是否排版成卡片图；短反馈始终走纯文本。
-# 网页卡片使用 Chrome/Chromium 与系统中日韩字体；出图失败时自动回退纯文本。
+
+# —— 推送目标 ——
+# 群号与私聊分别存，同号不会混淆。这两个列表用指令增删更省事：
+#   /ai推送添加 群 123456 · /ai推送删除 群 123456 · /ai推送列表
+groups = [175131947]
+private_users = []
+
+# —— 抓取参数 ——
+# 手动 /ai资讯 查询用的动态池；主动推送的数据源策略不受这一项影响。
+mode = "selected"
+# 时间窗。AIHOT v1 只支持 24h 与 7d。
+window = "24h"
+# 分类过滤：ai-models / ai-products / industry / paper / tip；留空表示不限。
+category = ""
+# 单次推送最多几条（1—100）。
+limit = 30
+# 去重后新条目少于这个数就本轮不推，避免只有一条也刷屏。
+min_items = 1
+# 同一条资讯的去重记忆天数。
+dedupe_days = 7
+# 单次请求超时（秒）。
+request_timeout_seconds = 15
+
+# —— 展示 ——
+# 摘要截断长度（按字符计）。
+summary_max_chars = 90
+# 是否展示 AIHOT 的「推荐理由」。
+show_reason = true
+# 是否附带第三方原文链接（AIHOT 站内阅读页始终保留）。
+show_original_link = true
+# 日报最多展示几条。
+daily_max_blocks = 12
+# 是否把资讯排版成卡片图。开启时一级推送只发图片，链接由引用卡片后回序号提取；
+# 关掉则发纯文本与可点链接。
 image_enabled = true
+# 卡片图最多展示几条；其余条目可以通过「引用卡片回复 0」一次取全部。
+image_max_items = 10
+# 提取结果或纯文本兜底超过多少字符时改用合并转发；0 表示永远发纯文本。
+forward_threshold_chars = 500
+# 用合并转发时，单个节点的字符软上限。
+forward_node_chars = 300
+# 卡片图渲染倍率（1—4）。
 image_scale = 3.0
+# 卡片主题：auto（北京时间 07:00—18:59 白天，其余夜晚）/ light / dark。
+card_theme = "auto"
+# 多个群之间的最小与最大发送间隔（秒）。实际间隔在两者之间随机，
+# 避免所有群在同一秒收到推送，也避开 QQ 的风控节奏。
+send_interval_seconds = 8
+send_interval_max_seconds = 35
 
-[repeater]
+# —— 模型榜 ——
+# /ai模型榜 单次展示的模型条数（1—30）。
+leaderboard_max_items = 12
+# 模型榜数据的本地缓存时长（分钟）；榜单每天只更新几次，不必每次指令都抓一遍。
+leaderboard_cache_minutes = 30
+
+# —— 实时推送 ——
+# 实时快报总开关：动态池一有有效资讯就推，不必等下一个定时档。
+realtime_enabled = true
+# 实时快报来源：selected（精选，默认低干扰）/ all（全量）。
+realtime_mode = "selected"
+# 轮询间隔（秒）。低于 60 秒无意义：AIHOT 的 CDN 缓存就是 60 秒，更密只会拿到同一份副本。
+realtime_interval_seconds = 60
+# 保鲜期（分钟）：只推收录时间在此之内的条目。Bot 离线一天再上线时，
+# 不会把这一天的旧闻当成「刚刚发生」补发一遍。
+realtime_max_age_minutes = 1440
+# 单次实时推送最多几条，多出来的留到下一轮。
+realtime_max_items = 30
+# 每个群每小时最多实时推送几次，防止爆发日刷屏。
+realtime_max_per_hour = 60
+# 静默时段起点与终点（HH:MM）。相同或留空表示不设静默，跨午夜按跨天处理。
+realtime_quiet_start = ""
+realtime_quiet_end = ""
+# 只收定时档、不收实时快报的目标。用指令更省事：/ai实时关闭 · /ai实时开启。
+realtime_muted_groups = []
+realtime_muted_private_users = []
+# —— 排期（按北京时间）——
+# 精选速递：一天推几档，时间点可配置多个（HH:MM:SS）。
+brief_enabled = true
+brief_times = ["12:50:00", "20:10:00"]
+# 日报：每天一条汇总。
+daily_enabled = true
+daily_time = "08:20:00"
+# 热点榜：每天一条 Top 10。
+hot_topics_enabled = true
+hot_topics_time = "21:40:00"
+
+# 按目标覆盖分类与静默时段。键是群号，或私聊的 `private:<QQ号>`；
+# 用 /ai分类 与 /ai静默 写进去，一般不必手改。空值表示继承全局。
+[ai_news.group_preferences]
+
+# ============================================================================
+# 统计 · 资讯
+# ============================================================================
+
+# 词云：按消息记录生成词云图。数据来自 [recorder]，关掉它这里只会说没有记录。
+[wordcloud]
 enabled = true
-# 复读超过有效期就丢弃，避免消息补推或发送排队后迟到跟读。
-max_delay_ms = 3000
+# 成图的宽高（像素）与取词数量上限。
+width = 800
+height = 600
+limit = 50
+# 一次最多读多少条原始记录。放大它更全面，代价是出图前那一段等待。
+max_msg = 50000
 
+# 统计图表：发言、表情、消息类型排行榜与走势，支持早中晚与周月的错峰定时推送。
 [stats]
 enabled = true
+# 成图的宽高（像素）。
+width = 960
+height = 800
+# 中文字体。留空按 font_family 让系统自己找；两者都不合适才写 font_path 指到字体文件。
+font_family = "Noto Sans CJK SC"
+font_path = ""
 # 排行榜的刻度竖线与发言条谁盖谁。
 # false：实色条盖住刻度，每根条都是完整的一块颜色；
 # true：刻度画在最上层，从榜首通到榜尾，格子不被任何一根条打断。
 #   /ctl set stats ranking_grid_over_bars true
 ranking_grid_over_bars = false
+# 定时推送的条数门槛：这批消息少于这么多就不推，免得冷清的群每天收到一张空的图。
+push_min_messages = 20
+# 多个群之间的发送间隔区间（秒），错峰用。
+push_group_gap_min_seconds = 20
+push_group_gap_max_seconds = 75
+
+# —— 排期（按北京时间）——
+# 早报、午报、日报、周报、月报各一个开关与时间点。
+morning_recap_enabled = true
+morning_recap_time = "09:00:00"
+noon_brief_enabled = true
+noon_brief_time = "12:30:00"
+daily_push_enabled = true
+daily_push_time = "23:30:00"
+weekly_recap_enabled = true
+weekly_recap_time = "10:00:00"
+monthly_recap_enabled = true
+monthly_recap_time = "10:20:00"
 
 # 群名单：查询指令与主动推送共用这一份，语义对所有带名单的插件一致——
 # 只配 black：除名单内的群以外，所有群都生效并推送；
@@ -291,6 +631,7 @@ ranking_grid_over_bars = false
 white = []
 black = []
 
+# 用户画像：读群成员历史发言，按活跃、内容、交互、表达四个维度出图文画像。
 [portrait]
 enabled = true
 # 分析用的模型，写「供应商/模型」；供应商取自 [oai.providers]，不带前缀走 oai 默认接口。
@@ -306,6 +647,8 @@ max_samples = 120
 max_scan = 8000
 # 报告主题：auto 按北京时间在日读与夜读之间切换，也可固定 light / dark。
 theme = "auto"
+# 是否把画像排版成卡片图；关掉或渲染失败时退回一份等价的文字版。
+image_enabled = true
 # 出图倍率（1—4）。倍率越高越清晰，图也越大。
 image_scale = 3.0
 # 同一个目标两次生成之间的最短间隔秒数。这期间再问不重新生成，
@@ -316,56 +659,3 @@ cooldown_seconds = 180
 [portrait.channel]
 white = []
 black = []
-
-[webshot]
-enabled = true
-# 命中这些域名的链接不截图。按域名后缀匹配，example.com 同时覆盖 a.example.com。
-ignore_domains = []
-# 允许截图访问内网/本机地址。默认关闭：截图会原样发回群里，开启后群友发一条
-# http://127.0.0.1:6520/ 之类的链接就能把本机面板、路由器后台渲染成图片读走。
-allow_private_hosts = false
-# 跳过截出来没有内容的站点：没登录只能看到登录墙（抖音/快手/小红书、Instagram/X、
-# 知乎、雪球、NGA 等），以及从本机打开会被风控拦下的（Reddit、Quora）。
-# 名单写在 src/plugins/webshot.rs 的 WALLED_DOMAINS，要额外拉黑别的域名用上面的
-# ignore_domains。
-# 视频站的稿件链接（B 站 /video/BV…、b23.tv 短链）由 [video_parse] 接，这里自动跳过。
-block_walled_sites = true
-
-# 语义同 [stats.channel]。
-[webshot.channel]
-white = []
-black = []
-
-[video_parse]
-enabled = true
-# 预览里那行「引用本条并回复「视频」可取原片」。关掉就只发封面与信息。
-hint = true
-# 取片时最多下载多大（MB）。按这个数挑画质：放得下就取最清楚的一档，
-# 连最低一档都超了就只回一句「最小的 360P 也有多少 MB」。
-max_size_mb = 80
-# 想要的最高画质：80=1080P / 64=720P / 32=480P / 16=360P。
-# 未登录时 B 站只放 360P—720P（多数稿件是 720P），1080P 及以上要登录态。
-prefer_quality = 64
-# 成品怎么发：both（先群文件再视频气泡）/ file / bubble。与 [oai] video_send 同一套写法。
-send = "both"
-# 一次取片的总预算（秒），含挑画质、下载与上传。
-timeout_seconds = 300
-# 超过这么久还没取完，就先回一句「正在取片」，免得群里以为没反应。0 表示什么都不说。
-ack_after_seconds = 20
-# B 站登录 Cookie，留空即匿名。填上自己浏览器的 Cookie 才能取到 1080P。
-# 形如 "SESSDATA=…; bili_jct=…; buvid3=…"，整行贴进来即可。
-cookie = ""
-
-# 语义同 [stats.channel]。
-[video_parse.channel]
-white = []
-black = []
-
-[help]
-enabled = true
-# 只在私聊应答：帮助是自己翻手册，留在群里只会刷屏。
-# 打开后群里的 help 原样放行，不消耗事件；需要群内也能用时设为 false。
-private_only = false
-# 是否把帮助排版成卡片图；关掉或渲染失败时退回纯文本。
-image_enabled = true
-image_scale = 3.0

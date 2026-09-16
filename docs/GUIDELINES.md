@@ -146,6 +146,10 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 **不要再写字段级 `#[serde(default = "fn")]`**——那是第二份默认值来源，
 和 `Default` 实现迟早对不上。`validate_config` 用真实类型反序列化一次即可。
 
+这条只约束**用户配置**（`config.toml` 里那棵树的类型）。模型工具调用的参数
+schema（`ambient/actions.rs` 的 `Action` / `FileAction` 这类内部枚举）不适用：
+它们不是配置、没有对应的 `Default` 实现，字段级默认值是唯一的一份。
+
 ### 5. 配置字段说明
 
 每个用户可改的字段上方写 `///` 注释，说清**这一项做什么**与**取值含义**，
@@ -189,6 +193,10 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 两者都按北京时间在日读与夜读之间切。**关图之后那一份纯文本必须信息等价**，
 不是「图挂了给你一句话」。
 
+**键名统一，默认值可以不同**，因为版心宽度不一样：720 CSS px 的卡片默认 3 倍，
+`oai` 的 520 px 回复卡默认 2 倍（1040px 位图，最省体积又不糊）。
+默认值写在该插件的 `Default` 里，不要为了「看起来一致」把倍率也抄过去。
+
 ### 8. 短反馈不出图
 
 一句话的纠错、开关确认、报错都走纯文本（`ctl` 的 `Output::card` 就是这条分界）。
@@ -203,7 +211,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 
 | 后缀 | 含义 | 例 |
 | --- | --- | --- |
-| `*_seconds` | 秒数（冷却、超时、间隔） | `cooldown_seconds`、`reply_timeout_seconds`、`max_wait_seconds` |
+| `*_seconds` | 秒数（冷却、超时、间隔） | `cooldown_seconds`、`reply_timeout_seconds`、`max_pending_seconds` |
 | `*_budget` | **每轮**可用次数，0 即关闭 | `lookup_budget`、`search_budget`、`draw_budget`、`music_budget` |
 | `*_max_per_hour` / `*_max_per_day` | 每小时／每日上限 | `realtime_max_per_hour` |
 
@@ -252,15 +260,17 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 改完一个插件，逐条过。前四条是硬的（有测试或架构兜着），后六条要自己看。
 
 - [ ] 注册表里那一条写全了：`display_name` / `section` / `summary` / `commands`
-- [ ] 走 `cargo test`，`every_plugin_has_a_summary` 与 `grouping_loses_no_plugin` 是绿的
+- [ ] 走 `cargo test`：注册表元数据、示例配置一致性与 `satori_compat_tests` 都是绿的
+- [ ] 加了配置项 → `config.example.toml` 同步了（`the_example_config_lists_exactly_the_default_keys` 会拦）
 - [ ] 出图走的是 `render::web::shoot` 或 `render::worker::run`，没有自己排并发
 - [ ] 配置只改 `ctl` 那一条路径，没有绕过 `config_save_lock`
 - [ ] 指令名查过第四节第 2 条那张表，没有为同一个动作造第二个词
 - [ ] 指令描述动词开头、无句末标点、参数占位写成 `<必填>` / `[可选]`
 - [ ] 配置只有一份 `Default`，没有字段级 `serde(default = "fn")`
 - [ ] 每个配置字段上方有 `///` 说明，陈述句、带句号
-- [ ] 日志 target 是 `Plugin/<驼峰注册名>`
+- [ ] 日志 target 是 `Plugin/<单词边界大写的注册名>`
 - [ ] 用户可见的每一句话过了一遍 `CONTENT.md` 的检查清单
+- [ ] 文案里的指令带的是**当前前缀**，不是写死的 `/`
 - [ ] 没有为兼容保留的旧名字、旧配置键、旧分支或注释掉的死代码
 - [ ] 改过版式 → `bash scripts/review-cards.sh`，并且**自己看了图**
 

@@ -15,6 +15,7 @@ const LOG_TARGET: &str = "Plugin/VideoParse";
 const STATE_FILE: &str = "state.json";
 /// 预览与取片的对应关系留多久。QQ 上翻得到的老消息都能继续引用。
 const RETAIN_DAYS: i64 = 30;
+// 与 ai_news 的 `EXTRACTION_RETAIN_DAYS` 是同一个口径（引用驱动一律留 30 天，见 docs/INTERACTION.md 第三节）。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preview {

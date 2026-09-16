@@ -28,26 +28,16 @@ use toml::Value;
 const LOG_TARGET: &str = "Plugin/Help";
 
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
 struct Config {
     enabled: bool,
     /// 仅在私聊应答。帮助属于「自己翻手册」，留在群里只会刷屏；
     /// 打开后群里的 help 原样放行，不消耗事件。
-    #[serde(default)]
     private_only: bool,
     /// 是否把帮助排版成卡片图；关掉或渲染失败时退回纯文本
-    #[serde(default = "default_true")]
     image_enabled: bool,
     /// 卡片图渲染倍率（1.0—4.0）。倍率越高出图越清晰，3.0 在手机上放大也不糊
-    #[serde(default = "default_image_scale")]
     image_scale: f64,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn default_image_scale() -> f64 {
-    3.0
 }
 
 impl Default for Config {
@@ -56,7 +46,7 @@ impl Default for Config {
             enabled: true,
             private_only: false,
             image_enabled: true,
-            image_scale: default_image_scale(),
+            image_scale: 3.0,
         }
     }
 }

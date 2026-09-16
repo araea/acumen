@@ -102,152 +102,110 @@ const DEFAULT_GROUP: i64 = 175131947;
 // ================= 配置定义 =================
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct GroupPreference {
     /// None 继承全局分类；Some("") 表示该目标不限分类
-    #[serde(default)]
     pub category: Option<String>,
     /// 两项均为 None 时继承全局静默时段；均为空字符串表示该目标不静默
-    #[serde(default)]
     pub quiet_start: Option<String>,
-    #[serde(default)]
     pub quiet_end: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AiNewsConfig {
-    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// 推送目标群号列表；可用 `/ai推送添加 群 <群号>` 在任意会话增删
-    #[serde(default = "default_groups")]
     pub groups: Vec<i64>,
     /// 推送目标私聊 QQ 号列表；与群聊目标分别存储，避免同号目标混淆
-    #[serde(default)]
     pub private_users: Vec<i64>,
 
     // —— 抓取参数 ——
     /// 手动 `/ai资讯` 查询所用动态池；主动推送的数据源策略不受此项影响
-    #[serde(default = "default_mode")]
     pub mode: String,
     /// 时间窗，AIHOT v1 只支持 `24h` 与 `7d`
-    #[serde(default = "default_window")]
     pub window: String,
     /// 分类过滤：ai-models / ai-products / industry / paper / tip；留空表示不限
-    #[serde(default)]
     pub category: String,
     /// 单次推送最多条数（1—100）
-    #[serde(default = "default_limit")]
     pub limit: u32,
     /// 去重后新条目少于该值则本轮不推送，避免只有一条也刷屏
-    #[serde(default = "default_min_items")]
     pub min_items: u32,
     /// 同一条资讯的去重记忆天数
-    #[serde(default = "default_dedupe_days")]
     pub dedupe_days: i64,
     /// 单次请求超时（秒）
-    #[serde(default = "default_timeout")]
     pub request_timeout_seconds: u64,
 
     // —— 展示参数 ——
     /// 摘要截断长度（按字符计）
-    #[serde(default = "default_summary_chars")]
     pub summary_max_chars: usize,
     /// 是否展示 AIHOT 的「推荐理由」
-    #[serde(default = "default_true")]
     pub show_reason: bool,
     /// 是否附带第三方原文链接（默认开启，同时保留 AIHOT 站内阅读页）
-    #[serde(default)]
     pub show_original_link: bool,
     /// 日报最多展示的条目数
-    #[serde(default = "default_daily_blocks")]
     pub daily_max_blocks: usize,
     /// 是否把资讯排版成卡片图；开启时一级推送只发图片，链接由引用提取
-    #[serde(default = "default_true")]
     pub image_enabled: bool,
     /// 卡片图最多展示几条；其余条目可通过“提取全部”一并获取
-    #[serde(default = "default_image_max_items")]
     pub image_max_items: usize,
     /// 提取/纯文本兜底超过多少字符时改用合并转发；0 表示永远发纯文本
-    #[serde(default = "default_forward_threshold")]
     pub forward_threshold_chars: usize,
     /// 提取内容使用合并转发时，单个节点的字符软上限
-    #[serde(default = "default_forward_node_chars")]
     pub forward_node_chars: usize,
     /// 卡片图的渲染倍率（1.0—4.0）。倍率越高出图越清晰，字也越"实"；
     /// 2.0 是勉强能看，3.0 在手机上放大也不糊
-    #[serde(default = "default_image_scale")]
     pub image_scale: f64,
     /// 卡片主题：auto（北京时间 07:00—18:59 白天，其余夜晚）/ light / dark
-    #[serde(default = "default_card_theme")]
     pub card_theme: String,
     /// 多个群之间的最小发送间隔（秒），防风控
-    #[serde(default = "default_send_interval")]
     pub send_interval_seconds: u64,
     /// 多个群之间的最大发送间隔（秒）；实际间隔在 min—max 间随机，
     /// 避免所有群在同一秒收到推送
-    #[serde(default = "default_send_interval_max")]
     pub send_interval_max_seconds: u64,
 
     // —— 模型榜 ——
     /// `/ai模型榜` 单次展示的模型条数（1—30）
-    #[serde(default = "default_leaderboard_items")]
     pub leaderboard_max_items: usize,
     /// 模型榜数据的本地缓存时长（分钟）；榜单每天只更新几次，不必每次指令都抓一遍
-    #[serde(default = "default_leaderboard_cache_minutes")]
     pub leaderboard_cache_minutes: u64,
 
     // —— 实时推送 ——
     /// 实时快报总开关：动态池一有有效资讯就推，不必等下一个定时档
-    #[serde(default = "default_true")]
     pub realtime_enabled: bool,
     /// 实时快报来源：selected（精选，默认低干扰）/ all（全量）
-    #[serde(default = "default_realtime_mode")]
     pub realtime_mode: String,
     /// 轮询间隔（秒）。低于 60 秒无意义：AIHOT 的 CDN 缓存就是 60 秒，
     /// 更密只会拿到同一份副本
-    #[serde(default = "default_realtime_interval")]
     pub realtime_interval_seconds: u64,
     /// 保鲜期（分钟）：只推收录时间在此之内的条目。
     /// Bot 离线一天再上线时，不会把这一天的旧闻当成「刚刚发生」补发一遍
-    #[serde(default = "default_realtime_max_age")]
     pub realtime_max_age_minutes: i64,
     /// 单次实时推送最多几条，多出来的留到下一轮
-    #[serde(default = "default_realtime_max_items")]
     pub realtime_max_items: usize,
     /// 每个群每小时最多实时推送几次，防止爆发日刷屏
-    #[serde(default = "default_realtime_max_per_hour")]
     pub realtime_max_per_hour: u32,
     /// 静默时段起点（HH:MM）；与终点相同或留空表示不设静默
-    #[serde(default = "default_quiet_start")]
     pub realtime_quiet_start: String,
     /// 静默时段终点（HH:MM）。跨午夜按跨天处理
-    #[serde(default = "default_quiet_end")]
     pub realtime_quiet_end: String,
     /// 只收定时档、不收实时快报的群；可用 `/ai实时关闭` 在群内增删
-    #[serde(default)]
     pub realtime_muted_groups: Vec<i64>,
     /// 只收定时档、不收实时快报的私聊目标
-    #[serde(default)]
     pub realtime_muted_private_users: Vec<i64>,
     /// 按目标覆盖分类与静默时段；群聊键沿用群号，私聊键使用 `private:<QQ号>`
-    #[serde(default)]
     pub group_preferences: HashMap<String, GroupPreference>,
 
     // —— 排期 ——
-    #[serde(default = "default_true")]
     pub brief_enabled: bool,
     /// 精选速递时间点，可配置多个（HH:MM:SS）
-    #[serde(default = "default_brief_times")]
     pub brief_times: Vec<String>,
 
-    #[serde(default = "default_true")]
     pub daily_enabled: bool,
-    #[serde(default = "default_daily_time")]
     pub daily_time: String,
 
-    #[serde(default = "default_true")]
     pub hot_topics_enabled: bool,
-    #[serde(default = "default_hot_topics_time")]
     pub hot_topics_time: String,
 }
 
@@ -847,9 +805,10 @@ pub fn handle(
             };
             let arg = extract_text_arg(&matched.args);
             let config = load_config(&ctx);
+            let prefix = get_prefixes(&ctx).first().cloned().unwrap_or_default();
 
             let payload = match trigger {
-                "ai搜索" => query_search(&config, &arg).await,
+                "ai搜索" => query_search(&config, &arg, &prefix).await,
                 "ai热点" => query_hot_topics(&config).await,
                 "ai日报" => query_daily(&config).await,
                 "ai模型排行榜" | "ai模型榜" | "ai大模型排行榜" | "模型排行榜" | "模型榜" => {
@@ -1166,13 +1125,13 @@ async fn query_models(config: &AiNewsConfig) -> Payload {
     }
 }
 
-async fn query_search(config: &AiNewsConfig, keyword: &str) -> Payload {
+async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Payload {
     let keyword = keyword.trim();
     if keyword.chars().count() < 2 {
-        return notice("用法：/ai搜索 <关键词>（关键词至少 2 个字）");
+        return notice(format!("❌ 关键词太短\n用法：{prefix}ai搜索 <关键词>，至少 2 个字"));
     }
     if keyword.chars().count() > 200 {
-        return notice("关键词太长了，请控制在 200 字以内");
+        return notice("❌ 关键词太长\n控制在 200 字以内");
     }
 
     match pusher::search(config, keyword).await {
@@ -1214,16 +1173,17 @@ async fn handle_push_admin(
     arg: &str,
 ) -> String {
     let config = load_config(ctx);
+    let prefix = get_prefixes(ctx).first().cloned().unwrap_or_default();
 
     if trigger == "ai推送列表" {
-        return render_target_list(&config);
+        return render_target_list(&config, &prefix);
     }
 
     if trigger == "ai推送状态" {
         let target = if arg.trim().is_empty() {
             current_target
         } else {
-            match parse_push_target(arg, current_target) {
+            match parse_push_target(arg, current_target, &prefix) {
                 Ok(target) => Some(target),
                 Err(message) => return message,
             }
@@ -1244,11 +1204,11 @@ async fn handle_push_admin(
             "全部" | "全量" | "全部资讯" | "all" | "full" => "all",
             "" | "状态" => {
                 return format!(
-                    "当前实时快报仅推送{}。用法：/ai实时模式 <精选|全部>",
+                    "当前实时快报仅推送{}\n用法：{prefix}ai实时模式 <精选|全部>",
                     config.realtime_mode_label()
                 );
             }
-            _ => return "模式无效。用法：/ai实时模式 <精选|全部>".to_string(),
+            _ => return format!("❌ 模式无效\n用法：{prefix}ai实时模式 <精选|全部>"),
         };
         if (normalized == "all") == config.realtime_uses_all() {
             return format!("实时快报当前已经只推送{}", config.realtime_mode_label());
@@ -1269,7 +1229,9 @@ async fn handle_push_admin(
                     state::align_realtime_baseline(target.state_id()).await;
                 }
                 if normalized == "all" {
-                    "⚠️ 实时快报已切换为全部资讯；消息量会明显增加，可随时用 /ai实时模式 精选 恢复低干扰模式".to_string()
+                    format!(
+                        "⚠️ 实时快报已切换为全部资讯，消息量会明显增加\n可随时用 {prefix}ai实时模式 精选 回到低干扰模式"
+                    )
                 } else {
                     "✅ 实时快报已切换为精选资讯，并已清理旧待发队列；日报、精选速递与热点榜不受影响".to_string()
                 }
@@ -1284,7 +1246,7 @@ async fn handle_push_admin(
         };
         target
     } else {
-        match parse_push_target(arg, current_target) {
+        match parse_push_target(arg, current_target, &prefix) {
             Ok(target) => target,
             Err(message) => return message,
         }
@@ -1348,18 +1310,12 @@ async fn handle_push_admin(
         }
         "ai实时开启" => {
             if !config.realtime_enabled {
-                let prefix = get_prefixes(ctx)
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "/".into());
                 return format!(
-                    "⚠️ 实时推送的总开关已停用。\
-                     可用 {}ctl set ai_news realtime_enabled true 恢复，目标随即生效",
-                    prefix
+                    "❌ 实时推送的总开关已停用\n可用 {prefix}ctl set ai_news realtime_enabled true 恢复，目标随即生效"
                 );
             }
             if !config.contains_target(target) {
-                return format!("{} 未开启推送，请先添加该目标", target);
+                return format!("{target} 未开启推送，先添加这个目标");
             }
             if !config.target_realtime_muted(target) {
                 return format!("{} 已经在接收实时快报", target);
@@ -1412,17 +1368,25 @@ async fn handle_push_admin(
     }
 }
 
-fn parse_push_target(raw: &str, current: Option<PushTarget>) -> Result<PushTarget, String> {
+/// 解析推送目标。`prefix` 只用于把指令按当前前缀写进报错，用户能整条抄走。
+fn parse_push_target(
+    raw: &str,
+    current: Option<PushTarget>,
+    prefix: &str,
+) -> Result<PushTarget, String> {
     let raw = raw.trim();
     if raw.is_empty() || matches!(raw, "当前" | "本群" | "本会话") {
-        return current.ok_or_else(|| "未指定目标：请写明群或私聊，例如 /ai推送添加 群 123456".to_string());
+        return current.ok_or_else(|| {
+            format!("❌ 未指定目标\n写明群或私聊，例如 {prefix}ai推送添加 群 123456")
+        });
     }
 
     let normalized = raw.replace(['：', ':', ',', '，'], " ");
     let parts: Vec<&str> = normalized.split_whitespace().collect();
     let usage = || {
-        "目标格式不正确。用法：/ai推送添加 <群|私聊> <ID>（如：/ai推送添加 群 123456）"
-            .to_string()
+        format!(
+            "❌ 目标格式不正确\n用法：{prefix}ai推送添加 <群|私聊> <ID>，例如 {prefix}ai推送添加 群 123456"
+        )
     };
 
     if parts.len() == 1 {
@@ -1470,7 +1434,7 @@ fn parse_positive_id(raw: &str) -> Result<i64, ()> {
     raw.parse::<i64>().ok().filter(|id| *id > 0).ok_or(())
 }
 
-fn render_target_list(config: &AiNewsConfig) -> String {
+fn render_target_list(config: &AiNewsConfig, prefix: &str) -> String {
     let groups: Vec<i64> = config
         .groups
         .iter()
@@ -1489,7 +1453,7 @@ fn render_target_list(config: &AiNewsConfig) -> String {
         private_users.len()
     );
     if groups.is_empty() && private_users.is_empty() {
-        out.push_str("\n暂无目标。可发送：/ai推送添加 群 <群号>");
+        out.push_str(&format!("\n暂无目标\n可发送 {prefix}ai推送添加 群 <群号>"));
         return out;
     }
     if !groups.is_empty() {
@@ -1517,8 +1481,9 @@ fn render_target_list(config: &AiNewsConfig) -> String {
 
 async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) -> String {
     let config = load_config(ctx);
+    let prefix = get_prefixes(ctx).first().cloned().unwrap_or_default();
     if !config.contains_target(target) {
-        return format!("{} 未开启推送，请先添加该目标", target);
+        return format!("{target} 不在推送列表里\n先发 {prefix}ai推送添加 群 <群号>");
     }
 
     let raw = raw.trim();
@@ -1530,8 +1495,7 @@ async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) ->
             api::category_label(current)
         };
         return format!(
-            "{} 当前接收：{}。\n用法：/ai分类 <模型|产品|行业|论文|技巧|全部|默认>",
-            target, label
+            "{target} 当前接收：{label}\n用法：{prefix}ai分类 <模型|产品|行业|论文|技巧|全部|默认>"
         );
     }
 
@@ -1544,8 +1508,7 @@ async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) ->
         "全部" | "不限" | "all" | "off" => Some(String::new()),
         "默认" | "继承" | "default" | "inherit" => None,
         _ => {
-            return "未识别该分类。可选：模型、产品、行业、论文、技巧、全部或默认"
-                .to_string();
+            return "❌ 未识别该分类\n可选：模型、产品、行业、论文、技巧、全部或默认".to_string();
         }
     };
     let stored = category.clone();
@@ -1578,14 +1541,15 @@ async fn update_target_category(ctx: &Context, target: PushTarget, raw: &str) ->
 
 async fn update_target_quiet(ctx: &Context, target: PushTarget, raw: &str) -> String {
     let config = load_config(ctx);
+    let prefix = get_prefixes(ctx).first().cloned().unwrap_or_default();
     if !config.contains_target(target) {
-        return format!("{} 未开启推送，请先添加该目标", target);
+        return format!("{target} 不在推送列表里\n先发 {prefix}ai推送添加 群 <群号>");
     }
 
     let raw = raw.trim();
     if raw.is_empty() {
         return format!(
-            "{} 的实时静默：{}。\n用法：/ai静默 <23:30-07:30|关闭|默认>",
+            "{} 的实时静默：{}\n用法：{prefix}ai静默 <23:30-07:30|关闭|默认>",
             target,
             quiet_label(&config, Some(target))
         );
@@ -1599,16 +1563,16 @@ async fn update_target_quiet(ctx: &Context, target: PushTarget, raw: &str) -> St
     } else {
         let normalized = raw.replace(['—', '–', '~', '～'], "-");
         let Some((start, end)) = normalized.split_once('-') else {
-            return "时间格式不正确，请使用「23:30-07:30」".to_string();
+            return "❌ 时间格式不正确\n写成 23:30-07:30 这样的区间".to_string();
         };
         let (Some(start), Some(end)) = (
             realtime::parse_clock(start),
             realtime::parse_clock(end),
         ) else {
-            return "时间格式不正确，请使用 00:00—23:59 范围内的时间".to_string();
+            return "❌ 时间格式不正确\n起止时间都要在 00:00—23:59 之内".to_string();
         };
         if start == end {
-            return "起止时间不能相同；如需全天接收，请发送「/ai静默 关闭」".to_string();
+            return format!("❌ 起止时间不能相同\n想全天接收就发 {prefix}ai静默 关闭");
         }
         let start = start.format("%H:%M").to_string();
         let end = end.format("%H:%M").to_string();
@@ -1691,7 +1655,7 @@ fn render_status(
             }
         ));
         out.push_str(&format!(
-            "   来源：{}（/ai实时模式 精选|全部）\n   每{}查一次 · 保鲜 {} 分钟\n   单次至多 {} 条 · 每小时至多 {} 次\n   静默时段：{}\n",
+            "   来源：{}（{prefix}ai实时模式 精选|全部）\n   每{}查一次 · 保鲜 {} 分钟\n   单次至多 {} 条 · 每小时至多 {} 次\n   静默时段：{}\n",
             config.realtime_mode_label(),
             interval_label(
                 config
@@ -2114,25 +2078,25 @@ mod tests {
     #[test]
     fn parses_current_group_and_explicit_group_or_private_targets() {
         let current_group = Some(PushTarget::Group(42));
-        assert_eq!(parse_push_target("", current_group).unwrap(), PushTarget::Group(42));
+        assert_eq!(parse_push_target("", current_group, "/").unwrap(), PushTarget::Group(42));
         assert_eq!(
-            parse_push_target("群 123456", current_group).unwrap(),
+            parse_push_target("群 123456", current_group, "/").unwrap(),
             PushTarget::Group(123456)
         );
         assert_eq!(
-            parse_push_target("group:123456", current_group).unwrap(),
+            parse_push_target("group:123456", current_group, "/").unwrap(),
             PushTarget::Group(123456)
         );
         assert_eq!(
-            parse_push_target("私聊 654321", current_group).unwrap(),
+            parse_push_target("私聊 654321", current_group, "/").unwrap(),
             PushTarget::Private(654321)
         );
         assert_eq!(
-            parse_push_target("private:654321", current_group).unwrap(),
+            parse_push_target("private:654321", current_group, "/").unwrap(),
             PushTarget::Private(654321)
         );
-        assert!(parse_push_target("私聊 0", current_group).is_err());
-        assert!(parse_push_target("不知道 123", current_group).is_err());
+        assert!(parse_push_target("私聊 0", current_group, "/").is_err());
+        assert!(parse_push_target("不知道 123", current_group, "/").is_err());
     }
 
     #[test]

@@ -19,8 +19,9 @@ use std::sync::OnceLock;
 const CARD_WIDTH: u32 = 520;
 /// 视口留出的左右留白。
 const VIEWPORT_WIDTH: u32 = CARD_WIDTH + 40;
-/// 设备像素比。2 倍即 1040px 位图，与 520px 的版心配在一起最省体积又不糊。
-const DEVICE_SCALE: f64 = 2.0;
+/// 设备像素比的默认值。2 倍即 1040px 位图，与 520px 的版心配在一起最省体积又不糊；
+/// 部署者可以用 `[oai] image_scale` 改它。
+pub(crate) const DEVICE_SCALE: f64 = 2.0;
 /// 单张图片的高度上限（CSS 像素），超出就退回纯文本，避免超大图拖垮发送。
 const MAX_CARD_HEIGHT: f64 = 20_000.0;
 
@@ -47,15 +48,15 @@ pub(crate) struct Footer {
     pub trace_overflow: usize,
 }
 
-/// 渲染成 base64 JPEG。
-pub(crate) async fn render_card(card: Card<'_>) -> anyhow::Result<String> {
+/// 渲染成 base64 JPEG。`scale` 是出图倍率（1—4），由 `[oai] image_scale` 给。
+pub(crate) async fn render_card(card: Card<'_>, scale: f64) -> anyhow::Result<String> {
     let html = build_html(&card);
     // 量高度、等字体、尺寸护栏与并发闸门都在 `render::web::shoot` 一处。
     // 出图范围是 `.card`（正文的 20px 留白由 body 提供，不进图）。
     render::shoot(
         render::Shot::new(&html, VIEWPORT_WIDTH)
             .selector(".card")
-            .scale(DEVICE_SCALE)
+            .scale(scale)
             .jpeg(88)
             .max_height(MAX_CARD_HEIGHT),
     )
@@ -489,16 +490,19 @@ mod live_tests {
             title: "示例来源".into(),
             url: "https://example.com/a".into(),
         }];
-        let base64 = render_card(Card {
-            title: "研究 #1回复",
-            markdown,
-            sources: &sources,
-            footer: Some(Footer {
-                meta: "gpt-5.6-luna · 3.4秒".into(),
-                trace: vec![TraceStep::new("bash", "测试")],
-                trace_overflow: 0,
-            }),
-        })
+        let base64 = render_card(
+            Card {
+                title: "研究 #1回复",
+                markdown,
+                sources: &sources,
+                footer: Some(Footer {
+                    meta: "gpt-5.6-luna · 3.4秒".into(),
+                    trace: vec![TraceStep::new("bash", "测试")],
+                    trace_overflow: 0,
+                }),
+            },
+            DEVICE_SCALE,
+        )
         .await
         .unwrap();
 

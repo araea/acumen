@@ -38,7 +38,10 @@ async fn reply(
     reply_card(ctx, writer, event, text, text_mode, header, &[], None).await;
 }
 
-/// 把回复渲染成卡片图片发出；`text_mode` 或渲染失败时退回纯文本。
+/// 把回复渲染成卡片图片发出；`text_mode`、关掉出图、或渲染失败时退回纯文本。
+///
+/// 关图开关在这里读一次就够——全部卡片输出都汇到这一个函数，
+/// 调用方不必各自判断（见 docs/GUIDELINES.md 四.7）。
 #[allow(clippy::too_many_arguments)]
 async fn reply_card(
     ctx: &Context,
@@ -51,8 +54,9 @@ async fn reply_card(
     footer: Option<super::render::Footer>,
 ) {
     let msg = Message::new().reply(event.message_id());
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
 
-    if text_mode {
+    if text_mode || !oai.image_enabled() {
         let _ = send_msg(
             ctx,
             writer.clone(),
@@ -70,7 +74,7 @@ async fn reply_card(
         sources,
         footer,
     };
-    match super::render::render_card(card).await {
+    match super::render::render_card(card, oai.image_scale()).await {
         Ok(b64) => {
             let _ = send_msg(
                 ctx,
@@ -937,7 +941,7 @@ pub async fn execute(
                     .await
                 }
                 Err(e) => {
-                    reply_text(ctx, writer, &msg_event, format!("⚠️ 获取模型失败：{}", e)).await
+                    reply_text(ctx, writer, &msg_event, format!("❌ 获取模型失败：{}", e)).await
                 }
             }
         }
@@ -987,7 +991,7 @@ pub async fn execute(
             }
             let mut c = mgr.config.write().await;
             if c.agents.iter().any(|a| a.name == cmd.args) {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 已存在", cmd.args)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 已存在", cmd.args)).await;
                 return;
             }
             if let Some(src) = c.agents.iter().find(|a| a.name == *name).cloned() {
@@ -1010,7 +1014,7 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::Rename => {
@@ -1034,7 +1038,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 目标名称 {} 已存在", cmd.args),
+                    format!("❌ 智能体 {} 已存在", cmd.args),
                 )
                 .await;
                 return;
@@ -1052,7 +1056,7 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::SetDesc => {
@@ -1066,7 +1070,7 @@ pub async fn execute(
                 mgr.save(&c);
                 reply_text(ctx, writer, &msg_event, format!("{} 描述已更新", name)).await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         // 同一个 `%` 既换模型也换引擎：`房间%pi` 交给本机 pi，`房间%pi 模型` 顺带指定
@@ -1105,13 +1109,13 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 无效模型。`/%` 查看中转站模型，或用 `智能体%pi 模型` 交给内置智能体。",
+                    "❌ 无效模型\n`/%` 查看中转站模型，或用 `智能体%pi 模型` 交给内置智能体",
                 )
                 .await;
                 return;
             };
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
                 return;
             };
             let old = room_model_label(a);
@@ -1137,7 +1141,7 @@ pub async fn execute(
             let global = oai.search.enabled;
             let mut c = mgr.config.write().await;
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
                 return;
             };
             if !a.uses_pi() {
@@ -1158,7 +1162,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 不认识这个写法。`房间?` 换一边，`房间?开` / `房间?关` 明确开关，`房间?默认` 跟随全局。",
+                    "❌ 不认识这个写法\n`房间?` 换一边，`房间?开` / `房间?关` 明确开关，`房间?默认` 跟随全局",
                 )
                 .await;
                 return;
@@ -1197,7 +1201,7 @@ pub async fn execute(
                     reply_text(ctx, writer, &msg_event, format!("{} 提示词已更新", name)).await;
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::ViewPrompt => {
@@ -1232,7 +1236,7 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::List => {
@@ -1304,7 +1308,7 @@ pub async fn execute(
                 mgr.save(&c);
                 reply_text(ctx, writer, &msg_event, format!("已删除 {}", name)).await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::ListModels => {
@@ -1418,7 +1422,7 @@ pub async fn execute(
                 );
                 reply(ctx, writer, &msg_event, &content, cmd.text_mode, &header).await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::ViewAt(scope) => {
@@ -1514,7 +1518,7 @@ pub async fn execute(
                     }
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::Export(scope) => {
@@ -1580,7 +1584,7 @@ pub async fn execute(
                     }
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::EditAt(scope) => {
@@ -1607,7 +1611,7 @@ pub async fn execute(
                     reply_text(ctx, writer, &msg_event, format!("❌ 索引 {} 无效", idx)).await;
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::DeleteAt(scope) => {
@@ -1649,7 +1653,7 @@ pub async fn execute(
                     .await;
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::ClearHistory(scope) => {
@@ -1675,7 +1679,7 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ {} 不存在", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::ClearAllPublic => {
@@ -1715,7 +1719,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("⚠️ 已清空 {} 个智能体的所有历史", cnt),
+                format!("✅ 已清空 {} 个智能体的所有历史", cnt),
             )
             .await;
         }

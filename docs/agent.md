@@ -205,7 +205,7 @@ agent 房间还带一份 skill，说明怎么用 `ayjx --ctl` 操作机器人自
 | --- | --- | --- |
 | `agent_default_model` | `deepseek/deepseek-flash` | 房间没写模型（留空或 `pi`）时用它；留空则退到 oai 的默认模型 |
 | `request_timeout_seconds` | `300` | 单次回复的总时间预算 |
-| `pi_stall_seconds` | `180` | 单次模型请求静默这么久算卡死；卡住且没动过工具时自动重来一次，`0` 关闭 |
+| `request_stall_seconds` | `180` | 单次模型请求静默这么久算卡死；卡住且没动过工具时自动重来一次，`0` 关闭 |
 | `plain_text_max_chars` | `120` | 短回复的纯文本阈值，`0` 表示始终渲染图片 |
 | `show_trace_footer` | `true` | 是否在卡片页脚显示模型、耗时与工具轨迹 |
 | `image_models` | `["gpt-image-2.5"]` | 走图像接口的模型关键字（子串匹配），画图预设房间据此选在售 id |
@@ -223,7 +223,7 @@ agent 房间还带一份 skill，说明怎么用 `ayjx --ctl` 操作机器人自
 | `search.results` | `8` | 每次搜索最多返回几条 |
 | `search.backends` | 空 | 各后端的 `api_key`（tavily/brave/serper）或 `base_url`（searxng） |
 
-一次模型请求发出去之后要到收尾才有回复，中间没有事件可看，所以 `pi_stall_seconds` 是单次请求的上限：上游异常时请求会一直挂着，静默超过这个秒数就中止并重来一次。动过工具之后不再重试，同一份副作用做两遍比慢一点糟糕得多。
+一次模型请求发出去之后要到收尾才有回复，中间没有事件可看，所以 `request_stall_seconds` 是单次请求的上限：上游异常时请求会一直挂着，静默超过这个秒数就中止并重来一次。动过工具之后不再重试，同一份副作用做两遍比慢一点糟糕得多。
 
 卡片渲染依赖 Chrome/Chromium，渲染失败时回退纯文本。等待期间不发进度提示，因为进度提示不会让回复更快，只会在群里插入与当前话题无关的内容。
 

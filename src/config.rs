@@ -4,38 +4,31 @@ use tokio::fs;
 use toml::Value;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct AppConfig {
-    // 全局指令前缀（支持多个，如 ["/", "#"]）
-    #[serde(default = "default_prefix")]
+    /// 全局指令前缀（支持多个，如 ["/", "#"]）
     pub command_prefix: Vec<String>,
 
-    // 全局浏览器路径配置 (默认为空，即自动查找)
-    #[serde(default)]
+    /// 全局浏览器路径配置 (默认为空，即自动查找)
     pub browser_path: Option<String>,
 
-    // 全局频道过滤配置
-    #[serde(default)]
+    /// 全局频道过滤配置
     pub global_filter: GlobalFilterConfig,
 
-    // Bot 连接配置
-    #[serde(default = "default_bots")]
+    /// Bot 连接配置
     pub bots: Vec<BotConfig>,
 
-    // 插件配置
+    /// 插件配置
     #[serde(flatten)]
     pub plugins: HashMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[serde(default)]
 pub struct GlobalFilterConfig {
-    #[serde(default)]
     pub enable_blacklist: bool,
-    #[serde(default)]
     pub blacklist: Vec<i64>,
-
-    #[serde(default)]
     pub enable_whitelist: bool,
-    #[serde(default)]
     pub whitelist: Vec<i64>,
 }
 
@@ -93,13 +86,12 @@ fn default_bots() -> Vec<BotConfig> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 pub struct BotConfig {
-    // 是否启用此 Bot
-    #[serde(default = "default_true")]
+    /// 是否启用此 Bot
     pub enabled: bool,
 
-    // 协议类型 (例如 "satori")
-    #[serde(default = "default_protocol")]
+    /// 协议类型 (例如 "satori")
     pub protocol: String,
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,12 +101,15 @@ pub struct BotConfig {
     pub access_token: Option<String>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-fn default_protocol() -> String {
-    "satori".to_string()
+impl Default for BotConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            protocol: "satori".to_string(),
+            url: None,
+            access_token: None,
+        }
+    }
 }
 
 impl Default for AppConfig {

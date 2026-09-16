@@ -58,6 +58,8 @@ struct PortraitConfig {
     max_scan: u64,
     /// 报告主题：`auto` 按北京时间在日读与夜读之间切换，也可固定 `light` / `dark`。
     theme: String,
+    /// 是否把画像排版成卡片图；关掉或渲染失败时退回一份等价的文字版。
+    image_enabled: bool,
     /// 出图倍率（1—4）。倍率越高越清晰，图也越大。
     image_scale: f64,
     /// 同一个目标两次生成之间的最短间隔秒数。
@@ -76,6 +78,7 @@ impl Default for PortraitConfig {
             max_samples: 120,
             max_scan: 8_000,
             theme: "auto".to_string(),
+            image_enabled: true,
             image_scale: 3.0,
             cooldown_seconds: 180,
             channel: ChannelConfig::default(),
@@ -539,7 +542,13 @@ pub fn handle(
         let html = card::html(&view);
         archive(&html, target).await;
 
-        match card::capture(&html, config.image_scale).await {
+        // 关掉出图时直接走文字版，与出图失败走同一条路（GUIDELINES 四.7）。
+        let captured = if config.image_enabled {
+            card::capture(&html, config.image_scale).await
+        } else {
+            Err(anyhow::anyhow!("image_enabled = false"))
+        };
+        match captured {
             Ok(base64) => {
                 let reply = Message::new().image(base64.clone());
                 // 真发出去了才记：没发出去的那份，群里没人看见过。
@@ -551,9 +560,11 @@ pub fn handle(
                 }
             }
             Err(error) => {
-                error!(target: LOG_TARGET, "画像出图失败：{error:#}");
-                // 出图失败不该等于没有结果：把报告里的关键几行退回成文字。
-                let summary = text_report(&material, &profile, &model);
+                if config.image_enabled {
+                    error!(target: LOG_TARGET, "画像出图失败：{error:#}");
+                }
+                // 出图失败或主动关图都不该等于没有结果：退回成文字版。
+                let summary = text_report(&material, &profile, &model, config.image_enabled);
                 remember(target, Cached::Report(summary.clone()));
                 say(&ctx, writer, group_id, requester, message_id, summary).await;
             }
@@ -610,12 +621,19 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 出图失败时的文字版：综合标签、四个维度下的标签、综述与那句边界说明，
+/// 卡片图之外的文字版：综合标签、四个维度下的标签、综述与那句边界说明，
 /// 够用户在群里看懂这份画像，不至于因为一张图没出成就什么都拿不到。
-fn text_report(material: &collect::Material, profile: &persona::Persona, model: &str) -> String {
-    let mut out = format!("【{}】{}\n", profile.title, profile.note);
+///
+/// `image_enabled` 只影响最后那句交代：是「出图失败」还是「本来就关了图」。
+fn text_report(
+    material: &collect::Material,
+    profile: &persona::Persona,
+    model: &str,
+    image_enabled: bool,
+) -> String {
+    let mut out = format!("▍{}\n{}\n", profile.title, profile.note);
     out.push_str(&format!(
-        "\n〖读数〗共 {} 条群聊发言，覆盖 {} 天（活跃 {} 天），单条平均 {:.1} 字，\
+        "\n▍读数\n共 {} 条群聊发言，覆盖 {} 天（活跃 {} 天），单条平均 {:.1} 字，\
          {}前后最密。样本充分性：{}。\n",
         material.total,
         material.span_days(),
@@ -630,7 +648,7 @@ fn text_report(material: &collect::Material, profile: &persona::Persona, model: 
         if tags.is_empty() {
             continue;
         }
-        out.push_str(&format!("\n〖{dimension}〗\n"));
+        out.push_str(&format!("\n▍{dimension}\n"));
         for tag in tags {
             out.push_str(&format!("　{}｜{}\n", tag.tier(), tag.label));
             if !tag.evidence.trim().is_empty() {
@@ -641,7 +659,7 @@ fn text_report(material: &collect::Material, profile: &persona::Persona, model: 
 
     let passages: Vec<&persona::Passage> = profile.live_passages().collect();
     if !passages.is_empty() {
-        out.push_str("\n〖画像综述〗\n");
+        out.push_str("\n▍画像综述\n");
         for passage in passages {
             if passage.is_quote() {
                 out.push_str(&format!("　「{}」\n", passage.text));
@@ -654,9 +672,14 @@ fn text_report(material: &collect::Material, profile: &persona::Persona, model: 
         }
     }
 
+    let footer = if image_enabled {
+        "出图失败，先给你一份文字版"
+    } else {
+        "出图已关闭，这一份是文字版"
+    };
     out.push_str(&format!(
         "\n画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。\
-         出图失败，先给你一份文字版（{model}）。"
+         {footer}（{model}）。"
     ));
     out
 }
@@ -1200,19 +1223,19 @@ mod tests {
             ],
             ..Default::default()
         };
-        let report = text_report(&material, &profile, "deepseek/deepseek-flash");
+        let report = text_report(&material, &profile, "deepseek/deepseek-flash", true);
         assert!(report.contains("夜行改稿人"));
         assert!(report.contains("白天潜水夜里冒泡"));
         assert!(report.contains("三点还在改"));
         assert!(report.contains("共 100 条群聊发言"));
         // 四个维度的小标题、三条层级、标签与证据都要跟着落到文字版里。
-        assert!(report.contains("〖活跃〗"));
-        assert!(report.contains("〖表达〗"));
-        assert!(!report.contains("〖内容〗"), "没有内容的维度不印");
+        assert!(report.contains("▍活跃"));
+        assert!(report.contains("▍表达"));
+        assert!(!report.contains("▍内容"), "没有内容的维度不印");
         assert!(report.contains("事实｜夜里出现"));
         assert!(report.contains("夜间发言占 41%"));
         assert!(report.contains("推断｜句子短"));
-        assert!(report.contains("〖画像综述〗"));
+        assert!(report.contains("▍画像综述"));
         assert!(report.contains("他把手艺当退路。"));
         assert!(report.contains("不等于本人"));
     }

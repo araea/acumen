@@ -5,7 +5,7 @@
 //! Unix 下使用 exec 替换当前进程，保持前台终端及 PID。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::command::match_word_command;
+use crate::command::{get_prefixes, match_word_command};
 use crate::config::{AppConfig, build_config};
 use crate::event::Context;
 use crate::message::Message;
@@ -19,26 +19,20 @@ use toml::Value;
 // ================= 配置定义 =================
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(default)]
 struct RestartConfig {
-    #[serde(default = "default_true")]
     enabled: bool,
     /// 每日自动重启时间 (HH:MM，24 小时制)，默认凌晨 4 点(群聊低峰期)
-    #[serde(default = "default_time")]
     time: String,
     /// 进程自身 RSS 内存阈值 (MB)，超过则提前重启；0 表示关闭内存监控(仅 Linux 支持读取)
-    #[serde(default)]
     memory_threshold_mb: u64,
     /// 内存巡检间隔(分钟)
-    #[serde(default = "default_check_interval")]
     memory_check_interval_minutes: u64,
     /// 是否开放 /restart 手动指令(默认关闭，防止群内成员误触发整机重启)
-    #[serde(default)]
     allow_manual_restart: bool,
     /// 重启前等待秒数(等待通知消息刷新到 WebSocket)
-    #[serde(default = "default_delay")]
     restart_delay_seconds: u64,
     /// 外部重启命令(如 "systemctl restart ayjx")；配置后优先使用，代替进程自我拉起
-    #[serde(default)]
     restart_command: String,
 }
 
@@ -46,27 +40,14 @@ impl Default for RestartConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            time: default_time(),
+            time: "04:00".to_string(),
             memory_threshold_mb: 0,
-            memory_check_interval_minutes: default_check_interval(),
+            memory_check_interval_minutes: 5,
             allow_manual_restart: false,
-            restart_delay_seconds: default_delay(),
+            restart_delay_seconds: 3,
             restart_command: String::new(),
         }
     }
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_time() -> String {
-    "04:00".to_string()
-}
-fn default_check_interval() -> u64 {
-    5
-}
-fn default_delay() -> u64 {
-    3
 }
 
 // ================= 全局状态 =================
@@ -186,9 +167,10 @@ pub fn handle(
             // 未开放手动重启时给出提示
             if !cfg.allow_manual_restart {
                 let msg = ctx.as_message().unwrap();
-                let reply = Message::new()
-                    .reply(msg.message_id())
-                    .text("⚠️ 重启指令未开放，可用 /ctl set restart allow_manual_restart true 开启");
+                let prefix = get_prefixes(&ctx).first().cloned().unwrap_or_default();
+                let reply = Message::new().reply(msg.message_id()).text(format!(
+                    "❌ 重启指令未开放\n可用 {prefix}ctl set restart allow_manual_restart true 开启"
+                ));
                 let _ = send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await;
                 return Ok(None);
             }

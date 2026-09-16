@@ -13,6 +13,8 @@ use toml::Value;
 
 pub mod processing;
 
+const LOG_TARGET: &str = "Plugin/ImageSplit";
+
 // ================= 配置定义 =================
 
 #[derive(Serialize, Deserialize)]
@@ -117,7 +119,7 @@ pub fn handle(
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        "⚠️ 请在发送指令时附带图片，或引用一张图片",
+                        "❌ 请在发送指令时附带图片，或引用一张图片",
                     )
                     .await?;
                     return Ok(None);
@@ -137,13 +139,13 @@ pub fn handle(
             let img_bytes = match download_bytes(&url).await {
                 Ok(b) => b,
                 Err(e) => {
-                    error!(target: "Plugin/ImageSplitter", "下载失败: {}", e);
+                    error!(target: LOG_TARGET, "下载失败: {}", e);
                     send_msg(
                         &ctx,
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        "❌ 图片下载失败",
+                        format!("❌ 图片下载失败：{}", e),
                     )
                     .await?;
                     return Ok(None);
@@ -175,7 +177,7 @@ pub fn handle(
                     )
                     .await
                     {
-                        error!(target: "Plugin/ImageSplitter", "发送合并转发失败: {}", e);
+                        error!(target: LOG_TARGET, "发送合并转发失败: {}", e);
                         send_msg(
                             &ctx,
                             writer,
@@ -197,7 +199,7 @@ pub fn handle(
                     .await?;
                 }
                 Err(e) => {
-                    error!(target: "Plugin/ImageSplitter", "Task join error: {}", e);
+                    error!(target: LOG_TARGET, "Task join error: {}", e);
                 }
             }
 

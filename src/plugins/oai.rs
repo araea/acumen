@@ -77,10 +77,14 @@ pub(crate) struct OaiConfig {
     /// 单次模型请求静默多少秒算卡死（内置 agent 一次性拿完整回复，
     /// 没有中间事件可看，所以这是单次请求的上限）；卡住且还没动过工具时自动重来一次。
     /// 置 0 关闭。
-    pi_stall_seconds: u64,
+    request_stall_seconds: u64,
     /// 短回复直接以文本发送而不渲染图片的字符上限；置 0 表示始终渲染图片。
     /// 一句话的答复走文本既快又便于复制。
     plain_text_max_chars: usize,
+    /// 是否把回复排版成卡片图；关掉后一律发纯文本（渲染失败本来也退回纯文本）。
+    image_enabled: bool,
+    /// 出图倍率（1—4）。版心 520 CSS px，2 倍即 1040px 位图，最省体积又不糊。
+    image_scale: f64,
     /// 在回复卡片页脚展示模型、耗时与工具调用轨迹。
     show_trace_footer: bool,
     /// 模型列表过滤：中转站返回的上千个 id 里只留下当下值得用的那些。
@@ -117,8 +121,10 @@ impl Default for OaiConfig {
             enabled: true,
             agent_default_model: "deepseek/deepseek-flash".to_string(),
             request_timeout_seconds: 300,
-            pi_stall_seconds: 180,
+            request_stall_seconds: 180,
             plain_text_max_chars: 120,
+            image_enabled: true,
+            image_scale: render::DEVICE_SCALE,
             show_trace_footer: true,
             model_filter: utils::ModelFilterConfig::default(),
             image_models: images::DEFAULT_IMAGE_MODELS
@@ -151,8 +157,8 @@ impl OaiConfig {
 
     /// 单次模型请求静默多久算卡死；`None` 表示不看。
     pub(crate) fn pi_stall(&self) -> Option<std::time::Duration> {
-        (self.pi_stall_seconds > 0)
-            .then(|| std::time::Duration::from_secs(self.pi_stall_seconds.max(20)))
+        (self.request_stall_seconds > 0)
+            .then(|| std::time::Duration::from_secs(self.request_stall_seconds.max(20)))
     }
 
     /// 内置 agent 房间没写模型时用的默认模型；留空返回 `None`，由调用方退到
@@ -164,6 +170,20 @@ impl OaiConfig {
 
     pub(crate) fn plain_text_max_chars(&self) -> usize {
         self.plain_text_max_chars
+    }
+
+    /// 是否出回复卡片图；关掉后一律发纯文本。
+    pub(crate) fn image_enabled(&self) -> bool {
+        self.image_enabled
+    }
+
+    /// 出图倍率，限制在 1—4 倍；非法值回到内置默认。
+    pub(crate) fn image_scale(&self) -> f64 {
+        if self.image_scale.is_finite() && (1.0..=4.0).contains(&self.image_scale) {
+            self.image_scale
+        } else {
+            render::DEVICE_SCALE
+        }
     }
 
     /// 音乐、视频这类异步任务的等待上限；太短会白等一场，太长又占着会话不放。

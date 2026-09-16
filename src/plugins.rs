@@ -11,6 +11,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::fs;
 use toml::Value;
 
+/// 框架自身的日志 target（插件级日志用 `Plugin/<名字>`，见 docs/GUIDELINES.md）。
+const LOG_TARGET: &str = "Plugin/Lifecycle";
+
 pub type PluginError = Box<dyn std::error::Error + Send + Sync>;
 
 pub type PluginResult<T> = std::result::Result<T, PluginError>;
@@ -146,7 +149,7 @@ pub async fn start(ctx: &Context, name: &str) -> Result<(), String> {
     };
     init(init_ctx).await.map_err(|error| error.to_string())?;
     started().lock().unwrap().insert(name.to_string());
-    info!(target: "Plugin", "🔁 [{}] 运行时启用，已补跑初始化", name);
+    info!(target: LOG_TARGET, "🔁 [{}] 运行时启用，已补跑初始化", name);
     Ok(())
 }
 
@@ -279,14 +282,14 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
             // 执行初始化
             match init_fn(init_ctx).await {
                 Ok(_) => {
-                    info!(target: "Plugin", "✅ [{}] 就绪 (Init Success)", plugin.name);
+                    info!(target: LOG_TARGET, "✅ [{}] 就绪 (Init Success)", plugin.name);
                 }
                 Err(e) => {
-                    error!(target: "Plugin", "❌ [{}] 初始化失败: {}", plugin.name, e);
+                    error!(target: LOG_TARGET, "❌ [{}] 初始化失败: {}", plugin.name, e);
                 }
             }
         } else {
-            info!(target: "Plugin", "✅ [{}] 就绪", plugin.name);
+            info!(target: LOG_TARGET, "✅ [{}] 就绪", plugin.name);
         }
     }
     Ok(())
@@ -371,9 +374,9 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
 
         if let Some(conn_fn) = plugin.on_connected {
             if let Err(e) = conn_fn(ctx.clone(), writer.clone()).await {
-                error!(target: "Plugin", "❌ [{}] 连接钩子执行失败: {}", plugin.name, e);
+                error!(target: LOG_TARGET, "❌ [{}] 连接钩子执行失败: {}", plugin.name, e);
             } else {
-                info!(target: "Plugin", "🔗 [{}] 连接钩子已触发", plugin.name);
+                info!(target: LOG_TARGET, "🔗 [{}] 连接钩子已触发", plugin.name);
             }
         }
     }
@@ -405,7 +408,7 @@ pub async fn run(mut ctx: Context, writer: LockedWriter) -> Result<(), PluginErr
             // 单个插件失败不应崩掉整个适配器：记录后按"事件已消费"处理
             Err(e) => {
                 error!(
-                    target: "Plugin",
+                    target: LOG_TARGET,
                     "❌ [{}] 处理事件失败: {}",
                     plugin.name, e
                 );
@@ -517,7 +520,7 @@ where
         None => T::default(),
         Some(v) => T::deserialize(v.clone()).unwrap_or_else(|e| {
             warn!(
-                target: "Plugin",
+                target: LOG_TARGET,
                 "插件 [{}] 配置反序列化失败，已使用默认值: {}",
                 plugin_name, e
             );
@@ -672,5 +675,122 @@ mod satori_compat_tests {
 
         assert!(white.allows(None), "私聊不受群名单约束");
         assert!(!white.allows(Some(3)));
+    }
+}
+
+#[cfg(test)]
+mod example_config_tests {
+    use super::*;
+
+    /// 示例配置里那些「由用户自己起名字」的表：子键不在默认值里，不算偏离。
+    const FREE_TABLES: &[(&str, &str)] = &[("oai", "providers"), ("oai", "search.backends")];
+
+    /// 默认值是一整段人写的中文时，示例里只留一行注释说明它怎么用，不抄正文。
+    ///
+    /// 抄过来就是同一段话住在两个地方，改了一处没改另一处只会更难查；
+    /// 而且示例本身要回答的是「不写这一行会怎样」，答案在注释里比在原文里清楚。
+    const TEXT_DEFAULTS_IN_COMMENTS: &[(&str, &str)] = &[("ambient", "gate_persona")];
+
+    fn commented_default(plugin: &str, path: &str) -> bool {
+        TEXT_DEFAULTS_IN_COMMENTS
+            .iter()
+            .any(|(name, key)| *name == plugin && *key == path)
+    }
+
+    /// 收集一棵 TOML 树里的叶子路径（标量与数组）。空表不算——它在示例里可以有也可以没有。
+    fn leaves(value: &Value, path: &str, into: &mut Vec<String>) {
+        if let Value::Table(table) = value {
+            for (key, child) in table {
+                let full = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                leaves(child, &full, into);
+            }
+        } else {
+            into.push(path.to_string());
+        }
+    }
+
+    fn free(plugin: &str, path: &str) -> bool {
+        FREE_TABLES
+            .iter()
+            .any(|(name, root)| *name == plugin && path.starts_with(&format!("{root}.")))
+    }
+
+    /// toml 1.x 里文档的根是 `Table`，`Value` 只表示单个值。
+    fn example() -> toml::Table {
+        let text = std::fs::read_to_string("config.example.toml")
+            .expect("config.example.toml 应当在仓库根目录");
+        toml::from_str(&text).expect("config.example.toml 必须是合法 TOML")
+    }
+
+    /// 每个注册插件都要在示例配置里有一段。
+    ///
+    /// 这份文件是新用户唯一能读到的完整配置参考；漏一段，那一整个插件就等于没有文档。
+    #[test]
+    fn every_plugin_has_a_section_in_the_example_config() {
+        let table = example();
+        for plugin in get_plugins() {
+            assert!(
+                table.contains_key(plugin.name),
+                "config.example.toml 里缺少 [{}]（{}）；每个插件都要有一段，哪怕只有 enabled",
+                plugin.name,
+                plugin.display_name
+            );
+        }
+    }
+
+    /// 示例里写的键与 default_config() 的叶子键必须一一对应。
+    ///
+    /// 两个方向都要管：改了键名而没改示例（示例里留着旧名，用户抄走会静默落默认值），
+    /// 或者加了字段而没写进示例（用户永远看不到它）。
+    #[test]
+    fn the_example_config_lists_exactly_the_default_keys() {
+        let table = example();
+
+        for plugin in get_plugins() {
+            let section = table
+                .get(plugin.name)
+                .unwrap_or_else(|| panic!("config.example.toml 里缺少 [{}]", plugin.name));
+
+            let mut expected = Vec::new();
+            leaves(&(plugin.default_config)(), "", &mut expected);
+            expected
+                .retain(|path| !free(plugin.name, path) && !commented_default(plugin.name, path));
+            expected.sort();
+
+            let mut written = Vec::new();
+            leaves(section, "", &mut written);
+            written.retain(|path| !free(plugin.name, path));
+            written.sort();
+
+            let missing: Vec<&String> = expected.iter().filter(|p| !written.contains(p)).collect();
+            let extra: Vec<&String> = written.iter().filter(|p| !expected.contains(p)).collect();
+            assert!(
+                missing.is_empty(),
+                "[{}] 的默认值里有这些键，示例配置里没写：{missing:?}",
+                plugin.name
+            );
+            assert!(
+                extra.is_empty(),
+                "[{}] 的示例配置里有这些键，默认值里没有（改名残留或拼错）：{extra:?}",
+                plugin.name
+            );
+        }
+    }
+
+    /// 示例里写出来的值必须能被真实配置类型反序列化——抄走就能用。
+    #[test]
+    fn every_example_section_validates() {
+        let table = example();
+        for plugin in get_plugins() {
+            let section = table.get(plugin.name).expect("上一条测试已保证存在");
+            let text = toml::to_string(section).expect("示例段可序列化");
+            let value: Value = toml::from_str(&text).expect("示例段可解析");
+            (plugin.validate_config)(&value)
+                .unwrap_or_else(|e| panic!("[{}] 的示例配置通不过自带校验：{e}", plugin.name));
+        }
     }
 }

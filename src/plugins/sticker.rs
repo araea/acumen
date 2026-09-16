@@ -58,7 +58,7 @@ pub fn handle(
                             Some(msg.user_id()),
                             Message::new()
                                 .reply(msg.message_id())
-                                .text("❌ 请【引用】你想要保存的表情包，然后发送此指令"),
+                                .text("❌ 请引用你要保存的表情或图片，然后重发这条指令"),
                         )
                         .await;
                         return Ok(None);
@@ -88,7 +88,7 @@ pub fn handle(
                                 Some(msg.user_id()),
                                 Message::new()
                                     .reply(msg.message_id())
-                                    .text("⚠️ 检测不到图片或表情，可能是商城表情等特殊格式"),
+                                    .text("❌ 检测不到图片或表情\n商城表情这类特殊格式暂时读不出来"),
                             )
                             .await;
                         } else {

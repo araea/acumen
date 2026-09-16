@@ -167,7 +167,7 @@ pub(crate) struct AmbientConfig {
     /// 群里安静多少秒之后才判定，用来把一串刷屏并成一次。
     pub debounce_seconds: u64,
     /// 从第一条消息算起最多等多久就必须判定一次。
-    pub max_wait_seconds: u64,
+    pub max_pending_seconds: u64,
     /// 可选硬冷却；0 关闭，被点名或正在继续感兴趣的对话时不受限。
     ///
     /// 挡住的是「刚说完又想接」：群里热闹时门槛和加价都在涨，但都是软约束，
@@ -183,7 +183,7 @@ pub(crate) struct AmbientConfig {
     ///
     /// 这是唯一一条不看分数、不看状态的硬顶。留得比正常节奏宽，只在真正聊嗨了
     /// 的时候兜底——一屋子人聊到兴头上，没人会数自己这个小时说了几句。
-    pub hourly_limit: usize,
+    pub max_per_hour: usize,
     /// 被 @ 或被引用时跳过判定直接开口。
     pub reply_on_mention: bool,
     /// 群友还会怎么叫它：名片之外的小名、简称。
@@ -276,10 +276,10 @@ impl Default for AmbientConfig {
             context_turns: 20,
             context_images: 2,
             debounce_seconds: 3,
-            max_wait_seconds: 12,
+            max_pending_seconds: 12,
             cooldown_seconds: 90,
             focus_max_seconds: 180,
-            hourly_limit: 8,
+            max_per_hour: 8,
             reply_on_mention: true,
             aliases: Vec::new(),
             summon_command: "/搭话".to_string(),
@@ -313,7 +313,7 @@ impl AmbientConfig {
     }
 
     fn max_wait(&self) -> Duration {
-        Duration::from_secs(self.max_wait_seconds.clamp(self.debounce().as_secs(), 600))
+        Duration::from_secs(self.max_pending_seconds.clamp(self.debounce().as_secs(), 600))
     }
 
     fn cooldown(&self) -> Duration {
@@ -1020,7 +1020,7 @@ async fn consider(
                 let mentioned = state.take_mention() && config.reply_on_mention;
                 let summoned = state.take_summon();
                 let capped =
-                    config.hourly_limit > 0 && state.spoken_last_hour() >= config.hourly_limit;
+                    config.max_per_hour > 0 && state.spoken_last_hour() >= config.max_per_hour;
                 (
                     state.seq,
                     state.recent(config.context_turns.clamp(1, 80)),
@@ -1750,11 +1750,11 @@ mod tests {
         // 默认带一条时间下限与一条每小时硬顶：前者挡住刚说完又想接，后者给聊嗨了
         // 的时段兜底。两条都不看分数，是「别吵」这件事唯一可靠的两颗钉子。
         assert_eq!(config.cooldown(), Duration::from_secs(90));
-        assert_eq!(config.hourly_limit, 8);
+        assert_eq!(config.max_per_hour, 8);
         assert_eq!(config.effective_threshold(None), config.score_threshold);
         let extreme = AmbientConfig {
             debounce_seconds: u64::MAX,
-            max_wait_seconds: 0,
+            max_pending_seconds: 0,
             silence_relief_cap: 20,
             ..config
         };
