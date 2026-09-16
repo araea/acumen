@@ -419,6 +419,15 @@ async fn chat(
                 draw_agent.model = chat_model.clone();
                 super::images::generate_reply(&base, &api_key, &draw_agent, &hist).await
             } else {
+                // 在群里说话的房间接上群聊能力层：群资料、翻旧账、发消息、画图写歌
+                // 那一套从此也在房间里可用。私聊里的房间没有这一份。
+                let chat = event.group_id().map(|group| super::agent::ChatContext {
+                    ctx: ctx.clone(),
+                    writer: writer.clone(),
+                    group,
+                    config: oai.chat.clone(),
+                    tools: Some(room_tools(&oai.chat, group)),
+                });
                 respond(
                     &api_base,
                     &api_key,
@@ -428,6 +437,7 @@ async fn chat(
                     &oai,
                     mgr.path.parent().unwrap_or(&mgr.path),
                     control.as_ref(),
+                    chat,
                 )
                 .await
             }
@@ -751,6 +761,36 @@ pub(super) struct MediaMessage {
     pub(super) segments: Vec<Media>,
 }
 
+/// 房间里这一轮的工具白名单。
+///
+/// 本机那几件按 `[oai.chat] tools` 来（留空就是全给）；群聊那一套按额度收敛，
+/// 与搭话用同一份清单（[`chat::tool_names`]），于是「模型看得到的工具」与
+/// 「它真按得动的按钮」在两边都永远对得上。
+fn room_tools(config: &super::chat::ChatConfig, group: i64) -> String {
+    let mut names: Vec<String> = if config.tools.trim().is_empty() {
+        super::agent::tools::local_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    } else {
+        config
+            .tools
+            .split(',')
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect()
+    };
+    // 管理动作写在 `satori_action` 里，按群授权（`[oai.chat] management_groups`），
+    // 白名单这一层不必再分；这里补的是「按额度该不该出现」。
+    let _ = group;
+    names.extend(
+        super::chat::tool_names(config)
+            .into_iter()
+            .map(str::to_string),
+    );
+    names.join(",")
+}
+
 /// 内置 agent 房间走带工具的多轮循环，普通房间走单轮 Chat Completions。
 ///
 /// `api_base` / `api_key` 已按房间模型的 `供应商/` 前缀解析好；
@@ -765,6 +805,8 @@ async fn respond(
     oai: &super::OaiConfig,
     data_dir: &std::path::Path,
     control: Option<&crate::plugins::ctl::bridge::Lease>,
+    // 群聊那一路的接口与额度；私聊里的房间没有这一份（没有群也就没有群动作）。
+    chat: Option<super::agent::ChatContext>,
 ) -> anyhow::Result<Reply> {
     let thinking = agent.effective_thinking();
     if agent.uses_agent() {
@@ -785,6 +827,7 @@ async fn respond(
             hist,
             control,
             &search,
+            chat,
         )
         .await?;
         return Ok(Reply {

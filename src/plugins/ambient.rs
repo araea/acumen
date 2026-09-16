@@ -444,20 +444,16 @@ impl Ambient {
         }
     }
 
-    /// 这一轮交给能力层的额度与开关。
-    pub(crate) fn chat(&self, group: i64) -> ChatConfig {
-        chat_config(&self.config, group)
-    }
 }
 
 /// `[ambient]` 那份配置 → 能力层这一轮的额度与开关。
 ///
 /// 一条一条写出来是为了看得见差异：能力层不读任何插件配置，两边怎么对上全靠这里，
 /// 以后给能力层加一项，编译器会在这里提醒补上。
-pub(crate) fn chat_config(config: &AmbientConfig, group: i64) -> ChatConfig {
+pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
     ChatConfig {
         enabled: config.enabled,
-        management: config.management_groups.contains(&group),
+        management_groups: config.management_groups.clone(),
         require_fresh: true,
         max_messages: config.max_messages,
         max_actions: config.max_actions,
@@ -470,8 +466,9 @@ pub(crate) fn chat_config(config: &AmbientConfig, group: i64) -> ChatConfig {
         sticker_max: config.sticker_max,
         context_turns: config.context_turns,
         split_chars: config.split_chars,
-        freshness: config.freshness_window(),
-        media_deadline: config.reply_timeout(),
+        freshness_seconds: config.freshness_window().as_secs(),
+        media_deadline_seconds: config.reply_timeout().as_secs(),
+        tools: config.tools.clone(),
     }
 }
 

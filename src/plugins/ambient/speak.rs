@@ -154,8 +154,15 @@ pub(crate) async fn compose(
     )>,
 ) -> anyhow::Result<String> {
     let dir = agent::ScratchDir::under(base, "runs")?;
+    // 白名单是一道闸：没写进来的工具不会被挂上去，所以每个可选工具都要跟着
+    // 它自己那个开关一起进出。群聊工具那一串由能力层给（见 [`chat::tool_names`]），
+    // 于是白名单、提示词里那句「手边有什么」与真正按得动的按钮始终是同一份开关。
+    let mut tools = config.tools.clone();
     let bridge = if let Some((ctx, writer, group, _seq)) = &live {
         // 人格这一层由搭话自己给：口吻、状态、记忆与打字节奏都在它那一边。
+        let chat = super::chat_config(config);
+        tools.push(',');
+        tools.push_str(&crate::plugins::oai::chat::tool_names(&chat).join(","));
         let persona = std::sync::Arc::new(super::Ambient::new(
             config,
             Some(crate::plugins::oai::chat::Avatar {
@@ -169,7 +176,7 @@ pub(crate) async fn compose(
                 ctx,
                 writer,
                 group: *group,
-                config: persona.chat(*group),
+                config: chat,
                 scratch: dir.path(),
                 media: &base.join("media"),
                 persona: Some(persona),
@@ -190,32 +197,6 @@ pub(crate) async fn compose(
     });
     let memo = bridge.is_some() && config.memory_enabled && config.memo_budget > 0;
     let lookup = bridge.is_some() && config.lookup_budget > 0;
-    let mut tools = if bridge.is_some() {
-        format!(
-            "{},satori_context,satori_read,satori_action,satori_draw",
-            config.tools
-        )
-    } else {
-        config.tools.clone()
-    };
-    // 白名单是一道闸：没写进来的工具不会被挂上去，
-    // 所以每个可选工具都要跟着它自己那个开关一起进出。
-    if bridge.is_some() {
-        if lookup {
-            tools.push_str(",satori_history,satori_group,satori_profile");
-        }
-        if memo {
-            tools.push_str(",satori_memo");
-        }
-        // 写歌与拍片真花钱，额度为 0 时连工具都不挂——提示词、白名单与实际可调的
-        // 东西始终是同一份开关。
-        if config.music_budget > 0 {
-            tools.push_str(",satori_music");
-        }
-        if config.video_budget > 0 {
-            tools.push_str(",satori_video");
-        }
-    }
     if web.is_some() {
         tools.push_str(",web_search,web_fetch");
     }

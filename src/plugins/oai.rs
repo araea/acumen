@@ -114,6 +114,9 @@ pub(crate) struct OaiConfig {
     /// 联网搜索：给内置 agent 房间的 `web_search` / `web_fetch`。
     /// 默认关闭，群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
     pub(crate) search: search::SearchConfig,
+    /// 群聊那一层：房间里能发的消息条数、能查几次资料、能画几张图，以及
+    /// 哪些群允许管理动作。搭话有自己的一份节奏（见 `[ambient]`），这张表只管房间。
+    pub(crate) chat: chat::ChatConfig,
 }
 
 impl Default for OaiConfig {
@@ -147,6 +150,7 @@ impl Default for OaiConfig {
             media_timeout_seconds: 900,
             providers: HashMap::new(),
             search: search::SearchConfig::default(),
+            chat: chat::ChatConfig::default(),
         }
     }
 }

@@ -48,17 +48,27 @@ pub(crate) const LOG_TARGET: &str = "Plugin/Chat";
 ///
 /// 这里只有「这一轮允许做什么」；在哪个群、用什么接口、说话的是谁，都在 [`ChatEnv`]
 /// 里。调用方算好后传进来，能力层不再回头看任何插件配置。
-#[derive(Debug, Clone)]
+///
+/// 它同时就是 `[oai.chat]` 那张表的形状——房间里要用哪几项，写在这里就写进了配置。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct ChatConfig {
     /// 这一层在当下这个群开着吗。房间总是开着；搭话看自己的开关与群列表。
+    ///
+    /// 这一项与下面的 `require_fresh` 由调用方算，不写进配置——它们描述的是「谁在
+    /// 用这一层」，不是可调的口味。
+    #[serde(skip)]
     pub enabled: bool,
-    /// 允许执行群管理动作：踢人、禁言、全员禁言、改群名、设精华、改他人名片、
-    /// 群文件的改名/移动/删除。这些是会被全群看见的写操作，默认要单独授权。
-    pub management: bool,
+    /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片、
+    /// 群文件的改名/移动/删除）的群号。
+    ///
+    /// 这些是会被全群看见的写操作，默认一个群都不放行——要用就按群单独列出来。
+    pub management_groups: Vec<i64>,
     /// 要求「群聊没有往前走」才允许动手。
     ///
     /// 搭话的回复只对刚才那一批消息负责，窗口一动就该重看；房间回答的是一句直接
     /// 请求，中间群里聊了什么与这次回答无关。
+    #[serde(skip)]
     pub require_fresh: bool,
     /// 一次发言最多几条（模型把一段话写长了，切开也算额度）。
     pub max_messages: usize,
@@ -79,10 +89,14 @@ pub(crate) struct ChatConfig {
     pub context_turns: usize,
     /// 一段话按换气切成几条的字数阈值；0 表示不切。
     pub split_chars: usize,
-    /// 发出前的时效窗口：群里又有人说话就整条不发。
-    pub freshness: std::time::Duration,
-    /// 一次媒体生成（图/歌/片）最多等多久。
-    pub media_deadline: std::time::Duration,
+    /// 发出前的时效窗口（秒）：群里又有人说话就整条不发。0 表示不带时效条件。
+    pub freshness_seconds: u64,
+    /// 一次媒体生成（图/歌/片）最多等多久（秒）。
+    pub media_deadline_seconds: u64,
+    /// 房间里的工具白名单；留空表示有什么挂什么（本机工具 + 群聊工具 + 联网）。
+    ///
+    /// 与搭话的 `[ambient].tools` 是同一套写法：逗号分隔的工具名。
+    pub tools: String,
 }
 
 impl Default for ChatConfig {
@@ -90,7 +104,7 @@ impl Default for ChatConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            management: false,
+            management_groups: Vec::new(),
             require_fresh: false,
             max_messages: 3,
             max_actions: 6,
@@ -104,8 +118,9 @@ impl Default for ChatConfig {
             sticker_max: 120,
             context_turns: 20,
             split_chars: 60,
-            freshness: std::time::Duration::ZERO,
-            media_deadline: std::time::Duration::from_secs(240),
+            freshness_seconds: 0,
+            media_deadline_seconds: 240,
+            tools: String::new(),
         }
     }
 }
@@ -158,6 +173,32 @@ pub(crate) struct Avatar {
     pub api_base: String,
     pub api_key: String,
     pub model: String,
+}
+
+/// 这一轮该挂哪些群聊工具。
+///
+/// 一道道闸与能力层真正会拒绝的开关是同一份：查询额度为 0 就不给 `satori_history`
+/// 那三个，记忆关着就不给 `satori_memo`，写歌拍片额度为 0 连工具都不挂。调用方
+/// （房间与搭话）照它拼白名单，于是「模型看得到的工具」和「它真按得动的按钮」
+/// 永远对得上。
+pub(crate) fn tool_names(config: &ChatConfig) -> Vec<&'static str> {
+    let mut names = vec!["satori_context", "satori_read", "satori_action"];
+    if config.draw_budget > 0 {
+        names.push("satori_draw");
+    }
+    if config.lookup_budget > 0 {
+        names.extend(["satori_history", "satori_group", "satori_profile"]);
+    }
+    if config.memory_enabled && config.memo_budget > 0 {
+        names.push("satori_memo");
+    }
+    if config.music_budget > 0 {
+        names.push("satori_music");
+    }
+    if config.video_budget > 0 {
+        names.push("satori_video");
+    }
+    names
 }
 
 /// 能力层的数据根：记忆、表情包库、群身份缓存。

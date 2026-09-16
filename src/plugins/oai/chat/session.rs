@@ -1466,8 +1466,9 @@ impl Session {
     fn enabled(&self) -> bool {
         self.config.enabled
     }
+    /// 这个群允许执行群管理动作吗（见 [`ChatConfig::management_groups`]）。
     fn management_enabled(&self) -> bool {
-        self.config.management
+        self.config.management_groups.contains(&self.group)
     }
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         ensure!(
@@ -1982,7 +1983,7 @@ impl Session {
             Some(self.group),
             None,
             &message,
-            freshness_for(self.group, self.config.freshness),
+            freshness_for(self.group, std::time::Duration::from_secs(self.config.freshness_seconds)),
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -2043,7 +2044,7 @@ impl Session {
     /// 取本轮发言的总预算：生成得再久也不该超过这一轮自己能活的时间。外层还有一道
     /// 同样的超时兜着，这里先到点就能给模型一句「等太久了」，而不是整轮被掐掉。
     fn media_deadline(&self) -> std::time::Duration {
-        self.config.media_deadline
+        std::time::Duration::from_secs(self.config.media_deadline_seconds.clamp(30, 1_800))
     }
 
     /// 把成品写进 本轮的工作目录，返回本地路径。
@@ -2267,7 +2268,7 @@ mod tests {
             ctx,
             writer,
             group,
-            config: crate::plugins::ambient::chat_config(config, group),
+            config: crate::plugins::ambient::chat_config(config),
             scratch,
             media: data,
             persona: Some(Arc::new(TestPersona)),

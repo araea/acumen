@@ -38,6 +38,21 @@ const CONTROL_HINT: &str = "\
 这一轮你还能直接操作机器人自己：用 bash 执行 `\"$AYJX_CTL_BIN\" --ctl \"<命令>\"`，
 可以查看和修改插件开关与配置。具体用法见下面列的 skill，命令的回执会原样打回来。";
 
+/// 群聊那一套工具的用法说明；只有这一轮真的接通了群聊界面（房间正开在群里）才写。
+///
+/// 每个工具都有自己的 description，这里只交代它们描述不了的三件事：动手之前先看现场、
+/// 回执才算数、以及**回复本身就是答案**——它会发进这个群，别用 `satori_action` 再发一遍。
+const CHAT_HINT: &str = "\
+这一轮你在一个 QQ 群里，手边还有一整套群聊工具：satori_context 看这个群此刻的样子
+（最新消息、精确 ID、此刻可用的动作与剩余额度），satori_read 读某条消息（合并转发会展开，
+语音会带上 QQ 听写的原文），satori_action 发消息、戳一戳、资料卡点赞、表态、撤回、合并
+转发，以及本群的管理动作。按这一轮的额度，可能还挂着 satori_history（翻 QQ 存的本群
+历史）、satori_group（群资料与群友）、satori_profile（你或某人的资料）、satori_memo
+（长期记忆）、satori_draw / satori_music / satori_video（出图、写歌、拍片）。
+动手之前先看一眼 satori_context，回执才算数：失败就按错误换个做法。
+你的回复本身会发进这个群，它就是你对用户那句话的回答；只有确实要单独发一条（发媒体、
+引用某条消息、@某人）时才用 satori_action 的 send。";
+
 /// 联网搜索的用法说明；只有这一轮真挂了出网工具时才写进提示词。
 ///
 /// 工具本身各有 description，这里只交代那件工具描述不了的事：什么时候该伸手去搜
@@ -210,6 +225,10 @@ impl Context {
                 if run.control {
                     base.push_str("\n\n");
                     base.push_str(CONTROL_HINT);
+                }
+                if run.bridge.is_some() {
+                    base.push_str("\n\n");
+                    base.push_str(CHAT_HINT);
                 }
                 if run.web.is_some() {
                     base.push_str("\n\n");
@@ -540,6 +559,60 @@ mod tests {
             .collect();
         assert!(names.contains(&"bash"), "{names:?}");
         assert!(!names.contains(&"satori_action"), "没有聊天界面就不该有它：{names:?}");
+        server.abort();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 房间开在群里时接上了聊天界面：`satori_*` 那一套挂得上，提示词也交代了怎么用。
+    ///
+    /// 这条钉住的是「内置 agent 房间 = 全功能集合」这件事本身：房间与搭话共用同一
+    /// 个执行层，差别只在有没有这一份现场。
+    #[tokio::test]
+    async fn a_room_in_a_group_gets_the_chat_tools_and_their_briefing() {
+        let dir = std::env::temp_dir().join(format!("ayjx-chat-{:032x}", rand::random::<u128>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (base, seen, server) =
+            scripted_model(vec![serde_json::json!({"role": "assistant", "content": "好"})]).await;
+
+        struct Fake;
+        impl super::super::ChatBridge for Fake {
+            fn call<'a>(
+                &'a self,
+                _call_id: &'a str,
+                _op: &'a str,
+                _params: serde_json::Value,
+            ) -> futures_util::future::BoxFuture<'a, serde_json::Value> {
+                Box::pin(async { serde_json::json!({"ok": true}) })
+            }
+        }
+
+        run(AgentRun {
+            api_base: &base,
+            api_key: "test-only",
+            dir: &dir,
+            model: "fake-model",
+            bridge: Some(std::sync::Arc::new(Fake)),
+            tools: Some("bash,satori_context,satori_read,satori_action,satori_group"),
+            prompt: "看看群里在聊什么",
+            ..AgentRun::new()
+        })
+        .await
+        .unwrap();
+
+        let requests = seen.lock().unwrap();
+        let names: Vec<&str> = requests[0]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"satori_action"), "{names:?}");
+        assert!(names.contains(&"satori_group"), "{names:?}");
+        let body = requests[0].to_string();
+        assert!(
+            body.contains("你的回复本身会发进这个群"),
+            "群里动手那一套的说明要写进提示词：{body}"
+        );
         server.abort();
         let _ = std::fs::remove_dir_all(dir);
     }

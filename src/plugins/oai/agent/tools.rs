@@ -27,6 +27,11 @@ const CHAT: &[&str] = &[
     "satori_memo",
 ];
 
+/// 房间里不给白名单时挂上的本地工具。写了 `[oai.chat] tools` 就从这份抄一份改。
+pub(crate) fn local_names() -> Vec<&'static str> {
+    LOCAL.to_vec()
+}
+
 /// 联网工具：只有这一轮挂了 [`super::AgentRun::web`] 时才存在。
 ///
 /// 名字直接取 [`super::super::search::TOOL_NAMES`]，白名单、提示词与实现共用一份。
@@ -34,13 +39,17 @@ const WEB: &[&str] = &super::super::search::TOOL_NAMES;
 
 /// 按白名单筛出这一轮真正挂上去的工具。
 ///
-/// `whitelist` 为 `None` 表示「全部本地工具」（房间里的默认形态）；
-/// 写空串则是「一个工具都不给」——模型仍然能正常回复，只是没法动手。
-/// `chat` / `web` 决定两类可选工具这一轮在不在场，写进白名单也不会凭空冒出来。
+/// `whitelist` 为 `None` 表示「有什么挂什么」——本机工具，加上这一轮在場的群聊工具
+/// 与联网工具（房间里的默认形态）；写空串则是「一个工具都不给」，模型仍然能正常
+/// 回复，只是没法动手。`chat` / `web` 决定那两类可选工具这一轮在不在场，
+/// 写进白名单也不会凭空冒出来。
 pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec<ToolDefinition> {
     let mut names: Vec<&str> = match whitelist {
         None => {
             let mut all = LOCAL.to_vec();
+            if chat {
+                all.extend_from_slice(CHAT);
+            }
             if web {
                 all.extend_from_slice(WEB);
             }
@@ -796,11 +805,17 @@ mod tests {
 
     #[test]
     fn the_whitelist_is_a_filter_not_an_addition() {
+        // 不给白名单：本地工具总是全给，群聊工具看有没有接通聊天界面。
         let all: Vec<String> = definitions(None, false, false)
             .into_iter()
             .map(|t| t.name)
             .collect();
         assert_eq!(all, LOCAL);
+        let with_chat: Vec<String> = definitions(None, true, false)
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(with_chat.len(), LOCAL.len() + CHAT.len());
 
         // 白名单按写法返回，重复项去重。
         let picked: Vec<String> = definitions(Some("read, bash ,read,nope"), false, false)

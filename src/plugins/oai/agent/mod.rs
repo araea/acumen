@@ -191,6 +191,20 @@ pub(crate) struct AgentReply {
     pub sources: Vec<super::types::Source>,
 }
 
+/// 房间在群里说话时的那一份现场：接进能力层要用它开一轮。
+///
+/// 私聊里的房间没有这一份（没有群、也就没有群资料与群动作），拿到的仍是本机
+/// 工具与联网。
+pub(crate) struct ChatContext {
+    pub ctx: crate::event::Context,
+    pub writer: crate::adapters::satori::LockedWriter,
+    pub group: i64,
+    /// 这一轮允许做什么：额度、开关、管理群，见 [`crate::plugins::oai::chat::ChatConfig`]。
+    pub config: crate::plugins::oai::chat::ChatConfig,
+    /// 工具白名单；`None` 表示有什么挂什么。
+    pub tools: Option<String>,
+}
+
 /// 房间对话：按历史展开消息，驱动一轮 agent。
 ///
 /// 房间历史仍是唯一事实来源；中途的工具调用不写回历史，下一轮按历史重新展开。
@@ -206,12 +220,35 @@ pub(crate) async fn conversation(
     hist: &[ChatMessage],
     control: Option<&crate::plugins::ctl::bridge::Lease>,
     search: &super::search::SearchConfig,
+    chat: Option<ChatContext>,
 ) -> anyhow::Result<AgentReply> {
     let (current, previous) = hist
         .split_last()
         .filter(|(message, _)| message.role == "user")
         .ok_or_else(|| anyhow::anyhow!("没有可重新生成的用户消息，请先发送内容"))?;
     let dir = ScratchDir::new(base)?;
+    // 房间在群里时把群聊能力层接上：工具表里那十个 `satori_*` 因此才存在。
+    let (bridge, tools): (Option<std::sync::Arc<dyn ChatBridge>>, Option<&str>) = match &chat {
+        Some(chat) => {
+            let opened = crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
+                ctx: &chat.ctx,
+                writer: &chat.writer,
+                group: chat.group,
+                config: chat.config.clone(),
+                scratch: dir.path(),
+                // 房间里生成的东西放在本轮工作目录里，随后就发出去；一轮结束即清理。
+                media: dir.path(),
+                persona: None,
+                scene: crate::plugins::oai::chat::session::Scene::Channel,
+            })
+            .await?;
+            (
+                Some(std::sync::Arc::new(opened)),
+                chat.tools.as_deref(),
+            )
+        }
+        None => (None, None),
+    };
     let env = control.map(|lease| lease.env()).unwrap_or_default();
     let skills: Vec<PathBuf> = control
         .map(|lease| vec![lease.skill().to_path_buf()])
@@ -233,6 +270,8 @@ pub(crate) async fn conversation(
             thinking: thinking.filter(|value| !value.trim().is_empty()),
             skills: &skills,
             control: control.is_some(),
+            tools,
+            bridge,
             env: &env,
             stall,
             web: web.as_ref(),
