@@ -1,0 +1,25 @@
+{
+  "name": "知言 · 控制台",
+  "short_name": "知言",
+  "description": "本机运行状况、插件、搭话与日志。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fcfdfb",
+  "theme_color": "#1f6350",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

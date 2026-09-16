@@ -37,6 +37,15 @@ rig-core = { version = "0.42", default-features = false, features = ["reqwest", 
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
 
+# 本机控制台（App 的图形界面与终端共用同一个后端）。
+# 只绑回环地址、且要口令，见 src/plugins/console/mod.rs。
+axum = { version = "0.8", default-features = false, features = [
+    "http1",
+    "tokio",
+    "json",
+    "query",
+] }
+
 # 数据库
 sea-orm = { version = "2.0", features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
 

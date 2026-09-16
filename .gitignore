@@ -17,3 +17,8 @@
 # Python 字节码：scripts/ 下的工具被 import 时会落下
 __pycache__/
 *.pyc
+
+# Android 壳的构建产物与临时输入
+/app/build
+/app/libs
+/app/assets/config.toml

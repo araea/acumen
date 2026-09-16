@@ -39,6 +39,13 @@ register_plugins!(
             ("ctl diff <插件>", "比较当前配置与默认值"),
         ]
     },
+    console {
+        display_name: "本机控制台",
+        section: "system",
+        summary: "把运行状况、插件配置、搭话与日志摆到本机网页上；只绑回环地址并要口令",
+        on_init: Some(console::init),
+        on_connected: Some(console::on_connected)
+    },
     logger {
         display_name: "日志输出",
         section: "system",

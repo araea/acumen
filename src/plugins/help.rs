@@ -90,6 +90,14 @@ const SECTIONS: &[(&str, &str, &str)] = &[
     ("misc", "其他", "MISC"),
 ];
 
+/// 分区表（代号、中文名、英文名），顺序即展示顺序。
+///
+/// 帮助总览与控制台的插件页读的是同一份：控制台里那几栏筛选项与 `/help` 上
+/// 那几栏是同一件事，分成两份迟早对不上。
+pub(crate) fn sections() -> &'static [(&'static str, &'static str, &'static str)] {
+    SECTIONS
+}
+
 fn is_enabled(ctx: &Context, name: &str) -> bool {
     let guard = ctx.config.read().unwrap();
     guard

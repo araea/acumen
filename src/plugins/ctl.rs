@@ -362,7 +362,7 @@ pub(crate) fn effect(name: &str) -> &'static str {
     let plugin = get_plugins().iter().find(|p| p.name == name);
     match plugin {
         Some(p) if p.on_connected.is_some() => {
-            "开关立即生效，初始化无需重启；定时推送在下一次连接后恢复。"
+            "开关立即生效，初始化无需重启；连接时安排的任务在下一次连接后补上。"
         }
         Some(p) if p.on_init.is_some() => "开关立即生效，初始化无需重启。",
         _ => "下一条消息生效。",

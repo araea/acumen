@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  壳的底色取自设计系统 res/cards/m3e.css 里控制台那套方案的 surface 与 primary。
+  网页里的一切颜色都从那张样式表来，原生这一侧只有启动前的等待屏会用到它，
+  所以只抄了三个值：多抄一个就多一处会跟系统对不上的地方。
+-->
+<resources>
+    <color name="paper">#FCFDFB</color>
+    <color name="paper_dark">#101613</color>
+    <color name="brand">#1F6350</color>
+    <color name="ink">#1C2320</color>
+    <color name="ink_dark">#E1E8E3</color>
+</resources>

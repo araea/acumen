@@ -1,0 +1,1010 @@
+/* ============================================================================
+   知言控制台 · 版式层与交互基元
+   ----------------------------------------------------------------------------
+   这一份是控制台的第二层：系统层是 res/cards/m3e.css（令牌与静态基元，六张
+   卡片图共用），这里是「摆在哪儿」——外壳怎么搭、导航放哪边、窄屏宽屏怎么分。
+   它还多担一件事：**交互基元**。卡片是静态位图，没有悬停与按压，所以 M3 的
+   状态层在 m3e.css 里没有用武之地；控制台是活的，按钮、开关、输入、标签页、
+   骨架都得真有反馈，这些写在这里（仍是取令牌，不新造色）。
+
+   段落：§A 外壳 · §B 导航 · §C 交互基元 · §D 内容块 · §E 日志面板 ·
+   §F 局部修饰 · §G 状态 · §H 宽屏。
+
+   两条纪律，与 GUDIELINES 第五节同源：
+   1. 色值、字号、圆角、阴影一律 var(--md-*)；本文件里出现 #hex / rgb() /
+      hsl() / font-size 数字 / border-radius 数字 / box-shadow 数字就是错的，
+      `assets.rs` 有测试盯着；
+   2. 结构尺寸（外壳多高、版心多宽、图标多大）不是视觉语言，是版面，允许
+      写字面量，但统一收在下面那组 --zy-* 里，不要在规则里散落。
+   ========================================================================== */
+
+:root {
+  /* 外壳 */
+  --zy-bar-height: 60px;
+  --zy-nav-height: 66px;
+  --zy-rail-width: 96px;
+  --zy-page-width: 900px;
+
+  /* 复用的结构值 */
+  --zy-hairline: 1px;
+  --zy-touch: 44px;
+  --zy-icon: 22px;
+  --zy-icon-lg: 26px;
+  --zy-avatar: 40px;
+  --zy-thumb: 76px;
+
+  /* 状态层的两个浓度（M3 的 5% / 8% 两档） */
+  --zy-state-hover: 0.06;
+  --zy-state-press: 0.12;
+}
+
+/* ==================== §A 外壳 ==================== */
+
+html {
+  /* 窄屏上横向不该有滚动条；宽屏由版心收口 */
+  overflow-x: hidden;
+}
+
+body.scheme-console {
+  background: var(--md-sys-color-surface-dim);
+  color: var(--md-sys-color-on-surface);
+  font-family: var(--md-font-plain);
+  min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.zy-shell {
+  display: grid;
+  grid-template-rows: var(--zy-bar-height) 1fr;
+  grid-template-columns: 1fr;
+  min-height: 100vh;
+}
+
+.zy-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-3);
+  padding: 0 var(--md-space-4);
+  background: color-mix(
+    in srgb,
+    var(--md-sys-color-surface) 88%,
+    transparent
+  );
+  backdrop-filter: blur(14px);
+  border-bottom: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+}
+
+.zy-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  min-width: 0;
+}
+
+.zy-brand svg {
+  width: var(--zy-icon-lg);
+  height: var(--zy-icon-lg);
+  border-radius: var(--md-shape-s);
+  flex: none;
+}
+
+.zy-brand-name {
+  font-size: var(--md-type-title-medium-size);
+  font-weight: var(--md-type-title-medium-weight);
+  letter-spacing: var(--md-type-title-medium-track);
+  line-height: var(--md-type-title-medium-line);
+}
+
+.zy-brand-sub {
+  color: var(--md-sys-color-on-surface-faint);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: var(--md-type-label-medium-track);
+}
+
+.zy-bar-spacer {
+  flex: 1;
+}
+
+.zy-main {
+  display: flex;
+  justify-content: center;
+  padding: var(--md-space-5) var(--md-space-4) calc(var(--zy-nav-height) + var(--md-space-8));
+}
+
+.zy-page {
+  width: 100%;
+  max-width: var(--zy-page-width);
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-6);
+}
+
+/* ==================== §B 导航 ==================== */
+
+.zy-nav {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 12;
+  display: flex;
+  justify-content: space-around;
+  align-items: stretch;
+  height: var(--zy-nav-height);
+  padding-bottom: env(safe-area-inset-bottom, 0);
+  background: var(--md-sys-color-surface-container);
+  border-top: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+}
+
+.zy-nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--md-space-1);
+  min-height: var(--zy-touch);
+  border: none;
+  background: none;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: inherit;
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: var(--md-type-label-medium-track);
+  cursor: pointer;
+  padding: 0;
+}
+
+.zy-nav-item[aria-current="page"] {
+  color: var(--md-sys-color-primary);
+}
+
+.zy-nav-item svg {
+  width: var(--zy-icon);
+  height: var(--zy-icon);
+}
+
+/* 选中那一格的底：M3 用「指示药丸」，窄屏上放不下，收成图标后面一小块 */
+.zy-nav-item[aria-current="page"] svg {
+  background: var(--md-sys-color-primary-tint-strong);
+  border-radius: var(--md-shape-full);
+  padding: var(--md-space-1);
+  margin: calc(var(--md-space-1) * -1);
+  box-sizing: content-box;
+}
+
+/* ==================== §C 交互基元 ==================== */
+
+/* —— 按钮 —— */
+.zy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--md-space-2);
+  min-height: var(--zy-touch);
+  padding: 0 var(--md-space-5);
+  border: none;
+  border-radius: var(--md-shape-full);
+  background: none;
+  color: var(--md-sys-color-primary);
+  font-family: inherit;
+  font-size: var(--md-type-label-large-size);
+  font-weight: var(--md-type-label-large-weight);
+  letter-spacing: var(--md-type-label-large-track);
+  cursor: pointer;
+}
+
+.zy-btn svg {
+  width: var(--zy-icon);
+  height: var(--zy-icon);
+}
+
+.zy-btn:hover {
+  background: var(--md-sys-color-primary-tint);
+}
+
+.zy-btn:active {
+  background: var(--md-sys-color-primary-tint-strong);
+}
+
+.zy-btn-filled {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.zy-btn-filled:hover {
+  background: color-mix(
+    in srgb,
+    var(--md-sys-color-primary) 92%,
+    var(--md-sys-color-on-primary)
+  );
+}
+
+.zy-btn-tonal {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.zy-btn-tonal:hover {
+  background: color-mix(
+    in srgb,
+    var(--md-sys-color-secondary-container) 88%,
+    var(--md-sys-color-on-secondary-container)
+  );
+}
+
+.zy-btn-outline {
+  border: var(--zy-hairline) solid var(--md-sys-color-outline);
+}
+
+.zy-btn-icon {
+  padding: 0;
+  width: var(--zy-touch);
+  border-radius: var(--md-shape-full);
+}
+
+.zy-btn[disabled] {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+:focus-visible {
+  outline: 3px solid var(--md-sys-color-primary-line);
+  outline-offset: 2px;
+}
+
+/* —— 开关 —— */
+.zy-switch {
+  position: relative;
+  flex: none;
+  width: 54px;
+  height: 32px;
+  border-radius: var(--md-shape-full);
+  border: 2px solid var(--md-sys-color-outline);
+  background: var(--md-sys-color-surface-container-high);
+  cursor: pointer;
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.zy-switch::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 6px;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-outline);
+  transition: transform 180ms ease, background 180ms ease, width 180ms ease;
+}
+
+.zy-switch[aria-checked="true"] {
+  background: var(--md-sys-color-primary);
+  border-color: var(--md-sys-color-primary);
+}
+
+.zy-switch[aria-checked="true"]::after {
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  transform: translateX(20px);
+  background: var(--md-sys-color-on-primary);
+}
+
+.zy-switch[disabled] {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* —— 芯片：筛选与标签 —— */
+.zy-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--md-space-2);
+}
+
+.zy-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  min-height: 36px;
+  padding: 0 var(--md-space-4);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-s);
+  background: none;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: inherit;
+  font-size: var(--md-type-label-large-size);
+  font-weight: var(--md-type-label-large-weight);
+  cursor: pointer;
+}
+
+/* 选中那一颗。用主色容器而不是次级容器：筛选项是「你现在看的是哪一栏」，
+   在整屏浅色上要一眼看出来，`--md-sys-color-secondary-container` 那点灰太轻。 */
+.zy-chip[aria-pressed="true"] {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  border-color: transparent;
+  font-weight: var(--md-type-label-large-weight);
+}
+
+/* —— 输入 —— */
+.zy-field {
+  display: flex;
+  align-items: stretch;
+  gap: var(--md-space-2);
+}
+
+.zy-input,
+.zy-area {
+  flex: 1;
+  min-width: 0;
+  padding: var(--md-space-3) var(--md-space-4);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline);
+  border-radius: var(--md-shape-s);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+}
+
+.zy-area {
+  font-family: var(--md-font-mono);
+  resize: vertical;
+  min-height: 240px;
+}
+
+.zy-input:focus,
+.zy-area:focus {
+  border-color: var(--md-sys-color-primary);
+  outline: none;
+}
+
+.zy-input-mono {
+  font-family: var(--md-font-mono);
+}
+
+/* —— 搜索框：前置一颗放大镜，占位不留假提示 —— */
+.zy-search {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  padding: 0 var(--md-space-4);
+  min-height: var(--zy-touch);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface-faint);
+}
+
+.zy-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: var(--md-sys-color-on-surface);
+  font-family: inherit;
+  font-size: var(--md-type-body-small-size);
+}
+
+.zy-search input:focus {
+  outline: none;
+}
+
+.zy-search svg {
+  width: var(--zy-icon);
+  height: var(--zy-icon);
+  flex: none;
+}
+
+/* ==================== §D 内容块 ==================== */
+
+.zy-card {
+  background: var(--md-sys-color-surface);
+  border-radius: var(--md-shape-xl);
+  box-shadow: var(--md-elevation-1);
+  padding: var(--md-space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-4);
+}
+
+/* 首屏那张：主色容器底，放这台机器此刻的样子 */
+.zy-hero {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  border-radius: var(--md-shape-2xl) var(--md-shape-2xl) var(--md-shape-2xl)
+    var(--md-shape-s);
+  padding: var(--md-space-7);
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-3);
+}
+
+.zy-hero-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--md-space-3);
+  flex-wrap: wrap;
+}
+
+.zy-hero-name {
+  font-size: var(--md-type-headline-medium-size);
+  font-weight: var(--md-type-headline-medium-weight);
+  letter-spacing: var(--md-type-headline-medium-track);
+  line-height: var(--md-type-headline-medium-line);
+}
+
+.zy-hero-note {
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+  color: color-mix(
+    in srgb,
+    var(--md-sys-color-on-primary-container) 78%,
+    transparent
+  );
+}
+
+.zy-title {
+  font-size: var(--md-type-headline-small-size);
+  font-weight: var(--md-type-headline-small-weight);
+  letter-spacing: var(--md-type-headline-small-track);
+  line-height: var(--md-type-headline-small-line);
+}
+
+.zy-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--md-space-3);
+  font-size: var(--md-type-title-medium-size);
+  font-weight: var(--md-type-title-medium-weight);
+  letter-spacing: var(--md-type-title-medium-track);
+}
+
+.zy-section-title .zy-count {
+  color: var(--md-sys-color-on-surface-faint);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: var(--md-type-label-medium-track);
+  font-variant-numeric: tabular-nums;
+}
+
+.zy-note {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+}
+
+.zy-faint {
+  color: var(--md-sys-color-on-surface-faint);
+}
+
+/* —— 读数行 —— */
+.zy-readings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--md-space-4);
+}
+
+.zy-reading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-1);
+}
+
+.zy-reading-key {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: var(--md-type-label-medium-track);
+}
+
+.zy-reading-value {
+  font-size: var(--md-type-headline-small-size);
+  font-weight: var(--md-type-headline-small-weight);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.zy-reading-unit {
+  color: var(--md-sys-color-on-surface-faint);
+  font-size: var(--md-type-label-large-size);
+  font-weight: var(--md-type-label-large-weight);
+  margin-left: var(--md-space-1);
+}
+
+/* —— 徽章与键名芯片 —— */
+.zy-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  padding: var(--md-space-1) var(--md-space-3);
+  border-radius: var(--md-shape-full);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  letter-spacing: var(--md-type-label-medium-track);
+  white-space: nowrap;
+}
+
+.zy-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: var(--md-shape-full);
+  background: currentColor;
+}
+
+.zy-badge-on {
+  background: var(--md-sys-color-success-container);
+  color: var(--md-sys-color-on-success-container);
+}
+
+.zy-badge-off {
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-faint);
+}
+
+.zy-badge-pending {
+  background: var(--md-sys-color-warning-container);
+  color: var(--md-sys-color-on-warning-container);
+}
+
+.zy-key {
+  display: inline-block;
+  padding: 0 var(--md-space-2);
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  /* 键名（插件名、配置键、模型名）整条留着。窄屏上宁可让这一行折到第二行，
+     也不要把 `meta_filter` 拆成 `meta_f` 加 `ilter`——那读起来像另一个东西。 */
+  white-space: nowrap;
+}
+
+/* —— 列表 —— */
+.zy-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.zy-row {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-4);
+  min-height: var(--zy-touch);
+  padding: var(--md-space-3) var(--md-space-2);
+  border: none;
+  border-bottom: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  background: none;
+  color: inherit;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  border-radius: var(--md-shape-s);
+}
+
+.zy-list > .zy-row:last-child {
+  border-bottom: none;
+}
+
+.zy-row:hover {
+  background: var(--md-sys-color-primary-tint);
+}
+
+.zy-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-1);
+}
+
+.zy-row-title {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  flex-wrap: wrap;
+  font-size: var(--md-type-title-small-size);
+  font-weight: var(--md-type-title-small-weight);
+  letter-spacing: var(--md-type-title-small-track);
+}
+
+.zy-row-sub {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+}
+
+.zy-row-tail {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-3);
+}
+
+.zy-chevron {
+  width: var(--zy-icon);
+  height: var(--zy-icon);
+  color: var(--md-sys-color-on-surface-faint);
+  flex: none;
+}
+
+/* —— 键值表（配置） —— */
+.zy-panel {
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--md-shape-l);
+  padding: var(--md-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-2);
+}
+
+.zy-kv {
+  display: grid;
+  grid-template-columns: minmax(118px, 1fr) minmax(0, 1.25fr);
+  gap: var(--md-space-3);
+  align-items: center;
+  padding: var(--md-space-2) 0;
+  border-bottom: var(--zy-hairline) dashed var(--md-sys-color-outline-variant);
+}
+
+.zy-kv:last-child {
+  border-bottom: none;
+}
+
+.zy-kv-key {
+  font-family: var(--md-font-mono);
+  /* 键名比正文小一档：它是等宽的，16px 在窄列里读起来比同号的正文重得多。 */
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  color: var(--md-sys-color-on-surface-variant);
+  overflow-wrap: anywhere;
+}
+
+.zy-kv-value {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  min-width: 0;
+}
+
+.zy-kv-value > * {
+  min-width: 0;
+}
+
+.zy-kv-readonly {
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-body-small-size);
+  word-break: break-all;
+  color: var(--md-sys-color-on-surface);
+}
+
+.zy-subtable {
+  margin-left: var(--md-space-4);
+  padding-left: var(--md-space-4);
+  border-left: 2px solid var(--md-sys-color-outline-variant);
+}
+
+/* —— 代码与文本 —— */
+.zy-code {
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--md-shape-l);
+  padding: var(--md-space-4);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+/* —— 画廊 —— */
+.zy-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--md-space-4);
+}
+
+.zy-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-2);
+}
+
+.zy-tile-img {
+  width: 100%;
+  height: var(--zy-thumb);
+  object-fit: contain;
+  background: var(--md-sys-color-surface-container);
+  border-radius: var(--md-shape-l);
+}
+
+.zy-tile-label {
+  font-size: var(--md-type-label-medium-size);
+  font-weight: var(--md-type-label-medium-weight);
+  color: var(--md-sys-color-on-surface-variant);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ==================== §E 日志面板 ==================== */
+
+.zy-log {
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.7;
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-on-inverse-surface);
+  border-radius: var(--md-shape-l);
+  padding: var(--md-space-4);
+  overflow: auto;
+  height: 62vh;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.zy-log-line {
+  display: flex;
+  gap: var(--md-space-3);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.zy-log-at {
+  color: var(--md-sys-color-on-inverse-surface);
+  opacity: 0.55;
+  flex: none;
+}
+
+.zy-log-target {
+  flex: none;
+  opacity: 0.8;
+}
+
+.zy-log-warn {
+  color: var(--md-sys-color-warning);
+}
+
+.zy-log-erro {
+  color: var(--md-sys-color-error);
+}
+
+.zy-log-debg {
+  opacity: 0.6;
+}
+
+/* ==================== §F 局部修饰 ==================== */
+
+/* 不带下边线的行：用在清单的收尾处、并排的标题行，以及不该看起来像
+   「可以点进去」的说明行（返回键那一类另算）。 */
+.zy-row-plain {
+  border-bottom: none;
+}
+
+/* 二级页返回键。它顶在整页最上面，左边与卡片对齐而不是与内容对齐。 */
+.zy-back {
+  align-self: flex-start;
+}
+
+/* 卡里再嵌一块：记忆按群分块、配置里的嵌套表都用它，靠一层浅底把边界说清。 */
+.zy-inset {
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--md-shape-l);
+  padding: var(--md-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-3);
+}
+
+/* 总览里那一小段日志：只当「最近发生了什么」的预览，不让它占满一屏。 */
+.zy-log-short {
+  height: auto;
+  max-height: 220px;
+}
+
+.zy-area-short {
+  min-height: 132px;
+}
+
+/* 配置表里整行让给控件的那一格（长文本、提示词） */
+.zy-kv-wide {
+  grid-template-columns: 1fr;
+}
+
+/* 商城表情只存参数不存字节，缩略图位置留一块说明底 */
+.zy-tile-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--md-sys-color-on-surface-faint);
+  font-size: var(--md-type-label-medium-size);
+  line-height: var(--md-type-label-medium-line);
+}
+
+/* ==================== §G 状态 ==================== */
+
+.zy-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--md-space-2);
+  padding: var(--md-space-9) var(--md-space-4);
+  text-align: center;
+  color: var(--md-sys-color-on-surface-faint);
+}
+
+.zy-empty-icon {
+  font-size: var(--md-type-headline-large-size);
+  line-height: 1;
+}
+
+.zy-empty-text {
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+}
+
+/* 骨架：加载时先把版面占住，不让内容跳一下 */
+.zy-skeleton {
+  border-radius: var(--md-shape-s);
+  background: linear-gradient(
+    90deg,
+    var(--md-sys-color-surface-container) 25%,
+    var(--md-sys-color-surface-container-high) 37%,
+    var(--md-sys-color-surface-container) 63%
+  );
+  background-size: 400% 100%;
+  animation: zy-shimmer 1.4s ease infinite;
+  height: 18px;
+}
+
+.zy-skeleton-lg {
+  height: 96px;
+  border-radius: var(--md-shape-xl);
+}
+
+@keyframes zy-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zy-skeleton {
+    animation: none;
+  }
+}
+
+/* 反馈条：成功与失败共用一条，靠左侧那根竖线分色 */
+.zy-snack {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(var(--zy-nav-height) + var(--md-space-4));
+  z-index: 20;
+  max-width: min(var(--zy-page-width), calc(100vw - var(--md-space-6)));
+  display: flex;
+  align-items: flex-start;
+  gap: var(--md-space-3);
+  padding: var(--md-space-4) var(--md-space-5);
+  border-radius: var(--md-shape-l);
+  background: var(--md-sys-color-inverse-surface);
+  color: var(--md-sys-color-on-inverse-surface);
+  box-shadow: var(--md-elevation-3);
+  font-size: var(--md-type-body-small-size);
+  line-height: var(--md-type-body-small-line);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.zy-snack-bad {
+  border-left: 4px solid var(--md-sys-color-error);
+}
+
+.zy-snack-good {
+  border-left: 4px solid var(--md-sys-color-success);
+}
+
+/* 解锁页：没有口令时唯一能看到的一屏 */
+.zy-lock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--md-space-4);
+  max-width: 420px;
+  margin: 12vh auto 0;
+  padding: var(--md-space-7);
+  background: var(--md-sys-color-surface);
+  border-radius: var(--md-shape-2xl);
+  box-shadow: var(--md-elevation-2);
+}
+
+/* ==================== §H 宽屏 ==================== */
+
+/* 窄屏（手机竖握）上把几处并排收成竖排。
+   判据是「这一行还能不能读」：日志一行放不下「时刻 + target + 正文」时，
+   硬挤的结果是三段各自折断，不如让正文整条落到第二行。 */
+@media (max-width: 560px) {
+  .zy-log-line {
+    flex-wrap: wrap;
+    gap: var(--md-space-2);
+  }
+
+  .zy-log-line > span:last-child {
+    flex-basis: 100%;
+  }
+
+  .zy-field {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+
+@media (min-width: 900px) {
+  .zy-shell {
+    grid-template-columns: var(--zy-rail-width) 1fr;
+    grid-template-rows: var(--zy-bar-height) 1fr;
+  }
+
+  .zy-bar {
+    grid-column: 1 / -1;
+  }
+
+  /* 宽屏把底栏搬到左边竖排：鼠标在右侧，眼睛在中间，导航不该横在最下面 */
+  .zy-nav {
+    position: sticky;
+    top: var(--zy-bar-height);
+    left: auto;
+    right: auto;
+    bottom: auto;
+    height: auto;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: var(--md-space-2);
+    padding: var(--md-space-4) var(--md-space-2);
+    border-top: none;
+    border-right: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+    background: var(--md-sys-color-surface-container-low);
+  }
+
+  .zy-nav-item {
+    flex: none;
+    padding: var(--md-space-3) 0;
+    border-radius: var(--md-shape-l);
+  }
+
+  .zy-nav-item:hover {
+    background: var(--md-sys-color-primary-tint);
+  }
+
+  .zy-main {
+    padding-bottom: var(--md-space-8);
+  }
+}
+
+@media (min-width: 1100px) {
+  /* 宽屏上两个并排的面板：插件详情左边配置、右边指令表 */
+  .zy-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    gap: var(--md-space-6);
+    align-items: start;
+  }
+}

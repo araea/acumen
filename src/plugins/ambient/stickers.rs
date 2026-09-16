@@ -123,6 +123,15 @@ pub(crate) fn count() -> usize {
     lock().library.entries.len()
 }
 
+/// 库里的全部条目，供控制台画廊展示：用过的排前面，同次数按收藏时间倒序。
+///
+/// 与 [`brief`] 挑给提示词的那四张不同——那是「此刻这张图该不该用」，这是清点。
+pub(crate) fn gallery() -> Vec<Entry> {
+    let mut entries = lock().library.entries.clone();
+    entries.sort_by(|a, b| b.uses.cmp(&a.uses).then(b.added_at.cmp(&a.added_at)));
+    entries
+}
+
 /// 收下一张偷来的表情包，返回它的编号；`max` 为 0 表示不攒。
 ///
 /// `bytes` 只有图那一路要：商城表情重发靠参数，字节没用。`label` 是人格在偷的那一刻

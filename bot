@@ -293,6 +293,26 @@ case "${1:-open}" in
         reap_orphan_browsers
         printf '已检查并清理孤儿浏览器进程。\n'
         ;;
+    # 控制台地址。它由 bot 启动时写在 data/console/url 里（0600），
+    # 这里只是把它捞出来——日志会被群里刷走，文件不会。
+    ui|web)
+        # 控制台地址由 bot 启动时写下（0600）。日志会被群里刷走，文件不会。
+        # 数据目录默认在可执行文件旁边，AYJX_DATA_DIR 能把它挪走（同一个变量
+        # 控制台自己也认），所以两条都试。
+        url_file="${AYJX_DATA_DIR:-$bot_dir/target/release/data}/console/url"
+        if [[ ! -s "$url_file" ]]; then
+            printf '还没有控制台地址。先 ./bot start；若控制台是关着的，看 config.toml 的 [console]。\n' >&2
+            exit 1
+        fi
+        url=$(head -n 1 "$url_file")
+        printf '%s\n' "$url"
+        if [[ "${2:-open}" == "url" ]]; then
+            exit 0
+        fi
+        if command -v termux-open-url >/dev/null 2>&1; then
+            termux-open-url "$url"
+        fi
+        ;;
     power)
         case "${2:-help}" in
             on) termux-wake-lock ;;
@@ -315,6 +335,7 @@ case "${1:-open}" in
         printf './bot console  手动前台启动（带控制台），调试用\n'
         printf './bot enable   随 Termux 监督树自启；./bot disable 取消\n'
         printf './bot reap     收掉父进程已不在的 cdp-shot 浏览器进程（启动时自动做）\n'
+        printf './bot ui       打开本机控制台；./bot ui url 只打印地址\n'
         printf './bot power    Termux 熄屏保活说明\n'
         if [[ -e "$revive_log" ]]; then
             printf '\n看守盯的是 Termux 监督树而不是 bot，所以 ./bot stop 不会被它抢回去。\n'

@@ -542,6 +542,62 @@ body.dark.seed-teal {
   --md-sys-color-primary: #79b8c2;
 }
 
+/* —— 方案：控制台（console） ——
+   七套方案里唯一不是卡片图的一套：它是知言在手机上、也在浏览器里的那个界面。
+   与手册同底同主色（同一个产品，不该因为换了个媒介就换一张脸），但两处不同：
+
+   1. 表面比纸再冷一档。卡片是「读一张就放下」的纸，控制台是要盯十分钟的台面，
+      同样的暖白在整屏铺开时会发闷；
+   2. 自带深色。控制台是 App，跟随系统明暗是应该的，所以这一套把浅深两版都写全，
+      其余六套仍按「日读／夜读由插件自己挑」的老规矩。 */
+body.scheme-console {
+  --md-sys-color-surface: #fcfdfb;
+  --md-sys-color-surface-dim: #e9ece9;
+  --md-sys-color-surface-container-low: #f5f7f4;
+  --md-sys-color-surface-container: #eef1ee;
+  --md-sys-color-surface-container-high: #e3e7e3;
+  --md-sys-color-on-surface: #1c2320;
+  --md-sys-color-on-surface-variant: #4b5751;
+  --md-sys-color-on-surface-faint: #6a756e;
+  --md-sys-color-outline: #9fada6;
+  --md-sys-color-outline-variant: #dbe1dc;
+  --md-sys-color-primary: #1f6350;
+  --md-sys-color-tertiary: #4a44b8;
+  --md-sys-color-secondary-container: #e2e9e3;
+  --md-sys-color-on-secondary-container: #313a35;
+}
+
+body.scheme-console.dark {
+  color-scheme: dark;
+  --md-sys-color-surface: #101613;
+  --md-sys-color-surface-dim: #0a0f0c;
+  --md-sys-color-surface-container-low: #171d1a;
+  --md-sys-color-surface-container: #1c231f;
+  --md-sys-color-surface-container-high: #262e29;
+  --md-sys-color-on-surface: #e1e8e3;
+  --md-sys-color-on-surface-variant: #b5c0b9;
+  --md-sys-color-on-surface-faint: #8a958e;
+  --md-sys-color-outline: #6b766f;
+  --md-sys-color-outline-variant: #39423c;
+  --md-sys-color-primary: #78d2b5;
+  --md-sys-color-on-primary: #00382b;
+  --md-sys-color-tertiary: #c0c1ff;
+  --md-sys-color-secondary-container: #333c36;
+  --md-sys-color-on-secondary-container: #d4ded6;
+  --md-sys-color-inverse-surface: #e1e8e3;
+  --md-sys-color-on-inverse-surface: #1b231f;
+  --md-sys-color-success: #8ad3a2;
+  --md-sys-color-success-container: #1c3a28;
+  --md-sys-color-on-success-container: #b8f0c9;
+  --md-sys-color-warning: #eec05e;
+  --md-sys-color-warning-container: #463400;
+  --md-sys-color-on-warning-container: #ffe2a3;
+  --md-sys-color-error: #ffb4ab;
+  --md-sys-color-error-container: #93000a;
+  --md-sys-color-on-error-container: #ffdad6;
+  --md-sys-color-scrim: #000000;
+}
+
 /* 深色主题对整体配色只改两件事：文字与表面翻面、容器混色比例换档。
    语义色在浅色主题下就能用（同为深底浅字那一套），不必各写一遍——
    本文件里只有 news 与 portrait 两套方案自带深色，其余四套按「日读」一种。 */

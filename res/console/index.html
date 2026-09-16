@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#1f6350">
+<meta name="description" content="知言的控制台：本机运行状况、插件、搭话与日志。">
+<title>知言</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
+<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body class="scheme-console">
+<div class="zy-shell">
+  <header class="zy-bar">
+    <span class="zy-brand">
+      <svg viewBox="0 0 108 108" aria-hidden="true">
+        <rect width="108" height="108" rx="26" fill="#1f6350"/>
+        <g fill="#ffffff">
+          <rect x="50.5" y="24.5" width="7" height="7" rx="2.2"/>
+          <rect x="24" y="38" width="60" height="5" rx="2.5"/>
+          <rect x="32" y="52" width="44" height="5" rx="2.5"/>
+          <rect x="32" y="62" width="44" height="5" rx="2.5"/>
+        </g>
+        <rect x="33" y="75" width="42" height="11" rx="2.2" fill="none" stroke="#ffffff" stroke-width="5"/>
+      </svg>
+      <span class="zy-brand-name">知言</span>
+    </span>
+    <span class="zy-bar-spacer"></span>
+    <button class="zy-btn zy-btn-icon" id="refresh" type="button" title="刷新这一页"></button>
+    <button class="zy-btn zy-btn-icon" id="settings" type="button" title="接入与全局设置"></button>
+  </header>
+  <nav class="zy-nav" id="nav" aria-label="主要"></nav>
+  <main class="zy-main"><div class="zy-page" id="view"></div></main>
+</div>
+<div id="snack" aria-live="polite"></div>
+<script src="/app.js"></script>
+</body>
+</html>

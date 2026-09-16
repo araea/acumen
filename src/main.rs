@@ -29,10 +29,23 @@ use tokio::sync::Mutex as AsyncMutex;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut console = false;
+    let mut options = plugins::console::Options {
+        ui: true,
+        port: None,
+    };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--console" => console = true,
+            // 无图形环境下跑：控制台服务整块不启动，其余一切照旧。
+            "--no-ui" => options.ui = false,
+            // 临时换一个端口跑，不动 config.toml（端口被占时最省事的一条路）。
+            "--ui" => {
+                let Some(port) = args.next().and_then(|raw| raw.parse::<u16>().ok()) else {
+                    return Err("--ui 后面要跟一个端口号，例如 --ui 7802".into());
+                };
+                options.port = Some(port);
+            }
             // 控制通道的客户端：连上正在运行的实例执行一条 ctl 命令后退出，
             // 不碰数据库、配置与浏览器。凭据只从环境变量取，不上命令行。
             "--ctl" => {
@@ -50,13 +63,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "ayjx [--console] [--ctl <命令>]\n--console 临时启用前台控制台，不修改 config.toml；输入 /ctl 查看用法，Ctrl+C 停止。\n--ctl 向正在运行的实例发送一条 ctl 命令并打印回执，需要本轮 pi 房间对话签发的凭据。"
+                    "知言（ayjx） [--console] [--no-ui] [--ui <端口>] [--ctl <命令>]\n\
+                     --console 临时启用前台控制台，不修改 config.toml；输入 /ctl 查看用法，Ctrl+C 停止。\n\
+                     --no-ui   本次启动不开放本机控制台服务（无图形环境用）。\n\
+                     --ui      本机控制台换一个端口，只影响本次启动。\n\
+                     --ctl     向正在运行的实例发送一条 ctl 命令并打印回执，需要本轮 agent 房间对话签发的凭据。"
                 );
                 return Ok(());
             }
             _ => return Err(format!("未知参数：{arg}；使用 --help 查看用法").into()),
         }
     }
+    plugins::console::set_options(options);
     let config_path = "config.toml";
 
     let db = db::init().await.expect("数据库初始化失败");
@@ -288,6 +306,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let _ = task.await;
         }
         scheduler.shutdown();
+        // 先把控制台的监听松掉，让下一次启动立刻能抢到同一个端口。
+        plugins::console::shutdown().await;
         let _ = db.close().await;
         cdp_html_shot::Browser::shutdown_global().await;
     };

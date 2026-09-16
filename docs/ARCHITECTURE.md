@@ -31,7 +31,7 @@ src/
   db/              sea-orm 实体与查询（SQLite，data/bot.db）
 ```
 
-`res/` 存放插件的静态资源（词库、人格提示词、技能说明），`docs/` 是这份手册，`tests/` 是几个用 Node 运行的端到端脚本，覆盖前台指令、重启和卡片落盘。
+`res/` 存放插件的静态资源（词库、人格提示词、技能说明、卡片与控制台的样式表），`docs/` 是这份手册，`tests/` 是几个用 Node 运行的端到端脚本，覆盖前台指令、重启和卡片落盘，`app/` 是 Android 壳（见[应用形态](APP.md)）。
 
 ## 事件流
 
@@ -218,8 +218,21 @@ CPU 图像工作统一通过 `render/worker.rs::run`：统计绘图、词云、G
 
 | 入口 | 身份 | 实现 |
 | --- | --- | --- |
-| 聊天或控制台 `/ctl` | 消息发起人，按 `ctl.admins` 判权 | `plugins/ctl.rs` |
+| 聊天或前台控制台 `/ctl` | 消息发起人，按 `ctl.admins` 判权 | `plugins/ctl.rs` |
 | agent 房间 `ayjx --ctl` | 一次性凭据换维护者身份 | `plugins/ctl/bridge.rs` |
+| 本机控制台网页 | 回环地址 + 口令 | `plugins/console/` |
+
+控制台（`src/plugins/console/`）是唯一一处「读」也不走指令的地方，它的分工是：
+
+| 文件 | 管什么 |
+| --- | --- |
+| `mod.rs` | 插件的注册面：配置、`init`、`on_connected`、`--no-ui` 与 `--ui` 两个覆盖项 |
+| `state.rs` | 进程内的那一份状态：启动时刻、口令、日志环形缓冲与订阅、各适配器的连接 |
+| `server.rs` | HTTP 面：静态资源不设防，`/api/*` 一律要口令；起停与优雅关闭 |
+| `api.rs` | 各接口的数据组装。写的一律转给 `ctl` |
+| `assets.rs` | 内嵌的前端（`res/console/` 三个文件），以及三条盯着它的测试 |
+
+日志落到面板上只挂了一处钩子：`log::hook` 在 `print` 里接一个闭包（`src/log.rs`），控制台启动时装上它。`log.rs` 因此仍然谁都不依赖。
 
 ## 新增一个插件
 

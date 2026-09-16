@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      壳不画任何应用内容，所以主题只需要管两件事：系统栏透出去让网页自己铺底色，
+      以及启动那一瞬间别闪一下白。深浅两套靠 values-night 的 overrides，
+      与网页那边 prefers-color-scheme 是同一条判断。
+    -->
+    <style name="ZhiyanTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@color/paper</item>
+        <item name="android:colorBackground">@color/paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

@@ -318,6 +318,42 @@ pub(crate) fn attach(base: &Path) {
     store.written.clear();
 }
 
+/// 每个群的记忆快照，按群号排序，供控制台展示。
+///
+/// 以内存那份为准：落盘是节流的（见 [`WRITE_INTERVAL`]），磁盘上那份随时可能落后
+/// 几十秒。内存里还没有的群从磁盘补上——进程刚起来、那个群还没说过话时就是这种。
+pub(crate) fn snapshot() -> Vec<(i64, GroupMemory)> {
+    let store = lock();
+    let mut out: Vec<(i64, GroupMemory)> = store
+        .groups
+        .iter()
+        .map(|(group, memory)| (*group, memory.clone()))
+        .collect();
+    if let Some(dir) = store.dir.as_ref()
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(raw) = name.to_string_lossy().strip_suffix(".json").map(str::to_string) else {
+                continue;
+            };
+            let Ok(group) = raw.parse::<i64>() else {
+                continue;
+            };
+            if store.groups.contains_key(&group) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(entry.path())
+                && let Ok(memory) = serde_json::from_str::<GroupMemory>(&text)
+            {
+                out.push((group, memory));
+            }
+        }
+    }
+    out.sort_by_key(|(group, _)| *group);
+    out
+}
+
 /// 取出某个群的记忆做一次修改。闭包里不要 await——锁是同步的。
 pub(crate) fn with_group<T>(group: i64, action: impl FnOnce(&mut GroupMemory) -> T) -> T {
     let mut store = lock();

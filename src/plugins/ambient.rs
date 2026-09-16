@@ -44,12 +44,12 @@ mod identity;
 #[cfg(test)]
 #[path = "ambient/tests.rs"]
 mod integration_tests;
-mod memory;
+pub(crate) mod memory;
 mod mood;
 mod pace;
 mod peak;
 mod speak;
-mod stickers;
+pub(crate) mod stickers;
 mod tone;
 mod vision;
 mod voice;
