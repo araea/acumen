@@ -1,17 +1,26 @@
 /* ============================================================================
-   知言控制台 · 前端
+   知言 · 界面
    ----------------------------------------------------------------------------
    一个文件、零依赖、零构建。理由与后端把资源编译进二进制是同一条：这是跑在
    别人机器上的机器人的界面，不该指望任何一台 CDN 活着，也不该为它引入一套
-   打包链。全篇只做三件事——取数据、拼字符串、按 hash 换页。
+   打包链。全篇只做四件事——取数据、拼字符串、按 hash 换页、把状态摆对。
 
-   三处纪律：
+   五处纪律：
    - 所有插值一律走 esc()。页面上的字有一半来自配置、日志与人名，其中任何
      一处漏转义都是一个注入点；
    - 不自己造状态。开关、配置、日志都以后端为准，改完重新拉一次，不猜结果。
      唯一的例外是日志缓冲——它只增不改，重画时不能把已经到过的行丢掉；
-   - 不往 DOM 里塞 style 字面量。视觉值只在 res/console/app.css 里，这里只
-     挑类名。
+   - 不往 DOM 里塞样式字面量。视觉值只在 app.css 里，这里只挑类名。唯一例外
+     是涟漪的圆心与半径：那两个数由按下的位置决定，算不出别的写法，且只写
+     位置与大小，不写颜色；
+   - 换页一律走链接（`<a href="#/…">`）与 hashchange。上一版把点击委派挂在
+     `#view` 上，而底部导航是它的兄弟节点，于是整条导航点不动；改成链接之后
+     即使这段脚本没跑起来，导航照样能换页；
+   - 手机上要一直流畅。日志按帧合批，标签页切到后台就不动 DOM，动画只碰
+     transform 与 opacity，界面里没有模糊与大面积重绘。
+
+   段落：§1 图标 · §2 小工具 · §3 口令 · §4 网络 · §5 反馈与询问 · §6 主题与版式 ·
+   §7 外壳与导航 · §8 路由 · §9 各页 · §10 事件 · §11 启动。
    ========================================================================== */
 
 (() => {
@@ -19,8 +28,10 @@
 
   const NAME = "知言";
   const TOKEN_KEY = "zhiyan.token";
+  /** 一行的请求上限。超过它当作「这台机器正忙」，不再让页面停在骨架上。 */
+  const REQUEST_TIMEOUT = 20000;
 
-  /* ------------------------------ 图标 ------------------------------ */
+  /* ==================== §1 图标 ==================== */
   /* 一套线性图标，24×24，只用 currentColor，不带填充。 */
   const wrap = (body) =>
     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ` +
@@ -60,9 +71,19 @@
       `<path d="M4.5 6.5h15M9.5 6.5V5a1.5 1.5 0 011.5-1.5h2A1.5 1.5 0 0114.5 5v1.5"/>` +
         `<path d="M6.5 6.5l.9 12a1.6 1.6 0 001.6 1.5h6a1.6 1.6 0 001.6-1.5l.9-12"/>`
     ),
+    install: wrap(
+      `<rect x="6" y="2.5" width="12" height="19" rx="3"/>` +
+        `<path d="M12 7.5v6M9.4 11.1L12 13.7l2.6-2.6"/>`
+    ),
+    latest: wrap(`<path d="M12 5.5v13M6.4 12.9L12 18.5l5.6-5.6"/>`),
+    close: wrap(`<path d="M6 6l12 12M18 6L6 18"/>`),
+    copy: wrap(
+      `<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/>` +
+        `<path d="M15.5 5.5A2.5 2.5 0 0013 4H6.5A2.5 2.5 0 004 6.5V13a2.5 2.5 0 001.5 2.3"/>`
+    ),
   };
 
-  /* ------------------------------ 小工具 ------------------------------ */
+  /* ==================== §2 小工具 ==================== */
 
   const $ = (selector, root = document) => root.querySelector(selector);
 
@@ -71,7 +92,7 @@
 
   const num = (value) => Number(value ?? 0).toLocaleString("zh-CN");
 
-  /** 时长说成人话：控制台上一行要读得下去，不摆秒数。 */
+  /** 时长说成人话：界面上要读得下去，不摆秒数。 */
   function span(seconds) {
     const total = Math.max(0, Math.floor(Number(seconds) || 0));
     const day = Math.floor(total / 86400);
@@ -96,7 +117,27 @@
     return new Date(stamp).toLocaleDateString("zh-CN");
   }
 
-  /* ------------------------------ 口令 ------------------------------ */
+  /** 一次请求的节拍。整屏只有一处会长这样，别在别处再写一遍。 */
+  const empty = (text) =>
+    `<div class="empty"><div class="empty-icon">📭</div>
+     <div class="empty-text">${esc(text)}</div></div>`;
+
+  const skeleton = (rows = 3) =>
+    `<div class="card">${'<div class="skeleton skeleton-lg"></div>'.repeat(rows)}</div>`;
+
+  const reading = (key, value, unit = "") =>
+    `<div class="reading"><span class="reading-key">${esc(key)}</span>
+     <span class="reading-value">${esc(value)}${
+       unit ? `<span class="reading-unit">${esc(unit)}</span>` : ""
+     }</span></div>`;
+
+  const pageHead = (title, note = "") =>
+    `<header class="page-head">
+      <h1 class="page-title">${esc(title)}</h1>
+      ${note ? `<p class="page-note">${esc(note)}</p>` : ""}
+    </header>`;
+
+  /* ==================== §3 口令 ==================== */
 
   const store = {
     get() {
@@ -125,15 +166,30 @@
   let token = new URLSearchParams(location.search).get("t") || store.get();
   if (token) store.set(token);
 
-  /* ------------------------------ 网络 ------------------------------ */
+  /* ==================== §4 网络 ==================== */
 
   async function api(path, options = {}) {
-    const init = { method: options.method || "GET", headers: { "x-zhiyan-token": token } };
+    const init = {
+      method: options.method || "GET",
+      headers: { "x-zhiyan-token": token },
+    };
     if (options.body !== undefined) {
       init.headers["content-type"] = "application/json";
       init.body = JSON.stringify(options.body);
     }
-    const response = await fetch(`/api${path}`, init);
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT);
+    init.signal = abort.signal;
+    let response;
+    try {
+      response = await fetch(`/api${path}`, init);
+    } catch (error) {
+      throw abort.signal.aborted
+        ? new Error("这一请求 20 秒没有回应；这台机器可能正忙，过一会儿再试")
+        : new Error("连不上控制台；它可能刚被关掉，或者这一页是离线的旧页面");
+    } finally {
+      clearTimeout(timer);
+    }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const error = new Error(payload.error || `服务返回 ${response.status}`);
@@ -143,105 +199,266 @@
     return payload;
   }
 
-  /* ------------------------------ 反馈条 ------------------------------ */
+  /* ==================== §5 反馈与询问 ==================== */
 
+  const snackHost = () => $("#snack");
   let snackTimer = 0;
+
+  /** 一条反馈。`busy` 不自动消失，等下一次调用把它换掉。 */
   function snack(text, kind = "good") {
-    $("#snack").innerHTML = `<div class="zy-snack zy-snack-${kind}">${esc(text)}</div>`;
     clearTimeout(snackTimer);
+    const busy = kind === "busy";
+    snackHost().innerHTML = `
+      <div class="snack snack-${busy ? "good" : kind}">
+        ${busy ? `<span class="indicator indicator-inline"></span>` : ""}
+        <span class="snack-text">${esc(text)}</span>
+        <button class="snack-close" type="button" data-snack-close aria-label="收起">${ICONS.close}</button>
+      </div>`;
+    if (busy) return;
     // 报错多留一会儿：一句话要读完，还要来得及照它做。
-    snackTimer = setTimeout(() => ($("#snack").innerHTML = ""), kind === "bad" ? 8000 : 3600);
+    snackTimer = setTimeout(() => (snackHost().innerHTML = ""), kind === "bad" ? 8000 : 3600);
   }
 
   function fail(error) {
     if (error && error.status === 401) {
       store.clear();
-      renderLock("口令不对，或者它已经换过了");
+      paintLock("口令不对，或者它已经换过了");
       return;
     }
     snack(error && error.message ? error.message : String(error), "bad");
   }
 
-  /* ------------------------------ 主题 ------------------------------ */
-
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
-  function applyTheme() {
-    document.body.classList.toggle("dark", prefersDark.matches);
-  }
-  if (prefersDark.addEventListener) prefersDark.addEventListener("change", applyTheme);
-
-  /* ------------------------------ 解锁页 ------------------------------ */
-
-  function renderLock(reason) {
-    $("#nav").innerHTML = "";
-    $("#view").innerHTML = `
-      <form class="zy-lock" id="lock-form">
-        <div class="zy-title">${esc(NAME)}</div>
-        <p class="zy-note">${esc(reason || "需要口令才能看这台机器的数据。")}
-        启动日志里那条带 <span class="zy-key">?t=</span> 的地址可以直接打开；
-        口令本体在 <span class="zy-key">data/console/token</span>。</p>
-        <input class="zy-input zy-input-mono" id="lock-input" type="password"
-               autocomplete="off" spellcheck="false" placeholder="粘贴口令" aria-label="口令">
-        <button class="zy-btn zy-btn-filled" type="submit">解锁</button>
-      </form>`;
-    $("#lock-form").addEventListener("submit", (event) => {
-      event.preventDefault();
-      token = $("#lock-input").value.trim();
-      if (!token) return;
-      store.set(token);
-      render();
+  /** 问一句再动手。用原生 dialog：Esc、焦点陷阱、返回键都由浏览器给。 */
+  function ask({ title, body, confirm = "继续", danger = false }) {
+    const dialog = $("#dialog");
+    if (!dialog || typeof dialog.showModal !== "function") {
+      return Promise.resolve(window.confirm(`${title}\n\n${body}`));
+    }
+    dialog.innerHTML = `
+      <div class="dialog-title">${esc(title)}</div>
+      <p class="dialog-body">${esc(body)}</p>
+      <div class="dialog-actions">
+        <button class="btn" type="button" data-answer="no">取消</button>
+        <button class="btn ${danger ? "btn-filled btn-danger" : "btn-filled"}"
+                type="button" data-answer="yes">${esc(confirm)}</button>
+      </div>`;
+    return new Promise((resolve) => {
+      const pick = (event) => {
+        const answer = event.target.closest("[data-answer]");
+        if (!answer) return;
+        dialog.close();
+        resolve(answer.dataset.answer === "yes");
+      };
+      dialog.addEventListener("click", pick);
+      // Esc 关掉时也算「不动手」：close 事件里统一收口，避免两个 resolve。
+      dialog.addEventListener("close", () => {
+        dialog.removeEventListener("click", pick);
+        resolve(false);
+      }, { once: true });
+      dialog.showModal();
     });
   }
 
-  /* ------------------------------ 外壳 ------------------------------ */
+  /* ==================== §6 主题与版式 ==================== */
 
-  const PAGES = [
-    { id: "overview", label: "总览" },
-    { id: "plugins", label: "插件" },
-    { id: "ambient", label: "搭话" },
-    { id: "logs", label: "日志" },
-    { id: "command", label: "命令" },
-  ];
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const narrow = window.matchMedia("(min-width: 600px)");
+  const wide = window.matchMedia("(min-width: 840px)");
 
-  function renderNav(active) {
-    $("#nav").innerHTML = PAGES.map(
-      (page) => `
-      <button class="zy-nav-item" type="button" data-nav="${page.id}"
-              ${page.id === active ? 'aria-current="page"' : ""}>
-        ${ICONS[page.id]}<span>${page.label}</span>
-      </button>`
-    ).join("");
+  function applyTheme() {
+    document.body.classList.toggle("dark", prefersDark.matches);
   }
 
-  /* ------------------------------ 通用块 ------------------------------ */
+  /** 三档版式：紧凑（底栏）· 中等（导航轨）· 宽（抽屉）。判据与 app.css 一致。 */
+  function layout() {
+    return wide.matches ? "expanded" : narrow.matches ? "medium" : "compact";
+  }
 
-  const empty = (text) =>
-    `<div class="zy-empty"><div class="zy-empty-icon">📭</div>
-     <div class="zy-empty-text">${esc(text)}</div></div>`;
+  function applyLayout() {
+    const name = layout();
+    document.body.classList.remove("layout-compact", "layout-medium", "layout-expanded");
+    document.body.classList.add(`layout-${name}`);
+    return name;
+  }
 
-  const skeleton = (rows = 3) =>
-    `<div class="zy-card">${'<div class="zy-skeleton zy-skeleton-lg"></div>'.repeat(rows)}</div>`;
+  /** 装到桌面之后浏览器不再给地址栏，界面也该知道自己不在标签页里了。 */
+  const standalone = () =>
+    window.matchMedia("(display-mode: standalone)").matches ||
+    window.matchMedia("(display-mode: fullscreen)").matches ||
+    window.navigator.standalone === true;
 
-  const reading = (key, value, unit = "") =>
-    `<div class="zy-reading"><span class="zy-reading-key">${esc(key)}</span>
-     <span class="zy-reading-value">${esc(value)}${
-       unit ? `<span class="zy-reading-unit">${esc(unit)}</span>` : ""
-     }</span></div>`;
+  /* ==================== §7 外壳与导航 ==================== */
 
-  /* ------------------------------ 页面：总览 ------------------------------ */
+  const PAGES = [
+    { id: "overview", label: "总览", title: "总览" },
+    { id: "plugins", label: "插件", title: "插件" },
+    { id: "ambient", label: "搭话", title: "搭话" },
+    { id: "logs", label: "日志", title: "日志" },
+    { id: "command", label: "命令", title: "命令" },
+  ];
 
-  async function pageOverview() {
+  const NAV_HINT = "知言";
+
+  /** 导航只搭一次：每次重画都会把选中态的过渡打断，看着像闪。 */
+  function buildNav() {
+    $("#nav").innerHTML =
+      `<span class="nav-hint">${esc(NAV_HINT)}</span>` +
+      PAGES.map(
+        (page) => `
+      <a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
+        <span class="nav-indicator">${ICONS[page.id]}</span>
+        <span class="nav-label">${esc(page.label)}</span>
+      </a>`
+      ).join("");
+  }
+
+  function markNav(active) {
+    for (const item of document.querySelectorAll("#nav [data-nav]")) {
+      if (item.dataset.nav === active) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
+    }
+  }
+
+  let pinObserver = null;
+
+  /** 页头滚到顶栏底下之后，紧凑屏的顶栏把品牌换成页名。 */
+  function watchPageHead() {
+    if (pinObserver) pinObserver.disconnect();
+    const bar = $(".bar");
+    const head = $(".page-head");
+    if (!bar || !head || !("IntersectionObserver" in window)) return;
+    bar.removeAttribute("data-pinned");
+    pinObserver = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) bar.removeAttribute("data-pinned");
+        else bar.setAttribute("data-pinned", "");
+      },
+      { rootMargin: `-${bar.offsetHeight + 1}px 0px 0px 0px`, threshold: 0 }
+    );
+    pinObserver.observe(head);
+  }
+
+  /* ==================== §8 路由 ==================== */
+
+  function currentRoute() {
+    const hash = location.hash.replace(/^#\/?/, "");
+    if (!hash) return { page: "overview", arg: null, detail: false };
+    const [head, ...rest] = hash.split("/");
+    if (head === "plugins" && rest.length) {
+      return { page: "plugins", arg: decodeURIComponent(rest.join("/")), detail: true };
+    }
+    if (head === "settings") return { page: "settings", arg: null, detail: false };
+    return PAGES.some((page) => page.id === head)
+      ? { page: head, arg: null, detail: false }
+      : { page: "overview", arg: null, detail: false };
+  }
+
+  /** 打开某个路由。用链接或这里都行——两者都只改 hash，剩下的交给 hashchange。 */
+  function go(page, arg) {
+    const hash = arg ? `#/${page}/${encodeURIComponent(arg)}` : `#/${page}`;
+    if (location.hash === hash) render();
+    else location.hash = hash;
+  }
+
+  let renderSeq = 0;
+  let lastPage = "";
+  const scrollMemory = new Map();
+
+  async function render() {
+    const route = currentRoute();
+    const navKey = route.detail ? "plugins" : route.page;
+    markNav(navKey);
+
+    const title = route.detail ? route.arg : (PAGES.find((p) => p.id === route.page) || PAGES[0]).title;
+    $(".bar-title").textContent = title;
+    document.title = route.detail ? `${route.arg} · ${NAME}` : `${title} · ${NAME}`;
+
+    const seq = ++renderSeq;
+    const view = $("#view");
+    // 换页时把上一页的滚动位置记住，回头再进来不至于从头翻。
+    if (lastPage && lastPage !== navKey) scrollMemory.set(lastPage, window.scrollY);
+    logState.mounted = false;
+    view.innerHTML = skeleton(route.detail ? 2 : 1);
+
+    let html;
+    try {
+      html = await paintRoute(route);
+    } catch (error) {
+      if (seq !== renderSeq) return;
+      if (error && error.status === 401) {
+        paintLock();
+        return;
+      }
+      view.innerHTML = empty(
+        error && error.status === 503
+          ? error.message
+          : `这一页没能读出来：${error && error.message ? error.message : "原因不明"}`
+      );
+      return;
+    }
+    if (seq !== renderSeq) return;
+
+    const changed = lastPage !== navKey;
+    lastPage = navKey;
+    view.innerHTML = html;
+    if (changed) {
+      const remembered = scrollMemory.get(navKey) || 0;
+      window.scrollTo({ top: remembered, behavior: "auto" });
+      if (!reduced.matches) {
+        view.removeAttribute("data-enter");
+        void view.offsetWidth;
+        view.dataset.enter = "";
+      }
+    }
+    watchPageHead();
+    mountRoute(route);
+  }
+
+  async function paintRoute(route) {
+    // 插件页在宽屏上是「列表 + 详情」并排，窄屏上详情另占一页。
+    if (route.detail) {
+      return layout() === "expanded" ? paintPluginsSplit(route.arg) : paintPluginDetail(route.arg);
+    }
+    switch (route.page) {
+      case "plugins":
+        return layout() === "expanded" ? paintPluginsSplit("") : paintPlugins();
+      case "ambient":
+        return paintAmbient();
+      case "logs":
+        return paintLogs();
+      case "command":
+        return paintCommand();
+      case "settings":
+        return paintSettings();
+      default:
+        return paintOverview();
+    }
+  }
+
+  function mountRoute(route) {
+    if (route.detail) return;
+    if (route.page === "overview") mountOverviewLog();
+    if (route.page === "logs") mountLogs();
+  }
+
+  /* ==================== §9 各页 ==================== */
+
+  /* ---- 总览 ---- */
+
+  async function paintOverview() {
     const data = await api("/overview");
     const bots = data.bots.length
       ? data.bots
           .map(
             (bot) => `
-        <div class="zy-row zy-row-plain">
-          <div class="zy-row-body">
-            <span class="zy-row-title">${esc(bot.name || bot.nick || bot.id || "未取得账号")}
-              <span class="zy-key">${esc(bot.adapter)}/${esc(bot.platform)}</span>
+        <div class="row row-plain">
+          <div class="row-icon">${esc((bot.name || bot.nick || "?").slice(0, 1))}</div>
+          <div class="row-body">
+            <span class="row-title">${esc(bot.name || bot.nick || bot.id || "未取得账号")}
+              <span class="key">${esc(bot.adapter)}/${esc(bot.platform)}</span>
             </span>
-            <span class="zy-row-sub">${
+            <span class="row-sub">${
               bot.id ? `已连上，账号 ${esc(bot.id)}` : "已连接实现端，账号还没认出来"
             }</span>
           </div>
@@ -251,16 +468,23 @@
       : empty("还没有连接；启动日志里找「启动适配器」那几行");
 
     return `
-      <section class="zy-hero">
-        <span class="zy-hero-note">${esc(NAME)} · ${esc(data.app.version)}</span>
-        <span class="zy-hero-name">已经跑了 ${esc(span(data.app.uptime))}</span>
-        <span class="zy-hero-note">这一次是 ${esc(data.app.started)} 起来的 ·
+      ${pageHead("总览")}
+      <section class="hero">
+        <span class="hero-eyebrow">${esc(NAME)} · ${esc(data.app.version)} 已经跑了</span>
+        <div class="hero-figure">
+          <span class="hero-number">${esc(span(data.app.uptime))}</span>
+        </div>
+        <span class="hero-note">这一次是 ${esc(data.app.started)} 起来的 ·
           控制台在 ${esc(data.console.address)}</span>
+        <div class="hero-actions">
+          <a class="btn btn-filled" href="#/logs">${ICONS.logs}去看日志</a>
+          <a class="btn btn-tonal" href="#/plugins">${ICONS.plugins}管理插件</a>
+        </div>
       </section>
 
-      <section class="zy-card">
-        <div class="zy-section-title">此刻</div>
-        <div class="zy-readings">
+      <section class="card">
+        <div class="section-title">此刻</div>
+        <div class="readings">
           ${reading("今日消息", num(data.messages.today), "条")}
           ${reading("今日发言人", num(data.messages.people), "位")}
           ${reading("近 7 天消息", num(data.messages.week), "条")}
@@ -272,20 +496,21 @@
         </div>
       </section>
 
-      <section class="zy-card">
-        <div class="zy-section-title">连接<span class="zy-count">${data.bots.length}</span></div>
-        <div class="zy-list">${bots}</div>
+      <section class="card card-notched">
+        <div class="section-title">连接<span class="count">${data.bots.length} 条</span></div>
+        <div class="list">${bots}</div>
       </section>
 
-      <section class="zy-card">
-        <div class="zy-section-title">最近发生了什么
-          <span class="zy-count">最近 6 行</span></div>
-        <div class="zy-log zy-log-short" id="overview-log"></div>
-        <button class="zy-btn zy-btn-tonal" type="button" data-nav="logs">去日志页看全部</button>
+      <section class="card">
+        <div class="section-title">最近发生了什么<span class="count">最近 6 行</span></div>
+        <div class="log log-short" id="overview-log"></div>
+        <div class="actions">
+          <a class="btn btn-tonal" href="#/logs">看全部</a>
+        </div>
       </section>`;
   }
 
-  async function mountOverview() {
+  async function mountOverviewLog() {
     const box = $("#overview-log");
     if (!box) return;
     try {
@@ -293,15 +518,15 @@
       const lines = (data.lines || []).slice(-6);
       box.innerHTML = lines.length
         ? lines.map(logLine).join("")
-        : `<div class="zy-log-line zy-log-debg">这里还是空的</div>`;
+        : `<div class="log-line log-debg">这里还是空的</div>`;
     } catch {
       /* 总览里这一格不重要，取不到就让它空着 */
     }
   }
 
-  /* ------------------------------ 页面：插件 ------------------------------ */
+  /* ---- 插件 ---- */
 
-  const pluginView = { payload: null, text: "", section: "" };
+  const pluginView = { payload: null, text: "", section: "", selected: "" };
 
   function pluginRows() {
     const data = pluginView.payload;
@@ -318,125 +543,161 @@
       })
       .map(
         (plugin) => `
-        <div class="zy-row" data-plugin="${esc(plugin.name)}" role="button" tabindex="0">
-          <div class="zy-row-body">
-            <span class="zy-row-title">${esc(plugin.display)}
-              <span class="zy-key">${esc(plugin.name)}</span>
-              ${badge(plugin)}
+        <div class="row" data-plugin="${esc(plugin.name)}"
+             ${plugin.name === pluginView.selected ? 'aria-selected="true"' : ""}>
+          <a class="row-hit" href="#/plugins/${encodeURIComponent(plugin.name)}"
+             aria-label="打开 ${esc(plugin.display)}"></a>
+          <div class="row-body">
+            <span class="row-title">${esc(plugin.display)}
+              <span class="key">${esc(plugin.name)}</span>
+              ${plugin.pending ? badge(plugin) : ""}
             </span>
-            <span class="zy-row-sub">${esc(plugin.summary)}</span>
+            <span class="row-sub">${esc(plugin.summary)}</span>
           </div>
-          <div class="zy-row-tail">
-            <button class="zy-switch" type="button" role="switch" data-toggle="${esc(plugin.name)}"
+          <div class="row-tail">
+            <button class="switch" type="button" role="switch" data-toggle="${esc(plugin.name)}"
                     aria-checked="${plugin.on}" aria-label="启用或停用${esc(plugin.display)}"
                     ${plugin.name === "ctl" ? "disabled" : ""}></button>
-            <span class="zy-chevron">${ICONS.chevron}</span>
+            <span class="chevron">${ICONS.chevron}</span>
           </div>
         </div>`
       )
       .join("");
-    return `<div class="zy-list">${rows || empty("没有符合条件的插件")}</div>`;
+    return `<div class="list">${rows || empty("没有符合条件的插件")}</div>`;
   }
 
   function pluginChips() {
     const data = pluginView.payload;
     return [
-      `<button class="zy-chip" type="button" data-section=""
+      `<button class="chip" type="button" data-section=""
          aria-pressed="${pluginView.section === ""}">全部 ${data.plugins.length}</button>`,
       ...data.sections
         .map((section) => {
           const count = data.plugins.filter((plugin) => plugin.section === section.code).length;
           if (!count) return "";
-          return `<button class="zy-chip" type="button" data-section="${esc(section.code)}"
+          return `<button class="chip" type="button" data-section="${esc(section.code)}"
             aria-pressed="${pluginView.section === section.code}">${esc(section.name)} ${count}</button>`;
         })
         .filter(Boolean),
     ].join("");
   }
 
+  const pluginSearch = () => `
+    <div class="search">
+      ${ICONS.search}
+      <input id="plugin-search" type="search" placeholder="按名字或说明找"
+             value="${esc(pluginView.text)}" aria-label="搜索插件">
+    </div>`;
+
   /** 只重画列表与筛选项：敲一个字就整页重拉一次太浪费，也会把光标顶掉。 */
   function repaintPlugins() {
     const list = $("#plugin-list");
-    if (list) list.outerHTML = `<section class="zy-card" id="plugin-list">${pluginRows()}</section>`;
+    if (list) list.innerHTML = pluginRows();
     const chips = $("#plugin-chips");
     if (chips) chips.innerHTML = pluginChips();
   }
 
-  async function pagePlugins() {
+  async function paintPlugins() {
     pluginView.payload = await api("/plugins");
+    pluginView.selected = "";
     return `
-      <div class="zy-search">
-        ${ICONS.search}
-        <input id="plugin-search" type="search" placeholder="按名字或说明找"
-               value="${esc(pluginView.text)}" aria-label="搜索插件">
-      </div>
-      <div class="zy-chips" id="plugin-chips">${pluginChips()}</div>
-      <section class="zy-card" id="plugin-list">${pluginRows()}</section>`;
+      ${pageHead("插件", "开关就地改，改完立刻生效；点一行进去改它的配置。")}
+      ${pluginSearch()}
+      <div class="chips" id="plugin-chips">${pluginChips()}</div>
+      <section class="card" id="plugin-list">${pluginRows()}</section>`;
+  }
+
+  /** 宽屏：列表与详情并排，选一个就地展开，不必来回翻页。 */
+  async function paintPluginsSplit(name) {
+    pluginView.payload = await api("/plugins");
+    pluginView.selected = name || "";
+    const detail = name
+      ? pluginDetailHtml(await fetchPlugin(name))
+      : `<section class="card">${empty("左边挑一个插件，它的配置与指令会在这儿展开")}</section>`;
+    return `
+      ${pageHead("插件", "开关就地改，改完立刻生效；右边是选中那个的配置。")}
+      <div class="panes" data-split>
+        <div class="pane">
+          ${pluginSearch()}
+          <div class="chips" id="plugin-chips">${pluginChips()}</div>
+          <section class="card" id="plugin-list">${pluginRows()}</section>
+        </div>
+        <div class="pane" id="plugin-detail">${detail}</div>
+      </div>`;
   }
 
   function badge(plugin) {
-    if (plugin.pending) return `<span class="zy-badge zy-badge-pending">待重启</span>`;
+    if (plugin.pending) return `<span class="badge badge-pending">待重启</span>`;
     return plugin.on
-      ? `<span class="zy-badge zy-badge-on">已启用</span>`
-      : `<span class="zy-badge zy-badge-off">已停用</span>`;
+      ? `<span class="badge badge-on">已启用</span>`
+      : `<span class="badge badge-off">已停用</span>`;
   }
 
-  /* ------------------------------ 页面：插件详情 ------------------------------ */
+  /* ---- 插件详情 ---- */
 
-  async function pagePlugin(name) {
-    const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
+  const fetchPlugin = (name) => api(`/plugins/${encodeURIComponent(name)}`);
+
+  async function paintPluginDetail(name) {
+    const plugin = await fetchPlugin(name);
+    // 页头已经写着插件名了，卡里不再重复一遍
+    return `${pageHead(plugin.display)}${pluginDetailHtml(plugin, { back: true, named: false })}`;
+  }
+
+  function pluginDetailHtml(plugin, { back = false, named = true } = {}) {
     const rows = Object.entries(plugin.config)
       .map(([key, value]) => renderNode(key, key, value))
       .join("");
     const differences = plugin.diff.length
-      ? `<div class="zy-code">${esc(plugin.diff.join("\n"))}</div>`
-      : `<p class="zy-note">与默认值一致。</p>`;
+      ? `<div class="code">${esc(plugin.diff.join("\n"))}</div>`
+      : `<p class="note">与默认值一致。</p>`;
     const commands = plugin.commands.length
       ? plugin.commands
           .map(
             (command) => `
-            <div class="zy-row zy-row-plain" data-copy="${esc(command.cmd)}" role="button"
-                 tabindex="0" title="点击复制">
-              <div class="zy-row-body">
-                <span class="zy-row-title"><span class="zy-key">${esc(command.cmd)}</span></span>
-                <span class="zy-row-sub">${esc(command.note)}</span>
+            <button class="row row-plain" type="button" data-copy="${esc(command.cmd)}"
+                    title="点击复制">
+              <div class="row-body">
+                <span class="row-title"><span class="key">${esc(command.cmd)}</span></span>
+                <span class="row-sub">${esc(command.note)}</span>
               </div>
-            </div>`
+              <div class="row-tail"><span class="chevron">${ICONS.copy}</span></div>
+            </button>`
           )
           .join("")
-      : `<p class="zy-note">这个插件没有指令，它在后台按排期自己工作。</p>`;
+      : `<p class="note">这个插件没有指令，它在后台按排期自己工作。</p>`;
 
     return `
-      <button class="zy-btn zy-btn-tonal zy-back" type="button" data-nav="plugins">
-        ${ICONS.back}回插件列表</button>
-      <section class="zy-card">
-        <div class="zy-title">${esc(plugin.display)}</div>
-        <p class="zy-note">${esc(plugin.summary)}</p>
-        <div class="zy-row zy-row-plain">
-          <div class="zy-row-body">
-            <span class="zy-row-title">${badge(plugin)}</span>
-            <span class="zy-row-sub">${esc(plugin.effect)}</span>
+      ${back ? `<a class="btn btn-tonal back" href="#/plugins">${ICONS.back}回插件列表</a>` : ""}
+      <section class="card">
+        <div class="section-title">${named ? esc(plugin.display) : ""}
+          <span class="key">${esc(plugin.name)}</span>${badge(plugin)}</div>
+        <p class="note">${esc(plugin.summary)}</p>
+        <div class="row row-plain">
+          <div class="row-body">
+            <span class="row-title">开关</span>
+            <span class="row-sub">${esc(plugin.effect)}</span>
           </div>
-          <button class="zy-switch" type="button" role="switch" data-toggle="${esc(plugin.name)}"
+          <button class="switch" type="button" role="switch" data-toggle="${esc(plugin.name)}"
                   aria-checked="${plugin.on}" aria-label="启用或停用"
                   ${plugin.name === "ctl" ? "disabled" : ""}></button>
         </div>
       </section>
 
-      <div class="zy-split">
-        <section class="zy-card">
-          <div class="zy-section-title">配置<span class="zy-count">改了立刻生效</span></div>
-          <div class="zy-panel">${rows}</div>
-          <button class="zy-btn zy-btn-outline" type="button" data-reset="${esc(plugin.name)}"
-                  data-confirm="恢复参数默认值会覆盖现有取值，继续？">
-            恢复默认参数（保留开关）</button>
+      <div class="split">
+        <section class="card">
+          <div class="section-title">配置<span class="count">改了立刻生效</span></div>
+          <div class="panel">${rows}</div>
+          <div class="actions">
+            <button class="btn btn-outline" type="button" data-reset="${esc(plugin.name)}">
+              恢复默认参数（保留开关）</button>
+          </div>
         </section>
-        <section class="zy-card">
-          <div class="zy-section-title">和默认差在哪</div>
+        <section class="card">
+          <div class="section-title">和默认差在哪</div>
           ${differences}
-          <div class="zy-section-title">指令
-            <span class="zy-count">${plugin.commands.length} 条 · 点一条复制</span></div>
-          <div class="zy-list">${commands}</div>
+          <div class="section-title">指令
+            <span class="count">${plugin.commands.length} 条 · 点一条复制</span></div>
+          <div class="list">${commands}</div>
         </section>
       </div>`;
   }
@@ -447,7 +708,7 @@
       return kv(
         path,
         key,
-        `<input class="zy-input zy-input-mono" data-path="${esc(path)}" data-kind="list"
+        `<input class="input input-mono" data-path="${esc(path)}" data-kind="list"
           value="${esc(value.join(", "))}" spellcheck="false" aria-label="${esc(key)}">`
       );
     }
@@ -457,36 +718,36 @@
         : Object.entries(value)
             .map(([child, item]) => renderNode(`${path}.${child}`, child, item))
             .join("");
-      return kv(path, key, `<div class="zy-subtable">${inner}</div>`);
+      return kv(path, key, `<div class="subtable">${inner}</div>`);
     }
     if (typeof value === "boolean") {
       return kv(
         path,
         key,
-        `<button class="zy-switch" type="button" role="switch" data-path="${esc(path)}"
+        `<button class="switch" type="button" role="switch" data-path="${esc(path)}"
            data-kind="bool" aria-checked="${value}" aria-label="${esc(key)}"></button>`
       );
     }
     // 长文本（提示词、人格那类）给一块多行的地方，单行输入框里换行会被吃掉。
     const long = typeof value === "string" && (value.includes("\n") || value.length > 120);
     if (long) {
-      return `<div class="zy-kv zy-kv-wide">
-        <span class="zy-kv-key" title="${esc(path)}">${esc(key)}</span>
-        <textarea class="zy-area zy-area-short" data-path="${esc(path)}" data-kind="string"
+      return `<div class="kv kv-wide">
+        <span class="kv-key" title="${esc(path)}">${esc(key)}</span>
+        <textarea class="area area-short" data-path="${esc(path)}" data-kind="string"
                   spellcheck="false" aria-label="${esc(key)}">${esc(value)}</textarea></div>`;
     }
     const kind = typeof value === "number" ? "number" : "string";
     return kv(
       path,
       key,
-      `<input class="zy-input zy-input-mono" data-path="${esc(path)}" data-kind="${kind}"
+      `<input class="input input-mono" data-path="${esc(path)}" data-kind="${kind}"
         value="${esc(value ?? "")}" spellcheck="false" aria-label="${esc(key)}">`
     );
   }
 
   const kv = (path, key, control) =>
-    `<div class="zy-kv"><span class="zy-kv-key" title="${esc(path)}">${esc(key)}</span>
-     <span class="zy-kv-value">${control}</span></div>`;
+    `<div class="kv"><span class="kv-key" title="${esc(path)}">${esc(key)}</span>
+     <span class="kv-value">${control}</span></div>`;
 
   /** 输入框里的字变回配置值。逗号分开的一行当数组，数字按数字写回去。 */
   function parseValue(kind, raw) {
@@ -507,9 +768,9 @@
     });
   }
 
-  /* ------------------------------ 页面：搭话 ------------------------------ */
+  /* ---- 搭话 ---- */
 
-  async function pageAmbient() {
+  async function paintAmbient() {
     const data = await api("/ambient");
     if (!data.ready) return empty("搭话插件的目录还没建起来，先让机器人跑一轮");
 
@@ -521,50 +782,50 @@
       : empty("库里还没有东西；它在群里收下一张就会存一张");
 
     return `
-      <section class="zy-card">
-        <div class="zy-section-title">它在群里像谁
-          <span class="zy-count">改完下一轮生效</span></div>
-        <p class="zy-note">人格是它在群里说话的样子，档案是它知道自己是谁。
+      ${pageHead("搭话", "人格、档案、记忆与表情包库都在这儿。")}
+
+      <section class="card">
+        <div class="section-title">它在群里像谁
+          <span class="count">改完下一轮生效</span></div>
+        <p class="note">人格是它在群里说话的样子，档案是它知道自己是谁。
         两份都直接写进运行目录，旧的那份存成同名的 backup；
         线上那份与仓库里那份是两回事，改这里不动仓库。</p>
-        <label class="zy-note" for="persona">人格 persona.md</label>
-        <textarea class="zy-area" id="persona" spellcheck="false">${esc(data.persona)}</textarea>
-        <label class="zy-note" for="self">档案 self.md</label>
-        <textarea class="zy-area zy-area-short" id="self" spellcheck="false">${esc(
-          data.self
-        )}</textarea>
-        <div class="zy-chips">
-          <button class="zy-btn zy-btn-filled" type="button" data-source="persona">
+        <label class="note" for="persona">人格 persona.md</label>
+        <textarea class="area" id="persona" spellcheck="false">${esc(data.persona)}</textarea>
+        <label class="note" for="self">档案 self.md</label>
+        <textarea class="area area-short" id="self" spellcheck="false">${esc(data.self)}</textarea>
+        <div class="actions">
+          <button class="btn btn-filled" type="button" data-source="persona">
             ${ICONS.save}保存人格</button>
-          <button class="zy-btn zy-btn-outline" type="button" data-source="self">
+          <button class="btn btn-outline" type="button" data-source="self">
             ${ICONS.save}保存档案</button>
         </div>
       </section>
 
-      <section class="zy-card">
-        <div class="zy-section-title">记得什么
-          <span class="zy-count">${data.memory.length} 个群</span></div>
-        <div class="zy-list">${groups}</div>
+      <section class="card card-notched">
+        <div class="section-title">记得什么
+          <span class="count">${data.memory.length} 个群</span></div>
+        <div class="list">${groups}</div>
       </section>
 
-      <section class="zy-card">
-        <div class="zy-section-title">表情包库
-          <span class="zy-count">${data.stickers.length} 张</span></div>
-        <div class="zy-gallery">${gallery}</div>
+      <section class="card">
+        <div class="section-title">表情包库
+          <span class="count">${data.stickers.length} 张</span></div>
+        <div class="gallery">${gallery}</div>
       </section>`;
   }
 
   function renderSticker(sticker) {
     return `
-      <div class="zy-tile">
+      <div class="tile">
         ${
           sticker.image
-            ? `<img class="zy-tile-img" loading="lazy" alt="${esc(sticker.label)}"
+            ? `<img class="tile-img" loading="lazy" decoding="async" alt="${esc(sticker.label)}"
                  src="/api/ambient/sticker/${sticker.id}?t=${encodeURIComponent(token)}">`
-            : `<div class="zy-tile-img zy-tile-blank">商城表情<br>只存了参数</div>`
+            : `<div class="tile-img tile-blank">商城表情<br>只存了参数</div>`
         }
-        <span class="zy-tile-label">${esc(sticker.label || "没起名的表情包")}</span>
-        <span class="zy-note">#${sticker.id} · 用过 ${sticker.uses} 次 · ${esc(
+        <span class="tile-label">${esc(sticker.label || "没起名的表情包")}</span>
+        <span class="note">#${sticker.id} · 用过 ${sticker.uses} 次 · ${esc(
           ago(sticker.added_at)
         )}</span>
       </div>`;
@@ -576,15 +837,15 @@
     const people = noted
       .map(
         (person) => `
-        <div class="zy-row zy-row-plain">
-          <div class="zy-row-body">
-            <span class="zy-row-title">${esc(person.name || person.id)}
-              ${person.address ? `<span class="zy-key">叫「${esc(person.address)}」</span>` : ""}
+        <div class="row row-plain">
+          <div class="row-body">
+            <span class="row-title">${esc(person.name || person.id)}
+              ${person.address ? `<span class="key">叫「${esc(person.address)}」</span>` : ""}
             </span>
-            <span class="zy-row-sub">${esc(person.note || "有称呼，没写印象")}</span>
+            <span class="row-sub">${esc(person.note || "有称呼，没写印象")}</span>
           </div>
-          <div class="zy-row-tail">
-            <span class="zy-note">${num(person.messages)} 条 · ${esc(ago(person.last_seen))}</span>
+          <div class="row-tail">
+            <span class="note">${num(person.messages)} 条 · ${esc(ago(person.last_seen))}</span>
           </div>
         </div>`
       )
@@ -592,129 +853,378 @@
     const notes = group.notes
       .map(
         (note) => `
-        <div class="zy-row zy-row-plain">
-          <div class="zy-row-body"><span class="zy-row-sub">${esc(note.text)}</span></div>
-          <div class="zy-row-tail"><span class="zy-note">${esc(ago(note.at))}</span></div>
+        <div class="row row-plain">
+          <div class="row-body"><span class="row-sub">${esc(note.text)}</span></div>
+          <div class="row-tail"><span class="note">${esc(ago(note.at))}</span></div>
         </div>`
       )
       .join("");
 
     return `
-      <div class="zy-inset">
-        <div class="zy-section-title">群 ${esc(group.group)}
-          <span class="zy-count">${group.people.length} 人 · ${group.notes.length} 条旧事</span>
+      <div class="inset">
+        <div class="section-title">群 ${esc(group.group)}
+          <span class="count">${group.people.length} 人 · ${group.notes.length} 条旧事</span>
         </div>
-        <p class="zy-note">${
+        <p class="note">${
           noted.length
             ? `有印象的 ${noted.length} 位${others > 0 ? `，另有 ${others} 位只记得露过面` : ""}`
             : "这个群里它还谁都没写上印象"
         }</p>
-        <div class="zy-list">${people}${notes}</div>
+        <div class="list">${people}${notes}</div>
       </div>`;
   }
 
-  /* ------------------------------ 页面：设置 ------------------------------ */
+  /* ---- 日志 ---- */
 
-  async function pageSettings() {
+  const DOM_LINES = 500;
+
+  const logState = {
+    lines: [],
+    loaded: false,
+    level: "",
+    text: "",
+    follow: true,
+    source: null,
+    limit: 2000,
+    queue: [],
+    frame: 0,
+    mounted: false,
+  };
+
+  function logLine(entry) {
+    const level = String(entry.level || "INFO").toLowerCase();
+    return `<div class="log-line log-${esc(level)}">
+      <span class="log-at">${esc(entry.at)}</span>
+      <span class="log-target">[${esc(entry.target)}]</span>
+      <span>${esc(entry.text)}</span></div>`;
+  }
+
+  function logMatches(entry) {
+    if (logState.level && entry.level !== logState.level) return false;
+    const text = logState.text.trim().toLowerCase();
+    if (!text) return true;
+    return (
+      String(entry.text).toLowerCase().includes(text) ||
+      String(entry.target).toLowerCase().includes(text)
+    );
+  }
+
+  const filtered = () => logState.lines.filter(logMatches).slice(-DOM_LINES);
+
+  function paintLog() {
+    const box = $("#log-box");
+    if (!box) return;
+    const shown = filtered();
+    box.innerHTML = shown.length
+      ? shown.map(logLine).join("")
+      : `<div class="log-line log-debg">这一屏没有符合条件的行</div>`;
+    if (logState.follow) box.scrollTop = box.scrollHeight;
+  }
+
+  /**
+   * 一行日志进来。**不立刻碰 DOM**：群消息密的时候每秒能来几十行，
+   * 一行一次 insertAdjacentHTML + 一次滚动，页面就会跟着卡。
+   * 攒到下一帧一次写完，标签页在后台就只进缓冲、不动 DOM。
+   */
+  function pushLog(entry) {
+    logState.lines.push(entry);
+    if (logState.lines.length > logState.limit) {
+      logState.lines.splice(0, logState.lines.length - logState.limit);
+    }
+    if (document.hidden || !logState.mounted) return;
+    logState.queue.push(entry);
+    if (logState.frame) return;
+    logState.frame = requestAnimationFrame(flushLog);
+  }
+
+  function flushLog() {
+    logState.frame = 0;
+    const queued = logState.queue.splice(0, logState.queue.length);
+    const box = $("#log-box");
+    if (!box) return;
+    if (!queued.length) {
+      if (!box.children.length) paintLog();
+      return;
+    }
+    if (box.children.length === 1 && box.firstElementChild.classList.contains("log-debg")) {
+      box.innerHTML = "";
+    }
+    const fresh = queued.filter(logMatches);
+    if (fresh.length) {
+      box.insertAdjacentHTML("beforeend", fresh.map(logLine).join(""));
+      while (box.children.length > DOM_LINES) box.removeChild(box.firstChild);
+    }
+    if (logState.follow) box.scrollTop = box.scrollHeight;
+    const jump = $("#log-jump");
+    if (jump) jump.classList.toggle("jump-on", !logState.follow);
+  }
+
+  async function paintLogs() {
+    // 缓冲只增不改：回到这一页时不能把刚才推送过来的行又丢掉。
+    if (!logState.loaded) {
+      const data = await api("/logs");
+      logState.lines = data.lines || [];
+      logState.loaded = true;
+    }
+    const levels = [
+      ["", "全部"],
+      ["INFO", "INFO"],
+      ["WARN", "WARN"],
+      ["ERRO", "ERRO"],
+      ["DEBG", "DEBG"],
+    ];
+    return `
+      ${pageHead("日志", "它在机器上打出来的每一行，跟着跑。")}
+      <div class="toolbar">
+        <div class="search">
+          ${ICONS.search}
+          <input id="log-search" type="search" placeholder="按内容或 target 过滤"
+                 value="${esc(logState.text)}" aria-label="过滤日志">
+        </div>
+        <div class="seg" data-connected role="group" aria-label="按级别筛">
+          ${levels
+            .map(
+              ([value, label]) => `<button class="seg-item" type="button" data-level="${value}"
+                aria-pressed="${logState.level === value}">${label}</button>`
+            )
+            .join("")}
+        </div>
+        <button class="chip" type="button" id="log-follow"
+                aria-pressed="${logState.follow}">跟着滚</button>
+        <button class="btn btn-icon" type="button" id="log-clear" title="清空这一屏"
+                aria-label="清空这一屏">${ICONS.trash}</button>
+      </div>
+      <div class="log" id="log-box"></div>
+      <button class="btn btn-filled jump ${logState.follow ? "" : "jump-on"}" type="button"
+              id="log-jump">${ICONS.latest}回到最新</button>
+      <p class="note">这一屏只画最近 ${DOM_LINES} 行，缓冲区留 ${logState.limit} 行；
+        完整的记录在 <span class="key">./bot logs</span> 那个窗口里。</p>`;
+  }
+
+  function mountLogs() {
+    logState.mounted = true;
+    paintLog();
+    if (logState.source) return;
+    logState.source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
+    logState.source.onmessage = (event) => {
+      try {
+        pushLog(JSON.parse(event.data));
+      } catch {
+        /* 半行数据不该让整页掉线 */
+      }
+    };
+    logState.source.onerror = () => {
+      // 断开后浏览器自己会重连；接不上时不刷提示，免得盖住正在看的日志。
+    };
+  }
+
+  /* ---- 命令 ---- */
+
+  const commandState = { output: "", history: [] };
+
+  async function paintCommand() {
+    const shortcuts = ["list", "diff ambient", "show oai", "defaults portrait"];
+    return `
+      ${pageHead("命令", "这里敲的和群里敲 /ctl 是同一套，以维护者身份执行。")}
+      <section class="card">
+        <p class="note">它只改这台机器上的配置，不往群里发消息——
+        要给群里说话请回群里，或者用 agent 房间。</p>
+        <form class="field" id="command-form">
+          <input class="input input-mono" id="command-input" autocomplete="off"
+                 spellcheck="false" placeholder="list / show ambient / set oai …"
+                 aria-label="控制命令">
+          <button class="btn btn-filled" type="submit">${ICONS.play}执行</button>
+        </form>
+        <div class="chips">
+          ${shortcuts
+            .map(
+              (item) =>
+                `<button class="chip" type="button" data-run="${esc(item)}">${esc(item)}</button>`
+            )
+            .join("")}
+          ${commandState.history
+            .map(
+              (item) =>
+                `<button class="chip" type="button" data-run="${esc(item)}"
+                   title="再用一次">再用一次 · ${esc(item)}</button>`
+            )
+            .join("")}
+        </div>
+      </section>
+      <section class="card">
+        <div class="section-title">回执</div>
+        <div class="code" id="command-output">${
+          commandState.output ? esc(commandState.output) : "还没有执行过命令"
+        }</div>
+      </section>`;
+  }
+
+  async function runCommand(input) {
+    const output = $("#command-output");
+    if (output) output.textContent = "执行中…";
+    try {
+      const data = await api("/command", { method: "POST", body: { input } });
+      commandState.output = data.message;
+      if (output) output.textContent = data.message;
+      commandState.history = [input, ...commandState.history.filter((x) => x !== input)].slice(0, 3);
+    } catch (error) {
+      commandState.output = error.message;
+      if (output) output.textContent = error.message;
+      fail(error);
+    }
+  }
+
+  /* ---- 框架设置 ---- */
+
+  async function paintSettings() {
     const data = await api("/settings");
     const bots = data.bots.length
       ? data.bots.map(renderBot).join("")
       : empty("还没有配连接；在下面加一条，或者先用本机控制台跑");
 
     return `
-      <button class="zy-btn zy-btn-tonal zy-back" type="button" data-nav="overview">
-        ${ICONS.back}回总览</button>
+      ${pageHead("接入与全局", "这几项不在任何插件的配置里，/ctl 够不着，只在这一页改。")}
 
-      <section class="zy-card">
-        <div class="zy-section-title">连接实现端
-          <span class="zy-count">${data.bots.length} 条 · 改完下次启动生效</span></div>
-        <p class="zy-note">知言自己不直接连 QQ：它连的是实现端（本机自建的那套在
-        <span class="zy-key">http://127.0.0.1:3001</span>）。这一份是机器人的「接在哪儿」，
-        与群里的指令、插件配置都不相干。</p>
-        <div class="zy-list">${bots}</div>
+      <section class="card">
+        <div class="section-title">装到桌面
+          <span class="count">${standalone() ? "已经装上了" : "可选"}</span></div>
+        ${installBody()}
       </section>
 
-      <section class="zy-card">
-        <div class="zy-section-title">全局</div>
-        <form id="global-form" class="zy-panel">
-          <div class="zy-kv">
-            <span class="zy-kv-key">command_prefix</span>
-            <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="command_prefix"
+      <section class="card">
+        <div class="section-title">连接实现端
+          <span class="count">${data.bots.length} 条 · 改完下次启动生效</span></div>
+        <p class="note">知言自己不直接连 QQ：它连的是实现端（本机自建的那套在
+        <span class="key">http://127.0.0.1:3001</span>）。这一份是机器人的「接在哪儿」，
+        与群里的指令、插件配置都不相干。</p>
+        <div class="list" id="bot-list">${bots}</div>
+        <div class="actions">
+          <button class="btn btn-tonal" type="button" data-add-bot>${ICONS.plus}加一条连接</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="section-title">全局</div>
+        <form id="global-form" class="panel">
+          <div class="kv">
+            <span class="kv-key">command_prefix</span>
+            <span class="kv-value"><input class="input input-mono" name="command_prefix"
               value="${esc(data.command_prefix.join(", "))}" spellcheck="false"
               aria-label="指令前缀"></span>
           </div>
-          <div class="zy-kv">
-            <span class="zy-kv-key">browser_path</span>
-            <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="browser_path"
+          <div class="kv">
+            <span class="kv-key">browser_path</span>
+            <span class="kv-value"><input class="input input-mono" name="browser_path"
               value="${esc(data.browser_path)}" spellcheck="false"
               placeholder="留空即自动查找" aria-label="浏览器路径"></span>
           </div>
-          <div class="zy-kv">
-            <span class="zy-kv-key">global_filter.enable_blacklist</span>
-            <span class="zy-kv-value"><button class="zy-switch" type="button" role="switch"
-              data-name="enable_blacklist" aria-checked="${data.global_filter.enable_blacklist}"
-              aria-label="启用群黑名单"></button></span>
+          <div class="kv kv-wide">
+            <span class="kv-key">global_filter</span>
+            <span class="kv-value">
+              <button class="switch" type="button" role="switch"
+                data-name="enable_blacklist" aria-checked="${data.global_filter.enable_blacklist}"
+                aria-label="启用群黑名单"></button>
+              <span class="group-label">黑名单</span>
+            </span>
           </div>
-          <div class="zy-kv">
-            <span class="zy-kv-key">global_filter.blacklist</span>
-            <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="blacklist"
+          <div class="kv">
+            <span class="kv-key">blacklist</span>
+            <span class="kv-value"><input class="input input-mono" name="blacklist"
               value="${esc(data.global_filter.blacklist.join(", "))}" spellcheck="false"
               aria-label="群黑名单"></span>
           </div>
-          <div class="zy-kv">
-            <span class="zy-kv-key">global_filter.enable_whitelist</span>
-            <span class="zy-kv-value"><button class="zy-switch" type="button" role="switch"
-              data-name="enable_whitelist" aria-checked="${data.global_filter.enable_whitelist}"
-              aria-label="启用群白名单"></button></span>
+          <div class="kv kv-wide">
+            <span class="kv-key">global_filter</span>
+            <span class="kv-value">
+              <button class="switch" type="button" role="switch"
+                data-name="enable_whitelist" aria-checked="${data.global_filter.enable_whitelist}"
+                aria-label="启用群白名单"></button>
+              <span class="group-label">白名单</span>
+            </span>
           </div>
-          <div class="zy-kv">
-            <span class="zy-kv-key">global_filter.whitelist</span>
-            <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="whitelist"
+          <div class="kv">
+            <span class="kv-key">whitelist</span>
+            <span class="kv-value"><input class="input input-mono" name="whitelist"
               value="${esc(data.global_filter.whitelist.join(", "))}" spellcheck="false"
               aria-label="群白名单"></span>
           </div>
         </form>
-        <p class="zy-note">两条名单都空 = 对所有群生效；同时出现在两边的群按禁止处理。
-        逗号分开，例如 <span class="zy-key">123456, 789012</span>。</p>
-        <button class="zy-btn zy-btn-filled" type="button" data-save-global>
-          ${ICONS.save}保存全局设置</button>
+        <p class="note">两条名单都空 = 对所有群生效；同时出现在两边的群按禁止处理。
+        逗号分开，例如 <span class="key">123456, 789012</span>。</p>
+        <div class="actions">
+          <button class="btn btn-filled" type="button" data-save-global>
+            ${ICONS.save}保存全局设置</button>
+        </div>
       </section>`;
   }
 
-  function renderBot(bot, index) {
+  /** 装到桌面：能直接叫出安装提示的浏览器给按钮，其余给步骤。 */
+  function installBody() {
+    if (standalone()) {
+      return `<p class="note">它已经装在这台设备上了，这一页就是从桌面图标打开的那一份。</p>`;
+    }
+    const ua = navigator.userAgent;
+    const steps = /iPhone|iPad|iPod/.test(ua)
+      ? ["在 Safari 里打开这一个地址", "点底部的分享键", "选「添加到主屏幕」，名字留「知言」"]
+      : /Android/.test(ua)
+        ? ["用 Chrome 打开这一个地址", "点右上角的三点", "选「安装应用」或「添加到主屏幕」"]
+        : ["地址栏右侧有一枚安装图标，点它", "或者用菜单里的「安装知言」", "装好后它会自己开一个窗口"];
     return `
-      <form class="zy-inset" id="bot-form-${index}" data-index="${index}">
-        <div class="zy-row zy-row-plain">
-          <div class="zy-row-body">
-            <span class="zy-row-title">第 ${index + 1} 条
-              ${bot.has_token ? `<span class="zy-badge zy-badge-on">已设令牌</span>` : ""}</span>
-            <span class="zy-row-sub">${esc(bot.protocol)} · ${esc(bot.url || "未填地址")}</span>
+      <p class="note">装上之后它跟普通应用一样：桌面有图标，打开就一个窗口，
+      没有地址栏，顶栏直接贴到状态栏下面。装的是这一页，数据还是这台机器上的。</p>
+      <ol class="list">
+        ${steps
+          .map(
+            (step, index) => `
+          <li class="row row-plain">
+            <span class="row-icon">${index + 1}</span>
+            <div class="row-body"><span class="row-sub">${esc(step)}</span></div>
+          </li>`
+          )
+          .join("")}
+      </ol>
+      <div class="actions">
+        <button class="btn btn-filled" type="button" data-install ${
+          installPrompt ? "" : "hidden"
+        }>${ICONS.install}现在就装</button>
+      </div>`;
+  }
+
+  function renderBot(bot, index) {
+    const order = index === "" ? "新的一条" : `第 ${Number(index) + 1} 条`;
+    return `
+      <form class="inset" id="bot-form-${index}" data-index="${index}">
+        <div class="row row-plain">
+          <div class="row-body">
+            <span class="row-title">${order}
+              ${bot.has_token ? `<span class="badge badge-on">已设令牌</span>` : ""}</span>
+            <span class="row-sub">${esc(bot.protocol)} · ${esc(bot.url || "未填地址")}</span>
           </div>
-          <div class="zy-row-tail">
-            <button class="zy-switch" type="button" role="switch" name="enabled"
+          <div class="row-tail">
+            <button class="switch" type="button" role="switch" name="enabled"
                     aria-checked="${bot.enabled}" aria-label="启用这条连接"></button>
           </div>
         </div>
-        <div class="zy-kv">
-          <span class="zy-kv-key">protocol</span>
-          <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="protocol"
+        <div class="kv">
+          <span class="kv-key">protocol</span>
+          <span class="kv-value"><input class="input input-mono" name="protocol"
             value="${esc(bot.protocol)}" spellcheck="false" aria-label="协议"></span>
         </div>
-        <div class="zy-kv">
-          <span class="zy-kv-key">url</span>
-          <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="url"
+        <div class="kv">
+          <span class="kv-key">url</span>
+          <span class="kv-value"><input class="input input-mono" name="url"
             value="${esc(bot.url)}" spellcheck="false" aria-label="实现端地址"></span>
         </div>
-        <div class="zy-kv">
-          <span class="zy-kv-key">access_token</span>
-          <span class="zy-kv-value"><input class="zy-input zy-input-mono" name="access_token"
+        <div class="kv">
+          <span class="kv-key">access_token</span>
+          <span class="kv-value"><input class="input input-mono" name="access_token"
             type="password" autocomplete="off" spellcheck="false"
             placeholder="${bot.has_token ? "已设置，留空即不动" : "留空表示不鉴权"}"
             aria-label="访问令牌"></span>
         </div>
-        <div class="zy-chips">
-          <button class="zy-btn zy-btn-filled" type="submit">${ICONS.save}保存</button>
-          <button class="zy-btn zy-btn-outline" type="button" data-drop-bot="${index}">
+        <div class="actions">
+          <button class="btn btn-filled" type="submit">${ICONS.save}保存</button>
+          <button class="btn btn-outline btn-danger" type="button" data-drop-bot="${index}">
             ${ICONS.trash}删掉这条</button>
         </div>
       </form>`;
@@ -726,14 +1236,14 @@
       return field ? field.value : "";
     };
     const on = form.querySelector('[name="enabled"]');
-    const token = value("access_token");
+    const access = value("access_token");
     return {
-      index: Number(form.dataset.index),
+      index: form.dataset.index === "" ? undefined : Number(form.dataset.index),
       enabled: on ? on.getAttribute("aria-checked") === "true" : true,
       protocol: value("protocol"),
       url: value("url"),
       // 没写字就不发这一格：后端按「不动原来那个」处理。
-      ...(token.trim() ? { access_token: token } : {}),
+      ...(access.trim() ? { access_token: access } : {}),
     };
   }
 
@@ -771,172 +1281,59 @@
     };
   }
 
-  /* ------------------------------ 页面：日志 ------------------------------ */
+  /* ---- 解锁 ---- */
 
-  const logState = {
-    lines: [],
-    loaded: false,
-    level: "",
-    text: "",
-    follow: true,
-    source: null,
-    limit: 2000,
-  };
-
-  function logLine(entry) {
-    const level = String(entry.level || "INFO").toLowerCase();
-    return `<div class="zy-log-line zy-log-${esc(level)}">
-      <span class="zy-log-at">${esc(entry.at)}</span>
-      <span class="zy-log-target">[${esc(entry.target)}]</span>
-      <span>${esc(entry.text)}</span></div>`;
+  function paintLock(reason) {
+    logState.mounted = false;
+    $("#nav").innerHTML = "";
+    $("#view").innerHTML = `
+      <form class="lock" id="lock-form">
+        <div class="section-title">${esc(NAME)}</div>
+        <p class="note">${esc(reason || "需要口令才能看这台机器的数据。")}
+        启动日志里那条带 <span class="key">?t=</span> 的地址可以直接打开；
+        口令本体在 <span class="key">data/console/token</span>。</p>
+        <input class="input input-mono" id="lock-input" type="password"
+               autocomplete="off" spellcheck="false" placeholder="粘贴口令" aria-label="口令">
+        <button class="btn btn-filled" type="submit">解锁</button>
+      </form>`;
+    $("#lock-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      token = $("#lock-input").value.trim();
+      if (!token) return;
+      store.set(token);
+      boot();
+    });
+    $("#lock-input").focus();
   }
 
-  function logMatches(entry) {
-    if (logState.level && entry.level !== logState.level) return false;
-    const text = logState.text.trim().toLowerCase();
-    if (!text) return true;
-    return (
-      String(entry.text).toLowerCase().includes(text) ||
-      String(entry.target).toLowerCase().includes(text)
-    );
+  /* ==================== §10 事件 ==================== */
+
+  /** 按下时从圆心漫开一片。只有指针设备与未开「减少动态效果」时才做。 */
+  function ripple(event) {
+    if (reduced.matches || event.button > 0) return;
+    const host = event.target.closest(".btn, .nav-item, .seg-item, .chip, .row");
+    if (!host) return;
+    const box = host.getBoundingClientRect();
+    const size = Math.max(box.width, box.height) * 2;
+    const dot = document.createElement("span");
+    dot.className = "ripple";
+    dot.style.width = `${size}px`;
+    dot.style.height = `${size}px`;
+    dot.style.left = `${event.clientX - box.left - size / 2}px`;
+    dot.style.top = `${event.clientY - box.top - size / 2}px`;
+    dot.addEventListener("animationend", () => dot.remove(), { once: true });
+    host.appendChild(dot);
   }
-
-  function paintLog() {
-    const box = $("#log-box");
-    if (!box) return;
-    const shown = logState.lines.filter(logMatches);
-    box.innerHTML = shown.length
-      ? shown.map(logLine).join("")
-      : `<div class="zy-log-line zy-log-debg">这一屏没有符合条件的行</div>`;
-    if (logState.follow) box.scrollTop = box.scrollHeight;
-  }
-
-  function pushLog(entry) {
-    logState.lines.push(entry);
-    if (logState.lines.length > logState.limit) {
-      logState.lines.splice(0, logState.lines.length - logState.limit);
-    }
-    const box = $("#log-box");
-    if (!box || !logMatches(entry)) return;
-    if (box.children.length === 1 && box.firstElementChild.classList.contains("zy-log-debg")) {
-      box.innerHTML = "";
-    }
-    box.insertAdjacentHTML("beforeend", logLine(entry));
-    while (box.children.length > logState.limit) box.removeChild(box.firstChild);
-    if (logState.follow) box.scrollTop = box.scrollHeight;
-  }
-
-  async function pageLogs() {
-    // 缓冲只增不改：回到这一页时不能把刚才推送过来的行又丢掉。
-    if (!logState.loaded) {
-      const data = await api("/logs");
-      logState.lines = data.lines || [];
-      logState.loaded = true;
-    }
-    const levels = [
-      ["", "全部"],
-      ["INFO", "INFO"],
-      ["WARN", "WARN"],
-      ["ERRO", "ERRO"],
-      ["DEBG", "DEBG"],
-    ];
-    return `
-      <div class="zy-search">
-        ${ICONS.search}
-        <input id="log-search" type="search" placeholder="按内容或 target 过滤"
-               value="${esc(logState.text)}" aria-label="过滤日志">
-      </div>
-      <div class="zy-chips">
-        ${levels
-          .map(
-            ([value, label]) => `<button class="zy-chip" type="button" data-level="${value}"
-              aria-pressed="${logState.level === value}">${label}</button>`
-          )
-          .join("")}
-        <button class="zy-chip" type="button" id="log-follow"
-                aria-pressed="${logState.follow}">跟着滚</button>
-        <button class="zy-chip" type="button" id="log-clear">清屏</button>
-      </div>
-      <div class="zy-log" id="log-box"></div>
-      <p class="zy-note">这一屏只留最近 ${logState.limit} 行；完整的记录在
-        <span class="zy-key">./bot logs</span> 那个窗口里。</p>`;
-  }
-
-  function mountLogs() {
-    paintLog();
-    if (logState.source) return;
-    logState.source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
-    logState.source.onmessage = (event) => {
-      try {
-        pushLog(JSON.parse(event.data));
-      } catch {
-        /* 半行数据不该让整页掉线 */
-      }
-    };
-    logState.source.onerror = () => {
-      // 断开后浏览器自己会重连；接不上时不刷提示，免得盖住正在看的日志。
-    };
-  }
-
-  /* ------------------------------ 页面：命令 ------------------------------ */
-
-  const commandState = { output: "" };
-
-  async function pageCommand() {
-    const shortcuts = ["list", "diff ambient", "show oai", "defaults portrait"];
-    return `
-      <section class="zy-card">
-        <div class="zy-section-title">本机控制台</div>
-        <p class="zy-note">这里敲的和群里敲 <span class="zy-key">/ctl</span> 是同一套，
-        以维护者身份执行。它只改这台机器上的配置，不往群里发消息——
-        要给群里说话请回群里，或者用 agent 房间。</p>
-        <form class="zy-field" id="command-form">
-          <input class="zy-input zy-input-mono" id="command-input" autocomplete="off"
-                 spellcheck="false" placeholder="list / show ambient / set oai …"
-                 aria-label="控制命令">
-          <button class="zy-btn zy-btn-filled" type="submit">${ICONS.play}执行</button>
-        </form>
-        <div class="zy-chips">
-          ${shortcuts
-            .map(
-              (item) =>
-                `<button class="zy-chip" type="button" data-run="${esc(item)}">${esc(
-                  item
-                )}</button>`
-            )
-            .join("")}
-        </div>
-      </section>
-      <section class="zy-card">
-        <div class="zy-section-title">回执</div>
-        <div class="zy-code" id="command-output">${
-          commandState.output ? esc(commandState.output) : "还没有执行过命令"
-        }</div>
-      </section>`;
-  }
-
-  async function runCommand(input) {
-    const output = $("#command-output");
-    if (output) output.textContent = "执行中…";
-    try {
-      const data = await api("/command", { method: "POST", body: { input } });
-      commandState.output = data.message;
-      if (output) output.textContent = data.message;
-    } catch (error) {
-      commandState.output = error.message;
-      if (output) output.textContent = error.message;
-      fail(error);
-    }
-  }
-
-  /* ------------------------------ 事件 ------------------------------ */
 
   async function commitField(control, forced) {
     const path = control.dataset.path;
-    const name = location.hash.replace(/^#\/plugins\//, "").split("/")[0];
+    const name = pluginView.selected || location.hash.replace(/^#\/plugins\//, "").split("/")[0];
     let value;
     try {
-      value = control.dataset.kind === "bool" ? Boolean(forced) : parseValue(control.dataset.kind, control.value);
+      value =
+        control.dataset.kind === "bool"
+          ? Boolean(forced)
+          : parseValue(control.dataset.kind, control.value);
     } catch (error) {
       snack(error.message, "bad");
       return;
@@ -957,15 +1354,73 @@
     }
   }
 
-  function bindView() {
-    const view = $("#view");
+  async function togglePlugin(toggle) {
+    const next = toggle.getAttribute("aria-checked") !== "true";
+    toggle.setAttribute("aria-checked", String(next));
+    try {
+      const data = await api(`/plugins/${encodeURIComponent(toggle.dataset.toggle)}/enabled`, {
+        method: "POST",
+        body: { on: next },
+      });
+      snack(data.message);
+      render();
+    } catch (error) {
+      toggle.setAttribute("aria-checked", String(!next));
+      fail(error);
+    }
+  }
 
-    view.addEventListener("click", async (event) => {
+  /** 宽屏上换一个插件只重画右边那一格，列表与搜索词都留在原地。 */
+  async function openDetail(name) {
+    pluginView.selected = name;
+    for (const row of document.querySelectorAll("#plugin-list [data-plugin]")) {
+      if (row.dataset.plugin === name) row.setAttribute("aria-selected", "true");
+      else row.removeAttribute("aria-selected");
+    }
+    const pane = $("#plugin-detail");
+    if (!pane) return;
+    pane.innerHTML = skeleton(2);
+    try {
+      pane.innerHTML = pluginDetailHtml(await fetchPlugin(name));
+    } catch (error) {
+      pane.innerHTML = empty(error && error.message ? error.message : "这一个没能读出来");
+    }
+    history.replaceState(null, "", `#/plugins/${encodeURIComponent(name)}`);
+    $(".bar-title").textContent = name;
+    document.title = `${name} · ${NAME}`;
+  }
+
+  async function runSource(which) {
+    const box = $("#" + which);
+    snack("正在写这两个文件…", "busy");
+    try {
+      const data = await api("/ambient/source", {
+        method: "POST",
+        body: { name: which, text: box ? box.value : "" },
+      });
+      snack(data.message);
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  function bindEvents() {
+    document.addEventListener("pointerdown", ripple, { passive: true });
+
+    document.addEventListener("click", async (event) => {
       const target = event.target;
 
-      const go = target.closest("[data-nav]");
-      if (go) {
-        location.hash = `#/${go.dataset.nav}`;
+      if (target.closest("[data-snack-close]")) {
+        clearTimeout(snackTimer);
+        snackHost().innerHTML = "";
+        return;
+      }
+
+      // 宽屏上列表与详情并排：点一行只换右边，别整页重来。
+      const pluginRow = target.closest("[data-plugin]");
+      if (pluginRow && layout() === "expanded" && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        await openDetail(pluginRow.dataset.plugin);
         return;
       }
 
@@ -983,18 +1438,43 @@
         return;
       }
 
+      const toggle = target.closest("[data-toggle]");
+      if (toggle) {
+        await togglePlugin(toggle);
+        return;
+      }
+
       const drop = target.closest("[data-drop-bot]");
       if (drop) {
-        if (!window.confirm(`删掉第 ${Number(drop.dataset.dropBot) + 1} 条连接？`)) return;
+        const index = Number(drop.dataset.dropBot);
+        const ok = await ask({
+          title: `删掉第 ${index + 1} 条连接？`,
+          body: "删掉之后这一条不再连；改动要下次启动才生效。",
+          confirm: "删掉",
+          danger: true,
+        });
+        if (!ok) return;
         try {
           const data = await api("/settings/bot", {
             method: "POST",
-            body: { index: Number(drop.dataset.dropBot), remove: true, enabled: false, protocol: "satori", url: "" },
+            body: { index, remove: true, enabled: false, protocol: "satori", url: "" },
           });
           snack(data.message);
           render();
         } catch (error) {
           fail(error);
+        }
+        return;
+      }
+
+      if (target.closest("[data-add-bot]")) {
+        const list = $("#bot-list");
+        if (list && !$('[data-index=""]')) {
+          // 新增这一条先摆进页面，填好按它自己的保存才落到配置里。
+          list.insertAdjacentHTML(
+            "beforeend",
+            renderBot({ protocol: "satori", url: "", enabled: true }, "")
+          );
         }
         return;
       }
@@ -1009,21 +1489,8 @@
         return;
       }
 
-      const toggle = target.closest("[data-toggle]");
-      if (toggle) {
-        const next = toggle.getAttribute("aria-checked") !== "true";
-        toggle.setAttribute("aria-checked", String(next));
-        try {
-          const data = await api(`/plugins/${encodeURIComponent(toggle.dataset.toggle)}/enabled`, {
-            method: "POST",
-            body: { on: next },
-          });
-          snack(data.message);
-          render();
-        } catch (error) {
-          toggle.setAttribute("aria-checked", String(!next));
-          fail(error);
-        }
+      if (target.closest("[data-install]")) {
+        await install();
         return;
       }
 
@@ -1047,16 +1514,31 @@
         return;
       }
 
+      if (target.closest("#log-jump")) {
+        logState.follow = true;
+        render();
+        return;
+      }
+
       if (target.closest("#log-clear")) {
         logState.lines = [];
+        logState.queue = [];
         paintLog();
         return;
       }
 
       const reset = target.closest("[data-reset]");
-      if (reset && window.confirm(reset.dataset.confirm)) {
+      if (reset) {
+        const name = reset.dataset.reset;
+        const ok = await ask({
+          title: `恢复「${name}」的默认参数？`,
+          body: "这会覆盖它现在所有的取值，插件自己的开关保留。",
+          confirm: "恢复默认",
+          danger: true,
+        });
+        if (!ok) return;
         try {
-          const data = await api(`/plugins/${encodeURIComponent(reset.dataset.reset)}/reset`, {
+          const data = await api(`/plugins/${encodeURIComponent(name)}/reset`, {
             method: "POST",
             body: {},
           });
@@ -1070,17 +1552,7 @@
 
       const source = target.closest("[data-source]");
       if (source) {
-        const which = source.dataset.source;
-        const box = $("#" + which);
-        try {
-          const data = await api("/ambient/source", {
-            method: "POST",
-            body: { name: which, text: box ? box.value : "" },
-          });
-          snack(data.message);
-        } catch (error) {
-          fail(error);
-        }
+        await runSource(source.dataset.source);
         return;
       }
 
@@ -1097,31 +1569,56 @@
 
       const shortcut = target.closest("[data-run]");
       if (shortcut) {
-        $("#command-input").value = shortcut.dataset.run;
+        const input = $("#command-input");
+        if (input) input.value = shortcut.dataset.run;
         runCommand(shortcut.dataset.run);
-        return;
       }
-
-      const pluginRow = target.closest("[data-plugin]");
-      if (pluginRow) location.hash = `#/plugins/${pluginRow.dataset.plugin}`;
     });
 
-    view.addEventListener("change", async (event) => {
+    document.addEventListener("change", async (event) => {
       const control = event.target.closest("[data-path]");
       if (!control || control.dataset.kind === "bool") return;
       await commitField(control);
     });
 
-    view.addEventListener("keydown", async (event) => {
-      if (event.key !== "Enter") return;
-      const control = event.target.closest("input[data-path]");
-      if (control) {
-        event.preventDefault();
-        await commitField(control);
+    document.addEventListener("keydown", async (event) => {
+      const typing =
+        event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+      if (event.key === "Enter") {
+        const control = event.target.closest ? event.target.closest("input[data-path]") : null;
+        if (control) {
+          event.preventDefault();
+          await commitField(control);
+          return;
+        }
+        const input = event.target.closest ? event.target.closest("#command-input") : null;
+        if (input && input.value.trim()) {
+          event.preventDefault();
+          runCommand(input.value.trim());
+        }
+        return;
+      }
+      if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+      const index = Number(event.key);
+      if (index >= 1 && index <= PAGES.length) {
+        go(PAGES[index - 1].id);
+        return;
+      }
+      if (event.key === "/") {
+        const search = $("#plugin-search") || $("#log-search");
+        if (search) {
+          event.preventDefault();
+          search.focus();
+        }
+        return;
+      }
+      if (event.key === "Escape") {
+        const box = $("#log-box");
+        if (box && document.activeElement === box) box.blur();
       }
     });
 
-    view.addEventListener("input", (event) => {
+    document.addEventListener("input", (event) => {
       if (event.target.closest("#plugin-search")) {
         pluginView.text = event.target.value;
         repaintPlugins();
@@ -1133,21 +1630,12 @@
       }
     });
 
-    const form = $("#command-form");
-    if (form) {
-      form.addEventListener("submit", (event) => {
-        event.preventDefault();
-        const input = $("#command-input").value.trim();
-        if (input) runCommand(input);
-      });
-    }
-
     // 设置页的两张表单：连接的每一条各一张，全局一张。都等按保存才提交，
     // 回车不提交（全局那张没有提交按钮，不拦下来会整页刷新）。
-    view.addEventListener("submit", async (event) => {
-      event.preventDefault();
+    document.addEventListener("submit", async (event) => {
       const botForm = event.target.closest("form[data-index]");
       if (!botForm) return;
+      event.preventDefault();
       try {
         const data = await api("/settings/bot", { method: "POST", body: botPayload(botForm) });
         snack(data.message);
@@ -1156,95 +1644,65 @@
         fail(error);
       }
     });
-  }
 
-  function bindLogScroll() {
-    const box = $("#log-box");
-    if (!box) return;
-    box.addEventListener("scroll", () => {
-      const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
-      if (atBottom === logState.follow) return;
-      logState.follow = atBottom;
-      const chip = $("#log-follow");
-      if (chip) chip.setAttribute("aria-pressed", String(atBottom));
+    // 切到后台就别再动 DOM 了：手机上那点 CPU 要留给机器人。
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      logState.queue = [];
+      if ($("#log-box")) paintLog();
+      if ($("#overview-log")) mountOverviewLog();
     });
+
+    prefersDark.addEventListener("change", applyTheme);
+    for (const media of [narrow, wide]) {
+      media.addEventListener("change", () => {
+        applyLayout();
+        render();
+      });
+    }
+    window.addEventListener("hashchange", render);
   }
 
-  /* ------------------------------ 路由 ------------------------------ */
+  /* ==================== §11 启动 ==================== */
 
-  function currentRoute() {
-    const hash = location.hash.replace(/^#\/?/, "");
-    if (!hash) return { page: "overview", arg: null };
-    const [head, ...rest] = hash.split("/");
-    if (head === "plugins" && rest.length) {
-      return { page: "plugins", arg: decodeURIComponent(rest.join("/")), detail: true };
-    }
-    if (head === "settings") return { page: "settings", arg: null };
-    return PAGES.some((page) => page.id === head)
-      ? { page: head, arg: null }
-      : { page: "overview", arg: null };
-  }
+  let installPrompt = null;
 
-  async function render() {
-    const route = currentRoute();
-    renderNav(route.page);
-    const view = $("#view");
-    view.innerHTML = skeleton(route.detail ? 2 : 1);
-
-    try {
-      if (route.detail) {
-        view.innerHTML = await pagePlugin(route.arg);
-      } else {
-        const paint = {
-          overview: pageOverview,
-          plugins: pagePlugins,
-          ambient: pageAmbient,
-          logs: pageLogs,
-          command: pageCommand,
-          settings: pageSettings,
-        }[route.page];
-        view.innerHTML = await paint();
-      }
-    } catch (error) {
-      if (error && error.status === 503) {
-        view.innerHTML = empty(error.message);
-      } else if (error && error.status === 401) {
-        renderLock();
-        return;
-      } else {
-        view.innerHTML = empty(error && error.message ? error.message : "这一页没能读出来");
-      }
-      return;
-    }
-
-    if (route.detail) return;
-    if (route.page === "overview") mountOverview();
-    if (route.page === "logs") {
-      mountLogs();
-      bindLogScroll();
-    }
-  }
-
-  /* ------------------------------ 启动 ------------------------------ */
-
-  function boot() {
-    applyTheme();
-    $("#refresh").innerHTML = ICONS.refresh;
-    $("#refresh").addEventListener("click", () => render());
-    const gear = $("#settings");
-    if (gear) {
-      gear.innerHTML = ICONS.gear;
-      gear.addEventListener("click", () => (location.hash = "#/settings"));
-    }
-    bindView();
+  async function install() {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    installPrompt = null;
+    snack(outcome === "accepted" ? "已交给系统安装；装好之后桌面会多一个知言" : "这次没有装，随时可以再来");
     render();
   }
 
-  window.addEventListener("hashchange", render);
+  function boot() {
+    applyTheme();
+    applyLayout();
+
+    $("#refresh").innerHTML = ICONS.refresh;
+    $("#refresh").onclick = (event) => {
+      const button = event.currentTarget;
+      button.dataset.busy = "";
+      render().finally(() => delete button.dataset.busy);
+    };
+    $("#settings").innerHTML = ICONS.gear;
+    $("#settings").onclick = () => go("settings");
+
+    buildNav();
+    render();
+  }
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    installPrompt = event;
+    if (currentRoute().page === "settings") render();
+  });
 
   document.addEventListener("DOMContentLoaded", () => {
+    bindEvents();
     if (!token) {
-      renderLock();
+      paintLock();
       return;
     }
     boot();

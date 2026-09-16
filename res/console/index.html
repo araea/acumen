@@ -4,19 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#1f6350">
+<meta name="theme-color" content="#fcfdfb" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
 <meta name="description" content="知言的控制台：本机运行状况、插件、搭话与日志。">
+<meta name="application-name" content="知言">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="知言">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="format-detection" content="telephone=no">
 <title>知言</title>
 <link rel="icon" type="image/svg+xml" href="/icon.svg">
-<link rel="apple-touch-icon" href="/icon.svg">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/app.css">
 </head>
-<body class="scheme-console">
-<div class="zy-shell">
-  <header class="zy-bar">
-    <span class="zy-brand">
-      <svg viewBox="0 0 108 108" aria-hidden="true">
+<body class="scheme-console layout-compact">
+<div class="shell">
+  <header class="bar">
+    <span class="brand">
+      <svg class="brand-mark" viewBox="0 0 108 108" role="img" aria-label="知言">
         <rect width="108" height="108" rx="26" fill="#1f6350"/>
         <g fill="#ffffff">
           <rect x="50.5" y="24.5" width="7" height="7" rx="2.2"/>
@@ -26,16 +33,24 @@
         </g>
         <rect x="33" y="75" width="42" height="11" rx="2.2" fill="none" stroke="#ffffff" stroke-width="5"/>
       </svg>
-      <span class="zy-brand-name">知言</span>
+      <span class="brand-name">知言</span>
     </span>
-    <span class="zy-bar-spacer"></span>
-    <button class="zy-btn zy-btn-icon" id="refresh" type="button" title="刷新这一页"></button>
-    <button class="zy-btn zy-btn-icon" id="settings" type="button" title="接入与全局设置"></button>
+    <h1 class="bar-title" id="bar-title">总览</h1>
+    <span class="bar-spacer"></span>
+    <button class="btn btn-icon" id="refresh" type="button" title="刷新这一页" aria-label="刷新这一页"></button>
+    <button class="btn btn-icon" id="settings" type="button" title="接入与全局设置" aria-label="接入与全局设置"></button>
   </header>
-  <nav class="zy-nav" id="nav" aria-label="主要"></nav>
-  <main class="zy-main"><div class="zy-page" id="view"></div></main>
+  <nav class="nav" id="nav" aria-label="主要"></nav>
+  <main class="main"><div class="page" id="view"></div></main>
 </div>
 <div id="snack" aria-live="polite"></div>
+<dialog id="dialog" class="dialog"></dialog>
+<noscript><div class="lock">
+  <p class="note">这一页要开着 JavaScript 才能跑。
+  地址与口令可以从启动日志里那条带 <span class="key">?t=</span> 的地址拿，
+  或者在本机敲 <span class="key">./bot ui url</span>。改配置也可以用群里的
+  <span class="key">/ctl</span>。</p>
+</div></noscript>
 <script src="/app.js"></script>
 </body>
 </html>

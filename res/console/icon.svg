@@ -8,9 +8,9 @@
   </defs>
   <rect width="108" height="108" rx="26" fill="#1f6350"/>
   <rect width="108" height="108" rx="26" fill="url(#glow)"/>
-    <rect x="50.5" y="24.5" width="7.0" height="7.0" rx="2.2" fill="#ffffff"/>
-    <rect x="24.0" y="38.0" width="60.0" height="5.0" rx="2.5" fill="#ffffff"/>
-    <rect x="32.0" y="52.0" width="44.0" height="5.0" rx="2.5" fill="#ffffff"/>
-    <rect x="32.0" y="62.0" width="44.0" height="5.0" rx="2.5" fill="#ffffff"/>
-    <rect x="33.0" y="75.0" width="42.0" height="11.0" rx="2.15" fill="none" stroke="#ffffff" stroke-width="5.0"/>
+    <rect x="50.5" y="24.5" width="7.0" height="7.0" rx="2.2" fill="(255, 255, 255)"/>
+    <rect x="24.0" y="38.0" width="60.0" height="5.0" rx="2.5" fill="(255, 255, 255)"/>
+    <rect x="32.0" y="52.0" width="44.0" height="5.0" rx="2.5" fill="(255, 255, 255)"/>
+    <rect x="32.0" y="62.0" width="44.0" height="5.0" rx="2.5" fill="(255, 255, 255)"/>
+    <rect x="33.0" y="75.0" width="42.0" height="11.0" rx="2.15" fill="none" stroke="(255, 255, 255)" stroke-width="5.0"/>
 </svg>
