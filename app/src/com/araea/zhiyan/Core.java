@@ -43,6 +43,8 @@ final class Core {
     private Thread pump;
     private volatile boolean stopping;
     private long startedAt;
+    /** 核心的输出另存一份在 root/ayjx.log。 */
+    private java.io.Writer log;
 
     private final Context context;
     private final Listener listener;
@@ -107,6 +109,7 @@ final class Core {
             builder.environment().put("AYJX_APP", "android");
             process = builder.start();
             startedAt = System.currentTimeMillis();
+            openLog(root);
         } catch (IOException error) {
             Log.w(TAG, "核心起不来", error);
             AppState.publish("", "核心起不来：" + error.getMessage(), false, true);
@@ -116,6 +119,57 @@ final class Core {
         pump = new Thread(this::read, "zhiyan-core-log");
         pump.setDaemon(true);
         pump.start();
+    }
+
+    /**
+     * 日志落盘。终端形态下 `./bot logs` 跟的就是这一份，应用里没有那个窗口，
+     * 所以核心的 stdout 另存一份：出问题时至少有个地方能看（console 的日志页
+     * 是同一个流，但它要先打得开界面）。
+     *
+     * 超过 1 MB 就轮转一次，只留上一份——这是排查用的痕迹，不是档案。
+     */
+    private void openLog(File root) {
+        File path = new File(root, "ayjx.log");
+        try {
+            if (path.length() > 1024 * 1024) {
+                File previous = new File(root, "ayjx.log.1");
+                //noinspection ResultOfMethodCallIgnored
+                previous.delete();
+                //noinspection ResultOfMethodCallIgnored
+                path.renameTo(previous);
+            }
+            log = new java.io.BufferedWriter(new java.io.FileWriter(path, true));
+            log.write("\n=== " + new java.util.Date() + " 核心启动 ===\n");
+            log.flush();
+        } catch (IOException error) {
+            Log.w(TAG, "日志文件打不开，只走内存", error);
+            log = null;
+        }
+    }
+
+    private void note(String line) {
+        if (log == null) {
+            return;
+        }
+        try {
+            log.write(line);
+            log.write('\n');
+            log.flush();
+        } catch (IOException error) {
+            log = null;
+        }
+    }
+
+    private void closeLog(String tail) {
+        note(tail);
+        if (log != null) {
+            try {
+                log.close();
+            } catch (IOException ignored) {
+                // 关不上就算了，下一次启动会另开一份。
+            }
+            log = null;
+        }
     }
 
     /** 读完 stdout：它既是日志也是握手——就绪那一行给出控制台地址。 */
@@ -128,6 +182,7 @@ final class Core {
                 new InputStreamReader(current.getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                note(line);
                 int at = line.indexOf(READY);
                 if (at >= 0) {
                     String url = line.substring(at + READY.length()).trim();
@@ -150,6 +205,7 @@ final class Core {
             Thread.currentThread().interrupt();
             code = -1;
         }
+        closeLog("=== 核心退出，代码 " + code + " ===");
         process = null;
         listener.onExit(code);
 
