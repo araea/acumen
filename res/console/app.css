@@ -1,35 +1,64 @@
 /* ============================================================================
-   知言 · 界面版式层与交互基元
+   知微 · 界面版式层与交互基元
    ----------------------------------------------------------------------------
-   这一份是知言的第二层：系统层是 res/cards/m3e.css（令牌与静态基元，五张卡片
+   这一份是知微的第二层：系统层是 res/cards/m3e.css（令牌与静态基元，五张卡片
    图共用），这里是「摆在哪儿、按下去会怎样」——外壳怎么搭、导航在哪一边、
    窄屏宽屏怎么分，以及按钮、开关、输入、芯片、对话框、涟漪、加载指示这些
    活的东西。卡片是静态位图，M3 的状态层在 m3e.css 里没有用武之地；界面是活的，
-   所以状态层与动效归这里。
+   所以状态层、动效与字号的界面档都归这里。
 
    段落：§A 外壳与断点 · §B 顶栏 · §C 导航 · §D 交互基元 · §E 内容块 ·
    §F 状态 · §G 动效与降级 · §H 宽屏。
 
-   四条纪律：
+   六条纪律：
    1. 色值、字号、圆角、阴影一律 var(--md-*)；本文件里出现 #hex / rgb() /
       hsl() / font-size 数字 / border-radius 数字 / box-shadow 数字就是错的，
       `assets.rs` 有测试盯着；
-   2. 结构尺寸（外壳多高、版心多宽、图标多大）不是视觉语言，是版面，允许
+   2. 界面的字阶比卡片小一档，收在本文件开头的 `--md-type-*` 覆盖里。卡片图是
+      在群里当缩略图看的，界面的字要在一屏里放下更多行——同一套令牌，两处取法
+      不同的档，不是两套系统。改字号只改这一处，不要去动 m3e.css；
+   3. 结构尺寸（外壳多高、版心多宽、图标多大）不是视觉语言，是版面，允许
       写字面量，但统一收在下面那组 --zy-* 里，不要在规则里散落；
-   3. 动效只动画 transform 与 opacity——这两样不触发布局，手机上才不抖。
+   4. 动效只动画 transform 与 opacity——这两样不触发布局，手机上才不抖。
       两处例外（涟漪的扩散、按下时的形状变形）都作用在几十像素的小块上；
-   4. 断点按最窄的可用宽度分三档，不按设备分：
-      紧凑 < 600px（底部导航条）· 中等 600—839px（导航轨）· 宽 ≥ 840px（抽屉）。
+   5. 断点按最窄的可用宽度分三档，不按设备分：
+      紧凑 < 600px（底部导航条）· 中等 600—839px（导航轨）· 宽 ≥ 840px（抽屉）；
+   6. 状态层（悬停 8% / 按下 12%）用 currentColor 叠在元素自己的 `::after` 上，
+      不写死颜色，也不靠改背景色——改背景色会在容器色上算错对比度。
    ========================================================================== */
 
 :root {
-  /* 外壳 */
-  --zy-bar-height: 64px;
-  --zy-nav-height: 72px;
-  --zy-rail-width: 92px;
-  --zy-drawer-width: 232px;
-  --zy-page-width: 940px;
-  --zy-page-wide: 1160px;
+  /* —— 界面字阶 ——
+     m3e.css 的字阶是按卡片图定的（中文字面比拉丁大三到四成，放大一档半）。
+     界面是「一屏里尽量多放信息」的场合，用同一支字阶会偏大，所以在这一层整体
+     收一档。**只覆盖这里列出的级**，级与级之间的比例关系不动，字重与字距也不动
+     ——那些是字阶的性格，收字号不该把性格一起收掉。 */
+  --md-type-display-small-size: 34px;
+  --md-type-headline-large-size: 30px;
+  --md-type-headline-medium-size: 26px;
+  --md-type-headline-small-size: 22px;
+  --md-type-title-large-size: 19px;
+  --md-type-title-medium-size: 17px;
+  --md-type-title-small-size: 15px;
+  --md-type-body-large-size: 16px;
+  --md-type-body-large-line: 1.62;
+  --md-type-body-medium-size: 15px;
+  --md-type-body-medium-line: 1.62;
+  --md-type-body-small-size: 13.5px;
+  --md-type-body-small-line: 1.6;
+  --md-type-label-large-size: 14px;
+  --md-type-label-medium-size: 12px;
+  --md-type-label-medium-track: 0.03em;
+
+  /* 外壳。导航条 64px 是 M3 Expressive 的高度（flexible navigation bar，
+     旧的 80dp baseline 官方已标 Not recommended）；导航轨 96px 同理
+     （collapsed navigation rail）。 */
+  --zy-bar-height: 60px;
+  --zy-nav-height: 64px;
+  --zy-rail-width: 96px;
+  --zy-drawer-width: 264px;
+  --zy-page-width: 960px;
+  --zy-page-wide: 1200px;
 
   /* 刘海与手势条：非全面屏上这两项是 0，装了桌面图标之后才起作用 */
   --zy-safe-top: env(safe-area-inset-top, 0px);
@@ -42,24 +71,41 @@
   --zy-touch: 48px;
   --zy-switch-width: 52px;
   --zy-switch-track: 32px;
-  --zy-log-height: 60dvh;
-  --zy-icon: 22px;
-  --zy-icon-bar: 24px;
-  --zy-icon-nav: 26px;
-  --zy-avatar: 40px;
+  --zy-nav-indicator: 56px;
+  --zy-nav-indicator-height: 32px;
+  --zy-log-height: 62dvh;
+  --zy-log-time: 62px;
+  --zy-log-level: 40px;
+  --zy-log-target: 18ch;
+  --zy-icon: 20px;
+  --zy-icon-bar: 22px;
+  --zy-icon-nav: 24px;
+  --zy-avatar: 38px;
   --zy-thumb: 76px;
 
   /* 状态层：M3 的 8% 与 12% 两档，按压多一层 */
   --zy-state-hover: 0.08;
   --zy-state-press: 0.12;
 
-  /* 动效。时长都在 140—420ms；两条曲线分别是 M3 的标准缓出与回弹，
-     回弹只给「选中态出现」这类一件事的小庆祝，不给滚动与列表。 */
-  --zy-duration-short: 140ms;
-  --zy-duration-medium: 240ms;
-  --zy-duration-long: 420ms;
+  /* 动效。M3 Expressive 把运动分两条轨道，两条是**四种不同的曲线**，不是同一条
+     换个时长：空间（位置、尺寸、形状）允许过冲，效果（颜色、透明度）阻尼恒为 1、
+     不过冲。下面四个曲线是官方给的「不能用弹簧时的等价曲线」，数值取自
+     m3.material.io/styles/motion/overview/specs 与 Compose 的
+     ExpressiveMotionTokens.kt（spatial 默认 damping 0.8 / stiffness 380，
+     effects 默认 1.0 / 1600）。
+
+     时长也跟着分：效果运动 150—200ms，空间运动 350—500ms。空间运动看着长，
+     但那条曲线前段很快，手感是「一下子到位」而不是「慢慢挪过去」。 */
+  --zy-duration-fast: 150ms;
+  --zy-duration-short: 200ms;
+  --zy-duration-medium: 350ms;
+  --zy-duration-long: 500ms;
+  --zy-ease-effects: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --zy-ease-effects-slow: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --zy-ease-spatial: cubic-bezier(0.42, 1.67, 0.21, 0.9);
+  --zy-ease-spatial-slow: cubic-bezier(0.38, 1.21, 0.22, 1);
+  /* 只给那些「一直在动」的东西（加载指示的旋转）。 */
   --zy-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --zy-ease-spring: cubic-bezier(0.34, 1.32, 0.64, 1);
 }
 
 /* ==================== §A 外壳与断点 ==================== */
@@ -102,7 +148,7 @@ body.scheme-console {
   grid-area: main;
   display: flex;
   justify-content: center;
-  padding: var(--md-space-4) var(--md-space-4) calc(var(--zy-nav) + var(--md-space-8));
+  padding: var(--md-space-3) var(--md-space-3) calc(var(--zy-nav) + var(--md-space-7));
 }
 
 .page {
@@ -110,13 +156,13 @@ body.scheme-console {
   max-width: var(--zy-page-width);
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-6);
+  gap: var(--md-space-3);
   min-width: 0;
 }
 
 /* 当前在哪一档版式由 body 上的类说，脚本与样式共用同一个判据 */
 body.layout-compact {
-  --zy-page-width: 940px;
+  --zy-page-width: 960px;
 }
 
 /* ==================== §B 顶栏 ==================== */
@@ -129,7 +175,7 @@ body.layout-compact {
   display: flex;
   align-items: center;
   gap: var(--md-space-2);
-  padding: var(--zy-safe-top) var(--md-space-3) 0 var(--md-space-4);
+  padding: var(--zy-safe-top) var(--md-space-2) 0 var(--md-space-3);
   background: var(--md-sys-color-surface);
   border-bottom: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
 }
@@ -167,8 +213,8 @@ body.layout-compact {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  transition: opacity var(--zy-duration-medium) var(--zy-ease-standard),
-    transform var(--zy-duration-medium) var(--zy-ease-standard);
+  transition: opacity var(--zy-duration-short) var(--zy-ease-effects),
+    transform var(--zy-duration-short) var(--zy-ease-spatial);
 }
 
 .bar-spacer {
@@ -183,7 +229,7 @@ body.layout-compact .bar-title {
 }
 
 body.layout-compact .brand {
-  transition: opacity var(--zy-duration-medium) var(--zy-ease-standard);
+  transition: opacity var(--zy-duration-short) var(--zy-ease-effects);
 }
 
 body.layout-compact .bar[data-pinned] .brand {
@@ -239,17 +285,17 @@ body.layout-compact .bar[data-pinned] .bar-title {
   cursor: pointer;
 }
 
-/* 选中那一格的药丸。M3 的导航指示器是 secondary-container，
+/* 选中那一格的药丸。M3 的导航指示器是 secondary-container，尺寸 62×32；
    出现时从 0.6 倍弹到 1 倍——只动 transform 与背景色。 */
 .nav-indicator {
   display: grid;
   place-items: center;
-  width: 62px;
-  height: 32px;
+  width: var(--zy-nav-indicator);
+  height: var(--zy-nav-indicator-height);
   border-radius: var(--md-shape-full);
   background: transparent;
-  transition: background var(--zy-duration-medium) var(--zy-ease-standard),
-    transform var(--zy-duration-medium) var(--zy-ease-spring);
+  transition: background var(--zy-duration-short) var(--zy-ease-effects),
+    transform var(--zy-duration-short) var(--zy-ease-spatial);
 }
 
 .nav-item svg {
@@ -287,6 +333,31 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 /* ==================== §D 交互基元 ==================== */
 
+/* —— 状态层 ——
+   M3 的悬停与按下是叠一层半透明的 currentColor，不是换一个背景色：换背景色
+   要在容器色、深色主题、禁用态上各算一遍对比度，叠一层就只用算一次。
+   `::after` 铺满整个盒子、形状跟着宿主走（这几个宿主都是 `overflow: hidden`，
+   圆角自然被裁出来），所以这里不另写圆角。 */
+:where(.btn, .chip, .seg-item, .row)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--zy-duration-fast) var(--zy-ease-effects);
+}
+
+@media (hover: hover) {
+  :where(.btn, .chip, .seg-item, .row):hover::after {
+    opacity: var(--zy-state-hover);
+  }
+}
+
+:where(.btn, .chip, .seg-item, .row):active::after {
+  opacity: var(--zy-state-press);
+}
+
 /* —— 按钮 ——
    M3 的五种按钮各占一个类：填充、色调、描边、文字、抬升。尺寸用结构值，
    形状与状态层用令牌。按下时圆角收一档（M3 Expressive 的形状变形），
@@ -299,7 +370,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   justify-content: center;
   gap: var(--md-space-2);
   min-height: var(--zy-touch);
-  padding: 0 var(--md-space-5);
+  padding: 0 var(--md-space-4);
   border: var(--zy-hairline) solid transparent;
   border-radius: var(--md-shape-full);
   background: none;
@@ -311,14 +382,24 @@ body.layout-compact .bar[data-pinned] .bar-title {
   text-decoration: none;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-radius var(--zy-duration-short) var(--zy-ease-standard),
-    transform var(--zy-duration-short) var(--zy-ease-standard),
-    background var(--zy-duration-short) var(--zy-ease-standard);
+  transition: border-radius var(--zy-duration-short) var(--zy-ease-spatial),
+    background var(--zy-duration-fast) var(--zy-ease-effects);
 }
 
+@media (hover: hover) {
+  .btn:hover::after {
+    opacity: var(--zy-state-hover);
+  }
+}
+
+.btn:active::after {
+  opacity: var(--zy-state-press);
+}
+
+/* 按下只收圆角，不缩尺寸——M3 Expressive 的按下反馈是形状形变加状态层，
+   Small 档的按下圆角是 8dp。 */
 .btn:active {
-  border-radius: var(--md-shape-m);
-  transform: scale(0.98);
+  border-radius: var(--md-shape-s);
 }
 
 .btn svg {
@@ -396,7 +477,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   opacity: 0.18;
   transform: scale(0);
   pointer-events: none;
-  animation: zy-ripple var(--zy-duration-long) var(--zy-ease-standard) forwards;
+  animation: zy-ripple var(--zy-duration-medium) var(--zy-ease-effects) forwards;
 }
 
 @keyframes zy-ripple {
@@ -407,7 +488,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 /* —— 分段按钮 ——
-   M3 的按钮组：一组相连的圆角格子，单选。用来做「看哪一档」。 */
+   M3 的按钮组：一组相连的圆角格子，单选。用来做「看哪一档」。
+   高度还是 48px——中文两字在这个高度上才按得准；宽度随字数收，不再各给一档内边距。 */
 .seg {
   display: flex;
   flex-wrap: wrap;
@@ -441,8 +523,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-weight: var(--md-type-label-large-weight);
   letter-spacing: var(--md-type-label-large-track);
   cursor: pointer;
-  transition: background var(--zy-duration-short) var(--zy-ease-standard),
-    color var(--zy-duration-short) var(--zy-ease-standard);
+  transition: background var(--zy-duration-fast) var(--zy-ease-effects),
+    color var(--zy-duration-fast) var(--zy-ease-effects);
 }
 
 .seg[data-connected] .seg-item {
@@ -461,6 +543,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
   border-color: transparent;
+  font-weight: var(--md-type-label-large-weight);
 }
 
 .seg-item svg {
@@ -494,7 +577,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-size: var(--md-type-label-large-size);
   font-weight: var(--md-type-label-large-weight);
   cursor: pointer;
-  transition: background var(--zy-duration-short) var(--zy-ease-standard);
+  transition: border-radius var(--zy-duration-short) var(--zy-ease-spatial),
+    background var(--zy-duration-fast) var(--zy-ease-effects);
 }
 
 /* 选中那一颗用主色容器而不是次级容器：筛选项是「你现在看的是哪一栏」，
@@ -502,6 +586,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .chip[aria-pressed="true"] {
   background: var(--md-sys-color-primary-container);
   color: var(--md-sys-color-on-primary-container);
+  border-radius: var(--md-shape-full);
   border-color: transparent;
 }
 
@@ -542,7 +627,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   margin-top: -8px;
   border-radius: var(--md-shape-full);
   background: var(--md-sys-color-outline);
-  transition: transform var(--zy-duration-medium) var(--zy-ease-spring);
+  transition: transform var(--zy-duration-short) var(--zy-ease-spatial);
 }
 
 .switch[aria-checked="true"]::before {
@@ -583,17 +668,17 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-family: inherit;
   font-size: var(--md-type-body-small-size);
   line-height: var(--md-type-body-small-line);
-  transition: border-color var(--zy-duration-short) var(--zy-ease-standard);
+  transition: border-color var(--zy-duration-fast) var(--zy-ease-effects);
 }
 
 .area {
   font-family: var(--md-font-mono);
   resize: vertical;
-  min-height: 240px;
+  min-height: 220px;
 }
 
 .area-short {
-  min-height: 132px;
+  min-height: 120px;
 }
 
 .input:focus,
@@ -658,14 +743,14 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--md-space-3);
+  gap: var(--md-space-2);
   padding: var(--md-space-3);
   background: var(--md-sys-color-surface-container);
   border-radius: var(--md-shape-l);
 }
 
 .toolbar .search {
-  flex: 1 1 220px;
+  flex: 1 1 200px;
   background: var(--md-sys-color-surface);
 }
 
@@ -676,13 +761,13 @@ body.layout-compact .bar[data-pinned] .bar-title {
   position: fixed;
   inset: 0;
   margin: auto;
-  width: min(440px, calc(100vw - var(--md-space-8)));
+  width: min(420px, calc(100vw - var(--md-space-8)));
   height: fit-content;
   max-height: 85dvh;
   overflow: auto;
   padding: var(--md-space-6);
   border: none;
-  border-radius: var(--md-shape-2xl);
+  border-radius: var(--md-shape-xl);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
   box-shadow: var(--md-elevation-3);
@@ -700,7 +785,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 .dialog-body {
-  margin: var(--md-space-4) 0 var(--md-space-6);
+  margin: var(--md-space-3) 0 var(--md-space-5);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-type-body-small-size);
   line-height: var(--md-type-body-small-line);
@@ -713,11 +798,11 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 /* —— 加载指示 ——
-   M3 Expressive 的加载指示是一个会转、会变形的圆角方块。直径只有 22px，
+   M3 Expressive 的加载指示是一个会转、会变形的圆角方块。直径只有 20px，
    变形引起的重绘范围就在这一小块里。 */
 .indicator {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   flex: none;
   border-radius: var(--md-shape-full);
   background: var(--md-sys-color-primary);
@@ -744,13 +829,20 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 /* ==================== §E 内容块 ==================== */
 
+/* 卡面：与卡片图上的 `.md-card` 是同一套外形——同一个圆角、同一条描边、同一级
+   阴影、同样的「卡面浮在相纸上」关系（底色是 surface，页面底色是 surface-dim）。
+   两处必须一致：插件在群里发的图与界面里看到的卡是同一个产品里的同一张纸。
+   界面比卡片图少一样东西——左上角那层主色微光，那是静态纸面上的纵深，
+   一屏六七张卡各来一层会变成满屏噪点。 */
 .card {
   background: var(--md-sys-color-surface);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-shape-xl);
-  padding: var(--md-space-5);
+  box-shadow: var(--md-elevation-1);
+  padding: var(--md-space-4) var(--md-space-4) var(--md-space-5);
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-4);
+  gap: var(--md-space-3);
   min-width: 0;
 }
 
@@ -765,10 +857,10 @@ body.layout-compact .bar[data-pinned] .bar-title {
   color: var(--md-sys-color-on-primary-container);
   border-radius: var(--md-shape-2xl) var(--md-shape-2xl) var(--md-shape-2xl)
     var(--md-shape-s);
-  padding: var(--md-space-7);
+  padding: var(--md-space-5);
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-3);
+  gap: var(--md-space-2);
 }
 
 .hero-eyebrow {
@@ -791,7 +883,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-size: var(--md-type-display-small-size);
   font-weight: var(--md-type-display-small-weight);
   letter-spacing: var(--md-type-display-small-track);
-  line-height: 1.15;
+  line-height: 1.12;
   font-variant-numeric: tabular-nums;
 }
 
@@ -821,7 +913,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .page-head {
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-2);
+  gap: var(--md-space-1);
   padding: var(--md-space-2) var(--md-space-1) 0;
 }
 
@@ -871,14 +963,14 @@ body.layout-compact .bar[data-pinned] .bar-title {
 /* —— 读数行 —— */
 .readings {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
-  gap: var(--md-space-4);
+  grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+  gap: var(--md-space-3);
 }
 
 .reading {
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-1);
+  gap: 2px;
   min-width: 0;
 }
 
@@ -892,7 +984,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .reading-value {
   font-size: var(--md-type-headline-small-size);
   font-weight: var(--md-type-headline-small-weight);
-  line-height: 1.1;
+  line-height: 1.12;
   font-variant-numeric: tabular-nums;
 }
 
@@ -908,7 +1000,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: inline-flex;
   align-items: center;
   gap: var(--md-space-2);
-  padding: var(--md-space-1) var(--md-space-3);
+  padding: 2px var(--md-space-3);
   border-radius: var(--md-shape-full);
   font-size: var(--md-type-label-medium-size);
   font-weight: var(--md-type-label-medium-weight);
@@ -965,9 +1057,9 @@ body.layout-compact .bar[data-pinned] .bar-title {
   overflow: hidden;
   display: flex;
   align-items: center;
-  gap: var(--md-space-4);
+  gap: var(--md-space-3);
   min-height: var(--zy-touch);
-  padding: var(--md-space-3) var(--md-space-3);
+  padding: var(--md-space-2) var(--md-space-3);
   border: none;
   border-bottom: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
   background: none;
@@ -978,17 +1070,20 @@ body.layout-compact .bar[data-pinned] .bar-title {
   cursor: pointer;
   border-radius: var(--md-shape-s);
   text-decoration: none;
+  transition: background var(--zy-duration-fast) var(--zy-ease-effects);
 }
 
 .list > .row:last-child {
   border-bottom: none;
 }
 
-.row:hover {
-  background: var(--md-sys-color-primary-tint);
+@media (hover: hover) {
+  .row:hover {
+    background: var(--md-sys-color-primary-tint);
+  }
 }
 
-/* 行里选中的那一条：左侧一条主色竖线，列表与详情并排时用得上 */
+/* 行里选中的那一条：M3 的次级容器，与导航的选中态同一个角色 */
 .row[aria-selected="true"] {
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
@@ -999,7 +1094,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-1);
+  gap: 2px;
 }
 
 /* 整行可点靠一层铺满的链接，而不是把开关塞进链接里：链接里套按钮是无效标记，
@@ -1068,17 +1163,17 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .panel {
   background: var(--md-sys-color-surface-container-low);
   border-radius: var(--md-shape-l);
-  padding: var(--md-space-4);
+  padding: var(--md-space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-2);
+  gap: var(--md-space-1);
   min-width: 0;
 }
 
 .kv {
   display: grid;
-  grid-template-columns: minmax(118px, 1fr) minmax(0, 1.25fr);
-  gap: var(--md-space-3);
+  grid-template-columns: minmax(104px, 1fr) minmax(0, 1.35fr);
+  gap: var(--md-space-2) var(--md-space-3);
   align-items: center;
   padding: var(--md-space-2) 0;
   border-bottom: var(--zy-hairline) dashed var(--md-sys-color-outline-variant);
@@ -1090,7 +1185,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 .kv-key {
   font-family: var(--md-font-mono);
-  /* 键名比正文小一档：它是等宽的，16px 在窄列里读起来比同号的正文重得多。 */
+  /* 键名比正文小一档：它是等宽的，同号数在窄列里读起来比正文重得多。 */
   font-size: var(--md-type-label-medium-size);
   font-weight: var(--md-type-label-medium-weight);
   color: var(--md-sys-color-on-surface-variant);
@@ -1120,8 +1215,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 .subtable {
-  margin-left: var(--md-space-4);
-  padding-left: var(--md-space-4);
+  margin-left: var(--md-space-3);
+  padding-left: var(--md-space-3);
   border-left: 2px solid var(--md-sys-color-outline-variant);
   min-width: 0;
 }
@@ -1133,7 +1228,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   line-height: var(--md-type-body-small-line);
   background: var(--md-sys-color-surface-container-low);
   border-radius: var(--md-shape-l);
-  padding: var(--md-space-4);
+  padding: var(--md-space-3);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 60vh;
@@ -1143,14 +1238,14 @@ body.layout-compact .bar[data-pinned] .bar-title {
 /* —— 画廊 —— */
 .gallery {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
-  gap: var(--md-space-4);
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: var(--md-space-3);
 }
 
 .tile {
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-2);
+  gap: var(--md-space-1);
   min-width: 0;
 }
 
@@ -1159,7 +1254,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   height: var(--zy-thumb);
   object-fit: contain;
   background: var(--md-sys-color-surface-container);
-  border-radius: var(--md-shape-l);
+  border-radius: var(--md-shape-m);
 }
 
 .tile-label {
@@ -1185,26 +1280,29 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 /* —— 日志面板 ——
    浅色主题下用反色面（像一块终端），深色主题下不能再反——那会在整屏夜里
-   亮出一大块白。两套颜色收在两个局部变量里，换主题只换这两个。 */
+   亮出一大块白。两套颜色收在两个局部变量里，换主题只换这两个。
+
+   一行是四格：时刻 / 级别 / 来源 / 正文。用网格而不是 flex 换行：时刻与来源
+   各自一列，正文从固定的起点开始，扫一列日志时眼睛不用横向找。
+   警告与错误在行首多一条竖线，靠位置而不是只靠颜色分出来。 */
 .log {
   --zy-log-bg: var(--md-sys-color-log-surface);
   --zy-log-fg: var(--md-sys-color-log-text);
   font-family: var(--md-font-mono);
   font-size: var(--md-type-label-medium-size);
-  line-height: 1.7;
+  line-height: 1.62;
   background: var(--zy-log-bg);
   color: var(--zy-log-fg);
   border-radius: var(--md-shape-l);
-  padding: var(--md-space-4);
+  padding: var(--md-space-3);
   overflow: auto;
   height: var(--zy-log-height);
-  min-height: 240px;
-  overflow-anchor: none;
+  min-height: 220px;
   overscroll-behavior: contain;
   contain: layout paint;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 body.dark .log {
@@ -1213,20 +1311,37 @@ body.dark .log {
 }
 
 .log-line {
-  display: flex;
-  gap: var(--md-space-3);
+  flex: none;
+  display: grid;
+  grid-template-columns: var(--zy-log-time) var(--zy-log-level)
+    minmax(0, var(--zy-log-target)) minmax(0, 1fr);
+  gap: 0 var(--md-space-3);
+  align-items: baseline;
+  padding-left: var(--md-space-3);
+  font-variant-numeric: tabular-nums;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
 }
 
 .log-at {
   color: var(--md-sys-color-log-muted);
-  flex: none;
+}
+
+.log-level {
+  color: var(--md-sys-color-log-muted);
+  font-weight: var(--md-type-label-large-weight);
 }
 
 .log-target {
   color: var(--md-sys-color-log-muted);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-text {
   min-width: 0;
 }
 
@@ -1234,14 +1349,26 @@ body.dark .log {
    日志里本来就按这个写），所以是 log-erro 而不是 log-err。 */
 .log-warn {
   color: var(--md-sys-color-log-warning);
+  box-shadow: inset 2px 0 0 var(--md-sys-color-log-warning);
 }
 
 .log-erro {
   color: var(--md-sys-color-log-error);
+  box-shadow: inset 2px 0 0 var(--md-sys-color-log-error);
 }
 
+/* 级别名与时刻在这一行里不再重复报一遍颜色，正文才是要读的 */
+.log-warn .log-at,
+.log-warn .log-target,
+.log-erro .log-at,
+.log-erro .log-target,
 .log-debg {
   color: var(--md-sys-color-log-muted);
+}
+
+.log-warn .log-level,
+.log-erro .log-level {
+  color: currentColor;
 }
 
 .log-short {
@@ -1250,7 +1377,7 @@ body.dark .log {
   max-height: 220px;
 }
 
-/* 跟着滚关掉之后，右下角浮出一颗「回到最新」——它只在需要的时候存在 */
+/* 跟着滚关掉之后，右下角浮出一颗「回到最新」，上面写着攒了多少条 */
 .jump {
   position: sticky;
   bottom: calc(var(--zy-nav) + var(--md-space-2));
@@ -1261,6 +1388,22 @@ body.dark .log {
 .jump-on {
   display: inline-flex;
 }
+
+.jump b {
+  font-weight: var(--md-type-label-large-weight);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 日志面板上下那两行状态与说明：小字、灰、不抢内容 */
+.log-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--md-space-3);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-medium-size);
+}
+
+.log-empty { color: var(--md-sys-color-log-muted); }
 
 /* —— 局部修饰 —— */
 .row-plain {
@@ -1274,10 +1417,10 @@ body.dark .log {
 .inset {
   background: var(--md-sys-color-surface-container-low);
   border-radius: var(--md-shape-l);
-  padding: var(--md-space-4);
+  padding: var(--md-space-3);
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-3);
+  gap: var(--md-space-2);
   min-width: 0;
 }
 
@@ -1292,14 +1435,14 @@ body.dark .log {
 .panes {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--md-space-6);
+  gap: var(--md-space-4);
   align-items: start;
 }
 
 .pane {
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-4);
+  gap: var(--md-space-3);
   min-width: 0;
 }
 
@@ -1310,7 +1453,7 @@ body.dark .log {
   flex-direction: column;
   align-items: center;
   gap: var(--md-space-2);
-  padding: var(--md-space-9) var(--md-space-4);
+  padding: var(--md-space-8) var(--md-space-4);
   text-align: center;
   color: var(--md-sys-color-on-surface-faint);
 }
@@ -1340,7 +1483,7 @@ body.dark .log {
 }
 
 .skeleton-lg {
-  height: 96px;
+  height: 88px;
   border-radius: var(--md-shape-xl);
 }
 
@@ -1365,8 +1508,8 @@ body.dark .log {
   display: flex;
   align-items: flex-start;
   gap: var(--md-space-3);
-  padding: var(--md-space-4) var(--md-space-5);
-  border-radius: var(--md-shape-l);
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-xs);
   background: var(--md-sys-color-inverse-surface);
   color: var(--md-sys-color-on-inverse-surface);
   box-shadow: var(--md-elevation-3);
@@ -1404,12 +1547,12 @@ body.dark .log {
 .lock {
   display: flex;
   flex-direction: column;
-  gap: var(--md-space-4);
-  max-width: 420px;
+  gap: var(--md-space-3);
+  max-width: 400px;
   margin: 12vh auto 0;
-  padding: var(--md-space-7);
+  padding: var(--md-space-6);
   background: var(--md-sys-color-surface);
-  border-radius: var(--md-shape-2xl);
+  border-radius: var(--md-shape-xl);
   box-shadow: var(--md-elevation-2);
 }
 
@@ -1426,7 +1569,7 @@ body.dark .log {
 /* 换页只做一次淡入上移：两页之间没有共同的元素，做共享轴反而更吵 */
 @media (prefers-reduced-motion: no-preference) {
   .page[data-enter] {
-    animation: zy-enter var(--zy-duration-medium) var(--zy-ease-standard) both;
+    animation: zy-enter var(--zy-duration-medium) var(--zy-ease-spatial-slow) both;
   }
 }
 
@@ -1466,26 +1609,27 @@ body.dark .log {
   }
 }
 
-/* 没有任何指针的设备上不摆悬停态 */
-@media (hover: none) {
-  .row:hover {
-    background: none;
-  }
-}
-
 /* ==================== §H 宽屏 ==================== */
 
 /* 窄屏（手机竖握）上把几处并排收成竖排。
-   判据是「这一行还能不能读」：日志一行放不下「时刻 + target + 正文」时，
-   硬挤的结果是三段各自折断，不如让正文整条落到第二行。 */
+   判据是「这一行还能不能读」：日志一行放不下「时刻 + 级别 + 来源 + 正文」时，
+   硬挤的结果是四段各自折断，不如让正文整条落到第二行。 */
 @media (max-width: 560px) {
   .log-line {
-    flex-wrap: wrap;
-    gap: var(--md-space-2);
+    grid-template-columns: var(--zy-log-time) var(--zy-log-level) minmax(0, 1fr);
+    row-gap: 0;
   }
 
-  .log-line > span:last-child {
-    flex-basis: 100%;
+  .log-target {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+  }
+
+  .log-text {
+    grid-column: 1 / -1;
+    padding-left: 0;
   }
 
   .field {
@@ -1497,7 +1641,7 @@ body.dark .log {
      模型名与路径都给截断。改成键名在上、控件占满一整行。 */
   .kv {
     grid-template-columns: minmax(0, 1fr);
-    gap: var(--md-space-1);
+    gap: 2px;
   }
 
   .page-head {
@@ -1529,7 +1673,7 @@ body.dark .log {
     justify-content: flex-start;
     align-items: stretch;
     gap: var(--md-space-2);
-    padding: var(--md-space-4) var(--md-space-2);
+    padding: var(--md-space-3) var(--md-space-2);
     overflow-y: auto;
     border-top: none;
     border-right: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
@@ -1567,11 +1711,7 @@ body.dark .log {
   }
 
   .main {
-    padding: var(--md-space-6) var(--md-space-6) var(--md-space-8);
-  }
-
-  .row:hover {
-    background: var(--md-sys-color-primary-tint);
+    padding: var(--md-space-5) var(--md-space-5) var(--md-space-8);
   }
 }
 
@@ -1586,7 +1726,7 @@ body.dark .log {
   }
 
   .nav {
-    padding: var(--md-space-5) var(--md-space-3);
+    padding: var(--md-space-4) var(--md-space-3);
     gap: var(--md-space-1);
   }
 
@@ -1622,7 +1762,7 @@ body.dark .log {
 
   .nav-hint {
     display: block;
-    padding: 0 var(--md-space-3) var(--md-space-4);
+    padding: 0 var(--md-space-3) var(--md-space-3);
     color: var(--md-sys-color-on-surface-faint);
     font-size: var(--md-type-label-small-size);
     font-weight: var(--md-type-label-small-weight);
@@ -1642,7 +1782,7 @@ body.dark .log {
   .split {
     display: grid;
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
-    gap: var(--md-space-6);
+    gap: var(--md-space-4);
     align-items: start;
   }
 }
@@ -1651,7 +1791,7 @@ body.dark .log {
 .overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--md-space-4);
+  gap: var(--md-space-3);
 }
 .hero-top {
   display: flex;
@@ -1659,31 +1799,24 @@ body.dark .log {
   justify-content: space-between;
   align-items: center;
   gap: var(--md-space-2);
-  margin-bottom: var(--md-space-4);
+  margin-bottom: var(--md-space-2);
 }
 .hero { min-width: 0; }
 .hero-number { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .hero-note { color: var(--md-sys-color-on-primary-container); }
-.hero-actions { margin-top: auto; padding-top: var(--md-space-4); }
+.hero-actions { margin-top: auto; padding-top: var(--md-space-3); }
 .overview-metrics .readings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .overview-metrics .reading {
-  padding: var(--md-space-4);
+  padding: var(--md-space-3);
   background: var(--md-sys-color-surface-container-low);
   border-radius: var(--md-shape-l);
-  gap: var(--md-space-2);
+  gap: var(--md-space-1);
 }
 .overview-metrics .reading-value { overflow-wrap: anywhere; }
 .overview-connections .row { padding-inline: 0; }
 .log-line { flex-shrink: 0; }
 .log-text { min-width: 0; overflow-wrap: anywhere; }
 .log-level { flex: none; font-weight: var(--md-type-label-large-weight); }
-.log-meta {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--md-space-3);
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-type-label-medium-size);
-}
 .log-empty { color: var(--md-sys-color-log-muted); }
 .empty-icon svg { width: var(--zy-avatar); height: var(--zy-avatar); }
 .row-plain { cursor: default; }
@@ -1702,7 +1835,7 @@ button.row-plain { cursor: pointer; }
 .skip-link {
   position: fixed;
   top: var(--md-space-2);
-  left: var(--md-space-4);
+  left: var(--md-space-3);
   z-index: 60;
   padding: var(--md-space-3) var(--md-space-4);
   border-radius: var(--md-shape-full);
@@ -1712,22 +1845,26 @@ button.row-plain { cursor: pointer; }
 }
 .skip-link:focus { transform: none; }
 @media (max-width: 599px) {
-  .main { padding-inline: var(--md-space-4); }
-  .hero { padding: var(--md-space-5); }
-  .card { padding: var(--md-space-4); }
+  .main { padding-inline: var(--md-space-2); }
+  .hero { padding: var(--md-space-4); }
+  .card { padding: var(--md-space-3) var(--md-space-3) var(--md-space-4); }
   .row { gap: var(--md-space-2); padding-inline: var(--md-space-2); }
   .toolbar { gap: var(--md-space-2); }
   .toolbar .seg { width: 100%; }
   .seg[data-connected] .seg-item { padding-inline: var(--md-space-2); }
-  .overview-metrics .reading { padding: var(--md-space-3); }
+  .overview-metrics .reading { padding: var(--md-space-2); }
   .input, .area { font-size: var(--md-type-body-large-size); }
 }
 @media (min-width: 1100px) {
-  .overview-grid { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
-  .overview-connections, .overview-recent { align-self: stretch; }
-  .overview-recent .log-short { flex: 1; }
-  .overview-recent .log-line { flex-wrap: wrap; }
-  .overview-recent .log-text { flex-basis: 100%; }
+  /* 两列之后每格只按自己的内容长。默认的 stretch 会把「连接」那张卡撑到与
+     首屏一样高，里面只有一行字，看着像一块空板。 */
+  .overview-grid {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  .overview-recent .log-short { max-height: 320px; }
+  .overview-recent .log-line { grid-template-columns: var(--zy-log-time) var(--zy-log-level) minmax(0, 1fr); }
+  .overview-recent .log-text { grid-column: 1 / -1; }
 }
 
 :where(button, a, input, textarea, [tabindex="0"]):focus-visible {
@@ -1741,15 +1878,9 @@ button.row-plain { cursor: pointer; }
 /* 并排详情是一块窄容器，不能用整个窗口的宽度判断字段是否并列。 */
 .panes[data-split] .kv {
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--md-space-1);
+  gap: 2px;
 }
 @media (max-width: 599px) {
   .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
   .bar-title { min-width: 0; }
-}
-
-/* 缓冲保留 2000 行，DOM 只留最近 120 行；屏外行跳过绘制与子树布局。 */
-.log-line {
-  content-visibility: auto;
-  contain-intrinsic-size: auto var(--zy-touch);
 }

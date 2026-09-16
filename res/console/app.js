@@ -1,5 +1,5 @@
 /* ============================================================================
-   知言 · 界面
+   知微 · 界面
    ----------------------------------------------------------------------------
    一个文件、零依赖、零构建。理由与后端把资源编译进二进制是同一条：这是跑在
    别人机器上的机器人的界面，不该指望任何一台 CDN 活着，也不该为它引入一套
@@ -26,7 +26,7 @@
 (() => {
   "use strict";
 
-  const NAME = "知言";
+  const NAME = "知微";
   const TOKEN_KEY = "zhiyan.token";
   /** 一行的请求上限。超过它当作「这台机器正忙」，不再让页面停在骨架上。 */
   const REQUEST_TIMEOUT = 20000;
@@ -298,7 +298,7 @@
     { id: "command", label: "命令", title: "命令" },
   ];
 
-  const NAV_HINT = "知言";
+  const NAV_HINT = "知微";
 
   /** 导航只搭一次：每次重画都会把选中态的过渡打断，看着像闪。 */
   function buildNav() {
@@ -532,17 +532,43 @@
       </div>`;
   }
 
+  /** 总览的「最近日志」：一屏六行，跟着走，不订阅日志流。 */
+  const OVERVIEW_LINES = 6;
+  const OVERVIEW_EVERY = 6000;
+
   async function mountOverviewLog() {
     const box = $("#overview-log");
     if (!box) return;
+    await refreshOverviewLog();
+    // 这一页是落地页，那六行不该停在打开那一刻。拉的是内存里的环形缓冲，
+    // 不碰数据库也不碰平台；六秒一次，一次六个 JSON 对象。
+    clearInterval(logState.overview);
+    logState.overview = setInterval(() => {
+      if (document.hidden || !$("#overview-log")) {
+        clearInterval(logState.overview);
+        logState.overview = 0;
+        return;
+      }
+      refreshOverviewLog();
+    }, OVERVIEW_EVERY);
+  }
+
+  async function refreshOverviewLog() {
+    const box = $("#overview-log");
+    if (!box) return;
     try {
-      const data = await api("/logs?limit=6");
-      const lines = (data.lines || []).slice(-6);
-      box.innerHTML = lines.length
+      const data = await api(`/logs?limit=${OVERVIEW_LINES}`);
+      const lines = (data.lines || []).slice(-OVERVIEW_LINES);
+      const html = lines.length
         ? lines.map(logLine).join("")
         : `<div class="log-line log-debg">这里还是空的</div>`;
+      // 一模一样就不动 DOM：每六秒重画一次会让滚动位置与选区一起跳。
+      if (box.dataset.digest === html) return;
+      box.dataset.digest = html;
+      box.innerHTML = html;
+      box.scrollTop = box.scrollHeight;
     } catch {
-      box.textContent = "日志暂时无法读取，可刷新重试";
+      if (!box.children.length) box.textContent = "日志暂时无法读取，可刷新重试";
     }
   }
 
@@ -897,13 +923,40 @@
       </div>`;
   }
 
-  /* ---- 日志 ---- */
+  /* ---- 日志 ----
+     这个面板的四条口径：
 
-  const DOM_LINES = 120;
+     1. **贴底就是跟随。** 判定只看「面板是不是贴在底部」，不看手势：贴在底部
+        就是跟，离开底部就是停。程序化滚动、换宽度、折行都会触发 scroll，用
+        手势判定会把它们一并算成暂停意图，停了还不会自己回来（旧写法就是栽在
+        这里：800ms 内的手势加距底 48px 就暂停，之后只能手点「回到最新」）。
+        现在滚回底部就自己恢复，不需要任何一处额外状态。
+     2. **行高必须是真的。** 旧写法给屏外行 `content-visibility: auto` 加
+        48px 的估值，面板的 `scrollHeight` 因此比实际矮，插进新行之后
+        「贴到底部」落在一个已经过时的高度上，看得见的就是「没显示最新那几行」。
+        窗口只有几十行，省下来的重排本来就不值得，这一条整个去掉。
+     3. **暂停就是暂停。** 暂停期间 DOM 一个字节都不动，新行只进有界缓冲，
+        屏上还留着选区与滚动位置；恢复时按缓冲重画一次补齐。
+     4. **断了要自己接回来。** `EventSource` 只在网络抖动时自动重连；服务端
+        回 401／503 这种「非事件流」响应时它会直接进入 CLOSED，从此一声不响。
+        所以 CLOSED 要自己退避重开，否则这一页会永远停在「连接中断」上。
+
+     行高做真的是有代价的：屏外行照样要排版要画。所以 DOM 窗口收到 80 行，
+     而且一次最多插 40 行——突发 2400 行时单次任务的节点增删量因此有上限，
+     剩下的留在队列里下一个 100ms 接着插，屏幕上始终是最近的那一段。 */
+  const DOM_LINES = 80;
   const LOG_BATCH_MS = 100;
+  const LOG_INSERT_MAX = 40;
+  /** 贴底的容差。差这么点算贴着，再远一点才算用户翻上去了。 */
+  const STICK_SLACK = 24;
+  /** 断了之后的退避：2、4、8、16 秒，封顶 30 秒。 */
+  const LOG_RETRY_BASE = 2000;
+  const LOG_RETRY_MAX = 30000;
+
   const logState = {
     lines: [], level: "", text: "", follow: true, source: null,
     limit: 2000, queue: [], frame: 0, mounted: false, status: "正在连接…",
+    fresh: 0, failures: 0, retry: 0, overview: 0,
   };
 
   function logLine(entry) {
@@ -918,8 +971,38 @@
   function logMatches(entry) {
     if (logState.level && entry.level !== logState.level) return false;
     const text = logState.text.trim().toLowerCase();
-    return !text || String(entry.text).toLowerCase().includes(text) ||
+    if (!text) return true;
+    return String(entry.text).toLowerCase().includes(text) ||
       String(entry.target).toLowerCase().includes(text);
+  }
+
+  /** 面板贴在底部。差值可能因折行而变化，所以只用于判断，不用于定位。 */
+  function logStuck(box) {
+    return box.scrollHeight - box.scrollTop - box.clientHeight <= STICK_SLACK;
+  }
+
+  /** 贴到底部。读 scrollHeight 会强制一次布局，拿到的就是刚插进去那一行的真实高度。 */
+  function logPin(box) {
+    box.scrollTop = box.scrollHeight;
+  }
+
+  /** 面板上下两处跟着状态走的东西：暂停按钮上的字，与「回到最新」上的条数。 */
+  function syncLogChrome() {
+    const button = $("#log-follow");
+    if (button) {
+      button.setAttribute("aria-pressed", String(logState.follow));
+      button.textContent = logState.follow ? "跟随最新" : "已暂停";
+    }
+    const jump = $("#log-jump");
+    if (!jump) return;
+    jump.classList.toggle("jump-on", !logState.follow);
+    const count = logState.fresh ? String(logState.fresh) : "";
+    if (jump.dataset.fresh !== count) {
+      jump.dataset.fresh = count;
+      jump.innerHTML = `${ICONS.latest}<span>回到最新${
+        count ? ` · <b>${count}</b> 条` : ""
+      }</span>`;
+    }
   }
 
   function paintLog() {
@@ -927,9 +1010,12 @@
     if (!box || document.hidden) return;
     logState.queue = [];
     const shown = logState.lines.filter(logMatches).slice(-DOM_LINES);
-    box.innerHTML = shown.length ? shown.map(logLine).join("") :
-      `<div class="log-empty">没有符合条件的日志</div>`;
-    if (logState.follow) box.scrollTop = box.scrollHeight;
+    box.innerHTML = shown.length
+      ? shown.map(logLine).join("")
+      : `<div class="log-empty">没有符合条件的日志</div>`;
+    logState.fresh = 0;
+    syncLogChrome();
+    if (logState.follow) logPin(box);
   }
 
   function logStatus(text) {
@@ -940,13 +1026,14 @@
     if (status) status.textContent = text;
   }
 
+  /** 跟随开关。恢复时按缓冲重画一次：暂停期间新行只进了缓冲，没进 DOM。 */
   function setFollow(on) {
-    logState.follow = on;
-    $("#log-follow")?.setAttribute("aria-pressed", String(on));
-    const button = $("#log-follow");
-    if (button) button.textContent = on ? "跟随最新" : "已暂停";
-    $("#log-jump")?.classList.toggle("jump-on", !on);
-    if (on) paintLog();
+    if (logState.follow !== on) {
+      logState.follow = on;
+      if (on) logState.fresh = 0;
+      syncLogChrome();
+    }
+    if (on && $("#log-box")) paintLog();
   }
 
   // 暂停时保留当前 DOM 与选择区域；到来的行只进有界缓冲。
@@ -955,7 +1042,12 @@
     if (logState.lines.length > logState.limit) {
       logState.lines.splice(0, logState.lines.length - logState.limit);
     }
-    if (document.hidden || !logState.mounted || !logState.follow) return;
+    if (document.hidden || !logState.mounted || !logState.follow) {
+      // 屏上不动的这段时间，只把「回来之后能补上多少」记在按钮上。
+      logState.fresh += entries.filter(logMatches).length;
+      syncLogChrome();
+      return;
+    }
     logState.queue.push(...entries);
     if (logState.queue.length > DOM_LINES) {
       logState.queue.splice(0, logState.queue.length - DOM_LINES);
@@ -963,24 +1055,28 @@
     if (!logState.frame) logState.frame = setTimeout(flushLog, LOG_BATCH_MS);
   }
 
-  // 每秒至多十次 DOM 合批，限制单批与总节点数；不随消息频率重复排版。
+  // 每秒至多十次 DOM 合批，限单批与总节点数；不随消息频率重复排版。
+  // 一次只插 LOG_INSERT_MAX 行，剩下的下一拍接着插——突发时单次任务因此有上限，
+  // 而屏幕上最终留下的仍是最近 DOM_LINES 行（队列超了丢的是最旧的那几行）。
   function flushLog() {
     logState.frame = 0;
-    const queued = logState.queue.splice(0);
     const box = $("#log-box");
     if (!box || document.hidden || !logState.mounted || !logState.follow) return;
-    const fresh = queued.filter(logMatches);
-    if (!fresh.length) return;
-    $(".log-empty", box)?.remove();
-    box.insertAdjacentHTML("beforeend", fresh.map(logLine).join(""));
-    while (box.children.length > DOM_LINES) box.firstElementChild.remove();
-    box.scrollTop = box.scrollHeight;
+    const fresh = logState.queue.splice(0, LOG_INSERT_MAX).filter(logMatches);
+    const rest = logState.queue.length;
+    if (fresh.length) {
+      $(".log-empty", box)?.remove();
+      box.insertAdjacentHTML("beforeend", fresh.map(logLine).join(""));
+      while (box.children.length > DOM_LINES) box.firstElementChild.remove();
+      logPin(box);
+    }
+    if (rest) logState.frame = setTimeout(flushLog, LOG_BATCH_MS);
   }
 
   function paintLogs() {
     const levels = [["", "全部"], ["INFO", "信息"], ["WARN", "警告"], ["ERRO", "错误"], ["DEBG", "调试"]];
     return `
-      ${pageHead("日志", "查看运行记录；暂停后可停留阅读，恢复时回到最新。")}
+      ${pageHead("日志", "查看运行记录；暂停后可停留阅读，滚回底部或点「回到最新」就继续跟随。")}
       <div class="toolbar">
         <div class="search">${ICONS.search}
           <input id="log-search" type="search" placeholder="搜索内容或来源"
@@ -996,10 +1092,10 @@
                 aria-label="清空这一屏">${ICONS.trash}</button>
       </div>
       <div class="log-meta"><span id="log-status" role="status">${esc(logState.status)}</span>
-        <span>最近 ${DOM_LINES} 行</span></div>
+        <span>最近 ${DOM_LINES} 行 · 收到即更新</span></div>
       <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志"></div>
       <button class="btn btn-filled jump ${logState.follow ? "" : "jump-on"}" type="button"
-              id="log-jump">${ICONS.latest}回到最新</button>
+              id="log-jump" data-fresh="${logState.fresh || ""}"><span>回到最新</span></button>
       <p class="note">离开日志页或切到后台时暂停接收，返回后补齐最近记录。
         完整日志可在终端用 <span class="key">./bot logs</span> 查看。</p>`;
   }
@@ -1009,39 +1105,32 @@
     logState.source = null;
     logState.mounted = false;
     clearTimeout(logState.frame);
+    clearTimeout(logState.retry);
+    clearInterval(logState.overview);
     logState.frame = 0;
+    logState.retry = 0;
+    logState.overview = 0;
+    logState.failures = 0;
     logState.queue = [];
+    logState.fresh = 0;
   }
 
-  function mountLogs() {
-    if (document.hidden) return;
-    logState.mounted = true;
-    paintLog();
-    const box = $("#log-box");
-    // 只把用户滚动当成暂停意图；换宽度与屏外行展开也会触发 scroll。
-    let scrollIntent = -Infinity;
-    const intent = () => { scrollIntent = performance.now(); };
-    box.onwheel = intent;
-    box.ontouchmove = intent;
-    box.onpointerdown = intent;
-    box.onkeydown = (event) => {
-      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) intent();
-    };
-    box.onscroll = () => {
-      if (logState.follow && performance.now() - scrollIntent < 800 &&
-          box.scrollHeight - box.clientHeight - box.scrollTop > 48) setFollow(false);
-    };
-    if (logState.source) return;
+  /** 建一条新的日志流。事件都在 `source === logState.source` 时才认，避免旧流的尾巴改到新状态。 */
+  function openLogs() {
     const source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
     logState.source = source;
-    source.onopen = () => logStatus("实时连接");
+    source.addEventListener("open", () => {
+      if (source !== logState.source) return;
+      logState.failures = 0;
+      logStatus("实时连接");
+    });
     source.addEventListener("snapshot", (event) => {
       if (source !== logState.source) return;
       try {
         const data = JSON.parse(event.data);
         logState.lines = data.lines.slice(-logState.limit);
         logState.queue = [];
-        if (logState.follow || !box.querySelector(".log-line")) paintLog();
+        if (logState.follow || !$("#log-box")?.querySelector(".log-line")) paintLog();
         if (data.dropped) logStatus(`追不上了，中间跳过 ${data.dropped} 行`);
       } catch { logStatus("记录未能读取，刷新重试"); }
     });
@@ -1053,7 +1142,47 @@
       if (source !== logState.source) return;
       try { pushLogs([JSON.parse(event.data)]); } catch { /* 忽略损坏的一行 */ }
     };
-    source.onerror = () => logStatus("连接中断，正在重连…");
+    source.onerror = () => {
+      if (source !== logState.source) return;
+      // CONNECTING 说明浏览器正在自己重连，等它；CLOSED 才是彻底断了。
+      if (source.readyState !== EventSource.CLOSED) {
+        logStatus("连接中断，正在重连…");
+        return;
+      }
+      source.close();
+      logState.source = null;
+      const delay = Math.min(LOG_RETRY_MAX, LOG_RETRY_BASE * 2 ** Math.min(logState.failures, 4));
+      logState.failures += 1;
+      logStatus(`连接已断开，${Math.round(delay / 1000)} 秒后重试`);
+      clearTimeout(logState.retry);
+      logState.retry = setTimeout(() => {
+        logState.retry = 0;
+        if (logState.mounted && !document.hidden) openLogs();
+      }, delay);
+    };
+  }
+
+  function connectLogs() {
+    // 连着的、或者正在自动重连的，不另开一条。
+    if (logState.source && logState.source.readyState !== EventSource.CLOSED) return;
+    openLogs();
+  }
+
+  function mountLogs() {
+    const box = $("#log-box");
+    if (!box) {
+      logState.mounted = false;
+      return;
+    }
+    logState.mounted = true;
+    paintLog();
+    // 贴底就是跟随。这一条是自愈的——程序化滚动之后停在底部，判定自然还是「跟随」。
+    box.onscroll = () => {
+      const stuck = logStuck(box);
+      if (stuck !== logState.follow) setFollow(stuck);
+    };
+    if (document.hidden) return;
+    connectLogs();
   }
 
   /* ---- 命令 ---- */
@@ -1139,7 +1268,7 @@
       <section class="card">
         <div class="section-title">连接实现端
           <span class="count">${data.bots.length} 条 · 改完下次启动生效</span></div>
-        <p class="note">知言自己不直接连 QQ：它连的是实现端（本机自建的那套在
+        <p class="note">知微自己不直接连 QQ：它连的是实现端（本机自建的那套在
         <span class="key">http://127.0.0.1:3001</span>）。这一份是机器人的「接在哪儿」，
         与群里的指令、插件配置都不相干。</p>
         <div class="list" id="bot-list">${bots}</div>
@@ -1210,10 +1339,10 @@
     }
     const ua = navigator.userAgent;
     const steps = /iPhone|iPad|iPod/.test(ua)
-      ? ["在 Safari 里打开这一个地址", "点底部的分享键", "选「添加到主屏幕」，名字留「知言」"]
+      ? ["在 Safari 里打开这一个地址", "点底部的分享键", "选「添加到主屏幕」，名字留「知微」"]
       : /Android/.test(ua)
         ? ["用 Chrome 打开这一个地址", "点右上角的三点", "选「安装应用」或「添加到主屏幕」"]
-        : ["地址栏右侧有一枚安装图标，点它", "或者用菜单里的「安装知言」", "装好后它会自己开一个窗口"];
+        : ["地址栏右侧有一枚安装图标，点它", "或者用菜单里的「安装知微」", "装好后它会自己开一个窗口"];
     return `
       <p class="note">装上之后它跟普通应用一样：桌面有图标，打开就一个窗口，
       没有地址栏，顶栏直接贴到状态栏下面。装的是这一页，数据还是这台机器上的。</p>
@@ -1740,7 +1869,9 @@
     });
     window.addEventListener("pagehide", stopLogs);
     window.addEventListener("pageshow", () => {
-      if (token && $("#log-box") && !document.hidden) mountLogs();
+      if (document.hidden) return;
+      if (token && $("#log-box")) mountLogs();
+      if (token && $("#overview-log")) mountOverviewLog();
     });
 
     prefersDark.addEventListener("change", applyTheme);
@@ -1762,7 +1893,7 @@
     installPrompt.prompt();
     const { outcome } = await installPrompt.userChoice;
     installPrompt = null;
-    snack(outcome === "accepted" ? "已交给系统安装；装好之后桌面会多一个知言" : "这次没有装，随时可以再来");
+    snack(outcome === "accepted" ? "已交给系统安装；装好之后桌面会多一个知微" : "这次没有装，随时可以再来");
     render();
   }
 

@@ -8,15 +8,21 @@
 //! 五张卡片图共用），`res/console/app.css` 是界面的版式层与交互基元，只写
 //! 「摆在哪儿」与「按下去会怎样」，色值字号一律 `var()` 取令牌。
 //!
-//! 图标有五个：矢量那份给标签页与清单里的 `any`，两张 PNG 给装到桌面（Android
-//! 与桌面浏览器要用位图），遮罩版交给系统自己裁形状，180 那份是 iOS 加到主屏幕
-//! 用的——Safari 不认 SVG，也不认透明底。五份都出自 `scripts/make-icon.py`。
+//! 图标有七份产物，一处几何（`scripts/make-icon.py`）：
+//!
+//! - 矢量那份给标签页与清单里的 `any`；
+//! - 两张 PNG 给装到桌面（Android 与桌面浏览器要用位图）；
+//! - 遮罩版交给系统自己裁形状，字形收在自适应图标的安全圆里；
+//! - 单色版给 Android 主题图标（13+）与清单的 `monochrome`：透明的底加纯白的字形，
+//!   系统按壁纸取色自己去染；
+//! - 180 那份是 iOS 加到主屏幕用的——Safari 不认 SVG，也不认透明底，
+//!   而且它自己会裁圆角，所以这一份是铺满的方角位图。
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 /// 应用的中文名。命令行、网页、桌面图标上的显示名都取这一处。
-pub(crate) const APP_NAME: &str = "知言";
+pub(crate) const APP_NAME: &str = "知微";
 
 const INDEX: &[u8] = include_bytes!("../../../res/console/index.html");
 const APP_CSS: &[u8] = include_bytes!("../../../res/console/app.css");
@@ -25,6 +31,8 @@ const ICON: &[u8] = include_bytes!("../../../res/console/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../../../res/console/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../../../res/console/icon-512.png");
 const ICON_MASKABLE: &[u8] = include_bytes!("../../../res/console/icon-maskable-512.png");
+const ICON_MONO_SVG: &[u8] = include_bytes!("../../../res/console/icon-monochrome.svg");
+const ICON_MONO_512: &[u8] = include_bytes!("../../../res/console/icon-monochrome-512.png");
 const APPLE_ICON: &[u8] = include_bytes!("../../../res/console/apple-touch-icon.png");
 const MANIFEST: &[u8] = include_bytes!("../../../res/console/manifest.webmanifest");
 
@@ -65,6 +73,14 @@ pub(super) async fn icon_512(headers: HeaderMap) -> Response {
 
 pub(super) async fn icon_maskable(headers: HeaderMap) -> Response {
     asset(&headers, ICON_MASKABLE, "image/png")
+}
+
+pub(super) async fn icon_monochrome(headers: HeaderMap) -> Response {
+    asset(&headers, ICON_MONO_SVG, "image/svg+xml")
+}
+
+pub(super) async fn icon_monochrome_512(headers: HeaderMap) -> Response {
+    asset(&headers, ICON_MONO_512, "image/png")
 }
 
 pub(super) async fn apple_icon(headers: HeaderMap) -> Response {
@@ -206,23 +222,46 @@ mod tests {
         assert!(index.contains(APP_NAME), "页面标题要对得上");
     }
 
-    /// 清单里列的那几张图标，一张都不能少：装到桌面的入口就靠它们。
+    /// 清单里列的那几张图标，一张都不能少，且各自得是它声称的那种格式：
+    /// 矢量看开头，位图看签名与前八字节之后的体量。
     #[test]
     fn every_icon_the_manifest_promises_exists() {
         let manifest = String::from_utf8_lossy(MANIFEST).into_owned();
-        for (name, body) in [
-            ("/icon.svg", ICON),
-            ("/icon-192.png", ICON_192),
-            ("/icon-512.png", ICON_512),
-            ("/icon-maskable-512.png", ICON_MASKABLE),
+        for (name, body, vector) in [
+            ("/icon.svg", ICON, true),
+            ("/icon-192.png", ICON_192, false),
+            ("/icon-512.png", ICON_512, false),
+            ("/icon-maskable-512.png", ICON_MASKABLE, false),
+            ("/icon-monochrome.svg", ICON_MONO_SVG, true),
         ] {
             assert!(manifest.contains(name), "清单里没有 {name}");
-            assert!(body.len() > 512, "{name} 的内容不像一张图标");
+            if vector {
+                assert!(body.starts_with(b"<svg"), "{name} 得是一张 SVG");
+            } else {
+                assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "{name} 得是一张 PNG");
+                assert!(body.len() > 512, "{name} 的内容不像一张图标");
+            }
         }
-        // PNG 的开头八字节是固定的签名，顺手认一下，免得塞进去的是别的格式。
-        for body in [ICON_192, ICON_512, ICON_MASKABLE, APPLE_ICON] {
-            assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "这几张必须是 PNG");
-        }
+        // Apple 那份不进清单，但同样是 PNG，一并认一下。
+        assert_eq!(&APPLE_ICON[..8], b"\x89PNG\r\n\x1a\n", "iOS 那份必须是 PNG");
+        assert!(
+            &ICON_MONO_512[..8] == b"\x89PNG\r\n\x1a\n",
+            "单色层的位图版必须是 PNG"
+        );
+    }
+
+    /// 三层的几何是同一处出来的，这里只钉住「该有的属性在」：
+    /// 单色层只能是纯白（系统自己去染），遮罩版与 iOS 版必须是铺满的方角
+    /// （系统/系统会自己裁，自己画了圆角就会裁出两层边）。
+    #[test]
+    fn the_monochrome_layer_is_one_colour_and_has_no_background() {
+        let mono = String::from_utf8_lossy(ICON_MONO_SVG).into_owned();
+        assert!(mono.contains("#ffffff"), "单色层只用纯白");
+        assert!(!mono.contains("<linearGradient"), "单色层不许有底");
+        assert!(
+            !mono.contains("rx=\"24.16\""),
+            "单色层不该带那张圆角底"
+        );
     }
 
     /// ETag 跟着内容走；`If-None-Match` 只认同一份。

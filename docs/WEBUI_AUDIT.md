@@ -23,7 +23,7 @@
 - 没有额外前端框架、远程字体、CDN 或常驻动画。静态资源继续支持 ETag。
 - 只在日志页可见时连接 SSE；换页、隐藏标签页与 pagehide 都关闭。返回后由服务端发送最近快照，后台不解析日志。
 - 快照与订阅在同一把日志锁内取得；推送也在这把锁内发布，消除“先取历史再订阅”的缺口。消费者落后时重新取快照，并把落下的行数写在状态行上（`event: snapshot` 带 `dropped`）。落后超过缓冲容量时（`HISTORY_LIMIT`，2000 行）真的会少行，所以不写成“一定不跳行”。
-- 服务端收到首行后合批 50ms，正常批次最多 128 行；浏览器最多每 100ms 更新一次。页面缓冲最多 2000 行，DOM 最多 120 行，屏外行使用 `content-visibility`。降低 DOM 上限是为了减少筛选与恢复时的长任务；完整记录仍在终端日志中。
+- 服务端收到首行后合批 50ms，正常批次最多 128 行；浏览器最多每 100ms 更新一次。页面缓冲最多 2000 行，DOM 窗口 80 行，一次最多插 40 行，屏外行不再用 `content-visibility` 跳过渲染（那会让面板的 `scrollHeight` 比实际矮，贴底落在一个过时的高度上，表现就是「看不到最新那几行」）。完整记录仍在终端日志中。
 - `[console] log_lines` 的上限也是 2000（`state::HISTORY_LIMIT`）：环、`/api/logs` 与 SSE 快照三处同一个数，写更大只按 2000 收。
 - 暂停保留 DOM、文字选择与滚动位置，新行只进入缓冲。主动向上翻阅也会暂停；“回到最新”再补画。
 - 总览只请求最近 6 行，不再为显示 6 行传输整份缓冲。总览数据打开或手动刷新时获取，不轮询数据库。
@@ -74,6 +74,50 @@ bash scripts/review-console.sh
 | 浏览器测试的夹具不校验口令，凭证发错也全绿；`longTasks`/`logMutations` 采了却只打印不判定 | 夹具按请求头与 `?t=` 验口令、表情包放一张真图（钉住那条带口令的图片地址）；长任务与 DOM 变更数改成断言 |
 | 「减少动态效果」那条断言测的是样式表（动画整条写在 `no-preference` 里），把 JS 侧的降级删掉也不会红 | 改断 `data-enter` 与 `.ripple`，并各配一个正对照 |
 | 表情包图片每次请求都整库克隆加排序，响应没有任何缓存头 | 新增按编号直查的取件函数；响应带 `Cache-Control: immutable`（文件名就是内容摘要） |
-| `CONTROL.md`、`UNIFORMITY.md` 里日志仍是「按帧合批、最多 500 行」「四条交互断言」 | 按实测口径改写为服务端合批 50ms/128 行、页面每 100ms、DOM 120 行、三条只读断言 |
+| `CONTROL.md`、`UNIFORMITY.md` 里日志仍是「按帧合批、最多 500 行」「四条交互断言」 | 按实测口径改写为服务端合批 50ms/128 行、页面每 100ms、三个只读断言 |
 
 两处**没改**，记下理由：控制台在运行中被关掉时，已经建立的那条 SSE 不会自己结束（要再等一次日志或客户端重连才会撞上 503）——修它要在流里加一条节拍去复查开关，与「不轮询」的取向相冲，留作已知取舍；日志行的 `contain-intrinsic-size` 估值取的是触控尺寸 48px，窄屏折行后与真实行高接近，宽屏上约为两倍，只影响从未进过视口的那部分的滚动条估算，`auto` 会随着行被渲染逐步校正。
+
+## 第三轮：跟随、字号与 M3 Expressive 的取值（2026-09-16）
+
+这一轮不是复审，是按用户提的三件事重做：日志看不到最新内容、字号偏大、界面要有 M3 Expressive 的样子。同时把界面里几处凭手感定的值换成官方文档与 `androidx` 源码里的取值。
+
+### 日志的跟随
+
+旧写法有两个互相叠加的毛病，合起来就是「不显示最新」：
+
+| 毛病 | 机理 | 改法 |
+| --- | --- | --- |
+| 屏外行按 48px 估值 | `.log-line` 带 `content-visibility: auto` 与 `contain-intrinsic-size: auto 48px`，未进过视口的行只按 48px 计。面板的 `scrollHeight` 因此比实际矮，「贴到底部」落在一个过时的高度上 | 整条去掉。DOM 窗口只有 80 行，省下来的重排本来就不值得 |
+| 暂停靠「800ms 内有过手势」判定 | `onscroll` 里判「最近 800ms 有 wheel/touchmove/pointerdown 且距底超过 48px」才暂停。`box.scrollTop = box.scrollHeight` 自己也会触发 scroll，赶上一次指针事件就被判成用户翻页；停了之后没有任何恢复机制 | 判定只看位置：贴在底部就是跟随，离开底部就是暂停，滚回底部自己恢复。程序化滚动落在底部，判定自然是「跟随」 |
+
+顺带两处：一次最多插 40 行（突发 2400 行时单次任务的节点增删有上限，剩下的下一拍接着插）；`EventSource` 进 CLOSED 之后按 2→4→8→16 秒退避自己重开——浏览器只在网络抖动时自动重连，服务端回 401／503 这种非事件流响应时它会一直静默。
+
+`node tests/console.cjs` 的断言跟着改：DOM 窗口 80、2400 行突发后长任务 <50ms、DOM 变更 ≤30。实测 `{"logMutations":5,"longTasks":[]}`。
+
+### 字号
+
+界面的字阶在 `res/console/app.css` 的 `:root` 里整体收一档（十三级），卡片图的字阶不动——那一套是按群聊缩略图标定的。只覆盖字号与行高，级差、字重、字距不动：收字号不该把字阶的性格一起收掉。
+
+### M3 Expressive 的取值
+
+界面里原来有几处是照印象写的，这一轮换成一手来源（`m3.material.io` 的 specs 页与 `androidx-main` 里 Compose Material3 的 token 源码）：
+
+| 项 | 原值 | 现值 | 出处 |
+| --- | --- | --- | --- |
+| 底部导航高度 | 76px | 64px（flexible navigation bar；80dp 的 baseline 官方已标 Not recommended） | `NavigationBarTokens.ContainerHeight` |
+| 导航轨宽度 | 88px | 96px（collapsed navigation rail） | `NavigationRailCollapsedTokens.ContainerWidth` |
+| 导航指示器 | 62×32 | 56×32 | `NavigationBarVerticalItemTokens` |
+| 空间运动的曲线与时长 | `cubic-bezier(0.34,1.24,0.42,1)` / 260ms | `cubic-bezier(0.42,1.67,0.21,0.9)` / 350ms（Expressive fast spatial） | motion overview specs 的「不能用弹簧时的等价曲线」表 |
+| 效果运动的曲线 | `cubic-bezier(0.24,0.72,0.24,1)` | `cubic-bezier(0.31,0.94,0.34,1)` / 150ms（Expressive fast effects） | 同上 |
+| 对话框圆角 | 48px | 28px | `DialogTokens` |
+| 反馈条圆角 | 16px | 4px（CornerExtraSmall） | `SnackbarTokens` |
+| 按钮按下 | 缩到 0.98 + 圆角 12px | 只收圆角到 8px（Small 档的按下圆角） | 官方 buttons specs 的 corner 表 |
+| 按钮左右内边距 | 20px | 16px（Expressive Small 档） | 同上 |
+| 芯片选中 | 圆角不变 | 形变到全圆（Expressive 的形变：未选中圆角矩形、选中胶囊） | chips specs |
+
+两处**没按 spec 改**，记下理由：交互元素的高度一律保在 48px 以上（`tests/console.cjs` 有一条断言盯着），而 M3 的芯片是 32dp、按钮是 40dp——Android 上中文两字在这个高度上才按得准，这是本项目一贯的取舍；卡面圆角用 28px 而不是 M3 的 12dp，为的是与五张卡片图同形（第七轮的目标就是这两处一致）。
+
+### 测试
+
+`node tests/console.cjs` 里修掉一处**既有的竞态**：保存连接之后整页会重画一次（`render()` 在 POST 回包之后才跑，比那条 `until` 晚），紧接着加的草稿表单会被这次重画抹掉，于是测试变成谁先跑完谁赢。改成等旧表单节点脱离 DOM 再往下走。

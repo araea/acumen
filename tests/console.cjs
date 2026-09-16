@@ -45,7 +45,7 @@ const server = http.createServer(async (req, res) => {
     await sleep(60); return reply({ message: '已保存 · ' + (body.input || '') });
   }
   if (url.pathname === '/api/overview') return reply({
-    app: { version: '0.1.0', started: '2026-09-16 08:30:00', uptime: 8426 }, bots: [{ name: '知言', adapter: 'satori', platform: 'QQ', id: '10001' }],
+    app: { version: '0.1.0', started: '2026-09-16 08:30:00', uptime: 8426 }, bots: [{ name: '知微', adapter: 'satori', platform: 'QQ', id: '10001' }],
     plugins: { on: 22, total: 23, pending: 0 }, messages: { today: 3803, people: 711, week: 84737 }, console: { address: 'http://127.0.0.1:7801/' },
   });
   if (url.pathname === '/api/plugins') return reply({ plugins, sections });
@@ -55,7 +55,7 @@ const server = http.createServer(async (req, res) => {
     return reply(plugin || {}, plugin ? 200 : 404);
   }
   if (url.pathname === '/api/settings') return reply(settings);
-  if (url.pathname === '/api/ambient') return reply({ ready: true, persona: '自然参与群聊，先听懂，再开口。', self: '知言', memory: [], stickers: [{ id: 1, label: '示例表情包', image: true, uses: 1 }] });
+  if (url.pathname === '/api/ambient') return reply({ ready: true, persona: '自然参与群聊，先听懂，再开口。', self: '知微', memory: [], stickers: [{ id: 1, label: '示例表情包', image: true, uses: 1 }] });
   if (url.pathname === '/api/ambient/sticker/1') {
     res.writeHead(200, { 'Content-Type': 'image/png' });
     return res.end(Buffer.from('89504e470d0a1a0a', 'hex'));
@@ -145,10 +145,14 @@ async function shot(name) {
   await cmd('POST',`/element/${commandInput['element-6066-11e4-a52e-4f735466cecf']}/value`,{text:'\uE007'});
   await until(()=>posts.filter(p=>p.path==='/api/command').length===2,'Enter submits once');
   await route('settings');
+  await js('window.savedForm = document.querySelector("#bot-form-0")');
   await click('#bot-form-0 [name=enabled]');
   await click('#bot-form-0 [type=submit]');
   await until(() => posts.some(p => p.path === '/api/settings/bot'), 'connection save');
   assert.equal(posts.find(p => p.path === '/api/settings/bot').body.enabled, false);
+  // 保存之后整页会重画一次（POST 收到回包才 render，比上面那条 until 晚）。不等它落地，
+  // 紧接着加的那条草稿会被这次重画抹掉，测试就变成谁先跑完谁赢。
+  await until(() => js('return !window.savedForm.isConnected'), 'settings re-rendered after save');
   // 草稿那一条（还没落过配置）的「删掉这条」不能当成第 0 条：那会删掉配置里第一条真连接。
   // 用脚本点：这一步测的是处理逻辑，底部那条消息条会挡住真实点击的落点。
   await js('document.querySelector("[data-add-bot]").click()');
@@ -162,8 +166,8 @@ async function shot(name) {
   await until(() => js('return document.querySelectorAll("#log-box .log-line").length > 0'), 'snapshot');
   await js(`window.longTasks=[]; new PerformanceObserver(list=>window.longTasks.push(...list.getEntries().map(e=>e.duration))).observe({type:'longtask'});
     window.logMutations=0; new MutationObserver(()=>window.logMutations++).observe(document.querySelector('#log-box'),{childList:true});`);
-  emit(2400); await sleep(500);
-  assert.equal(await js('return document.querySelector("#log-box").children.length'), 120);
+  emit(2400); await sleep(600);
+  assert.equal(await js('return document.querySelector("#log-box").children.length'), 80);
   assert.equal(await js('return !!window.injected'), false);
   assert.equal(await js('return document.querySelector("#log-follow").getAttribute("aria-pressed")'), 'true');
   await click('#log-follow');
