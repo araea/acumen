@@ -292,7 +292,7 @@ fn clean_history(content: &str) -> String {
 
 /// 把 skill 铺进这一轮的目录，并返回给模型看的索引。
 ///
-/// pi 时代的 `--skill` 是渐进披露：提示词里只有一行描述，正文要模型自己去读。
+/// 外部 CLI 时代的 `--skill` 是渐进披露：提示词里只有一行描述，正文要模型自己去读。
 /// 这里照搬同一套：目录复制进 run dir，索引写清路径，模型用 `read` 打开。
 fn skills(run: &AgentRun<'_>) -> anyhow::Result<String> {
     let mut lines = Vec::new();

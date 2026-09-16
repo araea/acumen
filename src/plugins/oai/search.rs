@@ -1,6 +1,6 @@
 //! 联网搜索：内置 agent 的 `web_search` 与 `web_fetch` 两个出网工具。
 //!
-//! 参考现行开源 harness 的做法（pi 的 provider-native 检索、oh-my-pi 的多后端
+//! 参考现行开源 harness 的做法（provider-native 检索、oh-my-pi 的多后端
 //! 顺序回退与「搜索/读取分工」），但落到本机这台手机上的约束里：
 //!
 //! - **后端是一条链**：按 `[oai.search].providers` 的顺序依次尝试，前一个不可用

@@ -10,7 +10,7 @@
 //! 于是 agent 能看见结果并据此继续。
 //!
 //! **这条通道不做身份限制**：任何能在 agent 房间里说话的人都能借它操作机器人，这是
-//! 部署者明确的选择（`[ctl].pi_control`，默认开）。它并没有扩大 agent 房间的能力边界
+//! 部署者明确的选择（`[ctl].agent_control`，默认开）。它并没有扩大 agent 房间的能力边界
 //! ——同一个 agent 手里的 bash 能做的事只多不少——但确实把「改配置」从管理员专属
 //! 变成了群友可用。要收回这份信任有两个层次：关掉本开关只堵住这条通道，真正的边界
 //! 在 agent 侧的工具白名单。
@@ -90,7 +90,7 @@ impl Drop for Lease {
 
 /// 为一轮 agent 房间对话签发控制凭据。
 ///
-/// `[ctl].pi_control` 关闭或套接字起不来时返回 `None`——那时 agent 房间的行为与从前
+/// `[ctl].agent_control` 关闭或套接字起不来时返回 `None`——那时 agent 房间的行为与从前
 /// 完全一致。除此之外不看发起人是谁：这条通道对所有人开放。
 pub(crate) async fn lease(ctx: &Context) -> Option<Lease> {
     if !enabled(ctx) {
@@ -122,7 +122,7 @@ pub(crate) async fn lease(ctx: &Context) -> Option<Lease> {
 }
 
 fn enabled(ctx: &Context) -> bool {
-    crate::plugins::get_config_or_default::<super::Config>(ctx, "ctl").pi_control
+    crate::plugins::get_config_or_default::<super::Config>(ctx, "ctl").agent_control
 }
 
 /// 把上下文换成维护者身份执行。
@@ -332,8 +332,8 @@ mod tests {
             event: EventType::Satori(
                 simd_json::serde::to_owned_value(serde_json::json!({
                     "post_type": "message", "message_type": "private",
-                    "user_id": 42, "message_id": 1, "raw_message": "pi 看看插件",
-                    "message": [{"type": "text", "data": {"text": "pi 看看插件"}}]
+                    "user_id": 42, "message_id": 1, "raw_message": "看看插件",
+                    "message": [{"type": "text", "data": {"text": "看看插件"}}]
                 }))
                 .unwrap(),
             ),

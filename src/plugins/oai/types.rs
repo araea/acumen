@@ -23,7 +23,7 @@ impl ChatMessage {
 }
 
 /// 房间交给内置智能体执行（带工具的 agent 循环）。
-pub const ENGINE_PI: &str = "pi";
+pub const ENGINE_AGENT: &str = "agent";
 /// 房间走中转站的 Chat Completions（含 MJ / 图像房间）。
 pub const ENGINE_CHAT: &str = "chat";
 
@@ -47,7 +47,7 @@ pub struct Agent {
     /// 按模型分组会把它们混进用户自己建的同模型房间里。
     #[serde(default)]
     pub section: String,
-    /// 执行引擎：[`ENGINE_PI`] 或 [`ENGINE_CHAT`]。
+    /// 执行引擎：[`ENGINE_AGENT`] 或 [`ENGINE_CHAT`]。
     ///
     /// 引擎是房间自己的属性，名字与它无关——叫什么都行，`#` 列表里显示的是
     /// 「内置」而不是这个字符串。留空按 [`ENGINE_CHAT`] 算。
@@ -100,8 +100,8 @@ impl Agent {
     /// 这个房间由内置智能体接管（带工具的 agent 循环）。
     ///
     /// 只看 `engine`：名字不参与判断。没写过引擎的房间按中转站房间算。
-    pub fn uses_pi(&self) -> bool {
-        self.engine.trim().eq_ignore_ascii_case(ENGINE_PI)
+    pub fn uses_agent(&self) -> bool {
+        self.engine.trim().eq_ignore_ascii_case(ENGINE_AGENT)
     }
 
     /// 记下这个房间用哪个引擎和模型；引擎一旦写下就不再依赖房间名。
@@ -293,12 +293,12 @@ mod engine_tests {
     #[test]
     fn any_room_name_can_run_pi_once_the_engine_is_written_down() {
         let mut room = Agent::new("研究", "gpt-5.6-luna", "", "");
-        assert!(!room.uses_pi(), "名字普通、引擎未定的房间仍走中转站");
-        room.set_engine(ENGINE_PI, "apilio/claude-opus-5");
-        assert!(room.uses_pi(), "名字没变，引擎说了算");
+        assert!(!room.uses_agent(), "名字普通、引擎未定的房间仍走中转站");
+        room.set_engine(ENGINE_AGENT, "apilio/claude-opus-5");
+        assert!(room.uses_agent(), "名字没变，引擎说了算");
         assert_eq!(room.model, "apilio/claude-opus-5");
         room.set_engine(ENGINE_CHAT, "gpt-5.6-luna");
-        assert!(!room.uses_pi(), "换回中转站不需要改名");
+        assert!(!room.uses_agent(), "换回中转站不需要改名");
     }
 
     #[test]
@@ -339,24 +339,24 @@ mod engine_tests {
         assert!(legacy.web_search(true));
     }
 
-    /// 还没写过引擎的房间按中转站房间算：名字不参与判断，`pi` 开头也一样。
+    /// 还没写过引擎的房间按中转站房间算：名字不参与判断，`agent` 开头也一样。
     #[test]
     fn the_engine_field_is_the_only_thing_that_decides() {
         let bare: Agent =
-            serde_json::from_str(r#"{"name":"pi-猫娘","model":"gpt-5.6-luna","system_prompt":""}"#)
+            serde_json::from_str(r#"{"name":"agent-猫娘","model":"gpt-5.6-luna","system_prompt":""}"#)
                 .unwrap();
         assert!(bare.engine.is_empty());
-        assert!(!bare.uses_pi(), "名字里带 pi 不再让它变成内置房间");
+        assert!(!bare.uses_agent(), "名字里带 agent 不再让它变成内置房间");
         let ordinary: Agent =
             serde_json::from_str(r#"{"name":"助手","model":"gpt-5.6-luna","system_prompt":""}"#)
                 .unwrap();
-        assert!(!ordinary.uses_pi());
+        assert!(!ordinary.uses_agent());
         // 引擎写明才是内置房间，与名字无关。
         let mut agent = ordinary.clone();
-        agent.set_engine(ENGINE_PI, "deepseek/deepseek-flash");
-        assert!(agent.uses_pi());
+        agent.set_engine(ENGINE_AGENT, "deepseek/deepseek-flash");
+        assert!(agent.uses_agent());
         agent.set_engine(ENGINE_CHAT, "gpt-5.6-luna");
-        assert!(!agent.uses_pi());
+        assert!(!agent.uses_agent());
     }
 }
 
@@ -366,17 +366,17 @@ mod generation_tests {
     #[test]
     fn cancellation_and_concurrent_histories_are_independent() {
         let mut state = GeneratingState::default();
-        let public = state.begin("pi", false, "alice").unwrap();
-        let alice = state.begin("pi", true, "alice").unwrap();
-        let bob = state.begin("pi", true, "bob").unwrap();
-        assert!(state.begin("pi", false, "bob").is_none());
-        state.set_generating("pi", true, "alice", false);
-        assert!(!state.is_current("pi", true, "alice", alice));
-        assert!(state.is_current("pi", true, "bob", bob));
-        assert!(state.is_current("pi", false, "alice", public));
-        let next = state.begin("pi", true, "alice").unwrap();
-        assert!(state.is_current("pi", true, "alice", next));
-        assert!(!state.is_current("pi", true, "alice", alice));
+        let public = state.begin("agent", false, "alice").unwrap();
+        let alice = state.begin("agent", true, "alice").unwrap();
+        let bob = state.begin("agent", true, "bob").unwrap();
+        assert!(state.begin("agent", false, "bob").is_none());
+        state.set_generating("agent", true, "alice", false);
+        assert!(!state.is_current("agent", true, "alice", alice));
+        assert!(state.is_current("agent", true, "bob", bob));
+        assert!(state.is_current("agent", false, "alice", public));
+        let next = state.begin("agent", true, "alice").unwrap();
+        assert!(state.is_current("agent", true, "alice", next));
+        assert!(!state.is_current("agent", true, "alice", alice));
     }
 }
 

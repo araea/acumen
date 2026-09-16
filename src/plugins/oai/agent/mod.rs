@@ -1,6 +1,6 @@
 //! 房间与群聊搭话共用的内置 agent 执行层。
 //!
-//! 这些房间曾经驱动本机安装的 pi CLI（`pi -p --mode json`），模型、系统提示词与
+//! 这些房间曾经驱动本机安装的一个外部 CLI，模型、系统提示词与
 //! 工具全在那边；代价是部署必须多装一套 Node 工具链，且工具集与提示词都不在自己
 //! 手里。现在整条链路就在进程内：一轮对话 = 若干个 Chat Completions 请求，
 //! 模型要工具就调用本模块里的实现，把结果作为 tool 消息回填，直到它不再要工具。
@@ -11,7 +11,7 @@
 //! - [`run`]：消息组装、工具循环、轨迹整理、skill 索引；
 //! - [`bash`]：子进程与进程组终止——取消一轮对话必须连带杀掉工具派生出来的进程。
 //!
-//! 与 pi 时期最大的行为差别是**没有会话文件**：房间历史始终由 ayjx 侧持有，
+//! 与从前那套外部 CLI 最大的行为差别是**没有会话文件**：房间历史始终由 ayjx 侧持有，
 //! 每轮按需展开成消息，所以编辑/删除/清空/重新生成的行为与普通房间完全一致。
 
 pub(crate) mod bash;
@@ -42,31 +42,33 @@ pub(crate) trait ChatBridge: Send + Sync {
     }
 }
 
-/// 解析房间的写法：`pi`、`pi 模型`、`pi/模型`、`pi:模型`（大小写与全角冒号皆可）。
+/// 解析房间的写法：`agent`、`agent 模型`、`agent/模型`、`agent:模型`（大小写与全角冒号皆可）。
 ///
 /// 返回 `Some(模型)`——空串表示房间没指定模型，用 `[oai] agent_default_model`。
 /// 不是这个写法时返回 `None`，调用方按中转站模型处理。
-pub(crate) fn parse_pi_spec(spec: &str) -> Option<String> {
+pub(crate) fn parse_agent_spec(spec: &str) -> Option<String> {
+    /// 引擎关键字。写模型位时它代替模型名，说「这间房交给内置智能体」。
+    const KEYWORD: &str = "agent";
     let spec = spec.trim();
     let tail = spec
-        .get(..2)
-        .filter(|head| head.eq_ignore_ascii_case("pi"))
-        .map(|_| &spec[2..])?;
+        .get(..KEYWORD.len())
+        .filter(|head| head.eq_ignore_ascii_case(KEYWORD))
+        .map(|_| &spec[KEYWORD.len()..])?;
     let mut chars = tail.chars();
     match chars.next() {
         None => Some(String::new()),
         Some('/' | ':' | '：' | ' ' | '\t') => Some(chars.as_str().trim().to_string()),
-        // `pixi`、`ping` 这类名字不是这个写法。
+        // `agency`、`agent2` 这类名字不是这个写法。
         Some(_) => None,
     }
 }
 
-/// 房间模型是否表示「用默认模型」：留空或写 `pi`。
+/// 房间模型是否表示「用默认模型」：留空或写 `agent`。
 ///
-/// 从前这是「沿用 pi 自身配置」；pi 没了之后由 `[oai] agent_default_model` 接手。
+/// 留空时由 `[oai] agent_default_model` 接手；写 `agent` 是同一件事的显式说法。
 pub(crate) fn uses_default_model(model: &str) -> bool {
     let model = model.trim();
-    model.is_empty() || model.eq_ignore_ascii_case("pi")
+    model.is_empty() || model.eq_ignore_ascii_case("agent")
 }
 
 /// 每次调用独占目录，避免中文房间名、私有用户及临时请求之间共享文件。
@@ -248,28 +250,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pi_spec_accepts_every_separator_and_rejects_lookalike_names() {
-        assert_eq!(parse_pi_spec("pi").as_deref(), Some(""));
-        assert_eq!(parse_pi_spec(" PI ").as_deref(), Some(""));
+    fn the_agent_spec_accepts_every_separator_and_rejects_lookalike_names() {
+        assert_eq!(parse_agent_spec("agent").as_deref(), Some(""));
+        assert_eq!(parse_agent_spec(" AGENT ").as_deref(), Some(""));
         for spec in [
-            "pi apilio/claude-opus-5",
-            "pi/apilio/claude-opus-5",
-            "pi:apilio/claude-opus-5",
-            "PI：apilio/claude-opus-5",
+            "agent apilio/claude-opus-5",
+            "agent/apilio/claude-opus-5",
+            "agent:apilio/claude-opus-5",
+            "AGENT：apilio/claude-opus-5",
         ] {
             assert_eq!(
-                parse_pi_spec(spec).as_deref(),
+                parse_agent_spec(spec).as_deref(),
                 Some("apilio/claude-opus-5"),
                 "{spec}"
             );
         }
         // 中转站模型名不能被误当成这种写法。
-        for spec in ["", "pixi", "ping", "gpt-5.6-luna", "pi-test", "皮"] {
-            assert_eq!(parse_pi_spec(spec), None, "{spec}");
+        for spec in ["", "agents", "agency", "gpt-5.6-luna", "agent-1", "皮"] {
+            assert_eq!(parse_agent_spec(spec), None, "{spec}");
         }
         // 空模型等于「用默认模型」。
-        assert!(uses_default_model(&parse_pi_spec("pi").unwrap()));
-        assert!(!uses_default_model(&parse_pi_spec("pi kimi-k3").unwrap()));
+        assert!(uses_default_model(&parse_agent_spec("agent").unwrap()));
+        assert!(!uses_default_model(&parse_agent_spec("agent kimi-k3").unwrap()));
     }
 
     #[test]

@@ -70,7 +70,7 @@ pub(crate) fn resolve_endpoint(
 #[serde(default)]
 pub(crate) struct OaiConfig {
     enabled: bool,
-    /// 内置 agent 房间没指定模型（留空或写 `pi`）时用哪个模型。
+    /// 内置 agent 房间没指定模型（留空或写 `agent`）时用哪个模型。
     /// 写 `供应商/模型` 时按 `[oai.providers]` 取接口；留空则用 oai 的默认模型。
     pub(crate) agent_default_model: String,
     /// 单次回复的总时间预算。
@@ -435,7 +435,7 @@ mod tests {
     fn agent_default_model_is_optional_and_legacy_config_remains_loadable() {
         // 旧配置里那些已经不用的键（如 pi_command）不该让整份配置解析失败。
         let config: OaiConfig =
-            toml::from_str("pi_command = 'pi'\nharness_rooms = ['pi']").unwrap();
+            toml::from_str("retired_option = 'x'\nharness_rooms = ['老键']").unwrap();
         assert_eq!(config.agent_default_model(), Some("deepseek/deepseek-flash"));
         let config: OaiConfig = toml::from_str("agent_default_model = 'deepseek/deepseek-flash'").unwrap();
         assert_eq!(config.agent_default_model(), Some("deepseek/deepseek-flash"));

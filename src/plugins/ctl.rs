@@ -18,8 +18,8 @@ struct Config {
     enabled: bool,
     /// Global operators, not group administrators. Empty means console only.
     admins: Vec<i64>,
-    /// 允许管理员在 pi 房间里用自然语言驱动 ctl（见 bridge）。关闭后 pi 房间拿不到凭据。
-    pi_control: bool,
+    /// 允许在内置智能体房间里用自然语言驱动 ctl（见 bridge）。关闭后那些房间拿不到凭据。
+    agent_control: bool,
     /// 是否把用法、状态、配置与差异排版成卡片图；关掉或没有可用字体时退回纯文本。
     /// 短反馈（开关、设置、重置、报错）任何时候都走纯文本。
     image_enabled: bool,
@@ -31,7 +31,7 @@ impl Default for Config {
         Self {
             enabled: true,
             admins: vec![],
-            pi_control: true,
+            agent_control: true,
             image_enabled: true,
             image_scale: 3.0,
         }
@@ -43,7 +43,7 @@ pub fn default_config() -> Value {
 pub fn validate_config(value: &Value) -> Result<(), String> {
     Config::deserialize(value.clone())
         .map(|_| ())
-        .map_err(|_| "admins 必须是 QQ 号整数数组，pi_control、image_enabled 必须是布尔值，image_scale 必须是数字".into())
+        .map_err(|_| "admins 必须是 QQ 号整数数组，agent_control、image_enabled 必须是布尔值，image_scale 必须是数字".into())
 }
 pub fn is_manager(ctx: &Context) -> bool {
     if ctx.bot.adapter == "console" && ctx.bot.platform == "console" {

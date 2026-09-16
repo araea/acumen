@@ -51,7 +51,7 @@ enabled = true
 # 例如 [123456789]。改这一项要在私聊或控制台里做——群里的 ctl 动不了 admins。
 admins = []
 # 允许管理员在 agent 房间里用自然语言驱动 ctl（凭据仅本轮有效，见 docs/CONTROL.md）。
-pi_control = true
+agent_control = true
 # 用法、状态、配置与差异是否排版成卡片图；短反馈（开关、设置、重置、报错）始终走纯文本。
 # 网页卡片需要 Chrome/Chromium 与系统中日韩字体；出图失败时自动回退纯文本。
 image_enabled = true
@@ -240,7 +240,7 @@ black = []
 # 智能对话：多智能体房间、模型与历史管理；内置 agent 房间能自己调工具。
 [oai]
 enabled = true
-# 内置 agent 房间（`##研究 pi`）没写模型时用哪个：留空或写 `pi` 的房间都取这里的值。
+# 内置 agent 房间（`##研究 agent`）没写模型时用哪个：留空或写 `agent` 的房间都取这里的值。
 # 写成 `供应商/模型` 时按下面的 [oai.providers] 取接口；留空则退到 oai 的默认模型。
 agent_default_model = "deepseek/deepseek-flash"
 # 单次回复的总时间预算（秒）。

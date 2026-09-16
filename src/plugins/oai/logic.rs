@@ -272,12 +272,12 @@ async fn chat(
         }
     };
 
-    let use_pi = agent.uses_pi();
+    let use_agent = agent.uses_agent();
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
-    // 内置 agent 房间可以只写 `pi`（或干脆留空）表示「用默认模型」：先看
+    // 内置 agent 房间可以只写 `agent`（或干脆留空）表示「用默认模型」：先看
     // `[oai] agent_default_model`，再退到 oai config.json 里的 default_model。
     // 普通房间没有这层回退——模型是建房时就定下的。
-    let spec = if use_pi && super::agent::uses_default_model(&agent.model) {
+    let spec = if use_agent && super::agent::uses_default_model(&agent.model) {
         let fallback = mgr.config.read().await.default_model.clone();
         oai.agent_default_model()
             .unwrap_or(fallback.as_str())
@@ -299,7 +299,7 @@ async fn chat(
     // 接口的模型 id。内置 agent 房间同样按前缀选接口（见 `resolve_endpoint`）。
     let (provider, chat_model) = super::utils::split_provider(&spec);
     // 按剥掉供应商前缀后的名字判家族，与后面的图像模型判断保持一致。
-    if !use_pi && super::mj::is_mj_model(&chat_model) {
+    if !use_agent && super::mj::is_mj_model(&chat_model) {
         // MJ 房间天生是无历史任务流；引用文字也不应混入绘图提示词。
         super::mj::handle_agent(&agent, &cmd.args, imgs, ctx, writer, mgr).await;
         return;
@@ -388,7 +388,7 @@ async fn chat(
     let started = std::time::Instant::now();
     // 这一轮内置智能体房间的对话可以用自然语言驱动 ctl；
     // 凭据随 `control` 一起活到本轮结束。其余情况下拿到 None，行为与从前一致。
-    let control = if use_pi {
+    let control = if use_agent {
         crate::plugins::ctl::bridge::lease(ctx).await
     } else {
         None
@@ -402,9 +402,9 @@ async fn chat(
     // 回复，只会在群里插进一段与上下文无关的噪音。
     // 图像 / 音乐 / 视频房间各自走专用接口，其余房间继续走聊天补全 / 内置 agent。
     // 内置 agent 房间的模型是交给执行层解析的，不能拿它去撞中转站的这些模型关键字。
-    let draw = !use_pi && super::images::is_images_model(&chat_model, &oai.image_models);
-    let music = !use_pi && super::music::is_music_model(&chat_model, &oai.music_models);
-    let video = !use_pi && super::video::is_video_model(&chat_model, &oai.video_models);
+    let draw = !use_agent && super::images::is_images_model(&chat_model, &oai.image_models);
+    let music = !use_agent && super::music::is_music_model(&chat_model, &oai.music_models);
+    let video = !use_agent && super::video::is_video_model(&chat_model, &oai.video_models);
     // 视频与一首歌都是异步任务，普通的 5 分钟预算不够它们出成品。
     let media_room = music || video;
 
@@ -670,7 +670,7 @@ fn search_backends(config: &super::search::SearchConfig) -> String {
 
 /// 房间里显示的联网状态：区分「这间房自己定的」和「跟着全局走」。
 fn search_state(agent: &Agent, global: bool) -> String {
-    if !agent.uses_pi() {
+    if !agent.uses_agent() {
         return "不适用（普通房间）".to_string();
     }
     // 两件事分开说：**现在开没开**（有效值）与**这个值是谁定的**。
@@ -687,7 +687,7 @@ fn search_state(agent: &Agent, global: bool) -> String {
 /// 房间列表和回执里显示的模型：内置 agent 房间前面挂上引擎，一眼能看出这间屋子
 /// 谁在跑；设了思考强度就一并标出。
 fn room_model_label(agent: &Agent) -> String {
-    let base = if !agent.uses_pi() {
+    let base = if !agent.uses_agent() {
         agent.model.clone()
     } else if super::agent::uses_default_model(&agent.model) {
         "内置 · 默认模型".to_string()
@@ -767,7 +767,7 @@ async fn respond(
     control: Option<&crate::plugins::ctl::bridge::Lease>,
 ) -> anyhow::Result<Reply> {
     let thinking = agent.effective_thinking();
-    if agent.uses_pi() {
+    if agent.uses_agent() {
         // 联网开关是房间自己的选择优先，没写过才跟 `[oai.search].enabled`。
         // 工具只是挂上去，搜不搜由模型按需决定，没有任何一轮是强制的。
         let search = super::search::SearchConfig {
@@ -1089,7 +1089,7 @@ pub async fn execute(
                 reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
-        // 同一个 `%` 既换模型也换引擎：`房间%pi` 转成内置智能体，`房间%pi 模型` 顺带
+        // 同一个 `%` 既换模型也换引擎：`房间%agent` 转成内置智能体，`房间%agent 模型` 顺带
         // 指定它用哪个模型，写中转站模型名则转回中转站房间。房间名不参与判断。
         Action::SetModel => {
             if cmd.args.is_empty() {
@@ -1097,7 +1097,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 请指定模型：`智能体%模型名`；交给内置智能体用 `智能体%pi` 或 `智能体%pi 模型`",
+                    "❌ 请指定模型：`智能体%模型名`；交给内置智能体用 `智能体%agent` 或 `智能体%agent 模型`",
                 )
                 .await;
                 return;
@@ -1106,9 +1106,9 @@ pub async fn execute(
             let models = c.models.clone();
             // 模型串支持 `:强度` 后缀；先摘掉它，剩下的再判 Pi 写法 / 供应商前缀。
             let (spec, thinking) = super::utils::split_thinking(&cmd.args);
-            let pi_model = super::agent::parse_pi_spec(&spec);
-            let resolved = match &pi_model {
-                Some(model) => Some((super::types::ENGINE_PI, model.clone())),
+            let agent_model = super::agent::parse_agent_spec(&spec);
+            let resolved = match &agent_model {
+                Some(model) => Some((super::types::ENGINE_AGENT, model.clone())),
                 None => {
                     let (provider, bare) = super::utils::split_provider(&spec);
                     match provider {
@@ -1125,7 +1125,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 无效模型\n`/%` 查看中转站模型，或用 `智能体%pi 模型` 交给内置智能体",
+                    "❌ 无效模型\n`/%` 查看中转站模型，或用 `智能体%agent 模型` 交给内置智能体",
                 )
                 .await;
                 return;
@@ -1160,13 +1160,13 @@ pub async fn execute(
                 reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
                 return;
             };
-            if !a.uses_pi() {
+            if !a.uses_agent() {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
                     format!(
-                        "❌ {} 是普通房间，联网搜索只挂在内置智能体上；先 `{}%pi` 把它转过来",
+                        "❌ {} 是普通房间，联网搜索只挂在内置智能体上；先 `{}%agent` 把它转过来",
                         name, name
                     ),
                 )
@@ -1297,7 +1297,7 @@ pub async fn execute(
                         "无描述".to_string()
                     };
                     // 联网的房间标一句：一眼看出哪几间会出去查资料。
-                    let desc_display = if a.uses_pi() && a.web_search(search_default) {
+                    let desc_display = if a.uses_agent() && a.web_search(search_default) {
                         format!("联网 · {}", desc_display)
                     } else {
                         desc_display
@@ -1789,16 +1789,16 @@ pub async fn execute(
 ## 内置智能体房间
 | 指令 | 效果 | 示例 |
 |------|------|------|
-| `##名称 pi` | 建一间内置智能体房间 | `##研究 pi` |
-| `##名称 pi/模型` | 建房并指定模型 | `##研究 pi/deepseek/deepseek-flash` |
-| `智能体%pi` | 已有房间转内置智能体 | `助手%pi` |
-| `智能体%pi 模型` | 换内置智能体用的模型 | `助手%pi apilio/kimi-k3` |
+| `##名称 agent` | 建一间内置智能体房间 | `##研究 agent` |
+| `##名称 agent/模型` | 建房并指定模型 | `##研究 agent/deepseek/deepseek-flash` |
+| `智能体%agent` | 已有房间转内置智能体 | `助手%agent` |
+| `智能体%agent 模型` | 换内置智能体用的模型 | `助手%agent apilio/kimi-k3` |
 | `智能体%中转站模型` | 转回中转站房间 | `助手%gpt-5.6-luna` |
 
 > 房间名可以随便取，中文也行；决定引擎的是这条指令，不是名字。
 > 模型写 `供应商/模型`（如 `apilio/claude-opus-5`）或裸 id，按 `[oai.providers]` 取接口；
 > 可加 `:强度`（如 `deepseek/deepseek-flash:high`），或在房间上单独设思考强度；
-> 只写 `pi` 则用 `[oai].agent_default_model`。`/#` 里显示为 `内置 · 模型 · 思考:强度`。
+> 只写 `agent` 则用 `[oai].agent_default_model`。`/#` 里显示为 `内置 · 模型 · 思考:强度`。
 > 公有、`&` 私有和 `~` 临时模式都适用，历史按原模式隔离。
 > 它会自己调工具：读写文件、执行命令，查到的结果自己用进回答里。
 > 房间提示词追加在内置系统提示词之后；支持图片、历史编辑/删除/清空/重新生成；
@@ -1981,11 +1981,11 @@ pub async fn handle_create(
     let mut c = mgr.config.write().await;
     let models = c.models.clone();
     // 建房时的模型位同样认 Pi 写法与供应商前缀：
-    // `##研究 pi`、`##研究 pi/apilio/claude-opus-5`、`##研究 deepseek/deepseek-flash:high`。
+    // `##研究 agent`、`##研究 agent/apilio/claude-opus-5`、`##研究 deepseek/deepseek-flash:high`。
     let (spec, thinking) = super::utils::split_thinking(model);
-    let pi_model = super::agent::parse_pi_spec(&spec);
-    let (engine, model) = match pi_model {
-        Some(model) => (super::types::ENGINE_PI, model),
+    let agent_model = super::agent::parse_agent_spec(&spec);
+    let (engine, model) = match agent_model {
+        Some(model) => (super::types::ENGINE_AGENT, model),
         None => match super::utils::split_provider(&spec) {
             // 带供应商前缀时保留原样，交给请求路由按供应商选接口。
             (Some(_), _) => (super::types::ENGINE_CHAT, spec.clone()),
@@ -2001,7 +2001,7 @@ pub async fn handle_create(
 
     if let Some(a) = c.agents.iter_mut().find(|a| a.name == name) {
         // 省略模型位时只改提示词和描述，保留这个房间原来的引擎。
-        if !model.is_empty() || engine == super::types::ENGINE_PI {
+        if !model.is_empty() || engine == super::types::ENGINE_AGENT {
             a.set_engine(engine, &model);
         }
         if let Some(level) = &thinking {

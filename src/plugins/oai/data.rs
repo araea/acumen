@@ -78,6 +78,14 @@ impl Manager {
             config_dirty = true;
         }
 
+        // 引擎关键字从 `pi` 改成 `agent`：老配置里写着旧值，改一次就好。
+        for agent in config.agents.iter_mut() {
+            if agent.engine.trim().eq_ignore_ascii_case("pi") {
+                agent.engine = super::types::ENGINE_AGENT.to_string();
+                config_dirty = true;
+            }
+        }
+
         // `模型:强度` 的旧写法收进独立的 `thinking` 字段：行为等价，但让强度可单独
         // 修改而不必重写模型名。幂等——已经收好的房间再跑一次什么都不做。
         for agent in config.agents.iter_mut() {
@@ -108,7 +116,7 @@ impl Manager {
                 };
                 let mut room =
                     super::types::Agent::new(BUILTIN_ROOM, model, BUILTIN_PERSONA, "终端与联网工具助手");
-                room.set_engine(super::types::ENGINE_PI, model);
+                room.set_engine(super::types::ENGINE_AGENT, model);
                 config.agents.push(room);
             }
             config.seeded_presets.push(BUILTIN_ROOM.to_string());
@@ -302,7 +310,7 @@ mod tests {
         assert_eq!(room.description, "终端与联网工具助手");
         assert_eq!(room.model, DEFAULT_MODEL);
         assert!(room.public_history.is_empty());
-        assert!(room.uses_pi());
+        assert!(room.uses_agent());
         assert_eq!(config.default_model, DEFAULT_MODEL);
         assert_eq!(config.defaults_version, CURRENT_DEFAULTS_VERSION);
         assert!(
@@ -322,6 +330,43 @@ mod tests {
             !again.agents.iter().any(|agent| agent.name == BUILTIN_ROOM),
             "管理员删过的内置房间不该被补建回来"
         );
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 引擎关键字从 `pi` 改成 `agent` 之后，老配置里的写值要跟着换过来，
+    /// 否则那间房会静默掉回中转站房间（引擎认不出，功能退化且没有报错）。
+    #[test]
+    fn the_old_engine_keyword_is_rewritten_to_the_new_one() {
+        let unique = format!(
+            "ayjx-oai-engine-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let mut legacy = Config {
+            api_base: "https://api.deepseek.com/v1".into(),
+            api_key: "sk-test".into(),
+            defaults_version: CURRENT_DEFAULTS_VERSION,
+            seeded_presets: vec![BUILTIN_ROOM.to_string()],
+            ..Default::default()
+        };
+        let mut room = super::super::types::Agent::new("管家大人", "deepseek/deepseek-flash", "", "");
+        room.engine = "pi".into();
+        legacy.agents.push(room);
+        std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        let _ = Manager::new(dir.clone());
+        let config: Config =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let room = config.agents.iter().find(|a| a.name == "管家大人").unwrap();
+        assert_eq!(room.engine, super::super::types::ENGINE_AGENT);
+        assert!(room.uses_agent());
 
         std::fs::remove_dir_all(dir).unwrap();
     }

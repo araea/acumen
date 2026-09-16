@@ -268,6 +268,6 @@ mod tests {
     fn symbol_commands_keep_their_own_form() {
         assert_eq!(full_cmd("/", "帮助"), "/帮助");
         assert_eq!(full_cmd("/", "/#"), "/#");
-        assert_eq!(full_cmd("!", "~pi <任务>"), "~pi <任务>");
+        assert_eq!(full_cmd("!", "~agent <任务>"), "~agent <任务>");
     }
 }

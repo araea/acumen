@@ -483,7 +483,7 @@ mod tests {
                 super::super::images::is_images_model(&room.model, &images)
             };
             assert!(matches, "{} 的模型 {} 落不到专用接口", room.name, room.model);
-            assert!(!room.uses_pi(), "{}", room.name);
+            assert!(!room.uses_agent(), "{}", room.name);
             // 三族模型关键字必须互不误伤：一间房只能命中一个专用接口。
             assert!(
                 !(super::super::images::is_images_model(&room.model, &images)

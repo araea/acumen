@@ -376,7 +376,7 @@ mod tests {
         ] {
             assert!(full.contains(tool), "{tool} 开着，提示词里却没提它");
         }
-        // pi 时代的联网工具已经整个撤掉，提示词里不该再留它们的名字。
+        // 从前那套外部 CLI 用过的联网工具已经整个撤掉，提示词里不该再留它们的名字。
         for gone in ["fetch_content", "source_check", "get_search_content"] {
             assert!(!full.contains(gone), "{gone} 已经删了，提示词里还留着");
         }

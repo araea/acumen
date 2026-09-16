@@ -77,7 +77,7 @@ pub(crate) const PERSONA: &str = include_str!("../../res/ambient/persona.md");
 const SELF: &str = include_str!("../../res/ambient/self.md");
 /// 随代码走的 skill：每次启动按目录名覆盖写入。
 ///
-/// 分成两份是照 pi 的渐进披露来的——常在提示词里的只有 skill 的一行描述，
+/// 分成两份是照那套外部 CLI 的渐进披露来的——常在提示词里的只有 skill 的一行描述，
 /// 正文要模型自己去 `read`。所以「怎么在群里动手」和「怎么翻旧账」拆开各自成篇，
 /// 用得上哪篇才读哪篇，常驻开销仍然只是两行描述。
 const SKILLS: [(&str, &str); 2] = [

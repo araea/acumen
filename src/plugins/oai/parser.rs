@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(name, "测试房");
         assert!(model.is_empty());
         // `-` 是「删除第 N 条」的符号，任何名字都不放行。
-        for bad in ["PI-猫娘", "other-x", "pi-test", "pi-../x"] {
+        for bad in ["AGENT-猫娘", "other-x", "agent-test", "agent-../x"] {
             assert!(!valid_agent_name(bad), "{bad}");
         }
         let rooms = vec!["测试".to_string(), name];
