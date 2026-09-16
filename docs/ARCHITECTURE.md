@@ -108,7 +108,10 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 发送消息统一走 `crate::adapters::satori::send_msg(&ctx, writer, group_id, user_id, msg)`，msg 支持 `Message`、`&str`、`String`。下载资源用 `crate::http::download_bytes(url)`。
 
-日志 target 使用 `"Plugin/<Name>"` 常量或字面量，命名与注册名一致（例如 `Plugin/WordCloud`）。
+日志 target 统一 `Plugin/<名字>`，名字按**单词边界**大写（`ai_news` → `Plugin/AiNews`，
+`webshot` → `Plugin/WebShot`，`wordcloud` → `Plugin/WordCloud`），
+子模块可以在后面加一级（`Plugin/OAI/Search`）。完整口径与其余九条硬条目见
+[设计规范总纲](GUIDELINES.md#四插件一致性的十条硬条目)。
 
 ## 出图与渲染
 
@@ -179,7 +182,9 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 两条单测**从样式表里读回来比对**——改了 CSS 没改代码，测试会红。
 
 文案与这层是一件事的两面，规范在 [`docs/CONTENT.md`](CONTENT.md)：声音、语气、
-标点、状态词表、术语表、六个状态图标。
+标点、状态词表、术语表、六个状态图标。整套设计规范的入口与十条硬条目见
+[`docs/GUIDELINES.md`](GUIDELINES.md)，交互与行为规范见
+[`docs/INTERACTION.md`](INTERACTION.md)。
 
 一个容易踩的坑：样式表是塞在 `style` 元素里的，HTML 的 raw text 解析遇到闭合标签
 就结束。**任何注释里都不许出现 HTML 的成对标签字面量**，否则整张样式表被截成半句话，

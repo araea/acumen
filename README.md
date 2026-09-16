@@ -42,14 +42,18 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 
 ## 文档与测试
 
+- [设计规范总纲](docs/GUIDELINES.md)
+- [交互规范](docs/INTERACTION.md)
+- [文案规范](docs/CONTENT.md)
+- [统一度审计](docs/UNIFORMITY.md)
+- [架构说明](docs/ARCHITECTURE.md)
+- [架构与渲染审计](docs/AUDIT.md)
 - [插件控制](docs/CONTROL.md)
 - [Satori 接入](docs/SATORI.md)
 - [内置 Agent 房间](docs/agent.md)
 - [群聊搭话](docs/ambient.md)
 - [用户画像](docs/portrait.md)
 - [视频解析](docs/video_parse.md)
-- [架构说明](docs/ARCHITECTURE.md)
-- [架构与渲染审计](docs/AUDIT.md)
 
 ```sh
 cargo test --locked
