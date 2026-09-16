@@ -750,8 +750,10 @@ pub fn handle(
                         return Ok(None);
                     }
                     Some(Err(message)) => {
-                        // 看起来是序号请求但非法（如越界），给一条提示
-                        let body = Message::new().reply(message_id).text(message);
+                        // 看起来是序号请求但非法（如越界）：按表用 ❌，把事实与出路说清。
+                        let body = Message::new()
+                            .reply(message_id)
+                            .text(format!("❌ {message}"));
                         send_msg(&ctx, writer, group_id, Some(user_id), body).await?;
                         return Ok(None);
                     }
@@ -1018,7 +1020,7 @@ fn parse_extraction_indices(input: &str, total: usize) -> Result<Vec<usize>, Str
     }
 
     if selected.is_empty() {
-        return Err("请输入要提取的序号，例如 2、1,3-5，或 0（提取全部）".to_string());
+        return Err("没说取哪几条\n写法如 2、1,3-5，或 0 取全部".to_string());
     }
     Ok(selected.into_iter().map(|index| index - 1).collect())
 }
@@ -1027,9 +1029,9 @@ fn parse_extraction_index(input: &str, total: usize) -> Result<usize, String> {
     let index = input
         .trim()
         .parse::<usize>()
-        .map_err(|_| format!("无法识别序号“{}”", input.trim()))?;
+        .map_err(|_| format!("认不出「{}」这个序号", input.trim()))?;
     if !(1..=total).contains(&index) {
-        return Err(format!("序号 {} 超出范围，这张卡片共有 {} 条", index, total));
+        return Err(format!("序号 {index} 超出范围，这张卡片共有 {total} 条"));
     }
     Ok(index)
 }

@@ -722,6 +722,22 @@ pub(super) struct Reply {
     pub(super) media: Vec<MediaMessage>,
 }
 
+/// 房间在等一句补充时回的那条。
+///
+/// 这不是失败——用户只是还没说要什么，`❌ 对话失败：…` 会把一句引导说成故障。
+/// 走 💡 并保持纯文本，与 CONTENT.md 的图标表一致。
+pub(super) fn guidance(text: impl Into<String>) -> Reply {
+    Reply {
+        text: text.into(),
+        sources: Vec::new(),
+        trace: Vec::new(),
+        trace_overflow: 0,
+        model: None,
+        plain: true,
+        media: Vec::new(),
+    }
+}
+
 /// 一条媒体消息里的单个片段。
 pub(super) enum Media {
     Image { url: String },

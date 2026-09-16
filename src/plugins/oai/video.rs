@@ -228,7 +228,9 @@ pub(super) async fn generate_reply(
     );
     let prompt = options.prompt.trim().to_string();
     if prompt.is_empty() {
-        return Err(anyhow!("请描述想拍什么，例如：拍一段雪山日出延时"));
+        return Ok(super::logic::guidance(
+            "💡 没说拍什么\n例如：拍一段雪山日出延时",
+        ));
     }
 
     let seconds = options

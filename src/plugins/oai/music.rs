@@ -203,8 +203,8 @@ pub(super) async fn generate_reply(
         },
     );
     if options.prompt.trim().is_empty() {
-        return Err(anyhow!(
-            "请说明想要一首什么样的歌，例如：唱一首关于秋天的民谣"
+        return Ok(super::logic::guidance(
+            "💡 没说想写什么歌\n例如：唱一首关于秋天的民谣",
         ));
     }
     if options.version.trim().is_empty() {
@@ -387,7 +387,7 @@ pub(crate) async fn generate(
 ) -> anyhow::Result<Generated> {
     let prompt = options.prompt.trim();
     if prompt.is_empty() {
-        return Err(anyhow!("请说明想要一首什么样的歌"));
+        return Err(anyhow!("没说想写什么歌"));
     }
     let version = if options.version.trim().is_empty() {
         DEFAULT_VERSION

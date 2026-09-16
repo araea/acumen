@@ -480,7 +480,7 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
             .map(resolve)
             .collect::<Result<_, _>>()?;
         if names.is_empty() {
-            return Err(format!("请指定插件，例如 {prefix}ctl on help echo"));
+            return Err(format!("没写插件名\n例如 {prefix}ctl on help echo"));
         }
         let on = ["on", "开启", "启用"].contains(&action);
         let text = change(ctx, |cfg| {
@@ -576,7 +576,10 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
             } else if tail == "--confirm" {
                 path
             } else {
-                return Err(format!("重置会覆盖现有值；查看 {prefix}ctl defaults 后，追加 --confirm 确认"));
+                // 这不是失败，是「先把后果看一眼」——按表用 💡，不走 ❌。
+                return Ok(Output::from(format!(
+                    "💡 重置会覆盖现有值\n先看 {prefix}ctl defaults，确认后追加 --confirm"
+                )));
             };
             let defaults = (p.default_config)();
             if path.is_empty() {
@@ -655,7 +658,8 @@ pub fn handle(
         let config = get_config::<Config>(&ctx, "ctl").unwrap_or_default();
         let response = execute(&ctx, &input)
             .await
-            .unwrap_or_else(|e| Output::from(format!("操作未完成：{e}")));
+            // 失败就是失败：不铺垫「操作未完成」，直接把事实与出路摆出来。
+            .unwrap_or_else(|e| Output::from(format!("❌ {e}")));
 
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
         if config.image_enabled && let Some(card) = &response.card {
@@ -816,7 +820,14 @@ mod tests {
                 .text
                 .contains("789")
         );
-        assert!(execute(&ctx, "reset repeater channel.white").await.is_err());
+        // 不带 --confirm 时不是失败，是一句引导：告诉用户先看后果再确认。
+        let guided = execute(&ctx, "reset repeater channel.white").await.unwrap();
+        assert!(guided.card.is_none(), "引导走纯文本");
+        assert!(
+            guided.text.starts_with("💡") && guided.text.contains("--confirm"),
+            "引导要说清下一步：{}",
+            guided.text
+        );
         execute(&ctx, "reset repeater channel.white --confirm")
             .await
             .unwrap();
