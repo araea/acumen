@@ -177,6 +177,8 @@ pub(crate) async fn compose(
                 writer,
                 group: *group,
                 config: chat,
+                enabled: config.enabled,
+                require_fresh: true,
                 scratch: dir.path(),
                 media: &base.join("media"),
                 persona: Some(persona),

@@ -452,9 +452,7 @@ impl Ambient {
 /// 以后给能力层加一项，编译器会在这里提醒补上。
 pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
     ChatConfig {
-        enabled: config.enabled,
         management_groups: config.management_groups.clone(),
-        require_fresh: true,
         max_messages: config.max_messages,
         max_actions: config.max_actions,
         memo_budget: config.memo_budget,

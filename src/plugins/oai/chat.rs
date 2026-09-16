@@ -53,23 +53,11 @@ pub(crate) const LOG_TARGET: &str = "Plugin/Chat";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub(crate) struct ChatConfig {
-    /// 这一层在当下这个群开着吗。房间总是开着；搭话看自己的开关与群列表。
-    ///
-    /// 这一项与下面的 `require_fresh` 由调用方算，不写进配置——它们描述的是「谁在
-    /// 用这一层」，不是可调的口味。
-    #[serde(skip)]
-    pub enabled: bool,
     /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片、
     /// 群文件的改名/移动/删除）的群号。
     ///
     /// 这些是会被全群看见的写操作，默认一个群都不放行——要用就按群单独列出来。
     pub management_groups: Vec<i64>,
-    /// 要求「群聊没有往前走」才允许动手。
-    ///
-    /// 搭话的回复只对刚才那一批消息负责，窗口一动就该重看；房间回答的是一句直接
-    /// 请求，中间群里聊了什么与这次回答无关。
-    #[serde(skip)]
-    pub require_fresh: bool,
     /// 一次发言最多几条（模型把一段话写长了，切开也算额度）。
     pub max_messages: usize,
     /// 一轮最多几次写动作。
@@ -103,9 +91,7 @@ impl Default for ChatConfig {
     /// 房间那一侧的内置默认：全都开着，额度取保守的一档。
     fn default() -> Self {
         Self {
-            enabled: true,
             management_groups: Vec::new(),
-            require_fresh: false,
             max_messages: 3,
             max_actions: 6,
             memo_budget: 3,
@@ -132,6 +118,13 @@ pub(crate) struct ChatEnv<'a> {
     /// 群号。能力层只在群里工作——私聊没有群资料、没有群动作，也就没有这一层。
     pub group: i64,
     pub config: ChatConfig,
+    /// 这个群现在开着吗。房间总是开着；搭话看自己的开关与群列表。
+    pub enabled: bool,
+    /// 动手之前要不要先确认「群聊没有往前走」。
+    ///
+    /// 搭话的回复只对刚才那一批消息负责，窗口一动就该重看；房间回答的是一句直接
+    /// 请求，中间群里聊了什么与这次回答无关。
+    pub require_fresh: bool,
     /// 本轮独占的工作目录：工具写文件、生成图片与视频都落在这儿。
     pub scratch: &'a Path,
     /// 本轮生成物落盘的位置，供随后用 `satori_action` 发出去。

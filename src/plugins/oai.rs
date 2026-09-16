@@ -400,6 +400,23 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// `[oai.chat]` 只写一半时，没写的那些取内置默认；写了的就认自己那一份。
+    ///
+    /// 「谁在用这一层」（这个群开着吗、要不要时效）不在配置里，所以写这张表绝不会
+    /// 把房间那一侧悄悄关掉。
+    #[test]
+    fn the_chat_table_falls_back_to_defaults_key_by_key() {
+        let config: OaiConfig = toml::from_str("[chat]\nvideo_budget = 2\n").unwrap();
+        assert_eq!(config.chat.video_budget, 2);
+        assert_eq!(config.chat.max_actions, 6);
+        assert!(config.chat.memory_enabled);
+        assert!(config.chat.management_groups.is_empty());
+
+        let bare: OaiConfig = toml::from_str("").unwrap();
+        assert_eq!(bare.chat.video_budget, 0);
+        assert_eq!(bare.chat.draw_budget, 2);
+    }
     use super::*;
 
     #[test]

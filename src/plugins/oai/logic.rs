@@ -426,7 +426,7 @@ async fn chat(
                     writer: writer.clone(),
                     group,
                     config: oai.chat.clone(),
-                    tools: Some(room_tools(&oai.chat, group)),
+                    tools: Some(room_tools(&oai.chat)),
                 });
                 respond(
                     &api_base,
@@ -766,7 +766,7 @@ pub(super) struct MediaMessage {
 /// 本机那几件按 `[oai.chat] tools` 来（留空就是全给）；群聊那一套按额度收敛，
 /// 与搭话用同一份清单（[`chat::tool_names`]），于是「模型看得到的工具」与
 /// 「它真按得动的按钮」在两边都永远对得上。
-fn room_tools(config: &super::chat::ChatConfig, group: i64) -> String {
+fn room_tools(config: &super::chat::ChatConfig) -> String {
     let mut names: Vec<String> = if config.tools.trim().is_empty() {
         super::agent::tools::local_names()
             .into_iter()
@@ -782,7 +782,6 @@ fn room_tools(config: &super::chat::ChatConfig, group: i64) -> String {
     };
     // 管理动作写在 `satori_action` 里，按群授权（`[oai.chat] management_groups`），
     // 白名单这一层不必再分；这里补的是「按额度该不该出现」。
-    let _ = group;
     names.extend(
         super::chat::tool_names(config)
             .into_iter()

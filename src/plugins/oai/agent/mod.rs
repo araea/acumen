@@ -235,6 +235,9 @@ pub(crate) async fn conversation(
                 writer: &chat.writer,
                 group: chat.group,
                 config: chat.config.clone(),
+                // 房间总是开着：用户问一句就答一句；动手也不必等群聊停下来。
+                enabled: true,
+                require_fresh: false,
                 scratch: dir.path(),
                 // 房间里生成的东西放在本轮工作目录里，随后就发出去；一轮结束即清理。
                 media: dir.path(),

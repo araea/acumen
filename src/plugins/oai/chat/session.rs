@@ -269,6 +269,10 @@ struct Session {
     own_reactions: HashMap<String, Vec<String>>,
     /// 平台明确拒绝过的能力（动作名 → 给模型的解释）。见 [`Session::refused`]。
     refusals: HashMap<&'static str, String>,
+    /// 这个群现在开着吗；停用之后这一轮什么都不做。
+    enabled: bool,
+    /// 动手之前要不要确认群聊没有往前走。
+    require_fresh: bool,
     /// 这一轮的群聊现场从哪儿来。
     scene: Scene,
     /// 房间那一侧向平台要回来的那一页（一轮只取一次）。
@@ -284,6 +288,8 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         writer,
         group,
         config,
+        enabled,
+        require_fresh,
         scratch,
         media,
         persona,
@@ -318,6 +324,8 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         capabilities: Value::Null,
         own_reactions: HashMap::new(),
         refusals: HashMap::new(),
+        enabled,
+        require_fresh,
         scene,
         page: None,
     };
@@ -434,8 +442,8 @@ impl Session {
     /// 那一版（搭话的回复只对刚才那批消息负责）。房间不要求时效——它回答的是一句
     /// 直接请求，期间群里聊了什么与这次回答无关。
     fn current(&self) -> bool {
-        self.config.enabled
-            && (!self.config.require_fresh
+        self.enabled
+            && (!self.require_fresh
                 || window::with_group(self.group, |s| s.seq) == self.seq.load(Ordering::SeqCst))
     }
     async fn request(&mut self, request: Value) -> Value {
@@ -1464,7 +1472,7 @@ impl Session {
         true
     }
     fn enabled(&self) -> bool {
-        self.config.enabled
+        self.enabled
     }
     /// 这个群允许执行群管理动作吗（见 [`ChatConfig::management_groups`]）。
     fn management_enabled(&self) -> bool {
@@ -2269,6 +2277,8 @@ mod tests {
             writer,
             group,
             config: crate::plugins::ambient::chat_config(config),
+            enabled: config.enabled,
+            require_fresh: true,
             scratch,
             media: data,
             persona: Some(Arc::new(TestPersona)),
