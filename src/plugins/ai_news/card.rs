@@ -158,7 +158,7 @@ body{width:720px}
 .sec-h{display:flex;align-items:center;gap:var(--md-space-3);
   font-size:var(--md-type-title-large-size);font-weight:800;
   color:var(--md-sys-color-on-surface)}
-.bar{width:5px;height:22px;border-radius:3px;background:var(--md-sys-color-primary)}
+.bar{width:5px;height:22px;border-radius:var(--md-shape-xs);background:var(--md-sys-color-primary)}
 .li{margin-top:17px;padding-left:var(--md-space-5);position:relative;
   font-size:var(--md-type-body-medium-size);line-height:1.68;
   color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}

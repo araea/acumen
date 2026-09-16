@@ -199,6 +199,11 @@ pub(crate) fn escape_html(value: &str) -> String {
 /// 这里只写这张卡自己的位置与 Markdown 的元素样式，**不写色值与字号字面量**。
 /// 与那五张卡的分工差别只有一条：这张卡的内容是 Markdown，元素由解析器产出，
 /// 所以多出一段「HTML 元素 → 令牌」的映射，其余版式语言完全一致。
+///
+/// 卡上的小字只有两档：页脚轨迹、来源序号、智能体小卡走 `label-small`（11px），
+/// 稍大一号的小标题走 `label-medium`（14px）。这两处原先是 10 / 10.5 / 11 / 11.5 /
+/// 13 / 13.5 / 14 七个值——比整支字阶还密，等于在系统之外又养了一套字阶。
+/// 行内代码的 `0.86em` 是例外：它相对父级字号，不属于这支字阶。
 const CSS: &str = r#"
 body{padding:20px;background:var(--md-sys-color-surface-dim)}
 .card{width:520px}
@@ -241,10 +246,10 @@ pre{position:relative;margin:var(--md-space-3) 0;padding:13px var(--md-space-4);
   overflow-wrap:anywhere}
 pre[data-lang]{padding-top:26px}
 pre[data-lang]::before{content:attr(data-lang);position:absolute;top:6px;left:var(--md-space-4);
-  font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+  font-size:var(--md-type-label-small-size);font-weight:700;letter-spacing:.06em;text-transform:uppercase;
   color:color-mix(in srgb,var(--md-sys-color-on-inverse-surface) 55%,transparent)}
 pre code{display:block;padding:0;background:none;color:var(--md-sys-color-on-inverse-surface);
-  font-size:14px;line-height:1.75;white-space:pre-wrap;word-break:break-word}
+  font-size:var(--md-type-label-medium-size);line-height:1.75;white-space:pre-wrap;word-break:break-word}
 /* 引语与「推荐理由」同形：主色淡底 + 一条主色左界 + 收一个角 */
 blockquote{margin:var(--md-space-3) 0;padding:var(--md-space-3) var(--md-space-4);
   background:var(--md-sys-color-primary-tint);border-left:3px solid var(--md-sys-color-primary);
@@ -278,7 +283,7 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
 /* 序号走 tertiary 容器：正文的主色已经用在链接上了，序号要另一支色才不混 */
 .src-idx{flex:none;min-width:17px;height:17px;border-radius:var(--md-shape-xs);
   background:var(--md-sys-color-tertiary-container);color:var(--md-sys-color-on-tertiary-container);
-  font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center}
+  font-size:var(--md-type-label-small-size);font-weight:800;display:flex;align-items:center;justify-content:center}
 .src-title{min-width:0;color:var(--md-sys-color-on-surface-variant);overflow-wrap:anywhere}
 .src-host{grid-column:2;color:var(--md-sys-color-on-surface-faint);
   font-size:var(--md-type-label-medium-size);overflow-wrap:anywhere}
@@ -294,12 +299,12 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
 .trace-name{flex:none;padding:0 5px;border-radius:var(--md-shape-xs);
   background:var(--md-sys-color-secondary-container);
   color:var(--md-sys-color-on-secondary-container);font-family:var(--md-font-mono);
-  font-size:10px;font-weight:700}
+  font-size:var(--md-type-label-small-size);font-weight:700}
 .trace-arg{flex:1;min-width:0;color:var(--md-sys-color-on-surface-faint);
-  font-family:var(--md-font-mono);font-size:10.5px;line-height:1.5;
+  font-family:var(--md-font-mono);font-size:var(--md-type-label-small-size);line-height:1.5;
   overflow-wrap:anywhere;word-break:break-word}
-.trace-rep{flex:none;color:var(--md-sys-color-on-surface-faint);font-size:10px}
-.trace-more{margin-top:2px;color:var(--md-sys-color-on-surface-faint);font-size:10.5px}
+.trace-rep{flex:none;color:var(--md-sys-color-on-surface-faint);font-size:var(--md-type-label-small-size)}
+.trace-more{margin-top:2px;color:var(--md-sys-color-on-surface-faint);font-size:var(--md-type-label-small-size)}
 
 /* —— 智能体与模型清单用的紧凑片段（以裸 HTML 嵌在 Markdown 里） —— */
 .agent-card{margin:var(--md-space-3) 0;padding:var(--md-space-3);
@@ -309,7 +314,7 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
   color:var(--md-sys-color-on-surface)}
 .agent-info{font-size:var(--md-type-label-medium-size);line-height:1.85;
   color:var(--md-sys-color-on-surface-variant)}
-.agent-info code{font-size:11.5px}
+.agent-info code{font-size:var(--md-type-label-small-size)}
 .model-group{margin-bottom:15px;break-inside:avoid}
 .model-header{display:flex;align-items:center;justify-content:space-between;
   margin-bottom:var(--md-space-2);padding:6px 10px;border-left:3px solid var(--md-sys-color-primary);
@@ -317,7 +322,7 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
   font-size:var(--md-type-label-medium-size);font-weight:700;color:var(--md-sys-color-on-surface-variant)}
 .model-count{padding:1px 6px;border-radius:var(--md-shape-xs);
   background:var(--md-sys-color-surface-container-high);
-  color:var(--md-sys-color-on-surface-faint);font-size:10.5px}
+  color:var(--md-sys-color-on-surface-faint);font-size:var(--md-type-label-small-size)}
 .agent-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
 .agent-mini{padding:var(--md-space-2);border:1px solid var(--md-sys-color-outline-variant);
   border-radius:var(--md-shape-s);background:var(--md-sys-color-surface)}
@@ -325,10 +330,10 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
 .agent-idx{flex:none;display:flex;align-items:center;justify-content:center;min-width:18px;
   height:18px;margin-right:6px;border-radius:var(--md-shape-xs);
   background:var(--md-sys-color-tertiary-container);color:var(--md-sys-color-on-tertiary-container);
-  font-size:10px;font-weight:800}
+  font-size:var(--md-type-label-small-size);font-weight:800}
 .agent-mini-name{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
-  font-size:13.5px;font-weight:700;color:var(--md-sys-color-on-surface)}
-.agent-mini-desc{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:11px;
+  font-size:var(--md-type-label-medium-size);font-weight:700;color:var(--md-sys-color-on-surface)}
+.agent-mini-desc{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:var(--md-type-label-small-size);
   color:var(--md-sys-color-on-surface-faint)}
 .mod-group{margin-bottom:15px;break-inside:avoid}
 .mod-title{margin-bottom:var(--md-space-2);padding-left:7px;
@@ -343,14 +348,14 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
 .chip-idx{margin-right:7px;padding:1px 5px;border-radius:var(--md-shape-xs);
   background:var(--md-sys-color-surface-container);
   color:var(--md-sys-color-on-surface-faint);font-family:var(--md-font-mono);
-  font-size:10.5px;font-weight:700}
+  font-size:var(--md-type-label-small-size);font-weight:700}
 .chip-name{font-weight:500}
 .chip-bad,.chip-badge{margin-left:7px;padding:1px 6px;border-radius:var(--md-shape-full);
   background:var(--md-sys-color-tertiary-container);color:var(--md-sys-color-on-tertiary-container);
-  font-size:10px;font-weight:700}
+  font-size:var(--md-type-label-small-size);font-weight:700}
 .provider-section{margin-bottom:18px;break-inside:avoid}
 .provider-title{margin-bottom:var(--md-space-2);padding-left:6px;
-  border-left:3px solid var(--md-sys-color-outline);font-size:13px;font-weight:800;
+  border-left:3px solid var(--md-sys-color-outline);font-size:var(--md-type-label-medium-size);font-weight:800;
   color:var(--md-sys-color-on-surface-variant)}
 .head,.agent-mini,.chip,.trace-name{min-width:0;overflow-wrap:anywhere}
 "#;
