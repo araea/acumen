@@ -286,7 +286,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
     let persona = read("persona.md");
     let self_portrait = read("self.md");
 
-    let memory: Vec<Value> = crate::plugins::ambient::memory::snapshot()
+    let memory: Vec<Value> = crate::plugins::oai::chat::memory::snapshot()
         .into_iter()
         .map(|(group, memory)| {
             let mut people: Vec<Value> = memory
@@ -321,7 +321,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
         })
         .collect();
 
-    let stickers: Vec<Value> = crate::plugins::ambient::stickers::gallery()
+    let stickers: Vec<Value> = crate::plugins::oai::chat::stickers::gallery()
         .into_iter()
         .map(|entry| {
             json!({
@@ -331,7 +331,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
                 "group": entry.group.to_string(),
                 "uses": entry.uses,
                 "added_at": entry.added_at,
-                "image": crate::plugins::ambient::stickers::file_of(&entry).is_some(),
+                "image": crate::plugins::oai::chat::stickers::file_of(&entry).is_some(),
             })
         })
         .collect();
@@ -360,11 +360,11 @@ async fn sticker_image(
     State(_console): State<Arc<Console>>,
     AxumPath(id): AxumPath<u32>,
 ) -> Response {
-    let entry = crate::plugins::ambient::stickers::by_id(id);
+    let entry = crate::plugins::oai::chat::stickers::by_id(id);
     let Some(entry) = entry else {
         return missing(&format!("#{id}"));
     };
-    let Some(path) = crate::plugins::ambient::stickers::file_of(&entry) else {
+    let Some(path) = crate::plugins::oai::chat::stickers::file_of(&entry) else {
         // 商城表情只存参数不存字节，本来就没有图可看。
         return super::server::fail(StatusCode::NOT_FOUND, "这张是商城表情，库里只存了参数");
     };

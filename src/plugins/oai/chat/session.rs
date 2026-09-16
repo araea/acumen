@@ -1,12 +1,13 @@
-//! 一轮人格发言的工具出口：写操作串行、回执可见、同一请求只执行一次。
+//! 一轮群聊行动的工具出口：写操作串行、回执可见、同一请求只执行一次。
 //!
-//! 这些能力从前藏在 pi 里的一份 TS 扩展后面，靠 Unix 套接字回调进来；agent 现在
-//! 就在进程内，[`Bridge::call`] 直接进 [`Session`]，套接字与凭据都不必存在了。
+//! `satori_*` 工具由执行层转发进来（见 [`crate::plugins::oai::agent::ChatBridge`]），
+//! [`Bridge::call`] 直接进 [`Session`]：额度、去重、平台拒绝记账都在这一层。
+//! 人格只在这一层之外——需要问一句的地方走 [`super::Persona`]。
 use super::{
-    AmbientConfig,
+    ChatConfig, ChatEnv, Persona,
     actions::{self, Action, FileAction, Part},
-    identity, memory, mood, stickers,
-    window::{self, Turn},
+    identity, memory, stickers,
+    window::{self, Turn, turn_from_platform},
 };
 use crate::{
     adapters::satori::{LockedWriter, forward, freshness_for, send_fresh_msg_id},
@@ -97,9 +98,23 @@ pub(crate) const LOOKUP_KINDS: [&str; 25] = [
 /// 单看某一个人的那一份（资料、会员、在线状态、亲密关系、关系开关）。与群资料
 /// 分开，是因为这些不是「这个群有什么」——人格据此把人当熟人还是生面孔、
 /// 开口的分寸才对得上。
-const PROFILE_KINDS: [&str; 7] = [
+pub(crate) const PROFILE_KINDS: [&str; 7] = [
     "me", "relation", "detail", "vas", "status", "intimate", "flags",
 ];
+
+/// 这一轮的群聊现场从哪里来。
+///
+/// 两边的用法不一样：搭话要一直听着群聊（自动环境感知，见 [`super::window`]），
+/// 房间只在模型伸手要的时候看一眼。两者都落到同一份 [`Turn`] 上，所以下面的工具
+/// 实现不必分两套——差别只在「消息不在眼前时怎么办」：搭话的窗口就是它知道的全部，
+/// 动手得落在窗口里；房间没有窗口，消息与群友由平台核对。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Scene {
+    /// 搭话：自己记着的那段常驻窗口。
+    Window,
+    /// 房间：不跟踪群聊，要看时向平台要最近一页，动手时按消息号现取。
+    Channel,
+}
 
 /// 平台明确拒绝过的能力记多久。
 ///
@@ -171,10 +186,10 @@ fn capability(action: &Action) -> &'static str {
     }
 }
 
-/// 一轮对话的工具出口。
+/// 一次行动的工具出口。
 ///
-/// 人格说话时用的 `satori_*` 工具直接调进这里，拿到的是与聊天侧同一份上下文；
-/// 动作、额度、回执去重都由 [`Session`] 负责，调用方只给 op 和参数。
+/// `satori_*` 工具直接调进这里，拿到的是与聊天侧同一份上下文；动作、额度、回执
+/// 去重都由 [`Session`] 负责，调用方只给 op 和参数。
 pub(crate) struct Bridge {
     session: Arc<tokio::sync::Mutex<Session>>,
     attempted: Arc<AtomicBool>,
@@ -232,7 +247,8 @@ struct Session {
     ctx: Context,
     writer: LockedWriter,
     group: i64,
-    config: AmbientConfig,
+    config: ChatConfig,
+    persona: Option<Arc<dyn Persona>>,
     scratch: PathBuf,
     media: PathBuf,
     /// 偷来的表情包那份库（全局一份，见 [`super::stickers`]）。
@@ -253,33 +269,40 @@ struct Session {
     own_reactions: HashMap<String, Vec<String>>,
     /// 平台明确拒绝过的能力（动作名 → 给模型的解释）。见 [`Session::refused`]。
     refusals: HashMap<&'static str, String>,
+    /// 这一轮的群聊现场从哪儿来。
+    scene: Scene,
+    /// 房间那一侧向平台要回来的那一页（一轮只取一次）。
+    page: Option<Vec<Turn>>,
 }
 
-/// 开一轮：把上下文、额度与产物目录打包成一次人格发言的工具出口。
+/// 开一轮：把这一轮的现场、额度与产物目录打包成一个工具出口。
 ///
-/// 从前这里是「绑一个 Unix 套接字 + 签发 token，交给 pi 里的 TS 扩展回调」；
-/// agent 现在就在进程内，套接字与 token 一并省掉——省掉的不只是代码，
-/// 还有一条「凭据随进程可读」的边界。
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn start(
-    ctx: &Context,
-    writer: &LockedWriter,
-    group: i64,
-    seq: u64,
-    config: &AmbientConfig,
-    scratch: &Path,
-    base: &Path,
-) -> Result<Bridge> {
-    let seq = Arc::new(AtomicU64::new(seq));
+/// 起点在这里，出口交给执行层（[`crate::plugins::oai::agent::ChatBridge`]）。
+pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
+    let ChatEnv {
+        ctx,
+        writer,
+        group,
+        config,
+        scratch,
+        media,
+        persona,
+        scene,
+    } = env;
+    // 起点记下群聊现场走到哪一步：模型读完 `satori_context` 之后，这里就是它看过
+    // 的那一版；期间群里又有人说话，动手之前就会被拦下。
+    let seq = Arc::new(AtomicU64::new(window::with_group(group, |s| s.seq)));
     let attempted = Arc::new(AtomicBool::new(false));
     let session = Session {
         ctx: ctx.clone(),
         writer: writer.clone(),
         group,
         config: config.clone(),
+        persona,
         scratch: scratch.to_path_buf(),
-        media: base.join("media"),
-        stickers: base.join("stickers"),
+        media: media.to_path_buf(),
+        // 表情包库的位置由库自己记着（[`super::stickers::attach`]）。
+        stickers: stickers::root().unwrap_or_default(),
         seq: seq.clone(),
         attempted: attempted.clone(),
         writes: 0,
@@ -295,6 +318,8 @@ pub(crate) async fn start(
         capabilities: Value::Null,
         own_reactions: HashMap::new(),
         refusals: HashMap::new(),
+        scene,
+        page: None,
     };
     Ok(Bridge {
         session: Arc::new(tokio::sync::Mutex::new(session)),
@@ -304,11 +329,114 @@ pub(crate) async fn start(
 }
 
 impl Session {
-    fn turns(&self) -> Vec<Turn> {
-        window::with_group(self.group, |s| s.recent(80))
+    /// 这一轮的群聊现场。
+    ///
+    /// 窗口那一侧直接读常驻窗口；房间那一侧向平台要最近一页，一轮只取一次。
+    async fn scene_turns(&mut self, count: usize) -> Vec<Turn> {
+        match self.scene {
+            Scene::Window => window::with_group(self.group, |state| state.recent(count)),
+            Scene::Channel => {
+                if self.page.is_none() {
+                    self.page = self.fetch_page(count).await.ok();
+                }
+                self.page.clone().unwrap_or_default()
+            }
+        }
     }
+
+    /// 按消息号取一条：现场里有就用现场那份，没有就问平台要。
+    ///
+    /// 房间那边翻旧账翻出来的消息号往往早于眼前这一页，而引用、转发、偷表情都要
+    /// 原消息的元素，所以这条兜底是必需的。搭话那一侧仍然只认自己的窗口。
+    async fn turn_of(&mut self, id: &str) -> Result<Turn> {
+        let id = actions::id(id)?;
+        if let Some(turn) = self
+            .scene_turns(80)
+            .await
+            .iter()
+            .find(|turn| turn.message_id == id)
+        {
+            return Ok(turn.clone());
+        }
+        ensure!(self.scene == Scene::Channel, "消息不在本群当前窗口内，先读 satori_context");
+        let raw = self
+            .rpc(
+                "message.get",
+                json!({"channel_id":self.group.to_string(),"message_id":id.to_string()}),
+            )
+            .await?;
+        turn_from_platform(&self.ctx, &self.writer, &raw)
+            .ok_or_else(|| anyhow::anyhow!("QQ 没有返回这条消息"))
+    }
+
+    /// 动作里点到的消息号：窗口那一侧要求它就在眼前，房间那一侧只查格式。
+    async fn resolve_id(&mut self, raw: &str) -> Result<i64> {
+        match self.scene {
+            Scene::Window => Ok(actions::message(&self.scene_turns(80).await, raw)?.message_id),
+            Scene::Channel => actions::id(raw),
+        }
+    }
+
+    /// 房间那一侧：把动作点到的消息与群友补进眼前这一页。
+    ///
+    /// 补完之后 [`Action::validate`] 那条「目标得看得见」的规矩原样成立——只不过
+    /// 看见它的方式是从平台取回来，而不是在窗口里等着它出现。
+    async fn hydrate(&mut self, action: &Action, turns: &mut Vec<Turn>) -> Result<()> {
+        if self.scene == Scene::Window {
+            return Ok(());
+        }
+        let (messages, users) = action.referenced();
+        for id in messages {
+            if turns.iter().any(|turn| turn.message_id == id) {
+                continue;
+            }
+            let raw = self
+                .rpc(
+                    "message.get",
+                    json!({"channel_id":self.group.to_string(),"message_id":id.to_string()}),
+                )
+                .await?;
+            if let Some(turn) = turn_from_platform(&self.ctx, &self.writer, &raw) {
+                turns.push(turn);
+            }
+        }
+        for user_id in users {
+            // 群友不需要「说过话」才存在；这里补一条出处，成员资格交给平台。
+            if !turns.iter().any(|turn| turn.user_id == user_id) {
+                turns.push(Turn {
+                    user_id,
+                    ..Turn::default()
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// 平台存的那一页消息。
+    async fn fetch_page(&self, count: usize) -> Result<Vec<Turn>> {
+        let page = self
+            .rpc(
+                "message.list",
+                json!({"channel_id":self.group.to_string(),"limit":count.clamp(1,100)}),
+            )
+            .await?;
+        let Some(items) = page["data"].as_array() else {
+            return Ok(Vec::new());
+        };
+        Ok(items
+            .iter()
+            .filter_map(|item| turn_from_platform(&self.ctx, &self.writer, item))
+            .collect())
+    }
+    /// 这一轮还该不该动手。
+    ///
+    /// 两道：这个群还开着（停用之后一轮都不要再发出去），以及群聊还停在模型看过的
+    /// 那一版（搭话的回复只对刚才那批消息负责）。房间不要求时效——它回答的是一句
+    /// 直接请求，期间群里聊了什么与这次回答无关。
     fn current(&self) -> bool {
-        super::current(&self.ctx, self.group, self.seq.load(Ordering::SeqCst))
+        self.config.enabled
+            && (!self.config.require_fresh
+                || window::with_group(self.group, |s| s.seq) == self.seq.load(Ordering::SeqCst))
     }
     async fn request(&mut self, request: Value) -> Value {
         let key = request["id"].as_str().unwrap_or("").to_string();
@@ -347,16 +475,23 @@ impl Session {
                     })
                     .collect();
                 capabilities["unavailable"] = Value::Object(unavailable);
-                let (seq, turns, rhythm) = window::with_group(self.group, |s| {
-                    s.take_mention();
-                    (
-                        s.seq,
-                        s.recent(self.config.context_turns.clamp(1, 80)),
-                        s.rhythm(),
-                    )
-                });
+                let count = self.config.context_turns.clamp(1, 80);
+                let (seq, turns, rhythm) = match self.scene {
+                    Scene::Window => window::with_group(self.group, |s| {
+                        s.take_mention();
+                        (s.seq, s.recent(count), s.rhythm())
+                    }),
+                    // 房间不跟踪群聊：现场就是刚才问平台要回来的那一页，
+                    // 也就没有「群聊走到哪一步」这回事。
+                    Scene::Channel => (0, self.scene_turns(count).await, String::new()),
+                };
                 self.seq.store(seq, Ordering::SeqCst);
-                let scene = super::Scene::build(self.group, &self.config, &turns, rhythm.clone());
+                // 人格那一份现场由调用方给（房间没有），缺的键留空串，形状一样。
+                let persona = self
+                    .persona
+                    .as_ref()
+                    .map(|persona| persona.scene(self.group, &turns, &rhythm))
+                    .unwrap_or(Value::Null);
                 let turns: Vec<Value> = turns.iter().map(|t| json!({
                     "message_id":t.message_id.to_string(),"user_id":t.user_id.to_string(),"name":t.name,
                     "text":t.text,"from_me":t.from_me,"time":t.at,"elements":t.elements,
@@ -372,6 +507,11 @@ impl Session {
                         }
                     }
                 }
+                // 还没认过这个群就先问一遍「我在这个群里是谁」；有缓存时是一个空转。
+                if identity::of(self.group).is_none() {
+                    let avatar = self.persona.as_ref().and_then(|persona| persona.avatar());
+                    identity::refresh(&self.ctx, &self.writer, avatar.as_ref(), self.group).await;
+                }
                 let identity = identity::of(self.group).map(|identity| json!({
                     "name": identity.name, "card": identity.card, "display": identity.display(),
                     "title": identity.title, "role": identity.role, "joined_at": identity.joined_at,
@@ -380,7 +520,10 @@ impl Session {
                 Ok(
                     json!({"revision":seq,"group_id":self.group.to_string(),"self_id":self.ctx.bot.login_user.get().id,
                     "identity":identity,
-                    "now":super::now_context(),"register":scene.register,"state":scene.state,"remember":scene.memory,
+                    "now":super::now_context(),
+                    "register":persona.get("register").and_then(Value::as_str).unwrap_or(""),
+                    "state":persona.get("state").and_then(Value::as_str).unwrap_or(""),
+                    "remember":persona.get("remember").and_then(Value::as_str).unwrap_or(""),
                     "capabilities":capabilities,"rhythm":rhythm,"messages":turns,"media":media,
                     "writes_remaining":self.config.max_actions.clamp(1,12).saturating_sub(self.writes),
                     "messages_remaining":self.config.max_messages.clamp(1,5).saturating_sub(self.messages),
@@ -393,9 +536,8 @@ impl Session {
             }
             "read" => {
                 ensure!(self.enabled(), "该群的搭话功能已停用");
-                let turns = self.turns();
                 let id = request["message_id"].as_str().unwrap_or("");
-                let turn = actions::message(&turns, id)?;
+                let turn = self.turn_of(id).await?;
                 if request["forward"].as_bool().unwrap_or(false) {
                     let source = forward::source_of(&turn.elements, Some(turn.message_id))
                         .ok_or_else(|| anyhow::anyhow!("该消息不是合并转发"))?
@@ -436,7 +578,7 @@ impl Session {
                         .await?;
                     // 语音消息在记录里只剩一个「[语音]」占位，正文要靠 QQ 的听写拿回来。
                     // 转不出来就当没有这一格，别让一次听写失败带走整条消息。
-                    if let Some(text) = self.voice_text(turn, id).await
+                    if let Some(text) = self.voice_text(&turn, id).await
                         && let Some(map) = message.as_object_mut()
                     {
                         map.insert("voice_text".into(), json!(text));
@@ -638,7 +780,7 @@ impl Session {
                     ),
                     "reactions" | "reaction_users" => {
                         let mid = request["message_id"].as_str().unwrap_or("");
-                        actions::message(&self.turns(), mid)?;
+                        self.resolve_id(mid).await?;
                         let emoji = request["emoji_id"].as_str().unwrap_or("");
                         ensure!(
                             emoji.parse::<u32>().is_ok(),
@@ -770,7 +912,7 @@ impl Session {
                     match self.save_image_to_media(url, index).await {
                         Ok(path) => saved.push(json!({ "file": path, "url": url })),
                         Err(error) => {
-                            warn!(target: "Plugin/Ambient", "保存生成的图片失败 {url}: {error:#}");
+                            warn!(target: super::LOG_TARGET, "保存生成的图片失败 {url}: {error:#}");
                         }
                     }
                 }
@@ -937,13 +1079,14 @@ impl Session {
                 );
                 ensure!(self.memos < budget, "本轮记忆额度已用完");
                 self.memos += 1;
-                let turns = self.turns();
+                let turns = self.scene_turns(80).await;
                 let now = chrono::Local::now().timestamp();
                 let mut done = Vec::new();
                 if let Some(people) = request["people"].as_array() {
                     for entry in people.iter().take(8) {
                         let raw = entry["user_id"].as_str().unwrap_or("");
-                        let id = actions::user(&turns, raw)?;
+                        // 记谁都可以：群友不需要在眼前这段记录里出现过。
+                        let id = actions::id(raw)?;
                         let note = entry["note"].as_str();
                         let address = entry["address"].as_str();
                         ensure!(
@@ -1003,7 +1146,8 @@ impl Session {
                     "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
                 );
                 let action: Action = serde_json::from_value(request["request"].clone())?;
-                let mut turns = self.turns();
+                let mut turns = self.scene_turns(80).await;
+                self.hydrate(&action, &mut turns).await?;
                 ensure!(
                     !action.requires_management(&self.ctx.bot.login_user.get().id)
                         || self.management_enabled(),
@@ -1136,7 +1280,7 @@ impl Session {
         let budget = self.lookup_budget();
         ensure!(
             budget > 0,
-            "本群已关闭旧账查询（[ambient] lookup_budget = 0）"
+            "本群已关闭旧账查询（lookup_budget = 0）"
         );
         ensure!(self.lookups < budget, "本轮查询额度已用完，先按已知的说");
         Ok(())
@@ -1320,13 +1464,10 @@ impl Session {
         true
     }
     fn enabled(&self) -> bool {
-        let c = crate::plugins::get_config_or_default::<AmbientConfig>(&self.ctx, "ambient");
-        c.enabled && c.groups.contains(&self.group)
+        self.config.enabled
     }
     fn management_enabled(&self) -> bool {
-        crate::plugins::get_config_or_default::<AmbientConfig>(&self.ctx, "ambient")
-            .management_groups
-            .contains(&self.group)
+        self.config.management
     }
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         ensure!(
@@ -1375,7 +1516,7 @@ impl Session {
                 bytes.as_deref(),
                 self.config.sticker_max,
             ) {
-                info!(target: "Plugin/Ambient", "偷来的表情包，第 {id} 张进库了");
+                info!(target: super::LOG_TARGET, "偷来的表情包，第 {id} 张进库了");
             }
             return Ok(Message(vec![segment]));
         };
@@ -1819,7 +1960,11 @@ impl Session {
     }
     async fn send(&mut self, message: Message) -> Result<Value> {
         let spoken = super::plain_text(&message);
-        let pace = self.config.pace(mood::snapshot(self.group));
+        let pace = self
+            .persona
+            .as_ref()
+            .map(|persona| persona.pace(self.group))
+            .unwrap_or_default();
         let typing = pace.typing_delay(spoken.chars().count());
         let delay = if self.spoke {
             pace.gap() + typing
@@ -1837,7 +1982,7 @@ impl Session {
             Some(self.group),
             None,
             &message,
-            freshness_for(self.group, self.config.freshness_window()),
+            freshness_for(self.group, self.config.freshness),
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1853,7 +1998,7 @@ impl Session {
     }
     fn record(&mut self, text: String, message_id: i64, elements: Message, success: bool) {
         let me = self.ctx.bot.login_user.get().id.parse().unwrap_or(0);
-        info!(target: "Plugin/Ambient", "群 {} 动作：{}", self.group, text);
+        info!(target: super::LOG_TARGET, "群 {} 动作：{}", self.group, text);
         if success && !self.spoke {
             // 锁不可重入：记忆与状态都在 window 的锁外面更新。
             let target = window::with_group(self.group, |s| {
@@ -1863,8 +2008,8 @@ impl Session {
                     .find(|turn| !turn.from_me)
                     .map(|turn| turn.user_id)
             });
-            if self.config.mood_enabled {
-                mood::nudge(|mood, now| mood.spoke(self.group, now));
+            if let Some(persona) = &self.persona {
+                persona.spoke(self.group);
             }
             if self.config.memory_enabled
                 && let Some(id) = target
@@ -1891,17 +2036,17 @@ impl Session {
         self.spoke |= success;
     }
 
-    /// 把生成的图片（远程直链或内联 base64）落盘到 ambient/media，供随后用工具发送。
+    /// 把生成的图片（远程直链或内联 base64）落盘到本轮的工作目录，供随后用工具发送。
     /// 直接发远程直链会受签名过期与防盗链影响，先下载下来再由 satori_action 上传更稳。
     /// 一次媒体生成的等待上限。
     ///
     /// 取本轮发言的总预算：生成得再久也不该超过这一轮自己能活的时间。外层还有一道
     /// 同样的超时兜着，这里先到点就能给模型一句「等太久了」，而不是整轮被掐掉。
     fn media_deadline(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.config.reply_timeout_seconds.clamp(30, 900))
+        self.config.media_deadline
     }
 
-    /// 把成品写进 `ambient/media`，返回本地路径。
+    /// 把成品写进 本轮的工作目录，返回本地路径。
     ///
     /// 远端的直链多半带签名、过一会儿就失效，QQ 那边也未必拉得到；先落本地，
     /// 模型随后用 `satori_action` 发出去时走的是 `upload.create`，稳。
@@ -1923,12 +2068,12 @@ impl Session {
             Ok(bytes) => match self.save_media(&bytes, name).await {
                 Ok(path) => Some(path),
                 Err(error) => {
-                    warn!(target: "Plugin/Ambient", "写入素材失败 {name}: {error:#}");
+                    warn!(target: super::LOG_TARGET, "写入素材失败 {name}: {error:#}");
                     None
                 }
             },
             Err(error) => {
-                warn!(target: "Plugin/Ambient", "下载素材失败 {url}: {error:#}");
+                warn!(target: super::LOG_TARGET, "下载素材失败 {url}: {error:#}");
                 None
             }
         }
@@ -2101,7 +2246,56 @@ fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::ambient::AmbientConfig;
     include!("qq_tests.rs");
+
+    /// 开一轮的测试入口：与从前同一个形状（额度 + 目录），额度按线上那套换算
+    /// 从 `[ambient]` 翻过来，现场取常驻窗口，人格那层用一份假现场。
+    ///
+    /// 换算复用 [`crate::plugins::ambient::chat_config`]，测的就是线上真正那一份；
+    /// 人格只在这里给一句固定的话，因为人格状态不是这一层的事。
+    async fn start(
+        ctx: &Context,
+        writer: &LockedWriter,
+        group: i64,
+        _seq: u64,
+        config: &AmbientConfig,
+        scratch: &Path,
+        data: &Path,
+    ) -> Result<Bridge> {
+        super::start(ChatEnv {
+            ctx,
+            writer,
+            group,
+            config: crate::plugins::ambient::chat_config(config, group),
+            scratch,
+            media: data,
+            persona: Some(Arc::new(TestPersona)),
+            scene: Scene::Window,
+        })
+        .await
+    }
+
+    /// 测试里的人格：一句固定的现场，打字快到不用等。
+    struct TestPersona;
+
+    impl Persona for TestPersona {
+        fn scene(&self, _group: i64, _turns: &[Turn], _rhythm: &str) -> Value {
+            json!({
+                "register": "群里发着短句，一句一个意思",
+                "state": "你精神不错",
+                "remember": "",
+            })
+        }
+
+        fn pace(&self, _group: i64) -> crate::plugins::oai::chat::pace::Pace {
+            crate::plugins::oai::chat::pace::Pace {
+                typing_cpm: 60_000,
+                voice_cpm: 60_000,
+                think_seconds: 0.0,
+            }
+        }
+    }
 
     fn long_line() -> String {
         "第一步把依赖装上 第二步重跑一次 第三步贴出错的第一行 别把整个日志都发出来".to_string()
@@ -3595,21 +3789,24 @@ mod tests {
         );
         let r = action(&bridge,"secret",json!({"action":"send","parts":[{"type":"file","source":"/proc/version","name":"secret.txt"}]})).await;
         assert_eq!(r["ok"], false);
-        let mut disabled = config;
+        // 停用一个群之后重开一轮：这一轮里什么都不做，也不出网。
+        let mut disabled = config.clone();
         disabled.enabled = false;
-        ctx.config
-            .write()
-            .unwrap()
-            .plugins
-            .insert("ambient".into(), build_config(disabled));
+        let off = start(&ctx, &writer, group, 0, &disabled, dir.path(), dir.path())
+            .await
+            .unwrap();
         assert_eq!(
-            action(&bridge, "disabled", json!({"action":"like","user_id":"42"})).await["ok"],
+            action(&off, "disabled", json!({"action":"like","user_id":"42"})).await["ok"],
             false
         );
+        // 除了能力自述与身份那几项只读查询，停用之后不该再有任何出网动作。
         assert!(calls.lock().unwrap().iter().all(|(m, _)| matches!(
             m.as_str(),
-            "login.get" | "internal/capabilities" | "guild.member.get"
-        )));
+            "login.get"
+                | "internal/capabilities"
+                | "guild.member.get"
+                | "guild.get"
+        )), "{:?}", calls.lock().unwrap());
         drop(bridge);
         server.abort();
     }
@@ -3757,7 +3954,7 @@ mod tests {
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
                 .unwrap();
-        super::super::setup(dir.path()).await.unwrap();
+        crate::plugins::ambient::setup(dir.path()).await.unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
         window::with_group(group, |s| {
             let mut t = s.recent(1)[0].clone();
@@ -3770,20 +3967,20 @@ mod tests {
         let turns = window::with_group(group, |s| s.recent(20));
         let mut seq = 1;
         let (api_base, api_key, reply_model) = live_endpoint(&config.reply_model);
-        let raw = super::super::speak::compose(
+        let raw = crate::plugins::ambient::speak::compose(
             &api_base,
             &api_key,
             &reply_model,
             dir.path(),
-            &super::super::skill_dirs(dir.path()),
-            super::super::PERSONA,
+            &crate::plugins::ambient::skill_dirs(dir.path()),
+            crate::plugins::ambient::PERSONA,
             &config,
             &Default::default(),
             Some(std::time::Duration::from_secs(70)),
             &turns,
             &[],
-            super::super::speak::Called::Mention,
-            &super::super::Scene::build(group, &config, &turns, "群友刚刚在与你正常交流".into()),
+            crate::plugins::ambient::speak::Called::Mention,
+            &crate::plugins::ambient::Scene::build(group, &config, &turns, "群友刚刚在与你正常交流".into()),
             Some((&ctx, &writer, group, &mut seq)),
         )
         .await
@@ -3811,7 +4008,7 @@ mod tests {
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
                 .unwrap();
-        super::super::setup(dir.path()).await.unwrap();
+        crate::plugins::ambient::setup(dir.path()).await.unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
         window::with_group(group, |s| {
             let mut turn = s.recent(1)[0].clone();
@@ -3824,20 +4021,20 @@ mod tests {
         let turns = window::with_group(group, |s| s.recent(20));
         let mut seq = 1;
         let (api_base, api_key, reply_model) = live_endpoint(&config.reply_model);
-        let raw = super::super::speak::compose(
+        let raw = crate::plugins::ambient::speak::compose(
             &api_base,
             &api_key,
             &reply_model,
             dir.path(),
-            &super::super::skill_dirs(dir.path()),
-            super::super::PERSONA,
+            &crate::plugins::ambient::skill_dirs(dir.path()),
+            crate::plugins::ambient::PERSONA,
             &config,
             &Default::default(),
             Some(std::time::Duration::from_secs(70)),
             &turns,
             &[],
-            super::super::speak::Called::Mention,
-            &super::super::Scene::build(group, &config, &turns, "尚未发言".into()),
+            crate::plugins::ambient::speak::Called::Mention,
+            &crate::plugins::ambient::Scene::build(group, &config, &turns, "尚未发言".into()),
             Some((&ctx, &writer, group, &mut seq)),
         )
         .await
@@ -3869,7 +4066,7 @@ mod tests {
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
                 .unwrap();
-        super::super::setup(dir.path()).await.unwrap();
+        crate::plugins::ambient::setup(dir.path()).await.unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
         // 线上那份 `[oai.search]`：密钥后端在链首，免密钥的兜底。
         let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml"))
@@ -3893,20 +4090,20 @@ mod tests {
         let turns = window::with_group(group, |s| s.recent(20));
         let mut seq = 1;
         let (api_base, api_key, reply_model) = live_endpoint(&config.reply_model);
-        let raw = super::super::speak::compose(
+        let raw = crate::plugins::ambient::speak::compose(
             &api_base,
             &api_key,
             &reply_model,
             dir.path(),
-            &super::super::skill_dirs(dir.path()),
-            super::super::PERSONA,
+            &crate::plugins::ambient::skill_dirs(dir.path()),
+            crate::plugins::ambient::PERSONA,
             &config,
             &search,
             Some(std::time::Duration::from_secs(120)),
             &turns,
             &[],
-            super::super::speak::Called::Mention,
-            &super::super::Scene::build(group, &config, &turns, "尚未发言".into()),
+            crate::plugins::ambient::speak::Called::Mention,
+            &crate::plugins::ambient::Scene::build(group, &config, &turns, "尚未发言".into()),
             Some((&ctx, &writer, group, &mut seq)),
         )
         .await
@@ -3929,7 +4126,7 @@ mod tests {
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
                 .unwrap();
-        super::super::setup(dir.path()).await.unwrap();
+        crate::plugins::ambient::setup(dir.path()).await.unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
         window::with_group(group, |s| {
             let mut turn = s.recent(1)[0].clone();
@@ -3943,20 +4140,20 @@ mod tests {
         let turns = window::with_group(group, |s| s.recent(20));
         let mut seq = 1;
         let (api_base, api_key, reply_model) = live_endpoint(&config.reply_model);
-        let raw = super::super::speak::compose(
+        let raw = crate::plugins::ambient::speak::compose(
             &api_base,
             &api_key,
             &reply_model,
             dir.path(),
-            &super::super::skill_dirs(dir.path()),
-            super::super::PERSONA,
+            &crate::plugins::ambient::skill_dirs(dir.path()),
+            crate::plugins::ambient::PERSONA,
             &config,
             &Default::default(),
             Some(std::time::Duration::from_secs(70)),
             &turns,
             &[],
-            super::super::speak::Called::Mention,
-            &super::super::Scene::build(group, &config, &turns, "尚未发言".into()),
+            crate::plugins::ambient::speak::Called::Mention,
+            &crate::plugins::ambient::Scene::build(group, &config, &turns, "尚未发言".into()),
             Some((&ctx, &writer, group, &mut seq)),
         )
         .await

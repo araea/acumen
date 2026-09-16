@@ -18,6 +18,7 @@ pub mod mj;
 pub mod music;
 pub mod parser;
 pub(crate) mod agent;
+pub(crate) mod chat;
 pub(crate) mod presets;
 pub mod render;
 pub(crate) mod search;
@@ -243,6 +244,13 @@ pub(crate) async fn ensure_manager() -> Result<Arc<data::Manager>, PluginError> 
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
         let mgr = ensure_manager().await?;
+
+        // 群聊能力层的数据（记忆、表情包库、群身份）挂在 `data/oai/chat/` 下。
+        if let Some(dir) = mgr.path.parent()
+            && let Err(error) = chat::attach(dir).await
+        {
+            warn!(target: "Plugin/OAI", "群聊能力层的数据目录初始化失败：{error}");
+        }
 
         // 尝试预加载模型列表
         let filter = crate::plugins::get_config_or_default::<OaiConfig>(&ctx, "oai").model_filter;

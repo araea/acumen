@@ -274,7 +274,74 @@ pub(crate) fn user(turns: &[Turn], raw: &str) -> Result<i64> {
     Ok(id)
 }
 
+/// 递归扫一遍动作的 JSON：消息号与群友号各收一栏。
+fn collect_ids(value: &serde_json::Value, messages: &mut Vec<i64>, users: &mut Vec<i64>) {
+    let push = |raw: &serde_json::Value, out: &mut Vec<i64>| match raw {
+        serde_json::Value::String(text) => {
+            if let Ok(id) = text.parse() {
+                out.push(id);
+            }
+        }
+        serde_json::Value::Number(number) => {
+            if let Some(id) = number.as_i64() {
+                out.push(id);
+            }
+        }
+        _ => {}
+    };
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                match key.as_str() {
+                    "message_id" | "reply_to" => push(value, messages),
+                    "user_id" => push(value, users),
+                    "message_ids" => {
+                        if let serde_json::Value::Array(items) = value {
+                            for item in items {
+                                push(item, messages);
+                            }
+                        }
+                    }
+                    "user_ids" => {
+                        if let serde_json::Value::Array(items) = value {
+                            for item in items {
+                                push(item, users);
+                            }
+                        }
+                    }
+                    "id" => {}
+                    _ => collect_ids(value, messages, users),
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_ids(item, messages, users);
+            }
+        }
+        _ => {}
+    }
+}
+
 impl Action {
+    /// 动作里按号点到的消息与群友。
+    ///
+    /// 房间那一侧没有常驻窗口，动手之前要把这些号换成眼前看得见的那份记录，校验与
+    /// 执行才仍然只认一条规矩。字段名是这份协议的一部分，照着扫一遍比另维护一张
+    /// 对应表更不容易漏——`message_id` / `user_id` 出现在哪个动作里都是同一个意思。
+    pub(crate) fn referenced(&self) -> (Vec<i64>, Vec<i64>) {
+        let mut messages = Vec::new();
+        let mut users = Vec::new();
+        if let Ok(value) = serde_json::to_value(self) {
+            collect_ids(&value, &mut messages, &mut users);
+        }
+        messages.sort_unstable();
+        messages.dedup();
+        users.sort_unstable();
+        users.dedup();
+        (messages, users)
+    }
+
     pub(crate) fn validate(&self, turns: &[Turn]) -> Result<()> {
         match self {
             Self::Send { parts, reply_to } => {

@@ -9,7 +9,7 @@
 
 use super::window::Turn;
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// 消息里的占位标记与提及，不计入「这句话有多长」。
@@ -207,4 +207,43 @@ mod tests {
         assert!(!echoes("那你重启一下路由器试试 不行再说", &theirs));
     }
 
+}
+
+/// 一句话切成的「字组」集合：汉字、字母、数字两两成组，空白与标点不进。
+///
+/// 用字组而不是词，是因为群聊样本又短又口语，切词器在「降噪还是很顶的」这种
+/// 半截话上切不出什么可靠的东西；字组重叠已经够把「也在聊手机」认出来了。
+/// 偷来的表情包挑贴题的那几张时用的是同一把尺子（见 [`super::stickers`]）。
+pub(crate) fn grams(text: &str) -> HashSet<String> {
+    let chars: Vec<char> = text
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    let mut out = HashSet::new();
+    match chars.len() {
+        0 => {}
+        1 => {
+            out.insert(chars[0].to_string());
+        }
+        _ => {
+            for pair in chars.windows(2) {
+                out.insert(pair.iter().collect());
+            }
+        }
+    }
+    out
+}
+
+/// 一条样本与当下话题的贴近程度：共有的字组数除以自身字组数的平方根。
+///
+/// 除以平方根是为了不让长句单靠长就赢——样本长短差得不多，但「牛逼克拉斯」和
+/// 「运存高一点还是有点用的 毕竟我有时候会在手机上玩盖世游戏」不该按长度排座次。
+pub(crate) fn affinity(sample: &str, topic: &HashSet<String>) -> f32 {
+    let own = grams(sample);
+    if own.is_empty() || topic.is_empty() {
+        return 0.0;
+    }
+    let shared = own.iter().filter(|gram| topic.contains(*gram)).count();
+    shared as f32 / (own.len() as f32).sqrt()
 }

@@ -15,11 +15,11 @@
 //! - **头像长什么样**——下下来交给判定模型看一眼，换成一句话存着。
 //!
 //! 取一次要花四个来回，所以按群缓存 [`TTL`]；头像更慢也更不常变，按图的内容摘要
-//! 存在磁盘上（`data/ambient/identity.json`），换了头像才重新看一眼。
+//! 存在磁盘上（`data/oai/chat/identity.json`），换了头像才重新看一眼。
 //!
 //! 这些全是设备本地状态：仓库里恢复不出来，换台机器从头取一遍即可。
 
-use super::AmbientConfig;
+use super::Avatar as AvatarAuth;
 use crate::adapters::satori::{LockedWriter, api};
 use crate::event::Context;
 use serde::{Deserialize, Serialize};
@@ -238,7 +238,7 @@ pub(crate) fn note_group_name(group: i64, name: &str) {
 
 /// 直接摆一份身份进缓存。测试用：认名字与提示词拼装都不该为了一次断言去连平台。
 #[cfg(test)]
-pub(super) fn seed(group: i64, identity: Identity) {
+pub(crate) fn seed(group: i64, identity: Identity) {
     lock().groups.insert(
         group,
         Entry {
@@ -265,7 +265,7 @@ pub(crate) fn brief(group: i64) -> String {
 /// @ 和引用在协议里是明码，喊名字不是——群友多数时候就是打两个字。认出来只加一个
 /// 记号（见 [`super::window::transcript`]），不像 @ 那样直接把人格叫醒：名字是会
 /// 撞车的，「秘」既是它的名片也是别人的半句话，把这种猜测当成点名会让它到处接话。
-pub(crate) fn called_by_name(group: i64, config: &AmbientConfig, text: &str) -> bool {
+pub(crate) fn called_by_name(group: i64, aliases: &[String], text: &str) -> bool {
     if text.is_empty() {
         return false;
     }
@@ -274,7 +274,7 @@ pub(crate) fn called_by_name(group: i64, config: &AmbientConfig, text: &str) -> 
     let names = identity
         .iter()
         .flat_map(|identity| [identity.card.as_str(), identity.name.as_str()])
-        .chain(config.aliases.iter().map(String::as_str));
+        .chain(aliases.iter().map(String::as_str));
     names
         .map(str::trim)
         // 一个字的名字在中文里到处都是，认它等于每句话都算点名。
@@ -289,8 +289,7 @@ pub(crate) fn called_by_name(group: i64, config: &AmbientConfig, text: &str) -> 
 pub(crate) async fn refresh(
     ctx: &Context,
     writer: &LockedWriter,
-    mgr: &std::sync::Arc<crate::plugins::oai::data::Manager>,
-    config: &AmbientConfig,
+    avatar: Option<&AvatarAuth>,
     group: i64,
 ) {
     let fresh = {
@@ -319,7 +318,7 @@ pub(crate) async fn refresh(
             .unwrap_or_default(),
     )
     .await;
-    identity.avatar = avatar_note(ctx, mgr, config, login.avatar.as_deref()).await;
+    identity.avatar = avatar_note(avatar, login.avatar.as_deref()).await;
     let mut store = lock();
     store.groups.insert(
         group,
@@ -377,12 +376,7 @@ pub(super) async fn probe(
 }
 
 /// 头像那一句：磁盘上有且还是同一张图就直接用，换了才重新看一眼。
-async fn avatar_note(
-    ctx: &Context,
-    mgr: &std::sync::Arc<crate::plugins::oai::data::Manager>,
-    config: &AmbientConfig,
-    url: Option<&str>,
-) -> String {
+async fn avatar_note(avatar: Option<&AvatarAuth>, url: Option<&str>) -> String {
     let Some(url) = url.filter(|url| url.starts_with("http")) else {
         return String::new();
     };
@@ -397,19 +391,20 @@ async fn avatar_note(
             return store.avatar.note.clone();
         }
     }
-    let endpoint = super::gate_endpoint(ctx, mgr, &config.gate_model).await;
-    let note = match endpoint {
-        Err(error) => {
-            debug!(target: super::LOG_TARGET, "看不成自己的头像：{error:#}");
+    let note = match avatar {
+        None => {
+            debug!(target: super::LOG_TARGET, "没有可用的接口，先不看头像");
             return remembered_note();
         }
-        Ok((api_base, api_key, model)) => match describe(&api_base, &api_key, &model, &image).await {
-            Ok(note) => note,
-            Err(error) => {
-                debug!(target: super::LOG_TARGET, "看不成自己的头像：{error:#}");
-                return remembered_note();
+        Some(avatar) => {
+            match describe(&avatar.api_base, &avatar.api_key, &avatar.model, &image).await {
+                Ok(note) => note,
+                Err(error) => {
+                    debug!(target: super::LOG_TARGET, "看不成自己的头像：{error:#}");
+                    return remembered_note();
+                }
             }
-        },
+        }
     };
     if note.is_empty() {
         return remembered_note();
@@ -569,15 +564,12 @@ mod tests {
     fn a_plain_name_in_the_text_counts_as_being_called() {
         let group = -9_200_001;
         seed(group, sample());
-        let config = AmbientConfig {
-            aliases: vec!["A宝".into()],
-            ..AmbientConfig::default()
-        };
-        assert!(called_by_name(group, &config, "A宝 在吗"));
-        assert!(called_by_name(group, &config, "A宝好腻害！这也能修好"));
-        assert!(called_by_name(group, &config, "@nawyjx 帮我看看"));
-        assert!(!called_by_name(group, &config, "这破依赖装了半天"));
-        assert!(!called_by_name(group, &config, ""));
+        let aliases = vec!["A宝".to_string()];
+        assert!(called_by_name(group, &aliases, "A宝 在吗"));
+        assert!(called_by_name(group, &aliases, "A宝好腻害！这也能修好"));
+        assert!(called_by_name(group, &aliases, "@nawyjx 帮我看看"));
+        assert!(!called_by_name(group, &aliases, "这破依赖装了半天"));
+        assert!(!called_by_name(group, &aliases, ""));
     }
 
     /// 一个字的名字在中文里到处都是；认它等于每句话都算点名。
@@ -592,12 +584,9 @@ mod tests {
                 ..sample()
             },
         );
-        let config = AmbientConfig {
-            aliases: vec!["宝".into()],
-            ..AmbientConfig::default()
-        };
-        assert!(!called_by_name(group, &config, "这事挺神秘的"));
-        assert!(!called_by_name(group, &config, "宝子们看这个"));
+        let aliases = vec!["宝".to_string()];
+        assert!(!called_by_name(group, &aliases, "这事挺神秘的"));
+        assert!(!called_by_name(group, &aliases, "宝子们看这个"));
     }
 
     #[test]

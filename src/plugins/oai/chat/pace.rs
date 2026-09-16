@@ -280,6 +280,17 @@ pub(crate) struct Pace {
     pub think_seconds: f32,
 }
 
+impl Default for Pace {
+    /// 不特别交代时的节奏：手打 150 字/分、长句按 420 字/分当语音、想三秒。
+    fn default() -> Self {
+        Self {
+            typing_cpm: 150,
+            voice_cpm: 420,
+            think_seconds: 3.0,
+        }
+    }
+}
+
 impl Pace {
     /// 想好之前的停顿。模型已经花掉的时间算作思考，不再重复等待。
     pub(crate) fn think_delay(&self, elapsed: Duration) -> Duration {

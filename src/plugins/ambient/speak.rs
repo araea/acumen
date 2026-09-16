@@ -2,7 +2,7 @@
 //!
 //! 和内置 agent 房间共用同一个执行层（[`agent::run`]），差别只在参数：换掉默认的
 //! 通用助手系统提示词、限定工具、挂上描述 Satori 消息元素的 skill，并把这一轮的
-//! 聊天界面出口（[`super::bridge::Bridge`]）交给工具层——让「能说什么」随 skill
+//! 聊天界面出口（[`crate::plugins::oai::chat::Bridge`]）交给工具层——让「能说什么」随 skill
 //! 生长，而不是随这个文件生长。
 
 use super::window::{Turn, transcript};
@@ -154,9 +154,29 @@ pub(crate) async fn compose(
     )>,
 ) -> anyhow::Result<String> {
     let dir = agent::ScratchDir::under(base, "runs")?;
-    let bridge = if let Some((ctx, writer, group, seq)) = &live {
+    let bridge = if let Some((ctx, writer, group, _seq)) = &live {
+        // 人格这一层由搭话自己给：口吻、状态、记忆与打字节奏都在它那一边。
+        let persona = std::sync::Arc::new(super::Ambient::new(
+            config,
+            Some(crate::plugins::oai::chat::Avatar {
+                api_base: api_base.to_string(),
+                api_key: api_key.to_string(),
+                model: model.to_string(),
+            }),
+        ));
         Some(std::sync::Arc::new(
-            super::bridge::start(ctx, writer, *group, **seq, config, dir.path(), base).await?,
+            crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
+                ctx,
+                writer,
+                group: *group,
+                config: persona.chat(*group),
+                scratch: dir.path(),
+                media: &base.join("media"),
+                persona: Some(persona),
+                // 搭话的现场是它自己听着的那段窗口（群聊自动环境感知）。
+                scene: crate::plugins::oai::chat::session::Scene::Window,
+            })
+            .await?,
         ))
     } else {
         None
@@ -254,7 +274,7 @@ pub(crate) async fn compose(
         let focus = reply
             .text
             .lines()
-            .filter(|line| super::attention::is_control(line))
+            .filter(|line| crate::plugins::oai::chat::attention::is_control(line))
             .collect::<Vec<_>>()
             .join("\n");
         Ok(format!("{focus}\n[silent]"))

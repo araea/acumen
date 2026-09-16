@@ -25,12 +25,11 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
     .await;
     assert_eq!(blocked["ok"], false);
     assert!(calls.lock().unwrap().is_empty());
+    // 管理动作的授权在开一轮时就定下了：授权改完得重开一轮（一轮只活几十秒）。
     config.management_groups = vec![group];
-    ctx.config
-        .write()
-        .unwrap()
-        .plugins
-        .insert("ambient".into(), build_config(config.clone()));
+    let bridge = start(&ctx, &writer, group, 0, &config, dir.path(), dir.path())
+        .await
+        .unwrap();
     let mute = json!({"action":"mute","user_id":"42","duration_seconds":60});
     let first = action(&bridge, "mute", mute.clone()).await;
     assert_eq!(first["ok"], true, "{first}");
@@ -152,12 +151,11 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
             .iter()
             .any(|(method, body)| method == "guild.member.mute" && body["user_id"] == "999")
     );
+    // 撤回授权之后重开一轮：授权在开一轮时定下，改完立刻生效。
     config.management_groups.clear();
-    ctx.config
-        .write()
-        .unwrap()
-        .plugins
-        .insert("ambient".into(), build_config(config));
+    let bridge = start(&ctx, &writer, group, 0, &config, dir.path(), dir.path())
+        .await
+        .unwrap();
     assert_eq!(
         action(&bridge, "revoked", json!({"action":"kick","user_id":"42"})).await["ok"],
         false
@@ -587,7 +585,7 @@ async fn live_agent_uses_the_new_card_action() {
     // 用例要串行，否则一边在写、一边被重铺，谁先谁后看运气。`memory::exclusive()`
     // 就是那把锁——几样状态共用它。
     let _guard = memory::exclusive();
-    super::super::setup(dir.path()).await.unwrap();
+    crate::plugins::ambient::setup(dir.path()).await.unwrap();
     let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
     window::with_group(group, |s| {
         let mut t = s.recent(1)[0].clone();
@@ -600,20 +598,20 @@ async fn live_agent_uses_the_new_card_action() {
     let turns = window::with_group(group, |s| s.recent(20));
     let mut seq = 1;
     let (api_base, api_key, reply_model) = live_endpoint(&config.reply_model);
-    let raw = super::super::speak::compose(
+    let raw = crate::plugins::ambient::speak::compose(
         &api_base,
         &api_key,
         &reply_model,
         dir.path(),
-        &super::super::skill_dirs(dir.path()),
-        super::super::PERSONA,
+        &crate::plugins::ambient::skill_dirs(dir.path()),
+        crate::plugins::ambient::PERSONA,
         &config,
         &Default::default(),
         Some(std::time::Duration::from_secs(70)),
         &turns,
         &[],
-        super::super::speak::Called::Mention,
-        &super::super::Scene::build(group, &config, &turns, "群友刚刚在与你正常交流".into()),
+        crate::plugins::ambient::speak::Called::Mention,
+        &crate::plugins::ambient::Scene::build(group, &config, &turns, "群友刚刚在与你正常交流".into()),
         Some((&ctx, &writer, group, &mut seq)),
     )
     .await

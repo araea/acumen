@@ -542,7 +542,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                 "properties": {
                     "what": {
                         "type": "string",
-                        "enum": crate::plugins::ambient::bridge::LOOKUP_KINDS,
+                        "enum": crate::plugins::oai::chat::LOOKUP_KINDS,
                         "description": "要查什么"
                     },
                     "query": {"type": "string", "description": "what=search：昵称、群名片、头衔或 QQ 号的一部分"},
@@ -574,7 +574,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                     "user_id": {"type": "string", "description": "要看的那个人（把他当陌生人聊得先看看底细时用）；留空就是看自己"},
                     "what": {
                         "type": "string",
-                        "enum": ["me", "relation", "detail", "vas", "status", "intimate", "flags"],
+                        "enum": crate::plugins::oai::chat::PROFILE_KINDS,
                         "description": "要看哪一份；不给时按有无 user_id 走 me 或 relation"
                     }
                 }

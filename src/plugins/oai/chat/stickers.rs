@@ -10,7 +10,7 @@
 //! 摘要，再不成才退回发它时那句话。发言轮按当下话题挑几张贴进提示词，用的是与口吻样本
 //! 同一套字组重合度：贴题的排前面，同分先给还没怎么用过的，于是新偷进来的自然浮上来。
 
-use super::voice;
+use super::tone;
 use super::window::Turn;
 use crate::message::Segment;
 use serde::{Deserialize, Serialize};
@@ -259,12 +259,12 @@ pub(crate) fn brief(turns: &[Turn], max: usize) -> String {
     if total == 0 {
         return String::new();
     }
-    let topic = voice::grams(&recent(turns));
+    let topic = tone::grams(&recent(turns));
     let mut ranked: Vec<(&Entry, f32)> = store
         .library
         .entries
         .iter()
-        .map(|entry| (entry, voice::affinity(&entry.label, &topic)))
+        .map(|entry| (entry, tone::affinity(&entry.label, &topic)))
         .collect();
     ranked.sort_by(|a, b| {
         b.1.total_cmp(&a.1)
@@ -390,7 +390,7 @@ fn persist(store: &Store) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::plugins::ambient::memory;
+    use crate::plugins::oai::chat::memory;
 
     /// 库是进程级的一份，几个测试都要动它；借用记忆那把锁把它们串起来——两者都会被
     /// 场景构建读到（发言轮同时贴口吻样本与表情包），串行才不会有互相误伤。

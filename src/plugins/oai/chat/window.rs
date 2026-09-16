@@ -3,7 +3,15 @@
 //! 搭话不像房间对话那样有明确的一问一答，模型要读的是「刚才这一段群聊」。
 //! 窗口只存在内存里：重启后重新攒几条就够用，落库反而要为一个随时会被丢弃的
 //! 上下文承担迁移与清理成本。
+//!
+//! 记消息的是 [`record`]（内置智能体插件在群消息过手时调用），搭话侧再用
+//! [`GroupState::receive`] 把更全的那一份换进去——同一条消息只占一格。节流那几项
+//! （`seq`／`running`／`focus`／发言时刻）只有搭话用，和消息记在同一把锁下是为了
+//! 「收到消息」与「占用 worker」不会在两把锁之间交错；房间只读消息那部分。
 
+use crate::event::MessageEvent;
+use simd_json::base::ValueAsScalar;
+use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -122,17 +130,17 @@ impl GroupState {
     }
 
     /// 收消息与占用 worker 必须在同一把锁下完成，避免交接时漏消息。
+    ///
+    /// 同一个 `message_id` 的第二次投递（先由能力层记下现场、搭话侧再补记号）
+    /// 只换内容，不动节流状态，也不重新唤醒 worker。
     pub(crate) fn receive(&mut self, turn: Turn) -> bool {
-        if turn.message_id != 0
-            && self
+        let fresh = turn.message_id == 0
+            || !self
                 .turns
                 .iter()
-                .any(|old| old.message_id == turn.message_id)
-        {
-            return false;
-        }
+                .any(|old| old.message_id == turn.message_id);
         let incoming = !turn.from_me;
-        if incoming {
+        if fresh && incoming {
             self.seq += 1;
             self.unread_mention |= turn.mentions_me;
             // 说完之后第一个开口的人，决定这次发言是被接住了还是掉地上了。
@@ -140,11 +148,29 @@ impl GroupState {
                 self.feedback = Some((turn.at - spoke_at).max(0));
             }
         }
-        self.push(turn);
-        if !incoming || self.running {
+        self.record(turn);
+        if !fresh || !incoming || self.running {
             return false;
         }
         self.running = true;
+        true
+    }
+
+    /// 记一条消息进窗口；同一条消息再来一次就替换那一格。
+    ///
+    /// 先记下的往往是「现场」（谁在什么时候说了什么），后到的可能带着更多记号
+    /// （引用原话、是不是叫了你的名字）。返回 true 表示这是一条没见过的消息。
+    pub(crate) fn record(&mut self, turn: Turn) -> bool {
+        if turn.message_id != 0
+            && let Some(old) = self
+                .turns
+                .iter_mut()
+                .find(|old| old.message_id == turn.message_id)
+        {
+            *old = turn;
+            return false;
+        }
+        self.push(turn);
         true
     }
 
@@ -383,6 +409,192 @@ pub(crate) fn transcript(turns: &[Turn]) -> String {
     out
 }
 
+/// 把「引用了哪条」解析成「谁说了什么」。
+///
+/// 群聊里的引用是连着原话一起显示的，人格看到的记录也该带上这句；解析到引用的
+/// 是自己发过的消息时，等于有人点了它的名，与 @ 一样直接把它叫醒。
+pub(crate) fn resolve_quote(turn: &mut Turn, lookup: impl FnOnce(i64) -> Option<(bool, String)>) {
+    if turn.call.reply_to == 0 {
+        return;
+    }
+    let Some((replied_me, quote)) = lookup(turn.call.reply_to) else {
+        return;
+    };
+    if replied_me {
+        turn.mentions_me = true;
+        turn.call.replied_me = true;
+    }
+    turn.call.quote = quote;
+}
+
+/// 事件 → 窗口里的一条消息。
+///
+/// 能力层与搭话都从这里进窗口，所以它只做「现场」那一层：谁在什么时候说了什么。
+/// 点名与引用是不是冲着人格来的，由调用方在自己那一侧补。
+pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
+    let mut text = String::new();
+    let mut images = Vec::new();
+    let mut mentions_me = false;
+    let mut call = Call::default();
+    // 平台在 at 段后面又跟着一条「@名字 正文」的文本段，那个 `@名字` 是 QQ 客户端的
+    // 显示方式，不是群友打的字。留着它，人格就会学着写 `@某某`（线上记录 id 61150 的
+    // 「@子屿 什么样不行」），而它能发得出去的写法只有 `[at:QQ号]`；摘掉那个 `@`，
+    // 名字本身不动——多字昵称没法猜到哪里为止，宁可留个名字也不啃掉半截。
+    let mut after_at = false;
+    if let Some(segments) = event.0.get_array("message") {
+        for segment in segments {
+            let kind = segment.get_str("type").unwrap_or_default();
+            // 这一条是不是紧跟在 at 段后面——是，才轮到上面那条规则。
+            let follows_at = std::mem::replace(&mut after_at, kind == "at");
+            let Some(data) = segment.get("data") else {
+                continue;
+            };
+            match kind {
+                "text" => {
+                    let body = data.get_str("text").unwrap_or_default();
+                    text.push_str(if follows_at {
+                        body.strip_prefix('@').unwrap_or(body)
+                    } else {
+                        body
+                    });
+                }
+                "at" => {
+                    let target = data.get_str("qq").unwrap_or_default();
+                    if target == me.to_string() {
+                        mentions_me = true;
+                        call.at_me = true;
+                        text.push_str("@我 ");
+                    } else {
+                        // 用与发言同一种写法渲染：人格照着眼前的记录写话，记录里写成
+                        // `@QQ号`，它就会把这串号码原样抄进正文（记录 id 105888）。
+                        text.push_str(&format!("[at:{target}] "));
+                    }
+                }
+                "image" | "mface" => {
+                    if let Some(url) = data
+                        .get("url")
+                        .or_else(|| data.get("file"))
+                        .and_then(|value| value.as_str())
+                        .filter(|url| url.starts_with("http"))
+                    {
+                        images.push(url.to_string());
+                    }
+                    text.push_str("[图片]");
+                }
+                "face" => text.push_str(&format!("[表情:{}]", data.get_str("id").unwrap_or("?"))),
+                "record" => text.push_str("[语音]"),
+                "video" => text.push_str("[视频]"),
+                "reply" => {
+                    // 引用了哪条先记下来，等窗口在手里时再解析成「谁：说了什么」。
+                    let id = data
+                        .get_str("id")
+                        .and_then(|id| id.parse::<i64>().ok())
+                        .or_else(|| data.get_i64("id"))
+                        .unwrap_or(0);
+                    if id != 0 {
+                        call.reply_to = id;
+                    }
+                    text.push_str(&format!("[引用:{}] ", data.get_str("id").unwrap_or("?")));
+                }
+                "file" => text.push_str(&format!(
+                    "[文件:{}]",
+                    data.get_str("name").unwrap_or("未命名")
+                )),
+                "forward" | "node" => text.push_str("[合并转发，可用 satori_read 展开]"),
+                "poke" => text.push_str("[戳一戳]"),
+                "dice" => text.push_str("[骰子]"),
+                "rps" => text.push_str("[猜拳]"),
+                _ => {}
+            }
+        }
+    }
+    if text.trim().is_empty() && !images.is_empty() {
+        text = "[图片]".to_string();
+    }
+    // 记录里一条消息占一行，换行与连续空格都压平，免得多行消息把上下文撑散。
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    Turn {
+        user_id: event.user_id(),
+        name: event.sender_name().to_string(),
+        text,
+        images,
+        elements: event
+            .0
+            .get("message")
+            .and_then(|v| simd_json::serde::from_owned_value(v.clone()).ok())
+            .unwrap_or_default(),
+        message_id: event.message_id(),
+        mentions_me,
+        call,
+        from_me: event.user_id() == me && me != 0,
+        at: event
+            .0
+            .get_i64("time")
+            .unwrap_or_else(|| chrono::Local::now().timestamp()),
+    }
+}
+
+/// 平台存的那条消息（`message.get` 与 `message.list` 回的是同一种形状）→ 现场里的一条。
+///
+/// 房间没有常驻窗口，要看某条消息时就是拿它换回来的。正文是 satori XML，
+/// 走与窗口里同一条渲染，模型不必学第二种读法。
+pub(crate) fn turn_from_platform(
+    ctx: &crate::event::Context,
+    writer: &crate::adapters::satori::LockedWriter,
+    item: &serde_json::Value,
+) -> Option<Turn> {
+    let message_id = item["id"]
+        .as_str()?
+        .parse::<i64>()
+        .ok()
+        .filter(|id| *id != 0)?;
+    let user_id = item["user"]["id"]
+        .as_str()
+        .unwrap_or("")
+        .parse::<i64>()
+        .unwrap_or(0);
+    let name = item["member"]["nick"]
+        .as_str()
+        .filter(|nick| !nick.is_empty())
+        .or_else(|| item["user"]["name"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let elements = crate::adapters::satori::message::from_content_with(
+        item["content"].as_str().unwrap_or(""),
+        &writer.resources(),
+    );
+    let images = elements
+        .0
+        .iter()
+        .filter(|segment| matches!(segment.type_.as_str(), "image" | "mface"))
+        .filter_map(|segment| {
+            segment
+                .data
+                .get("url")
+                .or_else(|| segment.data.get("file"))
+                .and_then(|value| value.as_str())
+                .filter(|url| url.starts_with("http"))
+                .map(str::to_string)
+        })
+        .collect();
+    let me = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or_default();
+    Some(Turn {
+        user_id,
+        name,
+        text: crate::adapters::satori::forward::describe(&elements),
+        images,
+        elements,
+        message_id,
+        from_me: user_id != 0 && user_id == me,
+        at: item["created_at"]
+            .as_i64()
+            .map(|millis| millis / 1000)
+            .unwrap_or_else(|| chrono::Local::now().timestamp()),
+        ..Turn::default()
+    })
+}
+
 fn states() -> &'static Mutex<HashMap<i64, GroupState>> {
     static STATES: OnceLock<Mutex<HashMap<i64, GroupState>>> = OnceLock::new();
     STATES.get_or_init(|| Mutex::new(HashMap::new()))
@@ -615,5 +827,148 @@ mod tests {
         state.mark_doze_spoke();
         assert_eq!(state.doze_spoke_last_hour(), 2);
         assert_eq!(state.spoken_last_hour(), 0);
+    }
+
+    /// 一份 satori 事件，测试造事件用。
+    fn event(value: serde_json::Value) -> simd_json::OwnedValue {
+        simd_json::serde::to_owned_value(value).unwrap()
+    }
+
+    #[test]
+    fn turns_flatten_segments_and_notice_mentions() {
+        let raw = event(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 1,
+            "user_id": 42,
+            "message_id": 7,
+            "time": 1_788_800_000_i64,
+            "sender": {"nickname": "张三", "card": "老张"},
+            "message": [
+                {"type": "reply", "data": {"id": "6"}},
+                {"type": "at", "data": {"qq": "3373167460"}},
+                {"type": "text", "data": {"text": " 你怎么看"}},
+                {"type": "image", "data": {"url": "https://example.com/a.png"}},
+            ],
+        }));
+        let turn = turn_from(&MessageEvent(&raw), 3_373_167_460);
+        assert_eq!(turn.name, "老张");
+        assert_eq!(turn.text, "[引用:6] @我 你怎么看[图片]");
+        assert!(turn.mentions_me);
+        assert!(turn.call.at_me);
+        assert_eq!(turn.call.reply_to, 6);
+        assert!(!turn.call.replied_me);
+        assert!(turn.call.quote.is_empty(), "窗口没参与，摘要留空");
+        assert!(!turn.from_me);
+        assert_eq!(turn.images, ["https://example.com/a.png"]);
+        assert_eq!(turn.at, 1_788_800_000);
+    }
+
+
+    #[test]
+    fn own_messages_are_recognized_and_media_only_turns_keep_a_label() {
+        let raw = event(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 1,
+            "user_id": 3_373_167_460_i64,
+            "message": [{"type": "image", "data": {"file": "https://example.com/b.png"}}],
+        }));
+        let turn = turn_from(&MessageEvent(&raw), 3_373_167_460);
+        assert!(turn.from_me);
+        assert_eq!(turn.text, "[图片]");
+    }
+
+
+    #[test]
+    fn quoting_rides_along_and_being_quoted_counts_as_being_called() {
+        let mut quoted = Turn {
+            text: "[引用:88] 你说得对".into(),
+            call: Call {
+                reply_to: 88,
+                ..Call::default()
+            },
+            ..Turn::default()
+        };
+        // 引的是群友的话：记下原话，但不算被叫到。
+        resolve_quote(&mut quoted, |id| {
+            assert_eq!(id, 88);
+            Some((false, "老张：这破依赖装了半天".to_string()))
+        });
+        assert_eq!(quoted.call.quote, "老张：这破依赖装了半天");
+        assert!(!quoted.call.replied_me);
+        assert!(!quoted.mentions_me);
+
+        // 引的是自己发的那条：与 @ 同等地被叫醒。
+        let mut called = Turn {
+            call: Call {
+                reply_to: 99,
+                ..Call::default()
+            },
+            ..Turn::default()
+        };
+        resolve_quote(&mut called, |_| {
+            Some((true, "你说的：别用那个版本".to_string()))
+        });
+        assert!(called.call.replied_me);
+        assert!(called.mentions_me);
+        assert_eq!(called.call.quote, "你说的：别用那个版本");
+
+        // 引用不在窗口里的旧消息：留个消息号，不编造内容，也不惊醒。
+        let mut old = Turn {
+            call: Call {
+                reply_to: 1_000,
+                ..Call::default()
+            },
+            ..Turn::default()
+        };
+        resolve_quote(&mut old, |_| None);
+        assert!(old.call.quote.is_empty());
+        assert!(!old.mentions_me);
+        assert_eq!(old.call.reply_to, 1_000);
+
+        // 没引用的时候压根不去查。
+        let mut plain = Turn::default();
+        resolve_quote(&mut plain, |_| panic!("没有引用就不该查窗口"));
+        assert!(plain.call.quote.is_empty());
+    }
+
+
+    #[test]
+    fn a_mention_of_someone_else_is_written_the_way_the_persona_may_write_it() {
+        let raw = event(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 1,
+            "user_id": 42,
+            "message_id": 8,
+            "time": 1_788_800_000_i64,
+            "sender": {"nickname": "张三", "card": "老张"},
+            "message": [
+                {"type": "at", "data": {"qq": "3938463481"}},
+                {"type": "text", "data": {"text": "兄弟说到点子上了"}},
+            ],
+        }));
+        let turn = turn_from(&MessageEvent(&raw), 3_373_167_460);
+        assert_eq!(turn.text, "[at:3938463481] 兄弟说到点子上了");
+        assert!(!turn.mentions_me && !turn.call.at_me);
+        assert!(transcript(&[turn]).contains("[at:3938463481] 兄弟说到点子上了"));
+
+        // 平台在 at 段后面又写了一遍「@名字」：那个 `@` 要摘掉，否则人格会跟着学。
+        let echoed = event(serde_json::json!({
+            "post_type": "message",
+            "message_type": "group",
+            "group_id": 1,
+            "user_id": 42,
+            "message_id": 9,
+            "time": 1_788_800_000_i64,
+            "sender": {"nickname": "张三", "card": "老张"},
+            "message": [
+                {"type": "at", "data": {"qq": "3938463481"}},
+                {"type": "text", "data": {"text": "@呜呜呜呜云 兄弟说到点子上了"}},
+            ],
+        }));
+        let turn = turn_from(&MessageEvent(&echoed), 3_373_167_460);
+        assert_eq!(turn.text, "[at:3938463481] 呜呜呜呜云 兄弟说到点子上了");
     }
 }
