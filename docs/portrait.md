@@ -106,6 +106,7 @@
 | `max_samples` | `120` | 交给模型的样本条数 |
 | `max_scan` | `8000` | 一次最多读多少条原始记录 |
 | `theme` | `auto` | `auto` / `light` / `dark` |
+| `image_enabled` | `true` | 是否出卡片图；关掉或渲染失败时退回一份等价的文字版 |
 | `image_scale` | `3.0` | 出图倍率，1—4 |
 | `cooldown_seconds` | `180` | 同一个目标两次生成之间的最短间隔；这期间再问重发上一次的结果 |
 | `channel` | 空 | 群名单，语义同 `[stats.channel]`；**两边都留空就是对所有群生效**，不需要单独开群 |

@@ -207,6 +207,8 @@ agent 房间还带一份 skill，说明怎么用 `ayjx --ctl` 操作机器人自
 | `request_timeout_seconds` | `300` | 单次回复的总时间预算 |
 | `request_stall_seconds` | `180` | 单次模型请求静默这么久算卡死；卡住且没动过工具时自动重来一次，`0` 关闭 |
 | `plain_text_max_chars` | `120` | 短回复的纯文本阈值，`0` 表示始终渲染图片 |
+| `image_enabled` | `true` | 是否出回复卡片图；关掉后一律发纯文本 |
+| `image_scale` | `2.0` | 出图倍率，1—4。版心 520 CSS px，2 倍最省体积又不糊 |
 | `show_trace_footer` | `true` | 是否在卡片页脚显示模型、耗时与工具轨迹 |
 | `image_models` | `["gpt-image-2.5"]` | 走图像接口的模型关键字（子串匹配），画图预设房间据此选在售 id |
 | `music_models` | `["suno"]` | 走 Suno 文生歌的房间模型关键字 |
