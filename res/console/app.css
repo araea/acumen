@@ -1179,13 +1179,17 @@ body.layout-compact .bar[data-pinned] .bar-title {
   line-height: var(--md-type-label-medium-line);
 }
 
-/* —— 日志面板 —— */
+/* —— 日志面板 ——
+   浅色主题下用反色面（像一块终端），深色主题下不能再反——那会在整屏夜里
+   亮出一大块白。两套颜色收在两个局部变量里，换主题只换这两个。 */
 .log {
+  --zy-log-bg: var(--md-sys-color-inverse-surface);
+  --zy-log-fg: var(--md-sys-color-on-inverse-surface);
   font-family: var(--md-font-mono);
   font-size: var(--md-type-label-medium-size);
   line-height: 1.7;
-  background: var(--md-sys-color-inverse-surface);
-  color: var(--md-sys-color-on-inverse-surface);
+  background: var(--zy-log-bg);
+  color: var(--zy-log-fg);
   border-radius: var(--md-shape-l);
   padding: var(--md-space-4);
   overflow: auto;
@@ -1193,6 +1197,11 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+body.dark .log {
+  --zy-log-bg: var(--md-sys-color-surface-container-high);
+  --zy-log-fg: var(--md-sys-color-on-surface);
 }
 
 .log-line {
@@ -1203,7 +1212,6 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 .log-at {
-  color: var(--md-sys-color-on-inverse-surface);
   opacity: 0.55;
   flex: none;
 }
