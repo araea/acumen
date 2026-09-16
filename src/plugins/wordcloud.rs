@@ -9,6 +9,8 @@ use futures_util::future::BoxFuture;
 use regex::Regex;
 use std::sync::OnceLock;
 
+const LOG_TARGET: &str = "Plugin/WordCloud";
+
 pub mod config;
 pub mod image;
 pub mod stopwords;
@@ -48,7 +50,7 @@ pub fn handle(
             let scope_str = caps.get(1).map_or("", |m| m.as_str());
             let time_str = caps.get(2).map_or("", |m| m.as_str());
 
-            info!(target: "Plugin/WordCloud", "收到词云请求: Scope={}, Time={}", scope_str, time_str);
+            info!(target: LOG_TARGET, "收到词云请求: Scope={}, Time={}", scope_str, time_str);
 
             let (start_time, end_time) = get_time_range(time_str);
 
@@ -67,7 +69,7 @@ pub fn handle(
 
             if scope_str == "本群" && query_group_id.is_none() && msg.group_id().is_none() {
                 let reply =
-                    Message::new().text("请在群里使用“本群”指令，或用“我的”查看个人词云");
+                    Message::new().text("❌ 这个范围只在群里有效\n用「本群」查群里的词云，或用「我的」查个人的");
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
@@ -94,10 +96,17 @@ pub fn handle(
                     let img_msg = Message::new().image(b64);
                     send_msg(&ctx, writer, target_group, target_user, img_msg).await?;
                 }
-                Err(e) => {
+                Err(GenError::Empty) => {
+                    // 空态不是错误：说清为什么空，再给一条能立刻做的事。
+                    let empty = Message::new()
+                        .reply(reply_id)
+                        .text("📭 这段时间没有聊天记录\n换一个时间范围，或先让群里聊几句");
+                    send_msg(&ctx, writer, target_group, target_user, empty).await?;
+                }
+                Err(GenError::Failed(e)) => {
                     let err_msg = Message::new().text(format!("❌ 生成失败：{}", e));
                     send_msg(&ctx, writer, target_group, target_user, err_msg).await?;
-                    error!(target: "Plugin/WordCloud", "Handler error: {}", e);
+                    error!(target: LOG_TARGET, "Handler error: {}", e);
                 }
             }
 
@@ -108,6 +117,25 @@ pub fn handle(
     })
 }
 
+/// 词云生不成的原因。分成两类是因为对用户来说这是两件事：
+/// 「这段时间没聊」是空态（📭，不是谁的错），「读取失败」才是故障（❌）。
+#[derive(Debug)]
+pub enum GenError {
+    /// 区间里没有可用的聊天记录。
+    Empty,
+    /// 真的失败了，附带原因。
+    Failed(String),
+}
+
+impl std::fmt::Display for GenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "区间内没有可用的聊天记录"),
+            Self::Failed(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
 /// 核心生成逻辑供外部调用 (例如综合日报插件)
 pub async fn generate_image(
     ctx: &Context,
@@ -115,20 +143,20 @@ pub async fn generate_image(
     query_user_id: Option<i64>,
     start_time: i64,
     end_time: i64,
-) -> Result<String, String> {
+) -> Result<String, GenError> {
     let config: WordCloudConfig = get_config_or_default(ctx, "wordcloud");
 
     if !config.enabled {
-        return Err("词云插件已停用".to_string());
+        return Err(GenError::Failed("词云插件已停用".to_string()));
     }
 
     let db = &ctx.db;
     let mut corpus = get_text_corpus(db, query_group_id, query_user_id, start_time, end_time)
         .await
-        .map_err(|e| format!("读取聊天记录失败：{}", e))?;
+        .map_err(|e| GenError::Failed(format!("读取聊天记录失败：{}", e)))?;
 
     if corpus.is_empty() {
-        return Err("该时间段内没有足够的聊天记录，换一个时间范围再试".to_string());
+        return Err(GenError::Empty);
     }
 
     // 截断过多消息
@@ -150,8 +178,8 @@ pub async fn generate_image(
     .await;
 
     match task_result {
-        Ok(res) => res,
-        Err(e) => Err(format!("任务中断：{}", e)),
+        Ok(res) => res.map_err(GenError::Failed),
+        Err(e) => Err(GenError::Failed(format!("任务中断：{}", e))),
     }
 }
 

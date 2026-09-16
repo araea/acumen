@@ -87,8 +87,9 @@ fn get_jieba() -> &'static Jieba {
 #[serde(default)]
 struct RecorderConfig {
     enabled: bool,
+    /// 是否连机器人自己发的消息一起记。搭话的风格分析要用到自己的发言，所以默认开。
     record_self: bool,
-    // 数据保留天数，默认 180 天
+    /// 原始消息保留多少天，超期清理；0 表示不清理。清理不影响已算出的统计结果。
     retention_days: i64,
 }
 

@@ -187,14 +187,23 @@ impl Agent {
     }
 }
 
+/// `data/oai/config.json` 的形状：房间、模型列表与默认接口。
+///
+/// 这一份不是 `config.toml`——它由 `/ctl`、`##` 系符号指令与启动时的预设补建共同维护，
+/// 用户不直接手改。接口与密钥的权威来源仍是 `[oai]` 那一段，这里只存运行时选定的值。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
+    /// 默认接口的 OpenAI 兼容基址。
     pub api_base: String,
+    /// 默认接口的密钥。
     pub api_key: String,
+    /// 中转站拉回的模型列表，供 `/%` 展示。
     #[serde(default)]
     pub models: Vec<String>,
+    /// 全部房间（智能体）。
     #[serde(default)]
     pub agents: Vec<Agent>,
+    /// 没写供应商前缀时用的模型名。
     #[serde(default)]
     pub default_model: String,
     /// 记录内置 `pi` 房间已经迁移过，用户主动删除后不会在每次启动时复活。

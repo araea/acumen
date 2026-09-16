@@ -13,6 +13,7 @@ use toml::Value;
 #[serde(default)]
 struct LoggerConfig {
     enabled: bool,
+    /// 连调试级日志一起打。排查「这条消息到底进没进流水线」时开它。
     debug: bool,
 }
 

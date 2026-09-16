@@ -38,7 +38,11 @@ async fn send_chart(
         Ok(b64) => {
             let _ = send_msg_ack(c, w, Some(gid), None, Message::new().image(b64)).await;
         }
-        Err(e) => {
+        // 没数据是常态（冷群），不该和真故障混在一个级别里。
+        Err(chart::ChartError::NoData) => {
+            info!(target: LOG_TARGET, "群 {gid} 「{title}」区间内没有数据，跳过");
+        }
+        Err(chart::ChartError::Failed(e)) => {
             warn!(target: LOG_TARGET, "群 {} 「{}」生成失败: {}", gid, title, e);
         }
     }
@@ -49,9 +53,12 @@ async fn send_wordcloud(c: &Context, w: LockedWriter, gid: i64, range: (i64, i64
         Ok(b64) => {
             let _ = send_msg_ack(c, w, Some(gid), None, Message::new().image(b64)).await;
         }
-        Err(e) => {
-            // 词云失败（消息过少等）属正常现象，仅记录日志，不打扰群
-            info!(target: LOG_TARGET, "群 {} 词云未生成: {}", gid, e);
+        // 消息过少属正常现象，只记日志不打扰群；真失败才值得 warn。
+        Err(wordcloud::GenError::Empty) => {
+            info!(target: LOG_TARGET, "群 {gid} 词云区间内没有数据，跳过");
+        }
+        Err(wordcloud::GenError::Failed(e)) => {
+            warn!(target: LOG_TARGET, "群 {gid} 词云未生成: {e}");
         }
     }
 }

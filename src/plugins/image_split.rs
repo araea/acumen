@@ -21,8 +21,9 @@ const LOG_TARGET: &str = "Plugin/ImageSplit";
 #[serde(default)]
 struct Config {
     enabled: bool,
-    // 最大切片行列限制，防止恶意消耗资源
+    /// 单次最多切几行；越大越容易被一张图切出上百块，所以有上限。
     max_rows: u32,
+    /// 单次最多切几列，理由同 `max_rows`。
     max_cols: u32,
 }
 

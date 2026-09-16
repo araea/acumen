@@ -24,8 +24,11 @@ pub struct StatsConfig {
     pub enabled: bool,
     /// 字体文件绝对路径。若提供且存在，优先于 `font_family` 使用。
     pub font_path: String,
+    /// 字体族名，交给系统去找。
     pub font_family: String,
+    /// 成图宽度（像素）。
     pub width: u32,
+    /// 成图高度（像素）。
     pub height: u32,
 
     /// 排行榜的刻度竖线与发言条谁盖谁。
@@ -35,7 +38,7 @@ pub struct StatsConfig {
     pub ranking_grid_over_bars: bool,
 
     /// 群名单：配了黑名单就对名单外的所有群生效并推送，配了白名单则只对名单内的群
-    /// 生效并推送。查询指令与主动推送共用这份名单，不会出现"能查不能推"的错位。
+    /// 生效并推送。查询指令与主动推送共用这份名单，不会出现「能查不能推」的错位。
     pub channel: ChannelConfig,
 
     // —— 主动推送总开关与阈值 ——
@@ -50,23 +53,33 @@ pub struct StatsConfig {
     pub push_group_gap_max_seconds: u64,
 
     // —— 每日 23:30 当日总结 ——
+    /// 是否推送当日总结。
     pub daily_push_enabled: bool,
+    /// 推送时间（HH:MM:SS，北京时间）。
     pub daily_push_time: String,
 
     // —— 每日 09:00 早安回顾（昨日数据） ——
+    /// 是否推送早安回顾。
     pub morning_recap_enabled: bool,
+    /// 推送时间（HH:MM:SS，北京时间）。
     pub morning_recap_time: String,
 
     // —— 每日 12:30 午间速览（今日上午） ——
+    /// 是否推送午间速览。
     pub noon_brief_enabled: bool,
+    /// 推送时间（HH:MM:SS，北京时间）。
     pub noon_brief_time: String,
 
     // —— 每周一 10:00 上周回顾 ——
+    /// 是否推送上周回顾。
     pub weekly_recap_enabled: bool,
+    /// 推送时间（HH:MM:SS，北京时间）。
     pub weekly_recap_time: String,
 
     // —— 每月 1 日 10:20 上月回顾（与周一 10:00 的周报错开，1 号恰逢周一时不会挤在一起）——
+    /// 是否推送上月回顾。
     pub monthly_recap_enabled: bool,
+    /// 推送时间（HH:MM:SS，北京时间）。
     pub monthly_recap_time: String,
 }
 
@@ -169,7 +182,7 @@ pub fn handle(
                 writer,
                 None,
                 Some(user_id),
-                r#"请在群里使用"本群"相关指令"#,
+                "❌ 这个范围只在群里有效\n用「本群」查群里的统计，或用「我的」查个人的",
             )
             .await?;
             return Ok(None);
@@ -217,7 +230,18 @@ pub fn handle(
                 let reply = Message::new().image(b64);
                 send_msg(&ctx, writer, group_id, Some(user_id), reply).await?;
             }
-            Err(e) => {
+            Err(chart::ChartError::NoData) => {
+                // 空态不是错误：说清为什么空，再给一条能立刻做的事。
+                send_msg(
+                    &ctx,
+                    writer,
+                    group_id,
+                    Some(user_id),
+                    format!("📭 {title}没有数据\n换一个时间范围，或先让群里聊几句"),
+                )
+                .await?;
+            }
+            Err(chart::ChartError::Failed(e)) => {
                 send_msg(
                     &ctx,
                     writer,

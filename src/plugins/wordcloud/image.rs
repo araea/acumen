@@ -106,7 +106,7 @@ pub fn generate_word_cloud(
                 builder = builder.font(font_data);
             }
             Err(e) => {
-                warn!(target: "Plugin/WordCloud", "加载系统字体 [{}] 失败: {}，将尝试默认方案", family, e);
+                warn!(target: super::LOG_TARGET, "加载系统字体 [{}] 失败: {}，将尝试默认方案", family, e);
             }
         }
     }
@@ -122,7 +122,7 @@ pub fn generate_word_cloud(
         .map_err(|e| format!("PNG 编码失败：{}", e))?;
 
     let b64_str = general_purpose::STANDARD.encode(&png_data);
-    info!(target: "Plugin/WordCloud", "Generated in {:?}", start.elapsed());
+    info!(target: super::LOG_TARGET, "Generated in {:?}", start.elapsed());
 
     Ok(format!("base64://{}", b64_str))
 }

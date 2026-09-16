@@ -197,15 +197,20 @@ pub struct AiNewsConfig {
     /// 按目标覆盖分类与静默时段；群聊键沿用群号，私聊键使用 `private:<QQ号>`
     pub group_preferences: HashMap<String, GroupPreference>,
 
-    // —— 排期 ——
+    // —— 排期（按北京时间）——
+    /// 是否推送精选速递（一天几档）。
     pub brief_enabled: bool,
     /// 精选速递时间点，可配置多个（HH:MM:SS）
     pub brief_times: Vec<String>,
 
+    /// 是否推送每日日报。
     pub daily_enabled: bool,
+    /// 日报时间（HH:MM:SS）。
     pub daily_time: String,
 
+    /// 是否推送每日热点榜。
     pub hot_topics_enabled: bool,
+    /// 热点榜时间（HH:MM:SS）。
     pub hot_topics_time: String,
 }
 

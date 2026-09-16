@@ -115,11 +115,30 @@ CPU 图像工作全部走 `render::worker.rs::run`。没有哪个插件自己 `s
 ./bot start   # 新增的 image_enabled / image_scale 由 fill_missing 补上
 ```
 
+### 第二轮：逐插件过一遍规范
+
+第一轮改完之后，又按同一份规范把 22 个插件逐个查了一遍。这一轮的项目都不显眼，
+但每一处都是「用户在群里真的会看到」。
+
+| 项 | 处理 |
+| --- | --- |
+| 配置字段缺 `///` 说明 | 补了 40 多处：`stats` 14、`webshot` 6、`wordcloud` 7、`ai_news` 6、`image_split` 2、`recorder` 2、`logger` 1。`enabled` 与 `oai/types.rs` 的运行时结构按规范豁免（前者 22 个插件里含义完全一样，后者不是 `config.toml`） |
+| 注册表的指令表少写了代码吃得下的写法 | `portrait` 从 3 个补到 6 个（少了 `人物画像`/`画像报告`/`用户画像报告`），`video_parse` 从 3 个补到 10 个，`ai_news` 的模型榜从 2 个补到 4 个（少了 `ai模型排行榜` 本身）。**用户看不见的写法等于不存在**，所以宁可把命令格写长 |
+| **空态被当成故障报** | `wordcloud` 与 `stats` 把「这段区间没数据」包成 `❌ 生成失败：…`。两处都改成底层分开返回（`GenError::Empty` / `ChartError::NoData`），上层用 📭 说清为什么空、再给一条能立刻做的事。推送侧同一件事：冷群没数据记 `info!`，真失败才 `warn!` |
+| 半角/弯引号混进中文文案 | `wordcloud` 的 `“本群”`、`stats` 的 `"本群"` 与 `"能查不能推"` 一律改成 `「」` |
+| `wordcloud` 的日志 target 还是字面量 | 提到 `LOG_TARGET` 常量，子模块引用它 |
+
+这一轮之后，`CONTENT.md` 3.6.1 新增了一节「空不是故障」，
+把这条判据与两处实现钉在一起。
+
 ---
 
 ## 三、留给下一次的
 
 **1. `portrait` / `oai` / `ai_news` 的「短反馈不出图」边界靠人工核对。**
+第二轮逐插件查过一遍：`oai` 的 79 处一句话反馈全走 `reply_text`，
+`portrait` 走 `say()`，`ai_news` 的指令回执直接返回纯文本；出图的只有
+「要被读、要被翻回去看」的那些。
 `ctl` 有 `Output::card` 这个类型把两类输出分开（`ctl.rs` 的注释里写着理由），
 其余三个插件的数据形状不同，没有对应的造型。做法是改动时按 GUIDELINES 四.8
 的判据过一遍，不为此另造一个共用类型。
@@ -146,7 +165,7 @@ bash scripts/review-cards.sh                            # 七类卡片样张 + �
 # 硬条目
 rg 'serde\(default = "' src/                            # 期望：只剩 ambient/actions.rs 的工具参数
 rg 'target: "Plugin"' src/                              # 期望：无输出
-rg -c '"⚠️ ' src/                                        # 期望：3
+rg -c '"⚠️ ' src/                                        # 期望：3（切片截断、缓存兜底、切全量池）
 
 # 日志 target 与注册名对照
 for p in $(rg -oP '^\s{4}\K[a-z_]+(?= \{)' src/plugins/registry.rs); do

@@ -7,11 +7,17 @@ use toml::Value;
 #[serde(default)]
 pub struct WordCloudConfig {
     pub enabled: bool,
+    /// 画面里最多排几个词，按出现次数从多到少取。
     pub limit: usize,
+    /// 成图宽度（像素）。
     pub width: u32,
+    /// 成图高度（像素）。
     pub height: u32,
+    /// 字体文件绝对路径。给了且存在就优先于 `font_family`。
     pub font_path: Option<String>,
+    /// 字体族名，交给系统去找。
     pub font_family: Option<String>,
+    /// 一次最多读多少条原始记录。放大它更全面，代价是出图前那一段等待。
     pub max_msg: usize,
 }
 

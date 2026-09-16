@@ -11,10 +11,42 @@ use self::avatar::prepare_avatars;
 use self::data_loader::{BarData, SeriesData, fetch_bar_data, fetch_line_data};
 use self::renderer::{draw_bar_chart, draw_line_chart, draw_message_type_ranking};
 
+/// 图表生成不出来的原因。分两类是因为对用户来说这是两件事：
+/// 「这段区间没数据」是空态（📭，谁也不怪），其余才是故障（❌）。
+#[derive(Debug)]
+pub enum ChartError {
+    /// 区间内没有任何数据可画。
+    NoData,
+    /// 真的失败了，附带原因。
+    Failed(String),
+}
+
+impl std::fmt::Display for ChartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoData => write!(f, "区间内没有数据"),
+            Self::Failed(reason) => write!(f, "{reason}"),
+        }
+    }
+}
+
+// 图层内部的失败原因都是人写的句子，一路 `?` 上来即可，不必每处包一层。
+impl From<String> for ChartError {
+    fn from(reason: String) -> Self {
+        Self::Failed(reason)
+    }
+}
+
+impl From<&str> for ChartError {
+    fn from(reason: &str) -> Self {
+        Self::Failed(reason.to_string())
+    }
+}
+
 /// Guard against plotters panics when font glyphs are missing (e.g. CJK text with Latin-only font).
-fn draw_with_font_panic_guard<F>(config: &StatsConfig, f: F) -> Result<String, String>
+fn draw_with_font_panic_guard<F>(config: &StatsConfig, f: F) -> Result<String, ChartError>
 where
-    F: FnOnce() -> Result<String, String>,
+    F: FnOnce() -> Result<String, ChartError>,
 {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(result) => result,
@@ -24,10 +56,10 @@ where
                 .map(|s| s.to_string())
                 .or_else(|| e.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown rendering error".to_string());
-            Err(format!(
+            Err(ChartError::Failed(format!(
                 "图表渲染失败（当前字体可能不支持中文渲染。font_path='{}', font_family='{}'。请通过 font_path 指定字体文件，或安装并配置 font_family）：{}",
                 config.font_path, config.font_family, msg
-            ))
+            )))
         }
     }
 }
@@ -44,7 +76,7 @@ pub async fn generate(
     start_time: i64,
     end_time: i64,
     title: &str,
-) -> Result<String, String> {
+) -> Result<String, ChartError> {
     let db = &ctx.db;
     let config: StatsConfig = get_config_or_default(ctx, "stats");
 
@@ -67,7 +99,7 @@ pub async fn generate(
             draw_with_font_panic_guard(&config, || draw_line_chart(&config, &title, chart_data))
         })
         .await
-        .map_err(|e| format!("图表任务失败：{e}"))?;
+        .map_err(|e| ChartError::Failed(format!("图表任务失败：{e}")))?;
     }
 
     // 2. 柱状图 / 排行榜

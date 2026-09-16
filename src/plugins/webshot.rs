@@ -23,11 +23,17 @@ use url::{Host, Url};
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
+    /// 成图的高度上限（像素）。网页多长就截多长，超过这个数就截断。
     pub max_height: u32,
+    /// 单次截图的超时（秒）。
     pub timeout_seconds: u64,
+    /// JPEG 画质（0—100）。
     pub quality: u8,
+    /// 截图视口宽度（CSS 像素），也是成图宽度。
     pub viewport_width: u32,
+    /// 出图倍率。1.0 即与视口同宽，调大更清晰、体积更大。
     pub device_scale_factor: f64,
+    /// 不截图的域名，按后缀匹配（`example.com` 同时覆盖 `a.example.com`）。
     pub ignore_domains: Vec<String>,
     /// 是否允许截图访问内网/本机地址。默认关闭——见 `check_url` 的说明。
     pub allow_private_hosts: bool,

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::ChartError;
 use super::data_loader::{BarData, SeriesData};
 use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, format_percent,
@@ -73,9 +74,9 @@ pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
     data: Vec<BarData>,
-) -> Result<String, String> {
+) -> Result<String, ChartError> {
     if data.is_empty() {
-        return Err("暂无数据".to_string());
+        return Err(ChartError::NoData);
     }
 
     let s = 2u32; // Scale factor
@@ -395,7 +396,7 @@ pub fn draw_bar_chart(
         }
     }
 
-    save_rgba_to_base64(rgba_image)
+    save_rgba_to_base64(rgba_image).map_err(ChartError::Failed)
 }
 
 /// 消息类型排行榜：标题区 + 构成条 + 竖排信息卡。
@@ -411,9 +412,9 @@ pub fn draw_message_type_ranking(
     config: &StatsConfig,
     title: &str,
     data: Vec<BarData>,
-) -> Result<String, String> {
+) -> Result<String, ChartError> {
     if data.is_empty() {
-        return Err("暂无数据".to_string());
+        return Err(ChartError::NoData);
     }
 
     let s = 2u32;
@@ -676,7 +677,7 @@ pub fn draw_message_type_ranking(
         }
     }
 
-    save_rgba_to_base64(rgba_image)
+    save_rgba_to_base64(rgba_image).map_err(ChartError::Failed)
 }
 
 /// 构成条的分段宽度。按占比切分总宽度（已扣除段间空隙），再把小到看不见的段
@@ -789,14 +790,16 @@ pub fn draw_line_chart(
     config: &StatsConfig,
     title: &str,
     series_list: Vec<SeriesData>,
-) -> Result<String, String> {
+) -> Result<String, ChartError> {
     if series_list.is_empty() {
-        return Err("暂无数据".to_string());
+        return Err(ChartError::NoData);
     }
 
     let s = 2u32;
     if !(480..=2400).contains(&config.width) || !(360..=2400).contains(&config.height) {
-        return Err("走势图尺寸应为宽 480—2400、高 360—2400 像素；改 stats.width 与 stats.height".into());
+        return Err(ChartError::Failed(
+            "走势图尺寸应为宽 480—2400、高 360—2400 像素；改 stats.width 与 stats.height".into(),
+        ));
     }
     let width = config.width * s;
     let height = config.height * s;
@@ -1095,7 +1098,7 @@ pub fn draw_line_chart(
         }
     }
 
-    save_rgba_to_base64(rgba_image)
+    save_rgba_to_base64(rgba_image).map_err(ChartError::Failed)
 }
 
 #[cfg(test)]
