@@ -9,7 +9,7 @@ use super::state::Console;
 use crate::plugins::{get_plugins, pending_startup};
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -66,10 +66,9 @@ async fn overview(State(console): State<Arc<Console>>) -> Response {
     let week = crate::db::queries::get_message_count(&ctx.db, None, None, week_start, now)
         .await
         .unwrap_or(0);
-    let today_people =
-        crate::db::queries::get_active_user_count(&ctx.db, None, today_start, now)
-            .await
-            .unwrap_or(0);
+    let today_people = crate::db::queries::get_active_user_count(&ctx.db, None, today_start, now)
+        .await
+        .unwrap_or(0);
 
     let (total, on, pending) = {
         let config = ctx.config.read().unwrap();
@@ -145,7 +144,10 @@ async fn plugins(State(console): State<Arc<Console>>) -> Response {
     Json(json!({ "plugins": list, "sections": sections })).into_response()
 }
 
-async fn plugin_detail(State(console): State<Arc<Console>>, AxumPath(name): AxumPath<String>) -> Response {
+async fn plugin_detail(
+    State(console): State<Arc<Console>>,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
     let Ok(plugin) = crate::plugins::ctl::resolve(&name) else {
         return missing(&name);
     };
@@ -260,7 +262,9 @@ fn to_toml(value: &Value) -> Result<Toml, String> {
             None => Toml::Float(number.as_f64().ok_or("这个数字读不出来")?),
         },
         Value::String(text) => Toml::String(text.clone()),
-        Value::Array(items) => Toml::Array(items.iter().map(to_toml).collect::<Result<Vec<_>, _>>()?),
+        Value::Array(items) => {
+            Toml::Array(items.iter().map(to_toml).collect::<Result<Vec<_>, _>>()?)
+        }
         Value::Object(map) => {
             let mut table = toml::Table::new();
             for (key, child) in map {
@@ -407,7 +411,11 @@ async fn write_ambient_source(
     let file = match body.name.as_str() {
         "persona" => "persona.md",
         "self" => "self.md",
-        other => return bad(format!("不认识的文本「{other}」；只有 persona 与 self 两份")),
+        other => {
+            return bad(format!(
+                "不认识的文本「{other}」；只有 persona 与 self 两份"
+            ));
+        }
     };
     if body.text.len() > 64 * 1024 {
         return bad("太长了；这两份是提示词，上限 64 KB");
@@ -499,7 +507,9 @@ async fn save_bot(State(console): State<Arc<Console>>, Json(body): Json<BotEdit>
 
         let protocol = body.protocol.trim();
         if !["satori", "console"].contains(&protocol) {
-            return Err(format!("不认识的协议「{protocol}」；现在只有 satori 与 console"));
+            return Err(format!(
+                "不认识的协议「{protocol}」；现在只有 satori 与 console"
+            ));
         }
         let url = body.url.trim();
         if protocol == "satori" && url.is_empty() {
@@ -552,8 +562,15 @@ struct GlobalEdit {
     global_filter: crate::config::GlobalFilterConfig,
 }
 
-async fn save_global(State(console): State<Arc<Console>>, Json(body): Json<GlobalEdit>) -> Response {
-    if body.command_prefix.iter().all(|prefix| prefix.trim().is_empty()) {
+async fn save_global(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<GlobalEdit>,
+) -> Response {
+    if body
+        .command_prefix
+        .iter()
+        .all(|prefix| prefix.trim().is_empty())
+    {
         // 空数组是合法的（无前缀），但一条空串只会在匹配时添乱。
         return bad("前缀写空串没有意义；不带前缀请用空数组 []");
     }
@@ -578,28 +595,76 @@ async fn save_global(State(console): State<Arc<Console>>, Json(body): Json<Globa
 
 // ==================== 日志 ====================
 
-async fn log_history(State(console): State<Arc<Console>>) -> Response {
-    Json(json!({ "lines": console.recent() })).into_response()
+#[derive(Deserialize, Default)]
+struct LogQuery {
+    limit: Option<usize>,
+}
+
+async fn log_history(
+    State(console): State<Arc<Console>>,
+    Query(query): Query<LogQuery>,
+) -> Response {
+    Json(json!({ "lines": console.recent(query.limit.unwrap_or(2000).clamp(1, 2000)) }))
+        .into_response()
 }
 
 async fn log_stream(State(console): State<Arc<Console>>) -> Response {
     use axum::response::sse::{Event, KeepAlive, Sse};
-    use tokio::sync::broadcast::error::RecvError;
+    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
-    // 订阅跟不上时跳过那一段而不是断开：面板上少几行，比整页失去连接好。
-    let stream = futures_util::stream::unfold(console.subscribe(), |mut receiver| async move {
-        loop {
-            match receiver.recv().await {
-                Ok(entry) => {
-                    let event = Event::default().json_data(&entry).unwrap_or_default();
-                    return Some((Ok::<_, std::convert::Infallible>(event), receiver));
-                }
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => return None,
-            }
-        }
+    // 持同一把日志锁订阅并取快照，避免历史请求与订阅之间漏行或重复。
+    let (history, receiver) = console.snapshot();
+    let first = futures_util::stream::once(async move {
+        Ok::<_, std::convert::Infallible>(
+            Event::default()
+                .event("snapshot")
+                .json_data(json!({ "lines": history }))
+                .unwrap_or_default(),
+        )
     });
-    Sse::new(stream)
+    let stream =
+        futures_util::stream::unfold((console, receiver), |(console, mut receiver)| async move {
+            let event = match receiver.recv().await {
+                Ok(entry) => {
+                    // 手机上把高密度日志合成一批，减少网络唤醒与 JS message 事件。
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let mut entries = vec![entry];
+                    let mut snapshot = false;
+                    while entries.len() < 128 {
+                        match receiver.try_recv() {
+                            Ok(entry) => entries.push(entry),
+                            Err(TryRecvError::Lagged(_)) => {
+                                let (history, fresh) = console.snapshot();
+                                receiver = fresh;
+                                entries = history;
+                                snapshot = true;
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    Event::default()
+                        .event(if snapshot { "snapshot" } else { "batch" })
+                        .json_data(json!({ "lines": entries }))
+                        .unwrap_or_default()
+                }
+                // 消费者跟不上时补一份有界快照，不能静默漏掉错误日志。
+                Err(RecvError::Lagged(_)) => {
+                    let (history, fresh) = console.snapshot();
+                    receiver = fresh;
+                    Event::default()
+                        .event("snapshot")
+                        .json_data(json!({ "lines": history }))
+                        .unwrap_or_default()
+                }
+                Err(RecvError::Closed) => return None,
+            };
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (console, receiver),
+            ))
+        });
+    Sse::new(futures_util::StreamExt::chain(first, stream))
         .keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(20)))
         .into_response()
 }
@@ -615,10 +680,7 @@ struct Command {
 ///
 /// 只走 `ctl`：它管的是本机配置，不往群里发消息。要触发别的东西请回群里或者用
 /// agent 房间——这个面板不该长成第二个消息入口。
-async fn command(
-    State(console): State<Arc<Console>>,
-    Json(body): Json<Command>,
-) -> Response {
+async fn command(State(console): State<Arc<Console>>, Json(body): Json<Command>) -> Response {
     let input = body.input.trim().trim_start_matches('/').to_string();
     if input.is_empty() {
         return bad("写点什么再回车；例如 list、show ambient、diff oai");

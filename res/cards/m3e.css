@@ -551,6 +551,14 @@ body.dark.seed-teal {
    2. 自带深色。控制台是网页，跟随系统明暗是应该的，所以这一套把浅深两版都写全，
       其余五套仍按「日读／夜读由插件自己挑」的老规矩。 */
 body.scheme-console {
+  /* 交互界面的主色容器比静态卡片更鲜明；日志在两种主题里都用深底。 */
+  --md-sys-color-primary-container: #b6efda;
+  --md-sys-color-on-primary-container: #073c2e;
+  --md-sys-color-log-surface: #19231f;
+  --md-sys-color-log-text: #e1e8e3;
+  --md-sys-color-log-muted: #b5c0b9;
+  --md-sys-color-log-warning: #f2ca77;
+  --md-sys-color-log-error: #ffb4ab;
   --md-sys-color-surface: #fcfdfb;
   --md-sys-color-surface-dim: #e9ece9;
   --md-sys-color-surface-container-low: #f5f7f4;
@@ -568,6 +576,8 @@ body.scheme-console {
 }
 
 body.scheme-console.dark {
+  --md-sys-color-primary-container: #144f3e;
+  --md-sys-color-on-primary-container: #b6efda;
   color-scheme: dark;
   --md-sys-color-surface: #101613;
   --md-sys-color-surface-dim: #0a0f0c;

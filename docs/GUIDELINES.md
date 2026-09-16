@@ -191,7 +191,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 - **换页一律用链接。** 导航与「进详情」都写成 `<a href="#/…">`，换页只靠 `hashchange`；脚本里的事件委派挂在 `document` 上。上一版把点击委派在 `#view` 上，而底部导航是它的兄弟节点，于是整条导航点不动。
 - **行里不套按钮。** 行身是铺满整行的一层链接，开关压在上面；链接里套按钮是无效标记，浏览器会连开两件事（换页 + 开关）。
 
-界面还是那份可安装的应用（`res/console/manifest.webmanifest`）：三档宽度对应底栏、导航轨与抽屉，装到桌面之后没有地址栏。改版式时三种宽度都要过一遍 `bash scripts/review-console.sh`。
+界面还是那份可安装的应用（`res/console/manifest.webmanifest`）：三档宽度对应底栏、导航轨与抽屉，装到桌面之后没有地址栏。改版式时三种宽度都要过一遍 `bash scripts/review-console.sh`；写操作与压力回归运行 `node tests/console.cjs`，使用隔离数据。性能边界与本轮审计见 [WEBUI_AUDIT.md](WEBUI_AUDIT.md)。
 
 ---
 

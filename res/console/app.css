@@ -39,7 +39,10 @@
 
   /* 复用的结构值 */
   --zy-hairline: 1px;
-  --zy-touch: 44px;
+  --zy-touch: 48px;
+  --zy-switch-width: 52px;
+  --zy-switch-track: 32px;
+  --zy-log-height: 60dvh;
   --zy-icon: 22px;
   --zy-icon-bar: 24px;
   --zy-icon-nav: 26px;
@@ -185,6 +188,7 @@ body.layout-compact .brand {
 
 body.layout-compact .bar[data-pinned] .brand {
   opacity: 0;
+  pointer-events: none;
 }
 
 body.layout-compact .bar[data-pinned] .bar-title {
@@ -480,7 +484,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: inline-flex;
   align-items: center;
   gap: var(--md-space-2);
-  min-height: 36px;
+  min-height: var(--zy-touch);
   padding: 0 var(--md-space-4);
   border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-shape-s);
@@ -507,62 +511,52 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .switch {
   position: relative;
   flex: none;
-  width: 52px;
-  height: 32px;
-  border: 2px solid var(--md-sys-color-outline);
-  border-radius: var(--md-shape-full);
-  background: var(--md-sys-color-surface-container-high);
+  width: var(--zy-switch-width);
+  height: var(--zy-touch);
+  border: none;
+  background: none;
   cursor: pointer;
-  transition: background var(--zy-duration-medium) var(--zy-ease-standard),
-    border-color var(--zy-duration-medium) var(--zy-ease-standard);
+  border-radius: var(--md-shape-full);
 }
 
+/* 轨道仍是 52 × 32，按钮本身提供完整 48px 触控高度。 */
 .switch::before {
   content: "";
   position: absolute;
-  top: 50%;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  margin-top: -50%;
-  background: none;
+  inset: 0;
+  margin: auto;
+  height: var(--zy-switch-track);
+  box-sizing: border-box;
+  border: 2px solid var(--md-sys-color-outline);
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-surface-container-high);
 }
 
 .switch::after {
   content: "";
   position: absolute;
   top: 50%;
-  left: 5px;
+  left: 8px;
   width: 16px;
   height: 16px;
   margin-top: -8px;
   border-radius: var(--md-shape-full);
   background: var(--md-sys-color-outline);
-  transition: transform var(--zy-duration-medium) var(--zy-ease-spring),
-    width var(--zy-duration-short) var(--zy-ease-standard),
-    height var(--zy-duration-short) var(--zy-ease-standard),
-    margin-top var(--zy-duration-short) var(--zy-ease-standard),
-    background var(--zy-duration-medium) var(--zy-ease-standard);
+  transition: transform var(--zy-duration-medium) var(--zy-ease-spring);
 }
 
-.switch[aria-checked="true"] {
+.switch[aria-checked="true"]::before {
   background: var(--md-sys-color-primary);
   border-color: var(--md-sys-color-primary);
 }
 
 .switch[aria-checked="true"]::after {
-  width: 24px;
-  height: 24px;
-  margin-top: -12px;
-  transform: translateX(19px);
+  transform: translateX(20px) scale(1.5);
   background: var(--md-sys-color-on-primary);
 }
 
-.switch:active::after {
-  width: 26px;
-  height: 26px;
-  margin-top: -13px;
-}
+.switch:active::after { transform: scale(1.6); }
+.switch[aria-checked="true"]:active::after { transform: translateX(20px) scale(1.6); }
 
 .switch[disabled],
 .switch[aria-disabled="true"] {
@@ -605,7 +599,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .input:focus,
 .area:focus {
   border-color: var(--md-sys-color-primary);
-  outline: none;
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
 }
 
 .input-mono {
@@ -614,6 +609,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 /* —— 搜索框：前置一颗放大镜，占位不留假提示 —— */
 .search {
+  min-width: 0;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: var(--md-space-2);
@@ -632,7 +629,13 @@ body.layout-compact .bar[data-pinned] .bar-title {
   background: none;
   color: var(--md-sys-color-on-surface);
   font-family: inherit;
-  font-size: var(--md-type-body-small-size);
+  font-size: var(--md-type-body-large-size);
+  min-height: var(--zy-touch);
+}
+
+.search:focus-within {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
 }
 
 .search input:focus {
@@ -744,8 +747,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .card {
   background: var(--md-sys-color-surface);
   border-radius: var(--md-shape-xl);
-  box-shadow: var(--md-elevation-1);
-  padding: var(--md-space-6);
+  padding: var(--md-space-5);
   display: flex;
   flex-direction: column;
   gap: var(--md-space-4);
@@ -947,7 +949,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-weight: var(--md-type-label-medium-weight);
   /* 键名（插件名、配置键、模型名）整条留着。窄屏上宁可让这一行折到第二行，
      也不要把 meta_filter 拆成 meta_f 加 ilter——那读起来像另一个东西。 */
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* —— 列表 —— */
@@ -1183,8 +1186,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
    浅色主题下用反色面（像一块终端），深色主题下不能再反——那会在整屏夜里
    亮出一大块白。两套颜色收在两个局部变量里，换主题只换这两个。 */
 .log {
-  --zy-log-bg: var(--md-sys-color-inverse-surface);
-  --zy-log-fg: var(--md-sys-color-on-inverse-surface);
+  --zy-log-bg: var(--md-sys-color-log-surface);
+  --zy-log-fg: var(--md-sys-color-log-text);
   font-family: var(--md-font-mono);
   font-size: var(--md-type-label-medium-size);
   line-height: 1.7;
@@ -1193,15 +1196,19 @@ body.layout-compact .bar[data-pinned] .bar-title {
   border-radius: var(--md-shape-l);
   padding: var(--md-space-4);
   overflow: auto;
-  height: 62vh;
+  height: var(--zy-log-height);
+  min-height: 240px;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  contain: layout paint;
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
 body.dark .log {
-  --zy-log-bg: var(--md-sys-color-surface-container-high);
-  --zy-log-fg: var(--md-sys-color-on-surface);
+  --zy-log-bg: var(--md-sys-color-log-surface);
+  --zy-log-fg: var(--md-sys-color-log-text);
 }
 
 .log-line {
@@ -1212,38 +1219,40 @@ body.dark .log {
 }
 
 .log-at {
-  opacity: 0.55;
+  color: var(--md-sys-color-log-muted);
   flex: none;
 }
 
 .log-target {
-  flex: none;
-  opacity: 0.8;
+  color: var(--md-sys-color-log-muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
 }
 
 /* 级别名直接当类名的一部分（INFO / WARN / ERRO / DEBG 都只有四个字母，
    日志里本来就按这个写），所以是 log-erro 而不是 log-err。 */
 .log-warn {
-  color: var(--md-sys-color-warning);
+  color: var(--md-sys-color-log-warning);
 }
 
 .log-erro {
-  color: var(--md-sys-color-error);
+  color: var(--md-sys-color-log-error);
 }
 
 .log-debg {
-  opacity: 0.6;
+  color: var(--md-sys-color-log-muted);
 }
 
 .log-short {
   height: auto;
+  min-height: 0;
   max-height: 220px;
 }
 
 /* 跟着滚关掉之后，右下角浮出一颗「回到最新」——它只在需要的时候存在 */
 .jump {
   position: sticky;
-  bottom: var(--md-space-2);
+  bottom: calc(var(--zy-nav) + var(--md-space-2));
   align-self: flex-end;
   display: none;
 }
@@ -1433,7 +1442,8 @@ body.dark .log {
 
 @media (prefers-reduced-motion: reduce) {
   .skeleton,
-  .indicator {
+  .indicator,
+  .btn-icon[data-busy] svg {
     animation: none;
   }
 
@@ -1505,6 +1515,8 @@ body.dark .log {
       "nav main";
   }
 
+  body { --zy-nav: 0px; }
+
   .nav {
     position: sticky;
     top: var(--zy-bar);
@@ -1525,7 +1537,7 @@ body.dark .log {
 
   .nav-item {
     flex: none;
-    min-height: auto;
+    min-height: var(--zy-touch);
     padding: var(--md-space-2) 0;
     border-radius: var(--md-shape-l);
   }
@@ -1632,4 +1644,109 @@ body.dark .log {
     gap: var(--md-space-6);
     align-items: start;
   }
+}
+
+/* 总览在足够宽时组成四块有明确权重的信息区；窄屏保持阅读顺序。 */
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--md-space-4);
+}
+.hero-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--md-space-2);
+  margin-bottom: var(--md-space-4);
+}
+.hero { min-width: 0; }
+.hero-number { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.hero-note { color: var(--md-sys-color-on-primary-container); }
+.hero-actions { margin-top: auto; padding-top: var(--md-space-4); }
+.overview-metrics .readings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.overview-metrics .reading {
+  padding: var(--md-space-4);
+  background: var(--md-sys-color-surface-container-low);
+  border-radius: var(--md-shape-l);
+  gap: var(--md-space-2);
+}
+.overview-metrics .reading-value { overflow-wrap: anywhere; }
+.overview-connections .row { padding-inline: 0; }
+.log-line { flex-shrink: 0; }
+.log-text { min-width: 0; overflow-wrap: anywhere; }
+.log-level { flex: none; font-weight: var(--md-type-label-large-weight); }
+.log-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--md-space-3);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-medium-size);
+}
+.log-empty { color: var(--md-sys-color-log-muted); }
+.empty-icon svg { width: var(--zy-avatar); height: var(--zy-avatar); }
+.row-plain { cursor: default; }
+button.row-plain { cursor: pointer; }
+.row-plain:not(button):hover { background: none; }
+.snack-close {
+  width: var(--zy-touch);
+  height: var(--zy-touch);
+  display: grid;
+  place-items: center;
+  margin: calc(-1 * var(--md-space-2)) 0;
+}
+.snack-close svg { width: var(--zy-icon); height: var(--zy-icon); }
+.page-title:focus { outline: none; }
+#view { scroll-margin-top: var(--zy-bar); }
+.skip-link {
+  position: fixed;
+  top: var(--md-space-2);
+  left: var(--md-space-4);
+  z-index: 60;
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  transform: translateY(-200%);
+}
+.skip-link:focus { transform: none; }
+@media (max-width: 599px) {
+  .main { padding-inline: var(--md-space-4); }
+  .hero { padding: var(--md-space-5); }
+  .card { padding: var(--md-space-4); }
+  .row { gap: var(--md-space-2); padding-inline: var(--md-space-2); }
+  .toolbar { gap: var(--md-space-2); }
+  .toolbar .seg { width: 100%; }
+  .seg[data-connected] .seg-item { padding-inline: var(--md-space-2); }
+  .overview-metrics .reading { padding: var(--md-space-3); }
+  .input, .area { font-size: var(--md-type-body-large-size); }
+}
+@media (min-width: 1100px) {
+  .overview-grid { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+  .overview-connections, .overview-recent { align-self: stretch; }
+  .overview-recent .log-short { flex: 1; }
+  .overview-recent .log-line { flex-wrap: wrap; }
+  .overview-recent .log-text { flex-basis: 100%; }
+}
+
+:where(button, a, input, textarea, [tabindex="0"]):focus-visible {
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+}
+.row-hit:focus-visible { outline-offset: -3px; }
+.log:focus-visible { outline-color: var(--md-sys-color-primary); }
+/* 并排详情是一块窄容器，不能用整个窗口的宽度判断字段是否并列。 */
+.panes[data-split] .kv {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--md-space-1);
+}
+@media (max-width: 599px) {
+  .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+  .bar-title { min-width: 0; }
+}
+
+/* 缓冲保留 2000 行，DOM 只留最近 120 行；屏外行跳过绘制与子树布局。 */
+.log-line {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--zy-touch);
 }

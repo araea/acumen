@@ -5,12 +5,12 @@
 # 与 scripts/review-cards.sh 是一对：那一份管五张卡片图，这一份管界面。
 # 两边都要「看一眼真东西」——卡片的审美在图上，界面的手感也在图上。
 #
-# 除了出图，这里还跑四条交互断言。它们盯的是「点了有没有用」：
+# 本脚本只读，不切换线上插件。写操作、压力与前后台切换回归用 node tests/console.cjs。
+# 除了出图，这里还跑三条交互断言。它们盯的是「点了有没有用」：
 #   1. 底部导航每一格都换页（2026-09-16 之前这里是死的：点击只委派在 #view 上，
 #      而导航是它的兄弟节点，整条导航点不动）；
-#   2. 行里的开关只开关插件，不顺带进详情页；
-#   3. 点行身进得了详情（窄屏换页、宽屏只换右边那一格）；
-#   4. 「恢复默认」弹的是自家对话框，不是浏览器的 confirm。
+#   2. 点行身进得了详情（窄屏换页、宽屏只换右边那一格）；
+#   3. 「恢复默认」弹的是自家对话框，不是浏览器的 confirm。
 #
 # 为什么不用 `chromium --screenshot`：日志页有一条长连接（SSE），页面永远不进入
 # 空闲，headless 的截图会一直等下去（实测挂满超时）。这里改用 chromedriver 的
@@ -156,22 +156,16 @@ try:
                     failures.append(f"点底部导航的「{item}」去到 {got!r}，应当是 {want!r}")
             print("  底部导航：逐格点过")
 
-            # 二与三：行里的开关只开关，点行身才进详情
+            # 二：点行身进详情；开关写入在隔离测试里验证
             goto(session, "plugins", wait=2.0)
-            click(session, "#plugin-list [data-plugin=logger] .switch")
-            time.sleep(1.2)
-            got = js(session, "return location.hash")
-            if got != "#/plugins":
-                failures.append(f"点行内开关顺带换页了（{got}）")
-            goto(session, "plugins", wait=1.8)
             click(session, "#plugin-list [data-plugin=logger] .row-hit")
             time.sleep(1.2)
             got = js(session, "return location.hash")
             if got != "#/plugins/logger":
                 failures.append(f"点行身没进详情（{got}）")
-            print("  行内开关与行身：点过")
+            print("  行身：点过（未改插件开关）")
 
-            # 四：破坏性操作弹自家对话框
+            # 三：只打开确认框，随后取消，不执行恢复
             goto(session, "plugins/oai")
             click(session, "[data-reset]")
             time.sleep(0.8)
@@ -211,5 +205,5 @@ if failures:
     for line in failures:
         print(f"  - {line}")
     sys.exit(1)
-print("四条交互断言全过。")
+print("三条只读交互断言全过。")
 PY

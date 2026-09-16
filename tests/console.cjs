@@ -1,0 +1,199 @@
+// node tests/console.cjs — real Chromium, isolated HTTP fixture; never touches a running bot.
+// Optional AYJX_CONSOLE_SHOTS exports screenshots and timing measurements.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const http = require('node:http');
+const { spawn } = require('node:child_process');
+const root = path.resolve(__dirname, '..');
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const out = process.env.AYJX_CONSOLE_SHOTS;
+if (out) fs.mkdirSync(out, { recursive: true });
+const plugins = [
+  ['logger', '日志', '记录运行日志'], ['oai', '智能对话', '与模型对话，管理房间与预设'],
+  ['console', '控制台', '查看本机运行状态'], ['ambient', '搭话', '参与群聊，记住熟悉的人'],
+].map(([name, display, summary]) => ({ name, display, summary, section: 'system', on: true,
+  pending: false, effect: '下一条消息生效', commands: [], configurable: true,
+  config: { enabled: true, model: '示例模型', retries: 2 }, defaults: {}, diff: [] }));
+const sections = [{ code: 'system', name: '系统' }];
+const settings = { bots: [{ enabled: true, protocol: 'satori', url: 'http://127.0.0.1:3001', has_token: false }],
+  command_prefix: ['/'], browser_path: '', global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: false, whitelist: [] } };
+let posts = [], streams = new Set(), sequence = 0, detailDelay = false;
+const line = text => ({ at: '12:30:00', level: ['INFO','WARN','ERRO','DEBG'][sequence++ % 4], target: 'Plugin/Console', text });
+let history = Array.from({ length: 80 }, (_, i) => line(`运行记录 ${i} · 已完成处理`));
+function emit(count) {
+  const lines = Array.from({ length: count }, () => line(`压力样本 ${sequence} <script>window.injected=true</script>`));
+  history = history.concat(lines).slice(-2000);
+  const batches=[];
+  for(let i=0;i<lines.length;i+=128) batches.push(`event: batch\ndata: ${JSON.stringify({lines:lines.slice(i,i+128)})}\n\n`);
+  const body = batches.join('');
+  for (const response of streams) response.write(body);
+}
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const reply = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+  if (req.method === 'POST') {
+    let data = ''; for await (const chunk of req) data += chunk;
+    const body = JSON.parse(data); posts.push({ path: url.pathname, body });
+    if (url.pathname.endsWith('/enabled')) plugins.find(p => url.pathname.includes(`/${p.name}/`)).on = body.on;
+    await sleep(60); return reply({ message: '已保存 · ' + (body.input || '') });
+  }
+  if (url.pathname === '/api/overview') return reply({
+    app: { version: '0.1.0', started: '2026-09-16 08:30:00', uptime: 8426 }, bots: [{ name: '知言', adapter: 'satori', platform: 'QQ', id: '10001' }],
+    plugins: { on: 22, total: 23, pending: 0 }, messages: { today: 3803, people: 711, week: 84737 }, console: { address: 'http://127.0.0.1:7801/' },
+  });
+  if (url.pathname === '/api/plugins') return reply({ plugins, sections });
+  if (url.pathname.startsWith('/api/plugins/')) {
+    const plugin = plugins.find(p => url.pathname === `/api/plugins/${p.name}`);
+    if (detailDelay && plugin?.name === 'oai') await sleep(300);
+    return reply(plugin || {}, plugin ? 200 : 404);
+  }
+  if (url.pathname === '/api/settings') return reply(settings);
+  if (url.pathname === '/api/ambient') return reply({ ready: true, persona: '自然参与群聊，先听懂，再开口。', self: '知言', memory: [], stickers: [] });
+  if (url.pathname === '/api/logs') return reply({ lines: history.slice(-Number(url.searchParams.get('limit') || 2000)) });
+  if (url.pathname === '/api/logs/stream') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+    res.write(`event: snapshot\ndata: ${JSON.stringify({ lines: history })}\n\n`);
+    streams.add(res); res.on('close', () => streams.delete(res)); return;
+  }
+  const assets = { '/': ['res/console/index.html','text/html'], '/app.js': ['res/console/app.js','text/javascript'], '/app.css': ['res/console/app.css','text/css'], '/icon.svg': ['res/console/icon.svg','image/svg+xml'], '/manifest.webmanifest': ['res/console/manifest.webmanifest','application/manifest+json'] };
+  if (!assets[url.pathname]) { res.writeHead(404); return res.end(); }
+  const [file, type] = assets[url.pathname]; res.writeHead(200, { 'Content-Type': type });
+  if (url.pathname === '/app.css') res.write(fs.readFileSync(path.join(root, 'res/cards/m3e.css')));
+  res.end(fs.readFileSync(path.join(root, file)));
+});
+let session, driver;
+const driverPort = Number(process.env.CHROMEDRIVER_PORT || 9529);
+async function call(method, route, data) {
+  const response = await fetch(`http://127.0.0.1:${driverPort}${route}`, { method,
+    headers: { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.timeout(30000) });
+  const result = (await response.json()).value;
+  if (result?.error) throw new Error(`${result.error}: ${result.message}`);
+  return result;
+}
+const cmd = (method, route, data) => call(method, `/session/${session}${route}`, data);
+const js = (script, ...args) => cmd('POST', '/execute/sync', { script, args });
+async function until(predicate, name) {
+  for (let i = 0; i < 100; i++) { if (await predicate()) return; await sleep(50); }
+  throw new Error(`Timeout: ${name}`);
+}
+async function click(selector) {
+  await js('document.querySelector(arguments[0]).scrollIntoView({block:"center"})', selector);
+  await sleep(80);
+  const node = await cmd('POST', '/element', { using: 'css selector', value: selector });
+  await cmd('POST', `/element/${node['element-6066-11e4-a52e-4f735466cecf']}/click`, {});
+}
+async function route(name) {
+  await js('location.hash = arguments[0]', '#/' + name);
+  await until(() => js('return !document.querySelector("#view[aria-busy]") && !!document.querySelector(".page-head")'), name);
+  await sleep(100);
+}
+const media = features => cmd('POST', '/goog/cdp/execute', { cmd: 'Emulation.setEmulatedMedia', params: { features } });
+async function viewport(width, height) {
+  await cmd('POST', '/goog/cdp/execute', { cmd: 'Emulation.setDeviceMetricsOverride', params: { width, height, deviceScaleFactor: 1, mobile: false } });
+  await sleep(150);
+}
+async function shot(name) {
+  if (!out) return;
+  fs.writeFileSync(path.join(out, `${name}.png`), Buffer.from(await cmd('GET', '/screenshot'), 'base64'));
+}
+(async () => {
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  driver = spawn('chromedriver', [`--port=${driverPort}`, '--log-level=SEVERE'], { stdio: 'ignore' });
+  driver.on('error', error => console.error(error.message));
+  await until(async () => { try { await call('GET', '/status'); return true; } catch { return false; } }, 'chromedriver');
+  session = (await call('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'chrome',
+    'goog:chromeOptions': { args: ['--headless=new', '--no-sandbox', '--disable-gpu'] }, 'goog:loggingPrefs': { browser: 'ALL' } } } })).sessionId;
+  await viewport(390, 844);
+  await cmd('POST', '/url', { url: `http://127.0.0.1:${server.address().port}/?t=fixture` });
+  await until(() => js('return !!document.querySelector(".hero")'), 'initial view');
+  for (const name of ['plugins','ambient','logs','command','overview']) {
+    await click(`[data-nav="${name}"]`); await sleep(160);
+    assert.equal(await js('return location.hash'), '#/' + name);
+  }
+  await viewport(1400, 900); await route('plugins');
+  await click('[data-plugin=logger] .switch');
+  await until(() => posts.some(p => p.path === '/api/plugins/logger/enabled'), 'wide switch POST');
+  assert.equal(await js('return location.hash'), '#/plugins');
+  await until(() => js('return document.querySelector("[data-plugin=logger] .switch")?.getAttribute("aria-checked") === "false"'), 'confirmed switch state');
+  detailDelay = true;
+  await js('document.querySelector("[data-plugin=oai] .row-hit").click(); document.querySelector("[data-plugin=console] .row-hit").click()');
+  await sleep(500);
+  assert.equal(await js('return location.hash'), '#/plugins/console', 'slow earlier detail must not win');
+  assert.equal(await js('return document.querySelector("#plugin-detail .key").textContent'), 'console');
+  await click('[data-reset]');
+  assert.equal(await js('return document.querySelector("dialog").open'), true);
+  assert.equal(await js('return document.querySelector("dialog").getAttribute("aria-labelledby")'), 'dialog-title');
+  await click('[data-answer=no]');
+  await route('command');
+  await js('document.querySelector("#command-input").value="list"');
+  await click('#command-form [type=submit]');
+  await until(() => js('return document.querySelector("#command-output").textContent.includes("已保存")'), 'submit command');
+  assert.equal(posts.filter(p => p.path === '/api/command').length, 1);
+  assert.equal(await js('return location.hash'), '#/command');
+  const commandInput = await cmd('POST','/element',{using:'css selector',value:'#command-input'});
+  await cmd('POST',`/element/${commandInput['element-6066-11e4-a52e-4f735466cecf']}/value`,{text:'\uE007'});
+  await until(()=>posts.filter(p=>p.path==='/api/command').length===2,'Enter submits once');
+  await route('settings');
+  await click('#bot-form-0 [name=enabled]');
+  await click('#bot-form-0 [type=submit]');
+  await until(() => posts.some(p => p.path === '/api/settings/bot'), 'connection save');
+  assert.equal(posts.find(p => p.path === '/api/settings/bot').body.enabled, false);
+  await route('logs'); await until(() => streams.size === 1, 'SSE connected');
+  await until(() => js('return document.querySelectorAll("#log-box .log-line").length > 0'), 'snapshot');
+  await js(`window.longTasks=[]; new PerformanceObserver(list=>window.longTasks.push(...list.getEntries().map(e=>e.duration))).observe({type:'longtask'});
+    window.logMutations=0; new MutationObserver(()=>window.logMutations++).observe(document.querySelector('#log-box'),{childList:true});`);
+  emit(2400); await sleep(500);
+  assert.equal(await js('return document.querySelector("#log-box").children.length'), 120);
+  assert.equal(await js('return !!window.injected'), false);
+  assert.equal(await js('return document.querySelector("#log-follow").getAttribute("aria-pressed")'), 'true');
+  await click('#log-follow');
+  const paused = await js('return document.querySelector("#log-box").innerHTML');
+  emit(30); await sleep(180);
+  assert.equal(await js('return document.querySelector("#log-box").innerHTML'), paused, 'paused DOM must stay stable');
+  await click('#log-jump');
+  await click('[data-level=WARN]');
+  assert.equal(await js('return [...document.querySelectorAll("#log-box .log-line")].every(n=>n.classList.contains("log-warn"))'), true);
+  // Changing filters must preserve toolbar nodes, focus and the SSE subscription.
+  await js('window.searchNode=document.querySelector("#log-search")');
+  await click('[data-level=""]');
+  assert.equal(await js('return window.searchNode===document.querySelector("#log-search")'), true);
+  await route('plugins'); await until(() => streams.size === 0, 'SSE closes on navigation');
+  await route('logs'); await until(() => streams.size === 1, 'SSE reconnects');
+  const original = await cmd('GET', '/window');
+  const tab = await cmd('POST', '/window/new', { type: 'tab' });
+  await cmd('POST', '/window', { handle: tab.handle });
+  await until(() => streams.size === 0, 'hidden tab disconnects');
+  emit(4);
+  await cmd('DELETE', '/window'); await cmd('POST', '/window', { handle: original });
+  await until(() => streams.size === 1, 'visible tab resumes');
+  await sleep(150);
+  const metrics = await js('return {longTasks:window.longTasks, logMutations:window.logMutations}');
+  history = Array.from({length:20},(_,i)=>line(['已连接实现端，开始接收消息','配置已保存，下一条消息生效','请求暂未回应，等待重试','已完成本轮消息处理'][i%4]));
+  const screenshots = ['overview','plugins','plugins/oai','ambient','logs','command','settings'];
+  for (const [label, width, height] of [['compact',390,844],['narrow',320,740],['medium',800,1000],['expanded',1400,900]]) {
+    await viewport(width,height);
+    for (const theme of ['light','dark']) {
+      await media([{ name:'prefers-color-scheme', value:theme }]);
+      for (const page of screenshots) {
+        await route(page); await js('window.scrollTo(0,0)'); await sleep(150);
+        assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `overflow: ${label}/${theme}/${page}`);
+        await shot(`${label}-${theme}-${page.replace('/','-')}`);
+      }
+    }
+  }
+  await media([{ name:'prefers-reduced-motion', value:'reduce' }]);
+  await route('overview');
+  assert.equal(await js('return getComputedStyle(document.querySelector("#view")).animationName'), 'none');
+  await route('plugins');
+  assert(await js('return [...document.querySelectorAll("button:not([disabled])")].filter(e=>e.getClientRects().length).every(e=>e.getBoundingClientRect().height >= 48)'), '48px button touch targets');
+  const errors = (await cmd('POST', '/log', { type:'browser' })).filter(e => e.level === 'SEVERE' && !e.message.includes('404'));
+  assert.deepEqual(errors, [], 'no JavaScript errors');
+  if (out) fs.writeFileSync(path.join(out, 'metrics.json'), JSON.stringify(metrics, null, 2));
+  console.log('Console browser checks passed: navigation, switches, stale responses, dialogs, forms, bounded logs, pause, visibility, themes, 320–1400px and reduced motion.');
+  console.log(JSON.stringify(metrics));
+})().catch(error => { console.error(error); process.exitCode=1; }).finally(async () => {
+  if (session) await cmd('DELETE','').catch(()=>{});
+  driver?.kill(); for (const response of streams) response.end();
+  server.closeAllConnections(); server.close();
+});

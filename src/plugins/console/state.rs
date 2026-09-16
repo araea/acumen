@@ -219,12 +219,23 @@ impl Console {
     }
 
     /// 往回保留的那一段日志，供页面刚打开时补齐。
-    pub(crate) fn recent(&self) -> Vec<Entry> {
-        self.logs.lock().unwrap().iter().cloned().collect()
+    pub(crate) fn recent(&self, limit: usize) -> Vec<Entry> {
+        let logs = self.logs.lock().unwrap();
+        logs.iter()
+            .skip(logs.len().saturating_sub(limit))
+            .cloned()
+            .collect()
     }
 
-    pub(crate) fn subscribe(&self) -> broadcast::Receiver<Entry> {
-        self.feed.subscribe()
+    pub(crate) fn snapshot(&self) -> (Vec<Entry>, broadcast::Receiver<Entry>) {
+        let logs = self.logs.lock().unwrap();
+        let receiver = self.feed.subscribe();
+        let history = logs
+            .iter()
+            .skip(logs.len().saturating_sub(2000))
+            .cloned()
+            .collect();
+        (history, receiver)
     }
 
     /// 终端上打完那一行之后落进来的同一个副本。
@@ -240,9 +251,9 @@ impl Console {
                 logs.pop_front();
             }
             logs.push_back(entry.clone());
+            // 与快照共用日志锁：一行只会落在快照或后续推送中的一处。
+            let _ = self.feed.send(entry);
         }
-        // 没有订阅者时 send 返回错误，这是常态（页面没开着），不是问题。
-        let _ = self.feed.send(entry);
     }
 
     pub(crate) fn stop(&self) {

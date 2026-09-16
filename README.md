@@ -33,6 +33,8 @@ Satori 默认地址是 `http://127.0.0.1:3001`。网页截图和资讯长图需�
 
 在本机浏览器打开它，或者 `./bot ui` 让 `termux-open-url` 代劳。它只绑回环地址、要那道口令，默认端口 7801；`[console]` 里可以改地址、端口与口令，`--no-ui` 让某一次启动完全不开放它。关掉之后命令行、群里的指令、排期与推送都不受影响。
 
+日志只在页面可见时接收，切回 Termux 或离开日志页就暂停连接；回来后补齐最近记录。暂停跟随后可停留阅读旧日志，点「回到最新」恢复。
+
 页面上五处：总览、插件、搭话、日志、命令，右上角那枚齿轮是接入与全局设置。版式按宽度分三档（窄屏底部导航条、中等导航轨、宽屏常驻抽屉），宽屏上插件页是列表与详情并排。装到桌面：Android 用 Chrome 的「安装应用」，iOS 用 Safari 的「添加到主屏幕」，设置页里写着当前这台该怎么装。
 
 ```sh
@@ -73,6 +75,7 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 - [交互规范](docs/INTERACTION.md)
 - [文案规范](docs/CONTENT.md)
 - [统一度审计](docs/UNIFORMITY.md)
+- [WebUI 设计与性能审计](docs/WEBUI_AUDIT.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [架构与渲染审计](docs/AUDIT.md)
 - [插件控制](docs/CONTROL.md)

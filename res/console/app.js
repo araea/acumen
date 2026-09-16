@@ -16,7 +16,7 @@
    - 换页一律走链接（`<a href="#/…">`）与 hashchange。上一版把点击委派挂在
      `#view` 上，而底部导航是它的兄弟节点，于是整条导航点不动；改成链接之后
      即使这段脚本没跑起来，导航照样能换页；
-   - 手机上要一直流畅。日志按帧合批，标签页切到后台就不动 DOM，动画只碰
+   - 手机上要一直流畅。日志限频合批，标签页切到后台就不动 DOM，动画只碰
      transform 与 opacity，界面里没有模糊与大面积重绘。
 
    段落：§1 图标 · §2 小工具 · §3 口令 · §4 网络 · §5 反馈与询问 · §6 主题与版式 ·
@@ -119,7 +119,7 @@
 
   /** 一次请求的节拍。整屏只有一处会长这样，别在别处再写一遍。 */
   const empty = (text) =>
-    `<div class="empty"><div class="empty-icon">📭</div>
+    `<div class="empty"><div class="empty-icon" aria-hidden="true">${ICONS.logs}</div>
      <div class="empty-text">${esc(text)}</div></div>`;
 
   const skeleton = (rows = 3) =>
@@ -133,7 +133,7 @@
 
   const pageHead = (title, note = "") =>
     `<header class="page-head">
-      <h1 class="page-title">${esc(title)}</h1>
+      <h1 class="page-title" tabindex="-1">${esc(title)}</h1>
       ${note ? `<p class="page-note">${esc(note)}</p>` : ""}
     </header>`;
 
@@ -235,8 +235,8 @@
       return Promise.resolve(window.confirm(`${title}\n\n${body}`));
     }
     dialog.innerHTML = `
-      <div class="dialog-title">${esc(title)}</div>
-      <p class="dialog-body">${esc(body)}</p>
+      <div class="dialog-title" id="dialog-title">${esc(title)}</div>
+      <p class="dialog-body" id="dialog-body">${esc(body)}</p>
       <div class="dialog-actions">
         <button class="btn" type="button" data-answer="no">取消</button>
         <button class="btn ${danger ? "btn-filled btn-danger" : "btn-filled"}"
@@ -346,7 +346,9 @@
     if (!hash) return { page: "overview", arg: null, detail: false };
     const [head, ...rest] = hash.split("/");
     if (head === "plugins" && rest.length) {
-      return { page: "plugins", arg: decodeURIComponent(rest.join("/")), detail: true };
+      try {
+        return { page: "plugins", arg: decodeURIComponent(rest.join("/")), detail: true };
+      } catch { return { page: "plugins", arg: null, detail: false }; }
     }
     if (head === "settings") return { page: "settings", arg: null, detail: false };
     return PAGES.some((page) => page.id === head)
@@ -366,19 +368,24 @@
   const scrollMemory = new Map();
 
   async function render() {
+    if (!token) return;
     const route = currentRoute();
+    if (route.page !== "logs") stopLogs();
     const navKey = route.detail ? "plugins" : route.page;
+    const pageKey = route.detail ? `plugins/${route.arg}` : route.page;
     markNav(navKey);
 
-    const title = route.detail ? route.arg : (PAGES.find((p) => p.id === route.page) || PAGES[0]).title;
+    const title = route.page === "settings" ? "接入与全局" : route.detail ? route.arg : (PAGES.find((p) => p.id === route.page) || PAGES[0]).title;
     $(".bar-title").textContent = title;
     document.title = route.detail ? `${route.arg} · ${NAME}` : `${title} · ${NAME}`;
 
     const seq = ++renderSeq;
     const view = $("#view");
     // 换页时把上一页的滚动位置记住，回头再进来不至于从头翻。
-    if (lastPage && lastPage !== navKey) scrollMemory.set(lastPage, window.scrollY);
+    if (lastPage && lastPage !== pageKey) scrollMemory.set(lastPage, window.scrollY);
     logState.mounted = false;
+    detailSeq++;
+    view.setAttribute("aria-busy", "true");
     view.innerHTML = skeleton(route.detail ? 2 : 1);
 
     let html;
@@ -390,6 +397,7 @@
         paintLock();
         return;
       }
+      view.removeAttribute("aria-busy");
       view.innerHTML = empty(
         error && error.status === 503
           ? error.message
@@ -399,11 +407,19 @@
     }
     if (seq !== renderSeq) return;
 
-    const changed = lastPage !== navKey;
-    lastPage = navKey;
+    const changed = lastPage !== pageKey;
+    lastPage = pageKey;
     view.innerHTML = html;
+    view.removeAttribute("aria-busy");
+    if (route.detail) {
+      const display = layout() === "expanded"
+        ? pluginView.payload?.plugins.find((p) => p.name === route.arg)?.display
+        : $(".page-title")?.textContent;
+      $(".bar-title").textContent = display || route.arg;
+      document.title = `${display || route.arg} · ${NAME}`;
+    }
     if (changed) {
-      const remembered = scrollMemory.get(navKey) || 0;
+      const remembered = scrollMemory.get(pageKey) || 0;
       window.scrollTo({ top: remembered, behavior: "auto" });
       if (!reduced.matches) {
         view.removeAttribute("data-enter");
@@ -413,6 +429,7 @@
     }
     watchPageHead();
     mountRoute(route);
+    if (changed && seq > 1) $(".page-title")?.focus({ preventScroll: true });
   }
 
   async function paintRoute(route) {
@@ -468,22 +485,24 @@
       : empty("还没有连接；启动日志里找「启动适配器」那几行");
 
     return `
-      ${pageHead("总览")}
+      ${pageHead("总览", "运行、连接与消息，一眼了解。") }
+      <div class="overview-grid">
       <section class="hero">
-        <span class="hero-eyebrow">${esc(NAME)} · ${esc(data.app.version)} 已经跑了</span>
+        <div class="hero-top"><span class="hero-eyebrow">${esc(NAME)} · ${esc(data.app.version)}</span>
+          <span class="badge badge-on">运行中</span></div>
+        <span class="hero-eyebrow">本次运行时长</span>
         <div class="hero-figure">
           <span class="hero-number">${esc(span(data.app.uptime))}</span>
         </div>
-        <span class="hero-note">这一次是 ${esc(data.app.started)} 起来的 ·
-          控制台在 ${esc(data.console.address)}</span>
+        <span class="hero-note">启动于 ${esc(data.app.started)}</span>
         <div class="hero-actions">
-          <a class="btn btn-filled" href="#/logs">${ICONS.logs}去看日志</a>
+          <a class="btn btn-filled" href="#/logs">${ICONS.logs}查看日志</a>
           <a class="btn btn-tonal" href="#/plugins">${ICONS.plugins}管理插件</a>
         </div>
       </section>
 
-      <section class="card">
-        <div class="section-title">此刻</div>
+      <section class="card overview-metrics">
+        <div class="section-title">消息与插件<span class="count">打开时更新</span></div>
         <div class="readings">
           ${reading("今日消息", num(data.messages.today), "条")}
           ${reading("今日发言人", num(data.messages.people), "位")}
@@ -496,31 +515,32 @@
         </div>
       </section>
 
-      <section class="card card-notched">
+      <section class="card card-notched overview-connections">
         <div class="section-title">连接<span class="count">${data.bots.length} 条</span></div>
         <div class="list">${bots}</div>
       </section>
 
-      <section class="card">
-        <div class="section-title">最近发生了什么<span class="count">最近 6 行</span></div>
+      <section class="card overview-recent">
+        <div class="section-title">最近日志<span class="count">最近 6 行</span></div>
         <div class="log log-short" id="overview-log"></div>
         <div class="actions">
           <a class="btn btn-tonal" href="#/logs">看全部</a>
         </div>
-      </section>`;
+      </section>
+      </div>`;
   }
 
   async function mountOverviewLog() {
     const box = $("#overview-log");
     if (!box) return;
     try {
-      const data = await api("/logs");
+      const data = await api("/logs?limit=6");
       const lines = (data.lines || []).slice(-6);
       box.innerHTML = lines.length
         ? lines.map(logLine).join("")
         : `<div class="log-line log-debg">这里还是空的</div>`;
     } catch {
-      /* 总览里这一格不重要，取不到就让它空着 */
+      box.textContent = "日志暂时无法读取，可刷新重试";
     }
   }
 
@@ -639,6 +659,7 @@
 
   async function paintPluginDetail(name) {
     const plugin = await fetchPlugin(name);
+    pluginView.selected = name;
     // 页头已经写着插件名了，卡里不再重复一遍
     return `${pageHead(plugin.display)}${pluginDetailHtml(plugin, { back: true, named: false })}`;
   }
@@ -686,7 +707,7 @@
       <div class="split">
         <section class="card">
           <div class="section-title">配置<span class="count">改了立刻生效</span></div>
-          <div class="panel">${rows}</div>
+          <div class="panel" data-config-plugin="${esc(plugin.name)}">${rows}</div>
           <div class="actions">
             <button class="btn btn-outline" type="button" data-reset="${esc(plugin.name)}">
               恢复默认参数（保留开关）</button>
@@ -876,151 +897,161 @@
 
   /* ---- 日志 ---- */
 
-  const DOM_LINES = 500;
-
+  const DOM_LINES = 120;
+  const LOG_BATCH_MS = 100;
   const logState = {
-    lines: [],
-    loaded: false,
-    level: "",
-    text: "",
-    follow: true,
-    source: null,
-    limit: 2000,
-    queue: [],
-    frame: 0,
-    mounted: false,
+    lines: [], level: "", text: "", follow: true, source: null,
+    limit: 2000, queue: [], frame: 0, mounted: false,
   };
 
   function logLine(entry) {
     const level = String(entry.level || "INFO").toLowerCase();
     return `<div class="log-line log-${esc(level)}">
       <span class="log-at">${esc(entry.at)}</span>
-      <span class="log-target">[${esc(entry.target)}]</span>
-      <span>${esc(entry.text)}</span></div>`;
+      <span class="log-level">${esc(entry.level || "INFO")}</span>
+      <span class="log-target">${esc(entry.target)}</span>
+      <span class="log-text">${esc(entry.text)}</span></div>`;
   }
 
   function logMatches(entry) {
     if (logState.level && entry.level !== logState.level) return false;
     const text = logState.text.trim().toLowerCase();
-    if (!text) return true;
-    return (
-      String(entry.text).toLowerCase().includes(text) ||
-      String(entry.target).toLowerCase().includes(text)
-    );
+    return !text || String(entry.text).toLowerCase().includes(text) ||
+      String(entry.target).toLowerCase().includes(text);
   }
-
-  const filtered = () => logState.lines.filter(logMatches).slice(-DOM_LINES);
 
   function paintLog() {
     const box = $("#log-box");
-    if (!box) return;
-    const shown = filtered();
-    box.innerHTML = shown.length
-      ? shown.map(logLine).join("")
-      : `<div class="log-line log-debg">这一屏没有符合条件的行</div>`;
+    if (!box || document.hidden) return;
+    logState.queue = [];
+    const shown = logState.lines.filter(logMatches).slice(-DOM_LINES);
+    box.innerHTML = shown.length ? shown.map(logLine).join("") :
+      `<div class="log-empty">没有符合条件的日志</div>`;
     if (logState.follow) box.scrollTop = box.scrollHeight;
   }
 
-  /**
-   * 一行日志进来。**不立刻碰 DOM**：群消息密的时候每秒能来几十行，
-   * 一行一次 insertAdjacentHTML + 一次滚动，页面就会跟着卡。
-   * 攒到下一帧一次写完，标签页在后台就只进缓冲、不动 DOM。
-   */
-  function pushLog(entry) {
-    logState.lines.push(entry);
+  function logStatus(text) {
+    const status = $("#log-status");
+    if (status) status.textContent = text;
+  }
+
+  function setFollow(on) {
+    logState.follow = on;
+    $("#log-follow")?.setAttribute("aria-pressed", String(on));
+    const button = $("#log-follow");
+    if (button) button.textContent = on ? "跟随最新" : "已暂停";
+    $("#log-jump")?.classList.toggle("jump-on", !on);
+    if (on) paintLog();
+  }
+
+  // 暂停时保留当前 DOM 与选择区域；到来的行只进有界缓冲。
+  function pushLogs(entries) {
+    logState.lines.push(...entries);
     if (logState.lines.length > logState.limit) {
       logState.lines.splice(0, logState.lines.length - logState.limit);
     }
-    if (document.hidden || !logState.mounted) return;
-    logState.queue.push(entry);
-    if (logState.frame) return;
-    logState.frame = requestAnimationFrame(flushLog);
+    if (document.hidden || !logState.mounted || !logState.follow) return;
+    logState.queue.push(...entries);
+    if (logState.queue.length > DOM_LINES) {
+      logState.queue.splice(0, logState.queue.length - DOM_LINES);
+    }
+    if (!logState.frame) logState.frame = setTimeout(flushLog, LOG_BATCH_MS);
   }
 
+  // 每秒至多十次 DOM 合批，限制单批与总节点数；不随消息频率重复排版。
   function flushLog() {
     logState.frame = 0;
-    const queued = logState.queue.splice(0, logState.queue.length);
+    const queued = logState.queue.splice(0);
     const box = $("#log-box");
-    if (!box) return;
-    if (!queued.length) {
-      if (!box.children.length) paintLog();
-      return;
-    }
-    if (box.children.length === 1 && box.firstElementChild.classList.contains("log-debg")) {
-      box.innerHTML = "";
-    }
+    if (!box || document.hidden || !logState.mounted || !logState.follow) return;
     const fresh = queued.filter(logMatches);
-    if (fresh.length) {
-      box.insertAdjacentHTML("beforeend", fresh.map(logLine).join(""));
-      while (box.children.length > DOM_LINES) box.removeChild(box.firstChild);
-    }
-    if (logState.follow) box.scrollTop = box.scrollHeight;
-    const jump = $("#log-jump");
-    if (jump) jump.classList.toggle("jump-on", !logState.follow);
+    if (!fresh.length) return;
+    $(".log-empty", box)?.remove();
+    box.insertAdjacentHTML("beforeend", fresh.map(logLine).join(""));
+    while (box.children.length > DOM_LINES) box.firstElementChild.remove();
+    box.scrollTop = box.scrollHeight;
   }
 
-  async function paintLogs() {
-    // 缓冲只增不改：回到这一页时不能把刚才推送过来的行又丢掉。
-    if (!logState.loaded) {
-      const data = await api("/logs");
-      logState.lines = data.lines || [];
-      logState.loaded = true;
-    }
-    const levels = [
-      ["", "全部"],
-      ["INFO", "INFO"],
-      ["WARN", "WARN"],
-      ["ERRO", "ERRO"],
-      ["DEBG", "DEBG"],
-    ];
+  function paintLogs() {
+    const levels = [["", "全部"], ["INFO", "信息"], ["WARN", "警告"], ["ERRO", "错误"], ["DEBG", "调试"]];
     return `
-      ${pageHead("日志", "它在机器上打出来的每一行，跟着跑。")}
+      ${pageHead("日志", "查看运行记录；暂停后可停留阅读，恢复时回到最新。")}
       <div class="toolbar">
-        <div class="search">
-          ${ICONS.search}
-          <input id="log-search" type="search" placeholder="按内容或 target 过滤"
+        <div class="search">${ICONS.search}
+          <input id="log-search" type="search" placeholder="搜索内容或来源"
                  value="${esc(logState.text)}" aria-label="过滤日志">
         </div>
-        <div class="seg" data-connected role="group" aria-label="按级别筛">
-          ${levels
-            .map(
-              ([value, label]) => `<button class="seg-item" type="button" data-level="${value}"
-                aria-pressed="${logState.level === value}">${label}</button>`
-            )
-            .join("")}
+        <div class="seg" data-connected role="group" aria-label="日志级别">
+          ${levels.map(([value, label]) => `<button class="seg-item" type="button" data-level="${value}"
+            aria-pressed="${logState.level === value}">${label}</button>`).join("")}
         </div>
-        <button class="chip" type="button" id="log-follow"
-                aria-pressed="${logState.follow}">跟着滚</button>
+        <button class="chip" type="button" id="log-follow" aria-pressed="${logState.follow}">
+          ${logState.follow ? "跟随最新" : "已暂停"}</button>
         <button class="btn btn-icon" type="button" id="log-clear" title="清空这一屏"
                 aria-label="清空这一屏">${ICONS.trash}</button>
       </div>
-      <div class="log" id="log-box"></div>
+      <div class="log-meta"><span id="log-status" role="status">正在连接…</span>
+        <span>最近 ${DOM_LINES} 行</span></div>
+      <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志"></div>
       <button class="btn btn-filled jump ${logState.follow ? "" : "jump-on"}" type="button"
               id="log-jump">${ICONS.latest}回到最新</button>
-      <p class="note">这一屏只画最近 ${DOM_LINES} 行，缓冲区留 ${logState.limit} 行；
-        完整的记录在 <span class="key">./bot logs</span> 那个窗口里。</p>`;
+      <p class="note">离开日志页或切到后台时暂停接收，返回后补齐最近记录。
+        完整日志可在终端用 <span class="key">./bot logs</span> 查看。</p>`;
+  }
+
+  function stopLogs() {
+    logState.source?.close();
+    logState.source = null;
+    logState.mounted = false;
+    clearTimeout(logState.frame);
+    logState.frame = 0;
+    logState.queue = [];
   }
 
   function mountLogs() {
+    if (document.hidden) return;
     logState.mounted = true;
     paintLog();
+    const box = $("#log-box");
+    // 只把用户滚动当成暂停意图；换宽度与屏外行展开也会触发 scroll。
+    let scrollIntent = -Infinity;
+    const intent = () => { scrollIntent = performance.now(); };
+    box.onwheel = intent;
+    box.ontouchmove = intent;
+    box.onpointerdown = intent;
+    box.onkeydown = (event) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) intent();
+    };
+    box.onscroll = () => {
+      if (logState.follow && performance.now() - scrollIntent < 800 &&
+          box.scrollHeight - box.clientHeight - box.scrollTop > 48) setFollow(false);
+    };
     if (logState.source) return;
-    logState.source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
-    logState.source.onmessage = (event) => {
+    const source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
+    logState.source = source;
+    source.onopen = () => logStatus("实时连接");
+    source.addEventListener("snapshot", (event) => {
+      if (source !== logState.source) return;
       try {
-        pushLog(JSON.parse(event.data));
-      } catch {
-        /* 半行数据不该让整页掉线 */
-      }
+        logState.lines = JSON.parse(event.data).lines.slice(-logState.limit);
+        logState.queue = [];
+        if (logState.follow || !box.querySelector(".log-line")) paintLog();
+      } catch { logStatus("记录未能读取，刷新重试"); }
+    });
+    source.addEventListener("batch", (event) => {
+      if (source !== logState.source) return;
+      try { pushLogs(JSON.parse(event.data).lines); } catch { /* 忽略损坏的一批 */ }
+    });
+    source.onmessage = (event) => {
+      if (source !== logState.source) return;
+      try { pushLogs([JSON.parse(event.data)]); } catch { /* 忽略损坏的一行 */ }
     };
-    logState.source.onerror = () => {
-      // 断开后浏览器自己会重连；接不上时不刷提示，免得盖住正在看的日志。
-    };
+    source.onerror = () => logStatus("连接中断，正在重连…");
   }
 
   /* ---- 命令 ---- */
 
-  const commandState = { output: "", history: [] };
+  const commandState = { output: "", history: [], busy: false };
 
   async function paintCommand() {
     const shortcuts = ["list", "diff ambient", "show oai", "defaults portrait"];
@@ -1053,13 +1084,17 @@
       </section>
       <section class="card">
         <div class="section-title">回执</div>
-        <div class="code" id="command-output">${
+        <div class="code" id="command-output" role="status" aria-live="polite">${
           commandState.output ? esc(commandState.output) : "还没有执行过命令"
         }</div>
       </section>`;
   }
 
   async function runCommand(input) {
+    if (commandState.busy || !input.trim()) return;
+    commandState.busy = true;
+    const button = $("#command-form [type=submit]");
+    if (button) button.disabled = true;
     const output = $("#command-output");
     if (output) output.textContent = "执行中…";
     try {
@@ -1071,6 +1106,9 @@
       commandState.output = error.message;
       if (output) output.textContent = error.message;
       fail(error);
+    } finally {
+      commandState.busy = false;
+      if (button) button.disabled = false;
     }
   }
 
@@ -1201,7 +1239,7 @@
             <span class="row-sub">${esc(bot.protocol)} · ${esc(bot.url || "未填地址")}</span>
           </div>
           <div class="row-tail">
-            <button class="switch" type="button" role="switch" name="enabled"
+            <button class="switch" type="button" role="switch" data-name="enabled" name="enabled"
                     aria-checked="${bot.enabled}" aria-label="启用这条连接"></button>
           </div>
         </div>
@@ -1284,7 +1322,11 @@
   /* ---- 解锁 ---- */
 
   function paintLock(reason) {
-    logState.mounted = false;
+    token = "";
+    store.clear();
+    stopLogs();
+    renderSeq++;
+    $("#view").removeAttribute("aria-busy");
     $("#nav").innerHTML = "";
     $("#view").innerHTML = `
       <form class="lock" id="lock-form">
@@ -1312,7 +1354,7 @@
   function ripple(event) {
     if (reduced.matches || event.button > 0) return;
     const host = event.target.closest(".btn, .nav-item, .seg-item, .chip, .row");
-    if (!host) return;
+    if (!host || host.matches(":disabled") || host.matches(".row-plain:not(button)")) return;
     const box = host.getBoundingClientRect();
     const size = Math.max(box.width, box.height) * 2;
     const dot = document.createElement("span");
@@ -1326,8 +1368,10 @@
   }
 
   async function commitField(control, forced) {
+    if (control.disabled) return;
     const path = control.dataset.path;
-    const name = pluginView.selected || location.hash.replace(/^#\/plugins\//, "").split("/")[0];
+    const name = control.closest("[data-config-plugin]")?.dataset.configPlugin;
+    if (!name) return;
     let value;
     try {
       value =
@@ -1355,23 +1399,29 @@
   }
 
   async function togglePlugin(toggle) {
+    if (toggle.disabled) return;
+    toggle.disabled = true;
     const next = toggle.getAttribute("aria-checked") !== "true";
-    toggle.setAttribute("aria-checked", String(next));
     try {
       const data = await api(`/plugins/${encodeURIComponent(toggle.dataset.toggle)}/enabled`, {
         method: "POST",
         body: { on: next },
       });
       snack(data.message);
-      render();
+      toggle.setAttribute("aria-checked", String(next));
+      if (toggle.isConnected) await render();
     } catch (error) {
       toggle.setAttribute("aria-checked", String(!next));
       fail(error);
+    } finally {
+      toggle.disabled = false;
     }
   }
 
   /** 宽屏上换一个插件只重画右边那一格，列表与搜索词都留在原地。 */
+  let detailSeq = 0;
   async function openDetail(name) {
+    const seq = ++detailSeq;
     pluginView.selected = name;
     for (const row of document.querySelectorAll("#plugin-list [data-plugin]")) {
       if (row.dataset.plugin === name) row.setAttribute("aria-selected", "true");
@@ -1381,13 +1431,16 @@
     if (!pane) return;
     pane.innerHTML = skeleton(2);
     try {
-      pane.innerHTML = pluginDetailHtml(await fetchPlugin(name));
+      const plugin = await fetchPlugin(name);
+      if (seq !== detailSeq || !pane.isConnected) return;
+      pane.innerHTML = pluginDetailHtml(plugin);
+      $(".bar-title").textContent = plugin.display;
+      document.title = `${plugin.display} · ${NAME}`;
     } catch (error) {
+      if (seq !== detailSeq || !pane.isConnected) return;
       pane.innerHTML = empty(error && error.message ? error.message : "这一个没能读出来");
     }
     history.replaceState(null, "", `#/plugins/${encodeURIComponent(name)}`);
-    $(".bar-title").textContent = name;
-    document.title = `${name} · ${NAME}`;
   }
 
   async function runSource(which) {
@@ -1410,6 +1463,12 @@
     document.addEventListener("click", async (event) => {
       const target = event.target;
 
+      if (target.closest(".skip-link")) {
+        event.preventDefault();
+        $("#view").focus();
+        return;
+      }
+
       if (target.closest("[data-snack-close]")) {
         clearTimeout(snackTimer);
         snackHost().innerHTML = "";
@@ -1418,7 +1477,7 @@
 
       // 宽屏上列表与详情并排：点一行只换右边，别整页重来。
       const pluginRow = target.closest("[data-plugin]");
-      if (pluginRow && layout() === "expanded" && !event.metaKey && !event.ctrlKey) {
+      if (pluginRow && !target.closest("button") && layout() === "expanded" && !event.metaKey && !event.ctrlKey) {
         event.preventDefault();
         await openDetail(pluginRow.dataset.plugin);
         return;
@@ -1504,19 +1563,20 @@
       const level = target.closest("[data-level]");
       if (level) {
         logState.level = level.dataset.level;
-        render();
+        for (const item of document.querySelectorAll("[data-level]")) {
+          item.setAttribute("aria-pressed", String(item === level));
+        }
+        paintLog();
         return;
       }
 
       if (target.closest("#log-follow")) {
-        logState.follow = !logState.follow;
-        render();
+        setFollow(!logState.follow);
         return;
       }
 
       if (target.closest("#log-jump")) {
-        logState.follow = true;
-        render();
+        setFollow(true);
         return;
       }
 
@@ -1584,17 +1644,13 @@
     document.addEventListener("keydown", async (event) => {
       const typing =
         event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
+      if (event.isComposing || $("#dialog[open]")) return;
       if (event.key === "Enter") {
         const control = event.target.closest ? event.target.closest("input[data-path]") : null;
         if (control) {
           event.preventDefault();
           await commitField(control);
           return;
-        }
-        const input = event.target.closest ? event.target.closest("#command-input") : null;
-        if (input && input.value.trim()) {
-          event.preventDefault();
-          runCommand(input.value.trim());
         }
         return;
       }
@@ -1633,6 +1689,16 @@
     // 设置页的两张表单：连接的每一条各一张，全局一张。都等按保存才提交，
     // 回车不提交（全局那张没有提交按钮，不拦下来会整页刷新）。
     document.addEventListener("submit", async (event) => {
+      if (event.target.id === "command-form") {
+        event.preventDefault();
+        const input = $("#command-input");
+        if (input.value.trim()) await runCommand(input.value.trim());
+        return;
+      }
+      if (event.target.id === "global-form") {
+        event.preventDefault();
+        return;
+      }
       const botForm = event.target.closest("form[data-index]");
       if (!botForm) return;
       event.preventDefault();
@@ -1645,12 +1711,17 @@
       }
     });
 
-    // 切到后台就别再动 DOM 了：手机上那点 CPU 要留给机器人。
+    // Android 切回 Termux 时释放 SSE；回来由服务端快照补齐，后台零日志解析。
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) return;
-      logState.queue = [];
-      if ($("#log-box")) paintLog();
-      if ($("#overview-log")) mountOverviewLog();
+      if (document.hidden) stopLogs();
+      else if (token) {
+        if ($("#log-box")) mountLogs();
+        if ($("#overview-log")) mountOverviewLog();
+      }
+    });
+    window.addEventListener("pagehide", stopLogs);
+    window.addEventListener("pageshow", () => {
+      if (token && $("#log-box") && !document.hidden) mountLogs();
     });
 
     prefersDark.addEventListener("change", applyTheme);
@@ -1683,8 +1754,10 @@
     $("#refresh").innerHTML = ICONS.refresh;
     $("#refresh").onclick = (event) => {
       const button = event.currentTarget;
+      if (button.disabled) return;
+      button.disabled = true;
       button.dataset.busy = "";
-      render().finally(() => delete button.dataset.busy);
+      render().finally(() => { delete button.dataset.busy; button.disabled = false; });
     };
     $("#settings").innerHTML = ICONS.gear;
     $("#settings").onclick = () => go("settings");
@@ -1696,7 +1769,8 @@
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event;
-    if (currentRoute().page === "settings") render();
+    const button = $("[data-install]");
+    if (button) button.hidden = false;
   });
 
   document.addEventListener("DOMContentLoaded", () => {

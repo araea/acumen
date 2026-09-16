@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="/app.css">
 </head>
 <body class="scheme-console layout-compact">
+<a class="skip-link" href="#view">跳到内容</a>
 <div class="shell">
   <header class="bar">
     <span class="brand">
@@ -35,16 +36,16 @@
       </svg>
       <span class="brand-name">知言</span>
     </span>
-    <h1 class="bar-title" id="bar-title">总览</h1>
+    <span class="bar-title" id="bar-title" aria-hidden="true">总览</span>
     <span class="bar-spacer"></span>
     <button class="btn btn-icon" id="refresh" type="button" title="刷新这一页" aria-label="刷新这一页"></button>
     <button class="btn btn-icon" id="settings" type="button" title="接入与全局设置" aria-label="接入与全局设置"></button>
   </header>
   <nav class="nav" id="nav" aria-label="主要"></nav>
-  <main class="main"><div class="page" id="view"></div></main>
+  <main class="main"><div class="page" id="view" tabindex="-1"></div></main>
 </div>
 <div id="snack" aria-live="polite"></div>
-<dialog id="dialog" class="dialog"></dialog>
+<dialog id="dialog" class="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-body"></dialog>
 <noscript><div class="lock">
   <p class="note">这一页要开着 JavaScript 才能跑。
   地址与口令可以从启动日志里那条带 <span class="key">?t=</span> 的地址拿，
