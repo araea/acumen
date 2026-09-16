@@ -191,18 +191,17 @@ rg 'serde\(default = "' src/                            # 期望：只剩 ambien
 rg 'target: "Plugin"' src/                              # 期望：无输出
 rg -c '"⚠️ ' src/                                        # 期望：3（切片截断、缓存兜底、切全量池）
 
-# 日志 target 与注册名对照
+# 文案层
+rg -nP '"[^"]*/(ctl|help|ai|搭话|撤回|画像)[^"]*"' src/plugins  # 期望：只剩测试夹具与 include_str
+rg -nP '"[^"]*[❌⚠️✅📭⏳💡][^"]*。"' src/plugins                # 期望：只剩 help 的三行页脚
+
+# 配置
+cargo test --locked example_config    # 每个插件都有一段、键集合与默认值一致、每段都能过校验
+
+# 每个插件的日志 target 与注册名对照
 for p in $(rg -oP '^\s{4}\K[a-z_]+(?= \{)' src/plugins/registry.rs); do
   printf '%s -> %s\n' "$p" "$(rg -oP 'target: "(Plugin/[^"]*)"' src/plugins/$p.rs src/plugins/$p/*.rs 2>/dev/null | sort -u | tr '\n' ' ')"
 done
-
-# 文案层
-rg '【' src/plugins/                                   # 期望：只剩测试数据
-rg -nP '"[^"]*/(ctl|help|ai|搭话|撤回|画像)[^"]*"' src/plugins  # 期望：只剩测试与注释
-
-# 配置
-diff <(rg -oP '^\s{4}\K[a-z_]+(?= \{)' src/plugins/registry.rs | sort) \
-     <(rg -oP '^\[\[?([a-z_]+)' config.example.toml | sort)      # 期望：无差异
 ```
 
 **图像的审美仍然要看图**，`review-cards.sh` 的自动断言只保证结构与内容边界。
