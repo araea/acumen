@@ -165,9 +165,14 @@ ack_after_seconds = 20
 cookie = ""
 
 # 语义同 [stats.channel]。
+# 线上把 818965288 与 924989840 放进了 black：那两个群已经有别的解析机器人，
+# 同一条链接不必两家都回一条预览。
 [video_parse.channel]
 white = []
-black = []
+black = [
+    818965288,
+    924989840,
+]
 
 # 网页截图：消息里的网页链接自动截成图。视频站链接交给 [video_parse]，这里跳过。
 [webshot]

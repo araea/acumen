@@ -132,27 +132,10 @@ async fn live_takes_the_video_into_the_sandbox_group() {
     result.expect("取片成品没发出去");
 
     // 群里到底有没有：看实现端记下来的内容，不看日志。
-    let listed: serde_json::Value = writer
-        .call(&ctx, "message.list", json!({"channel_id": group.to_string()}))
-        .await
-        .unwrap();
-    let messages = listed["data"].as_array().cloned().unwrap_or_default();
-    let find = |marker: &str| {
-        messages
-            .iter()
-            .find(|message| {
-                message["content"]
-                    .as_str()
-                    .is_some_and(|content| content.contains(marker))
-            })
-            .map(|message| {
-                println!("{}", message["content"].as_str().unwrap_or_default());
-                message["id"].as_str().unwrap_or_default().to_string()
-            })
-    };
-    let caption = find(" MB");
-    let file = find("<file");
-    let bubble = find("<video");
+    let listed = recent_messages(&ctx, &writer, group).await;
+    let caption = find_sent(&listed, " MB");
+    let file = find_sent(&listed, "<file");
+    let bubble = find_sent(&listed, "<video");
     assert!(caption.is_some(), "正文没到群里");
     assert!(file.is_some(), "群文件没到群里");
     assert!(bubble.is_some(), "视频气泡没到群里");
@@ -172,6 +155,180 @@ async fn live_takes_the_video_into_the_sandbox_group() {
             .unwrap();
         println!("撤回 {id}: {deleted}");
     }
+}
+
+/// 真机那条失败记录的重放：用户引用预览只说了「视频」，QQ 的引用回复自动补上 @，
+/// 平台又把 @ 的显示名写进正文，插件拿到的 `raw_message` 就成了
+/// 「@A宝好腻害！ 视频」（记录 id 113798，当时群里没有任何反应，片子一直没取）。
+/// 这里那句话原样喂进插件，看成品是不是真的到群里。
+///
+/// 这条会往群里发五六条，模块的出站闸门是全局 20 条/分钟，别把它跟别的沙盒用例挤在
+/// 同一分钟里跑——一起跑时最后那一两条会撞上 `outbound rate budget exhausted`。
+#[tokio::test]
+#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（正文 + 群文件 + 气泡）并撤回"]
+async fn live_takes_the_video_when_the_platform_adds_an_at() {
+    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+    let (ctx, writer) = live_context().await;
+    let (video, _) = sample().await;
+    // 验的是那一句认不认得出来，走 360P 就够，不必为它下几十兆。
+    let me = cheaper_take(&ctx);
+
+    // 引用目标与用户那条消息都要真实存在：成品正文会引用后者。
+    let anchor = post(&ctx, &writer, group, "视频解析自检").await;
+    let request = post(&ctx, &writer, group, "@A宝好腻害！ 视频").await;
+    state::remember(state::Preview {
+        target_id: group,
+        message_id: anchor.to_string(),
+        created_ts: chrono::Utc::now().timestamp(),
+        url: SAMPLE.to_string(),
+        bvid: video.bvid.clone(),
+        cid: video.cid,
+        page: video.page,
+        title: video.title.clone(),
+        duration: video.duration,
+        extracted: false,
+    })
+    .await;
+
+    let (ctx, writer) = quoting_context(ctx, writer, group, request, anchor, &me).await;
+    let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
+    assert!(consumed.is_none(), "带 @ 的取片请求该由本插件吃掉");
+
+    // 发出去了没有看实现端记下来的内容，不看日志。
+    let listed = recent_messages(&ctx, &writer, group).await;
+    let caption = find_sent(&listed, " MB");
+    let file = find_sent(&listed, "<file");
+    let bubble = find_sent(&listed, "<video");
+    assert!(caption.is_some(), "正文没到群里：那句带 @ 的取片请求没被认出来");
+    assert!(file.is_some(), "群文件没到群里");
+    assert!(bubble.is_some(), "视频气泡没到群里");
+
+    // 收工：这次发出去的连同那两条自检消息一起撤回（取片慢时还会有句「正在取片」）。
+    let ids = [
+        Some(anchor.to_string()),
+        Some(request.to_string()),
+        caption,
+        file,
+        bubble,
+        find_sent(&listed, "正在取片"),
+    ];
+    for id in ids.into_iter().flatten() {
+        let deleted: serde_json::Value = writer
+            .call(
+                &ctx,
+                "message.delete",
+                json!({"channel_id": group.to_string(), "message_id": id}),
+            )
+            .await
+            .unwrap();
+        println!("撤回 {id}: {deleted}");
+    }
+}
+
+/// 最近的消息，一路跟着 `next` 往回翻几页。
+///
+/// `message.list` 的第一页不保证含刚发出去的那几条：它按 seq 分页，实测过第一页只有
+/// 最新一条、正文与群文件都落在下一页（一次取片的成品是三条一起发出去的）。
+async fn recent_messages(
+    ctx: &Context,
+    writer: &LockedWriter,
+    group: i64,
+) -> Vec<serde_json::Value> {
+    const PAGES: usize = 4;
+    let mut out = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..PAGES {
+        let mut body = json!({"channel_id": group.to_string()});
+        if let Some(next) = &cursor {
+            body["next"] = json!(next);
+        }
+        let listed: serde_json::Value = writer.call(ctx, "message.list", body).await.unwrap();
+        out.extend(listed["data"].as_array().cloned().unwrap_or_default());
+        match listed["next"].as_str() {
+            Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+            _ => break,
+        }
+    }
+    out
+}
+
+/// 在这批消息里找带某个记号的那一条，回它的 ID。
+fn find_sent(messages: &[serde_json::Value], marker: &str) -> Option<String> {
+    messages
+        .iter()
+        .find(|message| {
+            message["content"]
+                .as_str()
+                .is_some_and(|content| content.contains(marker))
+        })
+        .map(|message| {
+            println!("{}", message["content"].as_str().unwrap_or_default());
+            message["id"].as_str().unwrap_or_default().to_string()
+        })
+}
+
+/// 往沙盒群发一条真实存在的消息，拿它的 ID。
+async fn post(ctx: &Context, writer: &LockedWriter, group: i64, content: &str) -> i64 {
+    let sent: serde_json::Value = writer
+        .call(
+            ctx,
+            "message.create",
+            json!({"channel_id": group.to_string(), "content": content}),
+        )
+        .await
+        .unwrap();
+    sent[0]["id"].as_str().unwrap().parse().unwrap()
+}
+
+/// 把自检那一轮的画质压到 360P（`Config::default()` 挑的是 720P），返回自己的 QQ 号。
+fn cheaper_take(ctx: &Context) -> String {
+    let me = ctx.bot.login_user.get().id.clone();
+    let mut config = ctx.config.write().unwrap();
+    let Some(value) = config.plugins.get_mut("video_parse") else {
+        panic!("插件配置不在");
+    };
+    value["prefer_quality"] = toml::Value::Integer(16);
+    value["max_size_mb"] = toml::Value::Integer(20);
+    me
+}
+
+/// 把[`live_context`]给的上下文换成「引用预览再回复」的那条消息：引用段指着
+/// `anchor`，at 段指着自己，正文是平台写进来的「@名字 视频」。
+///
+/// `raw_message` 照适配器的拼法来——只拼文本段，`at` 段与引用段都不进去
+/// （`adapters/satori.rs` 的 message-created 分支），所以正文里留着的是那个
+/// 显示名，不是 `[CQ:…]`。钉住的就是这一串能不能认出取片词。
+async fn quoting_context(
+    mut ctx: Context,
+    writer: LockedWriter,
+    group: i64,
+    message_id: i64,
+    anchor: i64,
+    at: &str,
+) -> (Context, LockedWriter) {
+    let body = "@A宝好腻害！ 视频";
+    ctx.event = EventType::Satori(
+        simd_json::serde::to_owned_value(json!({
+            "post_type": "message",
+            "satori_type": "message-created",
+            "message_type": "group",
+            "group_id": group,
+            "user_id": 1,
+            "message_id": message_id,
+            "raw_message": body,
+            "sender": {"nickname": "自检", "role": "member"},
+            "message": [
+                {"type": "reply", "data": {"id": anchor.to_string()}},
+                {"type": "at", "data": {"qq": at}},
+                {"type": "text", "data": {"text": body}}
+            ]
+        }))
+        .unwrap(),
+    );
+    (ctx, writer)
 }
 
 #[tokio::test]
@@ -292,20 +449,8 @@ async fn live_reads_a_card_from_the_sandbox_group() {
     assert!(consumed.is_none(), "卡片该由本插件吃掉");
 
     // 先按文本快照找到那条预览，再取它的完整元素。
-    let listed: serde_json::Value = writer
-        .call(&ctx, "message.list", json!({"channel_id": group.to_string()}))
-        .await
-        .unwrap();
-    let messages = listed["data"].as_array().cloned().unwrap_or_default();
-    let preview_id = messages
-        .iter()
-        .find(|message| {
-            message["content"]
-                .as_str()
-                .is_some_and(|content| content.contains(HINT_LINE))
-        })
-        .and_then(|message| message["id"].as_str().map(str::to_string))
-        .expect("卡片没有换来预览");
+    let listed = recent_messages(&ctx, &writer, group).await;
+    let preview_id = find_sent(&listed, HINT_LINE).expect("卡片没有换来预览");
 
     // 引用段与封面只有 `message.get` 看得到：`message.list` 回的是文本快照。
     let sent: serde_json::Value = writer

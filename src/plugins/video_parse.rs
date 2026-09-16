@@ -134,12 +134,39 @@ async fn resolve_link(raw: &str) -> Result<Url> {
 }
 
 /// 引用预览后回复的这句话，是不是在要片。
+///
+/// 不能拿正文整段比：QQ 的引用回复会自动带上 @，而平台把 @ 的**显示名**也写进了
+/// 正文——`at` 段后面还跟着一段「@名字 正文」（`at` 段自己不写名字，那个名字是 QQ
+/// 客户端显示出来的样子）。适配器拼 `raw_message` 时只取文本段，@ 段与引用段都不
+/// 进去，于是用户只打了「视频」，拼出来的却是 `@A宝好腻害！ 视频`，整段一比就落空
+/// （线上记录 id 113798 就是这样，群里的表现是机器人没反应）。名字多长没法猜，
+/// 昵称里还可能带空格，所以从 @ 后面逐词往后试，剩下一截正好是取片词才算数。
 fn matches_extract_request(text: &str) -> bool {
+    let candidate = text.trim();
+    let Some(mut rest) = candidate.strip_prefix('@').map(str::trim_start) else {
+        return is_extract_word(candidate);
+    };
+    loop {
+        if is_extract_word(rest) {
+            return true;
+        }
+        match rest.split_once(char::is_whitespace) {
+            Some((_, tail)) => rest = tail.trim_start(),
+            None => return false,
+        }
+    }
+}
+
+/// 这一截正文是不是取片词：去掉首尾空白与句末标点之后整段相等。
+fn is_extract_word(text: &str) -> bool {
     let cleaned = text
         .trim()
         .trim_end_matches(|c: char| "。.!！~～?？,，、".contains(c))
         .trim();
-    !cleaned.is_empty() && EXTRACT_WORDS.contains(&cleaned.to_ascii_lowercase().as_str())
+    if cleaned.is_empty() {
+        return false;
+    }
+    EXTRACT_WORDS.contains(&cleaned.to_ascii_lowercase().as_str())
 }
 
 // ================= Main Handler =================
@@ -625,6 +652,37 @@ mod tests {
         }
     }
 
+    /// 引用回复会被 QQ 自动补一个 @，平台又把这个 @ 的显示名写进正文，于是用户打的
+    /// 那句「视频」拼出来是「@A宝好腻害！ 视频」。线上的记录 id 113798 就是这个形状，
+    /// 当时的表现是机器人没有反应。
+    #[test]
+    fn the_at_the_platform_adds_to_a_quoted_reply_does_not_hide_the_word() {
+        for text in [
+            // 真机上那条原样的正文。
+            "@A宝好腻害！ 视频",
+            "@A宝好腻害！ 原片。",
+            "@A宝好腻害！ 下载",
+            // 实现端没给显示名时，留下的就是干净的一句。
+            "视频",
+            // 昵称里带空格：名字切成了好几段，还得往后挑。
+            "@对吧 A 宝最可爱啦～ 文件！",
+            // 两个人一起 @。
+            "@小黑 @小白 取片",
+        ] {
+            assert!(matches_extract_request(text), "{text} 应该算取片请求");
+        }
+        for text in [
+            // @ 之后不是取片词。
+            "@A宝好腻害！ 这个视频不错",
+            "@A宝好腻害！ 谢谢",
+            // 光 @ 了人，没别的话。
+            "@A宝好腻害！",
+            "@",
+        ] {
+            assert!(!matches_extract_request(text), "{text} 不该算取片请求");
+        }
+    }
+
     #[test]
     fn the_preview_names_the_video_and_how_to_get_it() {
         let text = preview_text(&video(), &config());
@@ -805,6 +863,15 @@ mod tests {
         assert!(
             handle(ctx, writer).await.unwrap().is_none(),
             "引用预览要片应该被本插件吃掉"
+        );
+
+        // 真机上平台会在引用回复前面补一段 @（正文变成「@名字 视频」，见
+        // `the_at_the_platform_adds_to_a_quoted_reply_does_not_hide_the_word`），
+        // 这一条也该被吃掉——没被吃掉就会落到下面的找链接那一步，事件原样放行。
+        let (ctx, writer) = event("@A宝好腻害！ 视频", Some(PREVIEW_ID)).await;
+        assert!(
+            handle(ctx, writer).await.unwrap().is_none(),
+            "带 @ 的取片请求应该被本插件吃掉"
         );
 
         // 引用的不是本插件发过的消息。
