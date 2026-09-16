@@ -102,9 +102,8 @@ fn stamp() -> String {
 /// 这里只写这张卡自己的位置，**不写色值与字号字面量**。四类内容的主色由页面的
 /// `seed-*` 类名换，这个文件不参与——所以「换分类」与「换版式」是两件互不牵连的事。
 const CSS: &str = r#"
-*{margin:0;padding:0;box-sizing:border-box}
 body{width:720px}
-.shot{padding:var(--md-space-5)}
+/* `.shot`（相纸的底色与内边距）由 m3e.css 的组件基元给，这里不再写一遍 */
 .card{padding:var(--md-space-9) 40px var(--md-space-8)}
 
 /* —— 标题块 —— */

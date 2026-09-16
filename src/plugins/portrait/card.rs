@@ -361,7 +361,7 @@ const CSS: &str = r#"
    「写下来的东西」，而这份报告正是要读成一份东西，不是一块仪表盘。
    衬线在 46px 上要把字重收到 700：Black(800) 的字脚在纸上会糊成一团。 */
 body{width:720px}
-.shot{padding:22px}
+/* `.shot`（相纸的底色与内边距）由 m3e.css 的组件基元给，这里不再写一遍 */
 .card{padding:var(--md-space-9) 44px var(--md-space-8)}
 /* 顶沿一条主色细线：这张卡与手册、资讯两张同尺寸的卡一眼分开 */
 .card::after{content:"";position:absolute;top:0;left:0;right:0;height:3px;

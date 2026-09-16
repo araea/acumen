@@ -68,7 +68,7 @@ async function main() {
       await until(() => run(`document.readyState === 'complete' && !!document.querySelector('.card')`));
       await run('document.fonts.ready.then(() => true)');
       const metrics = await run(`(() => {
-        const shot = document.querySelector('.shot, .card').getBoundingClientRect();
+        const shot = document.querySelector('.shot').getBoundingClientRect();
         const overflow = [...document.querySelectorAll('.card *')].filter(el => {
           const rect = el.getBoundingClientRect();
           return rect.width && (rect.left < shot.left || rect.right > shot.right + 1 ||
@@ -79,7 +79,7 @@ async function main() {
           items:document.querySelectorAll('.item').length,
           states:document.querySelectorAll('.status-row').length};
       })()`);
-      assert.equal(metrics.width, family === 'help' ? (file === 'overview.html' ? 920 : 640) : family === 'oai' ? 520 : viewport, file);
+      assert.equal(metrics.width, family === 'help' ? (file === 'overview.html' ? 920 : 640) : viewport, file);
       assert.equal(metrics.scriptRan, false, file + ': embedded script executed');
       assert.deepEqual(metrics.overflow, [], file + ': content overflow');
       assert(metrics.height <= 16000, file + ': excessive height');

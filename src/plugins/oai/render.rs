@@ -52,10 +52,9 @@ pub(crate) struct Footer {
 pub(crate) async fn render_card(card: Card<'_>, scale: f64) -> anyhow::Result<String> {
     let html = build_html(&card);
     // 量高度、等字体、尺寸护栏与并发闸门都在 `render::web::shoot` 一处。
-    // 出图范围是 `.card`（正文的 20px 留白由 body 提供，不进图）。
+    // 出图范围是默认的 `.shot`：与另外四张卡片同一处边界（卡面 + 一圈相纸）。
     render::shoot(
         render::Shot::new(&html, VIEWPORT_WIDTH)
-            .selector(".card")
             .scale(scale)
             .jpeg(88)
             .max_height(MAX_CARD_HEIGHT),
@@ -93,7 +92,7 @@ fn build_html(card: &Card<'_>) -> String {
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{SYSTEM}{CSS}</style></head>
-<body class="scheme-reply md-text"><div class="card md-card"><div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>智能回复<span class="md-kicker-en">REPLY</span></div>{stamp}</div><div class="head md-title md-type-title-small">{title}</div><hr class="md-divider"><div class="body">{body}</div></div>{sources}{footer}</div></body></html>"#,
+<body class="scheme-reply md-text"><div class="shot"><div class="card md-card"><div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>智能回复<span class="md-kicker-en">REPLY</span></div>{stamp}</div><div class="head md-title md-type-title-small">{title}</div><hr class="md-divider"><div class="body">{body}</div></div>{sources}{footer}</div></div></body></html>"#,
         SYSTEM = crate::render::web::DESIGN_SYSTEM,
         title = escape_html(card.title),
     )
@@ -205,7 +204,9 @@ pub(crate) fn escape_html(value: &str) -> String {
 /// 13 / 13.5 / 14 七个值——比整支字阶还密，等于在系统之外又养了一套字阶。
 /// 行内代码的 `0.86em` 是例外：它相对父级字号，不属于这支字阶。
 const CSS: &str = r#"
-body{padding:20px;background:var(--md-sys-color-surface-dim)}
+/* `body` 只给版心宽度；相纸的底色与内边距由 `.shot` 给（见 m3e.css 的组件基元），
+   出图范围也是 `.shot`——五张卡片的成图外围因此是同一种处理。 */
+body{width:560px}
 .card{width:520px}
 /* 内芯吃左右内边距，来源与页脚两块「附录」则通栏铺到卡片边缘——
    附录是另一张纸，边界要看得见，不能和正文一样缩在版心内。 */
@@ -516,7 +517,8 @@ mod live_tests {
             .decode(&base64)
             .unwrap();
         let image = image::load_from_memory(&bytes).unwrap();
-        assert_eq!(image.width(), (f64::from(CARD_WIDTH) * DEVICE_SCALE) as u32);
+        // 出图范围是 `.shot`：卡面 520 加两侧各 20 的相纸。
+        assert_eq!(image.width(), (f64::from(VIEWPORT_WIDTH) * DEVICE_SCALE) as u32);
         // 占位视口是 800，真实卡片必须比它高出一截才说明测量生效。
         assert!(image.height() > 900, "height = {}", image.height());
         std::fs::write(std::env::temp_dir().join("ayjx-card.jpg"), &bytes).unwrap();
