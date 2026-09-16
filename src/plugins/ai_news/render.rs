@@ -17,7 +17,6 @@ use super::leaderboard::{self, Board};
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
 
-const DIVIDER: &str = "———————————————";
 
 /// 一条可提取的链接：标签 + 地址。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,17 +96,17 @@ impl Rendered {
         if self.entries.is_empty() {
             return self.header.clone();
         }
+        // 条目之间、正文与页脚之间各留一个空行——分组靠空行与序号，
+        // 不再用横线（CONTENT.md 3.2：分隔线不用）。
         let mut out = String::with_capacity(self.char_count() * 3);
         out.push_str(&self.header);
-        out.push('\n');
-        out.push_str(DIVIDER);
-        out.push('\n');
         for entry in &self.entries {
+            out.push('\n');
+            out.push('\n');
             out.push_str(entry);
-            out.push_str("\n\n");
         }
-        out.push_str(DIVIDER);
         if !self.footer.is_empty() {
+            out.push('\n');
             out.push('\n');
             out.push_str(&self.footer);
         }

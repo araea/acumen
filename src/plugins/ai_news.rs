@@ -855,7 +855,7 @@ async fn handle_extraction_reply(
 ) -> Message {
     match state::extract_entries(target.state_id(), reply_id, wanted).await {
         state::ExtractionOutcome::Missing => Message::new().reply(message_id).text(
-            "没有找到这张卡片对应的资讯。请确认引用的是本插件近 30 天发送的 AI 资讯图片",
+            "❌ 没有找到这张卡片对应的资讯\n引用的是本插件近 30 天内发送的资讯卡片才算数",
         ),
         state::ExtractionOutcome::AlreadyExtracted => Message::new().reply(message_id).text(
             "这些条目刚才已经提取过了，无需重复提取",
@@ -1458,7 +1458,7 @@ fn render_target_list(config: &AiNewsConfig, prefix: &str) -> String {
         private_users.len()
     );
     if groups.is_empty() && private_users.is_empty() {
-        out.push_str(&format!("\n暂无目标\n可发送 {prefix}ai推送添加 群 <群号>"));
+        out.push_str(&format!("\n📭 还没有推送目标\n用 {prefix}ai推送添加 群 <群号> 加一个"));
         return out;
     }
     if !groups.is_empty() {

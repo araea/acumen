@@ -452,7 +452,8 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    format!("没有找到 {who} 在群里的发言记录"),
+                    // 空态不是错误：说清为什么空，再给一条能立刻做的事。
+                    format!("📭 没有找到 {who} 在群里的发言记录\n他在这段时间里没在群里说过话，或换个时间范围再试"),
                 )
                 .await;
                 return Ok(None);
@@ -465,7 +466,7 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    format!("查记录时出错了：{error}"),
+                    format!("❌ 查记录时出错了：{error}"),
                 )
                 .await;
                 return Ok(None);

@@ -137,9 +137,6 @@ fn grouped(ctx: &Context) -> Vec<Group> {
         .collect()
 }
 
-/// 与其他插件保持一致的分隔线
-const DIVIDER: &str = "———————————————";
-
 /// 纯文本总览：分区与卡片图一致，只是把版式换成缩进
 fn render_overview(ctx: &Context, groups: &[Group]) -> String {
     let prefix = prefix_of(ctx);
@@ -150,10 +147,8 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
         .filter(|e| e.enabled)
         .count();
 
-    let mut out = format!(
-        "ayjx 插件总览\n已启用 {} / {} 个插件 · 指令前缀 {}\n{}\n",
-        enabled, total, prefix, DIVIDER
-    );
+    // 不再用横线分隔：分组有 ▍、下一步有 💡，横线只是多占一行。
+    let mut out = format!("ayjx 插件总览\n已启用 {enabled} / {total} 个插件 · 指令前缀 {prefix}\n");
 
     // 一条两行：首行是身份与开关，次行是它到底做什么，扫读时不必在长句里找边界
     for group in groups {
@@ -167,7 +162,6 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
         }
     }
 
-    out.push_str(&format!("\n{}", DIVIDER));
     out.push_str(&format!(
         "\n💡 看全部指令：{p}help <插件名>\n管理开关与配置：{p}ctl（聊天）\n连接：Satori v1；状态为配置开关，初始化及排期修改待重启。",
         p = prefix
@@ -185,8 +179,8 @@ fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
     };
 
     let mut out = format!(
-        "{}（{}）\n状态：{}\n{}\n{}\n{}\n",
-        entry.display, entry.name, status, DIVIDER, entry.desc, DIVIDER
+        "{}（{}）\n状态：{}\n\n{}\n\n",
+        entry.display, entry.name, status, entry.desc
     );
 
     if cmds.is_empty() {
@@ -218,9 +212,8 @@ fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
 
 fn not_found(ctx: &Context, name: &str) -> String {
     format!(
-        "没有找到插件「{}」\n{}\n发送 {}help 可以查看全部插件。",
+        "❌ 没有找到插件「{}」\n发送 {}help 可以查看全部插件",
         name,
-        DIVIDER,
         prefix_of(ctx)
     )
 }
