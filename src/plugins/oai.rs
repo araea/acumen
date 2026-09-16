@@ -156,7 +156,7 @@ impl OaiConfig {
     }
 
     /// 单次模型请求静默多久算卡死；`None` 表示不看。
-    pub(crate) fn pi_stall(&self) -> Option<std::time::Duration> {
+    pub(crate) fn request_stall(&self) -> Option<std::time::Duration> {
         (self.request_stall_seconds > 0)
             .then(|| std::time::Duration::from_secs(self.request_stall_seconds.max(20)))
     }

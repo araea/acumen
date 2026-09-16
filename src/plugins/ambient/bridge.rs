@@ -4075,7 +4075,7 @@ mod tests {
                 "api_key": "sk-test",
                 "models": ["gpt-image-2.5-flare"],
                 "defaults_version": 999,
-                "pi_room_initialized": true,
+                "seeded_presets": ["管家大人"],
             })
             .to_string(),
         )

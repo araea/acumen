@@ -42,16 +42,6 @@ pub(crate) trait ChatBridge: Send + Sync {
     }
 }
 
-/// 旧房间名规则：`pi` 或 `pi-` 前缀（忽略大小写）。
-///
-/// 引擎现在是房间自己的属性（[`super::types::Agent::uses_pi`]），名字不再决定任何事。
-/// 这个函数只剩两个用途：迁移还没写下 `engine` 的旧配置，以及让历史上带 `-`
-/// 的房间名继续通过校验。
-pub(crate) fn legacy_pi_name(room: &str) -> bool {
-    let room = room.trim().to_lowercase();
-    room == "pi" || room.starts_with("pi-")
-}
-
 /// 解析房间的写法：`pi`、`pi 模型`、`pi/模型`、`pi:模型`（大小写与全角冒号皆可）。
 ///
 /// 返回 `Some(模型)`——空串表示房间没指定模型，用 `[oai] agent_default_model`。
@@ -256,20 +246,6 @@ pub(crate) async fn conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_pi_names_still_recognised_for_migration() {
-        assert!(legacy_pi_name("pi"));
-        assert!(legacy_pi_name("PI"));
-        assert!(legacy_pi_name(" pi "));
-        assert!(legacy_pi_name("pi-test"));
-        assert!(legacy_pi_name("PI-猫娘"));
-        assert!(!legacy_pi_name("ping"));
-        assert!(!legacy_pi_name("pixi"));
-        assert!(!legacy_pi_name("api"));
-        assert!(!legacy_pi_name("pi2"));
-        assert!(!legacy_pi_name("助手"));
-    }
 
     #[test]
     fn pi_spec_accepts_every_separator_and_rejects_lookalike_names() {

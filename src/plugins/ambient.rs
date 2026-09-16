@@ -1284,7 +1284,7 @@ async fn speak_up(
         persona,
         config,
         &oai.search,
-        oai.pi_stall(),
+        oai.request_stall(),
         turns,
         &images,
         called,

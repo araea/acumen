@@ -386,7 +386,7 @@ async fn chat(
     }
 
     let started = std::time::Instant::now();
-    // 发起人本身是全局管理员时，这一轮 pi 房间对话可以用自然语言驱动 ctl；
+    // 这一轮内置智能体房间的对话可以用自然语言驱动 ctl；
     // 凭据随 `control` 一起活到本轮结束。其余情况下拿到 None，行为与从前一致。
     let control = if use_pi {
         crate::plugins::ctl::bridge::lease(ctx).await
@@ -396,7 +396,7 @@ async fn chat(
 
     // 出结果与到总预算在同一个任务里赛跑。用 select 而不是另起任务，是因为发消息
     // 要用借来的 ctx/event，搬进 spawn 就得整套克隆一遍。把工作 Future 放进独立
-    // 作用域，超时/停止后立即 drop 并终止 Pi 子进程。
+    // 作用域，超时/停止后立即 drop 并终止工具派生的子进程。
     //
     // 中途不发任何「还在处理」提示：等待本身是隐式的，一条进度播报换不来更快的
     // 回复，只会在群里插进一段与上下文无关的噪音。
@@ -781,7 +781,7 @@ async fn respond(
             &agent.system_prompt,
             chat_model,
             thinking.as_deref(),
-            oai.pi_stall(),
+            oai.request_stall(),
             hist,
             control,
             &search,
@@ -1089,8 +1089,8 @@ pub async fn execute(
                 reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
-        // 同一个 `%` 既换模型也换引擎：`房间%pi` 交给本机 pi，`房间%pi 模型` 顺带指定
-        // pi 用哪个模型，写中转站模型名则转回中转站房间。房间名不再参与判断。
+        // 同一个 `%` 既换模型也换引擎：`房间%pi` 转成内置智能体，`房间%pi 模型` 顺带
+        // 指定它用哪个模型，写中转站模型名则转回中转站房间。房间名不参与判断。
         Action::SetModel => {
             if cmd.args.is_empty() {
                 reply_text(
@@ -1795,8 +1795,7 @@ pub async fn execute(
 | `智能体%pi 模型` | 换内置智能体用的模型 | `助手%pi apilio/kimi-k3` |
 | `智能体%中转站模型` | 转回中转站房间 | `助手%gpt-5.6-luna` |
 
-> 房间名可以随便取，中文也行；决定引擎的是这条指令，不是名字。旧的 `pi` / `pi-*`
-> 房间已自动带上该引擎，行为不变。
+> 房间名可以随便取，中文也行；决定引擎的是这条指令，不是名字。
 > 模型写 `供应商/模型`（如 `apilio/claude-opus-5`）或裸 id，按 `[oai.providers]` 取接口；
 > 可加 `:强度`（如 `deepseek/deepseek-flash:high`），或在房间上单独设思考强度；
 > 只写 `pi` 则用 `[oai].agent_default_model`。`/#` 里显示为 `内置 · 模型 · 思考:强度`。

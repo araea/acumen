@@ -100,15 +100,14 @@ pub fn parse_global(raw: &str, prefixes: &[String]) -> Option<Command> {
     None
 }
 
-/// `-` 在房间指令里是删除第 N 条的写法（`助手-1`），所以名字里通常不能出现；
-/// 历史上的 `pi-*` 房间是唯一例外，改名会丢掉它们的聊天记录，继续放行。
+/// `-` 在房间指令里是删除第 N 条的写法（`助手-1`），所以名字里不能出现。
 pub(crate) fn valid_agent_name(name: &str) -> bool {
     !name.is_empty()
         && name.chars().count() <= 7
         && !name
             .chars()
             .any(|c| c.is_whitespace() || "&\"#~/ _'!@$%:*".contains(c))
-        && (!name.contains('-') || super::agent::legacy_pi_name(name))
+        && !name.contains('-')
 }
 
 pub fn parse_create(raw: &str) -> Option<(String, String, String, String)> {
@@ -405,26 +404,28 @@ pub(crate) fn search_choice(word: &str, current: bool) -> Option<Option<bool>> {
 mod tests {
     use super::*;
     #[test]
-    fn pi_prefixed_rooms_can_be_created_and_use_longest_name() {
-        let (name, _, model, _) = parse_create("##pi-test").unwrap();
-        assert_eq!(name, "pi-test");
+    fn a_room_name_never_carries_a_dash_and_matching_takes_the_longest_one() {
+        let (name, _, model, _) = parse_create("##测试房").unwrap();
+        assert_eq!(name, "测试房");
         assert!(model.is_empty());
-        assert!(valid_agent_name("PI-猫娘"));
-        assert!(!valid_agent_name("pi-../x"));
-        assert!(!valid_agent_name("other-x"));
-        let rooms = vec!["pi".to_string(), name];
-        for input in ["pi-test 你好", "&pi-test 你好", "~pi-test 你好"] {
+        // `-` 是「删除第 N 条」的符号，任何名字都不放行。
+        for bad in ["PI-猫娘", "other-x", "pi-test", "pi-../x"] {
+            assert!(!valid_agent_name(bad), "{bad}");
+        }
+        let rooms = vec!["测试".to_string(), name];
+        for input in ["测试房 你好", "&测试房 你好", "~测试房 你好"] {
             let cmd = parse_agent_cmd(input, &rooms).unwrap();
-            assert_eq!(cmd.agent, "pi-test");
+            assert_eq!(cmd.agent, "测试房");
             assert_eq!(cmd.action, Action::Chat);
         }
-        let cmd = parse_agent_cmd("pi-test-1", &rooms).unwrap();
-        assert_eq!(cmd.agent, "pi-test");
+        // 名字最长的那间先匹配：`测试房-1` 是删「测试房」的第一条。
+        let cmd = parse_agent_cmd("测试房-1", &rooms).unwrap();
+        assert_eq!(cmd.agent, "测试房");
         assert_eq!(cmd.action, Action::DeleteAt(Scope::Public));
         assert_eq!(cmd.indices, vec![1]);
         assert_eq!(
-            parse_delete_agent("-#PI-TEST", &rooms).as_deref(),
-            Some("pi-test")
+            parse_delete_agent("-#测试房", &rooms).as_deref(),
+            Some("测试房")
         );
     }
 

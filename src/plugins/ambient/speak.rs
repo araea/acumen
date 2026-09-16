@@ -246,7 +246,7 @@ pub(crate) async fn compose(
     }
     let reply = reply.map_err(|_| {
         anyhow::anyhow!(
-            "发言超时（{} 秒），已终止 pi",
+            "发言超时（{} 秒），已终止智能体",
             config.reply_timeout().as_secs()
         )
     })??;

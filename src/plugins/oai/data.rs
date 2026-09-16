@@ -15,17 +15,14 @@ const LEGACY_DEFAULT_PROMPT: &str = "You are a helpful assistant.";
 /// 内置 agent 房间的默认名字。
 ///
 /// 取四个字是刻意的：房间指令是前缀匹配的（`parse_agent_cmd`），名字越短越容易在
-/// 日常聊天里撞上；「管家大人」既不会被顺口带出，叫起来也比一个 `pi` 明白。
+/// 日常聊天里撞上；「管家大人」既不会被顺口带出，也叫得明白。
 const BUILTIN_ROOM: &str = "管家大人";
 
 /// 内置 agent 房间的人设。
 ///
 /// 只写「是谁、什么风格」；运行环境、工具策略与排版要求由内置 agent 自己生成——
 /// 那些内容写死在人设里会随时间过期，也没法随工具集变化。
-const PI_PERSONA: &str = "你是管家大人，一个务实、直接的通用助手，回答简洁但不省略关键依据。";
-
-/// 旧版 `pi` 人设；把运行细节写进了人设，现已是内置 agent 自己的事。
-const LEGACY_PI_PERSONA: &str = "You are pi, a capable general assistant. In this public room you can use a full-permission shell and live web search. Use tools whenever they make the answer more accurate; never invent tool results. For web research, include the source URLs you relied on.";
+const BUILTIN_PERSONA: &str = "你是管家大人，一个务实、直接的通用助手，回答简洁但不省略关键依据。";
 
 // 全局单例管理器
 pub static MANAGER: OnceLock<Arc<Manager>> = OnceLock::new();
@@ -70,24 +67,6 @@ impl Manager {
             {
                 config.default_model = DEFAULT_MODEL.to_string();
             }
-            if let Some(pi) = config
-                .agents
-                .iter_mut()
-                .find(|agent| agent.name.eq_ignore_ascii_case("pi"))
-                && (pi.model.trim().is_empty()
-                    || pi.model.eq_ignore_ascii_case(LEGACY_DEFAULT_MODEL))
-            {
-                pi.model = DEFAULT_MODEL.to_string();
-            }
-            // 人设里写死的运行说明已改由 Pi Agent 生成；只替换没被管理员改过的那份。
-            if let Some(pi) = config
-                .agents
-                .iter_mut()
-                .find(|agent| agent.name.eq_ignore_ascii_case("pi"))
-                && pi.system_prompt.trim() == LEGACY_PI_PERSONA
-            {
-                pi.system_prompt = PI_PERSONA.to_string();
-            }
             // 不再默认填充「你是一个有帮助的助手」：清掉历史建房时被写入该默认值的房间。
             // 只匹配完全相同的那句，避免误伤管理员自定义的提示词。
             for agent in config.agents.iter_mut() {
@@ -110,23 +89,13 @@ impl Manager {
             }
         }
 
-        // 引擎从房间名搬到房间自己身上。老配置里没有这个字段，就按当初的名字规则
-        // 一次性写下来：`pi` / `pi-*` 归 pi，其余归中转站。写完之后名字彻底自由，
-        // 已有房间的行为一个都不变。
-        for agent in config.agents.iter_mut() {
-            if agent.engine.trim().is_empty() {
-                agent.engine = if super::agent::legacy_pi_name(&agent.name) {
-                    super::types::ENGINE_PI
-                } else {
-                    super::types::ENGINE_CHAT
-                }
-                .to_string();
-                config_dirty = true;
-            }
-        }
-
-        // 老配置只迁移一次；之后若管理员主动删除它，尊重这一选择。
-        if !config.pi_room_initialized {
+        // 内置智能体房间和其他内置房间一样，建过一次就记名：删掉的不复活，
+        // 而新加的房间（新预设）仍会补建，因为它的名字还不在表里。
+        if !config
+            .seeded_presets
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(BUILTIN_ROOM))
+        {
             if !config
                 .agents
                 .iter()
@@ -138,11 +107,11 @@ impl Manager {
                     &config.default_model
                 };
                 let mut room =
-                    super::types::Agent::new(BUILTIN_ROOM, model, PI_PERSONA, "终端与联网工具助手");
+                    super::types::Agent::new(BUILTIN_ROOM, model, BUILTIN_PERSONA, "终端与联网工具助手");
                 room.set_engine(super::types::ENGINE_PI, model);
                 config.agents.push(room);
             }
-            config.pi_room_initialized = true;
+            config.seeded_presets.push(BUILTIN_ROOM.to_string());
             config_dirty = true;
         }
         // 内置画图 / 音乐 / 视频预设：建过一次就记下名字，删掉的不复活，新加的才补建。
@@ -312,7 +281,7 @@ mod tests {
     #[test]
     fn initializes_the_builtin_room_once() {
         let unique = format!(
-            "ayjx-oai-pi-{}-{}",
+            "ayjx-oai-room-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -336,7 +305,23 @@ mod tests {
         assert!(room.uses_pi());
         assert_eq!(config.default_model, DEFAULT_MODEL);
         assert_eq!(config.defaults_version, CURRENT_DEFAULTS_VERSION);
-        assert!(config.pi_room_initialized);
+        assert!(
+            config.seeded_presets.iter().any(|name| name == BUILTIN_ROOM),
+            "内置房间与其他内置房间共用「建过就记名」的规矩"
+        );
+
+        // 删掉之后不再复活：第二次启动只认记下的名字。
+        let mut pruned: Config =
+            serde_json::from_str(&std::fs::read_to_string(&manager.path).unwrap()).unwrap();
+        pruned.agents.retain(|agent| agent.name != BUILTIN_ROOM);
+        std::fs::write(&manager.path, serde_json::to_string_pretty(&pruned).unwrap()).unwrap();
+        let _ = Manager::new(dir.clone());
+        let again: Config =
+            serde_json::from_str(&std::fs::read_to_string(&manager.path).unwrap()).unwrap();
+        assert!(
+            !again.agents.iter().any(|agent| agent.name == BUILTIN_ROOM),
+            "管理员删过的内置房间不该被补建回来"
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -359,7 +344,6 @@ mod tests {
         let mut legacy = Config {
             api_base: "https://api.deepseek.com/v1".into(),
             api_key: "sk-test".into(),
-            pi_room_initialized: true,
             defaults_version: CURRENT_DEFAULTS_VERSION,
             ..Default::default()
         };

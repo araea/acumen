@@ -22,7 +22,7 @@ impl ChatMessage {
     }
 }
 
-/// 房间交给本机 pi agent 执行。
+/// 房间交给内置智能体执行（带工具的 agent 循环）。
 pub const ENGINE_PI: &str = "pi";
 /// 房间走中转站的 Chat Completions（含 MJ / 图像房间）。
 pub const ENGINE_CHAT: &str = "chat";
@@ -49,16 +49,13 @@ pub struct Agent {
     pub section: String,
     /// 执行引擎：[`ENGINE_PI`] 或 [`ENGINE_CHAT`]。
     ///
-    /// 房间名曾经是唯一的开关——只有 `pi` 和 `pi-*` 能用 pi agent，于是所有想用 pi
-    /// 的房间都被迫顶着这个前缀。现在引擎是房间自己的属性，名字随便取。
-    /// 留空表示还没迁移过的旧配置，此时仍按旧的名字规则推断。
+    /// 引擎是房间自己的属性，名字与它无关——叫什么都行，`#` 列表里显示的是
+    /// 「内置」而不是这个字符串。留空按 [`ENGINE_CHAT`] 算。
     #[serde(default)]
     pub engine: String,
-    /// 引擎对应的模型：中转站房间是 `供应商/模型` 或裸模型 id；pi 房间是 pi 的
-    /// `--model`（`provider/id` 或裸 id），留空或 `pi` 表示沿用 pi 自身配置。
-    ///
-    /// 中转站房间的 `供应商/` 前缀决定打到哪个接口（见 `[oai.providers]`），
-    /// 不带前缀时沿用 `oai` 默认接口。
+    /// 引擎对应的模型：中转站房间是 `供应商/模型` 或裸模型 id；内置 agent 房间写
+    /// `供应商/模型`（`供应商/` 决定打到哪个接口，见 `[oai.providers]`），留空表示
+    /// 用 `[oai] agent_default_model`。
     pub model: String,
     /// 房间默认思考强度（`off` / `minimal` / `low` / `medium` / `high`）。
     /// 留空表示交给引擎默认；模型写法里的 `:强度` 后缀优先于这里。
@@ -100,14 +97,11 @@ impl Agent {
         }
     }
 
-    /// 这个房间是否由本机 pi agent 接管。
+    /// 这个房间由内置智能体接管（带工具的 agent 循环）。
     ///
-    /// 显式的 `engine` 说了算；只有还没迁移过的旧配置才回退到「名字叫 pi 或 pi-*」。
+    /// 只看 `engine`：名字不参与判断。没写过引擎的房间按中转站房间算。
     pub fn uses_pi(&self) -> bool {
-        match self.engine.trim() {
-            "" => super::agent::legacy_pi_name(&self.name),
-            engine => engine.eq_ignore_ascii_case(ENGINE_PI),
-        }
+        self.engine.trim().eq_ignore_ascii_case(ENGINE_PI)
     }
 
     /// 记下这个房间用哪个引擎和模型；引擎一旦写下就不再依赖房间名。
@@ -119,7 +113,7 @@ impl Agent {
     /// 请求时真正生效的思考强度：模型写法里的 `:强度` 后缀优先，其次房间字段。
     ///
     /// `set_engine` 会把后缀收进 `thinking`，所以两者通常一致；保留后缀优先是因为
-    /// 旧配置或手改的模型串可能带着后缀（Pi 的 `id:thinking` 写法），不该被忽略。
+    /// 手改过的模型串可能还带着后缀，不该被静默忽略。
     pub fn effective_thinking(&self) -> Option<String> {
         super::utils::split_thinking(&self.model)
             .1
@@ -206,16 +200,13 @@ pub struct Config {
     /// 没写供应商前缀时用的模型名。
     #[serde(default)]
     pub default_model: String,
-    /// 记录内置 `pi` 房间已经迁移过，用户主动删除后不会在每次启动时复活。
-    #[serde(default)]
-    pub pi_room_initialized: bool,
     /// 内置默认值迁移版本；避免每次启动覆盖管理员后续的模型选择。
     #[serde(default)]
     pub defaults_version: u32,
-    /// 已经建过的内置预设房间名（见 [`super::presets`]）。
+    /// 已经建过的内置房间名：内置智能体房间与画图/音乐/视频预设（见 [`super::presets`]）。
     ///
     /// 记的是「建过」而不是「存在」：管理员删掉哪间就是不要哪间，下次启动不复活；
-    /// 而新加的预设仍会补建，因为它的名字还不在这张表里。
+    /// 而新加的房间仍会补建，因为它的名字还不在这张表里。
     #[serde(default)]
     pub seeded_presets: Vec<String>,
 }
@@ -348,24 +339,24 @@ mod engine_tests {
         assert!(legacy.web_search(true));
     }
 
-    /// 还没迁移过的配置里 `engine` 是空的；那时仍按当初的名字规则判断，
-    /// 已有的 `pi` / `pi-*` 房间不会在升级的一瞬间变成普通房间。
+    /// 还没写过引擎的房间按中转站房间算：名字不参与判断，`pi` 开头也一样。
     #[test]
-    fn legacy_configs_without_an_engine_field_keep_their_old_behaviour() {
-        let legacy: Agent = serde_json::from_str(
-            r#"{"name":"pi-猫娘","model":"gpt-5.6-luna","system_prompt":""}"#,
-        )
-        .unwrap();
-        assert!(legacy.engine.is_empty());
-        assert!(legacy.uses_pi());
+    fn the_engine_field_is_the_only_thing_that_decides() {
+        let bare: Agent =
+            serde_json::from_str(r#"{"name":"pi-猫娘","model":"gpt-5.6-luna","system_prompt":""}"#)
+                .unwrap();
+        assert!(bare.engine.is_empty());
+        assert!(!bare.uses_pi(), "名字里带 pi 不再让它变成内置房间");
         let ordinary: Agent =
             serde_json::from_str(r#"{"name":"助手","model":"gpt-5.6-luna","system_prompt":""}"#)
                 .unwrap();
         assert!(!ordinary.uses_pi());
-        // 显式引擎优先于名字：叫 pi 也能被改回中转站房间。
-        let mut renamed = legacy.clone();
-        renamed.set_engine(ENGINE_CHAT, "gpt-5.6-luna");
-        assert!(!renamed.uses_pi());
+        // 引擎写明才是内置房间，与名字无关。
+        let mut agent = ordinary.clone();
+        agent.set_engine(ENGINE_PI, "deepseek/deepseek-flash");
+        assert!(agent.uses_pi());
+        agent.set_engine(ENGINE_CHAT, "gpt-5.6-luna");
+        assert!(!agent.uses_pi());
     }
 }
 
