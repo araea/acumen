@@ -1,4 +1,4 @@
-//! 本机控制台：知言（ayjx）的图形界面。
+//! 本机控制台：知言（ayjx）的那张界面。
 //!
 //! 一个进程里那 22 个插件、一份配置树、一条日志流，在终端里各自有各自的看法
 //! （`/ctl list`、`/ctl show`、`tail -F` 日志）。控制台把同一批东西摆到一个
@@ -35,7 +35,7 @@ const LOG_TARGET: &str = "Plugin/Console";
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub(crate) struct Config {
-    /// 是否启动控制台服务。它是图形界面与终端共用的后端，关掉之后命令行一切照旧；
+    /// 是否启动控制台服务。它是这台机器上唯一的一张界面，关掉之后命令行一切照旧；
     /// 运行中改成关也会立刻停止应答，端口要到下次启动才释放。
     enabled: bool,
     /// 监听的地址。默认只绑回环地址，只有本机能连。

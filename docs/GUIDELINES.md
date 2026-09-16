@@ -58,7 +58,7 @@ ayjx 采用那两份文档的判断方式，不采用那十六个插件的具体
 
 **4. 写配置只有一条路。** `ctl::change` 取 `config_save_lock`，按插件真实的 serde 类型校验，先写盘再改内存。聊天的 `/ctl`（按 `[ctl].admins` 判权）与 agent 房间的 `ayjx --ctl`（一次性凭据）都汇到这里。本机控制台（`src/plugins/console/`）是第三个触发器，也汇到这里。凭据换成一道回环口令，校验与保存的步骤一样。
 
-**5. 界面是核心发出来的，不是壳画的。** 图形界面是 `[console]` 那个插件在回环地址上发的一张网页（`res/console/`），Android 壳（`app/`）只负责把核心跑起来、把那张网页装进 WebView。所以「界面上显示什么」只有一个来源：进程里此刻的真实状态。要改界面，改的是那个插件与那份网页，不是壳。终端模式与它无关：`--no-ui` 或者 `[console] enabled = false` 之后，指令、排期与推送一切照旧。
+**5. 界面是核心自己发的网页。** 图形界面是 `[console]` 那个插件在回环地址上发的一张网页（`res/console/`）——`./bot ui` 打开它，手机上的浏览器打开的也是它。没有单独的客户端，也没有第二份状态：页面上显示的每一格都是进程里此刻的真实值，改的每一处都汇到 `ctl::change`。要改界面，改的是那个插件与那份网页。终端模式与它无关：`--no-ui` 或者 `[console] enabled = false` 之后，指令、排期与推送一切照旧。
 
 ---
 
@@ -176,8 +176,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 | [`docs/INTERACTION.md`](INTERACTION.md) | 交互：八条原则的译法、群聊原生模式、节奏、自适应、信息架构 | 改指令、改流程、加等待或追问时 |
 | [`docs/CONTENT.md`](CONTENT.md) | 文案：声音、语气、标点、状态词表、术语表、图标 | 写任何一句用户可见的话时 |
 | `res/cards/m3e.css` 文件头 | 视觉：字阶、形状、高度、配色角色、组件基元（五张卡片图 + 控制台那一套方案） | 改卡片版式或图上文字时 |
-| `res/console/app.css` 文件头 | 视觉：控制台的版式层与交互基元（按钮、开关、输入、导航、日志面板） | 改应用界面时 |
-| [`docs/APP.md`](APP.md) | 应用形态：Android 壳、两种运行方式、打包与装机 | 动 `app/` 或控制台时 |
+| `res/console/app.css` 文件头 | 视觉：控制台的版式层与交互基元（按钮、开关、输入、导航、日志面板） | 改控制台界面时 |
 | [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) | 架构：事件流、插件系统、出图与渲染、新增插件的步骤 | 查一个功能是怎么接进来的 |
 | [`docs/UNIFORMITY.md`](UNIFORMITY.md) | 统一度审计：偏离清单与位置 | 逐插件打磨时当待办清单看 |
 | [`docs/CONTROL.md`](CONTROL.md) | 控制通道与部署 | 改配置、排期、上线 |

@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
-"""知言的应用图标：一处几何，三个产物。
+"""知言那个标记：一处几何，一个产物。
 
-这个标记是一个几何化的「言」字——最上面一点，三横，底下一只口。选它是因为
-这个字本身就是「说出来的话」，而这台机器人做的是在同一句话上读人与应人。
+标记是一个几何化的「言」字——最上面一点，三横，底下一只口。选它是因为这个字
+本身就是「说出来的话」，而控制台做的正是把一屋子机器读出来的东西摆给人看。
 
-三份产物必须同源，所以只在这里写一遍坐标，其余地方都是它的输出：
+坐标只写在这里一遍，产物是它的输出：
 
-    res/console/icon.svg                      网页图标（favicon 与 PWA）
-    app/res/drawable/ic_launcher_foreground.xml   Android 自适应图标的前景层
-    app/res/drawable/ic_launcher_background.xml   Android 自适应图标的背景层
+    res/console/icon.svg    控制台的图标（favicon 与 PWA manifest 共用）
 
 跑法：python3 scripts/make-icon.py（无第三方依赖，只在改图标时跑一次）。
 """
@@ -17,13 +15,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# 画布 108，与 Android 自适应图标的前景层同一坐标系；内容收在中央 72×72
-# 的安全区里（18—90），旋转与裁切都不会碰到笔画。
+# 画布 108，笔画收在中央 72×72 里，缩到 24 也不会糊成一团。
 SIZE = 108
-SAFE = 18
 
-# 主色取自 res/cards/m3e.css 的 --md-sys-color-primary（手册方案，松绿）。
-# 图标是应用的脸，跟主题走会变成两张脸，所以这里钉死一个值。
+# 主色取自 res/cards/m3e.css 的 --md-sys-color-primary（控制台那套方案，松绿）。
+# 图标是脸面，跟主题走会变成两张脸，所以这里钉死一个值。
 PRIMARY = "#1f6350"
 ON_PRIMARY = "#ffffff"
 
@@ -40,38 +36,9 @@ STROKES = [
     (32.0, 62.0, 44.0, 5.0, 2.5),
 ]
 
-# 底下的「口」：外框与内框各一只圆角矩形，用 even-odd 挖空。
+# 底下的「口」：外框与内框各一只圆角矩形，用描边画。
 MOUTH = (30.5, 72.5, 47.0, 16.0, 3.4)
 MOUTH_BORDER = 5.0
-
-
-def rounded_rect(x: float, y: float, w: float, h: float, r: float) -> str:
-    """圆角矩形的路径。SVG 与 VectorDrawable 共用同一串命令。"""
-    r = min(r, w / 2, h / 2)
-    return (
-        f"M{x + r:.2f},{y:.2f}"
-        f"H{x + w - r:.2f}"
-        f"A{r:.2f},{r:.2f} 0 0 1 {x + w:.2f},{y + r:.2f}"
-        f"V{y + h - r:.2f}"
-        f"A{r:.2f},{r:.2f} 0 0 1 {x + w - r:.2f},{y + h:.2f}"
-        f"H{x + r:.2f}"
-        f"A{r:.2f},{r:.2f} 0 0 1 {x:.2f},{y + h - r:.2f}"
-        f"V{y + r:.2f}"
-        f"A{r:.2f},{r:.2f} 0 0 1 {x + r:.2f},{y:.2f}Z"
-    )
-
-
-def mouth_path() -> str:
-    x, y, w, h, r = MOUTH
-    b = MOUTH_BORDER
-    outer = rounded_rect(x, y, w, h, r)
-    inner = rounded_rect(x + b, y + b, w - 2 * b, h - 2 * b, max(r - b / 2, 0.6))
-    return outer + inner
-
-
-def glyph_path() -> str:
-    """六笔连成一条路径：四条横 + 挖空的口。"""
-    return "".join(rounded_rect(*s) for s in STROKES) + mouth_path()
 
 
 def write_svg() -> None:
@@ -104,130 +71,5 @@ def write_svg() -> None:
     print(f"已写入 {target.relative_to(ROOT)}")
 
 
-def write_foreground() -> None:
-    """前景层：只有笔画，透明底。安全区内要留出约 1/3 的余量，故整体缩到 0.8。"""
-    scale = 0.8
-    offset = SIZE * (1 - scale) / 2
-    vector = f"""<!-- 由 scripts/make-icon.py 生成，不要手改。知言的「言」字标记。 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="{SIZE}dp"
-    android:height="{SIZE}dp"
-    android:viewportWidth="{SIZE}"
-    android:viewportHeight="{SIZE}">
-    <group
-        android:pivotX="{SIZE / 2:.1f}"
-        android:pivotY="{SIZE / 2:.1f}"
-        android:scaleX="{scale}"
-        android:scaleY="{scale}"
-        android:translateX="{offset - SIZE * (1 - scale) / 2:.2f}"
-        android:translateY="{offset - SIZE * (1 - scale) / 2:.2f}">
-        <path
-            android:fillColor="{ON_PRIMARY}"
-            android:pathData="{glyph_path()}" />
-    </group>
-</vector>
-"""
-    target = ROOT / "app/res/drawable/ic_launcher_foreground.xml"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(vector, encoding="utf-8")
-    print(f"已写入 {target.relative_to(ROOT)}")
-
-
-def write_background() -> None:
-    """背景层：主色底加一角微光，与卡片上 `.md-card::before` 那层是同一手法。"""
-    vector = f"""<!-- 由 scripts/make-icon.py 生成，不要手改。 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="{SIZE}dp"
-    android:height="{SIZE}dp"
-    android:viewportWidth="{SIZE}"
-    android:viewportHeight="{SIZE}">
-    <path
-        android:fillColor="{PRIMARY}"
-        android:pathData="M0,0h{SIZE}v{SIZE}h-{SIZE}z" />
-    <path
-        android:fillAlpha="0.16"
-        android:fillColor="{ON_PRIMARY}"
-        android:pathData="M0,0h{SIZE}v{SIZE * 0.42}a{SIZE * 0.5},{SIZE * 0.5} 0 0 1 -{SIZE},0z" />
-</vector>
-"""
-    target = ROOT / "app/res/drawable/ic_launcher_background.xml"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(vector, encoding="utf-8")
-    print(f"已写入 {target.relative_to(ROOT)}")
-
-
-def write_mark() -> None:
-    """等待屏上那枚标记：主色圆角方 + 白笔画，与 res/console/icon.svg 同形。
-
-    与前景层分开，是因为前景层是**透明底的白笔画**（给系统裁切用），
-    直接摆在浅色纸上什么也看不见。
-    """
-    S = SIZE
-    plate = rounded_rect(0, 0, S, S, 26)
-    vector = f"""<!-- 由 scripts/make-icon.py 生成，不要手改。 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="{S}dp"
-    android:height="{S}dp"
-    android:viewportWidth="{S}"
-    android:viewportHeight="{S}">
-    <path
-        android:fillColor="{PRIMARY}"
-        android:pathData="{plate}" />
-    <path
-        android:fillColor="{ON_PRIMARY}"
-        android:fillType="evenOdd"
-        android:pathData="{glyph_path()}" />
-</vector>
-"""
-    target = ROOT / "app/res/drawable/ic_mark.xml"
-    target.write_text(vector, encoding="utf-8")
-    print(f"已写入 {target.relative_to(ROOT)}")
-
-
-def write_notification() -> None:
-    """通知栏那颗小图标：只有笔画、纯白剪影，24dp。
-
-    系统会把它当模板染色，所以这里不能有底色，也不能有多色。
-    """
-    vector = f"""<!-- 由 scripts/make-icon.py 生成，不要手改。 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="{SIZE}"
-    android:viewportHeight="{SIZE}">
-    <path
-        android:fillColor="#ffffff"
-        android:fillType="evenOdd"
-        android:pathData="{glyph_path()}" />
-</vector>
-"""
-    target = ROOT / "app/res/drawable/ic_notification.xml"
-    target.write_text(vector, encoding="utf-8")
-    print(f"已写入 {target.relative_to(ROOT)}")
-
-
-def write_monochrome() -> None:
-    """主题图标（Android 13+）用的单色层：只有笔画，由系统决定颜色。"""
-    vector = f"""<!-- 由 scripts/make-icon.py 生成，不要手改。 -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="{SIZE}dp"
-    android:height="{SIZE}dp"
-    android:viewportWidth="{SIZE}"
-    android:viewportHeight="{SIZE}">
-    <path
-        android:fillColor="#ffffff"
-        android:pathData="{glyph_path()}" />
-</vector>
-"""
-    target = ROOT / "app/res/drawable/ic_launcher_monochrome.xml"
-    target.write_text(vector, encoding="utf-8")
-    print(f"已写入 {target.relative_to(ROOT)}")
-
-
 if __name__ == "__main__":
     write_svg()
-    write_foreground()
-    write_background()
-    write_monochrome()
-    write_notification()
-    write_mark()

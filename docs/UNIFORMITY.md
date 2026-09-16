@@ -95,20 +95,19 @@
 
 五张卡与 `reading.css` 里没有十六进制色值，`box-shadow` 全部走令牌。
 
-### 第五轮：控制台与 Android 壳
+### 第五轮：控制台
 
 这一轮加的是界面，不是插件，但它是「用户看得见的第十种载体」，所以按同一张表过了一遍。
 
 | 项 | 处理 |
 | --- | --- |
-| 界面另起一套视觉语言的风险 | 令牌不新造：`m3e.css` 加一套 `scheme-console` 方案（浅深两版都写全，它是 App，跟随系统明暗），`res/console/app.css` 只写版式与交互基元。`the_layout_layer_borrows_every_value_from_the_system_layer` 剥掉注释后扫十六进制色、`rgb(`/`hsl(`、`font-size`、`border-radius`、`box-shadow`，一条都不许写字面量 |
+| 界面另起一套视觉语言的风险 | 令牌不新造：`m3e.css` 加一套 `scheme-console` 方案（浅深两版都写全，它是网页，跟随系统明暗），`res/console/app.css` 只写版式与交互基元。`the_layout_layer_borrows_every_value_from_the_system_layer` 剥掉注释后扫十六进制色、`rgb(`/`hsl(`、`font-size`、`border-radius`、`box-shadow`，一条都不许写字面量 |
 | 界面与终端各存一份状态的风险 | 控制台不另存状态：读的是注册表与 `config.toml`，写的是 `ctl::change`，日志是 `log::hook` 挂上来的同一行。它是先有的「一条写路径」的第三个触发器，不是第四条 |
 | 分区名两处维护的风险 | `help::SECTIONS` 提成 `help::sections()`，插件页的筛选项与 `/help` 的分区读同一份 |
 | 空态、状态词、图标另起一套的风险 | 沿用 `CONTENT.md`：空态 `📭`、「已启用／已停用／待重启」三组状态词、`label-*` 两档小字 |
 | 页面加载外部资源的风险 | `the_page_loads_nothing_from_the_network` 扫 `src="http`、`href="http`、`@import`、`url(http`——与卡片那条同源，界面要能在完全离线的设备上打开 |
 | 界面挂住没法看的问题 | 新增 `scripts/review-console.sh`，八页拍成本地图片。走 chromedriver 而不是 `chromium --screenshot`：日志页的长连接让页面永不空闲，headless 截图会等满超时 |
-| 应用与核心各写一份配置的风险 | Android 壳不内嵌配置副本：`app/build.sh` 把仓库的 `config.example.toml` 复制进 assets，首启落盘。改示例就是改应用默认值 |
-| 图标在四处各画一遍的风险 | `scripts/make-icon.py` 一处几何出五个产物（网页 SVG、自适应图标三层、通知图标），另加等待屏那枚 `ic_mark` |
+| 图标改一处别处对不上的风险 | 标记的几何只写在 `scripts/make-icon.py` 一处，产物是 `res/console/icon.svg` |
 
 两处仍靠人工核对：**界面的手感**（间距、折行、滚动）只能看图，`review-console.sh` 的产物是给人看的。**窄屏折行**只有两条硬规矩（键名不断词、日志正文整条落到第二行），其余按 `GUIDELINES` 的分工判断。
 

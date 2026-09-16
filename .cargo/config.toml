@@ -1,8 +1,0 @@
-# 交叉编译到 Android（APK 里的 ayjx 核心）。
-#
-# 本机 Termux 的 clang 默认三元组就是 aarch64-unknown-linux-android24，
-# 因此只需把它当 linker 即可，不需要额外的 NDK 工具链文件。
-# 用法：cargo build --release --locked --target aarch64-linux-android
-# 产物：target/aarch64-linux-android/release/ayjx
-[target.aarch64-linux-android]
-linker = "clang"

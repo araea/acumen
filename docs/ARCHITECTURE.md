@@ -20,7 +20,7 @@ src/
   command.rs       指令解析与消息内容提取的公共工具
   config.rs        AppConfig 与插件配置读写，build_config 辅助函数
   event.rs         Context / EventType / MessageEvent 定义
-  http.rs          全局 reqwest 客户端（Android CA 兼容），download_bytes
+  http.rs          全局 reqwest 客户端（Android 上从系统 CA 取根证书），download_bytes
   log.rs           控制台与文件日志的统一输出
   matcher.rs       交互消息等待与分发（取消时自动清理）
   message.rs       Message 消息构建器（text/image/node_custom 等）
@@ -31,7 +31,7 @@ src/
   db/              sea-orm 实体与查询（SQLite，data/bot.db）
 ```
 
-`res/` 存放插件的静态资源（词库、人格提示词、技能说明、卡片与控制台的样式表），`docs/` 是这份手册，`tests/` 是几个用 Node 运行的端到端脚本，覆盖前台指令、重启和卡片落盘，`app/` 是 Android 壳（见[应用形态](APP.md)）。
+`res/` 存放插件的静态资源（词库、人格提示词、技能说明、卡片与控制台的样式表），`docs/` 是这份手册，`tests/` 是几个用 Node 运行的端到端脚本，覆盖前台指令、重启和卡片落盘。
 
 ## 事件流
 

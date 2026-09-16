@@ -22,7 +22,7 @@ port=${CHROMEDRIVER_PORT:-9516}
 base=${1:-}
 
 if [[ -z "$base" ]]; then
-  url_file="${AYJX_DATA_DIR:-$repo/target/release/data}/console/url"
+  url_file="$repo/target/release/data/console/url"
   if [[ ! -s "$url_file" ]]; then
     printf '没有控制台地址：先 ./bot start，或者把地址当第一个参数传进来。\n' >&2
     exit 1

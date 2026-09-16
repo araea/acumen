@@ -483,25 +483,12 @@ pub async fn send_fake_event(
     run(new_ctx, writer).await
 }
 
-/// 插件的数据目录。
-///
-/// 默认落在**可执行文件旁边**的 `data/<插件名>`——这个约定让一份 checkout 自成一个
-/// 世界，`./bot` 与测试实例互不打扰。两种情况要挪开：
-/// Android 应用里可执行文件只能放在 `nativeLibraryDir`（那儿的父目录只读，
-/// 建不了 `data/`），以及把数据放到别处（比如更宽的存储）时。
-/// 两种都用环境变量 `AYJX_DATA_DIR` 指定根目录，插件名的下一级照旧。
 pub async fn get_data_dir(plugin_name: &str) -> Result<PathBuf, PluginError> {
-    let mut path = match std::env::var("AYJX_DATA_DIR").ok().filter(|root| !root.is_empty()) {
-        Some(root) => PathBuf::from(root),
-        None => {
-            let mut beside = std::env::current_exe()?
-                .parent()
-                .ok_or("Cannot get parent dir")?
-                .to_path_buf();
-            beside.push("data");
-            beside
-        }
-    };
+    let mut path = std::env::current_exe()?
+        .parent()
+        .ok_or("Cannot get parent dir")?
+        .to_path_buf();
+    path.push("data");
     path.push(plugin_name);
     if !path.exists() {
         fs::create_dir_all(&path).await?;
