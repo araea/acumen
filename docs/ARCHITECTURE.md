@@ -48,7 +48,7 @@ Context 通过移动传递，不深拷贝事件。`plugins::send_fake_event` 可
 
 插件的执行顺序就是 `registry.rs` 里的书写顺序。过滤类插件写在最前面（`meta_filter` 拦住心跳和元事件），`ctl` 紧随其后，保证管理入口不会被其他插件拦下；记录类插件（`logger`、`recorder`）在业务插件之前取得原始消息。
 
-链接类插件的先后也有意义：`video_parse` 写在 `webshot` 前面，视频站链接先被它接走（只回一条预览），截图那边也跳过这类链接——准入判据就是 `video_parse::is_video_link` 一处，两边不会各截一次又取一次。同类共用判据还有 `webshot::host_is_internal`（`web_fetch` 也用它拦内网）。
+链接类插件的先后也有意义：`video_parse` 写在 `webshot` 前面，视频站链接先被它接走（只回一条预览），截图那边也跳过这类链接。准入判据是 `video_parse::is_video_link` 一处，两边不会各截一次又取一次。同类共用判据还有 `webshot::host_is_internal`（`web_fetch` 也用它拦内网）。
 
 ## 插件系统
 
@@ -95,12 +95,7 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 指令匹配统一走 `crate::command`：
 
-- `match_command(ctx, cmd)` / `first_command_match(ctx, &[cmd])`：前缀类指令
-- `match_word_command(ctx, cmd)`：要求指令名后为空白或消息末尾，用于 ctl
-- `strip_prefix(ctx, text)`：自带正则匹配的指令（词云、stats 式）
-- `extract_text_arg(&matched.args)`：参数拼接为纯文本
-- `get_image_url(ctx, writer, &args, reply_id)`：取图（参数或引用）
-- `find_url(text)`：从文本中提取第一个 http(s) URL
+前缀类指令用 `match_command(ctx, cmd)` 或 `first_command_match(ctx, &[cmd])`；要求指令名后为空白或消息末尾的（ctl）用 `match_word_command`；自带正则匹配的（词云、stats 式）用 `strip_prefix`。参数用 `extract_text_arg(&matched.args)` 拼成纯文本，取图用 `get_image_url(ctx, writer, &args, reply_id)`，从文本里提第一个 URL 用 `find_url(text)`。
 
 匹配到就处理并返回 `Ok(None)`，不属于本插件就返回 `Ok(Some(ctx))` 放行。
 
@@ -167,7 +162,7 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
   `scheme-portrait`，后两者有深色档）也在这一个文件里，放在一起才好横向比。
 - **版式层**：`res/cards/reading.css`（help / ctl 的 `Doc` 模型）与各插件里那份
   `const CSS`。**只写「摆在哪儿」，不许出现色值、字号、圆角、阴影的字面量**，
-  一律 `var(--md-*)` 取令牌——写了就是又长出一套私有的视觉语言。
+  一律 `var(--md-*)` 取令牌。写了就是又长出一套私有的视觉语言。
 
 三条与 M3 的刻意偏离（字阶按中文字面放大、字重只用 500/600/700/800 四档、
 阴影不透明度收回到纸面量级）与「为什么不引外部字体」都写在 `m3e.css` 的开头。
@@ -179,7 +174,7 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 图表（plotters，位图，取不到 CSS）与词云的配色对照同一张色表：`stats` 的
 `ColorScheme` / `HUES` 与 `wordcloud` 的 `WORD_COLORS` 都从 `m3e.css` 里抄了字面量，
 由 `a_chart_is_painted_in_the_card_scheme`、`the_word_hues_come_from_the_design_system`
-两条单测**从样式表里读回来比对**——改了 CSS 没改代码，测试会红。
+两条单测从样式表里读回来比对。改了 CSS 没改代码，测试会红。
 
 文案与这层是一件事的两面，规范在 [`docs/CONTENT.md`](CONTENT.md)：声音、语气、
 标点、状态词表、术语表、六个状态图标。整套设计规范的入口与十条硬条目见
@@ -193,7 +188,7 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 另外：所有动态内容都做 HTML 转义，页面不执行脚本，也不加载外部资源，截图前等待字体
 和布局完成。help / ctl 的 `Doc` 模型由浏览器完成字体塑形、标点和长文本换行，默认输出
 3 倍 PNG；总览用 920 px 两列网格，条目的分隔线用「每条加顶线、首行两条不画」，
-任何条数都左右对称——`:last-child` 在网格里只命中整个网格的最后一条，会让右列末条有线、
+任何条数都左右对称。`:last-child` 在网格里只命中整个网格的最后一条，会让右列末条有线、
 左列末条没线。
 
 字重：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档，向系统请求 Bold 得到的仍是 400 字重。两条出图路径都会自行合成粗体（浏览器原生支持，原生绘制使用 `Typeface.embolden` 做形态学膨胀），但外扩轮廓无法补出笔画的粗细对比。运行 `sh scripts/install-cjk-weights.sh` 把真实的 Bold(700) 和 Black(900) 安装到 `~/.fonts` 后，fontconfig 和 fontdb 会自动使用它们，合成量为零，代码不需要改动。不安装也能运行，只是标题会细一档。网页卡片标题按用途使用 700—800 字重。字体是设备本地状态，仓库里无法恢复，换机器需要重新运行脚本。
@@ -217,9 +212,7 @@ CPU 图像工作统一通过 `render/worker.rs::run`：统计绘图、词云、G
 
 ## 配置与数据
 
-- `config.toml` 不入库；首次启动写入默认值，启动时补字段、清残留，解析失败则退出，不覆盖原文件
-- 插件配置改动经过 `plugins::update_config` 或 ctl 插件，持久化由 `config_save_lock` 串行化
-- 数据库是 `data/bot.db`，插件数据目录是 `data/<plugin>/`（`get_data_dir`）
+`config.toml` 不入库：首次启动写入默认值，启动时补字段、清残留，解析失败则退出，不覆盖原文件。插件配置改动经过 `plugins::update_config` 或 ctl 插件，持久化由 `config_save_lock` 串行化。数据库是 `data/bot.db`，插件数据目录是 `data/<plugin>/`（`get_data_dir`）。
 
 写配置只有一条路径：`ctl::change`。它获取 `config_save_lock`，按插件真实的 serde 类型校验，先写盘再改内存，任何一步失败都不会留下半个状态。两个入口都汇到这里：
 

@@ -146,9 +146,9 @@ ctl 操作 `config.toml` 中插件自己的配置。连接凭据、全局过滤�
 
 未托管时按 `Ctrl+C` 停止 bot，`tmux` 会话里跑的就是 bot 本身；托管后 bot 由 runsv 管，`./bot logs` 的窗口只是 `tail -F` 日志，关掉它不影响 bot。无论哪种方式，脚本都通过进程可执行文件路径识别本仓库实例，不要绕过脚本另外启动第二份程序。
 
-手动启动时还会用 `.bot.lock` 加文件锁防止重复启动；托管路径（`serve`）不加锁——runsv 已保证同一时刻只有一个 `run` 实例，而且那把锁的 fd 会被 bot 派生出的 Chromium 继承，浏览器可能比 bot 活得久，锁就被一个已经无关的进程攥住，后续启动全部报「锁被占用」（2026-09-14 因此出现过托管服务连续退出码 1 起不来）。
+手动启动时还会用 `.bot.lock` 加文件锁防止重复启动；托管路径（`serve`）不加锁。runsv 已保证同一时刻只有一个 `run` 实例，而且那把锁的 fd 会被 bot 派生出的 Chromium 继承，浏览器可能比 bot 活得久，锁就被一个已经无关的进程攥住，后续启动全部报「锁被占用」（2026-09-14 因此出现过托管服务连续退出码 1 起不来）。
 
-每次启动还会先收掉浏览器僵尸。`cdp-html-shot` 只在正常析构时 kill 浏览器（`BrowserProcess::drop`），所以 bot 被 SIGKILL、panic-abort、或走 `std::process::exit()` 时不会执行，浏览器会变成孤儿一直占内存又没有任何作用。判据是三条同时成立：命令行带 `--user-data-dir=` 与 `cdp-shot_`（即该 crate 拉起的浏览器及其 renderer/gpu 子进程）、不在本进程的祖先链上、往上找不到活着的 ayjx 祖先——有祖先说明正被某个 bot 或测试用着（认 ayjx 用可执行文件名，临时目录里跑的测试实例也算）。启动时自动做，也可以 `./bot reap` 手动收一次。
+每次启动还会先收掉浏览器僵尸。`cdp-html-shot` 只在正常析构时 kill 浏览器（`BrowserProcess::drop`），所以 bot 被 SIGKILL、panic-abort、或走 `std::process::exit()` 时不会执行，浏览器会变成孤儿一直占内存又没有任何作用。判据是三条同时成立：命令行带 `--user-data-dir=` 与 `cdp-shot_`（即该 crate 拉起的浏览器及其 renderer/gpu 子进程）、不在本进程的祖先链上、往上找不到活着的 ayjx 祖先。有祖先说明正被某个 bot 或测试用着（认 ayjx 用可执行文件名，临时目录里跑的测试实例也算）。启动时自动做，也可以 `./bot reap` 手动收一次。
 
 ## 交给 termux-services（runit）托管
 
@@ -168,7 +168,7 @@ chmod 755 "$PREFIX/var/service/ayjx/run" "$PREFIX/var/service/ayjx/finish" "$PRE
 | `finish` | runsv 在服务终止后、重启前执行。秒退（低于 `AYJX_MIN_UPTIME`，默认 20 秒）就退避同样时长；人为停止不退避 |
 | `log/run` | `svlogd -tt` 输出到 `$PREFIX/var/log/sv/ayjx` |
 
-`runsv` 没有内置退避，`run` 秒退时它会约每 1.25 秒重启一次（实测 20 秒起 16 次）——配置解析失败、二进制缺失、启动锁被占这类情况会一直热循环。`finish` 的退避把重试压到每分钟几次；活得久说明是运行中偶发退出，立刻重启，不影响正常崩溃恢复。人为停止不退避：实测 bot 接住 SIGTERM/SIGINT 后是正常退出（退出码 0、信号 0，日志以「Bye!」结尾），所以判据是退出码 0 而不是信号。注意 `runsv` 在 `finish` 里跑 sleep 时 `sv up` 要等 sleep 结束才生效，这也是人为停止必须走豁免的原因。
+`runsv` 没有内置退避，`run` 秒退时它会约每 1.25 秒重启一次（实测 20 秒起 16 次），配置解析失败、二进制缺失、启动锁被占这类情况会一直热循环。`finish` 的退避把重试压到每分钟几次；活得久说明是运行中偶发退出，立刻重启，不影响正常崩溃恢复。人为停止不退避：实测 bot 接住 SIGTERM/SIGINT 后是正常退出（退出码 0、信号 0，日志以「Bye!」结尾），所以判据是退出码 0 而不是信号。注意 `runsv` 在 `finish` 里跑 sleep 时 `sv up` 要等 sleep 结束才生效，这也是人为停止必须走豁免的原因。
 
 `tests/` 会把启动脚本复制到临时目录运行，那种情况按未托管处理，`start` / `stop` 不会去动真正在跑的服务。改完 `run` 后 `runsv` 会在下次启动时读取新内容。
 
@@ -183,7 +183,7 @@ ColorOS 之类的清理器会连整个 Termux 应用一起杀掉，Termux 里的
 | `scripts/97-termux-revive.sh` | `/data/adb/service.d/97-termux-revive.sh`（KernelSU / Magisk 开机拉起） |
 | `scripts/termux-revive.sh` | `/data/adb/termux-revive/termux-revive.sh`（看守本体） |
 
-看守每 60 秒看一次 `runsvdir` 在不在，不在就拉起 Termux。它区分「你手动停的」和「被动被杀」——前者不复活，判据是 `dumpsys package` 的 `stopped` 状态与 `ApplicationExitInfo` 的 `reason`。连续拉不起来时退避（`RECOVER_WAIT` 翻倍，封顶 `MAX_WAIT`，默认 30 分钟），不会每 65 秒反复拉一次。`--check` 打印全部判据，`hold` / `resume` 暂停与恢复。细节见两个脚本的头部注释。
+看守每 60 秒看一次 `runsvdir` 在不在，不在就拉起 Termux。它区分「你手动停的」和「被动被杀」，前者不复活，判据是 `dumpsys package` 的 `stopped` 状态与 `ApplicationExitInfo` 的 `reason`。连续拉不起来时退避（`RECOVER_WAIT` 翻倍，封顶 `MAX_WAIT`，默认 30 分钟），不会每 65 秒反复拉一次。`--check` 打印全部判据，`hold` / `resume` 暂停与恢复。细节见两个脚本的头部注释。
 
 进程「运行中」不代表 QQ 已经连接，连接成功应看到 Satori READY / 登录就绪日志。`/ctl list` 查看插件开关，`/ctl show <插件>` 查看配置。
 
