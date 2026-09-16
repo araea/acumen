@@ -70,7 +70,9 @@
 //! 本插件只作展示，不参与任何指令解析。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::command::{extract_text_arg, get_prefixes, match_command, message_reply_id};
+use crate::command::{
+    extract_text_arg, get_prefixes, match_command, message_reply_id, spoken_bodies,
+};
 use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
@@ -734,7 +736,7 @@ pub fn handle(
             // 只有引用的是本插件推送过的资讯卡片，并且回复文本像一条序号请求时
             // 才拦截；否则放行给其它插件，避免把普通数字消息误当提取。
             if let Some(rendered) = state::extraction(target.state_id(), &reply_id).await {
-                match parse_extraction_wanted(msg.text(), rendered.entries.len()) {
+                match wanted_from_reply(msg.text(), rendered.entries.len()) {
                     Some(Ok(wanted)) => {
                         let config = load_config(&ctx);
                         let reply = handle_extraction_reply(
@@ -874,6 +876,18 @@ async fn handle_extraction_reply(
 /// 返回 `None` 表示不像请求（交给其它插件处理，不拦截）；
 /// `Some(Err(msg))` 是像请求但格式非法（如序号越界），给用户提示；
 /// `Some(Ok(indices))` 是一串按卡片序号命中的 0-based 下标。
+/// 引用卡片后回复的这句话要不要提取，要哪几条。
+///
+/// 不能拿正文整段认：QQ 的引用回复会自动补一个 @，平台又把这个 @ 的显示名写进正文，
+/// 于是引用资讯卡片回「2」，拿到的却是「@A宝好腻害！ 2」。候选由
+/// [`spoken_bodies`] 给，取第一截认得出的——正文不带 @ 时只有整段一个候选，
+/// 与从前一样。
+fn wanted_from_reply(text: &str, total: usize) -> Option<Result<Vec<usize>, String>> {
+    spoken_bodies(text)
+        .into_iter()
+        .find_map(|body| parse_extraction_wanted(body, total))
+}
+
 fn parse_extraction_wanted(input: &str, total: usize) -> Option<Result<Vec<usize>, String>> {
     let input = input.trim();
     if input.is_empty() {
@@ -1826,6 +1840,45 @@ mod tests {
 
         // 卡片无条目时给出明确错误
         assert!(parse_extraction_wanted("0", 0).unwrap().is_err());
+    }
+
+    /// 引用回复会被 QQ 自动补一个 @，平台又把这个 @ 的显示名写进正文，于是用户回的
+    /// 「2」拼出来是「@A宝好腻害！ 2」。这与视频解析那边是同一个坑（记录 id 113798）。
+    #[test]
+    fn a_quoted_reply_arriving_with_the_platform_at_is_still_read() {
+        assert_eq!(
+            wanted_from_reply("@A宝好腻害！ 2", 6).unwrap().unwrap(),
+            vec![1]
+        );
+        assert_eq!(
+            wanted_from_reply("@A宝好腻害！ 0", 6)
+                .unwrap()
+                .unwrap()
+                .len(),
+            6
+        );
+        assert_eq!(
+            wanted_from_reply("@A宝好腻害！ 1,3-5", 6).unwrap().unwrap(),
+            vec![0, 2, 3, 4]
+        );
+        // 昵称里带空格、两个 @、实现端没给显示名，都要认。
+        for text in [
+            "@对吧 A 宝最可爱啦～ 2",
+            "@小黑 @小白 3",
+            "@A宝好腻害！ 全部",
+            "2",
+        ] {
+            assert!(
+                wanted_from_reply(text, 6).is_some_and(|wanted| wanted.is_ok()),
+                "{text} 该算提取请求"
+            );
+        }
+        // 越界仍是「像请求但非法」。
+        assert!(wanted_from_reply("@A宝好腻害！ 7", 6).unwrap().is_err());
+        // @ 之外的话不是请求。
+        for text in ["@A宝好腻害！", "@A宝好腻害！ 谢谢", "@A宝好腻害！ 第2条怎么样"] {
+            assert!(wanted_from_reply(text, 6).is_none(), "{text} 不该算提取请求");
+        }
     }
 
     #[test]

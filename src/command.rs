@@ -59,6 +59,27 @@ pub fn strip_prefix<'a>(ctx: &Context, text: &'a str) -> Option<&'a str> {
         .find_map(|p| text.strip_prefix(p.as_str()).map(|rest| rest.trim_start()))
 }
 
+/// 正文里能拿去认的每一截：先是整段，正文以 @ 开头时再补上 @ 之后逐词往后的每一截。
+///
+/// 平台会把 @ 的**显示名**也写进正文——`at` 段后面跟着一段「@名字 正文」（`at` 段自己
+/// 不写名字，那个名字是 QQ 客户端显示出来的样子）；适配器拼 `raw_message` 时只取文本段，
+/// 于是引用回复（QQ 会自动补一个 @）进来的正文长这样：「@A宝好腻害！ 2」或
+/// 「@A宝好腻害！ 视频」。名字多长没法猜、昵称里还可能带空格，所以这里只给候选，
+/// 由调用方挑认得出的那一截；正文不带 @ 时只有整段一个候选，与从前一样。
+pub fn spoken_bodies(text: &str) -> Vec<&str> {
+    let mut bodies = vec![text.trim()];
+    let Some(mut tail) = bodies[0].strip_prefix('@').map(str::trim_start) else {
+        return bodies;
+    };
+    loop {
+        bodies.push(tail);
+        match tail.split_once(char::is_whitespace) {
+            Some((_, next)) => tail = next.trim_start(),
+            None => return bodies,
+        }
+    }
+}
+
 /// 取消息里的引用回复 ID（`reply` 段的 `id`）。
 ///
 /// 「引用某条消息再回复」这类隐式交互（AI 资讯的序号提取、视频解析的取片）
@@ -362,7 +383,25 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{card_target_url, find_url};
+    use super::{card_target_url, find_url, spoken_bodies};
+
+    /// 引用回复带着平台补的 @ 进来时，正文里能认的那一截要挑得出来。
+    #[test]
+    fn the_platform_at_leaves_a_body_worth_reading() {
+        // 不带 @：只有整段一个候选。
+        assert_eq!(spoken_bodies("2"), vec!["2"]);
+        assert_eq!(spoken_bodies("  视频  "), vec!["视频"]);
+        // 带 @：整段之后从名字后面逐词往后补。
+        assert_eq!(
+            spoken_bodies("@A宝好腻害！ 视频"),
+            vec!["@A宝好腻害！ 视频", "A宝好腻害！ 视频", "视频"]
+        );
+        // 昵称里带空格、或者有两个 @，多补几截。
+        assert_eq!(spoken_bodies("@对吧 A 宝最可爱啦～ 2").last(), Some(&"2"));
+        assert_eq!(spoken_bodies("@小黑 @小白 3").last(), Some(&"3"));
+        // 光 @ 了人、没有别的话：候选只剩名字，认不认由调用方定。
+        assert_eq!(spoken_bodies("@A宝好腻害！").last(), Some(&"A宝好腻害！"));
+    }
 
     #[test]
     fn urls_stop_where_the_sentence_resumes() {

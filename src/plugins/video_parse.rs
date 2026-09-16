@@ -135,26 +135,14 @@ async fn resolve_link(raw: &str) -> Result<Url> {
 
 /// 引用预览后回复的这句话，是不是在要片。
 ///
-/// 不能拿正文整段比：QQ 的引用回复会自动带上 @，而平台把 @ 的**显示名**也写进了
-/// 正文——`at` 段后面还跟着一段「@名字 正文」（`at` 段自己不写名字，那个名字是 QQ
-/// 客户端显示出来的样子）。适配器拼 `raw_message` 时只取文本段，@ 段与引用段都不
-/// 进去，于是用户只打了「视频」，拼出来的却是 `@A宝好腻害！ 视频`，整段一比就落空
-/// （线上记录 id 113798 就是这样，群里的表现是机器人没反应）。名字多长没法猜，
-/// 昵称里还可能带空格，所以从 @ 后面逐词往后试，剩下一截正好是取片词才算数。
+/// 不能拿正文整段比：QQ 的引用回复会自动带上 @，而平台把 @ 的显示名也写进了正文，
+/// 用户只打了「视频」，拿到的却是 `@A宝好腻害！ 视频`，整段一比就落空（线上记录
+/// id 113798 就是这样，群里的表现是机器人没反应）。候选由 [`command::spoken_bodies`]
+/// 给，这里挑认得出的那一截。
 fn matches_extract_request(text: &str) -> bool {
-    let candidate = text.trim();
-    let Some(mut rest) = candidate.strip_prefix('@').map(str::trim_start) else {
-        return is_extract_word(candidate);
-    };
-    loop {
-        if is_extract_word(rest) {
-            return true;
-        }
-        match rest.split_once(char::is_whitespace) {
-            Some((_, tail)) => rest = tail.trim_start(),
-            None => return false,
-        }
-    }
+    crate::command::spoken_bodies(text)
+        .into_iter()
+        .any(is_extract_word)
 }
 
 /// 这一截正文是不是取片词：去掉首尾空白与句末标点之后整段相等。
