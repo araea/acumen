@@ -3821,6 +3821,96 @@ mod tests {
         drop(bridge);
         server.abort();
     }
+    /// 房间那一侧的现场：没有常驻窗口，`satori_context` 是向平台要回来的一页。
+    ///
+    /// 跑法：`AYJX_CHAT_LIVE_GROUP=<群号> cargo test --bin ayjx live_room_context -- --ignored --nocapture`
+    /// （只读，不发群消息、不调模型）
+    #[tokio::test]
+    #[ignore = "对真机只读；需要 AYJX_CHAT_LIVE_GROUP"]
+    async fn live_room_context_reads_the_group_from_the_platform() {
+        let group: i64 = std::env::var("AYJX_CHAT_LIVE_GROUP")
+            .expect("先给 AYJX_CHAT_LIVE_GROUP=群号")
+            .trim()
+            .parse()
+            .expect("群号");
+        let endpoint = std::env::var("AYJX_AMBIENT_LIVE_ENDPOINT")
+            .unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
+        let mut config = AppConfig::default();
+        for plugin in crate::plugins::get_plugins() {
+            config.plugins.insert(
+                plugin.name.into(),
+                toml::from_str("enabled = false").unwrap(),
+            );
+        }
+        let ctx = Context {
+            event: EventType::Init,
+            config: Arc::new(RwLock::new(config)),
+            config_save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            db: sea_orm::Database::connect("sqlite::memory:").await.unwrap(),
+            scheduler: Arc::new(crate::scheduler::Scheduler::new()),
+            matcher: Arc::new(crate::matcher::Matcher::new()),
+            config_path: Arc::from("unused-live-room.toml"),
+            bot: Arc::new(BotStatus {
+                adapter: "satori-qq".into(),
+                platform: "red".into(),
+                login_user: Default::default(),
+            }),
+        };
+        let writer: LockedWriter =
+            Arc::new(crate::adapters::satori::SatoriClient::new(endpoint, None));
+        let login: Value = writer
+            .call(&ctx, "login.get", json!({}))
+            .await
+            .expect("login.get：satori-qq 没在 3001 上，或者 QQ 没登录");
+        let self_id = login["user"]["id"].as_str().unwrap_or_default().to_string();
+        assert!(!self_id.is_empty(), "READY 没给出账号：{login}");
+        let ctx = Context {
+            bot: Arc::new(BotStatus {
+                adapter: "satori-qq".into(),
+                platform: login["platform"].as_str().unwrap_or("red").into(),
+                login_user: LoginUser {
+                    id: self_id.clone(),
+                    ..Default::default()
+                }
+                .into(),
+            }),
+            ..ctx
+        };
+        let dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "room-live")
+                .unwrap();
+
+        // 房间的现场：Scene::Channel。额度取房间那一份默认，人格那层没有。
+        let room = super::start(ChatEnv {
+            ctx: &ctx,
+            writer: &writer,
+            group,
+            config: ChatConfig::default(),
+            enabled: true,
+            require_fresh: false,
+            scratch: dir.path(),
+            media: dir.path(),
+            persona: None,
+            scene: Scene::Channel,
+        })
+        .await
+        .unwrap();
+
+        let context = request(&room, json!({"id":"ctx","op":"context"})).await;
+        println!("room context -> {context}");
+        assert_eq!(context["ok"], true, "{context}");
+        let messages = context["result"]["messages"]
+            .as_array()
+            .expect("现场要带消息")
+            .len();
+        assert!(messages > 0, "房间里也该看得到这个群最近在聊什么：{context}");
+        // 身份也认出来了：群里看到的那个名字。
+        assert!(
+            context["result"]["identity"]["name"].as_str().is_some(),
+            "{context}"
+        );
+    }
+
     /// 对着真的 satori-qq 打一遍新增的那几项查询。
     ///
     /// 假服务只能证明桥取用哪一层字段，证明不了实现端真接了这一路——内核入口有的

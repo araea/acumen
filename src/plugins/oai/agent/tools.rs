@@ -491,7 +491,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_draw" => (
-            "画一张图，存到本轮的 ambient/media。传入画什么的提示词（可选尺寸/画质/参考图直链），返回 images[].file（本地路径，供 satori_action 发送）、images[].url（原站链接）、caption（改写的标题）与 draws_remaining。之后用 satori_action 的 send + type:image 发给群友，配一句话就再加个 text。绘图是独立模型调用，不占 writes/messages 额度。",
+            "画一张图，落在本地。传入画什么的提示词（可选尺寸/画质/参考图直链），返回 images[].file（本地路径，供 satori_action 发送）、images[].url（原站链接）、caption（改写的标题）与 draws_remaining。之后用 satori_action 的 send + type:image 发给群友，配一句话就再加个 text。绘图是独立模型调用，不占 writes/messages 额度。",
             json!({
                 "type": "object",
                 "properties": {
@@ -504,7 +504,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_music" => (
-            "写一首歌，存到本轮的 ambient/media。传入想写什么（可给风格 tags 与纯音乐 instrumental），一到两分钟出两个版本，返回 songs[].audio（音频本地路径）、songs[].cover（封面本地路径）、title、duration、lyrics 与 music_remaining。之后用 satori_action 的 send 发出去：type:audio 发歌，想让群友看见封面就再加 type:image，配一句话就再加个 text。写歌是独立模型调用，不占 writes/messages 额度，一次按站点计费约半美元，所以每轮有次数上限。",
+            "写一首歌，成品落在本地。传入想写什么（可给风格 tags 与纯音乐 instrumental），一到两分钟出两个版本，返回 songs[].audio（音频本地路径）、songs[].cover（封面本地路径）、title、duration、lyrics 与 music_remaining。之后用 satori_action 的 send 发出去：type:audio 发歌，想让群友看见封面就再加 type:image，配一句话就再加个 text。写歌是独立模型调用，不占 writes/messages 额度，一次按站点计费约半美元，所以每轮有次数上限。",
             json!({
                 "type": "object",
                 "properties": {
@@ -517,7 +517,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "satori_video" => (
-            "拍一段视频，存到本轮的 ambient/media。传入要拍什么（可给 seconds 秒数与 size 画面比例），通常一到两分钟出片，返回 video（本地路径，供 satori_action 的 send + type:video 发送）、video_url、model、seconds、cost 与 videos_remaining。这是手边最贵的一件事（一次约一美元多），不占 writes/messages 额度，每轮有次数上限。",
+            "拍一段视频，成品落在本地。传入要拍什么（可给 seconds 秒数与 size 画面比例），通常一到两分钟出片，返回 video（本地路径，供 satori_action 的 send + type:video 发送）、video_url、model、seconds、cost 与 videos_remaining。这是手边最贵的一件事（一次约一美元多），不占 writes/messages 额度，每轮有次数上限。",
             json!({
                 "type": "object",
                 "properties": {
