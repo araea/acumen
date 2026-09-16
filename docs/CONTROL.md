@@ -12,7 +12,7 @@ enabled = true
 admins = [123456789] # 维护者 QQ 号，可填多个
 ```
 
-控制台适配器可以直接管理。QQ 里只有上述全局管理员能查看配置或修改全局状态，群管理员身份不会自动获得全局权限；`admins` 为空表示仅允许本机控制台管理。`/ctl` 用法、`/ctl list` 状态和 `/help` 帮助对所有人开放。权限检查不依赖 `ctl.enabled`，关闭 ctl 也不会让 `/restart` 失去权限检查。
+控制台适配器可以直接管理。QQ 里只有上述全局管理员能查看配置或修改全局状态，群管理员身份不会自动获得全局权限。`admins` 为空表示仅允许本机控制台管理。`/ctl` 用法、`/ctl list` 状态和 `/help` 帮助对所有人开放。权限检查不依赖 `ctl.enabled`，关闭 ctl 也不会让 `/restart` 失去权限检查。
 
 ## 常用命令
 
@@ -85,33 +85,33 @@ admins = [123456789] # 维护者 QQ 号，可填多个
 ## 保存、权限与生效时间
 
 - 批量开关全部验证通过才写入，任何插件名错误或保留入口检查失败都不会产生部分修改
-- 通过真实插件配置类型检查数组元素和整数范围，并检查概率、图片倍率、时间等常用约束；未知字段和不完整的固定结构表会被拒绝
+- 通过真实插件配置类型检查数组元素和整数范围，并检查概率、图片倍率、时间等常用约束。未知字段和不完整的固定结构表会被拒绝
 - 配置先写入同目录临时文件，同步后原子替换，成功后才发布到内存。保存失败保留原内存配置，并发修改通过同一把锁串行提交
 - 启动时按插件默认值补全 `config.toml` 里缺失的字段，嵌套表里的也补，只补空缺、从不覆盖已有取值。`/ctl` 的路径解析走不进不存在的键，所以升级带来的新开关如果没有被补出来，运行时靠 serde 默认值照常工作，管理员却改不到它，`[ambient.peak]` 这种嵌套新表就属于这一类。补全会写回配置文件并记日志，补过一次之后不再重写
 - ctl 位于日志与消息记录插件之前，控制指令不会被这些插件记录，也不会被业务插件消费。回复隐藏名称含 `token`、`secret`、`password`、`api_key` 等的字段，成功回执不复述输入值。敏感参数与管理员列表请在私聊或本机控制台设置
-- 全局开关影响所有适配器和会话。关闭后下一条事件不再进入该插件；`recorder`、`stats`、`ai_news`、`restart` 的后台任务在后续触发时检查总开关。已经开始执行的请求或任务不会强制取消
+- 全局开关影响所有适配器和会话。关闭后下一条事件不再进入该插件。`recorder`、`stats`、`ai_news`、`restart` 的后台任务在后续触发时检查总开关。已经开始执行的请求或任务不会强制取消
 - 无生命周期钩子的插件可以直接开关。带 `init` / `on_connected` 的插件如果启动时未开启，运行时开启会标注「待重启」，在重启完成初始化前不会进入消息处理。初始化参数、定时排期、推送间隔等在重启后完整生效，实时读取的参数下一次使用时生效
-- ctl 不允许通过聊天关闭自身，也不允许管理员通过聊天移除自己的权限；整插件 `reset` 保留 `enabled`，重置 ctl 还保留 `admins`
-- `/restart` 需要全局管理员，且 `restart.allow_manual_restart = true`。定时与手动重启都只向主循环提出请求，由主循环停止任务、关闭数据库与浏览器、保存配置；Unix/Termux 随后 exec 替换当前进程，保留 PID、终端、环境变量、启动参数与单实例锁，重新连接 Satori 前有短暂连接中断。`restart.time` 支持 `HH:MM` 或 `HH:MM:SS`，使用系统本地时区；内存阈值只统计 ayjx 自身 RSS（Linux/Android），不含 Chromium 子进程
+- ctl 不允许通过聊天关闭自身，也不允许管理员通过聊天移除自己的权限。整插件 `reset` 保留 `enabled`，重置 ctl 还保留 `admins`
+- `/restart` 需要全局管理员，且 `restart.allow_manual_restart = true`。定时与手动重启都只向主循环提出请求，由主循环停止任务、关闭数据库与浏览器、保存配置。Unix/Termux 随后 exec 替换当前进程，保留 PID、终端、环境变量、启动参数与单实例锁，重新连接 Satori 前有短暂连接中断。`restart.time` 支持 `HH:MM` 或 `HH:MM:SS`，使用系统本地时区；内存阈值只统计 ayjx 自身 RSS（Linux/Android），不含 Chromium 子进程
 
 ## 在 agent 房间里用自然语言操作
 
 `[ctl].pi_control`（默认 `true`）让 agent 房间可以直接说「把复读机关掉」「词云的字体调大一点」，由 agent 自己去查、去改、去复核。
 
-一轮 agent 房间对话开始时，ayjx 为这一轮签发一次性凭据，随环境变量交给 agent 的工具子进程，并附带说明用法的 `ayjx-control` skill。agent 执行 `ayjx --ctl "<命令>"`，命令经本机 Unix 套接字回到运行中的实例，由 ctl 以维护者身份执行，回执原样打到 stdout，因此 agent 能看见结果并据此继续，而不是不查看结果就发下一条命令。
+一轮 agent 房间对话开始时，ayjx 为这一轮签发一次性凭据，随环境变量交给 agent 的工具子进程，并附带说明用法的 `ayjx-control` skill。agent 执行 `ayjx --ctl "<命令>"`，命令经本机 Unix 套接字回到运行中的实例，由 ctl 以维护者身份执行，回执原样打到 stdout，因此 agent 看得到结果，能据此决定下一条命令。
 
-- 不做身份限制：任何能在 agent 房间里说话的人都能借它操作机器人。这是部署时的明确选择；agent 房间本来就持有全权限 shell，这条通道没有扩大它的能力边界，但确实把「改配置」从管理员专属变成了人人可用
-- ctl 自身的保护规则仍然有效：不能通过聊天关闭 ctl，也不能让管理员失去管理入口。这些规则防的是误操作，不是权限
+- 不做身份限制：任何能在 agent 房间里说话的人都能借它操作机器人。这是部署时的明确选择。agent 房间本来就持有全权限 shell，这条通道没有扩大它的能力边界，但确实把「改配置」从管理员专属变成了人人可用
+- ctl 自身的保护规则仍然有效：不能通过聊天关闭 ctl，也不能让管理员失去管理入口。这些规则针对误操作，权限不在此列
 - 凭据随这一轮对话结束立即作废（最长寿命 30 分钟），只存在于内存与子进程环境变量里，不落盘，也不出现在命令行。套接字是 `data/ctl/control.sock`，权限 `0600`
 - 每条经通道执行的命令都按「控制通道执行（QQ号）：命令」记进日志，可以追溯到人
 - 群聊搭话（`[ambient]`）里的 agent 不签发 ctl 管理凭据，那是无人触发的自发言，不该带有修改配置的能力
-- 收回这份开放有两个层次：`/ctl set ctl pi_control 关` 只关闭这条通道，agent 房间的 shell 仍然存在；真正的边界在 agent 的工具白名单
+- 收回这份开放有两个层次：`/ctl set ctl pi_control 关` 只关闭这条通道，agent 房间的 shell 仍然存在。真正的边界在 agent 的工具白名单
 
 ctl 操作 `config.toml` 中插件自己的配置。连接凭据、全局过滤规则、数据库中的插件业务数据，以及 oai 独立存储的模型 API 与智能体历史仍由各自的入口管理。例如 oai 的 API、模型与房间操作见 `/oai`，推送目标快捷指令见 `/help ai_news`。
 
 ## 本机控制台
 
-`[console]` 那个插件在回环地址上发一张网页，把散在终端里的四样东西摆到一处：运行状况、插件开关与配置、搭话的运行时文本、实时日志。它是图形界面与终端共用的后端——Android 应用（见[应用形态](APP.md)）看到的也是它，`./bot ui` 打开的也是它。
+`[console]` 那个插件在回环地址上发一张网页，把四样东西放到一处：运行状况、插件开关与配置、搭话的运行时文本、实时日志。它是图形界面与终端共用的后端——Android 应用（见[应用形态](APP.md)）看到的也是它，`./bot ui` 打开的也是它。
 
 ```toml
 [console]
@@ -122,7 +122,7 @@ token = ""           # 留空即首次启动自动生成，写在 data/console/t
 log_lines = 400
 ```
 
-启动日志里有唯一一条带口令的地址，启动时也会把它写一份在 `data/console/url`（0600）——日志会被群里刷走，文件不会：
+启动日志里有唯一一条带口令的地址，启动时也会把它写一份在 `data/console/url`（0600）：日志会被群里刷走，这个文件留在本地。
 
 ```text
 [14:05:03] [INFO] [Plugin/Console] 控制台已就绪 http://127.0.0.1:7801/?t=…
@@ -137,17 +137,17 @@ log_lines = 400
 
 几条边界：
 
-- **写配置仍然只有一条路。** 页面上的每一次改动都汇到 `ctl::change` / `ctl::set_value`，校验、串行化、失败不改内存、原子替换一步不少；口令换掉的是「谁按下了它」，不是「怎么保存」。
-- **它不会往群里说话。** 页面上的动作等价于在本机敲 `/ctl`，不碰 QQ、不发消息、不触发模型。要与群互动请回群里，或者用 agent 房间。
+- **写配置只有 `ctl::change` 一条路径。** 页面上的每一次改动都汇到 `ctl::change` / `ctl::set_value`，校验、串行化、失败不改内存、原子替换一步不少。口令决定谁有权按下它，保存路径不变。
+- **页面上的动作不产生群消息。** 页面上的动作等价于在本机敲 `/ctl`，不碰 QQ、不发消息、不触发模型。要与群互动请回群里，或者用 agent 房间。
 - **搭话那一页改的是运行目录里那两份文本**（`data/ambient/persona.md` 与 `self.md`），与手工覆盖是同一条路——落盘前先存一份 `backup-<日期>-<时分>`，仓库里那份模板不动。
-- **关掉它不影响任何东西。** `enabled = false` 或启动带 `--no-ui` 之后，指令、排期、推送一切照旧。运行中改成 `false` 会让接口立刻停下应答，端口要到下次启动才释放。
-- **口令是唯一的门。** 32 位十六进制，首次启动生成。换一个就 `rm data/console/token` 再重启；填在 `[console] token` 里就用你填的那个。`bind` 换成非回环地址这件事本身不安全，安全的是那道口令。
+- **关掉它不影响指令、排期与推送。** `enabled = false` 或启动带 `--no-ui` 之后，这几样一切照旧。运行中改成 `false` 会让接口立刻停下应答，端口要到下次启动才释放。
+- **访问控制靠那道口令。** 32 位十六进制，首次启动生成。换一个就 `rm data/console/token` 再重启；填在 `[console] token` 里就用你填的那个。`bind` 换成非回环地址不安全，起作用的是那道口令。
 
-看界面不用对着手机截图：`bash scripts/review-console.sh` 会把八页拍成本地图片，落在 `${TMPDIR:-/tmp}/ayjx-console`，与 `scripts/review-cards.sh` 是同一套用法。
+界面截图不必对着手机做：`bash scripts/review-console.sh` 会把八页拍成本地图片，落在 `${TMPDIR:-/tmp}/ayjx-console`，与 `scripts/review-cards.sh` 是同一套用法。
 
 ## 部署顺序
 
-1. 编译并测试：`cargo test`、`cargo build --release`；也可以运行 `node tests/foreground.cjs` 验证隔离配置下的前台指令、进程管理与退出保存，运行 `node tests/restart.cjs` 验证保留 PID 的手动重启与定时重启
+1. 编译并测试：`cargo test`、`cargo build --release`。也可以运行 `node tests/foreground.cjs` 验证隔离配置下的前台指令、进程管理与退出保存，运行 `node tests/restart.cjs` 验证保留 PID 的手动重启与定时重启
 2. 向正在运行的 ayjx 发送 SIGTERM，等待进程退出和「配置已保存」日志
 3. 备份并修改配置，开启所需插件。基础部署可以开启 `ctl`、`help`、`meta_filter`、`logger`、`recorder`，按实际需求启用其他插件
 4. 从仓库目录运行 `./bot start`，前台启动并临时开放本机控制台
@@ -178,11 +178,11 @@ log_lines = 400
 | `./bot power on/off` | Termux 唤醒锁：熄屏保持网络，`off` 需先停止 bot |
 | `./bot help` | 启动脚本帮助 |
 
-`status`、`stop`、`attach` 分别可以简写为 `s`、`down`、`a`；`logs` 也可以写 `session` 或 `up`；`enable` / `disable` 可以写 `on` / `off`。把脚本链接到 `$PREFIX/bin/bot`（Termux）或 `~/.local/bin/bot` 后，任意目录都能直接使用。`./bot start` 在 Termux 上会自动取得唤醒锁以避免熄屏断网，`AYJX_WAKE_LOCK=0` 可以关闭；唤醒锁由整个 Termux 共享，`./bot power off` 会影响其他 Termux 任务，因此要求先停止 bot。
+`status`、`stop`、`attach` 分别可以简写为 `s`、`down`、`a`。`logs` 也可以写 `session` 或 `up`。`enable` / `disable` 可以写 `on` / `off`。把脚本链接到 `$PREFIX/bin/bot`（Termux）或 `~/.local/bin/bot` 后，任意目录都能直接使用。`./bot start` 在 Termux 上会自动取得唤醒锁以避免熄屏断网，`AYJX_WAKE_LOCK=0` 可以关闭。唤醒锁由整个 Termux 共享，`./bot power off` 会影响其他 Termux 任务，因此要求先停止 bot。
 
-未托管时按 `Ctrl+C` 停止 bot，`tmux` 会话里跑的就是 bot 本身；托管后 bot 由 runsv 管，`./bot logs` 的窗口只是 `tail -F` 日志，关掉它不影响 bot。无论哪种方式，脚本都通过进程可执行文件路径识别本仓库实例，不要绕过脚本另外启动第二份程序。
+未托管时按 `Ctrl+C` 停止 bot，`tmux` 会话里跑的就是 bot 本身。托管后 bot 由 runsv 管，`./bot logs` 的窗口只是 `tail -F` 日志，关掉它不影响 bot。无论哪种方式，脚本都通过进程可执行文件路径识别本仓库实例，不要绕过脚本另外启动第二份程序。
 
-手动启动时还会用 `.bot.lock` 加文件锁防止重复启动；托管路径（`serve`）不加锁。runsv 已保证同一时刻只有一个 `run` 实例，而且那把锁的 fd 会被 bot 派生出的 Chromium 继承，浏览器可能比 bot 活得久，锁就被一个已经无关的进程攥住，后续启动全部报「锁被占用」（2026-09-14 因此出现过托管服务连续退出码 1 起不来）。
+手动启动时还会用 `.bot.lock` 加文件锁防止重复启动。托管路径（`serve`）不加锁。runsv 已保证同一时刻只有一个 `run` 实例，而且那把锁的 fd 会被 bot 派生出的 Chromium 继承，浏览器可能比 bot 活得久，锁就被一个已经无关的进程持有，后续启动全部报「锁被占用」（2026-09-14 因此出现过托管服务连续退出码 1 起不来）。
 
 每次启动还会先收掉浏览器僵尸。`cdp-html-shot` 只在正常析构时 kill 浏览器（`BrowserProcess::drop`），所以 bot 被 SIGKILL、panic-abort、或走 `std::process::exit()` 时不会执行，浏览器会变成孤儿一直占内存又没有任何作用。判据是三条同时成立：命令行带 `--user-data-dir=` 与 `cdp-shot_`（即该 crate 拉起的浏览器及其 renderer/gpu 子进程）、不在本进程的祖先链上、往上找不到活着的 ayjx 祖先。有祖先说明正被某个 bot 或测试用着（认 ayjx 用可执行文件名，临时目录里跑的测试实例也算）。启动时自动做，也可以 `./bot reap` 手动收一次。
 
@@ -204,11 +204,11 @@ chmod 755 "$PREFIX/var/service/ayjx/run" "$PREFIX/var/service/ayjx/finish" "$PRE
 | `finish` | runsv 在服务终止后、重启前执行。秒退（低于 `AYJX_MIN_UPTIME`，默认 20 秒）就退避同样时长；人为停止不退避 |
 | `log/run` | `svlogd -tt` 输出到 `$PREFIX/var/log/sv/ayjx` |
 
-`runsv` 没有内置退避，`run` 秒退时它会约每 1.25 秒重启一次（实测 20 秒起 16 次），配置解析失败、二进制缺失、启动锁被占这类情况会一直热循环。`finish` 的退避把重试压到每分钟几次；活得久说明是运行中偶发退出，立刻重启，不影响正常崩溃恢复。人为停止不退避：实测 bot 接住 SIGTERM/SIGINT 后是正常退出（退出码 0、信号 0，日志以「Bye!」结尾），所以判据是退出码 0 而不是信号。注意 `runsv` 在 `finish` 里跑 sleep 时 `sv up` 要等 sleep 结束才生效，这也是人为停止必须走豁免的原因。
+`runsv` 没有内置退避，`run` 秒退时它会约每 1.25 秒重启一次（实测 20 秒起 16 次），配置解析失败、二进制缺失、启动锁被占这类情况会一直热循环。`finish` 的退避把重试压到每分钟几次。活得久说明是运行中偶发退出，立刻重启，不影响正常崩溃恢复。人为停止不退避：实测 bot 接住 SIGTERM/SIGINT 后是正常退出（退出码 0、信号 0，日志以「Bye!」结尾），所以判据是退出码 0 而不是信号。注意 `runsv` 在 `finish` 里跑 sleep 时 `sv up` 要等 sleep 结束才生效，这也是人为停止必须走豁免的原因。
 
 `tests/` 会把启动脚本复制到临时目录运行，那种情况按未托管处理，`start` / `stop` 不会去动真正在跑的服务。改完 `run` 后 `runsv` 会在下次启动时读取新内容。
 
-托管后：停止用 `./bot stop`（等价 `sv down ayjx`，runsv 不会再拉起来），恢复用 `./bot start`；`./bot logs` 跟的是 `$PREFIX/var/log/sv/ayjx/current`；想让 Termux 重启后也不自启，用 `./bot disable`。
+托管后：停止用 `./bot stop`（等价 `sv down ayjx`，runsv 不会再拉起来），恢复用 `./bot start`。`./bot logs` 跟的是 `$PREFIX/var/log/sv/ayjx/current`。想让 Termux 重启后也不自启，用 `./bot disable`。
 
 ## 宿主被厂商清理器杀掉时（Android）
 
@@ -223,6 +223,6 @@ ColorOS 之类的清理器会连整个 Termux 应用一起杀掉，Termux 里的
 
 进程「运行中」不代表 QQ 已经连接，连接成功应看到 Satori READY / 登录就绪日志。`/ctl list` 查看插件开关，`/ctl show <插件>` 查看配置。
 
-ctl 与 help 使用 Chromium 网页卡片。插件总览是「目录」，版心 920px、条目按两列网格并排，便于一屏看全；插件详情与 ctl 的卡片版心 640px，单栏呈现。开关与待重启状态有文字标签，指令、别名、配置与差异自动换行并保留完整内容。`image_scale` 控制 PNG 分辨率（1—4 倍，默认 3），`image_enabled = false` 可以使用纯文本。
+ctl 与 help 使用 Chromium 网页卡片。插件总览按目录排，版心 920px、条目按两列网格并排。插件详情与 ctl 的卡片版心 640px，单栏呈现。开关与待重启状态有文字标签，指令、别名、配置与差异自动换行并保留完整内容。`image_scale` 控制 PNG 分辨率（1—4 倍，默认 3），`image_enabled = false` 可以使用纯文本。
 
-安装 Chrome/Chromium 与系统中日韩字体，并在全局 `browser_path` 指定浏览器路径。单张卡片最多渲染 45 秒（排队不计入，见 [ARCHITECTURE.md](ARCHITECTURE.md) 的出图与渲染），结束后清理页面；缺少浏览器、超时或图片超出安全尺寸时自动回复完整文本。`on` / `off` / `set` / `reset` 的确认及错误继续以文本回复。
+安装 Chrome/Chromium 与系统中日韩字体，并在全局 `browser_path` 指定浏览器路径。单张卡片最多渲染 45 秒（排队不计入，见 [ARCHITECTURE.md](ARCHITECTURE.md) 的出图与渲染），结束后清理页面。缺少浏览器、超时或图片超出安全尺寸时自动回复完整文本。`on` / `off` / `set` / `reset` 的确认及错误继续以文本回复。

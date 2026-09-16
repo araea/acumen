@@ -46,9 +46,9 @@ src/
 
 Context 通过移动传递，不深拷贝事件。`plugins::send_fake_event` 可以把伪造事件放回流水线。
 
-插件的执行顺序就是 `registry.rs` 里的书写顺序。过滤类插件写在最前面（`meta_filter` 拦住心跳和元事件），`ctl` 紧随其后，保证管理入口不会被其他插件拦下；记录类插件（`logger`、`recorder`）在业务插件之前取得原始消息。
+插件的执行顺序就是 `registry.rs` 里的书写顺序。过滤类插件写在最前面（`meta_filter` 拦住心跳和元事件），`ctl` 紧随其后，保证管理入口不会被其他插件拦下。记录类插件（`logger`、`recorder`）在业务插件之前取得原始消息。
 
-链接类插件的先后也有意义：`video_parse` 写在 `webshot` 前面，视频站链接先被它接走（只回一条预览），截图那边也跳过这类链接。准入判据是 `video_parse::is_video_link` 一处，两边不会各截一次又取一次。同类共用判据还有 `webshot::host_is_internal`（`web_fetch` 也用它拦内网）。
+链接类插件的先后同样按书写顺序：`video_parse` 写在 `webshot` 前面，视频站链接先被它接走（只回一条预览），截图那边跳过这类链接。准入判据是 `video_parse::is_video_link` 一处，两边不会各截一次又取一次。同类共用判据还有 `webshot::host_is_internal`（`web_fetch` 也用它拦内网）。
 
 ## 插件系统
 
@@ -95,11 +95,11 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 指令匹配统一走 `crate::command`：
 
-前缀类指令用 `match_command(ctx, cmd)` 或 `first_command_match(ctx, &[cmd])`；要求指令名后为空白或消息末尾的（ctl）用 `match_word_command`；自带正则匹配的（词云、stats 式）用 `strip_prefix`。参数用 `extract_text_arg(&matched.args)` 拼成纯文本，取图用 `get_image_url(ctx, writer, &args, reply_id)`，从文本里提第一个 URL 用 `find_url(text)`。
+前缀类指令用 `match_command(ctx, cmd)` 或 `first_command_match(ctx, &[cmd])`。要求指令名后为空白或消息末尾的（ctl）用 `match_word_command`。自带正则匹配的（词云、stats 式）用 `strip_prefix`。参数用 `extract_text_arg(&matched.args)` 拼成纯文本，取图用 `get_image_url(ctx, writer, &args, reply_id)`，从文本里提第一个 URL 用 `find_url(text)`。
 
 匹配到就处理并返回 `Ok(None)`，不属于本插件就返回 `Ok(Some(ctx))` 放行。
 
-错误处理：插件公开接口统一使用 `PluginError`（`Box<dyn Error + Send + Sync>`），可以用 `PluginResult<T>` 别名；内部子模块可以用 anyhow，但不要让它出现在边界之外。发送消息失败直接 `?` 传播，流水线会记录日志，不要用 `let _ =` 忽略错误。
+错误处理：插件公开接口统一使用 `PluginError`（`Box<dyn Error + Send + Sync>`），可以用 `PluginResult<T>` 别名。内部子模块可以用 anyhow，但不要让它出现在边界之外。发送消息失败直接 `?` 传播，流水线会记录日志，不要用 `let _ =` 忽略错误。
 
 发送消息统一走 `crate::adapters::satori::send_msg(&ctx, writer, group_id, user_id, msg)`，msg 支持 `Message`、`&str`、`String`。下载资源用 `crate::http::download_bytes(url)`。
 
@@ -133,9 +133,9 @@ render::web::shoot(
 
 `shoot` 只对页面做一趟 `evaluate`：字体和内嵌图片用 `document.fonts.ready` / `img.decode()` 与一个 900 ms 定时器
 赛跑，再让出一轮宏任务提交布局，然后一次量出盒模型，最后用带 clip 的整页截图取下来。
-等布局靠观测而不是靠固定睡眠，所以没有「睡少了量到偏小的高度、卡片底部被切」这一类
-偶发问题。**不要退回 `requestAnimationFrame`**：headless 下它不保证触发，拿它等布局
-等来的往往是死锁。
+等布局靠观测，不靠固定睡眠，因此不出现「睡少了量到偏小的高度、卡片底部被切」这类
+偶发问题。**不要退回 `requestAnimationFrame`**：headless 下它不保证触发，用它等布局
+会死锁。
 
 排队在超时之外：`CARD_GATE` 在 45 秒预算之前获取，排在后头的请求不会因为前面那张慢
 而被判超时。超时、量不到盒子、超过高度上限（16000 CSS px）或像素预算（6400 万）
@@ -143,12 +143,12 @@ render::web::shoot(
 1—4 倍，非有限值回退到 3 倍。
 
 闸门按「一类工作」划分，不按调用点划分：`render/web.rs` 的 `CARD_GATE`（3）管自家
-生成的卡片，`webshot` 自己的闸门（2）管真实网页。两者混进同一道的话，一条慢网页会把
-一张帮助卡挡住两分钟。
+生成的卡片，`webshot` 自己的闸门（2）管真实网页。两者若共用一道，一条慢网页会占住
+卡片的位置。
 
 ### 卡片设计系统
 
-六种卡片图（手册、控制、回复、资讯、画像，后两者各含日读与夜读）共用一套样式，
+五种卡片图（手册、控制、回复、资讯、画像，资讯与画像各有日读与夜读两档）共用一套样式，
 分两层，顺序不能换：
 
 ```rust
@@ -159,15 +159,15 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
   Expressive 的口径定义字阶、形状、高度、间距、配色角色与组件基元（`.md-card`、
   `.md-badge`、`.md-chip`、`.md-callout`、`.md-command`…）。六套配色方案
   （`scheme-manual` / `scheme-control` / `scheme-reply` / `scheme-news` /
-  `scheme-portrait`，后两者有深色档）也在这一个文件里，放在一起才好横向比。
+  `scheme-portrait` / `scheme-console`，后三套有深色档）也在这一个文件里，放在一起便于横向比。
 - **版式层**：`res/cards/reading.css`（help / ctl 的 `Doc` 模型）与各插件里那份
   `const CSS`。**只写「摆在哪儿」，不许出现色值、字号、圆角、阴影的字面量**，
-  一律 `var(--md-*)` 取令牌。写了就是又长出一套私有的视觉语言。
+  一律 `var(--md-*)` 取令牌。写了就是绕过令牌直接写字面量。
 
 三条与 M3 的刻意偏离（字阶按中文字面放大、字重只用 500/600/700/800 四档、
 阴影不透明度收回到纸面量级）与「为什么不引外部字体」都写在 `m3e.css` 的开头。
 
-字体只列系统里真有的：`Noto Sans CJK SC` 一族到底，不做拉丁与中日韩混排；画像卡是
+字体只列系统里真有的：`Noto Sans CJK SC` 一族到底，不做拉丁与中日韩混排。画像卡是
 唯一的例外，显示级文字走 `--md-font-display`（衬线）。装真字重见
 `scripts/install-cjk-weights.sh`。
 
@@ -176,45 +176,45 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 由 `a_chart_is_painted_in_the_card_scheme`、`the_word_hues_come_from_the_design_system`
 两条单测从样式表里读回来比对。改了 CSS 没改代码，测试会红。
 
-文案与这层是一件事的两面，规范在 [`docs/CONTENT.md`](CONTENT.md)：声音、语气、
+文案与这层配套，规范在 [`docs/CONTENT.md`](CONTENT.md)：声音、语气、
 标点、状态词表、术语表、六个状态图标。整套设计规范的入口与十条硬条目见
 [`docs/GUIDELINES.md`](GUIDELINES.md)，交互与行为规范见
 [`docs/INTERACTION.md`](INTERACTION.md)。
 
-一个容易踩的坑：样式表是塞在 `style` 元素里的，HTML 的 raw text 解析遇到闭合标签
-就结束。**任何注释里都不许出现 HTML 的成对标签字面量**，否则整张样式表被截成半句话，
-页面不报错、只是静悄悄退回无样式。`render::web::assert_embeddable` 钉着这一条。
+样式表塞在 `style` 元素里，HTML 的 raw text 解析遇到闭合标签
+就结束。**任何注释里都不许出现 HTML 的成对标签字面量**，否则整张样式表被截断，
+页面不报错，只是退回无样式。`render::web::assert_embeddable` 钉着这一条。
 
 另外：所有动态内容都做 HTML 转义，页面不执行脚本，也不加载外部资源，截图前等待字体
 和布局完成。help / ctl 的 `Doc` 模型由浏览器完成字体塑形、标点和长文本换行，默认输出
-3 倍 PNG；总览用 920 px 两列网格，条目的分隔线用「每条加顶线、首行两条不画」，
+3 倍 PNG。总览用 920 px 两列网格，条目的分隔线用「每条加顶线、首行两条不画」，
 任何条数都左右对称。`:last-child` 在网格里只命中整个网格的最后一条，会让右列末条有线、
 左列末条没线。
 
 字重：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档，向系统请求 Bold 得到的仍是 400 字重。两条出图路径都会自行合成粗体（浏览器原生支持，原生绘制使用 `Typeface.embolden` 做形态学膨胀），但外扩轮廓无法补出笔画的粗细对比。运行 `sh scripts/install-cjk-weights.sh` 把真实的 Bold(700) 和 Black(900) 安装到 `~/.fonts` 后，fontconfig 和 fontdb 会自动使用它们，合成量为零，代码不需要改动。不安装也能运行，只是标题会细一档。网页卡片标题按用途使用 700—800 字重。字体是设备本地状态，仓库里无法恢复，换机器需要重新运行脚本。
 
 CPU 图像工作统一通过 `render/worker.rs::run`：统计绘图、词云、GIF（包括信息和拆帧）、
-图片切分共享两条阻塞执行槽。先异步等待许可，再提交 `spawn_blocking`；许可归计算闭包
+图片切分共享两条阻塞执行槽。先异步等待许可，再提交 `spawn_blocking`。许可归计算闭包
 持有，调用方被取消后也不会提前放开并发。网络请求与发送消息不占执行槽。
 
-词云直接编码一次 PNG，保留固定画布与暖白留白，横向排词；不再解码 PNG 扫描像素、
-裁切后重新编码。GIF 的单次处理上限为 256 帧和合计 3200 万像素；缩放、拼图也在
+词云直接编码一次 PNG，保留固定画布与暖白留白，横向排词。不再解码 PNG 扫描像素、
+裁切后重新编码。GIF 的单次处理上限为 256 帧和合计 3200 万像素。缩放、拼图也在
 分配输出画布前检查尺寸。图片切分按相邻网格边界分配余数，完整保留原图边缘。
 
-智能回复表格使用固定表布局与单元格换行，来源标题完整折行；资讯标题取消 CSS 行数
+智能回复表格使用固定表布局与单元格换行，来源标题完整折行。资讯标题取消 CSS 行数
 裁切（摘要仍遵循插件配置的字符预算）。资讯、画像固定 720 CSS px，滚动条不影响版心。
 
 原生工具 `render/font.rs`、`canvas.rs`、`kit.rs` 保留供原生绘图使用。是否迁移渲染方式以实际阅读质量为准，ai_news 保持网页日夜主题。
 
 出图失败时回退到纯文本：浏览器缺失、初始化失败、截图超时或尺寸超限都不应让帮助和控制失去响应。图文数据来自同一份注册表，以及经过权限校验、敏感字段脱敏的配置。
 
-短反馈不出图。一句话的纠错、开关确认和报错都走纯文本。出图慢，在群里还多一条图片，也不方便复制文字。ctl 的 `Output::card` 就是这条分界。
+短反馈不出图。一句话的纠错、开关确认和报错都走纯文本。出图慢，在群里还多一条图片，也不方便复制文字。ctl 的 `Output::card` 按这条界线划分。
 
 ## 配置与数据
 
 `config.toml` 不入库：首次启动写入默认值，启动时补字段、清残留，解析失败则退出，不覆盖原文件。插件配置改动经过 `plugins::update_config` 或 ctl 插件，持久化由 `config_save_lock` 串行化。数据库是 `data/bot.db`，插件数据目录是 `data/<plugin>/`（`get_data_dir`）。
 
-写配置只有一条路径：`ctl::change`。它获取 `config_save_lock`，按插件真实的 serde 类型校验，先写盘再改内存，任何一步失败都不会留下半个状态。两个入口都汇到这里：
+写配置只有一条路径：`ctl::change`。它获取 `config_save_lock`，按插件真实的 serde 类型校验，先写盘再改内存，任何一步失败都不会留下部分修改。两个入口都汇到这里：
 
 | 入口 | 身份 | 实现 |
 | --- | --- | --- |

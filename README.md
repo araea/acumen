@@ -9,9 +9,9 @@
 
 两种形态不互斥：应用可以自带核心，也可以只当一块屏幕去连已经在跑的那一份。差别见[应用形态](docs/APP.md)。
 
-名字取自《孟子·公孙丑上》「我知言，我善养吾浩然之气」——知言是听得懂话里的意思。这台机器人在群里做的两件事正好是它：听懂大家在说什么再开口，以及从一个人的话里读出一个人的样子。仓库名、可执行文件名与 `./bot` 脚本都还叫 `ayjx`，改的只是给人看的那个名字。
+名字取自《孟子·公孙丑上》「我知言，我善养吾浩然之气」，知言是听得懂话里的意思。这台机器人在群里做的两件事与它对应：听懂大家在说什么再开口，以及从一个人的话里读出一个人的样子。仓库名、可执行文件名与 `./bot` 脚本都还叫 `ayjx`，改的只是给人看的那个名字。
 
-它与接入层那两个名字是一家人：QQ 进程里那个实现端模块叫[**知弦**](https://github.com/araea/satori-qq)（弦是把它接上的那根），这里叫**知言**（言是它开口说的那句）。
+它与接入层那个模块的名字对应：QQ 进程里那个实现端模块叫[**知弦**](https://github.com/araea/satori-qq)（弦指把它接上），这里叫**知言**（言指它开口说的那句）。
 
 ## 安装
 
@@ -74,7 +74,7 @@ bash app/build.sh            # 产出 app/build/Zhiyan.apk
 su -c "cp app/build/Zhiyan.apk /data/local/tmp/ && pm install -r /data/local/tmp/Zhiyan.apk"
 ```
 
-构建脚本用本机的 `aapt` / `d8` / `zipalign` / `apksigner` 手工打包，没有 Gradle；Rust 核心交叉编译成 `arm64-v8a` 的 `libayjx_core.so` 随包走。前置条件、装机步骤与两种运行模式见[应用形态](docs/APP.md)。
+构建脚本用本机的 `aapt` / `d8` / `zipalign` / `apksigner` 手工打包，没有 Gradle。Rust 核心交叉编译成 `arm64-v8a` 的 `libayjx_core.so` 随包走。前置条件、装机步骤与两种运行模式见[应用形态](docs/APP.md)。
 
 ## 文档与测试
 
