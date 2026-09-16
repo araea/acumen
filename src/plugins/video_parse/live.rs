@@ -291,21 +291,32 @@ async fn live_reads_a_card_from_the_sandbox_group() {
     let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
     assert!(consumed.is_none(), "卡片该由本插件吃掉");
 
-    // 群里到底有没有：看实现端记下来的内容，不看日志。
+    // 先按文本快照找到那条预览，再取它的完整元素。
     let listed: serde_json::Value = writer
         .call(&ctx, "message.list", json!({"channel_id": group.to_string()}))
         .await
         .unwrap();
     let messages = listed["data"].as_array().cloned().unwrap_or_default();
-    let preview = messages
+    let preview_id = messages
         .iter()
         .find(|message| {
             message["content"]
                 .as_str()
                 .is_some_and(|content| content.contains(HINT_LINE))
         })
+        .and_then(|message| message["id"].as_str().map(str::to_string))
         .expect("卡片没有换来预览");
-    let content = preview["content"].as_str().unwrap_or_default().to_string();
+
+    // 引用段与封面只有 `message.get` 看得到：`message.list` 回的是文本快照。
+    let sent: serde_json::Value = writer
+        .call(
+            &ctx,
+            "message.get",
+            json!({"channel_id": group.to_string(), "message_id": preview_id}),
+        )
+        .await
+        .unwrap();
+    let content = sent["content"].as_str().unwrap_or_default().to_string();
     println!("{content}");
     assert!(content.contains("索尼音乐中国"), "预览里没有 UP 主");
     assert!(
@@ -314,7 +325,7 @@ async fn live_reads_a_card_from_the_sandbox_group() {
     );
 
     // 收工：这次发出去的连同引用目标一起撤回。
-    for id in [trigger_id.to_string(), preview["id"].as_str().unwrap().to_string()] {
+    for id in [trigger_id.to_string(), preview_id.clone()] {
         let _: serde_json::Value = writer
             .call(
                 &ctx,
@@ -324,7 +335,7 @@ async fn live_reads_a_card_from_the_sandbox_group() {
             .await
             .unwrap();
     }
-    state::release(group, preview["id"].as_str().unwrap()).await;
+    state::release(group, &preview_id).await;
 }
 
 /// 把[`live_context`]给的上下文换成「一条卡片消息」：正文为空，`json` 段带着载荷，
