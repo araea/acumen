@@ -105,7 +105,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 
 不要写字段级 `#[serde(default = "fn")]`，那是第二份默认值来源，与 `Default` 实现迟早对不上。`validate_config` 用真实类型反序列化一次即可。
 
-这条只管用户配置，也就是 `config.toml` 里那棵树的类型。模型工具调用的参数 schema（`ambient/actions.rs` 的 `Action`、`FileAction` 这类内部枚举）不是配置，没有对应的 `Default` 实现，字段级默认值在那里是唯一的一份。
+这条只管用户配置，也就是 `config.toml` 里那棵树的类型。模型工具调用的参数 schema（`oai/chat/actions.rs` 的 `Action`、`FileAction` 这类内部枚举）不是配置，没有对应的 `Default` 实现，字段级默认值在那里是唯一的一份。
 
 ### 5. 配置字段说明
 
@@ -151,7 +151,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 
 ### 9. 限流与冷却
 
-统一三个后缀：`*_seconds` 记秒数（冷却、超时、间隔），`*_budget` 记每轮可用次数（0 即关闭），`*_max_per_hour` 与 `*_max_per_day` 记每小时或每日上限。上限不写成 `*_limit`，那个后缀看不出量纲。
+统一三个后缀：`*_seconds` 记秒数（冷却、超时、间隔），`*_budget` 记每轮可用次数（0 即关闭），`*_max_per_hour` 与 `*_max_per_day` 记每小时或每日上限。上限不写成 `*_limit`，那个后缀看不出量纲。一条消息切几条这类每轮的上限也归 `*_budget`（`messages_budget`、`actions_budget`）。
 
 `*_budget` 管一轮对话里能花几次，`*_max_per_hour` 管一段时间里能触发几次，两个都要有上限时两边都写。额度用完时说清什么时候恢复，并给一条此刻仍然能做的事。
 
@@ -161,7 +161,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 | --- | --- |
 | 改插件开关与配置 | `[ctl].admins` |
 | 手动 `/restart` | 仅管理员，且 `allow_manual_restart = true` |
-| 群管理类动作（禁言、踢人、改名） | `[ambient].management_groups` 显式列出的群 |
+| 群管理类动作（禁言、踢人、改名） | `[ambient].management_groups` 显式列出的群；内置 agent 房间在群里动手走 `[oai.chat].management_groups`，是另一份名单 |
 | 设置群头衔 | 机器人须是群主 |
 
 破坏性操作要有门槛，门槛要能说明自己是谁：被拒时回的是「仅限 ctl.admins 中的全局管理员」这种能照做的句子，不是「无权限」。

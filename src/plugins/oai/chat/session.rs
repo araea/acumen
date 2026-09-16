@@ -468,7 +468,7 @@ impl Session {
     async fn execute(&mut self, request: &Value) -> Result<Value> {
         match request["op"].as_str().unwrap_or("") {
             "context" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 if self.capabilities.is_null() {
                     self.capabilities = self.describe_capabilities().await;
                 }
@@ -533,8 +533,8 @@ impl Session {
                     "state":persona.get("state").and_then(Value::as_str).unwrap_or(""),
                     "remember":persona.get("remember").and_then(Value::as_str).unwrap_or(""),
                     "capabilities":capabilities,"rhythm":rhythm,"messages":turns,"media":media,
-                    "writes_remaining":self.config.max_actions.clamp(1,12).saturating_sub(self.writes),
-                    "messages_remaining":self.config.max_messages.clamp(1,5).saturating_sub(self.messages),
+                    "writes_remaining":self.config.actions_budget.clamp(1,12).saturating_sub(self.writes),
+                    "messages_remaining":self.config.messages_budget.clamp(1,5).saturating_sub(self.messages),
                     "draws_remaining":self.config.draw_budget.clamp(0,8).saturating_sub(self.draws),
                     "music_remaining":self.config.music_budget.clamp(0,4).saturating_sub(self.music),
                     "videos_remaining":self.config.video_budget.clamp(0,2).saturating_sub(self.videos),
@@ -543,7 +543,7 @@ impl Session {
                 )
             }
             "read" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 let id = request["message_id"].as_str().unwrap_or("");
                 let turn = self.turn_of(id).await?;
                 if request["forward"].as_bool().unwrap_or(false) {
@@ -595,7 +595,7 @@ impl Session {
                 }
             }
             "history" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 // 参数写错不该吃掉额度：先校验，真要发出查询时才扣。
                 self.check_lookup()?;
                 let around = request["around"].as_str().unwrap_or("").trim();
@@ -663,7 +663,7 @@ impl Session {
                 }))
             }
             "group" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 self.check_lookup()?;
                 let guild = self.group.to_string();
                 // 字段名不叫 op：那个名字已经被 RPC 信封占了，两层同名会互相覆盖。
@@ -832,7 +832,7 @@ impl Session {
                 }))
             }
             "profile" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 self.check_lookup()?;
                 let who = request["user_id"].as_str().unwrap_or("").trim().to_string();
                 if !who.is_empty() {
@@ -874,7 +874,7 @@ impl Session {
                 }))
             }
             "draw" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "绘图提示词先给几个字");
@@ -890,7 +890,7 @@ impl Session {
                 let size = request["size"].as_str().map(str::to_string);
                 let quality = request["quality"].as_str().map(str::to_string);
                 let budget = self.config.draw_budget.clamp(0, 8);
-                ensure!(budget > 0, "本群已关闭绘图（[ambient] draw_budget = 0）");
+                ensure!(budget > 0, "本群已关闭绘图（draw_budget = 0）");
                 ensure!(self.draws < budget, "本轮绘图额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx, "oai",
@@ -933,12 +933,12 @@ impl Session {
                 }))
             }
             "music" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "写歌得先说清楚写一首什么样的歌");
                 let budget = self.config.music_budget.clamp(0, 4);
-                ensure!(budget > 0, "本群已关闭写歌（[ambient] music_budget = 0）");
+                ensure!(budget > 0, "本群已关闭写歌（music_budget = 0）");
                 ensure!(self.music < budget, "本轮写歌额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx, "oai",
@@ -1019,12 +1019,12 @@ impl Session {
                 }))
             }
             "video" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "拍片得先说清楚要拍什么");
                 let budget = self.config.video_budget.clamp(0, 2);
-                ensure!(budget > 0, "本群已关闭拍片（[ambient] video_budget = 0）");
+                ensure!(budget > 0, "本群已关闭拍片（video_budget = 0）");
                 ensure!(self.videos < budget, "本轮拍片额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx, "oai",
@@ -1078,12 +1078,12 @@ impl Session {
                 }))
             }
             "memo" => {
-                ensure!(self.enabled(), "该群的搭话功能已停用");
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 ensure!(self.config.memory_enabled, "本群已关闭记忆");
                 let budget = self.config.memo_budget.clamp(0, 8);
                 ensure!(
                     budget > 0,
-                    "本群已关闭记忆写入（[ambient] memo_budget = 0）"
+                    "本群已关闭记忆写入（memo_budget = 0）"
                 );
                 ensure!(self.memos < budget, "本轮记忆额度已用完");
                 self.memos += 1;
@@ -1159,7 +1159,7 @@ impl Session {
                 ensure!(
                     !action.requires_management(&self.ctx.bot.login_user.get().id)
                         || self.management_enabled(),
-                    "本群未启用人格管理动作（ambient.management_groups）"
+                    "本群未启用管理动作（management_groups 里没有这个群）"
                 );
                 // 管理对象可能很久没说话。按 QQ 的当前群名册核实，不往聊天窗口伪造发言。
                 if let Some(target) = action.management_target() {
@@ -1191,11 +1191,11 @@ impl Session {
                     anyhow::bail!("{reason}");
                 }
                 ensure!(
-                    self.writes < self.config.max_actions.clamp(1, 12),
+                    self.writes < self.config.actions_budget.clamp(1, 12),
                     "本轮动作额度已用完"
                 );
                 ensure!(
-                    !action.is_message() || self.messages < self.config.max_messages.clamp(1, 5),
+                    !action.is_message() || self.messages < self.config.messages_budget.clamp(1, 5),
                     "本轮消息额度已用完"
                 );
                 self.writes += 1;
@@ -1566,7 +1566,7 @@ impl Session {
             path.starts_with(scratch)
                 || media.is_some_and(|root| path.starts_with(root))
                 || stickers.is_some_and(|root| path.starts_with(root)),
-            "本地资源取自本轮工作目录、ambient/media 或自己攒的表情包，Termux 私有路径 QQ 读不到"
+            "本地资源只能取自本轮工作目录或表情包库，Termux 私有路径 QQ 读不到"
         );
         let meta = tokio::fs::metadata(&path).await?;
         ensure!(
@@ -1593,7 +1593,7 @@ impl Session {
                 // 剩下的消息额度约束——真正发出去的条数才是额度算的东西。
                 let budget = self
                     .config
-                    .max_messages
+                    .messages_budget
                     .clamp(1, 5)
                     .saturating_sub(self.messages.saturating_sub(1));
                 if let Some(rows) = split_send(parts, budget, self.config.split_chars) {
@@ -2678,8 +2678,8 @@ mod tests {
         let ambient = AmbientConfig {
             enabled: true,
             groups: vec![group],
-            max_actions: 12,
-            max_messages: 5,
+            actions_budget: 12,
+            messages_budget: 5,
             typing_cpm: 60000,
             voice_cpm: 60000,
             think_seconds: 0.0,
@@ -3086,7 +3086,7 @@ mod tests {
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-test")
                 .unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
-        let budget = config.max_actions;
+        let budget = config.actions_budget;
         // 平台拒绝会跨轮记着，别的用例可能已经记过一次。
         forget_platform_refusals();
         let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
@@ -3275,7 +3275,7 @@ mod tests {
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-split")
                 .unwrap();
         let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
-        config.max_messages = 3;
+        config.messages_budget = 3;
         config.split_chars = 22;
         let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
             .await
@@ -3492,7 +3492,7 @@ mod tests {
         let ctx_after = request(&bridge, json!({"id":"ctx","op":"context"})).await;
         assert_eq!(
             ctx_after["result"]["writes_remaining"],
-            config.max_actions as u64
+            config.actions_budget as u64
         );
         assert_eq!(ctx_after["result"]["lookups_remaining"], 0);
         assert_eq!(ctx_after["result"]["capabilities"]["lookups"][0], "member");
@@ -4442,7 +4442,7 @@ mod tests {
 
         // 三个工具都是模型调用，不占平台写动作额度。
         let context = request(&bridge, json!({"id":"ctx2","op":"context"})).await;
-        assert_eq!(context["result"]["writes_remaining"], config.max_actions);
+        assert_eq!(context["result"]["writes_remaining"], config.actions_budget);
         drop(bridge);
         qq.abort();
         server.await.unwrap();

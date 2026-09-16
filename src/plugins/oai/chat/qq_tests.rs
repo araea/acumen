@@ -234,7 +234,7 @@ async fn qq_file_upload_uses_multipart_and_consumes_a_message() {
     let context = request(&bridge, json!({"id":"ctx","op":"context"})).await;
     assert_eq!(
         context["result"]["messages_remaining"],
-        config.max_messages - 1
+        config.messages_budget - 1
     );
     server.abort();
 }

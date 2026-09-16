@@ -225,15 +225,15 @@ pub(crate) struct AmbientConfig {
     /// 出这一句。0 关闭。见 [`crate::adapters::satori::Freshness`]。
     pub send_freshness_seconds: u64,
     /// 一次发言最多拆成几条消息。
-    pub max_messages: usize,
+    pub messages_budget: usize,
     /// 一条消息大约多少字就该换气：超过大约一条半的长度时，把一段话在最自然的
-    /// 断句处拆成几条依次发出（总数仍受 `max_messages` 约束）；0 关闭自动分段。
+    /// 断句处拆成几条依次发出（总数仍受 `messages_budget` 约束）；0 关闭自动分段。
     ///
     /// 模型写出来的是一整段，群友写出来的是三条——差别只在换气。见 [`breath`]。
     /// 默认给得宽：群里的长句多半是「语音输入一条说完」，只有真成了一坨才该拆。
     pub split_chars: usize,
     /// 每轮平台写动作总数（含消息、点赞、撤回）。
-    pub max_actions: usize,
+    pub actions_budget: usize,
     /// 每轮最多生成图片的张数；0 关闭绘图。绘图走 `[oai]` 配置的图像模型。
     pub draw_budget: usize,
     /// 每轮最多写几首歌；0 关闭写歌。写歌走 `[oai]` 配置的 Suno 接口，一次生成
@@ -295,9 +295,9 @@ impl Default for AmbientConfig {
             search_budget: 3,
             peak: peak::PeakConfig::default(),
             send_freshness_seconds: 25,
-            max_messages: 3,
+            messages_budget: 3,
             split_chars: 60,
-            max_actions: 6,
+            actions_budget: 6,
             draw_budget: 2,
             music_budget: 1,
             video_budget: 1,
@@ -374,7 +374,7 @@ impl AmbientConfig {
         Self {
             context_images: 0,
             context_turns: (self.context_turns / 2).max(6),
-            max_messages: self.max_messages.min(2),
+            messages_budget: self.messages_budget.min(2),
             draw_budget: 0,
             music_budget: 0,
             video_budget: 0,
@@ -453,8 +453,8 @@ impl Ambient {
 pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
     ChatConfig {
         management_groups: config.management_groups.clone(),
-        max_messages: config.max_messages,
-        max_actions: config.max_actions,
+        messages_budget: config.messages_budget,
+        actions_budget: config.actions_budget,
         memo_budget: config.memo_budget,
         lookup_budget: config.lookup_budget,
         draw_budget: config.draw_budget,
@@ -1241,7 +1241,7 @@ async fn speak_up(
     let (raw, focus) = attention::extract(&raw, turns, config.focus_max_seconds);
     // 沉默不需要检查草稿；新消息留给下一批。关注仍可在本轮更新。
     let silent = matches!(
-        pace::parse(&raw, config.max_messages.clamp(1, 5), config.split_chars),
+        pace::parse(&raw, config.messages_budget.clamp(1, 5), config.split_chars),
         pace::Speech::Silent
     );
     if !silent && !current(ctx, group, *seq) {
@@ -1284,7 +1284,7 @@ async fn speak_up(
         window::with_group(group, |state| state.focus = focus);
     }
     let mut utterances =
-        match pace::parse(&raw, config.max_messages.clamp(1, 5), config.split_chars) {
+        match pace::parse(&raw, config.messages_budget.clamp(1, 5), config.split_chars) {
             pace::Speech::Silent => {
                 info!(target: LOG_TARGET, "群 {group} 想了想，还是没说话");
                 return Ok(());
@@ -1703,7 +1703,7 @@ mod tests {
         let frugal = config.frugal();
         assert_eq!(frugal.context_images, 0);
         assert!(frugal.context_turns < config.context_turns);
-        assert!(frugal.max_messages <= 2);
+        assert!(frugal.messages_budget <= 2);
         assert_eq!(frugal.draw_budget, 0);
         assert_eq!(frugal.lookup_budget, 1);
         // 联网不便宜也更慢，高峰时段这一句先不查。

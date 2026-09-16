@@ -36,7 +36,7 @@
 
 | 项 | 处理 |
 | --- | --- |
-| 字段级 `serde(default = "fn")` 共 50 处 | `ai_news`（35）、`restart`（4）、`config.rs`（4）、`help`（2）全部换成容器级 `#[serde(default)]` 加一份 `Default`。`ambient/actions.rs` 的 5 处在工具调用参数 schema 里，不是用户配置，按四.4 保留 |
+| 字段级 `serde(default = "fn")` 共 50 处 | `ai_news`（35）、`restart`（4）、`config.rs`（4）、`help`（2）全部换成容器级 `#[serde(default)]` 加一份 `Default`。`chat/actions.rs` 的 5 处在工具调用参数 schema 里，不是用户配置，按四.4 保留 |
 | `portrait` 与 `oai` 出卡片却没有关图开关 | `portrait` 补 `image_enabled`，`oai` 补 `image_enabled` 与 `image_scale`，关图与出图失败走同一条纯文本回退，`oai` 的开关收在 `reply_card` 一处 |
 | `config.example.toml` 只覆盖 9 / 22 个插件，且没有测试 | 补全到 22 个，键与 `default_config()` 一一对应，新增三条测试 |
 | `⚠️` 11 处表达 6 种意思 | `CONTENT.md` 3.5 收窄成「做成了，但要打折着看」，代码改到只剩 3 处（切片截断、改用缓存列表、切全量池），其余改成 ✅ 或 ❌。`⚠️` 11 降到 3，`❌` 75 升到 91 |
@@ -140,6 +140,20 @@
 | 日志看不到最新几行 | 屏外行的 `content-visibility: auto` 按 48px 估值，面板的 `scrollHeight` 因此比实际矮，贴底落在一个过时的高度上。DOM 窗口只有 80 行，省下来的重排本来就不值得，整条去掉；贴底改成「判定只看位置」，程序化滚动与换行都不会被误判成暂停意图，滚回底部自己恢复；`EventSource` 进入 CLOSED 之后按 2→4→8→16 秒退避自己重开 |
 | 总览那六行日志停在打开那一刻 | 每六秒拉一次 `/api/logs?limit=6`，只在页面可见时拉。拉的是内存里的环形缓冲，不碰数据库 |
 
+### 第八轮：群聊能力层（2026-09-17）
+
+群聊工具（`satori_*`）从搭话插件搬进 `oai`（`src/plugins/oai/chat/`），房间与搭话共用同一份实现。搬完按同一张表过了一遍，五处偏离全部改掉。
+
+| 项 | 处理 |
+| --- | --- |
+| 能力层的日志 target 是 `Plugin/Chat`，而 `Chat` 不是注册名 | 收成 `Plugin/OAI/Chat`（四.6：注册名按单词边界大写，子模块在后面加一级） |
+| `[oai.chat]` 与 `[ambient]` 里两个每轮上限叫 `max_messages` / `max_actions`，同一张表里其余六个都叫 `*_budget` | 改名 `messages_budget` / `actions_budget`，四.9 补上「每轮次数也归 `*_budget`」；线上 `config.toml` 同步改名，值不变 |
+| 能力层的报错写着 `[ambient] xxx`、「该群的搭话功能已停用」这类只对一边成立的说法 | 改中性：报错只说事实与键名（`draw_budget = 0`），两边共用的那份实现不再假装自己是搭话 |
+| `ChatConfig` 里两处 `///` 写成疑问句（「长期记忆库开着吗。」） | 改陈述句并按四.5 说清取值含义（四.5 要求陈述句；全仓此前没有第二处疑问句） |
+| 四.10 的门槛表只写了 `[ambient].management_groups` | 补上房间那一侧的 `[oai.chat].management_groups`，写明是两份名单 |
+
+同轮另外核过、没有偏离的：注册表元数据、示例配置三处同步（`example_config_tests` 三条绿）、容器级 `#[serde(default)]` 加一份 `Default`、术语表（`群聊工具` 一条进 `CONTENT.md` 3.7）、图标集合、提示词不在文案规范管辖内（`CHAT_HINT` 与工具描述都在此列）。
+
 ## 尚未处理的
 
 **`portrait`、`oai`、`ai_news` 的「短反馈不出图」边界靠人工核对。** `ctl` 有 `Output::card` 这个类型把两类输出分开，其余三个插件的数据形状不同，没有对应的造型。本轮查过一遍：`oai` 的 79 处一句话反馈全走 `reply_text`，`portrait` 走 `say()`，`ai_news` 的指令回执直接返回纯文本。
@@ -158,7 +172,7 @@ node tests/console-backend.cjs                          # 隔离实例：口令�
 node tests/console.cjs                                  # 真实 Chromium：交互、压力、前后台切换与样张
 
 # 硬条目
-rg 'serde\(default = "' src/                            # 期望：只剩 ambient/actions.rs 的工具参数
+rg 'serde\(default = "' src/                            # 期望：只剩 chat/actions.rs 的工具参数
 rg 'target: "Plugin"' src/                              # 期望：无输出
 rg -c '"⚠️ ' src/                                        # 期望：3
 

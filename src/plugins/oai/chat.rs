@@ -41,8 +41,11 @@ use crate::message::Message;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// 能力层的日志 target。房间与搭话共用同一份实现，日志也就同一个名字。
-pub(crate) const LOG_TARGET: &str = "Plugin/Chat";
+/// 能力层的日志 target。
+///
+/// 两层共用同一份实现，日志也就只有一个名字：这一层住在 `oai` 里，
+/// 按注册名加一级子模块（GUIDELINES 四.6）。
+pub(crate) const LOG_TARGET: &str = "Plugin/OAI/Chat";
 
 /// 一轮行动的额度与开关。
 ///
@@ -53,15 +56,15 @@ pub(crate) const LOG_TARGET: &str = "Plugin/Chat";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub(crate) struct ChatConfig {
-    /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片、
-    /// 群文件的改名/移动/删除）的群号。
+    /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片，
+    /// 以及群文件的改名、移动、删除）的群号。
     ///
-    /// 这些是会被全群看见的写操作，默认一个群都不放行——要用就按群单独列出来。
+    /// 这些是会被全群看见的写操作，默认一个群都不放行，要用就按群单独列出来。
     pub management_groups: Vec<i64>,
     /// 一次发言最多几条（模型把一段话写长了，切开也算额度）。
-    pub max_messages: usize,
+    pub messages_budget: usize,
     /// 一轮最多几次写动作。
-    pub max_actions: usize,
+    pub actions_budget: usize,
     /// 一轮最多写几条记忆。
     pub memo_budget: usize,
     /// 一轮最多查几次资料（群资料、个人资料、旧消息共用这一份）。
@@ -69,17 +72,18 @@ pub(crate) struct ChatConfig {
     pub draw_budget: usize,
     pub music_budget: usize,
     pub video_budget: usize,
-    /// 长期记忆库开着吗。
+    /// 记住群里的人和旧事（落盘，跨重启），与搭话共用一份。
+    /// 关掉之后 `satori_memo` 不再挂上，已经记下的留着。
     pub memory_enabled: bool,
     /// 表情包库上限；0 表示不攒。
     pub sticker_max: usize,
     /// 递给模型的群聊条数。
     pub context_turns: usize,
-    /// 一段话按换气切成几条的字数阈值；0 表示不切。
+    /// 一段话切成几条的字数阈值；0 表示不切。
     pub split_chars: usize,
     /// 发出前的时效窗口（秒）：群里又有人说话就整条不发。0 表示不带时效条件。
     pub freshness_seconds: u64,
-    /// 一次媒体生成（图/歌/片）最多等多久（秒）。
+    /// 一次媒体生成（图、歌、片）最多等多久（秒）。
     pub media_deadline_seconds: u64,
     /// 房间里的工具白名单；留空表示有什么挂什么（本机工具 + 群聊工具 + 联网）。
     ///
@@ -92,8 +96,8 @@ impl Default for ChatConfig {
     fn default() -> Self {
         Self {
             management_groups: Vec::new(),
-            max_messages: 3,
-            max_actions: 6,
+            messages_budget: 3,
+            actions_budget: 6,
             memo_budget: 3,
             lookup_budget: 4,
             draw_budget: 2,
@@ -118,9 +122,9 @@ pub(crate) struct ChatEnv<'a> {
     /// 群号。能力层只在群里工作——私聊没有群资料、没有群动作，也就没有这一层。
     pub group: i64,
     pub config: ChatConfig,
-    /// 这个群现在开着吗。房间总是开着；搭话看自己的开关与群列表。
+    /// 这一轮在这个群开着。房间总是开着，搭话看自己的开关与群列表。
     pub enabled: bool,
-    /// 动手之前要不要先确认「群聊没有往前走」。
+    /// 动手之前先确认群聊没有往前走。
     ///
     /// 搭话的回复只对刚才那一批消息负责，窗口一动就该重看；房间回答的是一句直接
     /// 请求，中间群里聊了什么与这次回答无关。

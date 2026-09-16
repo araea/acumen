@@ -409,7 +409,7 @@ mod tests {
     fn the_chat_table_falls_back_to_defaults_key_by_key() {
         let config: OaiConfig = toml::from_str("[chat]\nvideo_budget = 2\n").unwrap();
         assert_eq!(config.chat.video_budget, 2);
-        assert_eq!(config.chat.max_actions, 6);
+        assert_eq!(config.chat.actions_budget, 6);
         assert!(config.chat.memory_enabled);
         assert!(config.chat.management_groups.is_empty());
 
