@@ -8,12 +8,14 @@
 //! - 用户**引用那条预览**并回复「视频」这类词，才真的去取片，取完按 `send`
 //!   配的发法把成品发出去（默认只发视频气泡）。
 //!
-//! 成品默认只发视频气泡，不发群文件：有些群不让普通成员发群文件，发文件那条腿必定
-//! 失败，实现端还会为它重试到超预算，把整条取片流程一起拖垮。要群文件的群自己把
-//! `send` 开成 `file` 或 `both`。
+//! 成品怎么发由 `send` 定（默认只发视频气泡）。要群文件的群开 `both` 也是安全的：
+//! 先发气泡再发文件，两条腿各自兜错，文件那条腿失败（有些群不让普通成员发群文件）
+//! 只是少一个文件，不会再让整条取片流程失败——见 [`deliver`]。
 //!
 //! 「引用 + 回复」这套隐式交互与 AI 资讯的「引用卡片回复序号」是同一个设计：
 //! 一级尽量轻，重的内容等用户开口。对应关系落在 [`state`]，取片细节见 [`bilibili`]。
+//! 一级也做了防刷屏：同一个人短时间内重贴同一条稿件，上面那张预览还没取片时
+//! 不再回第二条（[`state::repeated`]）。
 //!
 //! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
 //! 截图那边直接跳过，两处不会各截一次又取一次。
@@ -72,8 +74,8 @@ pub struct Config {
     /// 未登录时 B 站只放 360P—720P，想要更高要在 `cookie` 里填登录态。
     pub prefer_quality: u32,
     /// 成品怎么发：bubble（只发视频气泡，默认）/ file（只发群文件）/ both。
-    /// 默认只发气泡：有些群不让普通成员发群文件，那条腿会失败，实现端还会为它重试到
-    /// 超预算。要群文件的群再单独开。
+    /// 默认只发气泡，一份成品一条消息，不让群文件白占一份空间；要群文件的群再开
+    /// `file` 或 `both`——`both` 也是安全的：气泡先发，文件那条腿失败只少一个文件。
     pub send: String,
     /// 一次取片的总预算（秒），含挑画质、下载与上传。
     pub timeout_seconds: u64,
@@ -241,9 +243,11 @@ pub fn handle(
         };
         match preview(&ctx, &writer, &config, &candidate, group_id, user_id, msg.message_id()).await
         {
-            Ok(record) => {
+            Ok(Some(record)) => {
                 info!(target: LOG_TARGET, "已回预览：{}（{}）", record.title, record.bvid);
             }
+            // 同一个人刚贴过同一条、那张预览还在等他开口：上面已经有了，不再刷一条。
+            Ok(None) => info!(target: LOG_TARGET, "同一条链接刚由同一个人贴过，不再回预览"),
             Err(error) => warn!(target: LOG_TARGET, "预览失败（{}）：{}", candidate, error),
         }
         Ok(None)
@@ -274,7 +278,8 @@ fn failed(error: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
 /// 拉一次稿件信息，回一条预览，并把「预览消息 → 稿件」记下来。
 ///
 /// 记不下对应关系时返回错误：一张引用不回来的预览比不发更糟——用户会以为
-/// 取片入口就在那儿。
+/// 取片入口就在那儿。返回 `None` 表示这一条刻意没发（同一个人刚贴过同一条，
+/// 见 [`state::repeated`]），不是失败。
 async fn preview(
     ctx: &Context,
     writer: &LockedWriter,
@@ -283,10 +288,18 @@ async fn preview(
     group_id: Option<i64>,
     user_id: i64,
     request_id: i64,
-) -> Result<state::Preview> {
+) -> Result<Option<state::Preview>> {
     let url = resolve_link(raw_url).await?;
     let reference = bilibili::reference(&url).ok_or_else(|| anyhow!("链接没落到稿件页"))?;
     let video = bilibili::info(&reference, &config.cookie, API_TIMEOUT).await?;
+    let target = target_key(group_id, user_id);
+
+    // 同一个人在同一个会话里刚贴过同一条，而那张预览还没取片：不再回一条一样的。
+    // 只在拉完稿件信息之后判，是因为判据要用上游认出来的 `bvid`——同一条链接
+    // 可能一次是短链、一次是长链，光比地址认不出来。
+    if state::repeated(target, user_id, &video.bvid, chrono::Utc::now().timestamp()).await {
+        return Ok(None);
+    }
 
     let mut message = Message::new().reply(request_id).text(preview_text(&video, config));
     if let Some(cover) = &video.cover {
@@ -302,7 +315,7 @@ async fn preview(
     };
 
     let record = state::Preview {
-        target_id: target_key(group_id, user_id),
+        target_id: target,
         message_id,
         created_ts: chrono::Utc::now().timestamp(),
         url: url.to_string(),
@@ -312,9 +325,10 @@ async fn preview(
         title: video.title,
         duration: video.duration,
         extracted: false,
+        requester: user_id,
     };
     state::remember(record.clone()).await;
-    Ok(record)
+    Ok(Some(record))
 }
 
 /// 预览正文：标题一行，UP 主 / 时长 / 播放量一行，再一行怎么取片。
@@ -506,27 +520,30 @@ async fn deliver(
         .to_string();
 
     let send = SendMode::parse(&config.send);
-    // 两条腿各自兜住：有些群不让普通成员发群文件，那一腿会失败，实现端还会为它重试到
-    // 超预算。`both` 时一条腿成了就算送到，别让另一条把它一起带走；只配一条腿时，
+    // 先发能点开就播的那条（视频气泡），再补群文件。
+    //
+    // 两件事决定了这个顺序：① 实现端对上传失败的富媒体会就地重试到超预算（默认 2 次 /
+    // 45 秒），而有些群不让普通成员发群文件——文件那条腿注定失败，不该让它挡着气泡；
+    // ② 两条腿各自兜错，`both` 时一条成了就算送到（另一条只留一行 warn），只配一条时
     // 它自己的失败照旧往上报，用户那边能看到「没取到」。
     let mut delivered = false;
     let mut failure = None;
-    if matches!(send, SendMode::File | SendMode::Both) {
-        let file = Message::new().file(resource.clone(), Some(name.clone()));
-        match send_msg(ctx, writer.clone(), group_id, Some(user_id), file).await {
-            Ok(()) => delivered = true,
-            Err(error) => {
-                warn!(target: LOG_TARGET, "群文件没发出去（{}）：{}", name, error);
-                failure = Some(failed(error));
-            }
-        }
-    }
     if matches!(send, SendMode::Bubble | SendMode::Both) {
-        let bubble = Message::new().video(resource);
+        let bubble = Message::new().video(resource.clone());
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), bubble).await {
             Ok(()) => delivered = true,
             Err(error) => {
                 warn!(target: LOG_TARGET, "视频气泡没发出去：{}", error);
+                failure = Some(failed(error));
+            }
+        }
+    }
+    if matches!(send, SendMode::File | SendMode::Both) {
+        let file = Message::new().file(resource, Some(name.clone()));
+        match send_msg(ctx, writer.clone(), group_id, Some(user_id), file).await {
+            Ok(()) => delivered = true,
+            Err(error) => {
+                warn!(target: LOG_TARGET, "群文件没发出去（{}）：{}", name, error);
                 failure = Some(failed(error));
             }
         }
@@ -749,6 +766,7 @@ mod tests {
             title: "测试稿件".into(),
             duration: 213,
             extracted: true,
+            requester: 1,
         };
         let text = caption_text(&preview, 64, 25_847_808);
         assert_eq!(text, "测试稿件\n3:33 · 720P · 24.7 MB");
@@ -869,6 +887,7 @@ mod tests {
             title: "测试稿件".into(),
             duration: 213,
             extracted: true,
+            requester: 7,
         }
     }
 

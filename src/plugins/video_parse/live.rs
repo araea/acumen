@@ -113,6 +113,7 @@ async fn live_takes_the_video_into_the_sandbox_group() {
         title: video.title.clone(),
         duration: video.duration,
         extracted: false,
+        requester: 0,
     };
     // 这条要验两条腿都到（正文 + 群文件 + 气泡）。线上默认只发气泡，这里显式开成 both。
     let mut config = Config::default();
@@ -192,6 +193,7 @@ async fn live_takes_the_video_when_the_platform_adds_an_at() {
         title: video.title.clone(),
         duration: video.duration,
         extracted: false,
+        requester: 0,
     })
     .await;
 
@@ -368,7 +370,8 @@ async fn live_sends_the_preview_into_the_sandbox_group() {
         trigger_id,
     )
     .await
-    .expect("预览没发出去");
+    .expect("预览没发出去")
+    .expect("这条预览没被当成重复的吞掉");
     println!("预览消息 ID：{}", record.message_id);
 
     // 引用取片靠的就是这条对应关系；记不下就等于取不到片。

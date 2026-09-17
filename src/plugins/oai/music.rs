@@ -46,7 +46,7 @@ pub(crate) enum SendMode {
     File,
     /// 只发语音气泡。
     Voice,
-    /// 先发群文件（能存能下载），再补一条语音气泡。
+    /// 先发语音气泡（点开就听），再补一条群文件（能存能下载）。
     Both,
 }
 
@@ -280,7 +280,12 @@ fn summary(generated: &Generated, title: &str, send: SendMode, show_send: bool) 
     text
 }
 
-/// 每个版本一条消息：封面 + 音频。`both` 模式再为每一版补一条语音气泡。
+/// 每个版本两条消息：`both` 时先一条语音气泡（带封面）、再一条群文件；只发一种就
+/// 只出一条（封面跟着走）。
+///
+/// 顺序是刻意的：有些群不让普通成员发群文件，那条腿会失败并在实现端重试到超预算
+/// （默认 2 次 / 45 秒）。语音排在前面，点开就听的那条先落地，坏掉的文件腿拖不住它
+/// （调用方只 warn，不发第二条错）。
 ///
 /// 两个版本的文件名带上序号——Suno 给同一单两首曲子的是同一个标题，照原样发出去
 /// 群里会出现两个同名文件，谁是谁分不出来。
@@ -297,30 +302,30 @@ fn media_messages(clips: &[Clip], title: &str, mode: SendMode) -> Vec<MediaMessa
         } else {
             format!("{base}.mp3")
         };
-        let mut segments = Vec::new();
-        if !clip.image_url.trim().is_empty() {
-            segments.push(Media::Image {
-                url: clip.image_url.trim().to_string(),
-            });
-        }
-        if mode.file() {
-            segments.push(Media::File {
-                url: audio.to_string(),
-                name: name.clone(),
-            });
-        } else if mode.voice() {
-            // 只发语音时把语音放前半条，封面跟着一起走。
+        // 封面只挂在这一版的第一条上，两条都挂就是同一个封面进群两次。
+        let mut cover = (!clip.image_url.trim().is_empty()).then(|| Media::Image {
+            url: clip.image_url.trim().to_string(),
+        });
+        if mode.voice() {
+            let mut segments = Vec::new();
+            if let Some(cover) = cover.take() {
+                segments.push(cover);
+            }
             segments.push(Media::Audio {
                 url: audio.to_string(),
             });
+            messages.push(MediaMessage { segments });
         }
-        messages.push(MediaMessage { segments });
-        if mode == SendMode::Both {
-            messages.push(MediaMessage {
-                segments: vec![Media::Audio {
-                    url: audio.to_string(),
-                }],
+        if mode.file() {
+            let mut segments = Vec::new();
+            if let Some(cover) = cover {
+                segments.push(cover);
+            }
+            segments.push(Media::File {
+                url: audio.to_string(),
+                name,
             });
+            messages.push(MediaMessage { segments });
         }
     }
     messages
@@ -733,8 +738,27 @@ mod tests {
             &messages[1].segments[1],
             Media::File { name, .. } if name == "落叶 2.mp3"
         ));
-        // both：每版再补一条语音。
-        assert_eq!(media_messages(&clips, "落叶", SendMode::Both).len(), 4);
+        // both：每版先一条语音（封面跟着它走），再一条群文件。语音排在前面，
+        // 文件那条腿失败（有些群不让发群文件）拖不住它。
+        let both = media_messages(&clips, "落叶", SendMode::Both);
+        assert_eq!(both.len(), 4);
+        assert!(matches!(both[0].segments[0], Media::Image { .. }));
+        assert!(matches!(both[0].segments[1], Media::Audio { .. }));
+        assert!(matches!(
+            &both[1].segments[0],
+            Media::File { name, .. } if name == "落叶 1.mp3"
+        ));
+        assert!(matches!(both[2].segments[0], Media::Image { .. }));
+        assert!(matches!(both[2].segments[1], Media::Audio { .. }));
+        assert!(matches!(
+            &both[3].segments[0],
+            Media::File { name, .. } if name == "落叶 2.mp3"
+        ));
+        // 封面只挂一次，两条腿都挂就是同一个封面进群两遍。
+        assert!(
+            both.iter()
+                .all(|message| message.segments.len() == 1 || matches!(message.segments[0], Media::Image { .. }))
+        );
         // voice：不重复发文件。
         let voice = media_messages(&clips, "落叶", SendMode::Voice);
         assert_eq!(voice.len(), 2);

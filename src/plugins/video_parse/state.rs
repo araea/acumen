@@ -17,6 +17,12 @@ const STATE_FILE: &str = "state.json";
 const RETAIN_DAYS: i64 = 30;
 // 与 ai_news 的 `EXTRACTION_RETAIN_DAYS` 是同一个口径（引用驱动一律留 30 天，见 docs/INTERACTION.md 第三节）。
 
+/// 同一个人重复贴同一条稿件的判定窗口（秒）。
+///
+/// 手滑发两遍、编辑一下再发、从别处转回来，都落在这个窗口里；超过这个时间还贴，
+/// 当成「他又想要这条」，照旧回一条预览。
+pub const REPEAT_WINDOW_SECONDS: i64 = 600;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Preview {
     /// 会话标识：群聊是群号，私聊取用户号的负数
@@ -35,6 +41,9 @@ pub struct Preview {
     /// 已经取过片。取片开始时置位，取失败时由 [`release`] 复位。
     #[serde(default)]
     pub extracted: bool,
+    /// 贴这条链接的人。只用来认「同一个人又贴了一遍」，老记录缺这个字段时按 0 算。
+    #[serde(default)]
+    pub requester: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -122,6 +131,29 @@ pub async fn remember(preview: Preview) {
     .await
 }
 
+/// 同一个人短时间内又贴了同一条稿件，而那张预览还在等他开口取片。
+///
+/// 这种重复不该再回一条一模一样的预览——封面加正文是群里最占地方的那种消息，
+/// 手滑发两遍就刷两条实在没必要。判据收得紧，只吞「同一个人 + 同一条稿件 +
+/// 上一张还没取过 + 还在窗口内」这四条都成的；换个人贴、隔久了再贴、上一张已经
+/// 取过片，都照旧回新预览（那时他多半是真想要这条）。
+pub async fn repeated(target_id: i64, requester: i64, bvid: &str, now: i64) -> bool {
+    let bvid = bvid.to_string();
+    with_state(move |state| apply_repeat(state, target_id, requester, &bvid, now)).await
+}
+
+/// `repeated` 的纯逻辑部分，便于测试；不触碰全局状态与磁盘。
+fn apply_repeat(state: &State, target_id: i64, requester: i64, bvid: &str, now: i64) -> bool {
+    state.previews.iter().any(|seen| {
+        seen.target_id == target_id
+            && seen.requester == requester
+            && requester != 0
+            && seen.bvid == bvid
+            && !seen.extracted
+            && now - seen.created_ts <= REPEAT_WINDOW_SECONDS
+    })
+}
+
 /// 抢占一次取片：原子地判断这张预览能不能取，并把记录标成已取。
 ///
 /// 标在取片**开始**而不是结束时，是为了同一张预览被连着引用两次时只下一遍
@@ -180,7 +212,49 @@ mod tests {
             title: "测试稿件".into(),
             duration: 213,
             extracted: false,
+            requester: 7,
         }
+    }
+
+    #[test]
+    fn the_same_person_pasting_the_same_link_again_does_not_get_a_second_preview() {
+        let state = State {
+            previews: vec![preview("m1")],
+        };
+        // 同一个人、同一条稿件、还没取过、还在窗口内。
+        assert!(apply_repeat(&state, 42, 7, "BV1GJ411x7h7", 100));
+        assert!(apply_repeat(&state, 42, 7, "BV1GJ411x7h7", 100 + REPEAT_WINDOW_SECONDS));
+
+        // 换个人、换个群、换条稿件、隔久了，都照旧回新预览。
+        assert!(!apply_repeat(&state, 42, 8, "BV1GJ411x7h7", 100));
+        assert!(!apply_repeat(&state, 43, 7, "BV1GJ411x7h7", 100));
+        assert!(!apply_repeat(&state, 42, 7, "BV1other", 100));
+        assert!(
+            !apply_repeat(&state, 42, 7, "BV1GJ411x7h7", 100 + REPEAT_WINDOW_SECONDS + 1),
+            "过了窗口就该当成他又想要这条"
+        );
+    }
+
+    #[test]
+    fn a_taken_preview_does_not_block_the_next_one() {
+        let mut state = State {
+            previews: vec![preview("m1")],
+        };
+        state.previews[0].extracted = true;
+        assert!(
+            !apply_repeat(&state, 42, 7, "BV1GJ411x7h7", 100),
+            "上一张已经取过片，再贴就该给一张新的"
+        );
+    }
+
+    #[test]
+    fn a_record_without_a_requester_never_matches() {
+        let mut state = State {
+            previews: vec![preview("m1")],
+        };
+        // 老文件里的记录没有 `requester`，反序列化后是 0：不去猜是谁贴的。
+        state.previews[0].requester = 0;
+        assert!(!apply_repeat(&state, 42, 0, "BV1GJ411x7h7", 100));
     }
 
     #[test]
@@ -250,5 +324,7 @@ mod tests {
         )
         .unwrap();
         assert!(!legacy.previews[0].extracted);
+        // `requester` 同理：没有就按「不知道是谁」算。
+        assert_eq!(legacy.previews[0].requester, 0);
     }
 }

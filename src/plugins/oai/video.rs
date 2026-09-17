@@ -70,7 +70,7 @@ pub(crate) enum SendMode {
     File,
     /// 只发视频气泡：点开就播。
     Bubble,
-    /// 先发群文件，再补一条视频气泡：一个能存能转，一个点开就看。
+    /// 先发视频气泡（点开就播），再补一条群文件（能存能转）。
     Both,
 }
 
@@ -288,24 +288,28 @@ pub(super) async fn generate_reply(
 }
 
 /// 拍好的片子按发法发出去：文件名拿用户那句话来取，跟音乐房间同一个规矩。
+///
+/// 两条腿的顺序与降级同 `music.rs`：气泡在前、群文件在后。有些群不让普通成员发
+/// 群文件，那条腿会失败并在实现端重试到超预算（默认 2 次 / 45 秒）——排在后面的
+/// 坏一条腿不该把前面的气泡一起拖住，发不出去也只少一个文件（调用方只 warn）。
 fn media_messages(url: &str, caption: &str, mode: SendMode) -> Vec<MediaMessage> {
     let url = url.trim();
     if url.is_empty() {
         return Vec::new();
     }
     let mut messages = Vec::new();
+    if mode != SendMode::File {
+        messages.push(MediaMessage {
+            segments: vec![Media::Video {
+                url: url.to_string(),
+            }],
+        });
+    }
     if mode != SendMode::Bubble {
         messages.push(MediaMessage {
             segments: vec![Media::File {
                 url: url.to_string(),
                 name: format!("{}.mp4", super::utils::safe_file_name(caption)),
-            }],
-        });
-    }
-    if mode != SendMode::File {
-        messages.push(MediaMessage {
-            segments: vec![Media::Video {
-                url: url.to_string(),
             }],
         });
     }
@@ -582,15 +586,17 @@ mod tests {
     }
 
     #[test]
-    fn both_sends_the_file_first_then_the_bubble() {
+    fn both_sends_the_bubble_first_then_the_file() {
         let messages = media_messages("https://cdn/v.mp4", "一只橘猫坐在窗台上看雨", SendMode::Both);
         assert_eq!(messages.len(), 2);
+        // 点开就播的那条先发：文件那条腿在不让发群文件的群里会失败（实现端还会重试
+        // 到超预算），排在后面就拖不住它。
+        assert!(matches!(messages[0].segments[0], Media::Video { .. }));
         // 文件名拿用户那句话来取，跟音乐房间同一个规矩。
         assert!(matches!(
-            &messages[0].segments[0],
+            &messages[1].segments[0],
             Media::File { name, .. } if name == "一只橘猫坐在窗台上看雨.mp4"
         ));
-        assert!(matches!(messages[1].segments[0], Media::Video { .. }));
 
         assert_eq!(
             media_messages("https://cdn/v.mp4", "猫", SendMode::File).len(),
