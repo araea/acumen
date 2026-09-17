@@ -6,7 +6,11 @@
 //! - 群里出现一条能解析的视频链接，只回一条预览——封面加上标题、UP 主、时长、
 //!   播放量，一行提示说明怎么取片。这一步不下载任何视频；
 //! - 用户**引用那条预览**并回复「视频」这类词，才真的去取片，取完按 `send`
-//!   配的发法把成品发出去（默认群文件加视频气泡）。
+//!   配的发法把成品发出去（默认只发视频气泡）。
+//!
+//! 成品默认只发视频气泡，不发群文件：有些群不让普通成员发群文件，发文件那条腿必定
+//! 失败，实现端还会为它重试到超预算，把整条取片流程一起拖垮。要群文件的群自己把
+//! `send` 开成 `file` 或 `both`。
 //!
 //! 「引用 + 回复」这套隐式交互与 AI 资讯的「引用卡片回复序号」是同一个设计：
 //! 一级尽量轻，重的内容等用户开口。对应关系落在 [`state`]，取片细节见 [`bilibili`]。
@@ -67,7 +71,9 @@ pub struct Config {
     /// 想要的最高画质：80=1080P / 64=720P / 32=480P / 16=360P。
     /// 未登录时 B 站只放 360P—720P，想要更高要在 `cookie` 里填登录态。
     pub prefer_quality: u32,
-    /// 成品怎么发：both（群文件 + 视频气泡）/ file / bubble。
+    /// 成品怎么发：bubble（只发视频气泡，默认）/ file（只发群文件）/ both。
+    /// 默认只发气泡：有些群不让普通成员发群文件，那条腿会失败，实现端还会为它重试到
+    /// 超预算。要群文件的群再单独开。
     pub send: String,
     /// 一次取片的总预算（秒），含挑画质、下载与上传。
     pub timeout_seconds: u64,
@@ -86,7 +92,7 @@ impl Default for Config {
             hint: true,
             max_size_mb: 80,
             prefer_quality: 64,
-            send: "both".to_string(),
+            send: "bubble".to_string(),
             timeout_seconds: 300,
             ack_after_seconds: 20,
             cookie: String::new(),
@@ -500,19 +506,36 @@ async fn deliver(
         .to_string();
 
     let send = SendMode::parse(&config.send);
+    // 两条腿各自兜住：有些群不让普通成员发群文件，那一腿会失败，实现端还会为它重试到
+    // 超预算。`both` 时一条腿成了就算送到，别让另一条把它一起带走；只配一条腿时，
+    // 它自己的失败照旧往上报，用户那边能看到「没取到」。
+    let mut delivered = false;
+    let mut failure = None;
     if matches!(send, SendMode::File | SendMode::Both) {
         let file = Message::new().file(resource.clone(), Some(name.clone()));
-        send_msg(ctx, writer.clone(), group_id, Some(user_id), file)
-            .await
-            .map_err(failed)?;
+        match send_msg(ctx, writer.clone(), group_id, Some(user_id), file).await {
+            Ok(()) => delivered = true,
+            Err(error) => {
+                warn!(target: LOG_TARGET, "群文件没发出去（{}）：{}", name, error);
+                failure = Some(failed(error));
+            }
+        }
     }
     if matches!(send, SendMode::Bubble | SendMode::Both) {
         let bubble = Message::new().video(resource);
-        send_msg(ctx, writer.clone(), group_id, Some(user_id), bubble)
-            .await
-            .map_err(failed)?;
+        match send_msg(ctx, writer.clone(), group_id, Some(user_id), bubble).await {
+            Ok(()) => delivered = true,
+            Err(error) => {
+                warn!(target: LOG_TARGET, "视频气泡没发出去：{}", error);
+                failure = Some(failed(error));
+            }
+        }
     }
-    Ok(())
+    if delivered {
+        Ok(())
+    } else {
+        Err(failure.unwrap_or_else(|| anyhow!("成品没有发出去")))
+    }
 }
 
 /// 取片要下几十兆，群里等起来像是没反应。超过 `ack_after_seconds` 还没完，
@@ -729,6 +752,15 @@ mod tests {
         };
         let text = caption_text(&preview, 64, 25_847_808);
         assert_eq!(text, "测试稿件\n3:33 · 720P · 24.7 MB");
+    }
+
+    /// 默认只发视频气泡：有些群不让普通成员发群文件，那条腿必定失败，实现端还会为它
+    /// 重试到超预算，把整条取片流程一起拖垮。要群文件的群再单独开。
+    #[test]
+    fn the_take_goes_out_as_a_bubble_unless_the_group_asks_for_the_file() {
+        let send = Config::default().send;
+        assert_eq!(send, "bubble", "成品默认发法不该变：{send}");
+        assert!(matches!(SendMode::parse(&send), SendMode::Bubble));
     }
 
     #[test]

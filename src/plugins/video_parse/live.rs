@@ -114,7 +114,9 @@ async fn live_takes_the_video_into_the_sandbox_group() {
         duration: video.duration,
         extracted: false,
     };
-    let config = Config::default();
+    // 这条要验两条腿都到（正文 + 群文件 + 气泡）。线上默认只发气泡，这里显式开成 both。
+    let mut config = Config::default();
+    config.send = "both".to_string();
     let result = deliver(
         &ctx,
         &writer,
@@ -284,6 +286,9 @@ async fn post(ctx: &Context, writer: &LockedWriter, group: i64, content: &str) -
 }
 
 /// 把自检那一轮的画质压到 360P（`Config::default()` 挑的是 720P），返回自己的 QQ 号。
+///
+/// 这条用例验的是「@ 挡不住取片词」，成品两条腿都要到群里，所以发法也显式开成
+/// `both`——线上默认只发气泡，跟着线上走就只剩气泡那一条了。
 fn cheaper_take(ctx: &Context) -> String {
     let me = ctx.bot.login_user.get().id.clone();
     let mut config = ctx.config.write().unwrap();
@@ -292,6 +297,7 @@ fn cheaper_take(ctx: &Context) -> String {
     };
     value["prefer_quality"] = toml::Value::Integer(16);
     value["max_size_mb"] = toml::Value::Integer(20);
+    value["send"] = toml::Value::String("both".to_string());
     me
 }
 
