@@ -280,8 +280,9 @@ fn summary(generated: &Generated, title: &str, send: SendMode, show_send: bool) 
     text
 }
 
-/// 每个版本两条消息：`both` 时先一条语音气泡（带封面）、再一条群文件；只发一种就
-/// 只出一条（封面跟着走）。
+/// 每个版本两条消息：`both` 时先一条语音气泡、再一条群文件；只发一种就只出一条。
+/// 封面跟着语音那条走，到了实现端会按「顺媒体单独成条」拆开——群里先看到封面那张图，
+/// 再是语音（见 satori-qq 的 `docs/SATORI_SUPPORT.md`）。
 ///
 /// 顺序是刻意的：有些群不让普通成员发群文件，那条腿会失败并在实现端重试到超预算
 /// （默认 2 次 / 45 秒）。语音排在前面，点开就听的那条先落地，坏掉的文件腿拖不住它
@@ -738,8 +739,8 @@ mod tests {
             &messages[1].segments[1],
             Media::File { name, .. } if name == "落叶 2.mp3"
         ));
-        // both：每版先一条语音（封面跟着它走），再一条群文件。语音排在前面，
-        // 文件那条腿失败（有些群不让发群文件）拖不住它。
+        // both：每版先一条语音（封面跟着它走，发出时被实现端拆成封面 + 语音两条），
+        // 再一条群文件。语音排在前面，文件那条腿失败（有些群不让发群文件）拖不住它。
         let both = media_messages(&clips, "落叶", SendMode::Both);
         assert_eq!(both.len(), 4);
         assert!(matches!(both[0].segments[0], Media::Image { .. }));

@@ -636,8 +636,8 @@ async fn chat(
             //
             // 播放用的那条（语音 / 视频气泡）由 `media_messages` 排在同文件前面：
             // 有些群不让普通成员发群文件，那条腿失败时不该把能播的那条一起拖住。
-            // 这里**不留引用**：正文卡片已经把用户那句话引住了，成品再各引一次只是
-            // 把一单拆成四条带引用的气泡；语音气泡尤其不该跟引用绑在一起。
+            // 这里**不留引用**：正文卡片已经把用户那句话引住了；顺媒体也不接受引用
+            // （语音、视频、群文件必须单独成条，带了别的段落实现端就得替我们拆开）。
             for message in reply_data.media {
                 let mut msg = Message::new();
                 for segment in message.segments {
@@ -758,7 +758,11 @@ pub(super) enum Media {
     File { url: String, name: String },
 }
 
-/// 一条要单独发出去的媒体消息：封面和音频可以拼在同一条里，省掉一次发送。
+/// 一条要单独发出去的媒体消息（封面 + 音频这种拼法各段一起交给实现端）。
+///
+/// 顺媒体（语音、视频、群文件）在 QQ 里必须单独成条，与图片、引用同条时实现端会
+/// 按原顺序拆开发（见 satori-qq 的 `docs/SATORI_SUPPORT.md`）——所以「封面 + 语音」
+/// 到了群里是两条：封面那张图，再是语音。
 pub(super) struct MediaMessage {
     pub(super) segments: Vec<Media>,
 }

@@ -205,9 +205,9 @@ async fn handle_to_media(
 
 /// 转链路的成品：转视频发视频气泡，其余转成图片，两者都引用用户那条指令。
 ///
-/// **视频那条不带引用**：同一条消息里放「引用 + 视频」时 QQ 显示不出那段视频，
-/// 群里只看到一个空气泡（2026-09-17 实测，与视频解析同一条成因）。图片没有这个
-/// 限制，照旧引用。
+/// **视频那条不带引用**：语音、视频、群文件在 QQ 里是「顺媒体」，只能单独成条——带引用
+/// 的话实现端会把它们拆成两条发（见 satori-qq 的 `docs/SATORI_SUPPORT.md`），而这里要的
+/// 就是一条视频。图片没有这个限制，照旧引用。
 fn deliver_message(request_id: i64, url: String, is_video: bool) -> Message {
     if is_video {
         Message::new().video(url)

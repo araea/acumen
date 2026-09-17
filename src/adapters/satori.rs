@@ -829,6 +829,9 @@ where
     } else {
         return Ok(Vec::new());
     };
+    // 带文件/视频/语音的消息由实现端拆开发（顺媒体在 QQ 里必须单独成条，同条的
+    // 引用、@、文字会把它顶成空气泡）。这里原样交给它：一次调用可能真发出几条，
+    // 回执数组里就是多个 ID。见 satori-qq 的 `docs/SATORI_SUPPORT.md`。
     let params = simd_json::serde::to_owned_value(json!({
         "message_type": message_type,
         "group_id": group_id,
