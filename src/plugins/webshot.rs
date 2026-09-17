@@ -84,7 +84,7 @@ const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
 ///
 /// B 站的**稿件页**（`/video/BV…`）本来也能渲染，但它现在不问这里了：链接准入先经
 /// [`crate::plugins::video_parse::is_video_link`]，那类链接直接跳过截图，改由视频解析
-/// 插件回一条预览。
+/// 插件就地取原片。
 const WALLED_DOMAINS: &[&str] = &[
     // 登录墙：没有登录态只能看到登录表单或「打开App」引导
     "douyin.com",
@@ -138,7 +138,7 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
     }
     let host = url.host().ok_or_else(|| "链接缺少主机名".to_string())?;
 
-    // 视频站的链接交给 video_parse：那边先回一条预览，用户引用预览再开口取片。
+    // 视频站的链接交给 video_parse：那边就地取原片发进群。
     // 这里跳过不截——稿件页要等播放器起画面，截出来又慢又没什么有效信息。
     // 判据与那边共用一份，两处不会各截一次又取一次。
     if crate::plugins::video_parse::is_video_link(raw) {
@@ -634,8 +634,8 @@ mod tests {
         assert!(check_url("https://v.douyin.com/c9EJkQ5hNz0/", &relaxed).await.is_ok());
     }
 
-    /// 视频站的稿件链接改由 video_parse 接：预览 + 引用取片。这里必须跳过，
-    /// 否则同一条链接既回一条预览又被截一张图。
+    /// 视频站的稿件链接改由 video_parse 接：那边就地取原片。这里必须跳过，
+    /// 否则同一条链接既取一遍片又被截一张图。
     #[tokio::test]
     async fn video_links_are_left_to_the_video_parser() {
         for raw in [

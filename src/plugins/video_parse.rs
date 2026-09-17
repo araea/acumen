@@ -1,21 +1,17 @@
-//! 视频站链接：先回一条预览，引用预览再开口时才把原片取进群。
+//! 视频站链接：群里出现一条能解析的链接，就地把原片取进群。
 //!
 //! 视频站的链接不适合交给截图：抖音那类本来就只有登录墙，B 站这类要等播放器起
-//! 画面，截出来又慢又没什么信息。所以这些链接改由本插件接：
+//! 画面，截出来又慢又没什么信息。所以这些链接改由本插件接，一步到底：
+//! 链接进来、片子出去，不先回预览，不等引用，也没有要用户记住的指令。
 //!
-//! - 群里出现一条能解析的视频链接，只回一条预览——封面加上标题、UP 主、时长、
-//!   播放量，一行提示说明怎么取片。这一步不下载任何视频；
-//! - 用户**引用那条预览**并回复「视频」这类词，才真的去取片，取完按 `send`
-//!   配的发法把成品发出去（默认只发视频气泡）。
+//! 触发面覆盖消息里的三种形态，判据都是「点开它会去哪」：
 //!
-//! 成品怎么发由 `send` 定（默认只发视频气泡）。要群文件的群开 `both` 也是安全的：
-//! 先发气泡再发文件，两条腿各自兜错，文件那条腿失败（有些群不让普通成员发群文件）
-//! 只是少一个文件，不会再让整条取片流程失败——见 [`deliver`]。
+//! - 正文里的链接（[`crate::command::message_links`] 认得的都算）；
+//! - QQ 的小程序卡与分享卡——链接在那段 `json` 载荷里，正文是空的。
 //!
-//! 「引用 + 回复」这套隐式交互与 AI 资讯的「引用卡片回复序号」是同一个设计：
-//! 一级尽量轻，重的内容等用户开口。对应关系落在 [`state`]，取片细节见 [`bilibili`]。
-//! 一级也做了防刷屏：同一个人短时间内重贴同一条稿件，上面那张预览还没取片时
-//! 不再回第二条（[`state::repeated`]）。
+//! 说出口的话只有两句，且都只在必要时出现：取片慢（超过 `ack_after_seconds`）
+//! 补一句 ⏳，取不到回一句 ❌。成品自己就是那条消息，不再另发一条正文。
+//! 同一个人在同一会话里十分钟内重贴同一条不会下第二遍（[`state`]）。
 //!
 //! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
 //! 截图那边直接跳过，两处不会各截一次又取一次。
@@ -26,12 +22,12 @@ mod state;
 #[cfg(test)]
 mod live;
 
-use crate::adapters::satori::{LockedWriter, send_msg, send_msg_id};
-use crate::command::{message_links, message_reply_id};
+use crate::adapters::satori::{LockedWriter, send_msg};
+use crate::command::message_links;
 use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::oai::utils::{safe_file_name, truncate_str};
+use crate::plugins::oai::utils::safe_file_name;
 use crate::plugins::oai::video::SendMode;
 use crate::plugins::{ChannelConfig, PluginError, get_config_or_default, get_data_dir};
 use anyhow::{Result, anyhow};
@@ -40,8 +36,10 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use tokio::time;
 use toml::Value;
 use url::Url;
@@ -51,14 +49,13 @@ const LOG_TARGET: &str = "Plugin/VideoParse";
 /// 认稿件与取流的接口都很轻，10 秒足够。
 const API_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 引用预览后可以回复的词。生效的前提是**先引用了本插件发的预览**，
-/// 所以列宽一点不怕误伤普通消息。
-const EXTRACT_WORDS: &[&str] = &[
-    "视频", "原片", "原视频", "下载", "下载视频", "发视频", "取片", "文件", "video", "mp4",
-];
+/// 同时进行的取片上限。任意群友贴一条链接就能让我们下几十兆，没有闸门时
+/// 一个人连贴五条链接就是五份并发下载，手机的网络与内存都吃不下。
+/// 等闸门的时间走 `ack_after_seconds` 那条提示，不会静默排队。
+static TAKE_GATE: Semaphore = Semaphore::const_new(2);
 
-const ALREADY_MESSAGE: &str = "这条的片子已经取过了";
-const HINT_LINE: &str = "引用本条并回复「视频」可取原片";
+/// 取不到片时那句回执的前缀。
+const FAILED_PREFIX: &str = "❌ 没取到：";
 
 // ================= Config =================
 
@@ -66,8 +63,6 @@ const HINT_LINE: &str = "引用本条并回复「视频」可取原片";
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
-    /// 预览里那行「引用本条并回复…」。关掉就只发封面与信息。
-    pub hint: bool,
     /// 取片时最多下载多大（MB）。按它挑画质；最小一档也超了就只回一句说明。
     pub max_size_mb: u64,
     /// 想要的最高画质：80=1080P / 64=720P / 32=480P / 16=360P。
@@ -79,7 +74,7 @@ pub struct Config {
     pub send: String,
     /// 一次取片的总预算（秒），含挑画质、下载与上传。
     pub timeout_seconds: u64,
-    /// 超过这么久还没取完，就先回一句「正在取片」。0 表示什么都不说。
+    /// 取这么久还没完就先回一句「正在取片」。0 表示什么都不说。
     pub ack_after_seconds: u64,
     /// B 站登录 Cookie，留空即匿名。
     pub cookie: String,
@@ -91,7 +86,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            hint: true,
             max_size_mb: 80,
             prefer_quality: 64,
             send: "bubble".to_string(),
@@ -112,7 +106,7 @@ pub fn default_config() -> Value {
 /// 链接是否属于本插件负责的视频站。
 ///
 /// `webshot` 也用这个判据：两边必须认同一份名单，否则同一条链接会被截一次图、
-/// 又回一次预览。
+/// 又取一遍片。
 pub(crate) fn is_video_link(raw: &str) -> bool {
     let Ok(url) = Url::parse(raw) else {
         return false;
@@ -139,30 +133,6 @@ async fn resolve_link(raw: &str) -> Result<Url> {
         .await?;
     // 实现端不一定给短链配了跳转；落回原地址时交给下游报错。
     Ok(response.url().clone())
-}
-
-/// 引用预览后回复的这句话，是不是在要片。
-///
-/// 不能拿正文整段比：QQ 的引用回复会自动带上 @，而平台把 @ 的显示名也写进了正文，
-/// 用户只打了「视频」，拿到的却是 `@A宝好腻害！ 视频`，整段一比就落空（线上记录
-/// id 113798 就是这样，群里的表现是机器人没反应）。候选由 [`command::spoken_bodies`]
-/// 给，这里挑认得出的那一截。
-fn matches_extract_request(text: &str) -> bool {
-    crate::command::spoken_bodies(text)
-        .into_iter()
-        .any(is_extract_word)
-}
-
-/// 这一截正文是不是取片词：去掉首尾空白与句末标点之后整段相等。
-fn is_extract_word(text: &str) -> bool {
-    let cleaned = text
-        .trim()
-        .trim_end_matches(|c: char| "。.!！~～?？,，、".contains(c))
-        .trim();
-    if cleaned.is_empty() {
-        return false;
-    }
-    EXTRACT_WORDS.contains(&cleaned.to_ascii_lowercase().as_str())
 }
 
 // ================= Main Handler =================
@@ -192,64 +162,29 @@ pub fn handle(
         if user_id == self_id && !msg.is_manual_self() {
             return Ok(Some(ctx));
         }
-        let target = target_key(group_id, user_id);
 
-        // 一、引用预览再回复：取片那一步。裸引用的消息不会被拦下——
-        // 只有引用的是本插件发过的预览、回复的又正好是那几个词，才动手。
-        if matches_extract_request(msg.text())
-            && let Some(reply_id) = message_reply_id(&ctx)
-        {
-            match state::claim(target, &reply_id).await {
-                state::Claim::Missing => {}
-                state::Claim::AlreadyExtracted => {
-                    let body = Message::new().reply(msg.message_id()).text(ALREADY_MESSAGE);
-                    send_msg(&ctx, writer, group_id, Some(user_id), body).await?;
-                    return Ok(None);
-                }
-                state::Claim::Ready(preview) => {
-                    if let Err(error) = extract(
-                        &ctx,
-                        &writer,
-                        &config,
-                        &preview,
-                        group_id,
-                        user_id,
-                        msg.message_id(),
-                    )
-                    .await
-                    {
-                        // 失败要把标记放回去，否则这条预览再点一次会被判成「已经取过」。
-                        state::release(target, &reply_id).await;
-                        warn!(
-                            target: LOG_TARGET,
-                            "取片失败（{}）：{}", preview.bvid, error
-                        );
-                        let body = Message::new()
-                            .reply(msg.message_id())
-                            .text(format!("没取到：{}", error));
-                        send_msg(&ctx, writer, group_id, Some(user_id), body).await?;
-                    }
-                    return Ok(None);
-                }
-            }
-        }
-
-        // 二、群里出现视频站链接：只回一条预览，片子等用户开口。
         // 链接不一定写在正文里：QQ 的小程序卡与分享卡是一段落在 `json` 元素里的
         // 载荷，落地地址要从里面取（见 `message_links`）。两种来源都收，取第一个
         // 认得的稿件页。
         let Some(candidate) = take_candidate(&ctx) else {
             return Ok(Some(ctx));
         };
-        match preview(&ctx, &writer, &config, &candidate, group_id, user_id, msg.message_id()).await
+        let request_id = msg.message_id();
+
+        if let Err(error) = take(
+            &ctx, &writer, &config, &candidate, group_id, user_id, request_id,
+        )
+        .await
         {
-            Ok(Some(record)) => {
-                info!(target: LOG_TARGET, "已回预览：{}（{}）", record.title, record.bvid);
+            warn!(target: LOG_TARGET, "取片失败（{}）：{}", candidate, error);
+            let body = Message::new()
+                .reply(request_id)
+                .text(format!("{FAILED_PREFIX}{error}"));
+            if let Err(error) = send_msg(&ctx, writer, group_id, Some(user_id), body).await {
+                warn!(target: LOG_TARGET, "取片失败的回执没发出去：{}", error);
             }
-            // 同一个人刚贴过同一条、那张预览还在等他开口：上面已经有了，不再刷一条。
-            Ok(None) => info!(target: LOG_TARGET, "同一条链接刚由同一个人贴过，不再回预览"),
-            Err(error) => warn!(target: LOG_TARGET, "预览失败（{}）：{}", candidate, error),
         }
+        // 视频站的链接归本插件，后面几个链接类插件（截图）不必再看一眼。
         Ok(None)
     })
 }
@@ -259,7 +194,9 @@ pub fn handle(
 /// [`message_links`] 把卡片里的落地地址排在正文前面，这里逐个过一遍
 /// [`is_video_link`]——卡片载荷里还混着封面与图标的地址，第一个能用的才作数。
 fn take_candidate(ctx: &Context) -> Option<String> {
-    message_links(ctx).into_iter().find(|url| is_video_link(url))
+    message_links(ctx)
+        .into_iter()
+        .find(|url| is_video_link(url))
 }
 
 /// 会话标识：群聊用群号，私聊取用户号的负数。
@@ -273,14 +210,10 @@ fn failed(error: Box<dyn std::error::Error + Send + Sync>) -> anyhow::Error {
     anyhow!("{error}")
 }
 
-// ================= 预览 =================
+// ================= 取片 =================
 
-/// 拉一次稿件信息，回一条预览，并把「预览消息 → 稿件」记下来。
-///
-/// 记不下对应关系时返回错误：一张引用不回来的预览比不发更糟——用户会以为
-/// 取片入口就在那儿。返回 `None` 表示这一条刻意没发（同一个人刚贴过同一条，
-/// 见 [`state::repeated`]），不是失败。
-async fn preview(
+/// 一条链接的完整处理：认稿件、拉信息、占名额、下载、发出去。
+async fn take(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
@@ -288,113 +221,30 @@ async fn preview(
     group_id: Option<i64>,
     user_id: i64,
     request_id: i64,
-) -> Result<Option<state::Preview>> {
+) -> Result<()> {
     let url = resolve_link(raw_url).await?;
     let reference = bilibili::reference(&url).ok_or_else(|| anyhow!("链接没落到稿件页"))?;
     let video = bilibili::info(&reference, &config.cookie, API_TIMEOUT).await?;
+
+    // 同一个人在同一个会话里刚贴过同一条：片子已经在群里，或者正在取，不必再来一遍。
+    // 判在拉完稿件信息之后，是因为判据要用上游认出来的 `bvid`——同一条链接
+    // 一次是短链、一次是长链时，光比地址认不出来。
     let target = target_key(group_id, user_id);
-
-    // 同一个人在同一个会话里刚贴过同一条，而那张预览还没取片：不再回一条一样的。
-    // 只在拉完稿件信息之后判，是因为判据要用上游认出来的 `bvid`——同一条链接
-    // 可能一次是短链、一次是长链，光比地址认不出来。
-    if state::repeated(target, user_id, &video.bvid, chrono::Utc::now().timestamp()).await {
-        return Ok(None);
+    let now = chrono::Utc::now().timestamp();
+    if state::claim(target, user_id, &video.bvid, now).await == state::Claim::Recent {
+        info!(target: LOG_TARGET, "同一条刚由同一个人贴过，不再取第二遍：{}", video.bvid);
+        return Ok(());
     }
 
-    let mut message = Message::new().reply(request_id).text(preview_text(&video, config));
-    if let Some(cover) = &video.cover {
-        message = message.image(cover.clone());
+    let result = extract(ctx, writer, config, &video, group_id, user_id, request_id).await;
+    if result.is_err() {
+        // 没取到就把名额放回去：他重贴一次还能再来。
+        state::release(target, user_id, &video.bvid).await;
     }
-
-    let Some(message_id) =
-        send_msg_id(ctx, writer.clone(), group_id, Some(user_id), message)
-        .await
-        .map_err(failed)?
-    else {
-        return Err(anyhow!("实现端没有回消息 ID，引用取片对不上"));
-    };
-
-    let record = state::Preview {
-        target_id: target,
-        message_id,
-        created_ts: chrono::Utc::now().timestamp(),
-        url: url.to_string(),
-        bvid: video.bvid,
-        cid: video.cid,
-        page: video.page,
-        title: video.title,
-        duration: video.duration,
-        extracted: false,
-        requester: user_id,
-    };
-    state::remember(record.clone()).await;
-    Ok(Some(record))
+    result
 }
 
-/// 预览正文：标题一行，UP 主 / 时长 / 播放量一行，再一行怎么取片。
-fn preview_text(video: &bilibili::Video, config: &Config) -> String {
-    let mut title = one_line(&video.title);
-    if video.pages > 1 {
-        title.push_str(&format!("（P{}/{}）", video.page, video.pages));
-    }
-    let mut text = truncate_str(&title, 64);
-
-    let mut meta = vec![
-        one_line(&video.owner),
-        duration_text(video.duration),
-        format!("播放 {}", views_text(video.views)),
-    ];
-    meta.retain(|part| !part.trim().is_empty());
-    text.push('\n');
-    text.push_str(&meta.join(" · "));
-
-    if config.hint {
-        text.push('\n');
-        text.push_str(HINT_LINE);
-    }
-    text
-}
-
-/// 取片成品的正文：片名与这一单的实际参数。
-fn caption_text(preview: &state::Preview, quality: u32, size: u64) -> String {
-    format!(
-        "{}\n{} · {} · {:.1} MB",
-        truncate_str(&one_line(&preview.title), 64),
-        duration_text(preview.duration),
-        bilibili::quality_label(quality),
-        size as f64 / 1_048_576.0,
-    )
-}
-
-/// 秒数写成 `3:33` / `1:02:03`。
-fn duration_text(seconds: u64) -> String {
-    let (hours, minutes, seconds) = (seconds / 3600, seconds % 3600 / 60, seconds % 60);
-    if hours > 0 {
-        format!("{hours}:{minutes:02}:{seconds:02}")
-    } else {
-        format!("{minutes}:{seconds:02}")
-    }
-}
-
-/// 播放量按中文习惯写成亿/万。
-fn views_text(views: u64) -> String {
-    let value = views as f64;
-    if value >= 100_000_000.0 {
-        format!("{:.1}亿", value / 100_000_000.0)
-    } else if value >= 10_000.0 {
-        format!("{:.1}万", value / 10_000.0)
-    } else {
-        views.to_string()
-    }
-}
-
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-// ================= 取片 =================
-
-/// 下载到本地、发进群，最后把本地那份删掉。
+/// 挑画质、下载到本地、发进群，最后把本地那份删掉。
 ///
 /// 顺序是刻意的：先把分片落到 `data/video_parse/` 下的临时文件，再一次性
 /// `upload.create` 给实现端。B 站的分片 CDN 查 Referer，QQ 进程自己去取会 403；
@@ -403,7 +253,7 @@ async fn extract(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    preview: &state::Preview,
+    video: &bilibili::Video,
     group_id: Option<i64>,
     user_id: i64,
     request_id: i64,
@@ -411,8 +261,8 @@ async fn extract(
     let cap = config.max_size_mb.clamp(1, 2048) * 1_048_576;
     let budget = Duration::from_secs(config.timeout_seconds.clamp(30, 1800));
     let streams = bilibili::plan(
-        &preview.bvid,
-        preview.cid,
+        &video.bvid,
+        video.cid,
         config.prefer_quality,
         cap,
         &config.cookie,
@@ -422,25 +272,28 @@ async fn extract(
 
     let dir = get_data_dir("video_parse").await.map_err(failed)?;
     discard_stale_parts(&dir).await;
-    let path = dir.join(format!("{}.part", safe_file_name(&preview.bvid)));
+    let path = dir.join(format!("{}.part", safe_file_name(&video.bvid)));
+
+    // 成品进了群没有。取片提示只在「群里还什么都看不到」时发（见 [`with_ack`]）。
+    let delivered = AtomicBool::new(false);
 
     let work = async {
+        // 闸门在下载预算之外：排在前头那单的时间里不算这一单的超时。
+        let _permit = TAKE_GATE
+            .acquire()
+            .await
+            .map_err(|_| anyhow!("取片闸门不可用"))?;
         let size = download(&streams.urls, &path, cap, budget).await?;
-        deliver(
-            ctx,
-            writer,
-            config,
-            preview,
-            &streams,
-            size,
-            &path,
-            group_id,
-            user_id,
-            request_id,
+        send(
+            ctx, writer, config, video, &streams, size, &path, group_id, user_id, request_id,
+            &delivered,
         )
         .await
     };
-    let result = with_ack(ctx, writer, config, group_id, user_id, request_id, work).await;
+    let result = with_ack(
+        ctx, writer, config, group_id, user_id, request_id, &delivered, work,
+    )
+    .await;
 
     // 成品已经发出去（或者发失败），本地这份就没有用了。
     let _ = tokio::fs::remove_file(&path).await;
@@ -486,28 +339,25 @@ async fn download(urls: &[String], path: &Path, cap: u64, budget: Duration) -> R
     }
 }
 
-/// 上限与画质挑完才动手，这里只负责把片子送出去。
+/// 上传一份、发出去。
+///
+/// 视频气泡与群文件共用同一次上传。一条成品只有成品本身，不再另发一条正文：
+/// 用户在群里等的是这条片子，不是关于它的说明。
 #[allow(clippy::too_many_arguments)]
-async fn deliver(
+async fn send(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    preview: &state::Preview,
+    video: &bilibili::Video,
     streams: &bilibili::Streams,
     size: u64,
     path: &Path,
     group_id: Option<i64>,
     user_id: i64,
     request_id: i64,
+    delivered: &AtomicBool,
 ) -> Result<()> {
-    let caption = caption_text(preview, streams.quality, size);
-    let body = Message::new().reply(request_id).text(caption);
-    send_msg(ctx, writer.clone(), group_id, Some(user_id), body)
-        .await
-        .map_err(failed)?;
-
-    // 上传一次，群文件与视频气泡共用同一份资源：一次取片只往实现端送一遍。
-    let name = format!("{}.mp4", safe_file_name(&preview.title));
+    let name = format!("{}.mp4", safe_file_name(&video.title));
     let bytes = tokio::fs::read(path).await?;
     let uploaded = writer
         .upload(ctx, bytes, &name, "video/mp4")
@@ -519,6 +369,7 @@ async fn deliver(
         .ok_or_else(|| anyhow!("上传没有返回资源"))?
         .to_string();
 
+    // 成品引用用户贴的那条消息：群里同时有好几条链接时，能看出这个片子是哪来的。
     let send = SendMode::parse(&config.send);
     // 先发能点开就播的那条（视频气泡），再补群文件。
     //
@@ -526,12 +377,15 @@ async fn deliver(
     // 45 秒），而有些群不让普通成员发群文件——文件那条腿注定失败，不该让它挡着气泡；
     // ② 两条腿各自兜错，`both` 时一条成了就算送到（另一条只留一行 warn），只配一条时
     // 它自己的失败照旧往上报，用户那边能看到「没取到」。
-    let mut delivered = false;
+    let mut sent = false;
     let mut failure = None;
     if matches!(send, SendMode::Bubble | SendMode::Both) {
-        let bubble = Message::new().video(resource.clone());
+        let bubble = Message::new().reply(request_id).video(resource.clone());
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), bubble).await {
-            Ok(()) => delivered = true,
+            Ok(()) => {
+                sent = true;
+                delivered.store(true, Ordering::Relaxed);
+            }
             Err(error) => {
                 warn!(target: LOG_TARGET, "视频气泡没发出去：{}", error);
                 failure = Some(failed(error));
@@ -539,24 +393,43 @@ async fn deliver(
         }
     }
     if matches!(send, SendMode::File | SendMode::Both) {
-        let file = Message::new().file(resource, Some(name.clone()));
+        let file = Message::new()
+            .reply(request_id)
+            .file(resource, Some(name.clone()));
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), file).await {
-            Ok(()) => delivered = true,
+            Ok(()) => {
+                sent = true;
+                delivered.store(true, Ordering::Relaxed);
+            }
             Err(error) => {
                 warn!(target: LOG_TARGET, "群文件没发出去（{}）：{}", name, error);
                 failure = Some(failed(error));
             }
         }
     }
-    if delivered {
-        Ok(())
-    } else {
-        Err(failure.unwrap_or_else(|| anyhow!("成品没有发出去")))
+    if !sent {
+        return Err(failure.unwrap_or_else(|| anyhow!("成品没有发出去")));
     }
+
+    info!(
+        target: LOG_TARGET,
+        "已取片：{}（{} · P{}/{} · {} · {:.1} MB）",
+        video.title,
+        video.bvid,
+        video.page,
+        video.pages,
+        bilibili::quality_label(streams.quality),
+        size as f64 / 1_048_576.0,
+    );
+    Ok(())
 }
 
 /// 取片要下几十兆，群里等起来像是没反应。超过 `ack_after_seconds` 还没完，
 /// 就先回一句说明；配 0 就什么都不说。
+///
+/// 发之前看一眼 `delivered`：成品已经进群之后再补一句「正在取片」就是一条过时的
+/// 状态（`both` 那条路上，气泡发完、群文件还在传时正好会走到这里）。
+#[allow(clippy::too_many_arguments)]
 async fn with_ack<F>(
     ctx: &Context,
     writer: &LockedWriter,
@@ -564,6 +437,7 @@ async fn with_ack<F>(
     group_id: Option<i64>,
     user_id: i64,
     request_id: i64,
+    delivered: &AtomicBool,
     work: F,
 ) -> Result<()>
 where
@@ -576,9 +450,11 @@ where
     tokio::select! {
         result = &mut work => result,
         _ = time::sleep(Duration::from_secs(config.ack_after_seconds)) => {
-            let body = Message::new().reply(request_id).text("正在取片…");
-            if let Err(error) = send_msg(ctx, writer.clone(), group_id, Some(user_id), body).await {
-                warn!(target: LOG_TARGET, "取片提示发送失败: {}", error);
+            if !delivered.load(Ordering::Relaxed) {
+                let body = Message::new().reply(request_id).text("⏳ 正在取片…");
+                if let Err(error) = send_msg(ctx, writer.clone(), group_id, Some(user_id), body).await {
+                    warn!(target: LOG_TARGET, "取片提示发送失败: {}", error);
+                }
             }
             work.await
         }
@@ -628,23 +504,8 @@ mod tests {
     use std::sync::{Arc, RwLock};
     use tokio::sync::Mutex as AsyncMutex;
 
-    fn config() -> Config {
-        Config::default()
-    }
-
-    fn video() -> bilibili::Video {
-        bilibili::Video {
-            bvid: "BV1GJ411x7h7".into(),
-            cid: 137649199,
-            page: 1,
-            pages: 1,
-            title: "【官方 MV】Never Gonna Give You Up - Rick Astley".into(),
-            owner: "索尼音乐中国".into(),
-            duration: 213,
-            cover: Some("https://i1.hdslb.com/bfs/archive/a.jpg".into()),
-            views: 105_703_453,
-        }
-    }
+    const SAMPLE: &str = "https://www.bilibili.com/video/BV1GJ411x7h7";
+    const GROUP: i64 = 1000;
 
     #[test]
     fn only_the_video_pages_we_can_parse_are_taken_over() {
@@ -670,108 +531,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn extract_words_are_matched_exactly() {
-        for text in ["视频", " 原片 ", "下载视频。", "VIDEO", "mp4", "文件！"] {
-            assert!(matches_extract_request(text), "{text} 应该算取片请求");
-        }
-        for text in ["", "这个视频不错", "视频吗", "下载了", "转发"] {
-            assert!(!matches_extract_request(text), "{text} 不该算取片请求");
-        }
-    }
-
-    /// 引用回复会被 QQ 自动补一个 @，平台又把这个 @ 的显示名写进正文，于是用户打的
-    /// 那句「视频」拼出来是「@A宝好腻害！ 视频」。线上的记录 id 113798 就是这个形状，
-    /// 当时的表现是机器人没有反应。
-    #[test]
-    fn the_at_the_platform_adds_to_a_quoted_reply_does_not_hide_the_word() {
-        for text in [
-            // 真机上那条原样的正文。
-            "@A宝好腻害！ 视频",
-            "@A宝好腻害！ 原片。",
-            "@A宝好腻害！ 下载",
-            // 实现端没给显示名时，留下的就是干净的一句。
-            "视频",
-            // 昵称里带空格：名字切成了好几段，还得往后挑。
-            "@对吧 A 宝最可爱啦～ 文件！",
-            // 两个人一起 @。
-            "@小黑 @小白 取片",
-        ] {
-            assert!(matches_extract_request(text), "{text} 应该算取片请求");
-        }
-        for text in [
-            // @ 之后不是取片词。
-            "@A宝好腻害！ 这个视频不错",
-            "@A宝好腻害！ 谢谢",
-            // 光 @ 了人，没别的话。
-            "@A宝好腻害！",
-            "@",
-        ] {
-            assert!(!matches_extract_request(text), "{text} 不该算取片请求");
-        }
-    }
-
-    #[test]
-    fn the_preview_names_the_video_and_how_to_get_it() {
-        let text = preview_text(&video(), &config());
-        assert!(text.starts_with("【官方 MV】Never Gonna Give You Up - Rick Astley\n"));
-        assert!(text.contains("索尼音乐中国 · 3:33 · 播放 1.1亿"));
-        assert!(text.ends_with(HINT_LINE));
-
-        let quiet = preview_text(&video(), &Config { hint: false, ..config() });
-        assert!(!quiet.contains(HINT_LINE));
-    }
-
-    #[test]
-    fn multi_part_videos_say_which_page() {
-        let mut video = video();
-        video.pages = 4;
-        video.page = 3;
-        assert!(preview_text(&video, &config()).contains("（P3/4）"));
-    }
-
-    /// 一个字的标题、没有 UP 主、零播放量都不该在预览里留下空行或者 ` · `。
-    #[test]
-    fn missing_fields_do_not_leave_holes() {
-        let mut video = video();
-        video.owner = String::new();
-        video.views = 0;
-        let text = preview_text(&video, &config());
-        assert!(text.contains("\n3:33 · 播放 0\n"));
-        assert!(!text.contains(" ·  · "));
-    }
-
-    #[test]
-    fn durations_and_views_read_the_way_the_group_writes_them() {
-        assert_eq!(duration_text(213), "3:33");
-        assert_eq!(duration_text(3723), "1:02:03");
-        assert_eq!(duration_text(59), "0:59");
-        assert_eq!(views_text(0), "0");
-        assert_eq!(views_text(9999), "9999");
-        assert_eq!(views_text(10_000), "1.0万");
-        assert_eq!(views_text(105_703_453), "1.1亿");
-        assert_eq!(views_text(30_000), "3.0万");
-    }
-
-    #[test]
-    fn the_caption_says_what_this_take_cost() {
-        let preview = state::Preview {
-            target_id: 1,
-            message_id: "m1".into(),
-            created_ts: 0,
-            url: "https://b23.tv/abc".into(),
-            bvid: "BV1GJ411x7h7".into(),
-            cid: 137649199,
-            page: 1,
-            title: "测试稿件".into(),
-            duration: 213,
-            extracted: true,
-            requester: 1,
-        };
-        let text = caption_text(&preview, 64, 25_847_808);
-        assert_eq!(text, "测试稿件\n3:33 · 720P · 24.7 MB");
-    }
-
     /// 默认只发视频气泡：有些群不让普通成员发群文件，那条腿必定失败，实现端还会为它
     /// 重试到超预算，把整条取片流程一起拖垮。要群文件的群再单独开。
     #[test]
@@ -779,6 +538,13 @@ mod tests {
         let send = Config::default().send;
         assert_eq!(send, "bubble", "成品默认发法不该变：{send}");
         assert!(matches!(SendMode::parse(&send), SendMode::Bubble));
+    }
+
+    /// 取片慢时那句回执按 `CONTENT.md` 的「进行中」写：一个 ⏳ 加在开头。
+    #[test]
+    fn the_acknowledgement_reads_as_a_status_line() {
+        assert_eq!(Config::default().ack_after_seconds, 20);
+        assert!(FAILED_PREFIX.starts_with("❌ "), "取不到那条该带失败图标");
     }
 
     #[test]
@@ -789,9 +555,6 @@ mod tests {
     }
 
     // ============ 分流 ============
-
-    const PREVIEW_ID: &str = "7001";
-    const GROUP: i64 = 1000;
 
     /// 一条群消息，可选地带一个引用段；写回执走控制台适配器，不发真群。
     async fn event(text: &str, reply: Option<&str>) -> (Context, LockedWriter) {
@@ -810,20 +573,18 @@ mod tests {
             message.push(serde_json::json!({"type": "reply", "data": {"id": id}}));
         }
         message.push(serde_json::json!({"type": "text", "data": {"text": text}}));
-        stage(
-            serde_json::json!({
-                "post_type": "message",
-                "satori_type": "message-created",
-                "message_type": "group",
-                "group_id": GROUP,
-                "user_id": user_id,
-                "manual_self": manual_self,
-                "message_id": 9001,
-                "raw_message": text,
-                "sender": {"nickname": "群友", "role": "member"},
-                "message": message
-            }),
-        )
+        stage(serde_json::json!({
+            "post_type": "message",
+            "satori_type": "message-created",
+            "message_type": "group",
+            "group_id": GROUP,
+            "user_id": user_id,
+            "manual_self": manual_self,
+            "message_id": 9001,
+            "raw_message": text,
+            "sender": {"nickname": "群友", "role": "member"},
+            "message": message
+        }))
         .await
     }
 
@@ -875,80 +636,48 @@ mod tests {
         (ctx, Arc::new(SatoriClient::console()))
     }
 
-    fn taken_preview(message_id: &str) -> state::Preview {
-        state::Preview {
-            target_id: GROUP,
-            message_id: message_id.to_string(),
-            created_ts: chrono::Utc::now().timestamp(),
-            url: "https://b23.tv/abc".into(),
-            bvid: "BV1GJ411x7h7".into(),
-            cid: 137649199,
-            page: 1,
-            title: "测试稿件".into(),
-            duration: 213,
-            extracted: true,
-            requester: 7,
+    /// 没有本插件接得住的链接时，事件原样放行——普通消息、别家的链接、
+    /// 指向别处的卡片都不该被吃掉。这条不碰网络：放行的那几条都轮不到取片。
+    #[tokio::test]
+    async fn a_message_without_a_video_link_is_left_to_the_other_plugins() {
+        for text in [
+            "随便一句话",
+            "https://example.com/some/page",
+            "https://mp.weixin.qq.com/s/abc",
+            "https://www.bilibili.com/bangumi/play/ep307580",
+        ] {
+            let (ctx, writer) = event(text, None).await;
+            assert!(
+                handle(ctx, writer).await.unwrap().is_some(),
+                "{text} 不该被本插件吃掉"
+            );
         }
     }
 
-    /// 取片那条路只认「引用本插件发过的预览 + 一句取片词」，别的一律放行，
-    /// 免得把普通消息吃掉。
+    /// 号主与机器人共用同一个 QQ 号，他自己的消息同样带着这个号进来。靠 `manual_self`
+    /// 分辨：机器人自己发出去的那份回声连链接都不取（放行给后面的插件），
+    /// 号主贴的照常取。取片那条真机路走 live 用例，这里钉的是回声那一半。
     #[tokio::test]
-    async fn only_a_quoted_preview_asking_for_the_video_is_consumed() {
-        state::remember(taken_preview(PREVIEW_ID)).await;
-
-        // 引用预览说「视频」：走取片那条路。这条已经取过，回一句就吃掉事件。
-        let (ctx, writer) = event("视频", Some(PREVIEW_ID)).await;
-        assert!(
-            handle(ctx, writer).await.unwrap().is_none(),
-            "引用预览要片应该被本插件吃掉"
-        );
-
-        // 真机上平台会在引用回复前面补一段 @（正文变成「@名字 视频」，见
-        // `the_at_the_platform_adds_to_a_quoted_reply_does_not_hide_the_word`），
-        // 这一条也该被吃掉——没被吃掉就会落到下面的找链接那一步，事件原样放行。
-        let (ctx, writer) = event("@A宝好腻害！ 视频", Some(PREVIEW_ID)).await;
-        assert!(
-            handle(ctx, writer).await.unwrap().is_none(),
-            "带 @ 的取片请求应该被本插件吃掉"
-        );
-
-        // 引用的不是本插件发过的消息。
-        let (ctx, writer) = event("视频", Some("999999")).await;
-        assert!(
-            handle(ctx, writer).await.unwrap().is_some(),
-            "引用别人的消息不该被吃掉"
-        );
-
-        // 引用了预览，但说的不是取片词。
-        let (ctx, writer) = event("这条不错", Some(PREVIEW_ID)).await;
-        assert!(
-            handle(ctx, writer).await.unwrap().is_some(),
-            "引用预览说别的话不该被吃掉"
-        );
-
-        // 没引用，光提了一句「视频」。
-        let (ctx, writer) = event("视频", None).await;
-        assert!(
-            handle(ctx, writer).await.unwrap().is_some(),
-            "没引用时不该被吃掉"
-        );
-    }
-
-    /// 号主与机器人共用同一个 QQ 号，他自己的消息同样带着这个号进来。
-    /// 靠 `manual_self` 分辨：号主贴的链接要照常接，机器人自己的回声才跳过。
-    #[tokio::test]
-    async fn the_owner_shares_the_account_but_still_gets_served() {
-        let (ctx, writer) = event_from(7, true, "视频", Some(PREVIEW_ID)).await;
-        assert!(
-            handle(ctx, writer).await.unwrap().is_none(),
-            "号主手打的消息应当照常处理"
-        );
-
-        let (ctx, writer) = event_from(7, false, "视频", Some(PREVIEW_ID)).await;
+    async fn the_bots_own_echo_is_left_alone() {
+        let (ctx, writer) = event_from(7, false, SAMPLE, None).await;
         assert!(
             handle(ctx, writer).await.unwrap().is_some(),
             "机器人自己的回声不该被处理"
+        );
+    }
+
+    /// 群名单拦下时一声不出，也不取片。
+    #[tokio::test]
+    async fn a_blocked_group_is_never_served() {
+        let (ctx, writer) = event(SAMPLE, None).await;
+        {
+            let mut config = ctx.config.write().unwrap();
+            let value = config.plugins.get_mut("video_parse").unwrap();
+            value["channel"]["black"] = toml::Value::Array(vec![toml::Value::Integer(GROUP)]);
+        }
+        assert!(
+            handle(ctx, writer).await.unwrap().is_some(),
+            "名单外的群该原样放行"
         );
     }
 
@@ -973,7 +702,10 @@ mod tests {
             "meta":{"news":{"jumpUrl":"https://b23.tv/DONRtWF",
             "preview":"https://qq.ugcimg.cn/v1/odu6is84rije659prqcbgoornfg14q"}}}"#;
         let (ctx, _writer) = card_event(news).await;
-        assert_eq!(take_candidate(&ctx).as_deref(), Some("https://b23.tv/DONRtWF"));
+        assert_eq!(
+            take_candidate(&ctx).as_deref(),
+            Some("https://b23.tv/DONRtWF")
+        );
 
         // 卡片指向的页面不归本插件，事件原样放行给后面的插件。
         let other = r#"{"app":"com.tencent.structmsg","view":"news",

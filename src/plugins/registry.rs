@@ -156,11 +156,7 @@ register_plugins!(
     video_parse {
         display_name: "视频解析",
         section: "message",
-        summary: "视频站链接先回预览图，引用后发送「视频」才取原片进群（预览 30 天内有效）",
-        commands: cmds![
-            ("引用预览 + 视频 / 原片 / 原视频 / 下载 / 下载视频 / 发视频 / 取片 / 文件 / video / mp4",
-             "把这条链接的原片取进群（默认只发视频气泡，可配成群文件）；引用 30 天内的预览都算数"),
-        ]
+        summary: "视频站链接（正文、小程序卡、分享卡）就地取原片进群，成品默认只发视频气泡"
     },
     webshot {
         display_name: "网页截图",

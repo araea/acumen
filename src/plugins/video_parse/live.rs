@@ -1,12 +1,12 @@
 //! 取片的真机验证。
 //!
-//! 两条都默认 `ignored`：一条只连 B 站拉稿件信息与取流地址，不碰群；
-//! 另一条要显式给沙盒群号，会真的往群里发一条视频（正文 + 群文件 + 气泡）再撤回。
+//! 第一条只连 B 站拉稿件信息与取流地址，不碰群；后两条要显式给沙盒群号，
+//! 会真的往群里发一条视频（外加一份群文件）再撤回。
 //!
 //! ```sh
 //! cargo test --bin ayjx live_reads_the_metadata -- --ignored --nocapture
 //! AYJX_VIDEO_PARSE_LIVE_GROUP=280183116 \
-//!   cargo test --bin ayjx live_takes_the_video -- --ignored --nocapture
+//!   cargo test --bin ayjx live_takes_ -- --ignored --nocapture
 //! ```
 //!
 //! 「发出去了没有」看实现端记下来的消息（`message.list`），不看 ayjx 的日志：
@@ -25,7 +25,15 @@ use tokio::sync::Mutex as AsyncMutex;
 
 /// 最省事的一条样品：3 分 33 秒，720P/360P 两档，360P 约 10 MB。
 const SAMPLE: &str = "https://www.bilibili.com/video/BV1GJ411x7h7";
+const SAMPLE_BVID: &str = "BV1GJ411x7h7";
 const SAMPLE_CAP: u64 = 20 * 1_048_576;
+
+/// 自检用的是同一条样品、同一个贴链接的人（`user_id = 1`），而线上要的就是
+/// 「同一个人十分钟内重贴同一条不取第二遍」——不清掉上一轮的名额，第二次跑会被
+/// 自己的去重挡住。这条只清自检自己那一份，不动别的会话。
+async fn forget_previous_take(group: i64) {
+    state::release(group, 1, SAMPLE_BVID).await;
+}
 
 /// 拉一次样品的信息，并取 360P 档——真机上跑的是手机网络，一条自检别下几十兆。
 async fn sample() -> (bilibili::Video, bilibili::Streams) {
@@ -44,19 +52,22 @@ async fn sample() -> (bilibili::Video, bilibili::Streams) {
 async fn live_reads_the_metadata_and_the_stream_plan() {
     let (video, streams) = sample().await;
     println!(
-        "{} / {} / UP {} / {}s / {} / {:.1} MB / {} 段",
+        "{} / {} / P{}/{} / {} / {:.1} MB / {} 段",
         video.bvid,
         video.title,
-        video.owner,
-        video.duration,
+        video.page,
+        video.pages,
         bilibili::quality_label(streams.quality),
         streams.size as f64 / 1_048_576.0,
         streams.urls.len(),
     );
 
     assert_eq!(video.bvid, "BV1GJ411x7h7");
-    assert!(video.title.contains("Never Gonna Give You Up"), "{}", video.title);
-    assert!(video.cover.is_some(), "封面没拿到");
+    assert!(
+        video.title.contains("Never Gonna Give You Up"),
+        "{}",
+        video.title
+    );
     assert!(streams.size > 0 && !streams.urls.is_empty());
 
     // 分享短链要真的跟过去才知道落到哪个页面。
@@ -74,168 +85,110 @@ async fn live_reads_the_metadata_and_the_stream_plan() {
     assert!(error.to_string().contains("也有"), "{error}");
 }
 
-#[tokio::test]
-#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（正文 + 群文件 + 气泡）并撤回"]
-async fn live_takes_the_video_into_the_sandbox_group() {
-    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
-    let (ctx, writer) = live_context().await;
-    let (video, streams) = sample().await;
-
-    let dir = get_data_dir("video_parse").await.unwrap();
-    let path = dir.join("live-test.part");
-    let size = download(&streams.urls, &path, SAMPLE_CAP, Duration::from_secs(300))
-        .await
-        .expect("下载失败");
-    assert_eq!(size, streams.size, "落盘的字节数与站点报的对不上");
-
-    // 真机上是用户引用预览再回复，这里只要引用段指向一条真实存在的消息。
-    let quoted: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.create",
-            json!({"channel_id": group.to_string(), "content": "视频解析自检"}),
-        )
-        .await
-        .unwrap();
-    let quote_id: i64 = quoted[0]["id"].as_str().unwrap().parse().unwrap();
-
-    let preview = state::Preview {
-        target_id: group,
-        message_id: quote_id.to_string(),
-        created_ts: chrono::Utc::now().timestamp(),
-        url: SAMPLE.to_string(),
-        bvid: video.bvid.clone(),
-        cid: video.cid,
-        page: video.page,
-        title: video.title.clone(),
-        duration: video.duration,
-        extracted: false,
-        requester: 0,
-    };
-    // 这条要验两条腿都到（正文 + 群文件 + 气泡）。线上默认只发气泡，这里显式开成 both。
-    let mut config = Config::default();
-    config.send = "both".to_string();
-    let result = deliver(
-        &ctx,
-        &writer,
-        &config,
-        &preview,
-        &streams,
-        size,
-        &path,
-        Some(group),
-        0,
-        quote_id,
-    )
-    .await;
-    let _ = tokio::fs::remove_file(&path).await;
-    result.expect("取片成品没发出去");
-
-    // 群里到底有没有：看实现端记下来的内容，不看日志。
-    let listed = recent_messages(&ctx, &writer, group).await;
-    let caption = find_sent(&listed, " MB");
-    let file = find_sent(&listed, "<file");
-    let bubble = find_sent(&listed, "<video");
-    assert!(caption.is_some(), "正文没到群里");
-    assert!(file.is_some(), "群文件没到群里");
-    assert!(bubble.is_some(), "视频气泡没到群里");
-
-    // 收工：这次发出去的连同引用目标一起撤回。
-    for id in [Some(quote_id.to_string()), caption, file, bubble]
-        .into_iter()
-        .flatten()
-    {
-        let deleted: serde_json::Value = writer
-            .call(
-                &ctx,
-                "message.delete",
-                json!({"channel_id": group.to_string(), "message_id": id}),
-            )
-            .await
-            .unwrap();
-        println!("撤回 {id}: {deleted}");
-    }
-}
-
-/// 真机那条失败记录的重放：用户引用预览只说了「视频」，QQ 的引用回复自动补上 @，
-/// 平台又把 @ 的显示名写进正文，插件拿到的 `raw_message` 就成了
-/// 「@A宝好腻害！ 视频」（记录 id 113798，当时群里没有任何反应，片子一直没取）。
-/// 这里那句话原样喂进插件，看成品是不是真的到群里。
+/// 群友在群里贴一条链接，片子就该直接进群——不用引用，也不用再说一个词。
 ///
-/// 这条会往群里发五六条，模块的出站闸门是全局 20 条/分钟，别把它跟别的沙盒用例挤在
-/// 同一分钟里跑——一起跑时最后那一两条会撞上 `outbound rate budget exhausted`。
+/// 这条会往群里发四五条（触发那条、可能的一句 ⏳、成品那条气泡与文件），模块的
+/// 出站闸门是全局 20 条/分钟，别把它跟别的沙盒用例挤在同一分钟里跑。
 #[tokio::test]
-#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（正文 + 群文件 + 气泡）并撤回"]
-async fn live_takes_the_video_when_the_platform_adds_an_at() {
+#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
+async fn live_takes_a_link_from_the_sandbox_group() {
     let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
         .ok()
         .and_then(|value| value.parse().ok())
         .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
     let (ctx, writer) = live_context().await;
-    let (video, _) = sample().await;
-    // 验的是那一句认不认得出来，走 360P 就够，不必为它下几十兆。
-    let me = cheaper_take(&ctx);
+    forget_previous_take(group).await;
+    // 真机上这条链接是群友发的，这里造一条真实存在的——成品会引用它。
+    let trigger = post(&ctx, &writer, group, SAMPLE).await;
+    let (ctx, writer) = link_context(ctx, writer, group, trigger).await;
+    // 只为自检省流量：360P、20 MB 上限；两条腿都验，所以发法显式开成 both
+    // （线上默认只发气泡）。
+    cheaper_take(&ctx);
 
-    // 引用目标与用户那条消息都要真实存在：成品正文会引用后者。
-    let anchor = post(&ctx, &writer, group, "视频解析自检").await;
-    let request = post(&ctx, &writer, group, "@A宝好腻害！ 视频").await;
-    state::remember(state::Preview {
-        target_id: group,
-        message_id: anchor.to_string(),
-        created_ts: chrono::Utc::now().timestamp(),
-        url: SAMPLE.to_string(),
-        bvid: video.bvid.clone(),
-        cid: video.cid,
-        page: video.page,
-        title: video.title.clone(),
-        duration: video.duration,
-        extracted: false,
-        requester: 0,
-    })
-    .await;
-
-    let (ctx, writer) = quoting_context(ctx, writer, group, request, anchor, &me).await;
     let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
-    assert!(consumed.is_none(), "带 @ 的取片请求该由本插件吃掉");
+    assert!(consumed.is_none(), "视频站链接该由本插件吃掉");
 
-    // 发出去了没有看实现端记下来的内容，不看日志。
+    // 群里到底有没有：看实现端记下来的内容，不看日志。成品带引用，所以探针带上
+    // 这一轮的触发消息 ID——上一轮留下的成品配不上它。
     let listed = recent_messages(&ctx, &writer, group).await;
-    let caption = find_sent(&listed, " MB");
-    let file = find_sent(&listed, "<file");
-    let bubble = find_sent(&listed, "<video");
-    assert!(caption.is_some(), "正文没到群里：那句带 @ 的取片请求没被认出来");
-    assert!(file.is_some(), "群文件没到群里");
+    let bubble = find_sent(&listed, &format!("<quote id=\"{trigger}\"/><video"));
+    let file = find_sent(&listed, &format!("<quote id=\"{trigger}\"/><file"));
     assert!(bubble.is_some(), "视频气泡没到群里");
+    assert!(file.is_some(), "群文件没到群里");
 
-    // 收工：这次发出去的连同那两条自检消息一起撤回（取片慢时还会有句「正在取片」）。
+    // 收工：这次发出去的连同触发那条一起撤回（取片慢时还会有句「正在取片」）。
     let ids = [
-        Some(anchor.to_string()),
-        Some(request.to_string()),
-        caption,
-        file,
+        Some(trigger.to_string()),
         bubble,
+        file,
         find_sent(&listed, "正在取片"),
     ];
     for id in ids.into_iter().flatten() {
-        let deleted: serde_json::Value = writer
-            .call(
-                &ctx,
-                "message.delete",
-                json!({"channel_id": group.to_string(), "message_id": id}),
-            )
-            .await
-            .unwrap();
-        println!("撤回 {id}: {deleted}");
+        recall(&ctx, &writer, group, &id).await;
+    }
+}
+
+/// 群里发的是卡片（QQ 小程序卡 / 分享卡）时走通同一条路：从 `json` 段取落地地址、
+/// 跟短链、拉稿件信息、把原片发进群。载荷照真机收到的形状造，只有里面的 b23 短链换成
+/// 样品那条——真卡片指向的稿件随时可能被删，自检不能靠它。
+#[tokio::test]
+#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
+async fn live_reads_a_card_from_the_sandbox_group() {
+    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+    let (ctx, writer) = live_context().await;
+    forget_previous_take(group).await;
+    let trigger = post(&ctx, &writer, group, "[分享]视频").await;
+    cheaper_take(&ctx);
+
+    // 封面地址是不转义的（正则先撞上它），落地地址是转义的（正则撞不上）——
+    // 所以这条只有在卡片地址真的被取到时才会通过。
+    let payload = r#"{"ver":"1.0.0.19","prompt":"[QQ小程序]测试稿件","app":"com.tencent.miniapp_01",
+        "meta":{"detail_1":{"title":"哔哩哔哩","appid":"1109937557",
+        "icon":"http://miniapp.gtimg.cn/public/appicon/test.jpg",
+        "preview":"https://qq.ugcimg.cn/v1/test",
+        "url":"m.q.qq.com/a/s/test",
+        "qqdocurl":"https:\/\/b23.tv\/BV1GJ411x7h7"}}}"#;
+    let (ctx, writer) = card_context(ctx, writer, group, trigger, payload).await;
+
+    let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
+    assert!(consumed.is_none(), "卡片该由本插件吃掉");
+
+    let listed = recent_messages(&ctx, &writer, group).await;
+    let bubble = find_sent(&listed, &format!("<quote id=\"{trigger}\"/><video"));
+    assert!(bubble.is_some(), "卡片没有换来原片");
+
+    // 收工：这次发出去的连同触发那条一起撤回。
+    let ids = [
+        Some(trigger.to_string()),
+        bubble,
+        find_sent(&listed, &format!("<quote id=\"{trigger}\"/><file")),
+        find_sent(&listed, "正在取片"),
+    ];
+    for id in ids.into_iter().flatten() {
+        recall(&ctx, &writer, group, &id).await;
+    }
+}
+
+/// 撤回一条自检消息。
+///
+/// 撤回失败只打印，不带红这条用例：QQ 偶尔会对一条刚发出去的富媒体回 `code=5`，
+/// 而这条用例要证明的是「片子到群里了没有」，不是「撤回一定成功」。
+async fn recall(ctx: &Context, writer: &LockedWriter, group: i64, id: &str) {
+    let body = json!({"channel_id": group.to_string(), "message_id": id});
+    let deleted: Result<serde_json::Value, _> = writer.call(ctx, "message.delete", body).await;
+    match deleted {
+        Ok(result) => println!("撤回 {id}: {result}"),
+        Err(error) => println!("撤回 {id} 失败：{error}"),
     }
 }
 
 /// 最近的消息，一路跟着 `next` 往回翻几页。
 ///
 /// `message.list` 的第一页不保证含刚发出去的那几条：它按 seq 分页，实测过第一页只有
-/// 最新一条、正文与群文件都落在下一页（一次取片的成品是三条一起发出去的）。
+/// 最新一条、成品都落在下一页。
 async fn recent_messages(
     ctx: &Context,
     writer: &LockedWriter,
@@ -287,12 +240,9 @@ async fn post(ctx: &Context, writer: &LockedWriter, group: i64, content: &str) -
     sent[0]["id"].as_str().unwrap().parse().unwrap()
 }
 
-/// 把自检那一轮的画质压到 360P（`Config::default()` 挑的是 720P），返回自己的 QQ 号。
-///
-/// 这条用例验的是「@ 挡不住取片词」，成品两条腿都要到群里，所以发法也显式开成
-/// `both`——线上默认只发气泡，跟着线上走就只剩气泡那一条了。
-fn cheaper_take(ctx: &Context) -> String {
-    let me = ctx.bot.login_user.get().id.clone();
+/// 自检用的取片参数：360P、20 MB 上限、两条腿都发（`Config::default()` 挑的是
+/// 720P 与只发气泡，跟着线上走就要下几十兆，还验不到群文件那条腿）。
+fn cheaper_take(ctx: &Context) {
     let mut config = ctx.config.write().unwrap();
     let Some(value) = config.plugins.get_mut("video_parse") else {
         panic!("插件配置不在");
@@ -300,24 +250,15 @@ fn cheaper_take(ctx: &Context) -> String {
     value["prefer_quality"] = toml::Value::Integer(16);
     value["max_size_mb"] = toml::Value::Integer(20);
     value["send"] = toml::Value::String("both".to_string());
-    me
 }
 
-/// 把[`live_context`]给的上下文换成「引用预览再回复」的那条消息：引用段指着
-/// `anchor`，at 段指着自己，正文是平台写进来的「@名字 视频」。
-///
-/// `raw_message` 照适配器的拼法来——只拼文本段，`at` 段与引用段都不进去
-/// （`adapters/satori.rs` 的 message-created 分支），所以正文里留着的是那个
-/// 显示名，不是 `[CQ:…]`。钉住的就是这一串能不能认出取片词。
-async fn quoting_context(
+/// 把[`live_context`]给的上下文换成「群友贴了一条链接」的那条消息。
+async fn link_context(
     mut ctx: Context,
     writer: LockedWriter,
     group: i64,
     message_id: i64,
-    anchor: i64,
-    at: &str,
 ) -> (Context, LockedWriter) {
-    let body = "@A宝好腻害！ 视频";
     ctx.event = EventType::Satori(
         simd_json::serde::to_owned_value(json!({
             "post_type": "message",
@@ -326,173 +267,16 @@ async fn quoting_context(
             "group_id": group,
             "user_id": 1,
             "message_id": message_id,
-            "raw_message": body,
+            "raw_message": SAMPLE,
             "sender": {"nickname": "自检", "role": "member"},
-            "message": [
-                {"type": "reply", "data": {"id": anchor.to_string()}},
-                {"type": "at", "data": {"qq": at}},
-                {"type": "text", "data": {"text": body}}
-            ]
+            "message": [{"type": "text", "data": {"text": SAMPLE}}]
         }))
         .unwrap(),
     );
     (ctx, writer)
 }
 
-#[tokio::test]
-#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条预览并撤回"]
-async fn live_sends_the_preview_into_the_sandbox_group() {
-    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
-    let (ctx, writer) = live_context().await;
-
-    // 真机上是用户发的那条链接消息，这里造一条真实的，引用段要指着它。
-    let trigger: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.create",
-            json!({"channel_id": group.to_string(), "content": SAMPLE}),
-        )
-        .await
-        .unwrap();
-    let trigger_id: i64 = trigger[0]["id"].as_str().unwrap().parse().unwrap();
-
-    let config = Config::default();
-    let record = preview(
-        &ctx,
-        &writer,
-        &config,
-        SAMPLE,
-        Some(group),
-        0,
-        trigger_id,
-    )
-    .await
-    .expect("预览没发出去")
-    .expect("这条预览没被当成重复的吞掉");
-    println!("预览消息 ID：{}", record.message_id);
-
-    // 引用取片靠的就是这条对应关系；记不下就等于取不到片。
-    let claimed = state::claim(group, &record.message_id).await;
-    assert!(
-        matches!(claimed, state::Claim::Ready(_)),
-        "预览发出去了却没有记下对应关系"
-    );
-    state::release(group, &record.message_id).await;
-
-    // 群里那一条的完整元素。`message.list` 回的是文本快照，认不出图片，
-    // 要看封面得用 `message.get`。
-    let sent: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.get",
-            json!({"channel_id": group.to_string(), "message_id": record.message_id}),
-        )
-        .await
-        .unwrap();
-    let content = sent["content"].as_str().unwrap_or_default().to_string();
-    println!("{content}");
-    assert!(content.contains("索尼音乐中国"), "预览里没有 UP 主");
-    assert!(content.contains(HINT_LINE), "预览里没有取片提示");
-    assert!(
-        content.contains(&format!("<quote id=\"{trigger_id}\"/>")),
-        "预览没有引用用户那条链接"
-    );
-    // 封面是让实现端自己去 hdslb 取的：落到 asset 路由上说明它真的取到了。
-    assert!(content.contains("<img src="), "预览里没有封面");
-
-    let _: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.delete",
-            json!({"channel_id": group.to_string(), "message_id": record.message_id}),
-        )
-        .await
-        .unwrap();
-    let _: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.delete",
-            json!({"channel_id": group.to_string(), "message_id": trigger_id.to_string()}),
-        )
-        .await
-        .unwrap();
-}
-
-/// 群里发的是卡片（QQ 小程序卡 / 分享卡）时走通同一条路：从 `json` 段取落地地址、
-/// 跟短链、拉稿件信息、回预览。载荷照真机收到的形状造，只有里面的 b23 短链换成
-/// 样品那条——真卡片指向的稿件随时可能被删，自检不能靠它。
-#[tokio::test]
-#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条预览并撤回"]
-async fn live_reads_a_card_from_the_sandbox_group() {
-    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
-    let (ctx, writer) = live_context().await;
-
-    // 卡片必须引用一条真实存在的消息，预览才建立得起来。
-    let trigger: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.create",
-            json!({"channel_id": group.to_string(), "content": "[分享]视频"}),
-        )
-        .await
-        .unwrap();
-    let trigger_id: i64 = trigger[0]["id"].as_str().unwrap().parse().unwrap();
-
-    // 封面地址是不转义的（正则先撞上它），落地地址是转义的（正则撞不上）——
-    // 所以这条测试只有在卡片地址真的被取到时才会通过。
-    let payload = r#"{"ver":"1.0.0.19","prompt":"[QQ小程序]测试稿件","app":"com.tencent.miniapp_01",
-        "meta":{"detail_1":{"title":"哔哩哔哩","appid":"1109937557",
-        "icon":"http://miniapp.gtimg.cn/public/appicon/test.jpg",
-        "preview":"https://qq.ugcimg.cn/v1/test",
-        "url":"m.q.qq.com/a/s/test",
-        "qqdocurl":"https:\/\/b23.tv\/BV1GJ411x7h7"}}}"#;
-    let (ctx, writer) = card_context(ctx, writer, group, trigger_id, payload).await;
-
-    let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
-    assert!(consumed.is_none(), "卡片该由本插件吃掉");
-
-    // 先按文本快照找到那条预览，再取它的完整元素。
-    let listed = recent_messages(&ctx, &writer, group).await;
-    let preview_id = find_sent(&listed, HINT_LINE).expect("卡片没有换来预览");
-
-    // 引用段与封面只有 `message.get` 看得到：`message.list` 回的是文本快照。
-    let sent: serde_json::Value = writer
-        .call(
-            &ctx,
-            "message.get",
-            json!({"channel_id": group.to_string(), "message_id": preview_id}),
-        )
-        .await
-        .unwrap();
-    let content = sent["content"].as_str().unwrap_or_default().to_string();
-    println!("{content}");
-    assert!(content.contains("索尼音乐中国"), "预览里没有 UP 主");
-    assert!(
-        content.contains(&format!("<quote id=\"{trigger_id}\"/>")),
-        "预览没有引用那条卡片"
-    );
-
-    // 收工：这次发出去的连同引用目标一起撤回。
-    for id in [trigger_id.to_string(), preview_id.clone()] {
-        let _: serde_json::Value = writer
-            .call(
-                &ctx,
-                "message.delete",
-                json!({"channel_id": group.to_string(), "message_id": id}),
-            )
-            .await
-            .unwrap();
-    }
-    state::release(group, &preview_id).await;
-}
-
-/// 把[`live_context`]给的上下文换成「一条卡片消息」：正文为空，`json` 段带着载荷，
+/// 同上，换成「一条卡片消息」：正文为空，`json` 段带着载荷，
 /// `raw_message` 是与实现端一致的 CQ 形态（`[CQ:json,data=…]`）。
 async fn card_context(
     mut ctx: Context,
@@ -519,7 +303,8 @@ async fn card_context(
 }
 
 /// 一个够用的 Context：配置、数据库与登录账号，事件本身用不上。
-async fn live_context() -> (Context, LockedWriter) {    let db = Database::connect("sqlite::memory:").await.unwrap();
+async fn live_context() -> (Context, LockedWriter) {
+    let db = Database::connect("sqlite::memory:").await.unwrap();
     let text = tokio::fs::read_to_string("config.toml")
         .await
         .expect("要在仓库根目录跑");

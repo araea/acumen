@@ -106,20 +106,18 @@ fn page_of(url: &Url) -> u32 {
         .unwrap_or(1)
 }
 
-/// 一个稿件的可展示信息。
+/// 取片要用的那几样。成品本身就是要发出去的东西，不另外给它写一段说明，
+/// 所以这里只留「取哪一 P 的哪条流」与一个能当文件名用的标题。
 #[derive(Debug, Clone)]
 pub(crate) struct Video {
     pub(crate) bvid: String,
     /// 选中那一 P 的 `cid`，取流时要用
     pub(crate) cid: i64,
+    /// 选中那一 P 的序号
     pub(crate) page: u32,
     /// 总共几 P
     pub(crate) pages: u32,
     pub(crate) title: String,
-    pub(crate) owner: String,
-    pub(crate) duration: u64,
-    pub(crate) cover: Option<String>,
-    pub(crate) views: u64,
 }
 
 /// 拉一次稿件信息。
@@ -130,17 +128,13 @@ pub(crate) async fn info(reference: &VideoRef, cookie: &str, timeout: Duration) 
     }
     let data: ViewData = get_json(&format!("{VIEW_API}?{query}"), cookie, timeout).await?;
 
-    // 分 P 的时长与 cid 在 `pages` 里；`data.cid`/`data.duration` 只是第一 P 的。
+    // 分 P 的 cid 在 `pages` 里；`data.cid` 只是第一 P 的。
     let page = reference.page.max(1);
     let chosen = data.pages.get(page as usize - 1);
     let cid = chosen.map(|part| part.cid).unwrap_or(data.cid);
     if cid == 0 {
         return Err(anyhow!("这页没有可播放的分 P"));
     }
-    let duration = chosen
-        .map(|part| part.duration)
-        .filter(|seconds| *seconds > 0)
-        .unwrap_or(data.duration);
 
     Ok(Video {
         bvid: data.bvid,
@@ -148,20 +142,7 @@ pub(crate) async fn info(reference: &VideoRef, cookie: &str, timeout: Duration) 
         page,
         pages: data.videos.max(1),
         title: data.title.trim().to_string(),
-        owner: data.owner.map(|owner| owner.name).unwrap_or_default().trim().to_string(),
-        duration,
-        cover: cover_of(&data.pic),
-        views: data.stat.map(|stat| stat.view).unwrap_or(0),
     })
-}
-
-/// 封面地址。少数稿件填的是一张透明占位图，那种不如不发。
-fn cover_of(pic: &str) -> Option<String> {
-    let pic = pic.trim();
-    if pic.is_empty() || pic.contains("transparent") {
-        return None;
-    }
-    Some(pic.replacen("http://", "https://", 1))
 }
 
 #[derive(Deserialize)]
@@ -180,37 +161,15 @@ struct ViewData {
     #[serde(default)]
     title: String,
     #[serde(default)]
-    duration: u64,
-    #[serde(default)]
-    pic: String,
-    #[serde(default)]
     videos: u32,
     #[serde(default)]
-    owner: Option<Owner>,
-    #[serde(default)]
-    stat: Option<Stat>,
-    #[serde(default)]
     pages: Vec<Page>,
-}
-
-#[derive(Deserialize)]
-struct Owner {
-    #[serde(default)]
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct Stat {
-    #[serde(default)]
-    view: u64,
 }
 
 #[derive(Deserialize)]
 struct Page {
     #[serde(default)]
     cid: i64,
-    #[serde(default)]
-    duration: u64,
 }
 
 /// 一档画质的可下载地址。
@@ -271,7 +230,11 @@ async fn playurl(
     let size = data.durl.iter().map(|part| part.size).sum();
     Ok(Play {
         streams: Streams {
-            quality: if data.quality == 0 { quality } else { data.quality },
+            quality: if data.quality == 0 {
+                quality
+            } else {
+                data.quality
+            },
             urls,
             size,
         },
@@ -373,9 +336,7 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     if envelope.code != 0 {
         return Err(fail(envelope.code, envelope.message.as_deref()));
     }
-    envelope
-        .data
-        .ok_or_else(|| anyhow!("B 站没有回内容"))
+    envelope.data.ok_or_else(|| anyhow!("B 站没有回内容"))
 }
 
 async fn request(url: &str, cookie: &str, timeout: Duration) -> Result<reqwest::Response> {
@@ -390,7 +351,11 @@ async fn request(url: &str, cookie: &str, timeout: Duration) -> Result<reqwest::
     let response = request.send().await?;
     // 412/429 是风控与限流，HTTP 层就该拦下，进了 JSON 只会看到一坨 HTML。
     match response.status().as_u16() {
-        412 | 429 => return Err(anyhow!("B 站风控拦下了这次请求（配置里填一个登录 Cookie 通常就好了）")),
+        412 | 429 => {
+            return Err(anyhow!(
+                "B 站风控拦下了这次请求（配置里填一个登录 Cookie 通常就好了）"
+            ));
+        }
         _ => {}
     }
     Ok(response.error_for_status()?)
@@ -479,15 +444,5 @@ mod tests {
         assert_eq!(quality_label(64), "720P");
         assert_eq!(quality_label(120), "4K");
         assert_eq!(quality_label(999), "999");
-    }
-
-    #[test]
-    fn covers_are_upgraded_and_placeholders_dropped() {
-        assert_eq!(
-            cover_of("http://i1.hdslb.com/bfs/archive/a.jpg").as_deref(),
-            Some("https://i1.hdslb.com/bfs/archive/a.jpg")
-        );
-        assert_eq!(cover_of(""), None);
-        assert_eq!(cover_of("https://i0.hdslb.com/bfs/archive/transparent.png"), None);
     }
 }

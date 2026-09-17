@@ -15,7 +15,7 @@ use tokio::sync::Mutex as AsyncMutex;
 const LOG_TARGET: &str = "Plugin/AiNews";
 const STATE_FILE: &str = "state.json";
 const EXTRACTION_RETAIN_DAYS: i64 = 30;
-// 与 video_parse 的 `RETAIN_DAYS` 是同一个口径（引用驱动一律留 30 天，见 docs/INTERACTION.md 第三节）。
+// 引用驱动里由插件自己存对应关系的只剩这一处，30 天是它的口径（见 docs/INTERACTION.md 第三节）。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeenEntry {

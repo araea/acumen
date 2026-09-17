@@ -48,7 +48,7 @@ Context 通过移动传递，不深拷贝事件。`plugins::send_fake_event` 可
 
 插件的执行顺序就是 `registry.rs` 里的书写顺序。过滤类插件写在最前面（`meta_filter` 拦住心跳和元事件），`ctl` 紧随其后，保证管理入口不会被其他插件拦下。记录类插件（`logger`、`recorder`）在业务插件之前取得原始消息。
 
-链接类插件的先后同样按书写顺序：`video_parse` 写在 `webshot` 前面，视频站链接先被它接走（只回一条预览），截图那边跳过这类链接。准入判据是 `video_parse::is_video_link` 一处，两边不会各截一次又取一次。同类共用判据还有 `webshot::host_is_internal`（`web_fetch` 也用它拦内网）。
+链接类插件的先后同样按书写顺序：`video_parse` 写在 `webshot` 前面，视频站链接先被它接走（就地取原片），截图那边跳过这类链接。准入判据是 `video_parse::is_video_link` 一处，两边不会各截一次又取一次。同类共用判据还有 `webshot::host_is_internal`（`web_fetch` 也用它拦内网）。
 
 ## 插件系统
 

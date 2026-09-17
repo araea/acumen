@@ -82,8 +82,8 @@ pub fn spoken_bodies(text: &str) -> Vec<&str> {
 
 /// 取消息里的引用回复 ID（`reply` 段的 `id`）。
 ///
-/// 「引用某条消息再回复」这类隐式交互（AI 资讯的序号提取、视频解析的取片）
-/// 都从这一处取被引消息的 ID，实现端把它写成字符串还是数字都认。
+/// 「引用某条消息再回复」这类隐式交互（AI 资讯的序号提取）从这一处取被引消息的
+/// ID，实现端把它写成字符串还是数字都认。
 pub fn message_reply_id(ctx: &Context) -> Option<String> {
     let arr = ctx.as_message()?.0.get_array("message")?;
     for segment in arr.iter() {
