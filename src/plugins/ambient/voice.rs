@@ -254,6 +254,44 @@ mod tests {
         assert!(samples.iter().any(|sample| sample.text.contains('～')));
     }
 
+    /// 一个词被当成句式反复套，是这类小模型最容易露的馅，而它不在长短里显形。
+    ///
+    /// 2026-09-18 量出来的：「包」当保证词用，他 60 天里只说了 6 次（2189 条留言的
+    /// 0.37%），而线上输出里一度到七八个百分点——人设把「包是的」摆在「保证的口气」
+    /// 头一个，库里又攒了三条实物，模型就把它读成「这是个可以随便套的句式」。
+    /// 人设那边已把它挪到末位并写明「偶尔」，这条守着库里的那一半：实物只留一条。
+    /// 豆包、表情包、红包是别的词，不算。
+    #[test]
+    fn the_bank_does_not_teach_one_surety_word_as_a_template() {
+        const HEADS: [&str; 11] = [
+            "是", "真", "厉", "root", "不", "有", "你", "冲", "得", "能", "会",
+        ];
+        // 这些字打头的「包」是名词（表情包你都要吐槽一番），不是保证。
+        const BEFORE: [char; 9] = ['豆', '红', '面', '书', '背', '系', '行', '绿', '情'];
+        let samples = parse(VOICE);
+        let hits: Vec<&str> = samples
+            .iter()
+            .map(|sample| sample.text)
+            .filter(|text| {
+                text.char_indices().any(|(at, c)| {
+                    c == '包'
+                        && !text[..at]
+                            .chars()
+                            .next_back()
+                            .is_some_and(|prev| BEFORE.contains(&prev))
+                        && HEADS
+                            .iter()
+                            .any(|head| text[at + c.len_utf8()..].starts_with(head))
+                })
+            })
+            .collect();
+        assert!(
+            hits.len() <= 1,
+            "「包」当保证词的实物有 {} 条：{hits:?}——他是偶尔一句，不是一个句式",
+            hits.len()
+        );
+    }
+
     /// 话题贴题：聊折叠屏的时候，折叠那几条该排在前面。
     #[test]
     fn the_topic_decides_which_samples_come_first() {
@@ -293,10 +331,13 @@ mod tests {
 
     /// 调子决定挑哪一档：同一次聊鸿蒙，松的时候「鸿蒙不太顶得住」上得来，紧的时候
     /// 它进不了场。
+    ///
+    /// 话题写得具体到那句话本身，是为了让这条钉子盯住「哪一档」，而不是「谁排第五」：
+    /// 样本库会一轮轮变胖，泛泛聊鸿蒙时前五名谁属是浮动的。
     #[test]
     fn the_register_decides_which_shelf_the_samples_come_from() {
         let samples = parse(VOICE);
-        let topic = [turn("鸿蒙这个系统怎么样 值不值")];
+        let topic = [turn("鸿蒙系统 顶得住吗 太顶了")];
         let lively = pick(&topic, &samples, Register::Lively);
         let calm = pick(&topic, &samples, Register::Calm);
         assert!(lively.contains(&"鸿蒙不太顶得住"), "{lively:?}");
