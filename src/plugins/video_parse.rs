@@ -9,9 +9,10 @@
 //! - 正文里的链接（[`crate::command::message_links`] 认得的都算）；
 //! - QQ 的小程序卡与分享卡——链接在那段 `json` 载荷里，正文是空的。
 //!
-//! 说出口的话只有两句，且都只在必要时出现：取片慢（超过 `ack_after_seconds`）
-//! 补一句 ⏳，取不到回一句 ❌。成品自己就是那条消息，不再另发一条正文，**也不带
-//! 引用**——视频在 QQ 里是「顺媒体」，与引用放在一条消息里就显示不出来（见 [`send`]）。
+//! 说出口的话只有一句，且只在必要时出现：取片慢（超过 `ack_after_seconds`）补一句 ⏳。
+//! 取不到不开口——群里只当这条链接没被接住，原因写进日志给人看。成品自己就是那条
+//! 消息，不再另发一条正文，**也不带引用**——视频在 QQ 里是「顺媒体」，与引用放在一条
+//! 消息里就显示不出来（见 [`send`]）。
 //! 同一个人在同一会话里十分钟内重贴同一条不会下第二遍（[`state`]）。
 //!
 //! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
@@ -54,9 +55,6 @@ const API_TIMEOUT: Duration = Duration::from_secs(10);
 /// 一个人连贴五条链接就是五份并发下载，手机的网络与内存都吃不下。
 /// 等闸门的时间走 `ack_after_seconds` 那条提示，不会静默排队。
 static TAKE_GATE: Semaphore = Semaphore::const_new(2);
-
-/// 取不到片时那句回执的前缀。
-const FAILED_PREFIX: &str = "❌ 没取到：";
 
 // ================= Config =================
 
@@ -177,13 +175,9 @@ pub fn handle(
         )
         .await
         {
+            // 取不到就静默收场：群里只当这条链接没被接住，原因留给日志。
+            // 一条「没取到」在群里就是一次打扰，而贴链接的人自己看得出来没片子。
             warn!(target: LOG_TARGET, "取片失败（{}）：{}", candidate, error);
-            let body = Message::new()
-                .reply(request_id)
-                .text(format!("{FAILED_PREFIX}{error}"));
-            if let Err(error) = send_msg(&ctx, writer, group_id, Some(user_id), body).await {
-                warn!(target: LOG_TARGET, "取片失败的回执没发出去：{}", error);
-            }
         }
         // 视频站的链接归本插件，后面几个链接类插件（截图）不必再看一眼。
         Ok(None)
@@ -380,7 +374,7 @@ async fn send(
     // 两件事决定了这个顺序：① 实现端对上传失败的富媒体会就地重试到超预算（默认 2 次 /
     // 45 秒），而有些群不让普通成员发群文件——文件那条腿注定失败，不该让它挡着气泡；
     // ② 两条腿各自兜错，`both` 时一条成了就算送到（另一条只留一行 warn），只配一条时
-    // 它自己的失败照旧往上报，用户那边能看到「没取到」。
+    // 它自己的失败照旧往上报，最后由 [`handle`] 写进日志，群里不开口。
     let mut sent = false;
     let mut failure = None;
     if matches!(send, SendMode::Bubble | SendMode::Both) {
@@ -543,10 +537,10 @@ mod tests {
     }
 
     /// 取片慢时那句回执按 `CONTENT.md` 的「进行中」写：一个 ⏳ 加在开头。
+    /// 取不到不开口，这里只剩超时那一档要守。
     #[test]
-    fn the_acknowledgement_reads_as_a_status_line() {
+    fn the_acknowledgement_waits_twenty_seconds_by_default() {
         assert_eq!(Config::default().ack_after_seconds, 20);
-        assert!(FAILED_PREFIX.starts_with("❌ "), "取不到那条该带失败图标");
     }
 
     #[test]
