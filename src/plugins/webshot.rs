@@ -6,7 +6,7 @@ use crate::message::Message;
 use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
 use crate::render::web::TabGuard;
 use anyhow::{Result, anyhow};
-use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, Viewport};
+use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, LaunchOptions, Viewport};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
@@ -253,28 +253,99 @@ fn scale_factor(scale: f64) -> f64 {
 
 // ================= Core Logic =================
 
+/// 微信文章的专用 UA。
+///
+/// 微信按 UA 判「环境异常」：桌面 UA 打开 `mp.weixin.qq.com` 的文章会被 302 到
+/// `/mp/wappoc_appmsgcaptcha`，截出来只有「当前环境异常，完成验证后即可继续访问」。
+/// 换成微信自己的 UA 后正文、封面图都正常。这里不是伪装成登录态——文章本身公开可读，
+/// 拦的只是「不是微信客户端」这件事。
+const WECHAT_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.42(0x18002a2f) NetType/WIFI Language/zh_CN";
+
+/// 微信文章的截图宽度。
+///
+/// 上面那条 UA 让微信发移动版式，按桌面宽度（默认 1280）截会得到中间一条窄柱、
+/// 两边大片空白，所以这类链接改用手机宽度。
+const WECHAT_VIEWPORT_WIDTH: u32 = 480;
+
+/// 微信被 302 到的验证端点。落在这里说明没拿到正文。
+const WECHAT_CAPTCHA_PATH: &str = "/mp/wappoc_appmsgcaptcha";
+
+/// 是不是微信公众平台的文章页。
+fn is_wechat_article(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        host.trim_end_matches('.')
+            .eq_ignore_ascii_case("mp.weixin.qq.com")
+    })
+}
+
+/// 这张图按多宽截。
+fn capture_width(url: &Url, config: &Config) -> u32 {
+    if is_wechat_article(url) {
+        WECHAT_VIEWPORT_WIDTH
+    } else {
+        config.viewport_width
+    }
+}
+
+/// 微信文章用的启动参数。
+///
+/// Chromium 的 UA 是进程级开关，本库也没有按标签页改 UA 的入口，所以这类链接
+/// 单独起一个浏览器，用完即关。不给全局实例换 UA：那样所有网页都会按移动版式渲染。
+fn wechat_launch_options(browser_path: Option<&str>) -> LaunchOptions {
+    let options = LaunchOptions::new().user_agent(WECHAT_UA);
+    match browser_path.filter(|path| !path.is_empty()) {
+        Some(path) => options.path(path),
+        None => options,
+    }
+}
+
+/// 落点是不是需要人过验证的中转页。
+///
+/// 换 UA 之后绝大部分微信文章能出正文，但仍有少数（实测三条里有一条）照样被送去
+/// 验证页，成因在微信那一侧。与其把一张只有「去验证」的图发进群里，不如什么都不发。
+fn is_verification_page(landed: &str) -> bool {
+    landed.contains(WECHAT_CAPTCHA_PATH)
+}
+
 /// 截一张图。闸门、总超时和页面清理都在这里，`capture_page` 只管渲染。
-async fn capture_url(url: &str, config: &Config, browser_path: Option<String>) -> Result<String> {
+async fn capture_url(
+    url: &Url,
+    config: &Config,
+    browser_path: Option<String>,
+) -> Result<Option<String>> {
     let _permit = CAPTURE_GATE
         .acquire()
         .await
         .map_err(|_| anyhow!("截图闸门不可用"))?;
 
     let budget = Duration::from_secs(config.timeout_seconds.clamp(5, 120) + 15);
+    let width = capture_width(url, config);
+    let wechat = is_wechat_article(url);
     // page 放在超时之外：无论正常返回、报错还是超时，都能走到下面的清理。
     let mut page = None;
+    let mut dedicated = None;
     let result = time::timeout(budget, async {
-        let browser = match browser_path.filter(|p| !p.is_empty()) {
-            Some(path) => Browser::instance_with_path(path).await,
-            None => Browser::instance().await,
+        let browser = if wechat {
+            let browser =
+                Browser::launch_with(wechat_launch_options(browser_path.as_deref())).await?;
+            dedicated = Some(browser.clone());
+            browser
+        } else {
+            match browser_path.filter(|p| !p.is_empty()) {
+                Some(path) => Browser::instance_with_path(path).await,
+                None => Browser::instance().await,
+            }
         };
         page = Some(TabGuard::new(browser.new_tab().await?));
-        capture_page(page.as_ref().unwrap().tab(), url, config).await
+        capture_page(page.as_ref().unwrap().tab(), url.as_str(), config, width).await
     })
     .await;
 
     if let Some(guard) = page {
         guard.close().await;
+    }
+    if let Some(browser) = dedicated {
+        let _ = browser.close_async().await;
     }
 
     match result {
@@ -283,8 +354,14 @@ async fn capture_url(url: &str, config: &Config, browser_path: Option<String>) -
     }
 }
 
-async fn capture_page(tab: &cdp_html_shot::Tab, url: &str, config: &Config) -> Result<String> {
-    let width = config.viewport_width.clamp(200, 4096);
+/// 渲染一页并截下来。页面只是验证中转页时返回 `Ok(None)`——没有可发的内容。
+async fn capture_page(
+    tab: &cdp_html_shot::Tab,
+    url: &str,
+    config: &Config,
+    width: u32,
+) -> Result<Option<String>> {
+    let width = width.clamp(200, 4096);
     let scale = scale_factor(config.device_scale_factor);
     let load_timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 120));
 
@@ -296,6 +373,14 @@ async fn capture_page(tab: &cdp_html_shot::Tab, url: &str, config: &Config) -> R
         Ok(Err(e)) => return Err(anyhow!("Navigate failed: {}", e)),
         Err(_) => return Err(anyhow!("Page load timeout")),
     };
+
+    // 导航后站点还会再 302 一次（验证页就是这么来的），落点以浏览器为准。
+    if let Ok(landed) = tab.url().await
+        && is_verification_page(&landed)
+    {
+        info!(target: "Plugin/WebShot", "跳过截图：{} 被送到了验证页", url);
+        return Ok(None);
+    }
 
     // 等待页面渲染
     time::sleep(Duration::from_millis(1000)).await;
@@ -330,9 +415,11 @@ async fn capture_page(tab: &cdp_html_shot::Tab, url: &str, config: &Config) -> R
         .with_quality(quality)
         .with_full_page(true);
 
-    tab.screenshot(opts)
+    let image = tab
+        .screenshot(opts)
         .await
-        .map_err(|e| anyhow!("Screenshot failed: {}", e))
+        .map_err(|e| anyhow!("Screenshot failed: {}", e))?;
+    Ok(Some(image))
 }
 
 // ================= Main Handler =================
@@ -395,14 +482,16 @@ pub fn handle(
             // 执行截图
             info!(target: "Plugin/WebShot", "Capturing: {}", url);
 
-            match capture_url(url.as_str(), &config, browser_path).await {
-                Ok(base64_img) => {
+            match capture_url(&url, &config, browser_path).await {
+                Ok(Some(base64_img)) => {
                     let msg = Message::new()
                         .reply(msg_event.message_id())
                         .image(format!("base64://{}", base64_img));
 
                     send_msg(&ctx, writer, group_id, Some(user_id), msg).await?;
                 }
+                // 页面没有可发的内容（验证页），原因上面已经记过日志。
+                Ok(None) => {}
                 Err(e) => {
                     error!(target: "Plugin/WebShot", "Error capturing {}: {}", url, e);
                 }
@@ -585,6 +674,47 @@ mod tests {
         );
         let member = event(42, false);
         assert!(!is_own_echo(&crate::event::MessageEvent(&member), 7));
+    }
+
+    /// 微信文章走专用 UA 与手机宽度，别的站点一概不动。
+    #[test]
+    fn wechat_articles_get_the_mobile_ua_and_width() {
+        let config = config();
+        let url = |raw: &str| Url::parse(raw).unwrap();
+
+        assert!(is_wechat_article(&url(
+            "https://mp.weixin.qq.com/s/qp_Hqw5RsoKtaXe-l3XUrA"
+        )));
+        assert!(is_wechat_article(&url("https://MP.Weixin.QQ.com/s/abc")));
+        assert!(is_wechat_article(&url("https://mp.weixin.qq.com./s/abc")));
+        assert_eq!(
+            capture_width(&url("https://mp.weixin.qq.com/s/abc"), &config),
+            WECHAT_VIEWPORT_WIDTH
+        );
+
+        for raw in [
+            "https://weixin.qq.com/r/abc",
+            "https://mp.weixin.qq.com.attacker.net/s/abc",
+            "https://www.example.com/s/abc",
+        ] {
+            assert!(!is_wechat_article(&url(raw)), "{raw} 不该走微信那条路");
+            assert_eq!(capture_width(&url(raw), &config), config.viewport_width);
+        }
+
+        // UA 里得有 MicroMessenger，否则微信照样判「环境异常」。
+        assert!(WECHAT_UA.contains("MicroMessenger"));
+    }
+
+    /// 被送去验证页时返回「没有内容」，而不是发一张只有「去验证」的图。
+    #[test]
+    fn verification_pages_are_not_screenshotted() {
+        assert!(is_verification_page(
+            "https://mp.weixin.qq.com/mp/wappoc_appmsgcaptcha?poc_token=abc&target_url=x"
+        ));
+        assert!(!is_verification_page(
+            "https://mp.weixin.qq.com/s/qp_Hqw5RsoKtaXe-l3XUrA?nwr_flag=1#wechat_redirect"
+        ));
+        assert!(!is_verification_page("https://example.com/"));
     }
 
     #[test]
