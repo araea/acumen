@@ -32,8 +32,8 @@ pub struct StatsConfig {
     pub height: u32,
 
     /// 排行榜的刻度竖线与发言条谁盖谁。
-    /// `false`（默认）：实色条盖住刻度，每根条都是完整的一块颜色；
-    /// `true`：刻度画在最上层，从榜首通到榜尾，格子不被任何一根条打断。
+    /// `true`（默认）：刻度画在最上层，从榜首通到榜尾，格子不被任何一根条打断；
+    /// `false`：实色条盖住刻度，每根条都是完整的一块颜色。
     /// 只影响遮挡关系，刻度的位置与疏密两种都一样；文字始终在最上面，不会被线压到。
     pub ranking_grid_over_bars: bool,
 
@@ -91,7 +91,7 @@ impl Default for StatsConfig {
             font_family: "Noto Sans CJK SC".to_string(),
             width: 960,
             height: 800,
-            ranking_grid_over_bars: false,
+            ranking_grid_over_bars: true,
             channel: ChannelConfig::default(),
             push_min_messages: 20,
             push_group_gap_min_seconds: 20,

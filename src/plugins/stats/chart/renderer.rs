@@ -248,8 +248,8 @@ pub fn draw_bar_chart(
             )?;
         }
 
-        // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认实色条盖住刻度，
-        // 每根条是完整的一块颜色；打开则刻度画在最上层，每行的色带都被刻满。
+        // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认刻度画在最上层，
+        // 每行的色带都被刻满；关掉则实色条盖住刻度，每根条是完整的一块颜色。
         // 无论哪种，刻度只落在色带上、不越进行距的纸面，文字也都在最后一趟画。
         //
         // 刻度间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道。右端那道
@@ -1310,7 +1310,7 @@ mod tests {
             })
             .collect();
 
-        // 条盖住刻度（默认）与刻度压在条上两种，各出一张，好并排比
+        // 刻度压在条上（默认）与条盖住刻度两种，各出一张，好并排比
         for (over, name) in [(false, "ranking-full"), (true, "ranking-full-grid-on-top")] {
             let config = StatsConfig {
                 ranking_grid_over_bars: over,
