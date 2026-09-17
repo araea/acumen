@@ -116,9 +116,9 @@ async fn handle_to_url(
         writer,
         msg.group_id(),
         Some(msg.user_id()),
-        Message::new().reply(msg.message_id()).text(
-            "❌ 未检测到媒体文件\n引用一条包含图片或视频的消息，或在指令后面附带图片",
-        ),
+        Message::new()
+            .reply(msg.message_id())
+            .text("❌ 未检测到媒体文件\n引用一条包含图片或视频的消息，或在指令后面附带图片"),
     )
     .await?;
 
@@ -154,7 +154,9 @@ async fn handle_to_media(
     // 1. 尝试从指令参数中提取 URL
     let mut target_url = matched.args.iter().find_map(|seg| {
         if seg.get_str("type") == Some("text") {
-            seg.get("data").and_then(|d| d.get_str("text")).and_then(find_url)
+            seg.get("data")
+                .and_then(|d| d.get_str("text"))
+                .and_then(find_url)
         } else {
             None
         }
@@ -183,11 +185,7 @@ async fn handle_to_media(
         // 2. 链接以常见视频后缀结尾
         let is_video = is_video_cmd || url.ends_with(".mp4") || url.ends_with(".mov");
 
-        let reply = if is_video {
-            Message::new().reply(msg.message_id()).video(url)
-        } else {
-            Message::new().reply(msg.message_id()).image(url)
-        };
+        let reply = deliver_message(msg.message_id(), url, is_video);
         send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
     } else {
         send_msg(
@@ -205,9 +203,56 @@ async fn handle_to_media(
     Ok(None)
 }
 
+/// 转链路的成品：转视频发视频气泡，其余转成图片，两者都引用用户那条指令。
+///
+/// **视频那条不带引用**：同一条消息里放「引用 + 视频」时 QQ 显示不出那段视频，
+/// 群里只看到一个空气泡（2026-09-17 实测，与视频解析同一条成因）。图片没有这个
+/// 限制，照旧引用。
+fn deliver_message(request_id: i64, url: String, is_video: bool) -> Message {
+    if is_video {
+        Message::new().video(url)
+    } else {
+        Message::new().reply(request_id).image(url)
+    }
+}
+
 /// Validate control edits against the plugin's actual configuration type.
 pub fn validate_config(value: &toml::Value) -> Result<(), String> {
     <Config as serde::Deserialize>::deserialize(value.clone())
         .map(|_| ())
         .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kinds(message: &Message) -> Vec<String> {
+        message
+            .0
+            .iter()
+            .map(|segment| segment.type_.clone())
+            .collect()
+    }
+
+    /// 视频气泡与引用段不能同条：QQ 那边会把视频那一段吃掉。
+    #[test]
+    fn the_video_take_leaves_the_quote_out() {
+        assert_eq!(
+            kinds(&deliver_message(
+                7,
+                "https://example.com/a.mp4".into(),
+                true
+            )),
+            vec!["video"]
+        );
+        assert_eq!(
+            kinds(&deliver_message(
+                7,
+                "https://example.com/a.png".into(),
+                false
+            )),
+            vec!["reply", "image"]
+        );
+    }
 }
