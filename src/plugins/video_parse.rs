@@ -10,7 +10,8 @@
 //! - QQ 的小程序卡与分享卡——链接在那段 `json` 载荷里，正文是空的。
 //!
 //! 说出口的话只有两句，且都只在必要时出现：取片慢（超过 `ack_after_seconds`）
-//! 补一句 ⏳，取不到回一句 ❌。成品自己就是那条消息，不再另发一条正文。
+//! 补一句 ⏳，取不到回一句 ❌。成品自己就是那条消息，不再另发一条正文，**也不带
+//! 引用**——QQ 把「引用 + 视频」放在一条消息里时那个视频不显示，见 [`send`]。
 //! 同一个人在同一会话里十分钟内重贴同一条不会下第二遍（[`state`]）。
 //!
 //! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
@@ -285,8 +286,7 @@ async fn extract(
             .map_err(|_| anyhow!("取片闸门不可用"))?;
         let size = download(&streams.urls, &path, cap, budget).await?;
         send(
-            ctx, writer, config, video, &streams, size, &path, group_id, user_id, request_id,
-            &delivered,
+            ctx, writer, config, video, &streams, size, &path, group_id, user_id, &delivered,
         )
         .await
     };
@@ -343,6 +343,10 @@ async fn download(urls: &[String], path: &Path, cap: u64, budget: Duration) -> R
 ///
 /// 视频气泡与群文件共用同一次上传。一条成品只有成品本身，不再另发一条正文：
 /// 用户在群里等的是这条片子，不是关于它的说明。
+///
+/// **两条腿都不带引用**：QQ 把「引用 + 视频」放在一条消息里时，那个视频不显示
+/// （气泡是空的，用户什么也看不到）。2026-09-17 实测踩过，别顺手把引用加回来。
+/// 群里同时有好几条链接时靠时间顺序对上，成品就挨在触发它的那条后面。
 #[allow(clippy::too_many_arguments)]
 async fn send(
     ctx: &Context,
@@ -354,7 +358,6 @@ async fn send(
     path: &Path,
     group_id: Option<i64>,
     user_id: i64,
-    request_id: i64,
     delivered: &AtomicBool,
 ) -> Result<()> {
     let name = format!("{}.mp4", safe_file_name(&video.title));
@@ -369,7 +372,6 @@ async fn send(
         .ok_or_else(|| anyhow!("上传没有返回资源"))?
         .to_string();
 
-    // 成品引用用户贴的那条消息：群里同时有好几条链接时，能看出这个片子是哪来的。
     let send = SendMode::parse(&config.send);
     // 先发能点开就播的那条（视频气泡），再补群文件。
     //
@@ -380,7 +382,7 @@ async fn send(
     let mut sent = false;
     let mut failure = None;
     if matches!(send, SendMode::Bubble | SendMode::Both) {
-        let bubble = Message::new().reply(request_id).video(resource.clone());
+        let bubble = Message::new().video(resource.clone());
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), bubble).await {
             Ok(()) => {
                 sent = true;
@@ -393,9 +395,7 @@ async fn send(
         }
     }
     if matches!(send, SendMode::File | SendMode::Both) {
-        let file = Message::new()
-            .reply(request_id)
-            .file(resource, Some(name.clone()));
+        let file = Message::new().file(resource, Some(name.clone()));
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), file).await {
             Ok(()) => {
                 sent = true;

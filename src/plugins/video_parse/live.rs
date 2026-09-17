@@ -98,7 +98,7 @@ async fn live_takes_a_link_from_the_sandbox_group() {
         .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
     let (ctx, writer) = live_context().await;
     forget_previous_take(group).await;
-    // 真机上这条链接是群友发的，这里造一条真实存在的——成品会引用它。
+    // 真机上这条链接是群友发的，这里造一条真实存在的。
     let trigger = post(&ctx, &writer, group, SAMPLE).await;
     let (ctx, writer) = link_context(ctx, writer, group, trigger).await;
     // 只为自检省流量：360P、20 MB 上限；两条腿都验，所以发法显式开成 both
@@ -108,20 +108,33 @@ async fn live_takes_a_link_from_the_sandbox_group() {
     let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
     assert!(consumed.is_none(), "视频站链接该由本插件吃掉");
 
-    // 群里到底有没有：看实现端记下来的内容，不看日志。成品带引用，所以探针带上
-    // 这一轮的触发消息 ID——上一轮留下的成品配不上它。
+    // 群里到底有没有：看实现端记下来的内容，不看日志。成品**不带引用**（带引用时
+    // 视频不显示，见 `send`），所以用「比触发那条新」认这一轮的成品。
     let listed = recent_messages(&ctx, &writer, group).await;
-    let bubble = find_sent(&listed, &format!("<quote id=\"{trigger}\"/><video"));
-    let file = find_sent(&listed, &format!("<quote id=\"{trigger}\"/><file"));
+    let bubble = find_sent(&listed, "<video", trigger);
+    let file = find_sent(&listed, "<file", trigger);
     assert!(bubble.is_some(), "视频气泡没到群里");
     assert!(file.is_some(), "群文件没到群里");
+    // 成品里不该出现引用段：那正是视频显示不出来的成因。只看这一轮发出去的——
+    // 群里可能有从前的成品留在那儿。
+    for message in &listed {
+        let newer = message["id"]
+            .as_str()
+            .and_then(|id| id.parse::<i64>().ok())
+            .is_some_and(|id| id > trigger);
+        let content = message["content"].as_str().unwrap_or_default();
+        assert!(
+            !(newer && content.contains("<quote") && content.contains("<video")),
+            "成品带上了引用，视频会显示不出来：{content}"
+        );
+    }
 
     // 收工：这次发出去的连同触发那条一起撤回（取片慢时还会有句「正在取片」）。
     let ids = [
         Some(trigger.to_string()),
         bubble,
         file,
-        find_sent(&listed, "正在取片"),
+        find_sent(&listed, "正在取片", trigger),
     ];
     for id in ids.into_iter().flatten() {
         recall(&ctx, &writer, group, &id).await;
@@ -157,15 +170,15 @@ async fn live_reads_a_card_from_the_sandbox_group() {
     assert!(consumed.is_none(), "卡片该由本插件吃掉");
 
     let listed = recent_messages(&ctx, &writer, group).await;
-    let bubble = find_sent(&listed, &format!("<quote id=\"{trigger}\"/><video"));
+    let bubble = find_sent(&listed, "<video", trigger);
     assert!(bubble.is_some(), "卡片没有换来原片");
 
     // 收工：这次发出去的连同触发那条一起撤回。
     let ids = [
         Some(trigger.to_string()),
         bubble,
-        find_sent(&listed, &format!("<quote id=\"{trigger}\"/><file")),
-        find_sent(&listed, "正在取片"),
+        find_sent(&listed, "<file", trigger),
+        find_sent(&listed, "正在取片", trigger),
     ];
     for id in ids.into_iter().flatten() {
         recall(&ctx, &writer, group, &id).await;
@@ -212,10 +225,19 @@ async fn recent_messages(
     out
 }
 
-/// 在这批消息里找带某个记号的那一条，回它的 ID。
-fn find_sent(messages: &[serde_json::Value], marker: &str) -> Option<String> {
+/// 在这批消息里找带某个记号、且比 `after` 新的那一条，回它的 ID。
+///
+/// 成品不带引用，没法靠「引用的是这一轮的触发消息」认出自己那条；消息 ID 是递增的，
+/// 比触发那条大就一定是这一轮发出去的（上一轮留下的成品比它小）。
+fn find_sent(messages: &[serde_json::Value], marker: &str, after: i64) -> Option<String> {
     messages
         .iter()
+        .filter(|message| {
+            message["id"]
+                .as_str()
+                .and_then(|id| id.parse::<i64>().ok())
+                .is_some_and(|id| id > after)
+        })
         .find(|message| {
             message["content"]
                 .as_str()
