@@ -286,7 +286,7 @@ async fn live_persona_and_gate_dialogue() {
             &reply_key,
             &reply_model,
             dir.path(),
-            &skill_dirs(dir.path(), true),
+            &skill_dirs(dir.path()),
             PERSONA,
             &config,
             &Default::default(),

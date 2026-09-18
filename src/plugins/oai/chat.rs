@@ -33,7 +33,7 @@ pub(crate) mod tone;
 pub(crate) mod vision;
 pub(crate) mod window;
 
-pub(crate) use session::{LOOKUP_KINDS, PROFILE_KINDS, start};
+pub(crate) use session::start;
 
 use crate::event::Context;
 use simd_json::base::ValueAsScalar;
@@ -56,8 +56,7 @@ pub(crate) const LOG_TARGET: &str = "Plugin/OAI/Chat";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub(crate) struct ChatConfig {
-    /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片，
-    /// 以及群文件的改名、移动、删除）的群号。
+    /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片）的群号。
     ///
     /// 这些是会被全群看见的写操作，默认一个群都不放行，要用就按群单独列出来。
     pub management_groups: Vec<i64>,
@@ -67,8 +66,6 @@ pub(crate) struct ChatConfig {
     pub actions_budget: usize,
     /// 一轮最多写几条记忆。
     pub memo_budget: usize,
-    /// 一轮最多查几次资料（群资料、个人资料、旧消息共用这一份）。
-    pub lookup_budget: usize,
     pub draw_budget: usize,
     pub music_budget: usize,
     pub video_budget: usize,
@@ -99,7 +96,6 @@ impl Default for ChatConfig {
             messages_budget: 3,
             actions_budget: 6,
             memo_budget: 3,
-            lookup_budget: 4,
             draw_budget: 2,
             music_budget: 1,
             // 拍一段片子一次一块多，比写歌贵一倍；想要就自己在 [oai.chat] 里开。
@@ -174,17 +170,13 @@ pub(crate) struct Avatar {
 
 /// 这一轮该挂哪些群聊工具。
 ///
-/// 一道道闸与能力层真正会拒绝的开关是同一份：查询额度为 0 就不给 `satori_history`
-/// 那三个，记忆关着就不给 `satori_memo`，写歌拍片额度为 0 连工具都不挂。调用方
-/// （房间与搭话）照它拼白名单，于是「模型看得到的工具」和「它真按得动的按钮」
-/// 永远对得上。
+/// 一道道闸与能力层真正会拒绝的开关是同一份：记忆关着就不给 `satori_memo`，
+/// 画图、写歌、拍片额度为 0 连工具都不挂。调用方（房间与搭话）照它拼白名单，
+/// 于是「模型看得到的工具」和「它真按得动的按钮」永远对得上。
 pub(crate) fn tool_names(config: &ChatConfig) -> Vec<&'static str> {
     let mut names = vec!["satori_context", "satori_read", "satori_action"];
     if config.draw_budget > 0 {
         names.push("satori_draw");
-    }
-    if config.lookup_budget > 0 {
-        names.extend(["satori_history", "satori_group", "satori_profile"]);
     }
     if config.memory_enabled && config.memo_budget > 0 {
         names.push("satori_memo");

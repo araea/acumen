@@ -1136,15 +1136,10 @@ mod tests {
         assert!(decode_response("message.delete", b" ").unwrap().is_null());
         assert!(
             decode_response(
-                "internal/group_medal",
+                "internal/like",
                 br#"{"ok":false,"result":"code=2 system error"}"#
             )
             .is_err()
-        );
-        assert_eq!(
-            decode_response("internal/group_bulletin", br#"{"ok":true,"payload":false}"#).unwrap()
-                ["payload"],
-            false
         );
         assert!(decode_response("message.get", b"not-json").is_err());
     }

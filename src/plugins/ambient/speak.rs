@@ -10,11 +10,6 @@ use super::{AmbientConfig, Scene};
 use crate::plugins::oai::agent::{self, AgentRun};
 use std::path::{Path, PathBuf};
 
-/// 有旧账查询时追加的一段话。
-///
-/// 内存窗口只有几十条、重启就空，而 QQ 自己存着完整历史和整份名册。人格
-/// 「记不住」和「查得到」是两件事：这段话的作用是让它知道自己伸手能摸到什么。
-const LOOKUP_RULES: &str = "\n翻旧账：satori_history 读 QQ 存的本群历史（按关键词、只看某个人、或某条消息的前后），satori_group 按昵称找群友、看某人的群名片与入群时间与头衔、多久没冒头、群里谁最活跃、本群发言榜、随机抽人或分队、群文件、群荣誉与被禁言的人、这个群的容量与等级与群主、群统计、被设成精华的消息，satori_profile 看你自己的昵称签名与在线状态，或某人的资料详情（等级、生日、地区）、在不在线用什么设备、你和他的亲密关系与关系开关。眼前这段记录只有最近几十条，「上次那个」「这人是熟脸还是新面孔」「今天谁最能说」「抽个人分下队」翻一下就有；查回来的是资料，用进自己话里就好，查询过程本身不算话题。\n手边有 bash 与读写文件：要把一段材料整理成文件发出去就在本轮工作目录里做，别在群里贴长内容。\n";
 
 /// 留着写歌额度时追加的一段话。
 ///
@@ -59,7 +54,7 @@ fn house_rules(messages_budget: usize, focus_max_seconds: u64) -> String {
 ///
 /// 这段没法再省：每一句都对应一个拿不到就用不上的机制——工具叫什么、
 /// 回执才算数、用过工具之后输出 `[silent]` 免得再发一遍。
-const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、群角色与可用能力；satori_action 发送或互动；satori_read 读原消息（forward:true 展开转发，语音附听写）；入退群、禁言、名片变化、表态也是现场；未知身份与无载荷查询按未知理解。\n签到、改自己的名片、整理群文件、点个表态或戳一下都算完整的一轮；管理动作按 management_enabled 与 QQ 权限执行，用法见 satori-reply。\n回执才算数：失败或群聊更新就重看现场，超时表示结果未知；用过工具之后最终输出 [silent]（可附 focus）；bash 整理材料。\n两三个意思分几次 send，一条一个意思，每条计额度；text 保留空格与换行。群里的图与商城表情能再发一遍：send 里 sticker 配 message_id 与 index 就是从记录里偷，顺手在 note 写一句它长什么样、什么场合发；偷走的会进你的表情包库（编号就在现场里），往后写 id 就取得到。satori_draw 给画面描述（尺寸、画质、参考图可选），生成到 ambient/media，用 type:image 发出去，配字加 text。绘图不占发送额度，有张数上限。";
+const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、群角色与可用能力；satori_action 发送或互动；satori_read 读原消息（forward:true 展开合并转发）；入退群、禁言、名片变化、表态也是现场；未知身份与无载荷查询按未知理解。\n签到、改自己的名片、点个表态或戳一下都算完整的一轮；管理动作按 management_enabled 与 QQ 权限执行，用法见 satori-reply。\n回执才算数：失败或群聊更新就重看现场，超时表示结果未知；用过工具之后最终输出 [silent]（可附 focus）；bash 整理材料：要把一段材料整理成文件发出去就在本轮工作目录里做，别在群里贴长内容。\n两三个意思分几次 send，一条一个意思，每条计额度；text 保留空格与换行。群里的图与商城表情能再发一遍：send 里 sticker 配 message_id 与 index 就是从记录里偷，顺手在 note 写一句它长什么样、什么场合发；偷走的会进你的表情包库（编号就在现场里），往后写 id 就取得到。satori_draw 给画面描述（尺寸、画质、参考图可选），生成到 ambient/media，用 type:image 发出去，配字加 text。绘图不占发送额度，有张数上限。";
 
 /// 把人设、现场说明和这一轮真正挂上去的工具说明拼成系统提示词。
 ///
@@ -69,7 +64,6 @@ fn system_prompt(
     persona: &str,
     config: &AmbientConfig,
     live: bool,
-    lookup: bool,
     memo: bool,
     web: bool,
 ) -> String {
@@ -78,14 +72,13 @@ fn system_prompt(
     let music = live && config.music_budget > 0;
     let video = live && config.video_budget > 0;
     format!(
-        "{}\n\n---\n\n{}{}{}{}{}{}{}",
+        "{}\n\n---\n\n{}{}{}{}{}{}",
         persona.trim(),
         house_rules(
             config.messages_budget.clamp(1, 5),
             config.focus_max_seconds.min(600)
         ),
         if live { TOOL_RULES } else { "" },
-        if lookup { LOOKUP_RULES } else { "" },
         if memo { MEMO_RULES } else { "" },
         if web { SEARCH_RULES } else { "" },
         if music { MUSIC_RULES } else { "" },
@@ -198,7 +191,6 @@ pub(crate) async fn compose(
         })
     });
     let memo = bridge.is_some() && config.memory_enabled && config.memo_budget > 0;
-    let lookup = bridge.is_some() && config.lookup_budget > 0;
     if web.is_some() {
         tools.push_str(",web_search,web_fetch");
     }
@@ -206,7 +198,6 @@ pub(crate) async fn compose(
         persona,
         config,
         bridge.is_some(),
-        lookup,
         memo,
         web.is_some(),
     );
@@ -286,7 +277,7 @@ mod tests {
     /// 对语言模型也不好使——「不要写小作文」远不如「说清楚就停」管用。所以这里只留
     /// 硬性的协议（条数、标记写法）和几条真正的边界，其余一律写成可以怎么做。
     /// 这份清单盯着的是语气，不是某个词本身——协议里该有的「最多 N 条」都不算数。
-    /// 现场说明之外的几段（工具、旧账、记忆）同样只写「有什么可用」。
+    /// 现场说明之外的几段（工具、记忆、联网）同样只写「有什么可用」。
     #[test]
     fn the_house_rules_describe_affordances_rather_than_prohibitions() {
         let rules = house_rules(3, 300);
@@ -311,7 +302,6 @@ mod tests {
             for text in [
                 rules.as_str(),
                 TOOL_RULES,
-                LOOKUP_RULES,
                 MEMO_RULES,
                 SEARCH_RULES,
                 MUSIC_RULES,
@@ -342,15 +332,12 @@ mod tests {
     #[test]
     fn every_chat_tool_that_is_switched_on_is_named_in_the_prompt() {
         let config = AmbientConfig::default();
-        let full = system_prompt("人设", &config, true, true, true, true);
+        let full = system_prompt("人设", &config, true, true, true);
         for tool in [
             "satori_context",
             "satori_read",
             "satori_action",
             "satori_draw",
-            "satori_history",
-            "satori_group",
-            "satori_profile",
             "satori_memo",
             "satori_music",
             "satori_video",
@@ -365,12 +352,9 @@ mod tests {
         }
         // 关掉的工具不占篇幅：没有聊天界面时连带那条「用完输出 [silent]」都不该出现；
         // 没开联网时出网工具的名字也不该出现。
-        let bare = system_prompt("人设", &config, false, false, false, false);
+        let bare = system_prompt("人设", &config, false, false, false);
         for tool in [
             "satori_action",
-            "satori_history",
-            "satori_group",
-            "satori_profile",
             "satori_memo",
             "satori_music",
             "satori_video",
@@ -382,12 +366,12 @@ mod tests {
         // 不带聊天界面的那一轮仍然有完整的文字输出协议可用。
         assert!(bare.contains("satori-reply") && bare.contains("[silent]"));
         // 出网与聊天界面彼此独立：没有界面也能查资料。
-        let offline_chat = system_prompt("人设", &config, false, false, false, true);
+        let offline_chat = system_prompt("人设", &config, false, false, true);
         assert!(offline_chat.contains("web_search"), "{offline_chat}");
         // 写歌与拍片按额度开关：额度归零（高峰那档 frugal 就是这么干的）时，
         // 提示词里也不该再提它们——工具根本没挂上去。
         let frugal = AmbientConfig::default().frugal();
-        let cheap = system_prompt("人设", &frugal, true, true, true, true);
+        let cheap = system_prompt("人设", &frugal, true, true, true);
         for tool in ["satori_music", "satori_video"] {
             assert!(!cheap.contains(tool), "{tool} 额度是 0，提示词里还留着它");
         }
@@ -412,7 +396,7 @@ mod tests {
         // 上限随工具增多调过三次：写歌与拍片各占一段（约 250 字），它们的价钱与
         // 用法必须写在提示词里，不能只靠工具自己的 description；最近一次是「你自己」
         // 那两句（约 130 字，见上）。
-        let full = system_prompt("", &config, true, true, true, true)
+        let full = system_prompt("", &config, true, true, true)
             .chars()
             .count();
         assert!(full < 2650, "现场说明加全部工具说明 {full} 字");

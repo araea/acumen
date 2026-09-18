@@ -588,7 +588,7 @@ mod tests {
             dir: &dir,
             model: "fake-model",
             bridge: Some(std::sync::Arc::new(Fake)),
-            tools: Some("bash,satori_context,satori_read,satori_action,satori_group"),
+            tools: Some("bash,satori_context,satori_read,satori_action,satori_memo"),
             prompt: "看看群里在聊什么",
             ..AgentRun::new()
         })
@@ -603,7 +603,7 @@ mod tests {
             .map(|tool| tool["function"]["name"].as_str().unwrap())
             .collect();
         assert!(names.contains(&"satori_action"), "{names:?}");
-        assert!(names.contains(&"satori_group"), "{names:?}");
+        assert!(names.contains(&"satori_memo"), "{names:?}");
         let body = requests[0].to_string();
         assert!(
             body.contains("你的回复本身会发进这个群"),

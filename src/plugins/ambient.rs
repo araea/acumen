@@ -80,16 +80,10 @@ const SELF: &str = include_str!("../../res/ambient/self.md");
 /// 分成两份是照那套外部 CLI 的渐进披露来的——常在提示词里的只有 skill 的一行描述，
 /// 正文要模型自己去 `read`。所以「怎么在群里动手」和「怎么翻旧账」拆开各自成篇，
 /// 用得上哪篇才读哪篇，常驻开销仍然只是两行描述。
-const SKILLS: [(&str, &str); 2] = [
-    (
-        "satori-reply",
-        include_str!("../../res/ambient/skills/satori-reply/SKILL.md"),
-    ),
-    (
-        "satori-lookup",
-        include_str!("../../res/ambient/skills/satori-lookup/SKILL.md"),
-    ),
-];
+const SKILLS: [(&str, &str); 1] = [(
+    "satori-reply",
+    include_str!("../../res/ambient/skills/satori-reply/SKILL.md"),
+)];
 /// 判定用的「兴趣画像」。
 ///
 /// 判定的唯一任务是在每条消息到来时判断「这个人格会不会想接这句话」。
@@ -207,11 +201,6 @@ pub(crate) struct AmbientConfig {
     pub mood_enabled: bool,
     /// 每轮最多写几条记忆；0 关闭 `satori_memo`。
     pub memo_budget: usize,
-    /// 每轮最多查几次群聊旧账（`satori_history` / `satori_group`）；0 关闭这两个工具。
-    ///
-    /// 内存窗口只有几十条、且重启就空，但 QQ 自己存着完整历史与整份成员名册。
-    /// 开着它，人格才能想起「上周那个报错」和「这人上次是什么时候冒头的」。
-    pub lookup_budget: usize,
     /// 发言时是否联网：遇到不认识的梗、新版本、比赛战况这类训练知识够不着的事，
     /// 可以先搜一下再开口。**默认开启**——人格的价值有一半在于不瞎说。
     /// 后端与房间共用 `[oai.search]` 那份配置，这里只管这个开关和预算。
@@ -290,7 +279,6 @@ impl Default for AmbientConfig {
             memory_enabled: true,
             mood_enabled: true,
             memo_budget: 3,
-            lookup_budget: 4,
             search_enabled: true,
             search_budget: 3,
             peak: peak::PeakConfig::default(),
@@ -378,7 +366,6 @@ impl AmbientConfig {
             draw_budget: 0,
             music_budget: 0,
             video_budget: 0,
-            lookup_budget: self.lookup_budget.min(1),
             // 高峰时段半价的是模型调用；联网搜索不便宜也更慢，这一句先不查。
             search_enabled: false,
             ..self.clone()
@@ -456,7 +443,6 @@ pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
         messages_budget: config.messages_budget,
         actions_budget: config.actions_budget,
         memo_budget: config.memo_budget,
-        lookup_budget: config.lookup_budget,
         draw_budget: config.draw_budget,
         music_budget: config.music_budget,
         video_budget: config.video_budget,
@@ -622,14 +608,10 @@ fn skills_root(base: &Path) -> PathBuf {
 }
 
 /// 这一轮随身的 skill 目录清单。
-///
-/// 查询额度为 0 时不带上 `satori-lookup`：它讲的那三个工具这一轮根本没挂上，
-/// 那一行描述与那份正文（虽然只在模型自己去读时才花 token）都是白带的。
-pub(crate) fn skill_dirs(base: &Path, lookup: bool) -> Vec<PathBuf> {
+pub(crate) fn skill_dirs(base: &Path) -> Vec<PathBuf> {
     let root = skills_root(base);
     SKILLS
         .iter()
-        .filter(|(name, _)| lookup || *name != "satori-lookup")
         .map(|(name, _)| root.join(name))
         .collect()
 }
@@ -1232,7 +1214,7 @@ async fn speak_up(
         &api_key,
         &reply_model,
         base,
-        &skill_dirs(base, config.lookup_budget > 0),
+        &skill_dirs(base),
         persona,
         config,
         &oai.search,
@@ -1669,10 +1651,9 @@ mod tests {
             ..AmbientConfig::default()
         };
         assert_eq!(huge.freshness_window(), Duration::from_secs(300));
-        // 旧配置里没有这两个键也读得出来，取默认值。
+        // 旧配置里没有这个键也读得出来，取默认值。
         let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();
         assert_eq!(legacy.send_freshness_seconds, config.send_freshness_seconds);
-        assert_eq!(legacy.lookup_budget, config.lookup_budget);
     }
 
     #[test]
@@ -1706,13 +1687,12 @@ mod tests {
     fn peak_hours_default_to_dozing_through_deepseeks_expensive_window() {
         let config = AmbientConfig::default();
         assert_eq!(config.peak.mode, peak::Mode::Sleep);
-        // 醒来那一轮用最省的一份：不看图、上下文减半、少发一条、不绘图、只查一次。
+        // 醒来那一轮用最省的一份：不看图、上下文减半、少发一条、不绘图。
         let frugal = config.frugal();
         assert_eq!(frugal.context_images, 0);
         assert!(frugal.context_turns < config.context_turns);
         assert!(frugal.messages_budget <= 2);
         assert_eq!(frugal.draw_budget, 0);
-        assert_eq!(frugal.lookup_budget, 1);
         // 联网不便宜也更慢，高峰时段这一句先不查。
         assert!(!frugal.search_enabled);
         // 其余设置原样带过去。

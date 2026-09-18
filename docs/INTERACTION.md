@@ -135,7 +135,7 @@ ayjx 不用「等你下一句话」这种模态。需要指定对象时，一律
 | --- | --- | --- |
 | 复读机 | `cooldown_seconds` | 同一句接力后的静默期 |
 | 搭话 | `cooldown_seconds` / `max_per_hour` | 全局冷却与每小时上限 |
-| 搭话 | `lookup_budget` / `search_budget` | 每轮可用的查询次数 |
+| 搭话 | `search_budget` | 每轮可用的联网查询次数 |
 | 搭话 | `draw_budget` / `music_budget` / `video_budget` | 每轮可用的生成次数，0 即关闭 |
 | 资讯 | `realtime_max_per_hour` | 实时快报的每小时上限 |
 

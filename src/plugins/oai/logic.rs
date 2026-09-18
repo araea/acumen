@@ -1910,9 +1910,8 @@ pub async fn execute(
 > 公有、`&` 私有和 `~` 临时模式都适用，历史按原模式隔离。
 > 它会自己调工具：读写文件、执行命令，查到的结果自己用进回答里。
 > 在群里说话时还多一整套群聊工具：看这个群此刻的样子（`satori_context`）、读某条
-> 消息（`satori_read`）、发言与戳一戳与撤回与合并转发（`satori_action`）、翻群历史与
-> 查群资料与查某人（`satori_history` / `satori_group` / `satori_profile`）、写长期记忆
-> （`satori_memo`）、出图写歌拍片（`satori_draw` / `satori_music` / `satori_video`）。
+> 消息（`satori_read`）、发言与戳一戳与撤回与合并转发（`satori_action`）、
+> 写长期记忆（`satori_memo`）、出图写歌拍片（`satori_draw` / `satori_music` / `satori_video`）。
 > 额度与哪些群允许管理动作在 `[oai.chat]` 里配；私聊里没有这一套（没有群也就没有群动作）。
 > 房间提示词追加在内置系统提示词之后；支持图片、历史编辑/删除/清空/重新生成；
 > 长回复卡片显示实际应答模型、耗时和工具轨迹。

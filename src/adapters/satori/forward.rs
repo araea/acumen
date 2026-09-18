@@ -575,21 +575,27 @@ mod tests {
             }
             .into(),
         });
-        let found: Value = writer
-            .call(
-                &ctx,
-                "internal/message_search",
-                json!({"channel_id":channel,"query":"message forward","limit":3,"scan_limit":600}),
-            )
+        // 0.17.0 起实现端不再开放历史查询，改从最近一页消息里找一条带合并转发的。
+        let page: Value = writer
+            .call(&ctx, "message.list", json!({"channel_id":channel,"limit":50}))
             .await
-            .expect("message_search");
-        let hit = found["data"]
+            .expect("message.list");
+        let items = page["data"]
             .as_array()
-            .and_then(|list| list.first())
+            .cloned()
+            .or_else(|| page.as_array().cloned())
+            .expect("message.list 应回一页消息");
+        let (message_id, message) = items
+            .iter()
+            .find_map(|item| {
+                let id = item["id"].as_str().and_then(|id| id.parse::<i64>().ok());
+                let message = message::from_content_with(
+                    item["content"].as_str().unwrap_or(""),
+                    &writer.resources(),
+                );
+                source_of(&message, id).map(|_| (id, message))
+            })
             .expect("这个群最近没有合并转发可读");
-        let message_id = hit["id"].as_str().and_then(|id| id.parse::<i64>().ok());
-        let message =
-            message::from_content_with(hit["content"].as_str().unwrap_or(""), &writer.resources());
         let source = source_of(&message, message_id)
             .expect("forward source")
             .in_channel(channel.clone());

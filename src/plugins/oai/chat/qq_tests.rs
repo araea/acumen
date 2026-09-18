@@ -86,8 +86,8 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
     assert_eq!(
         action(
             &bridge,
-            "root-delete",
-            json!({"action":"group_file","operation":{"op":"delete_folder","folder_id":"/"}})
+            "over-long-mute",
+            json!({"action":"mute_all","duration_seconds":31*86400})
         )
         .await["ok"],
         false
@@ -163,81 +163,7 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
     server.abort();
 }
 
-#[tokio::test]
-async fn qq_empty_payload_and_kernel_errors_never_become_facts() {
-    let group = -8_000_502;
-    let (ctx, writer, calls, server) = fixture(group).await;
-    let dir =
-        crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "qq-query").unwrap();
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
-    let bridge = start(
-        &ctx,
-        &writer,
-        group,
-        window::with_group(group, |s| s.seq),
-        &config,
-        dir.path(),
-        dir.path(),
-    )
-    .await
-    .unwrap();
-    for what in ["unread", "capacity"] {
-        let result = request(&bridge, json!({"id":what,"op":"group","what":what})).await;
-        assert_eq!(result["ok"], false, "{result}");
-    }
-    let next = request(
-        &bridge,
-        json!({"id":"next","op":"group","what":"search","query":"张","next":"20"}),
-    )
-    .await;
-    assert_eq!(next["ok"], true);
-    let history = calls.lock().unwrap().clone();
-    let search = &history
-        .iter()
-        .find(|(m, _)| m == "internal/group_member_search")
-        .unwrap()
-        .1;
-    assert_eq!(search["offset"], 20);
-    assert_eq!(search["guild_id"], group.to_string());
-    server.abort();
-}
 
-#[tokio::test]
-async fn qq_file_upload_uses_multipart_and_consumes_a_message() {
-    let group = -8_000_503;
-    let (ctx, writer, calls, server) = fixture(group).await;
-    let dir =
-        crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "qq-file").unwrap();
-    tokio::fs::write(dir.path().join("note.txt"), "测试文件")
-        .await
-        .unwrap();
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
-    let bridge = start(
-        &ctx,
-        &writer,
-        group,
-        window::with_group(group, |s| s.seq),
-        &config,
-        dir.path(),
-        dir.path(),
-    )
-    .await
-    .unwrap();
-    let uploaded = action(&bridge, "upload", json!({"action":"group_file","operation":{"op":"upload","source":"note.txt","name":"note.txt","folder_id":"folder-1"}})).await;
-    assert_eq!(uploaded["ok"], true, "{uploaded}");
-    let history = calls.lock().unwrap().clone();
-    assert_eq!(history[0].0, "upload.create");
-    assert_eq!(history[1].0, "internal/group_file");
-    assert_eq!(history[1].1["file"], "internal:red/10000/_tmp/test");
-    assert_eq!(history[1].1["folder_id"], "folder-1");
-    assert!(history[1].1.get("source").is_none());
-    let context = request(&bridge, json!({"id":"ctx","op":"context"})).await;
-    assert_eq!(
-        context["result"]["messages_remaining"],
-        config.messages_budget - 1
-    );
-    server.abort();
-}
 
 /// Every call goes through the Rust bridge; the fixed sandbox is an explicit opt-in.
 #[tokio::test]
@@ -299,7 +225,6 @@ async fn live_qq_sandbox_actions_and_environment() {
     let old_card = member["nick"].as_str().unwrap_or("").to_string();
     let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
     config.management_groups = vec![group];
-    config.lookup_budget = 12;
     config.send_freshness_seconds = 0;
     ctx.config
         .write()
@@ -361,25 +286,9 @@ async fn live_qq_sandbox_actions_and_environment() {
             .as_array()
             .unwrap()
             .len()
-            > 50
+            > 10
     );
     let mut failures = Vec::new();
-    for what in [
-        "capacity",
-        "message_limit",
-        "signin",
-        "join_link",
-        "apps",
-        "file_info",
-        "first_unread",
-        "faces",
-    ] {
-        let out = request(&bridge, json!({"id":what,"op":"group","what":what})).await;
-        println!("live query {what}: ok={}", out["ok"]);
-        if out["ok"] != true {
-            failures.push(format!("{what}: {out}"));
-        }
-    }
     // Unknown and failed kernel envelopes are covered by deterministic tests above.
     // Perform cleanup before assertions, including when a write returns an error.
     for (name, value) in [
@@ -459,49 +368,6 @@ async fn live_qq_sandbox_actions_and_environment() {
         }
     } else {
         failures.push(format!("send receipt: {sent}"));
-    }
-    // Separate round for file operations so cleanup is not limited by the first round's quota.
-    let bridge = start(
-        &ctx,
-        &writer,
-        group,
-        window::with_group(group, |s| s.seq),
-        &config,
-        dir.path(),
-        dir.path(),
-    )
-    .await
-    .unwrap();
-    let folder_name = format!("ayjx-test-{}", chrono::Utc::now().timestamp());
-    let made = action(
-        &bridge,
-        "mkdir",
-        json!({"action":"group_file","operation":{"op":"create_folder","name":folder_name}}),
-    )
-    .await;
-    if let Some(folder) = made
-        .pointer("/result/data/folder_id")
-        .and_then(Value::as_str)
-    {
-        let renamed = action(&bridge, "rename-folder", json!({"action":"group_file","operation":{"op":"rename_folder","folder_id":folder,"name":format!("{folder_name}-renamed")}})).await;
-        if renamed["ok"] != true {
-            failures.push(format!("rename folder: {renamed}"));
-        }
-        let deleted = action(
-            &bridge,
-            "rmdir",
-            json!({"action":"group_file","operation":{"op":"delete_folder","folder_id":folder}}),
-        )
-        .await;
-        if deleted["ok"] != true {
-            failures.push(format!("delete folder: {deleted}"));
-        }
-        println!(
-            "live folder create/rename/delete: {}/{}/{}",
-            made["ok"], renamed["ok"], deleted["ok"]
-        );
-    } else {
-        failures.push(format!("create folder: {made}"));
     }
     let final_card: Value = writer
         .call(
@@ -603,7 +469,7 @@ async fn live_agent_uses_the_new_card_action() {
         &api_key,
         &reply_model,
         dir.path(),
-        &crate::plugins::ambient::skill_dirs(dir.path(), true),
+        &crate::plugins::ambient::skill_dirs(dir.path()),
         crate::plugins::ambient::PERSONA,
         &config,
         &Default::default(),

@@ -104,23 +104,10 @@ pub(crate) enum Action {
     RenameGroup {
         name: String,
     },
-    MarkRead,
-    SessionTop {
-        enable: bool,
-    },
-    GroupRemark {
-        remark: String,
-    },
-    GroupNotify {
-        mask: NotifyMask,
-    },
     ReactClear {
         message_id: String,
         #[serde(default)]
         emoji_id: Option<String>,
-    },
-    GroupFile {
-        operation: FileAction,
     },
     /// 转发已有消息保持真实作者；整理新内容时统一署机器人自己。
     Forward {
@@ -130,61 +117,7 @@ pub(crate) enum Action {
         texts: Vec<String>,
     },
 }
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum NotifyMask {
-    Notify,
-    Assistant,
-    Shield,
-    Receive,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum FileAction {
-    Upload {
-        source: String,
-        name: String,
-        #[serde(default = "root_folder")]
-        folder_id: String,
-    },
-    CreateFolder {
-        name: String,
-        #[serde(default = "root_folder")]
-        parent_id: String,
-    },
-    RenameFolder {
-        folder_id: String,
-        name: String,
-    },
-    DeleteFolder {
-        folder_id: String,
-    },
-    RenameFile {
-        file_id: String,
-        name: String,
-        #[serde(default = "root_folder")]
-        parent_id: String,
-        #[serde(default)]
-        busid: u32,
-    },
-    MoveFile {
-        file_id: String,
-        dest_id: String,
-        #[serde(default = "root_folder")]
-        parent_id: String,
-        #[serde(default)]
-        busid: u32,
-    },
-    DeleteFile {
-        file_id: String,
-        #[serde(default)]
-        busid: u32,
-    },
-}
-fn root_folder() -> String {
-    "/".into()
-}
+/// 一个会被写进 QQ 的短名称：非空、不超长、不带控制字符。
 fn label(value: &str, max: usize) -> Result<()> {
     ensure!(
         !value.trim().is_empty()
@@ -194,61 +127,7 @@ fn label(value: &str, max: usize) -> Result<()> {
     );
     Ok(())
 }
-fn filename(value: &str) -> Result<()> {
-    label(value, 180)?;
-    ensure!(!value.contains(['/', '\\']), "文件名不能包含路径分隔符");
-    Ok(())
-}
-impl FileAction {
-    fn validate(&self) -> Result<()> {
-        match self {
-            Self::Upload {
-                source,
-                name,
-                folder_id,
-            } => {
-                label(source, 4096)?;
-                filename(name)?;
-                label(folder_id, 512)?;
-            }
-            Self::CreateFolder { name, parent_id } => {
-                filename(name)?;
-                label(parent_id, 512)?;
-            }
-            Self::RenameFolder { name, folder_id } => {
-                filename(name)?;
-                label(folder_id, 512)?;
-                ensure!(folder_id != "/", "不能修改根目录");
-            }
-            Self::DeleteFolder { folder_id } => {
-                label(folder_id, 512)?;
-                ensure!(folder_id != "/", "不能删除根目录");
-            }
-            Self::RenameFile {
-                file_id,
-                name,
-                parent_id,
-                ..
-            } => {
-                label(file_id, 512)?;
-                filename(name)?;
-                label(parent_id, 512)?;
-            }
-            Self::MoveFile {
-                file_id,
-                dest_id,
-                parent_id,
-                ..
-            } => {
-                label(file_id, 512)?;
-                label(dest_id, 512)?;
-                label(parent_id, 512)?;
-            }
-            Self::DeleteFile { file_id, .. } => label(file_id, 512)?,
-        }
-        Ok(())
-    }
-}
+
 fn one() -> u8 {
     1
 }
@@ -433,7 +312,7 @@ impl Action {
                     "撤回作用于自己发出的消息"
                 );
             }
-            Self::Sign | Self::MarkRead | Self::SessionTop { .. } | Self::GroupNotify { .. } => {}
+            Self::Sign => {}
             Self::Card { user_id, card } => {
                 if let Some(uid) = user_id {
                     user(turns, uid)?;
@@ -470,12 +349,6 @@ impl Action {
                 );
             }
             Self::RenameGroup { name } => label(name, 60)?,
-            Self::GroupRemark { remark } => {
-                ensure!(
-                    remark.chars().count() <= 100 && !remark.chars().any(char::is_control),
-                    "群备注最多 100 字且不能含控制字符"
-                );
-            }
             Self::ReactClear {
                 message_id,
                 emoji_id,
@@ -485,7 +358,6 @@ impl Action {
                     ensure!(emoji.parse::<u32>().is_ok(), "表态 ID 用数字");
                 }
             }
-            Self::GroupFile { operation } => operation.validate()?,
             Self::Forward { message_ids, texts } => {
                 ensure!(
                     (1..=12).contains(&(message_ids.len() + texts.len())),
@@ -535,10 +407,6 @@ impl Action {
             | Self::Kick { .. }
             | Self::MuteAll { .. }
             | Self::RenameGroup { .. } => true,
-            Self::GroupFile { operation } => !matches!(
-                operation,
-                FileAction::Upload { .. } | FileAction::CreateFolder { .. }
-            ),
             _ => false,
         }
     }
@@ -547,9 +415,6 @@ impl Action {
             self,
             Self::Send { .. }
                 | Self::Forward { .. }
-                | Self::GroupFile {
-                    operation: FileAction::Upload { .. }
-                }
         )
     }
 }
