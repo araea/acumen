@@ -2,7 +2,8 @@
 
 这份文档管机器人在群里说出口的每一句话，以及每一张卡片图上的字。
 
-它是整套设计规范的第三份：入口与十条硬条目见 [`docs/GUIDELINES.md`](GUIDELINES.md)，
+它是整套设计规范的第三份：主张、原则与令牌口径见 [`docs/DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md)，
+入口与十条硬条目见 [`docs/GUIDELINES.md`](GUIDELINES.md)，
 交互与行为规范见 [`docs/INTERACTION.md`](INTERACTION.md)。
 
 它与 `res/cards/m3e.css` 分工：那边定「看起来是什么样」，这边定「听起来是什么样」。两者共用同一个前提：用户在群里看到的是一台机器，不是一个人。所以不装人、不卖萌、不渲染情绪，只把事说清楚。

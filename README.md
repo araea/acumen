@@ -72,6 +72,7 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 ## 文档与测试
 
 - [名称与界面复审](docs/NAME_DESIGN_AUDIT.md)
+- [设计系统](docs/DESIGN_SYSTEM.md)
 - [设计规范总纲](docs/GUIDELINES.md)
 - [交互规范](docs/INTERACTION.md)
 - [文案规范](docs/CONTENT.md)

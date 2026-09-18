@@ -1,6 +1,6 @@
 # 交互规范 · Interaction
 
-ayjx 设计规范的第二份，与[总纲](GUIDELINES.md)、[文案规范](CONTENT.md)、`res/cards/m3e.css`（视觉）配套。
+ayjx 设计规范的第二份，与[设计系统](DESIGN_SYSTEM.md)、[总纲](GUIDELINES.md)、[文案规范](CONTENT.md)、`res/cards/m3e.css`（视觉）配套。
 
 本文的引号约定：「」引代码里真实出现的指令与标识符；“”提及行文中的某个说法或概念。
 
@@ -34,6 +34,8 @@ ayjx 设计规范的第二份，与[总纲](GUIDELINES.md)、[文案规范](CONT
 ---
 
 ## 一、Think Human：八条原则的译法
+
+这套系统从 Apple HIG 取两层。一层是体验要达到的质量，九条，列在[设计系统的体验原则一节](DESIGN_SYSTEM.md#四体验原则--apple-hig)：清晰、尊重内容、层级、深度、直接、反馈、一致、渐进呈现、可达。另一层是拿不准时偏向谁，即下面这八条。
 
 依据是 Apple HIG 的八条设计原则。左栏是原话，右栏是它在 ayjx 里的含义。
 
@@ -241,4 +243,4 @@ ayjx 不用 `插件名.动作` 的形式，用扁平的中文指令加 `/` 前�
 
 ---
 
-这份规范依据 Apple Human Interface Guidelines 的八条设计原则，可用性部分参考 Nielsen Norman Group 的启发式评估，无障碍部分依据 WCAG 2.2。三者都为桌面与网页而写，这里逐条译成了群聊这个媒介里的动作。
+这份规范依据 Apple Human Interface Guidelines 的两层原则——体验九条与取舍八条，见[设计系统](DESIGN_SYSTEM.md#四体验原则--apple-hig)。可用性部分参考 Nielsen Norman Group 的启发式评估，无障碍部分依据 WCAG 2.2。三者都为桌面与网页而写，这里逐条译成了群聊这个媒介里的动作。规范之间冲突时，按[设计系统的决策优先级](DESIGN_SYSTEM.md#十四决策优先级)排。

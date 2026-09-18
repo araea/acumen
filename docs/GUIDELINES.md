@@ -18,15 +18,15 @@
 
 > Built on Material. Behave Native. Think Human.
 
-三句有先后。
+三句有先后，是[设计系统](DESIGN_SYSTEM.md)那四句主张在本仓库的短写法。
 
 Built on Material 管令牌。M3 Expressive 提供一套可计算的取值：色彩角色、字阶、形状、高度，落在 `res/cards/m3e.css`。文件头写着这套系统与 M3 的三处刻意偏离。令牌齐备之后，一张卡片上该说什么、什么时候说，还没有定义。
 
 Behave Native 管行为。这些插件不是 App，是群聊里的一个参与者。群聊里没有返回键、没有模态框、没有悬停菜单，也没有私有画布，机器人的每一次输出全体群成员都看得见。照搬 App 的交互，做出来的东西在群里不成立。规范在 [`docs/INTERACTION.md`](INTERACTION.md)。
 
-Think Human 管取舍。依据是 Apple HIG 的八条设计原则，排在最后，因为它是前两句的结果。Apple 对 Delight 的解释是“the sum of the consideration that you put into your product”。译法见 INTERACTION.md 第一节。
+Think Human 管取舍。依据是 Apple HIG，分两层：体验要达到什么质量（九条），以及拿不准时偏向谁（Apple 2026 年 6 月起 HIG 开头的八条原则）。两层都列在[设计系统的体验原则一节](DESIGN_SYSTEM.md#四体验原则--apple-hig)，八条的逐条译法见 INTERACTION.md 第一节。
 
-M3 与 HIG 管的不是同一件事。M3 给的是可以直接出图的令牌，HIG 的八条原则不规定长相，规定的是拿不准时偏向谁。
+M3 与 HIG 管的不是同一件事。M3 给的是可以直接出图的令牌，HIG 不规定长相，规定的是质量与偏向。冲突时按[决策优先级](DESIGN_SYSTEM.md#十四决策优先级)排。
 
 ---
 
@@ -37,10 +37,13 @@ M3 与 HIG 管的不是同一件事。M3 给的是可以直接出图的令牌，
 | 项 | koishi 工作区 | ayjx |
 | --- | --- | --- |
 | 形态 | 16 个仓库，各自发版 | 1 个仓库，23 个插件同进程 |
+| 设计系统 | 四份文档，规范仓库一处 | 同骨架的一份[设计系统](DESIGN_SYSTEM.md)加本仓库的总纲与硬条目 |
 | 保证同源的手段 | 11 份逐字节相同的 `m3.ts`，`md5sum` 校验 | 一份注册表、一个出图入口、一条配置写路径 |
 | 指令形态 | `插件名.动作` 两级为主，按 authority 分级 | `/` 前缀加中文指令，权限收在 `[ctl].admins` |
 | 视觉例外 | 复刻类画面不套规范（棋盘、牌面） | 无例外，五张卡片全在系统内 |
 | 文案例外 | 拟人题材台词属于内容 | 搭话人格整套在外，见下节第 3 条 |
+
+主张、哲学、体验原则、十类令牌、决策优先级两边是同一份，形态按各自的媒介落地——**Consistency ≠ identical implementation**。差异见[设计系统的平台适配一节](DESIGN_SYSTEM.md#十三平台适配)。
 
 ayjx 采用那两份文档的判断方式，不采用那十六个插件的具体写法。那边的 `mcdle.猜`、`bull.来一局`、`session.prompt()` 在这里没有对应物，这边的符号指令、引用驱动、卡片出图，那边也没有。
 
@@ -173,6 +176,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 | 文档 | 管什么 | 什么时候读 |
 | --- | --- | --- |
 | 本文 | 总纲：三句话、五条底线、十条硬条目 | 动手改任何插件之前 |
+| [`docs/DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md) | 设计系统本身：主张、哲学、视觉语言、体验原则、十类令牌、决策优先级。与 [koishi 工作区](https://github.com/araea/koishi-plugin-guidelines)同骨架 | 拿不准一处该怎么做时 |
 | [`docs/INTERACTION.md`](INTERACTION.md) | 交互：八条原则的译法、群聊原生模式、节奏、自适应、信息架构 | 改指令、改流程、加等待或追问时 |
 | [`docs/CONTENT.md`](CONTENT.md) | 文案：声音、语气、标点、状态词表、术语表、图标 | 写任何一句用户可见的话时 |
 | `res/cards/m3e.css` 文件头 | 视觉：字阶、形状、高度、配色角色、组件基元（五张卡片图 + 控制台那一套方案） | 改卡片版式或图上文字时 |
@@ -181,6 +185,8 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 | [`docs/UNIFORMITY.md`](UNIFORMITY.md) | 统一度审计：偏离清单与位置 | 逐插件打磨时当待办清单看 |
 | [`docs/CONTROL.md`](CONTROL.md) | 控制通道与部署 | 改配置、排期、上线 |
 | [`docs/ambient.md`](ambient.md)、[`portrait.md`](portrait.md)、[`video_parse.md`](video_parse.md)、[`agent.md`](agent.md) | 单个复杂插件的用法与实现 | 动那一个插件时 |
+
+两份文档分工不重。DESIGN_SYSTEM.md 是与 koishi 工作区共用的那一层，说明这套系统是什么、按什么排序；本文是 ayjx 特有的落地约束，说明这个仓库里哪些东西已经被架构钉住。
 
 两层不能混。系统层 `m3e.css` 说「是什么」，版式层（`res/cards/reading.css` 与各插件里那份 `const CSS`）只说「摆在哪儿」，版式层里不出现色值、字号、圆角、阴影的字面量，一律 `var(--md-*)` 取令牌。
 
@@ -210,6 +216,7 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 - [ ] 用户可见的每一句话过了一遍 `CONTENT.md` 的检查清单，空态用 📭 不是 ❌
 - [ ] 文案里的指令带的是当前前缀
 - [ ] 没有为兼容保留的旧名字、旧配置键、旧分支或注释掉的死代码
+- [ ] 拿不准的地方过了一遍[设计系统的检查清单](DESIGN_SYSTEM.md#十六检查清单)
 - [ ] 改过版式，跑过 `bash scripts/review-cards.sh`，并且看过图
 
 ---
@@ -222,4 +229,4 @@ impl Default for Config { fn default() -> Self { Self { enabled: true, /* … */
 
 加一条硬条目之前，先确定它能不能被测试或架构钉住。钉不住的写在 INTERACTION.md 里，不进第四节的硬条目。加一个图标或状态词，先看 `CONTENT.md` 那张表里有没有现成能用的。改动落地时同步三处：文档、`res/cards/m3e.css` 里对应的组件、各插件的代码。
 
-规范的依据来自 Material 3 Expressive（令牌）、Apple HIG 八条设计原则（判断依据）、Nielsen Norman Group 的启发式（错误预防、认得出优于记得住）与 WCAG 2.2（对比度、颜色不作唯一通道）。四份都为桌面与网页而写，这里是逐条译成群聊里的动作。
+规范的依据来自 Material 3 Expressive（令牌）、Apple HIG 的两层原则（体验九条与取舍八条，见[设计系统](DESIGN_SYSTEM.md#四体验原则--apple-hig)）、Nielsen Norman Group 的启发式（错误预防、认得出优于记得住）与 WCAG 2.2（对比度、颜色不作唯一通道）。四份都为桌面与网页而写，这里是逐条译成群聊里的动作。
