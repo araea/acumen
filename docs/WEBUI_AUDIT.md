@@ -4,7 +4,7 @@
 
 初版已经有统一令牌、浅深色、三档导航、原生网页和本机接口，方向成立。主要不足是宽屏信息分组偏弱、交互有遗漏，以及日志在后台仍占用资源。此次保留原生、零依赖、资源内嵌的架构，直接修整同一份控制台。
 
-设计依据是[项目规范](GUIDELINES.md)、[文案规范](CONTENT.md)与 [Material 3 Expressive](https://m3.material.io/blog/building-with-m3-expressive)。沿用项目为中文阅读制定的字阶；这里的动效是轻量 CSS 实现，不声称等同于原生物理弹簧。
+设计依据是个人设计系统与 [Material 3 Expressive](https://m3.material.io/blog/building-with-m3-expressive)。沿用项目为中文阅读制定的字阶；这里的动效是轻量 CSS 实现，不声称等同于原生物理弹簧。
 
 ## 视觉与交互
 

@@ -536,7 +536,7 @@ mod tests {
         assert!(matches!(SendMode::parse(&send), SendMode::Bubble));
     }
 
-    /// 取片慢时那句回执按 `CONTENT.md` 的「进行中」写：一个 ⏳ 加在开头。
+    /// 取片慢时那句回执按「进行中」写：一个 ⏳ 加在开头。
     /// 取不到不开口，这里只剩超时那一档要守。
     #[test]
     fn the_acknowledgement_waits_twenty_seconds_by_default() {

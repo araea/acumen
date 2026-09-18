@@ -44,7 +44,7 @@ use std::sync::Arc;
 /// 能力层的日志 target。
 ///
 /// 两层共用同一份实现，日志也就只有一个名字：这一层住在 `oai` 里，
-/// 按注册名加一级子模块（GUIDELINES 四.6）。
+/// 按注册名加一级子模块。
 pub(crate) const LOG_TARGET: &str = "Plugin/OAI/Chat";
 
 /// 一轮行动的额度与开关。

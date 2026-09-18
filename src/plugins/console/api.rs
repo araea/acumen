@@ -41,7 +41,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
     ))
 }
 
-/// 一次不成功的调用。文案照 `CONTENT.md` 的口径：说清发生了什么与下一步。
+/// 一次不成功的调用：说清发生了什么与下一步。
 fn bad(message: impl Into<String>) -> Response {
     super::server::fail(StatusCode::BAD_REQUEST, &message.into())
 }

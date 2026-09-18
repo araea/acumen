@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::fs;
 use toml::Value;
 
-/// 框架自身的日志 target（插件级日志用 `Plugin/<名字>`，见 docs/GUIDELINES.md）。
+/// 框架自身的日志 target（插件级日志用 `Plugin/<名字>`）。
 const LOG_TARGET: &str = "Plugin/Lifecycle";
 
 pub type PluginError = Box<dyn std::error::Error + Send + Sync>;

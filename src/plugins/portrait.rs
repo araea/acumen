@@ -543,7 +543,7 @@ pub fn handle(
         let html = card::html(&view);
         archive(&html, target).await;
 
-        // 关掉出图时直接走文字版，与出图失败走同一条路（GUIDELINES 四.7）。
+        // 关掉出图时直接走文字版，与出图失败走同一条路。
         let captured = if config.image_enabled {
             card::capture(&html, config.image_scale).await
         } else {

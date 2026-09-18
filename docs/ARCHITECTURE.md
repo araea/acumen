@@ -105,8 +105,7 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 日志 target 统一 `Plugin/<名字>`，名字按**单词边界**大写（`ai_news` → `Plugin/AiNews`，
 `webshot` → `Plugin/WebShot`，`wordcloud` → `Plugin/WordCloud`），
-子模块可以在后面加一级（`Plugin/OAI/Search`）。完整口径与其余九条硬条目见
-[设计规范总纲](GUIDELINES.md#四插件一致性的十条硬条目)。
+子模块可以在后面加一级（`Plugin/OAI/Search`）。
 
 ## 出图与渲染
 
@@ -181,10 +180,7 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 由 `a_chart_is_painted_in_the_card_scheme`、`the_word_hues_come_from_the_design_system`
 两条单测从样式表里读回来比对。改了 CSS 没改代码，测试会红。
 
-文案与这层配套，规范在 [`docs/CONTENT.md`](CONTENT.md)：声音、语气、
-标点、状态词表、术语表、六个状态图标。整套设计规范的入口与十条硬条目见
-[`docs/GUIDELINES.md`](GUIDELINES.md)，交互与行为规范见
-[`docs/INTERACTION.md`](INTERACTION.md)。
+文案与这层配套：声音、语气、标点、状态词表、术语表、状态图标。
 
 样式表塞在 `style` 元素里，HTML 的 raw text 解析遇到闭合标签
 就结束。**任何注释里都不许出现 HTML 的成对标签字面量**，否则整张样式表被截断，

@@ -41,7 +41,7 @@ async fn reply(
 /// 把回复渲染成卡片图片发出；`text_mode`、关掉出图、或渲染失败时退回纯文本。
 ///
 /// 关图开关在这里读一次就够——全部卡片输出都汇到这一个函数，
-/// 调用方不必各自判断（见 docs/GUIDELINES.md 四.7）。
+/// 调用方不必各自判断。
 #[allow(clippy::too_many_arguments)]
 async fn reply_card(
     ctx: &Context,
@@ -737,7 +737,7 @@ pub(super) struct Reply {
 /// 房间在等一句补充时回的那条。
 ///
 /// 这不是失败——用户只是还没说要什么，`❌ 对话失败：…` 会把一句引导说成故障。
-/// 走 💡 并保持纯文本，与 CONTENT.md 的图标表一致。
+/// 走 💡 并保持纯文本。
 pub(super) fn guidance(text: impl Into<String>) -> Reply {
     Reply {
         text: text.into(),
