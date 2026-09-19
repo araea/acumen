@@ -36,7 +36,7 @@ use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
@@ -256,22 +256,63 @@ async fn extract(
 
     let dir = get_data_dir("video_parse").await.map_err(failed)?;
     discard_stale_parts(&dir).await;
-    let path = dir.join(format!("{}.part", safe_file_name(&video.bvid)));
+    let scratch = Scratch::new(&dir, &video.bvid);
 
     // 闸门在下载预算之外：排在前头那单的时间里不算这一单的超时。
     let _permit = TAKE_GATE
         .acquire()
         .await
         .map_err(|_| anyhow!("取片闸门不可用"))?;
-    let size = download(&streams.urls, &path, cap, budget).await?;
-    let result = send(
-        ctx, writer, config, video, &streams, size, &path, group_id, user_id,
+    let size = download(&streams.urls, scratch.path(), cap, budget).await?;
+    send(
+        ctx,
+        writer,
+        config,
+        video,
+        &streams,
+        size,
+        scratch.path(),
+        group_id,
+        user_id,
     )
-    .await;
+    .await
+}
 
-    // 成品已经发出去（或者发失败），本地这份就没有用了。
-    let _ = tokio::fs::remove_file(&path).await;
-    result
+/// 一次取片落在本地的那一份片子，析构时删掉。
+///
+/// 下载超时、超过大小上限、上传失败，每一条都是提前返回；把 `remove_file` 写在
+/// 末尾，迟早会漏掉其中一条——下载失败那条就漏过。清理挂在值的生命周期上，返回
+/// 路径怎么写都不会漏。只有进程被 SIGKILL 那一下不走，留给 [`discard_stale_parts`]
+/// 在下次取片开头兜底。
+///
+/// 名字在稿件号之外带一段随机数：去重判据是「同一个人在同一会话里贴过没有」，
+/// 同一个群里的第二个人、或另一个群同时贴同一条稿件都是两份并发取片，只按稿件号
+/// 命名会让它们写进同一个文件——互相截断，先跑完的那份还会把另一份的文件删掉。
+struct Scratch {
+    path: PathBuf,
+}
+
+impl Scratch {
+    fn new(dir: &Path, bvid: &str) -> Self {
+        Self {
+            path: dir.join(format!(
+                "{}-{:032x}.part",
+                safe_file_name(bvid),
+                rand::random::<u128>()
+            )),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        // 析构里不能 await；一次 unlink 是微秒级，直接同步做掉。
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 /// 把分片按顺序写进同一个文件，边写边按上限收口。
@@ -641,5 +682,43 @@ mod tests {
             "meta":{"news":{"jumpUrl":"https://mp.weixin.qq.com/s/abc"}}}"#;
         let (ctx, _writer) = card_event(other).await;
         assert_eq!(take_candidate(&ctx), None);
+    }
+
+    // ============ 临时文件 ============
+
+    /// 下载半路失败（超时、超过大小上限、连不上）也该把本地那份删掉。清理挂在
+    /// `Scratch` 的析构上，不是末尾写一句 `remove_file`——曾经就是那样，下载失败
+    /// 提前返回，几十兆的 `.part` 留在手机里，要等六小时后下次取片才被扫走。
+    #[tokio::test]
+    async fn an_unfinished_take_leaves_no_part_behind() {
+        let dir = std::env::temp_dir().join(format!("ayjx-part-{:032x}", rand::random::<u128>()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+
+        let path = {
+            let scratch = Scratch::new(&dir, "BV1GJ411x7h7");
+            tokio::fs::write(scratch.path(), b"half a video")
+                .await
+                .unwrap();
+            scratch.path().to_path_buf()
+        };
+        assert!(!path.exists(), "析构后本地那份不该留下");
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    /// 同一个群里两个人、或两个群同时贴同一条稿件，是两份并发取片，不能落到
+    /// 同一个文件上——只按稿件号命名时它们会互相截断。
+    #[test]
+    fn two_takes_of_one_video_do_not_share_a_part_file() {
+        let dir = std::env::temp_dir();
+        let first = Scratch::new(&dir, "BV1GJ411x7h7");
+        let second = Scratch::new(&dir, "BV1GJ411x7h7");
+
+        assert_ne!(first.path(), second.path());
+        assert!(
+            first.path().to_string_lossy().contains("BV1GJ411x7h7"),
+            "文件名里留着稿件号，便于对日志：{:?}",
+            first.path()
+        );
     }
 }
