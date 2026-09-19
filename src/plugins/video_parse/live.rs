@@ -87,7 +87,7 @@ async fn live_reads_the_metadata_and_the_stream_plan() {
 
 /// 群友在群里贴一条链接，片子就该直接进群——不用引用，也不用再说一个词。
 ///
-/// 这条会往群里发四五条（触发那条、可能的一句 ⏳、成品那条气泡与文件），模块的
+/// 这条会往群里发三四条（触发那条、成品那条气泡与文件），模块的
 /// 出站闸门是全局 20 条/分钟，别把它跟别的沙盒用例挤在同一分钟里跑。
 #[tokio::test]
 #[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
@@ -129,13 +129,8 @@ async fn live_takes_a_link_from_the_sandbox_group() {
         );
     }
 
-    // 收工：这次发出去的连同触发那条一起撤回（取片慢时还会有句「正在取片」）。
-    let ids = [
-        Some(trigger.to_string()),
-        bubble,
-        file,
-        find_sent(&listed, "正在取片", trigger),
-    ];
+    // 收工：这次发出去的连同触发那条一起撤回。
+    let ids = [Some(trigger.to_string()), bubble, file];
     for id in ids.into_iter().flatten() {
         recall(&ctx, &writer, group, &id).await;
     }
@@ -178,7 +173,6 @@ async fn live_reads_a_card_from_the_sandbox_group() {
         Some(trigger.to_string()),
         bubble,
         find_sent(&listed, "<file", trigger),
-        find_sent(&listed, "正在取片", trigger),
     ];
     for id in ids.into_iter().flatten() {
         recall(&ctx, &writer, group, &id).await;

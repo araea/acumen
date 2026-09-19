@@ -9,10 +9,10 @@
 //! - 正文里的链接（[`crate::command::message_links`] 认得的都算）；
 //! - QQ 的小程序卡与分享卡——链接在那段 `json` 载荷里，正文是空的。
 //!
-//! 说出口的话只有一句，且只在必要时出现：取片慢（超过 `ack_after_seconds`）补一句 ⏳。
-//! 取不到不开口——群里只当这条链接没被接住，原因写进日志给人看。成品自己就是那条
-//! 消息，不再另发一条正文，**也不带引用**——视频在 QQ 里是「顺媒体」，与引用放在一条
-//! 消息里就显示不出来（见 [`send`]）。
+//! 群里只说成品那一条消息：不补一句「正在取片」，也**不报错**——取不到就当这条链接
+//! 没被接住，原因写进日志给人看。成品自己就是那条消息，不再另发一条正文，**也不带
+//! 引用**——视频在 QQ 里是「顺媒体」，与引用放在一条消息里就显示不出来（见 [`send`]）。
+//! 群里等得着的只有片子，中途冒出来的每一句都是打扰。
 //! 同一个人在同一会话里十分钟内重贴同一条不会下第二遍（[`state`]）。
 //!
 //! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
@@ -36,9 +36,7 @@ use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
@@ -53,7 +51,7 @@ const API_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 同时进行的取片上限。任意群友贴一条链接就能让我们下几十兆，没有闸门时
 /// 一个人连贴五条链接就是五份并发下载，手机的网络与内存都吃不下。
-/// 等闸门的时间走 `ack_after_seconds` 那条提示，不会静默排队。
+/// 排队排在下载预算之外：等闸门的时间不算进单片的超时，也不在群里冒出一句状态。
 static TAKE_GATE: Semaphore = Semaphore::const_new(2);
 
 // ================= Config =================
@@ -62,7 +60,8 @@ static TAKE_GATE: Semaphore = Semaphore::const_new(2);
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
-    /// 取片时最多下载多大（MB）。按它挑画质；最小一档也超了就只回一句说明。
+    /// 取片时最多下载多大（MB）。按它挑画质；最小一档也超了就放弃这条链接，
+    /// 只在日志里写一句说明。
     pub max_size_mb: u64,
     /// 想要的最高画质：80=1080P / 64=720P / 32=480P / 16=360P。
     /// 未登录时 B 站只放 360P—720P，想要更高要在 `cookie` 里填登录态。
@@ -73,8 +72,6 @@ pub struct Config {
     pub send: String,
     /// 一次取片的总预算（秒），含挑画质、下载与上传。
     pub timeout_seconds: u64,
-    /// 取这么久还没完就先回一句「正在取片」。0 表示什么都不说。
-    pub ack_after_seconds: u64,
     /// B 站登录 Cookie，留空即匿名。
     pub cookie: String,
     /// 群名单：配了黑名单就对名单外的所有群生效，配了白名单则只对名单内的群生效。
@@ -89,7 +86,6 @@ impl Default for Config {
             prefer_quality: 64,
             send: "bubble".to_string(),
             timeout_seconds: 300,
-            ack_after_seconds: 20,
             cookie: String::new(),
             channel: ChannelConfig::default(),
         }
@@ -168,13 +164,8 @@ pub fn handle(
         let Some(candidate) = take_candidate(&ctx) else {
             return Ok(Some(ctx));
         };
-        let request_id = msg.message_id();
 
-        if let Err(error) = take(
-            &ctx, &writer, &config, &candidate, group_id, user_id, request_id,
-        )
-        .await
-        {
+        if let Err(error) = take(&ctx, &writer, &config, &candidate, group_id, user_id).await {
             // 取不到就静默收场：群里只当这条链接没被接住，原因留给日志。
             // 一条「没取到」在群里就是一次打扰，而贴链接的人自己看得出来没片子。
             warn!(target: LOG_TARGET, "取片失败（{}）：{}", candidate, error);
@@ -215,7 +206,6 @@ async fn take(
     raw_url: &str,
     group_id: Option<i64>,
     user_id: i64,
-    request_id: i64,
 ) -> Result<()> {
     let url = resolve_link(raw_url).await?;
     let reference = bilibili::reference(&url).ok_or_else(|| anyhow!("链接没落到稿件页"))?;
@@ -231,7 +221,7 @@ async fn take(
         return Ok(());
     }
 
-    let result = extract(ctx, writer, config, &video, group_id, user_id, request_id).await;
+    let result = extract(ctx, writer, config, &video, group_id, user_id).await;
     if result.is_err() {
         // 没取到就把名额放回去：他重贴一次还能再来。
         state::release(target, user_id, &video.bvid).await;
@@ -251,7 +241,6 @@ async fn extract(
     video: &bilibili::Video,
     group_id: Option<i64>,
     user_id: i64,
-    request_id: i64,
 ) -> Result<()> {
     let cap = config.max_size_mb.clamp(1, 2048) * 1_048_576;
     let budget = Duration::from_secs(config.timeout_seconds.clamp(30, 1800));
@@ -269,23 +258,14 @@ async fn extract(
     discard_stale_parts(&dir).await;
     let path = dir.join(format!("{}.part", safe_file_name(&video.bvid)));
 
-    // 成品进了群没有。取片提示只在「群里还什么都看不到」时发（见 [`with_ack`]）。
-    let delivered = AtomicBool::new(false);
-
-    let work = async {
-        // 闸门在下载预算之外：排在前头那单的时间里不算这一单的超时。
-        let _permit = TAKE_GATE
-            .acquire()
-            .await
-            .map_err(|_| anyhow!("取片闸门不可用"))?;
-        let size = download(&streams.urls, &path, cap, budget).await?;
-        send(
-            ctx, writer, config, video, &streams, size, &path, group_id, user_id, &delivered,
-        )
+    // 闸门在下载预算之外：排在前头那单的时间里不算这一单的超时。
+    let _permit = TAKE_GATE
+        .acquire()
         .await
-    };
-    let result = with_ack(
-        ctx, writer, config, group_id, user_id, request_id, &delivered, work,
+        .map_err(|_| anyhow!("取片闸门不可用"))?;
+    let size = download(&streams.urls, &path, cap, budget).await?;
+    let result = send(
+        ctx, writer, config, video, &streams, size, &path, group_id, user_id,
     )
     .await;
 
@@ -354,7 +334,6 @@ async fn send(
     path: &Path,
     group_id: Option<i64>,
     user_id: i64,
-    delivered: &AtomicBool,
 ) -> Result<()> {
     let name = format!("{}.mp4", safe_file_name(&video.title));
     let bytes = tokio::fs::read(path).await?;
@@ -382,7 +361,6 @@ async fn send(
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), bubble).await {
             Ok(()) => {
                 sent = true;
-                delivered.store(true, Ordering::Relaxed);
             }
             Err(error) => {
                 warn!(target: LOG_TARGET, "视频气泡没发出去：{}", error);
@@ -395,7 +373,6 @@ async fn send(
         match send_msg(ctx, writer.clone(), group_id, Some(user_id), file).await {
             Ok(()) => {
                 sent = true;
-                delivered.store(true, Ordering::Relaxed);
             }
             Err(error) => {
                 warn!(target: LOG_TARGET, "群文件没发出去（{}）：{}", name, error);
@@ -418,43 +395,6 @@ async fn send(
         size as f64 / 1_048_576.0,
     );
     Ok(())
-}
-
-/// 取片要下几十兆，群里等起来像是没反应。超过 `ack_after_seconds` 还没完，
-/// 就先回一句说明；配 0 就什么都不说。
-///
-/// 发之前看一眼 `delivered`：成品已经进群之后再补一句「正在取片」就是一条过时的
-/// 状态（`both` 那条路上，气泡发完、群文件还在传时正好会走到这里）。
-#[allow(clippy::too_many_arguments)]
-async fn with_ack<F>(
-    ctx: &Context,
-    writer: &LockedWriter,
-    config: &Config,
-    group_id: Option<i64>,
-    user_id: i64,
-    request_id: i64,
-    delivered: &AtomicBool,
-    work: F,
-) -> Result<()>
-where
-    F: Future<Output = Result<()>>,
-{
-    if config.ack_after_seconds == 0 {
-        return work.await;
-    }
-    futures_util::pin_mut!(work);
-    tokio::select! {
-        result = &mut work => result,
-        _ = time::sleep(Duration::from_secs(config.ack_after_seconds)) => {
-            if !delivered.load(Ordering::Relaxed) {
-                let body = Message::new().reply(request_id).text("⏳ 正在取片…");
-                if let Err(error) = send_msg(ctx, writer.clone(), group_id, Some(user_id), body).await {
-                    warn!(target: LOG_TARGET, "取片提示发送失败: {}", error);
-                }
-            }
-            work.await
-        }
-    }
 }
 
 /// 上次取片被打断留下的残片。手机上的空间经不起一条几十兆的 `.part` 常驻，
@@ -534,13 +474,6 @@ mod tests {
         let send = Config::default().send;
         assert_eq!(send, "bubble", "成品默认发法不该变：{send}");
         assert!(matches!(SendMode::parse(&send), SendMode::Bubble));
-    }
-
-    /// 取片慢时那句回执按「进行中」写：一个 ⏳ 加在开头。
-    /// 取不到不开口，这里只剩超时那一档要守。
-    #[test]
-    fn the_acknowledgement_waits_twenty_seconds_by_default() {
-        assert_eq!(Config::default().ack_after_seconds, 20);
     }
 
     #[test]
