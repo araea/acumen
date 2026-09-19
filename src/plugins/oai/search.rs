@@ -6,7 +6,9 @@
 //! - **后端是一条链**：按 `[oai.search].providers` 的顺序依次尝试，前一个不可用
 //!   （没配密钥）或失败（超时、报错、零结果）就顺延，全部失败才报错。免密钥的
 //!   抓取后端（`bing` / `duckduckgo`）在链尾兜底，所以什么都不配也能用；要质量
-//!   就配上 `tavily` / `brave` / `serper` 的密钥，或指向自建的 `searxng`。
+//!   就配上 `tavily` / `exa` / `brave` / `serper` / `bocha` 的密钥，或指向自建的
+//!   `searxng`。同一个后端也可以配多份密钥，前一份失败就顺延到下一份（见
+//!   [`SearchConfig::keys`]）。
 //! - **搜索与读取分工**：`web_search` 只给标题、链接与摘要；要看某页正文得
 //!   `web_fetch`。模型已经知道 URL 时直接取，别拿搜索去凑——这条分工写在工具的
 //!   description 里，和 oh-my-pi 把 `read` URL 与 `web_search` 分开是同一个意思。
@@ -52,7 +54,10 @@ pub(crate) const TOOL_NAMES: [&str; 2] = ["web_search", "web_fetch"];
 const FREE_PROVIDERS: &[&str] = &["bing", "duckduckgo"];
 
 /// 需要密钥/基址才可用的后端。名字写错时静默跳过，但会记进「全部失败」的说明。
-const KEYED_PROVIDERS: &[&str] = &["tavily", "brave", "serper", "searxng"];
+///
+/// 这个顺序就是 `auto` 展开时密钥后端的优先级；`searxng` 压在最后是因为它要
+/// 自建实例，没有实例的人不该被它挡在前面。
+const KEYED_PROVIDERS: &[&str] = &["tavily", "brave", "serper", "exa", "bocha", "searxng"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -88,7 +93,8 @@ impl Default for SearchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct BackendConfig {
-    /// 密钥类后端的 API key。
+    /// 密钥类后端的 API key。可以写多份（用空白或逗号分隔）：同一家的第二个
+    /// 账号就是第二份额度，前一份失败（额度用尽、限流）就顺延到下一份。
     pub api_key: String,
     /// 自建后端的基址，目前只有 searxng 用。
     pub base_url: String,
@@ -107,11 +113,19 @@ impl SearchConfig {
         self.results.clamp(1, 20)
     }
 
-    fn key(&self, provider: &str) -> &str {
+    /// 该后端的全部密钥：`api_key` 里用空白或逗号分隔写多份，顺序就是顺延顺序。
+    fn keys(&self, provider: &str) -> Vec<&str> {
         self.backends
             .get(provider)
-            .map(|backend| backend.api_key.trim())
-            .unwrap_or("")
+            .map(|backend| {
+                backend
+                    .api_key
+                    .split(|c: char| c.is_whitespace() || c == ',')
+                    .map(str::trim)
+                    .filter(|key| !key.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn base(&self, provider: &str) -> &str {
@@ -128,7 +142,7 @@ impl SearchConfig {
         }
         match provider {
             "searxng" => !self.base("searxng").is_empty(),
-            "tavily" | "brave" | "serper" => !self.key(provider).is_empty(),
+            "tavily" | "brave" | "serper" | "exa" | "bocha" => !self.keys(provider).is_empty(),
             _ => false,
         }
     }
@@ -321,10 +335,28 @@ impl Search {
         match provider {
             "bing" => bing(&self.client, query, limit, recency).await,
             "duckduckgo" => duckduckgo(&self.client, query, limit, recency).await,
-            "tavily" => tavily(&self.client, self.config.key("tavily"), query, limit, recency).await,
-            "brave" => brave(&self.client, self.config.key("brave"), query, limit, recency).await,
-            "serper" => serper(&self.client, self.config.key("serper"), query, limit, recency).await,
             "searxng" => searxng(&self.client, self.config.base("searxng"), query, limit, recency).await,
+            // 密钥后端：一份密钥没成（额度用尽、限流、零结果）就换下一份——
+            // 同一家的两个账号，前一个用尽了后一个还在。
+            "tavily" | "brave" | "serper" | "exa" | "bocha" => {
+                let keys = self.config.keys(provider);
+                let mut failure = None;
+                for key in &keys {
+                    let attempt = match provider {
+                        "tavily" => tavily(&self.client, key, query, limit, recency).await,
+                        "brave" => brave(&self.client, key, query, limit, recency).await,
+                        "serper" => serper(&self.client, key, query, limit, recency).await,
+                        "exa" => exa(&self.client, key, query, limit, recency).await,
+                        _ => bocha(&self.client, key, query, limit, recency).await,
+                    };
+                    match attempt {
+                        Ok(hits) if !hits.is_empty() => return Ok(hits),
+                        Ok(_) => failure = Some(anyhow::anyhow!("没有结果")),
+                        Err(error) => failure = Some(error),
+                    }
+                }
+                Err(failure.unwrap_or_else(|| anyhow::anyhow!("没有配置密钥")))
+            }
             other => anyhow::bail!("不认识的后端 {other}"),
         }
     }
@@ -794,6 +826,126 @@ async fn searxng(
     Ok(hits.into_iter().take(limit).collect())
 }
 
+/// Exa：语义检索，`x-api-key` 认证，POST `/search`。
+///
+/// 时效性只有「起始发布日期」一个方向（`startPublishedDate`），所以 recency 折成
+/// 「N 天前到现在」而不是一个闭合窗口——Exa 没有对应的窗口参数。
+/// 摘要只要够排版一段的水位：Exa 默认会把整页正文塞回来，一条就是几千字。
+async fn exa(
+    client: &reqwest::Client,
+    key: &str,
+    query: &str,
+    limit: usize,
+    recency: Option<Recency>,
+) -> anyhow::Result<Vec<Hit>> {
+    let mut body = serde_json::json!({
+        "query": query,
+        "numResults": limit,
+        "contents": {"text": {"maxCharacters": SNIPPET_CHARS * 2}},
+    });
+    if let Some(window) = recency {
+        body["startPublishedDate"] = serde_json::json!(since(window));
+    }
+    let value = json_request(
+        client
+            .post("https://api.exa.ai/search")
+            .header("x-api-key", key)
+            .json(&body),
+    )
+    .await?;
+    Ok(json_hits(&value, &["results"]))
+}
+
+/// 博查：中文网页搜索，`Authorization: Bearer`，POST `/v1/web-search`。
+///
+/// 返回体是 Bing Search API 的形状；不传 `summary` 就只给短 `snippet`，而摘要
+/// 那份动辄几百字，所以这里不主动要，免得多付一次正文抽取。
+async fn bocha(
+    client: &reqwest::Client,
+    key: &str,
+    query: &str,
+    limit: usize,
+    recency: Option<Recency>,
+) -> anyhow::Result<Vec<Hit>> {
+    let body = serde_json::json!({
+        "query": query,
+        "count": limit,
+        "freshness": recency.map(bocha_freshness).unwrap_or("noLimit"),
+    });
+    let value = json_request(
+        client
+            .post("https://api.bochaai.com/v1/web-search")
+            .header("Authorization", format!("Bearer {key}"))
+            .json(&body),
+    )
+    .await?;
+    // 博查出错时 HTTP 常常仍是 200，真正的错误码在 body 里；当成「没有结果」
+    // 会把密钥失效、额度用尽这类问题藏起来。
+    if let Some(code) = value.get("code").and_then(|code| code.as_i64())
+        && code != 200
+    {
+        anyhow::bail!(
+            "{}",
+            value
+                .get("msg")
+                .and_then(|msg| msg.as_str())
+                .filter(|msg| !msg.trim().is_empty())
+                .unwrap_or("接口返回错误")
+        );
+    }
+    Ok(bocha_hits(&value, limit))
+}
+
+/// 博查的时间窗拼写。
+fn bocha_freshness(window: Recency) -> &'static str {
+    match window {
+        Recency::Day => "oneDay",
+        Recency::Week => "oneWeek",
+        Recency::Month => "oneMonth",
+        Recency::Year => "oneYear",
+    }
+}
+
+/// 博查的两种响应形状：官方文档的 `data.webPages.value`，以及兼容 Bing 的顶层
+/// `webPages.value`。摘要取 `snippet`（要了 `summary` 时它才是短的那一份），
+/// 缺失时退回 `summary`。
+fn bocha_hits(value: &serde_json::Value, limit: usize) -> Vec<Hit> {
+    let pages = value
+        .get("data")
+        .and_then(|data| data.get("webPages"))
+        .or_else(|| value.get("webPages"))
+        .and_then(|pages| pages.get("value"))
+        .and_then(|items| items.as_array())
+        .cloned()
+        .unwrap_or_default();
+    pages
+        .iter()
+        .filter_map(|item| {
+            let url = first_str(item, &["url"]);
+            if url.is_empty() {
+                return None;
+            }
+            Some(Hit {
+                title: decode_entities(&first_str(item, &["name", "title"])),
+                url,
+                snippet: decode_entities(&first_str(item, &["snippet", "summary"])),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+/// Exa 只认起始日期，把几个时间窗折成「N 天前」的 ISO 8601。
+fn since(window: Recency) -> String {
+    let days = match window {
+        Recency::Day => 1,
+        Recency::Week => 7,
+        Recency::Month => 30,
+        Recency::Year => 365,
+    };
+    (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339()
+}
+
 // ================= 文本处理 =================
 
 /// 头信息与正文要不要按网页解析：`text/*` 与缺失类型都当纯文本，避免把 JSON 也当 HTML 剥。
@@ -959,6 +1111,63 @@ mod tests {
         assert_eq!(bing_freshness(Recency::Day), Some("ez1"));
         assert_eq!(bing_freshness(Recency::Week), Some("ez2"));
         assert_eq!(bing_freshness(Recency::Year), Some("ez3"));
+    }
+
+    #[test]
+    fn exa_and_bocha_join_the_keyed_chain_behind_the_free_scrapers() {
+        let mut config = config();
+        for provider in ["exa", "bocha"] {
+            config.backends.insert(
+                provider.into(),
+                BackendConfig {
+                    api_key: "k".into(),
+                    base_url: String::new(),
+                },
+            );
+        }
+        // `auto` 的展开顺序：密钥后端按 KEYED_PROVIDERS 的次序排在免密钥抓取前面。
+        assert_eq!(config.chain(), vec!["exa", "bocha", "bing", "duckduckgo"]);
+    }
+
+    #[test]
+    fn one_backend_can_hold_several_keys_in_order() {
+        let mut config = config();
+        config.backends.insert(
+            "tavily".into(),
+            BackendConfig {
+                api_key: "k1, k2\nk3".into(),
+                base_url: String::new(),
+            },
+        );
+        assert_eq!(config.keys("tavily"), vec!["k1", "k2", "k3"]);
+        assert!(config.available("tavily"));
+        // 没配密钥的后端取到空列表，链上的 available() 早把这类挡掉了。
+        assert!(config.keys("brave").is_empty());
+    }
+
+    #[test]
+    fn bocha_reads_both_response_shapes() {
+        // 官方文档的形状：data.webPages.value。
+        let official = serde_json::json!({
+            "code": 200,
+            "data": {"webPages": {"value": [
+                {"name": "阿里巴巴 ESG", "url": "https://a.example", "snippet": "碳排放双降", "summary": "长摘要不该被选中"}
+            ]}}
+        });
+        let hits = bocha_hits(&official, 8);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "阿里巴巴 ESG");
+        assert_eq!(hits[0].snippet, "碳排放双降");
+        // 兼容 Bing 的旧形状：webPages.value 直接在顶层。
+        let legacy = serde_json::json!({
+            "webPages": {"value": [{"name": "N", "url": "https://b.example", "summary": "只有摘要"}]}
+        });
+        let hits = bocha_hits(&legacy, 8);
+        assert_eq!(hits[0].url, "https://b.example");
+        assert_eq!(hits[0].snippet, "只有摘要");
+        // 没有链接的条目丢掉。
+        let broken = serde_json::json!({"data": {"webPages": {"value": [{"name": "没有链接"}]}}});
+        assert!(bocha_hits(&broken, 8).is_empty());
     }
 
     #[test]
@@ -1158,6 +1367,33 @@ mod tests {
             .await
             .expect("搜索应当返回结果");
         println!("{text}");
+    }
+
+    /// 逐个密钥后端单跑一次，确认每一份密钥都能用、返回的形状也解析得动。
+    ///
+    /// 链上正常只会用到最前面那个，所以「后面的到底好不好使」平时没人验；
+    /// 换密钥、加后端之后跑一遍，逐家看结果。
+    /// `cargo test --release live_every_keyed -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "读取 config.toml 并访问真实后端"]
+    async fn live_every_keyed_backend_answers() {
+        let mut oai = live_oai_config();
+        for provider in KEYED_PROVIDERS {
+            if oai.search.keys(provider).is_empty() {
+                println!("\n===== {provider}：没配密钥，跳过");
+                continue;
+            }
+            oai.search.providers = vec![(*provider).to_string()];
+            oai.search.max_uses = 1;
+            let search = Search::new(oai.search.clone());
+            match search
+                .search("英雄联盟 IG 比赛 战况", Some(3), Some(Recency::Week))
+                .await
+            {
+                Ok(text) => println!("\n===== {provider} =====\n{text}"),
+                Err(error) => println!("\n===== {provider} 失败：{error:#}"),
+            }
+        }
     }
 
     /// 时效性：问「今天」的比赛，能不能搜到当天或近期的内容，而不是训练数据里的旧赛程。

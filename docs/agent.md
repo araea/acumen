@@ -249,7 +249,7 @@ agent 房间还带一份 skill，说明怎么用 `ayjx --ctl` 操作机器人自
 | `search.providers` | `["auto"]` | 搜索后端顺序；`auto` 展开成配置好的密钥后端（优先）加免密钥抓取（后备） |
 | `search.max_uses` | `4` | 一轮对话里搜索与抓取加起来的上限 |
 | `search.results` | `8` | 每次搜索最多返回几条 |
-| `search.backends` | 空 | 各后端的 `api_key`（tavily/brave/serper）或 `base_url`（searxng） |
+| `search.backends` | 空 | 各后端的 `api_key`（tavily/brave/serper/exa/bocha，可写多份，前一份失败顺延）或 `base_url`（searxng） |
 
 一次模型请求发出去之后要到收尾才有回复，中间没有事件可看，所以 `request_stall_seconds` 是单次请求的上限：上游异常时请求会一直挂着，静默超过这个秒数就中止并重来一次。动过工具之后不再重试，同一份副作用不做两遍。
 
