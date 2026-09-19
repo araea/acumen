@@ -949,6 +949,11 @@ impl Session {
             {
                 "QQ 拒绝了这个账号的资料卡点赞（平台限制，不是参数问题）。这一轮换个法子回应更划算。"
             }
+            // satori-qq 0.23.0 起只走 JNI 层，资料卡点赞（要 QQ 的 WUP/Handler 通道）不在了。
+            // 实现端会给 `code=removed_action`，按它认，别去匹配会变的中文文案。
+            Action::Like { .. } if text.contains("removed_action") => {
+                "实现端已不再提供资料卡点赞（0.23.0 起只走 JNI 层）。这一轮换个法子回应更划算。"
+            }
             _ => return false,
         };
         let reason = format!("{refusal}原始回执：{text}");

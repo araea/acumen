@@ -97,3 +97,30 @@ Satori 与 QQ NT 的消息 ID 可能超出 32 位范围，适配层与插件 API
 规范化事件保留原始 `channel_id`，API 优先使用它定位频道；成员事件的用户可从 `member.user` 取得，登录身份兼容顶层 `self_id`。只有 `_type=satori-qq/mute` 的成员更新归类为禁言，普通群名片/角色变化保留成员资料更新语义。读取 `native:` 合并转发附带当前 `channel_id`，模块重启后仍可定位父消息所属会话。
 
 更多群内操作与实际限制见 [ambient 的实现端适配](ambient.md#satori-qq-090-的环境与操作适配)。
+
+## satori-qq 0.23.x 兼容说明
+
+0.23.0 起实现端进程内不再有任何 hook 引擎（没有 LSPlant/Dobby、不改写 ArtMethod），引导、内核会话
+与回包通道都走 JNI 层。协议面本身不变，下面是这几次改版对适配层的实际影响。
+
+**动作移除要能认**。0.23.0 收掉了 `internal/like`（资料卡点赞走 QQ 的 WUP/Handler 通道，纯 JNI 层
+做不到）。曾经有过、后来移除的动作现在报 404 且响应体带 `code=removed_action`，与「方法名写错」的
+`API not found` 分开。适配层把 `code` 一并带进错误文案（`[code=removed_action]`），聊天层按它把这
+个能力记成不可用——否则每轮都会白试一次，还占掉一次动作额度。
+
+`internal/capabilities` 的 `actions` 现在只列真实可用的动作，另外给一段 `removed` 写明「哪个版本、
+为什么」。`payload:false` 与 `ok:false` 的处理没有变化。
+
+**群名是补出来的**。内核的 `GroupSimpleInfo.groupName` 对个别群是空的（本机测试群就是），所以
+`guild.get` / `channel.get` 会依次退到 `remarkName` 与一次群详情查询，单个群的显式查询最多等 3 秒；
+`guild.list` 仍走异步，不为一个群把整页拖住。返回空 `name` 的窗口比过去短很多，但不是零。
+
+**换号会踢连接**。实现端盯住当前账号，换号时先发 `login-updated` 再断开所有已 READY 的连接——
+客户端手里那份 READY 的 `user.id` 是旧账号，继续用会被实现端判成「别的登录」，整条连接哑掉。
+适配器的重连（3 秒起指数退避）能接住，重连后按新 READY 重建身份。
+
+**排障看 `internal/status.inbound`**：`recv` / `add` / `update` / `gray_tip` / `emitted` /
+`notices` / `manual_self`。事件收不到时先用它分开三种情况——记录压根没进来、进来了但没转成事件、
+转了但客户端没消费。
+
+手打消息的身份仍是 `qq-client:{selfUin}`，真实身份在 `satori_qq` 扩展里；这部分 0.23.x 没有变化。

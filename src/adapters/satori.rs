@@ -180,16 +180,7 @@ impl SatoriClient {
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
-            let detail = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            return Err(format!("Satori API {method} 失败 ({status}): {detail}").into());
+            return Err(api_error(method, status, &bytes));
         }
         let value = decode_response(method, &bytes)?;
         Ok(serde_json::from_value(value)?)
@@ -223,16 +214,7 @@ impl SatoriClient {
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
-            let detail = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            return Err(format!("Satori API upload.create 失败 ({status}): {detail}").into());
+            return Err(api_error("upload.create", status, &bytes));
         }
         Ok(serde_json::from_slice(&bytes)?)
     }
@@ -248,6 +230,26 @@ fn decode_response(method: &str, bytes: &[u8]) -> Result<Value, BotError> {
         return Err(format!("Satori API {method} 内核失败: {value}").into());
     }
     Ok(value)
+}
+
+/// 把非 2xx 的响应体变成错误文案。
+///
+/// 实现端从 0.23.1 起在错误体里给机器可读的 `code`（例如 `removed_action`），这里一并带上：
+/// 上游按 code 判断就不必去匹配会变的中文文案。
+fn api_error(method: &str, status: reqwest::StatusCode, bytes: &[u8]) -> BotError {
+    let parsed = serde_json::from_slice::<Value>(bytes).ok();
+    let detail = parsed
+        .as_ref()
+        .and_then(|value| value.get("message").and_then(Value::as_str))
+        .map(str::to_owned)
+        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
+    match parsed
+        .as_ref()
+        .and_then(|value| value.get("code").and_then(Value::as_str))
+    {
+        Some(code) => format!("Satori API {method} 失败 ({status}): {detail} [code={code}]").into(),
+        None => format!("Satori API {method} 失败 ({status}): {detail}").into(),
+    }
 }
 
 pub fn entry(
@@ -1869,6 +1871,27 @@ mod tests {
             !error.contains("{\"message\""),
             "整段 JSON 原文不该出现在错误里：{error}"
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_removed_action_carries_its_machine_readable_code() {
+        // satori-qq 0.23.1 起，曾经有过、后来移除的动作在 404 体里带 code=removed_action。
+        // 聊天层按这个 code 把能力记成不可用，所以它必须活着走到错误文案里。
+        let (endpoint, _seen, server) = scripted_peer(vec![(
+            404,
+            r#"{"message":"internal/like 已移除（0.23.0起）：资料卡点赞走 QQ 的 WUP/Handler 通道，本实现端只走 JNI 层","code":"removed_action"}"#.into(),
+        )])
+        .await;
+        let (ctx, writer) = bare_context(&endpoint).await;
+        let error = writer
+            .call::<_, Value>(&ctx, "internal/like", json!({"user_id":"42","times":1}))
+            .await
+            .expect_err("移除的动作不该被当成成功")
+            .to_string();
+        assert!(error.contains("removed_action"), "{error}");
+        assert!(error.contains("[code=removed_action]"), "{error}");
+        assert!(error.contains("已移除"), "{error}");
         server.abort();
     }
 }
