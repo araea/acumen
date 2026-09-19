@@ -701,9 +701,9 @@ dependencies = [
 
 [[package]]
 name = "cdp-html-shot"
-version = "0.2.9"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3af4f1b1b7e94b0cb648885e36c834aaabd81185a484e07cca62bf0445cd77e"
+checksum = "4774836fbd1d8ec2bb164a1e53abfcaa6b2da45e09e7f17d15b23e09cd56e38b"
 dependencies = [
  "anyhow",
  "chrono",
