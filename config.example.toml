@@ -185,7 +185,9 @@ allow_private_hosts = false
 # 跳过截出来没有内容的站点：没登录只能看到登录墙（抖音/快手/小红书、Instagram/X、
 # 知乎、雪球、NGA 等），以及从本机打开会被风控拦下的（Reddit、Quora）。
 # 名单写在 src/plugins/webshot.rs 的 WALLED_DOMAINS，要额外拉黑别的域名用上面的
-# ignore_domains。
+# ignore_domains。同一文件里的 UNCAPTURABLE_DOMAINS 另记一类「渲染不友好」的站点
+# （脚本动画多、整页极长，静态截图出不来可用的图，如 dontboardme.com），那类不受
+# 这个开关影响、总是跳过。
 block_walled_sites = true
 # 截图视口宽度（CSS 像素）与出图倍率。1.0 即与视口同宽，调大更清晰、体积更大。
 viewport_width = 1280

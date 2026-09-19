@@ -116,6 +116,18 @@ const WALLED_DOMAINS: &[&str] = &[
     "m.1688.com",
 ];
 
+/// 静态截图做不了的站点。
+///
+/// 与 [`WALLED_DOMAINS`] 的区别是：这里既不是登录墙也不是验证页，纯粹是**渲染不友好**。
+/// `dontboardme.com` 整页由脚本动画拼出来，没有稳定的定格帧——截图往往落在过渡
+/// 状态上（元素半透明、位置没归位），而且页面极长，按 `max_height` 截断后依旧是
+/// 一张又长又发不出去的大图。多次重截都不稳定，只能整站跳过。
+///
+/// 这类站点跟登录无关，也不该受 `block_walled_sites` 开关影响，所以单独一份名单、
+/// 无条件生效；要临时放开只能从这里摘掉。按域名后缀匹配，`dontboardme.com` 覆盖
+/// `www.dontboardme.com` 等子域。
+const UNCAPTURABLE_DOMAINS: &[&str] = &["dontboardme.com"];
+
 /// 这条消息是不是机器人自己发出去的那份回声。
 ///
 /// 号主与机器人共用同一个 QQ 号：他在客户端手打的消息同样带着这个号进来，
@@ -155,6 +167,12 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
             return Err(format!("域名 {} 命中忽略名单 {}", name, rule.trim()));
         }
         // 放在解析之前：这类站点不必真去 DNS 查一遍，也省一次查询。
+        if let Some(rule) = UNCAPTURABLE_DOMAINS
+            .iter()
+            .find(|rule| domain_matches(&name, rule))
+        {
+            return Err(format!("{rule} 动画重、整页极长，截出来不能用"));
+        }
         if config.block_walled_sites
             && let Some(rule) = WALLED_DOMAINS.iter().find(|rule| domain_matches(&name, rule))
         {
@@ -632,6 +650,26 @@ mod tests {
         let mut relaxed = config();
         relaxed.block_walled_sites = false;
         assert!(check_url("https://v.douyin.com/c9EJkQ5hNz0/", &relaxed).await.is_ok());
+    }
+
+    /// 动画重、整页极长的站点直接跳过，跟登录墙那个开关无关。
+    #[tokio::test]
+    async fn uncapturable_sites_are_skipped() {
+        let mut strict = config();
+        for raw in [
+            "https://dontboardme.com/",
+            "https://www.dontboardme.com/board/1",
+        ] {
+            assert!(check_url(raw, &strict).await.is_err(), "{raw} 不该截图");
+        }
+
+        // 关掉登录墙开关不该把这类站点放回来。
+        strict.block_walled_sites = false;
+        assert!(check_url("https://dontboardme.com/", &strict).await.is_err());
+
+        // 后缀匹配不能误伤同前缀的别的域名。
+        assert!(check_url("https://dontboardme.com.attacker.net/", &strict).await.is_ok());
+        assert!(check_url("https://example.com/", &strict).await.is_ok());
     }
 
     /// 视频站的稿件链接改由 video_parse 接：那边就地取原片。这里必须跳过，
