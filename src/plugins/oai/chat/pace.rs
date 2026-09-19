@@ -3,7 +3,7 @@
 //! 两件事在这里合并处理，因为它们其实是一件事：群里发言的自然感一半来自内容
 //! 怎么断句，一半来自这些断句之间隔了多久。模型只管写，断句与等待都在这里定。
 
-use super::breath;
+use super::{breath, protocol};
 use crate::message::Message;
 use regex::Regex;
 use std::sync::OnceLock;
@@ -108,6 +108,10 @@ enum Draft {
 ///
 /// 不认识的方括号原样保留——群友本来就会打 `[笑]`，把它们吞掉比留着更糟。
 pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speech {
+    // 伪工具调用要在这里摘掉，不能等分完行、切完句：JSON 里的逗号是换气处，
+    // 先断句会把 `[satori_action:…]` 切成两半，后半截照样当正文漏进群。
+    let raw = protocol::strip(raw);
+    let raw: &str = &raw;
     let mut drafts: Vec<(Draft, f32)> = Vec::new();
     let mut pending_wait = 0.0_f32;
 
@@ -217,7 +221,10 @@ fn strip_decoration(line: &str) -> &str {
 /// id 79077 的 `[face:277]` 就是这么漏的。这里复用文字路径的翻译：只认合法
 /// 标记，`[笑]` 这类不认识的方括号仍旧是文字。
 pub(crate) fn text_segments(text: &str) -> Message {
-    build_message(text).0
+    // 工具路径的 text 也可能混进伪调用；能在这里摘就先摘，`split_send` 那条
+    // 提前断句的路径另有处理。
+    let text = protocol::strip(text);
+    build_message(&text).0
 }
 
 /// 一行文本 → 消息段 + 正文字数。
@@ -434,6 +441,47 @@ mod tests {
         let plain = text_segments("[笑] 收到");
         assert_eq!(plain.0.len(), 1);
         assert_eq!(plain.0[0].data.get("text").unwrap(), "[笑] 收到");
+    }
+
+    /// 模型把 `satori_action` 当正文写出来时，发出去的是里面的那句话，不是 JSON。
+    /// 线上记录 id 134245：群里真的看见过一串 `[satori_action:{"request"…`，
+    /// 几个人还照着抄了一遍。
+    #[test]
+    fn a_tool_call_written_as_text_never_reaches_the_group() {
+        let raw = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"昇腾这单我还真算过"}]}}]"#;
+        let items = say(raw);
+        assert_eq!(items.len(), 1);
+        assert_eq!(text_of(&items[0]), "昇腾这单我还真算过");
+        assert!(!text_of(&items[0]).contains("satori_action"));
+
+        // 模型写到一半被截断的残片：一行都不发。
+        let raw = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text""#;
+        assert!(matches!(parse(raw, 3, 60), Speech::Silent));
+
+        // 工具路径传进来的 text 走同一套清洗。
+        let message = text_segments(
+            r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"行 我看看"}]}}]"#,
+        );
+        let text: String = message
+            .0
+            .iter()
+            .filter_map(|s| s.data.get("text").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(text, "行 我看看");
+    }
+
+    /// 清洗必须排在断句之前：JSON 里的逗号在 [`breath`] 眼里是换气处，
+    /// 先切会把标记切成两半，后半截没有名字，照样漏进群。
+    #[test]
+    fn a_pseudo_call_is_stripped_before_its_commas_are_cut() {
+        let raw = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"这个报错我刚翻到了 是驱动装岔了版本 你把显卡驱动回退一版再试"}]}}]"#;
+        let Speech::Say(items) = parse(raw, 3, 20) else {
+            panic!("expected speech");
+        };
+        let all: String = items.iter().map(text_of).collect::<Vec<_>>().join("");
+        assert!(!all.contains("satori_action"), "{all}");
+        assert!(!all.contains("parts"), "{all}");
+        assert!(all.contains("驱动"), "{all}");
     }
 
     /// 模型把 `@QQ号` 照着记录抄进正文时，也得变成真的 at：线上记录 id 105888 的

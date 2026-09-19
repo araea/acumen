@@ -1078,6 +1078,26 @@ impl Session {
         let group = self.group.to_string();
         let (method, params, summary) = match action {
             Action::Send { parts, reply_to } => {
+                // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
+                // 不是要说的话，而且必须在断句之前摘：JSON 里的逗号看着像换气处，
+                // 先切会把标记切成两半，后半截没有名字，照样漏进群。
+                let parts: Vec<Part> = parts
+                    .iter()
+                    .map(|part| match part {
+                        Part::Text { text } => Part::Text {
+                            text: super::protocol::strip(text).into_owned(),
+                        },
+                        other => other.clone(),
+                    })
+                    .collect();
+                // 摘干净之后什么都不剩（整条只有一个伪调用）就没有话要发。
+                if parts.is_empty()
+                    || parts
+                        .iter()
+                        .all(|part| matches!(part, Part::Text { text } if text.trim().is_empty()))
+                {
+                    return Ok(json!({"status":"skipped","note":"没有可发送的内容"}));
+                }
                 // 一整段话按换气处分成几条发出去。模型写得越顺，越容易把两三个意思
                 // 塞进一条；群里没人这么说话。切法见 [`super::breath`]，切几条受本轮
                 // 剩下的消息额度约束——真正发出去的条数才是额度算的东西。
@@ -1086,7 +1106,7 @@ impl Session {
                     .messages_budget
                     .clamp(1, 5)
                     .saturating_sub(self.messages.saturating_sub(1));
-                if let Some(rows) = split_send(parts, budget, self.config.split_chars) {
+                if let Some(rows) = split_send(&parts, budget, self.config.split_chars) {
                     return self.send_in_pieces(rows, reply_to.as_deref()).await;
                 }
                 let mut msg = Message::new();
@@ -1108,7 +1128,7 @@ impl Session {
                         }
                         Part::At { user_id } => {
                             let msg = msg.at(user_id);
-                            if at_needs_gap(parts, index) {
+                            if at_needs_gap(&parts, index) {
                                 msg.text(" ")
                             } else {
                                 msg
@@ -2452,6 +2472,49 @@ mod tests {
         assert!(content.contains("<emoji id=\"277\"/>"), "{content}");
         assert!(!content.contains("[face:277]"), "{content}");
         assert!(content.contains("[笑]"), "{content}");
+        drop(bridge);
+        server.abort();
+    }
+
+    /// 模型把整条 `satori_action` 当作 `send` 的 text 写出来时，发出去的是里面的正文，
+    /// 不是那串 JSON。线上记录 id 134245：群里几个人照着这串东西抄了一遍。
+    #[tokio::test]
+    async fn a_pseudo_call_inside_tool_text_is_stripped_before_sending() {
+        let group = -8_000_120;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-pseudo")
+                .unwrap();
+        tokio::fs::create_dir(dir.path().join("media"))
+            .await
+            .unwrap();
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            request(&bridge, json!({"id":"pseudo-context","op":"context"})).await["ok"],
+            true
+        );
+        let text = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"昇腾这单我还真算过"},{"type":"text","text":"回头再细说"}]}}]"#;
+        let sent = action(
+            &bridge,
+            "pseudo",
+            json!({"action":"send","parts":[{"type":"text","text":text}]}),
+        )
+        .await;
+        assert_eq!(sent["ok"], true, "{sent}");
+        let contents: Vec<String> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == "message.create")
+            .map(|(_, body)| body["content"].as_str().unwrap_or("").to_string())
+            .collect();
+        let joined = contents.join("\n");
+        assert!(joined.contains("昇腾这单我还真算过"), "{joined}");
+        assert!(!joined.contains("satori_action"), "{joined}");
+        assert!(!joined.contains("parts"), "{joined}");
         drop(bridge);
         server.abort();
     }

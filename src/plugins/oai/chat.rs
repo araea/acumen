@@ -19,6 +19,7 @@
 //! - [`actions`]：`satori_action` 能做的事的解析与校验；
 //! - [`memory`] 长期记忆、[`stickers`] 表情包库、[`identity`] 我在这个群里是谁；
 //! - [`pace`] / [`breath`] / [`tone`]：怎么说出来——换气、断句、别复读；
+//! - [`protocol`]：出站文字里的协议清洗——模型把 `satori_action` 当正文写出来时摘掉它；
 //! - [`attention`]：人格那侧的关注对象，[`vision`]：把群里的图转成模型收得下的图。
 
 pub(crate) mod actions;
@@ -27,6 +28,7 @@ pub(crate) mod breath;
 pub(crate) mod identity;
 pub(crate) mod memory;
 pub(crate) mod pace;
+pub(crate) mod protocol;
 pub(crate) mod session;
 pub(crate) mod stickers;
 pub(crate) mod tone;
