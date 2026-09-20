@@ -1,23 +1,30 @@
-//! 用户画像：读一个群成员的历史发言，给他出一份分层的人格画像，出一张图文报告。
+//! 角色画像：读一个群成员的历史发言，给他出一份档案，出一张图文报告。
 //!
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
-//! 报告分三层，从硬到软：[`collect`] 从库里取出可核验的事实与语言指纹（仪器读数），
-//! [`persona`] 把素材交给模型换回读法与投影层（四维行为标签、语言风格白描、MBTI 四轴、
-//! 九型核心，见 [`models`]），[`card`] 排成一张 HTML 报告图；[`avatar`] 取对象的 QQ 头像
-//! 配在报告开头。
 //!
-//! 三层各守一条线：不编数字（统计量与语言指纹由 [`collect`] 从库里算出来），不编原话
-//! （引语逐字比对样本），不把投影当定论（MBTI 与九型是行为往框架上的投影，只在模型接上
-//! 时才有，并在版面上标明）。模型不接时画像仍在——仪器读数与统计直出的标签都在，投影层
-//! 整块留空。
+//! 报告分两层，从硬到软：
 //!
-//! 两处刻意的保护：同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，
-//! 免得群里连着刷。这两道闸只影响发指令的人，不影响其它功能。
+//! - **观测**：[`collect`] 从库里数出来的三块——语言指纹、活跃节律、群内往来。都不经模型，
+//!   可核验，模型接不接都一样在。
+//! - **档案**：[`persona`] 把观测与样本交给模型，换回九个维度各一句判定
+//!   （性格 / 兴趣 / 好恶 / 生计 / 家庭 / 年岁 / 经历 / 志向 / 人际），每条配一条依据与
+//!   一档把握（明说 / 可推 / 待考）。
+//!
+//! [`card`] 把两层排成一张 HTML 报告图；[`avatar`] 取对象的 QQ 头像配在开头。
+//!
+//! 三条线，两处刻意为之：
+//!
+//! - 不编数字（观测三块全由 [`collect`] 算出来）、不编原话（引语与「明说」的依据都逐字
+//!   比对样本）、不冒充把握（标了「明说」却拿不出原话的，收口时降成「可推」）。
+//! - **不再给任何人定 MBTI 与九型**。凭一个人打过的字给他一个四字母的型，是把一次粗糙的
+//!   归类说得像一次测量。要判断一个人是什么样，看他亲口说过什么，比看他在四个轴上的位置
+//!   诚实得多。
+//! - 同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，免得群里连着刷。
+//!   这两道闸只影响发指令的人，不影响其它功能。
 
 pub mod avatar;
 pub mod card;
 pub mod collect;
-pub mod models;
 pub mod persona;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
@@ -58,6 +65,8 @@ struct PortraitConfig {
     max_samples: usize,
     /// 一次最多从库里读多少条原始记录。
     max_scan: u64,
+    /// 报告里最多摆几个往来对象（他和谁聊得来那一节）。
+    partners: usize,
     /// 报告主题：`auto` 按北京时间在日读与夜读之间切换，也可固定 `light` / `dark`。
     theme: String,
     /// 是否把画像排版成卡片图；关掉或渲染失败时退回一份等价的文字版。
@@ -79,6 +88,7 @@ impl Default for PortraitConfig {
             days: 0,
             max_samples: 120,
             max_scan: 8_000,
+            partners: 6,
             theme: "auto".to_string(),
             image_enabled: true,
             image_scale: 3.0,
@@ -101,9 +111,10 @@ pub fn validate_config(value: &Value) -> Result<(), String> {
 // ================= 指令解析 =================
 
 /// 画像的别名。长的写在前面，前缀匹配才不会被短的抢走。
-const KEYWORDS: [&str; 6] = [
+const KEYWORDS: [&str; 7] = [
     "用户画像报告",
     "用户画像",
+    "角色画像",
     "人物画像",
     "我的画像",
     "画像报告",
@@ -377,7 +388,7 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    "这张画像正在生成，画完会自动发出".to_string(),
+                    "⏳ 这张画像正在生成，画完会自动发出".to_string(),
                 )
                 .await;
                 return Ok(None);
@@ -392,7 +403,7 @@ pub fn handle(
                         if message_id > 0 {
                             reply = reply.reply(message_id);
                         }
-                        reply = reply.text(format!("还是刚才那份画像，{left} 秒后可重新生成"));
+                        reply = reply.text(format!("⏳ 还是刚才那份画像，{left} 秒后可重新生成"));
                         reply = match cached {
                             Cached::Card(base64) => reply.image(base64),
                             Cached::Report(report) => reply.text(report),
@@ -410,7 +421,7 @@ pub fn handle(
                             group_id,
                             requester,
                             message_id,
-                            format!("刚画过，{left} 秒后可重新生成"),
+                            format!("⏳ 刚画过，{left} 秒后可重新生成"),
                         )
                         .await;
                     }
@@ -431,7 +442,7 @@ pub fn handle(
             group_id,
             requester,
             message_id,
-            format!("正在读 {who} 的发言记录，整理画像…"),
+            format!("⏳ 正在读 {who} 的发言记录，整理画像…"),
         )
         .await;
 
@@ -444,6 +455,7 @@ pub fn handle(
             end: now.timestamp() + 1,
             max_scan: config.max_scan.clamp(200, 50_000),
             max_samples: config.max_samples.clamp(20, 400),
+            partners: config.partners.min(12),
         };
         let material = match collect::collect(&ctx.db, &request).await {
             Ok(Some(material)) => material,
@@ -468,14 +480,15 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    format!("❌ 查记录时出错了：{error}"),
+                    format!("❌ 查记录时出错了：{error}\n过一会儿再试"),
                 )
                 .await;
                 return Ok(None);
             }
         };
 
-        // 标签里的「事实」与「统计」两层全从统计量里来，模型只负责推断层与那段综述。
+        // 观测三块与样本交给模型，换回九格档案与综述；收口在 `sanitize` 里做，
+        // 认不出维度、没依据、冒认「明说」的都在那儿落地。
         let (base, key, model) = match endpoint(&ctx, &config.model).await {
             Ok(triple) => triple,
             Err(error) => {
@@ -486,7 +499,7 @@ pub fn handle(
                     group_id,
                     requester,
                     message_id,
-                    format!("模型接口没配好：{error}"),
+                    format!("❌ 模型接口没配好：{error}\n检查 [oai.providers] 里的接口地址与密钥"),
                 )
                 .await;
                 return Ok(None);
@@ -499,7 +512,10 @@ pub fn handle(
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material, &material.style)))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(
+                    &material,
+                    &material.style,
+                )))],
             },
         ];
         let completion = tokio::time::timeout(
@@ -533,12 +549,21 @@ pub fn handle(
         };
 
         let avatar = avatar::data_url(material.user_id).await;
+        // 页脚那条下一步带上当前环境的前缀，读者能整条抄走。
+        let command = format!(
+            "{}画像 @某人",
+            crate::command::get_prefixes(&ctx)
+                .first()
+                .cloned()
+                .unwrap_or_default()
+        );
         let view = card::View {
             material: &material,
             persona: &profile,
             avatar: avatar.as_deref(),
             model: &model,
             theme: &config.theme,
+            command: &command,
             offset: beijing(),
             now,
         };
@@ -624,9 +649,9 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 卡片图之外的文字版：综合速写、读数、人格投影、语言指纹、四维标签、综述、群聊钩子
-/// 与那句边界说明——一张图里有的信息，这一层一条不落。够用户在群里看懂这份画像，
-/// 不至于因为一张图没出成就什么都拿不到。
+/// 卡片图之外的文字版：综合速写、人物档案、怎么说话、什么时候来、群内往来、画像综述
+/// 与那句边界说明——一张图里有的信息，这一层一条不落，包括 24 小时与一周的完整分布。
+/// 够用户在群里看懂这份画像，不至于因为一张图没出成就什么都拿不到。
 ///
 /// `image_enabled` 只影响最后那句交代：是「出图失败」还是「本来就关了图」。
 fn text_report(
@@ -635,81 +660,85 @@ fn text_report(
     model: &str,
     image_enabled: bool,
 ) -> String {
-    let mut out = format!("▍{}\n{}\n", profile.title, profile.note);
-    out.push_str(&format!(
-        "\n▍读数\n共 {} 条群聊发言，覆盖 {} 天（活跃 {} 天），单条平均 {:.1} 字，\
-         {}前后最密。样本充分性：{}。\n",
-        material.total,
-        material.span_days(),
-        material.active_days,
-        material.avg_len(),
-        persona::hour_label(material.peak_hour()),
-        material.sufficiency().label(),
-    ));
+    let mut out = format!("▍综合速写\n{}\n{}\n", profile.title, profile.note);
 
-    // 人格投影：两把尺子都是投影，先声明，再给读数。模型没接整块说没接。
-    out.push_str("\n▍人格投影（是投影，不是定论）\n");
-    if let Some(mbti) = profile.mbti {
-        let epithet = mbti.epithet();
-        let code = if epithet.is_empty() {
-            format!("MBTI {}", mbti.code())
-        } else {
-            format!("MBTI {} · {}", mbti.code(), epithet)
-        };
-        out.push_str(&format!("{code}\n"));
-        for (left, right, score) in mbti.axes() {
-            let left_pct = models::axis_lean(score);
-            let right_pct = 100 - left_pct as u16;
-            out.push_str(&format!(
-                "　{} {} / {} {}\n",
-                models::pole_short(left.chars().next().unwrap_or('?')),
-                left_pct,
-                models::pole_short(right.chars().next().unwrap_or('?')),
-                right_pct,
-            ));
-        }
+    out.push_str("\n▍人物档案（把握三档：明说＝他本人讲过，可推＝几条线索，待考＝只一处线索）\n");
+    if profile.facets.is_empty() {
+        out.push_str(
+            "　这一层这次空着：模型没接上，九格一格都没写。\
+             下面三节照旧——它们全部由记录数出，不经模型。\n",
+        );
     } else {
-        out.push_str("模型未接，投影层暂不可用\n");
-    }
-    if let Some(ennea) = profile.enneagram {
-        out.push_str(&format!(
-            "九型 {} · {}：{}\n",
-            ennea.short(),
-            ennea.name(),
-            ennea.motif()
-        ));
+        for (name, _) in persona::FACETS {
+            let Some(facet) = profile.facet(name) else {
+                continue;
+            };
+            out.push_str(&format!("　{}｜{}\n", name, facet.tier()));
+            out.push_str(&format!("　　{}\n", facet.verdict));
+            out.push_str(&format!("　　{}\n", evidence_line(facet)));
+        }
     }
 
-    // 语言指纹：全部由事实算出。
+    // 语言：全部由事实算出。
     let s = &material.style;
+    out.push_str("\n▍怎么说话（全部由记录数出）\n");
     out.push_str(&format!(
-        "\n▍语言指纹\n提问 {}、感叹 {}、笑声 {}、语气词 {}、省略 {}；均长 {:.1} 字，\
-         长消息 {}、短消息 {}，长度起伏 {:.2}，爆发指数 {:.2}\n",
+        "　提问 {}、感叹 {}、笑声 {}、语气词 {}、省略 {}；每百字自称 {:.1} 次、对称呼 {:.1} 次\n",
         persona::percent(s.question_rate),
         persona::percent(s.exclaim_rate),
         persona::percent(s.laugh_rate),
         persona::percent(s.modal_rate),
         persona::percent(s.ellipsis_rate),
+        s.self_per100,
+        s.you_per100,
+    ));
+    out.push_str(&format!(
+        "　均长 {:.1} 字；长消息 {}、短消息 {}；长度起伏 {:.2}；爆发指数 {:.2}；相邻重复 {}\n",
         material.avg_len(),
         persona::percent(s.long_rate),
         persona::percent(s.short_rate),
         s.len_cv,
         s.burstiness,
+        persona::percent(s.repeat_rate),
     ));
     if !profile.style.trim().is_empty() {
         out.push_str(&format!("　{}\n", profile.style));
     }
 
-    for (dimension, _) in persona::DIMENSIONS {
-        let tags = profile.tags_of(dimension);
-        if tags.is_empty() {
-            continue;
-        }
-        out.push_str(&format!("\n▍{dimension}\n"));
-        for tag in tags {
-            out.push_str(&format!("　{}｜{}\n", tag.tier(), tag.label));
-            if !tag.evidence.trim().is_empty() {
-                out.push_str(&format!("　　{}\n", tag.evidence));
+    out.push_str("\n▍什么时候来\n");
+    out.push_str(&format!(
+        "　{}前后最密；夜间（0—6 点）占 {}；周末占 {}；最活跃的一天是{}\n",
+        persona::hour_label(material.peak_hour()),
+        persona::percent(material.night_ratio()),
+        persona::percent(material.weekend_ratio()),
+        persona::weekday_label(material.peak_weekday()),
+    ));
+    out.push_str(&format!("　0—23 时依次：{}\n", counts(&material.hour)));
+    out.push_str(&format!(
+        "　日 一 二 三 四 五 六依次：{}\n",
+        counts(&material.weekday)
+    ));
+
+    if !material.ties.is_empty() {
+        out.push_str("\n▍群内往来（点名是 @，接话是紧跟在对方之后的下一条；两者都不等于回复）\n");
+        for tie in &material.ties {
+            out.push_str(&format!("　{}（QQ {}）\n", tie.name, tie.user_id));
+            out.push_str(&format!(
+                "　　点名 我叫他 {} 次 · 他叫我 {} 次（{}）\n",
+                tie.at_out,
+                tie.at_in,
+                tie.initiative(),
+            ));
+            out.push_str(&format!(
+                "　　接话 我接他 {} 次 · 他接我 {} 次\n",
+                tie.turn_out, tie.turn_in,
+            ));
+            if let Some(line) = profile
+                .ties
+                .iter()
+                .find(|reading| reading.id == tie.user_id)
+            {
+                out.push_str(&format!("　　{}\n", line.line));
             }
         }
     }
@@ -729,13 +758,6 @@ fn text_report(
         }
     }
 
-    if !profile.discuss.is_empty() {
-        out.push_str("\n▍群聊钩子\n");
-        for hook in &profile.discuss {
-            out.push_str(&format!("　· {hook}\n"));
-        }
-    }
-
     let footer = if image_enabled {
         "出图失败，先给你一份文字版"
     } else {
@@ -743,10 +765,29 @@ fn text_report(
     };
     out.push_str(&format!(
         "\n画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。\
-         MBTI 与九型是行为往框架上的投影，是讨论的起点，不是定论。\
+         档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话。\
          {footer}（{model}）。"
     ));
     out
+}
+
+/// 一条依据。标了「明说」的那几格，依据就是他本人的原话，用书名号式的引号括起来，
+/// 与版面上的处理一致。
+fn evidence_line(facet: &persona::Facet) -> String {
+    if facet.quoted {
+        format!("「{}」", facet.evidence)
+    } else {
+        facet.evidence.clone()
+    }
+}
+
+/// 一列计数，一行印全。文字版里没有柱状图，图里有的数一个不落。
+fn counts(values: &[u64]) -> String {
+    values
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn say(
@@ -832,16 +873,18 @@ mod live_tests {
             end: now.timestamp() + 1,
             max_scan: 8_000,
             max_samples: 120,
+            partners: 6,
         };
         let material = collect::collect(&db, &request)
             .await
             .expect("查询失败")
             .expect("这个人没有群聊记录");
         println!(
-            "===== 素材 =====\n{} 条发言，覆盖 {} 天，样本充分性 {}",
+            "===== 素材 =====\n{} 条发言，覆盖 {} 天，样本充分性 {}，往来对象 {} 个",
             material.total,
             material.span_days(),
-            material.sufficiency().label()
+            material.sufficiency().label(),
+            material.ties.len()
         );
 
         let history = vec![
@@ -849,7 +892,10 @@ mod live_tests {
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material, &material.style)))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(
+                    &material,
+                    &material.style,
+                )))],
             },
         ];
         let raw = crate::plugins::oai::llm::complete(&base, &key, &model, history, Some("high"))
@@ -861,13 +907,29 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n综合标签：{}\n一句话：{}\n标签：\n{}\n综述：\n{}",
+            "===== 收口后的画像 =====\n综合速写：{}\n一句话：{}\n怎么说话：{}\n档案（{}/9 格）：\n{}\n往来读法：\n{}\n综述：\n{}",
             profile.title,
             profile.note,
-            profile
-                .tags
+            profile.style,
+            profile.covered(),
+            persona::FACETS
                 .iter()
-                .map(|tag| format!("　{}｜{}｜{}｜{}", tag.dim().unwrap_or("?"), tag.tier(), tag.label, tag.evidence))
+                .filter_map(|(name, _)| {
+                    let facet = profile.facet(name)?;
+                    Some(format!(
+                        "　{}｜{}｜{}｜{}",
+                        name,
+                        facet.tier(),
+                        facet.verdict,
+                        facet.evidence
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            profile
+                .ties
+                .iter()
+                .map(|reading| format!("　{}｜{}", reading.id, reading.line))
                 .collect::<Vec<_>>()
                 .join("\n"),
             profile
@@ -880,19 +942,52 @@ mod live_tests {
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        assert!(!profile.title.is_empty(), "综合标签不该是空的");
+        println!(
+            "===== 群内往来（由记录数出）=====\n{}",
+            material
+                .ties
+                .iter()
+                .map(|tie| format!(
+                    "　{}：我叫他 {}、他叫我 {}；我接他 {}、他接我 {}（{}）",
+                    tie.name,
+                    tie.at_out,
+                    tie.at_in,
+                    tie.turn_out,
+                    tie.turn_in,
+                    tie.initiative()
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert!(!profile.title.is_empty(), "综合速写不该是空的");
         assert!(!profile.note.is_empty(), "一句话概括不该是空的");
-        // 四个维度里至少三个有标签，否则这份画像没成形。
-        let covered = persona::DIMENSIONS
-            .iter()
-            .filter(|(name, _)| !profile.tags_of(name).is_empty())
-            .count();
-        assert!(covered >= 3, "只有 {covered} 个维度有标签");
+        // 九格里至少写出四格，否则这份档案没成形；模型接上了就不该只剩一两格。
+        assert!(
+            profile.covered() >= 4,
+            "档案只写出了 {} 格",
+            profile.covered()
+        );
         assert!(
             profile.live_passages().count() >= 4,
             "综述至少要有四段，这次只有 {} 段",
             profile.live_passages().count()
         );
+        // 每一格都有一条依据；标了「明说」的，依据必须是他的原话。
+        for facet in &profile.facets {
+            assert!(
+                !facet.evidence.trim().is_empty(),
+                "{} 没有依据",
+                facet.dimension
+            );
+            if facet.tier() == "明说" {
+                assert!(
+                    persona::quote_is_from_samples(&facet.evidence, &material.samples),
+                    "{} 标了明说，依据却不在样本里：{}",
+                    facet.dimension,
+                    facet.evidence
+                );
+            }
+        }
         // 引语是被比对过的：要么没有，要么每一句都归一化后出自样本（与收口同一把尺）。
         for passage in profile.live_passages().filter(|passage| passage.is_quote()) {
             assert!(
@@ -909,6 +1004,7 @@ mod live_tests {
             avatar: avatar.as_deref(),
             model: &model,
             theme: "auto",
+            command: "/画像 @某人",
             offset: beijing(),
             now,
         });
@@ -991,7 +1087,16 @@ mod tests {
 
     #[test]
     fn a_bare_command_asks_for_your_own_report() {
-        for input in ["画像", " 画像 ", "用户画像", "我的画像", "画像报告", "用户画像报告"] {
+        for input in [
+            "画像",
+            " 画像 ",
+            "用户画像",
+            "角色画像",
+            "我的画像",
+            "人物画像",
+            "画像报告",
+            "用户画像报告",
+        ] {
             assert_eq!(parse_command(input, &[]), Some(Request::Mine), "{input}");
         }
     }
@@ -1244,8 +1349,16 @@ mod tests {
             first_time: 0,
             last_time: 86_400 * 9,
             active_days: 6,
-            hour: [0; 24],
-            weekday: [0; 7],
+            hour: {
+                let mut hour = [0u64; 24];
+                hour[23] = 40;
+                hour
+            },
+            weekday: {
+                let mut weekday = [0u64; 7];
+                weekday[5] = 30;
+                weekday
+            },
             groups: Vec::new(),
             kinds: Default::default(),
             longest: 50,
@@ -1253,30 +1366,41 @@ mod tests {
             words: Vec::new(),
             samples: Vec::new(),
             style: Default::default(),
+            ties: vec![collect::Tie {
+                user_id: 10001,
+                name: "老张".into(),
+                at_out: 12,
+                at_in: 4,
+                turn_out: 30,
+                turn_in: 9,
+                last_time: 0,
+                samples: Vec::new(),
+            }],
         };
         let profile = persona::Persona {
             title: "夜行改稿人".into(),
             note: "白天潜水夜里冒泡".into(),
-            mbti: Some(models::Mbti {
-                energy: -72,
-                perceiving: -60,
-                deciding: 40,
-                lifestyle: -20,
-            }),
-            tags: vec![
-                persona::Tag {
-                    dimension: "活跃".into(),
-                    layer: "事实".into(),
-                    label: "夜里出现".into(),
-                    evidence: "夜间发言占 41%".into(),
+            style: "话短，句尾常带问号。".into(),
+            facets: vec![
+                persona::Facet {
+                    dimension: "性格".into(),
+                    certainty: "可推".into(),
+                    verdict: "说事先给结论".into(),
+                    evidence: "三条长发言都是先下判断再补理由".into(),
+                    quoted: false,
                 },
-                persona::Tag {
-                    dimension: "表达".into(),
-                    layer: "推断".into(),
-                    label: "句子短".into(),
-                    evidence: String::new(),
+                persona::Facet {
+                    dimension: "生计".into(),
+                    certainty: "明说".into(),
+                    verdict: "在上班，要早起".into(),
+                    evidence: "三点还在改".into(),
+                    quoted: true,
                 },
             ],
+            ties: vec![persona::TieReading {
+                id: 10001,
+                line: "跟老张主要聊装机".into(),
+            }],
             profile: vec![
                 persona::Passage {
                     kind: "text".into(),
@@ -1296,16 +1420,60 @@ mod tests {
         assert!(report.contains("夜行改稿人"));
         assert!(report.contains("白天潜水夜里冒泡"));
         assert!(report.contains("三点还在改"));
-        assert!(report.contains("共 100 条群聊发言"));
-        // 四个维度的小标题、三条层级、标签与证据都要跟着落到文字版里。
-        assert!(report.contains("▍活跃"));
-        assert!(report.contains("▍表达"));
-        assert!(!report.contains("▍内容"), "没有内容的维度不印");
-        assert!(report.contains("事实｜夜里出现"));
-        assert!(report.contains("夜间发言占 41%"));
-        assert!(report.contains("推断｜句子短"));
+        // 档案：只有写出来的那两格才印，把握与依据都跟着落下来。
+        assert!(report.contains("▍人物档案"));
+        assert!(report.contains("　性格｜可推"));
+        assert!(report.contains("　生计｜明说"));
+        assert!(report.contains("　　说事先给结论"));
+        assert!(report.contains("　　三条长发言都是先下判断再补理由"));
+        assert!(
+            report.contains("　　「三点还在改」"),
+            "明说的依据按原话括起来"
+        );
+        assert!(!report.contains("　家庭｜"), "没有的格子不印");
+        // 观测三节都在。
+        assert!(report.contains("▍怎么说话"));
+        assert!(report.contains("▍什么时候来"));
+        assert!(report.contains("▍群内往来"));
+        assert!(report.contains("老张（QQ 10001）"));
+        assert!(report.contains("　　点名 我叫他 12 次 · 他叫我 4 次（我这边主动）"));
+        assert!(report.contains("　　接话 我接他 30 次 · 他接我 9 次"));
+        assert!(report.contains("跟老张主要聊装机"));
+        // 图里有的信息，文字版一条不落：24 小时与一周的完整分布。
+        assert!(report.contains("　0—23 时依次：0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 40"));
+        assert!(report.contains("　日 一 二 三 四 五 六依次：0 0 0 0 0 30 0"));
         assert!(report.contains("▍画像综述"));
         assert!(report.contains("他把手艺当退路。"));
         assert!(report.contains("不等于本人"));
+    }
+
+    /// 模型没接上时，文字版要照实说档案空着，而观测三节照旧在。
+    #[test]
+    fn the_text_report_says_when_the_dossier_is_empty() {
+        let material = crate::plugins::portrait::collect::Material {
+            user_id: 1,
+            name: "甲".into(),
+            total: 4,
+            first_time: 0,
+            last_time: 86_400,
+            active_days: 2,
+            hour: [0; 24],
+            weekday: [0; 7],
+            groups: Vec::new(),
+            kinds: Default::default(),
+            longest: 8,
+            avg_len: 4.0,
+            words: Vec::new(),
+            samples: vec!["今天这个雨下得没完没了".into()],
+            style: Default::default(),
+            ties: Vec::new(),
+        };
+        let profile = persona::Persona::from_stats(&material);
+        let report = text_report(&material, &profile, "deepseek/deepseek-flash", false);
+        assert!(report.contains("这一层这次空着"));
+        assert!(report.contains("▍怎么说话"));
+        assert!(report.contains("▍什么时候来"));
+        assert!(!report.contains("▍群内往来"), "没有往来对象就不占版面");
+        assert!(report.contains("出图已关闭"));
     }
 }

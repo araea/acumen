@@ -1,15 +1,17 @@
 //! 画像卡（HTML → 截图）。
 //!
-//! 版式按「一份读数」来排，不按仪表盘来排。它有三层，从硬到软，版面也照着这个次序走：
+//! 版式按「一份档案」来排，不按仪表盘来排。它有两层，从硬到软，版面也照着这个次序走：
 //!
-//! 1. **仪器读数**：语言指纹。全篇唯一算得出来的东西，用一排事实筹码铺开。
-//! 2. **读法**：四维行为标签（事实/统计/推断三层徽章）加一段语言风格白描。
-//! 3. **投影**：MBTI 四轴光谱与九型核心。全篇唯一「不硬」的部分，所以单独关在一格里，
-//!    顶上就写明它是投影，不是定论。
+//! 1. **观测**：怎么说话（语言指纹）、什么时候来（24 小时与一周的分布）、群内往来
+//!    （跟谁聊得来）。全篇算得出来的东西，排在档案之后紧接着铺开。
+//! 2. **档案**：九个维度各一句判定，每条带一档把握与一条依据，是全篇唯一「读出来」的部分，
+//!    所以每条都挂着把握徽章，顶上写明三档各是什么意思。
 //!
-//! 综合速写压在最前——它是这份东西的脸。往下是两把尺子与一排筹码，再往下才是标签与综述。
-//! 版面唯一的图形是光谱那条从中间往一侧填的槽和事实筹码：光谱是投影层全部说服力所在，
-//! 筹码是仪器读数可核验的那一层。
+//! 综合速写压在最前——它是这份东西的脸。往下先立档案（他是谁），再摆观测（凭什么这么说），
+//! 最后是综述与页脚。
+//!
+//! 版面有两处图形，都是真数据：一排 24 小时的柱（什么时候来）与每条往来的双向条
+//! （谁更主动）。不画没有出处的图。
 //!
 //! 约束与本仓库其它卡片一致：不加载任何外部资源（字体、图片、脚本都不引；头像由
 //! [`super::avatar`] 先下回来，以 data URL 内嵌），所有动态文本一律转义，出图交给
@@ -17,8 +19,7 @@
 //! 本文件里的版式只摆位置，不写色值、字号、圆角、阴影的字面量，一律取令牌。
 
 use super::collect::Material;
-use super::models::{Mbti, axis_lean, pole_short};
-use super::persona::{DIMENSIONS, LAYERS, Persona, Tag};
+use super::persona::{CERTAINTIES, FACETS, Persona, certainty_class, certainty_note};
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Timelike, Utc};
 
@@ -26,6 +27,8 @@ use chrono::{DateTime, FixedOffset, Timelike, Utc};
 const WIDTH: u32 = 720;
 /// 高度上限（CSS 像素），与其它卡片一致。
 const CAPTURE_MAX_HEIGHT: f64 = 16_000.0;
+/// 柱状图里最矮的一根（百分比）。有数但很少的那几个小时也要看得见。
+const MIN_BAR: u64 = 6;
 
 /// 明暗两套主题。切换只动明度与文字三档灰，不动版式。两套都是纸色：日读偏暖白，
 /// 夜读偏墨黑，衬线字落在上面才不显生。
@@ -110,6 +113,8 @@ pub struct View<'a> {
     pub model: &'a str,
     /// 主题模式：`auto` / `light` / `dark`，见 [`Theme::resolve`]。
     pub theme: &'a str,
+    /// 页脚那条能立刻执行的下一步（`画像 @某人`），前缀取当前配置。空的就整条不印。
+    pub command: &'a str,
     pub offset: FixedOffset,
     pub now: DateTime<FixedOffset>,
 }
@@ -128,24 +133,24 @@ pub fn html(view: &View<'_>) -> String {
 {eyebrow}
 {hero}
 {headline}
-{models}
-{fingerprint}
-{taxonomy}
+{dossier}
+{voice}
+{rhythm}
+{ties}
 {profile}
-{discuss}
 {foot}
 </div></div></body></html>"#,
         css = css,
-        eyebrow = eyebrow(view),
-        hero = hero(view),
         seed = accent.seed_class(),
         theme = theme.vars(),
+        eyebrow = eyebrow(view),
+        hero = hero(view),
         headline = headline(view.persona),
-        models = models(view.persona),
-        fingerprint = fingerprint(view.material, view.persona),
-        taxonomy = taxonomy(view.persona),
+        dossier = dossier(view.persona),
+        voice = voice(view.material, view.persona),
+        rhythm = rhythm(view.material),
+        ties = ties(view.material, view.persona),
         profile = profile(view.persona),
-        discuss = discuss(view.persona),
         foot = foot(view),
     )
 }
@@ -160,7 +165,7 @@ fn sec_head(mark: &str, en: &str) -> String {
 
 fn eyebrow(view: &View<'_>) -> String {
     format!(
-        r#"<div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>用户画像<span class="md-kicker-en">USER PROFILE</span></div><span class="md-stamp">{}</span></div>"#,
+        r#"<div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>角色画像<span class="md-kicker-en">CHARACTER DOSSIER</span></div><span class="md-stamp">{}</span></div>"#,
         esc(&stamp(view.now)),
     )
 }
@@ -187,7 +192,7 @@ fn hero(view: &View<'_>) -> String {
 
 /// 一行读数。数字只做旁证，不铺成仪表盘。
 ///
-/// 只留四格：「均长」不在这里——它属于语言指纹，「同一件事只说一遍」。
+/// 只留四格：「均长」不在这里——它属于怎么说话，同一件事不说两遍。
 fn readings(material: &Material) -> String {
     let items = [
         ("发言", fmt_num(material.total), ""),
@@ -215,7 +220,7 @@ fn readings(material: &Material) -> String {
 /// 综合速写——这份东西的脸。模型没接时挂一枚筹码说明。
 fn headline(persona: &Persona) -> String {
     let pill = if persona.estimated {
-        r#"<span class="md-chip">模型未接，标签由统计直出</span>"#.to_string()
+        r#"<span class="md-chip">模型未接，档案由观测直出</span>"#.to_string()
     } else {
         String::new()
     };
@@ -234,101 +239,59 @@ fn headline(persona: &Persona) -> String {
     )
 }
 
-/// 投影层：两把尺子。模型没接就整块留空，并说清为什么。
-fn models(persona: &Persona) -> String {
-    let body = if persona.mbti.is_some() || persona.enneagram.is_some() {
-        format!(
-            r#"<div class="models">{}{}</div>"#,
-            mbti_card(persona),
-            ennea_card(persona),
-        )
-    } else {
-        r#"<div class="md-callout-empty fp-empty">模型未接，人格投影这一层空着。投影要把行为读进框架，得等模型接上。</div>"#
-            .to_string()
-    };
-    format!(
-        r#"<div class="sec">{head}<div class="fp-frame-note">两把尺子都是把群聊行为往既有框架上做的投影，是讨论的起点，不是定论。</div>{body}</div>"#,
-        head = sec_head("人格投影", "PERSONALITY PROJECTION"),
-    )
-}
-
-fn mbti_card(persona: &Persona) -> String {
-    let Some(mbti) = persona.mbti else {
-        return String::new();
-    };
-    let code = mbti.code();
-    let epithet = mbti.epithet();
-    let epithet = if epithet.is_empty() {
-        String::new()
-    } else {
-        format!(r#"<i>{}</i>"#, esc(epithet))
-    };
-    format!(
-        r#"<div class="model model-mbti"><div class="model-head"><span class="model-name">MBTI 四轴</span><span class="model-code">{code}{epithet}</span></div>{axes}</div>"#,
-        code = esc(&code),
-        epithet = epithet,
-        axes = spectrum(&mbti),
-    )
-}
-
-/// 四条光谱，从中间往更强的一侧填。槽越长，偏得越远；贴中即贴近中线。
-fn spectrum(mbti: &Mbti) -> String {
-    mbti.axes()
+/// 人物档案：九个维度各一格，每格一句判定、一档把握、一条依据。
+///
+/// 三档把握是这份东西的诚实所在，所以图例放在最前，徽章跟着每一格走——
+/// 判断一个人是什么样，读者得先看得见这句话有多少把握。
+fn dossier(persona: &Persona) -> String {
+    let legend: String = CERTAINTIES
         .iter()
-        .map(|(left_letter, right_letter, score)| {
-            let pct = axis_lean(*score); // 0..100，靠左极的百分比
-            let half = (pct as i32 - 50).unsigned_abs() as u32;
-            let (fill_left, fill_width) = if pct >= 50 {
-                (50 - half, half)
-            } else {
-                (50, half)
-            };
-            let win = if *score >= 0 { pct } else { 100 - pct };
-            let lc = left_letter.chars().next().unwrap_or('?');
-            let rc = right_letter.chars().next().unwrap_or('?');
-            let left_name = pole_short(lc);
-            let right_name = pole_short(rc);
-            // 赢的那一极把它偏到的百分比写在名字后面。
-            let (left_suffix, right_suffix) = if *score >= 0 {
-                (format!(" {win}"), String::new())
-            } else {
-                (String::new(), format!(" {win}"))
-            };
+        .map(|(name, en)| {
             format!(
-                r#"<div class="axis"><div class="axis-poles"><span class="pole">{lc} {left_name}{left_suffix}</span><span class="pole pole-right">{rc} {right_name}{right_suffix}</span></div><div class="axis-track"><span class="axis-center"></span><span class="axis-fill" style="left:{fill_left}%;width:{fill_width}%"></span></div></div>"#,
-                lc = lc,
-                rc = rc,
-                left_name = esc(left_name),
-                right_name = esc(right_name),
-                left_suffix = esc(&left_suffix),
-                right_suffix = esc(&right_suffix),
-                fill_left = fill_left,
-                fill_width = fill_width,
+                r#"<div class="legend-item"><b class="{}">{}</b><i>{}</i><span>{}</span></div>"#,
+                certainty_class(name),
+                esc(name),
+                esc(en),
+                esc(certainty_note(name)),
             )
         })
-        .collect()
-}
+        .collect();
 
-fn ennea_card(persona: &Persona) -> String {
-    let Some(ennea) = persona.enneagram else {
-        return String::new();
-    };
-    let name = ennea.name();
-    let name_line = if name.is_empty() {
-        String::new()
+    let rows: String = FACETS
+        .iter()
+        .filter_map(|(name, _)| {
+            let facet = persona.facet(name)?;
+            let evidence = if facet.quoted {
+                format!(r#"<blockquote class="facet-quote">{}</blockquote>"#, esc(&facet.evidence))
+            } else {
+                format!(r#"<div class="facet-ev">{}</div>"#, esc(&facet.evidence))
+            };
+            Some(format!(
+                r#"<div class="facet"><div class="facet-name">{}</div><div class="facet-body"><div class="facet-verdict">{}</div>{evidence}</div><span class="cert {}">{}</span></div>"#,
+                esc(name),
+                esc(&facet.verdict),
+                certainty_class(facet.tier()),
+                esc(facet.tier()),
+            ))
+        })
+        .collect();
+
+    // 九格全空：模型没接上，或这次素材里确实没有能落格的话。照实说，不拿观测冒充档案。
+    let body = if rows.is_empty() {
+        r#"<div class="md-callout-empty">这次九格都没写出东西：模型没接上，或者下发的记录里没有能落进这九格的话。下面三节照旧，它们全部由记录数出。</div>"#
+            .to_string()
     } else {
-        format!(r#"<div class="ennea-name">{}</div>"#, esc(name))
+        format!(r#"<div class="facets">{rows}</div>"#)
     };
+
     format!(
-        r#"<div class="model model-ennea"><div class="model-head"><span class="model-name">九型核心</span><span class="model-code ennea-code">{short}</span></div>{name_line}<div class="ennea-motif">{motif}</div></div>"#,
-        short = esc(&ennea.short()),
-        name_line = name_line,
-        motif = esc(ennea.motif()),
+        r#"<div class="sec">{head}<div class="legend">{legend}</div>{body}</div>"#,
+        head = sec_head("人物档案", "DOSSIER"),
     )
 }
 
-/// 语言指纹：一排事实筹码 + 模型对它们的一段读法。筹码是仪器读数，读法是读法层。
-fn fingerprint(material: &Material, persona: &Persona) -> String {
+/// 怎么说话：一排事实筹码 + 模型对它们的一段读法。筹码是观测，读法是读法。
+fn voice(material: &Material, persona: &Persona) -> String {
     let s = &material.style;
     let chips = [
         ("提问", super::persona::percent(s.question_rate)),
@@ -353,69 +316,130 @@ fn fingerprint(material: &Material, persona: &Persona) -> String {
         })
         .collect();
     let reading = if persona.style.trim().is_empty() {
-        r#"<div class="style-reading faint">模型未接，语言风格暂只有上面这些数得出来的筹码。</div>"#
+        r#"<div class="style-reading faint">模型未接，怎么说话暂只有上面这些数得出来的筹码。</div>"#
             .to_string()
     } else {
-        format!(r#"<div class="style-reading">{}</div>"#, esc(&persona.style))
+        format!(
+            r#"<div class="style-reading">{}</div>"#,
+            esc(&persona.style)
+        )
     };
     format!(
         r#"<div class="sec">{head}<div class="fp-grid">{grid}</div>{reading}</div>"#,
-        head = sec_head("语言指纹", "LANGUAGE FINGERPRINT"),
-        grid = grid,
-        reading = reading,
+        head = sec_head("怎么说话", "VOICE"),
     )
 }
 
-/// 四维标签体系。四个维度按固定次序排，空的维度不占版面；每条先给层级徽章，再给标签与证据。
-fn taxonomy(persona: &Persona) -> String {
-    let dims: String = DIMENSIONS
-        .iter()
-        .filter_map(|(name, en)| {
-            let tags = persona.tags_of(name);
-            if tags.is_empty() {
-                return None;
-            }
-            let rows: String = tags.iter().map(|tag| tag_row(tag)).collect();
-            Some(format!(
-                r#"<div class="dim"><div class="dim-head"><span class="dim-name">{}</span><span class="dim-en">{}</span></div>{rows}</div>"#,
-                esc(name),
-                esc(en),
-            ))
+/// 什么时候来：24 小时的柱，加一周的柱。全篇唯一画得出的形状，就画在这儿。
+///
+/// 两根柱子都不用颜色区分信息：峰值那根同时由主色与下面那行字点出来，
+/// 0—6 时那一段同样既换了底色、也在说明里写了数。
+fn rhythm(material: &Material) -> String {
+    let hours: String = bars(&material.hour, material.peak_hour(), 0..6);
+    let weekdays: String = bars(&material.weekday, material.peak_weekday(), 0..0);
+    let ticks: String = (0..24)
+        .map(|hour| {
+            let label = matches!(hour, 0 | 6 | 12 | 18).then(|| format!("{hour}"));
+            format!(r#"<span class="tick">{}</span>"#, label.unwrap_or_default())
         })
         .collect();
-    if dims.is_empty() {
+    let day_names: String = ["日", "一", "二", "三", "四", "五", "六"]
+        .iter()
+        .map(|name| format!(r#"<span class="tick">{name}</span>"#))
+        .collect();
+
+    format!(
+        r#"<div class="sec">{head}<div class="rhythm"><div class="bars">{hours}</div><div class="ticks">{ticks}</div></div>{caption}<div class="rhythm rhythm-week"><div class="bars">{weekdays}</div><div class="ticks">{day_names}</div></div></div>"#,
+        head = sec_head("什么时候来", "RHYTHM"),
+        caption = rhythm_caption(material),
+    )
+}
+
+/// 一根柱代表一个格子。高度按峰值归一；峰值那根上主色，0—6 时那一段的槽换一档底色。
+fn bars(values: &[u64], peak: usize, night: std::ops::Range<usize>) -> String {
+    let max = values.iter().copied().max().unwrap_or(0);
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let height = if max == 0 || *value == 0 {
+                0
+            } else {
+                (value * 100 / max).max(MIN_BAR)
+            };
+            let mut class = String::from("bar");
+            if index == peak && *value > 0 {
+                class.push_str(" bar-peak");
+            }
+            if night.contains(&index) {
+                class.push_str(" bar-night");
+            }
+            format!(
+                r#"<span class="{class}"><span class="bar-fill" style="height:{height}%"></span></span>"#
+            )
+        })
+        .collect()
+}
+
+/// 柱下面那行说明。峰值、夜里的占比、周末的占比与最活跃的一天都在这儿落成字。
+fn rhythm_caption(material: &Material) -> String {
+    let night = material.night_ratio();
+    let weekend = material.weekend_ratio();
+    format!(
+        r#"<div class="rhythm-note">{}前后最密<span class="md-sep">·</span>夜间（0—6 点）{}<span class="md-sep">·</span>周末 {}<span class="md-sep">·</span>最活跃的一天是{}</div>"#,
+        esc(&super::persona::hour_label(material.peak_hour())),
+        esc(&super::persona::percent(night)),
+        esc(&super::persona::percent(weekend)),
+        esc(super::persona::weekday_label(material.peak_weekday())),
+    )
+}
+
+/// 群内往来：跟谁聊得来。数字是数出来的，一句话是读出来的。
+///
+/// 一组往来分四行：谁、点名（方向条就在这一行下面）、接话、一句读法。
+/// 方向条只画点名——接话是两个人一起把话接下去的，两边本来就接近对半，
+/// 画出来只会让人以为「差不多」是读出来的结论。
+fn ties(material: &Material, persona: &Persona) -> String {
+    if material.ties.is_empty() {
         return String::new();
     }
-
-    let legend: String = LAYERS
+    let blocks: String = material
+        .ties
         .iter()
-        .map(|(name, en)| {
+        .map(|tie| {
+            let reading = persona
+                .ties
+                .iter()
+                .find(|reading| reading.id == tie.user_id)
+                .map(|reading| format!(r#"<div class="tie-line">{}</div>"#, esc(&reading.line)))
+                .unwrap_or_default();
+            // 方向条：左边是他叫对方的次数，右边是对方叫他的次数，中缝是平手。
+            let lean = tie.at_lean();
+            let left = (lean * 100.0).round() as u64;
+            let right = if tie.at_out + tie.at_in == 0 { 0 } else { 100 - left };
+            let track = if tie.at_out + tie.at_in == 0 {
+                String::new()
+            } else {
+                format!(
+                    r#"<div class="tie-track"><span class="tie-out" style="width:{left}%"></span><span class="tie-in" style="width:{right}%"></span><span class="tie-center"></span></div>"#
+                )
+            };
             format!(
-                r#"<span class="legend-item"><b class="{}">{}</b><i>{}</i></span>"#,
-                super::persona::tier_class(name),
-                esc(name),
-                esc(en),
+                r#"<div class="tie"><div class="tie-head"><span class="tie-face">{face}</span><span class="tie-name">{name}</span><span class="tie-initiative">{initiative}</span></div><div class="tie-num"><i>点名</i> 我叫他 {at_out} · 他叫我 {at_in}</div>{track}<div class="tie-num"><i>接话</i> 我接他 {turn_out} · 他接我 {turn_in}</div>{reading}</div>"#,
+                face = esc(&initial(&tie.name)),
+                name = esc(&tie.name),
+                initiative = esc(tie.initiative()),
+                at_out = tie.at_out,
+                at_in = tie.at_in,
+                turn_out = tie.turn_out,
+                turn_in = tie.turn_in,
+                reading = reading,
             )
         })
         .collect();
-
     format!(
-        r#"<div class="sec">{head}<div class="legend">{legend}</div><div class="dims">{dims}</div></div>"#,
-        head = sec_head("行为标签", "BEHAVIOUR TAGS"),
-    )
-}
-
-fn tag_row(tag: &Tag) -> String {
-    let class = tag.tier_class();
-    let evidence = if tag.evidence.trim().is_empty() {
-        String::new()
-    } else {
-        format!(r#"<span class="tag-ev">{}</span>"#, esc(&tag.evidence))
-    };
-    format!(
-        r#"<div class="tag"><span class="tag-layer {class}">{}</span><span class="tag-main"><span class="tag-label">{}</span>{evidence}</span></div>"#,
-        esc(tag.tier()),
-        esc(&tag.label),
+        r#"<div class="sec">{head}<div class="fp-frame-note">数字由记录数出：点名是 @，条上画的就是谁叫谁多；接话是紧跟在对方之后的下一条。两者都不等于回复。一句话是读出来的。</div><div class="ties">{blocks}</div></div>"#,
+        head = sec_head("群内往来", "GROUP TIES"),
     )
 }
 
@@ -451,22 +475,6 @@ fn profile(persona: &Persona) -> String {
     )
 }
 
-/// 群聊钩子：能拿去吵的切入点。模型没给就整块隐去。
-fn discuss(persona: &Persona) -> String {
-    let items: String = persona
-        .discuss
-        .iter()
-        .map(|hook| format!(r#"<li>{}</li>"#, esc(hook)))
-        .collect();
-    if items.is_empty() {
-        return String::new();
-    }
-    format!(
-        r#"<div class="sec">{head}<ul class="discuss">{items}</ul></div>"#,
-        head = sec_head("群聊钩子", "FOR DISCUSSION"),
-    )
-}
-
 fn foot(view: &View<'_>) -> String {
     let material = view.material;
     let range = format!(
@@ -474,8 +482,19 @@ fn foot(view: &View<'_>) -> String {
         date_of(material.first_time, view.offset),
         date_of(material.last_time, view.offset)
     );
+    let covered = view.persona.covered();
+    // 一张卡读完要能回答四件事：这是什么、看的是谁、数字从哪来、接下来做什么。
+    // 前三件在上面，这一件落在页脚；指令带着当前环境的前缀，能整条抄走。
+    let hint = if view.command.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="md-hint"><span>换一个人看</span><code>{}</code></div>"#,
+            esc(view.command)
+        )
+    };
     format!(
-        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>模型 {model}</div><div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。MBTI 与九型是行为往框架上的投影，是讨论的起点，不是定论。仅供娱乐，不作凭据。</div></div>"#,
+        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>档案 {covered}/9 格<span class="md-sep">·</span>模型 {model}</div>{hint}<div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话。仅供参考，不作凭据。</div></div>"#,
         material.samples.len(),
         range = esc(&range),
         model = esc(view.model),
@@ -503,9 +522,9 @@ const CSS: &str = r#"
    令牌与组件基元在 `res/cards/m3e.css`（`crate::render::web::DESIGN_SYSTEM`），
    这里只写这张卡自己的位置，**不写色值与字号字面量**。
 
-   与另外几张卡一样只用纸色；显示级文字用衬线（综合速写、九型名、语言读法与综述）。
-   这是版面选择不是设计系统的分歧——衬线落在纸色上才像一份「写下来的东西」。
-   衬线在 46px 上要把字重收到 700：Black(800) 的字脚在纸上会糊成一团。 */
+   与另外几张卡一样只用纸色；显示级文字用衬线（综合速写、档案的判定与依据、语言读法、
+   往来读法与综述）。这是版面选择不是设计系统的分歧——衬线落在纸色上才像一份「写下来的
+   东西」。衬线在 46px 上要把字重收到 700：Black(800) 的字脚在纸上会糊成一团。 */
 body{width:720px}
 /* `.shot`（相纸的底色与内边距）由 m3e.css 的组件基元给，这里不再写一遍 */
 .card{padding:var(--md-space-9) 44px var(--md-space-8)}
@@ -555,51 +574,52 @@ body{width:720px}
 .sec-en{font-size:var(--md-type-label-small-size);font-weight:var(--md-type-label-small-weight);
   letter-spacing:.3em;color:var(--md-sys-color-on-surface-faint);white-space:nowrap}
 .sec-head::after{content:"";flex:1;height:1px;background:var(--md-sys-color-outline-variant)}
-
-/* ==================== 人格投影 ==================== */
-/* 投影层顶上先声明它是投影不是定论，再摆两把尺子。 */
 .fp-frame-note{margin-bottom:var(--md-space-5);font-size:var(--md-type-body-small-size);
   line-height:1.7;color:var(--md-sys-color-on-surface-variant)}
-.models{display:grid;grid-template-columns:1fr 1fr;gap:var(--md-space-4)}
-.model{padding:var(--md-space-5) var(--md-space-5) var(--md-space-4);
-  border-radius:var(--md-shape-l);background:var(--md-sys-color-surface-container-low);
-  border:1px solid var(--md-sys-color-outline-variant)}
-.model-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--md-space-3);
-  padding-bottom:var(--md-space-4);margin-bottom:var(--md-space-2);
-  border-bottom:1px solid var(--md-sys-color-outline-variant)}
-.model-name{font-size:var(--md-type-label-medium-size);font-weight:var(--md-type-label-medium-weight);
-  letter-spacing:.14em;color:var(--md-sys-color-on-surface-faint)}
-.model-code{font-family:var(--md-font-display);font-size:var(--md-type-title-medium-size);
-  font-weight:700;letter-spacing:.06em;color:var(--md-sys-color-primary);white-space:nowrap}
-.model-code i{font-style:normal;margin-left:var(--md-space-2);font-size:var(--md-type-label-medium-size);
-  font-weight:600;letter-spacing:.04em;color:var(--md-sys-color-on-surface-variant)}
 
-/* —— MBTI 四轴光谱 ——
-   一条从中间往一侧填的槽：中线居中，往更强的一侧填，长度即偏幅。贴近中线
-   的人画出来是一条贴中的短线，那才是诚实的。 */
-.axis{padding:var(--md-space-3) 0}
-.axis-poles{display:flex;justify-content:space-between;align-items:baseline;
-  margin-bottom:var(--md-space-2);font-size:var(--md-type-label-medium-size);
-  font-weight:600;color:var(--md-sys-color-on-surface-variant)}
-.pole{font-variant-numeric:tabular-nums}
-.pole-right{text-align:right}
-.axis-track{position:relative;height:12px;border-radius:var(--md-shape-full);
-  background:var(--md-sys-color-surface-container-high)}
-.axis-center{position:absolute;left:50%;top:-4px;bottom:-4px;width:2px;margin-left:-1px;
-  background:var(--md-sys-color-outline);border-radius:var(--md-shape-full)}
-.axis-fill{position:absolute;top:0;bottom:0;border-radius:var(--md-shape-full);
-  background:var(--md-sys-color-primary);min-width:3px}
+/* ==================== 人物档案 ==================== */
+/* 三档把握的图例与徽章同一套形态：明说实心主色（他本人讲过）、可推淡主底、
+   待考只描一道虚线。从硬到软一条线，而徽章里始终有字——颜色不是唯一通道。
+   图例三行纵排而不是横铺：三句话横着放会挤成一团，纵排还能顺着从硬到软读下来。 */
+.legend{display:flex;flex-direction:column;gap:7px;margin-bottom:var(--md-space-6)}
+.legend-item{display:flex;align-items:baseline;gap:var(--md-space-3)}
+.legend-item b,.cert{display:inline-block;padding:2px 9px;border-radius:var(--md-shape-s);
+  font-size:var(--md-type-label-medium-size);font-weight:800;letter-spacing:.06em}
+.legend-item b{flex:none;width:56px;text-align:center}
+.legend-item i{flex:none;width:74px;font-style:normal;
+  font-size:var(--md-type-label-small-size);
+  font-weight:var(--md-type-label-small-weight);letter-spacing:.2em;
+  color:var(--md-sys-color-on-surface-faint)}
+.legend-item span{font-size:var(--md-type-body-small-size);line-height:1.6;
+  color:var(--md-sys-color-on-surface-variant)}
+.stated{color:var(--md-sys-color-on-primary);background:var(--md-sys-color-primary)}
+.inferred{color:var(--md-sys-color-on-primary-container);
+  background:var(--md-sys-color-primary-container)}
+.open{color:var(--md-sys-color-on-surface-variant);background:transparent;
+  box-shadow:inset 0 0 0 1px var(--md-sys-color-outline)}
 
-/* —— 九型核心 —— */
-.ennea-code{font-size:var(--md-type-headline-small-size);font-weight:800;letter-spacing:.02em}
-.ennea-name{margin-top:var(--md-space-4);font-family:var(--md-font-display);
-  font-size:var(--md-type-title-large-size);line-height:var(--md-type-title-large-line);
-  font-weight:700;letter-spacing:.06em;color:var(--md-sys-color-on-surface)}
-.ennea-motif{margin-top:var(--md-space-3);font-size:var(--md-type-body-small-size);
-  line-height:1.8;color:var(--md-sys-color-on-surface-variant)}
-.fp-empty{margin-top:0}
+/* 九格：左边一列维度名，中间判定与依据，右边一列把握。
+   两列标签把中间夹住，读者的眼睛可以只扫左边找维度，或只扫右边看把握。
+   分隔靠间距不靠线——每一行都以一个粗体的维度名起头，关系本来就清楚。 */
+.facets{display:flex;flex-direction:column;gap:var(--md-space-6)}
+.facet{display:grid;grid-template-columns:76px 1fr auto;gap:0 var(--md-space-4);
+  align-items:start}
+.facet-name{font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
+  line-height:var(--md-type-title-small-line);font-weight:700;letter-spacing:.14em;
+  color:var(--md-sys-color-on-surface)}
+.facet-body{min-width:0}
+.facet-verdict{font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
+  line-height:1.62;font-weight:600;color:var(--md-sys-color-on-surface)}
+.facet-ev{margin-top:5px;font-size:var(--md-type-body-small-size);line-height:1.75;
+  color:var(--md-sys-color-on-surface-variant)}
+/* 标了「明说」的那几格，依据就是他本人的原话：加一道主色竖线，与综述里的引语同一种处理 */
+.facet-quote{margin:7px 0 0;padding-left:var(--md-space-4);
+  border-left:2px solid var(--md-sys-color-primary-line);
+  font-family:var(--md-font-display);font-size:var(--md-type-body-medium-size);
+  line-height:1.8;color:var(--md-sys-color-primary);text-indent:0}
+.cert{flex:none;align-self:start;margin-top:2px}
 
-/* ==================== 语言指纹 ==================== */
+/* ==================== 怎么说话 ==================== */
 /* 一排事实筹码：每一枚都是数出来的，不是读出来的。 */
 .fp-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:var(--md-space-3)}
 .fp{display:flex;flex-direction:column;gap:5px;padding:var(--md-space-3) var(--md-space-2);
@@ -610,51 +630,67 @@ body{width:720px}
   color:var(--md-sys-color-on-surface-faint)}
 .fp b{font-size:var(--md-type-title-small-size);font-weight:700;
   color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums}
-/* 模型对指纹的一段读法，衬线；模型没接就是一句灰底交代 */
+/* 模型对筹码的一段读法，衬线；模型没接就是一句灰底交代 */
 .style-reading{margin-top:var(--md-space-5);font-family:var(--md-font-display);
   font-size:var(--md-type-body-large-size);line-height:1.86;
   color:var(--md-sys-color-on-surface-variant)}
 .style-reading.faint{font-family:var(--md-font-plain);font-size:var(--md-type-body-medium-size);
   color:var(--md-sys-color-on-surface-faint)}
 
-/* ==================== 行为标签 ==================== */
-/* 三层抽象的图例与徽章同一套形态：事实浅底、统计淡主底、推断主色实心。
-   从硬到软一条线，读者一眼知道哪几条能拿去用、哪几条只是读出来的。 */
-.legend{display:flex;flex-wrap:wrap;gap:var(--md-space-2) 22px;margin-bottom:18px}
-.legend-item{display:inline-flex;align-items:baseline;gap:var(--md-space-2)}
-.legend-item b,.tag-layer{display:inline-block;padding:2px 9px;border-radius:var(--md-shape-s);
-  font-size:var(--md-type-label-medium-size);font-weight:800;letter-spacing:.06em}
-.legend-item i{font-style:normal;font-size:var(--md-type-label-small-size);
-  font-weight:var(--md-type-label-small-weight);letter-spacing:.2em;
-  color:var(--md-sys-color-on-surface-faint)}
-.observed{color:var(--md-sys-color-on-surface-variant);
-  background:var(--md-sys-color-surface-container-high)}
-.derived{color:var(--md-sys-color-on-primary-container);
-  background:var(--md-sys-color-primary-container)}
-.inferred{color:var(--md-sys-color-on-primary);background:var(--md-sys-color-primary)}
+/* ==================== 什么时候来 ==================== */
+/* 24 个小时的柱，加一周七天的柱。有数的那几格从底部长上来，峰值的柱单独上主色，
+   0—6 时那一段的槽换一档底色——三样都另有文字交代，颜色不独自承担信息。
+   非峰值的柱面走 outline 而不是主色系：它是「同层的普通数据」，主色只留给峰值那一个；
+   outline 本来就是按图形元素（3∶1）而不是按文字调出来的，做柱面正合适。 */
+.rhythm{margin-bottom:var(--md-space-5)}
+.rhythm-week{margin-bottom:0}
+.bars{display:flex;align-items:flex-end;gap:4px;height:64px}
+.bar{position:relative;flex:1;height:100%;border-radius:var(--md-shape-xs);
+  background:var(--md-sys-color-surface-container-low);
+  border:1px solid var(--md-sys-color-outline-variant);overflow:hidden}
+.bar-night{background:var(--md-sys-color-surface-container-high)}
+.bar-fill{position:absolute;left:0;right:0;bottom:0;border-radius:var(--md-shape-xs);
+  background:var(--md-sys-color-outline)}
+.bar-peak .bar-fill{background:var(--md-sys-color-primary)}
+.ticks{display:flex;gap:4px;margin-top:7px}
+.tick{flex:1;text-align:center;font-size:var(--md-type-label-small-size);
+  line-height:1.5;font-weight:600;color:var(--md-sys-color-on-surface-faint);
+  font-variant-numeric:tabular-nums}
+.rhythm-note{font-size:var(--md-type-body-small-size);line-height:1.7;
+  color:var(--md-sys-color-on-surface-variant)}
 
-.dims{display:flex;flex-direction:column;gap:var(--md-space-4)}
-.dim{padding:var(--md-space-4) 22px var(--md-space-1);border-radius:var(--md-shape-l);
+/* ==================== 群内往来 ==================== */
+/* 每一份往来一块：名字、点名、方向条、接话、一句读法。
+   条只画点名，从中间往两边长：左边是他叫对方，右边是对方叫他，谁长谁更常主动开口。
+   条的底色用 outline 而不是主色系：这是「同层的普通数据」，主色留给峰值与真要紧的地方；
+   outline 本来就是按图形元素（3∶1）而不是按文字调出来的，做柱面正合适。 */
+.ties{display:flex;flex-direction:column;gap:var(--md-space-4)}
+.tie{padding:var(--md-space-5);border-radius:var(--md-shape-l);
   background:var(--md-sys-color-surface-container-low);
   border:1px solid var(--md-sys-color-outline-variant)}
-.dim-head{display:flex;align-items:baseline;gap:11px;padding-bottom:11px;
-  border-bottom:1px solid var(--md-sys-color-outline-variant)}
-.dim-name{font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
-  line-height:var(--md-type-title-small-line);font-weight:700;letter-spacing:.14em;
-  color:var(--md-sys-color-on-surface)}
-.dim-en{font-size:var(--md-type-label-small-size);font-weight:var(--md-type-label-small-weight);
-  letter-spacing:.26em;color:var(--md-sys-color-on-surface-faint)}
-.tag{display:flex;gap:13px;padding:var(--md-space-3) 0;
-  border-bottom:1px dashed var(--md-sys-color-outline-variant)}
-.tag:last-child{border-bottom:none}
-.tag-layer{flex:none;align-self:flex-start;width:56px;padding:3px 0;margin-top:2px;
-  text-align:center}
-.tag-main{flex:1;min-width:0}
-.tag-label{display:block;font-size:var(--md-type-title-small-size);
+.tie-head{display:flex;align-items:center;gap:var(--md-space-3)}
+.tie-face{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;
+  border-radius:var(--md-shape-full);font-size:var(--md-type-label-large-size);font-weight:800;
+  color:var(--md-sys-color-primary);background:var(--md-sys-color-primary-container)}
+.tie-name{font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
   line-height:var(--md-type-title-small-line);font-weight:700;
   color:var(--md-sys-color-on-surface)}
-.tag-ev{display:block;margin-top:5px;font-size:var(--md-type-body-small-size);
-  line-height:1.75;color:var(--md-sys-color-on-surface-variant)}
+.tie-initiative{margin-left:auto;font-size:var(--md-type-label-medium-size);
+  font-weight:700;letter-spacing:.04em;color:var(--md-sys-color-primary);white-space:nowrap}
+.tie-num{margin-top:var(--md-space-3);font-size:var(--md-type-body-small-size);line-height:1.7;
+  color:var(--md-sys-color-on-surface-variant);font-variant-numeric:tabular-nums}
+.tie-num i{font-style:normal;font-weight:700;color:var(--md-sys-color-on-surface-faint);
+  letter-spacing:.1em;margin-right:5px}
+.tie-track{position:relative;display:flex;height:10px;margin-top:var(--md-space-2);
+  border-radius:var(--md-shape-full);background:var(--md-sys-color-surface-container-high);
+  overflow:hidden}
+.tie-out{background:var(--md-sys-color-primary)}
+.tie-in{background:var(--md-sys-color-outline)}
+.tie-center{position:absolute;left:50%;top:0;bottom:0;width:1px;
+  background:var(--md-sys-color-surface)}
+.tie-line{margin-top:var(--md-space-4);font-family:var(--md-font-display);
+  font-size:var(--md-type-body-medium-size);line-height:1.78;
+  color:var(--md-sys-color-on-surface-variant)}
 
 /* ==================== 画像综述 ==================== */
 .prose{margin-bottom:18px;font-family:var(--md-font-display);
@@ -670,17 +706,6 @@ body{width:720px}
 .quote-note{margin-top:11px;font-size:var(--md-type-label-medium-size);line-height:1.62;
   color:var(--md-sys-color-on-surface-faint)}
 
-/* ==================== 群聊钩子 ==================== */
-/* 能拿去吵的切入点。左侧一枚引导性质的圆点，右侧是话。 */
-.discuss{list-style:none;display:flex;flex-direction:column;gap:var(--md-space-3)}
-.discuss li{position:relative;padding:var(--md-space-3) var(--md-space-5) var(--md-space-3) calc(var(--md-space-5) + 16px);
-  border-radius:var(--md-shape-m);background:var(--md-sys-color-secondary-container);
-  color:var(--md-sys-color-on-secondary-container);
-  font-family:var(--md-font-display);font-size:var(--md-type-body-medium-size);line-height:1.7}
-.discuss li::before{content:"";position:absolute;left:var(--md-space-4);top:50%;
-  width:6px;height:6px;margin-top:-3px;border-radius:var(--md-shape-full);
-  background:var(--md-sys-color-primary)}
-
 /* —— 页脚 —— */
 .foot-note{color:var(--md-sys-color-on-surface-variant)}
 "#;
@@ -688,16 +713,15 @@ body{width:720px}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::portrait::collect::{GroupSlice, Kinds};
-    use crate::plugins::portrait::models::Enneagram;
-    use crate::plugins::portrait::persona::Passage;
+    use crate::plugins::portrait::collect::{GroupSlice, Kinds, Style, Tie};
+    use crate::plugins::portrait::persona::{Facet, Passage, TieReading};
 
     fn offset() -> FixedOffset {
         FixedOffset::east_opt(8 * 3600).unwrap()
     }
 
-    fn style() -> crate::plugins::portrait::collect::Style {
-        crate::plugins::portrait::collect::Style {
+    fn style() -> Style {
+        Style {
             readable: 100,
             question_rate: 0.2,
             exclaim_rate: 0.1,
@@ -715,6 +739,19 @@ mod tests {
         }
     }
 
+    fn tie() -> Tie {
+        Tie {
+            user_id: 10002,
+            name: "老张".into(),
+            at_out: 12,
+            at_in: 4,
+            turn_out: 30,
+            turn_in: 9,
+            last_time: 1_700_000_000,
+            samples: vec!["这破依赖装了半天".into()],
+        }
+    }
+
     fn material() -> Material {
         Material {
             user_id: 10001,
@@ -727,19 +764,23 @@ mod tests {
                 let mut hour = [0u64; 24];
                 hour[23] = 220;
                 hour[9] = 120;
+                hour[2] = 20;
                 hour
             },
             weekday: {
                 let mut weekday = [0u64; 7];
                 weekday[4] = 300;
+                weekday[0] = 120;
                 weekday
             },
             groups: vec![
                 GroupSlice {
+                    group_id: 1,
                     name: "测试<群>".into(),
                     count: 900,
                 },
                 GroupSlice {
+                    group_id: 2,
                     name: "另一个群".into(),
                     count: 300,
                 },
@@ -759,24 +800,17 @@ mod tests {
             words: vec![("天气".into(), 40)],
             samples: vec!["凌晨三点还在改代码，明天又要废了".into()],
             style: style(),
+            ties: vec![tie()],
         }
     }
 
-    fn tag(dimension: &str, layer: &str, label: &str, evidence: &str) -> Tag {
-        Tag {
+    fn facet(dimension: &str, certainty: &str, verdict: &str, evidence: &str) -> Facet {
+        Facet {
             dimension: dimension.into(),
-            layer: layer.into(),
-            label: label.into(),
+            certainty: certainty.into(),
+            verdict: verdict.into(),
             evidence: evidence.into(),
-        }
-    }
-
-    fn mbti() -> Mbti {
-        Mbti {
-            energy: -70,
-            perceiving: -60,
-            deciding: 35,
-            lifestyle: -25,
+            quoted: false,
         }
     }
 
@@ -785,13 +819,31 @@ mod tests {
             title: "用忙碌挡空的人".into(),
             note: "他把休息也算成一件事".into(),
             style: "话短，句尾常带问号，像自言自语又像追问。".into(),
-            mbti: Some(mbti()),
-            enneagram: Some(Enneagram { number: 6, wing: 5 }),
-            tags: vec![
-                tag("活跃", "事实", "夜里出现", "夜间发言占 41%，白天基本不在"),
-                tag("活跃", "统计", "作息偏晚", "23 点前后最密"),
-                tag("内容", "推断", "说事就说事", "样本里没有一句闲聊"),
+            facets: vec![
+                facet(
+                    "性格",
+                    "可推",
+                    "说事先给结论",
+                    "三条长发言都是先下判断再补理由",
+                ),
+                facet(
+                    "好恶",
+                    "可推",
+                    "不爱听人劝",
+                    "别人劝他早点睡，他回了一句「睡什么睡」",
+                ),
+                Facet {
+                    dimension: "生计".into(),
+                    certainty: "明说".into(),
+                    verdict: "在上班，第二天要早起".into(),
+                    evidence: "凌晨三点还在改代码，明天又要废了".into(),
+                    quoted: true,
+                },
             ],
+            ties: vec![TieReading {
+                id: 10002,
+                line: "跟老张主要聊装机，抬杠居多".into(),
+            }],
             profile: vec![
                 Passage {
                     kind: "text".into(),
@@ -804,10 +856,6 @@ mod tests {
                     note: "他自己知道在拿什么换".into(),
                     ..Default::default()
                 },
-            ],
-            discuss: vec![
-                "他嘴上说无所谓，其实每条都改到半夜".into(),
-                "这个内省的底子，你觉得准吗".into(),
             ],
             accent: "indigo".into(),
             estimated: false,
@@ -824,6 +872,7 @@ mod tests {
             avatar: None,
             model: "deepseek/deepseek-flash",
             theme: "auto",
+            command: "/画像 @某人",
             offset: offset(),
             now: DateTime::from_timestamp(timestamp, 0)
                 .unwrap()
@@ -841,64 +890,142 @@ mod tests {
         let persona = persona();
         let html = html(&view(&material, &persona));
         for needle in [
-            "用户画像",
-            "USER PROFILE",
+            "角色画像",
+            "CHARACTER DOSSIER",
             "综合速写",
             "用忙碌挡空的人",
             "他把休息也算成一件事",
-            r#"<span class="sec-mark">人格投影</span>"#,
-            r#"<span class="sec-mark">语言指纹</span>"#,
-            r#"<span class="sec-mark">行为标签</span>"#,
+            r#"<span class="sec-mark">人物档案</span>"#,
+            r#"<span class="sec-mark">怎么说话</span>"#,
+            r#"<span class="sec-mark">什么时候来</span>"#,
+            r#"<span class="sec-mark">群内往来</span>"#,
             r#"<span class="sec-mark">画像综述</span>"#,
-            r#"<span class="sec-mark">群聊钩子</span>"#,
-            "MBTI 四轴",
-            "INTP",
-            "逻辑学家",
-            "九型核心",
-            "6w5",
-            "忠诚者",
-            "怕失去依靠",
-            "讨论的起点，不是定论",
-            "夜里出现",
-            "夜间发言占 41%",
+            // 档案：九维的维度名跟着每一格出现，判定、依据与把握都在。
+            "说事先给结论",
+            "三条长发言都是先下判断再补理由",
+            r#"<span class="cert stated">明说</span>"#,
+            r#"<span class="cert inferred">可推</span>"#,
+            // 明说的依据按原话处理，与综述里的引语同一种版式。
+            r#"<blockquote class="facet-quote">凌晨三点还在改代码，明天又要废了</blockquote>"#,
+            // 什么时候来：峰值、夜间、周末与最活跃的一天都落成字。
+            "深夜 23 点前后最密",
+            "夜间（0—6 点）",
+            "周末",
+            "最活跃的一天是周四",
+            // 群内往来：两组计数、主动方与那句读法。
+            "我叫他 12",
+            "他叫我 4",
+            "我接他 30",
+            "他接我 9",
+            "我这边主动",
+            "跟老张主要聊装机，抬杠居多",
+            "都不等于回复",
             "他把每件事都当成一件要交的活。",
             "凌晨三点还在改代码，明天又要废了",
-            "他嘴上说无所谓，其实每条都改到半夜",
             "不等于本人",
             "1,234",
             "充分",
+            "档案 3/9 格",
             "deepseek/deepseek-flash",
+            // 页脚那条能立刻执行的下一步，带着当前环境的前缀。
+            r#"<span>换一个人看</span><code>/画像 @某人</code>"#,
         ] {
             assert!(html.contains(needle), "缺少 {needle}");
         }
     }
 
-    /// 四条光谱各有一槽；内向那一侧（负分）应往右填，外向往左填。
+    /// 档案九格固定，没有的格子不占版面；有格子时也不该多出别的维度。
     #[test]
-    fn the_spectrum_draws_four_axes() {
-        let html = html(&view(&material(), &persona()));
-        assert_eq!(html.matches(r#"class="axis-poles""#).count(), 4);
-        assert_eq!(html.matches(r#"class="axis-track""#).count(), 4);
-        assert!(html.contains("E 外向"));
-        assert!(html.contains("I 内向"));
-        // 内向偏 -70 → 靠右极 85%，槽应从中间往右
-        assert!(html.contains("left:50%;width:35%"), "负轴应从中间向右填 35%");
-        // 思考偏 +35 → 靠左极 67%，槽应从中间往左 17%
-        assert!(html.contains("left:33%;width:17%"), "正轴应从中间向左填 17%");
+    fn the_dossier_has_exactly_the_nine_slots() {
+        let material = material();
+        let persona = persona();
+        let html = html(&view(&material, &persona));
+        assert_eq!(html.matches(r#"class="facet""#).count(), 3);
+        for needle in ["性格", "好恶", "生计"] {
+            assert!(html.contains(needle), "缺少 {needle}");
+        }
+        // 三档把握各有一个图例，颜色之外还带着字。
+        for needle in ["明说", "可推", "待考"] {
+            assert!(
+                html.contains(&format!(r#">{needle}</b>"#)),
+                "缺少图例 {needle}"
+            );
+        }
+        // 没写的格子不印。
+        assert!(!html.contains(r#"class="facet-name">家庭"#));
     }
 
-    /// 模型没接时投影层整块留空，并说清为什么；但语言指纹的筹码仍是事实。
+    /// 24 根柱与 7 根柱各就各位；峰值那根上主色，0—6 时那一段换底色。
     #[test]
-    fn a_model_down_report_drops_the_projection() {
+    fn the_rhythm_draws_the_hours_and_the_week() {
+        let html = html(&view(&material(), &persona()));
+        // 每一根柱里恰好一个填充块：24 小时加一周七天 = 31。
+        assert_eq!(html.matches(r#"class="bar-fill""#).count(), 31);
+        assert_eq!(
+            html.matches(r#"class="bar bar-peak""#).count(),
+            2,
+            "小时与星期各有一根峰值"
+        );
+        assert_eq!(
+            html.matches(r#"class="bar bar-night""#).count(),
+            6,
+            "0—6 时那一段"
+        );
+        // 峰值那根按最大值算满高，别的是它的比例。
+        assert!(html.contains(r#"style="height:100%""#), "峰值应当满格");
+        assert!(
+            html.contains(r#"style="height:54%""#),
+            "9 点的 120 是 220 的 54%"
+        );
+        // 一根柱都没有的格子是空的，而不是一条最小高度的假柱：21 个小时加 5 天。
+        assert_eq!(html.matches(r#"style="height:0%""#).count(), 26);
+    }
+
+    /// 往来条按点名的两个方向分，接话不进这条——它本来就两边接近。
+    #[test]
+    fn the_tie_bar_splits_by_who_does_the_summoning() {
+        let page = html(&view(&material(), &persona()));
+        // 我叫他 12 次、他叫我 4 次 → 75% / 25%。
+        assert!(
+            page.contains(r#"class="tie-out" style="width:75%""#),
+            "{page}"
+        );
+        assert!(page.contains(r#"class="tie-in" style="width:25%""#));
+        // 一次点名都没有时不画条，方向那栏照实说。
+        let mut material = material();
+        material.ties[0].at_out = 0;
+        material.ties[0].at_in = 0;
+        let bare = html(&view(&material, &persona()));
+        assert!(!bare.contains(r#"class="tie-track""#));
+        assert!(bare.contains("只看接话"));
+    }
+
+    /// 模型没接时：档案整块留空并说清为什么，观测三节照旧。
+    #[test]
+    fn a_model_down_report_keeps_the_observations() {
         let material = material();
         let persona = Persona::from_stats(&material);
         let html = html(&view(&material, &persona));
-        assert!(html.contains("模型未接，人格投影这一层空着"));
-        assert!(!html.contains(r#"class="model-mbti""#));
-        assert!(html.contains("语言指纹"));
+        assert!(html.contains("这次九格都没写出东西"));
+        assert!(!html.contains(r#"class="cert"#));
+        assert!(html.contains("怎么说话"));
         assert!(html.contains(r#"class="fp-grid""#));
-        assert!(html.contains("语言风格暂只有上面这些"));
-        assert!(html.contains("模型未接，标签由统计直出"));
+        assert!(html.contains("什么时候来"));
+        assert!(html.contains(r#"class="bars""#));
+        assert!(html.contains("群内往来"), "往来是数出来的，模型没接也还在");
+        assert!(html.contains("模型未接，怎么说话暂只有上面这些"));
+        assert!(html.contains("模型未接，档案由观测直出"));
+        assert!(html.contains("档案 0/9 格"));
+    }
+
+    /// 没有往来对象时，那一节整块不出现。
+    #[test]
+    fn a_material_without_ties_drops_the_section() {
+        let mut material = material();
+        material.ties.clear();
+        let html = html(&view(&material, &persona()));
+        assert!(!html.contains(r#"<span class="sec-mark">群内往来</span>"#));
+        assert!(!html.contains(r#"class="tie""#));
     }
 
     /// 昵称来自群聊，必须转义；模型给的文本同理。
@@ -936,27 +1063,23 @@ mod tests {
         assert!(!with.contains(r#"<div class="avatar">阿</div>"#));
     }
 
-    /// 空的维度、综述与钩子都不占版面；综合速写与语言指纹始终在——画像的骨头是数据。
+    /// 空的综述不占版面；综合速写、怎么说话、什么时候来始终在——画像的骨头是观测。
     #[test]
-    fn empty_sections_disappear_and_the_bones_stay() {
+    fn empty_passages_disappear_and_the_bones_stay() {
         let material = material();
         let persona = Persona {
-            tags: Vec::new(),
             profile: Vec::new(),
-            discuss: Vec::new(),
             note: String::new(),
-            mbti: None,
-            enneagram: None,
             style: String::new(),
+            facets: Vec::new(),
+            ties: Vec::new(),
             ..persona()
         };
         let html = html(&view(&material, &persona));
-        assert!(!html.contains(r#"<span class="sec-mark">行为标签</span>"#));
         assert!(!html.contains(r#"<span class="sec-mark">画像综述</span>"#));
-        assert!(!html.contains(r#"<span class="sec-mark">群聊钩子</span>"#));
         assert!(html.contains("用忙碌挡空的人"));
-        assert!(html.contains("语言指纹"));
-        assert!(html.contains("语言风格暂只有上面这些"));
+        assert!(html.contains("怎么说话"));
+        assert!(html.contains("模型未接，怎么说话暂只有上面这些"));
     }
 
     #[test]

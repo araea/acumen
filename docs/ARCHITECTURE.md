@@ -113,7 +113,7 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 | 路线 | 依赖 | 使用方 | 适用 |
 | --- | --- | --- | --- |
-| HTML 卡片 `render/web.rs` | Chrome/Chromium、系统 CJK 字体 | help、ctl、portrait、ai_news、oai | 插件手册、状态清单、配置与差异、用户画像、资讯长图、Markdown 回复 |
+| HTML 卡片 `render/web.rs` | Chrome/Chromium、系统 CJK 字体 | help、ctl、portrait、ai_news、oai | 插件手册、状态清单、配置与差异、角色画像、资讯长图、Markdown 回复 |
 | 图表 plotters | 无 | stats、wordcloud | 坐标轴、折线、柱状、词云 |
 | 真实网页截图 | Chrome/Chromium | webshot | 把链接本身截下来 |
 

@@ -11,7 +11,7 @@
 
 use crate::plugins::wordcloud::stopwords::get_stop_words;
 use sea_orm::{DatabaseConnection, DbErr, FromQueryResult, Statement};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// 单条样本的字数上限。太长的发言在提示词里性价比很低，截断即可。
 const SAMPLE_MAX_CHARS: usize = 90;
@@ -21,6 +21,17 @@ const SAMPLE_TOTAL_CHARS: usize = 9_000;
 const SAMPLE_MIN_KEEP: usize = 8;
 /// 最长的这几条一定入选。
 const MANDATORY_LONG: usize = 3;
+/// 往来统计一次最多读多少条原始记录（按时间取最近的这些）。
+///
+/// 往来要扫的是「这个人常住的群里所有人说过的话」，不是他一个人的发言，量比样本那一路
+/// 大一个量级。取最近的一段而不是第一段：往来这件事，近来比久远重要。
+const TIE_SCAN_MAX: u64 = 40_000;
+/// 接话的时间窗：紧跟在对方之后，且不超过这么久。
+const TURN_WINDOW: i64 = 120;
+/// 一个往来对象最多带几条原话给模型读。
+const TIE_SAMPLES: usize = 2;
+/// 一条往来原话截到多少字。
+const TIE_SAMPLE_CHARS: usize = 60;
 
 /// 一次采集的窗口参数。
 pub struct Request {
@@ -30,6 +41,8 @@ pub struct Request {
     /// 从库里最多读多少条原始记录；越大越慢，也越完整。
     pub max_scan: u64,
     pub max_samples: usize,
+    /// 报告里最多摆几个往来对象。
+    pub partners: usize,
 }
 
 /// 消息类型的构成。
@@ -48,8 +61,82 @@ pub struct Kinds {
 /// 某个群里的发言量。
 #[derive(Debug, Clone)]
 pub struct GroupSlice {
+    pub group_id: i64,
     pub name: String,
     pub count: u64,
+}
+
+/// 一个人与另一个人之间的往来账。数字全部从记录里数出来，不经模型。
+///
+/// 两个口径，都按方向分开数——「谁先开口」和「谁接谁的话」是两件事：
+///
+/// - **点名**：`content_rich` 里的 `[@QQ]`，是实打实的 @。
+/// - **接话**：同一群里紧跟在对方之后的那一条（两分钟以内、中间没有第三个人）。
+///   它是一条「对上了」的线索，**不等于回复**：记录里存不下回复的对象，
+///   所以这一项按可推读，不当事实。
+///
+/// 谁摆进报告、谁不摆，只看两个方向的合计数；具体数字一律照实印。
+#[derive(Debug, Clone)]
+pub struct Tie {
+    pub user_id: i64,
+    /// 群里最常用的那个名字。
+    pub name: String,
+    /// 我 @ 他 / 他 @ 我。
+    pub at_out: u64,
+    pub at_in: u64,
+    /// 我接他 / 他接我。
+    pub turn_out: u64,
+    pub turn_in: u64,
+    /// 最近一次对上（点名或接话）的时刻。
+    pub last_time: i64,
+    /// 我对他说过的原话，给模型读语气与话题用。
+    pub samples: Vec<String>,
+}
+
+impl Tie {
+    /// 我这边发出去的动作合计。
+    pub fn out(&self) -> u64 {
+        self.at_out + self.turn_out
+    }
+
+    /// 对方发过来、我接住的合计。
+    pub fn incoming(&self) -> u64 {
+        self.at_in + self.turn_in
+    }
+
+    /// 两人之间的往来总量，排序用。
+    pub fn weight(&self) -> u64 {
+        self.out() + self.incoming()
+    }
+
+    /// 点名里我这一侧占的比重（0..1），1 表示全是我叫的他。两边都没点过名时给 0.5。
+    ///
+    /// 方向只看点名，不看接话：一来一回本来就是对半的，把接话算进去，
+    /// 「他更常找谁」这件事会被冲淡成一个接近 0.5 的数。
+    pub fn at_lean(&self) -> f64 {
+        let (out, incoming) = (self.at_out, self.at_in);
+        if out + incoming == 0 {
+            0.5
+        } else {
+            out as f64 / (out + incoming) as f64
+        }
+    }
+
+    /// 谁更常主动点名。差不到三成半的说「两边差不多」——
+    /// 把 12 比 11 说成「我主动」是把噪声当结论。
+    pub fn initiative(&self) -> &'static str {
+        if self.at_out + self.at_in == 0 {
+            return "只看接话";
+        }
+        let lean = self.at_lean();
+        if lean >= 0.65 {
+            "我这边主动"
+        } else if lean <= 0.35 {
+            "他那边主动"
+        } else {
+            "两边差不多"
+        }
+    }
 }
 
 /// 语言与行为指纹——**全部由事实算出**，不经过模型，因此是可核验的那一层。
@@ -114,6 +201,8 @@ pub struct Material {
     pub samples: Vec<String>,
     /// 语言与行为指纹，全部由事实算出，见 [`Style`]。
     pub style: Style,
+    /// 与群里各人的往来，按往来量从大到小。全部由事实算出，见 [`Tie`]。
+    pub ties: Vec<Tie>,
 }
 
 impl Material {
@@ -132,10 +221,14 @@ impl Material {
         ratio(self.hour[0..6].iter().sum(), self.total)
     }
 
+    /// 周末（周六与周日）发言占比。
+    pub fn weekend_ratio(&self) -> f64 {
+        ratio(self.weekday[0] + self.weekday[6], self.total)
+    }
+
     /// 带图/表情包/小表情的发言占比。
     pub fn media_ratio(&self) -> f64 {
-        let visual =
-            self.kinds.image + self.kinds.anim_emoji + self.kinds.face + self.kinds.video;
+        let visual = self.kinds.image + self.kinds.anim_emoji + self.kinds.face + self.kinds.video;
         ratio(visual, self.total)
     }
 
@@ -239,6 +332,7 @@ struct BucketRow {
 
 #[derive(Debug, FromQueryResult)]
 struct GroupRow {
+    group_id: i64,
     name: String,
     count: i64,
 }
@@ -308,9 +402,7 @@ pub async fn collect(
     .await?;
     let weekdays = buckets(
         db,
-        &format!(
-            "SELECT time_weekday AS bucket, COUNT(*) AS count {scope} GROUP BY time_weekday"
-        ),
+        &format!("SELECT time_weekday AS bucket, COUNT(*) AS count {scope} GROUP BY time_weekday"),
     )
     .await?;
 
@@ -327,10 +419,10 @@ pub async fn collect(
         }
     }
 
-    let groups = GroupRow::find_by_statement(Statement::from_string(
+    let groups: Vec<GroupSlice> = GroupRow::find_by_statement(Statement::from_string(
         backend,
         format!(
-            "SELECT MAX(group_name) AS name, COUNT(*) AS count {scope} \
+            "SELECT group_id, MAX(group_name) AS name, COUNT(*) AS count {scope} \
              GROUP BY group_id ORDER BY count DESC LIMIT 6"
         ),
     ))
@@ -338,6 +430,7 @@ pub async fn collect(
     .await?
     .into_iter()
     .map(|row| GroupSlice {
+        group_id: row.group_id,
         name: if row.name.trim().is_empty() {
             "（未知群）".to_string()
         } else {
@@ -362,6 +455,7 @@ pub async fn collect(
     let words = top_words(&rows);
     let samples = pick_samples(&rows, request.max_samples);
     let style = style_of(&rows);
+    let ties = collect_ties(db, request, &groups, &rows).await?;
 
     Ok(Some(Material {
         user_id: request.user_id,
@@ -388,13 +482,17 @@ pub async fn collect(
         words,
         samples,
         style,
+        ties,
     }))
 }
 
 async fn buckets(db: &DatabaseConnection, sql: &str) -> Result<Vec<BucketRow>, DbErr> {
-    BucketRow::find_by_statement(Statement::from_string(db.get_database_backend(), sql.to_string()))
-        .all(db)
-        .await
+    BucketRow::find_by_statement(Statement::from_string(
+        db.get_database_backend(),
+        sql.to_string(),
+    ))
+    .all(db)
+    .await
 }
 
 /// 取群里最常用的名字。群名片比昵称更能代表「在群里是谁」，但在不同群里可能不一样，
@@ -429,6 +527,250 @@ async fn display_name(db: &DatabaseConnection, request: &Request) -> Result<Stri
     } else {
         name.trim().to_string()
     })
+}
+
+// ==================== 群内往来 ====================
+
+/// 与群里各人的往来账，按往来量从大到小。口径写在 [`Tie`] 上，这里只负责数。
+///
+/// 扫的是「这个人常住的群」（最多六个，按他自己的发言量排）在这段窗口里的**全部**记录，
+/// 按时间取最近的 [`TIE_SCAN_MAX`] 条。别人的发言也要读：他接住了谁的话、谁 @ 了他，
+/// 两样都落在别人的记录里。
+async fn collect_ties(
+    db: &DatabaseConnection,
+    request: &Request,
+    groups: &[GroupSlice],
+    own_rows: &[TextRow],
+) -> Result<Vec<Tie>, DbErr> {
+    if request.partners == 0 || groups.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<String> = groups
+        .iter()
+        .map(|group| group.group_id.to_string())
+        .collect();
+    let sql = format!(
+        "SELECT group_id, user_id, time, sender_nick, user_name, content_rich AS content \
+         FROM message_records WHERE group_id IN ({}) AND role != 'self' \
+         AND time >= {} AND time < {} ORDER BY time DESC LIMIT {TIE_SCAN_MAX}",
+        ids.join(","),
+        request.start,
+        request.end,
+    );
+    let mut stream =
+        StreamRow::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+            .all(db)
+            .await?;
+    if stream.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 取回来的是最近的这些（时间倒序），倒成升序再按群归拢：
+    // 「紧挨着的下一条」只有在同一个群里才成立。
+    stream.reverse();
+    stream.sort_by_key(|row| (row.group_id, row.time));
+
+    let target = request.user_id;
+    let mut acc: HashMap<i64, TieAccum> = HashMap::new();
+
+    // 接话：同群里紧挨着的两条，两分钟以内，中间换了人。
+    for pair in stream.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        if before.group_id != after.group_id
+            || before.user_id == after.user_id
+            || after.time - before.time > TURN_WINDOW
+        {
+            continue;
+        }
+        if after.user_id == target && before.user_id != target {
+            let entry = acc.entry(before.user_id).or_default();
+            entry.turn_out += 1;
+            entry.touch(after.time);
+        } else if before.user_id == target && after.user_id != target {
+            let entry = acc.entry(after.user_id).or_default();
+            entry.turn_in += 1;
+            entry.touch(after.time);
+        }
+    }
+
+    // 点名：`[@QQ]` 是实打实的 @，两个方向分别数。同一条里 @ 两次只算一次。
+    for row in &stream {
+        for mentioned in mentions(&row.content) {
+            if row.user_id == target && mentioned != target {
+                let entry = acc.entry(mentioned).or_default();
+                entry.at_out += 1;
+                entry.touch(row.time);
+            } else if row.user_id != target && mentioned == target {
+                let entry = acc.entry(row.user_id).or_default();
+                entry.at_in += 1;
+                entry.touch(row.time);
+            }
+        }
+    }
+    if acc.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 名字：按出现次数投票，群名片优先。一个人可能有多个名字，取他在这里最常用的那个。
+    let names = names_in(&stream, target);
+
+    let mut ties: Vec<Tie> = acc
+        .into_iter()
+        .filter(|(_, counted)| counted.weight() > 0)
+        .map(|(user_id, counted)| Tie {
+            user_id,
+            name: names
+                .get(&user_id)
+                .cloned()
+                .unwrap_or_else(|| format!("QQ {user_id}")),
+            at_out: counted.at_out,
+            at_in: counted.at_in,
+            turn_out: counted.turn_out,
+            turn_in: counted.turn_in,
+            last_time: counted.last_time,
+            samples: Vec::new(),
+        })
+        .collect();
+    ties.sort_by(|a, b| {
+        b.weight()
+            .cmp(&a.weight())
+            .then_with(|| b.last_time.cmp(&a.last_time))
+    });
+    ties.truncate(request.partners);
+    for tie in &mut ties {
+        tie.samples = said_to(tie.user_id, own_rows);
+    }
+    Ok(ties)
+}
+
+/// 一个人在这段流里的各项计数。合起来看是 [`Tie`]，这里只攒数。
+#[derive(Default)]
+struct TieAccum {
+    at_out: u64,
+    at_in: u64,
+    turn_out: u64,
+    turn_in: u64,
+    last_time: i64,
+}
+
+impl TieAccum {
+    fn touch(&mut self, time: i64) {
+        self.last_time = self.last_time.max(time);
+    }
+
+    fn weight(&self) -> u64 {
+        self.at_out + self.at_in + self.turn_out + self.turn_in
+    }
+}
+
+#[derive(Debug, FromQueryResult)]
+struct StreamRow {
+    group_id: i64,
+    user_id: i64,
+    time: i64,
+    sender_nick: String,
+    user_name: String,
+    content: String,
+}
+
+/// 按出现次数投票选出每个人在这段流里的名字，群名片优先。
+fn names_in(stream: &[StreamRow], target: i64) -> HashMap<i64, String> {
+    let mut votes: HashMap<i64, HashMap<String, u64>> = HashMap::new();
+    for row in stream {
+        if row.user_id == target {
+            continue;
+        }
+        let name = pick_name(&row.sender_nick, &row.user_name);
+        if name.is_empty() {
+            continue;
+        }
+        *votes
+            .entry(row.user_id)
+            .or_default()
+            .entry(name)
+            .or_insert(0) += 1;
+    }
+    votes
+        .into_iter()
+        .filter_map(|(user_id, counts)| {
+            let mut ranked: Vec<(String, u64)> = counts.into_iter().collect();
+            // 次数多的在前；一样多时按名字排，保证同一份素材每次拿到同一个名字。
+            ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            ranked.into_iter().next().map(|(name, _)| (user_id, name))
+        })
+        .collect()
+}
+
+/// 群名片优先，其次昵称。两个都空就是没有名字。
+fn pick_name(nick: &str, user_name: &str) -> String {
+    if !nick.trim().is_empty() {
+        nick.trim().to_string()
+    } else {
+        user_name.trim().to_string()
+    }
+}
+
+/// 我 @ 他的那几条原话，给模型读「跟这个人说话是什么调子」。去重，最多 [`TIE_SAMPLES`] 条。
+fn said_to(partner: i64, own_rows: &[TextRow]) -> Vec<String> {
+    let marker = format!("[@{partner}]");
+    let mut out: Vec<String> = Vec::new();
+    for row in own_rows {
+        if !row.content.contains(&marker) {
+            continue;
+        }
+        let text = strip_at_markers(&row.content);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let text: String = text.chars().take(TIE_SAMPLE_CHARS).collect();
+        if out.contains(&text) {
+            continue;
+        }
+        out.push(text);
+        if out.len() >= TIE_SAMPLES {
+            break;
+        }
+    }
+    out
+}
+
+/// 取出富文本摘要里的 `[@QQ]` 点名对象，去重。
+fn mentions(content: &str) -> Vec<i64> {
+    let mut out = Vec::new();
+    let mut rest = content;
+    while let Some(start) = rest.find("[@") {
+        let tail = &rest[start + 2..];
+        let Some(end) = tail.find(']') else {
+            break;
+        };
+        if let Ok(qq) = tail[..end].trim().parse::<i64>()
+            && qq > 0
+            && !out.contains(&qq)
+        {
+            out.push(qq);
+        }
+        rest = &tail[end..];
+    }
+    out
+}
+
+/// 摘掉 `[@QQ]` 只留话本身。给模型看的时候，号码没有意义，留着反而像正文。
+fn strip_at_markers(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find("[@") {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 2..];
+        match tail.find(']') {
+            Some(end) if tail[..end].trim().parse::<i64>().is_ok() => rest = &tail[end + 1..],
+            _ => {
+                out.push_str("[@");
+                rest = tail;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 高频词。分词结果在 `tokens` 列里已由录制插件算好，这里只做计数与过滤，
@@ -541,9 +883,7 @@ fn spread(len: usize, count: usize) -> Vec<usize> {
     if len <= count {
         return (0..len).collect();
     }
-    (0..count)
-        .map(|k| k * (len - 1) / (count - 1))
-        .collect()
+    (0..count).map(|k| k * (len - 1) / (count - 1)).collect()
 }
 
 /// 逐条截断，再按总字数预算收口。实在放不下就丢最早的那几条。
@@ -641,7 +981,11 @@ fn style_of(rows: &[TextRow]) -> Style {
     let short = lengths.iter().filter(|&&l| l <= 5).count() as u64;
     let mean = lengths.iter().sum::<u64>() as f64 / n_f;
     let variance = if mean > 0.0 {
-        lengths.iter().map(|&l| (l as f64 - mean).powi(2)).sum::<f64>() / n_f
+        lengths
+            .iter()
+            .map(|&l| (l as f64 - mean).powi(2))
+            .sum::<f64>()
+            / n_f
     } else {
         0.0
     };
@@ -729,9 +1073,7 @@ mod tests {
     /// 样本要铺满整条时间线，同时把最长的几条带上。
     #[test]
     fn samples_spread_over_time_and_keep_the_longest() {
-        let mut rows: Vec<TextRow> = (0..24)
-            .map(|i| row(&format!("第 {i} 条发言"), 8))
-            .collect();
+        let mut rows: Vec<TextRow> = (0..24).map(|i| row(&format!("第 {i} 条发言"), 8)).collect();
         rows[0] = row("最新的一条", 5);
         // 压轴的一条既是最旧的，也是最长的：两个条件都该把它选中。
         rows.push(row("这是一条特别长的发言，用来验证长样本会被挑中", 25));
@@ -763,7 +1105,10 @@ mod tests {
         assert_eq!(meaningful("[图片]"), None);
         assert_eq!(meaningful("[表情]"), None);
         assert_eq!(meaningful("[@10001]"), None);
-        assert_eq!(meaningful("  [图片] 这也算话"), Some("[图片] 这也算话".into()));
+        assert_eq!(
+            meaningful("  [图片] 这也算话"),
+            Some("[图片] 这也算话".into())
+        );
         assert_eq!(meaningful(""), None);
     }
 
@@ -776,7 +1121,11 @@ mod tests {
         assert!(out.iter().all(|s| s.chars().count() <= SAMPLE_MAX_CHARS));
         let total: usize = out.iter().map(|s| s.chars().count()).sum();
         assert!(total <= SAMPLE_TOTAL_CHARS, "总预算被突破: {total}");
-        assert!(out.len() >= SAMPLE_MIN_KEEP, "至少留 {} 条", SAMPLE_MIN_KEEP);
+        assert!(
+            out.len() >= SAMPLE_MIN_KEEP,
+            "至少留 {} 条",
+            SAMPLE_MIN_KEEP
+        );
     }
 
     #[test]
@@ -874,6 +1223,7 @@ mod tests {
             words: Vec::new(),
             samples: Vec::new(),
             style: Style::default(),
+            ties: Vec::new(),
         };
         assert_eq!(material.peak_hour(), 23);
         assert_eq!(material.peak_weekday(), 3);
@@ -902,10 +1252,15 @@ mod tests {
             words: Vec::new(),
             samples: Vec::new(),
             style: Style::default(),
+            ties: Vec::new(),
         };
         assert_eq!(material.sufficiency(), Sufficiency::Thin);
         material.total = 60;
-        assert_eq!(material.sufficiency(), Sufficiency::Thin, "条数够但天数不够");
+        assert_eq!(
+            material.sufficiency(),
+            Sufficiency::Thin,
+            "条数够但天数不够"
+        );
         material.active_days = 6;
         assert_eq!(material.sufficiency(), Sufficiency::Fair);
         material.total = 200;
@@ -948,7 +1303,9 @@ mod tests {
               '{content}', '{tokens}', '{role}', 0, {length}, {time}, {}, {}, 0, 0, 0, 0, 0, 0, \
               0, 0, 0, 0, 0, 0, 0)",
             (time / 3600) % 24,
-            (time / 86_400) % 7,
+            // 与录制插件同一套口径：0 是周日（`num_days_from_sunday`），
+            // 1970-01-01 是周四，所以在整日数上先加 4。
+            (time / 86_400 + 4) % 7,
         );
         db.execute_unprepared(&sql).await.unwrap();
     }
@@ -957,11 +1314,71 @@ mod tests {
     async fn collect_reads_only_this_person_and_never_counts_the_bot() {
         let db = seeded_db().await;
         // 甲：两条真实发言，另有一条机器人的（role=self，同一个 QQ 号）。
-        insert(&db, 7, 100, "测试群", "甲", "member", 1_700_000_000, "天气不错", 4, "天气 不错").await;
-        insert(&db, 7, 100, "测试群", "甲", "member", 1_700_000_060, "天气转凉了", 5, "天气 转凉").await;
-        insert(&db, 7, 100, "测试群", "甲", "self", 1_700_000_120, "我是机器人说的话", 8, "机器人 说话").await;
-        insert(&db, 7, 0, "", "甲", "member", 1_700_000_180, "私聊不算", 4, "私聊 不算").await;
-        insert(&db, 8, 100, "测试群", "乙", "member", 1_700_000_240, "别人的话", 4, "别人 的话").await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            1_700_000_000,
+            "天气不错",
+            4,
+            "天气 不错",
+        )
+        .await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            1_700_000_060,
+            "天气转凉了",
+            5,
+            "天气 转凉",
+        )
+        .await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "self",
+            1_700_000_120,
+            "我是机器人说的话",
+            8,
+            "机器人 说话",
+        )
+        .await;
+        insert(
+            &db,
+            7,
+            0,
+            "",
+            "甲",
+            "member",
+            1_700_000_180,
+            "私聊不算",
+            4,
+            "私聊 不算",
+        )
+        .await;
+        insert(
+            &db,
+            8,
+            100,
+            "测试群",
+            "乙",
+            "member",
+            1_700_000_240,
+            "别人的话",
+            4,
+            "别人 的话",
+        )
+        .await;
 
         let request = Request {
             user_id: 7,
@@ -969,6 +1386,7 @@ mod tests {
             end: i64::MAX,
             max_scan: 100,
             max_samples: 10,
+            partners: 3,
         };
         let material = collect(&db, &request).await.unwrap().unwrap();
 
@@ -985,13 +1403,26 @@ mod tests {
     #[tokio::test]
     async fn a_user_without_records_yields_nothing() {
         let db = seeded_db().await;
-        insert(&db, 7, 100, "测试群", "甲", "member", 1_700_000_000, "一句话", 3, "").await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            1_700_000_000,
+            "一句话",
+            3,
+            "",
+        )
+        .await;
         let request = Request {
             user_id: 999,
             start: 0,
             end: i64::MAX,
             max_scan: 100,
             max_samples: 10,
+            partners: 3,
         };
         assert!(collect(&db, &request).await.unwrap().is_none());
     }
@@ -999,17 +1430,250 @@ mod tests {
     #[tokio::test]
     async fn the_window_leaves_out_older_records() {
         let db = seeded_db().await;
-        insert(&db, 7, 100, "测试群", "甲", "member", 1_700_000_000, "新的", 2, "").await;
-        insert(&db, 7, 100, "测试群", "甲", "member", 1_600_000_000, "旧的", 2, "").await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            1_700_000_000,
+            "新的",
+            2,
+            "",
+        )
+        .await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            1_600_000_000,
+            "旧的",
+            2,
+            "",
+        )
+        .await;
         let request = Request {
             user_id: 7,
             start: 1_650_000_000,
             end: i64::MAX,
             max_scan: 100,
             max_samples: 10,
+            partners: 3,
         };
         let material = collect(&db, &request).await.unwrap().unwrap();
         assert_eq!(material.total, 1);
         assert_eq!(material.samples, vec!["新的".to_string()]);
+    }
+
+    /// 往来两个方向分开数：点名是事实（`[@QQ]`），接话是「紧挨着的下一条」。
+    #[tokio::test]
+    async fn ties_count_both_directions() {
+        let db = seeded_db().await;
+        let t = 1_700_000_000;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            t,
+            "[@8] 你那个修好了吗",
+            9,
+            "",
+        )
+        .await;
+        insert(
+            &db,
+            8,
+            100,
+            "测试群",
+            "乙",
+            "member",
+            t + 30,
+            "[@7] 修好了",
+            3,
+            "",
+        )
+        .await;
+        insert(
+            &db,
+            7,
+            100,
+            "测试群",
+            "甲",
+            "member",
+            t + 60,
+            "[@8] 谢了",
+            4,
+            "",
+        )
+        .await;
+        // 丙只是在同一个群里说过话，与甲没有任何往来，不该出现在往来里。
+        insert(
+            &db,
+            9,
+            100,
+            "测试群",
+            "丙",
+            "member",
+            t + 600,
+            "路过",
+            2,
+            "",
+        )
+        .await;
+
+        let request = Request {
+            user_id: 7,
+            start: 0,
+            end: i64::MAX,
+            max_scan: 100,
+            max_samples: 10,
+            partners: 5,
+        };
+        let material = collect(&db, &request).await.unwrap().unwrap();
+        assert_eq!(material.ties.len(), 1, "只有乙与甲有往来");
+        let tie = &material.ties[0];
+        assert_eq!(tie.user_id, 8);
+        assert_eq!(tie.name, "乙");
+        assert_eq!((tie.at_out, tie.at_in), (2, 1), "我叫他两次、他叫我一次");
+        assert_eq!((tie.turn_out, tie.turn_in), (1, 1));
+        assert_eq!(tie.weight(), 5);
+        assert_eq!(tie.last_time, t + 60);
+        // 我 @ 他的原话要留给我读他与这个人说话的调子，@ 的号码摘掉。
+        assert_eq!(
+            tie.samples,
+            vec!["谢了".to_string(), "你那个修好了吗".to_string()]
+        );
+        assert!(
+            (tie.at_lean() - 2.0 / 3.0).abs() < 1e-9,
+            "点名里我叫他三次占两次：{}",
+            tie.at_lean()
+        );
+        assert_eq!(tie.initiative(), "我这边主动");
+    }
+
+    /// 名字相同的人连发不叫接话；隔得太久也不算；中间夹了别人也不算。
+    #[tokio::test]
+    async fn a_turn_needs_two_people_next_to_each_other() {
+        let db = seeded_db().await;
+        let t = 1_700_000_000;
+        // 甲自己连发两条：不是接话。
+        insert(&db, 7, 100, "测试群", "甲", "member", t, "[@8] 一", 2, "").await;
+        insert(&db, 7, 100, "测试群", "甲", "member", t + 5, "二", 1, "").await;
+        // 乙隔了十分钟才回：超出两分钟的窗。
+        insert(&db, 8, 100, "测试群", "乙", "member", t + 600, "三", 1, "").await;
+        let request = Request {
+            user_id: 7,
+            start: 0,
+            end: i64::MAX,
+            max_scan: 100,
+            max_samples: 10,
+            partners: 5,
+        };
+        let material = collect(&db, &request).await.unwrap().unwrap();
+        let tie = &material.ties[0];
+        assert_eq!(tie.turn_out, 0, "隔了十分钟不算接话");
+        assert_eq!(tie.turn_in, 0);
+        assert_eq!(tie.at_out, 1, "点名照数");
+    }
+
+    /// 一个人最多印几个往来对象由 `partners` 定，0 就是不算。
+    #[tokio::test]
+    async fn the_number_of_partners_is_capped() {
+        let db = seeded_db().await;
+        let t = 1_700_000_000;
+        for offset in 0..4i64 {
+            let partner = 100 + offset;
+            insert(
+                &db,
+                7,
+                100,
+                "测试群",
+                "甲",
+                "member",
+                t + offset * 10,
+                &format!("[@{}] 在吗", partner),
+                5,
+                "",
+            )
+            .await;
+            insert(
+                &db,
+                partner,
+                100,
+                "测试群",
+                "某人",
+                "member",
+                t + offset * 10 + 2,
+                "在",
+                1,
+                "",
+            )
+            .await;
+        }
+        let request = |partners: usize| Request {
+            user_id: 7,
+            start: 0,
+            end: i64::MAX,
+            max_scan: 100,
+            max_samples: 10,
+            partners,
+        };
+        let two = collect(&db, &request(2)).await.unwrap().unwrap();
+        assert_eq!(two.ties.len(), 2);
+        let none = collect(&db, &request(0)).await.unwrap().unwrap();
+        assert!(none.ties.is_empty(), "0 就是一条都不给");
+    }
+
+    #[test]
+    fn mentions_are_read_out_of_the_rich_text() {
+        assert_eq!(mentions("[@8] 在吗"), vec![8]);
+        assert_eq!(mentions("[@8][@9] 你们在吗"), vec![8, 9]);
+        // 同一条里 @ 同一个人两次只算一次。
+        assert_eq!(mentions("[@8] 喂 [@8]"), vec![8]);
+        // 群名里的方括号、@全体、非数字都不算点名。
+        assert_eq!(mentions("[图片] 你好"), Vec::<i64>::new());
+        assert_eq!(mentions("[@all] 你好"), Vec::<i64>::new());
+        assert_eq!(mentions("[@abc] 你好"), Vec::<i64>::new());
+        assert_eq!(mentions("[@] 你好"), Vec::<i64>::new());
+    }
+
+    #[test]
+    fn at_markers_are_stripped_before_the_model_sees_them() {
+        assert_eq!(strip_at_markers("[@8] 你那个修好了吗"), " 你那个修好了吗");
+        assert_eq!(strip_at_markers("[@8][@9] 都来看看"), " 都来看看");
+        assert_eq!(strip_at_markers("[图片] 看这个"), "[图片] 看这个");
+        // 认不出是号码的方括号原样留着。
+        assert_eq!(strip_at_markers("[@all] 在吗"), "[@all] 在吗");
+    }
+
+    #[test]
+    fn a_tie_leans_towards_whoever_does_the_summoning() {
+        let tie = |at_out, at_in, turn_out, turn_in| Tie {
+            user_id: 1,
+            name: "某人".into(),
+            at_out,
+            at_in,
+            turn_out,
+            turn_in,
+            last_time: 0,
+            samples: Vec::new(),
+        };
+        // 方向只看点名：接话两边一样多的时候，也判得出是谁在主动叫人。
+        let mine = tie(29, 5, 66, 69);
+        assert_eq!(mine.initiative(), "我这边主动");
+        assert!((mine.at_lean() - 29.0 / 34.0).abs() < 1e-9);
+        // 12 比 11 是噪声，不是结论。
+        assert_eq!(tie(12, 11, 36, 29).initiative(), "两边差不多");
+        assert_eq!(tie(4, 26, 20, 20).initiative(), "他那边主动");
+        // 一次点名都没有时，方向这一栏照实说，不去猜。
+        assert_eq!(tie(0, 0, 50, 49).initiative(), "只看接话");
+        assert!((tie(0, 0, 50, 49).at_lean() - 0.5).abs() < 1e-9);
     }
 }
