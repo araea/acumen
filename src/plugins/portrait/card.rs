@@ -284,9 +284,9 @@ fn dossier(persona: &Persona) -> String {
         })
         .collect();
 
-    // 九格全空：模型没接上，或这次素材里确实没有能落格的话。照实说，不拿观测冒充档案。
+    // 十格全空：模型没接上，或这次素材里确实没有能落格的话。照实说，不拿观测冒充档案。
     let body = if rows.is_empty() {
-        r#"<div class="md-callout-empty">这次九格都没写出东西：模型没接上，或者下发的记录里没有能落进这九格的话。下面三节照旧，它们全部由记录数出。</div>"#
+        r#"<div class="md-callout-empty">这次十格都没写出东西：模型没接上，或者下发的记录里没有能落进这十格的话。下面三节照旧，它们全部由记录数出。</div>"#
             .to_string()
     } else {
         format!(r#"<div class="facets">{rows}</div>"#)
@@ -670,7 +670,7 @@ body{width:720px}
 .open{color:var(--md-sys-color-on-surface-variant);background:transparent;
   box-shadow:inset 0 0 0 1px var(--md-sys-color-outline)}
 
-/* 九格：左边一列维度名，中间判定与依据，右边一列把握。
+/* 十格：左边一列维度名，中间判定与依据，右边一列把握。
    两列标签把中间夹住，读者的眼睛可以只扫左边找维度，或只扫右边看把握。
    分隔靠间距不靠线——每一行都以一个粗体的维度名起头，关系本来就清楚。 */
 .facets{display:flex;flex-direction:column;gap:var(--md-space-6)}
@@ -1189,7 +1189,7 @@ mod tests {
         let material = material();
         let persona = Persona::from_stats(&material);
         let html = html(&view(&material, &persona));
-        assert!(html.contains("这次九格都没写出东西"));
+        assert!(html.contains("这次十格都没写出东西"));
         assert!(!html.contains(r#"class="cert"#));
         assert!(html.contains("怎么说话"));
         assert!(html.contains(r#"class="fp-grid""#));

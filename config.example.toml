@@ -704,7 +704,7 @@ enabled = true
 # 分析用的模型，写「供应商/模型」；供应商取自 [oai.providers]，不带前缀走 oai 默认接口。
 model = "deepseek/deepseek-flash"
 # 思考强度：off / minimal / low / medium / high / xhigh，留空交给接口默认。
-# 档案九格要读一百多条样本再落笔，默认给到 high；调低会明显变浅。
+# 档案十格要读一百多条样本再落笔，默认给到 high；调低会明显变浅。
 thinking = "high"
 # 只统计最近多少天，0 表示全部留存记录。
 # 注意：days 与 max_samples 会改变下发给模型的素材，也就会改变这份画像。

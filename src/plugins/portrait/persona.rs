@@ -675,7 +675,7 @@ impl Persona {
             .find(|facet| facet.dim() == Some(dimension))
     }
 
-    /// 有档案的维度数。版面上用来说「九格里写出了几格」。
+    /// 有档案的维度数。版面上用来说「十格里写出了几格」。
     pub fn covered(&self) -> usize {
         FACETS
             .iter()
@@ -687,7 +687,7 @@ impl Persona {
     ///
     /// 画像的骨头是观测，不是模型：语言指纹、活跃节律、群内往来本来就在手里，
     /// 照它们把报告排满，缺的只是档案那一层。版面上会标出来「这一层这次空着」——
-    /// 不用伪精度去补九格没有依据的判定：没读过语义就编不出诚心的档案。
+    /// 不用伪精度去补十格没有依据的判定：没读过语义就编不出诚心的档案。
     pub fn from_stats(material: &Material) -> Self {
         let mut profile = vec![Passage {
             kind: "text".to_string(),

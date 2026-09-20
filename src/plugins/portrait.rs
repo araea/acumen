@@ -521,7 +521,7 @@ pub fn handle(
             }
         };
 
-        // 观测三块与样本交给模型，换回九格档案与综述；收口在 `sanitize` 里做，
+        // 观测四块与样本交给模型，换回十格档案、戏说与综述；收口在 `sanitize` 里做，
         // 认不出维度、没依据、冒认「明说」的都在那儿落地。
         let (base, key, model) = match endpoint(&ctx, &config.model).await {
             Ok(triple) => triple,
@@ -1123,7 +1123,7 @@ mod live_tests {
         );
         assert!(!profile.title.is_empty(), "一句话定位里的戏称不该是空的");
         assert!(!profile.note.is_empty(), "一句话概括不该是空的");
-        // 九格里至少写出四格，否则这份档案没成形；模型接上了就不该只剩一两格。
+        // 十格里至少写出四格，否则这份档案没成形；模型接上了就不该只剩一两格。
         assert!(
             profile.covered() >= 4,
             "档案只写出了 {} 格",
