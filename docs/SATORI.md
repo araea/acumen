@@ -4,7 +4,7 @@
 
 ## 连接
 
-ayjx 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。这个登录账号放在共享单元里，插件判断「这条是不是自己发的」与出站请求的 `Satori-User-ID` 读的是同一份。
+acumen 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。这个登录账号放在共享单元里，插件判断「这条是不是自己发的」与出站请求的 `Satori-User-ID` 读的是同一份。
 
 - `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线。`login-updated` 不进流水线，只用来刷新登录账号
 - `PING`：本端每 10 秒发出，实现端回 `PONG`；收到反向 `PING` 也回 `PONG`
@@ -17,7 +17,7 @@ ayjx 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送
 
 ## 鉴权
 
-token 的取值顺序是环境变量 `AYJX_SATORI_TOKEN`、`config.toml` 中 Satori bot 的 `access_token`，两者都为空时不鉴权。同一个 token 用于 WebSocket 的 `IDENTIFY.body.token` 和 HTTP 的 `Authorization: Bearer ...`。HTTP 请求另外带 `Satori-Platform` 和 `Satori-User-ID`，取值由 `READY` 返回的 login 决定，`login-updated` 到达时跟着刷新。
+token 的取值顺序是环境变量 `ACUMEN_SATORI_TOKEN`、`config.toml` 中 Satori bot 的 `access_token`，两者都为空时不鉴权。同一个 token 用于 WebSocket 的 `IDENTIFY.body.token` 和 HTTP 的 `Authorization: Bearer ...`。HTTP 请求另外带 `Satori-Platform` 和 `Satori-User-ID`，取值由 `READY` 返回的 login 决定，`login-updated` 到达时跟着刷新。
 
 ## 资源链接
 
@@ -88,7 +88,7 @@ Satori 与 QQ NT 的消息 ID 可能超出 32 位范围，适配层与插件 API
 
 更新后的实现端会在出站队列等待结束后、媒体转换后以及每次交给 QQ 内核前检查：同一频道出现任何更新的消息，或超过 Unix 毫秒截止时间，就返回空数组并放弃发送。普通插件发送不携带该条件，仍按原有队列与限速执行。
 
-完整保护需要同时更新 ayjx 与 satori-qq。其他实现端或旧版 satori-qq 只有框架发送前的保护。HTTP 请求发出后，框架无法撤销其内部排队。即使双方都更新，已经交给 QQ 内核的消息仍可能受 QQ 网络或媒体上传耗时影响，这时无法保证显示顺序。
+完整保护需要同时更新 acumen 与 satori-qq。其他实现端或旧版 satori-qq 只有框架发送前的保护。HTTP 请求发出后，框架无法撤销其内部排队。即使双方都更新，已经交给 QQ 内核的消息仍可能受 QQ 网络或媒体上传耗时影响，这时无法保证显示顺序。
 
 ## satori-qq 0.9.0 回执与事件兼容
 

@@ -28,7 +28,7 @@ pub type LockedWriter = Arc<SatoriClient>;
 /// `message.create` 的可选时效条件（satori-qq 扩展）。
 ///
 /// 实现端在拿到出站队列的发送权、以及媒体转换与重试等待之后，才把消息交给 QQ
-/// 内核；这中间是 ayjx 完全看不见的一段时间。条件成立要求锚点消息仍是实现端
+/// 内核；这中间是 acumen 完全看不见的一段时间。条件成立要求锚点消息仍是实现端
 /// 最近推送给本应用的该频道消息，条件不成立就整条跳过并返回 `[]`——不算发送
 /// 失败，也不触发熔断。用它，「话说晚了」就变成「这句话干脆没说」。
 #[derive(Debug, Clone)]
@@ -186,7 +186,7 @@ impl SatoriClient {
         Ok(serde_json::from_value(value)?)
     }
 
-    /// 使用标准 `upload.create` multipart 把 ayjx 侧文件传给实现端。
+    /// 使用标准 `upload.create` multipart 把 acumen 侧文件传给实现端。
     pub async fn upload(
         &self,
         ctx: &Context,
@@ -601,7 +601,7 @@ fn proxy_urls(packet: &Value) -> Vec<String> {
 }
 
 fn effective_token(config: &BotConfig) -> Option<String> {
-    std::env::var("AYJX_SATORI_TOKEN")
+    std::env::var("ACUMEN_SATORI_TOKEN")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
@@ -762,7 +762,7 @@ where
 /// 发送一条「群聊已经往前走了就不必再说」的消息，并返回实现端分配的消息 ID。
 ///
 /// 搭话用它：模型思考加上模拟打字往往要十几秒，中间群里又说了话的话，这句就
-/// 不该再落地了。ayjx 自己已经在发送前查过一次窗口，但请求交给实现端之后还要
+/// 不该再落地了。acumen 自己已经在发送前查过一次窗口，但请求交给实现端之后还要
 /// 排队，那一段只有实现端看得见——所以把同一个判断也交给它。
 pub async fn send_fresh_msg_id<M>(
     ctx: &Context,
@@ -1753,7 +1753,7 @@ mod tests {
 
     /// 按脚本回包的本地对端：把每个请求记成 `路径 请求体`，再按顺序吐准备好的响应。
     ///
-    /// 用来钉住 ayjx 依赖的实现端形状——列表信封与错误体是实现端单方面改一下就会
+    /// 用来钉住 acumen 依赖的实现端形状——列表信封与错误体是实现端单方面改一下就会
     /// 静默对不上的东西，本地跑一遍比事后到群里找症状便宜。
     async fn scripted_peer(
         replies: Vec<(u16, String)>,

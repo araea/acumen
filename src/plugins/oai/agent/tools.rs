@@ -781,7 +781,7 @@ mod tests {
 
     #[tokio::test]
     async fn files_round_trip_through_write_read_edit() {
-        let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
 
@@ -813,7 +813,7 @@ mod tests {
 
     #[tokio::test]
     async fn ambiguous_edits_and_missing_files_are_refused() {
-        let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
 
@@ -843,11 +843,11 @@ mod tests {
 
     #[tokio::test]
     async fn glob_and_grep_find_what_was_written() {
-        let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(dir.join("deep/er")).unwrap();
         let ctx = run(&dir);
         write(
-            &json!({"path": "deep/er/a.md", "content": "暗号 AYJX_NEEDLE\n"}),
+            &json!({"path": "deep/er/a.md", "content": "暗号 ACUMEN_NEEDLE\n"}),
             &ctx,
         )
         .await
@@ -860,12 +860,12 @@ mod tests {
         assert!(found.contains("a.md"), "{found}");
         assert!(!found.contains("b.txt"), "{found}");
 
-        let hits = grep(&json!({"pattern": "AYJX_NEEDLE"}), &ctx)
+        let hits = grep(&json!({"pattern": "ACUMEN_NEEDLE"}), &ctx)
             .await
             .unwrap();
         assert!(hits.contains("a.md:1:"), "{hits}");
         assert!(
-            grep(&json!({"pattern": "AYJX_NEEDLE", "glob": "*.txt"}), &ctx)
+            grep(&json!({"pattern": "ACUMEN_NEEDLE", "glob": "*.txt"}), &ctx)
                 .await
                 .unwrap()
                 .contains("没有匹配")
@@ -876,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_tools_need_a_live_chat_bridge() {
-        let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
         let text = execute("satori_context", &json!({}), &ctx, "call-1").await;
@@ -886,7 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tools_report_instead_of_panicking() {
-        let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
         assert!(
@@ -905,7 +905,7 @@ mod tests {
     /// 没开联网时模型仍可能凭印象调它（或照抄历史里的调用），要给一句能读懂的话。
     #[tokio::test]
     async fn web_tools_report_when_this_turn_has_no_search() {
-        let dir = std::env::temp_dir().join(format!("ayjx-tools-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-tools-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let ctx = run(&dir);
         let text = execute("web_search", &json!({"query": "IG 战况"}), &ctx, "x").await;

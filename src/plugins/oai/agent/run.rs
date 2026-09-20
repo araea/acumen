@@ -35,7 +35,7 @@ const ROOM_BASE: &str = "\
 
 /// 控制通道的用法说明；只有这一轮真的持有时才写进提示词。
 const CONTROL_HINT: &str = "\
-这一轮你还能直接操作机器人自己：用 bash 执行 `\"$AYJX_CTL_BIN\" --ctl \"<命令>\"`，
+这一轮你还能直接操作机器人自己：用 bash 执行 `\"$ACUMEN_CTL_BIN\" --ctl \"<命令>\"`，
 可以查看和修改插件开关与配置。具体用法见下面列的 skill，命令的回执会原样打回来。";
 
 /// 群聊那一套工具的用法说明；只有这一轮真的接通了群聊界面（房间正开在群里）才写。
@@ -472,7 +472,7 @@ mod tests {
     /// 一轮真的会调工具：模型要 bash，结果回填，模型再据此收尾。
     #[tokio::test]
     async fn a_tool_call_round_trips_and_lands_in_the_footer_trace() {
-        let dir = std::env::temp_dir().join(format!("ayjx-run-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-run-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let (base, seen, server) = scripted_model(vec![
             serde_json::json!({
@@ -481,10 +481,10 @@ mod tests {
                 "tool_calls": [{
                     "id": "call-1",
                     "type": "function",
-                    "function": {"name": "bash", "arguments": "{\"command\":\"printf AYJX_OK\"}"}
+                    "function": {"name": "bash", "arguments": "{\"command\":\"printf ACUMEN_OK\"}"}
                 }]
             }),
-            serde_json::json!({"role": "assistant", "content": "命令输出是 AYJX_OK"}),
+            serde_json::json!({"role": "assistant", "content": "命令输出是 ACUMEN_OK"}),
         ])
         .await;
 
@@ -499,10 +499,10 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(reply.text, "命令输出是 AYJX_OK");
+        assert_eq!(reply.text, "命令输出是 ACUMEN_OK");
         assert_eq!(reply.trace.len(), 1);
         assert_eq!(reply.trace[0].name, "bash");
-        assert_eq!(reply.trace[0].detail, "printf AYJX_OK");
+        assert_eq!(reply.trace[0].detail, "printf ACUMEN_OK");
 
         // 第二次请求必须带上工具结果，且它是一条 tool 消息。
         let requests = seen.lock().unwrap();
@@ -513,7 +513,7 @@ mod tests {
             .find(|message| message["role"] == "tool")
             .expect("工具结果要作为 tool 消息回填");
         assert!(
-            tool_message["content"].as_str().unwrap().contains("AYJX_OK"),
+            tool_message["content"].as_str().unwrap().contains("ACUMEN_OK"),
             "{tool_message}"
         );
         // 带上工具的请求里必须有 tools 定义。
@@ -528,7 +528,7 @@ mod tests {
     /// 普通房间那一侧没有工具；这里确认 agent 的请求确实带着工具与思考强度。
     #[tokio::test]
     async fn the_request_carries_tools_and_reasoning_effort() {
-        let dir = std::env::temp_dir().join(format!("ayjx-run-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-run-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let (base, seen, server) =
             scripted_model(vec![serde_json::json!({"role": "assistant", "content": "好"})]).await;
@@ -565,7 +565,7 @@ mod tests {
     /// 个执行层，差别只在有没有这一份现场。
     #[tokio::test]
     async fn a_room_in_a_group_gets_the_chat_tools_and_their_briefing() {
-        let dir = std::env::temp_dir().join(format!("ayjx-chat-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-chat-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let (base, seen, server) =
             scripted_model(vec![serde_json::json!({"role": "assistant", "content": "好"})]).await;
@@ -616,7 +616,7 @@ mod tests {
     /// 一个把每轮都用来调工具的模型必须被步数上限拦住，而不是转下去。
     #[tokio::test]
     async fn endless_tool_calls_stop_at_the_step_limit() {
-        let dir = std::env::temp_dir().join(format!("ayjx-run-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-run-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let (base, _, server) = scripted_model(vec![serde_json::json!({
             "role": "assistant",
@@ -649,7 +649,7 @@ mod tests {
     /// 模型不给正文也不调工具时，错误要说清是「没返回」而不是「超时」。
     #[tokio::test]
     async fn an_empty_answer_is_reported_as_such() {
-        let dir = std::env::temp_dir().join(format!("ayjx-run-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-run-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let (base, _, server) =
             scripted_model(vec![serde_json::json!({"role": "assistant", "content": "   "})]).await;
@@ -672,14 +672,14 @@ mod tests {
     /// 真实模型的接入测试：确认上游的工具调用格式与本实现真的对得上
     /// （假服务器只能证明我们自己拼得对，证明不了对面认不认）。
     ///
-    /// 需要 `AYJX_AGENT_LIVE_BASE` / `_KEY` / `_MODEL`。
+    /// 需要 `ACUMEN_AGENT_LIVE_BASE` / `_KEY` / `_MODEL`。
     #[tokio::test]
     #[ignore = "调用真实模型接口，需要网络"]
     async fn live_agent_uses_a_tool_and_answers_from_its_output() {
-        let base = std::env::var("AYJX_AGENT_LIVE_BASE").expect("请设置 AYJX_AGENT_LIVE_BASE");
-        let key = std::env::var("AYJX_AGENT_LIVE_KEY").expect("请设置 AYJX_AGENT_LIVE_KEY");
-        let model = std::env::var("AYJX_AGENT_LIVE_MODEL").expect("请设置 AYJX_AGENT_LIVE_MODEL");
-        let dir = std::env::temp_dir().join(format!("ayjx-live-{:032x}", rand::random::<u128>()));
+        let base = std::env::var("ACUMEN_AGENT_LIVE_BASE").expect("请设置 ACUMEN_AGENT_LIVE_BASE");
+        let key = std::env::var("ACUMEN_AGENT_LIVE_KEY").expect("请设置 ACUMEN_AGENT_LIVE_KEY");
+        let model = std::env::var("ACUMEN_AGENT_LIVE_MODEL").expect("请设置 ACUMEN_AGENT_LIVE_MODEL");
+        let dir = std::env::temp_dir().join(format!("acumen-live-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let reply = tokio::time::timeout(
@@ -690,7 +690,7 @@ mod tests {
                 dir: &dir,
                 cwd: Some(&dir),
                 model: &model,
-                prompt: "请执行一次 bash 命令 printf AYJX_AGENT_TOOL_OK，然后只回答命令的输出。",
+                prompt: "请执行一次 bash 命令 printf ACUMEN_AGENT_TOOL_OK，然后只回答命令的输出。",
                 ..AgentRun::new()
             }),
         )
@@ -699,7 +699,7 @@ mod tests {
         .unwrap();
 
         println!("模型：{model}；回复：{}；工具：{:?}", reply.text, reply.trace);
-        assert!(reply.text.contains("AYJX_AGENT_TOOL_OK"), "{}", reply.text);
+        assert!(reply.text.contains("ACUMEN_AGENT_TOOL_OK"), "{}", reply.text);
         assert!(
             reply.trace.iter().any(|step| step.name == "bash"),
             "应当真的调过 bash：{:?}",
@@ -737,14 +737,14 @@ mod tests {
 
     #[tokio::test]
     async fn skills_are_copied_into_the_run_directory_and_indexed() {
-        let source = std::env::temp_dir().join(format!("ayjx-skill-{:032x}", rand::random::<u128>()));
+        let source = std::env::temp_dir().join(format!("acumen-skill-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&source).unwrap();
         std::fs::write(
             source.join("SKILL.md"),
             "---\ndescription: 聊天界面怎么用\n---\n\n正文\n",
         )
         .unwrap();
-        let dir = std::env::temp_dir().join(format!("ayjx-run-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-run-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let provided = vec![source.clone()];

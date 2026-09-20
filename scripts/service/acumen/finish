@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # runsv 在服务终止后、重启前执行本脚本（退出码在 $1、信号在 $2）。部署到
-# $PREFIX/var/service/ayjx/finish，权限 755。
+# $PREFIX/var/service/acumen/finish，权限 755。
 #
 # 为什么需要：runsv 自身没有退避，run 脚本秒退时它约每 1.25 秒重试一次（实测 20 秒
 # 起 16 次）。配置解析失败、二进制缺失、启动锁被占这类「一起来就退」的情况会一直
@@ -13,8 +13,8 @@
 #
 # 注意 runsv 在 finish 里跑 sleep 时 `sv up` 不会立刻生效，要等 sleep 结束——
 # 这也是人为停止必须走豁免这条路的原因。
-MIN_UPTIME=${AYJX_MIN_UPTIME:-20}
-STAMP=${PREFIX:-/data/data/com.termux/files/usr}/var/run/ayjx.started
+MIN_UPTIME=${ACUMEN_MIN_UPTIME:-20}
+STAMP=${PREFIX:-/data/data/com.termux/files/usr}/var/run/acumen.started
 
 if [ "$1" = "0" ]; then
     exit 0
@@ -26,7 +26,7 @@ fi
 if [ -r "$STAMP" ]; then
     ran=$(( $(date +%s) - $(cat "$STAMP" 2>/dev/null || echo 0) ))
     if [ "$ran" -lt "$MIN_UPTIME" ]; then
-        echo "ayjx: 只活了 ${ran}s（退出码 $1 / 信号 $2），退避 ${MIN_UPTIME}s 再试"
+        echo "acumen: 只活了 ${ran}s（退出码 $1 / 信号 $2），退避 ${MIN_UPTIME}s 再试"
         sleep "$MIN_UPTIME"
     fi
 fi

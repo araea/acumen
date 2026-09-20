@@ -4,12 +4,12 @@
 //! 会真的往群里发一条视频（外加一份群文件）再撤回。
 //!
 //! ```sh
-//! cargo test --bin ayjx live_reads_the_metadata -- --ignored --nocapture
-//! AYJX_VIDEO_PARSE_LIVE_GROUP=280183116 \
-//!   cargo test --bin ayjx live_takes_ -- --ignored --nocapture
+//! cargo test --bin acumen live_reads_the_metadata -- --ignored --nocapture
+//! ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116 \
+//!   cargo test --bin acumen live_takes_ -- --ignored --nocapture
 //! ```
 //!
-//! 「发出去了没有」看实现端记下来的消息（`message.list`），不看 ayjx 的日志：
+//! 「发出去了没有」看实现端记下来的消息（`message.list`），不看 acumen 的日志：
 //! `[Chat] 发送 ->` 只说明打算发，成功失败它不知道。
 
 use super::*;
@@ -90,12 +90,12 @@ async fn live_reads_the_metadata_and_the_stream_plan() {
 /// 这条会往群里发三四条（触发那条、成品那条气泡与文件），模块的
 /// 出站闸门是全局 20 条/分钟，别把它跟别的沙盒用例挤在同一分钟里跑。
 #[tokio::test]
-#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
+#[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
 async fn live_takes_a_link_from_the_sandbox_group() {
-    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
+    let group: i64 = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
         .ok()
         .and_then(|value| value.parse().ok())
-        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+        .expect("先给 ACUMEN_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
     let (ctx, writer) = live_context().await;
     forget_previous_take(group).await;
     // 真机上这条链接是群友发的，这里造一条真实存在的。
@@ -140,12 +140,12 @@ async fn live_takes_a_link_from_the_sandbox_group() {
 /// 跟短链、拉稿件信息、把原片发进群。载荷照真机收到的形状造，只有里面的 b23 短链换成
 /// 样品那条——真卡片指向的稿件随时可能被删，自检不能靠它。
 #[tokio::test]
-#[ignore = "AYJX_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
+#[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
 async fn live_reads_a_card_from_the_sandbox_group() {
-    let group: i64 = std::env::var("AYJX_VIDEO_PARSE_LIVE_GROUP")
+    let group: i64 = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
         .ok()
         .and_then(|value| value.parse().ok())
-        .expect("先给 AYJX_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+        .expect("先给 ACUMEN_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
     let (ctx, writer) = live_context().await;
     forget_previous_take(group).await;
     let trigger = post(&ctx, &writer, group, "[分享]视频").await;
@@ -332,7 +332,7 @@ async fn live_context() -> (Context, LockedWriter) {
         .find(|bot| bot["protocol"].as_str() == Some("satori"))
         .unwrap();
     let endpoint = connection["url"].as_str().unwrap().trim_end_matches('/');
-    let token = std::env::var("AYJX_SATORI_TOKEN").ok().or_else(|| {
+    let token = std::env::var("ACUMEN_SATORI_TOKEN").ok().or_else(|| {
         connection
             .get("access_token")
             .and_then(toml::Value::as_str)

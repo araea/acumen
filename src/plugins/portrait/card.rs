@@ -880,7 +880,7 @@ mod tests {
             assert_eq!(image.width(), WIDTH * 2, "{name}");
             // 报告一定比占位视口高，否则说明高度没量到、底部被切。
             assert!(image.height() > 2000, "{name} height = {}", image.height());
-            let path = std::env::temp_dir().join(format!("ayjx-portrait-{name}.jpg"));
+            let path = std::env::temp_dir().join(format!("acumen-portrait-{name}.jpg"));
             std::fs::write(&path, &bytes).ok();
             println!("出图已写入 {}", path.display());
         }

@@ -27,7 +27,7 @@
   "use strict";
 
   const NAME = "知微";
-  const TOKEN_KEY = "zhiyan.token";
+  const TOKEN_KEY = "acumen.token";
   /** 一行的请求上限。超过它当作「这台机器正忙」，不再让页面停在骨架上。 */
   const REQUEST_TIMEOUT = 20000;
 
@@ -171,7 +171,7 @@
   async function api(path, options = {}) {
     const init = {
       method: options.method || "GET",
-      headers: { "x-zhiyan-token": token },
+      headers: { "x-acumen-token": token },
     };
     if (options.body !== undefined) {
       init.headers["content-type"] = "application/json";

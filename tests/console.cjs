@@ -1,5 +1,5 @@
 // node tests/console.cjs — real Chromium, isolated HTTP fixture; never touches a running bot.
-// Optional AYJX_CONSOLE_SHOTS exports screenshots and timing measurements.
+// Optional ACUMEN_CONSOLE_SHOTS exports screenshots and timing measurements.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -7,7 +7,7 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const out = process.env.AYJX_CONSOLE_SHOTS;
+const out = process.env.ACUMEN_CONSOLE_SHOTS;
 if (out) fs.mkdirSync(out, { recursive: true });
 const plugins = [
   ['logger', '日志', '记录运行日志'], ['oai', '智能对话', '与模型对话，管理房间与预设'],
@@ -35,7 +35,7 @@ const server = http.createServer(async (req, res) => {
   const reply = (data, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
   // 夹具也认口令：凭证发错（请求头或 ?t=）要当场变红，而不是静默放行。
   if (url.pathname.startsWith('/api')
-      && req.headers['x-zhiyan-token'] !== token && url.searchParams.get('t') !== token) {
+      && req.headers['x-acumen-token'] !== token && url.searchParams.get('t') !== token) {
     return reply({ error: '口令不对' }, 401);
   }
   if (req.method === 'POST') {

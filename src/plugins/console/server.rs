@@ -79,7 +79,7 @@ pub(super) async fn guard(State(console): State<Arc<Console>>, request: Request,
 fn authorized(token: &str, request: &Request) -> bool {
     if let Some(value) = request
         .headers()
-        .get("x-zhiyan-token")
+        .get("x-acumen-token")
         .and_then(|value| value.to_str().ok())
         && same(value, token)
     {
@@ -148,7 +148,7 @@ mod tests {
     /// 三条路都要通：脚本用请求头、命令行用 Bearer、地址栏与 EventSource 用查询串。
     #[test]
     fn every_credential_carrier_is_accepted() {
-        assert!(authorized(TOKEN, &request("/api/overview", &[("x-zhiyan-token", TOKEN)])));
+        assert!(authorized(TOKEN, &request("/api/overview", &[("x-acumen-token", TOKEN)])));
         assert!(authorized(
             TOKEN,
             &request("/api/overview", &[(header::AUTHORIZATION.as_str(), &format!("Bearer {TOKEN}"))])
@@ -177,7 +177,7 @@ mod tests {
         assert!(!authorized(TOKEN, &request("/api/overview?t=0123456789abcdef0123456789abcde", &[])));
         assert!(!authorized(TOKEN, &request("/api/overview?t=0123456789abcdef0123456789abcdee", &[])));
         assert!(!authorized(TOKEN, &request("/api/overview?t=0123456789abcdef0123456789abcdeg", &[])));
-        assert!(!authorized(TOKEN, &request("/api/overview", &[("x-zhiyan-token", "nope")])));
+        assert!(!authorized(TOKEN, &request("/api/overview", &[("x-acumen-token", "nope")])));
         // 查询串里出现了口令，但键名不是 t（`index.html?note=t…` 这类）不算。
         assert!(!authorized(TOKEN, &request(&format!("/api/overview?note={TOKEN}"), &[])));
     }

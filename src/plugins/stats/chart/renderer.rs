@@ -1200,7 +1200,7 @@ mod tests {
         ];
         let out = draw_message_type_ranking(&config, "本群今日消息类型排行榜", data)
             .expect("消息类型排行榜应当能渲染");
-        save_preview(&out, "AYJX_CHART_PREVIEW");
+        save_preview(&out, "ACUMEN_CHART_PREVIEW");
     }
 
     #[test]
@@ -1213,7 +1213,7 @@ mod tests {
         ];
         let out =
             draw_bar_chart(&config, "本群今日发言排行榜", data).expect("发言排行榜应当能渲染");
-        save_preview(&out, "AYJX_CHART_PREVIEW_BAR");
+        save_preview(&out, "ACUMEN_CHART_PREVIEW_BAR");
     }
 
     /// 圆形假头像：用于本地样张，颜色与线上「头像均色」取到的调子接近。

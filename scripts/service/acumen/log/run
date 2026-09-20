@@ -1,6 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # svlogd 包装，与 termux-services 其他服务一致：从 PWD 推服务名，日志落到
-# $LOGDIR/sv/<服务名>。部署到 $PREFIX/var/service/ayjx/log/run，权限 755。
+# $LOGDIR/sv/<服务名>。部署到 $PREFIX/var/service/acumen/log/run，权限 755。
 pwd=${PWD%/*} # $SVDIR/service/<name>/log
 service=${pwd##*/} # <name>
 

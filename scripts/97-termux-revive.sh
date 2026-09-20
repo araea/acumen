@@ -8,6 +8,8 @@
 # 看守日志：/data/local/tmp/termux-revive.log
 # 手动起一次：su -c "/data/adb/termux-revive/termux-revive.sh &"
 # 停：       kill "$(cat /data/local/tmp/termux-revive.pid)"
+#            ——只停本次开机：Termux 侧的 acumen-guard 看守会在 ~2 分钟内用 su 把它重新
+#            拉起。要长期停就用下面的 hold（或先停掉 acumen-guard）。
 # 暂停：     su -c "/data/adb/termux-revive/termux-revive.sh hold"    （resume 恢复）
 # 自检：     su -c "/data/adb/termux-revive/termux-revive.sh --check"
 BIN=/data/data/com.termux/files/usr/bin/bash

@@ -148,7 +148,7 @@ mod tests {
     /// 一目录一证书的拼法：空的跳过、每张后面补一个换行、坏条目不拖垮整份。
     #[test]
     fn certificates_from_a_directory_are_joined_one_per_line() {
-        let dir = std::env::temp_dir().join(format!("ayjx-ca-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("acumen-ca-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("nested")).unwrap();
         std::fs::write(dir.join("a.0"), b"-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----").unwrap();
@@ -171,7 +171,7 @@ mod tests {
     fn a_missing_directory_is_not_an_error() {
         let mut joined = Vec::new();
         assert!(!join_certificate_dir(
-            std::path::Path::new("/nonexistent/ayjx-ca"),
+            std::path::Path::new("/nonexistent/acumen-ca"),
             &mut joined
         ));
         assert!(joined.is_empty());

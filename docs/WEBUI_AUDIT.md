@@ -38,7 +38,7 @@ cargo test --locked
 cargo build --release --locked
 node tests/console-backend.cjs
 node tests/console.cjs
-AYJX_CONSOLE_SHOTS="$TMPDIR/ayjx-console-review" node tests/console.cjs
+ACUMEN_CONSOLE_SHOTS="$TMPDIR/acumen-console-review" node tests/console.cjs
 bash scripts/review-console.sh
 ```
 

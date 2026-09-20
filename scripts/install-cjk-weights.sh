@@ -3,7 +3,7 @@
 #
 # 为什么需要这一步：Android 自带的 Noto Serif/Sans CJK 只有 Regular 一档。
 # 向系统要 Bold，拿回来的还是那张 400 的脸——浏览器会自己合成伪粗体，
-# ayjx 的原生绘制也会（见 painter.rs 的 `Typeface.embolden`），但两者都只是
+# acumen 的原生绘制也会（见 painter.rs 的 `Typeface.embolden`），但两者都只是
 # 把轮廓外扩一圈，笔画的粗细对比和三角字脚是补不出来的。装上真字重之后，
 # 两条出图路径都会自动改用它，合成逻辑自己关掉，代码一行不用动。
 #

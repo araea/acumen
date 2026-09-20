@@ -6,10 +6,10 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'ayjx-foreground-'));
-const executable = path.join(temporary, 'target/release/ayjx');
+const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'acumen-foreground-'));
+const executable = path.join(temporary, 'target/release/acumen');
 fs.mkdirSync(path.dirname(executable), { recursive: true });
-fs.copyFileSync(path.join(root, 'target/release/ayjx'), executable);
+fs.copyFileSync(path.join(root, 'target/release/acumen'), executable);
 const launcher = path.join(temporary, 'bot');
 fs.copyFileSync(path.join(root, 'bot'), launcher);
 const registry = fs.readFileSync(path.join(root, 'src/plugins/registry.rs'), 'utf8');
@@ -22,7 +22,7 @@ fs.writeFileSync(configPath,
     (name === 'ctl' ? 'image_enabled = false\n' : '')).join(''));
 const child = spawn(launcher, ['start'], {
   cwd: temporary, stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, AYJX_WAKE_LOCK: '0' },
+  env: { ...process.env, ACUMEN_WAKE_LOCK: '0' },
 });
 let output = '';
 child.stdout.on('data', data => { output += data; });

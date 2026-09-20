@@ -2,15 +2,15 @@
 /all-in-one.md
 /config.toml
 /config.toml.testbak
-/ayjx-task
+/acumen-task
 /data
-/ayjx_config.toml
+/acumen_config.toml
 /temp
 /.claude
 /ARCHITECTURE.md
 /.workbuddy
-/build-ayjx.log
-/run-ayjx.log
+/build-acumen.log
+/run-acumen.log
 /.bot.lock
 /config.toml.backup-*
 

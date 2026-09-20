@@ -609,7 +609,7 @@ mod satori_compat_tests {
             matcher,
             config_path: Arc::from(
                 std::env::temp_dir()
-                    .join("ayjx-satori-plugin-audit.toml")
+                    .join("acumen-satori-plugin-audit.toml")
                     .to_string_lossy()
                     .as_ref(),
             ),

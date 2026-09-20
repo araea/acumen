@@ -68,14 +68,14 @@
 ## 验证
 
 ```sh
-cargo test --bin ayjx                                       # 分流、卡片、状态与去重
-cargo test --bin ayjx live_reads_the_metadata -- --ignored --nocapture
-AYJX_VIDEO_PARSE_LIVE_GROUP=280183116 \
-  cargo test --bin ayjx live_takes_ -- --ignored --nocapture
+cargo test --bin acumen                                       # 分流、卡片、状态与去重
+cargo test --bin acumen live_reads_the_metadata -- --ignored --nocapture
+ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116 \
+  cargo test --bin acumen live_takes_ -- --ignored --nocapture
 ```
 
 后两条会真的往沙盒群发一条视频（气泡 + 群文件）与触发那条链接，跑完自己撤回。
-要确认「发出去了没有」看实现端的 `message.list` / `message.get`，不要看 ayjx 的日志。
+要确认「发出去了没有」看实现端的 `message.list` / `message.get`，不要看 acumen 的日志。
 `[Chat] 发送 ->` 只说明打算发。两条都按「比触发那条新」找成品，并断言成品里没有引用段
 （带上引用视频就不显示）。
 

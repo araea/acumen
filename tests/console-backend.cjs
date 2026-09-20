@@ -6,7 +6,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ayjx-console-api-'));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acumen-console-api-'));
 let child, exited, output = '', reader, abort;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, description) {
@@ -22,7 +22,7 @@ async function until(predicate, description) {
   await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
   const port = probe.address().port;
   await new Promise(resolve => probe.close(resolve));
-  const binary = path.join(dir, 'ayjx'); fs.copyFileSync(path.join(root, 'target/release/ayjx'), binary);
+  const binary = path.join(dir, 'acumen'); fs.copyFileSync(path.join(root, 'target/release/acumen'), binary);
   const registry = fs.readFileSync(path.join(root, 'src/plugins/registry.rs'), 'utf8');
   const names = [...registry.matchAll(/^    ([a-z_]+) \{/gm)].map(m => m[1]);
   // bots = [] 必须写在各插件表之前：不给这个键会落到 Config::default() 里那份
@@ -38,7 +38,7 @@ async function until(predicate, description) {
   await until(() => output.includes('前台控制台已就绪'), 'foreground ready');
   const base = `http://127.0.0.1:${port}`;
   const token = 'test console only';
-  const headers = { 'x-zhiyan-token': token };
+  const headers = { 'x-acumen-token': token };
   const api = async route => (await fetch(base + '/api' + route, { headers })).json();
   // 隔离：这次启动不该起任何真适配器。落到默认 bot 就会连上本机的 satori-qq。
   assert(!output.includes('启动适配器 [satori]'), 'isolated instance must not start the satori adapter');

@@ -521,7 +521,7 @@ mod live_tests {
         assert_eq!(image.width(), (f64::from(VIEWPORT_WIDTH) * DEVICE_SCALE) as u32);
         // 占位视口是 800，真实卡片必须比它高出一截才说明测量生效。
         assert!(image.height() > 900, "height = {}", image.height());
-        std::fs::write(std::env::temp_dir().join("ayjx-card.jpg"), &bytes).unwrap();
+        std::fs::write(std::env::temp_dir().join("acumen-card.jpg"), &bytes).unwrap();
         cdp_html_shot::Browser::shutdown_global().await;
     }
 }

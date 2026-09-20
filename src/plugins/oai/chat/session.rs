@@ -2256,10 +2256,10 @@ mod tests {
     /// 与 `ambient::tests` 的试聊用同一组变量，免得记两套名字。
     fn live_endpoint(spec: &str) -> (String, String, String) {
         let (_, model) = crate::plugins::oai::utils::split_provider(spec);
-        let base = std::env::var("AYJX_AMBIENT_LIVE_GATE_BASE")
-            .expect("请设置 AYJX_AMBIENT_LIVE_GATE_BASE");
+        let base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE")
+            .expect("请设置 ACUMEN_AMBIENT_LIVE_GATE_BASE");
         let key =
-            std::env::var("AYJX_AMBIENT_LIVE_GATE_KEY").expect("请设置 AYJX_AMBIENT_LIVE_GATE_KEY");
+            std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY").expect("请设置 ACUMEN_AMBIENT_LIVE_GATE_KEY");
         (base, key, model)
     }
 
@@ -2613,7 +2613,7 @@ mod tests {
     }
 
     /// 发出去的每一句都带时效条件：交给 QQ 之前群里又有人说话，这句就整条不发。
-    /// ayjx 自己在发送前也查过一次窗口，但请求交给实现端之后还要排队，那一段
+    /// acumen 自己在发送前也查过一次窗口，但请求交给实现端之后还要排队，那一段
     /// 只有实现端看得见。
     #[tokio::test]
     async fn every_utterance_carries_the_server_side_freshness_condition() {
@@ -2865,17 +2865,17 @@ mod tests {
     }
     /// 房间那一侧的现场：没有常驻窗口，`satori_context` 是向平台要回来的一页。
     ///
-    /// 跑法：`AYJX_CHAT_LIVE_GROUP=<群号> cargo test --bin ayjx live_room_context -- --ignored --nocapture`
+    /// 跑法：`ACUMEN_CHAT_LIVE_GROUP=<群号> cargo test --bin acumen live_room_context -- --ignored --nocapture`
     /// （只读，不发群消息、不调模型）
     #[tokio::test]
-    #[ignore = "对真机只读；需要 AYJX_CHAT_LIVE_GROUP"]
+    #[ignore = "对真机只读；需要 ACUMEN_CHAT_LIVE_GROUP"]
     async fn live_room_context_reads_the_group_from_the_platform() {
-        let group: i64 = std::env::var("AYJX_CHAT_LIVE_GROUP")
-            .expect("先给 AYJX_CHAT_LIVE_GROUP=群号")
+        let group: i64 = std::env::var("ACUMEN_CHAT_LIVE_GROUP")
+            .expect("先给 ACUMEN_CHAT_LIVE_GROUP=群号")
             .trim()
             .parse()
             .expect("群号");
-        let endpoint = std::env::var("AYJX_AMBIENT_LIVE_ENDPOINT")
+        let endpoint = std::env::var("ACUMEN_AMBIENT_LIVE_ENDPOINT")
             .unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
         let mut config = AppConfig::default();
         for plugin in crate::plugins::get_plugins() {

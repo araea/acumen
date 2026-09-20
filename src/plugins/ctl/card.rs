@@ -89,7 +89,7 @@ pub fn usage(prefix: &str, cmds: &[crate::plugins::Cmd]) -> Card {
         },
     ];
     doc(
-        "AYJX · CONTROL",
+        "ACUMEN · CONTROL",
         blocks,
         "状态以当前配置为准 · 标「待重启」的等下次启动",
         ("查看全局状态".into(), format!("{prefix}ctl list")),

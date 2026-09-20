@@ -156,7 +156,7 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
         .count();
 
     // 不再用横线分隔：分组有 ▍、下一步有 💡，横线只是多占一行。
-    let mut out = format!("ayjx 插件总览\n已启用 {enabled} / {total} 个插件 · 指令前缀 {prefix}\n");
+    let mut out = format!("acumen 插件总览\n已启用 {enabled} / {total} 个插件 · 指令前缀 {prefix}\n");
 
     // 一条两行：首行是身份与开关，次行是它到底做什么，扫读时不必在长句里找边界
     for group in groups {

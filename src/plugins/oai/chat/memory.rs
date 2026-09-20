@@ -557,7 +557,7 @@ mod tests {
     #[tokio::test]
     async fn attaching_a_directory_makes_the_memory_outlive_the_process() {
         let _guard = exclusive();
-        let base = std::env::temp_dir().join(format!("ayjx-memory-{}", rand::random::<u64>()));
+        let base = std::env::temp_dir().join(format!("acumen-memory-{}", rand::random::<u64>()));
         attach(&base);
         let now = chrono::Local::now().timestamp();
         edit(7, |memory| {
@@ -588,7 +588,7 @@ mod tests {
         );
         assert_eq!(with_group(7, |memory| memory.notes[0].text.clone()), "刚起的梗");
 
-        attach(&std::env::temp_dir().join("ayjx-memory-detached"));
+        attach(&std::env::temp_dir().join("acumen-memory-detached"));
         let _ = std::fs::remove_dir_all(&base);
     }
 

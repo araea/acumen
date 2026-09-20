@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "知微（ayjx） [--console] [--no-ui] [--ui <端口>] [--ctl <命令>]\n\
+                    "知微（Acumen） [--console] [--no-ui] [--ui <端口>] [--ctl <命令>]\n\
                      --console 临时启用前台控制台，不修改 config.toml；输入 /ctl 查看用法，Ctrl+C 停止。\n\
                      --no-ui   本次启动不开放本机控制台服务（无图形环境用）。\n\
                      --ui      本机控制台换一个端口，只影响本次启动。\n\

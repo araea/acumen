@@ -1,0 +1,13 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# runit 服务入口：acumen 看守（Termux 侧）。部署到 $SVDIR/acumen-guard/run，权限 755。
+#
+# 看守自己也要被监督：它挂掉时 runsv 会在 1 秒内拉起来，不需要额外一层。
+# 里面带 flock 单实例锁，所以手动 `acumen-guard run` 调试不会和服务实例打架。
+export PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
+export HOME=${HOME:-/data/data/com.termux/files/home}
+export PATH="$PREFIX/bin:$PATH"
+export SVDIR=${SVDIR:-$PREFIX/var/service}
+export LOGDIR=${LOGDIR:-$PREFIX/var/log}
+
+cd "$HOME" || exit 1
+exec "$PREFIX/bin/acumen-guard" run

@@ -398,7 +398,7 @@ fn observe(
 }
 
 // Updated synchronously at ingress, before event tasks can be reordered.
-const OBSERVED: &str = "_ayjx_repeater_observed";
+const OBSERVED: &str = "_acumen_repeater_observed";
 
 fn next_generation() -> u64 {
     static NEXT: AtomicU64 = AtomicU64::new(1);

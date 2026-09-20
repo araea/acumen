@@ -6,10 +6,10 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 const { spawn, spawnSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ayjx-restart-'));
-const executable = path.join(dir, 'target/release/ayjx');
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acumen-restart-'));
+const executable = path.join(dir, 'target/release/acumen');
 fs.mkdirSync(path.dirname(executable), { recursive: true });
-fs.copyFileSync(path.join(root, 'target/release/ayjx'), executable);
+fs.copyFileSync(path.join(root, 'target/release/acumen'), executable);
 fs.copyFileSync(path.join(root, 'bot'), path.join(dir, 'bot'));
 const plugins = [...fs.readFileSync(path.join(root, 'src/plugins/registry.rs'), 'utf8').matchAll(/^    ([a-z_]+) \{/gm)].map(m => m[1]);
 const scheduled = new Date(Date.now() + 30000).toISOString().slice(11, 19);
@@ -19,7 +19,7 @@ fs.writeFileSync(path.join(dir, 'config.toml'),
     (name === 'restart' ? `time = "${scheduled}"\nallow_manual_restart = true\nrestart_delay_seconds = 0\n` : '')).join(''));
 const child = spawn(path.join(dir, 'bot'), ['start'], {
   cwd: dir, stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, TZ: 'UTC', AYJX_WAKE_LOCK: '0' },
+  env: { ...process.env, TZ: 'UTC', ACUMEN_WAKE_LOCK: '0' },
 });
 let output = '';
 child.stdout.on('data', data => { output += data; });

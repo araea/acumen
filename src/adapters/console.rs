@@ -50,7 +50,7 @@ pub fn entry(
         // Tokio runtime from shutting down after Ctrl+C or SIGTERM.
         let (input_tx, mut input_rx) = tokio::sync::mpsc::channel(32);
         std::thread::Builder::new()
-            .name("ayjx-console-input".into())
+            .name("acumen-console-input".into())
             .spawn(move || {
                 for line in std::io::stdin().lock().lines() {
                     let Ok(line) = line else { break };

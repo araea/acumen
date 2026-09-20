@@ -707,7 +707,7 @@ mod tests {
             config.plugins.insert(p.name.into(), (p.default_config)());
         }
         let path =
-            std::env::temp_dir().join(format!("ayjx-ctl-test-{}.toml", rand::random::<u64>()));
+            std::env::temp_dir().join(format!("acumen-ctl-test-{}.toml", rand::random::<u64>()));
         Context {
             event: EventType::Satori(simd_json::serde::to_owned_value(serde_json::json!({
                 "post_type":"message", "message_type":"private", "user_id":42, "message_id":1,

@@ -116,12 +116,12 @@ fn stamp() -> String {
         .to_string()
 }
 
-/// 页眉右侧的眉标。调用方传的是完整眉标（`AYJX · MANUAL`），这里剥掉品牌前缀，
+/// 页眉右侧的眉标。调用方传的是完整眉标（`ACUMEN · MANUAL`），这里剥掉品牌前缀，
 /// 品牌由版式固定写在左边，眉标只留后面那截。
 fn kicker_en(kicker: &str) -> &str {
     kicker
-        .strip_prefix("AYJX · ")
-        .or_else(|| kicker.strip_prefix("AYJX·"))
+        .strip_prefix("ACUMEN · ")
+        .or_else(|| kicker.strip_prefix("ACUMEN·"))
         .unwrap_or(kicker)
         .trim()
 }
@@ -198,9 +198,9 @@ pub fn html(doc: &Doc) -> String {
         r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:">
-<title>AYJX · {title}</title><style>{system}{css}</style></head>
+<title>ACUMEN · {title}</title><style>{system}{css}</style></head>
 <body class="{scheme} md-text" style="width:{width}px"><main class=shot><div class="card md-card">
-<div class=md-eyebrow><div class=md-kicker><span class=md-dot></span>AYJX<span class=md-kicker-en>{kicker}</span></div><span class=md-stamp>{stamp}</span></div>
+<div class=md-eyebrow><div class=md-kicker><span class=md-dot></span>ACUMEN<span class=md-kicker-en>{kicker}</span></div><span class=md-stamp>{stamp}</span></div>
 {body}<footer class=md-foot><div class=md-hint><span>{hint}</span><code>{command}</code></div><p class=md-note>{foot}</p></footer>
 </div></main></body></html>"#,
         system = DESIGN_SYSTEM,
@@ -557,7 +557,7 @@ mod tests {
         let image = capture(&doc, 1.0, path.as_deref()).await.unwrap();
         assert!(image.starts_with("iVBOR"));
         Browser::shutdown_global().await;
-        let error = capture(&doc, 1.0, Some("/nonexistent/ayjx-test-chromium"))
+        let error = capture(&doc, 1.0, Some("/nonexistent/acumen-test-chromium"))
             .await
             .unwrap_err();
         assert!(error.to_string().contains("浏览器初始化失败"), "{error}");

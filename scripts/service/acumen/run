@@ -1,5 +1,5 @@
 #!/data/data/com.termux/files/usr/bin/sh
-# termux-services（runit）的 ayjx 服务入口。部署到 $PREFIX/var/service/ayjx/run，权限 755。
+# termux-services（runit）的 acumen 服务入口。部署到 $PREFIX/var/service/acumen/run，权限 755。
 #
 # 装之前把最后一行换成**本 checkout 的绝对路径**：`./bot` 靠 run 里出现这个路径
 # 判断自己是否被 runit 托管，写成 $HOME/... 或相对路径会被判成「未托管」，
@@ -12,6 +12,6 @@ export PATH="$PREFIX/bin:$PATH"
 
 # 记下启动时刻，finish 用它判断这次活了多久。
 mkdir -p "$PREFIX/var/run"
-date +%s > "$PREFIX/var/run/ayjx.started"
+date +%s > "$PREFIX/var/run/acumen.started"
 
 exec /path/to/this/checkout/bot serve

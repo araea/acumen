@@ -401,7 +401,7 @@ pub(crate) mod tests {
     /// 一个只属于这次测试的库目录；用完删掉。
     pub(crate) fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "ayjx-stickers-{name}-{:032x}",
+            "acumen-stickers-{name}-{:032x}",
             rand::random::<u128>()
         ));
         let _ = std::fs::remove_dir_all(&dir);

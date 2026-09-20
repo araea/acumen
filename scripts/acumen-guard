@@ -1,0 +1,504 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# =============================================================================
+# acumen 看守（Termux 侧，由 runit 服务 acumen-guard 拉起）
+#
+# 分层：
+#   第 1 层 runsv（runit，$SVDIR/acumen）
+#       bot 进程崩了由 runsv 自己拉起；秒退有 finish 退避。这一层已经是
+#       「bot 级守护」，比在 tmux 里跑更可靠（tmux server 死了就全没了）。
+#   第 2 层 本看守（runit 服务 $SVDIR/acumen-guard）
+#       不抢 runsv 的活，只补 runsv 管不到的几件事：
+#         · ARMED/PAUSED 持久状态：用户停掉 bot 后，即使 Termux 被系统杀死又
+#           被拉起，也不会偷偷复活（靠 runit 的 down 文件，跨 runsvdir 重启有效）。
+#         · 异常判定：stat=run 却连续几轮没有 bot 进程 → sv restart。
+#         · 服务目录缺失（sv-enable 被撤）等结构性异常的告警。
+#         · 唤醒锁保活：termux-wake-lock 掉了就补（FGS + 唤醒锁是防冻结的关键）。
+#         · 孤儿 Chromium 回收（内存压力下 LMK 杀 Termux 的主因之一）。
+#         · tmux 日志会话（=acumen-log）掉线后按需重建。
+#         · 根侧看守存活检测：根侧看守死了就用 su 拉起来。
+#   第 3 层 根侧看守 /data/adb/termux-revive/termux-revive.sh（root，service.d 拉起）
+#       Termux 整个应用被杀（ColorOS o-kill / LMK / 崩溃）时把应用拉回来。
+#
+#   第 2 层保证第 3 层活着，第 3 层保证 Termux 活着，第 2 层自己由 runsv 兜底。
+#
+# 用法（括号里是别名）：
+#   acumen-guard status (s/check)       看全部状态，不修改任何东西
+#   acumen-guard arm (start/resume/on) 「应运行」：清 down 标记，需要时 sv up
+#   acumen-guard pause (stop/off/hold) 「用户已停」：sv down + 落 down 标记（持久）
+#   acumen-guard restart                优雅重启 bot（sv restart）
+#   acumen-guard start-services         在应用内把 runsvdir 拉起来（只给根侧看守调）
+#   acumen-guard run                    看守主循环（runit 服务入口）
+#   acumen-guard logs (log) [N]         看日志尾部
+#
+# 状态目录：$HOME/.local/state/acumen-guard/{MODE,guard.log,...}
+# =============================================================================
+set -u
+
+export PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
+export HOME=${HOME:-/data/data/com.termux/files/home}
+export PATH="$PREFIX/bin:$HOME/bin:$PATH"
+export SVDIR=${SVDIR:-$PREFIX/var/service}
+export LOGDIR=${LOGDIR:-$PREFIX/var/log}
+export TMUX_TMPDIR=${TMUX_TMPDIR:-$PREFIX/var/run}
+
+SERVICE=${ACUMEN_GUARD_SERVICE:-acumen}
+TMUX_SESSION=${ACUMEN_GUARD_TMUX_SESSION:-acumen-log}
+BOT_DIR=${ACUMEN_GUARD_BOT_DIR:-$HOME/dev/araea/acumen}
+BOT_EXE=${ACUMEN_GUARD_BOT_EXE:-$BOT_DIR/target/release/acumen}
+BOT_LOG=${ACUMEN_LOG:-$PREFIX/var/log/sv/$SERVICE/current}
+
+STATE_DIR=${ACUMEN_GUARD_STATE:-$HOME/.local/state/acumen-guard}
+MODE_FILE=$STATE_DIR/MODE
+LOG=$STATE_DIR/guard.log
+DOWN_FILE=$SVDIR/$SERVICE/down
+STAT_FILE=$SVDIR/$SERVICE/supervise/stat
+
+REVIVE_PIDFILE=${ACUMEN_REVIVE_PIDFILE:-/data/local/tmp/termux-revive.pid}
+REVIVE_SCRIPT=${ACUMEN_REVIVE:-/data/adb/termux-revive/termux-revive.sh}
+REVIVE_STATUS=${ACUMEN_REVIVE_STATUS:-/data/local/tmp/termux-revive.status}
+REVIVE_LOG=${ACUMEN_REVIVE_LOG:-/data/local/tmp/termux-revive.log}
+
+INTERVAL=${ACUMEN_GUARD_INTERVAL:-30}          # 巡检间隔（秒）
+WAKE_EVERY=${ACUMEN_GUARD_WAKE_EVERY:-10}      # 每 N 轮补一次唤醒锁（10*30s=5min）
+REAP_EVERY=${ACUMEN_GUARD_REAP_EVERY:-20}      # 每 N 轮收一次孤儿浏览器（10min）
+REVIVE_EVERY=${ACUMEN_GUARD_REVIVE_EVERY:-4}   # 每 N 轮查一次根侧看守（2min）
+TMUX_EVERY=${ACUMEN_GUARD_TMUX_EVERY:-4}       # 每 N 轮看一次 tmux（2min）
+MAX_LOG_BYTES=${ACUMEN_GUARD_MAX_LOG_BYTES:-524288}
+REVIVE_COOLDOWN=${ACUMEN_GUARD_REVIVE_COOLDOWN:-300}   # 重拉根侧看守的最小间隔
+RESTART_COOLDOWN=${ACUMEN_GUARD_RESTART_COOLDOWN:-300} # sv restart 的最小间隔
+TMUX_COOLDOWN=${ACUMEN_GUARD_TMUX_COOLDOWN:-600}       # 重建 tmux 会话的最小间隔
+CRASH_WINDOW=${ACUMEN_GUARD_CRASH_WINDOW:-600}         # 连续崩溃统计窗口
+CRASH_LIMIT=${ACUMEN_GUARD_CRASH_LIMIT:-5}             # 窗口内起这么多算连续崩溃
+CRASH_BACKOFF=${ACUMEN_GUARD_CRASH_BACKOFF:-900}       # 连续崩溃后本看守静默多久
+PAUSE_SETTLE=${ACUMEN_GUARD_PAUSE_SETTLE:-30}          # 刚 pause 后多久内不判「用户又起来了」
+
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+# ---------------------------------------------------------------- 基础设施 ---
+log() {
+    local level=$1; shift
+    printf '%s [%s] %s\n' "$(date '+%F %T')" "$level" "$*" >> "$LOG" 2>/dev/null || true
+    chmod 0644 "$LOG" 2>/dev/null || true
+    local size
+    size=$(stat -c %s "$LOG" 2>/dev/null || echo 0)
+    if [ "$size" -gt "$MAX_LOG_BYTES" ]; then
+        tail -n 400 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG" || rm -f "$LOG.tmp"
+    fi
+}
+
+mode_get() { local m; m=$(cat "$MODE_FILE" 2>/dev/null) || true; case "$m" in paused|armed) printf '%s' "$m" ;; *) printf 'armed' ;; esac; }
+mode_set() { printf '%s\n' "$1" > "$MODE_FILE" 2>/dev/null || true; }
+
+# 冷却：$1 名字 $2 秒。允许则返回 0 并盖时间戳。
+cd_ok() {
+    local f=$STATE_DIR/cd.$1 now last
+    now=$(date +%s)
+    last=$(cat "$f" 2>/dev/null || echo 0)
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -lt "$2" ]; then return 1; fi
+    printf '%s\n' "$now" > "$f" 2>/dev/null || true
+    return 0
+}
+
+sv_state() {  # run | finish | down | missing
+    if [ ! -d "$SVDIR/$SERVICE" ]; then printf 'missing'; return; fi
+    if [ ! -r "$STAT_FILE" ]; then printf 'unknown'; return; fi
+    awk '{print $1; exit}' "$STAT_FILE" 2>/dev/null || printf 'unknown'
+}
+
+is_bot_pid() {
+    local exe
+    exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
+    [ "${exe% (deleted)}" = "$BOT_EXE" ]
+}
+
+# 与 scripts 里的 bot 一致：先按 cmdline 找候选，再用 /proc/PID/exe 确认，
+# 避免把测试实例或自己的命令行误认成 bot。
+bot_pids() {
+    local p
+    for p in $(pgrep -f '/target/release/acumen' 2>/dev/null || true); do
+        is_bot_pid "$p" && printf '%s\n' "$p"
+    done
+}
+
+pid_alive() { local p=${1:-}; case "$p" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$p" 2>/dev/null; }
+
+# 根侧看守是 root 进程，Termux 用户 kill -0 会报 EPERM——那也意味着进程在。
+# Android 上 /proc 只看得见自己的进程，ps 同样靠不住，所以只能这样判。
+pid_exists() {
+    local p=${1:-} err
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+    kill -0 "$p" 2>/dev/null && return 0
+    err=$(kill -0 "$p" 2>&1)
+    case "$err" in *'permitted'*) return 0 ;; esac
+    return 1
+}
+
+# 进程已运行秒数拿不到：Android 上 /proc/uptime 对普通应用不可读、getconf 也没有。
+# 直接用 runsv 自己维护的状态（其中就带 pid 和运行秒数）。
+sv_status_line() {
+    ( cd "$BOT_DIR" 2>/dev/null || cd "$HOME"; "$PREFIX/bin/sv" status "$SERVICE" 2>&1 )
+}
+
+termux_app_pid() {
+    local p
+    for p in $(pgrep -f '^com\.termux$' 2>/dev/null || true); do pid_alive "$p" && { printf '%s' "$p"; return 0; }; done
+    return 1
+}
+
+runsvdir_pid() {
+    local p
+    for p in $(pgrep -f 'runsvdir' 2>/dev/null || true); do
+        if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -qF -- "$SVDIR"; then printf '%s' "$p"; return 0; fi
+    done
+    return 1
+}
+
+revive_pid() { local p; p=$(cat "$REVIVE_PIDFILE" 2>/dev/null) || true; pid_exists "$p" && printf '%s' "$p"; }
+
+tmux_session_exists() {  # $1 session name
+    command -v tmux >/dev/null 2>&1 || return 1
+    tmux has-session -t "=$1" 2>/dev/null
+}
+
+tmux_list() {
+    command -v tmux >/dev/null 2>&1 || { printf '<无 tmux>'; return; }
+    tmux list-sessions -F '#{session_name}(#{session_windows}w,attached=#{session_attached})' 2>/dev/null | paste -sd, - || printf '<无 server>'
+}
+
+# ------------------------------------------------------------------ 动作 ---
+start_bot() {
+    ( cd "$BOT_DIR" 2>/dev/null || cd "$HOME"; "$PREFIX/bin/sv" up "$SERVICE" ) >/dev/null 2>&1
+}
+
+stop_bot() {
+    ( cd "$BOT_DIR" 2>/dev/null || cd "$HOME"; "$PREFIX/bin/sv" -w 20 down "$SERVICE" ) >/dev/null 2>&1
+}
+
+restart_bot() {
+    ( cd "$BOT_DIR" 2>/dev/null || cd "$HOME"; "$PREFIX/bin/sv" -w 20 restart "$SERVICE" ) >/dev/null 2>&1
+}
+
+ensure_revive() {  # 根侧看守不在了就拉起来
+    local pid
+    if pid=$(revive_pid); then return 0; fi
+    cd_ok revive "$REVIVE_COOLDOWN" || return 1
+    log warn "根侧看守不在（pidfile=$(cat "$REVIVE_PIDFILE" 2>/dev/null || echo 空)），尝试 su 拉起"
+    # /data/adb 是 0700 root，Termux 用户连 stat 都不行，存在性只能让 root 去判。
+    if ! su -c "test -f '$REVIVE_SCRIPT'" >/dev/null 2>&1; then
+        log error "root 视角下也找不到 $REVIVE_SCRIPT，无法拉起根侧看守"
+        return 1
+    fi
+    if su -c "setsid nohup '$PREFIX/bin/bash' '$REVIVE_SCRIPT' >/dev/null 2>&1 </dev/null &" >/dev/null 2>&1; then
+        sleep 3
+        if pid=$(revive_pid); then log info "根侧看守已拉起（pid $pid）"; return 0; fi
+        log error "根侧看守拉起后仍未存活（可能 KernelSU 拒了这次 su，或脚本自己在退避）"
+    else
+        log error "su 调用失败，无法拉起根侧看守"
+    fi
+    return 1
+}
+
+ensure_wakelock() {
+    if command -v termux-wake-lock >/dev/null 2>&1; then
+        termux-wake-lock >/dev/null 2>&1 || log warn "termux-wake-lock 调用失败（Termux:API/通知权限？）"
+    fi
+}
+
+reap_orphans() {
+    [ -x "$BOT_DIR/bot" ] || return 0
+    local out
+    out=$(cd "$BOT_DIR" && "$BOT_DIR/bot" reap 2>&1) || true
+    case "$out" in *'收掉'*) log info "reap: $out" ;; esac
+}
+
+ensure_tmux() {  # 只重建「曾经存在过」的日志会话
+    if tmux_session_exists "$TMUX_SESSION"; then
+        : > "$STATE_DIR/tmux.expected" 2>/dev/null || true
+        return 0
+    fi
+    [ -e "$STATE_DIR/tmux.expected" ] || return 0     # 从没出现过就别自己造
+    cd_ok tmux "$TMUX_COOLDOWN" || return 1
+    command -v tmux >/dev/null 2>&1 || return 1
+    if tmux new-session -d -s "$TMUX_SESSION" -c "$BOT_DIR" "tail -n 200 -F '$BOT_LOG'" 2>/dev/null; then
+        log info "tmux 日志会话 =$TMUX_SESSION 已重建（tail -F $BOT_LOG）"
+    else
+        log warn "tmux 日志会话 =$TMUX_SESSION 重建失败"
+    fi
+}
+
+# -------------------------------------------------------------- 崩溃统计 ---
+crash_record() {  # $1: 当前 bot 主 pid（可能为空）
+    local cur=$1 last now starts n
+    last=$(cat "$STATE_DIR/last_pid" 2>/dev/null || echo '')
+    if [ "$cur" != "$last" ]; then
+        printf '%s\n' "$cur" > "$STATE_DIR/last_pid" 2>/dev/null || true
+        [ -n "$cur" ] || return 0
+        now=$(date +%s)
+        starts=$STATE_DIR/starts
+        printf '%s %s\n' "$now" "$cur" >> "$starts" 2>/dev/null || true
+        tail -n 40 "$starts" > "$starts.tmp" 2>/dev/null && mv "$starts.tmp" "$starts" || rm -f "$starts.tmp"
+    fi
+    starts=$STATE_DIR/starts
+    [ -r "$starts" ] || return 0
+    now=$(date +%s)
+    n=$(awk -v n="$now" -v w="$CRASH_WINDOW" '$1 >= n-w' "$starts" 2>/dev/null | wc -l)
+    if [ "$n" -ge "$CRASH_LIMIT" ]; then
+        if cd_ok crash-notify "$CRASH_BACKOFF"; then
+            log error "连续崩溃：${CRASH_WINDOW}s 内起了 ${n} 次 bot（阈值 $CRASH_LIMIT），本看守静默 ${CRASH_BACKOFF}s 不做主动动作，请查 $BOT_LOG"
+        fi
+        printf '%s\n' "$(( now + CRASH_BACKOFF ))" > "$STATE_DIR/crash_until" 2>/dev/null || true
+        return 0
+    fi
+    if [ -e "$STATE_DIR/crash_until" ]; then
+        local until_ts; until_ts=$(cat "$STATE_DIR/crash_until" 2>/dev/null || echo 0)
+        case "$until_ts" in ''|*[!0-9]*) until_ts=0 ;; esac
+        [ "$now" -ge "$until_ts" ] && rm -f "$STATE_DIR/crash_until"
+    fi
+}
+
+crash_backoff_active() {
+    local until_ts now
+    [ -e "$STATE_DIR/crash_until" ] || return 1
+    until_ts=$(cat "$STATE_DIR/crash_until" 2>/dev/null || echo 0)
+    case "$until_ts" in ''|*[!0-9]*) return 1 ;; esac
+    now=$(date +%s)
+    [ "$now" -lt "$until_ts" ]
+}
+
+# ------------------------------------------------------------------ 巡检 ---
+tick() {
+    local mode state pids npid primary
+    mode=$(mode_get)
+    state=$(sv_state)
+    pids=$(bot_pids)
+    npid=$(printf '%s' "$pids" | grep -c . 2>/dev/null || true)
+    primary=$(printf '%s\n' "$pids" | head -n 1)
+
+    crash_record "$primary"
+
+    if [ "$state" = missing ]; then
+        log warn "服务目录不存在：$SVDIR/$SERVICE（sv-enable 被撤过？）"
+        return 0
+    fi
+
+    if [ "$mode" = paused ]; then
+        # PAUSED：只保证 down 文件在，绝不拉起
+        if [ ! -e "$DOWN_FILE" ]; then
+            : > "$DOWN_FILE" 2>/dev/null && log info "PAUSED：写入 runit down 标记，重启 Termux 也不会自动起"
+        fi
+        local pause_ts now
+        now=$(date +%s)
+        pause_ts=$(cat "$STATE_DIR/pause_ts" 2>/dev/null || echo 0)
+        case "$pause_ts" in ''|*[!0-9]*) pause_ts=0 ;; esac
+        if [ "$state" = run ] && [ "$npid" -gt 0 ] && [ $((now - pause_ts)) -ge "$PAUSE_SETTLE" ]; then
+            mode_set armed
+            rm -f "$DOWN_FILE"
+            log info "检测到用户重新启动了服务（stat=run, pid $primary）→ 切回 ARMED 并清掉 down 标记"
+        fi
+        return 0
+    fi
+
+    # ARMED
+    if [ "$state" = down ]; then
+        # runsv 不会自己进 down；进了就是用户 sv down / bot stop。
+        # 尊重用户：持久化成 PAUSED，不抢回来。
+        mode_set paused
+        : > "$DOWN_FILE" 2>/dev/null || true
+        date +%s > "$STATE_DIR/pause_ts" 2>/dev/null || true
+        log info "检测到服务被手动停止（stat=down）→ 已持久化为 PAUSED；恢复用 acumen-guard arm"
+        return 0
+    fi
+    if [ -e "$DOWN_FILE" ]; then
+        rm -f "$DOWN_FILE" 2>/dev/null && log info "ARMED：清掉 runit down 标记"
+    fi
+    if crash_backoff_active; then
+        return 0
+    fi
+    if [ "$state" = run ] && [ "$npid" -eq 0 ]; then
+        # stat=run 却没有 bot 进程：runsv 认为在跑。短暂窗口（run 脚本 exec 前）正常，
+        # 连续 3 轮（约 90s）都没有才算异常。
+        local miss=0
+        miss=$(cat "$STATE_DIR/bot_missing" 2>/dev/null || echo 0)
+        case "$miss" in ''|*[!0-9]*) miss=0 ;; esac
+        miss=$((miss + 1))
+        printf '%s\n' "$miss" > "$STATE_DIR/bot_missing" 2>/dev/null || true
+        if [ "$miss" -ge 3 ] && cd_ok restart-bot "$RESTART_COOLDOWN"; then
+            log warn "stat=run 但 ${miss} 轮没有 bot 进程，执行 sv restart $SERVICE"
+            restart_bot
+            printf '0\n' > "$STATE_DIR/bot_missing" 2>/dev/null || true
+        fi
+    else
+        printf '0\n' > "$STATE_DIR/bot_missing" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# ------------------------------------------------------------------ 主循环 ---
+# 单实例锁用 mkdir（原子）而不是 flock：flock 的 fd 会被派生出去的子进程继承
+# （bot 那边就因为这个被 Chromium 攥着锁卡死过）。mkdir 不会被继承，
+# 带 pid 文件，陈旧锁能自愈。
+LOCK_DIR=$STATE_DIR/run.lock.d
+SLEEP_PID=''
+
+is_guard_pid() {
+    local p=${1:-}
+    case "$p" in ''|*[!0-9]*) return 1 ;; esac
+    tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'acumen-guard' || return 1
+    return 0
+}
+
+# 成功时返回 0；已有活实例时把那个 pid 打到 stdout 并返回 1。
+acquire_lock() {
+    local tries=0 owner
+    while [ "$tries" -lt 2 ]; do
+        if mkdir "$LOCK_DIR" 2>/dev/null; then
+            printf '%s\n' "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+            return 0
+        fi
+        owner=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo '')
+        if pid_alive "$owner" && is_guard_pid "$owner"; then printf '%s' "$owner"; return 1; fi
+        # 陈旧锁：持有者没了，或 pid 被别的进程复用了。收掉重试一次。
+        rm -rf "$LOCK_DIR" 2>/dev/null || true
+        tries=$((tries + 1))
+    done
+    return 1
+}
+
+release_lock() { rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+
+on_term() {
+    log info "看守收到停止信号，退出"
+    [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null
+    release_lock
+    exit 0
+}
+
+run_loop() {
+    local owner i=0
+    if ! owner=$(acquire_lock); then
+        printf 'acumen-guard: 已有实例在跑（pid %s），退出。\n' "$owner" >&2
+        exit 0
+    fi
+    trap on_term TERM INT
+    # 状态显式落盘：默认虽然就按 armed 算，但写出来用户才看得到（acumen-guard status）。
+    if [ ! -e "$MODE_FILE" ]; then mode_set armed; fi
+    log info "看守启动 pid=$$ interval=${INTERVAL}s service=$SERVICE bot=$BOT_EXE"
+    while true; do
+        i=$((i + 1))
+        tick || log warn "tick 返回非 0"
+        # 第一轮就先把唤醒锁和根侧看守确认一遍：看守自己重启后也要立刻恢复这两件事。
+        if [ "$i" -eq 1 ] || [ $((i % WAKE_EVERY)) -eq 0 ]; then
+            if [ "$(mode_get)" = armed ]; then ensure_wakelock; fi
+        fi
+        # 根侧看守是整条链上最关键的一环（Termux 被杀只有它能救），查得勤一点。
+        if [ "$i" -eq 1 ] || [ $((i % REVIVE_EVERY)) -eq 0 ]; then
+            ensure_revive || true
+        fi
+        if [ $((i % REAP_EVERY)) -eq 0 ]; then
+            reap_orphans
+        fi
+        if [ $((i % TMUX_EVERY)) -eq 0 ]; then
+            ensure_tmux
+        fi
+        # 后台 sleep + wait：这样收到 TERM 能立即响应（sv restart 不用等满一轮）。
+        sleep "$INTERVAL" &
+        SLEEP_PID=$!
+        wait "$SLEEP_PID" 2>/dev/null || true
+        SLEEP_PID=''
+    done
+}
+
+# ------------------------------------------------------------------ 输出 ---
+print_status() {
+    local mode state pids primary rv rvdpid apppid
+    mode=$(mode_get); state=$(sv_state); pids=$(bot_pids); primary=$(printf '%s\n' "$pids" | head -n 1)
+    rvdpid=$(runsvdir_pid 2>/dev/null) || rvdpid=''
+    apppid=$(termux_app_pid 2>/dev/null) || apppid=''
+    printf '== acumen 看守 ==\n'
+    printf '模式(MODE)         : %s%s\n' "$mode" \
+        "$( [ "$mode" = paused ] && printf '（用户已停，且不会被自动拉起）' || printf '（应运行）' )"
+    printf 'runit 服务状态     : %s（down 标记: %s）\n' "$state" \
+        "$( [ -e "$DOWN_FILE" ] && printf '有' || printf '无' )"
+    printf 'sv status          : %s\n' "$(sv_status_line)"
+    if [ -n "$primary" ]; then
+        printf 'bot 进程           : pid %s\n' "$primary"
+        [ "$(printf '%s' "$pids" | grep -c .)" -gt 1 ] && printf '  注意：多个 bot 进程：%s\n' "$(printf '%s' "$pids" | paste -sd' ' -)"
+    else
+        printf 'bot 进程           : 无\n'
+    fi
+    printf 'bot 二进制         : %s\n' "$BOT_EXE"
+    printf 'bot 日志           : %s\n' "$BOT_LOG"
+    printf 'runsvdir           : %s\n' "${rvdpid:+pid $rvdpid}"; [ -n "$rvdpid" ] || printf 'runsvdir           : 不在\n'
+    printf 'Termux 应用        : %s\n' "${apppid:+pid $apppid}"; [ -n "$apppid" ] || printf 'Termux 应用        : 不在\n'
+    printf 'tmux 会话          : %s\n' "$(tmux_list)"
+    if rv=$(revive_pid); then
+        printf '根侧看守           : pid %s\n' "$rv"
+    else
+        printf '根侧看守           : 不在（pidfile=%s）\n' "$(cat "$REVIVE_PIDFILE" 2>/dev/null || echo 空)"
+    fi
+    if [ -r "$REVIVE_STATUS" ]; then
+        printf '根侧巡检快照       : %s\n' "$(tr '\n' ' ' < "$REVIVE_STATUS")"
+    fi
+    printf '看守日志           : %s\n' "$LOG"
+    if [ -e "$STATE_DIR/crash_until" ]; then
+        printf '连续崩溃静默       : 至 %s\n' "$(date -d "@$(cat "$STATE_DIR/crash_until" 2>/dev/null || echo 0)" '+%F %T' 2>/dev/null || echo '?')"
+    fi
+    printf '\n最近 12 行看守日志：\n'
+    tail -n 12 "$LOG" 2>/dev/null | sed 's/^/  /' || printf '  <无日志>\n'
+    printf '\n根侧看守最近 8 行：\n'
+    tail -n 8 "$REVIVE_LOG" 2>/dev/null | sed 's/^/  /' || printf '  <无日志>\n'
+}
+
+# ------------------------------------------------------------------ 入口 ---
+case "${1:-status}" in
+    run) run_loop ;;
+
+    status|s|check)
+        print_status
+        ;;
+
+    arm|start|resume|on)
+        mode_set armed
+        rm -f "$STATE_DIR/crash_until" "$STATE_DIR/pause_ts" 2>/dev/null || true
+        if [ -e "$DOWN_FILE" ]; then rm -f "$DOWN_FILE" && printf '已清掉 runit down 标记。\n'; fi
+        state=$(sv_state)
+        if [ "$state" = down ]; then
+            start_bot && printf '已请求 sv up %s。\n' "$SERVICE"
+        elif [ "$state" = run ]; then
+            printf 'bot 已在运行（stat=run）。\n'
+        else
+            printf '当前 stat=%s，未主动干预。\n' "$state"
+        fi
+        ;;
+    pause|stop|off|hold)
+        mode_set paused
+        date +%s > "$STATE_DIR/pause_ts" 2>/dev/null || true
+        : > "$DOWN_FILE" 2>/dev/null || true
+        stop_bot && printf '已停止并写好 down 标记：Termux 重启/被杀重拉后也不会自动起。\n' \
+                  || printf '已写 down 标记；停止等待超时，请看 %s。\n' "$BOT_LOG"
+        printf '恢复：acumen-guard arm（或 bot start）。\n'
+        ;;
+    restart)
+        if [ "$(mode_get)" = paused ]; then
+            printf '当前是 PAUSED，先 arm 再 restart。\n' >&2; exit 1
+        fi
+        restart_bot && printf '已请求 sv restart %s。\n' "$SERVICE"
+        ;;
+    start-services)
+        # 只给根侧看守用：在应用内把 runsvdir 拉起来（不重复起）。
+        export TMPDIR=${TMPDIR:-$PREFIX/tmp}
+        if p=$(runsvdir_pid); then
+            log info "start-services: runsvdir 已在运行（pid $p），不动"
+            printf 'runsvdir 已在运行（pid %s）。\n' "$p"; exit 0
+        fi
+        log info "start-services: 应用内 runsvdir 不在，执行 service-daemon start"
+        exec "$PREFIX/bin/service-daemon" start
+        ;;
+    logs|log)
+        tail -n "${2:-60}" "$LOG" 2>/dev/null || { printf '还没有日志：%s\n' "$LOG" >&2; exit 1; }
+        ;;
+    help|-h|--help|*)
+        sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+        ;;
+esac

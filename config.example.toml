@@ -1,4 +1,4 @@
-# ayjx 配置示例。
+# Acumen（知微）配置示例。
 #
 # 复制成 config.toml 后即可启动：首次启动会把缺的字段按默认值补进去，不会覆盖已有取值，
 # 解析失败也不会覆盖原文件。每一项的完整说明在源码里该字段的 /// 注释，这份文件解释的是
@@ -32,7 +32,7 @@ protocol = "console"
 enabled = true
 protocol = "satori"
 url = "http://127.0.0.1:3001"
-# 留空表示不鉴权；也可设置环境变量 AYJX_SATORI_TOKEN（优先级更高）。
+# 留空表示不鉴权；也可设置环境变量 ACUMEN_SATORI_TOKEN（优先级更高）。
 access_token = ""
 
 # ============================================================================
@@ -44,7 +44,7 @@ access_token = ""
 enabled = true
 
 # 插件控制：全局开关与配置的统一入口，也是唯一一条写配置的路径。
-# 聊天里走 /ctl，agent 房间里走 `ayjx --ctl`（一次性凭据）。两者都按这份 admins 判权。
+# 聊天里走 /ctl，agent 房间里走 `acumen --ctl`（一次性凭据）。两者都按这份 admins 判权。
 [ctl]
 enabled = true
 # 维护者 QQ 号。空列表表示只允许本机控制台管理，聊天里谁也不许改。
@@ -100,7 +100,7 @@ memory_threshold_mb = 0
 memory_check_interval_minutes = 5
 # 重启前等待多少秒，让「即将重启」那句通知先刷到 WebSocket。
 restart_delay_seconds = 3
-# 外部重启命令（如 "systemctl restart ayjx"）。配了就优先用它，代替进程自我拉起。
+# 外部重启命令（如 "systemctl restart acumen"）。配了就优先用它，代替进程自我拉起。
 restart_command = ""
 
 # 帮助中心：按当前注册表列出全部插件与开关状态，配置管理交给 ctl。
@@ -648,7 +648,8 @@ hot_topics_time = "21:40:00"
 # 词云：按消息记录生成词云图。数据来自 [recorder]，关掉它这里只会说没有记录。
 [wordcloud]
 enabled = true
-# 成图的宽高（像素）与取词数量上限。
+# 成图的排版画布宽高（像素）与取词数量上限。画布只决定词排得开不开：
+# 出图会把内容外的暖白裁掉，所以成图尺寸跟着词量走，不必为了让图好看调小画布。
 width = 800
 height = 600
 limit = 50

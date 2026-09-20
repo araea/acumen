@@ -167,10 +167,10 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
 
 /// Every call goes through the Rust bridge; the fixed sandbox is an explicit opt-in.
 #[tokio::test]
-#[ignore = "AYJX_AMBIENT_LIVE_GROUP=280183116；会发送并撤回测试消息、修改并恢复自己的名片、短暂禁言小号、创建并清理文件夹"]
+#[ignore = "ACUMEN_AMBIENT_LIVE_GROUP=280183116；会发送并撤回测试消息、修改并恢复自己的名片、短暂禁言小号、创建并清理文件夹"]
 async fn live_qq_sandbox_actions_and_environment() {
     assert_eq!(
-        std::env::var("AYJX_AMBIENT_LIVE_GROUP").as_deref(),
+        std::env::var("ACUMEN_AMBIENT_LIVE_GROUP").as_deref(),
         Ok("280183116")
     );
     let group = 280183116;
@@ -189,7 +189,7 @@ async fn live_qq_sandbox_actions_and_environment() {
         .unwrap()
         .trim_end_matches('/')
         .trim_end_matches("/v1/events");
-    let token = std::env::var("AYJX_SATORI_TOKEN").ok().or_else(|| {
+    let token = std::env::var("ACUMEN_SATORI_TOKEN").ok().or_else(|| {
         connection
             .get("access_token")
             .and_then(toml::Value::as_str)
@@ -292,7 +292,7 @@ async fn live_qq_sandbox_actions_and_environment() {
     // Unknown and failed kernel envelopes are covered by deterministic tests above.
     // Perform cleanup before assertions, including when a write returns an error.
     for (name, value) in [
-        ("card", json!({"action":"card","card":"ayjx兼容测试"})),
+        ("card", json!({"action":"card","card":"acumen兼容测试"})),
         (
             "mute",
             json!({"action":"mute","user_id":target,"duration_seconds":60}),
@@ -316,7 +316,7 @@ async fn live_qq_sandbox_actions_and_environment() {
                     json!({"guild_id":group.to_string(),"user_id":me}),
                 )
                 .await;
-            if !readback.is_ok_and(|v| v["nick"] == "ayjx兼容测试") {
+            if !readback.is_ok_and(|v| v["nick"] == "acumen兼容测试") {
                 failures.push("card readback mismatch".into());
             }
         }
@@ -330,7 +330,7 @@ async fn live_qq_sandbox_actions_and_environment() {
     if restored["ok"] != true {
         failures.push(format!("restore card: {restored}"));
     }
-    let sent = action(&bridge, "send", json!({"action":"send","parts":[{"type":"text","text":"ayjx 兼容验证：表态和精华测试，稍后撤回。"}]})).await;
+    let sent = action(&bridge, "send", json!({"action":"send","parts":[{"type":"text","text":"acumen 兼容验证：表态和精华测试，稍后撤回。"}]})).await;
     let mid = sent
         .pointer("/result/message_id")
         .and_then(Value::as_str)
@@ -510,10 +510,10 @@ async fn live_agent_uses_the_new_card_action() {
 /// **平台上写的到底是什么**。所以拿沙箱群真问一遍，顺带确认判定模型收得下头像：
 /// 收不下的话，头像那一句会安静地变成空串，线上看不出任何异常。只读，不改任何东西。
 #[tokio::test]
-#[ignore = "AYJX_AMBIENT_LIVE_GROUP=280183116；只读地问一遍自己的群身份，并让判定模型看一眼头像"]
+#[ignore = "ACUMEN_AMBIENT_LIVE_GROUP=280183116；只读地问一遍自己的群身份，并让判定模型看一眼头像"]
 async fn live_identity_reads_the_name_the_room_sees() {
     assert_eq!(
-        std::env::var("AYJX_AMBIENT_LIVE_GROUP").as_deref(),
+        std::env::var("ACUMEN_AMBIENT_LIVE_GROUP").as_deref(),
         Ok("280183116")
     );
     let group = 280183116;
@@ -532,7 +532,7 @@ async fn live_identity_reads_the_name_the_room_sees() {
         .unwrap()
         .trim_end_matches('/')
         .trim_end_matches("/v1/events");
-    let token = std::env::var("AYJX_SATORI_TOKEN").ok().or_else(|| {
+    let token = std::env::var("ACUMEN_SATORI_TOKEN").ok().or_else(|| {
         connection
             .get("access_token")
             .and_then(toml::Value::as_str)

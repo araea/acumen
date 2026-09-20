@@ -146,7 +146,7 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 - 判定完成后重新读取最新记录再生成。生成期间又有消息时，先让判定模型检查草稿是否仍然合适：补充与同话题闲聊不必重写，问题已解决、被纠正或转移话题则收起草稿重新判断。检查期间再有新消息也会让位给下一批
 - 分条发送时如果有新消息，或管理员停用插件、移除群，停止尚未发送的部分
 - 只有成功发送才计入发言频率。保存消息回执用于识别引用与去重
-- 每一句都带一层实现端的时效条件（`send_freshness_seconds`，默认 25 秒）。上面那些检查都发生在 ayjx 里，而请求交给 satori-qq 之后还要经过出站队列、限频、媒体转换与重试等待，那一段只有实现端看得见。现在 `message.create` 带上 `satori_qq.if_latest_message_id` 与 `expires_at`，实现端在真正交给 QQ 内核之前再确认一次锚点消息仍是该频道最新的一条，不成立就整条跳过并返回 `[]`，既不算发送失败也不触发熔断。锚点记在适配器层（`note_inbound`），因为实现端记录的是推送给本应用的每一条消息，包括被指令消费、被过滤器拦掉、根本没走到 `oai` 的那些。只让搭话自己记录会漏掉它们，于是一条 `/help` 就会让下一句话发不出去。机器人自己发出的消息不会作为事件回来（实现端按出站 ID 去重，保留 120 秒），所以连着发几条不会自己顶掉自己。被跳过时工具会收到「这一句没有发出去」，提示先重读 context 再决定。写 `0` 关闭这层条件
+- 每一句都带一层实现端的时效条件（`send_freshness_seconds`，默认 25 秒）。上面那些检查都发生在 acumen 里，而请求交给 satori-qq 之后还要经过出站队列、限频、媒体转换与重试等待，那一段只有实现端看得见。现在 `message.create` 带上 `satori_qq.if_latest_message_id` 与 `expires_at`，实现端在真正交给 QQ 内核之前再确认一次锚点消息仍是该频道最新的一条，不成立就整条跳过并返回 `[]`，既不算发送失败也不触发熔断。锚点记在适配器层（`note_inbound`），因为实现端记录的是推送给本应用的每一条消息，包括被指令消费、被过滤器拦掉、根本没走到 `oai` 的那些。只让搭话自己记录会漏掉它们，于是一条 `/help` 就会让下一句话发不出去。机器人自己发出的消息不会作为事件回来（实现端按出站 ID 去重，保留 120 秒），所以连着发几条不会自己顶掉自己。被跳过时工具会收到「这一句没有发出去」，提示先重读 context 再决定。写 `0` 关闭这层条件
 
 ## 平台动作与表达
 
@@ -204,7 +204,7 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 
 执行与等待期间如果群聊更新或插件停用，拒绝尚未交给 Satori 的动作，模型可以重新读 context 后改变决定。已经进入 QQ 内核的操作不能靠取消这一轮收回。网络超时属于结果未确认，不自动重发。每轮最多 `actions_budget` 个写操作（含失败尝试），其中发送消息仍受 `messages_budget` 限制。每次成功动作会回填上下文，但一轮只计一次参与频率。
 
-本轮工作目录中的本地文件与 `data/ambient/media` 素材会通过 `upload.create` 上传，不能直接把 Termux 私有路径交给 QQ。目录位置相对于 ayjx 可执行文件，当前实例通常是 `target/release/data/ambient/media`，可以放入含义清楚的图片与 GIF，context 每轮最多列 40 项。本地单文件上限 20 MiB，网络媒体必须是已核实的 http(s) 直链。不提供任意路径读取发送、跨群发言与 @全体；群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片、群文件的增删改）默认一个群都不放行，要用得把群号写进 `management_groups`。这属于工具接口边界，已有的 `bash` / `read` 仍按原配置运行，并不是操作系统沙箱。内置 agent 房间在群里用的是同一份实现，它那边的授权在 `[oai.chat].management_groups`，是另一份名单。
+本轮工作目录中的本地文件与 `data/ambient/media` 素材会通过 `upload.create` 上传，不能直接把 Termux 私有路径交给 QQ。目录位置相对于 acumen 可执行文件，当前实例通常是 `target/release/data/ambient/media`，可以放入含义清楚的图片与 GIF，context 每轮最多列 40 项。本地单文件上限 20 MiB，网络媒体必须是已核实的 http(s) 直链。不提供任意路径读取发送、跨群发言与 @全体；群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片、群文件的增删改）默认一个群都不放行，要用得把群号写进 `management_groups`。这属于工具接口边界，已有的 `bash` / `read` 仍按原配置运行，并不是操作系统沙箱。内置 agent 房间在群里用的是同一份实现，它那边的授权在 `[oai.chat].management_groups`，是另一份名单。
 
 语气由人格与语境决定：普通接话可以短，认真答疑可以讲步骤、检索并附来源，长材料可以发文件或转发。行文按手机打字来：口语、短句、语气词和口头禅都留着，标点随手打（逗号、问号、省略号、波浪号、括号），短句之间用空格断开、长句照群里那样把逗号顿号用起来，中文里夹的英文数字贴着打，不排成文档，也不列编号。人格是群里一个普通成员：说事就说事，不用每句收尾，群聊里不讲金句与人生道理。工具 text 保留空格、换行与标点，一条 text 内的换行不会被强行拆条。模型偶尔把换行写成字面的 `\n`，发送前会还原成真换行，不会让群里看见一个反斜杠加 n。没有合适回应时可以旁观。
 
@@ -307,7 +307,7 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 /ctl show ambient reply_model
 ```
 
-`deepseek` 是 `[oai.providers]` 里配置好的供应商名，换其他模型时写该表里有的 `供应商/模型`（如 `apilio/gemini-3.8-flash`）。判定模型同样写 `供应商/模型`，由 ayjx 按 `[oai.providers]` 取该供应商的接口与密钥：
+`deepseek` 是 `[oai.providers]` 里配置好的供应商名，换其他模型时写该表里有的 `供应商/模型`（如 `apilio/gemini-3.8-flash`）。判定模型同样写 `供应商/模型`，由 acumen 按 `[oai.providers]` 取该供应商的接口与密钥：
 
 ```text
 /ctl set ambient gate_model deepseek/deepseek-flash
@@ -328,7 +328,7 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 
 回执以真实结果为准：HTTP 200 中的 `ok:false` 是失败。`payload:false` 表示未知而非空值。QQ 9.3.60 的未读汇总仍可能无载荷，容量也可能含缓存占位零值，可结合成员概览核实。刚添加表态就清空时，QQ 缓存可能尚未登记：框架仅在明确返回“无已知表态”时撤销本轮已有成功回执的表态，回执标记 `status:partial` / `scope:this_turn`，其他表态状态仍未知。网络超时不自动重放写操作。
 
-验证：`cargo test --bin ayjx`。沙盒写入测试仅接受 `AYJX_AMBIENT_LIVE_GROUP=280183116 cargo test --bin ayjx live_qq_sandbox_actions_and_environment -- --ignored --nocapture`，使用本地配置中的 Satori 连接与令牌，修改后恢复自己的名片、解除测试禁言、撤回消息并清理测试目录。QQ 不支持的标准方法仍以实现端回执为准。
+验证：`cargo test --bin acumen`。沙盒写入测试仅接受 `ACUMEN_AMBIENT_LIVE_GROUP=280183116 cargo test --bin acumen live_qq_sandbox_actions_and_environment -- --ignored --nocapture`，使用本地配置中的 Satori 连接与令牌，修改后恢复自己的名片、解除测试禁言、撤回消息并清理测试目录。QQ 不支持的标准方法仍以实现端回执为准。
 
 ## 配置
 
@@ -391,6 +391,6 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 
 ## 验证与能力边界
 
-`cargo test ambient` 覆盖动作参数、回执、上传、引用、转发、撤回、停用、新消息、去重与调度。全套 Rust 测试中带 live 的 ignored 测试需要显式环境变量与网络，用 `AYJX_AMBIENT_LIVE_GATE_BASE` / `_KEY` 指定一个可用的 OpenAI 兼容端点。
+`cargo test ambient` 覆盖动作参数、回执、上传、引用、转发、撤回、停用、新消息、去重与调度。全套 Rust 测试中带 live 的 ignored 测试需要显式环境变量与网络，用 `ACUMEN_AMBIENT_LIVE_GATE_BASE` / `_KEY` 指定一个可用的 OpenAI 兼容端点。
 
 平台功能接通不等于 QQ 服务端必然接受：资料卡赞次数、表态支持、撤回时限、资源过期及网络状态仍以真实回执为准。语音与视频支持发送现成资源，读取语音已接入 QQ 的语音转写。尚未提供语音合成或视频理解。滚动窗口、关注与动作回执仍只活在本进程内，重启清空。跨重启保留的只有落盘的熟人记忆（`memory/<群号>.json`）、状态（`mood.json`）与本体档案（`self.md`），前两样是人格自己写下的几句印象与一条起伏曲线，不是完整聊天历史，也不做跨群关联。`self.md` 是管理员维护的静态事实，不会自己长。真正的聊天历史仍存在 QQ 那边，但 0.17.0 起这一层没有读它的入口，重启之后「想不起来」的事只能说不记得。说话样本库（`res/ambient/voice.md`）编译在二进制里，补样本走 `scripts/mine-voice.py` 加重新构建，见「说话样本与本体档案」。

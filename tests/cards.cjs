@@ -14,7 +14,7 @@ const artifacts = process.env.CARD_ARTIFACTS;
 assert(artifacts, 'Set CARD_ARTIFACTS to the fixture directory');
 let chrome, ws, sequence = 0;
 const pending = new Map();
-const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ayjx-cards-'));
+const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'acumen-cards-'));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(fn) {
   const end = Date.now() + 20000;
@@ -105,7 +105,7 @@ async function main() {
     if (fs.existsSync(dir)) pictures.push(...fs.readdirSync(dir).filter(file => file.endsWith('.png')).map(file => family + '/' + file));
   }
   const esc = value => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
-  fs.writeFileSync(path.join(artifacts, 'index.html'), `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AYJX 图片样张</title><style>body{margin:32px;background:#edf1ed;color:#253b37;font-family:system-ui,sans-serif}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:24px;align-items:start}figure{margin:0;padding:16px;background:#fffefa;border-radius:16px}figcaption{padding:0 0 12px;overflow-wrap:anywhere}img{width:100%;height:auto;display:block}a{color:inherit}</style><h1>AYJX 图片样张</h1><p>本地合成数据 · 点击图片查看完整尺寸</p><main>${pictures.map(file => `<figure><figcaption>${esc(file)}</figcaption><a href="${esc(file)}"><img loading="lazy" src="${esc(file)}"></a></figure>`).join('')}</main></html>`);
+  fs.writeFileSync(path.join(artifacts, 'index.html'), `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ACUMEN 图片样张</title><style>body{margin:32px;background:#edf1ed;color:#253b37;font-family:system-ui,sans-serif}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:24px;align-items:start}figure{margin:0;padding:16px;background:#fffefa;border-radius:16px}figcaption{padding:0 0 12px;overflow-wrap:anywhere}img{width:100%;height:auto;display:block}a{color:inherit}</style><h1>ACUMEN 图片样张</h1><p>本地合成数据 · 点击图片查看完整尺寸</p><main>${pictures.map(file => `<figure><figcaption>${esc(file)}</figcaption><a href="${esc(file)}"><img loading="lazy" src="${esc(file)}"></a></figure>`).join('')}</main></html>`);
 
 }
 main().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {

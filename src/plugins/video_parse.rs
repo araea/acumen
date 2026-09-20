@@ -691,7 +691,7 @@ mod tests {
     /// 提前返回，几十兆的 `.part` 留在手机里，要等六小时后下次取片才被扫走。
     #[tokio::test]
     async fn an_unfinished_take_leaves_no_part_behind() {
-        let dir = std::env::temp_dir().join(format!("ayjx-part-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-part-{:032x}", rand::random::<u128>()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
         let path = {

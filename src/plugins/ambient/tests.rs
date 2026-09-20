@@ -9,7 +9,7 @@ use super::*;
 async fn fake_model(reply: &str) -> (String, std::path::PathBuf, std::path::PathBuf, tokio::task::JoinHandle<()>) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-    let dir = std::env::temp_dir().join(format!("ayjx-ambient-{:032x}", rand::random::<u128>()));
+    let dir = std::env::temp_dir().join(format!("acumen-ambient-{:032x}", rand::random::<u128>()));
     std::fs::create_dir_all(&dir).unwrap();
     let started = dir.join("started");
     let release = dir.join("release");
@@ -208,9 +208,9 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
 }
 
 #[tokio::test]
-#[ignore = "需要 AYJX_AMBIENT_LIVE_DATA、已配置的模型接口和网络；仅打印试聊，不发群消息"]
+#[ignore = "需要 ACUMEN_AMBIENT_LIVE_DATA、已配置的模型接口和网络；仅打印试聊，不发群消息"]
 async fn live_persona_and_gate_dialogue() {
-    let data = PathBuf::from(std::env::var("AYJX_AMBIENT_LIVE_DATA").unwrap());
+    let data = PathBuf::from(std::env::var("ACUMEN_AMBIENT_LIVE_DATA").unwrap());
     let mgr = crate::plugins::oai::data::Manager::new(data.clone());
     let credentials = mgr.config.read().await;
     let dir =
@@ -229,13 +229,13 @@ async fn live_persona_and_gate_dialogue() {
     // 判定模型写成「供应商/模型」时，线上由 [oai.providers] 取接口；这里没有 Context，
     // 就用环境变量补上那一段，否则带前缀的模型名会被原样发给 oai 的默认接口。
     let (provider, gate_model) = crate::plugins::oai::utils::split_provider(&config.gate_model);
-    let gate_base = std::env::var("AYJX_AMBIENT_LIVE_GATE_BASE")
+    let gate_base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE")
         .unwrap_or_else(|_| credentials.api_base.clone());
-    let gate_key = std::env::var("AYJX_AMBIENT_LIVE_GATE_KEY")
+    let gate_key = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY")
         .unwrap_or_else(|_| credentials.api_key.clone());
     assert!(
-        provider.is_none() || std::env::var("AYJX_AMBIENT_LIVE_GATE_BASE").is_ok(),
-        "判定模型 {} 带供应商前缀，请设置 AYJX_AMBIENT_LIVE_GATE_BASE / _KEY",
+        provider.is_none() || std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE").is_ok(),
+        "判定模型 {} 带供应商前缀，请设置 ACUMEN_AMBIENT_LIVE_GATE_BASE / _KEY",
         config.gate_model
     );
     let group = -8_000_002;
@@ -276,9 +276,9 @@ async fn live_persona_and_gate_dialogue() {
         .unwrap();
         // 试聊同时查看人格决定，即便筛选不放行；线上仍按分数筛选。
         let (provider, reply_model) = crate::plugins::oai::utils::split_provider(&config.reply_model);
-        let reply_base = std::env::var("AYJX_AMBIENT_LIVE_GATE_BASE")
+        let reply_base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE")
             .unwrap_or_else(|_| credentials.api_base.clone());
-        let reply_key = std::env::var("AYJX_AMBIENT_LIVE_GATE_KEY")
+        let reply_key = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY")
             .unwrap_or_else(|_| credentials.api_key.clone());
         let _ = provider;
         let raw = speak::compose(

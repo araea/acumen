@@ -5,7 +5,7 @@
 //! 而绕道控制台（`tmux send-keys`）拿不到任何回执，agent 只能盲发。
 //!
 //! 这里给出一条正路：一轮 agent 房间对话开始时签发一枚一次性凭据，随环境变量交给
-//! agent 的工具子进程；agent 用 `ayjx --ctl "<命令>"` 把命令送回本进程的 Unix 套接字，由
+//! agent 的工具子进程；agent 用 `acumen --ctl "<命令>"` 把命令送回本进程的 Unix 套接字，由
 //! [`super::execute`] 以维护者身份执行，再把 `/ctl` 原样的回执打回 stdout——
 //! 于是 agent 能看见结果并据此继续。
 //!
@@ -32,8 +32,8 @@ const MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
 /// 单条请求的长度上限；命令是一行文字，不需要更多。
 const MAX_REQUEST: u64 = 64 * 1024;
 
-/// 描述控制命令用法的 skill；`{{AYJX}}` 在落盘时替换成真实可执行文件路径。
-const SKILL: &str = include_str!("../../../res/ctl/skills/ayjx-control/SKILL.md");
+/// 描述控制命令用法的 skill；`{{ACUMEN}}` 在落盘时替换成真实可执行文件路径。
+const SKILL: &str = include_str!("../../../res/ctl/skills/acumen-control/SKILL.md");
 
 /// 一枚有效凭据：以什么上下文执行、谁触发的、什么时候过期。
 struct Grant {
@@ -64,13 +64,13 @@ impl Lease {
     /// 交给工具子进程（bash）的环境变量。
     pub(crate) fn env(&self) -> Vec<(String, String)> {
         vec![
-            ("AYJX_CTL_TOKEN".to_string(), self.token.clone()),
+            ("ACUMEN_CTL_TOKEN".to_string(), self.token.clone()),
             (
-                "AYJX_CTL_SOCK".to_string(),
+                "ACUMEN_CTL_SOCK".to_string(),
                 self.socket.to_string_lossy().into_owned(),
             ),
             (
-                "AYJX_CTL_BIN".to_string(),
+                "ACUMEN_CTL_BIN".to_string(),
                 self.binary.to_string_lossy().into_owned(),
             ),
         ]
@@ -116,7 +116,7 @@ pub(crate) async fn lease(ctx: &Context) -> Option<Lease> {
     Some(Lease {
         token,
         socket,
-        binary: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ayjx")),
+        binary: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("acumen")),
         skill,
     })
 }
@@ -175,12 +175,12 @@ async fn start_server() -> anyhow::Result<(PathBuf, PathBuf)> {
 async fn write_skill(dir: &Path) -> anyhow::Result<PathBuf> {
     let binary = std::env::current_exe()
         .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "ayjx".to_string());
-    let skill = dir.join("skills/ayjx-control");
+        .unwrap_or_else(|_| "acumen".to_string());
+    let skill = dir.join("skills/acumen-control");
     tokio::fs::create_dir_all(&skill).await?;
     tokio::fs::write(
         skill.join("SKILL.md"),
-        SKILL.replace("{{AYJX}}", &binary),
+        SKILL.replace("{{ACUMEN}}", &binary),
     )
     .await?;
     Ok(skill)
@@ -263,7 +263,7 @@ async fn handle(request: Request) -> Response {
     }
 }
 
-/// `ayjx --ctl "<命令>"`：把命令送进正在运行的实例并打印回执。
+/// `acumen --ctl "<命令>"`：把命令送进正在运行的实例并打印回执。
 ///
 /// 只读环境变量，不接受套接字或凭据参数——凭据出现在命令行上就会进 `ps` 和 shell
 /// 历史，而这条通道的全部安全性都系在它身上。
@@ -271,10 +271,10 @@ pub fn client(command: &str) -> Result<String, String> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
-    let socket = std::env::var("AYJX_CTL_SOCK")
-        .map_err(|_| "缺少 AYJX_CTL_SOCK：控制通道只在 ayjx 的智能体房间对话内可用")?;
-    let token = std::env::var("AYJX_CTL_TOKEN")
-        .map_err(|_| "缺少 AYJX_CTL_TOKEN：本轮对话没有获得控制授权")?;
+    let socket = std::env::var("ACUMEN_CTL_SOCK")
+        .map_err(|_| "缺少 ACUMEN_CTL_SOCK：控制通道只在 acumen 的智能体房间对话内可用")?;
+    let token = std::env::var("ACUMEN_CTL_TOKEN")
+        .map_err(|_| "缺少 ACUMEN_CTL_TOKEN：本轮对话没有获得控制授权")?;
 
     let mut stream = UnixStream::connect(&socket)
         .map_err(|error| format!("无法连接控制通道（{socket}）：{error}"))?;
@@ -327,7 +327,7 @@ mod tests {
             table.insert("admins".into(), toml::Value::Array(vec![42.into()]));
         }
         let path =
-            std::env::temp_dir().join(format!("ayjx-bridge-test-{}.toml", rand::random::<u64>()));
+            std::env::temp_dir().join(format!("acumen-bridge-test-{}.toml", rand::random::<u64>()));
         Context {
             event: EventType::Satori(
                 simd_json::serde::to_owned_value(serde_json::json!({
@@ -408,19 +408,19 @@ mod tests {
 
     #[test]
     fn skill_carries_the_real_binary_path() {
-        assert!(SKILL.contains("{{AYJX}}"), "skill 必须留占位符供落盘时替换");
-        let rendered = SKILL.replace("{{AYJX}}", "/opt/ayjx");
-        assert!(rendered.contains(r#""/opt/ayjx" --ctl"#), "{rendered}");
-        assert!(!rendered.contains("{{AYJX}}"));
+        assert!(SKILL.contains("{{ACUMEN}}"), "skill 必须留占位符供落盘时替换");
+        let rendered = SKILL.replace("{{ACUMEN}}", "/opt/acumen");
+        assert!(rendered.contains(r#""/opt/acumen" --ctl"#), "{rendered}");
+        assert!(!rendered.contains("{{ACUMEN}}"));
     }
 
     #[test]
     fn client_refuses_to_run_outside_a_granted_turn() {
         // SAFETY: 单线程测试内改自身环境变量。
         unsafe {
-            std::env::remove_var("AYJX_CTL_SOCK");
-            std::env::remove_var("AYJX_CTL_TOKEN");
+            std::env::remove_var("ACUMEN_CTL_SOCK");
+            std::env::remove_var("ACUMEN_CTL_TOKEN");
         }
-        assert!(client("list").unwrap_err().contains("AYJX_CTL_SOCK"));
+        assert!(client("list").unwrap_err().contains("ACUMEN_CTL_SOCK"));
     }
 }

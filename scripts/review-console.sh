@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# 界面的样张：三种宽度 × 七页，摆在 ${TMPDIR:-/tmp}/ayjx-console 里。
+# 界面的样张：三种宽度 × 七页，摆在 ${TMPDIR:-/tmp}/acumen-console 里。
 #
 # 与 scripts/review-cards.sh 是一对：那一份管五张卡片图，这一份管界面。
 # 两边都要「看一眼真东西」——卡片的审美在图上，界面的手感也在图上。
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-out=${AYJX_CONSOLE_SHOTS:-${TMPDIR:-/tmp}/ayjx-console}
+out=${ACUMEN_CONSOLE_SHOTS:-${TMPDIR:-/tmp}/acumen-console}
 port=${CHROMEDRIVER_PORT:-9516}
 base=${1:-}
 
@@ -50,7 +50,7 @@ driver=$!
 trap 'kill "$driver" 2>/dev/null || true' EXIT
 sleep 2
 
-AYJX_SHOT_URL="$base" AYJX_SHOT_OUT="$out" AYJX_SHOT_PORT="$port" python3 - <<'PY'
+ACUMEN_SHOT_URL="$base" ACUMEN_SHOT_OUT="$out" ACUMEN_SHOT_PORT="$port" python3 - <<'PY'
 import base64
 import json
 import os
@@ -59,9 +59,9 @@ import time
 import urllib.error
 import urllib.request
 
-base = os.environ["AYJX_SHOT_URL"]
-out = os.environ["AYJX_SHOT_OUT"]
-port = int(os.environ["AYJX_SHOT_PORT"])
+base = os.environ["ACUMEN_SHOT_URL"]
+out = os.environ["ACUMEN_SHOT_OUT"]
+port = int(os.environ["ACUMEN_SHOT_PORT"])
 root = f"http://127.0.0.1:{port}"
 
 # 三档版式各拍一遍：紧凑是底部导航条，中等是导航轨，宽是抽屉。

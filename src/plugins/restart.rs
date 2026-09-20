@@ -32,7 +32,7 @@ struct RestartConfig {
     allow_manual_restart: bool,
     /// 重启前等待秒数(等待通知消息刷新到 WebSocket)
     restart_delay_seconds: u64,
-    /// 外部重启命令(如 "systemctl restart ayjx")；配置后优先使用，代替进程自我拉起
+    /// 外部重启命令(如 "systemctl restart acumen")；配置后优先使用，代替进程自我拉起
     restart_command: String,
 }
 

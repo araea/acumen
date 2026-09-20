@@ -107,9 +107,9 @@ pub(super) fn client(timeout_secs: u64) -> Result<&'static reqwest::Client, ApiE
     let built = crate::http::builder()
         .timeout(Duration::from_secs(timeout_secs.clamp(3, 60)))
         .user_agent(concat!(
-            "ayjx-ai-news/",
+            "acumen-ai-news/",
             env!("CARGO_PKG_VERSION"),
-            " (+https://github.com/araea/ayjx)"
+            " (+https://github.com/araea/acumen)"
         ))
         .build()?;
     Ok(CLIENT.get_or_init(|| built))

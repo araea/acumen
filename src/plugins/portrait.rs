@@ -858,7 +858,7 @@ mod live_tests {
             .unwrap();
         let image = image::load_from_memory(&bytes).unwrap();
         println!("出图 {}×{}", image.width(), image.height());
-        let path = std::env::temp_dir().join("ayjx-portrait-live.jpg");
+        let path = std::env::temp_dir().join("acumen-portrait-live.jpg");
         std::fs::write(&path, &bytes).ok();
         println!("出图已写入 {}", path.display());
     }

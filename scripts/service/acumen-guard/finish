@@ -1,0 +1,11 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# runsv 在服务终止后、重启前执行（退出码在 $1、信号在 $2）。部署到
+# $SVDIR/acumen-guard/finish，权限 755。
+#
+# 与 acumen 服务同样的理由：秒退时 runsv 会约每 1.25 秒重试一次，会把日志刷爆。
+# 看守秒退说明脚本本身坏了，退避 30 秒再试，避免热循环。
+if [ "$1" = "0" ]; then exit 0; fi
+if [ "$1" = "-1" ] && { [ "$2" = "15" ] || [ "$2" = "2" ]; }; then exit 0; fi
+echo "acumen-guard: 退出码 $1 / 信号 $2，退避 30s 再试" >&2
+sleep 30
+exit 0

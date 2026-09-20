@@ -86,7 +86,7 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
     Card(Doc {
         theme: Theme::Help,
         width: OVERVIEW_WIDTH,
-        kicker: "AYJX · MANUAL".into(),
+        kicker: "ACUMEN · MANUAL".into(),
         blocks,
         foot: "开关状态以当前配置为准".into(),
         hint: ("查看某个插件的全部指令".into(), format!("{prefix}help <插件名>")),
@@ -147,7 +147,7 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
         width: DETAIL_WIDTH,
         kicker: "MANUAL · PLUGIN".into(),
         blocks,
-        foot: "AYJX · 插件手册".into(),
+        foot: "ACUMEN · 插件手册".into(),
         hint: ("回到插件总览".into(), format!("{prefix}help")),
     })
 }

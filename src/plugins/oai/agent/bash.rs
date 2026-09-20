@@ -214,10 +214,10 @@ mod tests {
     async fn extra_env_and_working_directory_are_honoured() {
         let dir = std::env::temp_dir();
         let out = run(
-            "printf '%s' \"$AYJX_TEST_MARKER\"; pwd -P",
+            "printf '%s' \"$ACUMEN_TEST_MARKER\"; pwd -P",
             None,
             Some(&dir),
-            &[("AYJX_TEST_MARKER".to_string(), "已注入".to_string())],
+            &[("ACUMEN_TEST_MARKER".to_string(), "已注入".to_string())],
         )
         .await
         .unwrap();
@@ -237,7 +237,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_kills_the_whole_process_tree() {
-        let dir = std::env::temp_dir().join(format!("ayjx-bash-{:032x}", rand::random::<u128>()));
+        let dir = std::env::temp_dir().join(format!("acumen-bash-{:032x}", rand::random::<u128>()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("pids");
         let target = marker.clone();

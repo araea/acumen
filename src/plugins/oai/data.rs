@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn initializes_the_builtin_room_once() {
         let unique = format!(
-            "ayjx-oai-room-{}-{}",
+            "acumen-oai-room-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn the_old_engine_keyword_is_rewritten_to_the_new_one() {
         let unique = format!(
-            "ayjx-oai-engine-{}-{}",
+            "acumen-oai-engine-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn a_model_suffix_is_folded_into_the_thinking_field_once() {
         let unique = format!(
-            "ayjx-oai-thinking-{}-{}",
+            "acumen-oai-thinking-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

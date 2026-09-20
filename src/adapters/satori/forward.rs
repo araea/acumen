@@ -535,14 +535,14 @@ mod tests {
 
     /// 只读的真机核对：在指定群里找一条合并转发展开出来，不发任何消息。
     #[tokio::test]
-    #[ignore = "需要本机 satori-qq 在线；设置 AYJX_FORWARD_LIVE_CHANNEL=<群号>，只读不发消息"]
+    #[ignore = "需要本机 satori-qq 在线；设置 ACUMEN_FORWARD_LIVE_CHANNEL=<群号>，只读不发消息"]
     async fn live_forward_expansion_against_satori_qq() {
-        let channel = std::env::var("AYJX_FORWARD_LIVE_CHANNEL").expect("群号");
-        let endpoint = std::env::var("AYJX_FORWARD_LIVE_ENDPOINT")
+        let channel = std::env::var("ACUMEN_FORWARD_LIVE_CHANNEL").expect("群号");
+        let endpoint = std::env::var("ACUMEN_FORWARD_LIVE_ENDPOINT")
             .unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
         let writer: LockedWriter = std::sync::Arc::new(super::super::SatoriClient::new(
             endpoint.clone(),
-            std::env::var("AYJX_FORWARD_LIVE_TOKEN").ok(),
+            std::env::var("ACUMEN_FORWARD_LIVE_TOKEN").ok(),
         ));
         writer.set_proxy_urls(vec![format!("{endpoint}/v1/proxy/")]);
         let mut ctx = crate::event::Context {

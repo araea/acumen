@@ -1,0 +1,6 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# svlogd 包装，与 termux-services 其他服务一致：日志落到 $LOGDIR/sv/<服务名>。
+pwd=${PWD%/*}
+service=${pwd##*/}
+mkdir -p "${LOGDIR:-${PREFIX:-/data/data/com.termux/files/usr}/var/log}/sv/$service"
+exec svlogd -tt "${LOGDIR:-${PREFIX:-/data/data/com.termux/files/usr}/var/log}/sv/$service"

@@ -6,18 +6,18 @@
 set -euo pipefail
 bot_script=$(realpath -- "${BASH_SOURCE[0]}")
 bot_dir=$(cd -- "$(dirname -- "$bot_script")" && pwd -P)
-bot_exe="$bot_dir/target/release/ayjx"
-bot_session=ayjx
+bot_exe="$bot_dir/target/release/acumen"
+bot_session=acumen
 prefix=${PREFIX:-/data/data/com.termux/files/usr}
 svdir=${SVDIR:-$prefix/var/service}
-bot_log=${AYJX_LOG:-$prefix/var/log/sv/$bot_session/current}
+bot_log=${ACUMEN_LOG:-$prefix/var/log/sv/$bot_session/current}
 # sv/sv-enable/sv-disable 从 $SVDIR 找服务目录，非登录 shell 下可能没导出。
 export SVDIR="$svdir"
 # 根侧看守（Android 专用，脚本在仓库 scripts/ 下）的部署位置与日志。
 # /data/adb 是 700 root，普通用户连遍历都不行，所以用 /data/local/tmp 里可读的日志
 # 判断它是否在跑；没在跑就不在 help 里提这套东西。
-revive=${AYJX_REVIVE:-/data/adb/termux-revive/termux-revive.sh}
-revive_log=${AYJX_REVIVE_LOG:-/data/local/tmp/termux-revive.log}
+revive=${ACUMEN_REVIVE:-/data/adb/termux-revive/termux-revive.sh}
+revive_log=${ACUMEN_REVIVE_LOG:-/data/local/tmp/termux-revive.log}
 
 is_our_process() {
     local executable
@@ -33,12 +33,12 @@ running_pids() {
         fi
     # Android's pgrep may compare argv[0] (the full path) even with -x.
     # Find candidates by command line, then verify /proc/PID/exe above.
-    done < <(pgrep -f '/target/release/ayjx' || true)
+    done < <(pgrep -f '/target/release/acumen' || true)
 }
 
-# 本仓库的 ayjx 是否由 runit 托管。托管时进程的生死归 runsv 管，
+# 本仓库的 acumen 是否由 runit 托管。托管时进程的生死归 runsv 管，
 # start/stop 必须走 sv，直接 kill 会被立刻拉回来。
-# 只判断「$SVDIR/ayjx 存在」不够：tests/ 会把这份脚本复制到临时目录里跑，
+# 只判断「$SVDIR/acumen 存在」不够：tests/ 会把这份脚本复制到临时目录里跑，
 # 那种情况必须按「未托管」处理，否则 start/stop 会去动真正在跑的那个服务。
 # 所以要求 run 脚本里出现本 checkout 的绝对路径（见 docs/CONTROL.md 的服务文件）。
 runit_managed() {
@@ -59,14 +59,14 @@ stop_bot() {
     local pids pid
     pids=$(running_pids)
     if [[ -z "$pids" ]]; then
-        printf 'ayjx 已停止。\n'
+        printf 'acumen 已停止。\n'
         return
     fi
     while read -r pid; do
         if is_our_process "$pid"; then kill -TERM "$pid"; fi
     done <<< "$pids"
     if wait_gone; then
-        printf 'ayjx 进程已退出；请在前台日志确认配置保存结果。\n'
+        printf 'acumen 进程已退出；请在前台日志确认配置保存结果。\n'
         return
     fi
     printf '停止超时，请检查前台日志；未强制杀死进程。\n' >&2
@@ -84,9 +84,9 @@ stop_bot() {
 #      那棵浏览器（主进程和它的 renderer/gpu 子进程都带）。只按 cdp-shot_ 匹配
 #      会误伤「命令行里恰好提到这个字符串」的无关进程——我自己就被这么打死过一次。
 #   2. 不在本进程的祖先链上。reap 可能被命令行里带这个字符串的 shell 调起来。
-#   3. 往上找不到活着的 ayjx 祖先。不用「ppid 是不是 1」——孤儿 reparent 到哪
+#   3. 往上找不到活着的 acumen 祖先。不用「ppid 是不是 1」——孤儿 reparent 到哪
 #      取决于链路上有没有 subreaper（实测有落到别的进程而非 init 的情况）。
-#      认 ayjx 用可执行文件名而不是路径，这样从临时目录跑的测试实例也算祖先，
+#      认 acumen 用可执行文件名而不是路径，这样从临时目录跑的测试实例也算祖先，
 #      不会误杀测试中的浏览器。
 own_ancestors() {
     local pid=$$ hops=0 out=""
@@ -99,19 +99,19 @@ own_ancestors() {
     printf '%s' "$out"
 }
 
-is_ayjx_pid() {
+is_acumen_pid() {
     local exe
     exe=$(readlink "/proc/$1/exe" 2>/dev/null) || return 1
     exe=${exe% (deleted)}
-    [[ $(basename -- "$exe") == ayjx* ]]
+    [[ $(basename -- "$exe") == acumen* ]]
 }
 
-has_live_ayjx_ancestor() {
+has_live_acumen_ancestor() {
     local pid=$1 hops=0
     while [[ -n "$pid" && "$pid" != "0" && "$pid" != "1" && "$hops" -lt 40 ]]; do
         pid=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2)
         [[ -n "$pid" ]] || return 1
-        is_ayjx_pid "$pid" && return 0
+        is_acumen_pid "$pid" && return 0
         hops=$((hops + 1))
     done
     return 1
@@ -128,7 +128,7 @@ reap_orphan_browsers() {
             [[ -n "$pid" ]] || continue
             grep -qa -- '--user-data-dir=.*cdp-shot_' "/proc/$pid/cmdline" 2>/dev/null || continue
             case " $ancestors " in *" $pid "*) continue ;; esac
-            has_live_ayjx_ancestor "$pid" && continue
+            has_live_acumen_ancestor "$pid" && continue
             if kill -KILL "$pid" 2>/dev/null; then
                 reaped=$((reaped + 1))
             fi
@@ -138,7 +138,7 @@ reap_orphan_browsers() {
         sleep 1
     done
     if [[ "$total" -gt 0 ]]; then
-        printf 'bot: 收掉 %s 个孤儿浏览器进程（没有活着的 ayjx 祖先的 cdp-shot 浏览器）\n' "$total"
+        printf 'bot: 收掉 %s 个孤儿浏览器进程（没有活着的 acumen 祖先的 cdp-shot 浏览器）\n' "$total"
     fi
 }
 
@@ -154,9 +154,9 @@ prepare_runtime() {
     fi
     if [[ -n "$(running_pids)" ]]; then
         if runit_managed; then
-            printf 'ayjx 已由 runit 托管；用 ./bot logs 看日志，./bot restart 重启。\n' >&2
+            printf 'acumen 已由 runit 托管；用 ./bot logs 看日志，./bot restart 重启。\n' >&2
         else
-            printf '本仓库的 ayjx 已运行；用 ./bot logs 看日志或 ./bot status 查看。\n' >&2
+            printf '本仓库的 acumen 已运行；用 ./bot logs 看日志或 ./bot status 查看。\n' >&2
         fi
         exit 1
     fi
@@ -171,7 +171,7 @@ prepare_runtime() {
         if ! flock -n 9; then
             printf '启动锁 .bot.lock 被占用。\n' >&2
             printf '多半是上一次的 bot 或它派生的 Chromium 还活着——Chromium 会继承这把锁的 fd，\n' >&2
-            printf '即使 bot 已经退出也可能继续攥着。./bot status 看进程；确认没有 ayjx 后，\n' >&2
+            printf '即使 bot 已经退出也可能继续攥着。./bot status 看进程；确认没有 acumen 后，\n' >&2
             printf '按 --user-data-dir 里的 cdp-shot_* 目录找到残留 chromium 杀掉再试。\n' >&2
             exit 1
         fi
@@ -190,7 +190,7 @@ prepare_runtime() {
             fi
         done
     fi
-    if [[ "${AYJX_WAKE_LOCK:-1}" == 1 ]] && command -v termux-wake-lock >/dev/null; then
+    if [[ "${ACUMEN_WAKE_LOCK:-1}" == 1 ]] && command -v termux-wake-lock >/dev/null; then
         termux-wake-lock || printf '未能取得 Termux 唤醒锁，请检查通知中的 Acquire wakelock。\n' >&2
     fi
 }
@@ -237,10 +237,10 @@ case "${1:-open}" in
         pids=$(running_pids)
         printf '日志：%s\n' "$bot_log"
         if [[ -n "$pids" ]]; then
-            printf 'ayjx 运行中，PID：%s\n' "$pids"
+            printf 'acumen 运行中，PID：%s\n' "$pids"
             printf '插件状态：./bot logs 看日志；连接状态请查看 Satori 日志。\n'
         else
-            printf 'ayjx 已停止。\n'
+            printf 'acumen 已停止。\n'
             exit 3
         fi
         ;;
@@ -250,7 +250,7 @@ case "${1:-open}" in
             # 根侧看守盯的是 Termux 监督树而不是 bot，所以这里停掉是稳的。
             sv down "$bot_session"
             if wait_gone; then
-                printf 'ayjx 已停止，runit 已置 down，不会被自动拉起。\n'
+                printf 'acumen 已停止，runit 已置 down，不会被自动拉起。\n'
                 printf '恢复：./bot start（或 sv up %s）。\n' "$bot_session"
             else
                 printf '停止超时，请用 ./bot logs 查看退出日志。\n' >&2
@@ -297,9 +297,9 @@ case "${1:-open}" in
     # 这里只是把它捞出来——日志会被群里刷走，文件不会。
     ui|web)
         # 控制台地址由 bot 启动时写下（0600）。日志会被群里刷走，文件不会。
-        # 数据目录默认在可执行文件旁边，AYJX_DATA_DIR 能把它挪走（同一个变量
+        # 数据目录默认在可执行文件旁边，ACUMEN_DATA_DIR 能把它挪走（同一个变量
         # 控制台自己也认），所以两条都试。
-        url_file="${AYJX_DATA_DIR:-$bot_dir/target/release/data}/console/url"
+        url_file="${ACUMEN_DATA_DIR:-$bot_dir/target/release/data}/console/url"
         if [[ ! -s "$url_file" ]]; then
             printf '还没有控制台地址。先 ./bot start；若控制台是关着的，看 config.toml 的 [console]。\n' >&2
             exit 1

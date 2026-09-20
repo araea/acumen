@@ -4,12 +4,13 @@
 # 为什么需要：ColorOS 的清理器会把整个 Termux 应用杀掉，Termux 里的一切
 # （登录会话、tmux、runsvdir、bot）随之消失。runit 只能管进程级生死，管不到
 # 「宿主应用没了」这一层，所以这一层放在 Termux 外面用 root 跑。
-# 本机实测（`dumpsys activity exit-info com.termux`）：一周内 10 次
-# `reason=13 (OTHER KILLS BY SYSTEM) description=o-kill(...)`，都是它干的。
+# 本机实测（`dumpsys activity exit-info com.termux`）：截至 2026-09-20 共 11 条退出记录，
+# 其中 10 条是 `reason=13 (OTHER KILLS BY SYSTEM) description=o-kill(...)`，
+# 1 条 `reason=3 (LOW_MEMORY)`；最近一次 2026-09-20 02:05:38。都是它干的。
 #
 # 判据：runsvdir 在不在（$SVDIR 的那一个）。
 #   runsvdir 在   -> 什么都不做。bot 的生死归 runsv 管，进程崩了它自己会拉；
-#                    `sv down ayjx` 是你的明确意图，看守不干预。
+#                    `sv down acumen` 是你的明确意图，看守不干预。
 #   runsvdir 不在 -> 先分辨是「你手动停的」还是「被动被杀」，再决定动不动手。
 #
 # 手动 / 被动的分辨（2026-09-14 定，本机实测过映射）：
@@ -28,32 +29,56 @@
 # 手上刚做过 force-stop 想恢复：打开一次 Termux，或
 #   su -c 'cmd package unstop com.termux'
 #
-# 手动停机器人只要 `sv down ayjx`（或 ./bot stop）：看守判据是 runsvdir 而不是
+# 手动停机器人只要 `sv down acumen`（或 ./bot stop）：看守判据是 runsvdir 而不是
 # bot，不会跟你抢。
 #
-# 停止本看守：kill $(cat $PIDFILE)；本次开机不再有看守，重启后 service.d 会再拉起。
-# 自检：./termux-revive.sh --check   只看一轮判据，不动 Termux。
+# 除了复活 Termux，本看守还负责三件事：
+#   · 应用还在、只是 runsvdir 没了 → 走 RUN_COMMAND（allow-external-apps）在应用
+#     进程里执行 `acumen-guard start-services`。这种情况拉 activity 是没用的（不会
+#     新建登录 shell，profile.d 不会重新拉起监督树）；命令自己会先查重。
+#   · Doze 自愈：每 5 分钟核一次 `mLightEnabled/mDeepEnabled`，被系统/厂商重新打开
+#     就再关掉（只在真的被打开时才动手，不重复配置）。
+#   · 每轮写一份机器可读快照 STATUSFILE（/data/local/tmp，0644），Termux 侧的
+#     acumen-guard 靠它读唤醒锁与监督树状态，不用每次都 su dumpsys。
+#
+# 停止 / 自检：
+#   su -c "$0 --check"          只看一轮判据，不动 Termux
+#   su -c "$0 hold" / resume    硬开关，跨重启有效
+#   kill $(cat $PIDFILE)        只停本次开机——Termux 侧的 acumen-guard 看守会在
+#                               ~2 分钟内用 su 把它重新拉起；要长期停就用 hold
 set -u
 export PATH=/data/data/com.termux/files/usr/bin:/system/bin:/system/xbin:${PATH:-}
+# 相对路径一个都不用，但 sv/dumpsys 这些工具要求 cwd 可读（从 /tmp 之类
+# 不可遍历的目录里跑会报 "unable to open current directory"）。root 总能进 /。
+cd / 2>/dev/null || true
 
 PKG=${TERMUX_REVIVE_PKG:-com.termux}
 PREFIX=${TERMUX_REVIVE_PREFIX:-/data/data/com.termux/files/usr}
 SVDIR=${TERMUX_REVIVE_SVDIR:-$PREFIX/var/service}
-SERVICE=${TERMUX_REVIVE_SERVICE:-ayjx}
+SERVICE=${TERMUX_REVIVE_SERVICE:-acumen}
 INTERVAL=${TERMUX_REVIVE_INTERVAL:-60}
 RECOVER_WAIT=${TERMUX_REVIVE_RECOVER_WAIT:-60}
+# bot 二进制的绝对路径：Termux 侧部署在 <checkout>/target/release/acumen。
+# 只用来在状态快照里报出「bot 在不在」，不参与复活判定（bot 的生死归 runsv）。
+BOT_EXE=${TERMUX_REVIVE_BOT_EXE:-/data/data/com.termux/files/home/dev/araea/acumen/target/release/acumen}
 # 连续拉不起来时的退避上限（秒）。runsvdir 一直起不来说明不是被清理器杀一次，
 # 而是别的地方坏了，这时不该每 65 秒反复拉起一次。
 MAX_WAIT=${TERMUX_REVIVE_MAX_WAIT:-1800}
 # 视为「用户主动杀」的 ApplicationExitInfo.reason 集合。
 USER_REASONS=${TERMUX_REVIVE_USER_REASONS:-"10 11"}
 MAX_LOG_BYTES=${TERMUX_REVIVE_MAX_LOG_BYTES:-2000000}
+# Doze 自愈的检查间隔（轮数，每轮 INTERVAL 秒）。5 轮 = 5 分钟。
+DOZE_EVERY=${TERMUX_REVIVE_DOZE_EVERY:-5}
 
 # 日志/PID/hold 一律放 /data/local/tmp：本看守总是以 root 跑，HOME 会随调用方式变化，
 # 依赖 HOME 会让 hold 和 --check 认到不同文件。
 LOG=${TERMUX_REVIVE_LOG:-/data/local/tmp/termux-revive.log}
 PIDFILE=${TERMUX_REVIVE_PIDFILE:-${LOG%.log}.pid}
 HOLDFILE=${TERMUX_REVIVE_HOLD:-${LOG%.log}.hold}
+# 每次巡检写一份机器可读快照。Termux 里读不了 /data/adb（700 root），
+# 但 /data/local/tmp 是 0711，普通应用按绝对路径能读 0644 的文件，
+# 所以 Termux 侧看守（acumen-guard）就是靠这个文件知道唤醒锁有没有掉。
+STATUSFILE=${TERMUX_REVIVE_STATUS:-/data/local/tmp/termux-revive.status}
 
 log() {
     printf '%s %s\n' "$(date +%FT%T)" "$*" >> "$LOG" 2>/dev/null
@@ -76,7 +101,81 @@ runsvdir_pid() {
     return 1
 }
 
-termux_app_pid() { pgrep -f '^com\.termux$' 2>/dev/null | head -1; }
+# 有个坑：pgrep 找不到时返回 1，但 `pgrep ... | head -1` 的退出码是 head 的 0，
+# 于是调用方 `if app=$(termux_app_pid)` 永远为真，日志里出现过「应用还在（pid ）」。
+# 这里不用管道，找不到就返回 1，让调用方自己判空。
+termux_app_pid() {
+    local pid
+    for pid in $(pgrep -f '^com\.termux$' 2>/dev/null); do
+        [ -d "/proc/$pid" ] && { printf '%s' "$pid"; return 0; }
+    done
+    return 1
+}
+
+# bot 进程（按可执行文件校验，避免把命令行里恰好带这个路径的 shell 认进来）。
+bot_pid() {
+    local pid exe
+    for pid in $(pgrep -f '/target/release/acumen' 2>/dev/null); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+        [ "${exe% (deleted)}" = "$BOT_EXE" ] && { printf '%s' "$pid"; return 0; }
+    done
+    return 1
+}
+
+# 唤醒锁在不在。termux-wake-lock 会以 'termux:service-wakelock' 名字挂上；
+# 「Restored Wake Locks」历史里也有同名行，所以认带引号 + ACQ= 的那一行。
+termux_wakelock_held() {
+    dumpsys power 2>/dev/null | grep -q "termux:service-wakelock' ACQ="
+}
+
+service_state() {
+    local f="$SVDIR/$SERVICE/supervise/stat"
+    [ -r "$f" ] || { printf 'missing'; return; }
+    awk '{print $1; exit}' "$f" 2>/dev/null || printf 'unknown'
+}
+
+# Doze：一旦又生效，经 FlClash tun 的流量会整段断掉（2026-09-08 实测，mState=IDLE
+# 期间 6 分钟 proxy/tun 全失败）。开机有 service.d/99-no-doze.sh 兑一次，但系统更新、
+# 省电开关、厂商服务都可能把它打开；看守每 5 分钟核一次，只在真的被打开时才重关。
+doze_disabled() {
+    dumpsys deviceidle 2>/dev/null | grep -qE 'mLightEnabled=false[[:space:]]+mDeepEnabled=false'
+}
+
+ensure_doze_disabled() {
+    doze_disabled && return 0
+    log "doze: 检测到 Doze 又被打开了，重新关闭（deviceidle disable）"
+    {
+        echo "$(date '+%F %T') watchdog: Doze 重新打开，自动关闭"
+        dumpsys deviceidle disable 2>&1
+        dumpsys deviceidle 2>/dev/null | grep -E 'mLightEnabled|mState=' 2>&1
+    } >> "${TERMUX_REVIVE_NO_DOZE_LOG:-/data/local/tmp/no-doze.log}" 2>&1
+    if doze_disabled; then
+        log "doze: 已重新关掉"
+    else
+        log "doze: 关闭失败，请手动查 dumpsys deviceidle"
+    fi
+}
+
+write_status() {
+    local rv app bot wl state tmp
+    rv=$(runsvdir_pid 2>/dev/null) || rv=""
+    app=$(termux_app_pid 2>/dev/null) || app=""
+    bot=$(bot_pid 2>/dev/null) || bot=""
+    if termux_wakelock_held; then wl=yes; else wl=no; fi
+    state=$(service_state)
+    tmp="$STATUSFILE.tmp"
+    {
+        printf 'ts=%s\n' "$(date '+%F %T')"
+        printf 'runsvdir_pid=%s\n' "$rv"
+        printf 'app_pid=%s\n' "$app"
+        printf 'bot_pid=%s\n' "$bot"
+        printf 'wakelock=%s\n' "$wl"
+        printf 'service_state=%s\n' "$state"
+        printf 'hold=%s\n' "$( [ -f "$HOLDFILE" ] && echo yes || echo no )"
+        if doze_disabled; then printf 'doze=disabled\n'; else printf 'doze=ENABLED\n'; fi
+    } > "$tmp" 2>/dev/null && mv "$tmp" "$STATUSFILE" 2>/dev/null
+    chmod 0644 "$STATUSFILE" 2>/dev/null
+}
 
 # 系统认为「用户已经把 App 停掉」。force-stop / 强行停止置位，用户手动打开即清除。
 package_stopped() {
@@ -137,6 +236,31 @@ revive_termux() {
     runsvdir_pid >/dev/null
 }
 
+# 应用进程还在、只是监督树没了。这种情况拉 activity 没用——activity 只是切回前台，
+# 不会新建登录 shell，profile.d 也就不会重新拉起 runsvdir。走 Termux 自己的
+# RUN_COMMAND（需要 ~/.termux/termux.properties 里 allow-external-apps=true），
+# 在应用进程里执行 `acumen-guard start-services`；那条命令会先查 runsvdir 在不在，
+# 所以不会起出第二个 runsvdir（同一个 SVDIR 两个 runsvdir 会把服务起两遍）。
+restart_runsvdir_in_app() {
+    local guard=$PREFIX/bin/acumen-guard
+    if [ ! -x "$guard" ]; then
+        log "revive: 应用内重起监督树需要 $guard，但它不存在/不可执行，跳过"
+        return 1
+    fi
+    log "revive: 应用还在但监督树不在，尝试在应用内重起 runsvdir"
+    # 注意：RunCommandService 在 manifest 里是 <service>，不是 <receiver>，
+    # 所以必须用 am startservice；用 am broadcast 会「成功」但什么都不发生。
+    am startservice --user 0 \
+        -n "$PKG/com.termux.app.RunCommandService" \
+        -a com.termux.RUN_COMMAND \
+        --es com.termux.RUN_COMMAND_PATH "$guard" \
+        --esa com.termux.RUN_COMMAND_ARGUMENTS 'start-services' \
+        --ez com.termux.RUN_COMMAND_BACKGROUND true \
+        >/dev/null 2>&1
+    sleep 10
+    runsvdir_pid >/dev/null
+}
+
 # 只看一轮判据、不动 Termux，用来确认探针本身工作正常。
 if [ "${1:-}" = "--check" ]; then
     rv=$(runsvdir_pid) && echo "runsvdir: pid $rv ($SVDIR)" || echo "runsvdir: <不在>"
@@ -166,6 +290,18 @@ if [ "${1:-}" = "--check" ]; then
         echo "service $SERVICE: <未安装>"
     fi
     [ -f "$PIDFILE" ] && echo "watchdog: pid $(cat "$PIDFILE" 2>/dev/null)" || echo "watchdog: 未在跑"
+    write_status
+    [ -r "$STATUSFILE" ] && echo "快照: $(tr '\n' ' ' < "$STATUSFILE")"
+    if termux_wakelock_held; then
+        echo "wakelock: 在（termux:service-wakelock）"
+    else
+        echo "wakelock: 不在——CPU 可被挂起、应用会退回 cached，必须补 termux-wake-lock"
+    fi
+    if bp=$(bot_pid); then
+        echo "bot: pid $bp"
+    else
+        echo "bot: 不在（bot 的生死归 runsv：sv status $SERVICE）"
+    fi
     exit 0
 fi
 
@@ -195,6 +331,7 @@ log "watchdog start pid=$$ pkg=$PKG svdir=$SVDIR interval=${INTERVAL}s user_reas
 held_logged=0
 stop_reason=""
 revive_fails=0
+doze_tick=0
 
 while true; do
     # 硬开关：暂停。跨重启有效，只有 resume 才解除。
@@ -207,6 +344,15 @@ while true; do
         continue
     fi
     held_logged=0
+
+    # 每轮先写一份快照，供 Termux 侧看守（acumen-guard status）读取。
+    write_status
+
+    # Doze 自愈：只在真的被重新打开时才动手（不重复配置）。
+    doze_tick=$((doze_tick + 1))
+    if [ $((doze_tick % DOZE_EVERY)) -eq 0 ]; then
+        ensure_doze_disabled
+    fi
 
     # 正常态：监督树在。bot 的生死归 runsv，这里不插手。
     if rv=$(runsvdir_pid); then
@@ -238,7 +384,11 @@ while true; do
     fi
 
     if app=$(termux_app_pid); then
-        revive_termux "监督树不在，但 Termux 应用还在（pid $app）"
+        if restart_runsvdir_in_app; then
+            log "revive: 监督树已在应用内恢复（Termux 应用 pid $app）"
+        else
+            revive_termux "应用内重起监督树没成，退回拉 activity（应用 pid $app）"
+        fi
     else
         revive_termux "Termux 应用不在了"
     fi
