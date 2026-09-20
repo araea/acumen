@@ -19,6 +19,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
+name = "acumen"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "araea-wordcloud",
+ "axum",
+ "base64 0.23.1",
+ "cdp-html-shot",
+ "chrono",
+ "fontdb",
+ "futures-util",
+ "glob",
+ "http",
+ "image 0.25.10",
+ "jieba-rs",
+ "libc",
+ "md5",
+ "plotters",
+ "pulldown-cmark",
+ "quick-xml",
+ "rand 0.10.2",
+ "regex",
+ "reqwest",
+ "rig-core",
+ "sea-orm",
+ "serde",
+ "serde_json",
+ "simd-json",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "toml",
+ "url",
+ "walkdir",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -100,9 +137,9 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "araea-wordcloud"
-version = "0.1.12"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0af122b89f346354c8a60f02534bfbe00d91096df877aac2225135961ae4b09d"
+checksum = "57b1bdcd7128762fdadfcdf95380ff4b63bc03c4d6694f996049e651990db4c5"
 dependencies = [
  "fontdue",
  "image 0.25.10",
@@ -485,43 +522,6 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
-]
-
-[[package]]
-name = "acumen"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "araea-wordcloud",
- "axum",
- "base64 0.23.1",
- "cdp-html-shot",
- "chrono",
- "fontdb",
- "futures-util",
- "glob",
- "http",
- "image 0.25.10",
- "jieba-rs",
- "libc",
- "md5",
- "plotters",
- "pulldown-cmark",
- "quick-xml",
- "rand 0.10.2",
- "regex",
- "reqwest",
- "rig-core",
- "sea-orm",
- "serde",
- "serde_json",
- "simd-json",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "toml",
- "url",
- "walkdir",
 ]
 
 [[package]]
