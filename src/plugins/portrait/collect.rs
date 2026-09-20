@@ -52,6 +52,46 @@ pub struct GroupSlice {
     pub count: u64,
 }
 
+/// 语言与行为指纹——**全部由事实算出**，不经过模型，因此是可核验的那一层。
+///
+/// 这一组数是新版画像的地基：它回答旧版漏掉的那个问题——「这个人是怎么说话的」。
+/// 每一个字段都是能在 `message_records` 里数出来的比例或形状，不掺一点推断；模型读
+/// 的是这组数，不是凭空猜。分母统一用**可读发言**（`length > 0` 且去掉纯占位标记后
+/// 仍有字的那些条），空消息、纯图片纯表情不进这一层。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Style {
+    /// 可读发言条数——这一层的分母。
+    pub readable: u64,
+    /// 以 ？/? 收尾的消息占比。提问倾向。
+    pub question_rate: f64,
+    /// 以 ！/! 收尾的消息占比。
+    pub exclaim_rate: f64,
+    /// 含省略号（… / ... / 。。）的消息占比。
+    pub ellipsis_rate: f64,
+    /// 平均每条逗号数。长句、铺垫倾向。
+    pub comma_per_msg: f64,
+    /// 含笑声词（哈哈 / hh / 233 / xswl / lol / 笑死）的消息占比。
+    pub laugh_rate: f64,
+    /// 含语气词（吧呢哦啊嘛啦诶呀）的消息占比。
+    pub modal_rate: f64,
+    /// 每百字自称（我/俺/咱）出现次数。
+    pub self_per100: f64,
+    /// 每百字对称呼（你/您）出现次数。对着人说，还是自言自语。
+    pub you_per100: f64,
+    /// 消息长度变异系数（标准差 / 均值）。起伏大 = 时短时长，起伏小 = 匀称。
+    pub len_cv: f64,
+    /// 长消息（≥ 40 字）占比。
+    pub long_rate: f64,
+    /// 短消息（≤ 5 字）占比。
+    pub short_rate: f64,
+    /// 发言间隔的爆发指数：同一条时间线上相邻发言间隔的标准差与均值，按
+    /// (σ−μ)/(σ+μ) 归一。-1 表示像钟摆一样匀，0 表示随机，接近 +1 表示一阵一阵。
+    /// 用这个有界的量而不是方差除均值：后者在秒级的连发里会蹿到几万，既不可读也压不住。
+    pub burstiness: f64,
+    /// 与上一条内容相同的占比。口头禅、复读机倾向。
+    pub repeat_rate: f64,
+}
+
 /// 采集结果。字段都是报告直接要用的形状，呈现层不再回头查库。
 #[derive(Debug)]
 pub struct Material {
@@ -72,6 +112,8 @@ pub struct Material {
     pub words: Vec<(String, u64)>,
     /// 交给模型的发言样本，按时间由近及远；模型引用的原话必须出自这里。
     pub samples: Vec<String>,
+    /// 语言与行为指纹，全部由事实算出，见 [`Style`]。
+    pub style: Style,
 }
 
 impl Material {
@@ -206,6 +248,7 @@ struct TextRow {
     content: String,
     length: i32,
     tokens: String,
+    time: i64,
 }
 
 /// 采集某个用户的群聊发言素材。窗口内没有记录时返回 `None`。
@@ -308,7 +351,7 @@ pub async fn collect(
     let rows = TextRow::find_by_statement(Statement::from_string(
         backend,
         format!(
-            "SELECT content_rich AS content, length, tokens {scope} \
+            "SELECT content_rich AS content, length, tokens, time {scope} \
              ORDER BY time DESC LIMIT {}",
             request.max_scan
         ),
@@ -318,6 +361,7 @@ pub async fn collect(
 
     let words = top_words(&rows);
     let samples = pick_samples(&rows, request.max_samples);
+    let style = style_of(&rows);
 
     Ok(Some(Material {
         user_id: request.user_id,
@@ -343,6 +387,7 @@ pub async fn collect(
         avg_len: totals.avg_len.max(0.0),
         words,
         samples,
+        style,
     }))
 }
 
@@ -517,6 +562,155 @@ fn truncate_samples(samples: Vec<String>) -> Vec<String> {
     out
 }
 
+// ==================== 语言与行为指纹 ====================
+
+/// 语气词表。命中任意一个即算这条带语气词。
+const MODALS: [char; 8] = ['吧', '呢', '哦', '啊', '嘛', '啦', '诶', '呀'];
+
+/// 笑声词判定。只收几个误伤小的，字符逐个匹配比建一整套正则省事。
+fn has_laugh(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    lower.contains("哈")
+        || lower.contains("hh")
+        || lower.contains("233")
+        || lower.contains("xswl")
+        || lower.contains("lol")
+        || lower.contains("笑死")
+        || lower.contains("wwww")
+}
+
+/// 数一个字符串里出现了几次 `needles` 里的任意字符（不去重，按出现次数累加）。
+fn count_chars(text: &str, needles: &[char]) -> u64 {
+    text.chars().filter(|ch| needles.contains(ch)).count() as u64
+}
+
+/// 从扫描到的原始行里算出 [`Style`]。
+///
+/// 分母只用**可读发言**：`length > 0` 且 `meaningful` 通过。句子按 `content_rich` 判定
+/// （标点、笑声、语气词都在原文里），长度按 `length`（ recorder 已算好）。时间用来算爆发
+/// 指数，按时间升序排，行本身是倒序来的。
+fn style_of(rows: &[TextRow]) -> Style {
+    let readable: Vec<&TextRow> = rows
+        .iter()
+        .filter(|row| row.length > 0 && meaningful(&row.content).is_some())
+        .collect();
+    let n = readable.len();
+    if n == 0 {
+        return Style::default();
+    }
+    let n_f = n as f64;
+
+    let mut question = 0u64;
+    let mut exclaim = 0u64;
+    let mut ellipsis = 0u64;
+    let mut comma_sum = 0u64;
+    let mut laugh = 0u64;
+    let mut modal = 0u64;
+    let mut self_ref = 0u64;
+    let mut you_ref = 0u64;
+    let mut char_cnt = 0u64;
+    let mut lengths: Vec<u64> = Vec::with_capacity(n);
+    let mut times: Vec<i64> = Vec::with_capacity(n);
+    for row in &readable {
+        let text = row.content.trim();
+        if text.ends_with(['?', '？']) {
+            question += 1;
+        }
+        if text.ends_with(['!', '！']) {
+            exclaim += 1;
+        }
+        if text.contains("…") || text.contains("...") || text.contains("。。") {
+            ellipsis += 1;
+        }
+        comma_sum += count_chars(text, &[',', '，']);
+        if has_laugh(text) {
+            laugh += 1;
+        }
+        if text.chars().any(|ch| MODALS.contains(&ch)) {
+            modal += 1;
+        }
+        self_ref += count_chars(text, &['我', '俺', '咱']);
+        you_ref += count_chars(text, &['你', '您']);
+        char_cnt += text.chars().count() as u64;
+        lengths.push(row.length.max(0) as u64);
+        times.push(row.time);
+    }
+
+    let ratio = |part: u64| part as f64 / n_f;
+    let long = lengths.iter().filter(|&&l| l >= 40).count() as u64;
+    let short = lengths.iter().filter(|&&l| l <= 5).count() as u64;
+    let mean = lengths.iter().sum::<u64>() as f64 / n_f;
+    let variance = if mean > 0.0 {
+        lengths.iter().map(|&l| (l as f64 - mean).powi(2)).sum::<f64>() / n_f
+    } else {
+        0.0
+    };
+    let per100 = |count: u64| {
+        if char_cnt == 0 {
+            0.0
+        } else {
+            count as f64 / char_cnt as f64 * 100.0
+        }
+    };
+
+    // 爆发指数：按时间升序算相邻间隔的 (σ−μ)/(σ+μ)。至少要有两个间隔才谈得上爆发。
+    times.sort_unstable();
+    let gaps: Vec<f64> = times
+        .windows(2)
+        .map(|w| (w[1] - w[0]).max(0) as f64)
+        .collect();
+    let burstiness = if gaps.len() >= 2 {
+        let gmean = gaps.iter().sum::<f64>() / gaps.len() as f64;
+        let gvar = gaps.iter().map(|g| (g - gmean).powi(2)).sum::<f64>() / gaps.len() as f64;
+        let gstd = gvar.sqrt();
+        if gstd + gmean > 0.0 {
+            ((gstd - gmean) / (gstd + gmean)).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // 相邻重复：按时间升序，与上一条内容相同即算一次。
+    let chronological: Vec<&TextRow> = {
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by_key(|&i| times[i]);
+        idx.into_iter().map(|i| readable[i]).collect()
+    };
+    let mut repeat = 0u64;
+    for pair in chronological.windows(2) {
+        if pair[0].content.trim() == pair[1].content.trim() {
+            repeat += 1;
+        }
+    }
+
+    Style {
+        readable: n as u64,
+        question_rate: ratio(question),
+        exclaim_rate: ratio(exclaim),
+        ellipsis_rate: ratio(ellipsis),
+        comma_per_msg: comma_sum as f64 / n_f,
+        laugh_rate: ratio(laugh),
+        modal_rate: ratio(modal),
+        self_per100: per100(self_ref),
+        you_per100: per100(you_ref),
+        len_cv: if mean > 0.0 {
+            (variance.sqrt() / mean * 100.0).round() / 100.0
+        } else {
+            0.0
+        },
+        long_rate: ratio(long),
+        short_rate: ratio(short),
+        burstiness,
+        repeat_rate: if n >= 2 {
+            repeat as f64 / (n - 1) as f64
+        } else {
+            0.0
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,6 +722,7 @@ mod tests {
             content: content.to_string(),
             length,
             tokens: String::new(),
+            time: 0,
         }
     }
 
@@ -590,6 +785,63 @@ mod tests {
         assert!(pick_samples(&[row("[图片]", 0)], 10).is_empty());
     }
 
+    /// 语言指纹只管可读发言，且每一项都数得准。
+    #[test]
+    fn the_style_fingerprint_counts_what_was_really_said() {
+        let rows = vec![
+            // 纯占位标题不进分母。
+            row("[图片]", 0),
+            row("你觉得呢？", 5),
+            row("太强了！！", 5),
+            row("哈哈哈哈哈笑死", 7),
+            row("就这样吧。", 5),
+            row("我说你好啊", 5),
+        ];
+        let s = style_of(&rows);
+        assert_eq!(s.readable, 5, "纯图片那条不进分母");
+        // 问号收尾 1/5
+        assert!((s.question_rate - 0.2).abs() < 1e-9);
+        // 感叹收尾 1/5
+        assert!((s.exclaim_rate - 0.2).abs() < 1e-9);
+        // 笑声词（哈哈、笑死）命中 1 条 → 0.2
+        assert!((s.laugh_rate - 0.2).abs() < 1e-9);
+        // 语气词（呢、吧、啊）命中 3 条 → 0.6
+        assert!((s.modal_rate - 0.6).abs() < 1e-9);
+        // 自称："我说你好啊" 有一个 我 → 每百字按总字数折算，> 0 即可
+        assert!(s.self_per100 > 0.0);
+    }
+
+    /// 没有可读发言时指纹是全零，不崩。
+    #[test]
+    fn an_empty_style_is_all_zero() {
+        let s = style_of(&[row("[图片]", 0)]);
+        assert_eq!(s.readable, 0);
+        assert_eq!(s.question_rate, 0.0);
+        assert_eq!(s.len_cv, 0.0);
+    }
+
+    /// 爆发指数是个有界的量：秒级连发不会蹿到几万；完全匀的间隔趋向 -1。
+    #[test]
+    fn the_burstiness_is_bounded_and_scale_free() {
+        let of = |times: &[i64]| {
+            let rows: Vec<TextRow> = times
+                .iter()
+                .map(|&t| TextRow {
+                    content: format!("话{t}"),
+                    length: 2,
+                    tokens: String::new(),
+                    time: t,
+                })
+                .collect();
+            style_of(&rows).burstiness
+        };
+        // 间隔全相等 → σ=0 → (0−μ)/(0+μ) = −1
+        assert!((of(&[0, 60, 120, 180, 240]) - (-1.0)).abs() < 1e-9);
+        // 秒级连发夹一个长空档：必然落在 [-1, 1]
+        let b = of(&[0, 1, 2, 3, 4, 3600, 3601, 3602]);
+        assert!((-1.0..=1.0).contains(&b), "burstiness = {b}");
+    }
+
     #[test]
     fn ratios_and_peaks_come_from_the_histogram() {
         let material = Material {
@@ -621,6 +873,7 @@ mod tests {
             avg_len: 12.0,
             words: Vec::new(),
             samples: Vec::new(),
+            style: Style::default(),
         };
         assert_eq!(material.peak_hour(), 23);
         assert_eq!(material.peak_weekday(), 3);
@@ -648,6 +901,7 @@ mod tests {
             avg_len: 0.0,
             words: Vec::new(),
             samples: Vec::new(),
+            style: Style::default(),
         };
         assert_eq!(material.sufficiency(), Sufficiency::Thin);
         material.total = 60;

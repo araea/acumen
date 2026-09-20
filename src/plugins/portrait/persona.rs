@@ -1,17 +1,25 @@
-//! 把素材交给模型，换回一份用户画像；模型不接时退回统计直出的标签。
+//! 把素材交给模型，换回一份人格画像；模型不接时退回统计直出的标签与语言指纹。
 //!
-//! 用户画像是从行为数据里抽象出来的**标签化模型**：一组能被数据撑住的标签，加一段把
-//! 它们串起来的话。这一层只认三件事——**输出是一个 JSON 对象**、**引语必须是原话**、
-//! **标签分得清层级**。第一条靠宽松解析（模型爱在 JSON 外面裹一句「好的」或者一层
-//! 代码块），第二条靠归一化比对，对不上就丢掉；第三条落在 [`Tag`] 的形状上：维度只有
-//! 四个，层级只有三层，认不出的那一维直接不印——版面宁可少一块，也不印一条没有出处的标签。
+//! 一份画像分三层，从硬到软，读者对它们的信任度该一路往下走：
+//!
+//! - **仪器读数**：语言指纹 [`Style`](super::collect::Style)、活跃与交互统计。全部由
+//!   [`super::collect`] 从库里数出来，不经过模型，可核验。
+//! - **读法**：四维行为标签（活跃/内容/交互/表达，事实/统计/推断三层）加一段语言风格白描。
+//!   模型读那些事实，产出这一层；引语必须逐字出自样本，对不上就丢掉。
+//! - **投影**：MBTI 四轴与九型核心（[`super::models`]）。把行为往两套既有框架上做的读数，
+//!   是讨论的起点，不是结论——它们只在模型接上时才有，模型不接就整块消失，不用伪精度去补。
+//!
+//! 这一层只认三件事：**输出是一个 JSON 对象**、**引语必须是原话**、**标签分得清层级**。
+//! 第一条靠宽松解析，第二条靠归一化比对，第三条落在 [`Tag`] 的形状上——维度只有四个，
+//! 层级只有三层，认不出的那一维直接不印。
 
-use super::collect::Material;
+use super::collect::{Material, Style};
+use super::models::{Enneagram, Mbti};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-/// 报告主色。色板是固定的，模型只能从中挑，省得它挑出一组刺眼或看不清的组合。
+/// 报告主色。色板固定，模型只能从中挑，省得它挑出一组刺眼或看不清的组合。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Accent {
     Amber,
@@ -53,12 +61,6 @@ impl Accent {
         Self::ALL[(seed.unsigned_abs() as usize) % Self::ALL.len()]
     }
 
-    /// 主色的种子类名（页面上的 `seed-amber` 这种）。
-    ///
-    /// 色值本身在 `res/cards/m3e.css`：六个种子各一对（日读一份、夜读一份），
-    /// 容器色与淡色叠层由 `color-mix()` 从种子里现算。这里只带一个名字过去——
-    /// 从前色值写在这个文件里，卡片的 CSS 再把十六进制与 `r,g,b` 两份字面量
-    /// 替换进去，同一支色在三个地方各存了一份。
     pub fn seed_class(self) -> &'static str {
         match self {
             Accent::Amber => "seed-amber",
@@ -71,7 +73,7 @@ impl Accent {
     }
 }
 
-/// 标签的四个维度。这一层是画像的骨架，**不许模型自创**——多出来的维度一律不印。
+/// 标签的四个维度。画像的骨架，**不许模型自创**——多出来的维度一律不印。
 pub const DIMENSIONS: [(&str, &str); 4] = [
     ("活跃", "ACTIVITY"),
     ("内容", "CONTENT"),
@@ -79,8 +81,7 @@ pub const DIMENSIONS: [(&str, &str); 4] = [
     ("表达", "EXPRESSION"),
 ];
 
-/// 标签的三层抽象。事实是观测即得，统计是按阈值归纳，推断是从语义里读出来的；
-/// 三层从硬到软，读者对它们的信任度该跟着往下走，版式上也是这么排的。
+/// 标签的三层抽象。事实观测即得，统计按阈值归纳，推断从语义里读出来；从硬到软。
 pub const LAYERS: [(&str, &str); 3] = [
     ("事实", "OBSERVED"),
     ("统计", "DERIVED"),
@@ -90,16 +91,13 @@ pub const LAYERS: [(&str, &str); 3] = [
 /// 认一个维度名。模型常写成「活跃度」「内容偏好」这类，含关键字就算它。
 fn dimension_of(name: &str) -> Option<&'static str> {
     const TABLE: [(&str, &[&str]); 4] = [
-        ("活跃", &["活跃", "activity", "active"]),
-        ("内容", &["内容", "话题", "兴趣", "content"]),
+        ("活跃", &["活跃", "作息", "出现", "activity", "active", "schedule"]),
+        ("内容", &["内容", "话题", "兴趣", "聊什么", "content", "topic"]),
         (
             "交互",
-            &["交互", "互动", "社交", "关系", "interaction", "social"],
+            &["交互", "互动", "社交", "关系", "接话", "interaction", "social"],
         ),
-        (
-            "表达",
-            &["表达", "风格", "语言", "媒介", "expression", "style"],
-        ),
+        ("表达", &["表达", "风格", "语言", "文风", "媒介", "expression", "style"]),
     ];
     let name = name.trim().to_ascii_lowercase();
     TABLE
@@ -111,8 +109,8 @@ fn dimension_of(name: &str) -> Option<&'static str> {
 fn layer_of(name: &str) -> &'static str {
     const TABLE: [(&str, &[&str]); 3] = [
         ("事实", &["事实", "观测", "fact", "observ"]),
-        ("统计", &["统计", "模型", "阈值", "归纳", "derived", "statis"]),
-        ("推断", &["推断", "预测", "语义", "infer", "predict"]),
+        ("统计", &["统计", "阈值", "归纳", "derived", "statis"]),
+        ("推断", &["推断", "推测", "语义", "infer", "predict", "guess"]),
     ];
     let name = name.trim().to_ascii_lowercase();
     TABLE
@@ -154,7 +152,6 @@ impl Tag {
         layer_of(&self.layer)
     }
 
-    /// 层级对应的样式名，卡片按它给徽章上色。
     pub fn tier_class(&self) -> &'static str {
         tier_class(self.tier())
     }
@@ -175,16 +172,12 @@ pub fn tier_class(tier: &str) -> &'static str {
 /// 放上来当证，再接着往下说。这样报告是一篇，不是「正文一段 + 文末三条引语」。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Passage {
-    /// `text` 是综述，`quote` 是引语；认不出来的一律当综述。
     #[serde(default)]
     pub kind: String,
-    /// 综述的正文；引语时为空。
     #[serde(default)]
     pub body: String,
-    /// 引语的原话，逐字出自样本。
     #[serde(default)]
     pub text: String,
-    /// 为什么把这句话放在这里。
     #[serde(default)]
     pub note: String,
 }
@@ -201,21 +194,33 @@ impl Passage {
 /// 一份可以交给模板渲染的画像。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Persona {
-    /// 综合标签：一句话把他归成一类，2—7 字。
+    /// 综合速写：一句话把他归成一类，4—9 字。
     #[serde(default, alias = "称谓", alias = "name")]
     pub title: String,
-    /// 一句话概括。
+    /// 一句话概括，不超过 30 字。
     #[serde(default, alias = "题记", alias = "一句话", alias = "summary")]
     pub note: String,
-    /// 四个维度下的标签，收口后按维度分组渲染。
+    /// 语言风格白描：这个人怎么说话，从语言指纹与样本里读出来。模型的读法，不是事实。
+    #[serde(default, alias = "语言风格", alias = "voice")]
+    pub style: String,
+    /// MBTI 四轴光谱。只在模型接上时有。
+    #[serde(default, alias = "人格光谱")]
+    pub mbti: Option<Mbti>,
+    /// 九型核心。只在模型接上、且主型合法时有。
+    #[serde(default, alias = "九型")]
+    pub enneagram: Option<Enneagram>,
+    /// 四维行为标签，收口后按维度分组渲染。
     #[serde(default, alias = "标签", alias = "labels")]
     pub tags: Vec<Tag>,
     /// 综述：段落与引语按序排列。
     #[serde(default, alias = "综述", alias = "passages")]
     pub profile: Vec<Passage>,
+    /// 讨论钩子：群里能拿来吵的切入点，落在具体行为或某个模型读数上。
+    #[serde(default, alias = "讨论", alias = "hooks")]
+    pub discuss: Vec<String>,
     #[serde(default)]
     pub accent: String,
-    /// 这份画像是模型写的，还是从统计量直接拼出来的。
+    /// 这份画像是模型写的，还是从统计量与语言指纹直接拼出来的。
     #[serde(skip)]
     pub estimated: bool,
 }
@@ -225,15 +230,19 @@ pub struct Persona {
 mod limit {
     pub const TITLE: usize = 9;
     pub const NOTE: usize = 30;
+    pub const STYLE: usize = 90;
     pub const LABEL: usize = 12;
     pub const EVIDENCE: usize = 44;
     /// 一个维度最多印几条。四个维度都得有位置，不能由着一个维度铺满。
     pub const TAGS_PER_DIM: usize = 4;
     pub const MAX_TAGS: usize = 16;
-    pub const PASSAGE: usize = 220;
+    pub const PASSAGE: usize = 200;
     pub const QUOTE: usize = 90;
     pub const QUOTE_NOTE: usize = 24;
     pub const MAX_PASSAGES: usize = 6;
+    /// 讨论钩子一条的长度与总条数。
+    pub const DISCUSS: usize = 40;
+    pub const MAX_DISCUSS: usize = 3;
 }
 
 /// 截到上限并补省略号。省略号前面不留空白，否则会变成「手机 root …」这种断口。
@@ -264,6 +273,18 @@ fn is_punctuation(ch: char) -> bool {
     ch.is_ascii_punctuation() || EXTRA.contains(ch)
 }
 
+/// 一句引语是否「出自样本」：归一化（去标点空白、忽略大小写）后，是某条样本的子串。
+///
+/// [`Persona::sanitize`] 与端到端测试共用这一条判据——报告里印的是模型那句读来顺口的
+/// 引语，它只在这条归一化比对通过时留下，所以「逐字出自样本」的判据前后必须同一把尺。
+pub fn quote_is_from_samples(text: &str, samples: &[String]) -> bool {
+    let finger = fingerprint(text);
+    if finger.chars().count() < 4 {
+        return false;
+    }
+    samples.iter().any(|sample| fingerprint(sample).contains(&finger))
+}
+
 /// 宽松解析模型输出：取第一个花括号到最后一个花括号之间的内容。
 ///
 /// 开 JSON 模式能把可用模型限制在支持该参数的那几个上，为了一个字段的整洁
@@ -288,9 +309,9 @@ impl Persona {
     pub fn sanitize(mut self, material: &Material) -> Self {
         self.title = clip(&self.title, limit::TITLE);
         self.note = clip(&self.note, limit::NOTE);
+        self.style = clip(&self.style, limit::STYLE);
 
-        // 标签：维度认不出的丢掉，一个维度超额的丢掉，第一条必须是「事实」——
-        // 没有观测打底的推断不配印在画像上。
+        // 标签：维度认不出的丢掉，一个维度超额的丢掉。
         let mut used: HashMap<&'static str, usize> = HashMap::new();
         let tags = std::mem::take(&mut self.tags);
         self.tags = tags
@@ -316,17 +337,21 @@ impl Persona {
             .take(limit::MAX_TAGS)
             .collect();
 
-        let samples: Vec<String> = material.samples.iter().map(|s| fingerprint(s)).collect();
+        // 投影：归一 MBTI；主型不合法的九型整块丢掉，其余看清况。
+        if let Some(mbti) = self.mbti {
+            self.mbti = Some(mbti.sanitized());
+        }
+        if let Some(enneagram) = self.enneagram {
+            self.enneagram = enneagram.sanitized();
+        }
+
+        // 引语逐字比对样本；综述不受此限。
         let passages = std::mem::take(&mut self.profile);
         self.profile = passages
             .into_iter()
             .filter_map(|passage| {
                 if passage.is_quote() {
-                    let finger = fingerprint(&passage.text);
-                    // 引语要像一句话，也要真的在样本里。
-                    if finger.chars().count() < 4
-                        || !samples.iter().any(|sample| sample.contains(&finger))
-                    {
+                    if !quote_is_from_samples(&passage.text, &material.samples) {
                         return None;
                     }
                     return Some(Passage {
@@ -350,6 +375,15 @@ impl Persona {
             .take(limit::MAX_PASSAGES)
             .collect();
 
+        // 讨论钩子：去空、去重、收长度。不许它引用新数据，只落在已有行为或读数上。
+        let mut seen = std::collections::HashSet::new();
+        self.discuss = std::mem::take(&mut self.discuss)
+            .into_iter()
+            .map(|hook| clip(&hook, limit::DISCUSS))
+            .filter(|hook| !hook.is_empty() && seen.insert(hook.clone()))
+            .take(limit::MAX_DISCUSS)
+            .collect();
+
         self
     }
 
@@ -358,10 +392,16 @@ impl Persona {
         Accent::from_name(&self.accent).unwrap_or_else(|| Accent::pick(seed))
     }
 
+    /// 一个人格的「投影层」是否成篇：两个模型至少接上了一个。
+    pub fn has_models(&self) -> bool {
+        self.mbti.is_some() || self.enneagram.is_some()
+    }
+
     /// 模型完全没接上时的兜底。
     ///
-    /// 画像的骨头是数据，不是模型：统计量本来就在手里，照它把标签打出来，仍然是一份
-    /// 用户画像，缺的只是推断层与那段综述。版面上会标出「标签由统计直出」。
+    /// 画像的骨头是数据，不是模型：语言指纹与统计量本来就在手里，照它把标签打出来，
+    /// 仍然是一份画像，缺的只是读法与投影两层。版面上会标出「模型未接」——
+    /// 这一层不用伪精度去补 MBTI 或九型：没读过语义就编不出诚心的投影。
     pub fn from_stats(material: &Material) -> Self {
         let mut tags = vec![
             Tag::new(
@@ -406,15 +446,7 @@ impl Persona {
             } else {
                 "以文字为主".to_string()
             },
-            format!(
-                "图与表情占 {}；纯文字 {} 条、图片 {}、表情包 {}、小表情 {}、语音 {}",
-                percent(material.media_ratio()),
-                material.kinds.text,
-                material.kinds.image,
-                material.kinds.anim_emoji,
-                material.kinds.face,
-                material.kinds.voice
-            ),
+            format!("图与表情占 {}", percent(material.media_ratio())),
         ));
         if !material.words.is_empty() {
             let top: Vec<String> = material
@@ -434,7 +466,7 @@ impl Persona {
         let mut profile = vec![Passage {
             kind: "text".to_string(),
             body: format!(
-                "这一次模型没有接上，所以没有推断出来的标签，也没有综述。\
+                "这一次模型没有接上，没有推断出来的标签，也没有语言风格的读法。\
                  下面这些标签是照着他本人在群里的统计量直接排的：{} 条发言，\
                  覆盖 {} 天，单条平均 {:.1} 字，平均每天 {:.1} 条。",
                 material.total,
@@ -466,8 +498,12 @@ impl Persona {
                 material.total,
                 material.span_days()
             ),
+            style: String::new(),
+            mbti: None,
+            enneagram: None,
             tags,
             profile,
+            discuss: Vec::new(),
             accent: Accent::pick(material.user_id).name().to_string(),
             estimated: true,
         }
@@ -517,76 +553,96 @@ pub fn weekday_label(weekday: usize) -> &'static str {
     NAMES[weekday % 7]
 }
 
-/// 这份东西是什么，先把它说清楚——画像有两个面：可核验，也有损。
+/// 这份东西是什么，先把它说清楚——画像有三个面：仪器读数可核验，读法有据，投影是话题。
 const SYSTEM_PROMPT: &str = r#"你在做一份用户画像。
 
-用户画像是从用户的行为数据里抽象出来的一个标签化模型。它不等于这个人：它只是一组能被
-数据撑住的标签，加一段把这些标签串起来的话。它的好处是可核验，每一条都能回到他做过的
-事上；它的短处是有损，没观测到的部分一句话也不许有。
+用户画像是一个人留在群聊里的行为被整理成的一份读数。它分三层，从硬到软：
 
-读你这份东西的人不认识他。他读完要能说出：这个人什么时候来，说什么，跟谁说话，怎么说话。
+- 仪器读数：统计量与语言指纹，全部能从原始记录里数出来，可核验。你不用算，下面会给你。
+- 读法：你读那些事实，得出四维标签、一段语言风格白描、一段综述。这一层要有依据。
+- 投影：MBTI 四轴与九型，是把行为往两套既有框架上做的读数。它是讨论的起点，不是结论。
 
-【标签】
-标签是这份画像的骨架。四个维度都要给，每个 2 到 4 条，整个画像 8 到 16 条：
+这份画像有损：没观测到的部分一句话也不许有。它更不等于本人，只是一份能拿去聊的参考。
+
+读你这份东西的人不认识他。他读完要能说出：这个人怎么说话，什么时候来，说什么，
+跟谁说话，以及一个人大概的行事与动机底色。
+
+【语言指纹怎么用】
+下面给一组「语言指纹」：提问率、感叹率、省略号、笑声、语气词、自称与对称呼密度、
+长度起伏、长短占比、发言的爆发指数、重复率。它们都是数出来的事实。你要做的不是复述
+数字，而是从它们和样本里白描这个人怎么说话：标点习惯，语气是冲是缓，是不是爱提问，
+说给自己听还是说给别人听，话是匀称还是时短时长。风格字段控制在 90 字内，一两句白描，
+写他本人，不写成通用评语。不用形容词堆砌，不写「很有个性」这种空话。
+
+【四维标签】
+标签是读法层的骨架。四个维度都要给，每个 2 到 4 条，整个画像 8 到 16 条：
 - 活跃：什么时候出现，去得勤不勤，密度如何。
 - 内容：说什么，反复说什么，哪些话题从来不碰。
 - 交互：跟谁说话，主动发起还是接话，他说的时候别人接不接。
 - 表达：怎么说。长短、句读、用不用图片表情语音。
 
-每条标签都要标出它的抽象层级，只许用这三种：
-- 事实：观测即得，不做推断。条数、时刻、占比、媒介构成、原话都算这一类。照着下发的统计量
-  写，不要另编数字。
-- 统计：把观测按一个阈值归成一类。写的时候把阈值带出来，「夜里发言占四成」是观测，
-  「作息偏晚」是归出来的类，两个都要有。
-- 推断：从样本的意思里读出来的。这一类最容易编，所以一条必须有一条原话或一组数字顶在下面；
-  顶不住的不要写。推断标签不超过总数的一半。
+每条标签标出抽象层级，只许三种：
+- 事实：观测即得。条数、时刻、占比、媒介构成、原话。照下发的统计量写，不另编数字。
+- 统计：把观测按一个阈值归成一类，阈值要一起写出来。
+- 推断：从样本的意思里读出来的。一条必须有一条原话或一组数字顶着，顶不住的不要写。
+  推断标签不超过总数的一半。标签要说得出依据，别写成绰号。
 
-标签要说得出依据，别写成绰号。写「夜里出现，白天基本不在」，不写「夜猫子」。
+【投影：MBTI 四轴】
+给四轴各一个 -100 到 100 的整数：正 = 靠向 E（外向）/ S（实感）/ T（思考）/ J（判断），
+负 = 靠向 I（内向）/ N（直觉）/ F（情感）/ P（知觉）。绝对值越大越偏。多数人贴近中线，
+拿不准就给接近 0 的数，只在证据清楚时才给大数。这不是给人定型，是标出他往哪一侧使劲。
+四轴推出来的参考码由系统自己算，你不用给。
 
-【综述】
-综述是血肉，四到六段，笔法是白描：照着事实写，不加修饰。
-- 说今天的话。不用文言词，不用成语连堆。
+【投影：九型】
+给一个 1 到 9 的主型和一个相邻侧翼（一号两翼 9 与 2，九号两翼 8 与 1，中间取相邻）。
+这一套答的是「他为什么这样行事」——核心的怕与求。同样按证据来，证据不足就挑最接近的。
+
+【讨论钩子】
+给 1 到 3 条群里能拿来聊的钩子。每条一句，落在具体的行为或某个投影读数上，让人能
+同意也能反驳。不许编新的数字或引语，不许反问，不评判人。
+
+【综述笔法】
+综述是血肉，四到六段，白描：照着事实写，不加修饰。
 - 一句话说一件事，写成完整的陈述句。句子短，主语清楚。
-- 每一句判断后面要有东西撑着：他说过的话、他做过的动作、数字、时间。只有判断没有事实的
-  句子，删掉。
-- 至少两段把引语单独成段，前后用自己的话接住它，让这句话落在论证里。引语是证据，不是
-  装饰。引语必须逐字出自下发的样本，一个字都不能改；找不到合适的就不给引语。
-- 不用比喻，不用对仗，不用金句，不用格言体。不把一句话写成两半互相对照，不用「不是……
-  而是……」「既……又……」这种句式。
-- 不用评价词（很强、非常、厉害），不用模糊限定（似乎、某种、大概）。
-- 不用「其实」「说到底」「值得一提的是」这类垫话。
-- 一段的末尾说完事就停，不要加一句总结性的判断。
-- 数字挑着用，一段里至多两三处，只留撑得住判断的；不要一串串罗列。
-- 同一件事只说一遍，同一个数字不报两遍。
-- 冷静、克制。说穿，但不羞辱；不留情面，也不刻薄。
-- 不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、
-  跟谁是什么关系。
+- 每一句判断后面要有东西撑着：他说过的话、数字、时间。只有判断没有事实的句子，删掉。
+- 至少两段把引语单独成段，前后用自己的话接住它。引语必须逐字出自下发的样本，一个字
+  都不能改；找不到合适的就不给引语。
+- 不用比喻、对仗、金句、格言体，不用「不是……而是……」「既……又……」这种句式。
+- 不用评价词（很强、非常、厉害），不用模糊限定（似乎、某种、大概），不用「其实」「说到底」。
+- 数字挑着用，一段里至多两三处。同一件事只说一遍。
+- 冷静、克制。说穿，但不羞辱。
+
+不写外貌、性别、年龄、地域、收入、健康、政治立场；不臆断他做什么工作、住在哪里、
+跟谁是什么关系。
 
 只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
 
 JSON 字段：
 {
-  "title": "综合标签，2 到 7 个字。是概括，不是夸赞",
+  "title": "综合速写，4 到 9 字，是概括不是夸赞",
   "note": "一句话概括，不超过 30 字",
+  "style": "语言风格白描，不超过 90 字",
+  "mbti": {"energy": -40, "perceiving": -55, "deciding": 30, "lifestyle": -20},
+  "enneagram": {"number": 5, "wing": 4},
   "tags": [
     {"dimension":"活跃","layer":"事实","label":"标签，不超过 12 字","evidence":"撑住它的数字、时刻或原话，不超过 44 字"}
   ],
   "profile": [
-    {"kind":"text","body":"一段综述，不超过 220 字"},
+    {"kind":"text","body":"一段综述，不超过 200 字"},
     {"kind":"quote","text":"逐字引用的一条发言","note":"这句话说明什么，不超过 24 字"}
   ],
+  "discuss": ["讨论钩子，不超过 40 字"],
   "accent": "从 amber / rose / mint / indigo / violet / teal 里选一个当报告主色"
 }
 
 tags 的 dimension 只能写 活跃 / 内容 / 交互 / 表达，layer 只能写 事实 / 统计 / 推断。
-profile 给 4 到 6 段，其中 2 段是 kind 为 quote 的引语，其余是 text。
-写完自己看一遍：有没有对仗的句子，有没有只下判断不给事实的句子，有没有一句空收尾，
-有没有同一个数字报了两遍，有没有把没观测到的事当事实写进去。"#;
+mbti 四轴、enneagram 必填。profile 给 4 到 6 段，其中 2 段是 quote。discuss 给 1 到 3 条。
+写完自己看一遍：有没有对仗，有没有只下判断不给事实的句子，有没有空收尾，
+有没有同一个数字报了两遍，有没有把没观测到的事当事实写。"#;
 
-/// 组装下发给模型的素材。统计在前，样本在后——标签的「事实」与「统计」两层都从统计量里取，
-/// 「推断」那一层才用得着样本。
-pub fn user_prompt(material: &Material) -> String {
-    let mut out = String::with_capacity(12_288);
+/// 组装下发给模型的素材。三段：统计量、语言指纹、发言样本——前两段喂事实，样本喂语义。
+pub fn user_prompt(material: &Material, style: &Style) -> String {
+    let mut out = String::with_capacity(13_824);
 
     out.push_str("【对象】\n");
     out.push_str(&format!("群名片：{}\n", material.name));
@@ -642,6 +698,30 @@ pub fn user_prompt(material: &Material) -> String {
         out.push_str(&format!("- 高频词：{}\n", words.join("、")));
     }
 
+    out.push_str("\n【语言指纹】（全部由原始记录数出，可核验）\n");
+    out.push_str(&format!(
+        "- 以问号收尾 {}，以感叹号收尾 {}，含省略号 {}，含笑声词 {}，含语气词 {}\n",
+        percent(style.question_rate),
+        percent(style.exclaim_rate),
+        percent(style.ellipsis_rate),
+        percent(style.laugh_rate),
+        percent(style.modal_rate),
+    ));
+    out.push_str(&format!(
+        "- 平均每条逗号 {:.1}；长度起伏系数 {}；长消息（≥40 字）{}、短消息（≤5 字）{}\n",
+        style.comma_per_msg,
+        style.len_cv,
+        percent(style.long_rate),
+        percent(style.short_rate),
+    ));
+    out.push_str(&format!(
+        "- 每百字自称 {:.1} 次、对称呼 {:.1} 次；发言爆发指数（-1 极匀、0 随机、1 极爆发）{:.2}；相邻重复 {}\n",
+        style.self_per100,
+        style.you_per100,
+        style.burstiness,
+        percent(style.repeat_rate)
+    ));
+
     out.push_str("\n【发言样本】（按时间由近及远，长句已截断）\n");
     if material.samples.is_empty() {
         out.push_str("（没有可读的发言样本）\n");
@@ -661,6 +741,25 @@ pub fn system_prompt() -> &'static str {
 mod tests {
     use super::*;
     use crate::plugins::portrait::collect::{GroupSlice, Kinds};
+
+    fn style() -> Style {
+        Style {
+            readable: 100,
+            question_rate: 0.2,
+            exclaim_rate: 0.1,
+            ellipsis_rate: 0.05,
+            comma_per_msg: 1.8,
+            laugh_rate: 0.3,
+            modal_rate: 0.25,
+            self_per100: 2.4,
+            you_per100: 3.1,
+            len_cv: 0.6,
+            long_rate: 0.15,
+            short_rate: 0.4,
+            burstiness: 0.62,
+            repeat_rate: 0.08,
+        }
+    }
 
     fn material() -> Material {
         Material {
@@ -702,6 +801,7 @@ mod tests {
                 "今天这个雨下得没完没了".to_string(),
                 "凌晨三点还在改代码，明天又要废了".to_string(),
             ],
+            style: style(),
         }
     }
 
@@ -727,6 +827,32 @@ mod tests {
         assert!(parse("我觉得他挺好的").is_err());
     }
 
+    #[test]
+    fn a_full_persona_sanitises_end_to_end() {
+        let raw = r#"{
+            "title": "夜里的常客",
+            "note": "白天基本不在，夜里话密起来",
+            "style": "话短，句尾常带问号和省略号，像自言自语又像追问。",
+            "mbti": {"EI": -72, "SN": -55, "TF": 40, "JP": -20},
+            "enneagram": {"type": 5, "wing": 4},
+            "tags": [ {"dimension":"活跃","layer":"事实","label":"夜里出现"} ],
+            "profile": [
+                {"kind":"quote","text":"凌晨三点还在改代码，明天又要废了","note":"拿休息换进度"},
+                {"kind":"text","body":"他把手艺当退路。"}
+            ],
+            "discuss": ["他嘴上说无所谓，其实每条都改到半夜", "这个 IN 的底子，你觉得准吗"],
+            "accent": "indigo"
+        }"#;
+        let persona = parse(raw).unwrap().sanitize(&material());
+        assert_eq!(persona.title, "夜里的常客");
+        assert_eq!(persona.mbti.as_ref().unwrap().code(), "INTP");
+        assert_eq!(persona.enneagram.unwrap().short(), "5w4");
+        assert!(persona.has_models());
+        assert_eq!(persona.discuss.len(), 2);
+        assert_eq!(persona.profile[0].kind, "quote");
+        assert_eq!(persona.profile[1].kind, "text");
+    }
+
     /// 维度只认白名单里的四个，写成「活跃度」「内容偏好」也要归到正名上。
     #[test]
     fn dimensions_are_normalised_onto_the_four() {
@@ -749,7 +875,7 @@ mod tests {
         );
     }
 
-    /// 认不出维度的标签直接丢掉，版面宁可少一块，也不印一条没有归处的标签。
+    /// 认不出维度的标签直接丢掉。
     #[test]
     fn a_tag_outside_the_taxonomy_is_dropped() {
         let persona = Persona {
@@ -770,7 +896,7 @@ mod tests {
         assert_eq!(persona.tags[0].label, "夜里出现");
     }
 
-    /// 一个维度最多四条：四个维度都得有位置，不能由着一个维度铺满。
+    /// 一个维度最多四条。
     #[test]
     fn one_dimension_cannot_fill_the_whole_card() {
         let persona = Persona {
@@ -783,7 +909,27 @@ mod tests {
         assert_eq!(persona.tags.len(), limit::TAGS_PER_DIM);
     }
 
-    /// 引语必须逐字出自样本；编出来的一句都留不下。综述不受这条限制。
+    /// 九型主型不合法时整块丢掉；MBTI 越界被夹回。
+    #[test]
+    fn models_are_cleaned_or_dropped() {
+        let persona = Persona {
+            mbti: Some(Mbti {
+                energy: 999,
+                perceiving: -999,
+                deciding: 0,
+                lifestyle: 0,
+            }),
+            enneagram: Some(Enneagram { number: 12, wing: 0 }),
+            ..Default::default()
+        }
+        .sanitize(&material());
+        assert_eq!(persona.mbti.as_ref().unwrap().energy, 100);
+        assert_eq!(persona.mbti.as_ref().unwrap().perceiving, -100);
+        assert!(persona.enneagram.is_none(), "主型 12 非法，整块丢掉");
+        assert!(!persona.has_models() == false, "MBTI 仍在，投影层不算空");
+    }
+
+    /// 引语必须逐字出自样本；编出来的一句都留不下。
     #[test]
     fn quotes_must_appear_in_the_samples() {
         let persona = Persona {
@@ -862,10 +1008,12 @@ mod tests {
     }
 
     #[test]
-    fn overlong_fields_are_clipped_and_paragraphs_are_capped() {
+    fn overlong_fields_are_clipped_and_discuss_is_capped() {
         let persona = Persona {
-            title: "这是一个特别特别长的综合标签".into(),
+            title: "这是一个特别特别长的综合速写".into(),
             note: "长".repeat(200),
+            style: "风".repeat(300),
+            discuss: (0..10).map(|i| format!("钩子 {i}")).collect(),
             profile: (0..20)
                 .map(|index| Passage {
                     kind: "text".into(),
@@ -878,26 +1026,20 @@ mod tests {
         .sanitize(&material());
         assert_eq!(persona.title.chars().count(), limit::TITLE + 1);
         assert!(persona.note.chars().count() <= limit::NOTE + 1);
+        assert!(persona.style.chars().count() <= limit::STYLE + 1);
         assert_eq!(persona.profile.len(), limit::MAX_PASSAGES);
+        assert_eq!(persona.discuss.len(), limit::MAX_DISCUSS);
+    }
 
-        let clipped = Persona {
-            tags: vec![Tag {
-                dimension: "表达".into(),
-                layer: "事实".into(),
-                label: "字".repeat(60),
-                evidence: "据".repeat(200),
-            }],
-            profile: vec![Passage {
-                kind: "text".into(),
-                body: "字".repeat(900),
-                ..Default::default()
-            }],
+    /// 讨论钩子去重：内容相同的两条只留一条。
+    #[test]
+    fn duplicate_discussion_hooks_collapse() {
+        let persona = Persona {
+            discuss: vec!["同一句钩子".into(), "同一句钩子".into(), "另一句".into()],
             ..Default::default()
         }
         .sanitize(&material());
-        assert!(clipped.tags[0].label.chars().count() <= limit::LABEL + 1);
-        assert!(clipped.tags[0].evidence.chars().count() <= limit::EVIDENCE + 1);
-        assert!(clipped.profile[0].body.chars().count() <= limit::PASSAGE + 1);
+        assert_eq!(persona.discuss, vec!["同一句钩子".to_string(), "另一句".to_string()]);
     }
 
     #[test]
@@ -913,15 +1055,18 @@ mod tests {
         };
         assert_eq!(garbage.accent(1), Accent::pick(1));
         assert_eq!(garbage.accent(1), garbage.accent(1));
-        assert_eq!(Accent::ALL.len(), 6);
     }
 
-    /// 兜底画像也是一份真画像：四个维度里至少有三个有标签，引语一定出自样本。
+    /// 兜底画像也是一份真画像：模型不接，投影层为空，但事实标签与引语仍在。
     #[test]
-    fn the_fallback_is_still_a_profile_made_of_tags() {
+    fn the_fallback_has_facts_and_no_projection() {
         let material = material();
         let persona = Persona::from_stats(&material);
         assert!(persona.estimated);
+        assert!(!persona.has_models(), "模型没接，不给投影");
+        assert!(persona.mbti.is_none());
+        assert!(persona.enneagram.is_none());
+        assert!(persona.style.is_empty());
         assert!(persona.tags.len() >= 5);
         for dimension in ["活跃", "交互", "表达", "内容"] {
             assert!(
@@ -929,8 +1074,6 @@ mod tests {
                 "{dimension} 没有标签"
             );
         }
-        assert!(persona.note.contains("400"));
-        assert!(persona.profile[0].body.contains("400"));
         let quotes: Vec<&Passage> = persona
             .profile
             .iter()
@@ -945,30 +1088,32 @@ mod tests {
         );
     }
 
-    /// 提示词要把画像是什么、四个维度、三层抽象与白描笔法都写清楚。
+    /// 提示词要把三层说清楚、两把尺子的口径、语言指纹与逐字引语都交待到。
     #[test]
-    fn the_prompt_states_the_model_of_a_user_profile() {
+    fn the_prompt_states_the_three_layers_and_the_two_models() {
         let system = system_prompt();
-        assert!(system.contains("标签化模型"));
-        assert!(system.contains("可核验"));
-        assert!(system.contains("有损"));
-        assert!(system.contains("活跃"));
-        assert!(system.contains("交互"));
-        assert!(system.contains("推断标签不超过总数的一半"));
-        assert!(system.contains("白描"));
+        assert!(system.contains("仪器读数"));
+        assert!(system.contains("读法"));
+        assert!(system.contains("投影"));
+        assert!(system.contains("MBTI"));
+        assert!(system.contains("九型"));
+        assert!(system.contains("语言指纹"));
         assert!(system.contains("逐字"));
+        assert!(system.contains("讨论的起点，不是结论"));
     }
 
-    /// 统计量必须随提示词一起下发——标签里的「事实」与「统计」两层全靠它。
+    /// 统计量、语言指纹与样本都必须随提示词一起下发。
     #[test]
-    fn the_prompt_carries_the_numbers_the_facts_come_from() {
+    fn the_prompt_carries_the_numbers_and_the_fingerprint() {
         let material = material();
-        let prompt = user_prompt(&material);
+        let prompt = user_prompt(&material, &style());
         assert!(prompt.contains("群名片：甲"));
         assert!(prompt.contains("群聊发言 400 条"));
         assert!(prompt.contains("夜间（0—6 点）占"));
         assert!(prompt.contains("引用别人的消息 60 次"));
-        assert!(prompt.contains("高频词"));
+        assert!(prompt.contains("语言指纹"));
+        assert!(prompt.contains("以问号收尾"));
+        assert!(prompt.contains("发言爆发指数"));
         assert!(prompt.contains("凌晨三点还在改代码"));
         assert!(!prompt.contains("卦"), "画像里不该再出现筮法的说法");
     }

@@ -1,14 +1,15 @@
-//! 用户画像：读一个群成员的历史发言，给他打一份标签化的画像，出一张图文报告。
+//! 用户画像：读一个群成员的历史发言，给他出一份分层的人格画像，出一张图文报告。
 //!
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
-//! 报告由三段拼成——[`collect`] 从库里取出可统计的事实与发言样本，[`persona`] 把素材
-//! 交给模型换回一份画像（综合标签、四个维度的标签、一段综述），[`card`] 排成一张 HTML
-//! 报告图；[`avatar`] 取对象的 QQ 头像配在报告开头。
+//! 报告分三层，从硬到软：[`collect`] 从库里取出可核验的事实与语言指纹（仪器读数），
+//! [`persona`] 把素材交给模型换回读法与投影层（四维行为标签、语言风格白描、MBTI 四轴、
+//! 九型核心，见 [`models`]），[`card`] 排成一张 HTML 报告图；[`avatar`] 取对象的 QQ 头像
+//! 配在报告开头。
 //!
-//! 用户画像是从行为数据里抽象出来的**标签化模型**，这一层不做事的是三件：不编数字（统计量
-//! 由 [`collect`] 从库里算出来），不编原话（引语逐字比对样本），不编维度（四个维度与三层
-//! 抽象写死在 [`persona`] 里）。模型不接时画像仍在——标签退回统计直出，缺的只是推断层与
-//! 那段综述。
+//! 三层各守一条线：不编数字（统计量与语言指纹由 [`collect`] 从库里算出来），不编原话
+//! （引语逐字比对样本），不把投影当定论（MBTI 与九型是行为往框架上的投影，只在模型接上
+//! 时才有，并在版面上标明）。模型不接时画像仍在——仪器读数与统计直出的标签都在，投影层
+//! 整块留空。
 //!
 //! 两处刻意的保护：同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，
 //! 免得群里连着刷。这两道闸只影响发指令的人，不影响其它功能。
@@ -16,6 +17,7 @@
 pub mod avatar;
 pub mod card;
 pub mod collect;
+pub mod models;
 pub mod persona;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
@@ -497,7 +499,7 @@ pub fn handle(
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material, &material.style)))],
             },
         ];
         let completion = tokio::time::timeout(
@@ -622,8 +624,9 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 卡片图之外的文字版：综合标签、四个维度下的标签、综述与那句边界说明，
-/// 够用户在群里看懂这份画像，不至于因为一张图没出成就什么都拿不到。
+/// 卡片图之外的文字版：综合速写、读数、人格投影、语言指纹、四维标签、综述、群聊钩子
+/// 与那句边界说明——一张图里有的信息，这一层一条不落。够用户在群里看懂这份画像，
+/// 不至于因为一张图没出成就什么都拿不到。
 ///
 /// `image_enabled` 只影响最后那句交代：是「出图失败」还是「本来就关了图」。
 fn text_report(
@@ -643,6 +646,59 @@ fn text_report(
         persona::hour_label(material.peak_hour()),
         material.sufficiency().label(),
     ));
+
+    // 人格投影：两把尺子都是投影，先声明，再给读数。模型没接整块说没接。
+    out.push_str("\n▍人格投影（是投影，不是定论）\n");
+    if let Some(mbti) = profile.mbti {
+        let epithet = mbti.epithet();
+        let code = if epithet.is_empty() {
+            format!("MBTI {}", mbti.code())
+        } else {
+            format!("MBTI {} · {}", mbti.code(), epithet)
+        };
+        out.push_str(&format!("{code}\n"));
+        for (left, right, score) in mbti.axes() {
+            let left_pct = models::axis_lean(score);
+            let right_pct = 100 - left_pct as u16;
+            out.push_str(&format!(
+                "　{} {} / {} {}\n",
+                models::pole_short(left.chars().next().unwrap_or('?')),
+                left_pct,
+                models::pole_short(right.chars().next().unwrap_or('?')),
+                right_pct,
+            ));
+        }
+    } else {
+        out.push_str("模型未接，投影层暂不可用\n");
+    }
+    if let Some(ennea) = profile.enneagram {
+        out.push_str(&format!(
+            "九型 {} · {}：{}\n",
+            ennea.short(),
+            ennea.name(),
+            ennea.motif()
+        ));
+    }
+
+    // 语言指纹：全部由事实算出。
+    let s = &material.style;
+    out.push_str(&format!(
+        "\n▍语言指纹\n提问 {}、感叹 {}、笑声 {}、语气词 {}、省略 {}；均长 {:.1} 字，\
+         长消息 {}、短消息 {}，长度起伏 {:.2}，爆发指数 {:.2}\n",
+        persona::percent(s.question_rate),
+        persona::percent(s.exclaim_rate),
+        persona::percent(s.laugh_rate),
+        persona::percent(s.modal_rate),
+        persona::percent(s.ellipsis_rate),
+        material.avg_len(),
+        persona::percent(s.long_rate),
+        persona::percent(s.short_rate),
+        s.len_cv,
+        s.burstiness,
+    ));
+    if !profile.style.trim().is_empty() {
+        out.push_str(&format!("　{}\n", profile.style));
+    }
 
     for (dimension, _) in persona::DIMENSIONS {
         let tags = profile.tags_of(dimension);
@@ -673,6 +729,13 @@ fn text_report(
         }
     }
 
+    if !profile.discuss.is_empty() {
+        out.push_str("\n▍群聊钩子\n");
+        for hook in &profile.discuss {
+            out.push_str(&format!("　· {hook}\n"));
+        }
+    }
+
     let footer = if image_enabled {
         "出图失败，先给你一份文字版"
     } else {
@@ -680,6 +743,7 @@ fn text_report(
     };
     out.push_str(&format!(
         "\n画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。\
+         MBTI 与九型是行为往框架上的投影，是讨论的起点，不是定论。\
          {footer}（{model}）。"
     ));
     out
@@ -785,7 +849,7 @@ mod live_tests {
                 content: persona::system_prompt().to_string(),
             },
             LlmMessage::User {
-                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material)))],
+                content: vec![UserContent::Text(Text::new(persona::user_prompt(&material, &material.style)))],
             },
         ];
         let raw = crate::plugins::oai::llm::complete(&base, &key, &model, history, Some("high"))
@@ -829,13 +893,10 @@ mod live_tests {
             "综述至少要有四段，这次只有 {} 段",
             profile.live_passages().count()
         );
-        // 引语是被比对过的：要么没有，要么每一句都是原话。
+        // 引语是被比对过的：要么没有，要么每一句都归一化后出自样本（与收口同一把尺）。
         for passage in profile.live_passages().filter(|passage| passage.is_quote()) {
             assert!(
-                material
-                    .samples
-                    .iter()
-                    .any(|sample| sample.contains(&passage.text)),
+                persona::quote_is_from_samples(&passage.text, &material.samples),
                 "引语不在样本里：{}",
                 passage.text
             );
@@ -1191,10 +1252,17 @@ mod tests {
             avg_len: 10.0,
             words: Vec::new(),
             samples: Vec::new(),
+            style: Default::default(),
         };
         let profile = persona::Persona {
             title: "夜行改稿人".into(),
             note: "白天潜水夜里冒泡".into(),
+            mbti: Some(models::Mbti {
+                energy: -72,
+                perceiving: -60,
+                deciding: 40,
+                lifestyle: -20,
+            }),
             tags: vec![
                 persona::Tag {
                     dimension: "活跃".into(),
