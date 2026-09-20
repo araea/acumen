@@ -14,6 +14,12 @@
 //!
 //! [`card`] 把三层排成一张 HTML 报告图；[`avatar`] 取对象与往来对象的 QQ 头像配在开头。
 //!
+//! 三层之外还有一处笔法，落在综述与判词上：那是**亮刀**的地方。白描留给档案那一节，
+//! 这一节允许隐喻、典故、反问、反语——但放开的只是写法，不是出处：每句判断底下仍然要
+//! 压着事实，比喻是把事实照亮，不是拿来替事实的。准星只有一条，**靶子是他的做法与处境，
+//! 不是他这个人的价值**（这一份会发在群里，他自己也会看到）。整份画像收在末尾那句判词上，
+//! 它要刺一下，也要留一点暖。
+//!
 //! 四条线，两处刻意为之：
 //!
 //! - 不编数字（观测四块全由 [`collect`] 算出来）、不编原话（引语、口头禅、以及「明说」
@@ -269,9 +275,10 @@ struct Gate {
     /// 每个人最近一次的成品，按发出去的先后从旧到新排。卡片是几 MB 的 base64，
     /// 所以只留最近这几个。
     served: Vec<(i64, Cached)>,
-    /// 最近几份画像用过的「称号 + 一句话」，从旧到新。它只干一件事：下一份画像的提示词
-    /// 里带上它，让模型换个说法——十来个人拿到十来个「夜猫子」，这份东西就不好玩了。
-    recent: Vec<(String, String)>,
+    /// 最近几份画像用过的称号、一句话与判词，从旧到新。它只干一件事：下一份画像的提示词
+    /// 里带上它，让模型换个说法——十来个人拿到十来个「夜猫子」、十来句同一个句式的判词，
+    /// 这份东西就不好玩了。
+    recent: Vec<persona::Recent>,
 }
 
 /// 成品缓存留几个。冷却默认三分钟，够覆盖「同一批人反复问」的场面。
@@ -344,24 +351,27 @@ fn served(user_id: i64) -> Option<Cached> {
         .map(|(_, result)| result.clone())
 }
 
-/// 记下这一次用过的称号与一句话，给下一份画像当排除表。
+/// 记下这一次用过的称号、一句话与判词，给下一份画像当排除表。
 ///
 /// 只在真发出去之后调：群里没人看见的那份，不该占掉别人的说法。
-fn note_words(title: &str, note: &str) {
-    if title.trim().is_empty() && note.trim().is_empty() {
+fn note_words(entry: &persona::Recent) {
+    if entry.title.trim().is_empty()
+        && entry.note.trim().is_empty()
+        && entry.closing.trim().is_empty()
+    {
         return;
     }
     let mut gate = gate().lock().unwrap();
-    gate.recent.retain(|(seen, _)| seen != title);
-    gate.recent.push((title.to_string(), note.to_string()));
+    gate.recent.retain(|seen| seen.title != entry.title);
+    gate.recent.push(entry.clone());
     if gate.recent.len() > RECENT_KEEP {
         let drop = gate.recent.len() - RECENT_KEEP;
         gate.recent.drain(..drop);
     }
 }
 
-/// 最近用过的称号与一句话，从旧到新。
-fn recent_words() -> Vec<(String, String)> {
+/// 最近用过的称号、一句话与判词，从旧到新。
+fn recent_words() -> Vec<persona::Recent> {
     gate().lock().unwrap().recent.clone()
 }
 
@@ -628,7 +638,7 @@ pub fn handle(
                     .is_ok()
                 {
                     remember(target, Cached::Card(base64));
-                    note_words(&profile.title, &profile.note);
+                    note_words(&profile.stamp());
                 }
             }
             Err(error) => {
@@ -638,7 +648,7 @@ pub fn handle(
                 // 出图失败或主动关图都不该等于没有结果：退回成文字版。
                 let summary = text_report(&material, &profile, &model, config.image_enabled);
                 remember(target, Cached::Report(summary.clone()));
-                note_words(&profile.title, &profile.note);
+                note_words(&profile.stamp());
                 let _ = say(
                     &ctx,
                     writer.clone(),
@@ -704,8 +714,9 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 卡片图之外的文字版：一句话定位、人物档案、戏说、口头禅、怎么说话、什么时候来、群内往来、
-/// 画像综述与那句边界说明——一张图里有的信息，这一层一条不落，包括 24 小时与一周的完整分布。
+/// 卡片图之外的文字版：一句话定位、人物档案、戏说、口头禅、怎么说话、什么时候来、
+/// 群内往来、画像综述与判词，以及那句边界说明——一张图里有的信息，这一层一条不落，
+/// 包括 24 小时与一周的完整分布。
 /// 够用户在群里看懂这份画像，不至于因为一张图没出成就什么都拿不到。
 ///
 /// `image_enabled` 只影响最后那句交代：是「出图失败」还是「本来就关了图」。
@@ -821,7 +832,8 @@ fn text_report(
     }
 
     let passages: Vec<&persona::Passage> = profile.live_passages().collect();
-    if !passages.is_empty() {
+    let closing = profile.closing.trim();
+    if !passages.is_empty() || !closing.is_empty() {
         out.push_str("\n▍画像综述\n");
         for passage in passages {
             if passage.is_quote() {
@@ -832,6 +844,11 @@ fn text_report(
             } else {
                 out.push_str(&format!("{}\n", passage.body));
             }
+        }
+        // 判词换一行立在末尾，前面加一条记号：文字版没有细线可用，
+        // 这一块的分量就落在「判词」这两个字和一整行的留白上。
+        if !closing.is_empty() {
+            out.push_str(&format!("\n▍判词\n　{}\n", closing));
         }
     }
 
@@ -1055,7 +1072,7 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n称号：{}\n一句话：{}\n怎么说话：{}\n档案（{}/{} 格）：\n{}\n戏说：\n{}\n口头禅：\n{}\n往来读法：\n{}\n综述：\n{}",
+            "===== 收口后的画像 =====\n称号：{}\n一句话：{}\n怎么说话：{}\n档案（{}/{} 格）：\n{}\n戏说：\n{}\n口头禅：\n{}\n往来读法：\n{}\n综述：\n{}\n判词：{}",
             profile.title,
             profile.note,
             profile.style,
@@ -1103,6 +1120,7 @@ mod live_tests {
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
+            profile.closing,
         );
         println!(
             "===== 群内往来（由记录数出）=====\n{}",
@@ -1568,36 +1586,66 @@ mod tests {
         assert!(matches!(enter(user_id, Duration::ZERO), Entry::Go(_)));
     }
 
-    /// 用过的称号会留下来，旧的挤掉，同名的抬到最新——这份东西不千篇一律就靠这一手。
+    /// 用过的称号、一句话与判词会留下来，旧的挤掉，同名的抬到最新——
+    /// 这份东西不千篇一律就靠这一手。
     #[test]
     fn the_words_already_used_are_kept_to_avoid_repeats() {
+        let said = |index: usize| persona::Recent {
+            title: format!("第 {index} 个称号"),
+            note: format!("第 {index} 句"),
+            closing: format!("第 {index} 句判词"),
+        };
         for index in 0..=RECENT_KEEP {
-            note_words(&format!("第 {index} 个称号"), &format!("第 {index} 句"));
+            note_words(&said(index));
         }
         let recent = recent_words();
         assert_eq!(recent.len(), RECENT_KEEP);
         assert!(
-            !recent.iter().any(|(title, _)| title == "第 0 个称号"),
+            !recent.iter().any(|entry| entry.title == "第 0 个称号"),
             "最早的那条该被挤掉"
         );
         assert_eq!(
-            recent.last().map(|(title, _)| title.as_str()),
+            recent.last().map(|entry| entry.title.as_str()),
             Some(format!("第 {RECENT_KEEP} 个称号").as_str())
         );
 
         // 同一个称号再出现时抬到最后，不占两个位置（同一批素材重发时会发生）。
-        note_words("第 1 个称号", "换了一句话");
+        note_words(&persona::Recent {
+            title: "第 1 个称号".to_string(),
+            note: "换了一句话".to_string(),
+            closing: "第 1 句判词".to_string(),
+        });
         let recent = recent_words();
         assert_eq!(recent.len(), RECENT_KEEP);
         assert_eq!(
-            recent.last().map(|(t, n)| (t.as_str(), n.as_str())),
+            recent
+                .last()
+                .map(|entry| (entry.title.as_str(), entry.note.as_str())),
             Some(("第 1 个称号", "换了一句话"))
         );
 
-        // 两个都空的不记：那是一次没生成出东西的失败，不该占掉别人的说法。
+        // 三样都空的不记：那是一次没生成出东西的失败，不该占掉别人的说法。
         let before = recent_words().len();
-        note_words("  ", "");
+        note_words(&persona::Recent::default());
         assert_eq!(recent_words().len(), before);
+    }
+
+    /// 判词也要进排除表：只有称号与一句话防撞车，十来份判词会套成同一个句式。
+    #[test]
+    fn the_closing_line_joins_the_exclusion_list() {
+        let profile = persona::Persona {
+            title: "夜班报错客服".to_string(),
+            note: "他把白天让给了别的事".to_string(),
+            closing: "舍不得关灯的人，灯也舍不得他".to_string(),
+            ..Default::default()
+        };
+        // 记的是这份画像里那三样，投影不许漏掉判词。
+        assert_eq!(profile.stamp().closing, "舍不得关灯的人，灯也舍不得他");
+        note_words(&profile.stamp());
+        let recent = recent_words();
+        let last = recent.last().expect("刚记下的那份应该在");
+        assert_eq!(last.closing, "舍不得关灯的人，灯也舍不得他");
+        // 判词进不进得了提示词，由 persona 那边的用例盯着（那边有素材工厂）。
     }
 
     /// 缓存只留最近这几个：问过的人多了，最早的那份被挤掉。
@@ -1689,6 +1737,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            closing: "他把白天让给了别的事，深夜才回来认领自己。".into(),
             ..Default::default()
         };
         let report = text_report(&material, &profile, "deepseek/deepseek-flash", true);
@@ -1719,6 +1768,9 @@ mod tests {
         assert!(report.contains("　日 一 二 三 四 五 六依次：0 0 0 0 0 30 0"));
         assert!(report.contains("▍画像综述"));
         assert!(report.contains("他把手艺当退路。"));
+        // 判词在文字版里也要有自己的一行——它是一张图里分量最重的一块。
+        assert!(report.contains("▍判词"));
+        assert!(report.contains("他把白天让给了别的事，深夜才回来认领自己。"));
         assert!(report.contains("不等于本人"));
     }
 

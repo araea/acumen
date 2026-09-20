@@ -535,11 +535,22 @@ fn profile(persona: &Persona) -> String {
             }
         })
         .collect();
-    if blocks.is_empty() {
+    let closing = persona.closing.trim();
+    // 综述与判词都空时整节不印。有一个就印一个——判词是这份东西的落点，
+    // 不该因为别的段落都空了就跟着消失。
+    if blocks.is_empty() && closing.is_empty() {
         return String::new();
     }
+    let closing = if closing.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="closing"><hr class="rule md-rule"><span class="label">判词</span><p class="closing-line">{}</p></div>"#,
+            esc(closing)
+        )
+    };
     format!(
-        r#"<div class="sec">{head}{blocks}</div>"#,
+        r#"<div class="sec">{head}{blocks}{closing}</div>"#,
         head = sec_head("画像综述", "THE PROFILE"),
     )
 }
@@ -563,7 +574,7 @@ fn foot(view: &View<'_>) -> String {
         )
     };
     format!(
-        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>档案 {covered}/{total} 格<span class="md-sep">·</span>模型 {model}</div>{hint}<div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话；口头禅那几句是原样照抄的；戏说那一节是玩笑，允许夸张。仅供参考，不作凭据。</div></div>"#,
+        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>档案 {covered}/{total} 格<span class="md-sep">·</span>模型 {model}</div>{hint}<div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。档案每一格都标了把握，标「明说」的依据是他本人的原话；口头禅那几句是原样照抄的；戏说与判词是读法，不是事实。仅供参考，不作凭据。</div></div>"#,
         material.samples.len(),
         total = FACETS.len(),
         range = esc(&range),
@@ -741,9 +752,16 @@ body{width:720px}
   background:var(--md-sys-color-surface-container-low);
   border:1px solid var(--md-sys-color-outline-variant)}
 .tie-head{display:flex;align-items:center;gap:var(--md-space-3)}
+/* 圆框要真的把图关进去：头像原图是 140 像素，只给 border-radius 不剪裁，图会照着
+   自身尺寸撑出来，压掉名字和后面的版面。`overflow:hidden` 是这条的全部。
+   没取到头像时这一格装的是名字首字，同一套居中规则管两种内容。
+   外圈一道细边，与顶上的大头像同一角色；那边是主色，因为那是画像对象本身。 */
 .tie-face{flex:none;display:flex;align-items:center;justify-content:center;width:34px;height:34px;
-  border-radius:var(--md-shape-full);font-size:var(--md-type-label-large-size);font-weight:800;
-  color:var(--md-sys-color-primary);background:var(--md-sys-color-primary-container)}
+  border-radius:var(--md-shape-full);overflow:hidden;
+  font-size:var(--md-type-label-large-size);font-weight:800;
+  color:var(--md-sys-color-primary);background:var(--md-sys-color-primary-container);
+  box-shadow:0 0 0 1px var(--md-sys-color-outline-variant)}
+.tie-face img{display:block;width:100%;height:100%;object-fit:cover}
 .tie-name{font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
   line-height:var(--md-type-title-small-line);font-weight:700;
   color:var(--md-sys-color-on-surface)}
@@ -808,6 +826,18 @@ body{width:720px}
   color:var(--md-sys-color-on-surface);text-indent:0}
 .quote-note{margin-top:11px;font-size:var(--md-type-label-medium-size);line-height:1.62;
   color:var(--md-sys-color-on-surface-faint)}
+
+/* —— 判词 —— */
+/* 整份画像的落点，收在综述末尾。一条主色渐变的细线把它与前文隔开，字号上到
+   headline-small、颜色用正文最重的 on-surface：读者扫到最后一眼，先看见的是它。
+   这里刻意不借用引语那条左侧竖线——引语是「他说过什么」，判词是「这是什么」，
+   两种东西长得不一样，读者才不会把判词当成又一句原话。 */
+.closing{margin-top:var(--md-space-7)}
+.closing .md-rule{margin:0 0 var(--md-space-5)}
+.closing-line{margin:var(--md-space-4) 0 0;font-family:var(--md-font-display);
+  font-size:var(--md-type-headline-small-size);line-height:var(--md-type-headline-small-line);
+  font-weight:600;letter-spacing:-.005em;color:var(--md-sys-color-on-surface);
+  text-indent:0;text-wrap:pretty}
 
 /* —— 页脚 —— */
 .foot-note{color:var(--md-sys-color-on-surface-variant)}
@@ -973,6 +1003,7 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            closing: "他把休息也算成一件事，于是从来没有真正休息过。".into(),
             accent: "indigo".into(),
             estimated: false,
         }
@@ -982,6 +1013,27 @@ mod tests {
     fn no_faces() -> &'static HashMap<i64, String> {
         static EMPTY: std::sync::OnceLock<HashMap<i64, String>> = std::sync::OnceLock::new();
         EMPTY.get_or_init(HashMap::new)
+    }
+
+    /// 样张里用的那张头像：40×40 的实色 PNG，四象限四种颜色。
+    ///
+    /// 尺寸是这条的关键——**必须比 34 像素的框大**。用一张比框小的图，
+    /// 圆框剪不剪裁都看不出差别，布局审计就成了空跑：这个坑第一次就是这么埋进去的。
+    /// 色块还能顺带看出 `object-fit:cover` 在中间裁、没把图拉变形。
+    const FACE: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACgAAAAoCAIAAAADnC86AAAAQUlEQVR42u3NIREAIBAAMNKh0a+JQxJCoNGEIAcd3rK7+ZXTWlrtO62IxWKxWCwWfxTfFWkxR5pYLBaLxWLxR/ED5/MStxS3PWsAAAAASUVORK5CYII=";
+
+    /// 有头像的样张视图：老张有头像，旁边那个没有，两种状态同框。
+    fn view_with_faces<'a>(material: &'a Material, persona: &'a Persona) -> View<'a> {
+        static FACES: std::sync::OnceLock<HashMap<i64, String>> = std::sync::OnceLock::new();
+        let faces = FACES.get_or_init(|| {
+            let mut faces = HashMap::new();
+            faces.insert(10002, FACE.to_string());
+            faces
+        });
+        View {
+            faces,
+            ..view_at(material, persona, MORNING)
+        }
     }
 
     const MORNING: i64 = 1_700_014_400;
@@ -1057,6 +1109,10 @@ mod tests {
             "一个字没改",
             "他把每件事都当成一件要交的活。",
             "凌晨三点还在改代码，明天又要废了",
+            // 判词：综述末尾那一块，细线隔开，单独一个标签。
+            r#"<hr class="rule md-rule">"#,
+            r#"<span class="label">判词</span>"#,
+            r#"<p class="closing-line">他把休息也算成一件事，于是从来没有真正休息过。</p>"#,
             "不等于本人",
             "1,234",
             "充分",
@@ -1167,6 +1223,38 @@ mod tests {
         assert!(!mixed.contains("BBBB"));
     }
 
+    /// 圆框必须真的剪裁。头像原图比框大得多，只给圆角不关溢出，图会撑破版面——
+    /// 这条是那个 bug 的钉子：框上要有 overflow:hidden，图要铺满并居中裁。
+    #[test]
+    fn the_face_frame_clips_what_it_holds() {
+        let page = html(&view(&material(), &persona()));
+        let frame = page
+            .split(".tie-face{")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("往来头像的圆框样式没了");
+        assert!(
+            frame.contains("border-radius:var(--md-shape-full)"),
+            "{frame}"
+        );
+        assert!(
+            frame.contains("overflow:hidden"),
+            "圆框不剪裁，头像会溢出：{frame}"
+        );
+
+        let img = page
+            .split(".tie-face img{")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .expect("往来头像的图片样式没了");
+        assert!(img.contains("width:100%"), "{img}");
+        assert!(img.contains("height:100%"), "{img}");
+        assert!(
+            img.contains("object-fit:cover"),
+            "图要居中裁，不能被拉变形：{img}"
+        );
+    }
+
     /// 戏说与口头禅没有内容时整块不出现——空着不是失败。
     #[test]
     fn empty_fun_and_catchphrases_drop_the_section() {
@@ -1260,6 +1348,7 @@ mod tests {
             style: String::new(),
             facets: Vec::new(),
             ties: Vec::new(),
+            closing: String::new(),
             ..persona()
         };
         let html = html(&view(&material, &persona));
@@ -1267,6 +1356,23 @@ mod tests {
         assert!(html.contains("用忙碌挡空的人"));
         assert!(html.contains("怎么说话"));
         assert!(html.contains("模型未接，怎么说话暂只有上面这些"));
+    }
+
+    /// 综述的段落全空了，判词还在——这一节能只收一句判词，不该整节消失。
+    /// 判词是这份东西的落点，它的去留不该由别的段落决定。
+    #[test]
+    fn the_closing_line_survives_without_any_passages() {
+        let material = material();
+        let persona = Persona {
+            profile: Vec::new(),
+            ..persona()
+        };
+        let html = html(&view(&material, &persona));
+        assert!(html.contains(r#"<span class="sec-mark">画像综述</span>"#));
+        assert!(html.contains(r#"<span class="label">判词</span>"#));
+        assert!(html.contains("他把休息也算成一件事，于是从来没有真正休息过。"));
+        // 只有判词时不该留一条孤零零的细线在段落的位置上。
+        assert_eq!(html.matches(r#"<hr class="rule md-rule">"#).count(), 1);
     }
 
     #[test]
@@ -1348,9 +1454,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let material = material();
         let persona = persona();
+        // 日读这份带上有头像的往来：布局审计要跑在真实的头像上，
+        // 圆框剪裁这条只在这一份里看得见。
         std::fs::write(
             format!("{dir}/portrait-light.html"),
-            html(&view_at(&material, &persona, MORNING)),
+            html(&view_with_faces(&material, &persona)),
         )
         .unwrap();
         std::fs::write(

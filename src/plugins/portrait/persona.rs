@@ -352,6 +352,21 @@ impl Passage {
     }
 }
 
+/// 上一份画像用过的三样话：称号、一句话、判词。
+///
+/// 这是这份东西不千篇一律的那一手。模型看不见别人手里的画像，不给它这份名单，
+/// 十来个人就会拿到十来个「夜猫子」；判词还会批量套同一个句式
+/// （「他不是 A，是 B」连着出现五遍，再好的句子也成了模板）。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Recent {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub closing: String,
+}
+
 /// 一份可以交给模板渲染的画像。
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Persona {
@@ -382,6 +397,21 @@ pub struct Persona {
     /// 综述：段落与引语按序排列。
     #[serde(default, alias = "综述", alias = "passages")]
     pub profile: Vec<Passage>,
+    /// 判词：整份画像收在最锋利的一句上，30—60 字。
+    ///
+    /// 与 [`Self::note`] 的分工：一句话定位在开头，先给人一个抓手；判词在末尾，
+    /// 把整份读下来的东西收成一句。开头那句要准，末尾这句要狠。
+    ///
+    /// 字段名不叫 `verdict`：那个名字在 [`Facet`] 上是每一格的判定，
+    /// 两处同名会让读提示词的人分不清哪句是哪个。
+    #[serde(
+        default,
+        alias = "判词",
+        alias = "一句判词",
+        alias = "断语",
+        alias = "kicker"
+    )]
+    pub closing: String,
     #[serde(default)]
     pub accent: String,
     /// 这份档案是模型写的，还是统计直出的。
@@ -417,6 +447,8 @@ mod limit {
     pub const QUOTE: usize = 90;
     pub const QUOTE_NOTE: usize = 24;
     pub const MAX_PASSAGES: usize = 6;
+    /// 判词：一句收束。按三行给——它是这份东西的落点，被截断就白写了。
+    pub const CLOSING: usize = 60;
 }
 
 /// 截到上限并补省略号。省略号前面不留空白，否则会变成「手机 root …」这种断口。
@@ -542,6 +574,7 @@ impl Persona {
         self.title = clip(&self.title, limit::TITLE);
         self.note = clip(&self.note, limit::NOTE);
         self.style = clip(&self.style, limit::STYLE);
+        self.closing = clip(&self.closing, limit::CLOSING);
 
         let mut used: HashMap<&'static str, ()> = HashMap::new();
         let facets = std::mem::take(&mut self.facets);
@@ -775,8 +808,23 @@ impl Persona {
             sketch: String::new(),
             ties: Vec::new(),
             profile,
+            // 判词是读出来的，不是数出来的：没有模型就没有判词。
+            // 拿一句观测直出的话冒充判词，正好砸了这一节的招牌。
+            closing: String::new(),
             accent: Accent::pick(material.user_id).name().to_string(),
             estimated: true,
+        }
+    }
+
+    /// 这份画像里会被下一份躲开的那三样。
+    ///
+    /// 抽成一处是为了让「记什么」只有一个说法：排除表存的是这三样，
+    /// 提示词里念的也是这三样，两边不会各记各的。
+    pub fn stamp(&self) -> Recent {
+        Recent {
+            title: self.title.clone(),
+            note: self.note.clone(),
+            closing: self.closing.clone(),
         }
     }
 
@@ -822,6 +870,10 @@ const SYSTEM_PROMPT: &str = r#"你在给一个群成员做一份**角色画像**
 这份东西是发在群里给大家看着玩的：群友拿它互相调侃、哈哈一笑，不会有人当真。
 所以**你可以大胆下判断，判断偏了也没关系**——但每一句都要有影子（他说过的话、
 他出现的时间、他聊的事）。凭空安一个身份不好笑，笑点是「还真是这样」。
+
+它要有两层效果：**笑一下，然后安静一下。** 戏说那一节负责前一半，
+综述与判词负责后一半——把那句「还真是这样」往下推一层，推到他自己都没说出口的地方。
+一份读完只是好笑的画像，是没做完的。
 
 读的人不认识他。读完要能说出：这是个什么样的人，喜欢什么、不喜欢什么，靠什么过活，
 家里什么情况，多大年纪，读到哪儿，过去经历过什么，想做什么，在群里跟谁聊得来。
@@ -896,16 +948,49 @@ const SYSTEM_PROMPT: &str = r#"你在给一个群成员做一份**角色画像**
 两个人共用一个「他」，读的人分不清说的是谁——而卡片上紧挨着的那行数字里，
 「他」说的又是对方。
 
-【综述笔法】
-综述四到六段，白描，照着事实写。
-- 一句话说一件事，写成完整的陈述句。句子短，主语清楚。
-- 每一句判断后面要有东西撑着：他说过的话、数字、时间。只有判断没有事实的句子，删掉。
-- 至少两段把引语单独成段，前后用自己的话接住它。引语必须逐字出自下发的样本，一个字
-  都不能改；找不到合适的就不给引语。同一句引语不要在档案的依据或口头禅里再用一遍。
-- 不用比喻、对仗、金句、格言体，不用「不是……而是……」「既……又……」这种句式。
-- 不用评价词（很强、非常、厉害），不用模糊限定（似乎、某种、大概），不用「其实」「说到底」。
-- 数字挑着用，一段里至多两三处。同一件事只说一遍。
-- 这一节是白描，不是段子：玩笑都放在戏说那一节，这里只把事说准。
+【综述：这是亮刀的地方】
+综述四到六段，末尾再收一句判词。档案那一节是拿证据说话的，戏说那一节是逗笑的，
+这一节是**让人安静一下**的：把行为背后那个东西说出来，读者会「哦」一声，
+然后有点不舒服，因为那说的也是他自己。
+
+可以用的，用足了：
+- 隐喻与借代：把他在群里的样子落到一个具体的东西或场景上——排班表、无人认领的公告栏、
+  一直在响的取件码。比喻必须踩在一件真事上；踩不住的比喻是空话，删掉。
+- 典故与成语：把他做过的事抬进一个大家都熟的框架里。生僻的不要用；
+  用了还得解释一遍的，等于没用。
+- 反问：把读者拉进来。「一个人把报错贴到凌晨三点，白天在忙什么？」
+- 讽刺与反语：字面一层，指的是另一层。张力从这儿来。
+- 说穿机制：不只说他做了什么，说**为什么他只能这么做**——这样活换到了什么，又付了什么。
+  「给人启发」从这里来：读者认出的是处境，不是他这个人。
+- 含沙射影只许影射「现象」：不许暗指群里其他具体的人，也不许影射现实里的第三者。
+
+放开的是**写法**，不是**出处**：每一句判断后面仍然要有东西撑着——他说过的话、数字、
+时间。一句话漂亮但没有事实在下面，照样删掉。比喻与典故是把事实照亮，不是拿来替事实。
+至少两段把引语单独成段，前后用自己的话接住它。引语必须逐字出自下发的样本，一个字都
+不能改；找不到合适的就不给引语。同一句引语不要在档案的依据或口头禅里再用一遍。
+数字挑着用，一段里至多两三处。
+
+准星只有一个：**靶子是他的做法与处境，不是他这个人的价值。**
+这一份会发在群里，他自己也会看到。可以说一个人把日子过成了排班表，
+不可以暗示他这人不行；可以说「舍不得关灯」，不可以说他可怜。
+
+仍然要删的：
+- 没有事实垫着的漂亮话。对仗、排比、金句，说了等于没说的，一句都不要。
+- 说教的姿态：「希望他能……」「其实他需要的是……」。你不是他的长辈。
+- 空洞的收尾：「而这，就是他的故事。」这类句子一句都别写。
+- 评价词（很强、非常、厉害）、模糊限定（似乎、某种、大概）、「其实」「说到底」。
+- 同一个数字报两遍，同一件事说两遍。
+
+【判词】
+整份画像的落点，30 到 60 字，独立成句。它要刺一下，也要留一点暖：说出他这样活着
+**换到了什么、付了什么**。允许反问，允许只给一个画面让读者自己往下想。
+它必须是整份里最锋利的那一句，不是前文的总结——把前文总结一遍等于没写。
+前几份用过的判词会给你，**不要套同一个句式**。
+
+形状是这几种（造句别抄这三句，抄形状）：
+- 「他把白天让给了别的事，深夜才回来认领自己。」
+- 「一个人能连着三年在同一个点上线，说明这个点有人在等他，或者没人等他。」
+- 「群里最常报时间的人，往往是唯一一个还在意时间的人。」
 
 只输出一个 JSON 对象，不要代码块，不要解释，不要前后缀。
 
@@ -929,21 +1014,22 @@ JSON 字段：
     {"kind":"text","body":"一段综述，不超过 200 字"},
     {"kind":"quote","text":"逐字引用的一条发言","note":"这句话说明什么，不超过 24 字"}
   ],
+  "closing": "判词，30 到 60 字，整份画像最锋利的那一句",
   "accent": "从 amber / rose / mint / indigo / violet / teal 里选一个当报告主色"
 }
 
 facets 的 dimension 只能写 性格 / 兴趣 / 好恶 / 生计 / 家庭 / 年岁 / 学历 / 经历 / 志向 / 人际，
 certainty 只能写 明说 / 可推 / 待考，一个维度至多一条，没依据的整条不要给。
 ties 的 id 只能取往来账上的号。profile 给 4 到 6 段，其中至少 2 段是 quote。
-写完自己看一遍：有没有对仗，有没有只下判断不给事实的句子，有没有空收尾，
-有没有同一个数报了两遍，称号和别人撞了没有，戏说是不是踩在他真做过的事上。"#;
+写完自己看一遍：有没有漂亮话没事实垫着，有没有说教的口气，有没有暗指群里别的人，
+有没有同一个数报了两遍，称号和判词跟别人撞了没有，判词是不是把前文又总结了一遍。"#;
 
 /// 组装下发给模型的素材。观测三块（统计、语言指纹、群内往来）加一块样本。
 ///
 /// `recent` 是最近几份画像用过的「称号 + 一句话」，由调用方从进程状态里取。它是这份东西
 /// 不千篇一律的那一手：模型看不见别人手里的画像，不给它这份名单，十来个人就会拿到
 /// 十来个「技术宅 / 夜猫子」。
-pub fn user_prompt(material: &Material, style: &Style, recent: &[(String, String)]) -> String {
+pub fn user_prompt(material: &Material, style: &Style, recent: &[Recent]) -> String {
     let mut out = String::with_capacity(16_000);
 
     out.push_str("【对象】\n");
@@ -952,10 +1038,14 @@ pub fn user_prompt(material: &Material, style: &Style, recent: &[(String, String
 
     if !recent.is_empty() {
         out.push_str(
-            "【最近几份画像用过的称号与一句话】（**换个说法，不许与它们相同或只差一两个字**）\n",
+            "【最近几份画像用过的话】（**换个说法**：称号不许与它们相同或只差一两个字；\
+             判词不许套它们用过的句式）\n",
         );
-        for (title, note) in recent {
-            out.push_str(&format!("- {title}｜{note}\n"));
+        for entry in recent {
+            out.push_str(&format!("- {}｜{}\n", entry.title, entry.note));
+            if !entry.closing.trim().is_empty() {
+                out.push_str(&format!("  判词：{}\n", entry.closing));
+            }
         }
         out.push('\n');
     }
@@ -1436,6 +1526,7 @@ mod tests {
             title: "这是一个特别特别长的综合速写".into(),
             note: "长".repeat(200),
             style: "风".repeat(300),
+            closing: "判".repeat(200),
             facets: vec![facet("性格", "可推", &"判".repeat(200), &"依".repeat(300))],
             ties: vec![TieReading {
                 id: 10001,
@@ -1454,6 +1545,12 @@ mod tests {
         assert_eq!(persona.title.chars().count(), limit::TITLE + 1);
         assert!(persona.note.chars().count() <= limit::NOTE + 1);
         assert!(persona.style.chars().count() <= limit::STYLE + 1);
+        // 判词按三行给，不是拿来掐的：上限之外才截。
+        assert!(persona.closing.chars().count() <= limit::CLOSING + 1);
+        assert!(
+            persona.closing.chars().count() > limit::CLOSING,
+            "超了就该截"
+        );
         assert!(persona.facets[0].verdict.chars().count() <= limit::VERDICT + 1);
         assert!(persona.facets[0].evidence.chars().count() <= limit::EVIDENCE + 1);
         assert!(persona.sketch.chars().count() <= limit::SKETCH + 1);
@@ -1539,12 +1636,27 @@ mod tests {
             "外貌",
             "健康",
             "真实姓名",
+            // 锋芒层：允许的五种写法、唯一那条准星、判词。
+            "隐喻",
+            "典故",
+            "反问",
+            "反语",
+            "含沙射影",
+            "靶子是他的做法与处境，不是他这个人的价值",
+            "判词",
+            "最锋利",
+            // 放开写法不等于放开出处——这两条仍然要在。
+            "必须踩在一件真事上",
+            "每一句判断后面仍然要有东西撑着",
         ] {
             assert!(system.contains(needle), "提示词缺少 {needle}");
         }
         // 投影那一层整块拿掉了，提示词里再提它就是文档没跟上。
         assert!(!system.contains("MBTI"));
         assert!(!system.contains("九型"));
+        // 旧的「这一节是白描」那条禁令已经作废，留着它就是把刀又收回鞘里。
+        assert!(!system.contains("这一节是白描"));
+        assert!(!system.contains("不用比喻"));
     }
 
     /// 口头禅逐字核验：编的、改过一个字的、不在候选里的，一条都留不下。
@@ -1660,19 +1772,32 @@ mod tests {
         assert!(user_prompt(&bare, &style(), &[]).contains("没有重复到三遍的短句"));
     }
 
-    /// 最近几份用过的称号与一句话要随提示词下发：这份东西不千篇一律就靠这一手。
+    /// 最近几份用过的话要随提示词下发：这份东西不千篇一律就靠这一手。
     #[test]
     fn recent_titles_are_handed_to_the_model_to_avoid() {
         let material = material();
         let recent = vec![
-            ("赛博流浪汉".to_string(), "白天不在，夜里冒泡".to_string()),
-            ("自助餐学霸".to_string(), "食堂三层都吃遍了".to_string()),
+            Recent {
+                title: "赛博流浪汉".to_string(),
+                note: "白天不在，夜里冒泡".to_string(),
+                closing: "他把自己搬到了别人睡着的那个时段".to_string(),
+            },
+            Recent {
+                title: "自助餐学霸".to_string(),
+                note: "食堂三层都吃遍了".to_string(),
+                closing: String::new(),
+            },
         ];
         let prompt = user_prompt(&material, &style(), &recent);
-        assert!(prompt.contains("【最近几份画像用过的称号与一句话】"));
+        assert!(prompt.contains("【最近几份画像用过的话】"));
         assert!(prompt.contains("- 赛博流浪汉｜白天不在，夜里冒泡"));
         assert!(prompt.contains("- 自助餐学霸｜食堂三层都吃遍了"));
+        // 判词跟着一起给：不给它，下一份就会套同一个句式。
+        assert!(prompt.contains("判词：他把自己搬到了别人睡着的那个时段"));
         assert!(prompt.contains("不许与它们相同或只差一两个字"));
+        assert!(prompt.contains("不许套它们用过的句式"));
+        // 判词为空的那条不印一行空的。
+        assert!(!prompt.contains("判词：\n"));
         // 一份都没发过时整块不出现，省下那段字。
         assert!(!user_prompt(&material, &style(), &[]).contains("最近几份画像用过"));
     }
