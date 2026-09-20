@@ -32,6 +32,8 @@ const TURN_WINDOW: i64 = 120;
 const TIE_SAMPLES: usize = 2;
 /// 一条往来原话截到多少字。
 const TIE_SAMPLE_CHARS: usize = 60;
+/// 一条候选口癖至少原样出现过几次才算。
+const PHRASE_MIN_COUNT: u64 = 3;
 
 /// 一次采集的窗口参数。
 pub struct Request {
@@ -197,6 +199,9 @@ pub struct Material {
     pub avg_len: f64,
     /// 高频词与出现次数。
     pub words: Vec<(String, u64)>,
+    /// 口头禅的候选：原样重复过的短发言与次数。「他老说这一句」比高频词更能说明口癖，
+    /// 因为高频词给的是话题、重复的整句给的才是口头禅。
+    pub phrases: Vec<(String, u64)>,
     /// 交给模型的发言样本，按时间由近及远；模型引用的原话必须出自这里。
     pub samples: Vec<String>,
     /// 语言与行为指纹，全部由事实算出，见 [`Style`]。
@@ -453,6 +458,7 @@ pub async fn collect(
     .await?;
 
     let words = top_words(&rows);
+    let phrases = top_phrases(&rows);
     let samples = pick_samples(&rows, request.max_samples);
     let style = style_of(&rows);
     let ties = collect_ties(db, request, &groups, &rows).await?;
@@ -480,6 +486,7 @@ pub async fn collect(
         longest: totals.longest.max(0) as u64,
         avg_len: totals.avg_len.max(0.0),
         words,
+        phrases,
         samples,
         style,
         ties,
@@ -771,6 +778,42 @@ fn strip_at_markers(content: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// 口头禅的候选：原样重复过的短发言。
+///
+/// 口径卡在两处：长度 2—14 字（太短的「在」「6」人人都发，太长的是刷屏不是口癖），
+/// 至少重复 [`PHRASE_MIN_COUNT`] 次。带图片表情标记的那几条不算——那是复制的表情，
+/// 不是说话的习惯。
+fn top_phrases(rows: &[TextRow]) -> Vec<(String, u64)> {
+    const MAX_CHARS: usize = 14;
+    const KEEP: usize = 12;
+    let mut counts: HashMap<String, u64> = HashMap::new();
+    for row in rows {
+        if row.length <= 0 {
+            continue;
+        }
+        let Some(text) = meaningful(&row.content) else {
+            continue;
+        };
+        let text = strip_at_markers(&text);
+        let text = text.trim();
+        let chars = text.chars().count();
+        if chars < 2 || chars > MAX_CHARS {
+            continue;
+        }
+        if text.starts_with('[') && text.ends_with(']') {
+            continue;
+        }
+        *counts.entry(text.to_string()).or_insert(0) += 1;
+    }
+    let mut phrases: Vec<(String, u64)> = counts
+        .into_iter()
+        .filter(|(_, count)| *count >= PHRASE_MIN_COUNT)
+        .collect();
+    phrases.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    phrases.truncate(KEEP);
+    phrases
 }
 
 /// 高频词。分词结果在 `tokens` 列里已由录制插件算好，这里只做计数与过滤，
@@ -1221,6 +1264,7 @@ mod tests {
             longest: 120,
             avg_len: 12.0,
             words: Vec::new(),
+            phrases: Vec::new(),
             samples: Vec::new(),
             style: Style::default(),
             ties: Vec::new(),
@@ -1250,6 +1294,7 @@ mod tests {
             longest: 0,
             avg_len: 0.0,
             words: Vec::new(),
+            phrases: Vec::new(),
             samples: Vec::new(),
             style: Style::default(),
             ties: Vec::new(),
@@ -1642,6 +1687,46 @@ mod tests {
         assert_eq!(mentions("[@all] 你好"), Vec::<i64>::new());
         assert_eq!(mentions("[@abc] 你好"), Vec::<i64>::new());
         assert_eq!(mentions("[@] 你好"), Vec::<i64>::new());
+    }
+
+    /// 口头禅候选：原样重复过的短发言。太短的、太长的、带标记的、次数不够的都不要。
+    #[test]
+    fn repeated_short_messages_become_catchphrase_candidates() {
+        let repeat = |text: &str, length: i32, times: usize| {
+            (0..times)
+                .map(|_| row(text, length))
+                .collect::<Vec<TextRow>>()
+        };
+        let mut rows = Vec::new();
+        // 说三遍的一句：够格。
+        rows.extend(repeat("这就去", 3, 3));
+        // 只重复两次，不够。
+        rows.extend(repeat("不折腾了", 4, 2));
+        // 一个字：人人都发，不算口癖。
+        rows.extend(repeat("6", 1, 5));
+        // 太长，是刷屏不是口癖。
+        rows.extend(repeat(
+            "这是一条特别长的发言，重复几次也不该被当成口头禅来报",
+            28,
+            4,
+        ));
+        // 纯标记不是说话。
+        rows.extend(repeat("[图片]", 0, 5));
+
+        let phrases = top_phrases(&rows);
+        assert_eq!(phrases, vec![("这就去".to_string(), 3)]);
+
+        // 次数一样多时按文字排，同一份素材每次给出同一个候选表。
+        let mut tied = Vec::new();
+        tied.extend(repeat("来了", 2, 3));
+        tied.extend(repeat("好嘞", 2, 3));
+        assert_eq!(
+            top_phrases(&tied)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>(),
+            vec!["好嘞".to_string(), "来了".to_string()]
+        );
     }
 
     #[test]

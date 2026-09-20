@@ -7,7 +7,8 @@
 //! 2. **档案**：九个维度各一句判定，每条带一档把握与一条依据，是全篇唯一「读出来」的部分，
 //!    所以每条都挂着把握徽章，顶上写明三档各是什么意思。
 //!
-//! 综合速写压在最前——它是这份东西的脸。往下先立档案（他是谁），再摆观测（凭什么这么说），
+//! 一句话定位压在最前——它是这份东西的脸。往下先立档案（他是谁）、再摆戏说（拿来玩的），
+//! 然后是观测（凭什么这么说），
 //! 最后是综述与页脚。
 //!
 //! 版面有两处图形，都是真数据：一排 24 小时的柱（什么时候来）与每条往来的双向条
@@ -22,6 +23,7 @@ use super::collect::Material;
 use super::persona::{CERTAINTIES, FACETS, Persona, certainty_class, certainty_note};
 use anyhow::Result;
 use chrono::{DateTime, FixedOffset, Timelike, Utc};
+use std::collections::HashMap;
 
 /// 卡片渲染宽度（CSS 像素）。出图宽度 = `WIDTH × scale`。
 const WIDTH: u32 = 720;
@@ -110,6 +112,8 @@ pub struct View<'a> {
     pub persona: &'a Persona,
     /// 对象头像的 data URL，见 [`super::avatar`]；取不到时是 `None`，改用名字首字。
     pub avatar: Option<&'a str>,
+    /// 往来对象各自的头像，键是 QQ 号，见 [`super::avatar`]。少一个就少一个人用首字顶着。
+    pub faces: &'a HashMap<i64, String>,
     pub model: &'a str,
     /// 主题模式：`auto` / `light` / `dark`，见 [`Theme::resolve`]。
     pub theme: &'a str,
@@ -134,7 +138,9 @@ pub fn html(view: &View<'_>) -> String {
 {hero}
 {headline}
 {dossier}
+{fun}
 {voice}
+{catchphrases}
 {rhythm}
 {ties}
 {profile}
@@ -147,9 +153,11 @@ pub fn html(view: &View<'_>) -> String {
         hero = hero(view),
         headline = headline(view.persona),
         dossier = dossier(view.persona),
+        fun = fun(view.persona),
         voice = voice(view.material, view.persona),
+        catchphrases = catchphrases(view.persona),
         rhythm = rhythm(view.material),
-        ties = ties(view.material, view.persona),
+        ties = ties(view.material, view.persona, view.faces),
         profile = profile(view.persona),
         foot = foot(view),
     )
@@ -217,7 +225,7 @@ fn readings(material: &Material) -> String {
         .collect()
 }
 
-/// 综合速写——这份东西的脸。模型没接时挂一枚筹码说明。
+/// 一句话定位——这份东西的脸：一个戏称加一句话。模型没接时挂一枚筹码说明。
 fn headline(persona: &Persona) -> String {
     let pill = if persona.estimated {
         r#"<span class="md-chip">模型未接，档案由观测直出</span>"#.to_string()
@@ -230,7 +238,7 @@ fn headline(persona: &Persona) -> String {
         format!(r#"<div class="note">{}</div>"#, esc(&persona.note))
     };
     format!(
-        r#"<div class="headline"><div class="label-row"><span class="label">综合速写</span>{pill}</div><div class="title">{}</div>{note}</div>"#,
+        r#"<div class="headline"><div class="label-row"><span class="label">一句话定位</span>{pill}</div><div class="title">{}</div>{note}</div>"#,
         esc(if persona.title.is_empty() {
             "尚未归纳"
         } else {
@@ -287,6 +295,62 @@ fn dossier(persona: &Persona) -> String {
     format!(
         r#"<div class="sec">{head}<div class="legend">{legend}</div>{body}</div>"#,
         head = sec_head("人物档案", "DOSSIER"),
+    )
+}
+
+/// 戏说：标签墙与小传。这一节是拿来玩的，所以顶上先把口径写清楚——
+/// 允许夸张、也允许说偏；笑点落在他真做过的事上，不是胡说八道。
+///
+/// 版面与档案分开：标签是一枚枚短词，小传是一段衬线；档案那边是带把握徽章的行，
+/// 两节摆在一起，读者一眼分得清哪一半能拿去引用、哪一半只能拿去笑。
+fn fun(persona: &Persona) -> String {
+    let labels: String = persona
+        .labels
+        .iter()
+        .map(|item| {
+            let why = if item.why.trim().is_empty() {
+                String::new()
+            } else {
+                format!(r#"<span class="fun-why">{}</span>"#, esc(&item.why))
+            };
+            format!(
+                r#"<div class="fun-label"><span class="fun-word">{}</span>{why}</div>"#,
+                esc(&item.label)
+            )
+        })
+        .collect();
+    let sketch = if persona.sketch.trim().is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="fun-sketch">{}</div>"#, esc(&persona.sketch))
+    };
+    if labels.is_empty() && sketch.is_empty() {
+        return String::new();
+    }
+    format!(
+        r#"<div class="sec">{head}<div class="fp-frame-note">这一节是拿来玩的：允许夸张，也允许说偏。笑点在他真做过的事上。</div><div class="fun-labels">{labels}</div>{sketch}</div>"#,
+        head = sec_head("戏说", "JUST FOR FUN"),
+    )
+}
+
+/// 口头禅：原样说过三遍以上的那几句，逐字核过，一个字没改。
+fn catchphrases(persona: &Persona) -> String {
+    if persona.catchphrases.is_empty() {
+        return String::new();
+    }
+    let items: String = persona
+        .catchphrases
+        .iter()
+        .map(|phrase| {
+            format!(
+                r#"<li class="phrase"><span class="phrase-mark"></span><blockquote>{}</blockquote></li>"#,
+                esc(phrase)
+            )
+        })
+        .collect();
+    format!(
+        r#"<div class="sec">{head}<div class="fp-frame-note">这几句是他自己反复说的，逐字照抄，一个字没改。</div><ul class="phrases">{items}</ul></div>"#,
+        head = sec_head("口头禅", "CATCHPHRASES"),
     )
 }
 
@@ -399,7 +463,7 @@ fn rhythm_caption(material: &Material) -> String {
 /// 一组往来分四行：谁、点名（方向条就在这一行下面）、接话、一句读法。
 /// 方向条只画点名——接话是两个人一起把话接下去的，两边本来就接近对半，
 /// 画出来只会让人以为「差不多」是读出来的结论。
-fn ties(material: &Material, persona: &Persona) -> String {
+fn ties(material: &Material, persona: &Persona, faces: &HashMap<i64, String>) -> String {
     if material.ties.is_empty() {
         return String::new();
     }
@@ -424,9 +488,14 @@ fn ties(material: &Material, persona: &Persona) -> String {
                     r#"<div class="tie-track"><span class="tie-out" style="width:{left}%"></span><span class="tie-in" style="width:{right}%"></span><span class="tie-center"></span></div>"#
                 )
             };
+            // 头像：取回来就嵌图，没取到就用名字首字顶着，版位不变。
+            let face = match faces.get(&tie.user_id) {
+                Some(src) => format!(r#"<img src="{}" alt="">"#, esc(src)),
+                None => esc(&initial(&tie.name)),
+            };
             format!(
                 r#"<div class="tie"><div class="tie-head"><span class="tie-face">{face}</span><span class="tie-name">{name}</span><span class="tie-initiative">{initiative}</span></div><div class="tie-num"><i>点名</i> 我叫他 {at_out} · 他叫我 {at_in}</div>{track}<div class="tie-num"><i>接话</i> 我接他 {turn_out} · 他接我 {turn_in}</div>{reading}</div>"#,
-                face = esc(&initial(&tie.name)),
+                face = face,
                 name = esc(&tie.name),
                 initiative = esc(tie.initiative()),
                 at_out = tie.at_out,
@@ -494,8 +563,9 @@ fn foot(view: &View<'_>) -> String {
         )
     };
     format!(
-        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>档案 {covered}/9 格<span class="md-sep">·</span>模型 {model}</div>{hint}<div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话。仅供参考，不作凭据。</div></div>"#,
+        r#"<div class="foot md-foot"><div>观测区间 {range}<span class="md-sep">·</span>样本 {} 条<span class="md-sep">·</span>档案 {covered}/{total} 格<span class="md-sep">·</span>模型 {model}</div>{hint}<div class="foot-note">画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话；口头禅那几句是原样照抄的；戏说那一节是玩笑，允许夸张。仅供参考，不作凭据。</div></div>"#,
         material.samples.len(),
+        total = FACETS.len(),
         range = esc(&range),
         model = esc(view.model),
     )
@@ -522,7 +592,7 @@ const CSS: &str = r#"
    令牌与组件基元在 `res/cards/m3e.css`（`crate::render::web::DESIGN_SYSTEM`），
    这里只写这张卡自己的位置，**不写色值与字号字面量**。
 
-   与另外几张卡一样只用纸色；显示级文字用衬线（综合速写、档案的判定与依据、语言读法、
+   与另外几张卡一样只用纸色；显示级文字用衬线（一句话定位、档案的判定与依据、语言读法、
    往来读法与综述）。这是版面选择不是设计系统的分歧——衬线落在纸色上才像一份「写下来的
    东西」。衬线在 46px 上要把字重收到 700：Black(800) 的字脚在纸上会糊成一团。 */
 body{width:720px}
@@ -551,7 +621,7 @@ body{width:720px}
   font-weight:500;color:var(--md-sys-color-on-surface-variant)}
 .readings-top{margin-top:10px;padding-top:0}
 
-/* —— 综合速写 —— */
+/* —— 一句话定位 —— */
 .headline{margin-top:var(--md-space-6)}
 .label-row{display:flex;align-items:center;gap:var(--md-space-3);flex-wrap:wrap}
 .label{font-size:var(--md-type-label-small-size);font-weight:var(--md-type-label-small-weight);
@@ -559,9 +629,11 @@ body{width:720px}
 .title{margin-top:var(--md-space-3);font-family:var(--md-font-display);
   font-size:var(--md-type-display-medium-size);line-height:var(--md-type-display-medium-line);
   font-weight:700;letter-spacing:-.005em;color:var(--md-sys-color-on-surface)}
-/* 一句话概括用主色衬线：它是这份画像里唯一「说出来的话」 */
-.note{margin-top:var(--md-space-3);font-family:var(--md-font-display);
-  font-size:var(--md-type-title-small-size);line-height:1.66;font-weight:600;
+/* 一句话概括用主色衬线，是这份画像里唯一「说出来的话」。
+   留到六十个字、不给省略号：这一行就是这份东西的题眼，截断了看的人什么也拿不到。
+   两行到头，行距按段落的量级给。 */
+.note{margin-top:var(--md-space-4);font-family:var(--md-font-display);
+  font-size:var(--md-type-title-small-size);line-height:1.8;font-weight:600;
   color:var(--md-sys-color-primary)}
 
 /* —— 分节 —— */
@@ -692,6 +764,37 @@ body{width:720px}
   font-size:var(--md-type-body-medium-size);line-height:1.78;
   color:var(--md-sys-color-on-surface-variant)}
 
+/* ==================== 戏说 ==================== */
+/* 标签墙：一枚短词 + 一句为什么，一行一条、理由左对齐成一列，扫起来像一张牌面。
+   短词用主色芯片，理由用次级前景色——这一节是玩笑，但玩笑也有出处，出处就得看得清。 */
+.fun-labels{display:flex;flex-direction:column;gap:var(--md-space-3)}
+.fun-label{display:flex;align-items:baseline;gap:var(--md-space-4)}
+.fun-word{flex:none;padding:3px var(--md-space-3);border-radius:var(--md-shape-s);
+  background:var(--md-sys-color-primary-container);color:var(--md-sys-color-on-primary-container);
+  font-family:var(--md-font-display);font-size:var(--md-type-title-small-size);
+  line-height:1.5;font-weight:700;letter-spacing:.04em;white-space:nowrap}
+.fun-why{flex:1;min-width:0;font-size:var(--md-type-body-small-size);line-height:1.7;
+  color:var(--md-sys-color-on-surface-variant)}
+/* 戏说小传：一段衬线，落在主色淡层上——版面上它与「档案」那些带徽章的行一眼分开 */
+.fun-sketch{margin-top:var(--md-space-5);padding:var(--md-space-5) 22px;
+  border-radius:var(--md-shape-m);background:var(--md-sys-color-primary-tint);
+  border-left:3px solid var(--md-sys-color-primary-line);
+  font-family:var(--md-font-display);font-size:var(--md-type-body-large-size);
+  line-height:1.86;color:var(--md-sys-color-on-surface-variant)}
+
+/* ==================== 口头禅 ==================== */
+/* 逐字照抄的那几句。排成一列短引语，左边一枚主色点，右边衬线。 */
+.phrases{list-style:none;display:flex;flex-direction:column;gap:var(--md-space-2)}
+.phrase{position:relative;display:flex;align-items:baseline;gap:var(--md-space-4);
+  padding:var(--md-space-2) 0}
+.phrase-mark{flex:none;width:6px;height:6px;border-radius:var(--md-shape-full);
+  background:var(--md-sys-color-primary);align-self:center}
+.phrase blockquote{margin:0;font-family:var(--md-font-display);
+  font-size:var(--md-type-title-small-size);line-height:1.62;font-weight:600;
+  color:var(--md-sys-color-on-surface)}
+.phrase blockquote::before{content:"「"}
+.phrase blockquote::after{content:"」"}
+
 /* ==================== 画像综述 ==================== */
 .prose{margin-bottom:18px;font-family:var(--md-font-display);
   font-size:var(--md-type-body-large-size);line-height:1.86;
@@ -714,7 +817,7 @@ body{width:720px}
 mod tests {
     use super::*;
     use crate::plugins::portrait::collect::{GroupSlice, Kinds, Style, Tie};
-    use crate::plugins::portrait::persona::{Facet, Passage, TieReading};
+    use crate::plugins::portrait::persona::{Facet, FunLabel, Passage, TieReading};
 
     fn offset() -> FixedOffset {
         FixedOffset::east_opt(8 * 3600).unwrap()
@@ -798,6 +901,7 @@ mod tests {
             longest: 320,
             avg_len: 17.6,
             words: vec![("天气".into(), 40)],
+            phrases: vec![("这就去".into(), 6), ("不折腾了".into(), 4)],
             samples: vec!["凌晨三点还在改代码，明天又要废了".into()],
             style: style(),
             ties: vec![tie()],
@@ -819,6 +923,18 @@ mod tests {
             title: "用忙碌挡空的人".into(),
             note: "他把休息也算成一件事".into(),
             style: "话短，句尾常带问号，像自言自语又像追问。".into(),
+            catchphrases: vec!["这就去".into(), "不折腾了".into()],
+            labels: vec![
+                FunLabel {
+                    label: "赛博流浪汉".into(),
+                    why: "天天半夜上线，白天见不着".into(),
+                },
+                FunLabel {
+                    label: "自助餐学霸".into(),
+                    why: "食堂三层都吃遍了".into(),
+                },
+            ],
+            sketch: "他的一天从下午四点开始，到凌晨三点结束。".into(),
             facets: vec![
                 facet(
                     "性格",
@@ -862,6 +978,12 @@ mod tests {
         }
     }
 
+    /// 没有往来头像时的空表：一张卡里少几个头像不该影响版位。
+    fn no_faces() -> &'static HashMap<i64, String> {
+        static EMPTY: std::sync::OnceLock<HashMap<i64, String>> = std::sync::OnceLock::new();
+        EMPTY.get_or_init(HashMap::new)
+    }
+
     const MORNING: i64 = 1_700_014_400;
     const MIDNIGHT: i64 = 1_700_064_800;
 
@@ -870,6 +992,7 @@ mod tests {
             material,
             persona,
             avatar: None,
+            faces: no_faces(),
             model: "deepseek/deepseek-flash",
             theme: "auto",
             command: "/画像 @某人",
@@ -892,11 +1015,13 @@ mod tests {
         for needle in [
             "角色画像",
             "CHARACTER DOSSIER",
-            "综合速写",
+            "一句话定位",
             "用忙碌挡空的人",
             "他把休息也算成一件事",
             r#"<span class="sec-mark">人物档案</span>"#,
+            r#"<span class="sec-mark">戏说</span>"#,
             r#"<span class="sec-mark">怎么说话</span>"#,
+            r#"<span class="sec-mark">口头禅</span>"#,
             r#"<span class="sec-mark">什么时候来</span>"#,
             r#"<span class="sec-mark">群内往来</span>"#,
             r#"<span class="sec-mark">画像综述</span>"#,
@@ -920,12 +1045,22 @@ mod tests {
             "我这边主动",
             "跟老张主要聊装机，抬杠居多",
             "都不等于回复",
+            // 戏说：标签、理由与小传，口径写在节头上。
+            "赛博流浪汉",
+            "天天半夜上线，白天见不着",
+            "自助餐学霸",
+            "他的一天从下午四点开始，到凌晨三点结束。",
+            "允许夸张，也允许说偏",
+            // 口头禅：逐字照抄的那几句。
+            "这就去",
+            "不折腾了",
+            "一个字没改",
             "他把每件事都当成一件要交的活。",
             "凌晨三点还在改代码，明天又要废了",
             "不等于本人",
             "1,234",
             "充分",
-            "档案 3/9 格",
+            "档案 3/10 格",
             "deepseek/deepseek-flash",
             // 页脚那条能立刻执行的下一步，带着当前环境的前缀。
             r#"<span>换一个人看</span><code>/画像 @某人</code>"#,
@@ -934,9 +1069,9 @@ mod tests {
         }
     }
 
-    /// 档案九格固定，没有的格子不占版面；有格子时也不该多出别的维度。
+    /// 档案十格固定，没有的格子不占版面；有格子时也不该多出别的维度。
     #[test]
-    fn the_dossier_has_exactly_the_nine_slots() {
+    fn the_dossier_has_exactly_the_ten_slots() {
         let material = material();
         let persona = persona();
         let html = html(&view(&material, &persona));
@@ -1000,6 +1135,54 @@ mod tests {
         assert!(bare.contains("只看接话"));
     }
 
+    /// 往来对象也要头像：取回来嵌图，没取到用名字首字，两种都不改版位。
+    #[test]
+    fn a_tie_carries_the_partners_face() {
+        let material = material();
+        let persona = persona();
+        let without = html(&view(&material, &persona));
+        assert!(
+            without.contains(r#"<span class="tie-face">老</span>"#),
+            "没取到头像时用名字首字"
+        );
+
+        let mut faces = HashMap::new();
+        faces.insert(10002, "data:image/jpeg;base64,AAAA".to_string());
+        let with = html(&View {
+            faces: &faces,
+            ..view_at(&material, &persona, MORNING)
+        });
+        assert!(with.contains(
+            r#"<span class="tie-face"><img src="data:image/jpeg;base64,AAAA" alt=""></span>"#
+        ));
+        assert!(!with.contains(r#"<span class="tie-face">老</span>"#));
+        // 表里有别人、没有他时，他仍然用首字。
+        let mut others = HashMap::new();
+        others.insert(999_999, "data:image/jpeg;base64,BBBB".to_string());
+        let mixed = html(&View {
+            faces: &others,
+            ..view_at(&material, &persona, MORNING)
+        });
+        assert!(mixed.contains(r#"<span class="tie-face">老</span>"#));
+        assert!(!mixed.contains("BBBB"));
+    }
+
+    /// 戏说与口头禅没有内容时整块不出现——空着不是失败。
+    #[test]
+    fn empty_fun_and_catchphrases_drop_the_section() {
+        let material = material();
+        let persona = Persona {
+            labels: Vec::new(),
+            sketch: String::new(),
+            catchphrases: Vec::new(),
+            ..persona()
+        };
+        let page = html(&view(&material, &persona));
+        assert!(!page.contains(r#"<span class="sec-mark">戏说</span>"#));
+        assert!(!page.contains(r#"<span class="sec-mark">口头禅</span>"#));
+        assert!(page.contains(r#"<span class="sec-mark">人物档案</span>"#));
+    }
+
     /// 模型没接时：档案整块留空并说清为什么，观测三节照旧。
     #[test]
     fn a_model_down_report_keeps_the_observations() {
@@ -1015,7 +1198,11 @@ mod tests {
         assert!(html.contains("群内往来"), "往来是数出来的，模型没接也还在");
         assert!(html.contains("模型未接，怎么说话暂只有上面这些"));
         assert!(html.contains("模型未接，档案由观测直出"));
-        assert!(html.contains("档案 0/9 格"));
+        assert!(html.contains("档案 0/10 格"));
+        // 口头禅是数出来的，模型没接也照旧在；戏说要模型写，这一层空着。
+        assert!(html.contains(r#"<span class="sec-mark">口头禅</span>"#));
+        assert!(html.contains("这就去"));
+        assert!(!html.contains(r#"<span class="sec-mark">戏说</span>"#));
     }
 
     /// 没有往来对象时，那一节整块不出现。
@@ -1063,7 +1250,7 @@ mod tests {
         assert!(!with.contains(r#"<div class="avatar">阿</div>"#));
     }
 
-    /// 空的综述不占版面；综合速写、怎么说话、什么时候来始终在——画像的骨头是观测。
+    /// 空的综述不占版面；一句话定位、怎么说话、什么时候来始终在——画像的骨头是观测。
     #[test]
     fn empty_passages_disappear_and_the_bones_stay() {
         let material = material();

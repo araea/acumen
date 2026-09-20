@@ -2,23 +2,28 @@
 //!
 //! 指令只有一条，`画像`。不带参数是查自己，@ 一个人或直接写 QQ 号是查别人。
 //!
-//! 报告分两层，从硬到软：
+//! 这份东西是发在群里给大家看着玩的，所以它敢下判断、敢夸张；同时每一句都留了出处。
+//! 报告分三层：
 //!
-//! - **观测**：[`collect`] 从库里数出来的三块——语言指纹、活跃节律、群内往来。都不经模型，
-//!   可核验，模型接不接都一样在。
-//! - **档案**：[`persona`] 把观测与样本交给模型，换回九个维度各一句判定
-//!   （性格 / 兴趣 / 好恶 / 生计 / 家庭 / 年岁 / 经历 / 志向 / 人际），每条配一条依据与
-//!   一档把握（明说 / 可推 / 待考）。
+//! - **观测**：[`collect`] 从库里数出来的四块——语言指纹、活跃节律、口头禅候选、群内往来。
+//!   都不经模型，可核验，模型接不接都一样在。
+//! - **档案**：[`persona`] 把观测与样本交给模型，换回十个维度各一句判定
+//!   （性格 / 兴趣 / 好恶 / 生计 / 家庭 / 年岁 / 学历 / 经历 / 志向 / 人际），每条配一条
+//!   依据与一档把握（明说 / 可推 / 待考）。
+//! - **戏说**：同一份输出里的标签墙与小传。这一节明写着是玩笑，允许夸张。
 //!
-//! [`card`] 把两层排成一张 HTML 报告图；[`avatar`] 取对象的 QQ 头像配在开头。
+//! [`card`] 把三层排成一张 HTML 报告图；[`avatar`] 取对象与往来对象的 QQ 头像配在开头。
 //!
-//! 三条线，两处刻意为之：
+//! 四条线，两处刻意为之：
 //!
-//! - 不编数字（观测三块全由 [`collect`] 算出来）、不编原话（引语与「明说」的依据都逐字
-//!   比对样本）、不冒充把握（标了「明说」却拿不出原话的，收口时降成「可推」）。
+//! - 不编数字（观测四块全由 [`collect`] 算出来）、不编原话（引语、口头禅、以及「明说」
+//!   的依据都逐字比对样本）、不冒充把握（标了「明说」却拿不出原话的，收口时降成「可推」）、
+//!   不拿别人的脸开玩笑（外貌与健康不写）。
 //! - **不再给任何人定 MBTI 与九型**。凭一个人打过的字给他一个四字母的型，是把一次粗糙的
 //!   归类说得像一次测量。要判断一个人是什么样，看他亲口说过什么，比看他在四个轴上的位置
 //!   诚实得多。
+//! - 那句「正在生成」在成品发出去之后会被撤回：它是一句进度，留在群里是噪声。过了 QQ 的
+//!   两分钟就不去试（实现端的出站闸门会把连续的撤回失败算成故障，见 [`retract`]）。
 //! - 同一个目标同时在跑只允许一次，`cooldown_seconds` 之内也不重复，免得群里连着刷。
 //!   这两道闸只影响发指令的人，不影响其它功能。
 
@@ -27,7 +32,7 @@ pub mod card;
 pub mod collect;
 pub mod persona;
 
-use crate::adapters::satori::{LockedWriter, send_msg};
+use crate::adapters::satori::{LockedWriter, send_msg, send_msg_id};
 use crate::config::build_config;
 use crate::event::{Context, EventType};
 use crate::message::Message;
@@ -264,10 +269,15 @@ struct Gate {
     /// 每个人最近一次的成品，按发出去的先后从旧到新排。卡片是几 MB 的 base64，
     /// 所以只留最近这几个。
     served: Vec<(i64, Cached)>,
+    /// 最近几份画像用过的「称号 + 一句话」，从旧到新。它只干一件事：下一份画像的提示词
+    /// 里带上它，让模型换个说法——十来个人拿到十来个「夜猫子」，这份东西就不好玩了。
+    recent: Vec<(String, String)>,
 }
 
 /// 成品缓存留几个。冷却默认三分钟，够覆盖「同一批人反复问」的场面。
 const SERVED_KEEP: usize = 6;
+/// 排除表留几条。给多了提示词变长，给少了挡不住撞车。
+const RECENT_KEEP: usize = 8;
 
 /// 开始生成时发的一张「票」，走到哪一步都不会忘了还——哪怕是提前 return
 /// 或者 panic，`Drop` 都会把忙碌标记摘掉。
@@ -334,6 +344,27 @@ fn served(user_id: i64) -> Option<Cached> {
         .map(|(_, result)| result.clone())
 }
 
+/// 记下这一次用过的称号与一句话，给下一份画像当排除表。
+///
+/// 只在真发出去之后调：群里没人看见的那份，不该占掉别人的说法。
+fn note_words(title: &str, note: &str) {
+    if title.trim().is_empty() && note.trim().is_empty() {
+        return;
+    }
+    let mut gate = gate().lock().unwrap();
+    gate.recent.retain(|(seen, _)| seen != title);
+    gate.recent.push((title.to_string(), note.to_string()));
+    if gate.recent.len() > RECENT_KEEP {
+        let drop = gate.recent.len() - RECENT_KEEP;
+        gate.recent.drain(..drop);
+    }
+}
+
+/// 最近用过的称号与一句话，从旧到新。
+fn recent_words() -> Vec<(String, String)> {
+    gate().lock().unwrap().recent.clone()
+}
+
 // ================= 插件入口 =================
 
 pub fn handle(
@@ -382,7 +413,7 @@ pub fn handle(
         // 写进 `Ok(_)` 之类的分支里会当场被丢掉，闸门就白设了。
         let _ticket = match enter(target, cooldown) {
             Entry::Busy => {
-                say(
+                let _ = say(
                     &ctx,
                     writer,
                     group_id,
@@ -415,7 +446,7 @@ pub fn handle(
                         }
                     }
                     None => {
-                        say(
+                        let _ = say(
                             &ctx,
                             writer,
                             group_id,
@@ -436,7 +467,7 @@ pub fn handle(
             None if target == requester => "你".to_string(),
             None => format!("QQ {target}"),
         };
-        say(
+        let notice = say(
             &ctx,
             writer.clone(),
             group_id,
@@ -460,9 +491,9 @@ pub fn handle(
         let material = match collect::collect(&ctx.db, &request).await {
             Ok(Some(material)) => material,
             Ok(None) => {
-                say(
+                let _ = say(
                     &ctx,
-                    writer,
+                    writer.clone(),
                     group_id,
                     requester,
                     message_id,
@@ -470,19 +501,22 @@ pub fn handle(
                     format!("📭 没有找到 {who} 在群里的发言记录\n他在这段时间里没在群里说过话，或换个时间范围再试"),
                 )
                 .await;
+                // 这一趟到此为止，那句进度也该收走——群里只留一条说得清的。
+                retract(&ctx, writer, notice).await;
                 return Ok(None);
             }
             Err(error) => {
                 error!(target: LOG_TARGET, "查询发言记录失败：{error:#}");
-                say(
+                let _ = say(
                     &ctx,
-                    writer,
+                    writer.clone(),
                     group_id,
                     requester,
                     message_id,
                     format!("❌ 查记录时出错了：{error}\n过一会儿再试"),
                 )
                 .await;
+                retract(&ctx, writer, notice).await;
                 return Ok(None);
             }
         };
@@ -493,15 +527,16 @@ pub fn handle(
             Ok(triple) => triple,
             Err(error) => {
                 warn!(target: LOG_TARGET, "模型接口不可用：{error:#}");
-                say(
+                let _ = say(
                     &ctx,
-                    writer,
+                    writer.clone(),
                     group_id,
                     requester,
                     message_id,
                     format!("❌ 模型接口没配好：{error}\n检查 [oai.providers] 里的接口地址与密钥"),
                 )
                 .await;
+                retract(&ctx, writer, notice).await;
                 return Ok(None);
             }
         };
@@ -515,6 +550,7 @@ pub fn handle(
                 content: vec![UserContent::Text(Text::new(persona::user_prompt(
                     &material,
                     &material.style,
+                    &recent_words(),
                 )))],
             },
         ];
@@ -548,7 +584,13 @@ pub fn handle(
             }
         };
 
-        let avatar = avatar::data_url(material.user_id).await;
+        // 头像一共两拨：对象一张大图，往来对象每人一张小图。并起来取，
+        // 六个人挨个取最坏要等一分钟。
+        let partners: Vec<i64> = material.ties.iter().map(|tie| tie.user_id).collect();
+        let (avatar, faces) = tokio::join!(
+            avatar::data_url(material.user_id),
+            avatar::data_urls(&partners, avatar::PARTNER_SPEC),
+        );
         // 页脚那条下一步带上当前环境的前缀，读者能整条抄走。
         let command = format!(
             "{}画像 @某人",
@@ -561,6 +603,7 @@ pub fn handle(
             material: &material,
             persona: &profile,
             avatar: avatar.as_deref(),
+            faces: &faces,
             model: &model,
             theme: &config.theme,
             command: &command,
@@ -580,11 +623,12 @@ pub fn handle(
             Ok(base64) => {
                 let reply = Message::new().image(base64.clone());
                 // 真发出去了才记：没发出去的那份，群里没人看见过。
-                if send_msg(&ctx, writer, group_id, Some(requester), reply)
+                if send_msg(&ctx, writer.clone(), group_id, Some(requester), reply)
                     .await
                     .is_ok()
                 {
                     remember(target, Cached::Card(base64));
+                    note_words(&profile.title, &profile.note);
                 }
             }
             Err(error) => {
@@ -594,9 +638,21 @@ pub fn handle(
                 // 出图失败或主动关图都不该等于没有结果：退回成文字版。
                 let summary = text_report(&material, &profile, &model, config.image_enabled);
                 remember(target, Cached::Report(summary.clone()));
-                say(&ctx, writer, group_id, requester, message_id, summary).await;
+                note_words(&profile.title, &profile.note);
+                let _ = say(
+                    &ctx,
+                    writer.clone(),
+                    group_id,
+                    requester,
+                    message_id,
+                    summary,
+                )
+                .await;
             }
         }
+
+        // 成品已经在群里了，那句「正在生成」就该收走：它是一句进度，留在那儿是噪声。
+        retract(&ctx, writer, notice).await;
 
         info!(target: LOG_TARGET, "画像完成：目标 {}（{} 条样本）", target, material.samples.len());
         Ok(None)
@@ -623,8 +679,7 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     if model.trim().is_empty() {
         anyhow::bail!("portrait.model 没配");
     }
-    let providers =
-        get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai").providers;
+    let providers = get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai").providers;
     let (default_base, default_key) = match crate::plugins::oai::data::MANAGER.get() {
         Some(manager) => {
             let config = manager.config.read().await;
@@ -649,8 +704,8 @@ async fn endpoint(ctx: &Context, model: &str) -> anyhow::Result<(String, String,
     Ok((base, key, model))
 }
 
-/// 卡片图之外的文字版：综合速写、人物档案、怎么说话、什么时候来、群内往来、画像综述
-/// 与那句边界说明——一张图里有的信息，这一层一条不落，包括 24 小时与一周的完整分布。
+/// 卡片图之外的文字版：一句话定位、人物档案、戏说、口头禅、怎么说话、什么时候来、群内往来、
+/// 画像综述与那句边界说明——一张图里有的信息，这一层一条不落，包括 24 小时与一周的完整分布。
 /// 够用户在群里看懂这份画像，不至于因为一张图没出成就什么都拿不到。
 ///
 /// `image_enabled` 只影响最后那句交代：是「出图失败」还是「本来就关了图」。
@@ -660,13 +715,13 @@ fn text_report(
     model: &str,
     image_enabled: bool,
 ) -> String {
-    let mut out = format!("▍综合速写\n{}\n{}\n", profile.title, profile.note);
+    let mut out = format!("▍一句话定位\n{}\n{}\n", profile.title, profile.note);
 
     out.push_str("\n▍人物档案（把握三档：明说＝他本人讲过，可推＝几条线索，待考＝只一处线索）\n");
     if profile.facets.is_empty() {
         out.push_str(
-            "　这一层这次空着：模型没接上，九格一格都没写。\
-             下面三节照旧——它们全部由记录数出，不经模型。\n",
+            "　这一层这次空着：模型没接上，一格都没写。\
+             下面几节照旧——它们全部由记录数出，不经模型。\n",
         );
     } else {
         for (name, _) in persona::FACETS {
@@ -676,6 +731,28 @@ fn text_report(
             out.push_str(&format!("　{}｜{}\n", name, facet.tier()));
             out.push_str(&format!("　　{}\n", facet.verdict));
             out.push_str(&format!("　　{}\n", evidence_line(facet)));
+        }
+    }
+
+    // 戏说：标签墙与小传。文字版里把口径也带上，不然发出来容易被人当真。
+    if !profile.labels.is_empty() || !profile.sketch.trim().is_empty() {
+        out.push_str("\n▍戏说（拿来玩的：允许夸张，也允许说偏）\n");
+        for item in &profile.labels {
+            if item.why.trim().is_empty() {
+                out.push_str(&format!("　· {}\n", item.label));
+            } else {
+                out.push_str(&format!("　· {}｜{}\n", item.label, item.why));
+            }
+        }
+        if !profile.sketch.trim().is_empty() {
+            out.push_str(&format!("{}\n", profile.sketch));
+        }
+    }
+
+    if !profile.catchphrases.is_empty() {
+        out.push_str("\n▍口头禅（他自己反复说的，逐字照抄，一个字没改）\n");
+        for phrase in &profile.catchphrases {
+            out.push_str(&format!("　「{phrase}」\n"));
         }
     }
 
@@ -765,7 +842,8 @@ fn text_report(
     };
     out.push_str(&format!(
         "\n画像是对行为的抽象，有损：只含他在群里说过的部分，不等于本人。\
-         档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话。\
+         档案每一格都标了把握，标「明说」的那几格，依据是他本人的原话；\
+         口头禅那几句是原样照抄的；戏说那一节是玩笑，允许夸张。\
          {footer}（{model}）。"
     ));
     out
@@ -790,6 +868,63 @@ fn counts(values: &[u64]) -> String {
         .join(" ")
 }
 
+/// 一条刚发出去、还来得及撤回的消息。
+///
+/// 频道跟着消息一起记下来，不靠调用方再算一遍：群聊与私聊的 `channel_id` 写法不一样
+/// （群是群号本身，私聊是 `private:<QQ>`），撤回要按发出去的那条频道去撤。
+struct Notice {
+    id: String,
+    channel: String,
+    sent: Instant,
+}
+
+/// 预告消息的撤回窗口，取 QQ 的两分钟再留二十秒余量。
+///
+/// **过了窗口就不去试**。QQ 只给两分钟，超了必然失败，而实现端的出站闸门会把连续的
+/// 撤回失败算成故障（连撤三条就把整台机器人的发消息能力关上两分钟，见 satori-qq 的
+/// OutboundGuard）。一条留在群里的过期预告，比机器人失声两分钟轻得多。
+const RETRACT_WINDOW: Duration = Duration::from_secs(100);
+
+/// 把「正在生成」那条收回去。
+///
+/// 发一句进度是在群里占一行，成品出来之后它就成了噪声；收走它，会话干净。
+/// 收不掉不算失败：日志记一行，什么都不说。
+async fn retract(ctx: &Context, writer: LockedWriter, notice: Option<Notice>) {
+    let Some(notice) = notice else {
+        return;
+    };
+    let waited = notice.sent.elapsed();
+    if waited >= RETRACT_WINDOW {
+        debug!(
+            target: LOG_TARGET,
+            "预告消息发出已 {} 秒，过了撤回窗口，留着它",
+            waited.as_secs()
+        );
+        return;
+    }
+    let result = writer
+        .call::<_, serde_json::Value>(
+            ctx,
+            "message.delete",
+            serde_json::json!({
+                "channel_id": notice.channel,
+                "message_id": notice.id,
+            }),
+        )
+        .await;
+    match result {
+        Ok(_) => debug!(target: LOG_TARGET, "已收回预告消息 {}", notice.id),
+        // 撤回失败不是这次生成的问题：日志留一行就够了，群里一个字都不说。
+        Err(error) => {
+            debug!(target: LOG_TARGET, "预告消息没收回（不影响这份画像）：{error}")
+        }
+    }
+}
+
+/// 发一句提示，并把句柄带回来——能不能撤、要不要撤由调用方定。
+///
+/// 指令回执、空态与报错都该留在群里，用不到那个句柄；只有「正在生成」那一条会在成品
+/// 发出去之后交给 [`retract`]。
 async fn say(
     ctx: &Context,
     writer: LockedWriter,
@@ -797,13 +932,25 @@ async fn say(
     user_id: i64,
     message_id: i64,
     text: String,
-) {
+) -> Option<Notice> {
     let mut message = Message::new();
     if message_id > 0 {
         message = message.reply(message_id);
     }
-    if let Err(error) = send_msg(ctx, writer, group_id, Some(user_id), message.text(text)).await {
-        warn!(target: LOG_TARGET, "回复失败：{error}");
+    let channel = match group_id.filter(|id| *id != 0) {
+        Some(id) => id.to_string(),
+        None => format!("private:{user_id}"),
+    };
+    match send_msg_id(ctx, writer, group_id, Some(user_id), message.text(text)).await {
+        Ok(id) => id.map(|id| Notice {
+            id,
+            channel,
+            sent: Instant::now(),
+        }),
+        Err(error) => {
+            warn!(target: LOG_TARGET, "回复失败：{error}");
+            None
+        }
     }
 }
 
@@ -895,6 +1042,7 @@ mod live_tests {
                 content: vec![UserContent::Text(Text::new(persona::user_prompt(
                     &material,
                     &material.style,
+                    &recent_words(),
                 )))],
             },
         ];
@@ -907,11 +1055,12 @@ mod live_tests {
             .expect("模型没有返回可用 JSON")
             .sanitize(&material);
         println!(
-            "===== 收口后的画像 =====\n综合速写：{}\n一句话：{}\n怎么说话：{}\n档案（{}/9 格）：\n{}\n往来读法：\n{}\n综述：\n{}",
+            "===== 收口后的画像 =====\n称号：{}\n一句话：{}\n怎么说话：{}\n档案（{}/{} 格）：\n{}\n戏说：\n{}\n口头禅：\n{}\n往来读法：\n{}\n综述：\n{}",
             profile.title,
             profile.note,
             profile.style,
             profile.covered(),
+            persona::FACETS.len(),
             persona::FACETS
                 .iter()
                 .filter_map(|(name, _)| {
@@ -924,6 +1073,19 @@ mod live_tests {
                         facet.evidence
                     ))
                 })
+                .collect::<Vec<_>>()
+                .join("\n"),
+            profile
+                .labels
+                .iter()
+                .map(|item| format!("　· {}｜{}", item.label, item.why))
+                .chain(std::iter::once(format!("　{}", profile.sketch)))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            profile
+                .catchphrases
+                .iter()
+                .map(|phrase| format!("　「{phrase}」"))
                 .collect::<Vec<_>>()
                 .join("\n"),
             profile
@@ -959,7 +1121,7 @@ mod live_tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        assert!(!profile.title.is_empty(), "综合速写不该是空的");
+        assert!(!profile.title.is_empty(), "一句话定位里的戏称不该是空的");
         assert!(!profile.note.is_empty(), "一句话概括不该是空的");
         // 九格里至少写出四格，否则这份档案没成形；模型接上了就不该只剩一两格。
         assert!(
@@ -997,17 +1159,24 @@ mod live_tests {
             );
         }
 
-        let avatar = avatar::data_url(material.user_id).await;
+        let partners: Vec<i64> = material.ties.iter().map(|tie| tie.user_id).collect();
+        let (avatar, faces) = tokio::join!(
+            avatar::data_url(material.user_id),
+            avatar::data_urls(&partners, avatar::PARTNER_SPEC),
+        );
         let html = card::html(&card::View {
             material: &material,
             persona: &profile,
             avatar: avatar.as_deref(),
+            faces: &faces,
             model: &model,
             theme: "auto",
             command: "/画像 @某人",
             offset: beijing(),
             now,
         });
+        // 归档一份：出图预算探针要拿真卡片量，版式也能直接打开看。
+        archive(&html, material.user_id).await;
         let base64 = card::capture(&html, 2.0).await.expect("出图失败");
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD
@@ -1018,6 +1187,79 @@ mod live_tests {
         let path = std::env::temp_dir().join("acumen-portrait-live.jpg");
         std::fs::write(&path, &bytes).ok();
         println!("出图已写入 {}", path.display());
+    }
+
+    /// 出图预算探针：把一份真卡片按各档倍率各截一次，打印像素数与成败。
+    ///
+    /// 画像卡每加一节就多几百像素，而 `render::web` 有一道「宽度 × 高度 × 倍率² ≤ 6400 万」
+    /// 的像素护栏；线上 `image_scale` 是 3，所以卡片长到一定程度会悄没声地退回文字版。
+    /// 改完版式拿这个量一次，比等它失败强。
+    ///
+    /// 卡片默认取 `target/release/data/portrait/` 里最近归档的那一份，也可以用
+    /// `PORTRAIT_CARD_HTML=<文件>` 指定。
+    /// `cargo test --release portrait_card_budget -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "需要 Chromium 与一份归档的画像 HTML"]
+    async fn portrait_card_budget_at_every_scale() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let html = match std::env::var("PORTRAIT_CARD_HTML") {
+            Ok(path) => std::fs::read_to_string(path).expect("读不到指定的 HTML"),
+            Err(_) => {
+                // 归档目录跟着 `current_exe()` 走：生产是 `target/release/data/portrait`，
+                // 而这个探针自己是 `target/release/deps/` 下的测试二进制，归档会落到
+                // `deps/data/portrait`。两处都翻一遍，按改动时间取最近的那一份。
+                let root = std::path::Path::new(manifest).join("target/release");
+                let newest = [root.join("data/portrait"), root.join("deps/data/portrait")]
+                    .iter()
+                    .filter_map(|dir| std::fs::read_dir(dir).ok())
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "html"))
+                    .filter_map(|path| {
+                        let stamp = path.metadata().ok()?.modified().ok()?;
+                        Some((stamp, path))
+                    })
+                    .max_by_key(|(stamp, _)| *stamp)
+                    .map(|(_, path)| path);
+                match newest {
+                    Some(path) => {
+                        println!("用量的是 {}", path.display());
+                        std::fs::read_to_string(&path).expect("读不到归档的 HTML")
+                    }
+                    None => {
+                        println!("target/release 下没有归档，跳过");
+                        return;
+                    }
+                }
+            }
+        };
+        println!("HTML {} KB", html.len() / 1024);
+        for scale in [1.0, 2.0, 3.0, 4.0] {
+            match card::capture(&html, scale).await {
+                Ok(base64) => {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(&base64)
+                        .unwrap();
+                    let image = image::load_from_memory(&bytes).unwrap();
+                    let pixels = image.width() as f64 * image.height() as f64;
+                    println!(
+                        "倍率 {scale}：{}×{} = {:.1} 万像素（护栏 6400 万 · {}）",
+                        image.width(),
+                        image.height(),
+                        pixels / 10_000.0,
+                        if pixels > 64_000_000.0 {
+                            "超了，会退回文字版"
+                        } else {
+                            "在护栏内"
+                        }
+                    );
+                }
+                Err(error) => println!("倍率 {scale}：出图失败（线上会退回文字版）：{error}"),
+            }
+        }
+        cdp_html_shot::Browser::shutdown_global().await;
     }
 
     /// 记录最多的那个用户，或 `PORTRAIT_LIVE_USER` 指定的那个。
@@ -1053,8 +1295,8 @@ mod live_tests {
 
     /// 线上接口：`[oai.providers.deepseek]` 与 `[portrait].model`。
     fn live_endpoint(manifest: &str) -> (String, String, String) {
-        let raw = std::fs::read_to_string(format!("{manifest}/config.toml"))
-            .expect("读不到 config.toml");
+        let raw =
+            std::fs::read_to_string(format!("{manifest}/config.toml")).expect("读不到 config.toml");
         let value: toml::Value = toml::from_str(&raw).expect("config.toml 解析失败");
         let lookup = |path: &[&str]| {
             path.iter()
@@ -1326,6 +1568,38 @@ mod tests {
         assert!(matches!(enter(user_id, Duration::ZERO), Entry::Go(_)));
     }
 
+    /// 用过的称号会留下来，旧的挤掉，同名的抬到最新——这份东西不千篇一律就靠这一手。
+    #[test]
+    fn the_words_already_used_are_kept_to_avoid_repeats() {
+        for index in 0..=RECENT_KEEP {
+            note_words(&format!("第 {index} 个称号"), &format!("第 {index} 句"));
+        }
+        let recent = recent_words();
+        assert_eq!(recent.len(), RECENT_KEEP);
+        assert!(
+            !recent.iter().any(|(title, _)| title == "第 0 个称号"),
+            "最早的那条该被挤掉"
+        );
+        assert_eq!(
+            recent.last().map(|(title, _)| title.as_str()),
+            Some(format!("第 {RECENT_KEEP} 个称号").as_str())
+        );
+
+        // 同一个称号再出现时抬到最后，不占两个位置（同一批素材重发时会发生）。
+        note_words("第 1 个称号", "换了一句话");
+        let recent = recent_words();
+        assert_eq!(recent.len(), RECENT_KEEP);
+        assert_eq!(
+            recent.last().map(|(t, n)| (t.as_str(), n.as_str())),
+            Some(("第 1 个称号", "换了一句话"))
+        );
+
+        // 两个都空的不记：那是一次没生成出东西的失败，不该占掉别人的说法。
+        let before = recent_words().len();
+        note_words("  ", "");
+        assert_eq!(recent_words().len(), before);
+    }
+
     /// 缓存只留最近这几个：问过的人多了，最早的那份被挤掉。
     #[test]
     fn the_result_cache_keeps_only_the_most_recent_askers() {
@@ -1364,6 +1638,7 @@ mod tests {
             longest: 50,
             avg_len: 10.0,
             words: Vec::new(),
+            phrases: Vec::new(),
             samples: Vec::new(),
             style: Default::default(),
             ties: vec![collect::Tie {
@@ -1464,6 +1739,7 @@ mod tests {
             longest: 8,
             avg_len: 4.0,
             words: Vec::new(),
+            phrases: vec![("这就去".into(), 3)],
             samples: vec!["今天这个雨下得没完没了".into()],
             style: Default::default(),
             ties: Vec::new(),
