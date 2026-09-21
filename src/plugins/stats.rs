@@ -31,6 +31,12 @@ pub struct StatsConfig {
     /// 成图高度（像素）。
     pub height: u32,
 
+    /// 排行榜的构图线与发言条谁盖谁。
+    /// `true`（默认）：构图线画在最上层，从榜首通到榜尾，格子不被任何一根条打断；
+    /// `false`：实色条盖住它，每根条都是完整的一块颜色。
+    /// 只影响遮挡关系，线的位置与疏密两种都一样；文字始终在最上面，不会被线压到。
+    pub ranking_grid_over_bars: bool,
+
     /// 群名单：配了黑名单就对名单外的所有群生效并推送，配了白名单则只对名单内的群
     /// 生效并推送。查询指令与主动推送共用这份名单，不会出现「能查不能推」的错位。
     pub channel: ChannelConfig,
@@ -85,6 +91,7 @@ impl Default for StatsConfig {
             font_family: "Noto Sans CJK SC".to_string(),
             width: 960,
             height: 800,
+            ranking_grid_over_bars: true,
             channel: ChannelConfig::default(),
             push_min_messages: 20,
             push_group_gap_min_seconds: 20,

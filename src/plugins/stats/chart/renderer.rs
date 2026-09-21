@@ -6,7 +6,7 @@ use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
     format_percent, format_thousands, get_contrast_color, get_font, get_font_family,
     get_font_with_color, harmonize_theme, mix_with_color, mix_with_white, overlay_image, rank_ink,
-    save_rgba_to_base64, truncate_text_to_fit,
+    save_rgba_to_base64, track_tone, truncate_text_to_fit,
 };
 use crate::plugins::stats::StatsConfig;
 use chrono::Local;
@@ -24,6 +24,52 @@ struct RowStyle {
     pct_ink: RGBColor,
 }
 
+/// 排行榜的构图线：一组等距的浅色竖线，只刻在每行的色带里。
+///
+/// **它不表示任何数值。** 间距按像素定、与数据无关，每张图都画在同一处；它要解决的
+/// 是构图问题——榜尾那几行整条轨道几乎都是空的，二十行摞起来右半边就是一面空墙，
+/// 视线没有落点。曾经试过把它钉在榜首数值的 1/4、1/2、3/4 上，算术是对的，可那会把
+/// 一个构图元素变成一个没有标注的假刻度，反而教人用错误的方式量条长（条长与数值不成
+/// 正比，见 `base_bar_min_width` 处）。所以位置只跟像素有关，不跟数值有关。
+///
+/// 只画在色带上、不穿过行距的纸面：线是刻在条上的记号，不是铺在纸上的网格，
+/// 行与行之间留白干净，整张图也就轻快。
+///
+/// 单独拎出来是因为它要么画在实色条之前（被条盖住），要么画在之后（压在条上），
+/// 由 `stats.ranking_grid_over_bars` 决定，两处调用同一份几何。
+struct ScaleGrid {
+    first_x: i32,
+    end_x: i32,
+    step: i32,
+    width: i32,
+    row_height: i32,
+}
+
+impl ScaleGrid {
+    /// `row_tops` 是各行色带的上沿，逐行画出该行高度内的那一段。
+    fn draw<DB: DrawingBackend>(
+        &self,
+        root: &DrawingArea<DB, plotters::coord::Shift>,
+        row_tops: impl Iterator<Item = i32> + Clone,
+    ) -> Result<(), String> {
+        let color = RGBAColor(0, 0, 0, 0.08);
+        let mut x = self.first_x;
+        while x <= self.end_x {
+            // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
+            let x0 = x.min(self.end_x - self.width);
+            for y in row_tops.clone() {
+                root.draw(&Rectangle::new(
+                    [(x0, y), (x0 + self.width, y + self.row_height)],
+                    color.filled(),
+                ))
+                .map_err(|e| e.to_string())?;
+            }
+            x += self.step;
+        }
+        Ok(())
+    }
+}
+
 /// 绘制水平条形图 (排行榜)
 ///
 /// 版式分成五个纵列：名次 → 头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
@@ -37,10 +83,10 @@ struct RowStyle {
 /// - **数值与占比各自右对齐成固定的一列。** 跟着条尾走会排成一串阶梯，二十行
 ///   就是二十个不同的起点，上下比大小要一个个找；而且短条那几行的数字压在淡色
 ///   轨道上，长条那几行压在纸上，同一列字踩着两种底。
-/// - **色带上有两道构图线，但没有刻度。** 构图线按轨道三等分，与数据无关，只为给
-///   右半边那片留白一点结构；刻度会被读成数值，而这根条的长度不与数值成正比
-///   （见 `base_bar_min_width`），所以这张图上不能有刻度。精确的比较交给右边那两列
-///   数字，色带只负责一眼看出长尾有多陡。
+/// - **色带上有构图线，但没有刻度。** 构图线等距排布、与数据无关，只为给右半边那片
+///   留白一点落点；刻度会被读成数值，而这根条的长度不与数值成正比（见
+///   `base_bar_min_width`），所以这张图上不能有刻度。精确的比较交给右边那两列数字，
+///   色带只负责一眼看出长尾有多陡。
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
@@ -210,7 +256,7 @@ pub fn draw_bar_chart(
                 let ratio = item.value as f64 / max_val as f64;
                 let bar_w = (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
                 let bar = harmonize_theme(item.theme_color);
-                let track = mix_with_white(bar, 0.5);
+                let track = track_tone(bar);
                 let value_ink = ensure_contrast(deep_tone(bar, 0.34), page_bg, 4.5);
                 RowStyle {
                     y,
@@ -260,48 +306,26 @@ pub fn draw_bar_chart(
             )?;
         }
 
-        // 第二趟：构图线。**它不是刻度，不表示任何数值。**
+        // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认构图线画在最上层，
+        // 每行的色带都被刻满；关掉则实色条盖住它，每根条是完整的一块颜色。
+        // 无论哪种，线只落在色带上、不越进行距的纸面，文字也都在最后一趟画。
         //
-        // 存在的理由只有构图：榜尾那几行整条轨道几乎都是空的，二十行摞起来右半边就是
-        // 一面空墙，视线没有落点。两道竖线把这片留白分成三段，给它一点结构。
-        //
-        // 三条约定，都是为了让人**不会**把它读成刻度：
-        //
-        // - **位置按轨道三等分，与数据无关**，每张图都画在同一处。曾经把它钉在榜首
-        //   数值的 1/4、1/2、3/4 上，算术是对的，可那正好落在轨道的 38%、59%、79%——
-        //   没有标注的线，谁都会读成「轨道的四分之一」，于是它反而在教人用错误的方式
-        //   量这根条。条长与数值本来就不成正比（见 `base_bar_min_width` 处），这张图上
-        //   任何看着像刻度的东西都是有害的。
-        // - **实色条盖住它。** 构图线填的是空的地方，不该在数据上留记号；被条截断之后
-        //   也不可能被连成一条完整的格线去读。填多少跟着空多少走，正好是它该干的事。
-        // - **用这一行自己的色相**，比轨道深一档。它属于这一行，不是一层盖在上面的黑网格。
-        //
-        // 两道而不是三道：最短的条已经占掉轨道的 17.6%，三等分的第一道离它还有一段距离，
-        // 四等分的第一道就贴着条尾了，榜尾十几行会连成「条 + 一道缝 + 一条线」的重复图样。
-        let rule_xs: [i32; 2] = std::array::from_fn(|i| {
-            track_start_x + (max_possible_bar_width as i32 * (i as i32 + 1)) / 3
-        });
-        let rule_w = 2 * s as i32;
-        for row in rows.iter() {
-            let ink = mix_with_white(row.bar, 0.78);
-            for x in rule_xs {
-                // 条尾正好压到线上时，会在条外留下一两个像素的余缝，看着像给条描了道边。
-                // 差这么一点就不画——反正那一行本来就不空，构图线在那里也没事可做。
-                if (x - row.bar_end_x).abs() <= rule_w * 2 {
-                    continue;
-                }
-                root.draw(&Rectangle::new(
-                    [
-                        (x - rule_w / 2, row.y),
-                        (x + rule_w / 2, row.y + row_height as i32),
-                    ],
-                    ink.filled(),
-                ))
-                .map_err(|e| e.to_string())?;
-            }
-        }
+        // 间距沿用 100*s：自条的零点（最小条长处）起一格一道。右端那道收在圆角之前——
+        // 它若落在圆角上，方头的线会戳出色带的轮廓；色带自己的圆角就是这张表的右边界，
+        // 不必再描一道。
+        let grid = ScaleGrid {
+            first_x: track_start_x + base_bar_min_width as i32,
+            end_x: track_end_x - bar_radius,
+            step: 100 * s as i32,
+            width: 2 * s as i32,
+            row_height: row_height as i32,
+        };
+        let row_tops = || rows.iter().map(|row| row.y);
 
-        // 第三趟：实色条
+        // 第二趟：条与构图线，孰上孰下看配置
+        if !config.ranking_grid_over_bars {
+            grid.draw(&root, row_tops())?;
+        }
         for row in rows.iter() {
             // 条没铺满整条色带时右端平切，与后面的轨道接成一条；铺满了（榜首）
             // 就连右边两个角一起圆，正好落在色带的轮廓上。
@@ -328,7 +352,11 @@ pub fn draw_bar_chart(
             }
         }
 
-        // 第四趟：行内文字（名次、昵称、数值、占比），始终画在最上层
+        if config.ranking_grid_over_bars {
+            grid.draw(&root, row_tops())?;
+        }
+
+        // 第三趟：行内文字（名次、昵称、数值、占比），始终画在最上层
         for (i, item) in data.iter().enumerate() {
             let row = &rows[i];
             let (y, bar_end_x) = (row.y, row.bar_end_x);

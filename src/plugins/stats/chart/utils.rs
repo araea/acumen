@@ -476,10 +476,46 @@ fn fallback_hue() -> f32 {
     to_hsl(RGBColor(31, 99, 80)).0
 }
 
-/// 主题色的明度与饱和度收进窄带，只留色相。
-/// 明度上限压在 0.5：条上的浅色字才有足够对比；下限 0.36：不至于黑成一块煤。
+/// 实色条的目标亮度。**这是 WCAG 的相对亮度，不是 HSL 的明度。**
+///
+/// HSL 的明度不是视觉亮度：同一条 HSL 明度带（l=0.43, s=0.34）上，黄的实际亮度是
+/// 0.275，紫是 0.101，差将近三倍。于是二十行的榜上，黄绿那几行永远比蓝紫那几行扎眼，
+/// 整张图的"重量"忽轻忽重——看久了累，就是这么来的。
+///
+/// M3 的 tonal palette 用感知明度（HCT 的 tone）解决同一件事：同一个 tone 上的所有
+/// 色相分量一样重，差别只剩色相。这里用 WCAG 的相对亮度做同样的归一。
+const BAR_LUMINANCE: f32 = 0.16;
+
+/// 淡色轨道的目标亮度。与 `BAR_LUMINANCE` 的对比度是 (0.68+0.05)/(0.16+0.05) ≈ 3.5∶1，
+/// 过 WCAG 2.2 非文字元素的 3∶1——条尾在哪要看得出来，那是这张图的主要信息。
+/// 从前轨道是「条色混一半白」，比例固定而对比度不固定：浅黄那一支只有 1.50∶1。
+const TRACK_LUMINANCE: f32 = 0.68;
+
+/// 彩度上限。亮度归一之后，各行之间剩下的差别只有色相与彩度；上限压到 0.30，
+/// 二十行连起来才是一套调子，不是一道彩虹。
+const MAX_SATURATION: f32 = 0.30;
+const MIN_SATURATION: f32 = 0.16;
+
+/// 定住色相与饱和度，把明度推到指定的相对亮度上。
+///
+/// 相对亮度对 HSL 明度单调，二分即可。任何色相都到得了 0—1 之间的任何亮度
+/// （l=0 是黑，l=1 是白），所以这里不会失败。
+fn at_luminance(h: f32, s: f32, target: f32) -> RGBColor {
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..24 {
+        let mid = (lo + hi) / 2.0;
+        if relative_luminance(from_hsl(h, s, mid)) < target {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    from_hsl(h, s, (lo + hi) / 2.0)
+}
+
+/// 主题色只留色相，彩度收进窄带，亮度归一到 `BAR_LUMINANCE`。
 pub fn harmonize_theme(color: RGBColor) -> RGBColor {
-    let (h, s, l) = to_hsl(color);
+    let (h, s, _) = to_hsl(color);
     let chroma =
         (color.0.max(color.1).max(color.2) - color.0.min(color.1).min(color.2)) as f32 / 255.0;
     // 彩度低到读不出方向的头像（纯灰的线稿、雪白、近黑）退到固定的回退色相，
@@ -487,9 +523,18 @@ pub fn harmonize_theme(color: RGBColor) -> RGBColor {
     // 反而成为整张榜上最扎眼的一条。它看着仍然是一块灰，只是带着系统那一点绿，
     // 不是纯灰——成片的中性色发灰，和主色也不像一家人。
     if chroma < HUE_NOISE_FLOOR {
-        return from_hsl(fallback_hue(), 0.10, l.clamp(0.36, 0.50));
+        return at_luminance(fallback_hue(), 0.08, BAR_LUMINANCE);
     }
-    from_hsl(h, s.clamp(0.18, 0.42), l.clamp(0.36, 0.50))
+    at_luminance(h, s.clamp(MIN_SATURATION, MAX_SATURATION), BAR_LUMINANCE)
+}
+
+/// 这一行的淡色轨道：同一支色相，亮度归一到 `TRACK_LUMINANCE`。
+///
+/// 也归一，是因为「混一半白」得到的是固定的**比例**，不是固定的**对比度**：
+/// 一支本来就亮的黄，混一半白之后与自己只差 1.50∶1，条尾在哪根本看不出来。
+pub fn track_tone(bar: RGBColor) -> RGBColor {
+    let (h, s, _) = to_hsl(bar);
+    at_luminance(h, s, TRACK_LUMINANCE)
 }
 
 /// 同色相的深调：`strength` 越小越深。给淡底上的字用。
@@ -908,19 +953,48 @@ mod tests {
         ];
         for raw in samples {
             let bar = harmonize_theme(raw);
-            let track = mix_with_white(bar, 0.5);
+            let track = track_tone(bar);
             let ink = deep_tone(bar, 0.34);
 
-            let luma = |c: RGBColor| (c.0 as u32 * 299 + c.1 as u32 * 587 + c.2 as u32 * 114) / 1000;
-            assert!((80..=170).contains(&luma(bar)), "条色应落在中间调: {:?}", bar);
-            assert!(luma(track) > luma(bar), "轨道要比条浅");
-            assert!(
-                luma(track) - luma(ink) > 90,
-                "数字与轨道的明度差不够: ink={:?} track={:?}",
-                ink,
-                track
-            );
+            assert!(relative_luminance(track) > relative_luminance(bar), "轨道要比条浅");
+            assert!(contrast_ratio(ink, track) >= 4.5, "数字压不住轨道");
         }
+
+        // **这才是「同一个调子」的真正含义**：把整个色相环扫一遍，每一支的实际亮度
+        // 都落在同一个点上。从前收的是 HSL 的明度，而 HSL 明度不是视觉亮度——同一条
+        // 明度带上黄比紫亮将近三倍，于是黄绿那几行在榜上永远比别人扎眼，二十行的
+        // 重量忽轻忽重。M3 的 tonal palette 用感知明度解决这件事，这里用相对亮度。
+        let mut bars = Vec::new();
+        let mut tracks = Vec::new();
+        for h in 0..360 {
+            for s in [0.0f32, 0.35, 0.7, 1.0] {
+                for l in [0.05f32, 0.25, 0.5, 0.75, 0.95] {
+                    let bar = harmonize_theme(from_hsl(h as f32, s, l));
+                    bars.push(relative_luminance(bar));
+                    tracks.push(relative_luminance(track_tone(bar)));
+                }
+            }
+        }
+        let spread = |v: &[f32]| {
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for &x in v {
+                lo = lo.min(x);
+                hi = hi.max(x);
+            }
+            (lo, hi)
+        };
+        // 留 0.02 的余量给 8 位量化：亮度是二分解出来的，最后要落回整数 RGB，
+        // 越亮的颜色一格的跨度越大（轨道比条明显）。从前这个区间是 0.10—0.28。
+        let (blo, bhi) = spread(&bars);
+        assert!(
+            bhi - blo < 0.02,
+            "条色的亮度应当齐平，实测 {blo:.3}—{bhi:.3}"
+        );
+        let (tlo, thi) = spread(&tracks);
+        assert!(
+            thi - tlo < 0.02,
+            "轨道的亮度应当齐平，实测 {tlo:.3}—{thi:.3}"
+        );
 
         // 三分量几乎不差的头像——纯灰、近黑、冷灰——退到同一支回退色相。
         // 「不从噪声里读一个方向出来」，多低才算噪声由实测定，见 HUE_NOISE_FLOOR。
@@ -1136,6 +1210,27 @@ mod tests {
         // 全透明的图没有颜色可取，兜底给主色，不给一支系统外的蓝
         let blank = RgbaImage::new(8, 8);
         assert_eq!(get_average_color(&blank), ColorScheme::default().primary);
+    }
+
+    /// 条的长度是「必须看得懂才读得出内容」的图形元素，它与自己那条轨道之间
+    /// 按 WCAG 2.2 的非文字阈值要够 3∶1——不然条尾在哪就只能靠猜。
+    #[test]
+    fn the_bar_stands_out_from_its_own_track() {
+        let mut worst = (99.0f32, RGBColor(0, 0, 0));
+        for h in 0..360 {
+            for s in [0.0f32, 0.35, 0.7, 1.0] {
+                for l in [0.05f32, 0.25, 0.5, 0.75, 0.95] {
+                    let bar = harmonize_theme(from_hsl(h as f32, s, l));
+                    let track = track_tone(bar);
+                    let r = contrast_ratio(bar, track);
+                    if r < worst.0 {
+                        worst = (r, bar);
+                    }
+                }
+            }
+        }
+        println!("条与轨道最差的一支：{:?} {:.2}∶1", worst.1, worst.0);
+        assert!(worst.0 >= 3.0, "条与轨道只有 {:.2}∶1", worst.0);
     }
 
     #[test]
