@@ -325,6 +325,65 @@ fn is_verification_page(landed: &str) -> bool {
     landed.contains(WECHAT_CAPTCHA_PATH)
 }
 
+/// 微信文章的图靠它自己的脚本补，这里替它补一遍，并等图解码出来。
+///
+/// 微信会把图的地址挪进属性、把画在页面上的那份换成占位图，等自己的脚本滚到跟前再补
+/// 回来。那套脚本在普通 Chromium 里跑不起来——`window.__lazyload_detected` 停在 false，
+/// 页面还会自己挂出一句「因网络连接问题，剩余内容暂无法加载」——于是整篇文章截出来
+/// 只有一片比例正确的空白块。等多久都没用：实测静置 9 秒、再把视口拉满整页，
+/// 18 处占位图一处都没动。两种写法在这里都补：
+///
+/// - `<img>` 上只写了 `data-src`（正文里的长图）
+/// - 微信特有的 `data-lazy-bgimg`（[E2.COOL] 那类「SVG 交互」长图整篇都是它，
+///   `background-image` 被换成了 1×1 的占位 gif）
+///
+/// 只补当前是空白的，页面自己已经填好的不动。表达式自己等图解码，最多 5 秒——
+/// 等不到就照当前状态截，不发图也不是这里的选项。
+///
+/// [E2.COOL]: https://e2.cool
+const WECHAT_REHYDRATE_JS: &str = r#"(() => {
+  const blankSrc = (v) => !v || v.startsWith('data:');
+  const blankBg = (v) => {
+    if (!v) return true;
+    const m = v.match(/url\(["']?(.*?)["']?\)/);
+    return !m || m[1].startsWith('data:');
+  };
+  const pending = [];
+  for (const img of document.images) {
+    const dataSrc = img.getAttribute('data-src');
+    if (dataSrc && blankSrc(img.getAttribute('src'))) {
+      img.src = dataSrc;
+      pending.push(img);
+    }
+  }
+  for (const el of document.querySelectorAll('[data-lazy-bgimg]')) {
+    const url = el.getAttribute('data-lazy-bgimg');
+    if (url && blankBg(el.style.backgroundImage)) {
+      el.style.backgroundImage = 'url("' + url + '")';
+      const probe = new Image();
+      probe.src = url;
+      pending.push(probe);
+    }
+  }
+  if (pending.length === 0) return 0;
+  const decoded = Promise.all(pending.map(n => n.decode().catch(() => {})));
+  const cap = new Promise(r => setTimeout(r, 5000));
+  return Promise.race([decoded, cap]).then(() => pending.length);
+})()"#;
+
+/// 补回微信页面的占位图，返回补了几处。
+///
+/// 补不上不该瘫掉整次截图：出错就照原样出图，只是图还是空的。
+async fn rehydrate_wechat_images(tab: &cdp_html_shot::Tab) -> u64 {
+    match tab.evaluate(WECHAT_REHYDRATE_JS).await {
+        Ok(value) => value.as_f64().unwrap_or(0.0) as u64,
+        Err(e) => {
+            warn!(target: "Plugin/WebShot", "补微信页面的图失败：{}", e);
+            0
+        }
+    }
+}
+
 /// 截一张图。闸门、总超时和页面清理都在这里，`capture_page` 只管渲染。
 async fn capture_url(
     url: &Url,
@@ -355,7 +414,7 @@ async fn capture_url(
             }
         };
         page = Some(TabGuard::new(browser.new_tab().await?));
-        capture_page(page.as_ref().unwrap().tab(), url.as_str(), config, width).await
+        capture_page(page.as_ref().unwrap().tab(), url.as_str(), config, width, wechat).await
     })
     .await;
 
@@ -378,6 +437,7 @@ async fn capture_page(
     url: &str,
     config: &Config,
     width: u32,
+    wechat: bool,
 ) -> Result<Option<String>> {
     let width = width.clamp(200, 4096);
     let scale = scale_factor(config.device_scale_factor);
@@ -402,6 +462,13 @@ async fn capture_page(
 
     // 等待页面渲染
     time::sleep(Duration::from_millis(1000)).await;
+
+    // 微信页面的图得自己补，见 `WECHAT_REHYDRATE_JS`。补完再量高度，
+    // 免得图上来了布局却还是占位时的尺寸。
+    if wechat {
+        let restored = rehydrate_wechat_images(tab).await;
+        debug!(target: "Plugin/WebShot", "{} 补回 {restored} 处微信占位图", url);
+    }
 
     // 计算页面高度
     let height_js = "Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)";
@@ -753,6 +820,15 @@ mod tests {
             "https://mp.weixin.qq.com/s/qp_Hqw5RsoKtaXe-l3XUrA?nwr_flag=1#wechat_redirect"
         ));
         assert!(!is_verification_page("https://example.com/"));
+    }
+
+    /// 微信把真地址藏在两种属性里，补图脚本两种都得认。
+    #[test]
+    fn the_wechat_fix_covers_both_placeholder_shapes() {
+        // 正文长图：`<img>` 上只有 `data-src`。
+        assert!(WECHAT_REHYDRATE_JS.contains("data-src"));
+        // 「SVG 交互」长图：真地址在 `data-lazy-bgimg` 上，画出来的是占位 gif。
+        assert!(WECHAT_REHYDRATE_JS.contains("data-lazy-bgimg"));
     }
 
     #[test]
