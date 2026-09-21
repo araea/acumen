@@ -577,7 +577,11 @@ mod tests {
         });
         // 0.17.0 起实现端不再开放历史查询，改从最近一页消息里找一条带合并转发的。
         let page: Value = writer
-            .call(&ctx, "message.list", json!({"channel_id":channel,"limit":50}))
+            .call(
+                &ctx,
+                "message.list",
+                json!({"channel_id":channel,"limit":50}),
+            )
             .await
             .expect("message.list");
         let items = page["data"]

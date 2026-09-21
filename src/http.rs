@@ -151,8 +151,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("acumen-ca-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("nested")).unwrap();
-        std::fs::write(dir.join("a.0"), b"-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----").unwrap();
-        std::fs::write(dir.join("b.0"), b"-----BEGIN CERTIFICATE-----\nB\n-----END CERTIFICATE-----\n").unwrap();
+        std::fs::write(
+            dir.join("a.0"),
+            b"-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("b.0"),
+            b"-----BEGIN CERTIFICATE-----\nB\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
         // 空文件不该换来一个空行
         std::fs::write(dir.join("c.0"), b"").unwrap();
 
