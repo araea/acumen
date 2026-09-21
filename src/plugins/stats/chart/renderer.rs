@@ -1189,6 +1189,7 @@ pub fn draw_line_chart(
 mod tests {
     use super::*;
     use crate::plugins::stats::chart::data_loader::message_type_style;
+    use crate::plugins::stats::chart::utils::get_average_color;
 
     fn sample(label: &str, value: i64) -> BarData {
         let (color, icon) = message_type_style(label);
@@ -1408,6 +1409,59 @@ mod tests {
                 .unwrap();
             std::fs::write(format!("{dir}/{name}.png"), bytes).unwrap();
         }
+    }
+
+
+    /// 用磁盘上真实的头像缓存出一张榜。
+    ///
+    /// 合成样张里的假头像是一块块纯色，彩度比真头像高得多；真头像求完平均是一片
+    /// 洗过的灰调（本机 142 张的中位彩度只有 0.08）。「读不出色相就退回回退色」那条
+    /// 门槛一旦定高，合成样张上一点看不出来，线上却会大片变成同一条绿。
+    /// 取色相关的改动都要看这一张。
+    ///
+    /// `STATS_AVATAR_CACHE=<目录> STATS_CARD_DUMP=<目录> cargo test
+    /// dump_real_avatar_ranking -- --ignored`
+    #[test]
+    #[ignore = "用真实头像缓存出样张"]
+    fn dump_real_avatar_ranking() {
+        let (Ok(dir), Ok(cache)) = (
+            std::env::var("STATS_CARD_DUMP"),
+            std::env::var("STATS_AVATAR_CACHE"),
+        ) else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut files: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+
+        let data: Vec<BarData> = files
+            .iter()
+            .filter_map(|path| image::open(path).ok())
+            .take(20)
+            .enumerate()
+            .map(|(i, img)| {
+                let img = img.to_rgba8();
+                BarData {
+                    label: format!("群友 {}", i + 1),
+                    value: (4200.0 * 0.78f64.powi(i as i32)).round() as i64 + 1,
+                    user_id: Some(10_000 + i as i64),
+                    avatar_url: None,
+                    theme_color: get_average_color(&img),
+                    avatar_img: Some(img),
+                    icon_char: None,
+                }
+            })
+            .collect();
+        assert!(!data.is_empty(), "{cache} 里没有可读的头像");
+
+        let out = draw_bar_chart(&sample_config(), "本群今日发言排行榜", data)
+            .expect("真头像样张应当能渲染");
+        dump_png(&dir, "ranking-real-avatars", &out);
     }
 
     /// `BarData` 不是 Clone（带着一张头像位图），样张要画两遍，这里手工复制一份。

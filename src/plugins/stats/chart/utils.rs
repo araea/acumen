@@ -457,7 +457,16 @@ fn from_hsl(h: f32, s: f32, l: f32) -> RGBColor {
 /// 判彩度要看极差，不能看 HSL 的 S：雪白的自拍 `(238,234,228)` 三分量只差 10，
 /// 眼里就是一张白纸，HSL 却因为明度贴着顶而算出 0.23 的饱和度——照着它染，
 /// 一张白头像会得到一条橘色的条。近黑的剪影同理。
-const HUE_NOISE_FLOOR: f32 = 0.10;
+///
+/// **这个数是量出来的，不是估的**：整张头像求平均本来就会把彩度洗掉大半，真头像
+/// 的均色远比合成样张里的假头像灰——按本机 142 张缓存头像量，中位彩度只有 0.082，
+/// 四分之一在 0.04 以下。`0.02`（三分量差 5 格）以下的占 12%，翻出来看都是真正的
+/// 灰度头像、近黑与近白；再往上一档 `0.03` 就已经把 `(89,97,96)` 这种看得出偏青的
+/// 调子也划进去了，而 `0.10` 会把**一多半**的人推成同一条回退色。
+///
+/// 收调时饱和度本来就会被抬到 0.18 以上，所以方向只要不是噪声就留着它——留下来的
+/// 是一支克制的调子，不是原图那点灰。重新量用 `chart::avatar` 里的 `cache_survey`。
+const HUE_NOISE_FLOOR: f32 = 0.02;
 
 /// 回退色相：系统主色的那一支。灰头像不是"没有颜色"，是"没有自己的颜色"，
 /// 于是跟着全站走，而不是退成一块纯灰——成片的中性色发灰，与主色也不像一家人。
@@ -707,26 +716,39 @@ pub fn truncate_text_to_fit(
     "…".to_string()
 }
 
+/// 头像的均色，按 alpha 加权。
+///
+/// 头像在这之前已经被裁成圆的，方图的四角是全透明的像素——而 `RgbaImage::new`
+/// 给的透明像素 RGB 是 `(0,0,0)`。不看 alpha 地把它们一起平均，等于给每张头像
+/// 掺进两成纯黑：均色整体压暗，彩度也跟着被稀释掉约三成，本来就不多的色相方向
+/// 于是更容易掉到噪声线以下。
+///
+/// 全透明或空图取主色兜底（从前是一支与全站无关的钢蓝）。
 pub fn get_average_color(img: &RgbaImage) -> RGBColor {
     let mut r_sum = 0u64;
     let mut g_sum = 0u64;
     let mut b_sum = 0u64;
-    let count = (img.width() * img.height()) as u64;
-
-    if count == 0 {
-        return RGBColor(59, 130, 246);
-    }
+    let mut weight = 0u64;
 
     for p in img.pixels() {
-        r_sum += p[0] as u64;
-        g_sum += p[1] as u64;
-        b_sum += p[2] as u64;
+        let a = p[3] as u64;
+        if a == 0 {
+            continue;
+        }
+        r_sum += p[0] as u64 * a;
+        g_sum += p[1] as u64 * a;
+        b_sum += p[2] as u64 * a;
+        weight += a;
+    }
+
+    if weight == 0 {
+        return ColorScheme::default().primary;
     }
 
     RGBColor(
-        (r_sum / count) as u8,
-        (g_sum / count) as u8,
-        (b_sum / count) as u8,
+        (r_sum / weight) as u8,
+        (g_sum / weight) as u8,
+        (b_sum / weight) as u8,
     )
 }
 
@@ -839,14 +861,15 @@ mod tests {
             );
         }
 
-        // 读不出色相的三种头像——雪白、近黑、纯灰——退到同一支回退色相。
-        // 「不从噪声里读一个方向出来」：白头像三分量只差 10，HSL 却给得出 0.23 的
-        // 饱和度，照着染就会得到一条与头像毫无关系的橘色。
+        // 三分量几乎不差的头像——纯灰、近黑、冷灰——退到同一支回退色相。
+        // 「不从噪声里读一个方向出来」，多低才算噪声由实测定，见 HUE_NOISE_FLOOR。
+        // 三个样本都取自真实的头像缓存，不是编出来的极端值——编出来的数落在
+        // 阈值哪一侧全凭手感，量出来的才说明问题。
         let fallback = harmonize_theme(RGBColor(140, 140, 140));
         for raw in [
-            RGBColor(238, 234, 228),
-            RGBColor(26, 24, 30),
-            RGBColor(120, 124, 130),
+            RGBColor(234, 234, 233),
+            RGBColor(41, 42, 44),
+            RGBColor(222, 223, 227),
         ] {
             let (h, _, _) = to_hsl(harmonize_theme(raw));
             let (fh, _, _) = to_hsl(fallback);
@@ -861,11 +884,14 @@ mod tests {
         let (ph, _, _) = to_hsl(RGBColor(31, 99, 80));
         assert!((fh - ph).abs() < 1.0, "回退色相取的是主色那一支");
 
-        // 本来就有色相的头像不受影响
-        let pink = harmonize_theme(RGBColor(255, 64, 160));
-        let (ph_in, _, _) = to_hsl(RGBColor(255, 64, 160));
-        let (ph_out, _, _) = to_hsl(pink);
-        assert!((ph_in - ph_out).abs() < 3.0, "有色相的头像保留自己的色相");
+        // 本来就有色相的头像不受影响。雪白的自拍 `(238,234,228)` 也在此列：
+        // 三分量差 10 格，是一张真的偏暖的照片，收调之后是一支克制的暖调，
+        // 不是从前那条按 HSL 的 0.23 饱和度染出来的橘色。
+        for raw in [RGBColor(255, 64, 160), RGBColor(238, 234, 228)] {
+            let (h_in, _, _) = to_hsl(raw);
+            let (h_out, _, _) = to_hsl(harmonize_theme(raw));
+            assert!((h_in - h_out).abs() < 3.0, "{raw:?} 应当保留自己的色相");
+        }
     }
 
     /// 图上每一处文字都要逐对量过对比度：阈值是 WCAG 2.2 的，不是眼睛觉得够。
@@ -919,6 +945,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// 真头像的均色是一片洗过的灰调，不是样张里那种鲜明的色块。
+    ///
+    /// 这条钉住「多低才算读不出色相」：按本机 142 张缓存头像量，均色的中位彩度
+    /// 只有 0.08，四分之一在 0.04 以下。门槛定高一格，一整张榜就会大片变成同一条
+    /// 回退绿——合成样张看不出来，因为假头像的彩度比真头像高得多。
+    #[test]
+    fn a_washed_out_avatar_still_keeps_its_own_hue() {
+        // 左边是真头像缓存里量到的均色，右边是它该不该保住自己的色相
+        let samples = [
+            ((119u8, 109, 98), true),  // 中位数那张：暖调，彩度 0.08
+            ((145, 160, 171), true),   // 偏蓝的合影
+            ((190, 180, 184), true),   // 淡粉灰，彩度 0.039
+            ((89, 97, 96), true),      // 偏青的暗调，彩度 0.031
+            ((238, 233, 230), true),   // 暖白的自拍，彩度 0.031
+            ((222, 223, 227), false),  // 冷灰，彩度 0.020——到线上了
+            ((220, 220, 220), false),  // 纯灰
+            ((234, 234, 233), false),  // 近白的灰
+            ((41, 42, 44), false),     // 近黑的剪影
+        ];
+        let fallback_hue = to_hsl(harmonize_theme(RGBColor(128, 128, 128))).0;
+        for ((r, g, b), keeps_hue) in samples {
+            let raw = RGBColor(r, g, b);
+            let (own, _, _) = to_hsl(raw);
+            let (out, _, _) = to_hsl(harmonize_theme(raw));
+            if keeps_hue {
+                assert!(
+                    (out - own).abs() < 3.0,
+                    "{raw:?} 的色相还读得出来，不该被推成回退色（{out} vs {own}）"
+                );
+            } else {
+                assert!(
+                    (out - fallback_hue).abs() < 1.0,
+                    "{raw:?} 彩度已是噪声，应当退到回退色相"
+                );
+            }
+        }
+    }
+
+    /// 圆头像的四角是全透明的，`RgbaImage` 给它们的 RGB 是纯黑。
+    /// 不看 alpha 地平均，等于往每张头像里掺两成黑。
+    #[test]
+    fn the_transparent_corners_do_not_darken_the_average() {
+        let size = 100u32;
+        let mut img = RgbaImage::new(size, size);
+        let center = size as f32 / 2.0;
+        let tint = [200u8, 150, 90];
+        for y in 0..size {
+            for x in 0..size {
+                let (dx, dy) = (x as f32 - center + 0.5, y as f32 - center + 0.5);
+                if (dx * dx + dy * dy).sqrt() <= center - 1.0 {
+                    img.put_pixel(x, y, Rgba([tint[0], tint[1], tint[2], 255]));
+                }
+            }
+        }
+        let avg = get_average_color(&img);
+        assert_eq!(
+            (avg.0, avg.1, avg.2),
+            (tint[0], tint[1], tint[2]),
+            "一张纯色的圆头像，均色就该是那个纯色"
+        );
+
+        // 全透明的图没有颜色可取，兜底给主色，不给一支系统外的蓝
+        let blank = RgbaImage::new(8, 8);
+        assert_eq!(get_average_color(&blank), ColorScheme::default().primary);
     }
 
     #[test]
