@@ -665,11 +665,6 @@ height = 800
 # 中文字体。留空按 font_family 让系统自己找；两者都不合适才写 font_path 指到字体文件。
 font_family = "Noto Sans CJK SC"
 font_path = ""
-# 排行榜的刻度竖线与发言条谁盖谁。
-# true：刻度画在最上层，从榜首通到榜尾，格子不被任何一根条打断；
-# false：实色条盖住刻度，每根条都是完整的一块颜色。
-#   /ctl set stats ranking_grid_over_bars false
-ranking_grid_over_bars = true
 # 定时推送的条数门槛：这批消息少于这么多就不推，免得冷清的群每天收到一张空的图。
 push_min_messages = 20
 # 多个群之间的发送间隔区间（秒），错峰用。

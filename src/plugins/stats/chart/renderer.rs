@@ -24,46 +24,6 @@ struct RowStyle {
     pct_ink: RGBColor,
 }
 
-/// 排行榜的刻度竖线：在榜首数值的 1/4、1/2、3/4 处各一道，只刻在每行的色带里。
-///
-/// 只画在色带上、不穿过行距的纸面：线是刻在条上的记号，不是铺在纸上的网格，
-/// 行与行之间留白干净，整张图也就轻快。
-///
-/// 从前这里是一组按像素等距排的竖线（每 100 px 一道），看着像刻度，读起来却
-/// 什么也不是——它既不对应数值，数量也随画布宽度变。现在三道线各自钉在一个
-/// 能说出口的数上：榜首的四分之一、一半、四分之三。
-///
-/// 单独拎出来是因为它要么画在实色条之前（被条盖住），要么画在之后（压在条上），
-/// 由 `stats.ranking_grid_over_bars` 决定，两处调用同一份几何。
-struct ScaleGrid {
-    /// 三道线各自的中心 x
-    xs: [i32; 3],
-    width: i32,
-    row_height: i32,
-}
-
-impl ScaleGrid {
-    /// `row_tops` 是各行色带的上沿，逐行画出该行高度内的那一段。
-    fn draw<DB: DrawingBackend>(
-        &self,
-        root: &DrawingArea<DB, plotters::coord::Shift>,
-        row_tops: impl Iterator<Item = i32> + Clone,
-    ) -> Result<(), String> {
-        let color = RGBAColor(0, 0, 0, 0.08);
-        for x in self.xs {
-            let x0 = x - self.width / 2;
-            for y in row_tops.clone() {
-                root.draw(&Rectangle::new(
-                    [(x0, y), (x0 + self.width, y + self.row_height)],
-                    color.filled(),
-                ))
-                .map_err(|e| e.to_string())?;
-            }
-        }
-        Ok(())
-    }
-}
-
 /// 绘制水平条形图 (排行榜)
 ///
 /// 版式分成五个纵列：名次 → 头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
@@ -77,7 +37,9 @@ impl ScaleGrid {
 /// - **数值与占比各自右对齐成固定的一列。** 跟着条尾走会排成一串阶梯，二十行
 ///   就是二十个不同的起点，上下比大小要一个个找；而且短条那几行的数字压在淡色
 ///   轨道上，长条那几行压在纸上，同一列字踩着两种底。
-/// - **刻度只留三道**，钉在榜首数值的 1/4、1/2、3/4 上，只刻在色带里。
+/// - **色带上不画刻度。** 见下面 `base_bar_min_width` 处的说明：这根条的长度不与
+///   数值成正比，任何刻在它身上的线都会被读成"轨道的几分之几"，而那个读法是错的。
+///   精确的比较交给右边那两列数字，色带只负责一眼看出长尾有多陡。
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
@@ -130,6 +92,13 @@ pub fn draw_bar_chart(
     let meta_y = padding + title_font_size + meta_margin;
     let top_area_height = meta_y + meta_font_size + title_margin;
 
+    // 条长 = 最短长度 + 比例长度。最短那一截是给名字留的——名字写在条内，值为 1 的
+    // 那一行也得写得下几个字，所以条不能从零开始。
+    //
+    // **代价是这根条的长度不与数值成正比**：值为 0 的条也占满轨道的 17.6%，值是榜首
+    // 一半的条看着有榜首的 59% 长。诚实的读法是看条**尾**的位置——位置对数值是仿射的，
+    // 所以两条的尾差与数值差成正比；不诚实的读法是量条长。这两种读法长得一模一样，
+    // 所以色带上不画任何刻度：一画，读者就会去量长度。精确的比较在右边两列数字里。
     let base_bar_min_width = 150.0 * (s as f64);
     let base_bar_scale_width = 700.0 * (s as f64);
     let max_possible_bar_width = (base_bar_min_width + base_bar_scale_width) as u32;
@@ -290,27 +259,7 @@ pub fn draw_bar_chart(
             )?;
         }
 
-        // 刻度竖线与实色条的先后由 `ranking_grid_over_bars` 决定：默认刻度画在最上层，
-        // 每行的色带都被刻满；关掉则实色条盖住刻度，每根条是完整的一块颜色。
-        // 无论哪种，刻度只落在色带上、不越进行距的纸面，文字也都在最后一趟画。
-        //
-        // 三道线的位置：值为 0 的条落在 `base_bar_min_width` 处（最短的条也要写得下
-        // 名字），值为 `max_val` 的条落在轨道尽头，两者之间是线性的，所以榜首数值的
-        // 四分之一、一半、四分之三各对应一个确定的 x。
-        let tick_x = |frac: f64| {
-            track_start_x + (base_bar_min_width + base_bar_scale_width * frac).round() as i32
-        };
-        let grid = ScaleGrid {
-            xs: [tick_x(0.25), tick_x(0.5), tick_x(0.75)],
-            width: 2 * s as i32,
-            row_height: row_height as i32,
-        };
-        let row_tops = || rows.iter().map(|row| row.y);
-
-        // 第二趟：条与刻度，孰上孰下看配置
-        if !config.ranking_grid_over_bars {
-            grid.draw(&root, row_tops())?;
-        }
+        // 第二趟：实色条
         for row in rows.iter() {
             // 条没铺满整条色带时右端平切，与后面的轨道接成一条；铺满了（榜首）
             // 就连右边两个角一起圆，正好落在色带的轮廓上。
@@ -335,10 +284,6 @@ pub fn draw_bar_chart(
                     row.bar,
                 )?;
             }
-        }
-
-        if config.ranking_grid_over_bars {
-            grid.draw(&root, row_tops())?;
         }
 
         // 第三趟：行内文字（名次、昵称、数值、占比），始终画在最上层
@@ -1231,18 +1176,14 @@ mod tests {
         assert_eq!(short_x_label("中文标题-日期"), "中文标题-日期");
     }
 
+    /// 量级差三个数量级的两行也要画得出来：最短的那根条落在 `base_bar_min_width` 上，
+    /// 不会缩成一条看不见的线，也不会把名字挤没。
     #[test]
-    fn the_grid_toggle_renders_either_way() {
-        for over in [true, false] {
-            let config = StatsConfig {
-                ranking_grid_over_bars: over,
-                ..StatsConfig::default()
-            };
-            let data = vec![sample("文本", 8_120), sample("图片", 3)];
-            let out = draw_bar_chart(&config, "本群今日发言排行榜", data)
-                .expect("两种遮挡关系都应当能渲染");
-            assert!(out.starts_with("base64://"));
-        }
+    fn a_thousand_fold_gap_still_renders_both_rows() {
+        let data = vec![sample("文本", 8_120), sample("图片", 3)];
+        let out = draw_bar_chart(&StatsConfig::default(), "本群今日发言排行榜", data)
+            .expect("悬殊的两行也应当能渲染");
+        assert!(out.starts_with("base64://"));
     }
 
     #[test]
@@ -1397,20 +1338,9 @@ mod tests {
             })
             .collect();
 
-        // 刻度压在条上（默认）与条盖住刻度两种，各出一张，好并排比
-        for (over, name) in [(false, "ranking-full"), (true, "ranking-full-grid-on-top")] {
-            let config = StatsConfig {
-                ranking_grid_over_bars: over,
-                ..sample_config()
-            };
-            let out = draw_bar_chart(&config, "本群今日发言排行榜", clone_rows(&data))
-                .expect("排行榜样张应当能渲染");
-            use base64::Engine as _;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(out.trim_start_matches("base64://"))
-                .unwrap();
-            std::fs::write(format!("{dir}/{name}.png"), bytes).unwrap();
-        }
+        let out = draw_bar_chart(&sample_config(), "本群今日发言排行榜", data)
+            .expect("排行榜样张应当能渲染");
+        dump_png(&dir, "ranking-full", &out);
     }
 
 
@@ -1583,21 +1513,6 @@ mod tests {
             overlay_image(&mut sheet, img, pad as i32, y);
         }
         dump_png(&dir, "tone-compare", &save_rgba_to_base64(sheet).unwrap());
-    }
-
-    /// `BarData` 不是 Clone（带着一张头像位图），样张要画两遍，这里手工复制一份。
-    fn clone_rows(data: &[BarData]) -> Vec<BarData> {
-        data.iter()
-            .map(|d| BarData {
-                label: d.label.clone(),
-                value: d.value,
-                user_id: d.user_id,
-                avatar_url: d.avatar_url.clone(),
-                avatar_img: d.avatar_img.clone(),
-                theme_color: d.theme_color,
-                icon_char: d.icon_char.clone(),
-            })
-            .collect()
     }
 
     #[test]
