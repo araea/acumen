@@ -204,14 +204,21 @@
   const snackHost = () => $("#snack");
   let snackTimer = 0;
 
-  /** 一条反馈。`busy` 不自动消失，等下一次调用把它换掉。 */
+  /** 一条反馈。`busy` 不自动消失，等下一次调用把它换掉。
+   *
+   *  播报方式分两种：成功与进行中是 `role="status"`（礼貌，等当前朗读完），
+   *  失败是 `role="alert"`（立刻打断）。失败得马上知道——它多半意味着
+   *  刚才那一下没生效，等三秒才听到就晚了。
+   *  活区挂在**文字那一个 span** 上，不挂在整条上：挂整条的话，`收起`
+   *  这枚按钮也会被念进消息里。
+   *  宿主 #snack 自己不挂 aria-live——挂在它上面会和里面这层叠起来念两遍。 */
   function snack(text, kind = "good") {
     clearTimeout(snackTimer);
     const busy = kind === "busy";
     snackHost().innerHTML = `
       <div class="snack snack-${busy ? "good" : kind}">
-        ${busy ? `<span class="indicator indicator-inline"></span>` : ""}
-        <span class="snack-text">${esc(text)}</span>
+        ${busy ? `<span class="indicator indicator-inline" aria-hidden="true"></span>` : ""}
+        <span class="snack-text" role="${kind === "bad" ? "alert" : "status"}">${esc(text)}</span>
         <button class="snack-close" type="button" data-snack-close aria-label="收起">${ICONS.close}</button>
       </div>`;
     if (busy) return;

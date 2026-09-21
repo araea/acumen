@@ -4,8 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<meta name="theme-color" content="#fcfdfb" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#101613" media="(prefers-color-scheme: dark)">
+<!-- 状态栏与地址栏的底色取顶栏那一层（surface-container-low），不取页面底色：
+     装到桌面之后系统把这一段和顶栏接在一起，对不上就会有一条看得见的接缝。
+     两个值与 res/cards/m3e.css 里 body.scheme-console(.dark) 的那两行必须一致。 -->
+<meta name="theme-color" content="#f5f7f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#171d1a" media="(prefers-color-scheme: dark)">
 <meta name="description" content="知微的控制台：本机运行状况、插件、搭话与日志。">
 <meta name="application-name" content="知微">
 <meta name="mobile-web-app-capable" content="yes">
@@ -35,7 +38,9 @@
   <nav class="nav" id="nav" aria-label="主要"></nav>
   <main class="main"><div class="page" id="view" tabindex="-1"></div></main>
 </div>
-<div id="snack" aria-live="polite"></div>
+<!-- 反馈条的宿主。它自己不挂 aria-live：播报的轻重按每条反馈定
+     （成功与进行中是 status、失败是 alert），挂在这里就只能一刀切。 -->
+<div id="snack"></div>
 <dialog id="dialog" class="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-body"></dialog>
 <noscript><div class="lock">
   <p class="note">这一页要开着 JavaScript 才能跑。

@@ -219,7 +219,15 @@
    M3 基线只有 on-surface 与 on-surface-variant 两级，卡片还需要第三级来放
    时间戳、单位、页脚这类「存在但不该被读到」的信息，所以补一个扩展角色
    on-surface-faint（M3 的 outline 是给描边的，拿它当文字对比度不够）。
-   三级之外**不再有第四级**，需要更弱就减字重或缩字号，不要再调浅颜色。 */
+   三级之外**不再有第四级**，需要更弱就减字重或缩字号，不要再调浅颜色。
+
+   三个角色各自有一条不能破的下限，改任何一个值之前先核一遍（WCAG 2.2 AA）：
+   - on-surface / -variant / -faint 落在它们可能出现的**最深的那个表面**上，
+     小字仍要有 4.5:1。最深的是 surface-container-high，不是 surface；
+   - outline 是控件的边界（输入框、开关轨道、描边按钮、芯片），与它相邻的
+     颜色之间要有 3:1（1.4.11 非文本对比度）。**这一条只约束 outline**——
+     outline-variant 是分隔线，分隔线不是「识别控件所必需」，不在此列，
+     所以别把这两级混用：拿 variant 当控件边界就会掉到 1.1:1 那种看不出来。 */
 
 :root {
   color-scheme: light;
@@ -552,7 +560,12 @@ body.dark.seed-teal {
    1. 表面比纸再冷一档。卡片是「读一张就放下」的纸，控制台是要盯十分钟的台面，
       同样的暖白在整屏铺开时会发闷；
    2. 自带深色。控制台是网页，跟随系统明暗是应该的，所以这一套把浅深两版都写全，
-      其余五套仍按「日读／夜读由插件自己挑」的老规矩。 */
+      其余五套仍按「日读／夜读由插件自己挑」的老规矩。
+
+   浅色档的 on-surface-faint 与 outline 比 §7 的基线更深一档：网页是要按
+   WCAG 2.2 AA 核的（卡片图是发到群里的位图，不受这一条约束），而 §7 那两
+   个值在控制台这几个偏冷的表面上刚好卡在 4.47:1 与 2.29:1。差值肉眼几乎
+   看不出，但小字与控件边界从此过线。 */
 body.scheme-console {
   /* 交互界面的主色容器比静态卡片更鲜明；日志在两种主题里都用深底。 */
   --md-sys-color-primary-container: #b6efda;
@@ -569,8 +582,8 @@ body.scheme-console {
   --md-sys-color-surface-container-high: #e3e7e3;
   --md-sys-color-on-surface: #1c2320;
   --md-sys-color-on-surface-variant: #4b5751;
-  --md-sys-color-on-surface-faint: #6a756e;
-  --md-sys-color-outline: #9fada6;
+  --md-sys-color-on-surface-faint: #5d6862;
+  --md-sys-color-outline: #78867f;
   --md-sys-color-outline-variant: #dbe1dc;
   --md-sys-color-primary: #1f6350;
   --md-sys-color-tertiary: #4a44b8;
@@ -589,8 +602,8 @@ body.scheme-console.dark {
   --md-sys-color-surface-container-high: #262e29;
   --md-sys-color-on-surface: #e1e8e3;
   --md-sys-color-on-surface-variant: #b5c0b9;
-  --md-sys-color-on-surface-faint: #8a958e;
-  --md-sys-color-outline: #6b766f;
+  --md-sys-color-on-surface-faint: #8d9891;
+  --md-sys-color-outline: #6f7a73;
   --md-sys-color-outline-variant: #39423c;
   --md-sys-color-primary: #78d2b5;
   --md-sys-color-on-primary: #00382b;

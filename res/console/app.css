@@ -1,30 +1,104 @@
 /* ============================================================================
    知微 · 界面版式层与交互基元
    ----------------------------------------------------------------------------
-   这一份是知微的第二层：系统层是 res/cards/m3e.css（令牌与静态基元，五张卡片
-   图共用），这里是「摆在哪儿、按下去会怎样」——外壳怎么搭、导航在哪一边、
-   窄屏宽屏怎么分，以及按钮、开关、输入、芯片、对话框、涟漪、加载指示这些
-   活的东西。卡片是静态位图，M3 的状态层在 m3e.css 里没有用武之地；界面是活的，
-   所以状态层、动效与字号的界面档都归这里。
+   第二层。系统层是 res/cards/m3e.css（令牌与静态基元，五张卡片图共用），
+   这里是「摆在哪儿、按下去会怎样」——外壳怎么搭、导航在哪一边、窄屏宽屏
+   怎么分，以及按钮、开关、输入、芯片、对话框、涟漪、加载指示这些活的东西。
+   卡片是静态位图，M3 的状态层在 m3e.css 里没有用武之地；界面是活的，所以
+   状态层、动效与字号的界面档都归这里。
 
-   段落：§A 外壳与断点 · §B 顶栏 · §C 导航 · §D 交互基元 · §E 内容块 ·
-   §F 状态 · §G 动效与降级 · §H 宽屏。
+   —— 四个设计体系在这里的分工 ——
+   这是一份**统一的**设计语言，不是四套东西各管一块。每个组件都有自己的
+   令牌，来源只决定「这一处为什么长这样」，不意味着可以自带一套值。
 
-   六条纪律：
+     M3 Expressive   核心视觉语言：配色角色、字阶、形状级、高度级、状态层、
+                     两条运动轨道、形状变形。文件的骨架。
+     Apple HIG       交互与平台体验：装到桌面之后跟系统走——安全区、状态栏
+                     配色、原生 dialog 的焦点陷阱与返回键、iOS 那份图标不透明
+                     且不自己画圆角、触控目标不小于 48px。
+     Carbon          补充 Web 与响应式、以及信息密度高的界面：日志工作区的
+                     多列网格、键盘可达的滚动区域、断点的分法（版式断点按
+                     可用宽度，内容断点按「这一行还能不能读」）。
+     Miuix           只做视觉精修，不引入任何规则：线性图标的粗细与圆头圆角
+                     （在 app.js 的 wrap() 里，stroke 1.9 + round）、数显那
+                     紧一档的行高（本文件的 --zy-line-figure）。
+
+   执行顺序不是并列的。**冲突时按下表从上往下裁决，次序本身就是规范**：
+
+     1. 平台原生规范      平台说了算的地方不拿 M3 去覆盖；
+     2. 可用性与无障碍    WCAG 2.2 AA 是下限不是选项；
+     3. 产品一致性        同一个角色在两处必须指同一个令牌（界面与卡片图）；
+     4. M3 Expressive     核心视觉语言；
+     5. Carbon            响应式与复杂信息界面；
+     6. Miuix             视觉精修。
+
+   落地方式只有一条：**上层的取舍写进下层的令牌，下层不再自带一套值**。
+   本文件里出现色值/字号/圆角/阴影的字面量，就是某处又长出了私有的视觉语言。
+
+   —— 分节 ——
+   §A 外壳与断点 · §B 顶栏 · §C 导航 · §D 交互基元 · §E 内容块 · §F 状态 ·
+   §G 动效与降级 · §H 响应式。
+
+   —— 令牌 ——
+   取系统层（m3e.css）的：
+     配色  --md-sys-color-{surface*, on-surface*, outline*, primary*, secondary*,
+           tertiary*, error*, success*, warning*, log-*}
+     字阶  --md-type-<角色>-{size,line,weight,track}，角色是 M3 那五族
+           （display / headline / title / body / label）
+     形状  --md-shape-{none,xs,s,m,l,xl,2xl,full}、--md-corner-notched(-end)
+     高度  --md-elevation-{0,1,2,3}
+     间距  --md-space-{1..9}
+     字体  --md-font-{plain,serif,mono,display}
+   本层自有的（`--zy-` 前缀，只放版面与组件几何，不放视觉值）：
+     外壳  --zy-bar-height / --zy-nav-height / --zy-rail-width / --zy-drawer-width
+           / --zy-page-width / --zy-page-wide / --zy-safe-top / --zy-safe-bottom
+           / --zy-bar / --zy-nav（后两个是含安全区的实际高度）
+     尺寸  --zy-hairline / --zy-touch(48) / --zy-icon / --zy-icon-bar / --zy-icon-nav
+           / --zy-avatar / --zy-thumb / --zy-switch-width / --zy-switch-track
+           / --zy-knob / --zy-knob-travel / --zy-nav-indicator / --zy-nav-indicator-height
+     排版  --zy-line-figure（数显行高）
+     其他  --zy-gap-tight / --zy-dot / --zy-accent / --zy-border-strong
+           / --zy-skeleton / --zy-skeleton-lg / --zy-log-height / --zy-log-time
+           / --zy-log-level / --zy-log-target
+     状态与动效  --zy-state-hover / --zy-state-press / --zy-duration-*
+           / --zy-ease-*
+
+   —— 组件清单（改谁先看谁）——
+     外壳 .shell   栅格。三档版式的列与行在这里切，靠 body 上的 layout-* 类选中。
+     顶栏 .bar     吸顶。紧凑档滚过页头后品牌让位给页名（只动 opacity/transform）。
+     导航 .nav     一物三形：底部导航条 / 导航轨 / 抽屉，都是 .nav-item 那一套。
+     按钮 .btn     五型 × 三尺寸；按下时形状变形（圆角收一档）。
+     分段 .seg     互斥的固定几档；连体那份用 data-connected。
+     芯片 .chip    可选可不选的一堆标签（分档筛选用）。选中用主色容器。
+     开关 .switch  role=switch；轨道 52×32 画在 ::before，滑块画在 ::after。
+     输入 .input / .area / .search   搜索框自带前置放大镜，聚焦环画在容器上。
+     卡片 .card   与卡片图的 .md-card 同一外形；.hero 是首屏那张主色容器底。
+     列表 .row    行身铺一层 .row-hit 链接，尾巴 .row-tail 压在上面（开关不进链接）。
+     表格 .kv     配置的键值表；窄屏折成上下两行。.subtable 是它的缩进版。
+     日志 .log / .log-workspace   四列网格（时刻/级别/来源/正文）。见 §E 的说明。
+     反馈 .snack / .dialog   一条反馈、一个询问；破坏性操作一律先问。
+     状态 .empty / .skeleton / .badge   空态、骨架、状态徽章。
+
+   七条纪律：
    1. 色值、字号、圆角、阴影一律 var(--md-*)；本文件里出现 #hex / rgb() /
       hsl() / font-size 数字 / border-radius 数字 / box-shadow 数字就是错的，
-      `assets.rs` 有测试盯着；
+      `assets.rs` 的 the_layout_layer_borrows_every_value_from_the_system_layer
+      盯着这一条；
    2. 界面的字阶比卡片小一档，收在本文件开头的 `--md-type-*` 覆盖里。卡片图是
       在群里当缩略图看的，界面的字要在一屏里放下更多行——同一套令牌，两处取法
       不同的档，不是两套系统。改字号只改这一处，不要去动 m3e.css；
-   3. 结构尺寸（外壳多高、版心多宽、图标多大）不是视觉语言，是版面，允许
-      写字面量，但统一收在下面那组 --zy-* 里，不要在规则里散落；
+   3. 结构尺寸（外壳多高、版心多宽、图标多大）不是视觉语言，是版面，允许写字面量，
+      但统一收在上面那组 --zy-* 里，不要在规则里散落；
    4. 动效只动画 transform 与 opacity——这两样不触发布局，手机上才不抖。
       两处例外（涟漪的扩散、按下时的形状变形）都作用在几十像素的小块上；
-   5. 断点按最窄的可用宽度分三档，不按设备分：
-      紧凑 < 600px（底部导航条）· 中等 600—839px（导航轨）· 宽 ≥ 840px（抽屉）；
+   5. **控件边界用 `outline`，分隔线用 `outline-variant`，两级不许混用**。
+      前者要过 1.4.11 的 3:1，后者只是分隔线，不承担「认出这是个控件」的责任。
+      拿 variant 当控件边界，实测只有 1.1:1，等于没有边；
    6. 状态层（悬停 8% / 按下 12%）用 currentColor 叠在元素自己的 `::after` 上，
-      不写死颜色，也不靠改背景色——改背景色会在容器色上算错对比度。
+      不写死颜色，也不靠改背景色——改背景色会在容器色上算错对比度；
+   7. 焦点环只由本文件的 `:focus-visible` 一处给，组件不要再自己写 outline。
+      可聚焦元素还带 scroll-margin，免得吸顶的顶栏与固定的底栏把焦点盖住
+      （2.4.11 焦点不被遮挡）。
    ========================================================================== */
 
 :root {
@@ -73,6 +147,8 @@
   --zy-touch: 48px;
   --zy-switch-width: 52px;
   --zy-switch-track: 32px;
+  --zy-knob: 16px;
+  --zy-knob-travel: 20px;
   --zy-nav-indicator: 56px;
   --zy-nav-indicator-height: 32px;
   --zy-log-height: 62dvh;
@@ -84,6 +160,18 @@
   --zy-icon-nav: 24px;
   --zy-avatar: 38px;
   --zy-thumb: 76px;
+
+  /* 组件里出现两次以上的小几何，收在这里 */
+  --zy-gap-tight: 2px;
+  --zy-dot: 6px;
+  --zy-accent: 4px;
+  --zy-border-strong: 2px;
+  --zy-skeleton: 18px;
+  --zy-skeleton-lg: 88px;
+
+  /* 数显（首屏那个大数字、读数格里的值）的行高。字阶给的是正文行高，
+     一行数字要压得更紧才不像被撑开。Miuix 只在这一处出过手。 */
+  --zy-line-figure: 1.12;
 
   /* 状态层：M3 的 8% 与 12% 两档，按压多一层 */
   --zy-state-hover: 0.08;
@@ -178,8 +266,37 @@ body.layout-compact {
   --zy-page-width: 960px;
 }
 
+/* 键盘的第一站：跳过一条导航直达内容。没聚焦时移到视口外，不占位也不可见。 */
+.skip-link {
+  position: fixed;
+  top: var(--md-space-2);
+  left: var(--md-space-3);
+  z-index: 60;
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  transform: translateY(-200%);
+}
+
+.skip-link:focus {
+  transform: none;
+}
+
+/* 焦点滚动时给吸顶的顶栏与固定的底栏让出位置（2.4.11 焦点不被遮挡）。
+   这一条只管「滚到哪儿」，焦点环本身在 §D 一处给。 */
+#view {
+  scroll-margin-top: var(--zy-bar);
+}
+
 /* ==================== §B 顶栏 ==================== */
 
+/* 工作台的第一条：**用色调分层，不用描边分层**。页面的底色是 surface-dim，
+   顶栏与导航是 surface-container-low，内容是一张张 surface 的卡——三层各自
+   靠明度差站住，不再给每一层加一圈线（旧版顶栏底栏各有一条 outline-variant，
+   整屏数下来七八条横线，反而看不出层级在哪）。高对比只留给主动作。
+   底栏那条 `border-bottom` 保留着但透明：它是 1px 的占位，去掉会让紧凑档
+   滚过页头时高度跳一下。 */
 .bar {
   grid-area: bar;
   position: sticky;
@@ -189,8 +306,8 @@ body.layout-compact {
   align-items: center;
   gap: var(--md-space-2);
   padding: var(--zy-safe-top) var(--md-space-2) 0 var(--md-space-3);
-  background: var(--md-sys-color-surface);
-  border-bottom: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
+  border-bottom: var(--zy-hairline) solid transparent;
 }
 
 .brand {
@@ -270,8 +387,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
   justify-content: space-around;
   height: var(--zy-nav);
   padding-bottom: var(--zy-safe-bottom);
-  background: var(--md-sys-color-surface-container);
-  border-top: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low);
+  border-top: var(--zy-hairline) solid transparent;
 }
 
 .nav-item {
@@ -369,6 +486,31 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 :where(.btn, .chip, .seg-item, .row):active::after {
   opacity: var(--zy-state-press);
+}
+
+/* —— 焦点环 ——
+   全篇只有这一处给焦点环，组件不许再自己写 outline（写了就会有两圈）。
+   用 :focus-visible 而不是 :focus：鼠标点一下不该留一圈。
+   scroll-margin 是配套的：键盘 Tab 到屏幕外的一个控件时，浏览器把它滚进
+   视口，而吸顶的顶栏与固定的底栏会正好压在它上面——留出这两条的高度，
+   焦点才算真的看得见（2.4.11 焦点不被遮挡）。
+   `[tabindex="0"]` 而不是 `[tabindex]`：page-title 那份 tabindex="-1" 是脚本
+   送焦点用的，不进 Tab 序列，也就不该按这条算（见 §E 的那处例外）。
+   两个 outline-offset 例外跟在后面——它们的宿主是 overflow: hidden 的盒子，
+   画在外面的环会被裁掉，只能往里收。 */
+:where(a, button, input, textarea, select, [tabindex="0"]):focus-visible {
+  outline: var(--zy-border-strong) solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+  scroll-margin-top: calc(var(--zy-bar) + var(--md-space-3));
+  scroll-margin-bottom: calc(var(--zy-nav) + var(--md-space-3));
+}
+
+.row-hit:focus-visible {
+  outline-offset: -3px;
+}
+
+.seg-item:focus-visible {
+  outline-offset: -3px;
 }
 
 /* —— 按钮 ——
@@ -582,7 +724,9 @@ body.layout-compact .bar[data-pinned] .bar-title {
   gap: var(--md-space-2);
   min-height: var(--zy-touch);
   padding: 0 var(--md-space-4);
-  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  /* 未选中时这一圈线就是「这是个可点的控件」的全部证据（底是透明的），
+     所以取 outline 而不是 outline-variant——后者与卡面只有 1.1:1。 */
+  border: var(--zy-hairline) solid var(--md-sys-color-outline);
   border-radius: var(--md-shape-s);
   background: none;
   color: var(--md-sys-color-on-surface-variant);
@@ -634,10 +778,10 @@ body.layout-compact .bar[data-pinned] .bar-title {
   content: "";
   position: absolute;
   top: 50%;
-  left: 8px;
-  width: 16px;
-  height: 16px;
-  margin-top: -8px;
+  left: var(--md-space-2);
+  width: var(--zy-knob);
+  height: var(--zy-knob);
+  margin-top: calc(var(--zy-knob) / -2);
   border-radius: var(--md-shape-full);
   background: var(--md-sys-color-outline);
   transition: transform var(--zy-duration-short) var(--zy-ease-spatial);
@@ -649,12 +793,14 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 .switch[aria-checked="true"]::after {
-  transform: translateX(20px) scale(1.5);
+  transform: translateX(var(--zy-knob-travel)) scale(1.5);
   background: var(--md-sys-color-on-primary);
 }
 
 .switch:active::after { transform: scale(1.6); }
-.switch[aria-checked="true"]:active::after { transform: translateX(20px) scale(1.6); }
+.switch[aria-checked="true"]:active::after {
+  transform: translateX(var(--zy-knob-travel)) scale(1.6);
+}
 
 .switch[disabled],
 .switch[aria-disabled="true"] {
@@ -705,7 +851,9 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-family: var(--md-font-mono);
 }
 
-/* —— 搜索框：前置一颗放大镜，占位不留假提示 —— */
+/* —— 搜索框：前置一颗放大镜，占位不留假提示 ——
+   它同时是一个输入控件，所以边界取 outline（不是 variant）：容器那一层
+   surface-container-low 与卡面只差 1.05:1，光靠底色认不出这里能打字。 */
 .search {
   min-width: 0;
   max-width: 100%;
@@ -714,7 +862,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   gap: var(--md-space-2);
   padding: 0 var(--md-space-4);
   min-height: var(--zy-touch);
-  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline);
   border-radius: var(--md-shape-full);
   background: var(--md-sys-color-surface-container-low);
   color: var(--md-sys-color-on-surface-faint);
@@ -842,14 +990,21 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 /* ==================== §E 内容块 ==================== */
 
-/* 卡面：与卡片图上的 `.md-card` 是同一套外形——同一个圆角、同一条描边、同一级
-   阴影、同样的「卡面浮在相纸上」关系（底色是 surface，页面底色是 surface-dim）。
+/* 卡面：与卡片图上的 `.md-card` 是同一套外形——同一个圆角、同一级阴影、同样的
+   「卡面浮在相纸上」关系（底色是 surface，页面底色是 surface-dim）。
    两处必须一致：插件在群里发的图与界面里看到的卡是同一个产品里的同一张纸。
-   界面比卡片图少一样东西——左上角那层主色微光，那是静态纸面上的纵深，
-   一屏六七张卡各来一层会变成满屏噪点。 */
+
+   两处与卡片图不同，都是「媒介不同」造成的：
+   - 界面比卡片图少一样东西——左上角那层主色微光，那是静态纸面上的纵深，
+     一屏六七张卡各来一层会变成满屏噪点；
+   - 描边是透明的。放在群里的图是一张孤立的白纸，必须有边才成形；界面里
+     一屏七八张卡连着排，每张都描一圈反而成了一片格子。这里的边界由
+     surface 与 surface-dim 的明度差给（约 1.13:1），卡内的小块再退一档
+     到 surface-container-low。**这是产品一致性与信息层级之间的取舍，
+     不是漏写**；真要改回描边，改这一处，卡片图那边不动。 */
 .card {
   background: var(--md-sys-color-surface);
-  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  border: var(--zy-hairline) solid transparent;
   border-radius: var(--md-shape-xl);
   box-shadow: var(--md-elevation-0);
   padding: var(--md-space-4);
@@ -859,12 +1014,19 @@ body.layout-compact .bar[data-pinned] .bar-title {
   min-width: 0;
 }
 
+/* 卡里的小块（键值表、缩进区）比卡面再退一档，形成「卡 > 块」两级，不必描边。 */
+.card .panel,
+.card .inset {
+  background: var(--md-sys-color-surface-container-low);
+}
+
 /* 卡面右上角收一档：整屏都是同一个圆角时，卡片之间会分不清谁包着谁 */
 .card-notched {
   border-radius: var(--md-corner-notched);
 }
 
-/* 首屏那张：主色容器底，放这台机器此刻的样子 */
+/* 首屏那张：主色容器底，放这台机器此刻的样子。
+   缺角在左下（M3 Expressive 的「一个角不一样」），与卡片的 notched 同源。 */
 .hero {
   background: var(--md-sys-color-primary-container);
   color: var(--md-sys-color-on-primary-container);
@@ -874,6 +1036,17 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: flex;
   flex-direction: column;
   gap: var(--md-space-2);
+  min-width: 0;
+}
+
+/* 眉标与右上角那枚状态徽章同一行的两端。 */
+.hero-top {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--md-space-2);
+  margin-bottom: var(--md-space-2);
 }
 
 .hero-eyebrow {
@@ -896,8 +1069,9 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-size: var(--md-type-display-small-size);
   font-weight: var(--md-type-display-small-weight);
   letter-spacing: var(--md-type-display-small-track);
-  line-height: 1.12;
+  line-height: var(--zy-line-figure);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .hero-unit {
@@ -905,21 +1079,22 @@ body.layout-compact .bar[data-pinned] .bar-title {
   font-weight: var(--md-type-title-medium-weight);
 }
 
+/* 这一行是「启动于…」这类附注。用满强度的 on-primary-container 而不是调透明：
+   它落在主色容器上，对比度是 9.6:1，是这一屏里最好读的一段；淡下去反而
+   只剩 5 倍出头。 */
 .hero-note {
   font-size: var(--md-type-body-small-size);
   line-height: var(--md-type-body-small-line);
-  color: color-mix(
-    in srgb,
-    var(--md-sys-color-on-primary-container) 78%,
-    transparent
-  );
+  color: var(--md-sys-color-on-primary-container);
 }
 
+/* 动作压到底：同一行里几张卡并排时，按钮的下沿要对齐。 */
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--md-space-2);
-  margin-top: var(--md-space-2);
+  margin-top: auto;
+  padding-top: var(--md-space-3);
 }
 
 /* 页头：窄屏上一整块大字，滚过之后顶栏接手 */
@@ -927,15 +1102,25 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: flex;
   flex-direction: column;
   gap: var(--md-space-1);
-  padding: var(--md-space-2) var(--md-space-1) 0;
+  padding: var(--md-space-2) var(--md-space-1);
 }
 
+/* 页名用主色，是工作台里唯一一处「主动作以外的高对比」：一屏之内它是
+   最先要找到的那行字，而它下面的说明与内容都退到 on-surface 一档。 */
 .page-title {
   margin: 0;
+  color: var(--md-sys-color-primary);
   font-size: var(--md-type-headline-medium-size);
   font-weight: var(--md-type-headline-medium-weight);
   letter-spacing: var(--md-type-headline-medium-track);
   line-height: var(--md-type-headline-medium-line);
+}
+
+/* 焦点是脚本交给它的（跳到内容、换页后把光标送回来），不是键盘走到的：
+   tabindex="-1" 本来就不在 Tab 序列里，给它画一圈反而像一个能按的标题。
+   这是 §D「焦点环只有一处」的唯一例外，写在这里免得被当成漏写。 */
+.page-title:focus {
+  outline: none;
 }
 
 .page-note {
@@ -983,7 +1168,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .reading {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--zy-gap-tight);
   min-width: 0;
 }
 
@@ -997,8 +1182,9 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .reading-value {
   font-size: var(--md-type-headline-small-size);
   font-weight: var(--md-type-headline-small-weight);
-  line-height: 1.12;
+  line-height: var(--zy-line-figure);
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .reading-unit {
@@ -1013,7 +1199,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   display: inline-flex;
   align-items: center;
   gap: var(--md-space-2);
-  padding: 2px var(--md-space-3);
+  padding: var(--zy-gap-tight) var(--md-space-3);
   border-radius: var(--md-shape-full);
   font-size: var(--md-type-label-medium-size);
   font-weight: var(--md-type-label-medium-weight);
@@ -1023,8 +1209,8 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 .badge::before {
   content: "";
-  width: 6px;
-  height: 6px;
+  width: var(--zy-dot);
+  height: var(--zy-dot);
   border-radius: var(--md-shape-full);
   background: currentColor;
 }
@@ -1107,7 +1293,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--zy-gap-tight);
 }
 
 /* 整行可点靠一层铺满的链接，而不是把开关塞进链接里：链接里套按钮是无效标记，
@@ -1230,7 +1416,7 @@ body.layout-compact .bar[data-pinned] .bar-title {
 .subtable {
   margin-left: var(--md-space-3);
   padding-left: var(--md-space-3);
-  border-left: 2px solid var(--md-sys-color-outline-variant);
+  border-left: var(--zy-border-strong) solid var(--md-sys-color-outline-variant);
   min-width: 0;
 }
 
@@ -1292,20 +1478,19 @@ body.layout-compact .bar[data-pinned] .bar-title {
 }
 
 /* —— 日志面板 ——
-   浅色主题下用反色面（像一块终端），深色主题下不能再反——那会在整屏夜里
-   亮出一大块白。两套颜色收在两个局部变量里，换主题只换这两个。
+   浅色主题下它是一块反色面（像一块终端），深色主题下仍是同一块——两种主题里
+   日志都用「深底浅字」这一套，所以不必按主题换色，也就不再需要一层中间变量。
 
    一行是四格：时刻 / 级别 / 来源 / 正文。用网格而不是 flex 换行：时刻与来源
-   各自一列，正文从固定的起点开始，扫一列日志时眼睛不用横向找。
-   警告与错误在行首多一条竖线，靠位置而不是只靠颜色分出来。 */
+   各自一列，正文从固定的起点开始，扫一列日志时眼睛不用横向找（Carbon 的
+   结构化长表格就是这么排的）。警告与错误在行首多一条竖线，靠位置而不是
+   只靠颜色分出来。 */
 .log {
-  --zy-log-bg: var(--md-sys-color-log-surface);
-  --zy-log-fg: var(--md-sys-color-log-text);
   font-family: var(--md-font-mono);
   font-size: var(--md-type-label-medium-size);
   line-height: 1.62;
-  background: var(--zy-log-bg);
-  color: var(--zy-log-fg);
+  background: var(--md-sys-color-log-surface);
+  color: var(--md-sys-color-log-text);
   border-radius: var(--md-shape-l);
   padding: var(--md-space-3);
   overflow: auto;
@@ -1320,9 +1505,10 @@ body.layout-compact .bar[data-pinned] .bar-title {
   scrollbar-gutter: stable;
 }
 
-body.dark .log {
-  --zy-log-bg: var(--md-sys-color-log-surface);
-  --zy-log-fg: var(--md-sys-color-log-text);
+/* 隔行一点底色。3% 是「能看出行界，但不成为条纹」的量级；它压在深底上，
+   两种主题一样。 */
+.log-line:nth-child(even) {
+  background: color-mix(in srgb, var(--md-sys-color-log-text) 3%, transparent);
 }
 
 .log-line {
@@ -1345,6 +1531,7 @@ body.dark .log {
 }
 
 .log-level {
+  flex: none;
   color: var(--md-sys-color-log-muted);
   font-weight: var(--md-type-label-large-weight);
 }
@@ -1358,6 +1545,7 @@ body.dark .log {
 
 .log-text {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* 级别名直接当类名的一部分（INFO / WARN / ERRO / DEBG 都只有四个字母，
@@ -1420,9 +1608,101 @@ body.dark .log {
 
 .log-empty { color: var(--md-sys-color-log-muted); }
 
-/* —— 局部修饰 —— */
+/* —— 日志工作区 ——
+   日志页不是「一张卡里放一块日志」，而是一整块工作区：工具条、连接状态、
+   日志面、计数与页脚各占一段固定位置，整块自己撑满一屏（高度按视口算，
+   不让页面滚，只有日志面自己滚）。这是 Carbon 那种「复杂信息界面」的做法：
+   高频操作的控件不许跟着内容滚走，否则每次筛选都要先滚回去。
+   工具条用 surface-container-low 与内容区分开——它是固定的那一层。 */
+.log-workspace {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--md-sys-color-surface);
+  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-xl);
+  overflow: hidden;
+}
+
+.log-tools {
+  position: static;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--md-space-2);
+  padding: var(--md-space-3);
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.log-tools .search { flex: 1 1 200px; }
+.log-tools .seg { width: auto; }
+.log-tools .seg-item { padding-inline: var(--md-space-3); }
+.log-tools .chip[aria-pressed="true"] {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.log-actions {
+  display: flex;
+  gap: var(--md-space-1);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.log-workspace .log-meta,
+.log-footer {
+  padding: var(--md-space-2) var(--md-space-3);
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--md-space-1) var(--md-space-3);
+  font-size: var(--md-type-label-medium-size);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+#log-status {
+  font-weight: var(--md-type-label-large-weight);
+}
+
+/* 整块工作区自己收口，日志面贴到边（外面的圆角由 .log-workspace 裁）。 */
+.log-workspace .log {
+  border-radius: var(--md-shape-none);
+  padding: var(--md-space-2);
+  flex: 1;
+  min-height: 160px;
+}
+
+.log-workspace .jump {
+  position: absolute;
+  bottom: var(--md-space-8);
+  right: var(--md-space-3);
+  box-shadow: var(--md-elevation-2);
+}
+
+/* 一屏高减去顶栏与底栏，日志页整页不滚，滚的只有日志面本身。 */
+.page[data-page="logs"] {
+  height: calc(100dvh - var(--zy-bar) - var(--zy-nav) - var(--md-space-6));
+  min-height: 540px;
+}
+
+.page[data-page="logs"] .log-workspace { flex: 1; }
+
+/* —— 局部修饰 ——
+   `.row-plain` 是没有去处的那种行：一条连接、一条命令，点它不换页。
+   它不出分隔线，鼠标也不该变成手——除非它真是个按钮（命令那页的行可点复制）。 */
 .row-plain {
   border-bottom: none;
+  cursor: default;
+}
+
+button.row-plain {
+  cursor: pointer;
+}
+
+.row-plain:not(button):hover {
+  background: none;
 }
 
 .back {
@@ -1461,6 +1741,63 @@ body.dark .log {
   min-width: 0;
 }
 
+/* 并排详情是一块窄容器，不能用整个窗口的宽度判断字段是否并列：
+   窗口 1200px 的时候，详情那一格其实只有 500px。 */
+.panes[data-split] .kv {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--zy-gap-tight);
+}
+
+/* 列表自己的内边距，行才是列表里的一块。行选中时那一块会染色，
+   贴着列表边才不会看着像溢出去。 */
+#plugin-list {
+  padding: var(--md-space-2);
+}
+
+#plugin-list .row {
+  border-radius: var(--md-shape-m);
+}
+
+/* —— 总览 ——
+   窄屏按阅读顺序竖着排：先「这台机器现在什么样」，再数字，再连接，最后日志。
+   宽屏（≥1100px，见 §H）才分成两栏——**这条不是版式断点**：840px 起抽屉
+   占掉 216px 之后正文反而更窄，两栏要等正文自己够宽才成立。 */
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--md-space-3);
+}
+
+/* 连接与最近日志跨满整行：它们一个是名单一个是长文本，切一半都读不下去。 */
+.overview-connections,
+.overview-recent {
+  grid-column: 1 / -1;
+}
+
+/* 数字格：两列，固定在卡里自成一块。 */
+.overview-metrics {
+  background: var(--md-sys-color-surface-container-low);
+}
+
+.overview-metrics .readings {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.overview-metrics .reading {
+  padding: var(--md-space-3);
+  background: var(--md-sys-color-surface);
+  border-radius: var(--md-shape-l);
+  gap: var(--md-space-1);
+}
+
+.overview-connections .row {
+  padding-inline: 0;
+}
+
+.overview-recent .log-short {
+  max-height: 240px;
+}
+
 /* ==================== §F 状态 ==================== */
 
 .empty {
@@ -1476,6 +1813,11 @@ body.dark .log {
 .empty-icon {
   font-size: var(--md-type-headline-large-size);
   line-height: 1;
+}
+
+.empty-icon svg {
+  width: var(--zy-avatar);
+  height: var(--zy-avatar);
 }
 
 .empty-text {
@@ -1494,11 +1836,11 @@ body.dark .log {
   );
   background-size: 400% 100%;
   animation: zy-shimmer 1.4s ease infinite;
-  height: 18px;
+  height: var(--zy-skeleton);
 }
 
 .skeleton-lg {
-  height: 88px;
+  height: var(--zy-skeleton-lg);
   border-radius: var(--md-shape-xl);
 }
 
@@ -1539,8 +1881,15 @@ body.dark .log {
   min-width: 0;
 }
 
+/* 收起键要 48px：它在反馈条的角上，是这条里唯一的可点处，
+   视觉上只有一枚 20px 的叉，命中区靠这个盒子给。 */
 .snack-close {
   flex: none;
+  width: var(--zy-touch);
+  height: var(--zy-touch);
+  display: grid;
+  place-items: center;
+  margin: calc(-1 * var(--md-space-2)) 0;
   border: none;
   background: none;
   color: inherit;
@@ -1550,12 +1899,17 @@ body.dark .log {
   cursor: pointer;
 }
 
+.snack-close svg {
+  width: var(--zy-icon);
+  height: var(--zy-icon);
+}
+
 .snack-bad {
-  border-left: 4px solid var(--md-sys-color-error);
+  border-left: var(--zy-accent) solid var(--md-sys-color-error);
 }
 
 .snack-good {
-  border-left: 4px solid var(--md-sys-color-success);
+  border-left: var(--zy-accent) solid var(--md-sys-color-success);
 }
 
 /* 解锁页：没有口令时唯一能看到的一屏 */
@@ -1624,11 +1978,162 @@ body.dark .log {
   }
 }
 
-/* ==================== §H 宽屏 ==================== */
+/* 系统强制配色（Windows 高对比等）。这一档下浏览器会接管所有颜色，
+   我们能管的只有「哪一处原本靠色差表达状态、现在需要换一根真正的线」。
+   别在这里写 forced-color-adjust: none——那是把用户的选择关掉。 */
+@media (forced-colors: active) {
+  /* 开关的轨道与滑块都是画出来的形状，颜色被接管之后要保证两者还分得开。 */
+  .switch::before {
+    border-color: ButtonText;
+    background: ButtonFace;
+  }
 
-/* 窄屏（手机竖握）上把几处并排收成竖排。
-   判据是「这一行还能不能读」：日志一行放不下「时刻 + 级别 + 来源 + 正文」时，
-   硬挤的结果是四段各自折断，不如让正文整条落到第二行。 */
+  .switch::after {
+    background: ButtonText;
+  }
+
+  .switch[aria-checked="true"]::before {
+    background: ButtonText;
+    border-color: ButtonText;
+  }
+
+  .switch[aria-checked="true"]::after {
+    background: ButtonFace;
+  }
+
+  /* 选中态原本靠容器色，这里改用系统的高亮色描一圈。 */
+  .chip[aria-pressed="true"],
+  .seg-item[aria-pressed="true"],
+  .row[aria-selected="true"] {
+    border: var(--zy-hairline) solid Highlight;
+  }
+
+  /* 警告与错误那根行首竖线是 inset 阴影画的，这一档下会被丢掉。 */
+  .log-warn,
+  .log-erro {
+    border-left: var(--zy-border-strong) solid currentColor;
+  }
+}
+
+/* ==================== §H 响应式 ==================== */
+/* 断点分两种，别混，也别在别处另起一块：
+
+   —— 版式断点（决定外壳怎么摆，按可用宽度分三档，纪律 5）——
+     < 600px    底栏：.shell 单列 + 底部导航条
+     600—839px  导航轨：左侧 96px 一条，条目竖着排
+     ≥ 840px    抽屉：左侧 216px，条目横排，插件页并排
+
+   —— 内容断点（只看「这一行还能不能读」，与外壳无关）——
+     ≤ 599px    手机排版：表单与配置表折成一列，日志一行压紧
+     ≤ 560px    四格真的放不下时，日志正文整条落到第二行
+     ≥ 1100px   总览分两栏——这一条要的是**正文自己够宽**，不是视口够宽：
+                840px 起抽屉会吃掉 216px，两栏要等再宽一些才成立
+
+   同一个断点只有一块 @media。加规则往对应的那一块里加。 */
+
+/* —— 窄屏：手机竖握 —— */
+@media (max-width: 599px) {
+  .main {
+    padding-inline: var(--md-space-2);
+  }
+
+  .page-head {
+    padding-inline: 0;
+  }
+
+  .hero {
+    padding: var(--md-space-4);
+  }
+
+  .card {
+    padding: var(--md-space-3) var(--md-space-3) var(--md-space-4);
+  }
+
+  .row {
+    gap: var(--md-space-2);
+    padding-inline: var(--md-space-2);
+  }
+
+  .toolbar {
+    gap: var(--md-space-2);
+  }
+
+  .toolbar .seg,
+  .log-tools .seg {
+    width: 100%;
+  }
+
+  .seg[data-connected] .seg-item {
+    padding-inline: var(--md-space-2);
+  }
+
+  .overview-metrics .reading {
+    padding: var(--md-space-2);
+  }
+
+  /* 输入框的字号在手机上不能小于 16px：iOS 聚焦时会按字号把整页放大，
+     放大之后这一屏就回不到原样了。 */
+  .input,
+  .area,
+  .search input {
+    font-size: var(--md-type-input-size);
+  }
+
+  /* 长按钮宁可折行，也不要横向顶出视口。 */
+  .btn {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .bar-title {
+    min-width: 0;
+  }
+
+  /* 日志工具条在窄屏占满一行，动作靠右，「跟随最新」留在左边。 */
+  .log-tools {
+    padding: var(--md-space-2);
+    gap: var(--md-space-1);
+  }
+
+  .log-tools .search {
+    flex-basis: 100%;
+  }
+
+  .log-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .log-actions #log-follow {
+    margin-right: auto;
+  }
+
+  /* 窄屏不做「整页不滚」：一屏里塞不下工具条加日志面，让页面自己滚更顺。 */
+  .page[data-page="logs"] {
+    height: auto;
+    min-height: 0;
+  }
+
+  .log-workspace .log {
+    height: 52dvh;
+  }
+
+  .log-line {
+    padding-block: var(--md-space-1);
+  }
+
+  .log-target {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+/* —— 更窄：日志那一行四格真的放不下 ——
+   判据不是设备，是「时刻 + 级别 + 来源 + 正文」还能不能读。硬挤的结果是
+   四段各自折断，不如让正文整条落到第二行。配置表同理：键名一列、控件一列
+   之后输入框只剩一百多像素，模型名与路径都会被截断。 */
 @media (max-width: 560px) {
   .log-line {
     grid-template-columns: var(--zy-log-time) var(--zy-log-level) minmax(0, 1fr);
@@ -1652,21 +2157,15 @@ body.dark .log {
     align-items: stretch;
   }
 
-  /* 配置表在手机上不摆两列：键名一列、控件一列之后，输入框只剩一百多像素，
-     模型名与路径都给截断。改成键名在上、控件占满一整行。 */
   .kv {
     grid-template-columns: minmax(0, 1fr);
-    gap: 2px;
-  }
-
-  .page-head {
-    padding-left: 0;
-    padding-right: 0;
+    gap: var(--zy-gap-tight);
   }
 }
 
-/* 中等：底栏换成左边一条导航轨。鼠标在右侧，眼睛在中间，
-   导航横在最下面会白占一行高度。 */
+/* —— 中等：底栏换成左边一条导航轨 ——
+   鼠标在右侧，眼睛在中间，导航横在最下面会白占一行高度。这一档起底栏让位，
+   --zy-nav 归零，页面底部那几处「躲开底栏」的间距跟着一起收。 */
 @media (min-width: 600px) {
   .shell {
     grid-template-columns: var(--zy-rail-width) minmax(0, 1fr);
@@ -1676,6 +2175,10 @@ body.dark .log {
   }
 
   body { --zy-nav: 0px; }
+
+  .main {
+    padding: var(--md-space-4) var(--md-space-5);
+  }
 
   .nav {
     position: sticky;
@@ -1711,7 +2214,7 @@ body.dark .log {
   }
 
   .nav-indicator {
-    width: 56px;
+    width: var(--zy-nav-indicator);
   }
 
   /* 宽一点之后品牌与页名并排，中间用一枚间隔号分开 */
@@ -1725,12 +2228,16 @@ body.dark .log {
     color: var(--md-sys-color-on-surface-faint);
   }
 
-  .main {
-    padding: var(--md-space-5) var(--md-space-5) var(--md-space-8);
+  /* 宽屏不做「整页不滚」的那一套在这里收回来：一屏放得下工具条加日志面。 */
+  .page[data-page="logs"] {
+    height: calc(100dvh - var(--zy-bar) - var(--md-space-8));
+    min-height: 480px;
   }
 }
 
-/* 宽屏：导航轨长成抽屉，条目改成图标加文字；插件页并排成「列表 + 详情」。 */
+/* —— 宽屏：导航轨长成抽屉，条目改成图标加文字；插件页并排成「列表 + 详情」——
+   抽屉比导航轨宽一倍，但它把页名的位置让出来了：品牌与页名并排、中间一枚
+   间隔号，这是桌面应用常见的一条顶栏。 */
 @media (min-width: 840px) {
   body.layout-expanded {
     --zy-page-width: var(--zy-page-wide);
@@ -1784,12 +2291,12 @@ body.dark .log {
     letter-spacing: var(--md-type-label-small-track);
   }
 
+  /* 插件页：左边列表右边详情，点一行只换右边那一格。 */
   .panes[data-split] {
     grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
   }
 
-  /* 详情那一格自己只有半屏宽，再分成两栏就什么都放不下：
-     列表与详情并排时，详情内部一律单栏。 */
+  /* 详情那一格自己只有半屏宽，再分两栏就什么都放不下。 */
   .panes[data-split] .split {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -1802,191 +2309,25 @@ body.dark .log {
   }
 }
 
-/* 总览在足够宽时组成四块有明确权重的信息区；窄屏保持阅读顺序。 */
-.overview-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--md-space-3);
-}
-.hero-top {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--md-space-2);
-  margin-bottom: var(--md-space-2);
-}
-.hero { min-width: 0; }
-.hero-number { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.hero-note { color: var(--md-sys-color-on-primary-container); }
-.hero-actions { margin-top: auto; padding-top: var(--md-space-3); }
-.overview-metrics .readings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.overview-metrics .reading {
-  padding: var(--md-space-3);
-  background: var(--md-sys-color-surface-container-low);
-  border-radius: var(--md-shape-l);
-  gap: var(--md-space-1);
-}
-.overview-metrics .reading-value { overflow-wrap: anywhere; }
-.overview-connections .row { padding-inline: 0; }
-.log-line { flex-shrink: 0; }
-.log-text { min-width: 0; overflow-wrap: anywhere; }
-.log-level { flex: none; font-weight: var(--md-type-label-large-weight); }
-.log-empty { color: var(--md-sys-color-log-muted); }
-.empty-icon svg { width: var(--zy-avatar); height: var(--zy-avatar); }
-.row-plain { cursor: default; }
-button.row-plain { cursor: pointer; }
-.row-plain:not(button):hover { background: none; }
-.snack-close {
-  width: var(--zy-touch);
-  height: var(--zy-touch);
-  display: grid;
-  place-items: center;
-  margin: calc(-1 * var(--md-space-2)) 0;
-}
-.snack-close svg { width: var(--zy-icon); height: var(--zy-icon); }
-.page-title:focus { outline: none; }
-#view { scroll-margin-top: var(--zy-bar); }
-.skip-link {
-  position: fixed;
-  top: var(--md-space-2);
-  left: var(--md-space-3);
-  z-index: 60;
-  padding: var(--md-space-3) var(--md-space-4);
-  border-radius: var(--md-shape-full);
-  background: var(--md-sys-color-primary);
-  color: var(--md-sys-color-on-primary);
-  transform: translateY(-200%);
-}
-.skip-link:focus { transform: none; }
-@media (max-width: 599px) {
-  .main { padding-inline: var(--md-space-2); }
-  .hero { padding: var(--md-space-4); }
-  .card { padding: var(--md-space-3) var(--md-space-3) var(--md-space-4); }
-  .row { gap: var(--md-space-2); padding-inline: var(--md-space-2); }
-  .toolbar { gap: var(--md-space-2); }
-  .toolbar .seg { width: 100%; }
-  .seg[data-connected] .seg-item { padding-inline: var(--md-space-2); }
-  .overview-metrics .reading { padding: var(--md-space-2); }
-  .input, .area, .search input { font-size: var(--md-type-input-size); }
-}
+/* —— 很宽：总览分成两栏 ——
+   两列之后每格只按自己的内容长。默认的 stretch 会把「连接」那张卡撑到与
+   首屏一样高，里面只有一行字，看着像一块空板。 */
 @media (min-width: 1100px) {
-  /* 两列之后每格只按自己的内容长。默认的 stretch 会把「连接」那张卡撑到与
-     首屏一样高，里面只有一行字，看着像一块空板。 */
   .overview-grid {
     grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
     align-items: start;
   }
-  .overview-recent .log-short { max-height: 320px; }
-  .overview-recent .log-line { grid-template-columns: var(--zy-log-time) var(--zy-log-level) minmax(0, var(--zy-log-target)) minmax(0, 1fr); }
-  .overview-recent .log-text { grid-column: auto; }
-}
 
-:where(button, a, input, textarea, [tabindex="0"]):focus-visible {
-  outline: 2px solid var(--md-sys-color-primary);
-  outline-offset: 2px;
-}
-.row-hit:focus-visible { outline-offset: -3px; }
-/* 分段按钮自己的盒子贴着带 overflow: hidden 的容器，画在外面的环会被裁掉。 */
-.seg-item:focus-visible { outline-offset: -3px; }
-.log:focus-visible { outline-color: var(--md-sys-color-primary); }
-/* 并排详情是一块窄容器，不能用整个窗口的宽度判断字段是否并列。 */
-.panes[data-split] .kv {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 2px;
-}
-@media (max-width: 599px) {
-  .btn { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
-  .bar-title { min-width: 0; }
-}
+  .overview-recent .log-short {
+    max-height: 320px;
+  }
 
-/* 工作台：色调区分导航、内容和编辑容器；高对比只留给主动作。 */
-.bar { background: var(--md-sys-color-surface-container-low); border-bottom-color: transparent; }
-.nav { border-color: transparent; }
-.card { border-color: transparent; }
-.card .panel, .card .inset { background: var(--md-sys-color-surface-container-low); }
-.page-head { padding-block: var(--md-space-2); }
-.page-title { color: var(--md-sys-color-primary); }
-.row-title { font-size: var(--md-type-title-small-size); }
-.list .row { padding-block: var(--md-space-2); }
-#plugin-list { padding: var(--md-space-2); }
-#plugin-list .row { border-radius: var(--md-shape-m); }
-#plugin-list .row[aria-selected="true"] {
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
-}
-.overview-metrics { background: var(--md-sys-color-surface-container-low); }
-.overview-metrics .reading { background: var(--md-sys-color-surface); }
-.overview-connections, .overview-recent { grid-column: 1 / -1; }
-.overview-recent .log-short { max-height: 240px; }
+  .overview-recent .log-line {
+    grid-template-columns: var(--zy-log-time) var(--zy-log-level)
+      minmax(0, var(--zy-log-target)) minmax(0, 1fr);
+  }
 
-/* 日志是一块完整的工作区；工具、连接状态、内容和计数各有固定位置。 */
-.log-workspace {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  background: var(--md-sys-color-surface);
-  border: var(--zy-hairline) solid var(--md-sys-color-outline-variant);
-  border-radius: var(--md-shape-xl);
-  overflow: hidden;
-}
-.log-tools {
-  position: static;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--md-space-2);
-  padding: var(--md-space-3);
-  background: var(--md-sys-color-surface-container-low);
-}
-.log-tools .search { flex: 1 1 200px; }
-.log-tools .seg { width: auto; }
-.log-actions { display: flex; gap: var(--md-space-1); align-items: center; flex-wrap: wrap; }
-.log-tools .seg-item { padding-inline: var(--md-space-3); }
-.log-tools .chip[aria-pressed="true"] {
-  background: var(--md-sys-color-primary);
-  color: var(--md-sys-color-on-primary);
-}
-.log-workspace .log-meta, .log-footer {
-  padding: var(--md-space-2) var(--md-space-3);
-  display: flex;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: var(--md-space-1) var(--md-space-3);
-  font-size: var(--md-type-label-medium-size);
-  color: var(--md-sys-color-on-surface-variant);
-}
-#log-status { font-weight: var(--md-type-label-large-weight); }
-.log-workspace .log { border-radius: var(--md-shape-none); padding: var(--md-space-2); }
-.page[data-page="logs"] {
-  height: calc(100dvh - var(--zy-bar) - var(--zy-nav) - var(--md-space-6));
-  min-height: 540px;
-}
-.page[data-page="logs"] .log-workspace { flex: 1; }
-.log-workspace .log { flex: 1; min-height: 160px; }
-.log-line:nth-child(even) { background: color-mix(in srgb, var(--md-sys-color-log-text) 3%, transparent); }
-.log-workspace .jump {
-  position: absolute;
-  bottom: var(--md-space-8);
-  right: var(--md-space-3);
-  box-shadow: var(--md-elevation-2);
-}
-@media (min-width: 600px) {
-  .main { padding: var(--md-space-4) var(--md-space-5); }
-  .page[data-page="logs"] { height: calc(100dvh - var(--zy-bar) - var(--md-space-8)); min-height: 480px; }
-  .page[data-page="logs"] .log-workspace { flex: 1; }
-  .log-workspace .log { flex: 1; min-height: 160px; }
-  .nav { gap: var(--md-space-2); }
-}
-@media (max-width: 599px) {
-  .log-tools { padding: var(--md-space-2); gap: var(--md-space-1); }
-  .log-tools .search { flex-basis: 100%; }
-  .log-tools .seg { width: 100%; }
-  .log-actions { width: 100%; justify-content: flex-end; }
-  .log-actions #log-follow { margin-right: auto; }
-  .log-workspace .log { height: 52dvh; }
-  .log-target { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .log-line { padding-block: var(--md-space-1); }
+  .overview-recent .log-text {
+    grid-column: auto;
+  }
 }

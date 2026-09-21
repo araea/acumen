@@ -123,3 +123,54 @@ bash scripts/review-console.sh
 ### 测试
 
 `node tests/console.cjs` 里修掉一处**既有的竞态**：保存连接之后整页会重画一次（`render()` 在 POST 回包之后才跑，比那条 `until` 晚），紧接着加的草稿表单会被这次重画抹掉，于是测试变成谁先跑完谁赢。改成等旧表单节点脱离 DOM 再往下走。
+
+## 第四轮：一份统一的设计语言，与 WCAG 2.2 AA（2026-09-21）
+
+这一轮的目标不是再加几块界面，而是把「界面长什么样」这件事收成**一份**规范：令牌只有一处、组件只有一份定义、冲突有明确的裁决次序。四个来源各管一段——M3 Expressive 给核心视觉语言，Apple HIG 给交互与装到桌面之后的平台行为，Carbon 补 Web、响应式与信息密度高的界面，Miuix 只做视觉精修（图标粗细与数显行高）。次序写进了 `res/console/app.css` 的文件头，因为次序本身就是规范：
+
+```text
+平台原生规范 > 可用性与无障碍 > 产品一致性 > M3E > Carbon > Miuix
+```
+
+### 审计发现与改法
+
+| 审计发现 | 为什么是问题 | 改法 |
+| --- | --- | --- |
+| `app.css` 在 §H 之后还挂着一整段无标题的覆盖层（约 190 行） | 同一批组件被写了两遍：`.log-line` / `.log-text` / `.log-level` / `.log-empty` / `.row-plain` / `.snack-close` / `.hero-*` 都是先在一处定义、又在末尾改写一次。读的人得把两处叠起来才知道实际取值——这就是「拼贴」的样子 | 全部折回 §A—§H 的对应分节，重复声明删掉，同一属性只留一处 |
+| 三块 `@media (max-width: 599px)`、两块 `@media (min-width: 600px)` 散在文件里 | 文件头写着「断点按最窄的可用宽度分三档」，实际有五档宽度各自成块，加一条规则不知道该往哪儿放 | §H 重写成一份：每个断点只有一块，并区分**版式断点**（600/840，管外壳）与**内容断点**（599/560/1100，管一行读不读得下去） |
+| 芯片与搜索框拿 `outline-variant` 当控件边界 | 实测只有 1.12:1 与 1.30:1。它俩一个底是透明的、一个底与卡面只差 1.05:1，那圈线就是「这里能点/能打字」的全部证据，等于没有 | 改用 `outline`；`outline-variant` 从此只做分隔线。这条写成了纪律 5 |
+| `outline` 与 `on-surface-faint` 在控制台那套表面上不达标 | 小字 4.47:1 < 4.5，边界 2.29:1 < 3。卡片图是发到群里的位图，不受 WCAG 约束，但控制台是网页 | 在 `body.scheme-console` 两档里单独加深（4.47→5.09、2.29→3.75），`§7` 的基线不动，五张卡片图因此一行没变 |
+| 浅色主题下的日志面板套着一层同值的 `body.dark .log` 覆盖 | 两个分支写的是同一对令牌，纯粹是历史残留 | 删掉，顺带去掉一层中间变量；日志在两种主题里都是深底浅字，不需要按主题换色 |
+| 底栏底色是 `surface-container`，而顶栏、导航轨、抽屉都是 `surface-container-low` | 同一层「外壳」在窄屏与宽屏取了两级不同的面，换档时底栏会变色 | 底栏跟顶栏取同一级。外壳三层（顶栏、底栏/导航轨/抽屉）从此是同一个面，内容是一张张 `surface` 的卡，页面底是 `surface-dim` |
+| 拖尾里散着一批 `2px` / `6px` / `4px` / `18px` / `88px` 与两处 `line-height: 1.12` | 文件头第 3 条要求结构尺寸收进 `--zy-*`，这几样都出现了两次以上 | 收成 `--zy-gap-tight` / `--zy-dot` / `--zy-accent` / `--zy-border-strong` / `--zy-skeleton` / `--zy-skeleton-lg` / `--zy-line-figure` |
+| `theme-color` 与清单里的主题色是 `#fcfdfb`，而顶栏实际是 `surface-container-low` | 装到桌面之后系统把状态栏和顶栏接在一起，对不上就是一条看得见的接缝 | 页面两档 media 与清单的 `theme_color` 都改成顶栏那一层；`background_color` 改成页面底色 `surface-dim`，启动画面与首屏同色 |
+| 反馈条整条挂着 `aria-live="polite"` | 报错也按「礼貌」播报，等当前朗读完才说，而报错多半意味着刚才那一下没生效 | 活区下沉到文字那一个 span，成功与进行中用 `role="status"`、失败用 `role="alert"`；宿主不再挂 `aria-live`（挂了会和里面这层叠起来念两遍） |
+| 键盘 Tab 到屏幕外的控件时会被吸顶顶栏或固定底栏压住 | 2.4.11 焦点不被遮挡（WCAG 2.2 新增的 AA 条） | 焦点环那一处同时给 `scroll-margin-top/bottom`，按 `--zy-bar` / `--zy-nav` 留白 |
+| 强制配色（Windows 高对比等）下开关会糊成一团 | 轨道与滑块都是 `::before` / `::after` 画出来的背景色，这一档下颜色被系统接管 | 加一块 `forced-colors: active`：开关改用 `ButtonText` / `ButtonFace`，选中态改用 `Highlight` 描边，日志那根行首竖线换成真的 `border-left` |
+
+### 可重复验证：把这条下限交给机器
+
+审美靠图（`review-console.sh`），下限靠算。新增 `scripts/audit-contrast.py`：真 Chromium 逐元素算，7 个页面 × 3 档宽度 × 明暗两档共 42 个快照，查 1.4.3 对比度、1.4.11 控件边界、2.5.8 触控目标与可访问名。
+
+负数对照是拿同一份脚本对着**改之前**的那一版跑的，20 处不过（文字 4、边界 16）；改完之后 0 处：
+
+```sh
+python3 scripts/audit-contrast.py            # 用本仓库正在跑的那一份
+python3 scripts/audit-contrast.py <带口令的地址>
+```
+
+对比度是可以算的，所以它不该只写在文档里等人复核。**这一条以后由脚本守着**，文档里那几个数只是某一刻的快照。
+
+### 一处**刻意不改**
+
+卡面保留透明描边（边界只由 `surface` 与 `surface-dim` 的明度差给，约 1.13:1）。卡片容器不是控件，1.4.11 不适用于它；而一屏七八张卡各描一圈会变成一片格子，把「卡 > 块 > 页」三级色调的层次盖掉。理由写在 `app.css` 的 `.card` 上，免得后来者当成漏写。按裁决次序，这一条落在「产品一致性 > M3E」——卡片图那边有描边（孤立的白纸需要），界面这边没有（连排的卡不需要），两处的**外形令牌**仍然是同一套。
+
+### 测试
+
+```sh
+cargo test --locked                     # 602 通过
+node tests/console.cjs                  # 通过；{"logMutations":7,"longTasks":[]}
+bash scripts/review-console.sh          # 三档宽度 × 七页 + 三条只读交互断言
+bash scripts/review-cards.sh            # 五张卡片图（m3e.css 动过就要跑）
+python3 scripts/audit-contrast.py       # 42 个快照，0 处不过
+```
