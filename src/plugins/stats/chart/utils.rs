@@ -200,10 +200,31 @@ pub fn get_font_family(config: &StatsConfig) -> &str {
 pub struct ColorScheme {
     pub background: RGBColor,
     pub card_background: RGBColor,
+    /// 卡面之上、还要再分一层的底（信息卡的图标底板）
+    pub container: RGBColor,
+    /// 容器里最实的一档，用来做长度条的轨道
+    pub container_high: RGBColor,
     pub primary: RGBColor,
     pub text_primary: RGBColor,
     pub text_secondary: RGBColor,
+    /// 比次级前景再弱一档：名次这类只作参照、不需要被读的数字
+    pub text_faint: RGBColor,
+    /// 图形元素的描边。按 3∶1 设计，不用来写字
+    pub outline: RGBColor,
     pub grid_line: RGBColor,
+}
+
+impl ColorScheme {
+    /// 卡面上够得着正文对比度的那档弱化前景。
+    ///
+    /// `on-surface-faint` 这支令牌压在 `#fffefa` 上量出来是 4.44∶1，离 WCAG 2.2 的
+    /// 正文 4.5∶1 差一线。可达性是[底线](design-system 的底线与偏好)，过不去就不发，
+    /// 所以这里**换取值来源**（从令牌推出来，不是另挑一个色），不放宽约束。
+    /// 留痕在这里：令牌本身该往深里走半档，那是卡片那侧的事，改了之后这个方法会
+    /// 自动变成恒等映射。
+    pub fn readable_faint(&self) -> RGBColor {
+        ensure_contrast(self.text_faint, self.card_background, 4.5)
+    }
 }
 
 impl Default for ColorScheme {
@@ -215,17 +236,22 @@ impl Default for ColorScheme {
     ///
     /// **对不上 CSS 的地方只有一处**：这里必须是字面量——plotters 画的是位图，
     /// 拿不到 CSS 的自定义属性。改了 `m3e.css` 的 `scheme-manual`，这一组要跟着改
-    /// （六个数：surface / surface-dim / primary / on-surface / on-surface-variant /
-    /// outline-variant），`a_chart_is_painted_in_the_card_scheme` 那条单测钉着它们。
+    /// （surface / surface-dim / surface-container / surface-container-high / primary /
+    /// on-surface / on-surface-variant / on-surface-faint / outline / outline-variant），
+    /// `a_chart_is_painted_in_the_card_scheme` 那条单测逐个钉着它们。
     fn default() -> Self {
         Self {
             // 相纸：卡片外的底
             background: RGBColor(237, 241, 237),
             // 卡面：统计图自己就是一张纸，用卡面那档
             card_background: RGBColor(255, 254, 250),
+            container: RGBColor(241, 244, 241),
+            container_high: RGBColor(231, 236, 232),
             primary: RGBColor(31, 99, 80),
             text_primary: RGBColor(31, 42, 39),
             text_secondary: RGBColor(79, 92, 87),
+            text_faint: RGBColor(109, 122, 116),
+            outline: RGBColor(163, 178, 170),
             grid_line: RGBColor(222, 229, 223),
         }
     }
@@ -271,12 +297,25 @@ mod color_scheme_guard {
         let colors = ColorScheme::default();
         assert_eq!(colors.card_background, hex(&token("--md-sys-color-surface")));
         assert_eq!(colors.background, hex(&token("--md-sys-color-surface-dim")));
+        assert_eq!(
+            colors.container,
+            hex(&token("--md-sys-color-surface-container"))
+        );
+        assert_eq!(
+            colors.container_high,
+            hex(&token("--md-sys-color-surface-container-high"))
+        );
         assert_eq!(colors.primary, hex(&token("--md-sys-color-primary")));
         assert_eq!(colors.text_primary, hex(&token("--md-sys-color-on-surface")));
         assert_eq!(
             colors.text_secondary,
             hex(&token("--md-sys-color-on-surface-variant"))
         );
+        assert_eq!(
+            colors.text_faint,
+            hex(&token("--md-sys-color-on-surface-faint"))
+        );
+        assert_eq!(colors.outline, hex(&token("--md-sys-color-outline")));
         assert_eq!(
             colors.grid_line,
             hex(&token("--md-sys-color-outline-variant"))
@@ -291,6 +330,21 @@ mod color_scheme_guard {
             );
         }
     }
+}
+
+/// 名次色：金、银、铜。含义在颜色本身，因此**不跟主题走**，也不跟头像色走——
+/// 见视觉系统「有语义固定的元素不跟随主题变色」。取的是能在暖白纸上过正文对比度
+/// 的深调，不是屏幕上那种亮闪闪的金银；名次的数字本身是第二个通道，色觉障碍下
+/// 丢掉颜色也还认得出第几名。
+pub const MEDALS: [RGBColor; 3] = [
+    RGBColor(138, 100, 10),  // 金
+    RGBColor(104, 112, 118), // 银
+    RGBColor(140, 88, 52),   // 铜
+];
+
+/// 第 `rank` 名（从 1 起）该用的墨色：前三名是奖牌色，其余是弱化的前景色。
+pub fn rank_ink(rank: usize, faint: RGBColor) -> RGBColor {
+    MEDALS.get(rank.wrapping_sub(1)).copied().unwrap_or(faint)
 }
 
 pub fn get_font<'a>(config: &'a StatsConfig, size: u32) -> TextStyle<'a> {
@@ -398,14 +452,29 @@ fn from_hsl(h: f32, s: f32, l: f32) -> RGBColor {
     RGBColor(to8(r), to8(g), to8(b))
 }
 
+/// 读不出色相的下限：RGB 三分量的极差（彩度）不到这个比例，剩下的方向就是噪声。
+///
+/// 判彩度要看极差，不能看 HSL 的 S：雪白的自拍 `(238,234,228)` 三分量只差 10，
+/// 眼里就是一张白纸，HSL 却因为明度贴着顶而算出 0.23 的饱和度——照着它染，
+/// 一张白头像会得到一条橘色的条。近黑的剪影同理。
+const HUE_NOISE_FLOOR: f32 = 0.10;
+
+/// 回退色相：系统主色的那一支。灰头像不是"没有颜色"，是"没有自己的颜色"，
+/// 于是跟着全站走，而不是退成一块纯灰——成片的中性色发灰，与主色也不像一家人。
+fn fallback_hue() -> f32 {
+    to_hsl(RGBColor(31, 99, 80)).0
+}
+
 /// 主题色的明度与饱和度收进窄带，只留色相。
 /// 明度上限压在 0.5：条上的浅色字才有足够对比；下限 0.36：不至于黑成一块煤。
 pub fn harmonize_theme(color: RGBColor) -> RGBColor {
     let (h, s, l) = to_hsl(color);
-    // 本来就没有色相的头像（纯灰、纯白、纯黑）保持中性：HSL 里它们的 H 一律是 0，
-    // 硬给饱和度会凭空染出一条粉红，与头像对不上。中性色只压明度。
-    if s < 0.06 {
-        return from_hsl(0.0, 0.0, l.clamp(0.36, 0.50));
+    let chroma =
+        (color.0.max(color.1).max(color.2) - color.0.min(color.1).min(color.2)) as f32 / 255.0;
+    // 彩度低到读不出方向的头像（雪白、近黑、灰度）退到固定的回退色相，
+    // 彩度取窄带的中值——它们不该因为"没有颜色"反而成为整张榜上最扎眼的几行。
+    if chroma < HUE_NOISE_FLOOR {
+        return from_hsl(fallback_hue(), 0.30, l.clamp(0.36, 0.50));
     }
     from_hsl(h, s.clamp(0.18, 0.42), l.clamp(0.36, 0.50))
 }
@@ -428,14 +497,89 @@ fn yiq_brightness(c: RGBColor) -> u32 {
     (c.0 as u32 * 299 + c.1 as u32 * 587 + c.2 as u32 * 114) / 1000
 }
 
+/// 这块底上该写深字还是浅字：黑与白各量一次，谁的对比度高就往谁那边走。
+fn prefers_dark_ink(bg: RGBColor) -> bool {
+    contrast_ratio(RGBColor(0, 0, 0), bg) >= contrast_ratio(RGBColor(255, 255, 255), bg)
+}
+
 /// 实色条上的字色。纯白/纯黑盖在彩色上像两片贴纸；取同色相的极浅调或极深调，
 /// 对比度一样够，字却像是从这块颜色里长出来的。
+///
+/// 起手的那一档只是个起点：条色来自头像，什么色相都可能，总有那么一两支
+/// 刚好卡在 4.5∶1 的线下（荧光粉就是），所以最后一律过一遍阈值再交出去。
 pub fn get_contrast_color(bg_color: RGBColor) -> RGBColor {
-    if yiq_brightness(bg_color) >= 128 {
+    let seed = if prefers_dark_ink(bg_color) {
         deep_tone(bg_color, 0.26)
     } else {
         mix_with_white(bg_color, 0.10)
+    };
+    ensure_contrast(seed, bg_color, 4.5)
+}
+
+// ================= 对比度 =================
+//
+// 对比度是可达性，不是风格：阈值由 WCAG 2.2 定，正文 4.5∶1，大字与图形元素 3∶1。
+// 条色来自头像，什么都可能，所以「同一支色相的深调」这种算法给出来的字色得逐对量过
+// 才敢用——不量，总有那么一两支色相的字糊在自己的底上。
+
+/// WCAG 2.2 的相对亮度。
+fn relative_luminance(c: RGBColor) -> f32 {
+    let channel = |v: u8| {
+        let s = v as f32 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(c.0) + 0.7152 * channel(c.1) + 0.0722 * channel(c.2)
+}
+
+/// 两色之间的对比度，1—21。
+pub fn contrast_ratio(a: RGBColor, b: RGBColor) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// 把前景一档档推开，直到它在 `bg` 上够 `min_ratio`。色相不动，只动明度——
+/// 明度节奏是层级的载体，但这里让位给可达性那一条：底线过不去就不发。
+///
+/// 往哪边推由底色定，而且是**量出来**的：黑与白各在这块底上算一次对比度，
+/// 谁高往谁推。用明度阈值（YIQ 128 之类）在交界一带会选错边——`#AC6553` 那样
+/// 的砖红按 YIQ 算是"深底"，推到全白只有 4.43∶1，推到全黑却有 4.74∶1。
+/// 两端里高的那个至少是 4.58∶1（正好落在交界的那支色），所以 4.5 总够得着。
+pub fn ensure_contrast(fg: RGBColor, bg: RGBColor, min_ratio: f32) -> RGBColor {
+    let target = if prefers_dark_ink(bg) {
+        RGBColor(0, 0, 0)
+    } else {
+        RGBColor(255, 255, 255)
+    };
+    // 每档走掉剩余距离的 6%，且至少走一格：单纯按比例混色到了两端会因为取整
+    // 原地打转，字色就停在离阈值一线的地方——这正是从前荧光粉那一行的毛病。
+    let step = |v: u8, t: u8| -> u8 {
+        let (v, t) = (v as f32, t as f32);
+        let moved = v + (t - v) * 0.06;
+        if t > v {
+            moved.ceil().min(t) as u8
+        } else if t < v {
+            moved.floor().max(t) as u8
+        } else {
+            v as u8
+        }
+    };
+    let mut c = fg;
+    for _ in 0..255 {
+        if contrast_ratio(c, bg) >= min_ratio || (c.0, c.1, c.2) == (target.0, target.1, target.2) {
+            break;
+        }
+        c = RGBColor(
+            step(c.0, target.0),
+            step(c.1, target.1),
+            step(c.2, target.2),
+        );
     }
+    c
 }
 
 pub fn mix_with_white(color: RGBColor, opacity: f32) -> RGBColor {
@@ -695,10 +839,95 @@ mod tests {
             );
         }
 
-        // 灰头像不该被凭空染上色相
-        let gray = harmonize_theme(RGBColor(140, 140, 140));
-        assert_eq!(gray.0, gray.1);
-        assert_eq!(gray.1, gray.2);
+        // 读不出色相的三种头像——雪白、近黑、纯灰——退到同一支回退色相。
+        // 「不从噪声里读一个方向出来」：白头像三分量只差 10，HSL 却给得出 0.23 的
+        // 饱和度，照着染就会得到一条与头像毫无关系的橘色。
+        let fallback = harmonize_theme(RGBColor(140, 140, 140));
+        for raw in [
+            RGBColor(238, 234, 228),
+            RGBColor(26, 24, 30),
+            RGBColor(120, 124, 130),
+        ] {
+            let (h, _, _) = to_hsl(harmonize_theme(raw));
+            let (fh, _, _) = to_hsl(fallback);
+            assert!(
+                (h - fh).abs() < 1.0,
+                "{raw:?} 的彩度读不出方向，应当退到回退色相"
+            );
+        }
+        // 回退色相就是主色那一支，不是一块纯灰
+        assert!(fallback.0 != fallback.1 || fallback.1 != fallback.2);
+        let (fh, _, _) = to_hsl(fallback);
+        let (ph, _, _) = to_hsl(RGBColor(31, 99, 80));
+        assert!((fh - ph).abs() < 1.0, "回退色相取的是主色那一支");
+
+        // 本来就有色相的头像不受影响
+        let pink = harmonize_theme(RGBColor(255, 64, 160));
+        let (ph_in, _, _) = to_hsl(RGBColor(255, 64, 160));
+        let (ph_out, _, _) = to_hsl(pink);
+        assert!((ph_in - ph_out).abs() < 3.0, "有色相的头像保留自己的色相");
+    }
+
+    /// 图上每一处文字都要逐对量过对比度：阈值是 WCAG 2.2 的，不是眼睛觉得够。
+    #[test]
+    fn every_ink_clears_the_wcag_threshold_on_its_own_ground() {
+        let colors = ColorScheme::default();
+        let paper = colors.card_background;
+
+        // 系统自己的几支墨：正文 4.5∶1
+        for (name, ink) in [
+            ("on-surface", colors.text_primary),
+            ("on-surface-variant", colors.text_secondary),
+            ("readable_faint", colors.readable_faint()),
+        ] {
+            let ratio = contrast_ratio(ink, paper);
+            assert!(ratio >= 4.5, "{name} 在卡面上只有 {ratio:.2}∶1");
+        }
+        // 令牌原值差一线，`readable_faint` 就是为这条差额存在的；哪天卡片那侧把令牌
+        // 改深了，这里会失败，那时删掉这一行与那个方法即可
+        assert!(
+            contrast_ratio(colors.text_faint, paper) < 4.5,
+            "on-surface-faint 已经够正文对比度了，readable_faint 可以退休"
+        );
+        // 奖牌色也一样要能读
+        for (i, medal) in MEDALS.iter().enumerate() {
+            let ratio = contrast_ratio(*medal, paper);
+            assert!(ratio >= 4.5, "第 {} 名的名次色只有 {ratio:.2}∶1", i + 1);
+        }
+        // 描边按图形元素的 3∶1 设计，因此它**不**够写字——这条钉住「弱化的文字
+        // 不用描边色」那一条，免得哪天有人图省事拿它当灰字用
+        assert!(contrast_ratio(colors.outline, paper) < 4.5);
+
+        // 条色来自头像，什么色相都可能——所以不挑几个样本，把整个色相环扫一遍：
+        // 收调之后条色落在一条窄带里，带子里的每一支都得写得下字。
+        for h in 0..360 {
+            for s in [0.0f32, 0.35, 0.7, 1.0] {
+                for l in [0.05f32, 0.25, 0.5, 0.75, 0.95] {
+                    let bar = harmonize_theme(from_hsl(h as f32, s, l));
+                    let on_bar = get_contrast_color(bar);
+                    let ratio = contrast_ratio(on_bar, bar);
+                    assert!(
+                        ratio >= 4.5,
+                        "条上的名字在 {bar:?}（源 h={h} s={s} l={l}）上只有 {ratio:.2}∶1"
+                    );
+                    let value = ensure_contrast(deep_tone(bar, 0.34), paper, 4.5);
+                    assert!(
+                        contrast_ratio(value, paper) >= 4.5,
+                        "条外的数值在纸上只有 {:.2}∶1",
+                        contrast_ratio(value, paper)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn medals_are_fixed_and_the_rest_fall_back_to_faint() {
+        let faint = ColorScheme::default().text_faint;
+        assert_eq!(rank_ink(1, faint), MEDALS[0]);
+        assert_eq!(rank_ink(3, faint), MEDALS[2]);
+        assert_eq!(rank_ink(4, faint), faint);
+        assert_eq!(rank_ink(20, faint), faint);
     }
 
     #[test]

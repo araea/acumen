@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use super::ChartError;
 use super::data_loader::{BarData, SeriesData};
 use super::utils::{
-    ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, format_percent,
-    format_thousands, get_contrast_color, get_font, get_font_family, get_font_with_color,
-    harmonize_theme, mix_with_color, mix_with_white, overlay_image, save_rgba_to_base64,
-    truncate_text_to_fit,
+    ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
+    format_percent, format_thousands, get_contrast_color, get_font, get_font_family,
+    get_font_with_color, harmonize_theme, mix_with_color, mix_with_white, overlay_image, rank_ink,
+    save_rgba_to_base64, truncate_text_to_fit,
 };
 use crate::plugins::stats::StatsConfig;
 use chrono::Local;
@@ -24,17 +24,20 @@ struct RowStyle {
     pct_ink: RGBColor,
 }
 
-/// 排行榜的刻度竖线：一组等距的浅色竖线，只刻在每行的色带里。
+/// 排行榜的刻度竖线：在榜首数值的 1/4、1/2、3/4 处各一道，只刻在每行的色带里。
 ///
 /// 只画在色带上、不穿过行距的纸面：线是刻在条上的记号，不是铺在纸上的网格，
 /// 行与行之间留白干净，整张图也就轻快。
 ///
+/// 从前这里是一组按像素等距排的竖线（每 100 px 一道），看着像刻度，读起来却
+/// 什么也不是——它既不对应数值，数量也随画布宽度变。现在三道线各自钉在一个
+/// 能说出口的数上：榜首的四分之一、一半、四分之三。
+///
 /// 单独拎出来是因为它要么画在实色条之前（被条盖住），要么画在之后（压在条上），
 /// 由 `stats.ranking_grid_over_bars` 决定，两处调用同一份几何。
 struct ScaleGrid {
-    first_x: i32,
-    end_x: i32,
-    step: i32,
+    /// 三道线各自的中心 x
+    xs: [i32; 3],
     width: i32,
     row_height: i32,
 }
@@ -47,10 +50,8 @@ impl ScaleGrid {
         row_tops: impl Iterator<Item = i32> + Clone,
     ) -> Result<(), String> {
         let color = RGBAColor(0, 0, 0, 0.08);
-        let mut x = self.first_x;
-        while x <= self.end_x {
-            // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
-            let x0 = x.min(self.end_x - self.width);
+        for x in self.xs {
+            let x0 = x - self.width / 2;
             for y in row_tops.clone() {
                 root.draw(&Rectangle::new(
                     [(x0, y), (x0 + self.width, y + self.row_height)],
@@ -58,7 +59,6 @@ impl ScaleGrid {
                 ))
                 .map_err(|e| e.to_string())?;
             }
-            x += self.step;
         }
         Ok(())
     }
@@ -66,10 +66,18 @@ impl ScaleGrid {
 
 /// 绘制水平条形图 (排行榜)
 ///
-/// 版式分成四个纵列：头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
-/// 横条本身的画法（实色 + 半淡轨道、名字一律写在条内、放不下就截断）保持不变；
-/// 排版上只做两件事：数值与占比各自右对齐成固定的一列（不再跟着条尾走成一串
-/// 阶梯，也不再压在淡色轨道上），刻度线只留榜首长度 1/4、1/2、3/4 三道。
+/// 版式分成五个纵列：名次 → 头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
+///
+/// 三条排版上的约定：
+///
+/// - **名次单独成列。** 从前这张榜只能靠数行数才知道第几名——排行榜没有名次，
+///   是缺了它最该有的那一列。前三名走固定的奖牌色，不跟头像色走：名次的颜色
+///   本身就是含义，跟着主题走一遍就不认得了。数字本身是第二个通道，转成灰度
+///   也还读得出第几名。
+/// - **数值与占比各自右对齐成固定的一列。** 跟着条尾走会排成一串阶梯，二十行
+///   就是二十个不同的起点，上下比大小要一个个找；而且短条那几行的数字压在淡色
+///   轨道上，长条那几行压在纸上，同一列字踩着两种底。
+/// - **刻度只留三道**，钉在榜首数值的 1/4、1/2、3/4 上，只刻在色带里。
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
@@ -91,6 +99,7 @@ pub fn draw_bar_chart(
     let page_bg = colors.card_background;
     let ink = colors.text_primary; // 正文墨色：不写纯黑，与卡片同一个墨色
     let ink_soft = colors.text_secondary;
+    let ink_faint = colors.readable_faint();
 
     // 内部尺寸也随之放大。`row_height` 是条本身的高度，`row_pitch` 是相邻两行的
     // 行距：之间留一道空档，条与条才分得开——紧挨着排会连成一整块三色板，
@@ -99,6 +108,9 @@ pub fn draw_bar_chart(
     let row_gap = 10 * s;
     let row_pitch = row_height + row_gap;
     let font_size = 30 * s;
+    // 名次比昵称小两档：它只作次序参照，不该抢头像与名字的视线
+    let rank_font_size = 22 * s;
+    let rank_gap = 12 * s;
     let avatar_width = 50 * s;
     // 头像与横条之间留一道窄缝：圆头像直接贴着实色条会挤成一团。
     let avatar_gap = 6 * s;
@@ -129,12 +141,14 @@ pub fn draw_bar_chart(
     let font_obj = (font_family, font_size).into_font();
     let pct_font_size = 20 * s;
     let pct_font_obj = (font_family, pct_font_size).into_font();
+    let rank_font_obj = (font_family, rank_font_size).into_font();
 
-    // 每行都展示 "数值 + 百分比"，百分比用更小的灰色字体，提升可读性。
-    // 两者紧跟在各自条尾的右边，值与条连在一起读最直观；画布按最宽的一行预留。
-    let mut formatted_counts: Vec<(String, String)> = Vec::new();
-    let mut max_count_text_width = 0u32;
+    // 三列数字各按自己最宽的一行留位，列与列之间的缝是固定的：
+    // 这样二十行的数值收在同一条右边界上，占比也是，上下扫一眼就能比大小。
     let pct_gap = 8 * s;
+    let mut formatted_counts: Vec<(String, String)> = Vec::new();
+    let mut value_col_w = 0u32;
+    let mut pct_col_w = 0u32;
 
     for item in data.iter() {
         let value_text = format_thousands(item.value);
@@ -142,13 +156,28 @@ pub fn draw_bar_chart(
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
         let (pw, _) = pct_font_obj.box_size(&pct_text).unwrap_or((0, 0));
-        max_count_text_width = max_count_text_width.max(vw + pct_gap + pw);
+        value_col_w = value_col_w.max(vw);
+        pct_col_w = pct_col_w.max(pw);
         formatted_counts.push((value_text, pct_text));
     }
 
+    let rank_texts: Vec<String> = (1..=data.len()).map(|r| r.to_string()).collect();
+    let rank_col_w = rank_texts
+        .iter()
+        .map(|t| rank_font_obj.box_size(t).unwrap_or((0, 0)).0)
+        .max()
+        .unwrap_or(0);
+
     // 计算内容区域尺寸
-    let content_width =
-        avatar_width + avatar_gap + max_possible_bar_width + gap_text + max_count_text_width;
+    let content_width = rank_col_w
+        + rank_gap
+        + avatar_width
+        + avatar_gap
+        + max_possible_bar_width
+        + gap_text
+        + value_col_w
+        + pct_gap
+        + pct_col_w;
     // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
     let content_height = data.len() as u32 * row_pitch - row_gap + top_area_height;
 
@@ -156,9 +185,13 @@ pub fn draw_bar_chart(
     let canvas_width = content_width + padding * 2;
     let canvas_height = content_height + padding; // 底部留白
 
-    // 轨道的左右端：条与淡色轨道都在这之间，右边的留白留给贴着条尾的数字。
-    let track_start_x = (padding + avatar_width + avatar_gap) as i32;
+    // 各纵列的边界，从左到右一次算清
+    let rank_right_x = (padding + rank_col_w) as i32;
+    let avatar_x = rank_right_x + rank_gap as i32;
+    let track_start_x = avatar_x + (avatar_width + avatar_gap) as i32;
     let track_end_x = track_start_x + max_possible_bar_width as i32;
+    let value_right_x = track_end_x + (gap_text + value_col_w) as i32;
+    let pct_right_x = value_right_x + (pct_gap + pct_col_w) as i32;
 
     // === 2. 绘图 ===
     let mut buffer = vec![0u8; (canvas_width * canvas_height * 3) as usize];
@@ -170,8 +203,12 @@ pub fn draw_bar_chart(
 
         let title_style = get_font_with_color(config, title_font_size, &ink)
             .pos(Pos::new(HPos::Center, VPos::Top));
-        root.draw_text(title, &title_style, (canvas_width as i32 / 2, padding as i32))
-            .map_err(|e| e.to_string())?;
+        root.draw_text(
+            title,
+            &title_style,
+            (canvas_width as i32 / 2, padding as i32),
+        )
+        .map_err(|e| e.to_string())?;
 
         // 元信息行：榜单范围 + 合计（每行的百分比正是以它为基数）+ 出图时间。
         // 「·」在这套 CJK 字体里自带右侧空腔，两侧各补一个空格才等宽。
@@ -194,6 +231,7 @@ pub fn draw_bar_chart(
         // 每行的行位、条长与这一行的四个色调只算一次，后面几趟共用。
         // 一行四色全部出自同一支色相：实色条 → 淡色轨道 → 条外的数值 → 占比，
         // 明度依次拉开，底淡字深，二十行也就是二十套同构的配色。
+        // 数值与占比落在纸上（不再压着轨道），所以都按纸面量对比度。
         let rows: Vec<RowStyle> = data
             .iter()
             .enumerate()
@@ -203,33 +241,37 @@ pub fn draw_bar_chart(
                 let bar_w = (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
                 let bar = harmonize_theme(item.theme_color);
                 let track = mix_with_white(bar, 0.5);
-                let value_ink = deep_tone(bar, 0.34);
+                let value_ink = ensure_contrast(deep_tone(bar, 0.34), page_bg, 4.5);
                 RowStyle {
                     y,
                     bar_end_x: track_start_x + bar_w,
                     bar,
                     track,
                     value_ink,
-                    // 占比是次要信息：把数值的墨往底色里调一点，同一支色相退半档
-                    pct_ink: mix_with_color(value_ink, track, 0.64),
+                    // 占比是次要信息：把数值的墨往纸里调一点，同一支色相退半档，
+                    // 退到刚好还在正文阈值上为止
+                    pct_ink: ensure_contrast(
+                        mix_with_color(value_ink, page_bg, 0.62),
+                        page_bg,
+                        4.5,
+                    ),
                 }
             })
             .collect();
 
         // 头像底下垫一圈发丝细的暗边：浅色头像贴在暖白纸上边缘会化掉，
-        // 一圈 8% 的灰正好把圆形收住（iOS 给头像与应用图标描内边同理）。
-        let ring_color = RGBAColor(0, 0, 0, 0.08);
+        // 一圈描边正好把圆形收住（iOS 给头像与应用图标描内边同理）。
         for (row, item) in rows.iter().zip(data.iter()) {
             if item.avatar_img.is_none() {
                 continue;
             }
             root.draw(&Circle::new(
                 (
-                    padding as i32 + (avatar_width / 2) as i32,
+                    avatar_x + (avatar_width / 2) as i32,
                     row.y + (row_height / 2) as i32,
                 ),
                 (avatar_width / 2) as i32 + s as i32,
-                ring_color.filled(),
+                colors.grid_line.filled(),
             ))
             .map_err(|e| e.to_string())?;
         }
@@ -252,13 +294,14 @@ pub fn draw_bar_chart(
         // 每行的色带都被刻满；关掉则实色条盖住刻度，每根条是完整的一块颜色。
         // 无论哪种，刻度只落在色带上、不越进行距的纸面，文字也都在最后一趟画。
         //
-        // 刻度间距沿用原来的 100*s：自条的零点（最小条长处）起一格一道。右端那道
-        // 收在圆角之前——它若落在圆角上，方头的线会戳出色带的轮廓；色带自己的
-        // 圆角就是这张表的右边界，不必再描一道。
+        // 三道线的位置：值为 0 的条落在 `base_bar_min_width` 处（最短的条也要写得下
+        // 名字），值为 `max_val` 的条落在轨道尽头，两者之间是线性的，所以榜首数值的
+        // 四分之一、一半、四分之三各对应一个确定的 x。
+        let tick_x = |frac: f64| {
+            track_start_x + (base_bar_min_width + base_bar_scale_width * frac).round() as i32
+        };
         let grid = ScaleGrid {
-            first_x: track_start_x + base_bar_min_width as i32,
-            end_x: track_end_x - bar_radius,
-            step: 100 * s as i32,
+            xs: [tick_x(0.25), tick_x(0.5), tick_x(0.75)],
             width: 2 * s as i32,
             row_height: row_height as i32,
         };
@@ -298,15 +341,22 @@ pub fn draw_bar_chart(
             grid.draw(&root, row_tops())?;
         }
 
-        // 第三趟：行内文字（昵称、数值、占比），始终画在最上层
+        // 第三趟：行内文字（名次、昵称、数值、占比），始终画在最上层
         for (i, item) in data.iter().enumerate() {
             let row = &rows[i];
             let (y, bar_end_x) = (row.y, row.bar_end_x);
             let start_x = track_start_x;
+            let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
+
+            // 名次：右对齐收在头像左边。前三名是奖牌色，固定不跟主题也不跟头像走。
+            let rank_color = rank_ink(i + 1, ink_faint);
+            let rank_style = get_font_with_color(config, rank_font_size, &rank_color)
+                .pos(Pos::new(HPos::Right, VPos::Center));
+            root.draw_text(&rank_texts[i], &rank_style, (rank_right_x, text_mid_y))
+                .map_err(|e| e.to_string())?;
 
             // 昵称：一律写在实色条内，放不下就截断。名字挪到条外读起来反而费劲，
             // 短条那几行宁可截，也保持每行同一个视线落点。
-            let text_mid_y = y + (row_height / 2) as i32 + (2 * s as i32);
             let name_color = get_contrast_color(row.bar);
             let max_name_width = (bar_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
             let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
@@ -321,23 +371,17 @@ pub fn draw_bar_chart(
                 .map_err(|e| e.to_string())?;
             }
 
-            // 数值与占比：紧跟在自己那根条的尾巴右边，值与条连着读最直观。
+            // 数值与占比：各自右对齐在固定的一列上，落在轨道之外的纸面上。
             let (value_text, pct_text) = &formatted_counts[i];
-            let count_x = bar_end_x + text_inset as i32;
             let count_style = get_font_with_color(config, font_size, &row.value_ink)
-                .pos(Pos::new(HPos::Left, VPos::Center));
-            root.draw_text(value_text, &count_style, (count_x, text_mid_y))
+                .pos(Pos::new(HPos::Right, VPos::Center));
+            root.draw_text(value_text, &count_style, (value_right_x, text_mid_y))
                 .map_err(|e| e.to_string())?;
 
-            let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
             let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
-                .pos(Pos::new(HPos::Left, VPos::Center));
-            root.draw_text(
-                pct_text,
-                &pct_style,
-                (count_x + vw as i32 + pct_gap as i32, text_mid_y),
-            )
-            .map_err(|e| e.to_string())?;
+                .pos(Pos::new(HPos::Right, VPos::Center));
+            root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
+                .map_err(|e| e.to_string())?;
         }
 
         // 7. 绘制图标徽章 (消息类型等无头像条目：主题色圆底 + 类型字符)
@@ -349,7 +393,7 @@ pub fn draw_bar_chart(
                 continue;
             };
 
-            let cx = padding as i32 + (avatar_width / 2) as i32;
+            let cx = avatar_x + (avatar_width / 2) as i32;
             let cy = rows[i].y + (row_height / 2) as i32;
             let radius = (avatar_width as f32 * 0.46) as i32;
 
@@ -387,12 +431,11 @@ pub fn draw_bar_chart(
         }
     }
 
-    // 叠加头像 (注意边距偏移)
+    // 叠加头像：落在名次列右边的那一格里，与上面画的描边圈同心
     for (i, item) in data.iter().enumerate() {
         if let Some(avatar) = &item.avatar_img {
             let y_pos = top_area_height as i32 + (i as u32 * row_pitch) as i32;
-            let x_pos = padding as i32;
-            overlay_image(&mut rgba_image, avatar, x_pos, y_pos);
+            overlay_image(&mut rgba_image, avatar, avatar_x, y_pos);
         }
     }
 
@@ -408,6 +451,12 @@ pub fn draw_bar_chart(
 ///
 /// 与发言/表情包的头像条形榜共用配色、字号层级与时间戳/标题写法，
 /// 但不复用「满色横条塞字」的版式——那套是为头像行设计的。
+///
+/// **分层只用容器色与圆角，不加描边也不垫假投影。** 从前这里是「投影 + 描边 +
+/// 卡面」三件套堆出来的层次，三样东西在说同一件事；而且那一套颜色是留在旧配色里
+/// 的一份 Tailwind 石板灰，与全站的松绿没有关系——一张类型榜接在一张绿卡片后面，
+/// 像是另一个人做的。现在三层各取一支令牌：相纸（surface-dim）→ 卡面（surface）
+/// → 卡内的轨道（surface-container-high），明度一路往上走，层次自己就出来了。
 pub fn draw_message_type_ranking(
     config: &StatsConfig,
     title: &str,
@@ -418,20 +467,19 @@ pub fn draw_message_type_ranking(
     }
 
     let s = 2u32;
-    let page_bg = RGBColor(242, 245, 241);
-    let card_face = RGBColor(255, 255, 255);
-    let card_border = RGBColor(226, 232, 240);
-    let card_shadow = RGBColor(235, 239, 233);
-    let track_bg = RGBColor(237, 241, 246);
-    let text_primary = RGBColor(15, 23, 42);
-    let text_secondary = RGBColor(100, 116, 139);
+    let colors = ColorScheme::default();
+    let page_bg = colors.background;
+    let card_face = colors.card_background;
+    let track_bg = colors.container_high;
+    let text_primary = colors.text_primary;
+    let text_secondary = colors.text_secondary;
+    let text_faint = colors.readable_faint();
 
     // —— 布局常量：一切间距都是 s 的整数倍，缩放后不会出现半像素毛边 ——
     let padding = 30 * s;
     let card_h = 96 * s;
     let card_gap = 14 * s;
     let card_radius = 22 * s;
-    let border_w = 2 * s;
     let rank_col_w = 34 * s;
     let rail_pad = 10 * s;
     let icon_size = 54 * s;
@@ -474,6 +522,32 @@ pub fn draw_message_type_ranking(
 
     let card_x0 = padding as i32;
     let card_x1 = (canvas_width - padding) as i32;
+
+    // 数值与占比各占一列固定宽度：占比写成 "72%" 还是 "<1%" 宽度不一样，跟着它
+    // 排版会让数值那一列在行与行之间左右晃，一列对齐的数字是排版给出的顺序。
+    let pct_gap = 14 * s;
+    let texts: Vec<(String, String)> = data
+        .iter()
+        .map(|item| {
+            (
+                format_thousands(item.value),
+                format_percent(item.value, total_val),
+            )
+        })
+        .collect();
+    let value_col_w = texts
+        .iter()
+        .map(|(v, _)| value_font.box_size(v).unwrap_or((0, 0)).0)
+        .max()
+        .unwrap_or(0);
+    let pct_col_w = texts
+        .iter()
+        .map(|(_, p)| pct_font.box_size(p).unwrap_or((0, 0)).0)
+        .max()
+        .unwrap_or(0);
+
+    let stats_right = card_x1 - inner_pad as i32;
+    let value_right = stats_right - (pct_col_w + pct_gap) as i32;
 
     // 构成条各段宽度：先按占比分配，再把不足一格的段抬到最小可见宽度，
     // 多出来的像素从最宽的一段里扣回去，保证整条正好填满且不留缝。
@@ -536,18 +610,12 @@ pub fn draw_message_type_ranking(
             let y1 = y0 + card_h as i32;
             let cy = y0 + (card_h / 2) as i32;
             let accent = item.theme_color;
-            let leading = i == 0;
 
-            // 卡片：投影 → 描边 → 卡面。榜首用更明显的类型色微染做视觉锚点。
-            draw_rounded_rect(
-                &root,
-                card_x0,
-                y0 + (3 * s) as i32,
-                card_x1,
-                y1 + (4 * s) as i32,
-                card_radius as i32,
-                card_shadow,
-            )?;
+            // 卡面：每张一样。层次靠卡面与相纸的明度差 + 圆角，不描边、不垫影子。
+            //
+            // 榜首从前另外染一层类型色——可是「文本」的类型色本来就是近灰的
+            // on-surface-variant，染出来的不是更醒目，是更脏，那张卡看着像没画完。
+            // 榜首已经有两个通道在说它是榜首：最长的那根条，和金色的「1」。
             draw_rounded_rect(
                 &root,
                 card_x0,
@@ -555,47 +623,31 @@ pub fn draw_message_type_ranking(
                 card_x1,
                 y1,
                 card_radius as i32,
-                if leading {
-                    mix_with_white(accent, 0.22)
-                } else {
-                    card_border
-                },
+                card_face,
             )?;
-            let inner_x0 = card_x0 + border_w as i32;
-            let inner_y0 = y0 + border_w as i32;
-            let inner_x1 = card_x1 - border_w as i32;
-            let inner_y1 = y1 - border_w as i32;
-            let inner_r = (card_radius - border_w) as i32;
-            let face = if leading {
-                mix_with_white(accent, 0.06)
-            } else {
-                card_face
-            };
-            draw_rounded_rect(&root, inner_x0, inner_y0, inner_x1, inner_y1, inner_r, face)?;
 
-            // 名次：卡片左起的第一段，弱化处理，只作次序参照
-            let rank_color = if leading {
-                accent
-            } else {
-                mix_with_white(accent, 0.62)
-            };
+            // 名次：卡片左起的第一段。前三名是固定的奖牌色——名次的颜色本身就是
+            // 含义，从前这里跟着类型色走，于是「第 1 名」在每张榜上都是另一个颜色。
+            let rank_color = rank_ink(i + 1, text_faint);
             let rank_style = get_font_with_color(config, rank_font_size, &rank_color)
                 .pos(Pos::new(HPos::Center, VPos::Center));
             root.draw_text(
                 &(i + 1).to_string(),
                 &rank_style,
                 (
-                    inner_x0 + (rail_pad + rank_col_w / 2) as i32,
+                    card_x0 + (rail_pad + rank_col_w / 2) as i32,
                     cy + (2 * s) as i32,
                 ),
             )
             .map_err(|e| e.to_string())?;
 
-            // 类型图标：淡色底 + 同色字，比满色底更耐看，也不抢数值的视线
-            let icon_x0 = inner_x0 + (rail_pad + rank_col_w) as i32;
+            // 类型图标：淡色底 + 同色字，比满色底更耐看，也不抢数值的视线。
+            // 底色从容器那一档往类型色里调，不是往白里调——往白里调会在暖白卡面上
+            // 淡到看不出有个底板（「文本」那一格尤其明显，它的色本来就接近灰）。
+            let icon_x0 = card_x0 + (rail_pad + rank_col_w) as i32;
             let icon_y0 = cy - (icon_size / 2) as i32;
             let icon_x1 = icon_x0 + icon_size as i32;
-            let icon_fill = mix_with_white(accent, 0.16);
+            let icon_fill = mix_with_color(accent, colors.container, 0.20);
             draw_rounded_rect(
                 &root,
                 icon_x0,
@@ -606,7 +658,8 @@ pub fn draw_message_type_ranking(
                 icon_fill,
             )?;
             if let Some(icon_char) = item.icon_char.as_deref() {
-                let icon_style = get_font_with_color(config, icon_font_size, &accent)
+                let icon_ink = ensure_contrast(accent, icon_fill, 4.5);
+                let icon_style = get_font_with_color(config, icon_font_size, &icon_ink)
                     .pos(Pos::new(HPos::Center, VPos::Center));
                 root.draw_text(
                     icon_char,
@@ -616,27 +669,22 @@ pub fn draw_message_type_ranking(
                 .map_err(|e| e.to_string())?;
             }
 
-            // 上行右侧：数值（主色大字）+ 占比（次级小字），右对齐收边
-            let value_text = format_thousands(item.value);
-            let pct_text = format_percent(item.value, total_val);
-            let (pw, _) = pct_font.box_size(&pct_text).unwrap_or((0, 0));
-            let (vw, _) = value_font.box_size(&value_text).unwrap_or((0, 0));
-
-            let stats_right = inner_x1 - inner_pad as i32;
+            // 上行右侧：数值（主色大字）+ 占比（次级小字），各自右对齐收在自己那一列
+            let (value_text, pct_text) = &texts[i];
             let top_row_y = cy - (13 * s) as i32;
             let pct_style = get_font_with_color(config, pct_font_size, &text_secondary)
                 .pos(Pos::new(HPos::Right, VPos::Center));
-            root.draw_text(&pct_text, &pct_style, (stats_right, top_row_y))
+            root.draw_text(pct_text, &pct_style, (stats_right, top_row_y))
                 .map_err(|e| e.to_string())?;
-            let value_right = stats_right - pw as i32 - (14 * s) as i32;
             let value_style = get_font_with_color(config, value_font_size, &text_primary)
                 .pos(Pos::new(HPos::Right, VPos::Center));
-            root.draw_text(&value_text, &value_style, (value_right, top_row_y))
+            root.draw_text(value_text, &value_style, (value_right, top_row_y))
                 .map_err(|e| e.to_string())?;
 
             // 上行左侧：类型名，与数值同基线；过长按可用宽度截断
             let name_x = icon_x1 + icon_gap as i32;
-            let name_max_w = (value_right - vw as i32 - (20 * s) as i32 - name_x).max(0) as u32;
+            let name_max_w =
+                (value_right - value_col_w as i32 - (20 * s) as i32 - name_x).max(0) as u32;
             let display_name = truncate_text_to_fit(&name_font, &item.label, name_max_w);
             if !display_name.is_empty() {
                 let name_style = get_font_with_color(config, name_font_size, &text_primary)
@@ -731,26 +779,44 @@ fn allocate_strip_widths(
 
 // ================= 走势图 (与排行榜统一的手绘风格) =================
 
-/// 将坐标轴刻度取整为 1/2/2.5/5×10^k 的"美观"步长，返回 (步长, 格数)
+/// 纵轴的步长与格数：取 1/2/2.5/5×10^k 里能把 `max_val` 装进 2—5 格、
+/// 且**顶格最低**的那一档；一样低就取格子多的那一档，网格细一点。
+///
+/// 从前是先把上限抬到 `max × 1.05`，再拿抬高后的值反算格数——195 会画成 0—250，
+/// 顶上白白空掉两成的高度，真正有起伏的那一段反而被压扁。现在按 `ceil(max/step)`
+/// 定格数，同一组数画到 0—200，折线铺满整个绘图区。
+///
+/// 步长只取整数：刻度文案是整数，2.5 这样的步长取整之后会写出两个一样的刻度。
 fn nice_axis(max_val: i64) -> (f64, usize) {
-    let target = (max_val.max(1) as f64) * 1.05;
-    let raw_step = (target / 5.0).max(1.0);
-    let exp = raw_step.log10().floor() as i32;
-    let base = 10f64.powi(exp);
-    let frac = raw_step / base;
-    let step = if frac <= 1.0 {
-        base
-    } else if frac <= 2.0 {
-        2.0 * base
-    } else if frac <= 2.5 {
-        2.5 * base
-    } else if frac <= 5.0 {
-        5.0 * base
-    } else {
-        10.0 * base
-    };
-    let steps = ((target / step).ceil() as usize).clamp(2, 6);
-    (step, steps)
+    let max = max_val.max(1) as f64;
+    let mut best: Option<(f64, usize)> = None;
+    let start = (max / 5.0).log10().floor() as i32 - 1;
+    for k in start..start + 6 {
+        let base = 10f64.powi(k);
+        for m in [1.0, 2.0, 2.5, 5.0] {
+            let step = m * base;
+            if step < 1.0 || step.fract() != 0.0 {
+                continue;
+            }
+            let steps = (max / step).ceil() as usize;
+            if !(2..=5).contains(&steps) {
+                continue;
+            }
+            let top = step * steps as f64;
+            let better = match best {
+                None => true,
+                Some((bs, bn)) => {
+                    let btop = bs * bn as f64;
+                    top < btop - f64::EPSILON || ((top - btop).abs() < f64::EPSILON && steps > bn)
+                }
+            };
+            if better {
+                best = Some((step, steps));
+            }
+        }
+    }
+    // 只有 max_val 小到 1 才落到这里：0—2 两格
+    best.unwrap_or((1.0, 2))
 }
 
 /// Y 轴刻度文本：过万缩写为 "x.x万"，其余直接显示整数
@@ -846,9 +912,29 @@ pub fn draw_line_chart(
         y_label_w = y_label_w.max(w);
     }
 
-    // 标题在最上，出图时间跟在下面，与排行榜、类型卡同一套层级
+    // 标题在最上，副标题跟在下面，与排行榜、类型卡同一套层级。
+    // 副标题这一层放的是「范围与规模」：跨了多久、一共多少次、什么时候出的图。
+    // 从前这里只有一个时间戳——同一条消息里三张图，两张写着范围，一张什么都不写。
     let title_y = padding;
     let meta_y = title_y + title_font_size + gap;
+
+    // 时间粒度从标签写法认出来：`%H:%M` 是按小时聚的，`%Y-%m-%d` 是按天聚的
+    let hourly = x_labels
+        .first()
+        .is_some_and(|l| l.len() == 5 && l.contains(':'));
+    let span_unit = if hourly { "小时" } else { "天" };
+    let grand_total: i64 = series_list
+        .iter()
+        .flat_map(|sr| sr.points.iter().map(|p| p.value))
+        .sum();
+    let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
+    let meta = format!(
+        "共 {} {} · 合计 {} 次 · {}",
+        x_labels.len(),
+        span_unit,
+        format_thousands(grand_total),
+        now_str
+    );
 
     // === 3. 图例布局 (多系列时)：圆点 + 名称，水平排列，超宽自动换行 ===
     let dot_r = 6 * s;
@@ -885,10 +971,13 @@ pub fn draw_line_chart(
     }
 
     let legend_y = meta_y + meta_font_size + gap;
+    // 单系列会在最高点上方标一个数：纵轴收紧之后峰值常常顶到第一条网格线，
+    // 这里按标注自己的高度先把位置留出来，免得它撞到副标题那一行。
+    let peak_headroom = if multi { 0 } else { axis_font_size + 14 * s };
     let chart_top = if multi {
         legend_y + legend_h + (12 * s)
     } else {
-        meta_y + meta_font_size + (24 * s)
+        meta_y + meta_font_size + (24 * s) + peak_headroom
     };
     let x_label_area = axis_font_size + 14 * s;
     let chart_bottom = height
@@ -910,19 +999,17 @@ pub fn draw_line_chart(
         let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
 
         // 与排行榜同一张暖白纸，两张图连着看不会一亮一暗
-        root.fill(&page_bg)
-            .map_err(|e| e.to_string())?;
+        root.fill(&page_bg).map_err(|e| e.to_string())?;
 
         // 4.1 标题 + 出图时间 (与柱状图一致)
         let title_style = get_font(config, title_font_size).pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(title, &title_style, (width as i32 / 2, title_y as i32))
             .map_err(|e| e.to_string())?;
 
-        let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let meta_style = get_font(config, meta_font_size)
             .pos(Pos::new(HPos::Center, VPos::Top))
             .color(&colors.text_secondary);
-        root.draw_text(&now_str, &meta_style, (width as i32 / 2, meta_y as i32))
+        root.draw_text(&meta, &meta_style, (width as i32 / 2, meta_y as i32))
             .map_err(|e| e.to_string())?;
 
         // 4.2 图例
@@ -963,15 +1050,12 @@ pub fn draw_line_chart(
         for i in 0..=steps {
             let v = step * i as f64;
             let y = y_pos(v.round() as i64);
+            // 零线用描边那一档，其余用更淡的 outline-variant：基线是这张图的地面，
+            // 它比网格重一级，但两者都还是「图形元素」，取的都是系统的描边色。
             let line_color = if i == 0 {
-                RGBAColor(0, 0, 0, 0.12)
+                colors.outline
             } else {
-                RGBAColor(
-                    colors.grid_line.0,
-                    colors.grid_line.1,
-                    colors.grid_line.2,
-                    1.0,
-                )
+                colors.grid_line
             };
             root.draw(&PathElement::new(
                 vec![
@@ -1050,15 +1134,12 @@ pub fn draw_line_chart(
             root.draw(&PathElement::new(line_pts, color.stroke_width(3 * s)))
                 .map_err(|e| e.to_string())?;
 
-            // 数据点：白底圆 + 主题色内圆
+            // 数据点：纸色底圆 + 主题色内圆。底圆取的是这张纸本身的颜色，不是纯白——
+            // 纸是暖白的，压一圈纯白上去等于在每个点周围点了一圈更亮的光斑。
             for &(x, y) in &pts {
                 let (xi, yi) = (x.round() as i32, y.round() as i32);
-                root.draw(&Circle::new(
-                    (xi, yi),
-                    (6 * s) as i32,
-                    RGBColor(255, 255, 255).filled(),
-                ))
-                .map_err(|e| e.to_string())?;
+                root.draw(&Circle::new((xi, yi), (6 * s) as i32, page_bg.filled()))
+                    .map_err(|e| e.to_string())?;
                 root.draw(&Circle::new((xi, yi), (4 * s) as i32, color.filled()))
                     .map_err(|e| e.to_string())?;
             }
@@ -1072,8 +1153,11 @@ pub fn draw_line_chart(
         {
             let px = x_pos(i);
             let py = y_pos(peak.value);
-            let text = peak.value.to_string();
-            let peak_style = get_font_with_color(config, axis_font_size, &colors.text_primary)
+            let text = format_thousands(peak.value);
+            // 峰值是这条线的数，墨色就取这支色相的深调——与排行榜里「条外的数值」
+            // 同一套做法，读者一眼知道这个数属于哪根线
+            let peak_ink = ensure_contrast(deep_tone(series_list[0].color, 0.34), page_bg, 4.5);
+            let peak_style = get_font_with_color(config, axis_font_size, &peak_ink)
                 .pos(Pos::new(HPos::Center, VPos::Bottom));
             root.draw_text(
                 &text,
@@ -1314,7 +1398,7 @@ mod tests {
         for (over, name) in [(false, "ranking-full"), (true, "ranking-full-grid-on-top")] {
             let config = StatsConfig {
                 ranking_grid_over_bars: over,
-                ..StatsConfig::default()
+                ..sample_config()
             };
             let out = draw_bar_chart(&config, "本群今日发言排行榜", clone_rows(&data))
                 .expect("排行榜样张应当能渲染");
@@ -1362,13 +1446,40 @@ mod tests {
                     .collect(),
             })
             .collect();
-        let out =
-            draw_line_chart(&StatsConfig::default(), "本群近 7 天消息走势", series).unwrap();
+        let out = draw_line_chart(&sample_config(), "本群近 7 天消息走势", series).unwrap();
+        dump_png(&dir, "trend", &out);
+
+        // 单系列另出一张：面积填充、峰值标注与纵轴顶格只在这一种里看得到
+        let single = vec![SeriesData {
+            name: "消息量".into(),
+            color: message_type_style("图片").0,
+            points: (0..24)
+                .map(|h: i64| super::super::data_loader::ChartDataPoint {
+                    label: format!("{h:02}:00"),
+                    value: ((h * 37) % 61) * 3 + if h == 21 { 195 } else { 0 },
+                })
+                .collect(),
+        }];
+        let out = draw_line_chart(&sample_config(), "本群今日消息走势", single).unwrap();
+        dump_png(&dir, "trend-single", &out);
+    }
+
+    /// 样张用的配置。线上装的字体不一定是默认那支（这台机器配的是 MiSans），
+    /// 字宽一换，截断位置、数字列宽、行内留白全跟着变——看样张要看线上那一套。
+    /// 设 `STATS_CARD_FONT=<字体文件路径>` 就按它出图。
+    fn sample_config() -> StatsConfig {
+        StatsConfig {
+            font_path: std::env::var("STATS_CARD_FONT").unwrap_or_default(),
+            ..StatsConfig::default()
+        }
+    }
+
+    fn dump_png(dir: &str, name: &str, out: &str) {
         use base64::Engine as _;
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(out.trim_start_matches("base64://"))
             .unwrap();
-        std::fs::write(format!("{dir}/trend.png"), bytes).unwrap();
+        std::fs::write(format!("{dir}/{name}.png"), bytes).unwrap();
     }
 
     /// 断言产物是 PNG；设了环境变量时顺手落盘一份，方便人工看效果。
@@ -1383,3 +1494,4 @@ mod tests {
         }
     }
 }
+
