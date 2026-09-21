@@ -285,4 +285,4 @@ cargo test --release portrait_card_budget -- --ignored --nocapture
 
 ## 界面取自哪里
 
-色值、字号、圆角、间距一律取 `res/cards/m3e.css` 的令牌，版式层不写数值。这套令牌属于个人设计系统，规范本体在 `github.com/araea/design-system`，本仓库不放副本。
+色值、字号、圆角、间距一律取 `res/cards/m3e.css` 的令牌，版式层不写数值。
