@@ -4,7 +4,9 @@ use crate::command::{extract_text_arg, get_prefixes, match_word_command};
 use crate::config::{AppConfig, build_config};
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{Plugin, PluginError, get_config, get_plugins, needs_startup, pending_startup};
+use crate::plugins::{
+    Plugin, PluginError, get_config, get_plugins, needs_startup, pending_startup,
+};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use toml::Value;
@@ -160,26 +162,61 @@ fn parse(raw: &str, old: &Value) -> Result<Value, String> {
     }
     Ok(value)
 }
-/// Check all nested keys against defaults, including empty arrays via real serde types.
-fn shape(default: &Value, value: &Value) -> Result<(), String> {
+/// 把两层路径接起来，报错里要说清是哪个键。
+fn under(path: &str, key: &str) -> String {
+    if path.is_empty() {
+        key.to_string()
+    } else {
+        format!("{path}.{key}")
+    }
+}
+/// 对照默认值检查一次编辑的结果，只对「这一次」负责。
+///
+/// `before` 是编辑前的同一份配置，它本来就带着的出入一律放过——磁盘上的配置与注册表
+/// 对不上是常态：手上的文件可能比二进制新（某个键改过名或被删掉，例如 `[webshot]`
+/// `block_login_walls` 后来叫 `block_walled_sites`），也可能是手改过的（注册表要的键
+/// 没写）。二进制读配置时本来就容忍这两种情况：缺的键按 serde 默认值补齐，不认识的键
+/// 忽略，运行时与它们无关。旧写法把它们当成这一次写坏的值，于是「给黑名单加一个群」
+/// 会被一句「未知配置键」拦下，而那个键在界面上删不掉也补不出来，只能停机手改配置。
+/// 现在拦的只剩这次新造出来的错键与丢键：那才是管理员此刻写坏、也此刻能改回来的东西。
+///
+/// `before` 为 `None` 表示没有可比对的旧值（整段新写），此时两个方向都按严格处理。
+fn shape(default: &Value, before: Option<&Value>, value: &Value, path: &str) -> Result<(), String> {
     match (default, value) {
         (Value::Table(d), Value::Table(v)) => {
             if !d.is_empty() {
+                let old = before.and_then(Value::as_table);
+                // 这次编辑之前，同一个表里有没有这个键。没有旧表可比（整段新写，或旧值
+                // 根本不是表）时它一律为假，于是两个方向都按严格处理。
+                let known = |key: &str| old.is_some_and(|t| t.contains_key(key));
                 for (key, val) in v {
-                    let expected = d.get(key).ok_or_else(|| format!("未知配置键：{key}"))?;
-                    shape(expected, val)?;
+                    let child = under(path, key);
+                    match d.get(key) {
+                        Some(expected) => {
+                            shape(expected, old.and_then(|t| t.get(key)), val, &child)?
+                        }
+                        // 注册表不认得的键，本来就躺在配置里的就放过：删不掉的东西拦人没道理。
+                        None if known(key) => {}
+                        None => return Err(format!("未知配置键：{child}")),
+                    }
                 }
                 for key in d.keys() {
-                    if !v.contains_key(key) {
-                        return Err(format!("缺少配置键：{key}"));
+                    if !v.contains_key(key) && (old.is_none() || known(key)) {
+                        return Err(format!("缺少配置键：{}", under(path, key)));
                     }
                 }
             }
         }
         (Value::Array(d), Value::Array(v)) => {
             if let Some(first) = d.first() {
-                for val in v {
-                    shape(first, val)?;
+                let old = before.and_then(Value::as_array);
+                for (index, val) in v.iter().enumerate() {
+                    shape(
+                        first,
+                        old.and_then(|a| a.get(index)),
+                        val,
+                        &under(path, &index.to_string()),
+                    )?;
                 }
             }
         }
@@ -188,7 +225,12 @@ fn shape(default: &Value, value: &Value) -> Result<(), String> {
         | (Value::Integer(_), Value::Integer(_))
         | (Value::String(_), Value::String(_))
         | (Value::Datetime(_), Value::Datetime(_)) => {}
-        _ => return Err(format!("配置类型错误，需要 {}", default.type_str())),
+        _ => {
+            return Err(match path.is_empty() {
+                true => format!("配置类型错误，需要 {}", default.type_str()),
+                false => format!("{path} 类型错误，需要 {}", default.type_str()),
+            });
+        }
     }
     Ok(())
 }
@@ -239,7 +281,8 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
     }
 }
 
-pub(crate) fn validate(p: &Plugin, value: &Value) -> Result<(), String> {
+/// 校验一次编辑的结果。`before` 是编辑前的同一份配置，见 [`shape`]。
+pub(crate) fn validate(p: &Plugin, before: Option<&Value>, value: &Value) -> Result<(), String> {
     let mut expected = (p.default_config)();
     if p.name == "wordcloud" {
         for key in ["font_path", "font_family"] {
@@ -251,7 +294,7 @@ pub(crate) fn validate(p: &Plugin, value: &Value) -> Result<(), String> {
             }
         }
     }
-    shape(&expected, value)?;
+    shape(&expected, before, value, "")?;
     (p.validate_config)(value)?;
     constraints(value, "")?;
     for key in ["mode", "realtime_mode", "card_theme"] {
@@ -300,11 +343,13 @@ where
     if !is_manager(ctx) {
         return Err(DENIED.into());
     }
-    let mut next = ctx.config.read().unwrap().clone();
+    let before = ctx.config.read().unwrap().clone();
+    let mut next = before.clone();
     let result = edit(&mut next)?;
     for p in get_plugins() {
-        if next.plugins.get(p.name) != ctx.config.read().unwrap().plugins.get(p.name) {
-            validate(p, next.plugins.get(p.name).ok_or("缺少插件配置")?)?;
+        let (old, new) = (before.plugins.get(p.name), next.plugins.get(p.name));
+        if new != old {
+            validate(p, old, new.ok_or("缺少插件配置")?)?;
         }
     }
     if !enabled(&next, "ctl") {
@@ -352,11 +397,25 @@ pub async fn set_value(
                 .ok_or("配置不是表")?
                 .insert(path.into(), value);
         } else {
-            *at_mut(v, path).ok_or("配置路径不存在；可用 ctl show 查看完整配置")? = value;
+            let slot = at_mut(v, path).ok_or("配置路径不存在；可用 ctl show 查看完整配置")?;
+            *slot = as_written(slot, value);
         }
         Ok(format!("已保存 {}.{}。{}", p.name, path, effect(p.name)))
     })
     .await
+}
+/// 写进来的值按落点的现有类型收一下。
+///
+/// 目前只收一件事：整数落进小数位。网页的数字输入框分不出 `1` 与 `1.0`，
+/// `JSON.stringify(3.0)` 就是 `"3"`，服务端只收到整数，而配置里的 `image_scale`、
+/// `probability` 这类字段必须是小数——照原样写回去会被自己的类型检查判成错误，
+/// 于是「把它改成 3」这种最正常的改法在网页上永远改不成。`ctl set` 的 `parse` 早就
+/// 这么收了，这条路径当时漏了。
+fn as_written(slot: &Value, value: Value) -> Value {
+    match (slot, value) {
+        (Value::Float(_), Value::Integer(number)) => Value::Float(number as f64),
+        (_, value) => value,
+    }
 }
 pub(crate) fn effect(name: &str) -> &'static str {
     let plugin = get_plugins().iter().find(|p| p.name == name);
@@ -410,7 +469,10 @@ impl From<String> for Output {
 }
 impl Output {
     fn carded(text: String, card: card::Card) -> Self {
-        Output { text, card: Some(card) }
+        Output {
+            text,
+            card: Some(card),
+        }
     }
 }
 
@@ -427,7 +489,10 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
     let (action, rest) = word(input);
     let prefix = get_prefixes(ctx).first().cloned().unwrap_or_default();
     if ["", "help", "帮助"].contains(&action) {
-        return Ok(Output::carded(usage(&prefix), card::usage(&prefix, own_commands())));
+        return Ok(Output::carded(
+            usage(&prefix),
+            card::usage(&prefix, own_commands()),
+        ));
     }
     if ["list", "ls", "status", "列表", "状态"].contains(&action) {
         let rows: Vec<card::Status> = {
@@ -568,7 +633,9 @@ pub(crate) async fn execute(ctx: &Context, input: &str) -> Result<Output, String
                     })
                     .ok_or("配置路径不存在")?
             };
-            set_value(ctx, p.name, path, parse(tail, &old)?).await.map(Output::from)
+            set_value(ctx, p.name, path, parse(tail, &old)?)
+                .await
+                .map(Output::from)
         }
         "reset" | "重置" => {
             let path = if path == "--confirm" && tail.is_empty() {
@@ -662,13 +729,22 @@ pub fn handle(
             .unwrap_or_else(|e| Output::from(format!("❌ {e}")));
 
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
-        if config.image_enabled && let Some(card) = &response.card {
-            match card.render(config.image_scale, browser_path.as_deref()).await {
+        if config.image_enabled
+            && let Some(card) = &response.card
+        {
+            match card
+                .render(config.image_scale, browser_path.as_deref())
+                .await
+            {
                 Ok(b64) => {
                     send_msg(
-                        &ctx, writer, msg.group_id(), Some(msg.user_id()),
+                        &ctx,
+                        writer,
+                        msg.group_id(),
+                        Some(msg.user_id()),
                         Message::new().image(format!("base64://{b64}")),
-                    ).await?;
+                    )
+                    .await?;
                     return Ok(None);
                 }
                 Err(e) => warn!(target: "Plugin/Ctl", "控制网页卡片出图失败，改发纯文本：{e}"),
@@ -722,7 +798,8 @@ mod tests {
     #[test]
     fn registry_defaults_pass_real_type_validation() {
         for p in get_plugins() {
-            validate(p, &(p.default_config)()).unwrap_or_else(|e| panic!("{}: {}", p.name, e));
+            validate(p, None, &(p.default_config)())
+                .unwrap_or_else(|e| panic!("{}: {}", p.name, e));
         }
     }
     #[test]
@@ -807,9 +884,7 @@ mod tests {
         execute(&ctx, "set repeater channel.white.1 789")
             .await
             .unwrap();
-        execute(&ctx, "set help image_scale 2")
-            .await
-            .unwrap();
+        execute(&ctx, "set help image_scale 2").await.unwrap();
         execute(&ctx, "set wordcloud font_family Noto Sans CJK SC")
             .await
             .unwrap();
@@ -837,6 +912,91 @@ mod tests {
                 .unwrap()
                 .text
                 .contains("一致")
+        );
+        tokio::fs::remove_file(ctx.config_path.as_ref())
+            .await
+            .unwrap();
+    }
+    /// 磁盘上早就带着的失效键不该挡住这一次修改。
+    ///
+    /// 这一条照着真事写：[webshot] 里留着改名前的老键 `block_login_walls`（现在是
+    /// `block_walled_sites`），于是网页上动 webshot 的任何一项都被「未知配置键」拦下，
+    /// 而那个键在界面上根本删不掉，只能停机手改配置。同一条线上还有反过来的方向：
+    /// 注册表新加的键还没补进文件（`[repeater.channel] white` 被手工删过）。
+    #[tokio::test]
+    async fn drift_already_on_disk_does_not_block_an_unrelated_edit() {
+        let ctx = context(true).await;
+        {
+            let mut config = ctx.config.write().unwrap();
+            let webshot = config.plugins.get_mut("webshot").unwrap();
+            webshot
+                .as_table_mut()
+                .unwrap()
+                .insert("block_login_walls".into(), Value::Boolean(true));
+            let repeater = config.plugins.get_mut("repeater").unwrap();
+            repeater
+                .get_mut("channel")
+                .unwrap()
+                .as_table_mut()
+                .unwrap()
+                .remove("white");
+        }
+        execute(&ctx, "set webshot allow_private_hosts true")
+            .await
+            .unwrap();
+        execute(&ctx, "set repeater channel.black [123456789]")
+            .await
+            .unwrap();
+        execute(&ctx, "off webshot").await.unwrap();
+        let disk = tokio::fs::read_to_string(ctx.config_path.as_ref())
+            .await
+            .unwrap();
+        let saved: AppConfig = toml::from_str(&disk).unwrap();
+        assert_eq!(
+            saved.plugins["repeater"]["channel"]["black"][0].as_integer(),
+            Some(123456789)
+        );
+        assert_eq!(
+            saved.plugins["webshot"]["allow_private_hosts"].as_bool(),
+            Some(true)
+        );
+        // 失效键原样留着：一次无关的保存不该顺手抹掉配置里的东西。
+        assert_eq!(
+            saved.plugins["webshot"]["block_login_walls"].as_bool(),
+            Some(true),
+            "不该悄悄删掉不认识的键"
+        );
+        tokio::fs::remove_file(ctx.config_path.as_ref())
+            .await
+            .unwrap();
+    }
+    /// 这次编辑自己造出来的出入仍然要拦，而且要指名道姓。
+    #[tokio::test]
+    async fn drift_this_edit_creates_is_still_refused_with_a_path() {
+        let ctx = context(true).await;
+        let error = match execute(&ctx, "set repeater channel { whiet = [1] }").await {
+            Err(error) => error,
+            Ok(output) => panic!("写错键要报错，实际回了：{}", output.text),
+        };
+        assert!(error.contains("未知配置键：channel.whiet"), "{error}");
+        let error = match execute(&ctx, "set repeater channel { black = [] }").await {
+            Err(error) => error,
+            Ok(output) => panic!("丢掉已有的键要报错，实际回了：{}", output.text),
+        };
+        assert!(error.contains("缺少配置键：channel.white"), "{error}");
+        // 两次都被拦下，也就什么都没落盘——不必收尾。
+    }
+    /// 网页上的数字输入框分不出 `1` 与 `1.0`：`JSON.stringify(3.0)` 就是 `"3"`，服务端收到整数。
+    /// `image_scale`、`probability` 这类必须是小数，于是「把它改成 3」会被判成类型错误。
+    #[tokio::test]
+    async fn an_integral_write_lands_on_a_float_field() {
+        let ctx = context(true).await;
+        set_value(&ctx, "help", "image_scale", Value::Integer(3))
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.config.read().unwrap().plugins["help"]["image_scale"].as_float(),
+            Some(3.0)
         );
         tokio::fs::remove_file(ctx.config_path.as_ref())
             .await
