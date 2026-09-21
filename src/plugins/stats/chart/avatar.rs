@@ -1,5 +1,5 @@
 use super::data_loader::BarData;
-use super::utils::{create_default_avatar, get_average_color, make_circular_avatar};
+use super::utils::{avatar_theme_color, create_default_avatar, make_circular_avatar};
 use crate::plugins::get_data_dir;
 use futures_util::StreamExt;
 use image::RgbaImage;
@@ -73,7 +73,7 @@ pub async fn prepare_avatars(data: &mut [BarData]) {
             continue;
         }
         if let Some(img) = avatar {
-            data[i].theme_color = get_average_color(&img);
+            data[i].theme_color = avatar_theme_color(&img);
             data[i].avatar_img = Some(img);
         } else {
             data[i].avatar_img = Some(default_avatar.clone());
@@ -155,7 +155,7 @@ fn encode_png(img: &RgbaImage) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod cache_survey {
-    use super::super::utils::get_average_color;
+    use super::super::utils::avatar_theme_color;
 
     /// 量一遍磁盘上真实头像的均色彩度分布。
     ///
@@ -176,7 +176,7 @@ mod cache_survey {
             .flatten()
             .filter_map(|e| image::open(e.path()).ok())
             .map(|img| {
-                let c = get_average_color(&img.to_rgba8());
+                let c = avatar_theme_color(&img.to_rgba8());
                 let chroma =
                     (c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2)) as f32 / 255.0;
                 (chroma, format!("{:?}", c))

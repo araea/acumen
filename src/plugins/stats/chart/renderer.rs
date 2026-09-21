@@ -1189,7 +1189,9 @@ pub fn draw_line_chart(
 mod tests {
     use super::*;
     use crate::plugins::stats::chart::data_loader::message_type_style;
-    use crate::plugins::stats::chart::utils::get_average_color;
+    use crate::plugins::stats::chart::utils::{
+        avatar_theme_color, from_hsl_for_test, get_average_color, to_hsl_for_test,
+    };
 
     fn sample(label: &str, value: i64) -> BarData {
         let (color, icon) = message_type_style(label);
@@ -1451,7 +1453,7 @@ mod tests {
                     value: (4200.0 * 0.78f64.powi(i as i32)).round() as i64 + 1,
                     user_id: Some(10_000 + i as i64),
                     avatar_url: None,
-                    theme_color: get_average_color(&img),
+                    theme_color: avatar_theme_color(&img),
                     avatar_img: Some(img),
                     icon_char: None,
                 }
@@ -1462,6 +1464,125 @@ mod tests {
         let out = draw_bar_chart(&sample_config(), "本群今日发言排行榜", data)
             .expect("真头像样张应当能渲染");
         dump_png(&dir, "ranking-real-avatars", &out);
+    }
+
+
+
+    /// 三版取色的对照表：一行一个真头像，右边挨着摆原版、当前、提议三块色。
+    ///
+    /// 规范里那句「同一份内容做两版摆在一起看，输了就改规范」。取色这种事讲不清楚，
+    /// 得出图；而且要画**最终**的条色，不是中间值——`draw_bar_chart` 自己会再收一次调，
+    /// 从外面塞一个已经收过调的颜色进去，量到的就不是那一版真正的样子。
+    ///
+    /// `STATS_AVATAR_CACHE=<目录> STATS_CARD_DUMP=<目录> cargo test
+    /// compare_avatar_tone_variants -- --ignored`
+    #[test]
+    #[ignore = "三版取色并排出图"]
+    fn compare_avatar_tone_variants() {
+        let (Ok(dir), Ok(cache)) = (
+            std::env::var("STATS_CARD_DUMP"),
+            std::env::var("STATS_AVATAR_CACHE"),
+        ) else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut files: Vec<_> = std::fs::read_dir(&cache)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .collect();
+        files.sort();
+        let imgs: Vec<image::RgbaImage> = files
+            .iter()
+            .filter_map(|p| image::open(p).ok())
+            .map(|i| i.to_rgba8())
+            .take(24)
+            .collect();
+        assert!(!imgs.is_empty(), "{cache} 里没有可读的头像");
+
+        // A：原版。整张图（含透明角的纯黑）求平均，HSL 饱和度 < 0.06 退成纯灰。
+        let legacy = |img: &image::RgbaImage| {
+            let (mut r, mut g, mut b) = (0u64, 0u64, 0u64);
+            let n = (img.width() * img.height()) as u64;
+            for p in img.pixels() {
+                r += p[0] as u64;
+                g += p[1] as u64;
+                b += p[2] as u64;
+            }
+            let mean = RGBColor((r / n) as u8, (g / n) as u8, (b / n) as u8);
+            let (h, s, l) = to_hsl_for_test(mean);
+            if s < 0.06 {
+                from_hsl_for_test(0.0, 0.0, l.clamp(0.36, 0.50))
+            } else {
+                from_hsl_for_test(h, s.clamp(0.18, 0.42), l.clamp(0.36, 0.50))
+            }
+        };
+
+        let s = 2u32;
+        let cell = 100 * s;
+        let swatch_w = 190 * s;
+        let pad = 24 * s;
+        let head = 60 * s;
+        let width = pad * 2 + cell + swatch_w * 3;
+        let height = head + pad + imgs.len() as u32 * cell + pad;
+
+        let colors = ColorScheme::default();
+        let config = sample_config();
+        let mut buffer = vec![0u8; (width * height * 3) as usize];
+        {
+            let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
+            root.fill(&colors.card_background).map_err(|e| e.to_string()).unwrap();
+
+            for (i, label) in ["原版", "当前", "提议"].iter().enumerate() {
+                let style = get_font_with_color(&config, 22 * s, &colors.text_secondary)
+                    .pos(Pos::new(HPos::Center, VPos::Center));
+                let x = (pad + cell) as i32 + (swatch_w * i as u32 + swatch_w / 2) as i32;
+                root.draw_text(label, &style, (x, (head / 2) as i32)).unwrap();
+            }
+
+            for (row, img) in imgs.iter().enumerate() {
+                let y = (head + pad + row as u32 * cell) as i32;
+                for (i, bar) in [
+                    legacy(img),
+                    harmonize_theme(get_average_color(img)),
+                    harmonize_theme(avatar_theme_color(img)),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let x0 = (pad + cell + swatch_w * i as u32) as i32;
+                    draw_rounded_rect(
+                        &root,
+                        x0 + (4 * s) as i32,
+                        y + (4 * s) as i32,
+                        x0 + swatch_w as i32 - (4 * s) as i32,
+                        y + cell as i32 - (4 * s) as i32,
+                        (10 * s) as i32,
+                        bar,
+                    )
+                    .unwrap();
+                }
+            }
+            root.present().unwrap();
+        }
+
+        let mut sheet = RgbaImage::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let o = ((y * width + x) * 3) as usize;
+                sheet.put_pixel(
+                    x,
+                    y,
+                    Rgba([buffer[o], buffer[o + 1], buffer[o + 2], 255]),
+                );
+            }
+        }
+        for (row, img) in imgs.iter().enumerate() {
+            let y = (head + pad + row as u32 * cell) as i32;
+            overlay_image(&mut sheet, img, pad as i32, y);
+        }
+        dump_png(&dir, "tone-compare", &save_rgba_to_base64(sheet).unwrap());
     }
 
     /// `BarData` 不是 Clone（带着一张头像位图），样张要画两遍，这里手工复制一份。

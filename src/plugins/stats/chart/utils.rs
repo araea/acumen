@@ -458,14 +458,16 @@ fn from_hsl(h: f32, s: f32, l: f32) -> RGBColor {
 /// 眼里就是一张白纸，HSL 却因为明度贴着顶而算出 0.23 的饱和度——照着它染，
 /// 一张白头像会得到一条橘色的条。近黑的剪影同理。
 ///
-/// **这个数是量出来的，不是估的**：整张头像求平均本来就会把彩度洗掉大半，真头像
-/// 的均色远比合成样张里的假头像灰——按本机 142 张缓存头像量，中位彩度只有 0.082，
-/// 四分之一在 0.04 以下。`0.02`（三分量差 5 格）以下的占 12%，翻出来看都是真正的
-/// 灰度头像、近黑与近白；再往上一档 `0.03` 就已经把 `(89,97,96)` 这种看得出偏青的
-/// 调子也划进去了，而 `0.10` 会把**一多半**的人推成同一条回退色。
+/// **这个数是量出来的，不是估的。** 按本机 142 张缓存头像量，经 [`avatar_theme_color`]
+/// 取出来的调子中位彩度是 0.20，`0.02`（三分量差 5 格）以下的只占 6%，翻出来看都是
+/// 真正的灰度线稿与近乎中性的照片。分布离这道线很远，是件好事：判断不再卡在刀口上。
 ///
-/// 收调时饱和度本来就会被抬到 0.18 以上，所以方向只要不是噪声就留着它——留下来的
-/// 是一支克制的调子，不是原图那点灰。重新量用 `chart::avatar` 里的 `cache_survey`。
+/// 从前不是这样——朴素平均让白底一起投票，中位彩度只有 0.082，四分之一在 0.04 以下，
+/// 门槛往上挪一格就会大片退成同一支色（`0.10` 会推掉一多半）。真正该修的是取色，
+/// 不是把门槛压到更低。
+///
+/// 收调时饱和度本来会被抬到 0.18 以上，所以方向只要不是噪声就留着它。
+/// 重新量用 `chart::avatar` 里的 `cache_survey`。
 const HUE_NOISE_FLOOR: f32 = 0.02;
 
 /// 回退色相：系统主色的那一支。灰头像不是"没有颜色"，是"没有自己的颜色"，
@@ -480,10 +482,12 @@ pub fn harmonize_theme(color: RGBColor) -> RGBColor {
     let (h, s, l) = to_hsl(color);
     let chroma =
         (color.0.max(color.1).max(color.2) - color.0.min(color.1).min(color.2)) as f32 / 255.0;
-    // 彩度低到读不出方向的头像（雪白、近黑、灰度）退到固定的回退色相，
-    // 彩度取窄带的中值——它们不该因为"没有颜色"反而成为整张榜上最扎眼的几行。
+    // 彩度低到读不出方向的头像（纯灰的线稿、雪白、近黑）退到固定的回退色相，
+    // 但**彩度压到窄带之下**：一张本来就没有颜色的头像，不该因为"没有颜色"
+    // 反而成为整张榜上最扎眼的一条。它看着仍然是一块灰，只是带着系统那一点绿，
+    // 不是纯灰——成片的中性色发灰，和主色也不像一家人。
     if chroma < HUE_NOISE_FLOOR {
-        return from_hsl(fallback_hue(), 0.30, l.clamp(0.36, 0.50));
+        return from_hsl(fallback_hue(), 0.10, l.clamp(0.36, 0.50));
     }
     from_hsl(h, s.clamp(0.18, 0.42), l.clamp(0.36, 0.50))
 }
@@ -752,6 +756,63 @@ pub fn get_average_color(img: &RgbaImage) -> RGBColor {
     )
 }
 
+/// 头像的调子：**明度取整张图的均色，色相取「有颜色的那部分」的均色。**
+///
+/// 均色本身是对的——一张头像给一支色，整张图都算数，不挑不猜。问题只在于把背景
+/// 也算进了色相：大半头像是「大片白底/灰底 + 中间一小块彩色」，白底一平均就把那
+/// 一小块的方向稀释到快没有了。中位彩度只有 0.082 就是这么来的，于是「多低算读不出
+/// 色相」这条线不得不定得很低，稍微定高一点就会大片退成同一支色。
+///
+/// 所以这里仍然是平均，只是给每个像素按它自己的彩度加一份权重（`+0.04` 的底让
+/// 纯灰的头像退化成原来那种朴素平均）。白底不再有发言权，色相回到那一小块彩色上；
+/// 明度仍旧按整张图算，否则一张暗底亮标的头像会被那一点亮色带偏。
+///
+/// 这不是换一套逻辑，是把同一套平均算得准一点。
+pub fn avatar_theme_color(img: &RgbaImage) -> RGBColor {
+    let plain = get_average_color(img);
+
+    let (mut r, mut g, mut b, mut weight) = (0f64, 0f64, 0f64, 0f64);
+    for p in img.pixels() {
+        if p[3] == 0 {
+            continue;
+        }
+        let chroma = (p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2])) as f64 / 255.0;
+        let w = (p[3] as f64 / 255.0) * (chroma + 0.04);
+        r += p[0] as f64 * w;
+        g += p[1] as f64 * w;
+        b += p[2] as f64 * w;
+        weight += w;
+    }
+    if weight <= 0.0 {
+        return plain;
+    }
+    let tinted = RGBColor(
+        (r / weight).round() as u8,
+        (g / weight).round() as u8,
+        (b / weight).round() as u8,
+    );
+
+    // 色相与饱和度来自加权的那一版，明度来自整张图。
+    //
+    // 明度**在收调的窄带里**还原，不用原样的那个值：一张白底头像的均色明度贴着顶，
+    // 在那个明度上 HSL 根本表达不出多少彩度（`l=0.9` 时上限只剩两成），刚捞回来的
+    // 色相会被重新压扁，连带把「读不读得出色相」那道门槛也骗过去。窄带就是
+    // `harmonize_theme` 随后要 clamp 到的那一段，提前落进去不改变任何结果。
+    let (h, s, _) = to_hsl(tinted);
+    let (_, _, l) = to_hsl(plain);
+    from_hsl(h, s, l.clamp(0.36, 0.50))
+}
+
+#[cfg(test)]
+pub(crate) fn to_hsl_for_test(c: RGBColor) -> (f32, f32, f32) {
+    to_hsl(c)
+}
+
+#[cfg(test)]
+pub(crate) fn from_hsl_for_test(h: f32, s: f32, l: f32) -> RGBColor {
+    from_hsl(h, s, l)
+}
+
 pub fn make_circular_avatar(img: &DynamicImage, size: u32) -> RgbaImage {
     let rgba = img.to_rgba8();
     let mut result = RgbaImage::new(size, size);
@@ -983,6 +1044,70 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 大半头像是「一大片白底 + 中间一小块彩色」。朴素平均等于让白底投票决定色相，
+    /// 那一小块的方向被稀释到快没有了。
+    #[test]
+    fn a_white_background_does_not_get_a_vote_on_the_hue() {
+        // 八成白底 + 两成正红
+        let mut img = RgbaImage::new(100, 100);
+        for y in 0..100u32 {
+            for x in 0..100u32 {
+                let red = y >= 80;
+                let px = if red {
+                    Rgba([200, 30, 30, 255])
+                } else {
+                    Rgba([250, 250, 250, 255])
+                };
+                img.put_pixel(x, y, px);
+            }
+        }
+
+        let plain = get_average_color(&img);
+        let weighted = avatar_theme_color(&img);
+        let chroma =
+            |c: RGBColor| (c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2)) as f32 / 255.0;
+
+        // 两者的色相一致（白底不带色相，稀释的是强度不是方向）
+        assert!((to_hsl(plain).0 - to_hsl(weighted).0).abs() < 6.0);
+        // 但朴素平均被白底压到快读不出来，加权之后回到那一小块红上
+        assert!(chroma(plain) < 0.14, "朴素平均的彩度 {}", chroma(plain));
+        assert!(
+            chroma(weighted) > chroma(plain) * 2.0,
+            "加权之后应当把那一小块红捞回来：{} -> {}",
+            chroma(plain),
+            chroma(weighted)
+        );
+        // 明度仍然按整张图算（落在收调的窄带里）：这是一张亮头像，
+        // 不因为那一块红就变暗，所以顶在窄带的上沿
+        assert!((to_hsl(plain).2.clamp(0.36, 0.50) - to_hsl(weighted).2).abs() < 0.02);
+        assert!(to_hsl(weighted).2 > 0.49, "亮头像应当落在窄带的上沿");
+
+        // 整张纯灰的头像没有可加权的东西：色相仍然读不出来，交给回退那一条
+        let mut flat = RgbaImage::new(20, 20);
+        for p in flat.pixels_mut() {
+            *p = Rgba([140, 140, 140, 255]);
+        }
+        let flat_tone = avatar_theme_color(&flat);
+        assert_eq!(chroma(flat_tone), 0.0);
+    }
+
+    /// 读不出色相的头像退到回退色相，但**不该是整张榜上最扎眼的一条**：
+    /// 它本来就没有颜色，收出来该是一块带着系统色的灰。
+    #[test]
+    fn a_colourless_avatar_stays_quiet() {
+        let gray = harmonize_theme(RGBColor(150, 150, 150));
+        let colourful = harmonize_theme(RGBColor(200, 30, 30));
+        let sat = |c: RGBColor| to_hsl(c).1;
+        assert!(
+            sat(gray) < sat(colourful) / 1.5,
+            "灰头像的条 {gray:?}（S={:.2}）不该比有颜色的 {colourful:?}（S={:.2}）还艳",
+            sat(gray),
+            sat(colourful)
+        );
+        // 但也不是纯灰
+        assert!(gray.0 != gray.1 || gray.1 != gray.2);
     }
 
     /// 圆头像的四角是全透明的，`RgbaImage` 给它们的 RGB 是纯黑。
