@@ -116,11 +116,24 @@ pub fn list(prefix: &str, filter: &str, rows: &[Status]) -> Card {
     };
 
     let mut blocks = vec![
-        Block::Title { title: "插件状态".into(), pill: None, sub },
+        Block::Title {
+            title: "插件状态".into(),
+            pill: None,
+            sub,
+        },
         Block::Tiles(vec![
-            Tile { value: on.to_string(), label: "已启用".into() },
-            Tile { value: (rows.len() - on).to_string(), label: "已停用".into() },
-            Tile { value: pending.to_string(), label: "待重启".into() },
+            Tile {
+                value: on.to_string(),
+                label: "已启用".into(),
+            },
+            Tile {
+                value: (rows.len() - on).to_string(),
+                label: "已停用".into(),
+            },
+            Tile {
+                value: pending.to_string(),
+                label: "待重启".into(),
+            },
         ]),
         Block::Rule,
     ];
@@ -137,7 +150,11 @@ pub fn list(prefix: &str, filter: &str, rows: &[Status]) -> Card {
                     on: r.on,
                     main: r.display.into(),
                     sub: r.name.into(),
-                    tail: if r.pending { "待重启".into() } else { String::new() },
+                    tail: if r.pending {
+                        "待重启".into()
+                    } else {
+                        String::new()
+                    },
                 })
                 .collect(),
         ));
@@ -160,8 +177,19 @@ pub fn list(prefix: &str, filter: &str, rows: &[Status]) -> Card {
 }
 
 /// 配置卡：`show` 与 `defaults` 共用；`path` 为空表示整份配置
-pub fn config(prefix: &str, plugin: &str, path: &str, defaults: bool, body: &str, effect: &str) -> Card {
-    let title = if defaults { "默认配置" } else { "当前配置" };
+pub fn config(
+    prefix: &str,
+    plugin: &str,
+    path: &str,
+    defaults: bool,
+    body: &str,
+    effect: &str,
+) -> Card {
+    let title = if defaults {
+        "默认配置"
+    } else {
+        "当前配置"
+    };
     let blocks = vec![
         Block::Title {
             title: title.into(),
@@ -174,13 +202,19 @@ pub fn config(prefix: &str, plugin: &str, path: &str, defaults: bool, body: &str
         },
         Block::Rule,
         Block::Code(body.lines().map(str::to_string).collect()),
-        Block::Callout { tone: Tone::Info, text: effect.into() },
+        Block::Callout {
+            tone: Tone::Info,
+            text: effect.into(),
+        },
     ];
     doc(
         "CONTROL · CONFIG",
         blocks,
         "含 token / secret / password 的字段一律显示为「已隐藏」",
-        ("修改某一项".into(), format!("{prefix}ctl set {plugin} <路径> <值>")),
+        (
+            "修改某一项".into(),
+            format!("{prefix}ctl set {plugin} <路径> <值>"),
+        ),
     )
 }
 
@@ -215,7 +249,10 @@ pub fn diff(prefix: &str, plugin: &str, lines: &[String]) -> Card {
         "CONTROL · DIFF",
         blocks,
         "左为默认值，右为当前值",
-        ("查看默认配置".into(), format!("{prefix}ctl defaults {plugin}")),
+        (
+            "查看默认配置".into(),
+            format!("{prefix}ctl defaults {plugin}"),
+        ),
     )
 }
 
@@ -252,27 +289,41 @@ mod tests {
             "threshold: 3 → 5".to_string(),
             "probability: 0.5 → 0.85".to_string(),
         ];
-        let ctl_cmds = get_plugins().iter().find(|p| p.name == "ctl").unwrap().commands;
+        let ctl_cmds = get_plugins()
+            .iter()
+            .find(|p| p.name == "ctl")
+            .unwrap()
+            .commands;
 
         let cases: Vec<(&str, Card)> = vec![
             ("usage", usage("/", ctl_cmds)),
             ("list", list("/", "", &rows)),
-            ("config", config("/", "ai_news", "", false, body, "下一条消息生效。")),
+            (
+                "config",
+                config("/", "ai_news", "", false, body, "下一条消息生效。"),
+            ),
             ("diff", diff("/", "repeater", &diffs)),
             ("diff_clean", diff("/", "help", &[])),
         ];
         for (name, card) in cases {
             std::fs::write(format!("{dir}/{name}.html"), web::html(&card.0)).unwrap();
             let browser_path = std::env::var("CHROME_BIN").ok();
-            let b64 = card.render(3.0, browser_path.as_deref()).await.expect("浏览器应当出图");
+            let b64 = card
+                .render(3.0, browser_path.as_deref())
+                .await
+                .expect("浏览器应当出图");
             let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
                 .expect("应是合法 base64");
-            assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "{name} 应是 PNG");
+            assert!(
+                bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+                "{name} 应是 PNG"
+            );
             std::fs::write(format!("{dir}/{name}.png"), &bytes).unwrap();
             // 同时查看手机宽度的预览，避免只看高分辨率原图误判字号。
             let img = image::load_from_memory(&bytes).unwrap();
             img.resize(420, u32::MAX, image::imageops::FilterType::Lanczos3)
-                .save(format!("{dir}/{name}_phone.png")).unwrap();
+                .save(format!("{dir}/{name}_phone.png"))
+                .unwrap();
             println!("{name} 出图 {} 字节", bytes.len());
         }
         cdp_html_shot::Browser::shutdown_global().await;

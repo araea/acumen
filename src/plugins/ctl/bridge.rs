@@ -178,11 +178,7 @@ async fn write_skill(dir: &Path) -> anyhow::Result<PathBuf> {
         .unwrap_or_else(|_| "acumen".to_string());
     let skill = dir.join("skills/acumen-control");
     tokio::fs::create_dir_all(&skill).await?;
-    tokio::fs::write(
-        skill.join("SKILL.md"),
-        SKILL.replace("{{ACUMEN}}", &binary),
-    )
-    .await?;
+    tokio::fs::write(skill.join("SKILL.md"), SKILL.replace("{{ACUMEN}}", &binary)).await?;
     Ok(skill)
 }
 
@@ -255,7 +251,10 @@ async fn handle(request: Request) -> Response {
     info!(target: LOG_TARGET, "控制通道执行（{user}）：{command}");
     match super::execute(&ctx, &command).await {
         // 控制通道只要文本：调用方可能是 CLI 或 agent，图片对它们没有意义
-        Ok(out) => Response { ok: true, text: out.text },
+        Ok(out) => Response {
+            ok: true,
+            text: out.text,
+        },
         Err(text) => Response {
             ok: false,
             text: format!("操作未完成：{text}"),
@@ -322,7 +321,10 @@ mod tests {
                 .insert(plugin.name.into(), (plugin.default_config)());
         }
         if admin
-            && let Some(table) = config.plugins.get_mut("ctl").and_then(toml::Value::as_table_mut)
+            && let Some(table) = config
+                .plugins
+                .get_mut("ctl")
+                .and_then(toml::Value::as_table_mut)
         {
             table.insert("admins".into(), toml::Value::Array(vec![42.into()]));
         }
@@ -377,7 +379,9 @@ mod tests {
     async fn the_channel_is_open_to_everyone_and_expires_with_the_turn() {
         // 不在 ctl.admins 里的普通群友同样拿得到凭据——这条通道不做身份限制。
         let ctx = context(false).await;
-        let lease = lease(&ctx).await.expect("任何 agent 房间对话都应当拿到凭据");
+        let lease = lease(&ctx)
+            .await
+            .expect("任何 agent 房间对话都应当拿到凭据");
         let socket = lease.socket.clone();
         let token = lease.token.clone();
 
@@ -408,7 +412,10 @@ mod tests {
 
     #[test]
     fn skill_carries_the_real_binary_path() {
-        assert!(SKILL.contains("{{ACUMEN}}"), "skill 必须留占位符供落盘时替换");
+        assert!(
+            SKILL.contains("{{ACUMEN}}"),
+            "skill 必须留占位符供落盘时替换"
+        );
         let rendered = SKILL.replace("{{ACUMEN}}", "/opt/acumen");
         assert!(rendered.contains(r#""/opt/acumen" --ctl"#), "{rendered}");
         assert!(!rendered.contains("{{ACUMEN}}"));
