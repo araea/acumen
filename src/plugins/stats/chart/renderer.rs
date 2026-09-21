@@ -159,10 +159,23 @@ pub fn draw_bar_chart(
     let pct_font_obj = (font_family, pct_font_size).into_font();
     let rank_font_obj = (font_family, rank_font_size).into_font();
 
-    // 三列数字各按自己最宽的一行留位，列与列之间的缝是固定的：
-    // 这样二十行的数值收在同一条右边界上，占比也是，上下扫一眼就能比大小。
+    // 数值与占比写在哪儿，由 `stats.ranking_value_follows_bar` 决定。
+    //
+    // **跟着条尾（默认）**：值与条连着读，眼睛被条的颜色牵到条尾，答案就在那里，
+    // 中间不用换一次视线。代价是二十个数字排成一串阶梯——那串阶梯本身就是条尾的
+    // 轮廓，不算噪声。
+    //
+    // **排成右对齐的两列**：上下扫一眼就能比大小，画面也更齐整。代价是条尾什么都
+    // 没有，读完颜色还得横着扫到画面最右边再回头认这是哪一行；一列二十个数字，
+    // 认错行是常事。
+    //
+    // 两种都要留位：跟着条尾时按**最宽的那一串**在轨道右边留（任何一行都从自己的
+    // 条尾起写，榜首那根条恰好顶到轨道尽头，所以 `text_inset + 最宽的一串` 就够）；
+    // 排成列时按两列各自最宽的一行留。
+    let follows_bar = config.ranking_value_follows_bar;
     let pct_gap = 8 * s;
     let mut formatted_counts: Vec<(String, String)> = Vec::new();
+    let mut max_count_text_width = 0u32;
     let mut value_col_w = 0u32;
     let mut pct_col_w = 0u32;
 
@@ -172,10 +185,16 @@ pub fn draw_bar_chart(
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
         let (pw, _) = pct_font_obj.box_size(&pct_text).unwrap_or((0, 0));
+        max_count_text_width = max_count_text_width.max(vw + pct_gap + pw);
         value_col_w = value_col_w.max(vw);
         pct_col_w = pct_col_w.max(pw);
         formatted_counts.push((value_text, pct_text));
     }
+    let numbers_width = if follows_bar {
+        text_inset + max_count_text_width
+    } else {
+        gap_text + value_col_w + pct_gap + pct_col_w
+    };
 
     let rank_texts: Vec<String> = (1..=data.len()).map(|r| r.to_string()).collect();
     let rank_col_w = rank_texts
@@ -190,10 +209,7 @@ pub fn draw_bar_chart(
         + avatar_width
         + avatar_gap
         + max_possible_bar_width
-        + gap_text
-        + value_col_w
-        + pct_gap
-        + pct_col_w;
+        + numbers_width;
     // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
     let content_height = data.len() as u32 * row_pitch - row_gap + top_area_height;
 
@@ -257,7 +273,10 @@ pub fn draw_bar_chart(
                 let bar_w = (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
                 let bar = harmonize_theme(item.theme_color);
                 let track = track_tone(bar);
-                let value_ink = ensure_contrast(deep_tone(bar, 0.34), page_bg, 4.5);
+                // 数字踩在什么底上，就按什么底量对比度：跟着条尾时压在淡色轨道上
+                // （榜首那一行越过轨道落在纸上，纸更浅，一并够）；排成列时全在纸上。
+                let ground = if follows_bar { track } else { page_bg };
+                let value_ink = ensure_contrast(deep_tone(bar, 0.34), ground, 4.5);
                 RowStyle {
                     y,
                     bar_end_x: track_start_x + bar_w,
@@ -267,8 +286,8 @@ pub fn draw_bar_chart(
                     // 占比是次要信息：把数值的墨往纸里调一点，同一支色相退半档，
                     // 退到刚好还在正文阈值上为止
                     pct_ink: ensure_contrast(
-                        mix_with_color(value_ink, page_bg, 0.62),
-                        page_bg,
+                        mix_with_color(value_ink, ground, 0.62),
+                        ground,
                         4.5,
                     ),
                 }
@@ -386,17 +405,35 @@ pub fn draw_bar_chart(
                 .map_err(|e| e.to_string())?;
             }
 
-            // 数值与占比：各自右对齐在固定的一列上，落在轨道之外的纸面上。
+            // 数值与占比
             let (value_text, pct_text) = &formatted_counts[i];
-            let count_style = get_font_with_color(config, font_size, &row.value_ink)
-                .pos(Pos::new(HPos::Right, VPos::Center));
-            root.draw_text(value_text, &count_style, (value_right_x, text_mid_y))
-                .map_err(|e| e.to_string())?;
+            if follows_bar {
+                let count_x = bar_end_x + text_inset as i32;
+                let count_style = get_font_with_color(config, font_size, &row.value_ink)
+                    .pos(Pos::new(HPos::Left, VPos::Center));
+                root.draw_text(value_text, &count_style, (count_x, text_mid_y))
+                    .map_err(|e| e.to_string())?;
 
-            let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
-                .pos(Pos::new(HPos::Right, VPos::Center));
-            root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
+                let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
+                let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
+                    .pos(Pos::new(HPos::Left, VPos::Center));
+                root.draw_text(
+                    pct_text,
+                    &pct_style,
+                    (count_x + vw as i32 + pct_gap as i32, text_mid_y),
+                )
                 .map_err(|e| e.to_string())?;
+            } else {
+                let count_style = get_font_with_color(config, font_size, &row.value_ink)
+                    .pos(Pos::new(HPos::Right, VPos::Center));
+                root.draw_text(value_text, &count_style, (value_right_x, text_mid_y))
+                    .map_err(|e| e.to_string())?;
+
+                let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
+                    .pos(Pos::new(HPos::Right, VPos::Center));
+                root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
+                    .map_err(|e| e.to_string())?;
+            }
         }
 
         // 7. 绘制图标徽章 (消息类型等无头像条目：主题色圆底 + 类型字符)
@@ -1247,13 +1284,19 @@ mod tests {
     }
 
     /// 量级差三个数量级的两行也要画得出来：最短的那根条落在 `base_bar_min_width` 上，
-    /// 不会缩成一条看不见的线，也不会把名字挤没。
+    /// 不会缩成一条看不见的线，也不会把名字挤没。两种数字版式都跑一遍。
     #[test]
     fn a_thousand_fold_gap_still_renders_both_rows() {
-        let data = vec![sample("文本", 8_120), sample("图片", 3)];
-        let out = draw_bar_chart(&StatsConfig::default(), "本群今日发言排行榜", data)
-            .expect("悬殊的两行也应当能渲染");
-        assert!(out.starts_with("base64://"));
+        for follows in [true, false] {
+            let config = StatsConfig {
+                ranking_value_follows_bar: follows,
+                ..StatsConfig::default()
+            };
+            let data = vec![sample("文本", 8_120), sample("图片", 3)];
+            let out = draw_bar_chart(&config, "本群今日发言排行榜", data)
+                .expect("悬殊的两行也应当能渲染");
+            assert!(out.starts_with("base64://"));
+        }
     }
 
     #[test]
@@ -1461,9 +1504,30 @@ mod tests {
             .collect();
         assert!(!data.is_empty(), "{cache} 里没有可读的头像");
 
-        let out = draw_bar_chart(&sample_config(), "本群今日发言排行榜", data)
-            .expect("真头像样张应当能渲染");
-        dump_png(&dir, "ranking-real-avatars", &out);
+        for (follows, name) in [
+            (true, "ranking-real-avatars"),
+            (false, "ranking-real-avatars-columns"),
+        ] {
+            let config = StatsConfig {
+                ranking_value_follows_bar: follows,
+                ..sample_config()
+            };
+            let rows: Vec<BarData> = data
+                .iter()
+                .map(|d| BarData {
+                    label: d.label.clone(),
+                    value: d.value,
+                    user_id: d.user_id,
+                    avatar_url: d.avatar_url.clone(),
+                    avatar_img: d.avatar_img.clone(),
+                    theme_color: d.theme_color,
+                    icon_char: d.icon_char.clone(),
+                })
+                .collect();
+            let out = draw_bar_chart(&config, "本群今日发言排行榜", rows)
+                .expect("真头像样张应当能渲染");
+            dump_png(&dir, name, &out);
+        }
     }
 
 

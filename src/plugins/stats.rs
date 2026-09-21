@@ -37,6 +37,13 @@ pub struct StatsConfig {
     /// 只影响遮挡关系，线的位置与疏密两种都一样；文字始终在最上面，不会被线压到。
     pub ranking_grid_over_bars: bool,
 
+    /// 排行榜的次数与占比写在哪儿。
+    /// `true`（默认）：紧跟在自己那根条的尾巴后面。眼睛被条的颜色牵到条尾，答案就在
+    /// 那里，中间不用换一次视线；代价是二十个数字排成一串阶梯。
+    /// `false`：右对齐成固定的两列。上下扫一眼就能比大小、画面更齐整；代价是读完条
+    /// 还得横着扫到画面最右边，再回头认这是哪一行。
+    pub ranking_value_follows_bar: bool,
+
     /// 群名单：配了黑名单就对名单外的所有群生效并推送，配了白名单则只对名单内的群
     /// 生效并推送。查询指令与主动推送共用这份名单，不会出现「能查不能推」的错位。
     pub channel: ChannelConfig,
@@ -92,6 +99,7 @@ impl Default for StatsConfig {
             width: 960,
             height: 800,
             ranking_grid_over_bars: true,
+            ranking_value_follows_bar: true,
             channel: ChannelConfig::default(),
             push_min_messages: 20,
             push_group_gap_min_seconds: 20,

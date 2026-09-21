@@ -1071,12 +1071,22 @@ mod tests {
                         ratio >= 4.5,
                         "条上的名字在 {bar:?}（源 h={h} s={s} l={l}）上只有 {ratio:.2}∶1"
                     );
-                    let value = ensure_contrast(deep_tone(bar, 0.34), paper, 4.5);
-                    assert!(
-                        contrast_ratio(value, paper) >= 4.5,
-                        "条外的数值在纸上只有 {:.2}∶1",
-                        contrast_ratio(value, paper)
-                    );
+                    // 条外的数值有两种底：跟着条尾时压在淡色轨道上，排成右对齐的
+                    // 一列时落在纸上。两种版式各按自己的底收墨，都得过 4.5∶1。
+                    for ground in [track_tone(bar), paper] {
+                        let value = ensure_contrast(deep_tone(bar, 0.34), ground, 4.5);
+                        assert!(
+                            contrast_ratio(value, ground) >= 4.5,
+                            "数值在 {ground:?} 上只有 {:.2}∶1",
+                            contrast_ratio(value, ground)
+                        );
+                        let pct = ensure_contrast(
+                            mix_with_color(value, ground, 0.62),
+                            ground,
+                            4.5,
+                        );
+                        assert!(contrast_ratio(pct, ground) >= 4.5);
+                    }
                 }
             }
         }

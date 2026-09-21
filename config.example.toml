@@ -671,6 +671,13 @@ font_path = ""
 # false：实色条盖住它，每根条都是完整的一块颜色。
 #   /ctl set stats ranking_grid_over_bars false
 ranking_grid_over_bars = true
+# 排行榜的次数与占比写在哪儿。
+# true：紧跟在自己那根条的尾巴后面——眼睛被条的颜色牵到条尾，答案就在那里，
+#       中间不用换一次视线；代价是二十个数字排成一串阶梯。
+# false：右对齐成固定的两列——上下扫一眼就能比大小、画面更齐整；代价是读完条
+#       还得横着扫到画面最右边，再回头认这是哪一行。
+#   /ctl set stats ranking_value_follows_bar false
+ranking_value_follows_bar = true
 # 定时推送的条数门槛：这批消息少于这么多就不推，免得冷清的群每天收到一张空的图。
 push_min_messages = 20
 # 多个群之间的发送间隔区间（秒），错峰用。
