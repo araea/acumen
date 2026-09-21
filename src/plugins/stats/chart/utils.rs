@@ -1243,6 +1243,42 @@ mod tests {
         assert!(worst.0 >= 3.0, "条与轨道只有 {:.2}∶1", worst.0);
     }
 
+    /// 条上的名字**每一行都是浅色**，这是亮度归一之后的必然结果，不是巧合。
+    ///
+    /// `get_contrast_color` 的黑白切换还在，而且照样每次都量（消息类型卡的浅色图标
+    /// 底板上它仍然翻到深色字）；只是条色现在全部落在 `BAR_LUMINANCE = 0.16`，
+    /// 而黑白的临界点在亮度 0.179——整条窄带都在同一侧，于是它不需要翻。
+    ///
+    /// 从前之所以黑白混着，正是我们后来修掉的那个毛病：HSL 明度不是视觉亮度，
+    /// 同一条明度带上黄绿那半圈落在临界点之上、蓝紫那半圈落在之下，于是名字的颜色
+    /// 沿色相环在 h≈30 与 h≈205 翻了两次——名字是黑是白取决于头像偏什么色，不取决于
+    /// 任何有意义的东西；而且翻转点附近最好也只有 4.59∶1，贴着线走。
+    ///
+    /// **想换成深色字**：把 `BAR_LUMINANCE` 抬到 0.179 以上（0.21 左右），
+    /// `TRACK_LUMINANCE` 要跟着抬到 0.78 才保得住条与轨道的 3∶1，代价是轨道逼近纸色、
+    /// 整行不再像一条带子。这条测试会在那时失败，提醒改的人一起想这两件事。
+    #[test]
+    fn every_name_on_a_bar_is_light_ink() {
+        for h in 0..360 {
+            for s in [0.0f32, 0.35, 0.7, 1.0] {
+                let bar = harmonize_theme(from_hsl(h as f32, s, 0.5));
+                let ink = get_contrast_color(bar);
+                assert!(
+                    relative_luminance(ink) > relative_luminance(bar),
+                    "h={h} 的条 {bar:?} 上写的是深色字 {ink:?}，整张榜的字色应当一致"
+                );
+                assert!(contrast_ratio(ink, bar) >= 4.5);
+            }
+        }
+        // 机制本身还在：换一块浅底，它照样翻到深色字
+        let tile = mix_with_color(RGBColor(31, 99, 80), ColorScheme::default().container, 0.20);
+        let icon = get_contrast_color(tile);
+        assert!(
+            relative_luminance(icon) < relative_luminance(tile),
+            "浅底上应当翻成深色字，黑白切换不是被关掉了"
+        );
+    }
+
     #[test]
     fn medals_are_fixed_and_the_rest_fall_back_to_faint() {
         let faint = ColorScheme::default().text_faint;
@@ -1269,3 +1305,4 @@ mod tests {
         assert_eq!(format_percent(5, 0), "0%");
     }
 }
+
