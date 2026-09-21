@@ -334,13 +334,11 @@ fn is_verification_page(landed: &str) -> bool {
 /// 18 处占位图一处都没动。两种写法在这里都补：
 ///
 /// - `<img>` 上只写了 `data-src`（正文里的长图）
-/// - 微信特有的 `data-lazy-bgimg`（[E2.COOL] 那类「SVG 交互」长图整篇都是它，
+/// - 微信特有的 `data-lazy-bgimg`（E2.COOL 那类「SVG 交互」长图整篇都是它，
 ///   `background-image` 被换成了 1×1 的占位 gif）
 ///
-/// 只补当前是空白的，页面自己已经填好的不动。表达式自己等图解码，最多 5 秒——
-/// 等不到就照当前状态截，不发图也不是这里的选项。
-///
-/// [E2.COOL]: https://e2.cool
+/// 只补当前是空白的，页面自己已经填好的不动。表达式自己等图解码，最多 5 秒；
+/// 等不到就照当前状态截。
 const WECHAT_REHYDRATE_JS: &str = r#"(() => {
   const blankSrc = (v) => !v || v.startsWith('data:');
   const blankBg = (v) => {
