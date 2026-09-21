@@ -113,7 +113,7 @@ pub fn default_config() -> Value { build_config(Config::default()) }
 
 | 路线 | 依赖 | 使用方 | 适用 |
 | --- | --- | --- | --- |
-| HTML 卡片 `render/web.rs` | Chrome/Chromium、系统 CJK 字体 | help、ctl、portrait、ai_news、oai | 插件手册、状态清单、配置与差异、角色画像、资讯长图、Markdown 回复 |
+| HTML 卡片 `render/web.rs` | Chrome/Chromium、系统 CJK 字体 | help、ctl、ai_news、oai | 插件手册、状态清单、配置与差异、资讯长图、Markdown 回复 |
 | 图表 plotters | 无 | stats、wordcloud | 坐标轴、折线、柱状、词云 |
 | 真实网页截图 | Chrome/Chromium | webshot | 把链接本身截下来 |
 
@@ -127,7 +127,7 @@ render::web::shoot(
 
 `Shot` 的三个关键取值是宽度（视口与成图宽度，决定文字怎么换行）、选择器（命中的元素
 的外接矩形就是成图边界，默认 `.shot`，oai 的回复卡片用 `.card`）和格式（help/ctl 用 PNG，
-篇幅长的画像与资讯用 JPEG）。量高度、等字体、尺寸护栏、并发闸门都在 `shoot` 里，
+篇幅长的资讯用 JPEG）。量高度、等字体、尺寸护栏、并发闸门都在 `shoot` 里，
 调用方不重复实现。
 
 `shoot` 只对页面做一趟 `evaluate`：字体和内嵌图片用 `document.fonts.ready` / `img.decode()` 与一个 900 ms 定时器
@@ -152,7 +152,7 @@ render::web::shoot(
 
 ### 卡片设计系统
 
-五种卡片图（手册、控制、回复、资讯、画像，资讯与画像各有日读与夜读两档）共用一套样式，
+四种卡片图（手册、控制、回复、资讯，资讯有日读与夜读两档）共用一套样式，
 分两层，顺序不能换：
 
 ```rust
@@ -161,9 +161,9 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 
 - **系统层** `res/cards/m3e.css`（`render::web::DESIGN_SYSTEM`）：按 Material 3
   Expressive 的口径定义字阶、形状、高度、间距、配色角色与组件基元（`.md-card`、
-  `.md-badge`、`.md-chip`、`.md-callout`、`.md-command`…）。六套配色方案
+  `.md-badge`、`.md-chip`、`.md-callout`、`.md-command`…）。五套配色方案
   （`scheme-manual` / `scheme-control` / `scheme-reply` / `scheme-news` /
-  `scheme-portrait` / `scheme-console`，后三套有深色档）也在这一个文件里，放在一起便于横向比。
+  `scheme-console`，后两套有深色档）也在这一个文件里，放在一起便于横向比。
 - **版式层**：`res/cards/reading.css`（help / ctl 的 `Doc` 模型）与各插件里那份
   `const CSS`。**只写「摆在哪儿」，不许出现色值、字号、圆角、阴影的字面量**，
   一律 `var(--md-*)` 取令牌。写了就是绕过令牌直接写字面量。
@@ -171,8 +171,7 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 三条与 M3 的刻意偏离（字阶按中文字面放大、字重只用 500/600/700/800 四档、
 阴影不透明度收回到纸面量级）与「为什么不引外部字体」都写在 `m3e.css` 的开头。
 
-字体只列系统里真有的：`Noto Sans CJK SC` 一族到底，不做拉丁与中日韩混排。画像卡是
-唯一的例外，显示级文字走 `--md-font-display`（衬线）。装真字重见
+字体只列系统里真有的：`Noto Sans CJK SC` 一族到底，不做拉丁与中日韩混排。装真字重见
 `scripts/install-cjk-weights.sh`。
 
 图表（plotters，位图，取不到 CSS）与词云的配色对照同一张色表：`stats` 的
@@ -207,7 +206,7 @@ viewBox 与尺寸收到「内容 + `trim_margin`」，SVG 与 PNG 走同一条�
 前检查尺寸。图片切分按相邻网格边界分配余数，完整保留原图边缘。
 
 智能回复表格使用固定表布局与单元格换行，来源标题完整折行。资讯标题取消 CSS 行数
-裁切（摘要仍遵循插件配置的字符预算）。资讯、画像固定 720 CSS px，滚动条不影响版心。
+裁切（摘要仍遵循插件配置的字符预算）。资讯固定 720 CSS px，滚动条不影响版心。
 
 原生工具 `render/font.rs`、`canvas.rs`、`kit.rs` 保留供原生绘图使用。是否迁移渲染方式以实际阅读质量为准，ai_news 保持网页日夜主题。
 

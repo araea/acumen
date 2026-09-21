@@ -1209,7 +1209,7 @@
   const commandState = { output: "", history: [], busy: false };
 
   async function paintCommand() {
-    const shortcuts = ["list", "diff ambient", "show oai", "defaults portrait"];
+    const shortcuts = ["list", "diff ambient", "show oai", "defaults stats"];
     return `
       ${pageHead("命令", "这里敲的和群里敲 /ctl 是同一套，以维护者身份执行。")}
       <section class="card">

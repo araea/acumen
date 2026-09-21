@@ -121,15 +121,6 @@ register_plugins!(
         ],
         on_connected: Some(stats::on_connected)
     },
-    portrait {
-        display_name: "角色画像",
-        section: "insight",
-        summary: "读群成员历史发言，出语言指纹、活跃节律、群内往来、十维档案、戏说与判词的图文画像（娱乐向）",
-        commands: cmds![
-            ("画像 / 角色画像 / 用户画像 / 我的画像 / 人物画像 / 画像报告 / 用户画像报告", "为自己出一份角色画像"),
-            ("画像 @某人 / 画像 <QQ号>", "为对方出一份角色画像"),
-        ]
-    },
     gif {
         display_name: "GIF 工具箱",
         section: "message",

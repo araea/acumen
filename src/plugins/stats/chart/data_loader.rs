@@ -45,7 +45,7 @@ pub struct MessageTypeStyle {
 
 /// 图表用的五个色相：**一套色表，全站共用**。
 ///
-/// 值与 `res/cards/m3e.css` 里那张色表逐字一致（主色、画像种子的靛与紫、
+/// 值与 `res/cards/m3e.css` 里那张色表逐字一致（主色、调色板的靛与紫、
 /// 控制卡的三级橄榄、警告赭金），词云用的也是这五个。选它们不是为了好看，
 /// 是因为在这张暖白纸上**彼此分得开**——排行榜里相邻两行常常不同色，
 /// 色相挨太近就糊成一片；同时又都在同一个低彩度家族里。
@@ -56,8 +56,8 @@ pub struct MessageTypeStyle {
 /// `every_swatch_matches_the_stylesheet` 那条单测钉着这五支色都还在样式表里。
 pub const HUES: [RGBColor; 5] = [
     RGBColor(31, 99, 80),   // 主色（scheme-manual 的 primary）
-    RGBColor(62, 78, 158),  // 画像种子 indigo
-    RGBColor(95, 58, 150),  // 画像种子 violet
+    RGBColor(62, 78, 158),  // 调色板的靛（--md-hue-indigo）
+    RGBColor(95, 58, 150),  // 调色板的紫（--md-hue-violet）
     RGBColor(74, 91, 58),   // 控制卡的三级色（橄榄）
     RGBColor(122, 83, 0),   // 警告赭金
 ];

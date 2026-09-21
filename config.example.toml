@@ -78,8 +78,8 @@ log_lines = 400
 enabled = true
 debug = false
 
-# 消息记录：落库到 data/bot.db，是词云、统计、画像三个插件的共同数据源。
-# 关掉它，那三个插件只会回答「没有记录」。
+# 消息记录：落库到 data/bot.db，是词云、统计两个插件的共同数据源。
+# 关掉它，那两个插件只会回答「没有记录」。
 [recorder]
 enabled = true
 # 是否连机器人自己发的消息一起记。搭话的风格分析要用到自己的发言，所以默认开。
@@ -704,36 +704,5 @@ monthly_recap_time = "10:20:00"
 # 两个都空：对所有群生效。同时出现在两边时黑名单优先。
 #   /ctl set stats channel.black [123456789]
 [stats.channel]
-white = []
-black = []
-
-# 用户画像：读群成员历史发言，按活跃、内容、交互、表达四个维度出图文画像。
-[portrait]
-enabled = true
-# 分析用的模型，写「供应商/模型」；供应商取自 [oai.providers]，不带前缀走 oai 默认接口。
-model = "deepseek/deepseek-flash"
-# 思考强度：off / minimal / low / medium / high / xhigh，留空交给接口默认。
-# 档案十格要读一百多条样本再落笔，默认给到 high；调低会明显变浅。
-thinking = "high"
-# 只统计最近多少天，0 表示全部留存记录。
-# 注意：days 与 max_samples 会改变下发给模型的素材，也就会改变这份画像。
-days = 0
-# 交给模型的发言样本条数，以及一次最多读多少条原始记录。
-max_samples = 120
-max_scan = 8000
-# 报告里最多摆几个往来对象（他和谁聊得来那一节）。0 就是不算这一段。
-partners = 6
-# 报告主题：auto 按北京时间在日读与夜读之间切换，也可固定 light / dark。
-theme = "auto"
-# 是否把画像排版成卡片图；关掉或渲染失败时退回一份等价的文字版。
-image_enabled = true
-# 出图倍率（1—4）。倍率越高越清晰，图也越大。
-image_scale = 3.0
-# 同一个目标两次生成之间的最短间隔秒数。这期间再问不重新生成，
-# 直接把上一次那张卡片（出图失败时是那段文字）再发一次。
-cooldown_seconds = 180
-
-# 语义同 [stats.channel]。两个都空就是对所有群生效——画像不需要单独开群。
-[portrait.channel]
 white = []
 black = []

@@ -1,7 +1,7 @@
 // Generate real-registry fixtures first:
 // HELP_CARD_DUMP=/tmp/cards/help CTL_CARD_DUMP=/tmp/cards/ctl cargo test renders_sample_cards_to_png -- --ignored --test-threads=1
 // CARD_ARTIFACTS=/tmp/cards node tests/cards.cjs
-// Also accepts ai_news, portrait and oai fixtures; writes screenshots and a layout report.
+// Also accepts ai_news and oai fixtures; writes screenshots and a layout report.
 // Uses only local HTML fixtures and an isolated Chromium profile.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -56,13 +56,13 @@ async function main() {
   await cdp('Page.enable');
   await cdp('Emulation.setDeviceMetricsOverride', {width:640, height:800, deviceScaleFactor:1, mobile:false});
   const report = [];
-  for (const family of (process.env.CARD_FAMILIES || 'help,ctl,ai_news,portrait,oai').split(',')) {
+  for (const family of (process.env.CARD_FAMILIES || 'help,ctl,ai_news,oai').split(',')) {
     const dir = path.join(artifacts, family);
     if (!fs.existsSync(dir)) { assert(!['help','ctl'].includes(family), family + ' fixtures missing'); continue; }
     const files = fs.readdirSync(dir).filter(file => file.endsWith('.html'));
-    assert(files.length >= ({help:4,ctl:5,ai_news:5,portrait:3,oai:2}[family]));
+    assert(files.length >= ({help:4,ctl:5,ai_news:5,oai:2}[family]));
     for (const file of files) {
-      const viewport = {help:920,ctl:640,ai_news:720,portrait:720,oai:560}[family];
+      const viewport = {help:920,ctl:640,ai_news:720,oai:560}[family];
       await cdp('Emulation.setDeviceMetricsOverride', {width:viewport, height:800, deviceScaleFactor:1, mobile:false});
       await cdp('Page.navigate', {url:pathToFileURL(path.resolve(dir, file)).href});
       await until(() => run(`document.readyState === 'complete' && !!document.querySelector('.card')`));

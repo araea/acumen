@@ -1,9 +1,9 @@
 /* ============================================================================
    Acumen 卡片设计系统 · Material 3 Expressive × Apple HIG 口径
    ----------------------------------------------------------------------------
-   本仓库有五种卡片图：手册（help）、控制（ctl）、回复（oai）、资讯（ai_news，
-   日读／夜读）、画像（portrait，日读／夜读）。它们要像同一个产品里的五张纸，
-   而不是五个团队各做一张。这个文件把「同一张纸」该有的一致收在一处：字阶、
+   本仓库有四种卡片图：手册（help）、控制（ctl）、回复（oai）、资讯（ai_news，
+   日读／夜读）。它们要像同一个产品里的四张纸，
+   而不是四个团队各做一张。这个文件把「同一张纸」该有的一致收在一处：字阶、
    形状、高度、间距、配色角色、组件基元。
 
    文件按 §1—§9 分节，一节一种令牌：复位、字阶、形状、高度、间距、字体族、
@@ -199,14 +199,8 @@
 :root {
   --md-font-plain: "Noto Sans CJK SC", "Source Han Sans SC", "PingFang SC",
     "OPPO Sans SC", "Microsoft YaHei", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --md-font-serif: "Noto Serif CJK SC", "OPPO Serif SC", "Source Han Serif SC",
-    "Songti SC", "Noto Serif SC", Georgia, "Times New Roman", serif;
   --md-font-mono: "Noto Sans Mono", "DejaVu Sans Mono", "Roboto Mono", ui-monospace,
     "Noto Sans CJK SC", monospace;
-  /* 显示级文字用的族。默认与正文同族；画像卡要衬线，由那一套方案覆盖
-     （见 scheme-portrait）——所以版式里写 `var(--md-font-display)`，
-     不要去写死 serif，否则「换一套方案就换一张脸」这件事又被写死了。 */
-  --md-font-display: var(--md-font-plain);
 }
 
 /* ==================== §7 配色角色（color roles） ==================== */
@@ -215,7 +209,7 @@
    版式一律按角色的**语义**取色（「这是主色」），不按色相取色（「这是绿色」），
    换一套方案时版式一行都不用动。
 
-   三档文字是这个系统的骨架，也是五张卡从前最不齐的地方——有的卡有六级灰。
+   三档文字是这个系统的骨架，也是四张卡从前最不齐的地方——有的卡有六级灰。
    M3 基线只有 on-surface 与 on-surface-variant 两级，卡片还需要第三级来放
    时间戳、单位、页脚这类「存在但不该被读到」的信息，所以补一个扩展角色
    on-surface-faint（M3 的 outline 是给描边的，拿它当文字对比度不够）。
@@ -257,6 +251,13 @@
   --md-sys-color-on-primary: #ffffff;
   --md-sys-color-tertiary: #4a44b8;
 
+  /* 调色板补充色相：靛与紫。它们不对应任何语义角色，也不属于哪一套方案，
+     只在统计图与词云的调色板里当「彼此分得开」的另外两支用。出处就在这儿，
+     改值要连 `stats/chart/data_loader.rs` 的 `HUES` 与 `wordcloud/image.rs`
+     的 `WORD_COLORS` 一起改（有单测从这张表读回去比对）。 */
+  --md-hue-indigo: #3e4e9e;
+  --md-hue-violet: #5f3a96;
+
   /* 次要容器：中性色块，放行内代码、工具轨迹这类「是代码但不是重点」的东西 */
   --md-sys-color-secondary-container: #e4ebe4;
   --md-sys-color-on-secondary-container: #333c36;
@@ -279,7 +280,7 @@
 
   /* —— 派生：容器色 —— */
   /* M3 的 *-container 是同色相、亮两档（浅色主题）或暗两档（深色主题）的调子。
-     与其给每个种子手写一份容器色表（六套方案 × 六个种子 × 两个主题），
+     与其给每个种子手写一份容器色表（方案 × 种子 × 主题），
      不如按比例从种子里混出来：换种子只要改一行。两个比例由方案给——
      浅色主题的容器要亮（混得少），深色主题的容器要沉（混得多）；
      on-container 在浅色主题下是「主色再压深」，深色主题下是「主色再提亮」，
@@ -457,7 +458,7 @@ body.scheme-news.dark {
 }
 
 /* 分类换种子。写成四个短块而不是让 Rust 拼 `--md-sys-color-primary` 内联样式：
-   种子属于配色方案，摆在这里才和其余五套方案放在一张桌上比。 */
+   种子属于配色方案，摆在这里才和其余四套方案放在一张桌上比。 */
 body.seed-brief {
   --md-sys-color-primary: var(--md-seed-brief);
 }
@@ -471,96 +472,14 @@ body.seed-models {
   --md-sys-color-primary: var(--md-seed-models);
 }
 
-/* —— 方案：画像（portrait） ——
-   纸色底 + 衬线。这是五张卡里唯一用衬线的：画像是一份「写下来的东西」，
-   衬线在纸色上才立得住——这一点与 M3 无关，是版面的选择，所以单独写在这儿，
-   免得有人为了「统一」把它换成无衬线。主色由被画像的人决定（六个种子之一，
-   同一人每次同色），所以这里只给中性面，主色由 Rust 内联一个种子进来。 */
-body.scheme-portrait {
-  --md-role-container-mix: 10%;
-  --md-font-display: var(--md-font-serif);
-  --md-sys-color-surface: #fcfaf6;
-  --md-sys-color-surface-dim: #e9e3d9;
-  --md-sys-color-surface-container-low: #f7f4ee;
-  --md-sys-color-surface-container: #f1ede4;
-  --md-sys-color-surface-container-high: #e8e3d8;
-  --md-sys-color-on-surface: #1c1a17;
-  --md-sys-color-on-surface-variant: #524b41;
-  --md-sys-color-on-surface-faint: #6e675d;
-  --md-sys-color-outline: #a79e90;
-  --md-sys-color-outline-variant: #e2dcd0;
-  --md-sys-color-secondary-container: #ebe6dd;
-  --md-sys-color-on-secondary-container: #38322a;
-  --md-sys-color-scrim: #241f18;
-}
-
-body.scheme-portrait.dark {
-  color-scheme: dark;
-  --md-sys-color-surface: #171614;
-  --md-sys-color-surface-dim: #0d0c0b;
-  --md-sys-color-surface-container-low: #1d1b19;
-  --md-sys-color-surface-container: #221f1c;
-  --md-sys-color-surface-container-high: #2a2723;
-  --md-sys-color-on-surface: #f2eee6;
-  --md-sys-color-on-surface-variant: #bdb6ab;
-  --md-sys-color-on-surface-faint: #9c948a;
-  --md-sys-color-outline: #7a7468;
-  --md-sys-color-outline-variant: #3a3833;
-  --md-sys-color-secondary-container: #2a2723;
-  --md-sys-color-on-secondary-container: #ded8cd;
-  --md-sys-color-inverse-surface: #f2eee6;
-  --md-sys-color-on-inverse-surface: #171614;
-  --md-sys-color-scrim: #000000;
-  --md-role-on-container-mix: 46%;
-}
-
-/* 画像的六个主色种子（同一人在深浅两套主题下各一份）。
-   Rust 侧只负责在这两个里挑一个塞进 `--md-sys-color-primary`。 */
-body.seed-amber {
-  --md-sys-color-primary: #8a5a1e;
-}
-body.seed-rose {
-  --md-sys-color-primary: #9e2f4c;
-}
-body.seed-mint {
-  --md-sys-color-primary: #1f6f5c;
-}
-body.seed-indigo {
-  --md-sys-color-primary: #3e4e9e;
-}
-body.seed-violet {
-  --md-sys-color-primary: #5f3a96;
-}
-body.seed-teal {
-  --md-sys-color-primary: #14606e;
-}
-body.dark.seed-amber {
-  --md-sys-color-primary: #c9a063;
-}
-body.dark.seed-rose {
-  --md-sys-color-primary: #d98ba1;
-}
-body.dark.seed-mint {
-  --md-sys-color-primary: #7fbfa8;
-}
-body.dark.seed-indigo {
-  --md-sys-color-primary: #9aa6dd;
-}
-body.dark.seed-violet {
-  --md-sys-color-primary: #b49bdd;
-}
-body.dark.seed-teal {
-  --md-sys-color-primary: #79b8c2;
-}
-
 /* —— 方案：控制台（console） ——
-   六套方案里唯一不是卡片图的一套：它是知微在本机网页上那张控制台。
+   五套方案里唯一不是卡片图的一套：它是知微在本机网页上那张控制台。
    与手册同底同主色（同一个产品，不该因为换了个媒介就换一张脸），但两处不同：
 
    1. 表面比纸再冷一档。卡片是「读一张就放下」的纸，控制台是要盯十分钟的台面，
       同样的暖白在整屏铺开时会发闷；
    2. 自带深色。控制台是网页，跟随系统明暗是应该的，所以这一套把浅深两版都写全，
-      其余五套仍按「日读／夜读由插件自己挑」的老规矩。
+      其余四套仍按「日读／夜读由插件自己挑」的老规矩。
 
    浅色档的 on-surface-faint 与 outline 比 §7 的基线更深一档：网页是要按
    WCAG 2.2 AA 核的（卡片图是发到群里的位图，不受这一条约束），而 §7 那两
@@ -626,7 +545,7 @@ body.scheme-console.dark {
 
 /* 深色主题对整体配色只改两件事：文字与表面翻面、容器混色比例换档。
    语义色在浅色主题下就能用（同为深底浅字那一套），不必各写一遍——
-   本文件里只有 news、portrait 与 console 三套方案自带深色，其余三套按「日读」一种。 */
+   本文件里只有 news 与 console 两套方案自带深色，其余三套按「日读」一种。 */
 body.dark {
   color-scheme: dark;
   --md-role-container-mix: 22%;
@@ -758,10 +677,10 @@ body.dark {
 /* ==================== §9 组件基元 ==================== */
 
 /* —— 相纸（成图的外围） ——
-   五张卡片的成图边界都是 `.shot`：卡面浮在一层比它暗一档的纸上。
+   四张卡片的成图边界都是 `.shot`：卡面浮在一层比它暗一档的纸上。
    这一层不能省——卡面的圆角、描边与阴影三样都要有一层不同的底才看得出来，
    落在纯白上时它们合起来只剩一条悬着的线，看着像一个框，而不是一张纸。
-   内边距（20px）与底色在两处都写在这里，五张卡片的成图外围因此是同一种处理，
+   内边距（20px）与底色在两处都写在这里，四张卡片的成图外围因此是同一种处理，
    各卡的版式文件不再各写一遍 `.shot` 的取值。 */
 .shot {
   padding: var(--md-space-5);
@@ -800,7 +719,7 @@ body.dark {
 }
 
 /* —— 页眉 —— */
-/* 五张卡的页眉同形：左边「品牌 + 这张卡是什么」，右边「什么时候出的」。
+/* 四张卡的页眉同形：左边「品牌 + 这张卡是什么」，右边「什么时候出的」。
    眉标一律 label-small（小字放开字距），是全篇唯一允许这么大字距的地方。 */
 .md-eyebrow {
   display: flex;
