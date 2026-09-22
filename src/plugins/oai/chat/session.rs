@@ -893,6 +893,23 @@ impl Session {
         } else {
             None
         };
+        // 实现端自己列的「曾经有、现在没了」直接记进不可用名单。它给 `removed` 这张表
+        // 就是为了这个：不必等到撞一次 404 才知道按不动（见 `remember_platform_refusal`）。
+        if let Some(removed) = extensions
+            .as_ref()
+            .and_then(|value| value.get("removed"))
+            .and_then(Value::as_object)
+        {
+            for kind in ACTION_KINDS {
+                let Some(why) = removed.get(kind).and_then(Value::as_str) else {
+                    continue;
+                };
+                remember_platform_refusal(
+                    kind,
+                    &format!("实现端已移除这个动作（{why}）。这一轮换个法子回应更划算。"),
+                );
+            }
+        }
         let own_member = self.rpc("guild.member.get", json!({"guild_id":self.group.to_string(),"user_id":self.ctx.bot.login_user.get().id})).await;
         let environment = match own_member {
             Ok(member) => {
@@ -2006,6 +2023,16 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let calls = requests.clone();
+        // 真机那张「曾经有、现在没了」的表随版本变；这个群号上的假实现端按 0.24.0 回。
+        let capabilities = if group == -8_000_121 {
+            json!({
+                "version":"0.24.0",
+                "actions":["poke","sign","dice","rps"],
+                "removed":{"like":"0.23.0 起移除：资料卡点赞走 QQ 的 WUP/Handler 通道，本实现端只走 JNI 层"},
+            })
+        } else {
+            json!({})
+        };
         let task = tokio::spawn(async move {
             let mut next = 7837409278651234567_i64;
             loop {
@@ -2051,6 +2078,7 @@ mod tests {
                 let response = match method.as_str() {
                     "guild.member.get" if body["user_id"] == "43" => json!({"user":{"id":"43"},"roles":[{"id":"member"}]}),
                     "login.get" => json!({"features":["message.create","message.delete","reaction.create","reaction.delete","upload.create"]}),
+                    "internal/capabilities" => capabilities.clone(),
                     "upload.create" => json!({"file":"internal:red/10000/_tmp/test"}),
                     "message.create" => { next += 1; json!([{"id":next.to_string()}]) },
                     "message.get" => json!({"id":body["message_id"],"content":"原始内容"}),
@@ -2519,10 +2547,18 @@ mod tests {
         server.abort();
     }
 
+    /// 平台拒绝那本账是进程级的（真机上就该跨轮留着），所以碰它的用例要串行：
+    /// 一个用例记下的「点赞不可用」会立刻改变另一个用例看到的能力报告。
+    fn refusal_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
     /// 一轮只有几次动作。平台明确拒绝、动作根本没到达聊天的那一类失败，
     /// 不该把额度也一起吃掉，更不该让模型在同一轮里反复去撞同一堵墙。
     #[tokio::test]
     async fn a_platform_refusal_gives_the_action_budget_back_and_is_not_retried() {
+        let _serial = refusal_guard();
         let group = -8_000_104;
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
@@ -2608,6 +2644,52 @@ mod tests {
             "跨轮也不该再打到平台"
         );
         drop(next);
+        forget_platform_refusals();
+        server.abort();
+    }
+
+    /// 实现端在 `internal/capabilities` 里自己列了「曾经有、现在没了」的动作
+    /// （satori-qq 0.23.0 起是资料卡点赞），客户端读到这张表就该把它当不可用，
+    /// 而不是先撞一次 404 再学乖：那一次尝试要花掉本轮仅有的几次动作额度。
+    #[tokio::test]
+    async fn an_action_the_implementation_removed_is_unavailable_before_the_first_try() {
+        let _serial = refusal_guard();
+        let group = -8_000_121;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir =
+            crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-removed")
+                .unwrap();
+        forget_platform_refusals();
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let budget = config.actions_budget;
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path())
+            .await
+            .unwrap();
+
+        // 读一次现场，这一步就会取到那张表。
+        let context = request(&bridge, json!({"id":"ctx","op":"context"})).await;
+        assert!(
+            context["result"]["capabilities"]["unavailable"]["like"].is_string(),
+            "{context}"
+        );
+
+        let refused = action(&bridge, "like", json!({"action":"like","user_id":"42"})).await;
+        assert_eq!(refused["ok"], false, "{refused}");
+        let why = refused["error"].as_str().unwrap();
+        assert!(why.contains("实现端已移除"), "{why}");
+        // 这一下根本没出网，额度也没动。
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(m, _)| m == "internal/like")
+                .count(),
+            0
+        );
+        let after = request(&bridge, json!({"id":"budget","op":"context"})).await;
+        assert_eq!(after["result"]["writes_remaining"], budget);
+        drop(bridge);
         forget_platform_refusals();
         server.abort();
     }
