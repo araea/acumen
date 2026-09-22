@@ -14,9 +14,26 @@
 //! 硬上限。两条都只读内存里的时间戳，不产生费用。
 //!
 //! 时段写在配置里而不是写死：定价规则会变，改一行配置比改一次编译便宜。
+//!
+//! 峰谷价是 DeepSeek 一家的事，所以这一层只对走 DeepSeek 接口的模型生效
+//! （见 [`billed_by_peak`]）：换成全天一个价的供应商，时段管理直接让路，
+//! 配置留着不改，换回 DeepSeek 那天立刻又是原来那套作息。
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// DeepSeek 在 `[oai.providers]` 里的供应商名。
+const DEEPSEEK: &str = "deepseek";
+
+/// 这个模型走的是不是 DeepSeek 官方那条分峰谷价的接口。
+///
+/// 按供应商前缀认，不认别名：配置里写成 `另一名字/…` 指的是另一个接口，
+/// 那家怎么计价代码不知道，宁可当它全天一个价。
+pub(crate) fn billed_by_peak(model: &str) -> bool {
+    crate::plugins::oai::utils::split_provider(model)
+        .0
+        .is_some_and(|provider| provider.eq_ignore_ascii_case(DEEPSEEK))
+}
 
 /// 高峰时段的行为。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -222,6 +239,18 @@ mod tests {
         let back: PeakConfig = toml::from_str(&text).unwrap();
         assert_eq!(back.mode, Mode::Pause);
         assert_eq!(back.windows, PeakConfig::default().windows);
+    }
+
+    #[test]
+    fn only_deepseeks_own_models_carry_peak_pricing() {
+        assert!(billed_by_peak("deepseek/deepseek-flash"));
+        assert!(billed_by_peak("DeepSeek/deepseek-flash"));
+        // 别家全天一个价，挑时段没意义。
+        assert!(!billed_by_peak("mimo/mimo-v2.6-flash"));
+        assert!(!billed_by_peak("apilio/gemini-3.8-flash"));
+        // 不带前缀的走 oai 默认接口，那不是 DeepSeek 官方那条按峰谷计价的线。
+        assert!(!billed_by_peak("deepseek-flash"));
+        assert!(!billed_by_peak("deepseek/"));
     }
 
     /// 睡着时仍可偶尔接话，但两次主动判定之间有下限，写 0 才等于完全睡着。

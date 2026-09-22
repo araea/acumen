@@ -45,6 +45,8 @@
 
 DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00 定为高峰，其余时间（午休、傍晚、整夜、整个周末）都是空闲时段，价格是高峰的一半。搭话是这个仓库里唯一无人触发、跟着群消息频率自动运行的付费功能，时段选择直接影响费用：放在空闲时段费用减半，而群里最热闹的晚上本来就在空闲时段。
 
+**这一段只对 DeepSeek 的模型生效。** 峰谷价是它一家的事：判定与发言两个模型都不走 `[oai.providers.deepseek]`（默认的小米 MiMo 就是这样）时，全天一个价，挑时段没有意义，这一整段让路——判定与发言照常跑满全天，`[ambient.peak]` 怎么配都不影响。两个模型里但凡有一个还在 DeepSeek 上，这一轮就仍有一半的钱可省，休眠照旧。换回 DeepSeek 那天不必改配置，这张表立刻重新生效。
+
 `[ambient.peak]` 决定高峰时段的行为：
 
 | `mode` | 高峰时段的行为 |
@@ -328,18 +330,20 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 由 `ctl.admins` 中的全局管理员向机器人发送以下指令，私聊、已接入的群聊与本机控制台均可。发言模型影响所有已启用搭话的群：
 
 ```text
-/ctl set ambient reply_model deepseek/deepseek-flash
+/ctl set ambient reply_model mimo/mimo-v2.6-flash
 /ctl show ambient reply_model
 ```
 
-`deepseek` 是 `[oai.providers]` 里配置好的供应商名，换其他模型时写该表里有的 `供应商/模型`（如 `apilio/gemini-3.8-flash`）。判定模型同样写 `供应商/模型`，由 acumen 按 `[oai.providers]` 取该供应商的接口与密钥：
+`mimo` 是 `[oai.providers]` 里配置好的供应商名，换其他模型时写该表里有的 `供应商/模型`（如 `deepseek/deepseek-flash`、`apilio/gemini-3.8-flash`）。判定模型同样写 `供应商/模型`，由 acumen 按 `[oai.providers]` 取该供应商的接口与密钥：
 
 ```text
-/ctl set ambient gate_model deepseek/deepseek-flash
+/ctl set ambient gate_model mimo/mimo-v2.6-flash
 /ctl show ambient gate_model
 ```
 
-默认判定与发言统一使用 DeepSeek 官方 `deepseek-flash`（原生多模态）。判定与发言都打 `[oai.providers.deepseek]` 的接口，人格、上下文与聊天工具不变，发言端保留 `thinking = "low"`。不带供应商前缀的模型仍走 oai 默认接口。**换贵的模型不改变发言质量**：拿真实群聊记录回放过 Claude / Gemini 的快档，质量与 `deepseek-flash` 同档，「人机感」另有来源（该长该短的判据、一句长文该拆没拆）。默认留在便宜这一档，要换照上面的指令改即可。指令保存到配置并在下一轮读取，无需重启，已经开始的请求仍可能使用旧模型。已有配置不会随仓库默认值更新而自动替换，升级实例请执行上述指令。这些设置只管理群聊搭话，与普通 oai 智能体及 Agent 房间的默认模型无关。
+默认判定与发言统一使用小米 MiMo 的 `mimo-v2.6-flash`（原生多模态，能吃图、能调工具）。判定与发言都打 `[oai.providers.mimo]` 的接口，人格、上下文与聊天工具不变，发言端保留 `thinking = "low"`。不带供应商前缀的模型仍走 oai 默认接口。**换贵的模型不改变发言质量**：拿真实群聊记录回放过 Claude / Gemini 的快档，质量与便宜档同档，「人机感」另有来源（该长该短的判据、一句长文该拆没拆）。默认留在便宜这一档，要换照上面的指令改即可。指令保存到配置并在下一轮读取，无需重启，已经开始的请求仍可能使用旧模型。已有配置不会随仓库默认值更新而自动替换，升级实例请执行上述指令。这些设置只管理群聊搭话，与普通 oai 智能体及 Agent 房间的默认模型无关。
+
+换供应商还会牵动上面那张计价时段表：只有模型名带 `deepseek/` 前缀时才按峰谷作息（见[跟着计价时段作息](#跟着计价时段作息)），换成别家就是全天一个价。
 
 ## satori-qq 0.9.0 的环境与操作适配
 
@@ -366,9 +370,9 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 | `enabled` | `false` | 总开关 |
 | `groups` | `[]` | 允许搭话的群号 |
 | `management_groups` | `[]` | 开放人格群管理的群号，还须具有实际 QQ 权限；运行时移除立即阻止后续管理动作 |
-| `gate_model` | `deepseek/deepseek-flash` | 判定模型；`供应商/模型` 按 `[oai.providers]` 取接口，不带前缀走 oai 默认接口 |
+| `gate_model` | `mimo/mimo-v2.6-flash` | 判定模型；`供应商/模型` 按 `[oai.providers]` 取接口，不带前缀走 oai 默认接口 |
 | `gate_persona` | 浓缩画像 | 判定读的兴趣画像，留空则回退完整人设 |
-| `reply_model` | `deepseek/deepseek-flash` | 发言模型 |
+| `reply_model` | `mimo/mimo-v2.6-flash` | 发言模型 |
 | `thinking` | `low` | 发言模型思考强度 |
 | `temperature` | `1.3` | 发言模型采样温度；不写这一项交给接口默认值。判定模型不受影响，它要的是分数稳 |
 | `tools` | `read,write,bash` | 本地工具白名单（bash/read/write/edit/glob/grep）；本轮按开关自动附加 satori 系列工具。写错的名字会被静默忽略 |
@@ -393,7 +397,7 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 | `memo_budget` | `3` | 每轮最多写几条记忆；0 关闭 `satori_memo` |
 | `search_enabled` | `true` | 发言时是否联网；后端与房间共用 `[oai.search]` |
 | `search_budget` | `3` | 每轮最多联网几次（搜索与抓取合并）；0 关闭 `web_search` / `web_fetch` |
-| `peak.mode` | `sleep` | 计价高峰时段的行为：`sleep` 睡着但偶尔接一句，`pause` 完全不出声，`normal` 不理会时段 |
+| `peak.mode` | `sleep` | 计价高峰时段的行为：`sleep` 睡着但偶尔接一句，`pause` 完全不出声，`normal` 不理会时段。两个模型都不走 DeepSeek 时整段让路 |
 | `peak.windows` | `["09:00-12:00", "14:00-18:00"]` | 高峰时段，本机时间，可跨零点 |
 | `peak.weekdays` | `[1,2,3,4,5]` | 算作高峰的星期几，1=周一；留空等于每天 |
 | `peak.doze_gate_seconds` | `300` | 睡着时两次主动判定之间的最短间隔（秒）；写 0 只有被点名才醒 |

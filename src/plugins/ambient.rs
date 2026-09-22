@@ -115,13 +115,13 @@ pub(crate) struct AmbientConfig {
     /// 允许人格执行群管理的群；还须具备 QQ 对应权限。
     pub management_groups: Vec<i64>,
     /// 判定模型：便宜、快、能看图。写 `供应商/模型` 时按 `[oai.providers]` 取接口，
-    /// 默认走 DeepSeek 官方接口。
+    /// 默认走小米 MiMo。
     pub gate_model: String,
     /// 判定用的浓缩人设画像（见 [`GATE_PERSONA`]）。判定只需知道对什么感兴趣、
     /// 避开什么、怎么接话，不需要完整写作人设；留空则回退用完整人设（更贵）。
     pub gate_persona: String,
-    /// 发言模型，写成 `供应商/模型`；默认 DeepSeek 官方的 `deepseek-flash`。
-    /// 试过更贵的 Claude / Gemini，实测在真实群聊里并不比它更像人，人机感
+    /// 发言模型，写成 `供应商/模型`；默认小米 MiMo 的 `mimo-v2.6-flash`。
+    /// 试过更贵的 Claude / Gemini，实测在真实群聊里并不比便宜档更像人，人机感
     /// 另有来源（该长该短没控住），所以默认仍留在便宜这一档。
     pub reply_model: String,
     /// 发言模型的思考强度（off/minimal/low/medium/high）。
@@ -129,8 +129,9 @@ pub(crate) struct AmbientConfig {
     /// 发言模型的采样温度。`None`（不写这一项）交给接口自己的默认值。
     ///
     /// 这里调的是「像不像人」那一档：同一句话有无穷多种说法，温度低了每轮都挑最
-    /// 稳妥的那种，几轮下来就露出一张嘴一个调子的机器样。DeepSeek 官方对通用对话
-    /// 给的是 1.3，比接口默认的 1.0 松一档。判定模型不跟着动——它要的是分数稳。
+    /// 稳妥的那种，几轮下来就露出一张嘴一个调子的机器样。1.3 是从 DeepSeek 官方
+    /// 那份通用对话档借来的，比接口默认的 1.0 松一档，换供应商也照用。判定模型
+    /// 不跟着动——它要的是分数稳。
     pub temperature: Option<f64>,
     /// 发言时开放的工具白名单，逗号分隔。
     ///
@@ -208,7 +209,8 @@ pub(crate) struct AmbientConfig {
     /// 每轮最多联网几次（搜索与抓取合并）。0 等于关掉出网工具。
     pub search_budget: usize,
     /// 计价高峰时段的作息（见 [`peak`]）。DeepSeek 官方接口空闲时段半价，
-    /// 而搭话是这里唯一无人触发的付费功能，最值得挑时段。
+    /// 而搭话是这里唯一无人触发的付费功能，最值得挑时段。**只对它家的模型生效**：
+    /// 判定与发言两个模型都不走 DeepSeek 时，全天一个价，这一整段让路。
     pub peak: peak::PeakConfig,
     /// 消息时效窗口（秒）：请求交给 satori-qq 之后，群里只要又有人说话就不再发
     /// 出这一句。0 关闭。见 [`crate::adapters::satori::Freshness`]。
@@ -254,9 +256,9 @@ impl Default for AmbientConfig {
             enabled: false,
             groups: Vec::new(),
             management_groups: Vec::new(),
-            gate_model: "deepseek/deepseek-flash".to_string(),
+            gate_model: "mimo/mimo-v2.6-flash".to_string(),
             gate_persona: GATE_PERSONA.to_string(),
-            reply_model: "deepseek/deepseek-flash".to_string(),
+            reply_model: "mimo/mimo-v2.6-flash".to_string(),
             thinking: "low".to_string(),
             temperature: Some(1.3),
             tools: "read,write,bash".to_string(),
@@ -338,6 +340,27 @@ impl AmbientConfig {
         let relief = (minutes / 10.0 * f64::from(self.silence_relief_per_10min))
             .min(f64::from(self.silence_relief_cap));
         self.score_threshold.saturating_sub(relief as u8)
+    }
+
+    /// 这一轮里有没有走 DeepSeek 峰谷价的调用。判定与发言是两次不同的调用，
+    /// 有一个还在 DeepSeek 上，高峰时段就仍有一半的钱可省。
+    fn peak_applies(&self) -> bool {
+        [self.gate_model.as_str(), self.reply_model.as_str()]
+            .into_iter()
+            .any(peak::billed_by_peak)
+    }
+
+    /// 现在该以什么姿态待着。峰谷价只跟 DeepSeek 有关，别家全天一个价，
+    /// 时段管理整段让路——`[ambient.peak]` 怎么配都不影响，换回 DeepSeek 立刻生效。
+    fn peak_stance(&self) -> peak::Stance {
+        self.peak_stance_at(chrono::Local::now())
+    }
+
+    fn peak_stance_at(&self, at: chrono::DateTime<chrono::Local>) -> peak::Stance {
+        if !self.peak_applies() {
+            return peak::Stance::Awake;
+        }
+        self.peak.stance_at(at)
     }
 
     /// 发言节奏。精神头好就敲得快、想得短，困了反过来。
@@ -1046,8 +1069,8 @@ async fn consider_batch(
     // 计价高峰时段：价格翻倍，但也不必整段不出声。要么彻底睡着（`pause`），要么
     // 压成偶尔醒一次——不跟着消息频率一直判定，只隔 `doze_gate_seconds` 看一眼，
     // 每小时自主开口不超过 `doze_reply_limit` 次；被点名或搭话指令则立刻醒，
-    // 并且统一换上最省的一份上下文。
-    let stance = config.peak.stance();
+    // 并且统一换上最省的一份上下文。这一段只对 DeepSeek 的模型生效。
+    let stance = config.peak_stance();
     let frugal;
     let mut doze = false;
     let config = match stance {
@@ -1473,8 +1496,8 @@ mod tests {
     #[test]
     fn default_models_match_but_explicit_overrides_are_preserved() {
         let config: AmbientConfig = toml::from_str("").unwrap();
-        assert_eq!(config.gate_model, "deepseek/deepseek-flash");
-        assert_eq!(config.reply_model, "deepseek/deepseek-flash");
+        assert_eq!(config.gate_model, "mimo/mimo-v2.6-flash");
+        assert_eq!(config.reply_model, "mimo/mimo-v2.6-flash");
         // 发言温度默认比接口默认松一档，判定仍是接口默认。
         assert_eq!(config.temperature, Some(1.3));
         // 判定人设默认是浓缩画像，比完整人设便宜得多，且不会被空值覆盖。
@@ -1681,6 +1704,48 @@ mod tests {
             config.effective_threshold(None),
             config.score_threshold - config.silence_relief_cap
         );
+    }
+
+    /// 峰谷价是 DeepSeek 一家的事：判定与发言都不走它家时，`[ambient.peak]` 整段
+    /// 让路，全天照常跑；两个模型里但凡有一个还在 DeepSeek 上，这一轮就仍有一半
+    /// 的钱可省，休眠照旧。换回来那天不必改配置。
+    #[test]
+    fn peak_hours_only_apply_while_a_deepseek_model_is_in_the_round() {
+        use chrono::TimeZone as _;
+        // 2026-09-10 是周四：上午十点在 DeepSeek 的高峰里，晚八点在空闲时段。
+        let peak_time = chrono::Local
+            .with_ymd_and_hms(2026, 9, 10, 10, 0, 0)
+            .single()
+            .expect("本机时区里这个时刻存在");
+        let off_peak = chrono::Local
+            .with_ymd_and_hms(2026, 9, 10, 20, 0, 0)
+            .single()
+            .expect("本机时区里这个时刻存在");
+
+        let config = AmbientConfig::default();
+        assert!(!config.peak_applies());
+        assert_eq!(config.peak_stance_at(peak_time), peak::Stance::Awake);
+
+        // 判定留在 DeepSeek 上：判定那一次调用仍按峰谷计价。
+        let mixed = AmbientConfig {
+            gate_model: "deepseek/deepseek-flash".to_string(),
+            ..AmbientConfig::default()
+        };
+        assert!(mixed.peak_applies());
+        assert_eq!(mixed.peak_stance_at(peak_time), peak::Stance::Dozing);
+        assert_eq!(mixed.peak_stance_at(off_peak), peak::Stance::Awake);
+
+        // 两个都换回 DeepSeek：那张表原样生效，连 pause 也照旧。
+        let deepseek = AmbientConfig {
+            gate_model: "deepseek/deepseek-flash".to_string(),
+            reply_model: "deepseek/deepseek-flash".to_string(),
+            peak: peak::PeakConfig {
+                mode: peak::Mode::Pause,
+                ..peak::PeakConfig::default()
+            },
+            ..AmbientConfig::default()
+        };
+        assert_eq!(deepseek.peak_stance_at(peak_time), peak::Stance::Asleep);
     }
 
     #[test]
