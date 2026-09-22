@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const out = process.env.ACUMEN_CONSOLE_SHOTS;
@@ -67,7 +67,7 @@ const server = http.createServer(async (req, res) => {
     res.write(`event: snapshot\ndata: ${JSON.stringify({ lines: history })}\n\n`);
     streams.add(res); res.on('close', () => streams.delete(res)); return;
   }
-  const assets = { '/': ['res/console/index.html','text/html'], '/app.js': ['res/console/app.js','text/javascript'], '/app.css': ['res/console/app.css','text/css'], '/icon.svg': ['res/console/icon.svg','image/svg+xml'], '/manifest.webmanifest': ['res/console/manifest.webmanifest','application/manifest+json'] };
+  const assets = { '/': ['res/console/index.html','text/html'], '/app.js': ['res/console/app.js','text/javascript'], '/app.css': ['res/console/app.css','text/css'], '/icon.svg': ['res/console/icon.svg','image/svg+xml'], '/icon-monochrome.svg': ['res/console/icon-monochrome.svg','image/svg+xml'], '/manifest.webmanifest': ['res/console/manifest.webmanifest','application/manifest+json'] };
   if (!assets[url.pathname]) { res.writeHead(404); return res.end(); }
   const [file, type] = assets[url.pathname]; res.writeHead(200, { 'Content-Type': type });
   // 与 assets.rs 的 stylesheet() 同一顺序：系统层 → 令牌层 → 版式层。
@@ -77,6 +77,10 @@ const server = http.createServer(async (req, res) => {
   }
   res.end(fs.readFileSync(path.join(root, file)));
 });
+const axeSource = process.env.ACUMEN_AXE_CORE ? fs.readFileSync(process.env.ACUMEN_AXE_CORE, 'utf8') : null;
+const contrastProbe = execFileSync('python3', ['-c',
+  'import runpy; print(runpy.run_path("scripts/audit-contrast.py")["PROBE"])'], { cwd: root, encoding: 'utf8' });
+const accessibility = [];
 let session, driver;
 const driverPort = Number(process.env.CHROMEDRIVER_PORT || 9529);
 async function call(method, route, data) {
@@ -139,7 +143,14 @@ async function shot(name) {
   await click('[data-reset]');
   assert.equal(await js('return document.querySelector("dialog").open'), true);
   assert.equal(await js('return document.querySelector("dialog").getAttribute("aria-labelledby")'), 'dialog-title');
-  await click('[data-answer=no]');
+  assert.equal(await js('return document.activeElement.dataset.answer'), 'no', 'dialog starts on safe action');
+  await cmd('POST', '/actions', { actions: [{ type: 'key', id: 'keyboard', actions: [
+    {type:'keyDown',value:'\uE004'}, {type:'keyUp',value:'\uE004'}] }] });
+  assert(await js('return document.querySelector("dialog").contains(document.activeElement)'), 'Tab reaches the other modal action');
+  await cmd('POST', '/actions', { actions: [{ type: 'key', id: 'keyboard', actions: [
+    {type:'keyDown',value:'\uE00C'}, {type:'keyUp',value:'\uE00C'}] }] });
+  assert.equal(await js('return document.querySelector("dialog").open'), false, 'Escape cancels dialog');
+  assert(await js('return document.activeElement.matches("[data-reset]")'), 'dialog restores trigger focus');
   await route('command');
   await js('document.querySelector("#command-input").value="list"');
   await click('#command-form [type=submit]');
@@ -176,9 +187,12 @@ async function shot(name) {
   assert(await js('const b=document.querySelector("#log-box"); return b.scrollHeight-b.scrollTop-b.clientHeight<3'), 'resize keeps the newest line visible');
   await js('document.querySelector("#log-box").style.flex=""; document.querySelector("#log-box").style.height=""');
   await sleep(200);
-  await js(`window.longTasks=[]; new PerformanceObserver(list=>window.longTasks.push(...list.getEntries().map(e=>e.duration))).observe({type:'longtask'});
+  await js(`window.longTasks=[]; window.logPerformance=new PerformanceObserver(list=>window.longTasks.push(...list.getEntries().map(e=>e.duration))); window.logPerformance.observe({type:'longtask'});
     window.logMutations=0; new MutationObserver(()=>window.logMutations++).observe(document.querySelector('#log-box'),{childList:true});`);
   emit(2400); await sleep(600);
+  // Measure the burst itself; later navigation and background-tab restoration are
+  // different workloads and must not be attributed to the log batching budget.
+  await js('window.longTasks.push(...window.logPerformance.takeRecords().map(e=>e.duration)); window.logPerformance.disconnect()');
   assert.equal(await js('return document.querySelector("#log-box").children.length'), 80);
   assert.equal(await js('return !!window.injected'), false);
   assert.equal(await js('return document.querySelector("#log-follow").getAttribute("aria-pressed")'), 'true');
@@ -261,9 +275,39 @@ async function shot(name) {
         assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `overflow: ${label}/${theme}/${page}`);
         if (page === 'logs') assert(await js('const b=document.querySelector("#log-box"); const t=document.querySelector(".log-tools"); return b.scrollHeight-b.scrollTop-b.clientHeight<3 && t.getBoundingClientRect().bottom <= b.getBoundingClientRect().top'), `latest visible and toolbar does not cover logs: ${label}/${theme}`);
         await shot(`${label}-${theme}-${page.replace('/','-')}`);
+        const contrast = await js(contrastProbe);
+        const contrastFailures = Object.fromEntries(['text','borders','nameless','tiny','hints'].map(key => [key, contrast[key]]));
+        if (Object.values(contrastFailures).some(items => items.length)) accessibility.push({page:`${label}/${theme}/${page}`, contrast:contrastFailures});
+        if (axeSource) {
+          await js(axeSource);
+          const result = await cmd('POST', '/execute/async', { script: `const done=arguments[arguments.length-1];
+            axe.run(document, {runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa','wcag22aa']}})
+            .then(r=>done({violations:r.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>n.target)}))})).catch(e=>done({error:String(e)}));`, args:[] });
+          if (result.error || result.violations.length) accessibility.push({page:`${label}/${theme}/${page}`, axe:result});
+        }
       }
     }
   }
+  if (out) fs.writeFileSync(path.join(out, 'accessibility.json'), JSON.stringify(accessibility, null, 2));
+  assert.deepEqual(accessibility, [], 'contrast, names, targets and optional axe WCAG 2.2 AA audit');
+  // WCAG 1.4.12 text spacing: authored layout must tolerate the user's overrides.
+  await viewport(320,740); await route('plugins/oai');
+  await js(`const style=document.createElement('style');style.id='spacing-test';
+    style.textContent='* {line-height:1.5 !important;letter-spacing:0.12em !important;word-spacing:0.16em !important} p {margin-bottom:2em !important}';document.head.append(style)`);
+  assert(await js('return document.documentElement.scrollWidth <= innerWidth'), 'text spacing reflows at 320px');
+  await js('document.querySelector("#spacing-test").remove()');
+  await route('settings');
+  await js('document.querySelector("#view").focus()');
+  for (let step=0; step<24; step++) {
+    await cmd('POST','/actions',{actions:[{type:'key',id:'keyboard',actions:[
+      {type:'keyDown',value:'\uE004'},{type:'keyUp',value:'\uE004'}]}]});
+    assert(await js(`const e=document.activeElement;if(!e.closest('#view'))return true;
+      const r=e.getBoundingClientRect(),bar=document.querySelector('.bar').getBoundingClientRect(),nav=document.querySelector('.nav').getBoundingClientRect();
+      return r.bottom>bar.bottom && r.top<nav.top && getComputedStyle(e).outlineStyle!=='none'`), 'keyboard focus is visible outside fixed bars');
+  }
+  await media([{name:'forced-colors',value:'active'}]);
+  assert(await js('return getComputedStyle(document.querySelector(".nav-item[aria-current]" ) || document.querySelector(".nav-item")).forcedColorAdjust !== "none"'), 'system high contrast colors remain enabled');
+  await media([{name:'forced-colors',value:'none'}]);
   // 「减少动态效果」要测的是 app.js 自己那两处降级，不是 CSS：换页动画整条写在
   // @media (prefers-reduced-motion: no-preference) 里，只看 computed 的话，
   // 把 JS 侧的守卫删掉也永远是 none。两条各配一个正对照。
@@ -289,7 +333,7 @@ async function shot(name) {
   assert.deepEqual(errors, [], 'no JavaScript errors');
   if (out) fs.writeFileSync(path.join(out, 'metrics.json'), JSON.stringify(metrics, null, 2));
   console.log('Console browser checks passed: navigation, switches, stale responses, dialogs, forms, bounded logs, sparse filters, export, resize pinning, pause, visibility, reconnect, density persistence, themes, 320–1400px and reduced motion.');
-  console.log(JSON.stringify(metrics));
+  console.log(JSON.stringify({...metrics, accessibilitySnapshots:64, axe:!!axeSource}));
 })().catch(error => { console.error(error); process.exitCode=1; }).finally(async () => {
   if (session) await cmd('DELETE','').catch(()=>{});
   driver?.kill(); for (const response of streams) response.end();

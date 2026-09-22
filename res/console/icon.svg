@@ -2,11 +2,12 @@
   <title>知微</title>
   <defs>
     <linearGradient id="face" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2b7c64"/>
-      <stop offset="1" stop-color="#144337"/>
+      <stop offset="0" stop-color="#307050"/>
+      <stop offset="1" stop-color="#164132"/>
     </linearGradient>
   </defs>
   <rect width="108" height="108" rx="24.16" fill="url(#face)"/>
-  <circle cx="54" cy="54" r="28" fill="none" stroke="#ffffff" stroke-width="8"/>
-  <circle cx="54" cy="54" r="12" fill="#ffffff"/>
+  <path d="M79 54 A25 25 0 1 1 54 29" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="54" cy="54" r="7" fill="#ffffff"/>
+  <circle cx="72" cy="36" r="5.5" fill="#ffffff"/>
 </svg>

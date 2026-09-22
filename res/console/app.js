@@ -34,11 +34,11 @@
   /* ==================== §1 图标 ==================== */
   /* 一套线性图标，24×24，只用 currentColor，不带填充。 */
   const wrap = (body) =>
-    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" ` +
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ` +
     `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
 
   const ICONS = {
-    overview: wrap(`<circle cx="12" cy="12" r="8.2"/><path d="M12 12l3.6-3.6"/>`),
+    overview: wrap(`<rect x="3" y="3" width="7" height="10" rx="2.5"/><rect x="14" y="3" width="7" height="6" rx="2.5"/><rect x="3" y="17" width="7" height="4" rx="2"/><rect x="14" y="13" width="7" height="8" rx="2.5"/>`),
     plugins: wrap(
       `<rect x="3.6" y="3.6" width="7" height="7" rx="2"/>` +
         `<rect x="13.4" y="3.6" width="7" height="7" rx="2"/>` +
@@ -48,7 +48,7 @@
     ambient: wrap(
       `<path d="M4 7.2A3.2 3.2 0 017.2 4h9.6A3.2 3.2 0 0120 7.2v6.6a3.2 3.2 0 01-3.2 3.2H9.4L4 21z"/>`
     ),
-    logs: wrap(`<path d="M4 6.5h16M4 12h16M4 17.5h9"/>`),
+    logs: wrap(`<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h4"/>`),
     command: wrap(
       `<rect x="3" y="4.5" width="18" height="15" rx="3"/>` +
         `<path d="M7.5 10l2.6 2-2.6 2M12.8 14h3.7"/>`
@@ -62,10 +62,7 @@
       `<path d="M5 4.5h11l3.5 3.5v11.5H5z"/><path d="M8.5 4.5v5h6.5v-5"/>` +
         `<path d="M8.5 19.5v-5h7v5"/>`
     ),
-    gear: wrap(
-      `<circle cx="12" cy="12" r="3.1"/>` +
-        `<path d="M19.4 14.4a1.7 1.7 0 00.34 1.87l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.7 1.7 0 00-1.87-.34 1.7 1.7 0 00-1.03 1.55v.17a2 2 0 11-4 0v-.09a1.7 1.7 0 00-1.11-1.55 1.7 1.7 0 00-1.87.34l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.7 1.7 0 00.34-1.87 1.7 1.7 0 00-1.55-1.03h-.17a2 2 0 110-4h.09A1.7 1.7 0 005.5 8.36a1.7 1.7 0 00-.34-1.87l-.06-.06a2 2 0 112.83-2.83l.06.06a1.7 1.7 0 001.87.34H10a1.7 1.7 0 001.03-1.55v-.17a2 2 0 114 0v.09a1.7 1.7 0 001.03 1.55 1.7 1.7 0 001.87-.34l.06-.06a2 2 0 112.83 2.83l-.06.06a1.7 1.7 0 00-.34 1.87V10a1.7 1.7 0 001.55 1.03h.17a2 2 0 110 4h-.09a1.7 1.7 0 00-1.55 1.03z"/>`
-    ),
+    gear: wrap(`<path d="M4 7h7m4 0h5M4 17h3m4 0h9"/><circle cx="13" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/>`),
     plus: wrap(`<path d="M12 5.5v13M5.5 12h13"/>`),
     trash: wrap(
       `<path d="M4.5 6.5h15M9.5 6.5V5a1.5 1.5 0 011.5-1.5h2A1.5 1.5 0 0114.5 5v1.5"/>` +
@@ -133,6 +130,7 @@
 
   const pageHead = (title, note = "") =>
     `<header class="page-head">
+      <span class="page-eyebrow" aria-hidden="true">ACUMEN / 工作台</span>
       <h1 class="page-title" tabindex="-1">${esc(title)}</h1>
       ${note ? `<p class="page-note">${esc(note)}</p>` : ""}
     </header>`;
@@ -298,14 +296,14 @@
   /* ==================== §7 外壳与导航 ==================== */
 
   const PAGES = [
-    { id: "overview", label: "总览", title: "总览" },
-    { id: "plugins", label: "插件", title: "插件" },
-    { id: "ambient", label: "搭话", title: "搭话" },
-    { id: "logs", label: "日志", title: "日志" },
-    { id: "command", label: "命令", title: "命令" },
+    { id: "overview", label: "总览", title: "总览", hint: "运行与连接" },
+    { id: "plugins", label: "插件", title: "插件", hint: "功能与配置" },
+    { id: "ambient", label: "搭话", title: "搭话", hint: "人格与记忆" },
+    { id: "logs", label: "日志", title: "日志", hint: "实时运行记录" },
+    { id: "command", label: "命令", title: "命令", hint: "本机指令" },
   ];
 
-  const NAV_HINT = "知微 · 工作台";
+  const NAV_HINT = "工作空间";
 
   /** 导航只搭一次：每次重画都会把选中态的过渡打断，看着像闪。 */
   function buildNav() {
@@ -315,9 +313,10 @@
         (page) => `
       <a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
         <span class="nav-indicator">${ICONS[page.id]}</span>
-        <span class="nav-label">${esc(page.label)}</span>
+        <span class="nav-copy"><span class="nav-label">${esc(page.label)}</span>
+        <span class="nav-description">${esc(page.hint)}</span></span>
       </a>`
-      ).join("");
+      ).join("") + `<div class="nav-footer"><span class="nav-footer-mark" aria-hidden="true">${ICONS.command}</span><span>本机控制台<small>知微 ACUMEN</small></span></div>`;
   }
 
   function markNav(active) {
@@ -495,48 +494,44 @@
       : empty("还没有连接；启动日志里找「启动适配器」那几行");
 
     return `
-      ${pageHead("总览", "运行、连接与消息，一眼了解。") }
+      ${pageHead("总览", "从细微处，了解每一次运行。")}
       <div class="overview-grid">
-      <section class="hero">
-        <div class="hero-top"><span class="hero-eyebrow">${esc(NAME)} · ${esc(data.app.version)}</span>
-          <span class="badge badge-on">运行中</span></div>
-        <span class="hero-eyebrow">本次运行时长</span>
-        <div class="hero-figure">
-          <span class="hero-number">${esc(span(data.app.uptime))}</span>
-        </div>
-        <span class="hero-note">启动于 ${esc(data.app.started)}</span>
-        <div class="hero-actions">
-          <a class="btn btn-filled" href="#/logs">${ICONS.logs}查看日志</a>
-          <a class="btn btn-tonal" href="#/plugins">${ICONS.plugins}管理插件</a>
-        </div>
-      </section>
+        <section class="hero" aria-labelledby="runtime-title">
+          <div class="hero-top"><span class="hero-eyebrow">${esc(NAME)} / v${esc(data.app.version)}</span>
+            <span class="badge badge-on">核心运行中</span></div>
+          <h2 class="hero-label" id="runtime-title">本次运行时长</h2>
+          <div class="hero-figure"><span class="hero-number">${esc(span(data.app.uptime))}</span></div>
+          <span class="hero-note">启动于 ${esc(data.app.started)}</span>
+          <div class="hero-actions">
+            <a class="btn btn-filled" href="#/logs">${ICONS.logs}查看日志</a>
+            <a class="btn btn-outline" href="#/plugins">${ICONS.plugins}管理插件</a>
+          </div>
+        </section>
 
-      <section class="card overview-metrics">
-        <div class="section-title">消息与插件<span class="count">打开时更新</span></div>
-        <div class="readings">
-          ${reading("今日消息", num(data.messages.today), "条")}
-          ${reading("今日发言人", num(data.messages.people), "位")}
-          ${reading("近 7 天消息", num(data.messages.week), "条")}
-          ${reading(
-            "插件",
-            `${data.plugins.on}/${data.plugins.total}`,
-            data.plugins.pending ? ` · ${data.plugins.pending} 个待重启` : ""
-          )}
-        </div>
-      </section>
+        <section class="card overview-connections" aria-labelledby="connections-title">
+          <div class="section-heading"><h2 class="section-title" id="connections-title">连接状态</h2>
+            <span class="count">${data.bots.length} 条连接</span></div>
+          <p class="note">当前接入的账号与实现端</p>
+          <div class="list">${bots}</div>
+          <div class="actions"><a class="btn btn-tonal" href="#/settings">${ICONS.gear}管理连接</a></div>
+        </section>
 
-      <section class="card card-notched overview-connections">
-        <div class="section-title">连接<span class="count">${data.bots.length} 条</span></div>
-        <div class="list">${bots}</div>
-      </section>
+        <section class="overview-metrics" aria-labelledby="metrics-title">
+          <div class="section-heading"><h2 class="section-title" id="metrics-title">消息与插件</h2><span class="count">打开或刷新时更新</span></div>
+          <div class="readings">
+            ${reading("今日消息", num(data.messages.today), "条")}
+            ${reading("今日发言人", num(data.messages.people), "位")}
+            ${reading("近 7 天消息", num(data.messages.week), "条")}
+            ${reading("已启用插件", `${data.plugins.on}/${data.plugins.total}`, data.plugins.pending ? ` · ${data.plugins.pending} 个待重启` : "")}
+          </div>
+        </section>
 
-      <section class="card overview-recent">
-        <div class="section-title">最近日志<span class="count">最近 6 行</span></div>
-        <div class="log log-short" id="overview-log"></div>
-        <div class="actions">
-          <a class="btn btn-tonal" href="#/logs">看全部</a>
-        </div>
-      </section>
+        <section class="card overview-recent" aria-labelledby="recent-title">
+          <div class="section-heading"><h2 class="section-title" id="recent-title">最近日志</h2>
+            <a class="btn" href="#/logs">全部日志 ${ICONS.chevron}</a></div>
+          <p class="note">最近 6 行 · 页面可见时每 6 秒更新</p>
+          <div class="log log-short" id="overview-log" tabindex="0" role="region" aria-label="最近日志"></div>
+        </section>
       </div>`;
   }
 
@@ -600,9 +595,10 @@
       .map(
         (plugin) => `
         <div class="row" data-plugin="${esc(plugin.name)}"
-             ${plugin.name === pluginView.selected ? 'aria-selected="true"' : ""}>
+             ${plugin.name === pluginView.selected ? 'data-selected="true"' : ""}>
           <a class="row-hit" href="#/plugins/${encodeURIComponent(plugin.name)}"
-             aria-label="打开 ${esc(plugin.display)}"></a>
+             aria-label="打开 ${esc(plugin.display)}"
+             ${plugin.name === pluginView.selected ? 'aria-current="page"' : ""}></a>
           <div class="row-body">
             <span class="row-title">${esc(plugin.display)}
               <span class="key">${esc(plugin.name)}</span>
@@ -726,8 +722,8 @@
     return `
       ${back ? `<a class="btn btn-tonal back" href="#/plugins">${ICONS.back}回插件列表</a>` : ""}
       <section class="card">
-        <div class="section-title">${named ? esc(plugin.display) : ""}
-          <span class="key">${esc(plugin.name)}</span>${badge(plugin)}</div>
+        <h2 class="section-title">${named ? esc(plugin.display) : ""}
+          <span class="key">${esc(plugin.name)}</span>${badge(plugin)}</h2>
         <p class="note">${esc(plugin.summary)}</p>
         <div class="row row-plain">
           <div class="row-body">
@@ -742,7 +738,7 @@
 
       <div class="split">
         <section class="card">
-          <div class="section-title">配置<span class="count">改了立刻生效</span></div>
+          <h2 class="section-title">配置<span class="count">改了立刻生效</span></h2>
           <div class="panel" data-config-plugin="${esc(plugin.name)}">${rows}</div>
           <div class="actions">
             <button class="btn btn-outline" type="button" data-reset="${esc(plugin.name)}">
@@ -750,10 +746,10 @@
           </div>
         </section>
         <section class="card">
-          <div class="section-title">和默认差在哪</div>
+          <h2 class="section-title">和默认差在哪</h2>
           ${differences}
-          <div class="section-title">指令
-            <span class="count">${plugin.commands.length} 条 · 点一条复制</span></div>
+          <h2 class="section-title">指令
+            <span class="count">${plugin.commands.length} 条 · 点一条复制</span></h2>
           <div class="list">${commands}</div>
         </section>
       </div>`;
@@ -829,7 +825,7 @@
 
   async function paintAmbient() {
     const data = await api("/ambient");
-    if (!data.ready) return empty("搭话插件的目录还没建起来，先让机器人跑一轮");
+    if (!data.ready) return pageHead("搭话", "人格与记忆") + empty("搭话插件的目录还没建起来，先让机器人跑一轮");
 
     const groups = data.memory.length
       ? data.memory.map(renderGroupMemory).join("")
@@ -842,8 +838,8 @@
       ${pageHead("搭话", "人格、档案、记忆与表情包库都在这儿。")}
 
       <section class="card">
-        <div class="section-title">它在群里像谁
-          <span class="count">改完下一轮生效</span></div>
+        <h2 class="section-title">它在群里像谁
+          <span class="count">改完下一轮生效</span></h2>
         <p class="note">人格是它在群里说话的样子，档案是它知道自己是谁。
         两份都直接写进运行目录，旧的那份存成同名的 backup；
         线上那份与仓库里那份是两回事，改这里不动仓库。</p>
@@ -860,14 +856,14 @@
       </section>
 
       <section class="card card-notched">
-        <div class="section-title">记得什么
-          <span class="count">${data.memory.length} 个群</span></div>
+        <h2 class="section-title">记得什么
+          <span class="count">${data.memory.length} 个群</span></h2>
         <div class="list">${groups}</div>
       </section>
 
       <section class="card">
-        <div class="section-title">表情包库
-          <span class="count">${data.stickers.length} 张</span></div>
+        <h2 class="section-title">表情包库
+          <span class="count">${data.stickers.length} 张</span></h2>
         <div class="gallery">${gallery}</div>
       </section>`;
   }
@@ -919,9 +915,9 @@
 
     return `
       <div class="inset">
-        <div class="section-title">群 ${esc(group.group)}
+        <h2 class="section-title">群 ${esc(group.group)}
           <span class="count">${group.people.length} 人 · ${group.notes.length} 条旧事</span>
-        </div>
+        </h2>
         <p class="note">${
           noted.length
             ? `有印象的 ${noted.length} 位${others > 0 ? `，另有 ${others} 位只记得露过面` : ""}`
@@ -1238,7 +1234,7 @@
         </div>
       </section>
       <section class="card">
-        <div class="section-title">回执</div>
+        <h2 class="section-title">回执</h2>
         <div class="code" id="command-output" role="status" aria-live="polite">${
           commandState.output ? esc(commandState.output) : "还没有执行过命令"
         }</div>
@@ -1279,13 +1275,13 @@
       ${pageHead("接入与全局", "这几项不在任何插件的配置里，/ctl 够不着，只在这一页改。")}
 
       <section class="card">
-        <div class="section-title">装到桌面
-          <span class="count">${standalone() ? "已经装上了" : "可选"}</span></div>
+        <h2 class="section-title">装到桌面
+          <span class="count">${standalone() ? "已经装上了" : "可选"}</span></h2>
         ${installBody()}
       </section>
 
       <section class="card">
-        <div class="section-title">阅读密度</div>
+        <h2 class="section-title">阅读密度</h2>
         <p class="note">紧凑字号在一屏呈现更多信息，舒适字号适合长时间阅读。仅保存在当前浏览器。</p>
         <div class="seg" data-connected role="group" aria-label="阅读密度">
           ${[["compact", "紧凑"], ["comfortable", "舒适"]].map(([value, label]) => `<button class="seg-item" type="button" data-density-choice="${value}" aria-pressed="${(document.documentElement.dataset.density || "compact") === value}">${label}</button>`).join("")}
@@ -1293,8 +1289,8 @@
       </section>
 
       <section class="card">
-        <div class="section-title">连接实现端
-          <span class="count">${data.bots.length} 条 · 改完下次启动生效</span></div>
+        <h2 class="section-title">连接实现端
+          <span class="count">${data.bots.length} 条 · 改完下次启动生效</span></h2>
         <p class="note">知微自己不直接连 QQ：它连的是实现端（本机自建的那套在
         <span class="key">http://127.0.0.1:3001</span>）。这一份是机器人的「接在哪儿」，
         与群里的指令、插件配置都不相干。</p>
@@ -1305,7 +1301,7 @@
       </section>
 
       <section class="card">
-        <div class="section-title">全局</div>
+        <h2 class="section-title">全局</h2>
         <form id="global-form" class="panel">
           <div class="kv">
             <span class="kv-key">command_prefix</span>
@@ -1592,8 +1588,10 @@
     const seq = ++detailSeq;
     pluginView.selected = name;
     for (const row of document.querySelectorAll("#plugin-list [data-plugin]")) {
-      if (row.dataset.plugin === name) row.setAttribute("aria-selected", "true");
-      else row.removeAttribute("aria-selected");
+      const selected = row.dataset.plugin === name;
+      row.toggleAttribute("data-selected", selected);
+      if (selected) row.querySelector("a").setAttribute("aria-current", "page");
+      else row.querySelector("a").removeAttribute("aria-current");
     }
     const pane = $("#plugin-detail");
     if (!pane) return;

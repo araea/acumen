@@ -32,8 +32,8 @@
      Carbon          补充 Web 与响应式、以及信息密度高的界面：断点的分法、结构化
                      长表格、键盘可达的滚动区域。
      Miuix           只做视觉精修，不引入任何规则：线性图标的粗细与圆头圆角
-                     （在 app.js 的 wrap() 里，stroke 1.9 + round）、数显那紧
-                     一档的行高（本文件的 --zy-line-figure）。
+                     （在 app.js 的 wrap() 里，stroke 1.8 + round）、数显的光学
+                     行高（本文件的 --zy-line-figure）。
 
    冲突时按下表从上往下裁决，**次序本身就是规范**：
 
@@ -87,9 +87,9 @@
      是字阶的性格，收字号不该把性格一起收掉。字距只有 label-medium 一处跟着收
      （0.04em → 0.03em）：这一级在界面上全是中文小标签，按拉丁定的 0.04em
      在中文上散得开。 */
-  --md-type-display-small-size: 32px;
+  --md-type-display-small-size: 40px;
   --md-type-headline-large-size: 28px;
-  --md-type-headline-medium-size: 24px;
+  --md-type-headline-medium-size: 28px;
   --md-type-headline-small-size: 20px;
   --md-type-title-large-size: 18px;
   --md-type-title-medium-size: 15px;
@@ -108,13 +108,12 @@
   --md-type-input-size: 16px;
 
   /* —— §2 外壳 ——
-     导航条 64px 是 M3 Expressive 的高度（flexible navigation bar，旧的 80dp
-     baseline 官方已标 Not recommended）；导航轨 96px 同理（collapsed navigation
-     rail）。抽屉 216px 是导航轨再加一列文字。 */
-  --zy-bar-height: 60px;
-  --zy-nav-height: 64px;
+     产品取值：72px 顶/底栏、96px 导航轨、232px 桌面侧栏。
+     保留 M3E 的自适应导航关系，尺寸按中文标签与 Web 内容密度制定。 */
+  --zy-bar-height: 72px;
+  --zy-nav-height: 72px;
   --zy-rail-width: 96px;
-  --zy-drawer-width: 216px;
+  --zy-drawer-width: 232px;
   --zy-page-width: 960px;
   --zy-page-wide: 1200px;
 
@@ -154,7 +153,15 @@
   /* —— §2 排版 ——
      数显（首屏那个大数字、读数格里的值）的行高。字阶给的是正文行高，一行数字
      要压得更紧才不像被撑开。Miuix 只在这一处出过手。 */
-  --zy-line-figure: 1.12;
+  --zy-line-figure: 1.2;
+  --zy-brand-size: 36px;
+  --zy-hero-mark: 160px;
+  --zy-hero-height: 264px;
+  --zy-tracking-eyebrow: 0.14em;
+  --md-shape-card: 24px;
+  --md-shape-hero: 36px;
+  --zy-figure-mobile: 32px;
+  --md-font-plain: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans CJK SC", "PingFang SC", Roboto, sans-serif;
 
   /* —— §2 状态层 —— M3 的 8% 与 12% 两档，按压多一层 */
   --zy-state-hover: 0.08;

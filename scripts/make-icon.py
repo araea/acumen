@@ -1,67 +1,16 @@
 #!/usr/bin/env python3
-"""知微那个标记：一处几何，一组产物。
+"""生成知微的「开环 / 焦点」标记，SVG 与所有 PNG 共用几何。
 
-—— 这枚标记是什么 ——
+108 网格：270° 开环是观察的边界，中心是被理解的细节，右上圆点是新的发现。
+开环半径 25、笔画 8，圆头；中心点 7，右上焦点 5.5。16px 下笔画仍超过 1px。
+图形收在半径 33 的安全圆中。any 自带圆角；maskable 与 Apple 铺满不透明背景，
+由系统裁切；monochrome 只有白色前景。平台规范优先于品牌外形。
 
-**一环一点**。环是开阔的那个圈，点是圈里最小的那一处：视线先进环、再落到点上，
-而认识一个人正好是从那一点开始的。取《周易·系辞下》「君子知微知彰」——从已经显
-出来的，看出还没说出口的。
-
-图元只有两只圆：外环与圆心那枚点，环的外径比点的直径是 2.7 : 1。这个比例是收过的
-（先在 256px 上比过四组），再大就成了「圆里一个圆」，再小在 24px 上就没了。
-
-2026-09-22 只动了**环宽**：6.5 → 8。理由是它在最小那一档会翻个面——16px 的标签页
-图标上，环宽 6.5 折下来是 0.96 个设备像素，比一个像素还细，抗锯齿把它摊成灰的；
-而点在同一档上有 3.6px。于是「环先入眼、点再落到眼里」这个次序在小尺寸上反了，
-先看见的成了那粒点。8 折下来 1.19px，环站得住。
-
-环宽也不许再往上加，有一条约束：**环宽不超过「环内缘与点之间那道空」的三分之二**
-（空气比笔画宽，两个图元才不糊成一个）。现在环宽 8、那道空 12，8/12 = 0.67 正好卡住。
-想加粗环就得同时收点，而点已经收到过界了（再小在 24px 上就没了）——所以这里到顶了。
-
-接入层那个模块（satori-qq / 知弦）的标记也是几何图形而不是「弦」字，两枚放在一起是
-一套笔画语言：白、等宽、圆头、旋转 180° 自重合。上一版的标记是「知言」那个「言」字；
-名字换掉之后，把标记继续押在一个已经不对的概念上没有道理。
-
-坐标只写在这里一遍，产物都是它的输出：
-
-    res/console/icon.svg                网页标签页、清单里的矢量那一项、页头那个小标
-    res/console/icon-192.png            装到桌面用的小图（Android 桌面、浏览器）
-    res/console/icon-512.png            装到桌面用的大图
-    res/console/icon-maskable-512.png   交给系统裁形状的那一张：底色铺满整个画布
-    res/console/icon-monochrome.svg     单色层：透明的底 + 纯白的图形
-    res/console/icon-monochrome-512.png 单色层的位图版
-    res/console/apple-touch-icon.png    iOS 加到主屏幕用的那一张（180，不透明）
-
-跑法：python3 scripts/make-icon.py（无第三方依赖，只在改图标时跑一次）。
-
-—— 三层与四个尺寸的依据 ——
-
-**Android 自适应图标（Adaptive Icons）**：画布 108×108，系统用自己的形状去裁
-（圆、方、squircle、水滴……），裁掉的是画布的角。所以：
-
-- **可见区**是正中 72×72——裁完之后一定露出来的是这一块；
-- **安全区**是正中直径 66 的圆——任何形状的遮罩都不会切到圆里的东西。
-
-标记的外缘因此收在半径 32 上，比安全半径 33 还留一点。上一版那个「言」字的
-外接框是 60×64，右下角离中心 45.7——圆形遮罩一刀下去，口的那两个下角就没了。
-这是 2026-09-16 那次重做最实质的一处修正，`main()` 里那条断言一直盯着它。
-
-**Material Design 图标绘制**：图形画在画布正中，笔画宽度一致、端点与拐角都是圆的，
-比例按光学修正定（点在视觉上要略大于它的几何直径才不显小），不是照抄坐标。
-
-**Android 主题图标（Themed Icons，Android 13+）**：单独的 monochrome 层，透明的底 +
-纯白的图形，原生平台可按壁纸取色。这一层不许有第二颜色、不许有阴影。
-本仓库输出的是 Web App manifest 的 monochrome 图像，实际着色依赖浏览器/启动器，
-不是 Android 原生 AdaptiveIconDrawable 资源；原生封装需要另行提供分层资源。
-
-**Apple 的主屏图标（HIG）**：铺满、不透明、**不自己画圆角**——iOS 会拿自己的连续
-圆角去裁，画了圆角就会被裁出两层边。`apple-touch-icon.png` 因此与遮罩版同一套几何。
-
-普通图标（any）那一份自带圆角：它不会被任何遮罩裁，摆在标签页与桌面书签里就是它
-自己，圆角半径取边长的 22.37%，与 iOS 的连续圆角同一个比例，两处才是一张脸。
+此文件编辑的是程序定义的矢量图元；PNG 为同源导出，无第三方依赖。
+运行：python3 scripts/make-icon.py。
 """
 
+import math
 import struct
 import zlib
 from pathlib import Path
@@ -78,8 +27,8 @@ CORNER = 0.2237 * CANVAS
 # 底色。主色取自 res/cards/m3e.css 的 --md-sys-color-primary（控制台那套方案，
 # 松绿）。图标是脸面，跟主题走会变成两张脸，所以这里钉死一个值：同色相的一段
 # 斜向渐变，亮端在上左、暗端在下右。比一整块平涂多一点纵深，也没有多出第二个色相。
-SHADE_LIGHT = (0x2B, 0x7C, 0x64)
-SHADE_DARK = (0x14, 0x43, 0x37)
+SHADE_LIGHT = (0x30, 0x70, 0x50)
+SHADE_DARK = (0x16, 0x41, 0x32)
 
 # 图形用白。写成一个十六进制串，不再往 SVG 里塞元组——旧版就是这里把
 # `fill="(255, 255, 255)"` 写进了文件，浏览器按非法值处理、回落成黑色，
@@ -87,19 +36,14 @@ SHADE_DARK = (0x14, 0x43, 0x37)
 ON_SHADE = (0xFF, 0xFF, 0xFF)
 ON_SHADE_HEX = "#%02x%02x%02x" % ON_SHADE
 
-# —— 标记 ——
-# 三个数是一组，判据写在文件头：外径收在安全半径里、环宽在 16px 上要够一个设备
-# 像素、环宽不超过环与点之间那道空的三分之二。改之前先读那段。
-RING_OUTER = 32.0
+# —— 标记：唯一几何源 ——
+RING_OUTER = 29.0
 RING_STROKE = 8.0
-DOT_RADIUS = 12.0
-
-# 图元表。(kind, cx, cy, …)
-#   ring —— 一只圆环，给外半径与内半径
-#   disk —— 一枚实心圆
+DOT_RADIUS = 7.0
 SHAPES = [
-    ("ring", CENTER, CENTER, RING_OUTER, RING_OUTER - RING_STROKE),
+    ("arc", CENTER, CENTER, RING_OUTER, RING_OUTER - RING_STROKE),
     ("disk", CENTER, CENTER, DOT_RADIUS),
+    ("disk", 72.0, 36.0, 5.5),
 ]
 
 SUBSAMPLES = 4
@@ -131,16 +75,21 @@ def in_ring(px: float, py: float, cx: float, cy: float, outer: float, inner: flo
 
 
 def shape_contains(shape, px: float, py: float) -> bool:
-    if shape[0] == "ring":
+    if shape[0] == "arc":
         _, cx, cy, outer, inner = shape
-        return in_ring(px, py, cx, cy, outer, inner)
+        radius, cap = (outer + inner) / 2, (outer - inner) / 2
+        # 屏幕坐标顺时针：右 → 下 → 左 → 上，右上留开口。
+        angle = math.atan2(py - cy, px - cx) % (2 * math.pi)
+        return (angle <= 1.5 * math.pi and in_ring(px, py, cx, cy, outer, inner)
+                or in_disk(px, py, cx + radius, cy, cap)
+                or in_disk(px, py, cx, cy - radius, cap))
     _, cx, cy, r = shape
     return in_disk(px, py, cx, cy, r)
 
 
 MARK_BBOX = (
-    min(s[1] - (s[3] if s[0] == "ring" else s[3]) for s in SHAPES),
-    min(s[2] - (s[3] if s[0] == "ring" else s[3]) for s in SHAPES),
+    min(s[1] - s[3] for s in SHAPES),
+    min(s[2] - s[3] for s in SHAPES),
     max(s[1] + s[3] for s in SHAPES),
     max(s[2] + s[3] for s in SHAPES),
 )
@@ -234,11 +183,12 @@ def ink_radius() -> float:
 def mark_svg(indent: str) -> str:
     parts = []
     for shape in SHAPES:
-        if shape[0] == "ring":
+        if shape[0] == "arc":
             _, cx, cy, outer, inner = shape
+            r = (outer + inner) / 2
             parts.append(
-                f'{indent}<circle cx="{cx:g}" cy="{cy:g}" r="{(outer + inner) / 2:g}" '
-                f'fill="none" stroke="{ON_SHADE_HEX}" stroke-width="{outer - inner:g}"/>'
+                f'{indent}<path d="M{cx+r:g} {cy:g} A{r:g} {r:g} 0 1 1 {cx:g} {cy-r:g}" '
+                f'fill="none" stroke="{ON_SHADE_HEX}" stroke-width="{outer-inner:g}" stroke-linecap="round"/>'
             )
         else:
             _, cx, cy, r = shape
@@ -316,7 +266,7 @@ def check_geometry() -> tuple:
     assert gap > 0, f"环与点叠在一起了：那道空只有 {gap:.1f}"
     assert RING_STROKE <= gap * 2 / 3, (
         f"环宽 {RING_STROKE:g} 超过了「环内缘与点之间那道空」{gap:.1f} 的三分之二——"
-        f"两个图元会糊成一个；要么收环、要么收点，而点已经收到过界了"
+        f"两个图元会糊成一个；要么收环、要么收点，并保留最小尺寸的可辨识性"
     )
     return radius, stroke, gap
 
