@@ -1,0 +1,195 @@
+/* ============================================================================
+   知微 · 界面令牌层
+   ----------------------------------------------------------------------------
+   这一层只做一件事：给界面这一份定值。系统层（res/cards/m3e.css）给的是卡片图
+   与界面共用的一套，界面比卡片图多出来的那些收在这里。
+
+   三层与各自的分工：
+
+     res/cards/m3e.css       系统层  配色（**唯一出现颜色字面量的地方**）、字阶、
+                                     形状级、高度级、间距级、字族。卡片图与界面共用。
+     res/console/tokens.css  令牌层  界面这一份的取值：界面字阶档、外壳与组件几何、
+                                     状态层、动效。**只定义自定义属性**。
+     res/console/app.css     版式层  只写选择器与 var()。它出现的每一个视觉值都来自
+                                     上面两层，自己不再长出新令牌。
+
+   三段拼接的顺序是系统层 → 令牌层 → 版式层（见 `src/plugins/console/assets.rs`
+   的 `stylesheet()`）：越靠下越具体，所以这一层可以覆盖系统层的取值。
+
+   —— 为什么单起一层 ——
+   改字号、调外壳高度、换运动曲线都只在这一个文件里；读样式的人不必在两千行规则
+   中间找散落的赋值。四条由测试盯着：引用的令牌必存在、版式层不许新造令牌、这一层
+   不许出现颜色字面量、这一层除了自定义属性不写别的（`assets.rs` 的四条）。
+
+   —— 四个设计体系在这里的分工与裁决次序 ——
+   这是一份**统一的**设计语言，不是四套东西各管一块。来源只决定「这一处为什么长
+   这样」，不意味着某处可以自带一套值。
+
+     M3 Expressive   核心视觉语言：配色角色、字阶、形状级、高度级、状态层、
+                     两条运动轨道、形状变形。这一层的骨架。
+     Apple HIG       交互与平台体验：安全区、状态栏配色、原生 dialog 的焦点陷阱
+                     与返回键、iOS 那份图标不透明且不自己画圆角、触控目标 ≥48px。
+     Carbon          补充 Web 与响应式、以及信息密度高的界面：断点的分法、结构化
+                     长表格、键盘可达的滚动区域。
+     Miuix           只做视觉精修，不引入任何规则：线性图标的粗细与圆头圆角
+                     （在 app.js 的 wrap() 里，stroke 1.9 + round）、数显那紧
+                     一档的行高（本文件的 --zy-line-figure）。
+
+   冲突时按下表从上往下裁决，**次序本身就是规范**：
+
+     1. 平台原生规范      平台说了算的地方不拿 M3 去覆盖；
+     2. 可用性与无障碍    WCAG 2.2 AA 是下限不是选项；
+     3. 产品一致性        同一个角色在两处必须指同一个令牌（界面与卡片图）；
+     4. M3 Expressive     核心视觉语言；
+     5. Carbon            响应式与复杂信息界面；
+     6. Miuix             视觉精修。
+
+   落地方式只有一条：**上层的取舍写进下层的令牌，下层不再自带一套值**。
+
+   —— 令牌表 ——
+   §1 取系统层（m3e.css）的，这里只列名字，值在那一份里：
+     配色  --md-sys-color-{surface, surface-dim, surface-container[-low|-high],
+           on-surface, on-surface-variant, on-surface-faint, outline, outline-variant,
+           primary, on-primary, primary-container, on-primary-container, primary-tint,
+           secondary-container, on-secondary-container, error, on-error,
+           error-container, on-error-container, success-container,
+           on-success-container, warning-container, on-warning-container,
+           inverse-surface, on-inverse-surface, scrim, log-surface, log-text,
+           log-muted, log-warning, log-error}
+     字阶  --md-type-<角色>-{size,line,weight,track}，角色是 M3 那五族
+           （display / headline / title / body / label）
+     形状  --md-shape-{none,xs,s,m,l,xl,2xl,full}、--md-corner-notched(-end)
+     高度  --md-elevation-{0,1,2,3}
+     间距  --md-space-{1..9}
+     字体  --md-font-{plain,serif,mono,display}
+   §2 本层定义的，分六组：
+     字阶档  十三级 --md-type-* 的字号与行高（见下）
+     外壳    --zy-bar-height / --zy-nav-height / --zy-rail-width / --zy-drawer-width
+             / --zy-page-width / --zy-page-wide / --zy-safe-top / --zy-safe-bottom
+             / --zy-bar / --zy-nav（后两个是含安全区的实际高度）
+     尺寸    --zy-hairline / --zy-touch(48) / --zy-icon / --zy-icon-bar / --zy-icon-nav
+             / --zy-avatar / --zy-thumb / --zy-switch-width / --zy-switch-track
+             / --zy-knob / --zy-knob-travel / --zy-nav-indicator / --zy-nav-indicator-height
+             / --zy-log-height / --zy-log-time / --zy-log-level / --zy-log-target
+     排版    --zy-line-figure（数显行高）
+     其他    --zy-gap-tight / --zy-dot / --zy-accent / --zy-border-strong
+             / --zy-skeleton / --zy-skeleton-lg
+     状态与动效  --zy-state-hover / --zy-state-press / --zy-duration-* / --zy-ease-*
+   §3 由版式档覆盖的（值写在 app.css，那里才有断点）：--zy-nav（≥600px 归零）、
+      --zy-page-width（宽屏取 --zy-page-wide）。**版式层只覆盖这两个，不新造名字。**
+   ========================================================================== */
+
+:root {
+  /* —— §2 界面字阶 ——
+     m3e.css 的字阶是按卡片图定的（中文字面比拉丁大三到四成，放大一档半）。
+     界面是「一屏里尽量多放信息」的场合，用同一支字阶会偏大，所以在这一层整体
+     收一档。**只覆盖这里列出的级**，级与级之间的比例关系不动，字重不动——那些
+     是字阶的性格，收字号不该把性格一起收掉。字距只有 label-medium 一处跟着收
+     （0.04em → 0.03em）：这一级在界面上全是中文小标签，按拉丁定的 0.04em
+     在中文上散得开。 */
+  --md-type-display-small-size: 32px;
+  --md-type-headline-large-size: 28px;
+  --md-type-headline-medium-size: 24px;
+  --md-type-headline-small-size: 20px;
+  --md-type-title-large-size: 18px;
+  --md-type-title-medium-size: 15px;
+  --md-type-title-small-size: 14px;
+  --md-type-body-large-size: 14px;
+  --md-type-body-large-line: 1.62;
+  --md-type-body-medium-size: 13px;
+  --md-type-body-medium-line: 1.62;
+  --md-type-body-small-size: 12px;
+  --md-type-body-small-line: 1.6;
+  --md-type-label-large-size: 13px;
+  --md-type-label-small-size: 11px;
+  --md-type-label-medium-size: 12px;
+  --md-type-label-medium-track: 0.03em;
+  /* 输入框在手机上的下限，理由见 app.css §H 的 599 那一档 */
+  --md-type-input-size: 16px;
+
+  /* —— §2 外壳 ——
+     导航条 64px 是 M3 Expressive 的高度（flexible navigation bar，旧的 80dp
+     baseline 官方已标 Not recommended）；导航轨 96px 同理（collapsed navigation
+     rail）。抽屉 216px 是导航轨再加一列文字。 */
+  --zy-bar-height: 60px;
+  --zy-nav-height: 64px;
+  --zy-rail-width: 96px;
+  --zy-drawer-width: 216px;
+  --zy-page-width: 960px;
+  --zy-page-wide: 1200px;
+
+  /* 刘海与手势条：非全面屏上这两项是 0，装了桌面图标之后才起作用 */
+  --zy-safe-top: env(safe-area-inset-top, 0px);
+  --zy-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --zy-bar: calc(var(--zy-bar-height) + var(--zy-safe-top));
+  --zy-nav: calc(var(--zy-nav-height) + var(--zy-safe-bottom));
+
+  /* —— §2 尺寸 —— 复用的结构值。它们不是视觉语言，是版面 */
+  --zy-hairline: 1px;
+  --zy-touch: 48px;
+  --zy-switch-width: 52px;
+  --zy-switch-track: 32px;
+  --zy-knob: 16px;
+  --zy-knob-travel: 20px;
+  --zy-nav-indicator: 56px;
+  --zy-nav-indicator-height: 32px;
+  --zy-log-height: 62dvh;
+  --zy-log-time: 62px;
+  --zy-log-level: 40px;
+  --zy-log-target: 18ch;
+  --zy-icon: 20px;
+  --zy-icon-bar: 22px;
+  --zy-icon-nav: 24px;
+  --zy-avatar: 38px;
+  --zy-thumb: 76px;
+
+  /* —— §2 其他 —— 组件里出现两次以上的小几何 */
+  --zy-gap-tight: 2px;
+  --zy-dot: 6px;
+  --zy-accent: 4px;
+  --zy-border-strong: 2px;
+  --zy-skeleton: 18px;
+  --zy-skeleton-lg: 88px;
+
+  /* —— §2 排版 ——
+     数显（首屏那个大数字、读数格里的值）的行高。字阶给的是正文行高，一行数字
+     要压得更紧才不像被撑开。Miuix 只在这一处出过手。 */
+  --zy-line-figure: 1.12;
+
+  /* —— §2 状态层 —— M3 的 8% 与 12% 两档，按压多一层 */
+  --zy-state-hover: 0.08;
+  --zy-state-press: 0.12;
+
+  /* —— §2 动效 ——
+     M3 Expressive 把运动分两条轨道，两条是**四种不同的曲线**，不是同一条换个
+     时长：空间（位置、尺寸、形状）允许过冲，效果（颜色、透明度）阻尼恒为 1、
+     不过冲。下面四个曲线是官方给的「不能用弹簧时的等价曲线」，数值取自
+     m3.material.io/styles/motion/overview/specs 与 Compose 的
+     ExpressiveMotionTokens.kt（spatial 默认 damping 0.8 / stiffness 380，
+     effects 默认 1.0 / 1600）。
+
+     时长也跟着分：效果运动 150—200ms，空间运动 350—500ms。空间运动看着长，
+     但那条曲线前段很快，手感是「一下子到位」而不是「慢慢挪过去」。 */
+  --zy-duration-fast: 150ms;
+  --zy-duration-short: 200ms;
+  --zy-duration-medium: 350ms;
+  --zy-duration-long: 500ms;
+  --zy-ease-effects: cubic-bezier(0.31, 0.94, 0.34, 1);
+  --zy-ease-effects-slow: cubic-bezier(0.34, 0.8, 0.34, 1);
+  --zy-ease-spatial: cubic-bezier(0.42, 1.67, 0.21, 0.9);
+  --zy-ease-spatial-slow: cubic-bezier(0.38, 1.21, 0.22, 1);
+  /* 只给那些「一直在动」的东西（加载指示的旋转、骨架的扫光）。 */
+  --zy-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+/* 第二档字阶：舒适档只放大正文档与标签档，标题档不动（一屏放得下的行数才是
+   这一档要换的东西）。两档共用所有组件，舒适档不缩小触控目标。 */
+:root[data-density="comfortable"] {
+  --md-type-title-medium-size: 17px;
+  --md-type-title-small-size: 15px;
+  --md-type-body-large-size: 16px;
+  --md-type-body-medium-size: 15px;
+  --md-type-body-small-size: 14px;
+  --md-type-label-large-size: 14px;
+  --md-type-label-medium-size: 13px;
+}

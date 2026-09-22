@@ -168,6 +168,14 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
   `const CSS`。**只写「摆在哪儿」，不许出现色值、字号、圆角、阴影的字面量**，
   一律 `var(--md-*)` 取令牌。写了就是绕过令牌直接写字面量。
 
+控制台那一份是同一套系统层，多出一层令牌，共三层（`src/plugins/console/assets.rs`
+的 `stylesheet()` 按这个顺序拼）：系统层 `m3e.css` → 界面令牌层
+`res/console/tokens.css` → 版式层 `res/console/app.css`。中间那层是界面比卡片图
+多出来的取值（字阶的界面档、外壳与组件几何、状态层、动效曲线），**只定义自定义
+属性**；版式层因此只写选择器与 `var()`，一条令牌定义都没有。四条单测钉着这个
+形状：`the_layout_layer_adds_no_token`、`every_token_a_rule_uses_is_defined`、
+`the_token_layer_holds_no_colour`、`the_token_layer_only_declares_custom_properties`。
+
 三条与 M3 的刻意偏离（字阶按中文字面放大、字重只用 500/600/700/800 四档、
 阴影不透明度收回到纸面量级）与「为什么不引外部字体」都写在 `m3e.css` 的开头。
 

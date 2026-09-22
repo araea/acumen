@@ -70,7 +70,11 @@ const server = http.createServer(async (req, res) => {
   const assets = { '/': ['res/console/index.html','text/html'], '/app.js': ['res/console/app.js','text/javascript'], '/app.css': ['res/console/app.css','text/css'], '/icon.svg': ['res/console/icon.svg','image/svg+xml'], '/manifest.webmanifest': ['res/console/manifest.webmanifest','application/manifest+json'] };
   if (!assets[url.pathname]) { res.writeHead(404); return res.end(); }
   const [file, type] = assets[url.pathname]; res.writeHead(200, { 'Content-Type': type });
-  if (url.pathname === '/app.css') res.write(fs.readFileSync(path.join(root, 'res/cards/m3e.css')));
+  // 与 assets.rs 的 stylesheet() 同一顺序：系统层 → 令牌层 → 版式层。
+  if (url.pathname === '/app.css') {
+    res.write(fs.readFileSync(path.join(root, 'res/cards/m3e.css')));
+    res.write(fs.readFileSync(path.join(root, 'res/console/tokens.css')));
+  }
   res.end(fs.readFileSync(path.join(root, file)));
 });
 let session, driver;

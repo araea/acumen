@@ -10,6 +10,15 @@
 图元只有两只圆：外环与圆心那枚点，环的外径比点的直径是 2.7 : 1。这个比例是收过的
 （先在 256px 上比过四组），再大就成了「圆里一个圆」，再小在 24px 上就没了。
 
+2026-09-22 只动了**环宽**：6.5 → 8。理由是它在最小那一档会翻个面——16px 的标签页
+图标上，环宽 6.5 折下来是 0.96 个设备像素，比一个像素还细，抗锯齿把它摊成灰的；
+而点在同一档上有 3.6px。于是「环先入眼、点再落到眼里」这个次序在小尺寸上反了，
+先看见的成了那粒点。8 折下来 1.19px，环站得住。
+
+环宽也不许再往上加，有一条约束：**环宽不超过「环内缘与点之间那道空」的三分之二**
+（空气比笔画宽，两个图元才不糊成一个）。现在环宽 8、那道空 12，8/12 = 0.67 正好卡住。
+想加粗环就得同时收点，而点已经收到过界了（再小在 24px 上就没了）——所以这里到顶了。
+
 接入层那个模块（satori-qq / 知弦）的标记也是几何图形而不是「弦」字，两枚放在一起是
 一套笔画语言：白、等宽、圆头、旋转 180° 自重合。上一版的标记是「知言」那个「言」字；
 名字换掉之后，把标记继续押在一个已经不对的概念上没有道理。
@@ -36,7 +45,7 @@
 
 标记的外缘因此收在半径 32 上，比安全半径 33 还留一点。上一版那个「言」字的
 外接框是 60×64，右下角离中心 45.7——圆形遮罩一刀下去，口的那两个下角就没了。
-这是本次重做最实质的一处修正，`main()` 里那条断言一直盯着它。
+这是 2026-09-16 那次重做最实质的一处修正，`main()` 里那条断言一直盯着它。
 
 **Material Design 图标绘制**：图形画在画布正中，笔画宽度一致、端点与拐角都是圆的，
 比例按光学修正定（点在视觉上要略大于它的几何直径才不显小），不是照抄坐标。
@@ -79,8 +88,10 @@ ON_SHADE = (0xFF, 0xFF, 0xFF)
 ON_SHADE_HEX = "#%02x%02x%02x" % ON_SHADE
 
 # —— 标记 ——
+# 三个数是一组，判据写在文件头：外径收在安全半径里、环宽在 16px 上要够一个设备
+# 像素、环宽不超过环与点之间那道空的三分之二。改之前先读那段。
 RING_OUTER = 32.0
-RING_STROKE = 6.5
+RING_STROKE = 8.0
 DOT_RADIUS = 12.0
 
 # 图元表。(kind, cx, cy, …)
@@ -285,19 +296,41 @@ def write_pngs() -> None:
         print(f"已写入 {target.relative_to(ROOT)}（{size}×{size}，{target.stat().st_size} 字节）")
 
 
-def main() -> None:
-    # 应用名与图标的字面只在 `src/plugins/console/assets.rs` 那一处是权威；
-    # 这里只为生成物上的 aria-label 与 <title> 取一次，改名前先改那一处。
-    name = "知微"
-    SYMBOLS["name"] = name
+# 最小那一档：标签页图标。三个数的第三条判据按它算。
+SMALLEST = 16.0
+
+
+def check_geometry() -> tuple:
+    """三条判据，改坐标时先在这里撞一次。返回打印用的那几个数。"""
     radius = ink_radius()
     assert radius < SAFE / 2, (
         f"标记超出了安全区：最远的一处离中心 {radius:.1f}，"
         f"安全圆半径是 {SAFE / 2:.1f}——把环收小一档"
     )
+    stroke = RING_STROKE * SMALLEST / CANVAS
+    assert stroke >= 1.0, (
+        f"环宽在 {SMALLEST:g}px 上只有 {stroke:.2f} 个设备像素，比一个像素还细——"
+        f"环会被抗锯齿摊灰，比里面的点还轻，视线次序就反了"
+    )
+    gap = RING_OUTER - RING_STROKE - DOT_RADIUS
+    assert gap > 0, f"环与点叠在一起了：那道空只有 {gap:.1f}"
+    assert RING_STROKE <= gap * 2 / 3, (
+        f"环宽 {RING_STROKE:g} 超过了「环内缘与点之间那道空」{gap:.1f} 的三分之二——"
+        f"两个图元会糊成一个；要么收环、要么收点，而点已经收到过界了"
+    )
+    return radius, stroke, gap
+
+
+def main() -> None:
+    # 应用名与图标的字面只在 `src/plugins/console/assets.rs` 那一处是权威；
+    # 这里只为生成物上的 aria-label 与 <title> 取一次，改名前先改那一处。
+    name = "知微"
+    SYMBOLS["name"] = name
+    radius, stroke, gap = check_geometry()
     print(
         f"标记外缘 {radius:.1f}（可见区半径 {VISIBLE / 2:.1f}，安全区半径 {SAFE / 2:.1f}）；"
-        f"环 {RING_OUTER:g}/{RING_STROKE:g}，点 {DOT_RADIUS:g}"
+        f"环 {RING_OUTER:g}/{RING_STROKE:g}，点 {DOT_RADIUS:g}；"
+        f"{SMALLEST:g}px 上环宽 {stroke:.2f}px、那道空 {gap * SMALLEST / CANVAS:.2f}px"
     )
     write_svg()
     write_pngs()

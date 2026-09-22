@@ -4,9 +4,11 @@
 //! （见 `res/cards/m3e.css` 的文件头）：一个跑在别人机器上的机器人，界面不该
 //! 依赖任何一台服务器的可达性。
 //!
-//! 样式分两层，顺序不能换：`res/cards/m3e.css` 是系统层（令牌与静态基元，
-//! 五张卡片图共用），`res/console/app.css` 是界面的版式层与交互基元，只写
-//! 「摆在哪儿」与「按下去会怎样」，色值字号一律 `var()` 取令牌。
+//! 样式分三层，顺序不能换：`res/cards/m3e.css` 是系统层（令牌与静态基元，
+//! 卡片图共用），`res/console/tokens.css` 是界面的令牌层（界面这一份的取值），
+//! `res/console/app.css` 是版式层与交互基元，只写「摆在哪儿」与「按下去会怎样」。
+//! 越靠下越具体，所以令牌层能覆盖系统层、版式层能覆盖令牌层。三条各有一个
+//! 进程内的检查盯着，见本文件末尾那组 `layer_*` 测试。
 //!
 //! 图标有七份产物，一处几何（`scripts/make-icon.py`）：
 //!
@@ -25,6 +27,7 @@ use axum::response::{IntoResponse, Response};
 pub(crate) const APP_NAME: &str = "知微";
 
 const INDEX: &[u8] = include_bytes!("../../../res/console/index.html");
+const TOKENS_CSS: &[u8] = include_bytes!("../../../res/console/tokens.css");
 const APP_CSS: &[u8] = include_bytes!("../../../res/console/app.css");
 const APP_JS: &[u8] = include_bytes!("../../../res/console/app.js");
 const ICON: &[u8] = include_bytes!("../../../res/console/icon.svg");
@@ -36,11 +39,13 @@ const ICON_MONO_512: &[u8] = include_bytes!("../../../res/console/icon-monochrom
 const APPLE_ICON: &[u8] = include_bytes!("../../../res/console/apple-touch-icon.png");
 const MANIFEST: &[u8] = include_bytes!("../../../res/console/manifest.webmanifest");
 
-/// 系统层 + 版式层拼好之后的那一份。只拼一次，之后每次请求都拿同一片内存。
+/// 三层拼好之后的那一份。只拼一次，之后每次请求都拿同一片内存。
 fn stylesheet() -> &'static [u8] {
     static SHEET: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     SHEET.get_or_init(|| {
         let mut sheet = crate::render::web::DESIGN_SYSTEM.as_bytes().to_vec();
+        sheet.push(b'\n');
+        sheet.extend_from_slice(TOKENS_CSS);
         sheet.push(b'\n');
         sheet.extend_from_slice(APP_CSS);
         sheet
@@ -211,6 +216,139 @@ mod tests {
         }
         out.push_str(rest);
         out
+    }
+
+    /// 扫出一段样式里的令牌名。定义看后面跟的是不是 `:`，引用看是不是 `)` 或 `,`
+    /// （`var(--x, 兜底)` 这种写法目前没有，认一下免得以后踩空）。
+    fn scan_tokens(sheet: &str, definition: bool) -> Vec<&str> {
+        let bytes = sheet.as_bytes();
+        let mut found = Vec::new();
+        let mut i = 0;
+        while i + 1 < bytes.len() {
+            if bytes[i] != b'-' || bytes[i + 1] != b'-' {
+                i += 1;
+                continue;
+            }
+            let mut end = i + 2;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_lowercase()
+                    || bytes[end].is_ascii_digit()
+                    || bytes[end] == b'-')
+            {
+                end += 1;
+            }
+            if end == i + 2 {
+                i += 1;
+                continue;
+            }
+            let mut next = end;
+            while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                next += 1;
+            }
+            let hit = match bytes.get(next) {
+                Some(b':') => definition,
+                Some(b')' | b',') => !definition,
+                _ => false,
+            };
+            if hit {
+                found.push(&sheet[i..end]);
+            }
+            i = end;
+        }
+        found
+    }
+
+    fn text(sheet: &[u8]) -> String {
+        strip_comments(&String::from_utf8_lossy(sheet))
+    }
+
+    /// 令牌只有两处能定义：系统层（`m3e.css`）与界面令牌层（`tokens.css`）。
+    /// 版式层里冒出 `--x:` 就是某一处又长出了私有的视觉语言——要加值先加到
+    /// `tokens.css`，那里是唯一能读全「界面长什么样」的地方。
+    #[test]
+    fn the_layout_layer_adds_no_token() {
+        let system = text(crate::render::web::DESIGN_SYSTEM.as_bytes());
+        let tokens = text(TOKENS_CSS);
+        let app = text(APP_CSS);
+        let defined: Vec<&str> = scan_tokens(&system, true)
+            .into_iter()
+            .chain(scan_tokens(&tokens, true))
+            .collect();
+        let mut extra: Vec<&str> = scan_tokens(&app, true)
+            .into_iter()
+            .filter(|name| !defined.contains(name))
+            .collect();
+        extra.sort_unstable();
+        extra.dedup();
+        assert!(
+            extra.is_empty(),
+            "版式层自己定义了令牌：{}；加到 tokens.css 去",
+            extra.join("、")
+        );
+    }
+
+    /// 用到的每一个令牌都得有定义。写错一个字母不会报错，只会静默地什么都不生效
+    /// ——这层保护比看起来重要。
+    #[test]
+    fn every_token_a_rule_uses_is_defined() {
+        let system = text(crate::render::web::DESIGN_SYSTEM.as_bytes());
+        let tokens = text(TOKENS_CSS);
+        let app = text(APP_CSS);
+        let defined: Vec<&str> = scan_tokens(&system, true)
+            .into_iter()
+            .chain(scan_tokens(&tokens, true))
+            .collect();
+        let mut missing: Vec<&str> = scan_tokens(&app, false)
+            .into_iter()
+            .chain(scan_tokens(&tokens, false))
+            .filter(|name| !defined.contains(name))
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "这些令牌没有定义：{}",
+            missing.join("、")
+        );
+    }
+
+    /// 令牌层是值层，但它只管「界面这一份多出来的取值」：颜色一律取自系统层，
+    /// 在这里写死一个色值就等于界面脱离了配色方案，深浅两档也会漏掉。
+    #[test]
+    fn the_token_layer_holds_no_colour() {
+        let tokens = text(TOKENS_CSS);
+        for (index, line) in tokens.lines().enumerate() {
+            let code = line.trim();
+            let hex = code
+                .split('#')
+                .skip(1)
+                .any(|rest| rest.chars().take(6).all(|c| c.is_ascii_hexdigit()));
+            assert!(
+                !hex && !code.contains("rgb(") && !code.contains("hsl("),
+                "{} 行写死了颜色：{}",
+                index + 1,
+                code
+            );
+        }
+    }
+
+    /// 令牌层只定义自定义属性。混进一条普通声明（`padding: 4px`）看着也生效，
+    /// 但它落在一个没人会去读的选择器上，且绕过了「值只在令牌里」这条。
+    #[test]
+    fn the_token_layer_only_declares_custom_properties() {
+        let tokens = text(TOKENS_CSS);
+        for (index, line) in tokens.lines().enumerate() {
+            let code = line.trim();
+            if code.is_empty() || code.ends_with('{') || code == "}" {
+                continue;
+            }
+            assert!(
+                code.starts_with("--"),
+                "{} 行不是自定义属性：{}",
+                index + 1,
+                code
+            );
+        }
     }
 
     /// 图标与清单里的名字取自同一处。

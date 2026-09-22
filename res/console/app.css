@@ -1,94 +1,90 @@
 /* ============================================================================
    知微 · 界面版式层与交互基元
    ----------------------------------------------------------------------------
-   第二层。系统层是 res/cards/m3e.css（令牌与静态基元，四张卡片图共用），
-   这里是「摆在哪儿、按下去会怎样」——外壳怎么搭、导航在哪一边、窄屏宽屏
-   怎么分，以及按钮、开关、输入、芯片、对话框、涟漪、加载指示这些活的东西。
+   第三层。上面两层是 res/cards/m3e.css（系统层：令牌与静态基元，卡片图与
+   界面共用）与 res/console/tokens.css（令牌层：界面这一份的取值）；这里只说
+   「摆在哪儿、按下去会怎样」——外壳怎么搭、导航在哪一边、窄屏宽屏怎么分，
+   以及按钮、开关、输入、芯片、对话框、涟漪、加载指示这些活的东西。
    卡片是静态位图，M3 的状态层在 m3e.css 里没有用武之地；界面是活的，所以
-   状态层、动效与字号的界面档都归这里。
+   状态层、动效都归这一层用。
 
-   —— 四个设计体系在这里的分工 ——
-   这是一份**统一的**设计语言，不是四套东西各管一块。每个组件都有自己的
-   令牌，来源只决定「这一处为什么长这样」，不意味着可以自带一套值。
-
-     M3 Expressive   核心视觉语言：配色角色、字阶、形状级、高度级、状态层、
-                     两条运动轨道、形状变形。文件的骨架。
-     Apple HIG       交互与平台体验：装到桌面之后跟系统走——安全区、状态栏
-                     配色、原生 dialog 的焦点陷阱与返回键、iOS 那份图标不透明
-                     且不自己画圆角、触控目标不小于 48px。
-     Carbon          补充 Web 与响应式、以及信息密度高的界面：日志工作区的
-                     多列网格、键盘可达的滚动区域、断点的分法（版式断点按
-                     可用宽度，内容断点按「这一行还能不能读」）。
-     Miuix           只做视觉精修，不引入任何规则：线性图标的粗细与圆头圆角
-                     （在 app.js 的 wrap() 里，stroke 1.9 + round）、数显那
-                     紧一档的行高（本文件的 --zy-line-figure）。
-
-   执行顺序不是并列的。**冲突时按下表从上往下裁决，次序本身就是规范**：
-
-     1. 平台原生规范      平台说了算的地方不拿 M3 去覆盖；
-     2. 可用性与无障碍    WCAG 2.2 AA 是下限不是选项；
-     3. 产品一致性        同一个角色在两处必须指同一个令牌（界面与卡片图）；
-     4. M3 Expressive     核心视觉语言；
-     5. Carbon            响应式与复杂信息界面；
-     6. Miuix             视觉精修。
-
-   落地方式只有一条：**上层的取舍写进下层的令牌，下层不再自带一套值**。
-   本文件里出现色值/字号/圆角/阴影的字面量，就是某处又长出了私有的视觉语言。
+   四个设计体系的分工、六个来源的**裁决次序**、以及全部令牌的名字都在
+   tokens.css 的文件头，这里不重抄。这一层受两条约束：凡是视觉值一律
+   var(--md-*) 或 var(--zy-*)；自己不再定义令牌——只有 §H 的两处版式档覆盖
+   （--zy-nav 归零、--zy-page-width 取宽档），那两处的断点只在这里。
 
    —— 分节 ——
    §A 外壳与断点 · §B 顶栏 · §C 导航 · §D 交互基元 · §E 内容块 · §F 状态 ·
    §G 动效与降级 · §H 响应式。
 
-   —— 令牌 ——
-   取系统层（m3e.css）的：
-     配色  --md-sys-color-{surface*, on-surface*, outline*, primary*, secondary*,
-           tertiary*, error*, success*, warning*, log-*}
-     字阶  --md-type-<角色>-{size,line,weight,track}，角色是 M3 那五族
-           （display / headline / title / body / label）
-     形状  --md-shape-{none,xs,s,m,l,xl,2xl,full}、--md-corner-notched(-end)
-     高度  --md-elevation-{0,1,2,3}
-     间距  --md-space-{1..9}
-     字体  --md-font-{plain,serif,mono,display}
-   本层自有的（`--zy-` 前缀，只放版面与组件几何，不放视觉值）：
-     外壳  --zy-bar-height / --zy-nav-height / --zy-rail-width / --zy-drawer-width
-           / --zy-page-width / --zy-page-wide / --zy-safe-top / --zy-safe-bottom
-           / --zy-bar / --zy-nav（后两个是含安全区的实际高度）
-     尺寸  --zy-hairline / --zy-touch(48) / --zy-icon / --zy-icon-bar / --zy-icon-nav
-           / --zy-avatar / --zy-thumb / --zy-switch-width / --zy-switch-track
-           / --zy-knob / --zy-knob-travel / --zy-nav-indicator / --zy-nav-indicator-height
-     排版  --zy-line-figure（数显行高）
-     其他  --zy-gap-tight / --zy-dot / --zy-accent / --zy-border-strong
-           / --zy-skeleton / --zy-skeleton-lg / --zy-log-height / --zy-log-time
-           / --zy-log-level / --zy-log-target
-     状态与动效  --zy-state-hover / --zy-state-press / --zy-duration-*
-           / --zy-ease-*
+   —— 组件规范（改谁先看谁）——
+   每一条是一件东西：它是什么、认哪几个令牌、有哪几种状态、对无障碍欠着什么。
+   状态只有两种写法——ARIA（aria-pressed / aria-checked / aria-current /
+   aria-selected / aria-disabled）与 data-*（data-connected / data-busy /
+   data-enter / data-pinned / data-split）。类名不当状态用。
 
-   —— 组件清单（改谁先看谁）——
-     外壳 .shell   栅格。三档版式的列与行在这里切，靠 body 上的 layout-* 类选中。
-     顶栏 .bar     吸顶。紧凑档滚过页头后品牌让位给页名（只动 opacity/transform）。
-     导航 .nav     一物三形：底部导航条 / 导航轨 / 抽屉，都是 .nav-item 那一套。
-     按钮 .btn     五型 × 三尺寸；按下时形状变形（圆角收一档）。
-     分段 .seg     互斥的固定几档；连体那份用 data-connected。
-     芯片 .chip    可选可不选的一堆标签（分档筛选用）。选中用主色容器。
-     开关 .switch  role=switch；轨道 52×32 画在 ::before，滑块画在 ::after。
-     输入 .input / .area / .search   搜索框自带前置放大镜，聚焦环画在容器上。
-     卡片 .card   与卡片图的 .md-card 同一外形；.hero 是首屏那张主色容器底。
-     列表 .row    行身铺一层 .row-hit 链接，尾巴 .row-tail 压在上面（开关不进链接）。
-     表格 .kv     配置的键值表；窄屏折成上下两行。.subtable 是它的缩进版。
-     日志 .log / .log-workspace   四列网格（时刻/级别/来源/正文）。见 §E 的说明。
-     反馈 .snack / .dialog   一条反馈、一个询问；破坏性操作一律先问。
-     状态 .empty / .skeleton / .badge   空态、骨架、状态徽章。
+   外壳与导航
+     .shell  栅格。认 --zy-bar / --zy-nav / --zy-rail-width / --zy-drawer-width。
+             三档由 body 上的 layout-compact|medium|expanded 选中，判据与 app.js
+             的 layout() 同一处（600 与 840）。
+     .bar    吸顶顶栏。认 --zy-bar / --zy-safe-top。状态 data-pinned：紧凑档滚过
+             页头后品牌让位给页名，只动 opacity 与 transform。两枚图标按钮各自
+             带 aria-label。
+     .nav    一物三形：底部导航条 / 导航轨 / 抽屉，条目都是 .nav-item，选中态
+             aria-current="page"。它在 DOM 里是 #view 的兄弟节点，不是子节点
+             ——点击委派挂 document 这条就是被它坑过。
+     .skip-link  键盘的第一站，没聚焦时移到视口外。它是个真链接（#view）。
+
+   动作
+     .btn    五型（.btn-filled / .btn-tonal / .btn-outline / .btn-elevated /
+             默认文字型）+ 图标档 .btn-icon。破坏性加 .btn-danger，填充版走
+             error-container 那一对。按下时圆角收一档（形状变形）。禁用写
+             disabled 或 aria-disabled="true"，两条都认。
+     .seg    固定几档互斥，aria-pressed；连体那份用 data-connected。
+     .chip   可选可不选的一堆（分档筛选），aria-pressed；选中用主色容器。
+     .switch role="switch" + aria-checked。轨道 52×32 画在 ::before、滑块画在
+             ::after，宿主盒子仍是完整的 48px 触控高度。
+
+   输入
+     .input / .area  文本与多行。聚焦环画在自己身上（border-color + outline）。
+                     .area 用等宽字体，可纵向拉伸。
+     .search 自带前置放大镜，聚焦环画在容器上（:focus-within），里面那个 input
+             不再自己画一圈。它是输入控件，边界取 outline。
+     .field  输入加动作的那一排；窄屏折成上下两行。
+
+   内容
+     .card   与卡片图的 .md-card 同一外形（描边透明，见 §E 的说明）；
+             .card-notched 只收右上角一档。
+     .hero   首屏那张主色容器底，左下缺角。整屏只有这里用 display 档。
+     .row    行身铺一层 .row-hit 链接，尾巴 .row-tail 压在上面（开关不进链接，
+             链接里套按钮会连开两件事）。选中态 aria-selected。
+     .kv     配置的键值表；.kv-wide 是整行一格的变体，.subtable 是它的缩进版。
+     .panel / .inset  卡里再退一档的块（surface-container-low）。
+     .log    四列网格（时刻/级别/来源/正文）。级别名当类名的一部分
+             （.log-warn / .log-erro / .log-debg），警告与错误在行首多一条竖线，
+             靠位置也靠颜色。见 §E 的说明。
+     .log-workspace  日志页那一整块：工具条、连接状态、日志面、计数、页脚各占
+             一段固定位置，只有日志面自己滚。
+     .readings / .reading   读数格（首屏那两列数字）。
+     .gallery / .tile       表情包与图片墙。
+
+   反馈
+     .snack  一条反馈。活区挂在文字那一个 span 上（成功与进行中是 role="status"、
+             失败是 role="alert"），宿主 #snack 自己不挂——挂两处会念两遍。
+     .dialog 原生 <dialog>：焦点陷阱、Esc、返回键都由浏览器给。破坏性操作一律
+             先问一句；不用 confirm() 是「平台原生规范」那一档。
+     .empty / .skeleton / .badge / .indicator   空态、骨架、状态徽章、加载指示。
 
    七条纪律：
-   1. 色值、字号、圆角、阴影一律 var(--md-*)；本文件里出现 #hex / rgb() /
-      hsl() / font-size 数字 / border-radius 数字 / box-shadow 数字就是错的，
-      `assets.rs` 的 the_layout_layer_borrows_every_value_from_the_system_layer
-      盯着这一条；
-   2. 界面的字阶比卡片小一档，收在本文件开头的 `--md-type-*` 覆盖里。卡片图是
-      在群里当缩略图看的，界面的字要在一屏里放下更多行——同一套令牌，两处取法
-      不同的档，不是两套系统。改字号只改这一处，不要去动 m3e.css；
-   3. 结构尺寸（外壳多高、版心多宽、图标多大）不是视觉语言，是版面，允许写字面量，
-      但统一收在上面那组 --zy-* 里，不要在规则里散落；
+   1. 色值、字号、圆角、阴影一律 var(--md-*) 或 var(--zy-*)；本文件里出现
+      #hex / rgb() / hsl() / font-size 数字 / border-radius 数字 / box-shadow
+      数字就是错的，`assets.rs` 的
+      the_layout_layer_borrows_every_value_from_the_system_layer 盯着这一条；
+   2. 本文件不定义令牌。要加一个值先加到 tokens.css——版式层里冒出 `--x:`
+      就是某一处又长出了私有的视觉语言，`the_layout_layer_adds_no_token` 盯着；
+   3. 界面的字阶比卡片小一档，收在 tokens.css 的 §2。卡片图是在群里当缩略图看
+      的，界面的字要在一屏里放下更多行——同一套令牌、两处取法不同的档，不是
+      两套系统。改字号只改那一处，不要去动 m3e.css；
    4. 动效只动画 transform 与 opacity——这两样不触发布局，手机上才不抖。
       两处例外（涟漪的扩散、按下时的形状变形）都作用在几十像素的小块上；
    5. **控件边界用 `outline`，分隔线用 `outline-variant`，两级不许混用**。
@@ -101,113 +97,7 @@
       （2.4.11 焦点不被遮挡）。
    ========================================================================== */
 
-:root {
-  /* —— 界面字阶 ——
-     m3e.css 的字阶是按卡片图定的（中文字面比拉丁大三到四成，放大一档半）。
-     界面是「一屏里尽量多放信息」的场合，用同一支字阶会偏大，所以在这一层整体
-     收一档。**只覆盖这里列出的级**，级与级之间的比例关系不动，字重与字距也不动
-     ——那些是字阶的性格，收字号不该把性格一起收掉。 */
-  --md-type-display-small-size: 32px;
-  --md-type-headline-large-size: 28px;
-  --md-type-headline-medium-size: 24px;
-  --md-type-headline-small-size: 20px;
-  --md-type-title-large-size: 18px;
-  --md-type-title-medium-size: 15px;
-  --md-type-title-small-size: 14px;
-  --md-type-body-large-size: 14px;
-  --md-type-body-large-line: 1.62;
-  --md-type-body-medium-size: 13px;
-  --md-type-body-medium-line: 1.62;
-  --md-type-body-small-size: 12px;
-  --md-type-body-small-line: 1.6;
-  --md-type-label-large-size: 13px;
-  --md-type-label-small-size: 11px;
-  --md-type-input-size: 16px;
-  --md-type-label-medium-size: 12px;
-  --md-type-label-medium-track: 0.03em;
-
-  /* 外壳。导航条 64px 是 M3 Expressive 的高度（flexible navigation bar，
-     旧的 80dp baseline 官方已标 Not recommended）；导航轨 96px 同理
-     （collapsed navigation rail）。 */
-  --zy-bar-height: 60px;
-  --zy-nav-height: 64px;
-  --zy-rail-width: 96px;
-  --zy-drawer-width: 216px;
-  --zy-page-width: 960px;
-  --zy-page-wide: 1200px;
-
-  /* 刘海与手势条：非全面屏上这两项是 0，装了桌面图标之后才起作用 */
-  --zy-safe-top: env(safe-area-inset-top, 0px);
-  --zy-safe-bottom: env(safe-area-inset-bottom, 0px);
-  --zy-bar: calc(var(--zy-bar-height) + var(--zy-safe-top));
-  --zy-nav: calc(var(--zy-nav-height) + var(--zy-safe-bottom));
-
-  /* 复用的结构值 */
-  --zy-hairline: 1px;
-  --zy-touch: 48px;
-  --zy-switch-width: 52px;
-  --zy-switch-track: 32px;
-  --zy-knob: 16px;
-  --zy-knob-travel: 20px;
-  --zy-nav-indicator: 56px;
-  --zy-nav-indicator-height: 32px;
-  --zy-log-height: 62dvh;
-  --zy-log-time: 62px;
-  --zy-log-level: 40px;
-  --zy-log-target: 18ch;
-  --zy-icon: 20px;
-  --zy-icon-bar: 22px;
-  --zy-icon-nav: 24px;
-  --zy-avatar: 38px;
-  --zy-thumb: 76px;
-
-  /* 组件里出现两次以上的小几何，收在这里 */
-  --zy-gap-tight: 2px;
-  --zy-dot: 6px;
-  --zy-accent: 4px;
-  --zy-border-strong: 2px;
-  --zy-skeleton: 18px;
-  --zy-skeleton-lg: 88px;
-
-  /* 数显（首屏那个大数字、读数格里的值）的行高。字阶给的是正文行高，
-     一行数字要压得更紧才不像被撑开。Miuix 只在这一处出过手。 */
-  --zy-line-figure: 1.12;
-
-  /* 状态层：M3 的 8% 与 12% 两档，按压多一层 */
-  --zy-state-hover: 0.08;
-  --zy-state-press: 0.12;
-
-  /* 动效。M3 Expressive 把运动分两条轨道，两条是**四种不同的曲线**，不是同一条
-     换个时长：空间（位置、尺寸、形状）允许过冲，效果（颜色、透明度）阻尼恒为 1、
-     不过冲。下面四个曲线是官方给的「不能用弹簧时的等价曲线」，数值取自
-     m3.material.io/styles/motion/overview/specs 与 Compose 的
-     ExpressiveMotionTokens.kt（spatial 默认 damping 0.8 / stiffness 380，
-     effects 默认 1.0 / 1600）。
-
-     时长也跟着分：效果运动 150—200ms，空间运动 350—500ms。空间运动看着长，
-     但那条曲线前段很快，手感是「一下子到位」而不是「慢慢挪过去」。 */
-  --zy-duration-fast: 150ms;
-  --zy-duration-short: 200ms;
-  --zy-duration-medium: 350ms;
-  --zy-duration-long: 500ms;
-  --zy-ease-effects: cubic-bezier(0.31, 0.94, 0.34, 1);
-  --zy-ease-effects-slow: cubic-bezier(0.34, 0.8, 0.34, 1);
-  --zy-ease-spatial: cubic-bezier(0.42, 1.67, 0.21, 0.9);
-  --zy-ease-spatial-slow: cubic-bezier(0.38, 1.21, 0.22, 1);
-  /* 只给那些「一直在动」的东西（加载指示的旋转）。 */
-  --zy-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-}
-
-/* 两档共用所有组件；舒适档不缩小触控目标。 */
-:root[data-density="comfortable"] {
-  --md-type-title-medium-size: 17px;
-  --md-type-title-small-size: 15px;
-  --md-type-body-large-size: 16px;
-  --md-type-body-medium-size: 15px;
-  --md-type-body-small-size: 14px;
-  --md-type-label-large-size: 14px;
-  --md-type-label-medium-size: 13px;
-}
+/* 令牌全部在 tokens.css。这一层从下一行开始就只有选择器。 */
 
 /* ==================== §A 外壳与断点 ==================== */
 
@@ -261,10 +151,9 @@ body.scheme-console {
   min-width: 0;
 }
 
-/* 当前在哪一档版式由 body 上的类说，脚本与样式共用同一个判据 */
-body.layout-compact {
-  --zy-page-width: 960px;
-}
+/* 当前在哪一档版式由 body 上的类说，脚本与样式共用同一个判据。紧凑档不覆盖
+   --zy-page-width：tokens.css 里那个默认值就是给它和中等档用的，宽档在 §H
+   的 840 那一块里改。 */
 
 /* 键盘的第一站：跳过一条导航直达内容。没聚焦时移到视口外，不占位也不可见。 */
 .skip-link {
@@ -317,10 +206,12 @@ body.layout-compact {
   min-width: 0;
 }
 
+/* 页头这枚小标就是那张应用图标本身（`<img src="/icon.svg">`），不再由 CSS 给它
+   圆角：图标自己带 22.37% 的圆角，这一层再画一圈更大的就会把它的角切得更圆——
+   同一个产品在标签页与页头就成了两个外形。 */
 .brand-mark {
   width: var(--zy-icon-nav);
   height: var(--zy-icon-nav);
-  border-radius: var(--md-shape-s);
   flex: none;
 }
 
@@ -838,6 +729,17 @@ body.layout-compact .bar[data-pinned] .bar-title {
 
 .area-short {
   min-height: 120px;
+}
+
+/* 占位文字是「还没写进去的答案」，它也是正文的一部分（1.4.3 管得到），
+   所以取 on-surface-variant 而不是浏览器那个半透明的默认值：默认值等于把
+   文字色往底上兑一半，浅色下勉强过、深色下就说不好了。
+   审计脚本把 ::placeholder 单独算一遍——它是页面上的文字，但不在 DOM 文本
+   节点里，逐元素那套看不见它。 */
+.input::placeholder,
+.area::placeholder,
+.search input::placeholder {
+  color: var(--md-sys-color-on-surface-variant);
 }
 
 .input:focus,
@@ -1853,13 +1755,18 @@ button.row-plain {
   }
 }
 
-/* 反馈条：成功与失败共用一条，靠左侧那根竖线分色。
-   位置压在导航条之上，出现时从下方滑上来。 */
+/* 反馈条：成功与失败共用一条，靠左侧那根竖线分色。位置压在导航条之上，
+   出现时从下方滑上来——位移与透明度属于同一次入场，按主导的那一项（位移）
+   走空间轨道。效果轨道管的是「只有颜色或透明度在变」的场合（悬停那层底）。
+   退场不做动效：它是被计时器收走的，做一段淡出只会让「刚才那一下成没成」
+   多等两百毫秒。 */
 .snack {
   position: fixed;
   left: 50%;
   bottom: calc(var(--zy-nav) + var(--md-space-4));
   z-index: 40;
+  /* 这一行不能只交给动画的收尾帧：`prefers-reduced-motion` 下动画被关掉，
+     没有它整条会从视口中线往右错开半个宽度。 */
   transform: translateX(-50%);
   width: min(var(--zy-page-width), calc(100vw - var(--md-space-6)));
   display: flex;
@@ -1874,6 +1781,18 @@ button.row-plain {
   line-height: var(--md-type-body-small-line);
   white-space: pre-wrap;
   word-break: break-word;
+  animation: zy-snack-in var(--zy-duration-short) var(--zy-ease-spatial) both;
+}
+
+@keyframes zy-snack-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, var(--md-space-4));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
 }
 
 .snack-text {
@@ -1956,6 +1875,7 @@ button.row-plain {
 @media (prefers-reduced-motion: reduce) {
   .skeleton,
   .indicator,
+  .snack,
   .btn-icon[data-busy] svg {
     animation: none;
   }
@@ -2035,6 +1955,12 @@ button.row-plain {
 @media (max-width: 599px) {
   .main {
     padding-inline: var(--md-space-2);
+  }
+
+  /* 页头的起点跟着内容列一起收：否则品牌与页名在这一档比卡片多缩进 4px，
+     看上去像没对齐。 */
+  .bar {
+    padding-inline-start: var(--md-space-2);
   }
 
   .page-head {

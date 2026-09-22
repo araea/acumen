@@ -86,8 +86,10 @@ async function until(predicate, description) {
   const response=await fetch(base+'/app.js');
   assert.equal(await response.text(), fs.readFileSync(path.join(root,'res/console/app.js'),'utf8'), 'release embeds the exact current JavaScript');
   assert.equal(await (await fetch(base+'/app.css')).text(),
-    fs.readFileSync(path.join(root,'res/cards/m3e.css'),'utf8')+'\n'+fs.readFileSync(path.join(root,'res/console/app.css'),'utf8'),
-    'release embeds the shared tokens and exact current console stylesheet');
+    [fs.readFileSync(path.join(root,'res/cards/m3e.css'),'utf8'),
+     fs.readFileSync(path.join(root,'res/console/tokens.css'),'utf8'),
+     fs.readFileSync(path.join(root,'res/console/app.css'),'utf8')].join('\n'),
+    'release embeds the three layers, in order, byte for byte');
   const etag=response.headers.get('etag');
   assert.equal((await fetch(base+'/app.js',{headers:{'if-none-match':etag}})).status,304);
   child.kill('SIGTERM');

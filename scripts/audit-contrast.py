@@ -5,13 +5,15 @@
 # 与 scripts/review-console.sh 是一对：那一份管「看着对不对」，这一份管
 # 「算出来过不过」。审美靠图，下限靠这台机器——两样都不能只靠眼睛。
 #
-# 查四件事，七个页面 × 三档宽度 × 明暗两档：
+# 查五件事，七个页面 × 三档宽度 × 明暗两档：
 #   1.4.3  对比度：正文 4.5:1，大字（≥24px，或 ≥18.66px 且 ≥700）3:1；
 #   1.4.11 非文本对比度：控件自己的边界（描边按钮、芯片、输入框、开关轨道）
 #          与它相邻的颜色要有 3:1——**只查 outline 那一级**，分隔线不在此列；
 #   4.1.2  可访问名：每个 button / link / role=switch 得有个名字；
 #   2.5.8  触控目标：可点的东西不小于 24×24（本仓库自己的下限是 48，
-#          那一条由 tests/console.cjs 管，这里只兜底）。
+#          那一条由 tests/console.cjs 管，这里只兜底）；
+#   1.4.3  占位文字：它不在任何文本节点里，逐元素那套看不见它，得单独用
+#          `::placeholder` 的伪元素样式取一次色——「还没写进去的答案」也是文字。
 #
 # 做法是逐元素算：文字颜色（含半透明）叠到祖先里第一个不透明的底色上，
 # 边界颜色叠到宿主底色上，再按 WCAG 的相对亮度公式比。color-mix() 这类
@@ -100,7 +102,7 @@ return (function () {
   }
   function rgb(c) { return "rgb(" + Math.round(c.r) + " " + Math.round(c.g) + " " + Math.round(c.b) + ")"; }
 
-  var text = [], borders = [], nameless = [], tiny = [];
+  var text = [], borders = [], nameless = [], tiny = [], hints = [];
 
   document.querySelectorAll("*").forEach(function (el) {
     if (!shown(el)) return;
@@ -148,9 +150,26 @@ return (function () {
       var label = (el.getAttribute("aria-label") || el.textContent || "").trim();
       if (!label && !el.getAttribute("aria-labelledby")) nameless.push({ sel: path(el) });
     }
+
+    // 占位文字。它一辈子进不了文本节点，逐元素那套扫不到，所以在同一个循环里
+    // 用伪元素的样式单独取一次色；底就按输入框自己的填充算（它是不透明的）。
+    if (el.matches("input, textarea") && el.getAttribute("placeholder")) {
+      var pcs = getComputedStyle(el, "::placeholder");
+      var pc = parseColor(pcs.color);
+      if (pc && pc.a > 0.05) {
+        var pbg = backdrop(el);
+        var peff = pc.a < 1 ? over(pc, pbg) : pc;
+        var pr = ratio(peff, pbg);
+        if (pr < 4.5 - 0.005) {
+          hints.push({ sel: path(el), ratio: Math.round(pr * 100) / 100,
+                       fg: pcs.color, bg: rgb(pbg),
+                       sample: el.getAttribute("placeholder").slice(0, 28) });
+        }
+      }
+    }
   });
 
-  return { text: text, borders: borders, nameless: nameless, tiny: tiny,
+  return { text: text, borders: borders, nameless: nameless, tiny: tiny, hints: hints,
            theme: document.documentElement.dataset.density || "", dark: document.body.classList.contains("dark") };
 })()
 """
@@ -216,12 +235,12 @@ def main():
     with open(os.path.join(OUT, "report.json"), "w") as fh:
         json.dump(report, fh, ensure_ascii=False, indent=1)
 
-    counts = {"text": 0, "borders": 0, "nameless": 0, "tiny": 0}
+    counts = {"text": 0, "borders": 0, "nameless": 0, "tiny": 0, "hints": 0}
     seen = set()
     for page in sorted(report):
         got = report[page]
         rows = []
-        for key in ("text", "borders", "nameless", "tiny"):
+        for key in ("text", "borders", "nameless", "tiny", "hints"):
             for one in got[key]:
                 # 同一处会在多页多档重复出现，按「选择器 + 是什么」去重后再报。
                 ident = (key, one["sel"], one.get("sample") or one.get("border") or "")
@@ -241,6 +260,9 @@ def main():
                 print(f"   边界 {one['ratio']:>5} < 3    {one['border']} 绕着 {one['around']}  {one['sel']}")
             elif key == "tiny":
                 print(f"   目标 {one['w']}×{one['h']} < 24   {one['sel']}")
+            elif key == "hints":
+                print(f"   占位 {one['ratio']:>5} < 4.5  {one['fg']} on {one['bg']}  "
+                      f"{one['sel']}  {one['sample']!r}")
             else:
                 print(f"   无名  {one['sel']}")
 
@@ -248,10 +270,11 @@ def main():
     print(f"\n盘点了 {len(report)} 个页面快照（{len(VIEWPORTS)} 档宽度 × {len(THEMES)} 档明暗）。")
     if total:
         print(f"不过的：文字 {counts['text']} 处、控件边界 {counts['borders']} 处、"
-              f"触控目标 {counts['tiny']} 处、无可访问名 {counts['nameless']} 处。")
+              f"触控目标 {counts['tiny']} 处、无可访问名 {counts['nameless']} 处、"
+              f"占位文字 {counts['hints']} 处。")
         print(f"明细：{os.path.join(OUT, 'report.json')}")
         return 1
-    print("WCAG 2.2 AA 里能算的那几条全过：对比度、控件边界、触控目标、可访问名。")
+    print("WCAG 2.2 AA 里能算的那几条全过：对比度、控件边界、触控目标、可访问名、占位文字。")
     return 0
 
 
