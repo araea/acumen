@@ -30,23 +30,17 @@ impl Verdict {
     /// 「聊得投机可以连着聊几轮」和「他每说一句我都接」之间只隔着这一点：
     /// 一旦绕过门槛，热闹的群里 continuation 会一直为真，人格就再也停不下来了。
     ///
-    /// 硬冷却对续聊同样有效。原因和在门槛上打折不一样：`continuation` 在长期
-    /// 只有一个话题的群里几乎恒真（数码群整天聊手机），免掉冷却就等于放它两分钟
-    /// 里连说四轮——群友听到的正是这个。续聊该换来的是「门槛低一点」，不是
-    /// 「不用排队」。真正有人叫它走的不是这条路（`reply_on_mention` 在判定之前
-    /// 就把它接到了人格手里），所以被问到时不受影响。
+    /// 这里没有「排队」这一说：刚说过话、这个小时说超了，都换算成门槛上的一笔加价
+    /// （见 `AmbientConfig::threshold`），而不是一到点就整段拦下。差别在于群友真的
+    /// 在等它回一句时——那种消息分数会明显高过日常闲聊，抬高的门槛挡不住它。
+    /// 被 @ 与搭话指令走的是另一条路，压根不到这里。
     pub(crate) fn wants_composition(
         &self,
         threshold: u8,
         focus_relief: u8,
         focused: bool,
-        silent_for: Option<std::time::Duration>,
-        cooldown: std::time::Duration,
     ) -> bool {
         if self.score == 0 {
-            return false;
-        }
-        if silent_for.is_some_and(|elapsed| elapsed < cooldown) {
             return false;
         }
         let continuing = focused && self.continuation;
@@ -258,41 +252,32 @@ mod tests {
 
     #[test]
     fn continuing_interest_lowers_the_bar_without_removing_it() {
-        use std::time::Duration;
         let verdict = parse_verdict(r#"{"score":35,"continuation":true}"#).unwrap();
         // 关注中的续聊少 15 分，35 够得着 50-15，够不着 60-15。
-        assert!(verdict.wants_composition(50, 15, true, Some(Duration::ZERO), Duration::ZERO));
-        assert!(!verdict.wants_composition(60, 15, true, Some(Duration::ZERO), Duration::ZERO));
+        assert!(verdict.wants_composition(50, 15, true));
+        assert!(!verdict.wants_composition(60, 15, true));
         // 没在关注就是原价。
-        assert!(!verdict.wants_composition(50, 15, false, Some(Duration::ZERO), Duration::ZERO));
-        // 续聊换来的是门槛打折，不是免排队：硬冷却对续聊同样有效。
-        assert!(!verdict.wants_composition(
-            50,
-            15,
-            true,
-            Some(Duration::from_secs(5)),
-            Duration::from_secs(90)
-        ));
-        // 冷却过去之后，续聊照旧按打过折的门槛放行。
-        assert!(verdict.wants_composition(
-            50,
-            15,
-            true,
-            Some(Duration::from_secs(120)),
-            Duration::from_secs(90)
-        ));
-        // 从没说过话（silent_for 为 None）时没有冷却可言。
-        assert!(verdict.wants_composition(50, 15, true, None, Duration::from_secs(90)));
+        assert!(!verdict.wants_composition(50, 15, false));
+        // 续聊换来的是门槛打折，而不是免掉门槛本身：抬到 51 分它就够不着了。
+        assert!(!verdict.wants_composition(51, 15, true));
         let zero = parse_verdict(r#"{"score":0,"continuation":true}"#).unwrap();
-        assert!(!zero.wants_composition(0, 99, true, None, Duration::ZERO));
+        assert!(!zero.wants_composition(0, 99, true));
         let ordinary = parse_verdict(r#"{"score":60}"#).unwrap();
-        assert!(ordinary.wants_composition(50, 15, false, Some(Duration::ZERO), Duration::ZERO));
-        assert!(!ordinary.wants_composition(
-            50,
-            15,
-            false,
-            Some(Duration::ZERO),
-            Duration::from_secs(90)
-        ));
+        assert!(ordinary.wants_composition(50, 15, false));
+        assert!(ordinary.wants_composition(60, 15, false));
+        assert!(!ordinary.wants_composition(61, 15, false));
+    }
+
+    /// 「刚说过话」和「这个小时说超了」都不再是一道墙：它们抬高的只是门槛，
+    /// 分数够高时照样放行。抬价那本账在 `AmbientConfig::threshold` 里算。
+    #[test]
+    fn a_high_score_still_gets_through_whatever_the_pressure_is() {
+        // 门槛被抬到 80：追问它刚说的那句话（88 分）进得来，日常闲聊（45 分）进不来。
+        let eager = parse_verdict(r#"{"score":88,"reason":"有人追问他刚说的话"}"#).unwrap();
+        assert!(eager.wants_composition(80, 15, false));
+        let casual = parse_verdict(r#"{"score":45,"reason":"日常闲聊"}"#).unwrap();
+        assert!(!casual.wants_composition(80, 15, false));
+        // 抬到顶才是真的没门——那要一小时说超许多轮才会到。
+        assert!(!eager.wants_composition(100, 15, false));
     }
 }

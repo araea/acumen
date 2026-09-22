@@ -163,22 +163,30 @@ pub(crate) struct AmbientConfig {
     pub debounce_seconds: u64,
     /// 从第一条消息算起最多等多久就必须判定一次。
     pub max_pending_seconds: u64,
-    /// 可选硬冷却；0 关闭，被点名或正在继续感兴趣的对话时不受限。
+    /// 两次主动开口之间的时间下限；0 关闭。
     ///
-    /// 挡住的是「刚说完又想接」：群里热闹时门槛和加价都在涨，但都是软约束，
-    /// 冷却是一条不看分数的时间下限。只有被点名不受它限制——那是真有人在跟它
-    /// 说话，不是它自己想凑。
+    /// 从前这里是一道墙——冷却没走完就一句话都不说，被点名才绕得过。现在它是一笔
+    /// 账：窗口之内，门槛按 `cooldown_penalty` 加价，随时间线性退到窗口结束的 0。
+    /// 「刚说完又想接」于是贵得几乎开不了口，而群里真有人顺着它的话问下去时，
+    /// 分数够高仍然过得了。把「拦下」换成「抬价」，是为了不把偶发的高分时刻
+    /// （有人真的在等它回）也一并挡在外面。
     pub cooldown_seconds: u64,
+    /// 冷却窗口内门槛上调的分，从满额线性退到 0；0 等于不设这笔。
+    pub cooldown_penalty: u8,
     /// 人格一次最多关注多少秒；0 关闭，最多 600 秒，可随互动续期。
     ///
     /// 关注意味着「续聊」判定为真、门槛打折；给得太久，一个万年不变的话题
     /// 能把它一直挂在那儿。
     pub focus_max_seconds: u64,
-    /// 每群每小时的可选发言上限；0 关闭。
+    /// 每群每小时的目标发言轮数；0 关闭。
     ///
-    /// 这是唯一一条不看分数、不看状态的硬顶。留得比正常节奏宽，只在真正聊嗨了
-    /// 的时候兜底——一屋子人聊到兴头上，没人会数自己这个小时说了几句。
+    /// 这不是配额，是一条会抬价的线：超过它之后每再说一轮，门槛再加
+    /// `budget_penalty` 分，加到分数够不着为止——一路抬上去而不是一刀砍断，
+    /// 所以聊到兴头上仍然接得住一句特别值得接的。被 @ 与搭话指令本来就不走
+    /// 这道门槛，所以真正有人叫它时不会被「这个小时聊够了」挡在外面。
     pub max_per_hour: usize,
+    /// 超过每小时目标之后，每多一轮再加的门槛分。
+    pub budget_penalty: u8,
     /// 被 @ 或被引用时跳过判定直接开口。
     pub reply_on_mention: bool,
     /// 群友还会怎么叫它：名片之外的小名、简称。
@@ -273,8 +281,10 @@ impl Default for AmbientConfig {
             debounce_seconds: 3,
             max_pending_seconds: 12,
             cooldown_seconds: 90,
+            cooldown_penalty: 25,
             focus_max_seconds: 180,
             max_per_hour: 8,
+            budget_penalty: 12,
             reply_on_mention: true,
             aliases: Vec::new(),
             summon_command: "/搭话".to_string(),
@@ -299,6 +309,21 @@ impl Default for AmbientConfig {
             reply_timeout_seconds: 240,
         }
     }
+}
+
+/// 这一轮压在门槛上的分量。
+///
+/// 三件事各自算一笔账：刚开过口的余温、最近十分钟的密度、这个小时已经说超的
+/// 部分。它们都只抬价、不拦人——分数是模型看着群聊给的，真有人冲它来的时候
+/// 分数自然会高。
+#[derive(Debug, Clone, Copy, Default)]
+struct Pressure {
+    /// 距上次自己开口多久；从没说过是 None。
+    since_last_spoke: Option<Duration>,
+    /// 最近十分钟说过几轮。
+    recent_turns: usize,
+    /// 这一小时说过几轮。
+    hourly_turns: usize,
 }
 
 impl AmbientConfig {
@@ -340,6 +365,52 @@ impl AmbientConfig {
         let relief = (minutes / 10.0 * f64::from(self.silence_relief_per_10min))
             .min(f64::from(self.silence_relief_cap));
         self.score_threshold.saturating_sub(relief as u8)
+    }
+
+    /// 这一轮实际要跨过的门槛。
+    ///
+    /// 五笔加减：可选的沉默补偿、当下状态的微调、最近十分钟的密度、刚开过口的
+    /// 余温，以及这个小时说超的部分。后三笔都是**抬价而不是拦人**：群里真有人
+    /// 顺着它的话接下去时，分数够高就照样过得去；只有一直没人理它（分数上不去）
+    /// 才会被一路抬高的门槛挡在外面——那正是「更安静一点」该有的样子。
+    fn threshold(&self, state: mood::Snapshot, pressure: Pressure) -> u8 {
+        let base = i16::from(self.effective_threshold(pressure.since_last_spoke));
+        let shift = if self.mood_enabled {
+            state.threshold_shift()
+        } else {
+            0
+        };
+        let crowding = (pressure.recent_turns as i16)
+            .saturating_mul(i16::from(self.speech_penalty_per_turn))
+            .min(i16::from(self.speech_penalty_cap));
+        let total =
+            base + shift + crowding + self.cooldown_charge(pressure) + self.budget_charge(pressure);
+        total.clamp(1, 100) as u8
+    }
+
+    /// 刚开过口的余温：冷却窗口里按剩下的时间按比例抬价，走到窗口末尾就回到 0。
+    /// 冷却写 0、或从没开过口时，都没有这笔账。
+    fn cooldown_charge(&self, pressure: Pressure) -> i16 {
+        let cooldown = self.cooldown();
+        let Some(elapsed) = pressure.since_last_spoke else {
+            return 0;
+        };
+        if cooldown.is_zero() || self.cooldown_penalty == 0 {
+            return 0;
+        }
+        let left = cooldown.saturating_sub(elapsed).as_secs();
+        let charge = u64::from(self.cooldown_penalty) * left / cooldown.as_secs().max(1);
+        charge as i16
+    }
+
+    /// 这个小时说超的账：每多一轮再加一份 `budget_penalty`。抬到分数够不着为止，
+    /// 但抬上去的是一条线而不是一堵墙——小时一过账就清了（计数只留最近一小时）。
+    fn budget_charge(&self, pressure: Pressure) -> i16 {
+        if self.max_per_hour == 0 || self.budget_penalty == 0 {
+            return 0;
+        }
+        let over = pressure.hourly_turns.saturating_sub(self.max_per_hour);
+        (over as i16).saturating_mul(i16::from(self.budget_penalty))
     }
 
     /// 这一轮里有没有走 DeepSeek 峰谷价的调用。判定与发言是两次不同的调用，
@@ -395,28 +466,6 @@ impl AmbientConfig {
         }
     }
 
-    /// 这一轮实际要跨过的门槛。
-    ///
-    /// 三笔加减：可选的沉默补偿、当下状态的微调，以及「刚才已经说了几轮」的加价。
-    /// 最后这一笔是防止刷屏的主力——门槛随自己的发言次数一路抬高，人格在热闹的
-    /// 群里会自然收住，而不是靠某个固定的每小时配额一刀切。
-    fn threshold(
-        &self,
-        silent_for: Option<Duration>,
-        state: mood::Snapshot,
-        recent_turns: usize,
-    ) -> u8 {
-        let base = i16::from(self.effective_threshold(silent_for));
-        let shift = if self.mood_enabled {
-            state.threshold_shift()
-        } else {
-            0
-        };
-        let crowding = (recent_turns as i16)
-            .saturating_mul(i16::from(self.speech_penalty_per_turn))
-            .min(i16::from(self.speech_penalty_cap));
-        (base + shift + crowding).clamp(1, 100) as u8
-    }
 }
 
 /// 看头像用的接口：判定模型那一份。配不出来就不看。
@@ -976,12 +1025,10 @@ async fn consider(
                 break;
             }
         }
-        let (mut seq, turns, mentioned, summoned, silent_for, rhythm, focused, capped) =
+        let (mut seq, turns, mentioned, summoned, silent_for, rhythm, focused) =
             window::with_group(group, |state| {
                 let mentioned = state.take_mention() && config.reply_on_mention;
                 let summoned = state.take_summon();
-                let capped =
-                    config.max_per_hour > 0 && state.spoken_last_hour() >= config.max_per_hour;
                 (
                     state.seq,
                     state.recent(config.context_turns.clamp(1, 80)),
@@ -990,15 +1037,13 @@ async fn consider(
                     state.last_spoke.map(|last| last.elapsed()),
                     state.rhythm(),
                     state.active_focus().is_some(),
-                    capped,
                 )
             });
-        if !capped
-            && let Err(error) = consider_batch(
-                ctx, writer, mgr, group, base, &config, &mut seq, &turns, mentioned, summoned,
-                silent_for, &rhythm, focused,
-            )
-            .await
+        if let Err(error) = consider_batch(
+            ctx, writer, mgr, group, base, &config, &mut seq, &turns, mentioned, summoned, silent_for,
+            &rhythm, focused,
+        )
+        .await
         {
             warn!(target: LOG_TARGET, "群 {group} 搭话失败：{error:#}");
         }
@@ -1125,8 +1170,12 @@ async fn consider_batch(
         info!(target: LOG_TARGET, "群 {group} 收到搭话指令，这一批交给人格");
     } else if !mentioned {
         let (api_base, api_key, gate_model) = gate_endpoint(ctx, mgr, &config.gate_model).await?;
-        let recent = window::with_group(group, |state| state.spoken_within(window::RECENT_SPEECH));
-        let threshold = config.threshold(silent_for, mood::snapshot(group), recent);
+        let pressure = window::with_group(group, |state| Pressure {
+            since_last_spoke: silent_for,
+            recent_turns: state.spoken_within(window::RECENT_SPEECH),
+            hourly_turns: state.spoken_last_hour(),
+        });
+        let threshold = config.threshold(mood::snapshot(group), pressure);
         let verdict = gate::judge(
             &api_base,
             &api_key,
@@ -1138,13 +1187,7 @@ async fn consider_batch(
             None,
         )
         .await?;
-        if !verdict.wants_composition(
-            threshold,
-            config.focus_relief,
-            focused,
-            silent_for,
-            config.cooldown(),
-        ) {
+        if !verdict.wants_composition(threshold, config.focus_relief, focused) {
             debug!(target: LOG_TARGET, "群 {group} 保持沉默（{}/{}，{}）", verdict.score, threshold, verdict.reason);
             return Ok(());
         }
@@ -1638,10 +1681,14 @@ mod tests {
         assert!(!config.enabled);
         assert!(config.groups.is_empty());
         assert!(config.max_wait() >= config.debounce());
-        // 默认带一条时间下限与一条每小时硬顶：前者挡住刚说完又想接，后者给聊嗨了
-        // 的时段兜底。两条都不看分数，是「别吵」这件事唯一可靠的两颗钉子。
+        // 默认带一条时间下限与一条每小时目标：前者挡住「刚说完又想接」，后者给
+        // 聊嗨了的时段兜底。两条都不是墙，而是门槛上的一笔加价（见
+        // `cooldown_and_the_hourly_budget_raise_the_bar_instead_of_shutting_the_door`），
+        // 所以有人真的在等它回话时不会被挡在外面。
         assert_eq!(config.cooldown(), Duration::from_secs(90));
+        assert_eq!(config.cooldown_penalty, 25);
         assert_eq!(config.max_per_hour, 8);
+        assert_eq!(config.budget_penalty, 12);
         assert_eq!(config.effective_threshold(None), config.score_threshold);
         let extreme = AmbientConfig {
             debounce_seconds: u64::MAX,
@@ -1998,18 +2045,18 @@ mod tests {
             energy: 0.9,
             warmth: 0.9,
         };
-        assert!(config.threshold(None, tired, 0) > config.threshold(None, lively, 0));
+        assert!(config.threshold(tired, Pressure::default()) > config.threshold(lively, Pressure::default()));
         assert!(config.pace(tired).typing_cpm < config.pace(lively).typing_cpm);
         assert!(config.pace(tired).think_seconds > config.pace(lively).think_seconds);
         // 门槛仍留在有效区间里，不会被状态推到 0 或爆表。
-        assert!((1..=100).contains(&config.threshold(None, tired, 0)));
+        assert!((1..=100).contains(&config.threshold(tired, Pressure::default())));
         let fixed = AmbientConfig {
             mood_enabled: false,
             ..AmbientConfig::default()
         };
         assert_eq!(
-            fixed.threshold(None, tired, 0),
-            fixed.threshold(None, lively, 0)
+            fixed.threshold(tired, Pressure::default()),
+            fixed.threshold(lively, Pressure::default())
         );
         assert_eq!(fixed.pace(tired).typing_cpm, fixed.typing_cpm);
     }
@@ -2021,15 +2068,23 @@ mod tests {
             energy: 0.55,
             warmth: 0.35,
         };
-        let quiet = config.threshold(None, calm, 0);
+        let quiet = config.threshold(calm, Pressure::default());
         assert_eq!(quiet, config.score_threshold);
         // 说过的每一轮都在抬价，但抬到封顶就不再往上。
+        let once = Pressure {
+            recent_turns: 1,
+            ..Pressure::default()
+        };
         assert_eq!(
-            config.threshold(None, calm, 1),
+            config.threshold(calm, once),
             quiet + config.speech_penalty_per_turn
         );
+        let crowded = Pressure {
+            recent_turns: 9,
+            ..Pressure::default()
+        };
         assert_eq!(
-            config.threshold(None, calm, 9),
+            config.threshold(calm, crowded),
             quiet + config.speech_penalty_cap
         );
         // 关掉这笔加价就回到从前的行为。
@@ -2037,7 +2092,98 @@ mod tests {
             speech_penalty_per_turn: 0,
             ..AmbientConfig::default()
         };
-        assert_eq!(loose.threshold(None, calm, 5), quiet);
+        let five = Pressure {
+            recent_turns: 5,
+            ..Pressure::default()
+        };
+        assert_eq!(loose.threshold(calm, five), quiet);
+    }
+
+    /// 冷却不再是「一到点就整段拦下」：刚开过口时门槛按剩下的时间抬价，走到窗口
+    /// 末尾回到 0；这个小时说超的部分同样一轮一轮往上加。两笔都只是抬价，
+    /// 分数确实高的时候照样放行。
+    #[test]
+    fn cooldown_and_the_hourly_budget_raise_the_bar_instead_of_shutting_the_door() {
+        let config = AmbientConfig::default();
+        let calm = mood::Snapshot {
+            energy: 0.55,
+            warmth: 0.35,
+        };
+        let base = config.threshold(calm, Pressure::default());
+
+        // 刚说完：满额（默认 25），越接近冷却末尾退得越低。
+        let just_spoke = config.threshold(
+            calm,
+            Pressure {
+                since_last_spoke: Some(Duration::ZERO),
+                ..Pressure::default()
+            },
+        );
+        assert_eq!(just_spoke, base + config.cooldown_penalty);
+        let halfway = config.threshold(
+            calm,
+            Pressure {
+                since_last_spoke: Some(Duration::from_secs(config.cooldown_seconds / 2)),
+                ..Pressure::default()
+            },
+        );
+        assert!(halfway < just_spoke && halfway > base);
+        // 冷却走完、以及从没开过口，都不加这一笔。
+        let after = config.threshold(
+            calm,
+            Pressure {
+                since_last_spoke: Some(Duration::from_secs(config.cooldown_seconds)),
+                ..Pressure::default()
+            },
+        );
+        assert_eq!(after, base);
+        // 冷却关闭时没有这笔账。
+        let no_cooldown = AmbientConfig {
+            cooldown_seconds: 0,
+            ..AmbientConfig::default()
+        };
+        assert_eq!(
+            no_cooldown.threshold(
+                calm,
+                Pressure {
+                    since_last_spoke: Some(Duration::ZERO),
+                    ..Pressure::default()
+                }
+            ),
+            base
+        );
+
+        // 每小时目标之内不加价，超出去之后一轮一份。
+        let at_budget = Pressure {
+            hourly_turns: config.max_per_hour,
+            ..Pressure::default()
+        };
+        assert_eq!(config.threshold(calm, at_budget), base);
+        let over_budget = Pressure {
+            hourly_turns: config.max_per_hour + 1,
+            ..Pressure::default()
+        };
+        assert_eq!(
+            config.threshold(calm, over_budget),
+            base + config.budget_penalty
+        );
+        // 抬价不是墙：第一轮超标时 100 分照样过得去，抬到 100 才真的没门。
+        let far = Pressure {
+            hourly_turns: config.max_per_hour + 40,
+            ..Pressure::default()
+        };
+        assert_eq!(config.threshold(calm, far), 100);
+        // 关掉这笔（写 0）或者关掉整条线（max_per_hour = 0）都一样。
+        let no_budget = AmbientConfig {
+            max_per_hour: 0,
+            ..AmbientConfig::default()
+        };
+        assert_eq!(no_budget.threshold(calm, far), base);
+        let free = AmbientConfig {
+            budget_penalty: 0,
+            ..AmbientConfig::default()
+        };
+        assert_eq!(free.threshold(calm, far), base);
     }
 
     #[test]
