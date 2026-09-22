@@ -28,6 +28,9 @@
 **样本库的长短分布也要跟他本人对得上。** 模型是照着样本的形状写字的：一屋子七八个
 字的样本，它就再也写不出两个字的回话。`--shape` 把两边的分布并排打出来，差得远就去
 补那一档，别靠感觉。
+
+**已经在库里的句子不会再打印。** 隔一阵子重捞一遍时，看到的就只有这期间新出现的说法，
+不必对着几百条旧句再挑一次。
 """
 
 from __future__ import annotations
@@ -133,10 +136,13 @@ def chatter(rows: list[tuple[int, int, str]]) -> list[str]:
     return out
 
 
-def candidates(rows: list[tuple[int, int, str]], limit: int, max_chars: int) -> dict[str, list[str]]:
+def candidates(
+    rows: list[tuple[int, int, str]], limit: int, max_chars: int, known: set[str]
+) -> dict[str, list[str]]:
+    """按场景分组的候选；`known` 是已经在样本库里的那些，不必再看第二遍。"""
     out: dict[str, list[str]] = {}
     for text in chatter(rows):
-        if width(text) > max_chars:
+        if width(text) > max_chars or not speech_like(text) or text in known:
             continue
         for name, pattern in BUCKETS:
             if re.search(pattern, text, re.I):
@@ -145,6 +151,23 @@ def candidates(rows: list[tuple[int, int, str]], limit: int, max_chars: int) -> 
                     bucket.append(text)
                 break
     return out
+
+
+# 一个字都没有、还只有一两个拉丁词：那是发给别的 bot 的指令或答题（`alb 每日魔方`、
+# `MCDLE 裸猜`、`p5letter`、`b7e7`），不是他在说话。
+HAN = re.compile(r"[\u4e00-\u9fff]")
+LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
+# 光秃秃的数字或标点（`22`、`？`、`✅`）。
+BARE_MARKS = re.compile(r"^[\W_]+$|^[\d\s.]+$")
+
+
+def speech_like(text: str) -> bool:
+    """像不像一句人在群里说的话。粗筛，挑还是要人来挑。"""
+    if "@" in text:
+        return False
+    if BARE_MARKS.match(text):
+        return False
+    return bool(HAN.search(text)) or len(LATIN_WORD.findall(text)) >= 2
 
 
 def verify(rows: list[tuple[int, int, str]], path: str) -> int:
@@ -261,11 +284,12 @@ def main() -> int:
         return verify(rows, args.voice)
     if args.shape:
         return shape(rows, args.voice)
-    for name, items in candidates(rows, args.limit, args.max_chars).items():
+    known = set(samples_of(args.voice))
+    for name, items in candidates(rows, args.limit, args.max_chars, known).items():
         print(f"\n## {name}")
         for text in items:
             print(f"  {text}")
-    print("\n挑好的粘进 res/ambient/voice.md（原样，别改字），再跑 --verify 核一遍。")
+    print(f"\n已在样本库里的 {len(known)} 条没有打印。挑好的粘进 res/ambient/voice.md（原样，别改字），再跑 --verify 核一遍。")
     return 0
 
 
