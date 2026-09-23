@@ -5,9 +5,9 @@
 //!
 //! 搭话是这个 bot 里唯一一个无人触发、跟着群消息频率自动跑的付费功能，所以它
 //! 也是最值得挑时段的那个：把它压回空闲时段，账单直接对折，而群里最热闹的晚上
-//! 本来就落在空闲时段里，几乎不损失什么。高峰时段有两种省法——彻底不出声，
-//! 或者睡着：不跟着消息频率一直判定，只隔一段时间看一眼；被点名或搭话指令
-//! 则立刻醒一次。两种都换上最省的一份上下文。
+//! 本来就落在空闲时段里，几乎不损失什么。高峰时段有三种做法：彻底不出声、
+//! 睡着（不跟着消息频率一直判定，只隔一段时间看一眼，被点名或搭话指令则立刻
+//! 醒一次），或者换一家全天同价的便宜模型照常跑（见 [`Mode::Swap`]）。
 //!
 //! 睡着时的自主接话由两条本地闸门控住成本：`doze_gate_seconds` 限制主动判定的
 //! 频率（判定是最频繁的那次调用），`doze_reply_limit` 给真正花钱的开口一个每小时
@@ -19,10 +19,10 @@
 //! （见 [`billed_by_peak`]）：换成全天一个价的供应商，时段管理直接让路，
 //! 配置留着不改，换回 DeepSeek 那天立刻又是原来那套作息。
 //!
-//! 第三条路是给高峰时段单独配一个替补模型（`model`）：峰谷价只跟 DeepSeek
-//! 有关，换一家就没有高峰这回事，账单不再翻倍。代价是替补模型多半更笨，所以
-//! 换上它的那些轮只做最简单的活——被叫到回一句，换上最省的一份上下文。留空
-//! 则仍用主模型，旧配置原样。
+//! 替补模型那条路（`model`）：换一家就没有高峰这回事，账单不再翻倍。成本既已
+//! 压下来，最省事的做法是 `mode = "swap"`——节奏、联网、看图、绘图都跟平时一样，
+//! 只是高峰这几段换成替补；想更保守就仍用 `mode = "sleep"`（睡着，连上下文一起
+//! 省），或 `mode = "pause"` 整段不出声。`model` 留空则以上都不发生，沿主模型。
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -44,8 +44,11 @@ pub(crate) fn billed_by_peak(model: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Mode {
-    /// 不理会时段，照常。
+    /// 不理会时段，照常（高峰也用主模型）。
     Normal,
+    /// 照常跑，只是高峰这几段把模型换成 `model` 的替补。成本已经压下来了，
+    /// 就不必再靠睡或不说话来省；节奏、联网、看图、绘图都跟平时一样。
+    Swap,
     /// 睡着：不跟着消息频率一直判定，只按 `doze_gate_seconds` 偶尔看一眼；
     /// 被 @ / 引用 / 戳一戳时立刻醒一次，且用最省的上下文。
     Sleep,
@@ -58,6 +61,8 @@ pub(crate) enum Mode {
 pub(crate) enum Stance {
     /// 空闲时段（或关掉了时段管理）：照常。
     Awake,
+    /// 高峰时段，照常节奏，只是模型换成替补。
+    Swapped,
     /// 高峰时段，睡着：偶尔主动接一句，被点名时立刻回应。
     Dozing,
     /// 高峰时段，停用。
@@ -74,8 +79,8 @@ pub(crate) struct PeakConfig {
     /// 算作高峰的星期几，1=周一 … 7=周日；空列表等于每天都算。
     pub weekdays: Vec<u8>,
     /// 高峰时段顶上来的模型（`供应商/模型`）。峰谷价把 DeepSeek 的高峰抬成一倍，
-    /// 与其整段不出声，不如把醒来的那几句交给一家全天同价的便宜模型——它不够
-    /// 聪明，所以只让它做最简单的活（被叫到回一句，换上最省的一份上下文）。
+    /// 与其为这两段多付一倍，不如把它们交给一家全天同价的便宜模型：`mode = "swap"`
+    /// 就照常跑、只换这一个模型，`mode = "sleep"` 则连上下文一起省着来。
     /// 空字符串（默认）表示不换，仍用 `gate_model` / `reply_model`。
     pub model: String,
     /// 睡着时两次主动判定之间的最短间隔（秒）。高峰价格翻倍，但群里该接的话
@@ -137,12 +142,14 @@ impl PeakConfig {
     }
 
     pub(crate) fn stance_at<Tz: chrono::TimeZone>(&self, at: chrono::DateTime<Tz>) -> Stance {
-        if self.mode == Mode::Normal || !self.is_peak_at(at) {
+        if !self.is_peak_at(at) {
             return Stance::Awake;
         }
         match self.mode {
+            Mode::Normal => Stance::Awake,
+            Mode::Swap => Stance::Swapped,
+            Mode::Sleep => Stance::Dozing,
             Mode::Pause => Stance::Asleep,
-            _ => Stance::Dozing,
         }
     }
 
@@ -223,6 +230,11 @@ mod tests {
         config.mode = Mode::Pause;
         assert_eq!(config.stance_at(thursday(10, 0)), Stance::Asleep);
         assert_eq!(config.stance_at(sunday(10)), Stance::Awake);
+        // 换模型那一档：高峰照常跑，只是姿态不同；离峰还是照常。
+        config.mode = Mode::Swap;
+        assert_eq!(config.stance_at(thursday(10, 0)), Stance::Swapped);
+        assert_eq!(config.stance_at(thursday(20, 0)), Stance::Awake);
+        assert_eq!(config.stance_at(sunday(10)), Stance::Awake);
         // 关掉时段管理之后，高峰时段也照常。
         config.mode = Mode::Normal;
         assert_eq!(config.stance_at(thursday(10, 0)), Stance::Awake);
@@ -266,6 +278,17 @@ mod tests {
         assert_eq!(back.mode, Mode::Pause);
         assert_eq!(back.windows, PeakConfig::default().windows);
         assert!(back.model.is_empty());
+        // 换模型那一档也读得回来。
+        let swap = toml::to_string(&PeakConfig {
+            mode: Mode::Swap,
+            model: "mimo/mimo-v2.6-flash".to_string(),
+            ..PeakConfig::default()
+        })
+        .unwrap();
+        assert!(swap.contains("\"swap\""), "{swap}");
+        let back: PeakConfig = toml::from_str(&swap).unwrap();
+        assert_eq!(back.mode, Mode::Swap);
+        assert_eq!(back.model, "mimo/mimo-v2.6-flash");
     }
 
     #[test]

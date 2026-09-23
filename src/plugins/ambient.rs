@@ -440,7 +440,11 @@ impl AmbientConfig {
         if !self.peak_applies() {
             return peak::Stance::Awake;
         }
-        self.peak.stance_at(at)
+        match self.peak.stance_at(at) {
+            // 配了替补才有「换模型」这回事；`model` 留空时这一档与照常无异。
+            peak::Stance::Swapped if self.peak.model.trim().is_empty() => peak::Stance::Awake,
+            stance => stance,
+        }
     }
 
     /// 发言节奏。精神头好就敲得快、想得短，困了反过来。
@@ -457,18 +461,28 @@ impl AmbientConfig {
         }
     }
 
-    /// 高峰时段被点名唤醒时用的一份「省着来」的配置。
+    /// 高峰时段照常跑、只把模型换成替补的一份配置。
+    ///
+    /// `mode = "swap"` 用这一份：节奏、联网、看图、绘图全跟平时一样，只有判定与
+    /// 发言两个模型换成 `[ambient.peak].model`。峰谷价是 DeepSeek 一家的事，换一家
+    /// 就没有高峰期，成本既已压下来，就不必再靠睡或不说话来省。
+    fn swapped(&self) -> Self {
+        Self {
+            gate_model: self.peak.model_or(&self.gate_model).to_string(),
+            reply_model: self.peak.model_or(&self.reply_model).to_string(),
+            ..self.clone()
+        }
+    }
+
+    /// 高峰时段被点名唤醒时用的一份「省着来」的配置（`mode = "sleep"`）。
     ///
     /// 输入里最贵的是图片，其次是上下文长度；输出里最贵的是多发几条和顺手画张图。
     /// 醒过来回一句仍然算数，只是这一句用最少的钱说完。
     ///
-    /// 若 `[ambient.peak].model` 配了替补模型（线上配的是小米 MiMo），这一轮
-    /// 连模型一起换掉：主模型在 DeepSeek 高峰翻倍，替补全天一个价。替补不够聪明，
-    /// 所以这段只留最简单的活——被叫到回一句，不判图、不联网、不画不唱不拍。
+    /// 模型也跟着换：主模型在 DeepSeek 高峰翻倍，替补全天一个价。这一档连上下文
+    /// 一起省，所以比 [`Self::swapped`] 还紧一档。
     fn frugal(&self) -> Self {
         Self {
-            gate_model: self.peak.model_or(&self.gate_model).to_string(),
-            reply_model: self.peak.model_or(&self.reply_model).to_string(),
             context_images: 0,
             context_turns: (self.context_turns / 2).max(6),
             messages_budget: self.messages_budget.min(2),
@@ -477,7 +491,7 @@ impl AmbientConfig {
             video_budget: 0,
             // 高峰时段半价的是模型调用；联网搜索不便宜也更慢，这一句先不查。
             search_enabled: false,
-            ..self.clone()
+            ..self.swapped()
         }
     }
 
@@ -1132,22 +1146,29 @@ async fn consider_batch(
     if turns.is_empty() {
         return Ok(());
     }
-    // 计价高峰时段：价格翻倍，但也不必整段不出声。要么彻底睡着（`pause`），要么
-    // 压成偶尔醒一次——不跟着消息频率一直判定，只隔 `doze_gate_seconds` 看一眼，
-    // 每小时自主开口不超过 `doze_reply_limit` 次；被点名或搭话指令则立刻醒，
-    // 并且统一换上最省的一份上下文。这一段只对 DeepSeek 的模型生效。
+    // 计价高峰时段：价格翻倍。最省事的做法是换一家全天同价的便宜模型照常跑
+    // （`swap`）；想更保守可以让它睡着（`sleep`：不跟着消息频率一直判定，只隔
+    // `doze_gate_seconds` 看一眼，每小时自主开口不超过 `doze_reply_limit` 次，
+    // 被点名或搭话指令则立刻醒，并且统一换上最省的一份上下文），或者彻底不出声
+    // （`pause`）。这一段只对 DeepSeek 的模型生效。
     let stance = config.peak_stance();
-    let frugal;
+    let adjusted;
     let mut doze = false;
     let config = match stance {
         peak::Stance::Asleep => {
             debug!(target: LOG_TARGET, "群 {group} 处于计价高峰时段，本轮不出声");
             return Ok(());
         }
+        // 高峰换了替补：节奏与平时一样，只是这一轮走便宜档。
+        peak::Stance::Swapped => {
+            debug!(target: LOG_TARGET, "群 {group} 处于计价高峰时段，本轮换替补模型照常跑");
+            adjusted = config.swapped();
+            &adjusted
+        }
         peak::Stance::Dozing if mentioned || summoned => {
             info!(target: LOG_TARGET, "群 {group} 在计价高峰时段被叫醒，省着回一句");
-            frugal = config.frugal();
-            &frugal
+            adjusted = config.frugal();
+            &adjusted
         }
         peak::Stance::Dozing => {
             // 两条闸门都只在本地读时间戳，不产生费用：这一小时的自主开口配额，
@@ -1163,8 +1184,8 @@ async fn consider_batch(
             }
             info!(target: LOG_TARGET, "群 {group} 处于计价高峰时段，偶尔看一眼要不要接话");
             doze = true;
-            frugal = config.frugal();
-            &frugal
+            adjusted = config.frugal();
+            &adjusted
         }
         peak::Stance::Awake => config,
     };
@@ -1883,11 +1904,58 @@ mod tests {
         assert!(legacy.peak.model.is_empty());
     }
 
-    /// 高峰时段配了替补模型时，醒来的那一轮连模型一起换：主模型在 DeepSeek 上
-    /// 高峰翻倍，替补全天一个价。替补不够聪明，所以只让它做最简单的活。离峰与
-    /// 没配的旧配置都不换。
+    /// `swap` 模式：高峰照常跑，只把两个模型换成替补，其余一概不动（联网、看图、
+    /// 绘图都照旧）；`model` 留空时这一档与照常无异，不瞎换。
     #[test]
-    fn peak_hours_hand_the_simple_round_to_the_substitute_model() {
+    fn swap_mode_only_trades_the_models_during_peak_hours() {
+        use chrono::TimeZone as _;
+        let beijing = chrono::FixedOffset::east_opt(8 * 3_600).unwrap();
+        let peak_time = beijing
+            .with_ymd_and_hms(2026, 9, 10, 10, 0, 0)
+            .single()
+            .expect("北京时间里这个时刻存在");
+        let off_peak = beijing
+            .with_ymd_and_hms(2026, 9, 10, 20, 0, 0)
+            .single()
+            .expect("北京时间里这个时刻存在");
+
+        let config = AmbientConfig {
+            peak: peak::PeakConfig {
+                mode: peak::Mode::Swap,
+                model: "mimo/mimo-v2.6-flash".to_string(),
+                ..peak::PeakConfig::default()
+            },
+            ..AmbientConfig::default()
+        };
+        assert_eq!(config.peak_stance_at(peak_time), peak::Stance::Swapped);
+        assert_eq!(config.peak_stance_at(off_peak), peak::Stance::Awake);
+        let swapped = config.swapped();
+        assert_eq!(swapped.gate_model, "mimo/mimo-v2.6-flash");
+        assert_eq!(swapped.reply_model, "mimo/mimo-v2.6-flash");
+        // 只换模型，别的照常：联网、看图、绘图与上下文都在，这一档不省这些。
+        assert_eq!(swapped.search_enabled, config.search_enabled);
+        assert_eq!(swapped.context_images, config.context_images);
+        assert_eq!(swapped.context_turns, config.context_turns);
+        assert_eq!(swapped.draw_budget, config.draw_budget);
+        assert_eq!(swapped.messages_budget, config.messages_budget);
+        // 主配置不动：离峰那一轮仍走 DeepSeek。
+        assert_eq!(config.gate_model, "deepseek/deepseek-flash");
+        assert_eq!(config.reply_model, "deepseek/deepseek-flash");
+
+        // 没配替补时 `swap` 不该凭空改行为，退回照常。
+        let no_model = AmbientConfig {
+            peak: peak::PeakConfig {
+                mode: peak::Mode::Swap,
+                ..peak::PeakConfig::default()
+            },
+            ..AmbientConfig::default()
+        };
+        assert_eq!(no_model.peak_stance_at(peak_time), peak::Stance::Awake);
+    }
+
+    /// 睡着那一档（`sleep`）醒来时，连模型一起换，同时换上最省的一份上下文。
+    #[test]
+    fn dozing_rounds_take_the_substitute_model_and_the_thriftiest_context() {
         let config = AmbientConfig {
             peak: peak::PeakConfig {
                 model: "mimo/mimo-v2.6-flash".to_string(),
@@ -1898,11 +1966,9 @@ mod tests {
         let frugal = config.frugal();
         assert_eq!(frugal.gate_model, "mimo/mimo-v2.6-flash");
         assert_eq!(frugal.reply_model, "mimo/mimo-v2.6-flash");
-        // 主配置不动：离峰那一轮仍走 DeepSeek。
-        assert_eq!(config.gate_model, "deepseek/deepseek-flash");
-        assert_eq!(config.reply_model, "deepseek/deepseek-flash");
-        // 替补只换模型，别的最省的设置照旧。
+        // 省钱那一档更紧：不看图、上下文减半、不出网。
         assert_eq!(frugal.context_images, 0);
+        assert!(frugal.context_turns < config.context_turns);
         assert!(!frugal.search_enabled);
         assert_eq!(frugal.groups, config.groups);
     }
