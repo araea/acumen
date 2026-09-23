@@ -28,6 +28,8 @@ const LABEL_CHARS: usize = 24;
 const BRIEF_LIMIT: usize = 4;
 /// 只看最近的这些条消息来猜话题，与口吻样本同一条口径。
 const TOPIC_TURNS: usize = 12;
+/// 记录里能偷的最多点名几条。刷图的时候一屏全是图，点名最近这几条就够。
+const LOOT_LIMIT: usize = 3;
 
 /// 收进来的是哪一种。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -245,45 +247,93 @@ pub(crate) fn file_of(entry: &Entry) -> Option<PathBuf> {
     }
 }
 
-/// 发言轮贴进提示词的那一段；没 attach 过、库是空的、或者库是关的就返回空串。
+/// 发言轮贴进提示词的那一段；库是关的、或者库空着而眼前也没什么可偷时返回空串。
 ///
-/// 摆在手边的这几张按「离眼前的话有多近」挑：接梗、吐槽、被逗乐这些场合用不用得上，
-/// 看的就是它自己写的那个标签与此刻话题的重合度。一条都贴不上时也给几张——那时挑出来的
-/// 是还没怎么用过的，新偷进来的正好露一面。
+/// 两样东西摆在手边。一是库里的几张，按「离眼前的话有多近」挑：接梗、吐槽、被逗乐这些
+/// 场合用不用得上，看的就是它自己写的那个标签与此刻话题的重合度；一条都贴不上时也给
+/// 几张——那时挑出来的是还没怎么用过的，新偷进来的正好露一面。
+///
+/// 二是记录里刚有人发过的图与表情包，连着消息 ID 一起点出来。从前库空着时这一段整个
+/// 不出现，偷这件事只剩工具说明里的一句话，于是一次都没偷过，库也就一直空着——
+/// 先有货架才会去偷，先偷了才会有货架。点名眼前能偷的那几条，这个圈就解开了。
 pub(crate) fn brief(turns: &[Turn], max: usize) -> String {
     if max == 0 {
         return String::new();
     }
+    let loot = loot(turns);
     let store = lock();
     let total = store.library.entries.len();
-    if total == 0 {
-        return String::new();
+    let mut out = String::new();
+    if total > 0 {
+        let topic = tone::grams(&recent(turns));
+        let mut ranked: Vec<(&Entry, f32)> = store
+            .library
+            .entries
+            .iter()
+            .map(|entry| (entry, tone::affinity(&entry.label, &topic)))
+            .collect();
+        ranked.sort_by(|a, b| {
+            b.1.total_cmp(&a.1)
+                .then(a.0.uses.cmp(&b.0.uses))
+                .then(b.0.added_at.cmp(&a.0.added_at))
+                // 同一秒里偷进来的几张按编号倒着排：刚偷的先露一面。
+                .then(b.0.id.cmp(&a.0.id))
+        });
+        let lines: Vec<String> = ranked
+            .iter()
+            .take(BRIEF_LIMIT)
+            .map(|(entry, _)| format!("- {}", entry.line()))
+            .collect();
+        out.push_str(&format!(
+            "偷来的表情包（一共 {total} 张，这几张离眼前的话最近）：\n{}\n\
+             要发就用 send 里的 sticker 配 id。\n",
+            lines.join("\n")
+        ));
+    } else if !loot.is_empty() {
+        out.push_str("你的表情包库还空着，库里没有编号可取。\n");
     }
-    let topic = tone::grams(&recent(turns));
-    let mut ranked: Vec<(&Entry, f32)> = store
-        .library
-        .entries
+    if !loot.is_empty() {
+        out.push_str(&format!(
+            "记录里刚有人发了图或表情包，好玩的可以偷来回一张（sticker 配 message_id，\
+             一条里有好几张就用 index 从 0 数），顺手写一句 note 说清它是什么、什么场合发，\
+             往后才挑得出来：\n{}\n",
+            loot.join("\n")
+        ));
+    }
+    out
+}
+
+/// 记录里最近那几条带图或商城表情的消息，一条一行：`- id=123 老张：[表情包:开心]`。
+///
+/// 自己发的不算——那张要么本来就在库里，要么是自己画的。
+fn loot(turns: &[Turn]) -> Vec<String> {
+    turns
         .iter()
-        .map(|entry| (entry, tone::affinity(&entry.label, &topic)))
-        .collect();
-    ranked.sort_by(|a, b| {
-        b.1.total_cmp(&a.1)
-            .then(a.0.uses.cmp(&b.0.uses))
-            .then(b.0.added_at.cmp(&a.0.added_at))
-            // 同一秒里偷进来的几张按编号倒着排：刚偷的先露一面。
-            .then(b.0.id.cmp(&a.0.id))
-    });
-    let lines: Vec<String> = ranked
-        .iter()
-        .take(BRIEF_LIMIT)
-        .map(|(entry, _)| format!("- {}", entry.line()))
-        .collect();
-    format!(
-        "偷来的表情包（一共 {total} 张，这几张离眼前的话最近）：\n{}\n\
-         要发就用 send 里的 sticker 配 id；从记录里偷来一张时顺手写一句 note 说清它是什么，\
-         往后才挑得出来。\n",
-        lines.join("\n")
-    )
+        .rev()
+        .take(TOPIC_TURNS)
+        .filter(|turn| !turn.from_me && turn.message_id != 0)
+        .filter_map(|turn| {
+            let count = turn
+                .elements
+                .0
+                .iter()
+                .filter(|segment| matches!(segment.type_.as_str(), "image" | "mface"))
+                .count();
+            (count > 0).then(|| {
+                let what = match clean_label(&turn.text) {
+                    empty if empty.is_empty() => "[图片]".to_string(),
+                    text => text,
+                };
+                let many = if count > 1 {
+                    format!("（{count} 张）")
+                } else {
+                    String::new()
+                };
+                format!("- id={} {}：{what}{many}", turn.message_id, turn.name.trim())
+            })
+        })
+        .take(LOOT_LIMIT)
+        .collect()
 }
 
 /// 最近这些条消息拼成的一段话，用来猜此刻在聊什么。
@@ -606,6 +656,53 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(lines.len(), BRIEF_LIMIT, "{text}");
         assert!(lines[0].contains("#6"), "{text}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 库空着的时候也得告诉它能偷：记录里谁刚发了图、消息 ID 是几，一条一行点出来。
+    /// 从前这一段在库空时整个不出现，偷这件事就一直想不起来，库也就一直是空的。
+    #[test]
+    fn an_empty_library_still_points_at_what_can_be_stolen() {
+        let _guard = exclusive();
+        let dir = scratch("loot");
+        // 眼前没图、库也空着：什么都不贴。
+        assert!(brief(&[turn("群友", "今天又要加班")], 20).is_empty());
+
+        let mut meme = turn("老张", "[表情包:捂脸笑]");
+        meme.message_id = 321;
+        meme.elements = crate::message::Message::new().mface("296f", "241904", "k1");
+        let mut pics = turn("阿云", "看这个[图片]");
+        pics.message_id = 322;
+        pics.elements = crate::message::Message::new()
+            .image("https://example.com/a.png")
+            .image("https://example.com/b.png");
+        let mut mine = turn("我", "[图片]");
+        mine.message_id = 323;
+        mine.from_me = true;
+        mine.elements = crate::message::Message::new().image("https://example.com/c.png");
+        let text = brief(&[meme, pics, turn("群友", "笑死"), mine], 20);
+        assert!(text.contains("库还空着"), "{text}");
+        assert!(text.contains("- id=321 老张：[表情包:捂脸笑]"), "{text}");
+        assert!(text.contains("- id=322 阿云：看这个[图片]（2 张）"), "{text}");
+        // 自己发的不点名；最近的排前面。
+        assert!(!text.contains("id=323"), "{text}");
+        assert!(text.find("id=322") < text.find("id=321"), "{text}");
+        assert!(text.contains("message_id") && text.contains("note"), "{text}");
+        for word in ["禁止", "不得", "必须", "不要", "不能"] {
+            assert!(!text.contains(word), "{text}");
+        }
+
+        // 库里有货之后「库还空着」那句就不说了，货架和能偷的两段都在。
+        keep(&shop("1", "9"), &turn("老张", "笑死"), 1, "猫捂着嘴笑", None, 20);
+        let mut again = turn("老张", "[图片]");
+        again.message_id = 400;
+        again.elements = crate::message::Message::new().image("https://example.com/d.png");
+        let text = brief(&[again], 20);
+        assert!(!text.contains("库还空着"), "{text}");
+        assert!(text.contains("#1 猫捂着嘴笑"), "{text}");
+        assert!(text.contains("- id=400 老张：[图片]"), "{text}");
+        // 关掉库时哪一段都不出现。
+        assert!(brief(&[turn("群友", "加班")], 0).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 

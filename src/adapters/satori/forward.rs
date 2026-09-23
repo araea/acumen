@@ -398,7 +398,7 @@ pub fn describe(message: &Message) -> String {
             }
             "face" => out.push_str(&format!("[表情:{}]", string(segment, "id"))),
             "image" => out.push_str("[图片]"),
-            "mface" => out.push_str("[表情包]"),
+            "mface" => out.push_str(&mface_label(string(segment, "summary"))),
             "record" => out.push_str("[语音]"),
             "video" => out.push_str("[视频]"),
             "file" => {
@@ -424,6 +424,30 @@ pub fn describe(message: &Message) -> String {
         format!("{kept}…（本条已截断）")
     } else {
         flat
+    }
+}
+
+/// 商城表情在记录里的样子：带上它自己的名字（`[表情包:开心]`）。
+///
+/// 商城表情没有图片地址，模型看不见它长什么样；只写一个 `[图片]`，它就和截图、照片
+/// 混在一起，也就想不到这是一张能偷来回人的表情包。QQ 给的名字自带方括号
+/// （`[开心]`），套进标记之前先剥掉，免得方括号嵌套把占位标记切坏。
+pub(crate) fn mface_label(summary: &str) -> String {
+    let name: String = summary
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !matches!(c, '[' | ']'))
+        .take(16)
+        .collect();
+    if name.is_empty() {
+        "[表情包]".to_string()
+    } else {
+        format!("[表情包:{name}]")
     }
 }
 
@@ -454,6 +478,15 @@ fn text_id(value: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shop_sticker_labels_keep_their_own_name_without_nested_brackets() {
+        assert_eq!(super::mface_label("[开心]"), "[表情包:开心]");
+        assert_eq!(super::mface_label(" 捂脸 笑 "), "[表情包:捂脸 笑]");
+        assert_eq!(super::mface_label(""), "[表情包]");
+        assert_eq!(super::mface_label("[]"), "[表情包]");
+        assert!(!super::mface_label("[a[b]c]").contains("[b"));
+    }
+
     use super::*;
 
     fn proxy() -> message::ResourceProxy {

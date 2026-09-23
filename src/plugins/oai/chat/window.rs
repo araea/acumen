@@ -492,7 +492,13 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                     {
                         images.push(url.to_string());
                     }
-                    text.push_str("[图片]");
+                    if kind == "mface" {
+                        text.push_str(&crate::adapters::satori::forward::mface_label(
+                            data.get_str("summary").unwrap_or(""),
+                        ));
+                    } else {
+                        text.push_str("[图片]");
+                    }
                 }
                 "face" => text.push_str(&format!("[表情:{}]", data.get_str("id").unwrap_or("?"))),
                 "record" => text.push_str("[语音]"),
@@ -919,6 +925,27 @@ mod tests {
         assert!(transcript(&[turn]).contains("https://example.com/release"));
     }
 
+
+    /// 商城表情带着自己的名字进记录：它没有图片地址，模型看不见它，只写 `[图片]`
+    /// 就和截图混成一样的东西，也想不到那是一张能偷来回人的表情包。
+    #[test]
+    fn shop_stickers_are_named_apart_from_pictures() {
+        let raw = event(serde_json::json!({
+            "post_type": "message", "message_type": "group", "group_id": 1,
+            "user_id": 42, "message_id": 9,
+            "sender": {"nickname": "老张"},
+            "message": [
+                {"type": "mface", "data": {"emoji_id": "296f", "emoji_package_id": 241904,
+                    "key": "k1", "summary": "[捂脸笑]"}},
+                {"type": "mface", "data": {"emoji_id": "1"}},
+            ],
+        }));
+        let turn = turn_from(&MessageEvent(&raw), 10000);
+        assert_eq!(turn.text, "[表情包:捂脸笑][表情包]");
+        assert!(turn.images.is_empty());
+        // 与商城表情那一段原样留着，偷的时候取得到。
+        assert_eq!(crate::plugins::oai::chat::actions::sticker(&turn, 1).unwrap().type_, "mface");
+    }
 
     #[test]
     fn own_messages_are_recognized_and_media_only_turns_keep_a_label() {
