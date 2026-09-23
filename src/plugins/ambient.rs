@@ -1310,6 +1310,16 @@ fn reply_target(turns: &[Turn]) -> Option<i64> {
         .map(|turn| turn.message_id)
 }
 
+/// 这条消息实际引谁。
+///
+/// 模型点名的那条优先——但得真在本批记录里，否则它随口写的一个消息号会让整条消息
+/// 引到不存在的目标上；点不出或没点名，才用 [`reply_target`] 的默认目标。
+fn quote_target(explicit: Option<i64>, fallback: Option<i64>, turns: &[Turn]) -> Option<i64> {
+    explicit
+        .filter(|id| *id != 0 && turns.iter().any(|turn| turn.message_id == *id))
+        .or(fallback)
+}
+
 /// 让人格模型写，然后按人的节奏发出去。
 #[allow(clippy::too_many_arguments)]
 async fn speak_up(
@@ -1329,6 +1339,7 @@ async fn speak_up(
 ) -> anyhow::Result<()> {
     let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai");
     // 与判定看到的是同一批图：已转码成模型收得下的格式，GIF 表情包也不例外。
+    // 每张都带着出处（来自哪条消息），人格据此把「讲的那张」对回正确的消息号。
     let images = vision::usable_images(turns, config.context_images).await;
 
     let started = Instant::now();
@@ -1418,10 +1429,11 @@ async fn speak_up(
         return Ok(());
     }
 
-    // 兼容文字路径要引谁：优先引「叫到我的那条」（@、引用我、戳我），那才是这句
-    // 回应真正对着的话；没人叫的时候才落到本批最后一条群友消息。消息号为 0 的
-    // 平台事件（戳一戳、撤回）引不了，跳过。
-    let reply_to = reply_target(turns);
+    // 兼容文字路径要引谁：模型用 `[reply:消息号]` 点名了就引那条（须在本批记录里，
+    // 免得它凭记忆写一个引不到或引错的消息号）；没点名才退回本批默认目标——优先
+    // 「叫到我的那条」，没人叫就引最新那条群友消息。两张图片消息挨着来时，默认目标
+    // 只会是后一张，模型讲的是前一张就露馅了，所以点名这一路要留给它。
+    let fallback = reply_target(turns);
     let pace = config.pace(mood::snapshot(group));
     tokio::time::sleep(pace.think_delay(started.elapsed())).await;
 
@@ -1454,7 +1466,7 @@ async fn speak_up(
 
         let mut message = Message::new();
         if utterance.reply
-            && let Some(id) = reply_to
+            && let Some(id) = quote_target(utterance.reply_to, fallback, turns)
         {
             message = message.reply(id);
         }
@@ -2102,6 +2114,28 @@ mod tests {
         };
         assert_eq!(reply_target(&[poked]), None);
         assert_eq!(reply_target(&[]), None);
+    }
+
+    /// 模型点名引用时以它为准——两条图片消息挨着发来的场景就靠这一条定准。
+    #[test]
+    fn an_explicit_quote_target_wins_over_the_default() {
+        let turn = |id: i64| Turn {
+            message_id: id,
+            ..Turn::default()
+        };
+        // 两条群友消息，谁也没叫我：默认只会引最新那条（12，也就是第二张图）。
+        let turns = [turn(11), turn(12)];
+        let fallback = reply_target(&turns);
+        assert_eq!(fallback, Some(12), "没人叫我时默认引最新一条");
+        // 模型讲的是第一张图，点名引 11：就算默认目标是 12，也听它的。
+        assert_eq!(quote_target(Some(11), fallback, &turns), Some(11));
+        // 点名的是一个本批记录里没有的消息号：退回默认目标，别引到引不到的地方。
+        assert_eq!(quote_target(Some(999), fallback, &turns), Some(12));
+        // 没点名就照默认来。
+        assert_eq!(quote_target(None, fallback, &turns), Some(12));
+        // 默认也引不了（记录里全是自己或消息号为 0 的平台事件）时，点名仍能定准。
+        assert_eq!(quote_target(Some(11), None, &turns), Some(11));
+        assert_eq!(quote_target(None, None, &turns), None);
     }
 
     #[test]

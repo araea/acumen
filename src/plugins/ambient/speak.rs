@@ -46,7 +46,7 @@ fn house_rules(messages_budget: usize, focus_max_seconds: u64) -> String {
 
 想继续关注时，在正文前独占一行写 [focus:{{\"users\":[QQ号],\"topic\":\"当前具体话题\",\"seconds\":180}}]：QQ号取自记录，最多三人，users 为空表示只关注话题，期限最多 {focus_max_seconds} 秒。它是给你自己看的记号，不会替你自动回复，也不当正文发出去；[focus:{{\"seconds\":0}}] 离场，省略这行保持原状。
 
-未使用聊天动作工具时的兼容文字输出：一行就是一条消息，最多 {messages_budget} 行，正文之外的解释、前缀和引号不会被当作消息。行内可用 [at:QQ号]、[face:表情ID]、[img:图片直链]；独占一行可用 [poke:QQ号]、[dice]、[rps]、[wait:秒数]、[silent]。想用更多花样就读 skill `satori-reply`。"
+未使用聊天动作工具时的兼容文字输出：一行就是一条消息，最多 {messages_budget} 行，正文之外的解释与引号不算。行内可用 [at:QQ号]、[face:表情ID]、[img:图片直链]；独占一行可用 [poke:QQ号]、[dice]、[rps]、[wait:秒数]、[silent]。引用在行首：[reply] 引最后一条，[reply:消息号] 引点名那条（讲哪张图就引哪条）。更多花样读 skill `satori-reply`。"
     )
 }
 
@@ -136,7 +136,7 @@ pub(crate) async fn compose(
     search: &crate::plugins::oai::search::SearchConfig,
     stall: Option<std::time::Duration>,
     turns: &[Turn],
-    images: &[String],
+    images: &[super::vision::Usable],
     called: Called,
     scene: &Scene,
     live: Option<(
@@ -202,12 +202,18 @@ pub(crate) async fn compose(
         web.is_some(),
     );
     let prompt = format!(
-        "{}{}最近的群聊记录：\n{}\n{}",
+        "{}{}最近的群聊记录：\n{}\n{}\n{}",
         scene.own,
         scene.brief(),
         transcript(turns),
-        closing(called)
+        closing(called),
+        super::vision::provenance(images)
     );
+    // 图块紧跟在正文后面，先后与出处那一行一一对应；这里只取模型收得下的部分。
+    let urls: Vec<String> = images
+        .iter()
+        .map(|image| image.data_url.clone())
+        .collect();
     let reply = tokio::time::timeout(
         config.reply_timeout(),
         agent::run(AgentRun {
@@ -228,7 +234,7 @@ pub(crate) async fn compose(
             web: web.as_ref(),
             stall,
             prompt: &prompt,
-            images,
+            images: &urls,
             ..AgentRun::new()
         }),
     )

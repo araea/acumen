@@ -134,12 +134,12 @@ pub(crate) async fn judge(
     }
     let images = vision::usable_images(turns, config.context_images).await;
     if !images.is_empty() {
-        parts.push(UserContent::Text(Text::new(
-            "下面是记录里最新的图片，按出现顺序：",
-        )));
-        for data_url in images {
+        // 图片块本身不带出处；这里把「哪张图来自哪条消息」写清，判定才分得清两张
+        // 挨着发来的图（否则它可能把第二张读成第一张）。
+        parts.push(UserContent::Text(Text::new(vision::provenance(&images))));
+        for image in images {
             parts.push(UserContent::Image(Image {
-                data: DocumentSourceKind::Url(data_url),
+                data: DocumentSourceKind::Url(image.data_url),
                 media_type: None,
                 detail: None,
                 additional_params: None,

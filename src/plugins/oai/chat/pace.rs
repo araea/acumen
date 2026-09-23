@@ -17,6 +17,9 @@ pub(crate) struct Utterance {
     pub chars: usize,
     /// 以引用触发消息的形式发出。
     pub reply: bool,
+    /// 要引哪条消息：模型写 `[reply:消息号]` 点名时是它，`[reply]` 时为 None
+    /// （由发言侧退回本批默认目标）。
+    pub reply_to: Option<i64>,
     /// 发出前额外停顿的秒数（模型显式要求的 `[wait:n]`）。
     pub wait: f32,
 }
@@ -98,7 +101,11 @@ fn action() -> &'static Regex {
 /// 解析出来但还没定形的一条：动作照原样，文字要先等断句分完剩下的额度。
 enum Draft {
     Act(Message),
-    Text { body: String, reply: bool },
+    Text {
+        body: String,
+        reply: bool,
+        reply_to: Option<i64>,
+    },
 }
 
 /// 解析模型输出：一行一条消息，标记按 `satori-reply` skill 的约定翻译成消息段。
@@ -143,10 +150,7 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
         if drafts.len() >= max_messages {
             continue;
         }
-        let (reply, body) = match line.strip_prefix("[reply]") {
-            Some(rest) => (true, rest.trim()),
-            None => (false, line),
-        };
+        let (reply, reply_to, body) = reply_prefix(line);
         if body.is_empty() {
             continue;
         }
@@ -154,6 +158,7 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
             Draft::Text {
                 body: body.to_string(),
                 reply,
+                reply_to,
             },
             std::mem::take(&mut pending_wait),
         ));
@@ -168,9 +173,14 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
                 message,
                 chars: 0,
                 reply: false,
+                reply_to: None,
                 wait,
             }),
-            Draft::Text { body, reply } => {
+            Draft::Text {
+                body,
+                reply,
+                reply_to,
+            } => {
                 // 标记本身不能切，但带标记的长句照样要换气：护住 `[at:…]`、`[img:…]`
                 // 这些 token 的下标，标记之外该切还切。从前是整行不动，于是一句
                 // `[at:…] + 一长段` 会原样发成一条几百字不带标点的长文。
@@ -187,6 +197,7 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
                         chars,
                         // 引用只挂在第一条上：后面几条是同一口气里接着说的。
                         reply: reply && index == 0,
+                        reply_to: if index == 0 { reply_to } else { None },
                         wait: if index == 0 { wait } else { 0.0 },
                     });
                 }
@@ -199,6 +210,27 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
     } else {
         Speech::Say(out)
     }
+}
+
+/// 行首的引用前缀：`[reply]` 引本批默认目标，`[reply:消息号]` 点名引某一条。
+///
+/// 返回「是否引用、点名的消息号、剩下要发的正文」。号码写得不合法时整行原样当文字
+/// 处理——群友本来就会打方括号，认不出来的那种留着比吞掉好。
+fn reply_prefix(line: &str) -> (bool, Option<i64>, &str) {
+    let Some(rest) = line.strip_prefix("[reply") else {
+        return (false, None, line);
+    };
+    if let Some(rest) = rest.strip_prefix(']') {
+        return (true, None, rest.trim_start());
+    }
+    if let Some(rest) = rest.strip_prefix(':')
+        && let Some((id, rest)) = rest.split_once(']')
+        && let Ok(id) = id.trim().parse::<i64>()
+        && id != 0
+    {
+        return (true, Some(id), rest.trim_start());
+    }
+    (false, None, line)
 }
 
 /// 去掉模型偶尔带上的代码围栏、列表符号与首尾空白。
@@ -388,6 +420,7 @@ mod tests {
         let items = say("[reply][at:114514]第三步缺了个前提 [face:178]");
         assert_eq!(items.len(), 1);
         assert!(items[0].reply);
+        assert_eq!(items[0].reply_to, None, "光写 [reply] 不点名，交给发言侧定默认目标");
         let kinds: Vec<&str> = items[0]
             .message
             .0
@@ -397,6 +430,28 @@ mod tests {
         assert_eq!(kinds, ["at", "text", "text", "face"]);
         assert_eq!(text_of(&items[0]), " 第三步缺了个前提 ");
         assert!(items[0].chars > 4);
+    }
+
+    /// 两条图片消息挨着来时，模型得能点名引哪一条：`[reply:消息号]` 把目标带出来。
+    #[test]
+    fn an_explicit_reply_prefix_names_the_target_message() {
+        let items = say("[reply:61150]这张我上个月拍过同款");
+        assert_eq!(items.len(), 1);
+        assert!(items[0].reply);
+        assert_eq!(items[0].reply_to, Some(61150));
+        assert_eq!(text_of(&items[0]), "这张我上个月拍过同款");
+
+        // 号码不合法时整行原样当文字，不吞内容也不谎报目标。
+        for raw in ["[reply:abc] 上面那张", "[reply:] 上面那张", "[reply:0] 上面那张"] {
+            let items = say(raw);
+            assert!(!items[0].reply, "{raw}");
+            assert_eq!(items[0].reply_to, None, "{raw}");
+            assert_eq!(text_of(&items[0]), raw);
+        }
+        // `[reply]` 后面的正文照旧去掉前缀。
+        let items = say("[reply]上面那张");
+        assert!(items[0].reply);
+        assert_eq!(text_of(&items[0]), "上面那张");
     }
 
     /// `@` 后面该有几个空格就是几个：模型自己留了就不再添，后面没话也不补。

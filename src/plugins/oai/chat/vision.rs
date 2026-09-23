@@ -68,25 +68,64 @@ fn remember(url: &str, value: Option<String>) {
     guard.insert(url.to_string(), (value, std::time::Instant::now()));
 }
 
-/// 最近的若干张图片，转成可直接送进模型的 data URL，按时间正序。
+/// 一张能送进模型的图，连同它出自哪条消息。
+///
+/// 图片是多模态块，本身不带出处；记录里每条消息又只写〔图片 ×N〕。两张图挨着来
+/// 时，模型看得到两张图、却分不清哪个块是哪条消息里的——于是它明明在讲第一张，
+/// 引用却指到了第二张。出处随图一起递过去，模型照着记录上的消息号引用就不会指错。
+pub(crate) struct Usable {
+    /// 这张图来自哪条消息；0 表示不来自记录（比如头像）。
+    pub message_id: i64,
+    /// 在这条消息里是第几张，1 起。
+    pub index: usize,
+    /// 模型直接收得下的 data URL。
+    pub data_url: String,
+}
+
+/// 最近的若干张图片，转成可直接送进模型的 data URL，按时间正序，各带出处。
 ///
 /// 下载与转码都可能失败，失败的那张直接跳过——判定宁可少看一张图，也不该因为
 /// 一张表情包整轮报废。
-pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<String> {
+pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<Usable> {
     if limit == 0 {
         return Vec::new();
     }
     let mut out = Vec::new();
-    for url in turns.iter().rev().flat_map(|turn| turn.images.iter().rev()) {
-        if let Some(usable) = usable_image(url).await {
-            out.push(usable);
-            if out.len() >= limit {
-                break;
+    for turn in turns.iter().rev() {
+        for (index, url) in turn.images.iter().enumerate().rev() {
+            if let Some(data_url) = usable_image(url).await {
+                out.push(Usable {
+                    message_id: turn.message_id,
+                    index: index + 1,
+                    data_url,
+                });
+                if out.len() >= limit {
+                    break;
+                }
             }
+        }
+        if out.len() >= limit {
+            break;
         }
     }
     out.reverse();
     out
+}
+
+/// 随附图与记录里消息的对应关系，写成一行给模型读。
+///
+/// 只列得出处的那几张，顺序与真正附在提示词后面的图片块一一对应；一句都没有时
+/// 返回空串（没有图，就没有要交代的对应）。
+pub(crate) fn provenance(images: &[Usable]) -> String {
+    let entries: Vec<String> = images
+        .iter()
+        .filter(|image| image.message_id != 0)
+        .map(|image| format!("id={} 的第 {} 张", image.message_id, image.index))
+        .collect();
+    if entries.is_empty() {
+        return String::new();
+    }
+    format!("随附的图片依次对应记录里的：{}。\n", entries.join("、"))
 }
 
 /// 一张图片直链 → 模型能收下的 data URL；下不动或解不开时返回 `None`。
@@ -207,5 +246,33 @@ mod tests {
         assert!(normalize(&data_url("image/gif", b"broken")).is_none());
         assert!(normalize("https://example.com/a.png").is_none());
         assert!(normalize(&data_url("application/pdf", b"%PDF-")).is_none());
+    }
+
+    /// 出处按图块顺序逐张写出，模型据此把「我讲的那张」对回记录里的消息号。
+    #[test]
+    fn provenance_lists_each_image_with_its_message() {
+        let images = [
+            Usable {
+                message_id: 111,
+                index: 1,
+                data_url: "data:,".into(),
+            },
+            Usable {
+                message_id: 222,
+                index: 2,
+                data_url: "data:,".into(),
+            },
+        ];
+        let text = provenance(&images);
+        assert!(text.contains("id=111 的第 1 张"), "{text}");
+        assert!(text.contains("id=222 的第 2 张"), "{text}");
+        // 不来自记录的那张（头像）不占用对应关系。
+        let avatar = [Usable {
+            message_id: 0,
+            index: 1,
+            data_url: "data:,".into(),
+        }];
+        assert!(provenance(&avatar).is_empty());
+        assert!(provenance(&[]).is_empty());
     }
 }
