@@ -4,10 +4,11 @@
 //!
 //! ```text
 //! [satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"…"}]}}]
+//! [send]parts:[{"type":"text","text":"…"},{"type":"sticker","id":1}]
 //! ```
 //!
 //! 那是协议，不是要说的话；原样发进群，群友看到的是一串 JSON（线上记录 id 134245，
-//! 群里几个人还照着抄了一遍）。所以出站之前必须把它摘掉：`send` 的正文接过来当普通
+//! 群里几个人还照着抄了一遍；`[send]parts` 也在线上漏出过）。所以出站之前必须把它摘掉：`send` 的正文接过来当普通
 //! 消息发，其余动作（戳一戳、撤回、管理）与读不到结尾的残片整段丢弃——从文字里执行
 //! 动作会绕开额度与权限那两道闸，宁可不做。
 //!
@@ -16,12 +17,23 @@
 
 use std::borrow::Cow;
 
-/// 伪工具调用的开头。真工具调用走的是结构化 `tool_calls`，不会带这个标记。
-const MARKER: &str = "[satori_action:";
+/// 伪工具调用的开头。真工具调用走的是结构化 `tool_calls`，不会带这些标记。
+const ACTION_MARKER: &str = "[satori_action:";
+const SEND_MARKER: &str = "[send]parts:";
+
+fn next_marker(raw: &str) -> Option<(usize, &str)> {
+    match (raw.find(ACTION_MARKER), raw.find(SEND_MARKER)) {
+        (Some(action), Some(send)) if action < send => Some((action, ACTION_MARKER)),
+        (Some(_), Some(send)) => Some((send, SEND_MARKER)),
+        (Some(action), None) => Some((action, ACTION_MARKER)),
+        (None, Some(send)) => Some((send, SEND_MARKER)),
+        (None, None) => None,
+    }
+}
 
 /// 摘掉正文里的伪工具调用，返回可以照常断句、翻译标记的文字。
 pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
-    let Some(mut at) = raw.find(MARKER) else {
+    let Some((mut at, mut marker)) = next_marker(raw) else {
         return Cow::Borrowed(raw);
     };
     let mut out = String::with_capacity(raw.len());
@@ -29,20 +41,32 @@ pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
     loop {
         // 标记之前的原文原样留着——它可能是上半句正常的话。
         out.push_str(&raw[cursor..at]);
-        let tail = &raw[at + MARKER.len()..];
-        match object_end(tail) {
+        let tail = &raw[at + marker.len()..];
+        let end = if marker == ACTION_MARKER {
+            json_end(tail, b'{')
+        } else {
+            json_end(tail, b'[')
+        };
+        match end {
             // 配平的 JSON：认出 `send` 就把正文接过来，其余动作丢掉。
             Some(end) => {
                 let value = serde_json::from_str::<serde_json::Value>(&tail[..end]).ok();
-                if let Some(text) = send_text(value.as_ref()) {
+                let text = if marker == ACTION_MARKER {
+                    send_text(value.as_ref())
+                } else {
+                    value.as_ref().and_then(|value| parts_text(value.as_array()?))
+                };
+                if let Some(text) = text {
                     out.push_str(&text);
                 }
-                cursor = at + MARKER.len() + end;
-                // JSON 与收尾的 `]` 之间允许夹空白（含换行）。
-                let rest = &raw[cursor..];
-                cursor += rest.len() - rest.trim_start().len();
-                if raw[cursor..].starts_with(']') {
-                    cursor += 1;
+                cursor = at + marker.len() + end;
+                if marker == ACTION_MARKER {
+                    // JSON 与收尾的 `]` 之间允许夹空白（含换行）。
+                    let rest = &raw[cursor..];
+                    cursor += rest.len() - rest.trim_start().len();
+                    if raw[cursor..].starts_with(']') {
+                        cursor += 1;
+                    }
                 }
             }
             // 读不到结尾的残片（模型写到一半被截断）：从标记起整段丢掉，
@@ -52,8 +76,11 @@ pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
                 break;
             }
         }
-        match raw[cursor..].find(MARKER) {
-            Some(next) => at = cursor + next,
+        match next_marker(&raw[cursor..]) {
+            Some((next, found)) => {
+                at = cursor + next;
+                marker = found;
+            }
             None => break,
         }
     }
@@ -61,13 +88,13 @@ pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// 从 `{` 开始找一个配平的 JSON 对象，返回闭括号之后的下标（字节）。
+/// 从 `{` 或 `[` 开始找一段配平的 JSON，返回闭括号之后的下标（字节）。
 ///
-/// 字符串里的花括号与 `\` 转义都不算数，否则 `{"text":" } "}` 会提前收尾。
-/// 找不到 `{`、或一直不配平，都给 `None`。
-fn object_end(text: &str) -> Option<usize> {
-    let start = text.find('{')?;
-    let mut depth = 0usize;
+/// 字符串里的括号与 `\` 转义都不算数，否则正文中的括号会提前收尾。
+/// 找不到开括号、或一直不配平，都给 `None`。
+fn json_end(text: &str, open: u8) -> Option<usize> {
+    let start = text.bytes().position(|byte| byte == open)?;
+    let mut stack = Vec::new();
     let mut in_string = false;
     let mut escaped = false;
     for (index, byte) in text.bytes().enumerate().skip(start) {
@@ -83,10 +110,13 @@ fn object_end(text: &str) -> Option<usize> {
         }
         match byte {
             b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
+            b'{' | b'[' => stack.push(byte),
+            b'}' | b']' => {
+                let expected = if byte == b'}' { b'{' } else { b'[' };
+                if stack.pop()? != expected {
+                    return None;
+                }
+                if stack.is_empty() {
                     return Some(index + 1);
                 }
             }
@@ -107,7 +137,10 @@ fn send_text(value: Option<&serde_json::Value>) -> Option<String> {
     if request.get("action")?.as_str()? != "send" {
         return None;
     }
-    let parts = request.get("parts")?.as_array()?;
+    parts_text(request.get("parts")?.as_array()?)
+}
+
+fn parts_text(parts: &[serde_json::Value]) -> Option<String> {
     let mut out = String::new();
     // 只有相邻的两个 text 段之间才补换行——它们代表模型自己分的两条消息。
     let mut last_was_text = false;
@@ -160,6 +193,26 @@ mod tests {
     fn a_send_call_written_as_text_becomes_its_message() {
         let raw = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"昇腾归属这事我还真查过"}]}}]"#;
         assert_eq!(strip(raw), "昇腾归属这事我还真查过");
+    }
+
+    /// 线上原样漏出的 MiMo 写法：只有文字可作为兼容输出，表情包要走真实工具。
+    #[test]
+    fn send_parts_written_as_text_keep_only_the_message() {
+        let raw = r#"[send]parts:[{"text":"痔疮还带揽客的呀","type":"text"},{"type":"sticker","id":1}]"#;
+        assert_eq!(strip(raw), "痔疮还带揽客的呀");
+        assert_eq!(strip("[send]parts:[{\"type\":\"sticker\",\"id\":1}]"), "");
+        assert_eq!(strip("[send]parts:[{\"type\":\"text\""), "");
+    }
+
+    #[test]
+    fn both_pseudo_call_forms_can_appear_in_one_reply() {
+        let raw = concat!(
+            "开头 ",
+            r#"[send]parts:[{"type":"text","text":"第一句，里面有 ] 和 [ 字符"}]"#,
+            " 接着 ",
+            r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"第二句"}]}}]"#,
+        );
+        assert_eq!(strip(raw), "开头 第一句，里面有 ] 和 [ 字符 接着 第二句");
     }
 
     /// 线上真正漏出去的那一条：模型写到一半断了，只有一个前缀，没有花括号。

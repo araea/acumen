@@ -109,7 +109,7 @@ enum Draft {
 /// 不认识的方括号原样保留——群友本来就会打 `[笑]`，把它们吞掉比留着更糟。
 pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speech {
     // 伪工具调用要在这里摘掉，不能等分完行、切完句：JSON 里的逗号是换气处，
-    // 先断句会把 `[satori_action:…]` 切成两半，后半截照样当正文漏进群。
+    // 先断句会把 `[satori_action:…]` 或 `[send]parts:…` 切成两半，后半截照样漏进群。
     let raw = protocol::strip(raw);
     let raw: &str = &raw;
     let mut drafts: Vec<(Draft, f32)> = Vec::new();
@@ -468,6 +468,14 @@ mod tests {
             .filter_map(|s| s.data.get("text").and_then(|v| v.as_str()))
             .collect();
         assert_eq!(text, "行 我看看");
+    }
+
+    #[test]
+    fn a_send_parts_call_does_not_leak_through_ambient_reply_parsing() {
+        let raw = r#"[send]parts:[{"text":"痔疮还带揽客的呀","type":"text"},{"type":"sticker","id":1}]"#;
+        let items = say(raw);
+        assert_eq!(items.len(), 1);
+        assert_eq!(text_of(&items[0]), "痔疮还带揽客的呀");
     }
 
     /// 清洗必须排在断句之前：JSON 里的逗号在 [`breath`] 眼里是换气处，
