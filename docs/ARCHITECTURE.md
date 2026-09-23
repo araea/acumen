@@ -161,20 +161,17 @@ format!("{}{}", render::web::DESIGN_SYSTEM, 本卡版式)   // 拼成一个 <sty
 
 - **系统层** `res/cards/m3e.css`（`render::web::DESIGN_SYSTEM`）：按 Material 3
   Expressive 的口径定义字阶、形状、高度、间距、配色角色与组件基元（`.md-card`、
-  `.md-badge`、`.md-chip`、`.md-callout`、`.md-command`…）。五套配色方案
-  （`scheme-manual` / `scheme-control` / `scheme-reply` / `scheme-news` /
-  `scheme-console`，后两套有深色档）也在这一个文件里，放在一起便于横向比。
+  `.md-badge`、`.md-chip`、`.md-callout`、`.md-command`…）。四套配色方案
+  （`scheme-manual` / `scheme-control` / `scheme-reply` / `scheme-news`，
+  最后一套有深色档）也在这一个文件里，放在一起便于横向比。
 - **版式层**：`res/cards/reading.css`（help / ctl 的 `Doc` 模型）与各插件里那份
   `const CSS`。**只写「摆在哪儿」，不许出现色值、字号、圆角、阴影的字面量**，
   一律 `var(--md-*)` 取令牌。写了就是绕过令牌直接写字面量。
 
-控制台那一份是同一套系统层，多出一层令牌，共三层（`src/plugins/console/assets.rs`
-的 `stylesheet()` 按这个顺序拼）：系统层 `m3e.css` → 界面令牌层
-`res/console/tokens.css` → 版式层 `res/console/app.css`。中间那层是界面比卡片图
-多出来的取值（字阶的界面档、外壳与组件几何、状态层、动效曲线），**只定义自定义
-属性**；版式层因此只写选择器与 `var()`，一条令牌定义都没有。四条单测钉着这个
-形状：`the_layout_layer_adds_no_token`、`every_token_a_rule_uses_is_defined`、
-`the_token_layer_holds_no_colour`、`the_token_layer_only_declares_custom_properties`。
+控制台不用这一套。它的令牌只在 `res/console/tokens.css`（配色由
+`scripts/make-tokens.py` 从种子色经 HCT 生成），组件在 `res/console/app.css`，
+两层按这个顺序拼（`src/plugins/console/assets.rs` 的 `stylesheet()`）。规范见
+[WebUI 设计系统](DESIGN_SYSTEM.md)。
 
 三条与 M3 的刻意偏离（字阶按中文字面放大、字重只用 500/600/700/800 四档、
 阴影不透明度收回到纸面量级）与「为什么不引外部字体」都写在 `m3e.css` 的开头。
@@ -242,7 +239,7 @@ viewBox 与尺寸收到「内容 + `trim_margin`」，SVG 与 PNG 走同一条�
 | `state.rs` | 进程内的那一份状态：启动时刻、口令、日志环形缓冲与订阅、各适配器的连接 |
 | `server.rs` | HTTP 面：静态资源不设防，`/api/*` 一律要口令；起停与优雅关闭 |
 | `api.rs` | 各接口的数据组装。写的一律转给 `ctl` |
-| `assets.rs` | 内嵌的前端（`res/console/` 三个文件），以及三条盯着它的测试 |
+| `assets.rs` | 内嵌的前端（`res/console/`），以及盯着令牌分层、图标与转义的测试 |
 
 日志落到面板上只挂了一处钩子：`log::hook` 在 `print` 里接一个闭包（`src/log.rs`），控制台启动时装上它。`log.rs` 因此仍然谁都不依赖。
 

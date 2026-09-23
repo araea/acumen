@@ -17,7 +17,7 @@
 
 ## 图标复核
 
-现有「一环一点」是矢量几何，清晰、居中，与名称的观察意象相符，本次保留。生成源是 `scripts/make-icon.py`，网页、192/512 PNG、maskable、monochrome 与 Apple touch 图标共用几何。标记外径 64 / 108，处于参考的 66 / 108 安全区内；无文字、小尺寸轮廓稳定；maskable 与 Apple touch 版本为不透明满底方角，单色版无背景。
+2026-09-23 图标重做：M3 Expressive 形状库的七瓣「曲奇」形挖出一个焦点圆——整体是被观察的事物，那一点是看见的细处；底板为连续曲率的超椭圆。生成源仍是 `scripts/make-icon.py`，位图由 Chromium 渲染同一份 SVG。标记外径 32.6 / 54（半径），处于 33 的安全圆内；maskable 与 Apple touch 为不透明满底方角，单色版透明底纯白。
 
 平台边界需要明确：这是可安装网页，manifest 的 `maskable` / `monochrome` **不等于**原生 Android `AdaptiveIconDrawable` 的 foreground/background/monochrome 资源。桌面主题着色取决于浏览器与启动器支持。项目也没有原生 Apple 应用，因此没有宣称提供 Icon Composer 多层图标、深色/着色原生资产。若将来封装原生应用，应沿用几何另行提供平台资源。
 

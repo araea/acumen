@@ -167,9 +167,9 @@
 ```sh
 cargo test --locked                                     # 含注册表、示例配置、兼容性与控制台
 bash scripts/review-cards.sh                            # 七份样张 + 布局报告
-bash scripts/review-console.sh                          # 三种宽度 × 七页样张 + 三条只读交互断言（要先有在跑的实例）
+python3 scripts/audit-contrast.py                       # 线上实例的 WCAG 2.2 AA 只读审计（要先有在跑的实例）
 node tests/console-backend.cjs                          # 隔离实例：口令、历史上限、SSE、前台响应、优雅退出
-node tests/console.cjs                                  # 真实 Chromium：交互、压力、前后台切换与样张
+node tests/console.cjs                                  # 真实 Chromium：交互、压力、前后台切换、无障碍矩阵与样张
 
 # 硬条目
 rg 'serde\(default = "' src/                            # 期望：只剩 chat/actions.rs 的工具参数
@@ -194,3 +194,7 @@ cargo test --locked example_config    # 每个插件都有一段、键集合与�
 线上样张脚本现为三条只读交互断言；更完整的写操作回归移至隔离的 `tests/console.cjs`，不再改变运行实例的插件开关。
 
 同一天的后一轮复审（六个维度各查一遍、每条发现由另一个代理独立反驳）又确认并修掉十余处：设置页草稿的「删掉这条」会删掉配置里第一条真连接、锁屏与路由错误页整页没有标题、段控焦点环被祖先裁掉、两处对比度不达标、口令需要转义时日志流恒 401、地址栏里的旧 `?t=` 会盖掉刚存下的新口令、`log_lines` 上限三处不一致、后端测试会连上真实现端、两处测试断言实际测不到它声称的东西。清单、改法与两处明确不改的取舍见 [WebUI 审计](WEBUI_AUDIT.md) 的「第二轮复审」。
+
+## 2026-09-23 · 控制台推倒重做
+
+上面几轮关于控制台的记录是旧界面的历史，不再对应代码：`scheme-console`、三层样式、`review-console.sh` 与 WebUI 审计文档都已删除。现行规范只有 [WebUI 设计系统](DESIGN_SYSTEM.md)。

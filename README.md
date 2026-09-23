@@ -5,7 +5,7 @@
 一份核心，两种用法：
 
 - **终端**：`cargo build --release --locked` 出来的那个可执行文件，前台或交给 runit 常驻。没有图形界面也照常跑——`--no-ui` 之后连网页那一层也不开。
-- **网页**：核心自己在回环地址上发的一张控制台（运行状况、插件开关与配置、搭话、实时日志、一行 `/ctl`），`./bot ui` 打开它。它同时是一份可安装的应用：手机与桌面浏览器都能把它加到主屏幕，装上之后没有地址栏。界面只有这一份，没有单独的客户端。
+- **网页**：核心自己在回环地址上发的一张控制台（运行状况、插件开关与配置、搭话、实时日志、连接与维护命令），`./bot ui` 打开它。它同时是一份可安装的应用：手机与桌面浏览器都能把它加到主屏幕，装上之后没有地址栏。界面只有这一份，没有单独的客户端。
 
 「知微」取理解细微信息之意，对应搭话中的上下文理解与统计里的日常观察；英文名 **Acumen** 是同一层意思——对细微之处的敏锐洞察。它与接入层[知弦](https://github.com/araea/satori-qq)共同组成群聊机器人的两部分。仓库、可执行文件、runit 服务、环境变量前缀与线上请求头统一为 `acumen`，中文显示名保留「知微」；完整依据见[名称与界面复审](docs/NAME_DESIGN_AUDIT.md)。
 
@@ -71,11 +71,9 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 
 ## 文档与测试
 
-- [WebUI Design Tokens 与组件规范](docs/DESIGN_SYSTEM.md)
-
+- [WebUI 设计系统](docs/DESIGN_SYSTEM.md)
 - [名称与界面复审](docs/NAME_DESIGN_AUDIT.md)
 - [统一度审计](docs/UNIFORMITY.md)
-- [WebUI 设计与性能审计](docs/WEBUI_AUDIT.md)
 - [架构说明](docs/ARCHITECTURE.md)
 - [架构与渲染审计](docs/AUDIT.md)
 - [插件控制](docs/CONTROL.md)
