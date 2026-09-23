@@ -526,7 +526,10 @@ fn resource_tag(kind: &str, data: &OwnedValue) -> String {
     {
         attrs.push(("sub-type", sub_type.to_string()));
     }
-    if let Some(summary) = data.get_str("summary").filter(|summary| !summary.is_empty()) {
+    if let Some(summary) = data
+        .get_str("summary")
+        .filter(|summary| !summary.is_empty())
+    {
         attrs.push(("summary", summary.to_string()));
     }
     tag(kind, &attrs)
@@ -724,16 +727,24 @@ mod tests {
         );
         let sticker = &message.0[0].data;
         assert_eq!(sticker.get("sub_type").and_then(|v| v.as_i64()), Some(1));
-        assert_eq!(sticker.get("summary").and_then(|v| v.as_str()), Some("[动画表情]"));
+        assert_eq!(
+            sticker.get("summary").and_then(|v| v.as_str()),
+            Some("[动画表情]")
+        );
         assert!(message.0[1].data.get("sub_type").is_none());
 
         let value = simd_json::serde::to_owned_value(message).unwrap();
         let content = to_content(&value);
         assert!(
-            content.contains(r#"<img src="https://example.com/a.gif" sub-type="1" summary="[动画表情]"/>"#),
+            content.contains(
+                r#"<img src="https://example.com/a.gif" sub-type="1" summary="[动画表情]"/>"#
+            ),
             "{content}"
         );
-        assert!(content.contains(r#"<img src="https://example.com/b.png"/>"#), "{content}");
+        assert!(
+            content.contains(r#"<img src="https://example.com/b.png"/>"#),
+            "{content}"
+        );
     }
 
     /// 实现端的反转义不认 `&apos;`；撇号必须原样进元素串。
