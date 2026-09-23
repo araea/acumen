@@ -7,6 +7,9 @@ use crate::plugins::PluginError;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 use toml::Value;
 
 #[derive(Serialize, Deserialize)]
@@ -16,6 +19,34 @@ struct Config {
 
 pub fn default_config() -> Value {
     build_config(Config { enabled: true })
+}
+
+/// 每个群上次「打开展示成员群头衔开关」的时间，给这个写操作单独限一道频。
+/// QQ 对群设置的写有过一天写太多就限流的先例（2026-09-19，code=1010），这个开关
+/// 一旦查到是开的就不会再写，正常情况下这道频根本用不上；只在开关被反复关掉、
+/// 或者短时间内很多人同时触发指令时兜底，避免对同一个群短时间内连续发起写请求。
+static SWITCH_ENABLE_COOLDOWN_UNTIL: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
+const SWITCH_ENABLE_COOLDOWN: Duration = Duration::from_secs(300);
+
+fn switch_enable_cooldowns() -> MutexGuard<'static, HashMap<i64, Instant>> {
+    SWITCH_ENABLE_COOLDOWN_UNTIL
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// 这个群最近是否已经尝试过打开开关；没有就登记本次尝试，返回 true 放行。
+fn should_try_enable_switch(group_id: i64) -> bool {
+    let mut cooldowns = switch_enable_cooldowns();
+    let now = Instant::now();
+    let recently_tried = cooldowns
+        .get(&group_id)
+        .is_some_and(|last| now.duration_since(*last) < SWITCH_ENABLE_COOLDOWN);
+    if recently_tried {
+        return false;
+    }
+    cooldowns.insert(group_id, now);
+    true
 }
 
 pub fn handle(
@@ -83,35 +114,41 @@ pub fn handle(
             }
             let title = title.trim();
 
-            // 5. 设置头衔；失败时再检查群管理里「展示成员群头衔」的开关，
-            //    没开就打开后重试一次——头衔本身设成功了，只是不开这个开关就不会显示。
-            if let Err(e) =
-                api::set_group_special_title(&ctx, writer.clone(), group_id, user_id, title.to_string(), -1)
-                    .await
-            {
-                warn!(
-                    target: "Plugin/GroupTitle",
-                    "[Group({})] 设置头衔失败: {}，检查「展示成员群头衔」开关",
-                    group_id, e
-                );
-                match api::get_group_title_display(&ctx, writer.clone(), group_id).await {
-                    Ok(true) => {
+            // 5. 设置头衔。
+            // 写头衔本身（OIDB 0x8FC_2）和群管理里「展示成员群头衔」的显示开关是两回事：
+            // 写头衔这次调用哪怕不报错，开关没开也照样不显示——所以不能只看这次调用
+            // 返不返回错误。不管这次写头衔成不成功，都顺手把显示开关的状态确认一遍，
+            // 没开就打开；开关原本关着又正好写头衔失败了，打开开关后再补一次。
+            // 两边都试过仍然不行，就静默放弃，不打扰群聊。
+            let mut result = api::set_group_special_title(
+                &ctx,
+                writer.clone(),
+                group_id,
+                user_id,
+                title.to_string(),
+                -1,
+            )
+            .await;
+
+            match api::get_group_title_display(&ctx, writer.clone(), group_id).await {
+                Ok(false) if !should_try_enable_switch(group_id) => {
+                    warn!(
+                        target: "Plugin/GroupTitle",
+                        "[Group({})] 「展示成员群头衔」开关最近刚尝试打开过，冷却中，本次跳过",
+                        group_id
+                    );
+                }
+                Ok(false) => {
+                    if let Err(e) =
+                        api::set_group_title_display(&ctx, writer.clone(), group_id, true).await
+                    {
                         error!(
                             target: "Plugin/GroupTitle",
-                            "[Group({})] 「展示成员群头衔」开关已是开启状态，设置头衔仍失败，放弃",
-                            group_id
+                            "[Group({})] 打开「展示成员群头衔」开关失败: {}",
+                            group_id, e
                         );
-                    }
-                    Ok(false) => {
-                        if let Err(e) =
-                            api::set_group_title_display(&ctx, writer.clone(), group_id, true).await
-                        {
-                            error!(
-                                target: "Plugin/GroupTitle",
-                                "[Group({})] 打开「展示成员群头衔」开关失败: {}",
-                                group_id, e
-                            );
-                        } else if let Err(e) = api::set_group_special_title(
+                    } else if result.is_err() {
+                        result = api::set_group_special_title(
                             &ctx,
                             writer.clone(),
                             group_id,
@@ -119,28 +156,29 @@ pub fn handle(
                             title.to_string(),
                             -1,
                         )
-                        .await
-                        {
-                            error!(
-                                target: "Plugin/GroupTitle",
-                                "[Group({})] 打开开关后重试设置头衔仍失败: {}",
-                                group_id, e
-                            );
-                        } else {
-                            return Ok(None);
-                        }
-                    }
-                    Err(qe) => {
-                        error!(
-                            target: "Plugin/GroupTitle",
-                            "[Group({})] 查询「展示成员群头衔」开关状态失败: {}",
-                            group_id, qe
-                        );
+                        .await;
                     }
                 }
-            } else {
-                return Ok(None);
+                Ok(true) => {}
+                Err(qe) => {
+                    warn!(
+                        target: "Plugin/GroupTitle",
+                        "[Group({})] 查询「展示成员群头衔」开关状态失败: {}",
+                        group_id, qe
+                    );
+                }
             }
+
+            if let Err(e) = result {
+                error!(
+                    target: "Plugin/GroupTitle",
+                    "[Group({})] 设置头衔失败: {}",
+                    group_id, e
+                );
+                return Ok(Some(ctx));
+            }
+
+            return Ok(None);
         }
 
         Ok(Some(ctx))
