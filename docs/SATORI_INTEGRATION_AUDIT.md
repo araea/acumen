@@ -123,6 +123,29 @@ ID 一律用字符串，能力清单与回应概况有类型化返回值，`call
 | 实现端构建 | `bash build.sh` | `SatoriQQ.apk` 与 `SatoriQQ-module.zip`，native 无第三方依赖 |
 | 客户端测试 | `cargo test --locked --bin acumen` | 557 项通过 |
 | 客户端构建 | `cargo build --release --locked` | 通过 |
+| 真机端到端 | `node tests/ws-integration.js`（`SATORI_INTERACTION_TEST=1`） | 全部断言通过，见下 |
+
+## 线上验证（2026-09-23）
+
+测试群 `1126269891`，Android QQ 9.3.65，Zygisk Next 1.5.0。模块重启装机后
+`/healthz` 报 `version=0.28.0`、`online=true`、`compat=204/204`、SSO 通道已挂上；
+客户端重连后 `connections=1`。端到端脚本逐项通过：
+
+- READY 带 `satori_qq.session_id`；`features` 里没有 `reaction.clear`，标准 `reaction.clear`
+  返回 404；`internal/capabilities` 列出 `poke`/`reaction_summary`/`reaction_clear`/`dice`/`rps`。
+- 发一条消息、加两个表态后，`internal/reaction_summary` 给出的计数与自己是否回应一致；
+  `reaction.list` 带 `emoji_id` 返回用户列表，不带时回 400。
+- `internal/reaction_clear` 只清自己的两个表态，返回 `{cleared:2, scope:"self"}`；
+  内核计数滞后时再调一次返回 0，不误报成功。
+- `internal/poke` 按 `channel_id` 定位到群内成员，并收到 QQ 原生入站事件
+  （`_type=satori-qq/poke`，`_data` 带目标与群号）。
+- `internal/dice` 的 JNI 动画骰子可发。
+- 表态事件都带 `_type=satori-qq/reaction` 与数值 `delta`，且**不带 `user`**；
+  用事件的 `sn` 重连回放，顺序单调、没有 `login-*` 事件混入。
+- 测试消息在收尾时撤回。
+
+QQ 侧只有 `reaction_summary` 的计数受本机缓存影响：清空后再查一次仍可能看到旧 `count`，
+但 `self` 已按实现端确认的动作更新，所以「是否已清干净」判的是 `self` 而不是 `count`。
 
 ## 限制与未做的事
 
