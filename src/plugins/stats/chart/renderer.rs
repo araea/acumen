@@ -400,7 +400,7 @@ pub fn draw_bar_chart(
                 root.draw_text(
                     &display_name,
                     &name_style,
-                    (start_x + text_inset as i32, text_mid_y),
+                    (start_x + text_inset as i32, text_mid_y + (2 * s as i32)),
                 )
                 .map_err(|e| e.to_string())?;
             }
