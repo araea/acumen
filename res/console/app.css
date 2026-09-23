@@ -147,7 +147,7 @@ pre,
   border: 0;
 }
 
-/* 数字等宽：读数、时间、计数换行时列不跳（Miuix 精修）。 */
+/* 数据读数使用等宽数字，避免更新时跳动。 */
 .num,
 time {
   font-variant-numeric: tabular-nums;
@@ -432,7 +432,7 @@ time {
     gap: var(--zw-space-04);
     height: calc(100dvh - var(--zw-topbar-height) - var(--zw-safe-top));
     padding: var(--zw-space-04) 0 var(--zw-space-05) var(--zw-safe-left);
-    background: var(--md-sys-color-surface);
+    background: var(--md-sys-color-surface-container-low);
   }
 
   .nav-item {
@@ -612,6 +612,10 @@ body[data-state="locked"] .main {
     font-size: var(--md-sys-typescale-headline-large-size);
     line-height: var(--md-sys-typescale-headline-large-line-height);
   }
+
+  .page-head {
+    padding-block: var(--zw-space-05) var(--zw-space-03);
+  }
 }
 
 .section {
@@ -677,7 +681,6 @@ body[data-state="locked"] .main {
   min-width: 0;
   padding: var(--zw-space-05);
   border-radius: var(--md-sys-shape-corner-extra-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container-low);
 }
 
@@ -705,7 +708,6 @@ body[data-state="locked"] .main {
   min-height: var(--zw-size-list-item);
   padding: var(--zw-space-04) var(--zw-space-05);
   border-radius: var(--zw-group-inner);
-  corner-shape: var(--zw-corner-shape);
   background: var(--_item-bg);
   color: var(--md-sys-color-on-surface);
   text-align: start;
@@ -865,7 +867,7 @@ button.item:active::after {
   overflow-wrap: anywhere;
 }
 
-/* 结构化列表（Carbon structured list）：两列的键值，窄屏上下排。 */
+/* M3E 信息行：键值在窄屏上下排列。 */
 .facts {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1253,7 +1255,7 @@ button.item:active::after {
 }
 
 /* —— 文本框 ——
-   标签常驻在框上方（Carbon 的做法，比 M3 的浮动标签更好读，可用性优先）；
+   常驻标签保障放大和自动填充时可读（可用性优先）；
    描边取 outline，满足非文本 3:1；聚焦时描边加粗并换成 primary。 */
 .field {
   display: flex;
@@ -1584,7 +1586,6 @@ button.item:active::after {
   padding: var(--zw-space-06);
   border: 0;
   border-radius: var(--md-sys-shape-corner-extra-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
   box-shadow: var(--md-sys-elevation-level3);
@@ -1620,7 +1621,7 @@ button.item:active::after {
   }
 }
 
-/* —— 骨架屏（Carbon skeleton） —— */
+/* —— 加载占位（M3E 表面层级） —— */
 .skeleton {
   display: flex;
   flex-direction: column;
@@ -1677,7 +1678,6 @@ button.item:active::after {
   width: var(--zw-space-10);
   height: var(--zw-space-10);
   border-radius: var(--md-sys-shape-corner-extra-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-primary);
 }
@@ -1718,7 +1718,6 @@ button.item:active::after {
   padding: var(--zw-space-06);
   border-radius: var(--md-sys-shape-corner-extra-extra-large) var(--md-sys-shape-corner-large-increased)
     var(--md-sys-shape-corner-extra-extra-large) var(--md-sys-shape-corner-large-increased);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-primary-container);
   color: var(--md-sys-color-on-primary-container);
   isolation: isolate;
@@ -1789,7 +1788,6 @@ button.item:active::after {
   min-width: 0;
   padding: var(--zw-space-05);
   border-radius: var(--md-sys-shape-corner-large-increased);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container);
 }
 
@@ -1811,6 +1809,26 @@ button.item:active::after {
   font-variant-numeric: tabular-nums;
 }
 
+.stat:nth-child(2) {
+  border-radius: var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-small)
+    var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-small);
+}
+
+.stat:nth-child(3) {
+  border-radius: var(--md-sys-shape-corner-small) var(--md-sys-shape-corner-extra-large)
+    var(--md-sys-shape-corner-small) var(--md-sys-shape-corner-extra-large);
+}
+
+.stat:last-child {
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+
+.stat:last-child .stat-label,
+.stat:last-child .stat-unit {
+  color: inherit;
+}
+
 .stat-unit {
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
@@ -1820,16 +1838,31 @@ button.item:active::after {
 
 @media (min-width: 840px) {
   .overview {
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--zw-space-06);
   }
 
   .overview > .section-wide {
-    grid-column: 1 / -1;
+    grid-column: auto;
   }
 
   .stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview > .section:nth-child(2) {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .overview > .section:nth-child(3) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .overview > .section:nth-child(4) {
+    grid-column: 2;
+    grid-row: 2;
   }
 
   .hero {
@@ -1841,7 +1874,13 @@ button.item:active::after {
   }
 }
 
-/* —— 插件：列表-详情（Carbon list–detail，M3 canonical layout） —— */
+@media (min-width: 1200px) {
+  .overview {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  }
+}
+
+/* —— 插件：M3E 列表-详情 canonical layout —— */
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1906,7 +1945,6 @@ button.item:active::after {
   gap: var(--zw-space-05);
   padding: var(--zw-space-05);
   border-radius: var(--md-sys-shape-corner-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container);
 }
 
@@ -1971,7 +2009,6 @@ button.item:active::after {
 
 .memory {
   border-radius: var(--zw-group-inner);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container);
 }
 
@@ -2038,7 +2075,6 @@ button.item:active::after {
   min-width: 0;
   padding: var(--zw-space-03);
   border-radius: var(--md-sys-shape-corner-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container);
 }
 
@@ -2078,8 +2114,7 @@ button.item:active::after {
   line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
-/* —— 日志 ——
-   Carbon 的高密度数据区：等宽、四列、行不换色，级别永远带字。 */
+/* —— 日志：M3E 容器上的等宽数据行；级别始终带文字。 —— */
 .logs {
   display: flex;
   flex-direction: column;
@@ -2110,7 +2145,6 @@ button.item:active::after {
   padding: var(--zw-space-03) 0;
   border: var(--zw-border-width) solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-corner-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container-lowest);
   font-family: var(--md-ref-typeface-mono);
   font-size: var(--zw-code-size);
@@ -2225,7 +2259,6 @@ button.item:active::after {
   gap: var(--zw-space-05);
   padding: var(--zw-space-05);
   border-radius: var(--md-sys-shape-corner-large);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container);
 }
 
@@ -2271,7 +2304,6 @@ button.item:active::after {
   width: min(100%, 26rem);
   padding: var(--zw-space-07) var(--zw-space-06);
   border-radius: var(--md-sys-shape-corner-extra-large-increased);
-  corner-shape: var(--zw-corner-shape);
   background: var(--md-sys-color-surface-container-low);
 }
 

@@ -838,7 +838,7 @@
     });
   }
 
-  /** 行内校验（Carbon inline notification）：错在哪一格就在哪一格下面说，并立即播报。 */
+  /** 就地校验：错在哪一格就在哪一格下面说，并立即播报。 */
   function fieldError(control, message) {
     clearFieldError(control);
     control.setAttribute("aria-invalid", "true");

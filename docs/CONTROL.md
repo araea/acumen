@@ -164,11 +164,7 @@ log_lines = 400     # 上限 2000；环、接口与快照三处都用这个数
 
 ### 这一层的设计语言
 
-规范在 [WebUI 设计系统](DESIGN_SYSTEM.md)，取值在 `res/console/tokens.css`。四个来源的裁决次序：
-
-```text
-平台原生规范 > 可用性与无障碍 > 产品一致性 > M3E > Carbon > Miuix
-```
+规范在 [WebUI 设计系统](DESIGN_SYSTEM.md)，取值在 `res/console/tokens.css`。视觉只使用 M3E；Apple HIG 仅指导平台交互。冲突时优先平台惯例、可用性与 WCAG 2.2 AA。
 
 界面不再借卡片图的 `res/cards/m3e.css`：卡片是发进群里的静态位图，界面是要跟随系统明暗、对比度与动态偏好的网页。
 

@@ -59,7 +59,7 @@
 - Chromium：全部回归通过。2,400 行突发及后续日志交互测得 7 次日志 DOM 更新，没有超过 50ms 的长任务。性能验收在 release 编译完成后独立运行；同时编译的竞争负载下曾触发门槛，不把这一测量推广为任意负载下的延迟保证。
 - 样张使用隔离夹具数据，不含线上账号、配置或私有消息。
 
-[桌面总览](design/overview-desktop.png) · [手机日志](design/logs-mobile.png) · [深色桌面日志](design/logs-desktop-dark.png)
+旧版截图已替换；当前界面与截图见 [WebUI 设计系统](DESIGN_SYSTEM.md)。
 
 - release 后端集成通过：鉴权、SSE、配置写入、静态资源逐字比对、ETag 与正常退出均已验证。
 - 本机 runit 服务已重启上线；线上 JS/CSS 与当前源码逐字一致，23 个插件详情均可读取，Satori 连接正常。线上 Chromium 只读验收覆盖 23 个插件配置页及手机/桌面日志贴底。

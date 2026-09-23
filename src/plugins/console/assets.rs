@@ -291,6 +291,17 @@ mod tests {
         );
     }
 
+    /// WebUI 不得再次引入另一套视觉体系或非 M3E 的角形。
+    #[test]
+    fn the_webui_uses_only_material_expressive_visuals() {
+        for (name, source) in [("tokens.css", TOKENS_CSS), ("app.css", APP_CSS), ("app.js", APP_JS)] {
+            let source = text(source).to_lowercase();
+            for forbidden in ["carbon", "miuix", "squircle", "corner-shape"] {
+                assert!(!source.contains(forbidden), "{name} 包含混合视觉体系：{forbidden}");
+            }
+        }
+    }
+
     /// 令牌层只定义自定义属性（`color-scheme` 除外，它是配色段的一部分）。
     #[test]
     fn the_token_layer_only_declares_custom_properties() {
