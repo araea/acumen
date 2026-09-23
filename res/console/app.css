@@ -1174,9 +1174,7 @@ button.item:active::after {
 }
 
 .chip-count {
-  color: inherit;
   font-variant-numeric: tabular-nums;
-  opacity: 0.8;
 }
 
 /* —— 连接按钮组（M3E connected button group，单选） ——
@@ -1303,7 +1301,8 @@ button.item:active::after {
   padding: var(--zw-space-03) var(--zw-space-04);
   border: var(--zw-border-width) solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-corner-medium);
-  background: var(--md-sys-color-surface-container-lowest);
+  /* M3 描边文本框不填色，透出所在容器；深色下不会出现一块纯黑。 */
+  background: transparent;
   color: var(--md-sys-color-on-surface);
   /* 16px 起：iOS Safari 聚焦小于 16px 的输入框会整页放大。 */
   font-size: var(--md-sys-typescale-body-large-size);
@@ -2102,8 +2101,10 @@ button.item:active::after {
   position: relative;
 }
 
+/* 日志区的高度 = 视口减去外壳与页头、工具栏：一屏里既看得到工具栏也看得到最新一行。
+   紧凑宽度下工具栏折成三行，所以扣得更多。 */
 .log {
-  height: max(20rem, calc(100dvh - var(--zw-topbar-height) - var(--zw-navbar-height) - var(--zw-safe-top) - var(--zw-safe-bottom) - 17rem));
+  height: max(18rem, calc(100dvh - var(--zw-topbar-height) - var(--zw-navbar-height) - var(--zw-safe-top) - var(--zw-safe-bottom) - 25rem));
   overflow: auto;
   overscroll-behavior: contain;
   padding: var(--zw-space-03) 0;

@@ -5,12 +5,12 @@
 # 与 scripts/review-console.sh 是一对：那一份管「看着对不对」，这一份管
 # 「算出来过不过」。审美靠图，下限靠这台机器——两样都不能只靠眼睛。
 #
-# 查五件事，七个页面 × 三档宽度 × 明暗两档：
+# 查五件事，六个页面 × 三档宽度 × 明暗两档：
 #   1.4.3  对比度：正文 4.5:1，大字（≥24px，或 ≥18.66px 且 ≥700）3:1；
 #   1.4.11 非文本对比度：控件自己的边界（描边按钮、芯片、输入框、开关轨道）
 #          与它相邻的颜色要有 3:1——**只查 outline 那一级**，分隔线不在此列；
 #   4.1.2  可访问名：每个 button / link / role=switch 得有个名字；
-#   2.5.8  触控目标：可点的东西不小于 24×24（本仓库自己的下限是 48，
+#   2.5.8  触控目标：可点的东西不小于 24×24（本仓库触屏取 48、精确指针取 40，
 #          那一条由 tests/console.cjs 管，这里只兜底）；
 #   1.4.3  占位文字：它不在任何文本节点里，逐元素那套看不见它，得单独用
 #          `::placeholder` 的伪元素样式取一次色——「还没写进去的答案」也是文字。
@@ -41,14 +41,21 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = int(os.environ.get("CHROMEDRIVER_PORT", "9531"))
 OUT = os.environ.get("ACUMEN_AUDIT_OUT", os.path.join(os.environ.get("TMPDIR", "/tmp"), "acumen-contrast"))
 
-PAGES = ["", "plugins", "plugins/oai", "ambient", "logs", "command", "settings"]
+PAGES = ["", "plugins", "plugins/oai", "ambient", "logs", "settings"]
 VIEWPORTS = [("compact", 430, 1060), ("medium", 800, 1060), ("expanded", 1400, 900)]
 THEMES = ["light", "dark"]
 
 PROBE = r"""
 return (function () {
+  // color-mix() 的计算值是 color(srgb r g b / a)，分量在 0–1；其余是 rgb()/rgba()。
   function parseColor(s) {
-    var m = String(s).match(/rgba?\(([^)]+)\)/);
+    var text = String(s);
+    var srgb = text.match(/color\(srgb\s+([^)]+)\)/);
+    if (srgb) {
+      var q = srgb[1].split(/[\s\/]+/).filter(function (x) { return x.length; }).map(Number);
+      return { r: q[0] * 255, g: q[1] * 255, b: q[2] * 255, a: q.length > 3 ? q[3] : 1 };
+    }
+    var m = text.match(/rgba?\(([^)]+)\)/);
     if (!m) return null;
     var p = m[1].split(/[,\s\/]+/).filter(function (x) { return x.length; }).map(Number);
     return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
@@ -111,7 +118,9 @@ return (function () {
     var own = Array.prototype.filter.call(el.childNodes, function (n) {
       return n.nodeType === 3 && n.textContent.trim().length > 0;
     });
-    if (own.length) {
+    // 停用的控件不在 1.4.3 的范围内（WCAG 明文豁免「非活动的界面组件」）。
+    var inactive = !!el.closest(":disabled, [aria-disabled=true]");
+    if (own.length && !inactive) {
       var fg = parseColor(cs.color);
       var bg = backdrop(el);
       var eff = fg.a < 1 ? over(fg, bg) : fg;
@@ -170,7 +179,7 @@ return (function () {
   });
 
   return { text: text, borders: borders, nameless: nameless, tiny: tiny, hints: hints,
-           theme: document.documentElement.dataset.density || "", dark: document.body.classList.contains("dark") };
+           dark: matchMedia("(prefers-color-scheme: dark)").matches };
 })()
 """
 
