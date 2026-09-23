@@ -78,6 +78,7 @@ Termux 下 `./bot start` 会取得唤醒锁；`./bot logs` 用 tmux 窗口跟运
 - [架构与渲染审计](docs/AUDIT.md)
 - [插件控制](docs/CONTROL.md)
 - [Satori 接入](docs/SATORI.md)
+- [Satori 协作审计](docs/SATORI_INTEGRATION_AUDIT.md)
 - [内置 Agent 房间](docs/agent.md)
 - [群聊搭话](docs/ambient.md)
 - [视频解析](docs/video_parse.md)

@@ -70,19 +70,19 @@ pub(crate) enum Scene {
 const REFUSAL_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3_600);
 
 /// 跨轮的平台拒绝记录：能力键 → （原因，记下的时刻）。
-fn known_refusals() -> &'static std::sync::Mutex<HashMap<&'static str, (String, std::time::Instant)>>
+fn known_refusals() -> &'static std::sync::Mutex<HashMap<(String, String), (String, std::time::Instant)>>
 {
     static KNOWN: std::sync::OnceLock<
-        std::sync::Mutex<HashMap<&'static str, (String, std::time::Instant)>>,
+        std::sync::Mutex<HashMap<(String, String), (String, std::time::Instant)>>,
     > = std::sync::OnceLock::new();
     KNOWN.get_or_init(Default::default)
 }
 
-fn remember_platform_refusal(capability: &'static str, reason: &str) {
+fn remember_platform_refusal(scope: &str, capability: &'static str, reason: &str) {
     known_refusals()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .insert(capability, (reason.to_string(), std::time::Instant::now()));
+        .insert((scope.to_string(), capability.to_string()), (reason.to_string(), std::time::Instant::now()));
 }
 
 /// 测试之间要能互不影响：这份记账是进程级的，跑完一个用例得能抹掉。
@@ -94,13 +94,14 @@ fn forget_platform_refusals() {
         .clear();
 }
 
-fn platform_refusal(capability: &str) -> Option<String> {
+fn platform_refusal(scope: &str, capability: &str) -> Option<String> {
     let mut guard = known_refusals()
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    let (reason, at) = guard.get(capability)?;
+    let key = (scope.to_string(), capability.to_string());
+    let (reason, at) = guard.get(&key)?;
     if at.elapsed() > REFUSAL_TTL {
-        guard.remove(capability);
+        guard.remove(&key);
         return None;
     }
     Some(reason.clone())
@@ -411,7 +412,7 @@ impl Session {
                 let unavailable: serde_json::Map<String, Value> = ACTION_KINDS
                     .iter()
                     .filter_map(|kind| {
-                        platform_refusal(kind).map(|why| ((*kind).to_string(), json!(why)))
+                        platform_refusal(&self.refusal_scope(), kind).map(|why| ((*kind).to_string(), json!(why)))
                     })
                     .collect();
                 capabilities["unavailable"] = Value::Object(unavailable);
@@ -477,7 +478,10 @@ impl Session {
                 ensure!(self.enabled(), "本群的群聊功能已停用");
                 let id = request["message_id"].as_str().unwrap_or("");
                 let turn = self.turn_of(id).await?;
-                if request["forward"].as_bool().unwrap_or(false) {
+                ensure!(!(request["reactions"].as_bool().unwrap_or(false) && request["forward"].as_bool().unwrap_or(false)), "回应查询与转发展开请分开调用");
+                if request["reactions"].as_bool().unwrap_or(false) {
+                    self.rpc("internal/reaction_summary", json!({"channel_id":self.group.to_string(),"message_id":id})).await
+                } else if request["forward"].as_bool().unwrap_or(false) {
                     let source = forward::source_of(&turn.elements, Some(turn.message_id))
                         .ok_or_else(|| anyhow::anyhow!("该消息不是合并转发"))?
                         .in_channel(self.group.to_string());
@@ -878,6 +882,10 @@ impl Session {
     /// `actions` / `lookups` / `profile` 是这座桥实际接受的参数，`qq_extensions` 决定
     /// 戳一戳、点赞这类 QQ 专有动作在不在。查询失败也照样把后两层报出去——它们不依赖
     /// 那次探测，而实际结果无论如何都以回执为准。
+    fn refusal_scope(&self) -> String {
+        format!("{}|{}|{}", self.writer.connection_key(), self.ctx.bot.platform, self.ctx.bot.login_user.get().id)
+    }
+
     async fn describe_capabilities(&self) -> Value {
         let qq = self.ctx.bot.adapter == "satori-qq";
         let login = self
@@ -905,7 +913,7 @@ impl Session {
                     continue;
                 };
                 remember_platform_refusal(
-                    kind,
+                    &self.refusal_scope(), kind,
                     &format!("实现端已移除这个动作（{why}）。这一轮换个法子回应更划算。"),
                 );
             }
@@ -951,7 +959,7 @@ impl Session {
         self.refusals
             .get(key)
             .cloned()
-            .or_else(|| platform_refusal(key))
+            .or_else(|| platform_refusal(&self.refusal_scope(), key))
     }
     /// 记录一次「服务端明确拒绝、动作从未到达聊天」的失败，并返回它是否属于这一类。
     ///
@@ -974,7 +982,7 @@ impl Session {
             _ => return false,
         };
         let reason = format!("{refusal}原始回执：{text}");
-        remember_platform_refusal(capability(action), &reason);
+        remember_platform_refusal(&self.refusal_scope(), capability(action), &reason);
         self.refusals.insert(capability(action), reason);
         true
     }
@@ -1284,7 +1292,7 @@ impl Session {
                     params["emoji_id"] = json!(emoji);
                 }
                 (
-                    "reaction.clear",
+                    if emoji_id.is_some() { "reaction.delete" } else { "internal/reaction_clear" },
                     params,
                     format!("[清除自己在消息 {message_id} 上的表态]"),
                 )
@@ -1347,7 +1355,7 @@ impl Session {
     async fn clear_known_reactions(&mut self, message_id: &str) -> Result<Value> {
         ensure!(self.current(), "群聊已更新，请先读 satori_context");
         let params = json!({"channel_id":self.group.to_string(),"message_id":message_id});
-        match self.rpc("reaction.clear", params.clone()).await {
+        match self.rpc("internal/reaction_clear", params.clone()).await {
             Ok(data) => {
                 self.own_reactions.remove(message_id);
                 self.record(
@@ -1361,7 +1369,8 @@ impl Session {
             Err(error)
                 if error
                     .to_string()
-                    .contains("no reaction set by this login on the message") =>
+                    .contains("no reaction set by this login on the message")
+                    || error.to_string().contains("(404") =>
             {
                 let known = self
                     .own_reactions
@@ -2068,7 +2077,7 @@ mod tests {
                     stream.write_all(format!("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
                     continue;
                 }
-                if method == "reaction.clear" && body["channel_id"] == "-8000504" {
+                if method == "internal/reaction_clear" && body["channel_id"] == "-8000504" {
                     let body = json!({"message":"no reaction set by this login on the message"})
                         .to_string();
                     reader.into_inner().write_all(format!("HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();

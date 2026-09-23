@@ -151,7 +151,8 @@ fn normalize_boolean_attrs(content: &str) -> String {
     static TAG: OnceLock<regex::Regex> = OnceLock::new();
     static ATTR: OnceLock<regex::Regex> = OnceLock::new();
     let tag = TAG.get_or_init(|| {
-        regex::Regex::new(r#"<([a-z][a-z0-9-]*)([^<>]*?)(/?)>"#).expect("valid tag regex")
+        regex::Regex::new(r#"<([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)([^<>]*?)(/?)>"#)
+            .expect("valid tag regex")
     });
     let attr = ATTR.get_or_init(|| {
         regex::Regex::new(r#"([^\s=]+)(?:=(?:"[^"]*"|'[^']*'))?"#).expect("valid attr regex")
@@ -230,7 +231,10 @@ fn attr(element: &Element, key: &str) -> String {
         .to_string()
 }
 
-fn append_element(out: &mut Message, element: Element, proxy: &ResourceProxy) {
+fn append_element(out: &mut Message, mut element: Element, proxy: &ResourceProxy) {
+    if let Some(name) = element.name.strip_prefix("satori-qq:") {
+        element.name = name.to_string();
+    }
     let mut data = Object::new();
     match element.name.as_str() {
         "text" => push(out, "text", "text", element.text),
@@ -469,7 +473,7 @@ fn segment_to_content(segment: &OwnedValue) -> String {
         "video" => resource_tag("video", data),
         "file" => resource_tag("file", data),
         "json" | "lightapp" => tag(
-            "json",
+            "satori-qq:json",
             &[(
                 "data",
                 data.get_str("data")
@@ -478,7 +482,7 @@ fn segment_to_content(segment: &OwnedValue) -> String {
                     .to_string(),
             )],
         ),
-        "mface" | "poke" => tag_from_data(kind, data),
+        "mface" | "poke" => tag_from_data(&format!("satori-qq:{kind}"), data),
         // 骰子和猜拳在 QQ 里就是两个特殊表情；`<dice/>`/`<rps/>` 不在 Satori 元素表里，
         // 发出去只会被适配器整段丢掉（没有报错，消息直接变空）。
         "dice" => tag("emoji", &[("id", DICE_FACE_ID.to_string())]),
@@ -620,6 +624,18 @@ mod tests {
     /// 不涉及代理路由的用例走默认解析。
     fn from_content(content: &str) -> Message {
         from_content_with(content, &ResourceProxy::default())
+    }
+
+    #[test]
+    fn qq_extension_elements_accept_legacy_and_emit_namespaced_form() {
+        for name in ["mface", "poke", "json"] {
+            let legacy = from_content(&format!("<{name} data=\"x\"/>"));
+            let namespaced = from_content(&format!("<satori-qq:{name} data=\"x\"/>"));
+            let old = simd_json::serde::to_owned_value(legacy).unwrap();
+            let new = simd_json::serde::to_owned_value(namespaced).unwrap();
+            assert_eq!(to_content(&old), to_content(&new));
+            assert!(to_content(&new).starts_with(&format!("<satori-qq:{name}")));
+        }
     }
 
     #[test]

@@ -4,9 +4,9 @@
 
 ## 连接
 
-acumen 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。这个登录账号放在共享单元里，插件判断「这条是不是自己发的」与出站请求的 `Satori-User-ID` 读的是同一份。
+acumen 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发送 `IDENTIFY`。收到 `READY` 后，从首个 login 建立 `BotStatus`，再触发插件的 connected 生命周期。账号身份在连接内固定；同账号资料更新可共享，换号必须重连，旧任务仍携带旧选择器。
 
-- `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线。`login-updated` 不进流水线，只用来刷新登录账号
+- `EVENT`：记录 `sn`，转为框架内部的规范化事件后进入插件流水线。`login-updated` 不进流水线，同账号时更新资料，satori-qq 换号时重连
 - `PING`：本端每 10 秒发出，实现端回 `PONG`；收到反向 `PING` 也回 `PONG`
 - `META`：刷新代理路由列表
 - 连接关闭或失败：从 3 秒开始指数退避，最长 60 秒
@@ -17,7 +17,7 @@ acumen 连接实现端的 `/v1/events` WebSocket，连接建立后 10 秒内发�
 
 ## 鉴权
 
-token 的取值顺序是环境变量 `ACUMEN_SATORI_TOKEN`、`config.toml` 中 Satori bot 的 `access_token`，两者都为空时不鉴权。同一个 token 用于 WebSocket 的 `IDENTIFY.body.token` 和 HTTP 的 `Authorization: Bearer ...`。HTTP 请求另外带 `Satori-Platform` 和 `Satori-User-ID`，取值由 `READY` 返回的 login 决定，`login-updated` 到达时跟着刷新。
+token 的取值顺序是环境变量 `ACUMEN_SATORI_TOKEN`、`config.toml` 中 Satori bot 的 `access_token`，两者都为空时不鉴权。同一个 token 用于 WebSocket 的 `IDENTIFY.body.token` 和 HTTP 的 `Authorization: Bearer ...`。HTTP 请求另外带 `Satori-Platform` 和 `Satori-User-ID`，取值由 `READY` 返回的 login 决定，同账号的 `login-updated` 更新资料；账号变化建立新连接，避免旧任务改用新账号。
 
 ## 资源链接
 
@@ -42,7 +42,8 @@ token 的取值顺序是环境变量 `ACUMEN_SATORI_TOKEN`、`config.toml` 中 S
 | 添加或取消表态 | `reaction.create` / `reaction.delete` |
 | 发送文件 | `upload.create` multipart + `message.create` `<file>` |
 | 群头衔 | `internal/special_title` |
-| 资料卡点赞 | `internal/like` |
+| 资料卡点赞 | 纯 JNI 实现端不可用，不向模型承诺可用 |
+| 戳一戳 / 回应概况 / 清自己的回应 | `internal/poke` / `internal/reaction_summary` / `internal/reaction_clear` |
 | 合并转发读取 | `internal/get_forward` |
 | 资源代理 | `GET /v1/proxy/{url}` |
 
@@ -124,3 +125,31 @@ Satori 与 QQ NT 的消息 ID 可能超出 32 位范围，适配层与插件 API
 转了但客户端没消费。
 
 手打消息的身份仍是 `qq-client:{selfUin}`，真实身份在 `satori_qq` 扩展里；这部分 0.23.x 没有变化。
+
+
+## 0.28.0 协作修复
+
+- 收到重复或较旧 sn 时不重复进入插件流水线；登录事件不改恢复游标。READY 的进程会话标识
+  变化会重置游标。只接收当前 READY 所选登录的事件，其他登录不能冒用它调用 HTTP。
+- 30 秒没有 Satori PONG 就断线重连；READY 失败、连接钩子异常及正常断开都会回收写任务和心跳。
+  连接持续一分钟后重置重连退避。
+- `SatoriApiError` 保留 `method/status/code/message`，插件可 downcast 判断 404/removed_action，
+  现有错误文案保持兼容。QQ 扩展的 `ok:false` 仍被当作失败，动作超时不自动重试。
+- 插件可使用 `adapters::satori::qq::{capabilities,poke,reactions,clear_reactions,call}`。
+  ID 使用字符串，能力清单与回应概况有类型化返回值；`call` 可调用能力表中其他扩展。
+- ambient 的 `react_clear` 永远只撤销自己的回应：单个用 `reaction.delete`，全部用 QQ 扩展；
+  老实现端没有扩展时只对本轮已确认添加的回应逐个撤销，并报告范围受限。
+- `satori_read({message_id, reactions:true})` 可查看回应概况。与 `forward:true` 互斥。
+  能力拒绝缓存按实现端/平台/账号隔离。QQ 消息元素输出带 `satori-qq:` 前缀，接收兼容旧名称。
+
+示例（插件持有 ctx 与 writer）：
+
+```rust
+let caps = satori::qq::capabilities(&ctx, &writer).await?;
+if caps.supports("poke") {
+    satori::qq::poke(&ctx, &writer, "群号", "目标QQ号").await?;
+}
+let summary = satori::qq::reactions(&ctx, &writer, "群号", "消息ID").await?;
+```
+
+完整检查范围及限制见 [协作审计](SATORI_INTEGRATION_AUDIT.md)。

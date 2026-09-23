@@ -120,7 +120,7 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
     assert!(
         history
             .iter()
-            .find(|(m, _)| m == "reaction.clear")
+            .find(|(m, _)| m == "internal/reaction_clear")
             .unwrap()
             .1
             .get("emoji_id")

@@ -21,6 +21,8 @@ use tokio_tungstenite::{
 pub mod api;
 pub mod forward;
 pub mod message;
+#[allow(dead_code)]
+pub mod qq;
 
 pub type BotError = Box<dyn std::error::Error + Send + Sync>;
 pub type LockedWriter = Arc<SatoriClient>;
@@ -236,20 +238,98 @@ fn decode_response(method: &str, bytes: &[u8]) -> Result<Value, BotError> {
 ///
 /// 实现端从 0.23.1 起在错误体里给机器可读的 `code`（例如 `removed_action`），这里一并带上：
 /// 上游按 code 判断就不必去匹配会变的中文文案。
+#[derive(Debug)]
+pub struct SatoriApiError {
+    pub method: String,
+    pub status: u16,
+    pub code: Option<String>,
+    pub message: String,
+}
+impl std::fmt::Display for SatoriApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Satori API {} 失败 ({}): {}",
+            self.method, self.status, self.message
+        )?;
+        if let Some(code) = &self.code {
+            write!(f, " [code={code}]")?;
+        }
+        Ok(())
+    }
+}
+impl std::error::Error for SatoriApiError {}
 fn api_error(method: &str, status: reqwest::StatusCode, bytes: &[u8]) -> BotError {
     let parsed = serde_json::from_slice::<Value>(bytes).ok();
-    let detail = parsed
-        .as_ref()
-        .and_then(|value| value.get("message").and_then(Value::as_str))
-        .map(str::to_owned)
-        .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned());
-    match parsed
-        .as_ref()
-        .and_then(|value| value.get("code").and_then(Value::as_str))
-    {
-        Some(code) => format!("Satori API {method} 失败 ({status}): {detail} [code={code}]").into(),
-        None => format!("Satori API {method} 失败 ({status}): {detail}").into(),
+    Box::new(SatoriApiError {
+        method: method.into(),
+        status: status.as_u16(),
+        code: parsed
+            .as_ref()
+            .and_then(|v| v.get("code")?.as_str())
+            .map(str::to_owned),
+        message: parsed
+            .as_ref()
+            .and_then(|v| v.get("message")?.as_str())
+            .map(str::to_owned)
+            .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
+    })
+}
+
+/// Tasks must also be stopped when READY or a connected hook returns early.
+struct AbortTask(tokio::task::JoinHandle<()>);
+impl Drop for AbortTask {
+    fn drop(&mut self) {
+        self.0.abort();
     }
+}
+
+#[derive(Default)]
+struct EventCursor {
+    sn: Option<i64>,
+    session: Option<String>,
+    account: Option<(String, String)>,
+}
+impl EventCursor {
+    fn ready(&mut self, ready: &Value, platform: &str, user: &str) {
+        let session = ready
+            .pointer("/body/satori_qq/session_id")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let account = (platform.to_string(), user.to_string());
+        if self.session != session || self.account.as_ref().is_some_and(|v| v != &account) {
+            self.sn = None;
+        }
+        self.session = session;
+        self.account = Some(account);
+    }
+    fn accept(&mut self, body: &Value) -> bool {
+        // Login events do not participate in resumption.
+        if body
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.starts_with("login-"))
+        {
+            return true;
+        }
+        let Some(sn) = body.get("sn").and_then(Value::as_i64) else {
+            return true;
+        };
+        if self.sn.is_some_and(|previous| sn <= previous) {
+            return false;
+        }
+        self.sn = Some(sn);
+        true
+    }
+}
+
+fn belongs_to_login(body: &Value, bot: &BotStatus) -> bool {
+    let platform = body.pointer("/login/platform").and_then(Value::as_str);
+    let user = body.pointer("/login/user/id").map(|id| raw_id(Some(id)));
+    platform.is_none_or(|p| p == bot.platform)
+        && user
+            .as_ref()
+            .is_none_or(|id| id.is_empty() || *id == bot.login_user.get().id)
 }
 
 pub fn entry(
@@ -285,8 +365,9 @@ pub async fn run_bot_loop(
     let endpoint = bot_config.url.clone().unwrap_or_default();
     let mut backoff = Duration::from_secs(3);
     // 最后一个收到的事件序列号。重连时带上它，实现端会补推断线期间的事件。
-    let mut session_sn: Option<i64> = None;
+    let mut session_sn = EventCursor::default();
     loop {
+        let connected_at = std::time::Instant::now();
         match connect_and_listen(
             &bot_config,
             global_config.clone(),
@@ -304,6 +385,9 @@ pub async fn run_bot_loop(
             Err(err) => {
                 error!(target: "Bot", "Satori [{}] 连接失败: {}。{:?} 后重试...", endpoint, err, backoff)
             }
+        }
+        if connected_at.elapsed() >= Duration::from_secs(60) {
+            backoff = Duration::from_secs(3);
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(60));
@@ -328,7 +412,7 @@ async fn connect_and_listen(
     scheduler: Arc<Scheduler>,
     save_lock: Arc<AsyncMutex<()>>,
     config_path: Arc<str>,
-    session_sn: &mut Option<i64>,
+    session_sn: &mut EventCursor,
 ) -> Result<(), BotError> {
     let endpoint = normalize_endpoint(config.url.as_deref().ok_or("Satori URL 未配置")?)?;
     let events_url = events_url(&endpoint)?;
@@ -338,14 +422,14 @@ async fn connect_and_listen(
 
     // 出站帧统一走一条队列：心跳任务和事件循环都只是往队列里投递。
     let (outbound, mut outbound_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let writer_task = tokio::spawn(async move {
+    let _writer_task = AbortTask(tokio::spawn(async move {
         while let Some(text) = outbound_rx.recv().await {
             if ws_write.send(WsMessage::Text(text.into())).await.is_err() {
                 break;
             }
         }
         let _ = ws_write.close().await;
-    });
+    }));
 
     let token = effective_token(config);
     let mut identify_body = json!({});
@@ -353,7 +437,7 @@ async fn connect_and_listen(
         identify_body["token"] = json!(token);
     }
     // 省略 sn 表示开新会话；带上 sn 则请求补推断线期间的事件。
-    if let Some(sn) = *session_sn {
+    if let Some(sn) = session_sn.sn {
         identify_body["sn"] = json!(sn);
         info!(target: "Bot", "Satori [{}] 尝试从 sn={} 恢复会话。", endpoint, sn);
     }
@@ -391,6 +475,11 @@ async fn connect_and_listen(
             .to_string(),
         login_user: login_user_of(user).into(),
     });
+    session_sn.ready(
+        &ready,
+        &bot_status.platform,
+        &bot_status.login_user.get().id,
+    );
     let writer = Arc::new(SatoriClient::new(endpoint.clone(), token));
     writer.set_proxy_urls(proxy_urls(&ready));
     let matcher = Arc::new(Matcher::new());
@@ -414,9 +503,7 @@ async fn connect_and_listen(
         config_path: config_path.clone(),
         bot: bot_status.clone(),
     };
-    plugins::do_connected(connected_ctx, writer.clone()).await?;
-
-    let heartbeat = tokio::spawn({
+    let _heartbeat = AbortTask(tokio::spawn({
         let outbound = outbound.clone();
         async move {
             let ping = json!({"op": OP_PING, "body": {}}).to_string();
@@ -427,7 +514,9 @@ async fn connect_and_listen(
                 }
             }
         }
-    });
+    }));
+
+    plugins::do_connected(connected_ctx, writer.clone()).await?;
 
     let result = listen(
         &mut ws_read,
@@ -444,9 +533,6 @@ async fn connect_and_listen(
     )
     .await;
 
-    heartbeat.abort();
-    drop(outbound);
-    let _ = writer_task.await;
     result
 }
 
@@ -467,10 +553,15 @@ async fn listen(
     save_lock: &Arc<AsyncMutex<()>>,
     config_path: &Arc<str>,
     matcher: &Arc<Matcher>,
-    session_sn: &mut Option<i64>,
+    session_sn: &mut EventCursor,
 ) -> Result<(), BotError> {
-    while let Some(frame) = ws_read.next().await {
-        match frame? {
+    let mut pong_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let frame = tokio::select! {
+            frame = ws_read.next() => match frame { Some(frame) => frame?, None => return Ok(()) },
+            _ = tokio::time::sleep_until(pong_deadline) => return Err("Satori PONG 超时".into()),
+        };
+        match frame {
             WsMessage::Text(text) => {
                 let packet: Value = match serde_json::from_str(&text) {
                     Ok(packet) => packet,
@@ -484,13 +575,29 @@ async fn listen(
                         let Some(body) = packet.get("body") else {
                             continue;
                         };
-                        if let Some(sn) = body.get("sn").and_then(Value::as_i64) {
-                            *session_sn = Some(sn);
+                        if !session_sn.accept(body) {
+                            continue;
                         }
-                        // 登录状态变化不是聊天事件，不进插件流水线；它只用来把共享账号
-                        // 对齐到实现端当前认定的登录，出站选择器与插件的自我识别都读它。
-                        if body.get("type").and_then(Value::as_str) == Some("login-updated") {
-                            apply_login_update(body, bot_status);
+                        match body.get("type").and_then(Value::as_str) {
+                            Some("login-updated" | "login-removed") => {
+                                if !belongs_to_login(body, bot_status) {
+                                    // satori-qq changes account on the same login slot. Reconnect;
+                                    // existing tasks retain the old account and receive 404.
+                                    if bot_status.adapter == "satori-qq" {
+                                        return Ok(());
+                                    }
+                                    continue;
+                                }
+                                if body["type"] == "login-removed" {
+                                    return Ok(());
+                                }
+                                apply_login_update(body, bot_status);
+                                continue;
+                            }
+                            Some("login-added") => continue,
+                            _ => {}
+                        }
+                        if !belongs_to_login(body, bot_status) {
                             continue;
                         }
                         let event = match normalize_event(body, bot_status, &writer.resources()) {
@@ -531,6 +638,9 @@ async fn listen(
                     Some(OP_PING) => {
                         outbound.send(json!({"op": OP_PONG, "body": {}}).to_string())?;
                     }
+                    Some(OP_PONG) => {
+                        pong_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                    }
                     Some(OP_META) => {
                         if let Some(body) = packet.get("body") {
                             writer.set_proxy_urls(proxy_urls(body));
@@ -543,7 +653,6 @@ async fn listen(
             _ => {}
         }
     }
-    Ok(())
 }
 
 /// `login-updated` 的 `login` 是实现端当前认定的登录。账号变了就把共享账号换过去，
@@ -553,7 +662,7 @@ fn apply_login_update(body: &Value, bot: &BotStatus) {
         return;
     };
     let updated = login_user_of(login.get("user").unwrap_or(&Value::Null));
-    if updated.id.is_empty() {
+    if updated.id.is_empty() || updated.id != bot.login_user.get().id {
         // 账号未知的快照给不出可用账号，保留现有值。
         return;
     }
@@ -1134,6 +1243,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cursor_deduplicates_replay_and_resets_for_a_new_server_session() {
+        let mut cursor = EventCursor::default();
+        let ready = json!({"body":{"satori_qq":{"session_id":"one"}}});
+        cursor.ready(&ready, "red", "10000");
+        assert!(cursor.accept(&json!({"type":"message-created","sn":42})));
+        assert!(!cursor.accept(&json!({"type":"message-created","sn":42})));
+        assert!(cursor.accept(&json!({"type":"login-updated","sn":99})));
+        assert_eq!(cursor.sn, Some(42));
+        cursor.ready(&ready, "red", "10000");
+        assert!(!cursor.accept(&json!({"type":"message-created","sn":41})));
+        cursor.ready(
+            &json!({"body":{"satori_qq":{"session_id":"two"}}}),
+            "red",
+            "10000",
+        );
+        assert!(cursor.accept(&json!({"type":"message-created","sn":1})));
+    }
+
+    #[test]
+    fn other_logins_cannot_enter_this_bots_pipeline() {
+        let bot = test_bot();
+        assert!(belongs_to_login(
+            &json!({"login":{"platform":"red","user":{"id":"10000"}}}),
+            &bot
+        ));
+        assert!(!belongs_to_login(
+            &json!({"login":{"platform":"red","user":{"id":"20000"}}}),
+            &bot
+        ));
+        assert!(!belongs_to_login(
+            &json!({"login":{"platform":"other","user":{"id":"10000"}}}),
+            &bot
+        ));
+    }
+
+    #[tokio::test]
+    async fn qq_helpers_preserve_ids_routes_and_structured_errors() {
+        let (endpoint, mut seen, server) = scripted_peer(vec![
+            (200, r#"{"message_id":"7837409278651234567","data":[{"emoji_id":"76","count":2,"self":true}],"source":"kernel_cache","observed_at":123}"#.into()),
+            (200, "{}".into()),
+            (404, r#"{"message":"unavailable","code":"removed_action"}"#.into()),
+        ]).await;
+        let (ctx, writer) = bare_context(&endpoint).await;
+        let summary = qq::reactions(&ctx, &writer, "123", "7837409278651234567")
+            .await
+            .unwrap();
+        assert_eq!(summary.message_id, "7837409278651234567");
+        assert!(summary.data[0].by_self);
+        qq::poke(&ctx, &writer, "private:42", "42").await.unwrap();
+        let error = qq::clear_reactions(&ctx, &writer, "123", &summary.message_id)
+            .await
+            .unwrap_err();
+        let typed = error.downcast_ref::<SatoriApiError>().unwrap();
+        assert_eq!(typed.status, 404);
+        assert_eq!(typed.code.as_deref(), Some("removed_action"));
+        let first = seen.try_recv().unwrap();
+        assert!(first.starts_with("/v1/internal/reaction_summary "));
+        assert!(first.contains("7837409278651234567"));
+        assert!(seen.try_recv().unwrap().starts_with("/v1/internal/poke "));
+        assert!(
+            seen.try_recv()
+                .unwrap()
+                .starts_with("/v1/internal/reaction_clear ")
+        );
+        server.abort();
+    }
+
+    #[test]
     fn rpc_distinguishes_empty_success_kernel_failure_and_absent_payload() {
         assert!(decode_response("message.delete", b" ").unwrap().is_null());
         assert!(
@@ -1565,7 +1742,7 @@ mod tests {
     // login-updated 换了账号，共享账号要跟着换：出站请求的选择器与插件读到的自我识别
     // 都取自它；账号未知的快照不能把它清掉。
     #[tokio::test]
-    async fn login_update_moves_the_shared_account() {
+    async fn login_update_cannot_retarget_existing_tasks() {
         async fn selector(ctx: &Context, writer: &LockedWriter) -> String {
             let created: Vec<Value> = writer
                 .call(
@@ -1585,14 +1762,14 @@ mod tests {
             &json!({"type": "login-updated", "login": {"user": {"id": "20000"}}}),
             &ctx.bot,
         );
-        assert_eq!(selector(&ctx, &writer).await, "20000");
-        assert_eq!(ctx.bot.login_user.get().id, "20000");
+        assert_eq!(selector(&ctx, &writer).await, "10000");
+        assert_eq!(ctx.bot.login_user.get().id, "10000");
         // 账号尚不可知的快照给不出账号，保留现有的。
         apply_login_update(
             &json!({"type": "login-updated", "login": {"user": {}}}),
             &ctx.bot,
         );
-        assert_eq!(selector(&ctx, &writer).await, "20000");
+        assert_eq!(selector(&ctx, &writer).await, "10000");
         server.abort();
     }
 
