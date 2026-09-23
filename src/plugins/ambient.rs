@@ -222,6 +222,7 @@ pub(crate) struct AmbientConfig {
     /// 计价高峰时段的作息（见 [`peak`]）。DeepSeek 官方接口空闲时段半价，
     /// 而搭话是这里唯一无人触发的付费功能，最值得挑时段。**只对它家的模型生效**：
     /// 判定与发言两个模型都不走 DeepSeek 时，全天一个价，这一整段让路。
+    /// `peak.model` 可以给高峰时段单独配一个便宜模型顶替主模型。
     pub peak: peak::PeakConfig,
     /// 消息时效窗口（秒）：请求交给 satori-qq 之后，群里只要又有人说话就不再发
     /// 出这一句。0 关闭。见 [`crate::adapters::satori::Freshness`]。
@@ -460,8 +461,14 @@ impl AmbientConfig {
     ///
     /// 输入里最贵的是图片，其次是上下文长度；输出里最贵的是多发几条和顺手画张图。
     /// 醒过来回一句仍然算数，只是这一句用最少的钱说完。
+    ///
+    /// 若 `[ambient.peak].model` 配了替补模型（线上配的是小米 MiMo），这一轮
+    /// 连模型一起换掉：主模型在 DeepSeek 高峰翻倍，替补全天一个价。替补不够聪明，
+    /// 所以这段只留最简单的活——被叫到回一句，不判图、不联网、不画不唱不拍。
     fn frugal(&self) -> Self {
         Self {
+            gate_model: self.peak.model_or(&self.gate_model).to_string(),
+            reply_model: self.peak.model_or(&self.reply_model).to_string(),
             context_images: 0,
             context_turns: (self.context_turns / 2).max(6),
             messages_budget: self.messages_budget.min(2),
@@ -1867,10 +1874,37 @@ mod tests {
         assert_eq!(frugal.groups, config.groups);
         assert_eq!(config.peak.doze_gate(), Duration::ZERO);
         assert_eq!(config.peak.doze_reply_limit, 2);
+        // 没配替补模型，高峰那一轮仍用主模型。
+        assert!(config.peak.model.is_empty());
         // 旧配置里没有这张表也能读出来。
         let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();
         assert_eq!(legacy.peak.windows, config.peak.windows);
         assert_eq!(legacy.peak.doze_gate(), config.peak.doze_gate());
+        assert!(legacy.peak.model.is_empty());
+    }
+
+    /// 高峰时段配了替补模型时，醒来的那一轮连模型一起换：主模型在 DeepSeek 上
+    /// 高峰翻倍，替补全天一个价。替补不够聪明，所以只让它做最简单的活。离峰与
+    /// 没配的旧配置都不换。
+    #[test]
+    fn peak_hours_hand_the_simple_round_to_the_substitute_model() {
+        let config = AmbientConfig {
+            peak: peak::PeakConfig {
+                model: "mimo/mimo-v2.6-flash".to_string(),
+                ..peak::PeakConfig::default()
+            },
+            ..AmbientConfig::default()
+        };
+        let frugal = config.frugal();
+        assert_eq!(frugal.gate_model, "mimo/mimo-v2.6-flash");
+        assert_eq!(frugal.reply_model, "mimo/mimo-v2.6-flash");
+        // 主配置不动：离峰那一轮仍走 DeepSeek。
+        assert_eq!(config.gate_model, "deepseek/deepseek-flash");
+        assert_eq!(config.reply_model, "deepseek/deepseek-flash");
+        // 替补只换模型，别的最省的设置照旧。
+        assert_eq!(frugal.context_images, 0);
+        assert!(!frugal.search_enabled);
+        assert_eq!(frugal.groups, config.groups);
     }
 
     /// 联网搜索对搭话是默认开着的：遇到不认识的梗、新版本、比赛战况，先查再开口。

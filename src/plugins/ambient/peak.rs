@@ -18,6 +18,11 @@
 //! 峰谷价是 DeepSeek 一家的事，所以这一层只对走 DeepSeek 接口的模型生效
 //! （见 [`billed_by_peak`]）：换成全天一个价的供应商，时段管理直接让路，
 //! 配置留着不改，换回 DeepSeek 那天立刻又是原来那套作息。
+//!
+//! 第三条路是给高峰时段单独配一个替补模型（`model`）：峰谷价只跟 DeepSeek
+//! 有关，换一家就没有高峰这回事，账单不再翻倍。代价是替补模型多半更笨，所以
+//! 换上它的那些轮只做最简单的活——被叫到回一句，换上最省的一份上下文。留空
+//! 则仍用主模型，旧配置原样。
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -68,6 +73,11 @@ pub(crate) struct PeakConfig {
     pub windows: Vec<String>,
     /// 算作高峰的星期几，1=周一 … 7=周日；空列表等于每天都算。
     pub weekdays: Vec<u8>,
+    /// 高峰时段顶上来的模型（`供应商/模型`）。峰谷价把 DeepSeek 的高峰抬成一倍，
+    /// 与其整段不出声，不如把醒来的那几句交给一家全天同价的便宜模型——它不够
+    /// 聪明，所以只让它做最简单的活（被叫到回一句，换上最省的一份上下文）。
+    /// 空字符串（默认）表示不换，仍用 `gate_model` / `reply_model`。
+    pub model: String,
     /// 睡着时两次主动判定之间的最短间隔（秒）。高峰价格翻倍，但群里该接的话
     /// 隔一会儿看一眼仍接得住；这个间隔把「跟着消息频率一直在判定」压成
     /// 「隔一段时间看一眼」。写 0 表示完全睡着，只有被点名才醒（旧行为）；
@@ -84,6 +94,7 @@ impl Default for PeakConfig {
             mode: Mode::Sleep,
             windows: vec!["09:00-12:00".to_string(), "14:00-18:00".to_string()],
             weekdays: vec![1, 2, 3, 4, 5],
+            model: String::new(),
             doze_gate_seconds: 0,
             doze_reply_limit: 2,
         }
@@ -137,6 +148,16 @@ impl PeakConfig {
 
     pub(crate) fn stance(&self) -> Stance {
         self.stance_at(chrono::Local::now())
+    }
+
+    /// 高峰时段这一轮实际用哪个模型：配了替补就用它，没配（空字符串）沿用主模型。
+    pub(crate) fn model_or<'a>(&'a self, primary: &'a str) -> &'a str {
+        let substitution = self.model.trim();
+        if substitution.is_empty() {
+            primary
+        } else {
+            substitution
+        }
     }
 
     /// 睡着时两次主动判定之间要隔多久。写 0 关闭自主判定；其余夹到 30 秒起步，
@@ -233,6 +254,8 @@ mod tests {
     fn config_round_trips_through_toml_and_old_files_get_the_defaults() {
         let config: PeakConfig = toml::from_str("").unwrap();
         assert_eq!(config.mode, Mode::Sleep);
+        // 默认不换模型：旧配置读出来也是空的，高峰时段仍走主模型。
+        assert!(config.model.is_empty());
         let text = toml::to_string(&PeakConfig {
             mode: Mode::Pause,
             ..PeakConfig::default()
@@ -242,6 +265,25 @@ mod tests {
         let back: PeakConfig = toml::from_str(&text).unwrap();
         assert_eq!(back.mode, Mode::Pause);
         assert_eq!(back.windows, PeakConfig::default().windows);
+        assert!(back.model.is_empty());
+    }
+
+    #[test]
+    fn a_substitute_model_takes_over_only_when_one_is_configured() {
+        // 没配就沿用主模型。
+        let plain = PeakConfig::default();
+        assert_eq!(plain.model_or("deepseek/deepseek-flash"), "deepseek/deepseek-flash");
+        // 配了就顶上；两边空白当作没配。
+        let swapped = PeakConfig {
+            model: "mimo/mimo-v2.6-flash".to_string(),
+            ..PeakConfig::default()
+        };
+        assert_eq!(swapped.model_or("deepseek/deepseek-flash"), "mimo/mimo-v2.6-flash");
+        let blank = PeakConfig {
+            model: "   ".to_string(),
+            ..PeakConfig::default()
+        };
+        assert_eq!(blank.model_or("deepseek/deepseek-flash"), "deepseek/deepseek-flash");
     }
 
     #[test]
