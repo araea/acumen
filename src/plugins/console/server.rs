@@ -46,7 +46,6 @@ fn router(console: Arc<Console>) -> Router {
         .route("/icon-512.png", get(super::assets::icon_512))
         .route("/icon-maskable-512.png", get(super::assets::icon_maskable))
         .route("/icon-monochrome.svg", get(super::assets::icon_monochrome))
-        .route("/icon-monochrome-512.png", get(super::assets::icon_monochrome_512))
         .route("/apple-touch-icon.png", get(super::assets::apple_icon))
         .route("/app.css", get(super::assets::css))
         .route("/app.js", get(super::assets::js))

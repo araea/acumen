@@ -1,24 +1,21 @@
 //! 内嵌的前端资源。
 //!
-//! 这些文件一起编译进二进制，页面上不加载任何外部资源——这条与卡片出图同源
-//! （见 `res/cards/m3e.css` 的文件头）：一个跑在别人机器上的机器人，界面不该
-//! 依赖任何一台服务器的可达性。
+//! 全部编译进二进制，页面不加载任何外部资源：一个跑在别人机器上的机器人，
+//! 界面不该依赖任何一台服务器的可达性。
 //!
-//! 样式分三层，顺序不能换：`res/cards/m3e.css` 是系统层（令牌与静态基元，
-//! 卡片图共用），`res/console/tokens.css` 是界面的令牌层（界面这一份的取值），
-//! `res/console/app.css` 是版式层与交互基元，只写「摆在哪儿」与「按下去会怎样」。
-//! 越靠下越具体，所以令牌层能覆盖系统层、版式层能覆盖令牌层。三条各有一个
-//! 进程内的检查盯着，见本文件末尾那组 `layer_*` 测试。
+//! 样式分两层，顺序不能换（见 `stylesheet()`）：
 //!
-//! 图标有七份产物，一处几何（`scripts/make-icon.py`）：
+//! - `res/console/tokens.css`：设计令牌，界面唯一的取值来源。配色段由
+//!   `scripts/make-tokens.py` 从种子色经 HCT 生成，其余是字阶、形状、动效、
+//!   间距与外壳几何；
+//! - `res/console/app.css`：组件与版式，只写选择器与 `var()`。
 //!
-//! - 矢量那份给标签页与清单里的 `any`；
-//! - 两张 PNG 给装到桌面（Android 与桌面浏览器要用位图）；
-//! - 遮罩版交给系统自己裁形状，字形收在自适应图标的安全圆里；
-//! - 单色版供 Web App 清单的 `monochrome` 使用：透明底加纯白图形；
-//!   浏览器/启动器支持时可着色，不等于原生 Android 的 monochrome 资源；
-//! - 180 那份是 iOS 加到主屏幕用的——Safari 不认 SVG，也不认透明底，
-//!   而且它自己会裁圆角，所以这一份是铺满的方角位图。
+//! 界面与卡片图（`res/cards/m3e.css`）各有各的令牌：卡片是发进群里的静态位图，
+//! 界面是要跟随系统明暗、对比度与动态偏好的网页，两者的约束不同。
+//!
+//! 图标六份产物同出 `scripts/make-icon.py` 一处几何：矢量 `any`、192/512 位图、
+//! 铺满的 maskable、铺满的 Apple 180（Safari 不认 SVG 与透明底，且自己裁圆角），
+//! 以及透明底纯白的 monochrome。
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -35,17 +32,14 @@ const ICON_192: &[u8] = include_bytes!("../../../res/console/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../../../res/console/icon-512.png");
 const ICON_MASKABLE: &[u8] = include_bytes!("../../../res/console/icon-maskable-512.png");
 const ICON_MONO_SVG: &[u8] = include_bytes!("../../../res/console/icon-monochrome.svg");
-const ICON_MONO_512: &[u8] = include_bytes!("../../../res/console/icon-monochrome-512.png");
 const APPLE_ICON: &[u8] = include_bytes!("../../../res/console/apple-touch-icon.png");
 const MANIFEST: &[u8] = include_bytes!("../../../res/console/manifest.webmanifest");
 
-/// 三层拼好之后的那一份。只拼一次，之后每次请求都拿同一片内存。
+/// 两层拼好之后的那一份。只拼一次，之后每次请求都拿同一片内存。
 fn stylesheet() -> &'static [u8] {
     static SHEET: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     SHEET.get_or_init(|| {
-        let mut sheet = crate::render::web::DESIGN_SYSTEM.as_bytes().to_vec();
-        sheet.push(b'\n');
-        sheet.extend_from_slice(TOKENS_CSS);
+        let mut sheet = TOKENS_CSS.to_vec();
         sheet.push(b'\n');
         sheet.extend_from_slice(APP_CSS);
         sheet
@@ -84,10 +78,6 @@ pub(super) async fn icon_monochrome(headers: HeaderMap) -> Response {
     asset(&headers, ICON_MONO_SVG, "image/svg+xml")
 }
 
-pub(super) async fn icon_monochrome_512(headers: HeaderMap) -> Response {
-    asset(&headers, ICON_MONO_512, "image/png")
-}
-
 pub(super) async fn apple_icon(headers: HeaderMap) -> Response {
     asset(&headers, APPLE_ICON, "image/png")
 }
@@ -103,12 +93,16 @@ pub(super) async fn manifest(headers: HeaderMap) -> Response {
 /// 一律 `no-cache`：界面跟二进制一起走，升级之后不该还看到上一版的页面。
 ///
 /// 但「每次都问一遍」不等于「每次都重发一遍」——带上内容算出来的 ETag，
-/// 页面接得上 304 就不用再下这一百多 KB。手机上打开界面那一刻的等待，
-/// 跟机器人抢的正是同一台机器的 CPU。
+/// 接得上 304 就不用再下一遍。手机上打开界面那一刻的等待，跟机器人抢的是
+/// 同一台机器的 CPU。
 fn asset(request: &HeaderMap, body: &'static [u8], mime: &'static str) -> Response {
     let tag = etag(body);
     let mut headers = HeaderMap::new();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        header::HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
     if let Ok(value) = HeaderValue::from_str(&tag) {
         headers.insert(header::ETAG, value);
     }
@@ -146,60 +140,13 @@ fn etag(body: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use regex::Regex;
 
-    /// 页面里不许引用外部资源：没有 `src="http`、`href="http`、`@import`、
-    /// `url(http`。内联 SVG 的 `xmlns` 不算——那不是去网络上取东西。
-    ///
-    /// 与 `render::web` 那条同源：界面要能在完全离线的设备上打开。
-    #[test]
-    fn the_page_loads_nothing_from_the_network() {
-        let sheet = stylesheet();
-        for (name, body) in [
-            ("index.html", INDEX),
-            ("app.js", APP_JS),
-            ("app.css", sheet),
-        ] {
-            let text = String::from_utf8_lossy(body);
-            for needle in ["src=\"http", "href=\"http", "@import", "url(http"] {
-                assert!(
-                    !text.contains(needle),
-                    "{name} 里出现了外部引用 {needle}；界面不该依赖任何一台服务器的可达性"
-                );
-            }
-        }
+    fn text(bytes: &[u8]) -> String {
+        strip_comments(&String::from_utf8_lossy(bytes))
     }
 
-    /// 版式层不许写死颜色、字号、圆角、阴影，一律取系统层的令牌。
-    ///
-    /// 系统层说「是什么」，
-    /// 版式层只说「摆在哪儿」。查法很土但不漏——先把注释整段拿掉（本文件开头的
-    /// 说明里就写着 `#hex`、`font-size` 这些词，不剥掉会自己把自己判死），
-    /// 再看十六进制色、`rgb(`/`hsl(` 两种函数写法，以及那三个属性后面跟着数字。
-    #[test]
-    fn the_layout_layer_borrows_every_value_from_the_system_layer() {
-        const BANNED: &[&str] = &["font-size", "border-radius", "box-shadow"];
-        let css = String::from_utf8_lossy(APP_CSS).into_owned();
-        let mut suspicious = Vec::new();
-        for (index, line) in strip_comments(&css).lines().enumerate() {
-            let code = line.trim();
-            if code.is_empty() || code.starts_with("--") {
-                continue;
-            }
-            let hex = code
-                .split('#')
-                .skip(1)
-                .any(|rest| rest.chars().take(6).all(|c| c.is_ascii_hexdigit()));
-            let literal = BANNED
-                .iter()
-                .any(|prop| code.starts_with(prop) && !code.contains("var(--md-"));
-            if hex || code.contains("rgb(") || code.contains("hsl(") || literal {
-                suspicious.push(format!("{} 行写死了视觉值：{}", index + 1, code));
-            }
-        }
-        assert!(suspicious.is_empty(), "{}", suspicious.join("\n"));
-    }
-
-    /// 把 `/* … */` 整段删掉，行号不再对应原文件，但这一条测试只报行号给人找。
+    /// 把 `/* … */` 整段删掉。注释里写着 `#hex`、`font-size` 这些词，不剥掉会误报。
     fn strip_comments(sheet: &str) -> String {
         let mut out = String::with_capacity(sheet.len());
         let mut rest = sheet;
@@ -207,7 +154,6 @@ mod tests {
             out.push_str(&rest[..start]);
             match rest[start..].find("*/") {
                 Some(end) => {
-                    // 段落被整段拿掉之后，前后两行不该粘成一行。
                     out.push('\n');
                     rest = &rest[start + end + 2..];
                 }
@@ -218,92 +164,125 @@ mod tests {
         out
     }
 
-    /// 扫出一段样式里的令牌名。定义看后面跟的是不是 `:`，引用看是不是 `)` 或 `,`
-    /// （`var(--x, 兜底)` 这种写法目前没有，认一下免得以后踩空）。
-    fn scan_tokens(sheet: &str, definition: bool) -> Vec<&str> {
-        let bytes = sheet.as_bytes();
-        let mut found = Vec::new();
-        let mut i = 0;
-        while i + 1 < bytes.len() {
-            if bytes[i] != b'-' || bytes[i + 1] != b'-' {
-                i += 1;
-                continue;
+    /// 样式表里的每一条声明（属性名, 值）。遇到 `{` 前面的是选择器或 @ 规则，
+    /// 遇到 `;` 或 `}` 前面的是声明——多行的值（过渡列表、阴影列表）也完整取到。
+    fn declarations(sheet: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut buffer = String::new();
+        for ch in sheet.chars() {
+            match ch {
+                '{' => buffer.clear(),
+                ';' | '}' => {
+                    if let Some((name, value)) = buffer.split_once(':') {
+                        let name = name.trim();
+                        if !name.is_empty() && !name.contains(char::is_whitespace) {
+                            out.push((
+                                name.to_string(),
+                                value.split_whitespace().collect::<Vec<_>>().join(" "),
+                            ));
+                        }
+                    }
+                    buffer.clear();
+                }
+                _ => buffer.push(ch),
             }
-            let mut end = i + 2;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_lowercase()
-                    || bytes[end].is_ascii_digit()
-                    || bytes[end] == b'-')
-            {
-                end += 1;
-            }
-            if end == i + 2 {
-                i += 1;
-                continue;
-            }
-            let mut next = end;
-            while next < bytes.len() && bytes[next].is_ascii_whitespace() {
-                next += 1;
-            }
-            let hit = match bytes.get(next) {
-                Some(b':') => definition,
-                Some(b')' | b',') => !definition,
-                _ => false,
-            };
-            if hit {
-                found.push(&sheet[i..end]);
-            }
-            i = end;
         }
-        found
+        out
     }
 
-    fn text(sheet: &[u8]) -> String {
-        strip_comments(&String::from_utf8_lossy(sheet))
+    fn colour_literal(value: &str) -> bool {
+        let hex = Regex::new(r"#[0-9a-fA-F]{3,8}\b").unwrap();
+        hex.is_match(value)
+            || ["rgb(", "rgba(", "hsl(", "hsla(", "oklch(", "lab("]
+                .iter()
+                .any(|f| value.contains(f))
     }
 
-    /// 令牌只有两处能定义：系统层（`m3e.css`）与界面令牌层（`tokens.css`）。
-    /// 版式层里冒出 `--x:` 就是某一处又长出了私有的视觉语言——要加值先加到
-    /// `tokens.css`，那里是唯一能读全「界面长什么样」的地方。
+    fn defined(sheet: &str) -> Vec<String> {
+        declarations(sheet)
+            .into_iter()
+            .filter(|(name, _)| name.starts_with("--"))
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    fn used(sheet: &str) -> Vec<String> {
+        let re = Regex::new(r"var\(\s*(--[a-z0-9_-]+)").unwrap();
+        re.captures_iter(sheet).map(|c| c[1].to_string()).collect()
+    }
+
+    /// 页面里不许引用外部资源。界面要能在完全离线的设备上打开。
     #[test]
-    fn the_layout_layer_adds_no_token() {
-        let system = text(crate::render::web::DESIGN_SYSTEM.as_bytes());
-        let tokens = text(TOKENS_CSS);
-        let app = text(APP_CSS);
-        let defined: Vec<&str> = scan_tokens(&system, true)
-            .into_iter()
-            .chain(scan_tokens(&tokens, true))
-            .collect();
-        let mut extra: Vec<&str> = scan_tokens(&app, true)
-            .into_iter()
-            .filter(|name| !defined.contains(name))
-            .collect();
-        extra.sort_unstable();
-        extra.dedup();
+    fn the_page_loads_nothing_from_the_network() {
+        for (name, body) in [
+            ("index.html", INDEX),
+            ("app.js", APP_JS),
+            ("app.css", stylesheet()),
+        ] {
+            let text = String::from_utf8_lossy(body);
+            for needle in [
+                "src=\"http",
+                "href=\"http",
+                "@import",
+                "url(http",
+                "url(\"http",
+                "fetch(\"http",
+            ] {
+                assert!(!text.contains(needle), "{name} 里出现了外部引用 {needle}");
+            }
+        }
+    }
+
+    /// 组件层不写视觉字面量：颜色一律来自令牌；字号、圆角、阴影必须取 `var()`。
+    #[test]
+    fn the_component_layer_takes_every_value_from_tokens() {
+        let mut suspicious = Vec::new();
+        for (name, value) in declarations(&text(APP_CSS)) {
+            if colour_literal(&value) {
+                suspicious.push(format!("{name}: {value}（颜色字面量）"));
+            }
+            let guarded = ["font-size", "border-radius", "box-shadow"].contains(&name.as_str())
+                || name.starts_with("border-") && name.ends_with("-radius");
+            let keyword = ["none", "inherit", "0", "initial"].contains(&value.as_str());
+            if guarded && !keyword && !value.contains("var(--") {
+                suspicious.push(format!("{name}: {value}（应取令牌）"));
+            }
+        }
+        assert!(suspicious.is_empty(), "{}", suspicious.join("\n"));
+    }
+
+    /// 组件层不新造令牌。唯一的例外是 `--_` 开头的组件私有变量，
+    /// 而它的值只能指向令牌（或 `transparent`）——换个名字写字面量同样不行。
+    #[test]
+    fn the_component_layer_adds_no_token() {
+        let mut extra = Vec::new();
+        for (name, value) in declarations(&text(APP_CSS)) {
+            if !name.starts_with("--") {
+                continue;
+            }
+            if !name.starts_with("--_") || !(value.contains("var(--") || value == "transparent") {
+                extra.push(format!("{name}: {value}"));
+            }
+        }
         assert!(
             extra.is_empty(),
-            "版式层自己定义了令牌：{}；加到 tokens.css 去",
+            "组件层自己定义了令牌，挪到 tokens.css：{}",
             extra.join("、")
         );
     }
 
-    /// 用到的每一个令牌都得有定义。写错一个字母不会报错，只会静默地什么都不生效
-    /// ——这层保护比看起来重要。
+    /// 用到的每一个令牌都得有定义：拼错一个字母不会报错，只会静默不生效。
     #[test]
-    fn every_token_a_rule_uses_is_defined() {
-        let system = text(crate::render::web::DESIGN_SYSTEM.as_bytes());
+    fn every_token_in_use_is_defined() {
         let tokens = text(TOKENS_CSS);
         let app = text(APP_CSS);
-        let defined: Vec<&str> = scan_tokens(&system, true)
+        let known: Vec<String> = defined(&tokens).into_iter().chain(defined(&app)).collect();
+        let mut missing: Vec<String> = used(&tokens)
             .into_iter()
-            .chain(scan_tokens(&tokens, true))
+            .chain(used(&app))
+            .filter(|name| !known.contains(name))
             .collect();
-        let mut missing: Vec<&str> = scan_tokens(&app, false)
-            .into_iter()
-            .chain(scan_tokens(&tokens, false))
-            .filter(|name| !defined.contains(name))
-            .collect();
-        missing.sort_unstable();
+        missing.sort();
         missing.dedup();
         assert!(
             missing.is_empty(),
@@ -312,94 +291,160 @@ mod tests {
         );
     }
 
-    /// 令牌层是值层，但它只管「界面这一份多出来的取值」：颜色一律取自系统层，
-    /// 在这里写死一个色值就等于界面脱离了配色方案，深浅两档也会漏掉。
-    #[test]
-    fn the_token_layer_holds_no_colour() {
-        let tokens = text(TOKENS_CSS);
-        for (index, line) in tokens.lines().enumerate() {
-            let code = line.trim();
-            let hex = code
-                .split('#')
-                .skip(1)
-                .any(|rest| rest.chars().take(6).all(|c| c.is_ascii_hexdigit()));
-            assert!(
-                !hex && !code.contains("rgb(") && !code.contains("hsl("),
-                "{} 行写死了颜色：{}",
-                index + 1,
-                code
-            );
-        }
-    }
-
-    /// 令牌层只定义自定义属性。混进一条普通声明（`padding: 4px`）看着也生效，
-    /// 但它落在一个没人会去读的选择器上，且绕过了「值只在令牌里」这条。
+    /// 令牌层只定义自定义属性（`color-scheme` 除外，它是配色段的一部分）。
     #[test]
     fn the_token_layer_only_declares_custom_properties() {
-        let tokens = text(TOKENS_CSS);
-        for (index, line) in tokens.lines().enumerate() {
-            let code = line.trim();
-            if code.is_empty() || code.ends_with('{') || code == "}" {
-                continue;
-            }
+        for (name, value) in declarations(&text(TOKENS_CSS)) {
             assert!(
-                code.starts_with("--"),
-                "{} 行不是自定义属性：{}",
-                index + 1,
-                code
+                name.starts_with("--") || name == "color-scheme",
+                "tokens.css 里混进了普通声明：{name}: {value}"
             );
         }
     }
 
-    /// 图标与清单里的名字取自同一处。
+    /// 颜色字面量只能出现在生成段里：手写的一处色值就是脱离了种子与算法。
+    #[test]
+    fn colours_only_come_from_the_generated_scheme() {
+        let source = String::from_utf8_lossy(TOKENS_CSS);
+        let start = source
+            .find("@generated by scripts/make-tokens.py")
+            .expect("缺少生成段起点");
+        let end = source.find("@end generated").expect("缺少生成段终点");
+        assert!(start < end);
+        let outside = format!("{}{}", &source[..start], &source[end..]);
+        for (name, value) in declarations(&strip_comments(&outside)) {
+            assert!(
+                !colour_literal(&value),
+                "生成段之外写了颜色：{name}: {value}"
+            );
+        }
+        let generated = &source[start..end];
+        for role in [
+            "primary",
+            "on-primary",
+            "primary-container",
+            "surface",
+            "on-surface",
+            "on-surface-variant",
+            "outline",
+            "error",
+            "success",
+            "warning",
+            "inverse-surface",
+            "scrim",
+        ] {
+            assert!(
+                generated
+                    .matches(&format!("--md-sys-color-{role}:"))
+                    .count()
+                    == 4,
+                "--md-sys-color-{role} 要在浅、深、浅高对比、深高对比四档各有一份"
+            );
+        }
+    }
+
+    /// 状态栏颜色（theme-color）必须等于浅深两档的 surface，否则装到桌面后顶栏与状态栏有接缝。
+    #[test]
+    fn theme_colour_matches_the_surface() {
+        let tokens = String::from_utf8_lossy(TOKENS_CSS);
+        let index = String::from_utf8_lossy(INDEX);
+        let surfaces: Vec<&str> = Regex::new(r"--md-sys-color-surface: (#[0-9a-f]{6});")
+            .unwrap()
+            .captures_iter(&tokens)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        let (light, dark) = (surfaces[0], surfaces[1]);
+        assert!(index.contains(&format!(
+            r#"content="{light}" media="(prefers-color-scheme: light)""#
+        )));
+        assert!(index.contains(&format!(
+            r#"content="{dark}" media="(prefers-color-scheme: dark)""#
+        )));
+        let manifest: serde_json::Value = serde_json::from_slice(MANIFEST).unwrap();
+        assert_eq!(manifest["theme_color"], light);
+    }
+
+    /// 名字只写一处。
     #[test]
     fn the_name_is_written_once() {
-        let manifest = String::from_utf8_lossy(MANIFEST);
-        let index = String::from_utf8_lossy(INDEX);
-        assert!(manifest.contains(APP_NAME), "manifest 里的名字要对得上");
-        assert!(index.contains(APP_NAME), "页面标题要对得上");
+        assert!(String::from_utf8_lossy(MANIFEST).contains(APP_NAME));
+        assert!(String::from_utf8_lossy(INDEX).contains(&format!("<title>{APP_NAME}</title>")));
+        assert!(String::from_utf8_lossy(ICON).contains(&format!("<title>{APP_NAME}</title>")));
     }
 
-    /// 清单里列的那几张图标，一张都不能少，且各自得是它声称的那种格式：
-    /// 矢量看开头，位图看签名与前八字节之后的体量。
+    fn png_colour_type(body: &[u8]) -> u8 {
+        assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "得是一张 PNG");
+        assert_eq!(&body[12..16], b"IHDR");
+        body[25]
+    }
+
+    fn png_size(body: &[u8]) -> (u32, u32) {
+        let read = |at: usize| u32::from_be_bytes(body[at..at + 4].try_into().unwrap());
+        (read(16), read(20))
+    }
+
+    /// 清单承诺的每一张图标都在，尺寸与格式对得上；铺满的两份不许有透明通道
+    /// （系统裁形之后透明处会变黑或变白），any 那份必须有（圆角外是透明的）。
     #[test]
-    fn every_icon_the_manifest_promises_exists() {
-        let manifest = String::from_utf8_lossy(MANIFEST).into_owned();
-        for (name, body, vector) in [
-            ("/icon.svg", ICON, true),
-            ("/icon-192.png", ICON_192, false),
-            ("/icon-512.png", ICON_512, false),
-            ("/icon-maskable-512.png", ICON_MASKABLE, false),
-            ("/icon-monochrome.svg", ICON_MONO_SVG, true),
+    fn every_icon_is_what_it_claims_to_be() {
+        let manifest: serde_json::Value = serde_json::from_slice(MANIFEST).unwrap();
+        let listed: Vec<&str> = manifest["icons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|icon| icon["src"].as_str().unwrap())
+            .collect();
+        for name in [
+            "/icon.svg",
+            "/icon-192.png",
+            "/icon-512.png",
+            "/icon-maskable-512.png",
+            "/icon-monochrome.svg",
         ] {
-            assert!(manifest.contains(name), "清单里没有 {name}");
-            if vector {
-                assert!(body.starts_with(b"<svg"), "{name} 得是一张 SVG");
-            } else {
-                assert_eq!(&body[..8], b"\x89PNG\r\n\x1a\n", "{name} 得是一张 PNG");
-                assert!(body.len() > 512, "{name} 的内容不像一张图标");
-            }
+            assert!(listed.contains(&name), "清单里没有 {name}");
         }
-        // Apple 那份不进清单，但同样是 PNG，一并认一下。
-        assert_eq!(&APPLE_ICON[..8], b"\x89PNG\r\n\x1a\n", "iOS 那份必须是 PNG");
-        assert!(
-            &ICON_MONO_512[..8] == b"\x89PNG\r\n\x1a\n",
-            "单色层的位图版必须是 PNG"
-        );
+        assert!(ICON.starts_with(b"<svg") && ICON_MONO_SVG.starts_with(b"<svg"));
+        for (body, size, alpha) in [
+            (ICON_192, 192, true),
+            (ICON_512, 512, true),
+            (ICON_MASKABLE, 512, false),
+            (APPLE_ICON, 180, false),
+        ] {
+            assert_eq!(png_size(body), (size, size));
+            let colour = png_colour_type(body);
+            assert_eq!(
+                colour == 6,
+                alpha,
+                "{size}px 图标的透明通道不对（颜色类型 {colour}）"
+            );
+        }
     }
 
-    /// 三层的几何是同一处出来的，这里只钉住「该有的属性在」：
-    /// 单色层只能是纯白（系统自己去染），遮罩版与 iOS 版必须是铺满的方角
-    /// （系统/系统会自己裁，自己画了圆角就会裁出两层边）。
+    /// 单色层透明底、纯白前景，由系统去染色。
     #[test]
-    fn the_monochrome_layer_is_one_colour_and_has_no_background() {
-        let mono = String::from_utf8_lossy(ICON_MONO_SVG).into_owned();
-        assert!(mono.contains("#ffffff"), "单色层只用纯白");
-        assert!(!mono.contains("<linearGradient"), "单色层不许有底");
-        assert!(
-            !mono.contains("rx=\"24.16\""),
-            "单色层不该带那张圆角底"
-        );
+    fn the_monochrome_icon_is_white_on_nothing() {
+        let mono = String::from_utf8_lossy(ICON_MONO_SVG);
+        assert!(mono.contains(r##"fill="#ffffff""##));
+        assert!(!mono.contains("<linearGradient") && !mono.contains("<rect"));
+    }
+
+    /// 组件层的开关、页签、单选组都要带着语义出场，而不是只有样子。
+    #[test]
+    fn interactive_patterns_carry_their_roles() {
+        let js = String::from_utf8_lossy(APP_JS);
+        for needle in [
+            r#"role="switch""#,
+            r#"role="tab""#,
+            r#"role="tabpanel""#,
+            r#"type="radio""#,
+            "aria-current",
+            "aria-pressed",
+        ] {
+            assert!(js.contains(needle), "app.js 里缺少 {needle}");
+        }
+        // 模板插值默认转义：不许绕过 h`` 直接拼 innerHTML。
+        let direct = Regex::new(r"innerHTML\s*=\s*[`'\x22]").unwrap();
+        assert!(!direct.is_match(&js), "有地方绕过 h`` 直接拼 innerHTML");
     }
 
     /// ETag 跟着内容走；`If-None-Match` 只认同一份。
@@ -415,9 +460,9 @@ mod tests {
             }
             fresh(&headers, &tag)
         };
-        assert!(!ask(None), "没带条件的请求要拿到整份");
+        assert!(!ask(None));
         assert!(ask(Some(&tag)));
-        assert!(ask(Some(&format!("\"x\", {tag}"))), "多标签里命中一个也算");
+        assert!(ask(Some(&format!("\"x\", {tag}"))));
         assert!(ask(Some("*")));
         assert!(!ask(Some("\"0000\"")));
     }

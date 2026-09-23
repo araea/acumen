@@ -1,26 +1,18 @@
 /* ============================================================================
-   知微 · 界面
+   知微 · 控制台脚本
    ----------------------------------------------------------------------------
-   一个文件、零依赖、零构建。理由与后端把资源编译进二进制是同一条：这是跑在
-   别人机器上的机器人的界面，不该指望任何一台 CDN 活着，也不该为它引入一套
-   打包链。全篇只做四件事——取数据、拼字符串、按 hash 换页、把状态摆对。
+   单文件、零依赖、零构建：资源编译进二进制，界面不指望任何 CDN。
 
-   五处纪律：
-   - 所有插值一律走 esc()。页面上的字有一半来自配置、日志与人名，其中任何
-     一处漏转义都是一个注入点；
-   - 不自己造状态。开关、配置、日志都以后端为准，改完重新拉一次，不猜结果。
-     唯一的例外是日志缓冲——它只增不改，重画时不能把已经到过的行丢掉；
-   - 不往 DOM 里塞样式字面量。视觉值只在 app.css 里，这里只挑类名。唯一例外
-     是涟漪的圆心与半径：那两个数由按下的位置决定，算不出别的写法，且只写
-     位置与大小，不写颜色；
-   - 换页一律走链接（`<a href="#/…">`）与 hashchange。上一版把点击委派挂在
-     `#view` 上，而底部导航是它的兄弟节点，于是整条导航点不动；改成链接之后
-     即使这段脚本没跑起来，导航照样能换页；
-   - 手机上要一直流畅。日志限频合批，标签页切到后台就不动 DOM，动画只碰
-     transform 与 opacity，界面里没有模糊与大面积重绘。
+   几条纪律：
+   - 拼 HTML 一律用 h`` 标签模板：插值默认转义，只有 raw() 包过的片段原样输出。
+     页面上的字一半来自配置、日志与群友昵称，转义不能靠记得；
+   - 不猜后端状态：写入以接口回执为准，失败就把控件留在原值并说明原因；
+   - 能就地更新就不整页重画：整页重画会丢焦点、丢滚动、丢输入法状态；
+   - 样式值只在 CSS 里。脚本只切类名与 ARIA 状态；
+   - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
-   段落：§1 图标 · §2 小工具 · §3 口令 · §4 网络 · §5 反馈与询问 · §6 主题与版式 ·
-   §7 外壳与导航 · §8 路由 · §9 各页 · §10 事件 · §11 启动。
+   §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
+   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -28,80 +20,84 @@
 
   const NAME = "知微";
   const TOKEN_KEY = "acumen.token";
-  /** 一行的请求上限。超过它当作「这台机器正忙」，不再让页面停在骨架上。 */
-  const REQUEST_TIMEOUT = 20000;
+  const TIMEOUT = 20000;
 
-  /* ==================== §1 图标 ==================== */
-  /* 一套线性图标，24×24，只用 currentColor，不带填充。 */
-  const wrap = (body) =>
-    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" ` +
-    `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  /* ==================== §1 模板 ==================== */
 
-  const ICONS = {
-    overview: wrap(`<rect x="3" y="3" width="7" height="10" rx="2.5"/><rect x="14" y="3" width="7" height="6" rx="2.5"/><rect x="3" y="17" width="7" height="4" rx="2"/><rect x="14" y="13" width="7" height="8" rx="2.5"/>`),
-    plugins: wrap(
-      `<rect x="3.6" y="3.6" width="7" height="7" rx="2"/>` +
-        `<rect x="13.4" y="3.6" width="7" height="7" rx="2"/>` +
-        `<rect x="3.6" y="13.4" width="7" height="7" rx="2"/>` +
-        `<path d="M16.9 13.6v6.8M13.5 17h6.8"/>`
-    ),
-    ambient: wrap(
-      `<path d="M4 7.2A3.2 3.2 0 017.2 4h9.6A3.2 3.2 0 0120 7.2v6.6a3.2 3.2 0 01-3.2 3.2H9.4L4 21z"/>`
-    ),
-    logs: wrap(`<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h4"/>`),
-    command: wrap(
-      `<rect x="3" y="4.5" width="18" height="15" rx="3"/>` +
-        `<path d="M7.5 10l2.6 2-2.6 2M12.8 14h3.7"/>`
-    ),
-    refresh: wrap(`<path d="M20 12a8 8 0 11-2.4-5.7"/><path d="M20 4.5V10h-5.5"/>`),
-    search: wrap(`<circle cx="11" cy="11" r="6.4"/><path d="M15.8 15.8L20 20"/>`),
-    chevron: wrap(`<path d="M9.5 5.5l7 6.5-7 6.5"/>`),
-    back: wrap(`<path d="M14.5 5.5l-7 6.5 7 6.5"/>`),
-    play: wrap(`<path d="M7.5 4.8l11 7.2-11 7.2z"/>`),
-    save: wrap(
-      `<path d="M5 4.5h11l3.5 3.5v11.5H5z"/><path d="M8.5 4.5v5h6.5v-5"/>` +
-        `<path d="M8.5 19.5v-5h7v5"/>`
-    ),
-    gear: wrap(`<path d="M4 7h7m4 0h5M4 17h3m4 0h9"/><circle cx="13" cy="7" r="2.5"/><circle cx="9" cy="17" r="2.5"/>`),
-    plus: wrap(`<path d="M12 5.5v13M5.5 12h13"/>`),
-    trash: wrap(
-      `<path d="M4.5 6.5h15M9.5 6.5V5a1.5 1.5 0 011.5-1.5h2A1.5 1.5 0 0114.5 5v1.5"/>` +
-        `<path d="M6.5 6.5l.9 12a1.6 1.6 0 001.6 1.5h6a1.6 1.6 0 001.6-1.5l.9-12"/>`
-    ),
-    install: wrap(
-      `<rect x="6" y="2.5" width="12" height="19" rx="3"/>` +
-        `<path d="M12 7.5v6M9.4 11.1L12 13.7l2.6-2.6"/>`
-    ),
-    latest: wrap(`<path d="M12 5.5v13M6.4 12.9L12 18.5l5.6-5.6"/>`),
-    close: wrap(`<path d="M6 6l12 12M18 6L6 18"/>`),
-    copy: wrap(
-      `<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2.5"/>` +
-        `<path d="M15.5 5.5A2.5 2.5 0 0013 4H6.5A2.5 2.5 0 004 6.5V13a2.5 2.5 0 001.5 2.3"/>`
-    ),
-  };
-
-  /* ==================== §2 小工具 ==================== */
-
-  const $ = (selector, root = document) => root.querySelector(selector);
-
+  const RAW = Symbol("raw");
+  const raw = (html) => ({ [RAW]: String(html) });
   const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
 
+  function part(value) {
+    if (value === null || value === undefined || value === false) return "";
+    if (Array.isArray(value)) return value.map(part).join("");
+    if (typeof value === "object" && RAW in value) return value[RAW];
+    return esc(value);
+  }
+
+  /** 标签模板：插值一律转义，数组逐项拼接，raw() 原样。 */
+  function h(strings, ...values) {
+    let out = strings[0];
+    for (let i = 0; i < values.length; i++) out += part(values[i]) + strings[i + 1];
+    return raw(out);
+  }
+
+  const put = (element, fragment) => {
+    if (element) element.innerHTML = part(fragment);
+  };
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+  const attr = (condition, name) => (condition ? raw(` ${name}`) : "");
+
+  /* ==================== §2 图标 ==================== */
+  /* 24 网格、圆头圆角描边，笔画粗细取 --zw-icon-stroke。装饰性，对辅助技术隐藏。 */
+
+  const PATHS = {
+    overview: '<rect x="3.5" y="3.5" width="7" height="9" rx="2"/><rect x="13.5" y="3.5" width="7" height="5" rx="2"/><rect x="13.5" y="11.5" width="7" height="9" rx="2"/><rect x="3.5" y="15.5" width="7" height="5" rx="2"/>',
+    plugins: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/><path d="M17 2.9 20.1 6 17 9.1 13.9 6z"/>',
+    ambient: '<path d="M20 11.5a7.5 7.5 0 0 1-10.9 6.7L4 19.5l1.3-4.4A7.5 7.5 0 1 1 20 11.5z"/><path d="M8.8 11.5h.01M12.3 11.5h.01M15.8 11.5h.01"/>',
+    logs: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10z"/><path d="M14 3.5v5h5M8.5 13h7M8.5 16.5h5"/>',
+    settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+    refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>',
+    chevron: '<path d="m9.5 6 6 6-6 6"/>',
+    back: '<path d="m14.5 6-6 6 6 6"/>',
+    down: '<path d="m6 9.5 6 6 6-6"/>',
+    check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+    close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
+    copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 5.5A2 2 0 0 0 13.5 4H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 1.5 1.94"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    trash: '<path d="M4.5 7h15M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l.8 11.6a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9L17.5 7"/>',
+    download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
+    latest: '<path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/>',
+    play: '<path d="M8 5.5v13l10-6.5z"/>',
+    alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.5h.01"/>',
+    logout: '<path d="M14 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M10 16.5 5.5 12 10 7.5M5.5 12h9"/>',
+    inbox: '<path d="M4 13.5 6.5 5.5h11l2.5 8v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>',
+  };
+
+  const icon = (name, extra = "") =>
+    raw(
+      `<svg class="i${extra ? ` ${extra}` : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
+        `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${PATHS[name]}</svg>`
+    );
+
+  /* ==================== §3 格式 ==================== */
+
   const num = (value) => Number(value ?? 0).toLocaleString("zh-CN");
 
-  /** 时长说成人话：界面上要读得下去，不摆秒数。 */
-  function span(seconds) {
+  function duration(seconds) {
     const total = Math.max(0, Math.floor(Number(seconds) || 0));
     const day = Math.floor(total / 86400);
     const hour = Math.floor((total % 86400) / 3600);
     const minute = Math.floor((total % 3600) / 60);
-    if (day > 0) return `${day} 天 ${hour} 小时`;
-    if (hour > 0) return `${hour} 小时 ${minute} 分`;
-    if (minute > 0) return `${minute} 分 ${total % 60} 秒`;
-    return `${total} 秒`;
+    if (day) return `${day} 天 ${hour} 小时`;
+    if (hour) return `${hour} 小时 ${minute} 分`;
+    if (minute) return `${minute} 分钟`;
+    return "不到 1 分钟";
   }
 
-  /** 「多久以前」。搭话的记忆与表情包库里那些时间戳都用它。 */
   function ago(seconds) {
     const at = Number(seconds) || 0;
     if (!at) return "—";
@@ -114,28 +110,10 @@
     return new Date(stamp).toLocaleDateString("zh-CN");
   }
 
-  /** 一次请求的节拍。整屏只有一处会长这样，别在别处再写一遍。 */
-  const empty = (text) =>
-    `<div class="empty"><div class="empty-icon" aria-hidden="true">${ICONS.logs}</div>
-     <div class="empty-text">${esc(text)}</div></div>`;
+  const clock = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  const count = (text) => [...String(text)].length;
 
-  const skeleton = (rows = 3) =>
-    `<div class="card">${'<div class="skeleton skeleton-lg"></div>'.repeat(rows)}</div>`;
-
-  const reading = (key, value, unit = "") =>
-    `<div class="reading"><span class="reading-key">${esc(key)}</span>
-     <span class="reading-value">${esc(value)}${
-       unit ? `<span class="reading-unit">${esc(unit)}</span>` : ""
-     }</span></div>`;
-
-  const pageHead = (title, note = "") =>
-    `<header class="page-head">
-      <span class="page-eyebrow" aria-hidden="true">ACUMEN / 工作台</span>
-      <h1 class="page-title" tabindex="-1">${esc(title)}</h1>
-      ${note ? `<p class="page-note">${esc(note)}</p>` : ""}
-    </header>`;
-
-  /* ==================== §3 口令 ==================== */
+  /* ==================== §4 口令与接口 ==================== */
 
   const store = {
     get() {
@@ -145,11 +123,11 @@
         return "";
       }
     },
-    set(token) {
+    set(value) {
       try {
-        localStorage.setItem(TOKEN_KEY, token);
+        localStorage.setItem(TOKEN_KEY, value);
       } catch {
-        /* 隐私模式下存不住，这一次会话照常能用 */
+        /* 隐私模式存不住：本次会话仍在内存里可用 */
       }
     },
     clear() {
@@ -161,1825 +139,1760 @@
     },
   };
 
-  let token = new URLSearchParams(location.search).get("t") || store.get();
-  if (token) store.set(token);
+  /** 地址栏里的 ?t= 读一次就抹掉：口令不该留在历史记录、截图与分享出去的链接里。 */
+  function readToken() {
+    const params = new URLSearchParams(location.search);
+    const fromUrl = params.get("t");
+    if (fromUrl) {
+      store.set(fromUrl);
+      history.replaceState(null, "", location.pathname + location.hash);
+      return fromUrl;
+    }
+    return store.get();
+  }
 
-  /* ==================== §4 网络 ==================== */
+  let token = "";
 
-  async function api(path, options = {}) {
-    const init = {
-      method: options.method || "GET",
-      headers: { "x-acumen-token": token },
-    };
-    if (options.body !== undefined) {
+  function failure(message, status = 0) {
+    const error = new Error(message);
+    error.status = status;
+    return error;
+  }
+
+  async function api(path, { method = "GET", body } = {}) {
+    const init = { method, headers: { "x-acumen-token": token }, cache: "no-store" };
+    if (body !== undefined) {
       init.headers["content-type"] = "application/json";
-      init.body = JSON.stringify(options.body);
+      init.body = JSON.stringify(body);
     }
     const abort = new AbortController();
-    const timer = setTimeout(() => abort.abort(), REQUEST_TIMEOUT);
+    const timer = setTimeout(() => abort.abort(), TIMEOUT);
     init.signal = abort.signal;
     let response;
     try {
       response = await fetch(`/api${path}`, init);
-    } catch (error) {
-      throw abort.signal.aborted
-        ? new Error("这一请求 20 秒没有回应；这台机器可能正忙，过一会儿再试")
-        : new Error("连不上控制台；它可能刚被关掉，或者这一页是离线的旧页面");
+    } catch {
+      throw failure(
+        abort.signal.aborted
+          ? "20 秒内没有回应，这台设备可能正忙。稍后再试。"
+          : "连不上控制台。它可能已经停止，或者网络断开了。"
+      );
     } finally {
       clearTimeout(timer);
     }
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(payload.error || `服务返回 ${response.status}`);
-      error.status = response.status;
-      throw error;
+      if (response.status === 401) lock("口令不正确，或者已经更换。请重新输入。");
+      throw failure(payload.error || `服务返回了 ${response.status}`, response.status);
     }
     return payload;
   }
 
-  /* ==================== §5 反馈与询问 ==================== */
-
-  const snackHost = () => $("#snack");
-  let snackTimer = 0;
-
-  /** 一条反馈。`busy` 不自动消失，等下一次调用把它换掉。
-   *
-   *  播报方式分两种：成功与进行中是 `role="status"`（礼貌，等当前朗读完），
-   *  失败是 `role="alert"`（立刻打断）。失败得马上知道——它多半意味着
-   *  刚才那一下没生效，等三秒才听到就晚了。
-   *  活区挂在**文字那一个 span** 上，不挂在整条上：挂整条的话，`收起`
-   *  这枚按钮也会被念进消息里。
-   *  宿主 #snack 自己不挂 aria-live——挂在它上面会和里面这层叠起来念两遍。 */
-  function snack(text, kind = "good") {
-    clearTimeout(snackTimer);
-    const busy = kind === "busy";
-    snackHost().innerHTML = `
-      <div class="snack snack-${busy ? "good" : kind}">
-        ${busy ? `<span class="indicator indicator-inline" aria-hidden="true"></span>` : ""}
-        <span class="snack-text" role="${kind === "bad" ? "alert" : "status"}">${esc(text)}</span>
-        <button class="snack-close" type="button" data-snack-close aria-label="收起">${ICONS.close}</button>
-      </div>`;
-    if (busy) return;
-    // 报错多留一会儿：一句话要读完，还要来得及照它做。
-    snackTimer = setTimeout(() => (snackHost().innerHTML = ""), kind === "bad" ? 8000 : 3600);
+  /** 接口失败的统一出口。401 已经换成解锁页，不再弹提示。 */
+  function report(error) {
+    if (error?.status === 401) return;
+    snackbar(error?.message || String(error), "error");
   }
 
-  function fail(error) {
-    if (error && error.status === 401) {
-      store.clear();
-      paintLock("口令不对，或者它已经换过了");
-      return;
-    }
-    snack(error && error.message ? error.message : String(error), "bad");
+  /* ==================== §5 反馈 ==================== */
+
+  const snack = { timer: 0, hold: false, left: 0 };
+
+  /** 提示条。成功与进行中是 status（礼貌播报），失败是 alert（立即播报）。
+   *  鼠标悬停或键盘聚焦在提示条上时暂停计时（WCAG 2.2.1）。 */
+  function snackbar(message, kind = "info") {
+    clearTimeout(snack.timer);
+    const host = $("#snackbar");
+    put(
+      host,
+      h`<div class="snackbar${kind === "error" ? " snackbar-error" : ""}">
+        <span class="snackbar-text" role="${kind === "error" ? "alert" : "status"}">${message}</span>
+        <button class="icon-btn state" type="button" data-snack-close aria-label="关闭提示">${icon("close")}</button>
+      </div>`
+    );
+    snack.left = kind === "error" ? 10000 : 4000;
+    armSnack();
   }
 
-  /** 问一句再动手。用原生 dialog：Esc、焦点陷阱、返回键都由浏览器给。 */
-  function ask({ title, body, confirm = "继续", danger = false }) {
+  function armSnack() {
+    clearTimeout(snack.timer);
+    if (snack.hold || !$("#snackbar .snackbar")) return;
+    const started = Date.now();
+    snack.timer = setTimeout(() => put($("#snackbar"), ""), snack.left);
+    snack.started = started;
+  }
+
+  function holdSnack(hold) {
+    if (snack.hold === hold) return;
+    snack.hold = hold;
+    if (hold) {
+      clearTimeout(snack.timer);
+      snack.left = Math.max(1500, snack.left - (Date.now() - (snack.started || Date.now())));
+    } else armSnack();
+  }
+
+  /** 确认对话框：原生 dialog 负责焦点陷阱、Esc 与返回键；初始焦点落在「取消」。 */
+  function confirmAction({ title, body, confirm, danger = false }) {
     const dialog = $("#dialog");
-    if (!dialog || typeof dialog.showModal !== "function") {
-      return Promise.resolve(window.confirm(`${title}\n\n${body}`));
-    }
-    dialog.innerHTML = `
-      <div class="dialog-title" id="dialog-title">${esc(title)}</div>
-      <p class="dialog-body" id="dialog-body">${esc(body)}</p>
-      <div class="dialog-actions">
-        <button class="btn" type="button" data-answer="no">取消</button>
-        <button class="btn ${danger ? "btn-filled btn-danger" : "btn-filled"}"
-                type="button" data-answer="yes">${esc(confirm)}</button>
-      </div>`;
+    const opener = document.activeElement;
+    put(
+      dialog,
+      h`<h2 class="dialog-title" id="dialog-title">${title}</h2>
+        <p class="dialog-body" id="dialog-body">${body}</p>
+        <div class="actions actions-end">
+          <button class="btn btn-text" type="button" value="cancel" autofocus>取消</button>
+          <button class="btn btn-filled${danger ? " btn-danger" : ""}" type="button" value="confirm">${confirm}</button>
+        </div>`
+    );
     return new Promise((resolve) => {
       const pick = (event) => {
-        const answer = event.target.closest("[data-answer]");
-        if (!answer) return;
-        dialog.close();
-        resolve(answer.dataset.answer === "yes");
+        const button = event.target.closest("button[value]");
+        if (button) dialog.close(button.value);
       };
       dialog.addEventListener("click", pick);
-      // Esc 关掉时也算「不动手」：close 事件里统一收口，避免两个 resolve。
-      dialog.addEventListener("close", () => {
-        dialog.removeEventListener("click", pick);
-        resolve(false);
-      }, { once: true });
+      dialog.addEventListener(
+        "close",
+        () => {
+          dialog.removeEventListener("click", pick);
+          if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+          resolve(dialog.returnValue === "confirm");
+        },
+        { once: true }
+      );
+      dialog.returnValue = "";
       dialog.showModal();
     });
   }
 
-  /* ==================== §6 主题与版式 ==================== */
+  const emptyState = (message, name = "inbox") =>
+    h`<div class="empty"><span class="empty-mark">${icon(name)}</span><p>${message}</p></div>`;
 
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
-  const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
-  const narrow = window.matchMedia("(min-width: 600px)");
-  const wide = window.matchMedia("(min-width: 840px)");
+  const skeleton = () =>
+    h`<div class="page" aria-hidden="true"><div class="skeleton">
+        <div class="skeleton-block"></div><div class="skeleton-block skeleton-tall"></div>
+        <div class="skeleton-block"></div><div class="skeleton-block"></div>
+      </div></div>`;
 
-  function applyTheme() {
-    document.body.classList.toggle("dark", prefersDark.matches);
+  function pageHead(title, sub = "", { back = null, actions = "" } = {}) {
+    return h`<header class="page-head">
+      <div class="page-head-text">
+        ${back ? h`<a class="btn btn-text back" href="${back.href}">${icon("back")}${back.label}</a>` : ""}
+        <h1 class="page-title" tabindex="-1">${title}</h1>
+        ${sub ? h`<p class="page-sub">${sub}</p>` : ""}
+      </div>
+      ${actions ? h`<div class="page-actions">${actions}</div>` : ""}
+    </header>`;
   }
 
-  /** 三档版式：紧凑（底栏）· 中等（导航轨）· 宽（抽屉）。判据与 app.css 一致。 */
-  function layout() {
-    return wide.matches ? "expanded" : narrow.matches ? "medium" : "compact";
-  }
+  const statusTag = (plugin) =>
+    h`<span class="detail-status" data-status-for="${plugin.name}">${statusBadge(plugin)}</span>`;
 
-  function applyLayout() {
-    const name = layout();
-    document.body.classList.remove("layout-compact", "layout-medium", "layout-expanded");
-    document.body.classList.add(`layout-${name}`);
-    return name;
-  }
+  const statusBadge = (plugin) =>
+    plugin.pending
+      ? h`<span class="status status-warning">待重启</span>`
+      : plugin.on
+        ? h`<span class="status status-success">已启用</span>`
+        : h`<span class="status">已停用</span>`;
 
-  /** 装到桌面之后浏览器不再给地址栏，界面也该知道自己不在标签页里了。 */
-  const standalone = () =>
-    window.matchMedia("(display-mode: standalone)").matches ||
-    window.matchMedia("(display-mode: fullscreen)").matches ||
-    window.navigator.standalone === true;
-
-  /* ==================== §7 外壳与导航 ==================== */
+  /* ==================== §6 外壳与路由 ==================== */
 
   const PAGES = [
-    { id: "overview", label: "总览", title: "总览", hint: "运行与连接" },
-    { id: "plugins", label: "插件", title: "插件", hint: "功能与配置" },
-    { id: "ambient", label: "搭话", title: "搭话", hint: "人格与记忆" },
-    { id: "logs", label: "日志", title: "日志", hint: "实时运行记录" },
-    { id: "command", label: "命令", title: "命令", hint: "本机指令" },
+    { id: "overview", label: "总览" },
+    { id: "plugins", label: "插件" },
+    { id: "ambient", label: "搭话" },
+    { id: "logs", label: "日志" },
+    { id: "settings", label: "设置" },
   ];
 
-  const NAV_HINT = "工作空间";
+  const wide = matchMedia("(min-width: 840px)");
 
-  /** 导航只搭一次：每次重画都会把选中态的过渡打断，看着像闪。 */
-  function buildNav() {
-    $("#nav").innerHTML =
-      `<span class="nav-hint">${esc(NAV_HINT)}</span>` +
+  function buildShell() {
+    put(
+      $("#nav"),
       PAGES.map(
-        (page) => `
-      <a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
-        <span class="nav-indicator">${ICONS[page.id]}</span>
-        <span class="nav-copy"><span class="nav-label">${esc(page.label)}</span>
-        <span class="nav-description">${esc(page.hint)}</span></span>
-      </a>`
-      ).join("") + `<div class="nav-footer"><span class="nav-footer-mark" aria-hidden="true">${ICONS.command}</span><span>本机控制台<small>知微 ACUMEN</small></span></div>`;
+        (page) => h`<a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
+          <span class="nav-icon state">${icon(page.id)}</span>
+          <span class="nav-label">${page.label}</span>
+        </a>`
+      )
+    );
+    put(
+      $("#topbar-actions"),
+      h`<button class="icon-btn state" id="refresh" type="button" aria-label="刷新当前页面" title="刷新当前页面">${icon("refresh")}</button>`
+    );
   }
 
   function markNav(active) {
-    for (const item of document.querySelectorAll("#nav [data-nav]")) {
+    for (const item of $$("#nav [data-nav]")) {
       if (item.dataset.nav === active) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     }
   }
 
-  let pinObserver = null;
-
-  /** 页头滚到顶栏底下之后，紧凑屏的顶栏把品牌换成页名。 */
-  function watchPageHead() {
-    if (pinObserver) pinObserver.disconnect();
-    const bar = $(".bar");
-    const head = $(".page-head");
-    if (!bar || !head || !("IntersectionObserver" in window)) return;
-    bar.removeAttribute("data-pinned");
-    pinObserver = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting) bar.removeAttribute("data-pinned");
-        else bar.setAttribute("data-pinned", "");
-      },
-      { rootMargin: `-${bar.offsetHeight + 1}px 0px 0px 0px`, threshold: 0 }
-    );
-    pinObserver.observe(head);
-  }
-
-  /* ==================== §8 路由 ==================== */
-
-  function currentRoute() {
-    const hash = location.hash.replace(/^#\/?/, "");
-    if (!hash) return { page: "overview", arg: null, detail: false };
-    const [head, ...rest] = hash.split("/");
-    if (head === "plugins" && rest.length) {
+  function parseRoute() {
+    const [head = "", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
+    const page = PAGES.some((p) => p.id === head) ? head : "overview";
+    let arg = null;
+    if (page === "plugins" && rest.length) {
       try {
-        return { page: "plugins", arg: decodeURIComponent(rest.join("/")), detail: true };
-      } catch { return { page: "plugins", arg: null, detail: false }; }
+        arg = decodeURIComponent(rest.join("/")) || null;
+      } catch {
+        arg = null;
+      }
     }
-    if (head === "settings") return { page: "settings", arg: null, detail: false };
-    return PAGES.some((page) => page.id === head)
-      ? { page: head, arg: null, detail: false }
-      : { page: "overview", arg: null, detail: false };
+    return { page, arg, key: page === "plugins" && arg ? `plugins/${arg}` : page };
   }
 
-  /** 打开某个路由。用链接或这里都行——两者都只改 hash，剩下的交给 hashchange。 */
-  function go(page, arg) {
-    const hash = arg ? `#/${page}/${encodeURIComponent(arg)}` : `#/${page}`;
-    if (location.hash === hash) render();
-    else location.hash = hash;
+  function setTitle(title) {
+    document.title = title ? `${title} · ${NAME}` : NAME;
+    $("#topbar-title").textContent = title || "";
   }
+
+  let progressTimer = 0;
+  function busy(on) {
+    clearTimeout(progressTimer);
+    const view = $("#view");
+    if (on) {
+      view.setAttribute("aria-busy", "true");
+      progressTimer = setTimeout(() => ($("#progress").hidden = false), 150);
+    } else {
+      view.removeAttribute("aria-busy");
+      $("#progress").hidden = true;
+    }
+  }
+
+  let titleObserver = null;
+  /** 页头 h1 滚出顶栏之后，顶栏接过页名并换容器色（HIG 大标题收拢 + M3 滚动态）。 */
+  function watchTitle() {
+    titleObserver?.disconnect();
+    const bar = $("#topbar");
+    const heading = $(".page-title");
+    bar.removeAttribute("data-scrolled");
+    if (!heading || !("IntersectionObserver" in window)) return;
+    titleObserver = new IntersectionObserver(
+      ([entry]) => bar.toggleAttribute("data-scrolled", !entry.isIntersecting && entry.boundingClientRect.top < 0),
+      { rootMargin: `-${bar.offsetHeight}px 0px 0px 0px` }
+    );
+    titleObserver.observe(heading);
+  }
+
+  const PAINT = {
+    overview: () => overviewPage(),
+    plugins: (route) => pluginsPage(route),
+    ambient: () => ambientPage(),
+    logs: () => logsPage(),
+    settings: () => settingsPage(),
+  };
+
+  const MOUNT = {
+    overview: () => overviewFeed.start(),
+    logs: () => logs.mount(),
+  };
 
   let renderSeq = 0;
-  let lastPage = "";
-  const scrollMemory = new Map();
+  let shown = null;
+  const scrolls = new Map();
 
-  async function render() {
-    if (!token) return;
-    const route = currentRoute();
-    if (route.page !== "logs") stopLogs();
-    const navKey = route.detail ? "plugins" : route.page;
-    const pageKey = route.detail ? `plugins/${route.arg}` : route.page;
-    markNav(navKey);
+  /** 画当前路由。`quiet` 用于刷新：不出骨架、不挪焦点、保留滚动位置。 */
+  async function render({ quiet = false } = {}) {
+    if (!token) {
+      lock();
+      return;
+    }
+    const route = parseRoute();
+    const previous = shown;
+    const changed = !previous || previous.key !== route.key;
+    markNav(route.page);
+    overviewFeed.stop();
+    if (route.page !== "logs") logs.stop();
 
-    const title = route.page === "settings" ? "接入与全局" : route.detail ? route.arg : (PAGES.find((p) => p.id === route.page) || PAGES[0]).title;
-    $(".bar-title").textContent = title;
-    document.title = route.detail ? `${route.arg} · ${NAME}` : `${title} · ${NAME}`;
+    // 宽屏插件页：列表已经在屏上，只换右侧详情，搜索词、焦点与滚动都不动。
+    if (!quiet && previous?.page === "plugins" && route.page === "plugins" && wide.matches && $("#plugin-detail")) {
+      shown = route;
+      await plugins.swapDetail(route.arg);
+      return;
+    }
 
     const seq = ++renderSeq;
-    const view = $("#view");
-    // 换页时把上一页的滚动位置记住，回头再进来不至于从头翻。
-    if (lastPage && lastPage !== pageKey) scrollMemory.set(lastPage, window.scrollY);
-    logState.mounted = false;
-    detailSeq++;
-    view.setAttribute("aria-busy", "true");
-    view.innerHTML = skeleton(route.detail ? 2 : 1);
+    if (previous && changed) scrolls.set(previous.key, scrollY);
+    if (changed) setTitle(PAGES.find((p) => p.id === route.page)?.label);
+    busy(true);
+    if (changed && !quiet) put($("#view"), skeleton());
 
-    let html;
+    let fragment;
     try {
-      html = await paintRoute(route);
+      fragment = await PAINT[route.page](route);
     } catch (error) {
-      if (seq !== renderSeq) return;
-      if (error && error.status === 401) {
-        paintLock();
-        return;
-      }
-      view.removeAttribute("aria-busy");
-      view.innerHTML =
-        pageHead("读不出来") +
-        empty(
-          error && error.status === 503
-            ? error.message
-            : `这一页没能读出来：${error && error.message ? error.message : "原因不明"}`
-        );
+      if (seq !== renderSeq || error?.status === 401) return;
+      busy(false);
+      shown = route;
+      put(
+        $("#view"),
+        h`<div class="page">${pageHead("没能打开这一页")}
+          <div class="card"><div class="empty" role="alert">
+            <span class="empty-mark">${icon("alert")}</span><p>${error?.message || "原因不明"}</p>
+            <button class="btn btn-tonal" type="button" data-retry>${icon("refresh")}重试</button>
+          </div></div></div>`
+      );
+      watchTitle();
       return;
     }
     if (seq !== renderSeq) return;
 
-    const changed = lastPage !== pageKey;
-    lastPage = pageKey;
-    view.innerHTML = html;
-    view.dataset.page = route.page;
-    view.removeAttribute("aria-busy");
-    if (route.detail) {
-      const display = layout() === "expanded"
-        ? pluginView.payload?.plugins.find((p) => p.name === route.arg)?.display
-        : $(".page-title")?.textContent;
-      $(".bar-title").textContent = display || route.arg;
-      document.title = `${display || route.arg} · ${NAME}`;
-    }
-    if (changed) {
-      const remembered = scrollMemory.get(pageKey) || 0;
-      window.scrollTo({ top: remembered, behavior: "auto" });
-      if (!reduced.matches) {
-        view.removeAttribute("data-enter");
-        void view.offsetWidth;
-        view.dataset.enter = "";
+    const keep = quiet ? scrollY : changed ? scrolls.get(route.key) || 0 : scrollY;
+    shown = route;
+    busy(false);
+    put($("#view"), fragment);
+    const page = $("#view > .page");
+    if (changed && page) page.toggleAttribute("data-enter", true);
+    const heading = $(".page-title");
+    if (heading) setTitle(page?.dataset.title || heading.textContent.trim());
+    scrollTo({ top: keep, behavior: "instant" });
+    watchTitle();
+    MOUNT[route.page]?.();
+    // 换页后把焦点交给新页的标题：读屏从这里开始读，键盘从这里继续走。
+    if (changed && previous && !quiet) heading?.focus({ preventScroll: true });
+  }
+
+  /* ==================== §7 总览 ==================== */
+
+  const overviewFeed = {
+    timer: 0,
+    base: 0,
+    at: 0,
+    start() {
+      this.stop();
+      const hero = $("[data-uptime]");
+      if (hero) {
+        this.base = Number(hero.dataset.uptime) || 0;
+        this.at = Date.now();
       }
-    }
-    watchPageHead();
-    mountRoute(route);
-    if (changed && seq > 1) $(".page-title")?.focus({ preventScroll: true });
-  }
+      this.tick();
+      this.timer = setInterval(() => this.tick(), 6000);
+    },
+    stop() {
+      clearInterval(this.timer);
+      this.timer = 0;
+    },
+    async tick() {
+      const box = $("#overview-log");
+      if (!box || document.hidden) return this.stop();
+      const hero = $("[data-uptime]");
+      if (hero) hero.textContent = duration(this.base + (Date.now() - this.at) / 1000);
+      try {
+        const data = await api("/logs?limit=5");
+        const html = part((data.lines || []).slice(-5).map(logRow)) || part(h`<p class="log-empty">还没有日志</p>`);
+        if (box.dataset.digest !== html) {
+          box.dataset.digest = html;
+          box.innerHTML = html;
+        }
+      } catch {
+        if (!box.children.length) put(box, h`<p class="log-empty">暂时读不到日志</p>`);
+      }
+    },
+  };
 
-  async function paintRoute(route) {
-    // 插件页在宽屏上是「列表 + 详情」并排，窄屏上详情另占一页。
-    if (route.detail) {
-      return layout() === "expanded" ? paintPluginsSplit(route.arg) : paintPluginDetail(route.arg);
-    }
-    switch (route.page) {
-      case "plugins":
-        return layout() === "expanded" ? paintPluginsSplit("") : paintPlugins();
-      case "ambient":
-        return paintAmbient();
-      case "logs":
-        return paintLogs();
-      case "command":
-        return paintCommand();
-      case "settings":
-        return paintSettings();
-      default:
-        return paintOverview();
-    }
-  }
-
-  function mountRoute(route) {
-    if (route.detail) return;
-    if (route.page === "overview") mountOverviewLog();
-    if (route.page === "logs") mountLogs();
-  }
-
-  /* ==================== §9 各页 ==================== */
-
-  /* ---- 总览 ---- */
-
-  async function paintOverview() {
+  async function overviewPage() {
     const data = await api("/overview");
+    const stat = (label, value, unit) =>
+      h`<div class="stat"><dt class="stat-label">${label}</dt>
+        <dd class="stat-value"><span class="num">${value}</span>${unit ? h`<span class="stat-unit">${unit}</span>` : ""}</dd></div>`;
     const bots = data.bots.length
-      ? data.bots
-          .map(
-            (bot) => `
-        <div class="row row-plain">
-          <div class="row-icon">${esc((bot.name || bot.nick || "?").slice(0, 1))}</div>
-          <div class="row-body">
-            <span class="row-title">${esc(bot.name || bot.nick || bot.id || "未取得账号")}
-              <span class="key">${esc(bot.adapter)}/${esc(bot.platform)}</span>
-            </span>
-            <span class="row-sub">${
-              bot.id ? `已连上，账号 ${esc(bot.id)}` : "已连接实现端，账号还没认出来"
-            }</span>
-          </div>
-        </div>`
-          )
-          .join("")
-      : empty("还没有连接；启动日志里找「启动适配器」那几行");
+      ? h`<ul class="group">${data.bots.map(
+          (bot) => h`<li class="item">
+            <span class="item-leading" aria-hidden="true">${(bot.name || bot.nick || "?").slice(0, 1)}</span>
+            <div class="item-content">
+              <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag">${bot.adapter}/${bot.platform}</span></span>
+              <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "已连接实现端，账号尚未识别"}</span>
+            </div>
+            <div class="item-trailing"><span class="status status-success">已连接</span></div>
+          </li>`
+        )}</ul>`
+      : h`<div class="card">${emptyState("还没有连接到任何实现端。在「设置」里添加一条连接，重启后生效。")}</div>`;
+    const pending = data.plugins.pending ? `，${data.plugins.pending} 个待重启` : "";
 
-    return `
-      ${pageHead("总览", "从细微处，了解每一次运行。")}
-      <div class="overview-grid">
-        <section class="hero" aria-labelledby="runtime-title">
-          <div class="hero-top"><span class="hero-eyebrow">${esc(NAME)} / v${esc(data.app.version)}</span>
-            <span class="badge badge-on">核心运行中</span></div>
-          <h2 class="hero-label" id="runtime-title">本次运行时长</h2>
-          <div class="hero-figure"><span class="hero-number">${esc(span(data.app.uptime))}</span></div>
-          <span class="hero-note">启动于 ${esc(data.app.started)}</span>
-          <div class="hero-actions">
-            <a class="btn btn-filled" href="#/logs">${ICONS.logs}查看日志</a>
-            <a class="btn btn-outline" href="#/plugins">${ICONS.plugins}管理插件</a>
+    return h`<div class="page">
+      ${pageHead("总览", "这台设备上知微的运行情况。")}
+      <div class="overview">
+        <section class="hero" aria-labelledby="hero-label">
+          <span class="hero-art" aria-hidden="true"></span>
+          <div class="hero-top"><span>${NAME} v${data.app.version}</span><span class="status status-success">运行中</span></div>
+          <h2 class="hero-label" id="hero-label">已连续运行</h2>
+          <p class="hero-value" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</p>
+          <p class="hero-note">启动于 <time>${data.app.started}</time></p>
+          <div class="actions">
+            <a class="btn btn-filled" href="#/logs">${icon("logs")}查看日志</a>
+            <a class="btn btn-outlined" href="#/plugins">${icon("plugins")}管理插件</a>
           </div>
         </section>
 
-        <section class="card overview-connections" aria-labelledby="connections-title">
-          <div class="section-heading"><h2 class="section-title" id="connections-title">连接状态</h2>
-            <span class="count">${data.bots.length} 条连接</span></div>
-          <p class="note">当前接入的账号与实现端</p>
-          <div class="list">${bots}</div>
-          <div class="actions"><a class="btn btn-tonal" href="#/settings">${ICONS.gear}管理连接</a></div>
-        </section>
-
-        <section class="overview-metrics" aria-labelledby="metrics-title">
-          <div class="section-heading"><h2 class="section-title" id="metrics-title">消息与插件</h2><span class="count">打开或刷新时更新</span></div>
-          <div class="readings">
-            ${reading("今日消息", num(data.messages.today), "条")}
-            ${reading("今日发言人", num(data.messages.people), "位")}
-            ${reading("近 7 天消息", num(data.messages.week), "条")}
-            ${reading("已启用插件", `${data.plugins.on}/${data.plugins.total}`, data.plugins.pending ? ` · ${data.plugins.pending} 个待重启` : "")}
+        <section class="section" aria-labelledby="bots-title">
+          <div class="section-head">
+            <h2 class="section-title" id="bots-title">连接</h2>
+            <a class="btn btn-text" href="#/settings">管理连接</a>
           </div>
+          ${bots}
         </section>
 
-        <section class="card overview-recent" aria-labelledby="recent-title">
-          <div class="section-heading"><h2 class="section-title" id="recent-title">最近日志</h2>
-            <a class="btn" href="#/logs">全部日志 ${ICONS.chevron}</a></div>
-          <p class="note">最近 6 行 · 页面可见时每 6 秒更新</p>
-          <div class="log log-short" id="overview-log" tabindex="0" role="region" aria-label="最近日志"></div>
+        <section class="section section-wide" aria-labelledby="stats-title">
+          <div class="section-head">
+            <h2 class="section-title" id="stats-title">消息与插件</h2>
+            <span class="section-meta">更新于 <time>${clock()}</time></span>
+          </div>
+          <dl class="stats">
+            ${stat("今日消息", num(data.messages.today), "条")}
+            ${stat("今日发言", num(data.messages.people), "人")}
+            ${stat("近 7 天消息", num(data.messages.week), "条")}
+            ${stat("已启用插件", `${data.plugins.on} / ${data.plugins.total}`, pending.slice(1))}
+          </dl>
         </section>
-      </div>`;
+
+        <section class="section section-wide" aria-labelledby="recent-title">
+          <div class="section-head">
+            <h2 class="section-title" id="recent-title">最近日志</h2>
+            <a class="btn btn-text" href="#/logs">全部日志${icon("chevron", "i-end")}</a>
+          </div>
+          <div class="log log-short" id="overview-log"></div>
+        </section>
+      </div>
+    </div>`;
   }
 
-  /** 总览的「最近日志」：一屏六行，跟着走，不订阅日志流。 */
-  const OVERVIEW_LINES = 6;
-  const OVERVIEW_EVERY = 6000;
+  /* ==================== §8 插件 ==================== */
 
-  async function mountOverviewLog() {
-    const box = $("#overview-log");
-    if (!box) return;
-    await refreshOverviewLog();
-    // 这一页是落地页，那六行不该停在打开那一刻。拉的是内存里的环形缓冲，
-    // 不碰数据库也不碰平台；六秒一次，一次六个 JSON 对象。
-    clearInterval(logState.overview);
-    logState.overview = setInterval(() => {
-      if (document.hidden || !$("#overview-log")) {
-        clearInterval(logState.overview);
-        logState.overview = 0;
+  const plugins = {
+    data: null,
+    query: "",
+    section: "",
+    selected: null,
+    detailSeq: 0,
+
+    visible() {
+      const text = this.query.trim().toLowerCase();
+      return this.data.plugins.filter(
+        (plugin) =>
+          (!this.section || plugin.section === this.section) &&
+          (!text ||
+            plugin.name.toLowerCase().includes(text) ||
+            plugin.display.toLowerCase().includes(text) ||
+            plugin.summary.toLowerCase().includes(text))
+      );
+    },
+
+    rows() {
+      const list = this.visible();
+      if (!list.length) return h`<li>${emptyState("没有符合条件的插件。换个关键词或筛选试试。", "search")}</li>`;
+      const dual = wide.matches;
+      return list.map(
+        (plugin) => h`<li class="item" data-plugin="${plugin.name}">
+          <div class="item-content">
+            <a class="item-link item-title" href="#/plugins/${encodeURIComponent(plugin.name)}"${attr(plugin.name === this.selected, 'aria-current="page"')}>
+              ${plugin.display}<span class="tag">${plugin.name}</span>${plugin.pending ? h`<span class="status status-warning">待重启</span>` : ""}
+            </a>
+            <span class="item-sub">${plugin.summary}</span>
+          </div>
+          <div class="item-trailing">
+            ${switchButton(plugin, { label: `启用 ${plugin.display}` })}
+            ${dual ? "" : icon("chevron", "chevron")}
+          </div>
+        </li>`
+      );
+    },
+
+    chips() {
+      const counts = new Map();
+      for (const plugin of this.data.plugins) counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
+      const chip = (code, label, total) =>
+        h`<button class="chip state" type="button" data-section="${code}" aria-pressed="${this.section === code}">
+          ${icon("check")}${label}<span class="chip-count">${total}</span></button>`;
+      return [
+        chip("", "全部", this.data.plugins.length),
+        ...this.data.sections.filter((s) => counts.get(s.code)).map((s) => chip(s.code, s.name, counts.get(s.code))),
+      ];
+    },
+
+    summary() {
+      const on = this.data.plugins.filter((p) => p.on).length;
+      const shownCount = this.visible().length;
+      return shownCount === this.data.plugins.length
+        ? `共 ${this.data.plugins.length} 个，已启用 ${on} 个`
+        : `显示 ${shownCount} / ${this.data.plugins.length} 个`;
+    },
+
+    /** 只重画列表与计数：打一个字就整页重来会把输入法与光标一起冲掉。 */
+    repaint() {
+      put($("#plugin-list"), this.rows());
+      put($("#plugin-chips"), this.chips());
+      const status = $("#plugin-count");
+      if (status) status.textContent = this.summary();
+    },
+
+    async swapDetail(name) {
+      const seq = ++this.detailSeq;
+      this.selected = name;
+      for (const link of $$("#plugin-list .item-link")) {
+        const on = link.closest("[data-plugin]").dataset.plugin === name;
+        if (on) link.setAttribute("aria-current", "page");
+        else link.removeAttribute("aria-current");
+      }
+      const pane = $("#plugin-detail");
+      if (!name) {
+        put(pane, detailPlaceholder());
+        setTitle("插件");
         return;
       }
-      refreshOverviewLog();
-    }, OVERVIEW_EVERY);
-  }
+      pane.setAttribute("aria-busy", "true");
+      try {
+        const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
+        if (seq !== this.detailSeq || !pane.isConnected) return;
+        put(pane, detailBody(plugin, 2));
+        pane.scrollTop = 0;
+        setTitle(plugin.display);
+      } catch (error) {
+        if (seq !== this.detailSeq || !pane.isConnected) return;
+        put(pane, h`<div class="card">${emptyState(error.message, "alert")}</div>`);
+      } finally {
+        if (seq === this.detailSeq) pane.removeAttribute("aria-busy");
+      }
+    },
+  };
 
-  async function refreshOverviewLog() {
-    const box = $("#overview-log");
-    if (!box) return;
-    try {
-      const data = await api(`/logs?limit=${OVERVIEW_LINES}`);
-      const lines = (data.lines || []).slice(-OVERVIEW_LINES);
-      const html = lines.length
-        ? lines.map(logLine).join("")
-        : `<div class="log-line log-debg">这里还是空的</div>`;
-      // 一模一样就不动 DOM：每六秒重画一次会让滚动位置与选区一起跳。
-      if (box.dataset.digest === html) return;
-      box.dataset.digest = html;
-      box.innerHTML = html;
-      box.scrollTop = box.scrollHeight;
-    } catch {
-      if (!box.children.length) box.textContent = "日志暂时无法读取，可刷新重试";
-    }
-  }
+  /** 插件开关。名字固定为「启用 某某」，状态交给 aria-checked：开关的名字不随状态变。 */
+  const switchButton = (plugin, { label = "", labelledby = "", describedby = "" }) =>
+    h`<button class="switch" type="button" role="switch" data-toggle="${plugin.name}" aria-checked="${plugin.on}"
+        ${label ? h`aria-label="${label}"` : h`aria-labelledby="${labelledby}" aria-describedby="${describedby}"`}
+        ${attr(plugin.name === "ctl", 'disabled title="控制插件不能停用"')}></button>`;
 
-  /* ---- 插件 ---- */
+  const detailPlaceholder = () =>
+    h`<div class="card">${emptyState("在左侧选择一个插件，这里会显示它的开关、配置与指令。", "plugins")}</div>`;
 
-  const pluginView = { payload: null, text: "", section: "", selected: "" };
+  async function pluginsPage(route) {
+    const [list, detail] = await Promise.all([
+      api("/plugins"),
+      route.arg ? api(`/plugins/${encodeURIComponent(route.arg)}`).catch((error) => error) : null,
+    ]);
+    plugins.data = list;
+    plugins.selected = route.arg;
+    const dual = wide.matches;
+    if (detail instanceof Error && detail.status === 401) throw detail;
 
-  function pluginRows() {
-    const data = pluginView.payload;
-    const rows = data.plugins
-      .filter((plugin) => {
-        if (pluginView.section && plugin.section !== pluginView.section) return false;
-        const text = pluginView.text.trim().toLowerCase();
-        if (!text) return true;
-        return (
-          plugin.name.includes(text) ||
-          plugin.display.toLowerCase().includes(text) ||
-          plugin.summary.toLowerCase().includes(text)
-        );
-      })
-      .map(
-        (plugin) => `
-        <div class="row" data-plugin="${esc(plugin.name)}"
-             ${plugin.name === pluginView.selected ? 'data-selected="true"' : ""}>
-          <a class="row-hit" href="#/plugins/${encodeURIComponent(plugin.name)}"
-             aria-label="打开 ${esc(plugin.display)}"
-             ${plugin.name === pluginView.selected ? 'aria-current="page"' : ""}></a>
-          <div class="row-body">
-            <span class="row-title">${esc(plugin.display)}
-              <span class="key">${esc(plugin.name)}</span>
-              ${plugin.pending ? badge(plugin) : ""}
-            </span>
-            <span class="row-sub">${esc(plugin.summary)}</span>
-          </div>
-          <div class="row-tail">
-            <button class="switch" type="button" role="switch" data-toggle="${esc(plugin.name)}"
-                    aria-checked="${plugin.on}" aria-label="启用或停用${esc(plugin.display)}"
-                    ${plugin.name === "ctl" ? "disabled" : ""}></button>
-            <span class="chevron">${ICONS.chevron}</span>
-          </div>
-        </div>`
-      )
-      .join("");
-    return `<div class="list">${rows || empty("没有符合条件的插件")}</div>`;
-  }
-
-  function pluginChips() {
-    const data = pluginView.payload;
-    return [
-      `<button class="chip" type="button" data-section=""
-         aria-pressed="${pluginView.section === ""}">全部 ${data.plugins.length}</button>`,
-      ...data.sections
-        .map((section) => {
-          const count = data.plugins.filter((plugin) => plugin.section === section.code).length;
-          if (!count) return "";
-          return `<button class="chip" type="button" data-section="${esc(section.code)}"
-            aria-pressed="${pluginView.section === section.code}">${esc(section.name)} ${count}</button>`;
-        })
-        .filter(Boolean),
-    ].join("");
-  }
-
-  const pluginSearch = () => `
-    <div class="search">
-      ${ICONS.search}
-      <input id="plugin-search" type="search" placeholder="按名字或说明找"
-             value="${esc(pluginView.text)}" aria-label="搜索插件">
-    </div>`;
-
-  /** 只重画列表与筛选项：敲一个字就整页重拉一次太浪费，也会把光标顶掉。 */
-  function repaintPlugins() {
-    const list = $("#plugin-list");
-    if (list) list.innerHTML = pluginRows();
-    const chips = $("#plugin-chips");
-    if (chips) chips.innerHTML = pluginChips();
-  }
-
-  async function paintPlugins() {
-    pluginView.payload = await api("/plugins");
-    pluginView.selected = "";
-    return `
-      ${pageHead("插件", "开关就地改，改完立刻生效；点一行进去改它的配置。")}
-      ${pluginSearch()}
-      <div class="chips" id="plugin-chips">${pluginChips()}</div>
-      <section class="card" id="plugin-list">${pluginRows()}</section>`;
-  }
-
-  /** 宽屏：列表与详情并排，选一个就地展开，不必来回翻页。 */
-  async function paintPluginsSplit(name) {
-    pluginView.payload = await api("/plugins");
-    pluginView.selected = name || "";
-    const detail = name
-      ? pluginDetailHtml(await fetchPlugin(name))
-      : `<section class="card">${empty("左边挑一个插件，它的配置与指令会在这儿展开")}</section>`;
-    return `
-      ${pageHead("插件", "开关就地改，改完立刻生效；右边是选中那个的配置。")}
-      <div class="panes" data-split>
-        <div class="pane">
-          ${pluginSearch()}
-          <div class="chips" id="plugin-chips">${pluginChips()}</div>
-          <section class="card" id="plugin-list">${pluginRows()}</section>
-        </div>
-        <div class="pane" id="plugin-detail">${detail}</div>
+    // 窄屏：详情单独成页，左上角是返回（HIG 的层级导航）。
+    if (route.arg && !dual) {
+      if (detail instanceof Error) throw detail;
+      return h`<div class="page">
+        ${pageHead(detail.display, detail.summary, { back: { href: "#/plugins", label: "插件" } })}
+        ${detailBody(detail, 1)}
       </div>`;
-  }
+    }
 
-  function badge(plugin) {
-    if (plugin.pending) return `<span class="badge badge-pending">待重启</span>`;
-    return plugin.on
-      ? `<span class="badge badge-on">已启用</span>`
-      : `<span class="badge badge-off">已停用</span>`;
-  }
+    const pane = !dual
+      ? ""
+      : h`<section class="split-detail" id="plugin-detail" aria-label="插件详情">${
+          !detail
+            ? detailPlaceholder()
+            : detail instanceof Error
+              ? h`<div class="card">${emptyState(detail.message, "alert")}</div>`
+              : detailBody(detail, 2)
+        }</section>`;
 
-  /* ---- 插件详情 ---- */
-
-  const fetchPlugin = (name) => api(`/plugins/${encodeURIComponent(name)}`);
-
-  async function paintPluginDetail(name) {
-    const plugin = await fetchPlugin(name);
-    pluginView.selected = name;
-    // 页头已经写着插件名了，卡里不再重复一遍
-    return `${pageHead(plugin.display)}${pluginDetailHtml(plugin, { back: true, named: false })}`;
-  }
-
-  function pluginDetailHtml(plugin, { back = false, named = true } = {}) {
-    const rows = Object.entries(plugin.config)
-      .map(([key, value]) => renderNode(key, key, value))
-      .join("");
-    const differences = plugin.diff.length
-      ? `<div class="code">${esc(plugin.diff.join("\n"))}</div>`
-      : `<p class="note">与默认值一致。</p>`;
-    const commands = plugin.commands.length
-      ? plugin.commands
-          .map(
-            (command) => `
-            <button class="row row-plain" type="button" data-copy="${esc(command.cmd)}"
-                    title="点击复制">
-              <div class="row-body">
-                <span class="row-title"><span class="key">${esc(command.cmd)}</span></span>
-                <span class="row-sub">${esc(command.note)}</span>
-              </div>
-              <div class="row-tail"><span class="chevron">${ICONS.copy}</span></div>
-            </button>`
-          )
-          .join("")
-      : `<p class="note">这个插件没有指令，它在后台按排期自己工作。</p>`;
-
-    return `
-      ${back ? `<a class="btn btn-tonal back" href="#/plugins">${ICONS.back}回插件列表</a>` : ""}
-      <section class="card">
-        <h2 class="section-title">${named ? esc(plugin.display) : ""}
-          <span class="key">${esc(plugin.name)}</span>${badge(plugin)}</h2>
-        <p class="note">${esc(plugin.summary)}</p>
-        <div class="row row-plain">
-          <div class="row-body">
-            <span class="row-title">开关</span>
-            <span class="row-sub">${esc(plugin.effect)}</span>
+    const title = detail && !(detail instanceof Error) ? detail.display : "";
+    return h`<div class="page"${title ? h` data-title="${title}"` : ""}>
+      ${pageHead("插件", "开关即时生效；配置修改后立即保存。")}
+      <div class="split"${attr(dual, "data-dual")}>
+        <div class="split-list">
+          <div class="toolbar">
+            <div class="search">${icon("search")}
+              <input class="input" id="plugin-search" type="search" placeholder="搜索名称或说明"
+                aria-label="搜索插件" autocomplete="off" value="${plugins.query}">
+            </div>
           </div>
-          <button class="switch" type="button" role="switch" data-toggle="${esc(plugin.name)}"
-                  aria-checked="${plugin.on}" aria-label="启用或停用"
-                  ${plugin.name === "ctl" ? "disabled" : ""}></button>
+          <div class="chips" id="plugin-chips" role="group" aria-label="按分类筛选">${plugins.chips()}</div>
+          <p class="section-meta" id="plugin-count" role="status">${plugins.summary()}</p>
+          <ul class="group" id="plugin-list">${plugins.rows()}</ul>
         </div>
+        ${pane}
+      </div>
+    </div>`;
+  }
+
+  /** 插件详情。`level` 是这一块最高的标题级别：宽屏在「插件」h1 之下用 h2，窄屏自成一页。 */
+  function detailBody(plugin, level) {
+    const top = `h${level}`;
+    const sub = `h${Math.min(level + 1, 6)}`;
+    const heading = (tag, id, text, cls = "section-title") => raw(`<${tag} class="${cls}" id="${id}">${esc(text)}</${tag}>`);
+    const fields = Object.entries(plugin.config)
+      .filter(([key]) => key !== "enabled")
+      .map(([key, value]) => configField(key, key, value));
+    const commands = plugin.commands.length
+      ? h`<ul class="group">${plugin.commands.map(
+          (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
+            <span class="item-content"><span class="item-title"><code class="tag">${command.cmd}</code></span>
+            <span class="item-sub">${command.note}</span></span>
+            <span class="item-trailing">${icon("copy")}</span></button></li>`
+        )}</ul>`
+      : h`<p class="note">这个插件没有指令，它在后台按计划工作。</p>`;
+
+    return h`
+      ${level === 2
+        ? h`<div class="detail-head">
+            ${raw(`<${top} class="detail-title" id="detail-title">`)}${plugin.display}<span class="tag">${plugin.name}</span>${statusTag(plugin)}${raw(`</${top}>`)}
+            <p class="note">${plugin.summary}</p>
+          </div>`
+        : h`<div>${statusTag(plugin)}</div>`}
+      <div class="card">
+        <div class="toggle-row">
+          <div class="field">
+            <span class="field-label" id="enable-label">启用</span>
+            <span class="field-hint" id="enable-hint">${plugin.effect}</span>
+          </div>
+          ${switchButton(plugin, { labelledby: "enable-label", describedby: "enable-hint" })}
+        </div>
+      </div>
+
+      <section class="section" aria-labelledby="config-title">
+        <div class="section-head">
+          ${heading(sub, "config-title", "配置")}
+          <span class="section-meta">修改后离开输入框或按回车即保存</span>
+        </div>
+        ${fields.length
+          ? h`<form class="card config" data-config="${plugin.name}" novalidate>${fields}</form>`
+          : h`<p class="note">没有可以调整的配置项。</p>`}
+        ${fields.length
+          ? h`<div class="actions"><button class="btn btn-outlined btn-danger" type="button" data-reset="${plugin.name}" data-display="${plugin.display}">恢复默认参数</button></div>`
+          : ""}
       </section>
 
-      <div class="split">
-        <section class="card">
-          <h2 class="section-title">配置<span class="count">改了立刻生效</span></h2>
-          <div class="panel" data-config-plugin="${esc(plugin.name)}">${rows}</div>
-          <div class="actions">
-            <button class="btn btn-outline" type="button" data-reset="${esc(plugin.name)}">
-              恢复默认参数（保留开关）</button>
-          </div>
-        </section>
-        <section class="card">
-          <h2 class="section-title">和默认差在哪</h2>
-          ${differences}
-          <h2 class="section-title">指令
-            <span class="count">${plugin.commands.length} 条 · 点一条复制</span></h2>
-          <div class="list">${commands}</div>
-        </section>
-      </div>`;
+      <section class="section" aria-labelledby="diff-title">
+        <div class="section-head">${heading(sub, "diff-title", "与默认值的差异")}</div>
+        <div id="plugin-diff">${diffBlock(plugin.diff)}</div>
+      </section>
+
+      <section class="section" aria-labelledby="commands-title">
+        <div class="section-head">
+          ${heading(sub, "commands-title", "指令")}
+          <span class="section-meta">${plugin.commands.length ? `${plugin.commands.length} 条，点按复制` : ""}</span>
+        </div>
+        ${commands}
+      </section>`;
   }
 
-  /** 一个配置节点：表与对象数组往下拆，叶子就地渲染成能改的控件。 */
-  function renderNode(path, key, value) {
+  const diffBlock = (diff) =>
+    diff.length
+      ? h`<pre class="code" tabindex="0" aria-label="与默认值的差异">${diff.join("\n")}</pre>`
+      : h`<p class="note">全部与默认值一致。</p>`;
+
+  let fieldSeq = 0;
+
+  /** 一个配置项。表与对象数组展开成 fieldset，叶子就地成为能改的控件。 */
+  function configField(path, key, value) {
+    const id = `f${++fieldSeq}`;
     if (Array.isArray(value) && value.every((item) => item === null || typeof item !== "object")) {
-      return kv(
-        path,
-        key,
-        `<input class="input input-mono" data-path="${esc(path)}" data-kind="list"
-          value="${esc(value.join(", "))}" spellcheck="false" aria-label="${esc(key)}">`
-      );
+      return h`<div class="field">
+        <label class="field-label" for="${id}"><code>${key}</code></label>
+        <input class="input mono" id="${id}" data-path="${path}" data-kind="list" value="${value.join(", ")}"
+          spellcheck="false" autocapitalize="off" aria-describedby="${id}-hint">
+        <span class="field-hint" id="${id}-hint">多个值用逗号分隔；留空表示空列表</span>
+      </div>`;
     }
     if (value !== null && typeof value === "object") {
-      const inner = Array.isArray(value)
-        ? value.map((item, index) => renderNode(`${path}.${index}`, `[${index}]`, item)).join("")
-        : Object.entries(value)
-            .map(([child, item]) => renderNode(`${path}.${child}`, child, item))
-            .join("");
-      return kv(path, key, `<div class="subtable">${inner}</div>`);
+      const children = Array.isArray(value)
+        ? value.map((item, index) => configField(`${path}.${index}`, `[${index}]`, item))
+        : Object.entries(value).map(([child, item]) => configField(`${path}.${child}`, child, item));
+      return h`<fieldset class="config-group"><legend class="config-legend">${key}</legend>${children}</fieldset>`;
     }
     if (typeof value === "boolean") {
-      return kv(
-        path,
-        key,
-        `<button class="switch" type="button" role="switch" data-path="${esc(path)}"
-           data-kind="bool" aria-checked="${value}" aria-label="${esc(key)}"></button>`
-      );
+      return h`<div class="toggle-row">
+        <span class="field-label" id="${id}"><code>${key}</code></span>
+        <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"
+          aria-checked="${value}" aria-labelledby="${id}"></button>
+      </div>`;
     }
-    // 长文本（提示词、人格那类）给一块多行的地方，单行输入框里换行会被吃掉。
-    const long = typeof value === "string" && (value.includes("\n") || value.length > 120);
-    if (long) {
-      return `<div class="kv kv-wide">
-        <span class="kv-key" title="${esc(path)}">${esc(key)}</span>
-        <textarea class="area area-short" data-path="${esc(path)}" data-kind="string"
-                  spellcheck="false" aria-label="${esc(key)}">${esc(value)}</textarea></div>`;
+    if (typeof value === "string" && (value.includes("\n") || value.length > 80)) {
+      return h`<div class="field">
+        <label class="field-label" for="${id}"><code>${key}</code></label>
+        <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false">${value}</textarea>
+      </div>`;
     }
-    const kind = typeof value === "number" ? "number" : "string";
-    return kv(
-      path,
-      key,
-      `<input class="input input-mono" data-path="${esc(path)}" data-kind="${kind}"
-        value="${esc(value ?? "")}" spellcheck="false" aria-label="${esc(key)}">`
-    );
+    const numeric = typeof value === "number";
+    return h`<div class="field">
+      <label class="field-label" for="${id}"><code>${key}</code></label>
+      <input class="input${numeric ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
+        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${attr(numeric, 'inputmode="decimal"')}>
+    </div>`;
   }
 
-  const kv = (path, key, control) =>
-    `<div class="kv"><span class="kv-key" title="${esc(path)}">${esc(key)}</span>
-     <span class="kv-value">${control}</span></div>`;
-
-  /** 输入框里的字变回配置值。逗号分开的一行当数组，数字按数字写回去。 */
-  function parseValue(kind, raw) {
-    if (kind === "bool") return Boolean(raw);
+  function parseValue(kind, text) {
     if (kind === "number") {
-      const value = Number(raw);
-      if (!Number.isFinite(value)) throw new Error("这一项要填数字");
+      const value = Number(text.trim());
+      if (!text.trim() || !Number.isFinite(value)) throw new Error("这一项需要一个数字。");
       return value;
     }
-    if (kind !== "list") return raw;
-    const text = raw.trim();
-    if (!text) return [];
-    return text.split(",").map((part) => {
-      const item = part.trim();
+    if (kind !== "list") return text;
+    const trimmed = text.trim();
+    if (!trimmed) return [];
+    return trimmed.split(/[,，]/).map((piece) => {
+      const item = piece.trim();
       if (/^-?\d+$/.test(item)) return Number.parseInt(item, 10);
       if (/^-?\d*\.\d+$/.test(item)) return Number.parseFloat(item);
       return item.replace(/^["']|["']$/g, "");
     });
   }
 
-  /* ---- 搭话 ---- */
-
-  async function paintAmbient() {
-    const data = await api("/ambient");
-    if (!data.ready) return pageHead("搭话", "人格与记忆") + empty("搭话插件的目录还没建起来，先让机器人跑一轮");
-
-    const groups = data.memory.length
-      ? data.memory.map(renderGroupMemory).join("")
-      : empty("还没记住任何群");
-    const gallery = data.stickers.length
-      ? data.stickers.map(renderSticker).join("")
-      : empty("库里还没有东西；它在群里收下一张就会存一张");
-
-    return `
-      ${pageHead("搭话", "人格、档案、记忆与表情包库都在这儿。")}
-
-      <section class="card">
-        <h2 class="section-title">它在群里像谁
-          <span class="count">改完下一轮生效</span></h2>
-        <p class="note">人格是它在群里说话的样子，档案是它知道自己是谁。
-        两份都直接写进运行目录，旧的那份存成同名的 backup；
-        线上那份与仓库里那份是两回事，改这里不动仓库。</p>
-        <label class="note" for="persona">人格 persona.md</label>
-        <textarea class="area" id="persona" spellcheck="false">${esc(data.persona)}</textarea>
-        <label class="note" for="self">档案 self.md</label>
-        <textarea class="area area-short" id="self" spellcheck="false">${esc(data.self)}</textarea>
-        <div class="actions">
-          <button class="btn btn-filled" type="button" data-source="persona">
-            ${ICONS.save}保存人格</button>
-          <button class="btn btn-outline" type="button" data-source="self">
-            ${ICONS.save}保存档案</button>
-        </div>
-      </section>
-
-      <section class="card card-notched">
-        <h2 class="section-title">记得什么
-          <span class="count">${data.memory.length} 个群</span></h2>
-        <div class="list">${groups}</div>
-      </section>
-
-      <section class="card">
-        <h2 class="section-title">表情包库
-          <span class="count">${data.stickers.length} 张</span></h2>
-        <div class="gallery">${gallery}</div>
-      </section>`;
+  /** 行内校验（Carbon inline notification）：错在哪一格就在哪一格下面说，并立即播报。 */
+  function fieldError(control, message) {
+    clearFieldError(control);
+    control.setAttribute("aria-invalid", "true");
+    const note = document.createElement("p");
+    note.className = "field-error";
+    note.id = `${control.id}-error`;
+    note.setAttribute("role", "alert");
+    note.innerHTML = part(h`${icon("alert")}<span>${message}</span>`);
+    control.after(note);
+    const described = (control.getAttribute("aria-describedby") || "").split(" ").filter(Boolean);
+    control.setAttribute("aria-describedby", [...described, note.id].join(" "));
   }
 
-  function renderSticker(sticker) {
-    return `
-      <div class="tile">
-        ${
-          sticker.image
-            ? `<img class="tile-img" loading="lazy" decoding="async" alt="${esc(sticker.label)}"
-                 src="/api/ambient/sticker/${sticker.id}?t=${encodeURIComponent(token)}">`
-            : `<div class="tile-img tile-blank">商城表情<br>只存了参数</div>`
-        }
-        <span class="tile-label">${esc(sticker.label || "没起名的表情包")}</span>
-        <span class="note">#${sticker.id} · 用过 ${sticker.uses} 次 · ${esc(
-          ago(sticker.added_at)
-        )}</span>
-      </div>`;
+  function clearFieldError(control) {
+    const note = document.getElementById(`${control.id}-error`);
+    if (!note) return;
+    note.remove();
+    control.removeAttribute("aria-invalid");
+    const rest = (control.getAttribute("aria-describedby") || "").split(" ").filter((id) => id && id !== note.id);
+    if (rest.length) control.setAttribute("aria-describedby", rest.join(" "));
+    else control.removeAttribute("aria-describedby");
   }
 
-  function renderGroupMemory(group) {
-    const noted = group.people.filter((person) => person.note || person.address);
-    const others = group.people.length - noted.length;
-    const people = noted
-      .map(
-        (person) => `
-        <div class="row row-plain">
-          <div class="row-body">
-            <span class="row-title">${esc(person.name || person.id)}
-              ${person.address ? `<span class="key">叫「${esc(person.address)}」</span>` : ""}
-            </span>
-            <span class="row-sub">${esc(person.note || "有称呼，没写印象")}</span>
-          </div>
-          <div class="row-tail">
-            <span class="note">${num(person.messages)} 条 · ${esc(ago(person.last_seen))}</span>
-          </div>
-        </div>`
-      )
-      .join("");
-    const notes = group.notes
-      .map(
-        (note) => `
-        <div class="row row-plain">
-          <div class="row-body"><span class="row-sub">${esc(note.text)}</span></div>
-          <div class="row-tail"><span class="note">${esc(ago(note.at))}</span></div>
-        </div>`
-      )
-      .join("");
-
-    return `
-      <div class="inset">
-        <h2 class="section-title">群 ${esc(group.group)}
-          <span class="count">${group.people.length} 人 · ${group.notes.length} 条旧事</span>
-        </h2>
-        <p class="note">${
-          noted.length
-            ? `有印象的 ${noted.length} 位${others > 0 ? `，另有 ${others} 位只记得露过面` : ""}`
-            : "这个群里它还谁都没写上印象"
-        }</p>
-        <div class="list">${people}${notes}</div>
-      </div>`;
-  }
-
-  /* ---- 日志 ----
-     跟随是阅读意图，不从每一次布局产生的 scroll 事件反推。
-     真实向上滚动暂停；回到底部恢复。面板尺寸变化只在跟随时重新贴底。
-     暂停保留 DOM、选区和位置，后台关闭连接，回来以快照补齐有界缓冲。
-     筛选必须先于显示队列截断，避免密集 INFO 淹没最新一条 WARN。
-  */
-  const DOM_LINES = 80;
-  const LOG_BATCH_MS = 100;
-  const LOG_INSERT_MAX = 40;
-  /** 贴底的容差。差这么点算贴着，再远一点才算用户翻上去了。 */
-  const STICK_SLACK = 24;
-  /** 断了之后的退避：2、4、8、16 秒，封顶 30 秒。 */
-  const LOG_RETRY_BASE = 2000;
-  const LOG_RETRY_MAX = 30000;
-
-  const logState = {
-    lines: [], level: "", text: "", follow: true, source: null,
-    limit: 2000, queue: [], frame: 0, mounted: false, status: "正在连接…",
-    fresh: 0, failures: 0, retry: 0, overview: 0, resize: null, scrollTop: 0,
-  };
-
-  function logLine(entry) {
-    const level = String(entry.level || "INFO").toLowerCase();
-    return `<div class="log-line log-${esc(level)}">
-      <span class="log-at">${esc(entry.at)}</span>
-      <span class="log-level">${esc(entry.level || "INFO")}</span>
-      <span class="log-target">${esc(entry.target)}</span>
-      <span class="log-text">${esc(entry.text)}</span></div>`;
-  }
-
-  function logMatches(entry) {
-    if (logState.level && entry.level !== logState.level) return false;
-    const text = logState.text.trim().toLowerCase();
-    if (!text) return true;
-    return String(entry.text).toLowerCase().includes(text) ||
-      String(entry.target).toLowerCase().includes(text);
-  }
-
-  /** 面板贴在底部。差值可能因折行而变化，所以只用于判断，不用于定位。 */
-  function logStuck(box) {
-    return box.scrollHeight - box.scrollTop - box.clientHeight <= STICK_SLACK;
-  }
-
-  /** 贴到底部。读 scrollHeight 会强制一次布局，拿到的就是刚插进去那一行的真实高度。 */
-  function logPin(box) {
-    box.scrollTop = box.scrollHeight;
-    logState.scrollTop = box.scrollTop;
-  }
-
-  /** 面板上下两处跟着状态走的东西：暂停按钮上的字，与「回到最新」上的条数。 */
-  function syncLogChrome() {
-    const countLabel = $("#log-count");
-    if (countLabel) countLabel.textContent = `${$("#log-box")?.querySelectorAll(".log-line").length || 0} 行可见 · ${logState.lines.length} 行缓冲`;
-    const latest = $("#log-latest");
-    if (latest) latest.textContent = logState.lines.length ? `最近收到 ${logState.lines.at(-1).at}` : "等待记录";
-    const button = $("#log-follow");
-    if (button) {
-      button.setAttribute("aria-pressed", String(logState.follow));
-      button.textContent = logState.follow ? "跟随最新" : "已暂停";
-    }
-    const jump = $("#log-jump");
-    if (!jump) return;
-    jump.classList.toggle("jump-on", !logState.follow);
-    const count = logState.fresh ? String(logState.fresh) : "";
-    if (jump.dataset.fresh !== count) {
-      jump.dataset.fresh = count;
-      jump.innerHTML = `${ICONS.latest}<span>回到最新${
-        count ? ` · <b>${count}</b> 条` : ""
-      }</span>`;
-    }
-  }
-
-  function paintLog() {
-    const box = $("#log-box");
-    if (!box || document.hidden) return;
-    clearTimeout(logState.frame);
-    logState.frame = 0;
-    logState.queue = [];
-    const shown = logState.lines.filter(logMatches).slice(-DOM_LINES);
-    box.innerHTML = shown.length
-      ? shown.map(logLine).join("")
-      : `<div class="log-empty">没有符合条件的日志</div>`;
-    logState.fresh = 0;
-    syncLogChrome();
-    if (logState.follow) logPin(box);
-  }
-
-  function logStatus(text) {
-    // 状态记在状态里、由渲染读出来。整屏重画（顶栏刷新、跨断点）时连接还在，
-    // 若写死字面量，重画之后就会永远停在「正在连接…」。
-    logState.status = text;
-    const status = $("#log-status");
-    if (status) status.textContent = text;
-  }
-
-  /** 跟随开关。恢复时按缓冲重画一次：暂停期间新行只进了缓冲，没进 DOM。 */
-  function setFollow(on) {
-    logState.scrollTop = $("#log-box")?.scrollTop || 0;
-    if (logState.follow !== on) {
-      logState.follow = on;
-      if (on) logState.fresh = 0;
-      syncLogChrome();
-    }
-    if (on && $("#log-box")) paintLog();
-  }
-
-  // 暂停时保留当前 DOM 与选择区域；到来的行只进有界缓冲。
-  function pushLogs(entries) {
-    logState.lines.push(...entries);
-    if (logState.lines.length > logState.limit) {
-      logState.lines.splice(0, logState.lines.length - logState.limit);
-    }
-    if (document.hidden || !logState.mounted || !logState.follow) {
-      // 屏上不动的这段时间，只把「回来之后能补上多少」记在按钮上。
-      logState.fresh += entries.filter(logMatches).length;
-      syncLogChrome();
-      return;
-    }
-    logState.queue.push(...entries.filter(logMatches));
-    if (logState.queue.length > DOM_LINES) {
-      logState.queue.splice(0, logState.queue.length - DOM_LINES);
-    }
-    if (!logState.frame) logState.frame = setTimeout(flushLog, LOG_BATCH_MS);
-  }
-
-  // 每秒至多十次 DOM 合批，限单批与总节点数；不随消息频率重复排版。
-  // 一次只插 LOG_INSERT_MAX 行，剩下的下一拍接着插——突发时单次任务因此有上限，
-  // 而屏幕上最终留下的仍是最近 DOM_LINES 行（队列超了丢的是最旧的那几行）。
-  function flushLog() {
-    logState.frame = 0;
-    const box = $("#log-box");
-    if (!box || document.hidden || !logState.mounted || !logState.follow) return;
-    const fresh = logState.queue.splice(0, LOG_INSERT_MAX).filter(logMatches);
-    const rest = logState.queue.length;
-    if (fresh.length) {
-      $(".log-empty", box)?.remove();
-      box.insertAdjacentHTML("beforeend", fresh.map(logLine).join(""));
-      while (box.children.length > DOM_LINES) box.firstElementChild.remove();
-      logPin(box);
-    }
-    syncLogChrome();
-    if (rest) logState.frame = setTimeout(flushLog, LOG_BATCH_MS);
-  }
-
-  function paintLogs() {
-    const levels = [["", "全部"], ["INFO", "信息"], ["WARN", "警告"], ["ERRO", "错误"], ["DEBG", "调试"]];
-    return `
-      ${pageHead("日志", "运行的每一步，都在这里。向上翻阅暂停，回到底部继续跟随。")}
-      <section class="log-workspace" aria-label="日志工作区">
-      <div class="toolbar log-tools">
-        <div class="search">${ICONS.search}
-          <input id="log-search" type="search" placeholder="搜索内容或来源"
-                 value="${esc(logState.text)}" aria-label="过滤日志">
-        </div>
-        <div class="seg log-levels" data-connected role="group" aria-label="日志级别">
-          ${levels.map(([value, label]) => `<button class="seg-item" type="button" data-level="${value}"
-            aria-pressed="${logState.level === value}">${label}</button>`).join("")}
-        </div>
-        <div class="log-actions">
-        <button class="chip" type="button" id="log-follow" aria-pressed="${logState.follow}">
-          ${logState.follow ? "跟随最新" : "已暂停"}</button>
-        <button class="btn" type="button" id="log-export">导出记录</button>
-        <button class="btn btn-icon" type="button" id="log-clear" title="清空这一屏"
-                aria-label="清空这一屏">${ICONS.trash}</button>
-      </div>
-      </div>
-      <div class="log-meta"><span id="log-status" role="status">${esc(logState.status)}</span>
-        <span id="log-latest">等待记录</span></div>
-      <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志"></div>
-      <button class="btn btn-filled jump ${logState.follow ? "" : "jump-on"}" type="button"
-              id="log-jump" data-fresh="${logState.fresh || ""}"><span>回到最新</span></button>
-      <div class="log-footer"><span id="log-count"></span><span>显示最近 ${DOM_LINES} 条匹配记录</span></div>
-      </section>
-      <p class="note">离开或切到后台时暂停接收，返回后补齐最近记录。导出当前筛选的缓冲记录；完整日志用 <span class="key">./bot logs</span> 查看。</p>`;
-  }
-
-  function stopLogs() {
-    logState.resize?.disconnect();
-    logState.resize = null;
-    logState.source?.close();
-    logState.source = null;
-    logState.mounted = false;
-    clearTimeout(logState.frame);
-    clearTimeout(logState.retry);
-    clearInterval(logState.overview);
-    logState.frame = 0;
-    logState.retry = 0;
-    logState.overview = 0;
-    logState.failures = 0;
-    logState.queue = [];
-  }
-
-  /** 建一条新的日志流。事件都在 `source === logState.source` 时才认，避免旧流的尾巴改到新状态。 */
-  function openLogs() {
-    const source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
-    logState.source = source;
-    source.addEventListener("open", () => {
-      if (source !== logState.source) return;
-      logState.failures = 0;
-      logStatus("实时连接");
-    });
-    source.addEventListener("snapshot", (event) => {
-      if (source !== logState.source) return;
+  async function commitField(control) {
+    const form = control.closest("[data-config]");
+    if (!form || control.getAttribute("aria-busy") === "true") return;
+    const kind = control.dataset.kind;
+    let value;
+    if (kind === "bool") value = control.getAttribute("aria-checked") !== "true";
+    else {
+      if (control.value === control.defaultValue) return;
       try {
-        const data = JSON.parse(event.data);
-        logState.lines = data.lines.slice(-logState.limit);
-        logState.queue = [];
-        if (logState.follow || !$("#log-box")?.querySelector(".log-line")) paintLog();
-        syncLogChrome();
-        if (data.dropped) logStatus(`追不上了，中间跳过 ${data.dropped} 行`);
-      } catch { logStatus("记录未能读取，刷新重试"); }
-    });
-    source.addEventListener("batch", (event) => {
-      if (source !== logState.source) return;
-      try { pushLogs(JSON.parse(event.data).lines); } catch { /* 忽略损坏的一批 */ }
-    });
-    source.onmessage = (event) => {
-      if (source !== logState.source) return;
-      try { pushLogs([JSON.parse(event.data)]); } catch { /* 忽略损坏的一行 */ }
-    };
-    source.onerror = () => {
-      if (source !== logState.source) return;
-      // CONNECTING 说明浏览器正在自己重连，等它；CLOSED 才是彻底断了。
-      if (source.readyState !== EventSource.CLOSED) {
-        logStatus("连接中断，正在重连…");
+        value = parseValue(kind, control.value);
+      } catch (error) {
+        fieldError(control, error.message);
         return;
       }
-      source.close();
-      logState.source = null;
-      const delay = Math.min(LOG_RETRY_MAX, LOG_RETRY_BASE * 2 ** Math.min(logState.failures, 4));
-      logState.failures += 1;
-      logStatus(`连接已断开，${Math.round(delay / 1000)} 秒后重试`);
-      clearTimeout(logState.retry);
-      logState.retry = setTimeout(() => {
-        logState.retry = 0;
-        if (logState.mounted && !document.hidden) openLogs();
-      }, delay);
-    };
-  }
-
-  function connectLogs() {
-    // 连着的、或者正在自动重连的，不另开一条。
-    if (logState.source && logState.source.readyState !== EventSource.CLOSED) return;
-    openLogs();
-  }
-
-  function mountLogs() {
-    const box = $("#log-box");
-    if (!box) {
-      logState.mounted = false;
-      return;
     }
-    logState.mounted = true;
-    // 同一页面从后台回来且已暂停时保留选区；新页面才需要首次绘制。
-    if (logState.follow || !box.dataset.initialized) paintLog();
-    box.dataset.initialized = "true";
-    logState.scrollTop = box.scrollTop;
-    box.onscroll = () => {
-      const previous = logState.scrollTop;
-      logState.scrollTop = box.scrollTop;
-      if (Math.abs(box.scrollTop - previous) < 1) return;
-      if (logState.follow && box.scrollTop < previous && !logStuck(box)) setFollow(false);
-      else if (!logState.follow && box.scrollTop > previous && logStuck(box)) setFollow(true);
-    };
-    logState.resize?.disconnect();
-    logState.resize = new ResizeObserver(() => {
-      if (logState.follow && box.isConnected && !document.hidden) logPin(box);
-    });
-    logState.resize.observe(box);
-    if (document.hidden) return;
-    connectLogs();
-  }
-
-  /* ---- 命令 ---- */
-
-  const commandState = { output: "", history: [], busy: false };
-
-  async function paintCommand() {
-    const shortcuts = ["list", "diff ambient", "show oai", "defaults stats"];
-    return `
-      ${pageHead("命令", "这里敲的和群里敲 /ctl 是同一套，以维护者身份执行。")}
-      <section class="card">
-        <p class="note">它只改这台机器上的配置，不往群里发消息——
-        要给群里说话请回群里，或者用 agent 房间。</p>
-        <form class="field" id="command-form">
-          <input class="input input-mono" id="command-input" autocomplete="off"
-                 spellcheck="false" placeholder="list / show ambient / set oai …"
-                 aria-label="控制命令">
-          <button class="btn btn-filled" type="submit">${ICONS.play}执行</button>
-        </form>
-        <div class="chips">
-          ${shortcuts
-            .map(
-              (item) =>
-                `<button class="chip" type="button" data-run="${esc(item)}">${esc(item)}</button>`
-            )
-            .join("")}
-          ${commandState.history
-            .map(
-              (item) =>
-                `<button class="chip" type="button" data-run="${esc(item)}"
-                   title="再用一次">再用一次 · ${esc(item)}</button>`
-            )
-            .join("")}
-        </div>
-      </section>
-      <section class="card">
-        <h2 class="section-title">回执</h2>
-        <div class="code" id="command-output" role="status" aria-live="polite">${
-          commandState.output ? esc(commandState.output) : "还没有执行过命令"
-        }</div>
-      </section>`;
-  }
-
-  async function runCommand(input) {
-    if (commandState.busy || !input.trim()) return;
-    commandState.busy = true;
-    const button = $("#command-form [type=submit]");
-    if (button) button.disabled = true;
-    const output = $("#command-output");
-    if (output) output.textContent = "执行中…";
+    control.setAttribute("aria-busy", "true");
     try {
-      const data = await api("/command", { method: "POST", body: { input } });
-      commandState.output = data.message;
-      if (output) output.textContent = data.message;
-      commandState.history = [input, ...commandState.history.filter((x) => x !== input)].slice(0, 3);
+      const reply = await api(`/plugins/${encodeURIComponent(form.dataset.config)}/config`, {
+        method: "POST",
+        body: { path: control.dataset.path, value },
+      });
+      if (kind === "bool") control.setAttribute("aria-checked", String(value));
+      else control.defaultValue = control.value;
+      clearFieldError(control);
+      snackbar(reply.message);
+      refreshDiff(form.dataset.config);
     } catch (error) {
-      commandState.output = error.message;
-      if (output) output.textContent = error.message;
-      fail(error);
+      if (error.status === 401) return;
+      if (kind === "bool") report(error);
+      else fieldError(control, error.message);
     } finally {
-      commandState.busy = false;
-      if (button) button.disabled = false;
+      control.removeAttribute("aria-busy");
     }
   }
 
-  /* ---- 框架设置 ---- */
+  async function refreshDiff(name) {
+    try {
+      const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
+      if ($(`[data-config="${CSS.escape(name)}"]`)) put($("#plugin-diff"), diffBlock(plugin.diff));
+    } catch {
+      /* 差异只是参考信息，读不到不打扰 */
+    }
+  }
 
-  async function paintSettings() {
-    const data = await api("/settings");
-    const bots = data.bots.length
-      ? data.bots.map(renderBot).join("")
-      : empty("还没有配连接；在下面加一条，或者先用本机控制台跑");
+  async function togglePlugin(button) {
+    if (button.disabled || button.getAttribute("aria-busy") === "true") return;
+    const name = button.dataset.toggle;
+    const next = button.getAttribute("aria-checked") !== "true";
+    const all = $$(`[data-toggle="${CSS.escape(name)}"]`);
+    for (const item of all) item.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api(`/plugins/${encodeURIComponent(name)}/enabled`, { method: "POST", body: { on: next } });
+      snackbar(reply.message);
+      // 以后端为准：重新取一次列表，就地改开关与状态，不整页重画。
+      const fresh = await api("/plugins").catch(() => null);
+      if (fresh) plugins.data = fresh;
+      const plugin = plugins.data?.plugins.find((p) => p.name === name) || { name, on: next, pending: false };
+      if (!fresh) plugin.on = next;
+      for (const item of $$(`[data-toggle="${CSS.escape(name)}"]`)) item.setAttribute("aria-checked", String(plugin.on));
+      const row = $(`#plugin-list [data-plugin="${CSS.escape(name)}"] .item-link`);
+      if (row) {
+        $(".status", row)?.remove();
+        if (plugin.pending) row.insertAdjacentHTML("beforeend", part(h`<span class="status status-warning">待重启</span>`));
+      }
+      for (const badge of $$(`[data-status-for="${CSS.escape(name)}"]`)) put(badge, statusBadge(plugin));
+      const counter = $("#plugin-count");
+      if (counter && plugins.data) counter.textContent = plugins.summary();
+    } catch (error) {
+      report(error);
+    } finally {
+      for (const item of $$(`[data-toggle="${CSS.escape(name)}"]`)) item.removeAttribute("aria-busy");
+    }
+  }
 
-    return `
-      ${pageHead("接入与全局", "这几项不在任何插件的配置里，/ctl 够不着，只在这一页改。")}
+  async function resetPlugin(button) {
+    const name = button.dataset.reset;
+    const ok = await confirmAction({
+      title: `恢复「${button.dataset.display || name}」的默认参数？`,
+      body: "当前的全部配置值会被默认值覆盖，插件的启用状态保持不变。这一步无法撤销。",
+      confirm: "恢复默认",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const reply = await api(`/plugins/${encodeURIComponent(name)}/reset`, { method: "POST", body: {} });
+      snackbar(reply.message);
+      if (wide.matches && $("#plugin-detail")) await plugins.swapDetail(name);
+      else await render({ quiet: true });
+    } catch (error) {
+      report(error);
+    }
+  }
 
-      <section class="card">
-        <h2 class="section-title">装到桌面
-          <span class="count">${standalone() ? "已经装上了" : "可选"}</span></h2>
-        ${installBody()}
-      </section>
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      snackbar(`已复制 ${text}`);
+    } catch {
+      snackbar("浏览器没有给剪贴板权限；可以长按或拖选文字复制。", "error");
+    }
+  }
 
-      <section class="card">
-        <h2 class="section-title">阅读密度</h2>
-        <p class="note">紧凑字号在一屏呈现更多信息，舒适字号适合长时间阅读。仅保存在当前浏览器。</p>
-        <div class="seg" data-connected role="group" aria-label="阅读密度">
-          ${[["compact", "紧凑"], ["comfortable", "舒适"]].map(([value, label]) => `<button class="seg-item" type="button" data-density-choice="${value}" aria-pressed="${(document.documentElement.dataset.density || "compact") === value}">${label}</button>`).join("")}
+  /* ==================== §9 搭话 ==================== */
+
+  const SOURCES = [
+    { name: "persona", file: "persona.md", title: "人格", note: "它在群里说话的方式与分寸。" },
+    { name: "self", file: "self.md", title: "档案", note: "它对自己是谁的认识。" },
+  ];
+  const STICKER_PAGE = 60;
+  const ambient = { data: null, tab: "persona", drafts: {}, stickers: STICKER_PAGE };
+
+  const sourceText = (name) => ambient.drafts[name] ?? ambient.data?.[name] ?? "";
+  const dirty = (name) => name in ambient.drafts && ambient.drafts[name] !== (ambient.data?.[name] ?? "");
+
+  function editorState(name) {
+    return `${num(count(sourceText(name)))} 字 · ${dirty(name) ? "有未保存的修改" : "已保存"}`;
+  }
+
+  async function ambientPage() {
+    const data = await api("/ambient");
+    ambient.data = data;
+    if (!data.ready) {
+      return h`<div class="page">${pageHead("搭话")}
+        <div class="card">${emptyState("搭话插件的数据目录还没有建立。让它运行一轮之后再来。")}</div></div>`;
+    }
+    const tabs = [
+      { id: "persona", label: "人设" },
+      { id: "memory", label: "记忆", count: data.memory.length },
+      { id: "stickers", label: "表情包", count: data.stickers.length },
+    ];
+    return h`<div class="page">
+      ${pageHead("搭话", "人设、它记住的人与事，以及收藏的表情包。")}
+      <div>
+        <div class="tabs" role="tablist" aria-label="搭话内容">
+          ${tabs.map(
+            (tab) => h`<button class="tab state" type="button" role="tab" id="tab-${tab.id}" data-tab="${tab.id}"
+              aria-controls="panel-${tab.id}" aria-selected="${ambient.tab === tab.id}" tabindex="${ambient.tab === tab.id ? 0 : -1}">
+              ${tab.label}${tab.count !== undefined ? h`<span class="tab-count">${tab.count}</span>` : ""}</button>`
+          )}
+        </div>
+        <div class="tabpanel" role="tabpanel" id="panel-persona" aria-labelledby="tab-persona"${attr(ambient.tab !== "persona", "hidden")}>
+          ${SOURCES.map(sourceEditor)}
+        </div>
+        <div class="tabpanel" role="tabpanel" id="panel-memory" aria-labelledby="tab-memory" tabindex="0"${attr(ambient.tab !== "memory", "hidden")}>
+          ${memoryPanel(data.memory)}
+        </div>
+        <div class="tabpanel" role="tabpanel" id="panel-stickers" aria-labelledby="tab-stickers" tabindex="0"${attr(ambient.tab !== "stickers", "hidden")}>
+          ${stickerPanel()}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  function sourceEditor(source) {
+    return h`<section class="card editor" aria-labelledby="source-${source.name}-title">
+      <div class="section-head">
+        <h2 class="section-title" id="source-${source.name}-title">${source.title}</h2>
+        <code class="tag">${source.file}</code>
+      </div>
+      <p class="note" id="source-${source.name}-note">${source.note}保存后下一轮对话生效，旧版本会备份在同一目录。</p>
+      <textarea class="textarea textarea-tall" id="source-${source.name}" data-source="${source.name}" spellcheck="false"
+        aria-labelledby="source-${source.name}-title" aria-describedby="source-${source.name}-note">${sourceText(source.name)}</textarea>
+      <div class="editor-foot">
+        <span class="editor-state" id="source-${source.name}-state"${attr(dirty(source.name), "data-dirty")}>${editorState(source.name)}</span>
+        <button class="btn btn-filled" type="button" data-save-source="${source.name}"${attr(!dirty(source.name), "disabled")}>保存${source.title}</button>
+      </div>
+    </section>`;
+  }
+
+  function memoryPanel(groups) {
+    if (!groups.length) return h`<div class="card">${emptyState("它还没有记住任何群。")}</div>`;
+    return h`<div class="group">${groups.map((group, index) => {
+      const noted = group.people.filter((person) => person.note || person.address);
+      const others = group.people.length - noted.length;
+      return h`<details class="memory"${attr(index === 0, "open")}>
+        <summary class="state">
+          <span class="item-leading" aria-hidden="true">群</span>
+          <span class="item-content">
+            <span class="item-title">群 ${group.group}</span>
+            <span class="item-sub">${group.people.length} 人 · ${group.notes.length} 条旧事</span>
+          </span>
+          ${icon("chevron", "chevron")}
+        </summary>
+        <div class="memory-body">
+          <p class="note">${noted.length ? `对 ${noted.length} 位有印象${others > 0 ? `，另有 ${others} 位只记得来过` : ""}。` : "还没有对这个群里的任何人写下印象。"}</p>
+          ${noted.length
+            ? h`<h3 class="subhead">印象</h3><ul class="group">${noted.map(
+                (person) => h`<li class="item">
+                  <div class="item-content">
+                    <span class="item-title">${person.name || person.id}${person.address ? h`<span class="tag">称呼「${person.address}」</span>` : ""}</span>
+                    <span class="item-sub">${person.note || "记得称呼，还没有写下印象"}</span>
+                  </div>
+                  <span class="item-meta">${num(person.messages)} 条<br>${ago(person.last_seen)}</span>
+                </li>`
+              )}</ul>`
+            : ""}
+          ${group.notes.length
+            ? h`<h3 class="subhead">旧事</h3><ul class="group">${group.notes.map(
+                (note) => h`<li class="item"><div class="item-content"><span class="item-sub">${note.text}</span></div>
+                  <span class="item-meta">${ago(note.at)}</span></li>`
+              )}</ul>`
+            : ""}
+        </div>
+      </details>`;
+    })}</div>`;
+  }
+
+  function stickerPanel() {
+    const all = ambient.data.stickers;
+    if (!all.length) return h`<div class="card">${emptyState("还没有收藏表情包。它在群里收下一张就会存一张。")}</div>`;
+    const shownList = all.slice(0, ambient.stickers);
+    const rest = all.length - shownList.length;
+    return h`<ul class="stickers" id="sticker-grid">${shownList.map(
+      (sticker) => h`<li><figure class="sticker">
+        ${sticker.image
+          ? h`<img class="sticker-img" loading="lazy" decoding="async" width="132" height="132" alt="${sticker.label || "未命名表情包"}"
+              src="/api/ambient/sticker/${sticker.id}?t=${encodeURIComponent(token)}">`
+          : h`<span class="sticker-img">商城表情<br>只保存了参数</span>`}
+        <figcaption>
+          <span class="sticker-label" title="${sticker.label}">${sticker.label || "未命名表情包"}</span>
+          <span class="sticker-meta">#${sticker.id} · 用过 ${sticker.uses} 次 · ${ago(sticker.added_at)}</span>
+        </figcaption>
+      </figure></li>`
+    )}</ul>
+    ${rest > 0
+      ? h`<div class="actions"><button class="btn btn-tonal" type="button" data-more-stickers>再显示 ${Math.min(rest, STICKER_PAGE)} 张（还有 ${rest} 张）</button></div>`
+      : ""}`;
+  }
+
+  function selectTab(tab, focus = false) {
+    ambient.tab = tab.dataset.tab;
+    for (const item of $$('[role="tab"]')) {
+      const on = item === tab;
+      item.setAttribute("aria-selected", String(on));
+      item.tabIndex = on ? 0 : -1;
+      const panel = document.getElementById(item.getAttribute("aria-controls"));
+      if (panel) panel.hidden = !on;
+    }
+    if (focus) tab.focus();
+  }
+
+  function onSourceInput(area) {
+    const name = area.dataset.source;
+    ambient.drafts[name] = area.value;
+    const state = $(`#source-${name}-state`);
+    state.textContent = editorState(name);
+    state.toggleAttribute("data-dirty", dirty(name));
+    $(`[data-save-source="${name}"]`).disabled = !dirty(name);
+  }
+
+  async function saveSource(button) {
+    const name = button.dataset.saveSource;
+    const text = sourceText(name);
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api("/ambient/source", { method: "POST", body: { name, text } });
+      ambient.data[name] = text;
+      delete ambient.drafts[name];
+      const state = $(`#source-${name}-state`);
+      state.textContent = editorState(name);
+      state.removeAttribute("data-dirty");
+      snackbar(reply.message);
+    } catch (error) {
+      button.disabled = false;
+      report(error);
+    } finally {
+      button.removeAttribute("aria-busy");
+    }
+  }
+
+  /* ==================== §10 日志 ====================
+     跟随是阅读意图：真正向上滚动才暂停，回到底部恢复；尺寸变化只在跟随时贴底。
+     暂停时不动 DOM（保住选区与位置），新行只进有界缓冲。
+     先筛选、后截断，密集的 INFO 淹不掉最新那条 WARN。
+     标签页进后台就断开实时连接，回来由服务端快照补齐。 */
+
+  const DOM_LINES = 100;
+  const BATCH_MS = 100;
+  const INSERT_MAX = 40;
+  const STICK = 24;
+  const RETRY_BASE = 2000;
+  const RETRY_MAX = 30000;
+  const BUFFER = 2000;
+  const LEVELS = [
+    ["", "全部"],
+    ["INFO", "信息"],
+    ["WARN", "警告"],
+    ["ERRO", "错误"],
+    ["DEBG", "调试"],
+  ];
+
+  function logRow(entry) {
+    const level = String(entry.level || "INFO");
+    return h`<div class="log-row" data-level="${level.toLowerCase()}"><time class="log-time">${entry.at}</time><span class="log-level">${level}</span><span class="log-target">${entry.target}</span><span class="log-text">${entry.text}</span></div>`;
+  }
+
+  const logs = {
+    lines: [],
+    level: "",
+    query: "",
+    follow: true,
+    source: null,
+    queue: [],
+    timer: 0,
+    mounted: false,
+    status: "正在连接…",
+    fresh: 0,
+    failures: 0,
+    retry: 0,
+    resize: null,
+    top: 0,
+
+    matches(entry) {
+      if (this.level && entry.level !== this.level) return false;
+      const text = this.query.trim().toLowerCase();
+      return !text || String(entry.text).toLowerCase().includes(text) || String(entry.target).toLowerCase().includes(text);
+    },
+
+    box: () => $("#log-box"),
+    stuck: (box) => box.scrollHeight - box.scrollTop - box.clientHeight <= STICK,
+
+    pin(box) {
+      box.scrollTop = box.scrollHeight;
+      this.top = box.scrollTop;
+    },
+
+    chrome() {
+      const box = this.box();
+      const counter = $("#log-count");
+      if (counter) {
+        const visible = box ? box.childElementCount - ($(".log-empty", box) ? 1 : 0) : 0;
+        counter.textContent = `显示 ${visible} 条 · 缓冲 ${this.lines.length} 条`;
+      }
+      const follow = $("#log-follow");
+      if (follow) {
+        follow.setAttribute("aria-pressed", String(this.follow));
+        follow.classList.toggle("btn-tonal", this.follow);
+        follow.classList.toggle("btn-outlined", !this.follow);
+      }
+      const jump = $("#log-jump");
+      if (jump) {
+        jump.hidden = this.follow;
+        const label = this.fresh ? `回到最新 · ${this.fresh} 条新记录` : "回到最新";
+        const span = $("span", jump);
+        if (span && span.textContent !== label) span.textContent = label;
+      }
+    },
+
+    setStatus(text) {
+      this.status = text;
+      const status = $("#log-status");
+      if (status && status.textContent !== text) status.textContent = text;
+    },
+
+    paint() {
+      const box = this.box();
+      if (!box || document.hidden) return;
+      clearTimeout(this.timer);
+      this.timer = 0;
+      this.queue = [];
+      const shownLines = this.lines.filter((entry) => this.matches(entry)).slice(-DOM_LINES);
+      box.innerHTML = shownLines.length
+        ? part(shownLines.map(logRow))
+        : part(h`<p class="log-empty">${this.lines.length ? "没有符合条件的日志" : "还没有日志"}</p>`);
+      this.fresh = 0;
+      this.chrome();
+      if (this.follow) this.pin(box);
+    },
+
+    setFollow(on) {
+      const box = this.box();
+      this.top = box?.scrollTop || 0;
+      if (this.follow !== on) {
+        this.follow = on;
+        if (on) this.fresh = 0;
+        this.chrome();
+      }
+      if (on && box) this.paint();
+    },
+
+    push(entries) {
+      this.lines.push(...entries);
+      if (this.lines.length > BUFFER) this.lines.splice(0, this.lines.length - BUFFER);
+      const matching = entries.filter((entry) => this.matches(entry));
+      if (document.hidden || !this.mounted || !this.follow) {
+        this.fresh += matching.length;
+        this.chrome();
+        return;
+      }
+      this.queue.push(...matching);
+      if (this.queue.length > DOM_LINES) this.queue.splice(0, this.queue.length - DOM_LINES);
+      if (!this.timer) this.timer = setTimeout(() => this.flush(), BATCH_MS);
+    },
+
+    /** 每 100ms 至多一次 DOM 写入、一次至多 40 行：突发时单个任务有上限。 */
+    flush() {
+      this.timer = 0;
+      const box = this.box();
+      if (!box || document.hidden || !this.mounted || !this.follow) return;
+      const batch = this.queue.splice(0, INSERT_MAX);
+      if (batch.length) {
+        $(".log-empty", box)?.remove();
+        box.insertAdjacentHTML("beforeend", part(batch.map(logRow)));
+        while (box.childElementCount > DOM_LINES) box.firstElementChild.remove();
+        this.pin(box);
+      }
+      this.chrome();
+      if (this.queue.length) this.timer = setTimeout(() => this.flush(), BATCH_MS);
+    },
+
+    stop() {
+      this.resize?.disconnect();
+      this.resize = null;
+      this.source?.close();
+      this.source = null;
+      this.mounted = false;
+      clearTimeout(this.timer);
+      clearTimeout(this.retry);
+      this.timer = 0;
+      this.retry = 0;
+      this.failures = 0;
+      this.queue = [];
+    },
+
+    open() {
+      const source = new EventSource(`/api/logs/stream?t=${encodeURIComponent(token)}`);
+      this.source = source;
+      source.addEventListener("open", () => {
+        if (source !== this.source) return;
+        this.failures = 0;
+        this.setStatus("实时连接中");
+      });
+      source.addEventListener("snapshot", (event) => {
+        if (source !== this.source) return;
+        try {
+          const data = JSON.parse(event.data);
+          this.lines = data.lines.slice(-BUFFER);
+          this.queue = [];
+          if (this.follow || !$(".log-row", this.box())) this.paint();
+          else this.chrome();
+          if (data.dropped) this.setStatus(`实时连接中 · 追赶时跳过了 ${data.dropped} 条`);
+        } catch {
+          this.setStatus("这一批日志读取失败，刷新后重试");
+        }
+      });
+      source.addEventListener("batch", (event) => {
+        if (source !== this.source) return;
+        try {
+          this.push(JSON.parse(event.data).lines);
+        } catch {
+          /* 丢弃损坏的一批 */
+        }
+      });
+      source.onerror = () => {
+        if (source !== this.source) return;
+        // CONNECTING：浏览器在自己重连；CLOSED：彻底断开，要我们来退避重试。
+        if (source.readyState !== EventSource.CLOSED) {
+          this.setStatus("连接中断，正在重连…");
+          return;
+        }
+        source.close();
+        this.source = null;
+        const delay = Math.min(RETRY_MAX, RETRY_BASE * 2 ** Math.min(this.failures, 4));
+        this.failures += 1;
+        this.setStatus(`连接已断开，${Math.round(delay / 1000)} 秒后重试`);
+        clearTimeout(this.retry);
+        this.retry = setTimeout(() => {
+          this.retry = 0;
+          if (this.mounted && !document.hidden) this.open();
+        }, delay);
+      };
+    },
+
+    connect() {
+      if (this.source && this.source.readyState !== EventSource.CLOSED) return;
+      this.open();
+    },
+
+    mount() {
+      const box = this.box();
+      if (!box) {
+        this.mounted = false;
+        return;
+      }
+      this.mounted = true;
+      if (this.follow || !box.dataset.ready) this.paint();
+      box.dataset.ready = "true";
+      this.top = box.scrollTop;
+      box.onscroll = () => {
+        const previous = this.top;
+        this.top = box.scrollTop;
+        if (Math.abs(box.scrollTop - previous) < 1) return;
+        if (this.follow && box.scrollTop < previous && !this.stuck(box)) this.setFollow(false);
+        else if (!this.follow && box.scrollTop > previous && this.stuck(box)) this.setFollow(true);
+      };
+      this.resize?.disconnect();
+      this.resize = new ResizeObserver(() => {
+        if (this.follow && box.isConnected && !document.hidden) this.pin(box);
+      });
+      this.resize.observe(box);
+      if (!document.hidden) this.connect();
+    },
+
+    export() {
+      const text = this.lines
+        .filter((entry) => this.matches(entry))
+        .map((entry) => `[${entry.at}] [${entry.level}] [${entry.target}] ${entry.text}`)
+        .join("\n");
+      const url = URL.createObjectURL(new Blob([`${text}\n`], { type: "text/plain;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `acumen-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
+  };
+
+  function logsPage() {
+    return h`<div class="page">
+      ${pageHead("日志", "实时运行记录。向上滚动会暂停跟随，滚回底部继续。")}
+      <section class="logs" aria-label="日志工作区">
+        <div class="toolbar">
+          <div class="search">${icon("search")}
+            <input class="input" id="log-search" type="search" placeholder="搜索内容或来源" aria-label="搜索日志"
+              autocomplete="off" value="${logs.query}">
+          </div>
+          <fieldset class="segmented" id="log-levels">
+            <legend class="visually-hidden">日志级别</legend>
+            ${LEVELS.map(
+              ([value, label]) => h`<label class="segment"><input type="radio" name="log-level" value="${value}"${attr(logs.level === value, "checked")}>${label}</label>`
+            )}
+          </fieldset>
+          <div class="actions">
+            <button class="btn ${logs.follow ? "btn-tonal" : "btn-outlined"}" type="button" id="log-follow" aria-pressed="${logs.follow}">${icon("latest")}跟随最新</button>
+            <button class="icon-btn state" type="button" id="log-export" aria-label="导出当前筛选的日志" title="导出当前筛选的日志">${icon("download")}</button>
+            <button class="icon-btn state" type="button" id="log-clear" aria-label="清空屏幕上的日志" title="清空屏幕上的日志">${icon("trash")}</button>
+          </div>
+        </div>
+        <div class="log-meta"><span id="log-status" role="status">${logs.status}</span><span id="log-count"></span></div>
+        <div class="log-frame">
+          <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志，最近 ${DOM_LINES} 条"></div>
+          <button class="btn btn-filled jump" type="button" id="log-jump"${attr(logs.follow, "hidden")}>${icon("latest")}<span>回到最新</span></button>
         </div>
       </section>
+      <p class="note">页面切到后台时暂停接收，回来后自动补齐。完整日志请在本机运行 <code>./bot logs</code>。</p>
+    </div>`;
+  }
 
-      <section class="card">
-        <h2 class="section-title">连接实现端
-          <span class="count">${data.bots.length} 条 · 改完下次启动生效</span></h2>
-        <p class="note">知微自己不直接连 QQ：它连的是实现端（本机自建的那套在
-        <span class="key">http://127.0.0.1:3001</span>）。这一份是机器人的「接在哪儿」，
-        与群里的指令、插件配置都不相干。</p>
-        <div class="list" id="bot-list">${bots}</div>
-        <div class="actions">
-          <button class="btn btn-tonal" type="button" data-add-bot>${ICONS.plus}加一条连接</button>
+  /* ==================== §11 设置 ==================== */
+
+  const COMMANDS = ["list", "show ambient", "diff oai", "defaults stats"];
+  const command = { output: "", history: [], busy: false };
+
+  async function settingsPage() {
+    const [data, overview] = await Promise.all([api("/settings"), api("/overview").catch(() => null)]);
+    const list = (values) => values.join(", ");
+    const filter = data.global_filter;
+    return h`<div class="page">
+      ${pageHead("设置", "连接、全局行为与维护命令。这些项目不属于任何插件。")}
+
+      <section class="card" aria-labelledby="bots-title">
+        <div class="section-head">
+          <h2 class="section-title" id="bots-title">连接</h2>
+          <span class="section-meta">修改后重启生效</span>
         </div>
+        <p class="note">知微通过实现端接入 QQ，例如本机的 <code>http://127.0.0.1:3001</code>。</p>
+        <div class="group" id="bot-list">
+          ${data.bots.length ? data.bots.map((bot, index) => botForm(bot, String(index))) : h`<p class="note" id="bot-empty">还没有连接。</p>`}
+        </div>
+        <div class="actions"><button class="btn btn-tonal" type="button" data-add-bot>${icon("plus")}添加连接</button></div>
       </section>
 
-      <section class="card">
-        <h2 class="section-title">全局</h2>
-        <form id="global-form" class="panel">
-          <div class="kv">
-            <span class="kv-key">command_prefix</span>
-            <span class="kv-value"><input class="input input-mono" name="command_prefix"
-              value="${esc(data.command_prefix.join(", "))}" spellcheck="false"
-              aria-label="指令前缀"></span>
+      <section class="card" aria-labelledby="global-title">
+        <div class="section-head">
+          <h2 class="section-title" id="global-title">全局</h2>
+          <span class="section-meta">前缀与名单下一条消息生效</span>
+        </div>
+        <form id="global-form" class="form-grid" novalidate>
+          ${textField("g-prefix", "指令前缀", "command_prefix", list(data.command_prefix), "多个用逗号分隔，例如 /, #")}
+          ${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；下次启动生效")}
+          <div class="field">
+            <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
+              <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${filter.enable_blacklist}" aria-labelledby="g-black-label"></button></div>
+            ${textField("g-black", "黑名单群号", "blacklist", list(filter.blacklist), "逗号分隔")}
           </div>
-          <div class="kv">
-            <span class="kv-key">browser_path</span>
-            <span class="kv-value"><input class="input input-mono" name="browser_path"
-              value="${esc(data.browser_path)}" spellcheck="false"
-              placeholder="留空即自动查找" aria-label="浏览器路径"></span>
+          <div class="field">
+            <div class="toggle-row"><span class="field-label" id="g-white-label">启用群白名单</span>
+              <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${filter.enable_whitelist}" aria-labelledby="g-white-label"></button></div>
+            ${textField("g-white", "白名单群号", "whitelist", list(filter.whitelist), "逗号分隔")}
           </div>
-          <div class="kv kv-wide">
-            <span class="kv-key">global_filter</span>
-            <span class="kv-value">
-              <button class="switch" type="button" role="switch"
-                data-name="enable_blacklist" aria-checked="${data.global_filter.enable_blacklist}"
-                aria-label="启用群黑名单"></button>
-              <span class="group-label">黑名单</span>
-            </span>
-          </div>
-          <div class="kv">
-            <span class="kv-key">blacklist</span>
-            <span class="kv-value"><input class="input input-mono" name="blacklist"
-              value="${esc(data.global_filter.blacklist.join(", "))}" spellcheck="false"
-              aria-label="群黑名单"></span>
-          </div>
-          <div class="kv kv-wide">
-            <span class="kv-key">global_filter</span>
-            <span class="kv-value">
-              <button class="switch" type="button" role="switch"
-                data-name="enable_whitelist" aria-checked="${data.global_filter.enable_whitelist}"
-                aria-label="启用群白名单"></button>
-              <span class="group-label">白名单</span>
-            </span>
-          </div>
-          <div class="kv">
-            <span class="kv-key">whitelist</span>
-            <span class="kv-value"><input class="input input-mono" name="whitelist"
-              value="${esc(data.global_filter.whitelist.join(", "))}" spellcheck="false"
-              aria-label="群白名单"></span>
-          </div>
+          <p class="note span-all">两个名单都为空时对所有群生效；同时出现在两边的群按禁止处理。</p>
+          <div class="actions span-all"><button class="btn btn-filled" type="submit">保存全局设置</button></div>
         </form>
-        <p class="note">两条名单都空 = 对所有群生效；同时出现在两边的群按禁止处理。
-        逗号分开，例如 <span class="key">123456, 789012</span>。</p>
-        <div class="actions">
-          <button class="btn btn-filled" type="button" data-save-global>
-            ${ICONS.save}保存全局设置</button>
+      </section>
+
+      <section class="card" aria-labelledby="command-title">
+        <div class="section-head">
+          <h2 class="section-title" id="command-title">维护命令</h2>
+          <span class="section-meta">与群里的 /ctl 相同，以维护者身份执行</span>
         </div>
-      </section>`;
+        <form class="command-form" id="command-form">
+          <label class="visually-hidden" for="command-input">控制命令</label>
+          <input class="input mono" id="command-input" autocomplete="off" spellcheck="false" autocapitalize="off"
+            enterkeyhint="go" placeholder="list · show ambient · set oai …">
+          <button class="btn btn-filled" type="submit">${icon("play")}执行</button>
+        </form>
+        <div class="chips" role="group" aria-label="常用命令">
+          ${[...new Set([...command.history, ...COMMANDS])].slice(0, 6).map(
+            (item) => h`<button class="chip state" type="button" data-run="${item}">${item}</button>`
+          )}
+        </div>
+        <pre class="code" id="command-output" role="status" tabindex="0" aria-label="命令回执">${command.output || "执行结果会显示在这里。"}</pre>
+      </section>
+
+      <section class="card" aria-labelledby="about-title">
+        <div class="section-head"><h2 class="section-title" id="about-title">本机</h2></div>
+        <dl class="facts">
+          ${overview
+            ? h`<div class="fact"><dt>版本</dt><dd>${NAME} v${overview.app.version}</dd></div>
+                <div class="fact"><dt>控制台地址</dt><dd><code>${overview.console.address}</code></dd></div>
+                <div class="fact"><dt>本次启动</dt><dd><time>${overview.app.started}</time></dd></div>`
+            : ""}
+          <div class="fact"><dt>安装为应用</dt><dd>${installHint()}</dd></div>
+        </dl>
+        <div class="actions">
+          <button class="btn btn-outlined" type="button" data-logout>${icon("logout")}在这台设备上退出</button>
+        </div>
+      </section>
+    </div>`;
   }
 
-  /** 装到桌面：能直接叫出安装提示的浏览器给按钮，其余给步骤。 */
-  function installBody() {
-    if (standalone()) {
-      return `<p class="note">它已经装在这台设备上了，这一页就是从桌面图标打开的那一份。</p>`;
-    }
-    const ua = navigator.userAgent;
-    const steps = /iPhone|iPad|iPod/.test(ua)
-      ? ["在 Safari 里打开这一个地址", "点底部的分享键", "选「添加到主屏幕」，名字留「知微」"]
-      : /Android/.test(ua)
-        ? ["用 Chrome 打开这一个地址", "点右上角的三点", "选「安装应用」或「添加到主屏幕」"]
-        : ["地址栏右侧有一枚安装图标，点它", "或者用菜单里的「安装知微」", "装好后它会自己开一个窗口"];
-    return `
-      <p class="note">装上之后它跟普通应用一样：桌面有图标，打开就一个窗口，
-      没有地址栏，顶栏直接贴到状态栏下面。装的是这一页，数据还是这台机器上的。</p>
-      <ol class="list">
-        ${steps
-          .map(
-            (step, index) => `
-          <li class="row row-plain">
-            <span class="row-icon">${index + 1}</span>
-            <div class="row-body"><span class="row-sub">${esc(step)}</span></div>
-          </li>`
-          )
-          .join("")}
-      </ol>
+  function installHint() {
+    const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+    if (standalone) return "已作为应用打开。";
+    if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return "在 Safari 中点「分享」，再选「添加到主屏幕」。";
+    if (/Android/.test(navigator.userAgent)) return "在浏览器菜单中选择「安装应用」或「添加到主屏幕」。";
+    return "在浏览器地址栏右侧或菜单中选择「安装」。";
+  }
+
+  const textField = (id, label, name, value, hint, extra = "") =>
+    h`<div class="field">
+      <label class="field-label" for="${id}">${label}</label>
+      <input class="input mono" id="${id}" name="${name}" value="${value}" spellcheck="false" autocapitalize="off"
+        autocomplete="off" aria-describedby="${id}-hint"${raw(extra)}>
+      <span class="field-hint" id="${id}-hint">${hint}</span>
+    </div>`;
+
+  function botForm(bot, index) {
+    const id = `bot-${index === "" ? "new" : index}`;
+    const known = ["satori", "console"];
+    const protocols = known.includes(bot.protocol) ? known : [...known, bot.protocol];
+    const title = index === "" ? "新连接" : `连接 ${Number(index) + 1}`;
+    return h`<form class="bot" data-bot="${index}" aria-labelledby="${id}-title" novalidate>
+      <div class="bot-head">
+        <h3 class="bot-title" id="${id}-title">${title}${bot.has_token ? h`<span class="status">已设令牌</span>` : ""}</h3>
+        <div class="toggle-row">
+          <span class="field-label" id="${id}-on">启用</span>
+          <button class="switch" type="button" role="switch" data-form-switch name="enabled" aria-checked="${bot.enabled}" aria-labelledby="${id}-on"></button>
+        </div>
+      </div>
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label" for="${id}-protocol">协议</label>
+          <span class="select"><select id="${id}-protocol" name="protocol">
+            ${protocols.map((p) => h`<option value="${p}"${attr(p === bot.protocol, "selected")}>${p === "satori" ? "Satori" : p === "console" ? "本地终端（测试用）" : p}</option>`)}
+          </select>${icon("down")}</span>
+        </div>
+        ${textField(`${id}-url`, "实现端地址", "url", bot.url, "Satori 必填，例如 http://127.0.0.1:3001", ' inputmode="url"')}
+        <div class="field span-all">
+          <label class="field-label" for="${id}-token">访问令牌</label>
+          <input class="input mono" id="${id}-token" name="access_token" type="password" autocomplete="off" spellcheck="false"
+            placeholder="${bot.has_token ? "已设置；留空保持不变" : "留空表示不鉴权"}">
+        </div>
+      </div>
       <div class="actions">
-        <button class="btn btn-filled" type="button" data-install ${
-          installPrompt ? "" : "hidden"
-        }>${ICONS.install}现在就装</button>
-      </div>`;
-  }
-
-  function renderBot(bot, index) {
-    const order = index === "" ? "新的一条" : `第 ${Number(index) + 1} 条`;
-    return `
-      <form class="inset" id="bot-form-${index}" data-index="${index}">
-        <div class="row row-plain">
-          <div class="row-body">
-            <span class="row-title">${order}
-              ${bot.has_token ? `<span class="badge badge-on">已设令牌</span>` : ""}</span>
-            <span class="row-sub">${esc(bot.protocol)} · ${esc(bot.url || "未填地址")}</span>
-          </div>
-          <div class="row-tail">
-            <button class="switch" type="button" role="switch" data-name="enabled" name="enabled"
-                    aria-checked="${bot.enabled}" aria-label="启用这条连接"></button>
-          </div>
-        </div>
-        <div class="kv">
-          <span class="kv-key">protocol</span>
-          <span class="kv-value"><input class="input input-mono" name="protocol"
-            value="${esc(bot.protocol)}" spellcheck="false" aria-label="协议"></span>
-        </div>
-        <div class="kv">
-          <span class="kv-key">url</span>
-          <span class="kv-value"><input class="input input-mono" name="url"
-            value="${esc(bot.url)}" spellcheck="false" aria-label="实现端地址"></span>
-        </div>
-        <div class="kv">
-          <span class="kv-key">access_token</span>
-          <span class="kv-value"><input class="input input-mono" name="access_token"
-            type="password" autocomplete="off" spellcheck="false"
-            placeholder="${bot.has_token ? "已设置，留空即不动" : "留空表示不鉴权"}"
-            aria-label="访问令牌"></span>
-        </div>
-        <div class="actions">
-          <button class="btn btn-filled" type="submit">${ICONS.save}保存</button>
-          <button class="btn btn-outline btn-danger" type="button" data-drop-bot="${index}">
-            ${ICONS.trash}删掉这条</button>
-        </div>
-      </form>`;
+        <button class="btn btn-filled" type="submit">保存</button>
+        <button class="btn btn-text btn-danger" type="button" data-drop-bot="${index}">${icon("trash")}${index === "" ? "放弃" : "删除"}</button>
+      </div>
+    </form>`;
   }
 
   function botPayload(form) {
-    const value = (name) => {
-      const field = form.querySelector(`[name="${name}"]`);
-      return field ? field.value : "";
-    };
-    const on = form.querySelector('[name="enabled"]');
+    const value = (name) => form.elements[name]?.value ?? "";
     const access = value("access_token");
     return {
-      index: form.dataset.index === "" ? undefined : Number(form.dataset.index),
-      enabled: on ? on.getAttribute("aria-checked") === "true" : true,
+      index: form.dataset.bot === "" ? undefined : Number(form.dataset.bot),
+      enabled: $('[name="enabled"]', form)?.getAttribute("aria-checked") === "true",
       protocol: value("protocol"),
       url: value("url"),
-      // 没写字就不发这一格：后端按「不动原来那个」处理。
       ...(access.trim() ? { access_token: access } : {}),
     };
   }
 
-  function globalPayload() {
-    const value = (name) => {
-      const field = $(`#global-form [name="${name}"]`);
-      return field ? field.value : "";
-    };
-    const list = (name) =>
+  function globalPayload(form) {
+    const value = (name) => form.elements[name]?.value ?? "";
+    const split = (name) =>
       value(name)
-        .split(",")
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .map((part) => {
-          const id = Number(part);
-          if (!Number.isInteger(id)) throw new Error(`「${part}」不是群号`);
-          return id;
-        });
-    const flag = (name) => {
-      const button = $(`#global-form [data-name="${name}"]`);
-      return button ? button.getAttribute("aria-checked") === "true" : false;
-    };
+        .split(/[,，]/)
+        .map((piece) => piece.trim())
+        .filter(Boolean);
+    const groups = (name) =>
+      split(name).map((piece) => {
+        const id = Number(piece);
+        if (!Number.isInteger(id)) throw Object.assign(new Error(`「${piece}」不是群号`), { field: form.elements[name] });
+        return id;
+      });
+    const flag = (name) => $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
     return {
-      command_prefix: value("command_prefix")
-        .split(",")
-        .map((part) => part.trim())
-        .filter(Boolean),
+      command_prefix: split("command_prefix"),
       browser_path: value("browser_path"),
       global_filter: {
         enable_blacklist: flag("enable_blacklist"),
-        blacklist: list("blacklist"),
+        blacklist: groups("blacklist"),
         enable_whitelist: flag("enable_whitelist"),
-        whitelist: list("whitelist"),
+        whitelist: groups("whitelist"),
       },
     };
   }
 
-  /* ---- 解锁 ---- */
+  async function submitWith(form, work) {
+    const button = $('[type="submit"]', form);
+    if (button?.getAttribute("aria-busy") === "true") return;
+    button?.setAttribute("aria-busy", "true");
+    try {
+      await work();
+    } finally {
+      button?.removeAttribute("aria-busy");
+    }
+  }
 
-  function paintLock(reason) {
+  async function runCommand(input) {
+    const text = input.trim();
+    if (!text || command.busy) return;
+    command.busy = true;
+    const output = $("#command-output");
+    const button = $('#command-form [type="submit"]');
+    button?.setAttribute("aria-busy", "true");
+    if (output) output.textContent = "执行中…";
+    try {
+      const reply = await api("/command", { method: "POST", body: { input: text } });
+      command.output = reply.message;
+      command.history = [text, ...command.history.filter((item) => item !== text)].slice(0, 3);
+    } catch (error) {
+      if (error.status === 401) return;
+      command.output = error.message;
+    } finally {
+      command.busy = false;
+      button?.removeAttribute("aria-busy");
+      const box = $("#command-output");
+      if (box) box.textContent = command.output;
+    }
+  }
+
+  /* ==================== §12 解锁 ==================== */
+
+  function lock(reason = "") {
     token = "";
     store.clear();
-    stopLogs();
+    logs.stop();
+    overviewFeed.stop();
     renderSeq++;
-    $("#view").removeAttribute("aria-busy");
-    $("#nav").innerHTML = "";
-    // 地址栏里那份口令是旧的就别再留着：它会盖掉刚存下的新的那份（见 §3 的取值顺序），
-    // 于是刷新一次又退回这里。抹掉之后只认 localStorage。
-    if (new URLSearchParams(location.search).has("t")) {
-      history.replaceState(null, "", location.pathname + location.hash);
-    }
-    $("#view").innerHTML = `
-      <form class="lock" id="lock-form">
-        <h1 class="section-title">${esc(NAME)}</h1>
-        <p class="note">${esc(reason || "需要口令才能看这台机器的数据。")}
-        启动日志里那条带 <span class="key">?t=</span> 的地址可以直接打开；
-        口令本体在 <span class="key">data/console/token</span>。</p>
-        <input class="input input-mono" id="lock-input" type="password"
-               autocomplete="off" spellcheck="false" placeholder="粘贴口令" aria-label="口令">
+    shown = null;
+    busy(false);
+    document.body.dataset.state = "locked";
+    setTitle("解锁");
+    $("#topbar").removeAttribute("data-scrolled");
+    put(
+      $("#view"),
+      h`<div class="lock"><form class="lock-card" id="lock-form">
+        <img class="lock-mark" src="/icon.svg" alt="" width="64" height="64">
+        <h1 class="lock-title page-title" tabindex="-1">解锁知微控制台</h1>
+        <p class="note">${reason || "需要访问口令才能查看这台设备的数据。"}
+          启动日志里带 <code>?t=</code> 的地址可以直接打开；口令也保存在 <code>data/console/token</code>。</p>
+        <input type="text" name="username" autocomplete="username" value="acumen" hidden>
+        <div class="field">
+          <label class="field-label" for="lock-input">访问口令</label>
+          <input class="input mono" id="lock-input" name="password" type="password" autocomplete="current-password"
+            required spellcheck="false" autocapitalize="off">
+        </div>
         <button class="btn btn-filled" type="submit">解锁</button>
-      </form>`;
-    $("#lock-form").addEventListener("submit", (event) => {
-      event.preventDefault();
-      token = $("#lock-input").value.trim();
-      if (!token) return;
-      store.set(token);
-      boot();
-    });
+      </form></div>`
+    );
     $("#lock-input").focus();
   }
 
-  /* ==================== §10 事件 ==================== */
-
-  /** 按下时从圆心漫开一片。只有指针设备与未开「减少动态效果」时才做。 */
-  function ripple(event) {
-    if (reduced.matches || event.button > 0) return;
-    const host = event.target.closest(".btn, .nav-item, .seg-item, .chip, .row");
-    if (!host || host.matches(":disabled") || host.matches(".row-plain:not(button)")) return;
-    const box = host.getBoundingClientRect();
-    const size = Math.max(box.width, box.height) * 2;
-    const dot = document.createElement("span");
-    dot.className = "ripple";
-    dot.style.width = `${size}px`;
-    dot.style.height = `${size}px`;
-    dot.style.left = `${event.clientX - box.left - size / 2}px`;
-    dot.style.top = `${event.clientY - box.top - size / 2}px`;
-    dot.addEventListener("animationend", () => dot.remove(), { once: true });
-    host.appendChild(dot);
+  function unlock(value) {
+    token = value;
+    store.set(value);
+    document.body.dataset.state = "ready";
+    render();
   }
 
-  async function commitField(control, forced) {
-    if (control.disabled) return;
-    const path = control.dataset.path;
-    const name = control.closest("[data-config-plugin]")?.dataset.configPlugin;
-    if (!name) return;
-    let value;
-    try {
-      value =
-        control.dataset.kind === "bool"
-          ? Boolean(forced)
-          : parseValue(control.dataset.kind, control.value);
-    } catch (error) {
-      snack(error.message, "bad");
-      return;
-    }
-    control.disabled = true;
-    try {
-      const data = await api(`/plugins/${encodeURIComponent(name)}/config`, {
-        method: "POST",
-        body: { path, value },
-      });
-      snack(data.message);
-      if (control.dataset.kind === "bool") control.setAttribute("aria-checked", String(value));
-    } catch (error) {
-      fail(error);
-      render();
-    } finally {
-      control.disabled = false;
-    }
-  }
-
-  async function togglePlugin(toggle) {
-    if (toggle.disabled) return;
-    toggle.disabled = true;
-    const next = toggle.getAttribute("aria-checked") !== "true";
-    try {
-      const data = await api(`/plugins/${encodeURIComponent(toggle.dataset.toggle)}/enabled`, {
-        method: "POST",
-        body: { on: next },
-      });
-      snack(data.message);
-      toggle.setAttribute("aria-checked", String(next));
-      if (toggle.isConnected) await render();
-    } catch (error) {
-      toggle.setAttribute("aria-checked", String(!next));
-      fail(error);
-    } finally {
-      toggle.disabled = false;
-    }
-  }
-
-  /** 宽屏上换一个插件只重画右边那一格，列表与搜索词都留在原地。 */
-  let detailSeq = 0;
-  async function openDetail(name) {
-    const seq = ++detailSeq;
-    pluginView.selected = name;
-    for (const row of document.querySelectorAll("#plugin-list [data-plugin]")) {
-      const selected = row.dataset.plugin === name;
-      row.toggleAttribute("data-selected", selected);
-      if (selected) row.querySelector("a").setAttribute("aria-current", "page");
-      else row.querySelector("a").removeAttribute("aria-current");
-    }
-    const pane = $("#plugin-detail");
-    if (!pane) return;
-    pane.innerHTML = skeleton(2);
-    try {
-      const plugin = await fetchPlugin(name);
-      if (seq !== detailSeq || !pane.isConnected) return;
-      pane.innerHTML = pluginDetailHtml(plugin);
-      $(".bar-title").textContent = plugin.display;
-      document.title = `${plugin.display} · ${NAME}`;
-    } catch (error) {
-      if (seq !== detailSeq || !pane.isConnected) return;
-      pane.innerHTML = empty(error && error.message ? error.message : "这一个没能读出来");
-    }
-    history.replaceState(null, "", `#/plugins/${encodeURIComponent(name)}`);
-  }
-
-  async function runSource(which) {
-    const box = $("#" + which);
-    snack("正在写这两个文件…", "busy");
-    try {
-      const data = await api("/ambient/source", {
-        method: "POST",
-        body: { name: which, text: box ? box.value : "" },
-      });
-      snack(data.message);
-    } catch (error) {
-      fail(error);
-    }
-  }
+  /* ==================== §13 事件 ==================== */
 
   function bindEvents() {
-    document.addEventListener("pointerdown", ripple, { passive: true });
-
     document.addEventListener("click", async (event) => {
       const target = event.target;
+      if (!(target instanceof Element)) return;
+      const on = (selector) => target.closest(selector);
+      let hit;
 
-      if (target.closest(".skip-link")) {
-        event.preventDefault();
-        $("#view").focus();
+      if (on("[data-snack-close]")) {
+        clearTimeout(snack.timer);
+        put($("#snackbar"), "");
         return;
       }
-
-      if (target.closest("[data-snack-close]")) {
-        clearTimeout(snackTimer);
-        snackHost().innerHTML = "";
+      if (on("#refresh")) {
+        const button = $("#refresh");
+        if (button.dataset.busy !== undefined) return;
+        button.dataset.busy = "";
+        await render({ quiet: true }).finally(() => delete button.dataset.busy);
         return;
       }
-
-      // 宽屏上列表与详情并排：点一行只换右边，别整页重来。
-      const pluginRow = target.closest("[data-plugin]");
-      if (pluginRow && !target.closest("button") && layout() === "expanded" && !event.metaKey && !event.ctrlKey) {
-        event.preventDefault();
-        await openDetail(pluginRow.dataset.plugin);
+      if (on("[data-retry]")) return render();
+      if ((hit = on("[data-toggle]"))) return togglePlugin(hit);
+      if ((hit = on('button[data-path][data-kind="bool"]'))) return commitField(hit);
+      if ((hit = on("[data-form-switch]"))) {
+        hit.setAttribute("aria-checked", String(hit.getAttribute("aria-checked") !== "true"));
         return;
       }
-
-      const flag = target.closest('button[data-path][data-kind="bool"]');
-      if (flag) {
-        await commitField(flag, flag.getAttribute("aria-checked") !== "true");
+      if ((hit = on("[data-section]"))) {
+        plugins.section = hit.dataset.section;
+        plugins.repaint();
+        $(`[data-section="${CSS.escape(plugins.section)}"]`)?.focus();
         return;
       }
-
-      // 设置页里那几个开关只改表单状态，等按保存才提交。
-      const formFlag = target.closest("button[data-name]");
-      if (formFlag) {
-        const on = formFlag.getAttribute("aria-checked") === "true";
-        formFlag.setAttribute("aria-checked", String(!on));
+      if ((hit = on("[data-reset]"))) return resetPlugin(hit);
+      if ((hit = on("[data-copy]"))) return copyText(hit.dataset.copy);
+      if ((hit = on('[role="tab"]'))) return selectTab(hit);
+      if ((hit = on("[data-save-source]"))) return saveSource(hit);
+      if (on("[data-more-stickers]")) {
+        ambient.stickers += STICKER_PAGE;
+        const panel = $("#panel-stickers");
+        const before = $$("#sticker-grid > li").length;
+        put(panel, stickerPanel());
+        // 焦点落到新出现的第一张上，键盘用户不必从头再翻。
+        const first = $$("#sticker-grid > li")[before];
+        first?.setAttribute("tabindex", "-1");
+        first?.focus();
         return;
       }
-
-      const toggle = target.closest("[data-toggle]");
-      if (toggle) {
-        await togglePlugin(toggle);
+      if (on("#log-follow")) return logs.setFollow(!logs.follow);
+      if (on("#log-jump")) {
+        logs.setFollow(true);
+        logs.box()?.focus();
         return;
       }
-
-      const drop = target.closest("[data-drop-bot]");
-      if (drop) {
-        // 草稿（还没落过配置的那一条）的 index 是空串，Number("") 会静默变成 0，
-        // 于是「删草稿」会去删配置里的第一条真连接。草稿只活在 DOM 里，直接撤掉表单。
-        const raw = drop.dataset.dropBot;
-        if (raw === "") {
-          drop.closest("form")?.remove();
+      if (on("#log-export")) return logs.export();
+      if (on("#log-clear")) {
+        logs.lines = [];
+        logs.queue = [];
+        logs.paint();
+        return;
+      }
+      if (on("[data-add-bot]")) {
+        if (!$('[data-bot=""]')) {
+          $("#bot-empty")?.remove();
+          $("#bot-list").insertAdjacentHTML("beforeend", part(botForm({ protocol: "satori", url: "", enabled: true }, "")));
+        }
+        $("#bot-new-url")?.focus();
+        return;
+      }
+      if ((hit = on("[data-drop-bot]"))) {
+        // 草稿只活在页面上；它的序号是空串，绝不能当成第 0 条去删配置。
+        if (hit.dataset.dropBot === "") {
+          hit.closest("form")?.remove();
+          $("[data-add-bot]")?.focus();
           return;
         }
-        const index = Number(raw);
-        const ok = await ask({
-          title: `删掉第 ${index + 1} 条连接？`,
-          body: "删掉之后这一条不再连；改动要下次启动才生效。",
-          confirm: "删掉",
+        const index = Number(hit.dataset.dropBot);
+        const ok = await confirmAction({
+          title: `删除连接 ${index + 1}？`,
+          body: "删除后这条连接不再使用，重启后生效。",
+          confirm: "删除",
           danger: true,
         });
         if (!ok) return;
         try {
-          const data = await api("/settings/bot", {
+          const reply = await api("/settings/bot", {
             method: "POST",
             body: { index, remove: true, enabled: false, protocol: "satori", url: "" },
           });
-          snack(data.message);
-          render();
+          snackbar(reply.message);
+          await render({ quiet: true });
         } catch (error) {
-          fail(error);
+          report(error);
         }
         return;
       }
-
-      if (target.closest("[data-add-bot]")) {
-        const list = $("#bot-list");
-        if (list && !$('[data-index=""]')) {
-          // 新增这一条先摆进页面，填好按它自己的保存才落到配置里。
-          list.insertAdjacentHTML(
-            "beforeend",
-            renderBot({ protocol: "satori", url: "", enabled: true }, "")
-          );
-        }
-        return;
-      }
-
-      if (target.closest("[data-save-global]")) {
-        try {
-          const data = await api("/settings/global", { method: "POST", body: globalPayload() });
-          snack(data.message);
-        } catch (error) {
-          fail(error);
-        }
-        return;
-      }
-
-      const density = target.closest("[data-density-choice]");
-      if (density) {
-        applyDensity(density.dataset.densityChoice);
-        try { localStorage.setItem("zhiwei.density", density.dataset.densityChoice); } catch { /* private mode */ }
-        return;
-      }
-
-      if (target.closest("[data-install]")) {
-        await install();
-        return;
-      }
-
-      const section = target.closest("[data-section]");
-      if (section) {
-        pluginView.section = section.dataset.section;
-        repaintPlugins();
-        return;
-      }
-
-      const level = target.closest("[data-level]");
-      if (level) {
-        logState.level = level.dataset.level;
-        for (const item of document.querySelectorAll("[data-level]")) {
-          item.setAttribute("aria-pressed", String(item === level));
-        }
-        paintLog();
-        return;
-      }
-
-      if (target.closest("#log-follow")) {
-        setFollow(!logState.follow);
-        return;
-      }
-
-      if (target.closest("#log-jump")) {
-        setFollow(true);
-        return;
-      }
-
-      if (target.closest("#log-export")) {
-        const text = logState.lines.filter(logMatches).map(line => `[${line.at}] [${line.level}] [${line.target}] ${line.text}`).join("\n");
-        const url = URL.createObjectURL(new Blob([text + "\n"], { type: "text/plain;charset=utf-8" }));
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = `zhiwei-logs-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
-        return;
-      }
-
-      if (target.closest("#log-clear")) {
-        logState.lines = [];
-        logState.queue = [];
-        paintLog();
-        return;
-      }
-
-      const reset = target.closest("[data-reset]");
-      if (reset) {
-        const name = reset.dataset.reset;
-        const ok = await ask({
-          title: `恢复「${name}」的默认参数？`,
-          body: "这会覆盖它现在所有的取值，插件自己的开关保留。",
-          confirm: "恢复默认",
-          danger: true,
-        });
-        if (!ok) return;
-        try {
-          const data = await api(`/plugins/${encodeURIComponent(name)}/reset`, {
-            method: "POST",
-            body: {},
-          });
-          snack(data.message);
-          render();
-        } catch (error) {
-          fail(error);
-        }
-        return;
-      }
-
-      const source = target.closest("[data-source]");
-      if (source) {
-        await runSource(source.dataset.source);
-        return;
-      }
-
-      const copy = target.closest("[data-copy]");
-      if (copy) {
-        try {
-          await navigator.clipboard.writeText(copy.dataset.copy);
-          snack(`已复制 ${copy.dataset.copy}`);
-        } catch {
-          snack("这台设备没给剪贴板权限；长按选中也可以", "bad");
-        }
-        return;
-      }
-
-      const shortcut = target.closest("[data-run]");
-      if (shortcut) {
+      if ((hit = on("[data-run]"))) {
         const input = $("#command-input");
-        if (input) input.value = shortcut.dataset.run;
-        runCommand(shortcut.dataset.run);
+        if (input) input.value = hit.dataset.run;
+        return runCommand(hit.dataset.run);
+      }
+      if (on("[data-logout]")) {
+        const ok = await confirmAction({
+          title: "在这台设备上退出？",
+          body: "会清除这个浏览器保存的访问口令，下次打开需要重新输入。知微本身继续运行。",
+          confirm: "退出",
+        });
+        if (ok) lock("已退出。");
       }
     });
 
-    document.addEventListener("change", async (event) => {
-      const control = event.target.closest("[data-path]");
-      if (!control || control.dataset.kind === "bool") return;
-      await commitField(control);
-    });
-
-    document.addEventListener("keydown", async (event) => {
-      const typing =
-        event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
-      if (event.isComposing || $("#dialog[open]")) return;
-      if (event.key === "Enter") {
-        const control = event.target.closest ? event.target.closest("input[data-path]") : null;
-        if (control) {
-          event.preventDefault();
-          await commitField(control);
-          return;
-        }
-        return;
-      }
-      if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
-      const index = Number(event.key);
-      if (index >= 1 && index <= PAGES.length) {
-        go(PAGES[index - 1].id);
-        return;
-      }
-      if (event.key === "/") {
-        const search = $("#plugin-search") || $("#log-search");
-        if (search) {
-          event.preventDefault();
-          search.focus();
-        }
-        return;
-      }
-      if (event.key === "Escape") {
-        const box = $("#log-box");
-        if (box && document.activeElement === box) box.blur();
+    document.addEventListener("change", (event) => {
+      const target = event.target;
+      if (target.matches?.("input[data-path], textarea[data-path]")) return void commitField(target);
+      if (target.name === "log-level") {
+        logs.level = target.value;
+        logs.paint();
       }
     });
 
     document.addEventListener("input", (event) => {
-      if (event.target.closest("#plugin-search")) {
-        pluginView.text = event.target.value;
-        repaintPlugins();
+      const target = event.target;
+      if (target.id === "plugin-search") {
+        plugins.query = target.value;
+        plugins.repaint();
+      } else if (target.id === "log-search") {
+        logs.query = target.value;
+        logs.paint();
+      } else if (target.matches?.("textarea[data-source]")) onSourceInput(target);
+      else if (target.getAttribute?.("aria-invalid") === "true") clearFieldError(target);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const target = event.target;
+      if (event.isComposing) return;
+      if (event.key === "Enter" && target.matches?.("input[data-path]")) {
+        event.preventDefault();
+        commitField(target);
         return;
       }
-      if (event.target.closest("#log-search")) {
-        logState.text = event.target.value;
-        paintLog();
+      if (target.getAttribute?.("role") === "tab") {
+        const tabs = $$('[role="tab"]');
+        const index = tabs.indexOf(target);
+        const next = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: tabs.length - 1 }[event.key];
+        if (next === undefined) return;
+        event.preventDefault();
+        selectTab(tabs[(next + tabs.length) % tabs.length], true);
       }
     });
 
-    // 设置页的两张表单：连接的每一条各一张，全局一张。都等按保存才提交，
-    // 回车不提交（全局那张没有提交按钮，不拦下来会整页刷新）。
     document.addEventListener("submit", async (event) => {
-      if (event.target.id === "command-form") {
-        event.preventDefault();
-        const input = $("#command-input");
-        if (input.value.trim()) await runCommand(input.value.trim());
-        return;
-      }
-      if (event.target.id === "global-form") {
-        event.preventDefault();
-        return;
-      }
-      const botForm = event.target.closest("form[data-index]");
-      if (!botForm) return;
+      const form = event.target;
       event.preventDefault();
-      try {
-        const data = await api("/settings/bot", { method: "POST", body: botPayload(botForm) });
-        snack(data.message);
-        render();
-      } catch (error) {
-        fail(error);
+      if (form.id === "lock-form") {
+        const value = $("#lock-input").value.trim();
+        if (value) unlock(value);
+        return;
+      }
+      if (form.id === "command-form") return runCommand($("#command-input").value);
+      if (form.id === "global-form") {
+        await submitWith(form, async () => {
+          let body;
+          try {
+            body = globalPayload(form);
+          } catch (error) {
+            if (error.field) fieldError(error.field, error.message);
+            return;
+          }
+          try {
+            const reply = await api("/settings/global", { method: "POST", body });
+            for (const input of $$("input", form)) {
+              input.defaultValue = input.value;
+              clearFieldError(input);
+            }
+            snackbar(reply.message);
+          } catch (error) {
+            report(error);
+          }
+        });
+        return;
+      }
+      if (form.matches("[data-bot]")) {
+        await submitWith(form, async () => {
+          try {
+            const reply = await api("/settings/bot", { method: "POST", body: botPayload(form) });
+            snackbar(reply.message);
+            await render({ quiet: true });
+          } catch (error) {
+            report(error);
+          }
+        });
       }
     });
 
-    // Android 切回 Termux 时释放 SSE；回来由服务端快照补齐，后台零日志解析。
+    const host = $("#snackbar");
+    host.addEventListener("pointerenter", () => holdSnack(true));
+    host.addEventListener("pointerleave", () => holdSnack(false));
+    host.addEventListener("focusin", () => holdSnack(true));
+    host.addEventListener("focusout", () => holdSnack(false));
+
+    // 进后台就断开日志流、停掉总览轮询；回来由快照补齐。后台零解析、零重排。
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) stopLogs();
-      else if (token) {
-        if ($("#log-box")) mountLogs();
-        if ($("#overview-log")) mountOverviewLog();
-      }
+      if (document.hidden) {
+        logs.stop();
+        overviewFeed.stop();
+      } else if (token) resume();
     });
-    window.addEventListener("pagehide", stopLogs);
-    window.addEventListener("pageshow", () => {
-      if (document.hidden) return;
-      if (token && $("#log-box")) mountLogs();
-      if (token && $("#overview-log")) mountOverviewLog();
+    addEventListener("pagehide", () => {
+      logs.stop();
+      overviewFeed.stop();
     });
-
-    prefersDark.addEventListener("change", applyTheme);
-    for (const media of [narrow, wide]) {
-      media.addEventListener("change", () => {
-        applyLayout();
-        render();
-      });
-    }
-    window.addEventListener("hashchange", render);
+    addEventListener("pageshow", () => {
+      if (!document.hidden && token) resume();
+    });
+    addEventListener("hashchange", () => render());
+    wide.addEventListener("change", () => render({ quiet: true }));
+    addEventListener("beforeunload", (event) => {
+      if (SOURCES.some((source) => dirty(source.name))) event.preventDefault();
+    });
   }
 
-  /* ==================== §11 启动 ==================== */
-
-  let installPrompt = null;
-
-  async function install() {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    const { outcome } = await installPrompt.userChoice;
-    installPrompt = null;
-    snack(outcome === "accepted" ? "已交给系统安装；装好之后桌面会多一个知微" : "这次没有装，随时可以再来");
-    render();
+  function resume() {
+    if ($("#log-box")) logs.mount();
+    if ($("#overview-log") && !overviewFeed.timer) overviewFeed.start();
   }
 
-  function applyDensity(value) {
-    document.documentElement.dataset.density = value === "comfortable" ? "comfortable" : "compact";
-    for (const button of document.querySelectorAll("[data-density-choice]")) {
-      button.setAttribute("aria-pressed", String(button.dataset.densityChoice === document.documentElement.dataset.density));
-    }
-  }
-
-  function boot() {
-    try { applyDensity(localStorage.getItem("zhiwei.density")); } catch { applyDensity("compact"); }
-    applyTheme();
-    applyLayout();
-
-    $("#refresh").innerHTML = ICONS.refresh;
-    $("#refresh").onclick = (event) => {
-      const button = event.currentTarget;
-      if (button.disabled) return;
-      button.disabled = true;
-      button.dataset.busy = "";
-      render().finally(() => { delete button.dataset.busy; button.disabled = false; });
-    };
-    $("#settings").innerHTML = ICONS.gear;
-    $("#settings").onclick = () => go("settings");
-
-    buildNav();
-    render();
-  }
-
-  window.addEventListener("beforeinstallprompt", (event) => {
-    event.preventDefault();
-    installPrompt = event;
-    const button = $("[data-install]");
-    if (button) button.hidden = false;
-  });
+  /* ==================== §14 启动 ==================== */
 
   document.addEventListener("DOMContentLoaded", () => {
+    buildShell();
     bindEvents();
+    token = readToken();
     if (!token) {
-      paintLock();
+      lock();
       return;
     }
-    boot();
+    document.body.dataset.state = "ready";
+    render();
   });
 })();

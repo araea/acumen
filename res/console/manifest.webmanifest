@@ -6,14 +6,15 @@
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
   "orientation": "any",
-  "background_color": "#f1f3eb",
-  "theme_color": "#f7f9f2",
+  "background_color": "#fbf8fe",
+  "theme_color": "#fbf8fe",
   "lang": "zh-CN",
   "dir": "ltr",
-  "categories": ["utilities", "productivity"],
-  "prefer_related_applications": false,
+  "categories": [
+    "utilities",
+    "productivity"
+  ],
   "icons": [
     {
       "src": "/icon.svg",
@@ -44,29 +45,20 @@
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "monochrome"
-    },
-    {
-      "src": "/icon-monochrome-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "monochrome"
     }
   ],
   "shortcuts": [
     {
-      "name": "日志",
-      "short_name": "日志",
-      "url": "/#/logs"
-    },
-    {
       "name": "插件",
-      "short_name": "插件",
       "url": "/#/plugins"
     },
     {
-      "name": "命令",
-      "short_name": "命令",
-      "url": "/#/command"
+      "name": "日志",
+      "url": "/#/logs"
+    },
+    {
+      "name": "设置",
+      "url": "/#/settings"
     }
   ]
 }

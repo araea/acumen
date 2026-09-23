@@ -458,7 +458,7 @@ body.scheme-news.dark {
 }
 
 /* 分类换种子。写成四个短块而不是让 Rust 拼 `--md-sys-color-primary` 内联样式：
-   种子属于配色方案，摆在这里才和其余四套方案放在一张桌上比。 */
+   种子属于配色方案，摆在这里才和其余几套方案放在一张桌上比。 */
 body.seed-brief {
   --md-sys-color-primary: var(--md-seed-brief);
 }
@@ -472,80 +472,9 @@ body.seed-models {
   --md-sys-color-primary: var(--md-seed-models);
 }
 
-/* —— 方案：控制台（console） ——
-   五套方案里唯一不是卡片图的一套：它是知微在本机网页上那张控制台。
-   与手册同底同主色（同一个产品，不该因为换了个媒介就换一张脸），但两处不同：
-
-   1. 表面比纸再冷一档。卡片是「读一张就放下」的纸，控制台是要盯十分钟的台面，
-      同样的暖白在整屏铺开时会发闷；
-   2. 自带深色。控制台是网页，跟随系统明暗是应该的，所以这一套把浅深两版都写全，
-      其余四套仍按「日读／夜读由插件自己挑」的老规矩。
-
-   浅色档的 on-surface-faint 与 outline 比 §7 的基线更深一档：网页是要按
-   WCAG 2.2 AA 核的（卡片图是发到群里的位图，不受这一条约束），而 §7 那两
-   个值在控制台这几个偏冷的表面上刚好卡在 4.47:1 与 2.29:1。差值肉眼几乎
-   看不出，但小字与控件边界从此过线。 */
-body.scheme-console {
-  /* 交互界面的主色容器比静态卡片更鲜明；日志在两种主题里都用深底。 */
-  --md-sys-color-primary-container: #e0edb7;
-  --md-sys-color-on-primary-container: #253616;
-  --md-sys-color-log-surface: #19231f;
-  --md-sys-color-log-text: #e1e8e3;
-  --md-sys-color-log-muted: #b5c0b9;
-  --md-sys-color-log-warning: #f2ca77;
-  --md-sys-color-log-error: #ffb4ab;
-  --md-sys-color-surface: #fdfef8;
-  --md-sys-color-surface-dim: #f1f3eb;
-  --md-sys-color-surface-container-low: #f7f9f2;
-  --md-sys-color-surface-container: #ebeee4;
-  --md-sys-color-surface-container-high: #e0e6d9;
-  --md-sys-color-on-surface: #20271e;
-  --md-sys-color-on-surface-variant: #4e594b;
-  --md-sys-color-on-surface-faint: #5d6859;
-  --md-sys-color-outline: #737f6d;
-  --md-sys-color-outline-variant: #dce2d4;
-  --md-sys-color-primary: #1f6350;
-  --md-sys-color-tertiary: #4a44b8;
-  --md-sys-color-secondary-container: #dce8cd;
-  --md-sys-color-on-secondary-container: #293d24;
-}
-
-body.scheme-console.dark {
-  --md-sys-color-primary-container: #354b2b;
-  --md-sys-color-on-primary-container: #e0edb7;
-  color-scheme: dark;
-  --md-sys-color-surface: #171e18;
-  --md-sys-color-surface-dim: #101510;
-  --md-sys-color-surface-container-low: #141b15;
-  --md-sys-color-surface-container: #1e281f;
-  --md-sys-color-surface-container-high: #29332a;
-  --md-sys-color-on-surface: #e1e8e3;
-  --md-sys-color-on-surface-variant: #b5c0b9;
-  --md-sys-color-on-surface-faint: #8d9891;
-  --md-sys-color-outline: #6f7a73;
-  --md-sys-color-outline-variant: #39423c;
-  --md-sys-color-primary: #abd1a0;
-  --md-sys-color-on-primary: #00382b;
-  --md-sys-color-tertiary: #c0c1ff;
-  --md-sys-color-secondary-container: #333c36;
-  --md-sys-color-on-secondary-container: #d4ded6;
-  --md-sys-color-inverse-surface: #e1e8e3;
-  --md-sys-color-on-inverse-surface: #1b231f;
-  --md-sys-color-success: #8ad3a2;
-  --md-sys-color-success-container: #1c3a28;
-  --md-sys-color-on-success-container: #b8f0c9;
-  --md-sys-color-warning: #eec05e;
-  --md-sys-color-warning-container: #463400;
-  --md-sys-color-on-warning-container: #ffe2a3;
-  --md-sys-color-error: #ffb4ab;
-  --md-sys-color-error-container: #93000a;
-  --md-sys-color-on-error-container: #ffdad6;
-  --md-sys-color-scrim: #000000;
-}
-
 /* 深色主题对整体配色只改两件事：文字与表面翻面、容器混色比例换档。
    语义色在浅色主题下就能用（同为深底浅字那一套），不必各写一遍——
-   本文件里只有 news 与 console 两套方案自带深色，其余三套按「日读」一种。 */
+   本文件里只有 news 一套方案自带深色，其余三套按「日读」一种。 */
 body.dark {
   color-scheme: dark;
   --md-role-container-mix: 22%;
