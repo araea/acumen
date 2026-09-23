@@ -1034,7 +1034,7 @@ impl Session {
             ) {
                 info!(target: super::LOG_TARGET, "偷来的表情包，第 {id} 张进库了");
             }
-            return Ok(Message(vec![segment]));
+            return Ok(Message(vec![stickers::sticker_style(segment)]));
         };
         let entry = stickers::take(id, note)
             .ok_or_else(|| anyhow::anyhow!("库里没有编号 {id} 那张表情包"))?;
@@ -1043,9 +1043,8 @@ impl Session {
             stickers::Kind::Image { file } => {
                 let path = stickers::file_of(&entry)
                     .ok_or_else(|| anyhow::anyhow!("第 {id} 张表情包的文件不在了"))?;
-                Ok(Message::new().image(
-                    self.source(&path.to_string_lossy(), file).await?,
-                ))
+                let image = Message::new().image(self.source(&path.to_string_lossy(), file).await?);
+                Ok(Message(image.0.into_iter().map(stickers::sticker_style).collect()))
             }
         }
     }

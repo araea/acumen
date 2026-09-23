@@ -412,11 +412,19 @@ fn resource(out: &mut Message, kind: &str, element: Element, proxy: &ResourcePro
         ("height", "height"),
         ("duration", "duration"),
         ("poster", "poster"),
+        ("summary", "summary"),
     ] {
         let value = attr(&element, source);
         if !value.is_empty() {
             data.insert(target.into(), OwnedValue::from(value));
         }
+    }
+    // satori-qq 把 QQ 的图片子类型带在 `sub-type` 上：1 是收藏/自定义表情，0 或缺省是
+    // 普通图片。按数字存，与商城表情的 `sub_type` 同一种写法，录制器也按数字认。
+    if let Ok(sub_type) = attr(&element, "sub-type").parse::<i64>()
+        && sub_type != 0
+    {
+        data.insert("sub_type".into(), OwnedValue::from(sub_type));
     }
     out.0.push(Segment::new(kind, data));
 }
@@ -509,6 +517,17 @@ fn resource_tag(kind: &str, data: &OwnedValue) -> String {
     let mut attrs = vec![("src", src.to_string())];
     if let Some(name) = data.get_str("name") {
         attrs.push(("title", name.to_string()));
+    }
+    // 图片子类型原样带回去：偷来的表情包发出去还是表情包的样子，不变成一张大图。
+    if let Some(sub_type) = data
+        .get_i64("sub_type")
+        .or_else(|| data.get_str("sub_type").and_then(|v| v.parse().ok()))
+        .filter(|sub_type| *sub_type != 0)
+    {
+        attrs.push(("sub-type", sub_type.to_string()));
+    }
+    if let Some(summary) = data.get_str("summary").filter(|summary| !summary.is_empty()) {
+        attrs.push(("summary", summary.to_string()));
     }
     tag(kind, &attrs)
 }
@@ -694,6 +713,27 @@ mod tests {
             .filter_map(|segment| segment.data.get("text").and_then(|value| value.as_str()))
             .collect::<String>();
         assert_eq!(text, "@在线成员#频道站点 (https://example.com)");
+    }
+
+    /// QQ 的收藏表情是图片子类型 1：进来时按数字认下，发出去时原样带回，偷来的表情包
+    /// 才不会变成一张带相框的大图。普通图片两头都不多出这个属性。
+    #[test]
+    fn sticker_pictures_keep_their_sub_type_both_ways() {
+        let message = from_content(
+            r#"<img src="https://example.com/a.gif" sub-type="1" summary="[动画表情]"/><img src="https://example.com/b.png"/>"#,
+        );
+        let sticker = &message.0[0].data;
+        assert_eq!(sticker.get("sub_type").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(sticker.get("summary").and_then(|v| v.as_str()), Some("[动画表情]"));
+        assert!(message.0[1].data.get("sub_type").is_none());
+
+        let value = simd_json::serde::to_owned_value(message).unwrap();
+        let content = to_content(&value);
+        assert!(
+            content.contains(r#"<img src="https://example.com/a.gif" sub-type="1" summary="[动画表情]"/>"#),
+            "{content}"
+        );
+        assert!(content.contains(r#"<img src="https://example.com/b.png"/>"#), "{content}");
     }
 
     /// 实现端的反转义不认 `&apos;`；撇号必须原样进元素串。

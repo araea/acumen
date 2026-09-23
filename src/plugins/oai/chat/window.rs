@@ -496,6 +496,8 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                         text.push_str(&crate::adapters::satori::forward::mface_label(
                             data.get_str("summary").unwrap_or(""),
                         ));
+                    } else if crate::adapters::satori::forward::is_sticker_picture(data.get("sub_type")) {
+                        text.push_str("[表情包]");
                     } else {
                         text.push_str("[图片]");
                     }
@@ -942,6 +944,20 @@ mod tests {
         }));
         let turn = turn_from(&MessageEvent(&raw), 10000);
         assert_eq!(turn.text, "[表情包:捂脸笑][表情包]");
+        // 群里斗图多半用的是收藏表情：图片子类型 1。它有图，模型看得见，也照样记成表情包。
+        let saved = event(serde_json::json!({
+            "post_type": "message", "message_type": "group", "group_id": 1,
+            "user_id": 42, "message_id": 10,
+            "sender": {"nickname": "老张"},
+            "message": [
+                {"type": "image", "data": {"url": "https://example.com/a.gif", "sub_type": 1,
+                    "summary": "[动画表情]"}},
+                {"type": "image", "data": {"url": "https://example.com/b.png"}},
+            ],
+        }));
+        let saved = turn_from(&MessageEvent(&saved), 10000);
+        assert_eq!(saved.text, "[表情包][图片]");
+        assert_eq!(saved.images.len(), 2);
         assert!(turn.images.is_empty());
         // 与商城表情那一段原样留着，偷的时候取得到。
         assert_eq!(crate::plugins::oai::chat::actions::sticker(&turn, 1).unwrap().type_, "mface");

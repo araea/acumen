@@ -397,6 +397,7 @@ pub fn describe(message: &Message) -> String {
                 }
             }
             "face" => out.push_str(&format!("[表情:{}]", string(segment, "id"))),
+            "image" if is_sticker_picture(segment.data.get("sub_type")) => out.push_str("[表情包]"),
             "image" => out.push_str("[图片]"),
             "mface" => out.push_str(&mface_label(string(segment, "summary"))),
             "record" => out.push_str("[语音]"),
@@ -425,6 +426,16 @@ pub fn describe(message: &Message) -> String {
     } else {
         flat
     }
+}
+
+/// 这张图是不是 QQ 的收藏/自定义表情：看的是它的 `sub_type`（图片子类型 1，satori-qq
+/// 带在 `sub-type` 上）。
+///
+/// 群里斗图用的大多是这种，而不是商城表情；不认出来，它就和截图一样只是一张 `[图片]`。
+pub(crate) fn is_sticker_picture(sub_type: Option<&simd_json::OwnedValue>) -> bool {
+    sub_type.is_some_and(|value| {
+        value.as_i64() == Some(1) || value.as_str().is_some_and(|value| value.trim() == "1")
+    })
 }
 
 /// 商城表情在记录里的样子：带上它自己的名字（`[表情包:开心]`）。

@@ -247,6 +247,18 @@ pub(crate) fn file_of(entry: &Entry) -> Option<PathBuf> {
     }
 }
 
+/// 图按 QQ 表情的样子发（图片子类型 1）：聊天里是一张小表情，会话列表里是「[动画表情]」，
+/// 而不是一张带相框的大图。偷来的就是拿来当表情包用的，群友当初是当照片发的也一样。
+/// 商城表情与别的段落原样返回。
+pub(crate) fn sticker_style(mut segment: Segment) -> Segment {
+    if segment.type_ == "image" {
+        segment
+            .data
+            .insert("sub_type".into(), simd_json::OwnedValue::from(1_i64));
+    }
+    segment
+}
+
 /// 发言轮贴进提示词的那一段；库是关的、或者库空着而眼前也没什么可偷时返回空串。
 ///
 /// 两样东西摆在手边。一是库里的几张，按「离眼前的话有多近」挑：接梗、吐槽、被逗乐这些
@@ -704,6 +716,16 @@ pub(crate) mod tests {
         // 关掉库时哪一段都不出现。
         assert!(brief(&[turn("群友", "加班")], 0).is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// 偷来的图按表情的样子发；商城表情本来就是表情，不动它。
+    #[test]
+    fn stolen_pictures_go_out_as_stickers() {
+        let sent = sticker_style(picture());
+        assert_eq!(sent.data.get("sub_type").and_then(|v| v.as_i64()), Some(1));
+        assert!(sent.data.get("url").is_some(), "原来的参数都留着");
+        let shop = sticker_style(shop("1", "9"));
+        assert!(shop.data.get("sub_type").is_none());
     }
 
     #[test]
