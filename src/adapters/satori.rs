@@ -575,19 +575,21 @@ async fn listen(
                         let Some(body) = packet.get("body") else {
                             continue;
                         };
+                        // Cursor belongs to this login, not to the entire WS stream. A foreign
+                        // login's higher sn must never cause our replayed messages to be lost.
+                        if !belongs_to_login(body, bot_status) {
+                            if matches!(body.get("type").and_then(Value::as_str), Some("login-updated" | "login-removed"))
+                                && bot_status.adapter == "satori-qq"
+                            {
+                                return Ok(()); // same slot changed account; obtain a fresh READY
+                            }
+                            continue;
+                        }
                         if !session_sn.accept(body) {
                             continue;
                         }
                         match body.get("type").and_then(Value::as_str) {
                             Some("login-updated" | "login-removed") => {
-                                if !belongs_to_login(body, bot_status) {
-                                    // satori-qq changes account on the same login slot. Reconnect;
-                                    // existing tasks retain the old account and receive 404.
-                                    if bot_status.adapter == "satori-qq" {
-                                        return Ok(());
-                                    }
-                                    continue;
-                                }
                                 if body["type"] == "login-removed" {
                                     return Ok(());
                                 }
@@ -596,9 +598,6 @@ async fn listen(
                             }
                             Some("login-added") => continue,
                             _ => {}
-                        }
-                        if !belongs_to_login(body, bot_status) {
-                            continue;
                         }
                         let event = match normalize_event(body, bot_status, &writer.resources()) {
                             Ok(event) => event,
@@ -1262,6 +1261,18 @@ mod tests {
     }
 
     #[test]
+    fn foreign_login_does_not_advance_the_local_cursor() {
+        let bot = test_bot();
+        let mut cursor = EventCursor::default();
+        cursor.ready(&json!({"body":{"satori_qq":{"session_id":"one"}}}), "red", "10000");
+        let foreign = json!({"type":"message-created","sn":900,"login":{"platform":"red","user":{"id":"20000"}}});
+        if belongs_to_login(&foreign, &bot) { cursor.accept(&foreign); }
+        let local = json!({"type":"message-created","sn":100,"login":{"platform":"red","user":{"id":"10000"}}});
+        assert!(belongs_to_login(&local, &bot) && cursor.accept(&local));
+        assert_eq!(cursor.sn, Some(100));
+    }
+
+    #[test]
     fn other_logins_cannot_enter_this_bots_pipeline() {
         let bot = test_bot();
         assert!(belongs_to_login(
@@ -1283,6 +1294,8 @@ mod tests {
         let (endpoint, mut seen, server) = scripted_peer(vec![
             (200, r#"{"message_id":"7837409278651234567","data":[{"emoji_id":"76","count":2,"self":true}],"source":"kernel_cache","observed_at":123}"#.into()),
             (200, "{}".into()),
+            (200, "{}".into()),
+            (200, "{}".into()),
             (404, r#"{"message":"unavailable","code":"removed_action"}"#.into()),
         ]).await;
         let (ctx, writer) = bare_context(&endpoint).await;
@@ -1292,6 +1305,8 @@ mod tests {
         assert_eq!(summary.message_id, "7837409278651234567");
         assert!(summary.data[0].by_self);
         qq::poke(&ctx, &writer, "private:42", "42").await.unwrap();
+        qq::typing(&ctx, &writer, "123").await.unwrap();
+        qq::mark_read(&ctx, &writer, "123").await.unwrap();
         let error = qq::clear_reactions(&ctx, &writer, "123", &summary.message_id)
             .await
             .unwrap_err();
@@ -1302,6 +1317,8 @@ mod tests {
         assert!(first.starts_with("/v1/internal/reaction_summary "));
         assert!(first.contains("7837409278651234567"));
         assert!(seen.try_recv().unwrap().starts_with("/v1/internal/poke "));
+        assert!(seen.try_recv().unwrap().starts_with("/v1/internal/typing "));
+        assert!(seen.try_recv().unwrap().starts_with("/v1/internal/mark_read "));
         assert!(
             seen.try_recv()
                 .unwrap()

@@ -227,6 +227,10 @@ pub(crate) struct AmbientConfig {
     /// 消息时效窗口（秒）：请求交给 satori-qq 之后，群里只要又有人说话就不再发
     /// 出这一句。0 关闭。见 [`crate::adapters::satori::Freshness`]。
     pub send_freshness_seconds: u64,
+    /// 发送前短暂显示 QQ 原生“正在输入”（内核实验性接口，默认关闭）。
+    pub qq_typing: bool,
+    /// 回话前在 QQ 原生内核中标记本群已读（实验性；默认关闭）。
+    pub qq_mark_read: bool,
     /// 一次发言最多拆成几条消息。
     pub messages_budget: usize,
     /// 一条消息大约多少字就该换气：超过大约一条半的长度时，把一段话在最自然的
@@ -300,6 +304,8 @@ impl Default for AmbientConfig {
             search_budget: 3,
             peak: peak::PeakConfig::default(),
             send_freshness_seconds: 25,
+            qq_typing: false,
+            qq_mark_read: false,
             messages_budget: 3,
             split_chars: 60,
             actions_budget: 6,
@@ -552,6 +558,8 @@ pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
         context_turns: config.context_turns,
         split_chars: config.split_chars,
         freshness_seconds: config.freshness_window().as_secs(),
+        qq_typing: config.qq_typing,
+        qq_mark_read: config.qq_mark_read,
         media_deadline_seconds: config.reply_timeout().as_secs(),
         tools: config.tools.clone(),
     }

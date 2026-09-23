@@ -135,7 +135,12 @@ Satori 与 QQ NT 的消息 ID 可能超出 32 位范围，适配层与插件 API
   连接持续一分钟后重置重连退避。
 - `SatoriApiError` 保留 `method/status/code/message`，插件可 downcast 判断 404/removed_action，
   现有错误文案保持兼容。QQ 扩展的 `ok:false` 仍被当作失败，动作超时不自动重试。
-- 插件可使用 `adapters::satori::qq::{capabilities,poke,reactions,clear_reactions,call}`。
+- 插件可使用 `adapters::satori::qq::{capabilities,poke,typing,mark_read,reactions,clear_reactions,call}`。
+  `typing` / `mark_read` 是 satori-qq 的 JNI 扩展，不是标准 Satori 方法；先按
+  `capabilities.supports("typing")` 判断，真实可用性仍以 QQ 内核回执为准。
+  `[ambient]` 与 `[oai.chat]` 的 `qq_typing`、`qq_mark_read` 默认关闭；开启后仅在
+  实际准备发送消息且聊天未过期时短暂请求 QQ 原生输入状态、每轮至多标记一次已读。
+  失败或超时不妨碍发消息。
   ID 使用字符串，能力清单与回应概况有类型化返回值；`call` 可调用能力表中其他扩展。
 - ambient 的 `react_clear` 永远只撤销自己的回应：单个用 `reaction.delete`，全部用 QQ 扩展；
   老实现端没有扩展时只对本轮已确认添加的回应逐个撤销，并报告范围受限。

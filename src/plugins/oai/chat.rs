@@ -82,6 +82,11 @@ pub(crate) struct ChatConfig {
     pub split_chars: usize,
     /// 发出前的时效窗口（秒）：群里又有人说话就整条不发。0 表示不带时效条件。
     pub freshness_seconds: u64,
+    /// QQ 原生输入状态（实验性：内核回调尚未实机确认）。只在即将发送时短暂展示；
+    /// 默认关闭，不会因为 QQ 无此能力而阻止正常发送。
+    pub qq_typing: bool,
+    /// QQ JNI 已读标记；仅在确实准备回复时调用一次，默认关闭。
+    pub qq_mark_read: bool,
     /// 一次媒体生成（图、歌、片）最多等多久（秒）。
     pub media_deadline_seconds: u64,
     /// 房间里的工具白名单；留空表示有什么挂什么（本机工具 + 群聊工具 + 联网）。
@@ -107,6 +112,8 @@ impl Default for ChatConfig {
             context_turns: 20,
             split_chars: 60,
             freshness_seconds: 0,
+            qq_typing: false,
+            qq_mark_read: false,
             media_deadline_seconds: 240,
             tools: String::new(),
         }

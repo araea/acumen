@@ -351,6 +351,10 @@ tools = ""
 # 发出前的时效窗口（秒）：群里又有人说话就整条不发，先读一遍现场再决定。0 关闭。
 # 房间里默认关：用户问一句就答一句，中间群里聊了什么与这次回答无关。
 freshness_seconds = 0
+# QQ 内核正在输入指示（实验性、仅 satori-qq，失败不妨碍发消息）。
+qq_typing = false
+# 仅在实际准备回复时，通过 QQ 内核标记本群已读（每轮一次、失败忽略）。
+qq_mark_read = false
 # 一次媒体生成（图、歌、片）最多等多久（秒）。
 media_deadline_seconds = 240
 
@@ -500,6 +504,10 @@ sticker_max = 120
 # 消息时效窗口（秒）：请求交给 satori-qq 之后还要排队，这段时间里群里只要又有人
 # 说话，这一句就整条不发——话说晚了不如不说。0 关闭这层条件。
 send_freshness_seconds = 25
+# 发送前短暂显示 QQ 原生正在输入；内核接口尚未实机确认，默认关闭。
+qq_typing = false
+# 回复前标记本群 QQ 已读；实验性，默认关闭。
+qq_mark_read = false
 # 熟人记忆：落盘记住群里的人与旧事（data/ambient/memory/），并开放 satori_memo。
 memory_enabled = true
 # 每轮最多写几条记忆；0 关闭 satori_memo。

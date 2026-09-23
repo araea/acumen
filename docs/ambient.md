@@ -449,6 +449,8 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 | `sticker_max` | `120` | 偷来的表情包最多留几张（`data/oai/chat/stickers/`，与房间共用一份）；满了先丢最没人用的，0 表示不攒 |
 | `send_freshness_seconds` | `25` | 消息时效窗口：交给 QQ 之前群里又有人说话就整条不发；0 关闭 |
 | `typing_cpm` | `150` | 打字速度，字/分钟 |
+| `qq_typing` | `false` | 实验性 QQ JNI 输入指示；仅即将发送时触发，失败不影响消息 |
+| `qq_mark_read` | `false` | 回复前每轮最多一次 QQ JNI 已读标记；失败不影响消息 |
 | `voice_cpm` | `420` | 长句等效语音输入速度 |
 | `think_seconds` | `3.0` | 思考等待，模型耗时计入其中 |
 | `gate_timeout_seconds` | `45` | 单次判定超时 |

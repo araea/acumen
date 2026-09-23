@@ -68,6 +68,25 @@ pub async fn poke(
     )
     .await
 }
+/// Best-effort QQ-native input indicator. Only call for a conversation the bot is
+/// actually responding to; QQ kernel availability varies with client version.
+pub async fn typing(
+    ctx: &Context,
+    writer: &LockedWriter,
+    channel: &str,
+) -> Result<Value, BotError> {
+    call(ctx, writer, "typing", json!({"channel_id": channel})).await
+}
+
+/// Mark a conversation read through the QQ kernel (not a Satori standard action).
+pub async fn mark_read(
+    ctx: &Context,
+    writer: &LockedWriter,
+    channel: &str,
+) -> Result<Value, BotError> {
+    call(ctx, writer, "mark_read", json!({"channel_id": channel})).await
+}
+
 pub async fn reactions(
     ctx: &Context,
     writer: &LockedWriter,

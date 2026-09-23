@@ -204,6 +204,7 @@ struct Session {
     videos: usize,
     memos: usize,
     spoke: bool,
+    read_marked: bool,
     started: Instant,
     receipts: HashMap<String, Value>,
     capabilities: Value,
@@ -259,6 +260,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         videos: 0,
         memos: 0,
         spoke: false,
+        read_marked: false,
         started: Instant::now(),
         receipts: HashMap::new(),
         capabilities: Value::Null,
@@ -1486,7 +1488,36 @@ impl Session {
         } else {
             pace.think_delay(self.started.elapsed()) + typing.saturating_sub(self.started.elapsed())
         };
-        tokio::time::sleep(delay).await;
+        // 思考/停顿结束、真的开始打字时才通知 QQ。实验性 JNI 能力是
+        // best-effort：群里有新话题、实现端不支持或回调超时，都不应阻塞这句回复。
+        let input_time = typing.min(delay);
+        tokio::time::sleep(delay.saturating_sub(input_time)).await;
+        ensure!(
+            self.current(),
+            "准备发送期间群聊已更新，尚未发送；请读 satori_context"
+        );
+        if self.config.qq_mark_read && !self.read_marked
+            && self.ctx.bot.adapter == "satori-qq"
+        {
+            self.read_marked = true; // one attempt per session, even on timeout
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                crate::adapters::satori::qq::mark_read(
+                    &self.ctx, &self.writer, &self.group.to_string(),
+                ),
+            ).await;
+        }
+        if self.config.qq_typing && self.ctx.bot.adapter == "satori-qq"
+            && input_time >= std::time::Duration::from_secs(1)
+        {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                crate::adapters::satori::qq::typing(
+                    &self.ctx, &self.writer, &self.group.to_string(),
+                ),
+            ).await;
+        }
+        tokio::time::sleep(input_time).await;
         ensure!(
             self.current(),
             "准备发送期间群聊已更新，尚未发送；请读 satori_context"
