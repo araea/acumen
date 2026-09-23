@@ -100,7 +100,7 @@ pub fn message_reply_id(ctx: &Context) -> Option<String> {
     None
 }
 
-/// 提取文本中第一个 http(s) URL。
+/// 提取文本里所有 http(s) URL，按出现顺序去重。
 ///
 /// 群聊里的链接几乎从不独占一行：前后粘着中文，后面跟着全角逗号、句号、引号或者
 /// 一对括号。「避雷这个中转站https://platform.deepseek.com，pro 模型路由到 flash」
@@ -109,15 +109,36 @@ pub fn message_reply_id(ctx: &Context) -> Option<String> {
 /// 所以这里只认 RFC 3986 允许的那些 ASCII 字符——中文、全角标点、书名号、引号
 /// 都不在其中，自然断开；再把结尾那几个几乎不可能属于地址的半角标点剥掉，
 /// 包括与地址内部不成对的那半个括号（`(https://example.com)` 里的右括号是外面的）。
+///
+/// 一条消息可以贴好几条链接（「一句话提示词生成」那类分享常见），所以这里收全量，
+/// 由调用方决定怎么用：截图会逐条截、合成一条消息发出去。
+pub fn find_urls(text: &str) -> Vec<String> {
+    let re = url_regex();
+    let mut urls: Vec<String> = Vec::new();
+    for matched in re.find_iter(text) {
+        let url = trim_tail(matched.as_str());
+        // 剥完之后至少还得剩个主机名，`见 https://。` 这种不算链接。
+        let host = url.split_once("//").map(|(_, rest)| rest).unwrap_or("");
+        if host.is_empty() {
+            continue;
+        }
+        if !urls.iter().any(|seen| seen == url) {
+            urls.push(url.to_string());
+        }
+    }
+    urls
+}
+
+/// 提取文本中第一个 http(s) URL。取法见 [`find_urls`]。
 pub fn find_url(text: &str) -> Option<String> {
+    find_urls(text).into_iter().next()
+}
+
+fn url_regex() -> &'static Regex {
     static URL_REGEX: OnceLock<Regex> = OnceLock::new();
-    let re = URL_REGEX.get_or_init(|| {
+    URL_REGEX.get_or_init(|| {
         Regex::new(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+").expect("Invalid Regex")
-    });
-    let url = trim_tail(re.find(text)?.as_str());
-    // 剥完之后至少还得剩个主机名，`见 https://。` 这种不算链接。
-    let host = url.split_once("//").map(|(_, rest)| rest).unwrap_or("");
-    (!host.is_empty()).then(|| url.to_string())
+    })
 }
 
 /// 去掉结尾那些属于句子而不属于地址的标点。
@@ -383,7 +404,7 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
 
 #[cfg(test)]
 mod tests {
-    use super::{card_target_url, find_url, spoken_bodies};
+    use super::{card_target_url, find_url, find_urls, spoken_bodies};
 
     /// 引用回复带着平台补的 @ 进来时，正文里能认的那一截要挑得出来。
     #[test]
@@ -442,6 +463,35 @@ mod tests {
         assert_eq!(
             find_url("https://en.wikipedia.org/wiki/Rust_(programming_language) 挺好").as_deref(),
             Some("https://en.wikipedia.org/wiki/Rust_(programming_language)")
+        );
+    }
+
+    #[test]
+    fn every_url_in_a_message_is_found_in_order() {
+        // 实测的形态：一句前言带三条链接，每条各占一行。
+        assert_eq!(
+            find_urls(
+                "以下内容皆使用 Claude Opus 5.5 一句话提示词生成\n\
+                 QQ飞车：https://lf3-static.bytednsdoc.com/obj/a/index.html\n\
+                 穿越火线之运输船 : https://lf3-static.bytednsdoc.com/obj/b/transport-ship.html\n\
+                 鹈鹕骑自行车: https://lf3-static.bytednsdoc.com/obj/c/index.html\n"
+            ),
+            vec![
+                "https://lf3-static.bytednsdoc.com/obj/a/index.html",
+                "https://lf3-static.bytednsdoc.com/obj/b/transport-ship.html",
+                "https://lf3-static.bytednsdoc.com/obj/c/index.html",
+            ]
+        );
+        // 同一个地址贴两遍只算一条；正文里的标点照旧剥掉。
+        assert_eq!(
+            find_urls("https://a.com/1，然后 https://a.com/1 又 https://b.com/2。"),
+            vec!["https://a.com/1", "https://b.com/2"]
+        );
+        // 一条都没有就是空表，`find_url` 仍是它的第一个。
+        assert!(find_urls("没有链接的一句话").is_empty());
+        assert_eq!(
+            find_url("先 https://a.com/1 再 https://b.com/2").as_deref(),
+            Some("https://a.com/1")
         );
     }
 

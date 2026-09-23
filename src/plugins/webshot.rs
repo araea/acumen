@@ -1,5 +1,5 @@
 use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::command::find_url;
+use crate::command::find_urls;
 use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
@@ -7,7 +7,7 @@ use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
 use crate::render::web::TabGuard;
 use anyhow::{Result, anyhow};
 use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, LaunchOptions, Viewport};
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
@@ -69,6 +69,13 @@ pub fn default_config() -> Value {
 /// 同时进行的网页截图上限。任意群友都能用一条链接触发渲染，没有闸门时
 /// 大量页面会同时吃内存——本机的卡片截图因此同样是串行的。
 static CAPTURE_GATE: Semaphore = Semaphore::const_new(2);
+
+/// 一条消息最多截几条链接。一条消息里贴好几条是常事（「一句话提示词生成」那类
+/// 分享一次贴三条），全截下来合成一条消息发出去，比只认第一条有用，也不会刷屏。
+///
+/// 但也不能没有头：这些图最后都压在一条消息里，条数一多发送侧会先撑不住，
+/// 而且谁都能用一条消息触发一串渲染。超出的按出现顺序丢掉，只记一条日志。
+const MAX_LINKS_PER_MESSAGE: usize = 4;
 
 /// 单张截图的像素上限（含 `device_scale_factor`），与 `render/web.rs` 保持一致。
 const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
@@ -505,6 +512,56 @@ async fn capture_page(
     Ok(Some(image))
 }
 
+/// 一条消息里的多条链接，逐条截图，按链接顺序返回成功的 base64。
+///
+/// 并发跑：闸门（[`CAPTURE_GATE`]）自己把同时渲染的数量压在 2 条以内，这里多开的
+/// 只是排队，不会多占浏览器。某一条失败或没有内容只丢它自己，不连坐其余的。
+async fn capture_all(urls: &[Url], config: &Config, browser_path: Option<String>) -> Vec<String> {
+    let captures = urls.iter().map(|url| {
+        let browser_path = browser_path.clone();
+        async move {
+            match capture_url(url, config, browser_path).await {
+                Ok(Some(image)) => Some(image),
+                // 页面没有可发的内容（验证页），原因上面已经记过日志。
+                Ok(None) => None,
+                Err(e) => {
+                    error!(target: "Plugin/WebShot", "Error capturing {}: {}", url, e);
+                    None
+                }
+            }
+        }
+    });
+    join_all(captures)
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// 消息 `message` 数组里所有正文链接，按出现顺序去重。
+///
+/// 只看 `text` 段：卡片载荷里的落地地址归 video_parse 那边取，这里不重复认。
+fn links_in_segments(event: &crate::event::Event) -> Vec<String> {
+    let mut links: Vec<String> = Vec::new();
+    let Some(segments) = event.get_array("message") else {
+        return links;
+    };
+    for segment in segments.iter() {
+        if segment.get_str("type") != Some("text") {
+            continue;
+        }
+        let Some(text) = segment.get("data").and_then(|data| data.get_str("text")) else {
+            continue;
+        };
+        for url in find_urls(text) {
+            if !links.contains(&url) {
+                links.push(url);
+            }
+        }
+    }
+    links
+}
+
 // ================= Main Handler =================
 
 pub fn handle(
@@ -536,49 +593,55 @@ pub fn handle(
             return Ok(Some(ctx));
         }
 
-        // 提取 URL
-        let url_candidate = if let crate::event::EventType::Satori(event) = &ctx.event {
-            if let Some(arr) = event.get_array("message") {
-                arr.iter()
-                    .filter(|seg| seg.get_str("type") == Some("text"))
-                    .find_map(|seg| {
-                        seg.get("data")
-                            .and_then(|d| d.get_str("text"))
-                            .and_then(find_url)
-                    })
+        // 一条消息可以贴好几条链接，全收下来一起处理：各截一张，合成一条消息发出去。
+        // 只取正文（`text` 段）；没有 `message` 数组时退回整条 `raw_message`。
+        let candidates = if let crate::event::EventType::Satori(event) = &ctx.event {
+            if event.get_array("message").is_some() {
+                links_in_segments(event)
             } else {
-                find_url(msg_event.text())
+                find_urls(msg_event.text())
             }
         } else {
-            find_url(msg_event.text())
+            find_urls(msg_event.text())
         };
 
-        if let Some(candidate) = url_candidate {
-            let url = match check_url(&candidate, &config).await {
-                Ok(url) => url,
-                Err(reason) => {
-                    info!(target: "Plugin/WebShot", "跳过截图：{}", reason);
-                    return Ok(Some(ctx));
-                }
-            };
+        if candidates.is_empty() {
+            return Ok(Some(ctx));
+        }
 
-            // 执行截图
-            info!(target: "Plugin/WebShot", "Capturing: {}", url);
-
-            match capture_url(&url, &config, browser_path).await {
-                Ok(Some(base64_img)) => {
-                    let msg = Message::new()
-                        .reply(msg_event.message_id())
-                        .image(format!("base64://{}", base64_img));
-
-                    send_msg(&ctx, writer, group_id, Some(user_id), msg).await?;
-                }
-                // 页面没有可发的内容（验证页），原因上面已经记过日志。
-                Ok(None) => {}
-                Err(e) => {
-                    error!(target: "Plugin/WebShot", "Error capturing {}: {}", url, e);
-                }
+        // 逐条准入，跳过的不算数；收到上限就不再往下看。
+        let mut urls = Vec::new();
+        for candidate in candidates {
+            if urls.len() >= MAX_LINKS_PER_MESSAGE {
+                info!(target: "Plugin/WebShot", "超过上限，本条消息只截前 {} 条链接", MAX_LINKS_PER_MESSAGE);
+                break;
             }
+            match check_url(&candidate, &config).await {
+                Ok(url) => urls.push(url),
+                Err(reason) => info!(target: "Plugin/WebShot", "跳过截图：{}", reason),
+            }
+        }
+
+        if urls.is_empty() {
+            return Ok(Some(ctx));
+        }
+
+        info!(
+            target: "Plugin/WebShot",
+            "Capturing: {}",
+            urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
+        );
+
+        let images = capture_all(&urls, &config, browser_path).await;
+
+        // 全都没出图（都是验证页之类）就什么都不发。
+        if !images.is_empty() {
+            // 多张图合成一条消息：一轮分享只打扰群聊一次。
+            let mut msg = Message::new().reply(msg_event.message_id());
+            for base64_img in images {
+                msg = msg.image(format!("base64://{}", base64_img));
+            }
+            send_msg(&ctx, writer, group_id, Some(user_id), msg).await?;
         }
 
         Ok(Some(ctx))
@@ -835,5 +898,29 @@ mod tests {
         assert_eq!(scale_factor(f64::INFINITY), 1.0);
         assert_eq!(scale_factor(0.1), 0.5);
         assert_eq!(scale_factor(9.0), 4.0);
+    }
+
+    /// 一条消息里的多条链接都要按顺序收下来；只有 `text` 段算正文，
+    /// 图片段里的地址（封面、头像）不算。
+    #[test]
+    fn every_body_link_is_collected_in_order() {
+        let event = simd_json::serde::to_owned_value(serde_json::json!({
+            "post_type": "message",
+            "message": [
+                {"type": "text", "data": {"text": "前言\nA：https://a.com/1\nB：https://b.com/2\nC：https://c.com/3"}},
+                {"type": "image", "data": {"url": "https://cover.example.com/x.png"}},
+                {"type": "text", "data": {"text": "收尾 https://a.com/1 与 https://e.com/4"}}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(
+            links_in_segments(&event),
+            vec![
+                "https://a.com/1",
+                "https://b.com/2",
+                "https://c.com/3",
+                "https://e.com/4",
+            ]
+        );
     }
 }
