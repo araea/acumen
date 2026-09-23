@@ -83,22 +83,61 @@ pub fn handle(
             }
             let title = title.trim();
 
-            // 5. 设置头衔
-            if let Err(e) = api::set_group_special_title(
-                &ctx,
-                writer.clone(),
-                group_id,
-                user_id,
-                title.to_string(),
-                -1,
-            )
-            .await
+            // 5. 设置头衔；失败时再检查群管理里「展示成员群头衔」的开关，
+            //    没开就打开后重试一次——头衔本身设成功了，只是不开这个开关就不会显示。
+            if let Err(e) =
+                api::set_group_special_title(&ctx, writer.clone(), group_id, user_id, title.to_string(), -1)
+                    .await
             {
-                error!(
+                warn!(
                     target: "Plugin/GroupTitle",
-                    "[Group({})] 设置头衔失败: {}",
+                    "[Group({})] 设置头衔失败: {}，检查「展示成员群头衔」开关",
                     group_id, e
                 );
+                match api::get_group_title_display(&ctx, writer.clone(), group_id).await {
+                    Ok(true) => {
+                        error!(
+                            target: "Plugin/GroupTitle",
+                            "[Group({})] 「展示成员群头衔」开关已是开启状态，设置头衔仍失败，放弃",
+                            group_id
+                        );
+                    }
+                    Ok(false) => {
+                        if let Err(e) =
+                            api::set_group_title_display(&ctx, writer.clone(), group_id, true).await
+                        {
+                            error!(
+                                target: "Plugin/GroupTitle",
+                                "[Group({})] 打开「展示成员群头衔」开关失败: {}",
+                                group_id, e
+                            );
+                        } else if let Err(e) = api::set_group_special_title(
+                            &ctx,
+                            writer.clone(),
+                            group_id,
+                            user_id,
+                            title.to_string(),
+                            -1,
+                        )
+                        .await
+                        {
+                            error!(
+                                target: "Plugin/GroupTitle",
+                                "[Group({})] 打开开关后重试设置头衔仍失败: {}",
+                                group_id, e
+                            );
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+                    Err(qe) => {
+                        error!(
+                            target: "Plugin/GroupTitle",
+                            "[Group({})] 查询「展示成员群头衔」开关状态失败: {}",
+                            group_id, qe
+                        );
+                    }
+                }
             } else {
                 return Ok(None);
             }

@@ -191,6 +191,39 @@ pub async fn set_group_special_title(
     Ok(())
 }
 
+/// 只读群管理里「展示成员群头衔」开关的当前状态，不写。
+pub async fn get_group_title_display(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: i64,
+) -> Result<bool, ApiError> {
+    let value: Value = writer
+        .call(
+            ctx,
+            "internal/title_display",
+            json!({"guild_id": group_id.to_string()}),
+        )
+        .await?;
+    Ok(value.get("title_open").and_then(Value::as_bool).unwrap_or(false))
+}
+
+/// 打开或关闭群管理里「展示成员群头衔」的开关。
+pub async fn set_group_title_display(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: i64,
+    show: bool,
+) -> Result<(), ApiError> {
+    let _: Value = writer
+        .call(
+            ctx,
+            "internal/title_display",
+            json!({"guild_id": group_id.to_string(), "show": show}),
+        )
+        .await?;
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GroupMemberInfo {
     pub group_id: i64,
