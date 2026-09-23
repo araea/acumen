@@ -190,6 +190,11 @@ allow_private_hosts = false
 # （脚本动画多、整页极长，静态截图出不来可用的图，如 dontboardme.com），那类不受
 # 这个开关影响、总是跳过。
 block_walled_sites = true
+# 跳过 QQ 官方机器人（Q群管家那代与 QQ 开放平台上注册的那些）发的消息。
+# 它们回的是模板，里面的链接（markdown 写的「查看原文」）截图没有可看的。
+# 号段前缀写在 src/plugins/webshot.rs 的 OFFICIAL_BOT_ID_PREFIXES，没有官方文档、
+# 只有一份实测名单，所以段外的机器人认不出来、段里恰好有真人号也会被一起跳过。
+skip_official_bots = true
 # 截图视口宽度（CSS 像素）与出图倍率。1.0 即与视口同宽，调大更清晰、体积更大。
 viewport_width = 1280
 device_scale_factor = 1.0

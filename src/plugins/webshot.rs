@@ -39,6 +39,8 @@ pub struct Config {
     pub allow_private_hosts: bool,
     /// 是否跳过截出来没有内容的站点。默认开启——见 `WALLED_DOMAINS`。
     pub block_walled_sites: bool,
+    /// 是否跳过 QQ 官方机器人发的消息。默认开启——见 `OFFICIAL_BOT_ID_PREFIXES`。
+    pub skip_official_bots: bool,
     /// 群名单：配了黑名单就对名单外的所有群截图，配了白名单则只对名单内的群截图。
     pub channel: ChannelConfig,
 }
@@ -55,6 +57,7 @@ impl Default for Config {
             ignore_domains: vec![],
             allow_private_hosts: false,
             block_walled_sites: true,
+            skip_official_bots: true,
             channel: ChannelConfig::default(),
         }
     }
@@ -142,6 +145,34 @@ const UNCAPTURABLE_DOMAINS: &[&str] = &["dontboardme.com"];
 /// 号主贴的链接要照常截图——从前只看 `user_id == self_id`，把他一起漏掉了。
 fn is_own_echo(msg: &crate::event::MessageEvent<'_>, self_id: i64) -> bool {
     msg.user_id() == self_id && !msg.is_manual_self()
+}
+
+/// QQ 官方机器人的号段前缀。
+///
+/// 群里那些「小北」「夜夜酱」是别人在 QQ 开放平台上注册的机器人，回消息时常带 markdown
+/// 写的链接（`[查看原文](https://…)`）。这类消息是模板，落地页截出来没有可看的，还占掉
+/// 一张图的位置，所以默认整条跳过（`skip_official_bots = false` 可以关掉）。
+///
+/// 两个前缀是 2026-09-23 从本机 `data/bot.db` 的 `message_records` 里数出来的：`2854`
+/// 段是 Q 群管家那一代自带的群机器人，`3889` 段是 QQ 开放平台注册的机器人（实测
+/// `2854196310` Q群管家、`2854211260` 萌卡、`3889029313` 小北、`3889001845` 夜夜酱……）。
+/// 号段没有官方文档，只有这一份实测名单，所以按前缀匹配既有漏也有误伤：段外的机器人
+/// 认不出来，落在段里的真人号会被一起跳过。
+const OFFICIAL_BOT_ID_PREFIXES: &[&str] = &["2854", "3889"];
+
+/// 官方机器人的号都是 10 位，比这短的一概不算——早年发出去的 4—9 位号里，
+/// 恰好以 `2854` / `3889` 开头的会被前缀匹配误伤。
+const OFFICIAL_BOT_ID_MIN: i64 = 1_000_000_000;
+
+/// 这个号是不是 QQ 官方机器人。按十进制前缀匹配，见 [`OFFICIAL_BOT_ID_PREFIXES`]。
+fn is_official_bot(user_id: i64) -> bool {
+    if user_id < OFFICIAL_BOT_ID_MIN {
+        return false;
+    }
+    let id = user_id.to_string();
+    OFFICIAL_BOT_ID_PREFIXES
+        .iter()
+        .any(|prefix| id.starts_with(prefix))
 }
 
 /// 链接是否允许截图，不允许时返回可写进日志的原因。
@@ -593,6 +624,11 @@ pub fn handle(
             return Ok(Some(ctx));
         }
 
+        // QQ 官方机器人回的是模板消息，里面的链接没有截图的价值。
+        if config.skip_official_bots && is_official_bot(user_id) {
+            return Ok(Some(ctx));
+        }
+
         // 一条消息可以贴好几条链接，全收下来一起处理：各截一张，合成一条消息发出去。
         // 只取正文（`text` 段）；没有 `message` 数组时退回整条 `raw_message`。
         let candidates = if let crate::event::EventType::Satori(event) = &ctx.event {
@@ -840,6 +876,23 @@ mod tests {
         );
         let member = event(42, false);
         assert!(!is_own_echo(&crate::event::MessageEvent(&member), 7));
+    }
+
+    /// 两个号段都认，段外的号（含号主自己的号）一个都不能碰。
+    #[test]
+    fn official_bot_ids_are_recognised_by_prefix() {
+        for id in [
+            2854196310, // Q群管家
+            2854211260, // 萌卡
+            3889029313, // 小北
+            3889001845, // 夜夜酱
+        ] {
+            assert!(is_official_bot(id), "{id} 应当判为 QQ 官方机器人");
+        }
+        // 短号不算：早年发出去的小号里，恰好以这几个数字开头的会被前缀匹配误伤。
+        for id in [0, 42, 3373167460, 3667456514, 2959738664, 2854, 3889] {
+            assert!(!is_official_bot(id), "{id} 不该判为 QQ 官方机器人");
+        }
     }
 
     /// 微信文章走专用 UA 与手机宽度，别的站点一概不动。
