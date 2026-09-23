@@ -500,6 +500,21 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                     "[文件:{}]",
                     data.get_str("name").unwrap_or("未命名")
                 )),
+                "json" => {
+                    // QQ 的分享/小程序卡是 JSON 段；若只留在原始 elements，搭话与
+                    // agent 房间的窗口都看不到卡片。落地地址复用指令侧已核过的提取规则。
+                    let payload = data.get_str("data").or_else(|| data.get_str("content"))
+                        .unwrap_or("");
+                    text.push_str("[卡片");
+                    if let Some(url) = crate::command::card_target_url(payload)
+                        .filter(|url| (url.starts_with("http://") || url.starts_with("https://"))
+                            && url.len() <= 2048)
+                    {
+                        text.push_str(": ");
+                        text.push_str(&url);
+                    }
+                    text.push(']');
+                }
                 "forward" | "node" => text.push_str("[合并转发，可用 satori_read 展开]"),
                 "poke" => text.push_str("[戳一戳]"),
                 "dice" => text.push_str("[骰子]"),
@@ -862,6 +877,24 @@ mod tests {
         assert!(!turn.from_me);
         assert_eq!(turn.images, ["https://example.com/a.png"]);
         assert_eq!(turn.at, 1_788_800_000);
+    }
+
+    #[test]
+    fn bot_markdown_buttons_and_qq_card_are_visible_in_both_chat_windows() {
+        let raw = event(serde_json::json!({
+            "post_type": "message", "message_type": "group", "group_id": 1,
+            "user_id": 42, "message_id": 77,
+            "sender": {"nickname": "官方机器人"},
+            "message": [
+                {"type":"text","data":{"text":"**公告**\n今天更新\n按钮: [查看] [稍后]"}},
+                {"type":"json","data":{"data":
+                    "{\"meta\":{\"news\":{\"jumpUrl\":\"https:\\/\\/example.com\\/release\"}}}"}}
+            ]
+        }));
+        let turn = turn_from(&MessageEvent(&raw), 10000);
+        assert!(turn.text.contains("**公告** 今天更新 按钮: [查看] [稍后]"), "{}", turn.text);
+        assert!(turn.text.contains("[卡片: https://example.com/release]"), "{}", turn.text);
+        assert!(transcript(&[turn]).contains("https://example.com/release"));
     }
 
 

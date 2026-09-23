@@ -297,6 +297,19 @@ pub(crate) fn plain_text(message: &Message) -> String {
             "record" => out.push_str("[语音]"),
             "video" => out.push_str("[视频]"),
             "node" | "forward" => out.push_str("[合并转发]"),
+            "json" => {
+                let payload = segment.data.get("data").or_else(|| segment.data.get("content"))
+                    .and_then(|value| value.as_str()).unwrap_or("");
+                out.push_str("[卡片");
+                if let Some(url) = crate::command::card_target_url(payload)
+                    .filter(|url| (url.starts_with("http://") || url.starts_with("https://"))
+                        && url.len() <= 2048)
+                {
+                    out.push_str(": ");
+                    out.push_str(&url);
+                }
+                out.push(']');
+            }
             _ => {}
         }
     }
