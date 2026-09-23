@@ -153,22 +153,6 @@ pub async fn get_forward_msg(
     Ok(ForwardMsgData { message: chain })
 }
 
-pub async fn send_like(
-    ctx: &Context,
-    writer: LockedWriter,
-    user_id: i64,
-    times: i32,
-) -> Result<(), ApiError> {
-    let _: Value = writer
-        .call(
-            ctx,
-            "internal/like",
-            json!({"user_id": user_id.to_string(), "times": times}),
-        )
-        .await?;
-    Ok(())
-}
-
 pub async fn set_group_special_title(
     ctx: &Context,
     writer: LockedWriter,
@@ -380,6 +364,7 @@ pub async fn get_group_list(
     const MAX_PAGES: usize = 64;
     let mut out = Vec::new();
     let mut next: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
     for _ in 0..MAX_PAGES {
         let params = match &next {
             Some(cursor) => json!({"next": cursor}),
@@ -410,11 +395,15 @@ pub async fn get_group_list(
             .and_then(Value::as_str)
             .filter(|cursor| !cursor.is_empty())
             .map(str::to_owned);
-        if next.is_none() {
-            break;
+        match next.as_ref() {
+            None => return Ok(out),
+            Some(cursor) if !seen.insert(cursor.clone()) => {
+                return Err(format!("Satori guild.list 重复分页令牌: {cursor}").into());
+            }
+            _ => {}
         }
     }
-    Ok(out)
+    Err(format!("Satori guild.list 超过 {MAX_PAGES} 页，拒绝返回不完整群列表").into())
 }
 
 pub async fn upload_file(

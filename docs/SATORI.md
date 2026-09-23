@@ -47,7 +47,7 @@ token 的取值顺序是环境变量 `ACUMEN_SATORI_TOKEN`、`config.toml` 中 S
 | 合并转发读取 | `internal/get_forward` |
 | 资源代理 | `GET /v1/proxy/{url}` |
 
-HTTP RPC 自带同步响应：需要把后续引用与已发送消息关联时，可以直接读取 `message.create` 返回的消息 ID，不需要 WebSocket echo 匹配器。`guild.list` 等标准分页列表跟随响应里的 `next` 令牌翻页。
+HTTP RPC 自带同步响应：需要把后续引用与已发送消息关联时，可以直接读取 `message.create` 返回的消息 ID，不需要 WebSocket echo 匹配器。`guild.list` 等标准分页列表跟随响应里的 `next` 令牌翻页。知弦在未给 `limit` 时直接返回完整列表，通常只需一次请求；其他实现端返回分页时也会继续取完。若令牌重复或超过 64 页，则报错而非把残缺群列表交给定时任务。
 
 ## 事件规范化
 

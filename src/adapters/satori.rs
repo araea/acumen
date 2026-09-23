@@ -578,8 +578,10 @@ async fn listen(
                         // Cursor belongs to this login, not to the entire WS stream. A foreign
                         // login's higher sn must never cause our replayed messages to be lost.
                         if !belongs_to_login(body, bot_status) {
-                            if matches!(body.get("type").and_then(Value::as_str), Some("login-updated" | "login-removed"))
-                                && bot_status.adapter == "satori-qq"
+                            if matches!(
+                                body.get("type").and_then(Value::as_str),
+                                Some("login-updated" | "login-removed")
+                            ) && bot_status.adapter == "satori-qq"
                             {
                                 return Ok(()); // same slot changed account; obtain a fresh READY
                             }
@@ -1264,9 +1266,15 @@ mod tests {
     fn foreign_login_does_not_advance_the_local_cursor() {
         let bot = test_bot();
         let mut cursor = EventCursor::default();
-        cursor.ready(&json!({"body":{"satori_qq":{"session_id":"one"}}}), "red", "10000");
+        cursor.ready(
+            &json!({"body":{"satori_qq":{"session_id":"one"}}}),
+            "red",
+            "10000",
+        );
         let foreign = json!({"type":"message-created","sn":900,"login":{"platform":"red","user":{"id":"20000"}}});
-        if belongs_to_login(&foreign, &bot) { cursor.accept(&foreign); }
+        if belongs_to_login(&foreign, &bot) {
+            cursor.accept(&foreign);
+        }
         let local = json!({"type":"message-created","sn":100,"login":{"platform":"red","user":{"id":"10000"}}});
         assert!(belongs_to_login(&local, &bot) && cursor.accept(&local));
         assert_eq!(cursor.sn, Some(100));
@@ -1318,7 +1326,11 @@ mod tests {
         assert!(first.contains("7837409278651234567"));
         assert!(seen.try_recv().unwrap().starts_with("/v1/internal/poke "));
         assert!(seen.try_recv().unwrap().starts_with("/v1/internal/typing "));
-        assert!(seen.try_recv().unwrap().starts_with("/v1/internal/mark_read "));
+        assert!(
+            seen.try_recv()
+                .unwrap()
+                .starts_with("/v1/internal/mark_read ")
+        );
         assert!(
             seen.try_recv()
                 .unwrap()
@@ -2042,6 +2054,45 @@ mod tests {
         assert_eq!(seen.try_recv().unwrap(), r#"/v1/guild.list {"next":"1"}"#);
         assert_eq!(seen.try_recv().unwrap(), r#"/v1/guild.list {"next":"2"}"#);
         assert!(seen.try_recv().is_err(), "没有 next 时不该再发一次请求");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn repeated_list_cursor_is_an_error_not_an_infinite_loop() {
+        let (endpoint, mut seen, server) = scripted_peer(vec![
+            (200, r#"{"data":[{"id":"1"}],"next":"1"}"#.into()),
+            (200, r#"{"data":[{"id":"2"}],"next":"1"}"#.into()),
+        ])
+        .await;
+        let (ctx, writer) = bare_context(&endpoint).await;
+        let error = api::get_group_list(&ctx, writer, false)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("重复分页令牌"));
+        assert!(seen.try_recv().is_ok());
+        assert!(seen.try_recv().is_ok());
+        assert!(seen.try_recv().is_err());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn capped_list_does_not_return_partial_groups() {
+        let replies = (0..64)
+            .map(|i| {
+                (
+                    200,
+                    format!(r#"{{"data":[{{"id":"{}"}}],"next":"{}"}}"#, i + 1, i + 1),
+                )
+            })
+            .collect();
+        let (endpoint, _seen, server) = scripted_peer(replies).await;
+        let (ctx, writer) = bare_context(&endpoint).await;
+        let error = api::get_group_list(&ctx, writer, false)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("超过 64 页"));
         server.abort();
     }
 
