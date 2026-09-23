@@ -102,6 +102,7 @@ pub(crate) struct GroupState {
     spoken: VecDeque<Instant>,
     /// 睡着（计价高峰）时上一次主动判定的时刻：把自主判定压到隔一段时间一次。
     doze_gate_at: Option<Instant>,
+    passive_gate_at: Option<Instant>,
     /// 睡着时自主开口的时刻，用于每小时上限——判定便宜、开口贵，这条管的是后者。
     doze_spoken: VecDeque<Instant>,
 }
@@ -327,6 +328,18 @@ impl GroupState {
             return false;
         }
         self.doze_gate_at = Some(now);
+        true
+    }
+
+    pub(crate) fn allow_passive_gate(&mut self, interval: Duration) -> bool {
+        let now = Instant::now();
+        if self
+            .passive_gate_at
+            .is_some_and(|at| now.duration_since(at) < interval)
+        {
+            return false;
+        }
+        self.passive_gate_at = Some(now);
         true
     }
 
@@ -842,6 +855,15 @@ mod tests {
         state.mark_doze_spoke();
         assert_eq!(state.doze_spoke_last_hour(), 2);
         assert_eq!(state.spoken_last_hour(), 0);
+    }
+
+    #[test]
+    fn ordinary_judgements_are_bounded_without_affecting_doze() {
+        let mut state = GroupState::default();
+        assert!(state.allow_passive_gate(Duration::from_secs(30)));
+        assert!(!state.allow_passive_gate(Duration::from_secs(30)));
+        assert!(state.allow_passive_gate(Duration::ZERO));
+        assert!(state.allow_doze_gate(Duration::from_secs(30)));
     }
 
     /// 一份 satori 事件，测试造事件用。

@@ -64,7 +64,7 @@ pub(crate) enum Stance {
 pub(crate) struct PeakConfig {
     /// 高峰时段怎么办。
     pub mode: Mode,
-    /// 高峰时段，`HH:MM-HH:MM`，按本机时间，可跨零点；空列表等于没有高峰。
+    /// 高峰时段，`HH:MM-HH:MM`，按北京时间，可跨零点；空列表等于没有高峰。
     pub windows: Vec<String>,
     /// 算作高峰的星期几，1=周一 … 7=周日；空列表等于每天都算。
     pub weekdays: Vec<u8>,
@@ -84,9 +84,7 @@ impl Default for PeakConfig {
             mode: Mode::Sleep,
             windows: vec!["09:00-12:00".to_string(), "14:00-18:00".to_string()],
             weekdays: vec![1, 2, 3, 4, 5],
-            // 五分钟看一眼、每小时最多自己开两次口：群里不觉得它突然活跃，
-            // 账单也被钉死在「每分钟最多一次判定、每小时最多两句」之内。
-            doze_gate_seconds: 300,
+            doze_gate_seconds: 0,
             doze_reply_limit: 2,
         }
     }
@@ -107,8 +105,9 @@ fn parse_clock(clock: &str) -> Option<u32> {
 
 impl PeakConfig {
     /// 这个时刻算不算高峰。跨零点的时段按当时那一刻的星期几判断。
-    pub(crate) fn is_peak_at(&self, at: chrono::DateTime<chrono::Local>) -> bool {
+    pub(crate) fn is_peak_at<Tz: chrono::TimeZone>(&self, at: chrono::DateTime<Tz>) -> bool {
         use chrono::{Datelike as _, Timelike as _};
+        let at = at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3_600).expect("北京时间"));
         let weekday = at.weekday().number_from_monday() as u8;
         if !self.weekdays.is_empty() && !self.weekdays.contains(&weekday) {
             return false;
@@ -126,7 +125,7 @@ impl PeakConfig {
             })
     }
 
-    pub(crate) fn stance_at(&self, at: chrono::DateTime<chrono::Local>) -> Stance {
+    pub(crate) fn stance_at<Tz: chrono::TimeZone>(&self, at: chrono::DateTime<Tz>) -> Stance {
         if self.mode == Mode::Normal || !self.is_peak_at(at) {
             return Stance::Awake;
         }
@@ -161,19 +160,21 @@ mod tests {
     use super::*;
     use chrono::TimeZone as _;
 
-    /// 2026-09-10 是周四；给一个本机时刻。
-    fn thursday(hour: u32, minute: u32) -> chrono::DateTime<chrono::Local> {
-        chrono::Local
+    /// 2026-09-10 是周四；给一个北京时间。
+    fn thursday(hour: u32, minute: u32) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::FixedOffset::east_opt(8 * 3_600)
+            .unwrap()
             .with_ymd_and_hms(2026, 9, 10, hour, minute, 0)
             .single()
-            .expect("本机时区里这个时刻存在")
+            .expect("北京时间里这个时刻存在")
     }
 
-    fn sunday(hour: u32) -> chrono::DateTime<chrono::Local> {
-        chrono::Local
+    fn sunday(hour: u32) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::FixedOffset::east_opt(8 * 3_600)
+            .unwrap()
             .with_ymd_and_hms(2026, 9, 13, hour, 0, 0)
             .single()
-            .expect("本机时区里这个时刻存在")
+            .expect("北京时间里这个时刻存在")
     }
 
     #[test]
@@ -189,6 +190,8 @@ mod tests {
         assert!(!config.is_peak_at(thursday(18, 0)));
         assert!(!config.is_peak_at(thursday(2, 0)));
         assert!(!config.is_peak_at(sunday(10)));
+        assert!(config.is_peak_at(thursday(9, 0).with_timezone(&chrono::Utc)));
+        assert!(!config.is_peak_at(thursday(18, 0).with_timezone(&chrono::Utc)));
     }
 
     #[test]
@@ -253,20 +256,18 @@ mod tests {
         assert!(!billed_by_peak("deepseek/"));
     }
 
-    /// 睡着时仍可偶尔接话，但两次主动判定之间有下限，写 0 才等于完全睡着。
     #[test]
     fn dozing_keeps_a_floor_between_voluntary_judgements() {
         let config = PeakConfig::default();
-        assert_eq!(config.doze_gate(), Duration::from_secs(300));
+        assert_eq!(config.doze_gate(), Duration::ZERO);
         assert!(config.doze_allows_reply(0));
         assert!(config.doze_allows_reply(config.doze_reply_limit - 1));
         assert!(!config.doze_allows_reply(config.doze_reply_limit));
-        // 写 0 关掉自主判定，退回旧行为。
-        let off = PeakConfig {
-            doze_gate_seconds: 0,
+        let occasional = PeakConfig {
+            doze_gate_seconds: 300,
             ..PeakConfig::default()
         };
-        assert_eq!(off.doze_gate(), Duration::ZERO);
+        assert_eq!(occasional.doze_gate(), Duration::from_secs(300));
         // 写成 1 秒会被夹回下限，不会把账单拉回高峰水平。
         let eager = PeakConfig {
             doze_gate_seconds: 1,

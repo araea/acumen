@@ -203,8 +203,8 @@ pub(crate) async fn compose(
     );
     let prompt = format!(
         "{}{}最近的群聊记录：\n{}\n{}",
-        scene.brief(),
         scene.own,
+        scene.brief(),
         transcript(turns),
         closing(called)
     );

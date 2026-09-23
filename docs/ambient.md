@@ -16,6 +16,10 @@
 
 另有一条搭话指令（`summon_command`，默认 `/搭话`）。群里发一条以它开头的消息就跳过判定，直接把最近这段群聊交给人格。指令本身会被去掉，不进入窗口，所以人格看到的是有人想听它说一句。`/搭话 你怎么看` 里剩下的正文照常算群聊内容。人格仍有最后决定权，`[silent]` 也算回应。这条指令与 @、引用一样不走门槛，所以两条软钉子都拦不住它；真正拦得住的是 `peak.mode = "pause"`（见[跟着计价时段作息](#跟着计价时段作息)），那是管理员明确的硬开关。
 
+关注中的话题也遵循同样的防抖间隔，不抢着接每条消息；普通群聊至多每 30 秒主动判定一次，而被点名、发来新图片及正在关注的互动不受这道限频影响。判定期间群里来了新话，就让下一批重新判断，不沿用旧分数。本机运行配置额外把普通开口门槛从默认 60 提到 70。
+
+判定只读最近 12 条消息，发言仍读配置的 `context_turns`（默认 20 条）；短窗口让高频但不打算开口的判定请求更轻。DeepSeek 会自动缓存重复的输入**前缀**：两种请求都把固定人设、行为说明放在系统消息前部；发言时把相对稳定的本人资料置于实时状态和群聊记录之前。不会为凑缓存塞重复文案；时间、现场、发言样本仍按最新内容提供，不能保证每轮全部命中。DeepSeek 返回的 `prompt_cache_hit_tokens` 与 `prompt_cache_miss_tokens` 可以用来观察实际命中情况。
+
 ## 门槛是怎么算的
 
 门槛每轮由六笔加减算出，最后夹在 1–100 之间：
@@ -49,13 +53,13 @@
 
 DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00 定为高峰，其余时间（午休、傍晚、整夜、整个周末）都是空闲时段，价格是高峰的一半。搭话是这个仓库里唯一无人触发、跟着群消息频率自动运行的付费功能，时段选择直接影响费用：放在空闲时段费用减半，而群里最热闹的晚上本来就在空闲时段。
 
-**这一段只对 DeepSeek 的模型生效。** 峰谷价是它一家的事：判定与发言两个模型都不走 `[oai.providers.deepseek]`（默认的小米 MiMo 就是这样）时，全天一个价，挑时段没有意义，这一整段让路——判定与发言照常跑满全天，`[ambient.peak]` 怎么配都不影响。两个模型里但凡有一个还在 DeepSeek 上，这一轮就仍有一半的钱可省，休眠照旧。换回 DeepSeek 那天不必改配置，这张表立刻重新生效。
+**这一段只对 DeepSeek 的模型生效。** 峰谷价是它一家的事：判定与发言两个模型都不走 `[oai.providers.deepseek]`（例如都改用小米 MiMo）时，全天一个价，挑时段没有意义，这一整段让路——判定与发言照常跑满全天，`[ambient.peak]` 怎么配都不影响。两个模型里但凡有一个还在 DeepSeek 上，休眠照旧。换回 DeepSeek 时无需改作息配置。
 
 `[ambient.peak]` 决定高峰时段的行为：
 
 | `mode` | 高峰时段的行为 |
 | --- | --- |
-| `sleep`（默认） | 睡着，但仍会偶尔接一句：不跟着消息频率一直判定，只隔 `doze_gate_seconds` 看一眼；被 @ / 引用 / 戳一戳时立刻醒 |
+| `sleep`（默认） | 睡着，默认不主动判定或插话；若设置了非零 `doze_gate_seconds`，才隔一段时间看一眼；被 @ / 引用 / 戳一戳时立刻醒 |
 | `pause` | 一句话都不说，零调用 |
 | `normal` | 不理会时段，照常 |
 
@@ -63,12 +67,14 @@ DeepSeek 官方接口把北京时间周一至周五 9:00–12:00、14:00–18:00
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `doze_gate_seconds` | `300` | 两次主动判定之间的最短间隔（秒）。判定是最频繁的那次调用，这条把它压成「隔一会儿看一眼」；写 0 表示完全睡着，只有被点名才醒，其余夹到 30–3600 秒 |
+| `doze_gate_seconds` | `0` | 0 表示高峰时不主动判定，只有被点名或 `/搭话` 才醒；想让它偶尔主动接话可设非零值，夹到 30–3600 秒 |
 | `doze_reply_limit` | `2` | 每小时最多自主开口几次（不含被点名与搭话指令）。判定便宜、开口贵，这条给真正花钱的发言一个硬上限；写 0 表示不额外限制 |
+
+默认在工作时段不主动打扰群聊，但被点名或收到 `/搭话` 仍会回应。此实例的本机配置也采用这种设置。
 
 睡着时醒来的那一轮，无论自主接话还是被点名，都换上最省的一份上下文：不看图、上下文条数减半、最多 2 条消息、不绘图、不联网、只查一次旧账。最坏情况下高峰时段的搭话费用因此不超过「每分钟一次判定、每小时两句发言」。
 
-`windows` 是 `HH:MM-HH:MM` 的列表，按本机时间，可以跨零点。`weekdays` 是算作高峰的星期几（1=周一 … 7=周日，留空等于每天）。写坏的时段当作不存在，不去猜测它的含义。定价规则会变化，所以时段写在配置里：
+`windows` 是 `HH:MM-HH:MM` 的列表，按北京时间（UTC+8），可以跨零点，不受服务器本机时区影响。`weekdays` 是算作高峰的星期几（1=周一 … 7=周日，留空等于每天）。写坏的时段当作不存在，不去猜测它的含义。定价规则会变化，所以时段写在配置里：
 
 ```text
 /ctl show ambient peak
@@ -346,18 +352,18 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 由 `ctl.admins` 中的全局管理员向机器人发送以下指令，私聊、已接入的群聊与本机控制台均可。发言模型影响所有已启用搭话的群：
 
 ```text
-/ctl set ambient reply_model mimo/mimo-v2.6-flash
+/ctl set ambient reply_model deepseek/deepseek-flash
 /ctl show ambient reply_model
 ```
 
-`mimo` 是 `[oai.providers]` 里配置好的供应商名，换其他模型时写该表里有的 `供应商/模型`（如 `deepseek/deepseek-flash`、`apilio/gemini-3.8-flash`）。判定模型同样写 `供应商/模型`，由 acumen 按 `[oai.providers]` 取该供应商的接口与密钥：
+`deepseek` 是 `[oai.providers]` 里配置好的供应商名，换其他模型时写该表里有的 `供应商/模型`（如 `mimo/mimo-v2.6-flash`、`apilio/gemini-3.8-flash`）。判定模型同样写 `供应商/模型`，由 acumen 按 `[oai.providers]` 取该供应商的接口与密钥：
 
 ```text
-/ctl set ambient gate_model mimo/mimo-v2.6-flash
+/ctl set ambient gate_model deepseek/deepseek-flash
 /ctl show ambient gate_model
 ```
 
-默认判定与发言统一使用小米 MiMo 的 `mimo-v2.6-flash`（原生多模态，能吃图、能调工具）。判定与发言都打 `[oai.providers.mimo]` 的接口，人格、上下文与聊天工具不变，发言端保留 `thinking = "low"`。不带供应商前缀的模型仍走 oai 默认接口。**换贵的模型不改变发言质量**：拿真实群聊记录回放过 Claude / Gemini 的快档，质量与便宜档同档，「人机感」另有来源（该长该短的判据、一句长文该拆没拆）。默认留在便宜这一档，要换照上面的指令改即可。指令保存到配置并在下一轮读取，无需重启，已经开始的请求仍可能使用旧模型。已有配置不会随仓库默认值更新而自动替换，升级实例请执行上述指令。这些设置只管理群聊搭话，与普通 oai 智能体及 Agent 房间的默认模型无关。
+默认判定与发言统一使用 DeepSeek 官方 V4.1 Flash（API 模型名 `deepseek-flash`，支持图片与工具）；两次调用都走 `[oai.providers.deepseek]`，发言端保留 `thinking = "low"`。不带供应商前缀的模型仍走 oai 默认接口。判定之后如有新群消息，旧分数不会用来决定要不要接新话题，留待下一批重新判断。已有配置不会随仓库默认值更新而自动替换，升级实例请执行上述指令；保存后下一轮生效，无需重启。这些设置只管理群聊搭话，与普通 oai 智能体及 Agent 房间的默认模型无关。
 
 换供应商还会牵动上面那张计价时段表：只有模型名带 `deepseek/` 前缀时才按峰谷作息（见[跟着计价时段作息](#跟着计价时段作息)），换成别家就是全天一个价。
 
@@ -388,9 +394,9 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 | `enabled` | `false` | 总开关 |
 | `groups` | `[]` | 允许搭话的群号 |
 | `management_groups` | `[]` | 开放人格群管理的群号，还须具有实际 QQ 权限；运行时移除立即阻止后续管理动作 |
-| `gate_model` | `mimo/mimo-v2.6-flash` | 判定模型；`供应商/模型` 按 `[oai.providers]` 取接口，不带前缀走 oai 默认接口 |
+| `gate_model` | `deepseek/deepseek-flash` | 判定模型；`供应商/模型` 按 `[oai.providers]` 取接口，不带前缀走 oai 默认接口 |
 | `gate_persona` | 浓缩画像 | 判定读的兴趣画像，留空则回退完整人设 |
-| `reply_model` | `mimo/mimo-v2.6-flash` | 发言模型 |
+| `reply_model` | `deepseek/deepseek-flash` | 发言模型 |
 | `thinking` | `low` | 发言模型思考强度 |
 | `temperature` | `1.3` | 发言模型采样温度；不写这一项交给接口默认值。判定模型不受影响，它要的是分数稳 |
 | `tools` | `read,write,bash` | 本地工具白名单（bash/read/write/edit/glob/grep）；本轮按开关自动附加 satori 系列工具。写错的名字会被静默忽略 |
@@ -403,8 +409,9 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 | `silence_relief_cap` | `0` | 可选：门槛降低上限 |
 | `context_turns` | `20` | 最近消息数，限制在 1–80 |
 | `context_images` | `2` | 最新图片数；0 关闭 |
-| `debounce_seconds` | `3` | 普通消息合并等待；关注时至多 1 秒 |
+| `debounce_seconds` | `3` | 消息合并等待，关注时也一样 |
 | `max_pending_seconds` | `12` | 持续有消息时最多等待时间 |
+| `gate_interval_seconds` | `30` | 普通群聊主动判定的最短间隔；点名、发图与关注中的互动不受限；设 0 取消限频 |
 | `cooldown_seconds` | `90` | 两次主动开口之间的时间下限，窗口内按 `cooldown_penalty` 抬价；0 关闭这笔 |
 | `cooldown_penalty` | `25` | 冷却窗口内门槛上调的满额，随时间线性退到窗口结束的 0 |
 | `max_per_hour` | `8` | 每群每小时的目标发言轮数；超出后每轮再加 `budget_penalty`，0 关闭这笔 |
@@ -417,10 +424,10 @@ $ python scripts/mine-voice.py --uid <号主 QQ> --days 0 --shape
 | `memo_budget` | `3` | 每轮最多写几条记忆；0 关闭 `satori_memo` |
 | `search_enabled` | `true` | 发言时是否联网；后端与房间共用 `[oai.search]` |
 | `search_budget` | `3` | 每轮最多联网几次（搜索与抓取合并）；0 关闭 `web_search` / `web_fetch` |
-| `peak.mode` | `sleep` | 计价高峰时段的行为：`sleep` 睡着但偶尔接一句，`pause` 完全不出声，`normal` 不理会时段。两个模型都不走 DeepSeek 时整段让路 |
-| `peak.windows` | `["09:00-12:00", "14:00-18:00"]` | 高峰时段，本机时间，可跨零点 |
+| `peak.mode` | `sleep` | 计价高峰时段的行为：`sleep` 默认只在被叫时醒，`pause` 完全不出声，`normal` 不理会时段。两个模型都不走 DeepSeek 时整段让路 |
+| `peak.windows` | `["09:00-12:00", "14:00-18:00"]` | 高峰时段，北京时间，可跨零点 |
 | `peak.weekdays` | `[1,2,3,4,5]` | 算作高峰的星期几，1=周一；留空等于每天 |
-| `peak.doze_gate_seconds` | `300` | 睡着时两次主动判定之间的最短间隔（秒）；写 0 只有被点名才醒 |
+| `peak.doze_gate_seconds` | `0` | 睡着时两次主动判定之间的最短间隔（秒）；写 0 只有被点名才醒 |
 | `peak.doze_reply_limit` | `2` | 睡着时每小时最多自主开口几次；0 表示不额外限制 |
 | `messages_budget` | `3` | 一轮最多发送消息数，限制在 1–5 |
 | `split_chars` | `60` | 一条消息大约多少字就该分段；超过约一条半时按断句切成几条依次发出，总数仍受 `messages_budget` 约束；0 关闭 |

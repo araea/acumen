@@ -115,12 +115,12 @@ pub(crate) struct AmbientConfig {
     /// 允许人格执行群管理的群；还须具备 QQ 对应权限。
     pub management_groups: Vec<i64>,
     /// 判定模型：便宜、快、能看图。写 `供应商/模型` 时按 `[oai.providers]` 取接口，
-    /// 默认走小米 MiMo。
+    /// 默认走 DeepSeek 官方的 V4.1 Flash（API 模型名为 deepseek-flash）。
     pub gate_model: String,
     /// 判定用的浓缩人设画像（见 [`GATE_PERSONA`]）。判定只需知道对什么感兴趣、
     /// 避开什么、怎么接话，不需要完整写作人设；留空则回退用完整人设（更贵）。
     pub gate_persona: String,
-    /// 发言模型，写成 `供应商/模型`；默认小米 MiMo 的 `mimo-v2.6-flash`。
+    /// 发言模型，写成 `供应商/模型`；默认 DeepSeek 的 `deepseek-flash`。
     /// 试过更贵的 Claude / Gemini，实测在真实群聊里并不比便宜档更像人，人机感
     /// 另有来源（该长该短没控住），所以默认仍留在便宜这一档。
     pub reply_model: String,
@@ -163,6 +163,8 @@ pub(crate) struct AmbientConfig {
     pub debounce_seconds: u64,
     /// 从第一条消息算起最多等多久就必须判定一次。
     pub max_pending_seconds: u64,
+    /// 普通话题两次主动判定的最短间隔；被叫到、发图与关注中的对话不受限。
+    pub gate_interval_seconds: u64,
     /// 两次主动开口之间的时间下限；0 关闭。
     ///
     /// 从前这里是一道墙——冷却没走完就一句话都不说，被点名才绕得过。现在它是一笔
@@ -264,9 +266,9 @@ impl Default for AmbientConfig {
             enabled: false,
             groups: Vec::new(),
             management_groups: Vec::new(),
-            gate_model: "mimo/mimo-v2.6-flash".to_string(),
+            gate_model: "deepseek/deepseek-flash".to_string(),
             gate_persona: GATE_PERSONA.to_string(),
-            reply_model: "mimo/mimo-v2.6-flash".to_string(),
+            reply_model: "deepseek/deepseek-flash".to_string(),
             thinking: "low".to_string(),
             temperature: Some(1.3),
             tools: "read,write,bash".to_string(),
@@ -280,6 +282,7 @@ impl Default for AmbientConfig {
             context_images: 2,
             debounce_seconds: 3,
             max_pending_seconds: 12,
+            gate_interval_seconds: 30,
             cooldown_seconds: 90,
             cooldown_penalty: 25,
             focus_max_seconds: 180,
@@ -333,6 +336,10 @@ impl AmbientConfig {
 
     fn max_wait(&self) -> Duration {
         Duration::from_secs(self.max_pending_seconds.clamp(self.debounce().as_secs(), 600))
+    }
+
+    fn gate_interval(&self) -> Duration {
+        Duration::from_secs(self.gate_interval_seconds.min(3_600))
     }
 
     fn cooldown(&self) -> Duration {
@@ -427,7 +434,7 @@ impl AmbientConfig {
         self.peak_stance_at(chrono::Local::now())
     }
 
-    fn peak_stance_at(&self, at: chrono::DateTime<chrono::Local>) -> peak::Stance {
+    fn peak_stance_at<Tz: chrono::TimeZone>(&self, at: chrono::DateTime<Tz>) -> peak::Stance {
         if !self.peak_applies() {
             return peak::Stance::Awake;
         }
@@ -985,6 +992,17 @@ struct Worker {
     group: i64,
     armed: bool,
 }
+
+fn immediate_gate(turns: &[Turn], mentioned: bool, summoned: bool, focused: bool) -> bool {
+    mentioned
+        || summoned
+        || focused
+        || turns
+            .iter()
+            .rev()
+            .find(|turn| !turn.from_me)
+            .is_some_and(|turn| turn.call.named_me || !turn.images.is_empty())
+}
 impl Drop for Worker {
     fn drop(&mut self) {
         if self.armed {
@@ -1012,14 +1030,12 @@ async fn consider(
         let deadline = Instant::now() + config.max_wait();
         loop {
             let before = window::with_group(group, |state| state.seq);
-            let delay = window::with_group(group, |state| {
-                if state.active_focus().is_some() {
-                    config.debounce().min(Duration::from_secs(1))
-                } else {
-                    config.debounce()
-                }
-            });
-            tokio::time::sleep(delay.min(deadline.saturating_duration_since(Instant::now()))).await;
+            tokio::time::sleep(
+                config
+                    .debounce()
+                    .min(deadline.saturating_duration_since(Instant::now())),
+            )
+            .await;
             let after = window::with_group(group, |state| state.seq);
             if before == after || Instant::now() >= deadline {
                 break;
@@ -1108,9 +1124,6 @@ async fn consider_batch(
     if turns.is_empty() {
         return Ok(());
     }
-    let persona = tokio::fs::read_to_string(persona_path(base))
-        .await
-        .unwrap_or_else(|_| PERSONA.to_string());
     // 计价高峰时段：价格翻倍，但也不必整段不出声。要么彻底睡着（`pause`），要么
     // 压成偶尔醒一次——不跟着消息频率一直判定，只隔 `doze_gate_seconds` 看一眼，
     // 每小时自主开口不超过 `doze_reply_limit` 次；被点名或搭话指令则立刻醒，
@@ -1151,6 +1164,16 @@ async fn consider_batch(
         .len()
         .saturating_sub(config.context_turns.clamp(1, 80))..];
 
+    if !immediate_gate(turns, mentioned, summoned, focused)
+        && !window::with_group(group, |state| state.allow_passive_gate(config.gate_interval()))
+    {
+        return Ok(());
+    }
+
+    let persona = tokio::fs::read_to_string(persona_path(base))
+        .await
+        .unwrap_or_else(|_| PERSONA.to_string());
+
     // 上一次开口是被接住了还是掉在地上，只在这里结算一次。
     if config.mood_enabled
         && let Some(gap) = window::with_group(group, |state| state.take_feedback())
@@ -1164,6 +1187,9 @@ async fn consider_batch(
     // 「我在这个群里是谁」在判定之前就要在手上：判定要认出「有人在叫我」，而群里
     // 叫人用的是名片上那几个字。资料按小时缓存，所以这一句绝大多数时候不出网。
     identity::refresh(ctx, writer, avatar_endpoint(ctx, mgr, config).await.as_ref(), group).await;
+    if !mentioned && !summoned && !current(ctx, group, *seq) {
+        return Ok(());
+    }
     let scene = Scene::build(group, config, turns, rhythm.to_string());
     if summoned {
         // 指令是人按下的：判定那一步整个不发生，这一批直接进第三步。
@@ -1193,6 +1219,9 @@ async fn consider_batch(
         }
         info!(target: LOG_TARGET, "群 {group} 交给人格决定（{}/{}，续聊={}，{}）",
             verdict.score, threshold, verdict.continuation, verdict.reason);
+        if !current(ctx, group, *seq) {
+            return Ok(());
+        }
     } else {
         info!(target: LOG_TARGET, "群 {group} 被点名，由人格决定是否回应");
     }
@@ -1539,8 +1568,9 @@ mod tests {
     #[test]
     fn default_models_match_but_explicit_overrides_are_preserved() {
         let config: AmbientConfig = toml::from_str("").unwrap();
-        assert_eq!(config.gate_model, "mimo/mimo-v2.6-flash");
-        assert_eq!(config.reply_model, "mimo/mimo-v2.6-flash");
+        assert_eq!(config.gate_model, "deepseek/deepseek-flash");
+        assert_eq!(config.reply_model, "deepseek/deepseek-flash");
+        assert_eq!(config.gate_interval(), Duration::from_secs(30));
         // 发言温度默认比接口默认松一档，判定仍是接口默认。
         assert_eq!(config.temperature, Some(1.3));
         // 判定人设默认是浓缩画像，比完整人设便宜得多，且不会被空值覆盖。
@@ -1556,6 +1586,21 @@ mod tests {
         // 显式清空 gate_persona 时判定回退用完整人设。
         let no_gate_persona: AmbientConfig = toml::from_str("gate_persona = ''").unwrap();
         assert!(no_gate_persona.gate_persona.trim().is_empty());
+    }
+
+    #[test]
+    fn calls_and_new_images_skip_the_ordinary_gate_interval() {
+        let turn = Turn::default();
+        assert!(!immediate_gate(&[turn.clone()], false, false, false));
+        assert!(immediate_gate(&[turn.clone()], true, false, false));
+        assert!(immediate_gate(&[turn.clone()], false, true, false));
+        assert!(immediate_gate(&[turn.clone()], false, false, true));
+        let mut named = turn.clone();
+        named.call.named_me = true;
+        assert!(immediate_gate(&[named], false, false, false));
+        let mut image = turn;
+        image.images.push("image.png".into());
+        assert!(immediate_gate(&[image], false, false, false));
     }
 
     /// 人设是每轮都要付一次钱的东西，而它天然会长：每发现一种不满意的说法，
@@ -1760,18 +1805,27 @@ mod tests {
     fn peak_hours_only_apply_while_a_deepseek_model_is_in_the_round() {
         use chrono::TimeZone as _;
         // 2026-09-10 是周四：上午十点在 DeepSeek 的高峰里，晚八点在空闲时段。
-        let peak_time = chrono::Local
+        let beijing = chrono::FixedOffset::east_opt(8 * 3_600).unwrap();
+        let peak_time = beijing
             .with_ymd_and_hms(2026, 9, 10, 10, 0, 0)
             .single()
             .expect("本机时区里这个时刻存在");
-        let off_peak = chrono::Local
+        let off_peak = beijing
             .with_ymd_and_hms(2026, 9, 10, 20, 0, 0)
             .single()
             .expect("本机时区里这个时刻存在");
 
         let config = AmbientConfig::default();
-        assert!(!config.peak_applies());
-        assert_eq!(config.peak_stance_at(peak_time), peak::Stance::Awake);
+        assert!(config.peak_applies());
+        assert_eq!(config.peak_stance_at(peak_time), peak::Stance::Dozing);
+
+        let other = AmbientConfig {
+            gate_model: "mimo/mimo-v2.6-flash".to_string(),
+            reply_model: "mimo/mimo-v2.6-flash".to_string(),
+            ..AmbientConfig::default()
+        };
+        assert!(!other.peak_applies());
+        assert_eq!(other.peak_stance_at(peak_time), peak::Stance::Awake);
 
         // 判定留在 DeepSeek 上：判定那一次调用仍按峰谷计价。
         let mixed = AmbientConfig {
@@ -1810,9 +1864,7 @@ mod tests {
         // 其余设置原样带过去。
         assert_eq!(frugal.reply_model, config.reply_model);
         assert_eq!(frugal.groups, config.groups);
-        // 但睡着不等于彻底不出声：每五分钟看一眼、每小时最多自己开两次口，
-        // 高峰时段的费用因此有一条硬上限。
-        assert_eq!(config.peak.doze_gate(), Duration::from_secs(300));
+        assert_eq!(config.peak.doze_gate(), Duration::ZERO);
         assert_eq!(config.peak.doze_reply_limit, 2);
         // 旧配置里没有这张表也能读出来。
         let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();

@@ -67,6 +67,8 @@ const RUBRIC: &str = "\
 除非新消息确实是冲着他来的（叫他、回应他刚说的话），那时候照常给分。
 同一个话题他已经说过几轮，分数就一轮比一轮低；群里同时聊着好几摊事时，他多半只挑
 其中一摊接一句，剩下的听着——每摊都插一句的人，在一屋子熟人里就叫吵。
+最新一句如果是群友之间的追问、已经有人接住的问题，按旁观来估；就算他会答，
+也不必抢别人的话。隔了好几分钟的梗也不必补一句，分数跟着现场的新鲜程度走。
 
 「你自己」写着群友这会儿看到的他：名片上那个名字、头衔、进群多久，还有他的头像。
 群里叫人用的是那个名字，不是 QQ 号——记录上的〔叫了你的名字〕就是有人直接喊了他，
@@ -81,6 +83,12 @@ continuation 仅在当前关注仍有效、且最新消息确实延续那个话�
 开不开口是他的事。
 
 只输出 JSON：{\"score\": 0-100, \"reason\": \"十五字以内\", \"continuation\": false}";
+
+const GATE_TURNS: usize = 12;
+
+fn recent_turns(turns: &[Turn]) -> &[Turn] {
+    &turns[turns.len().saturating_sub(GATE_TURNS)..]
+}
 
 /// 读最近的聊天记录，给出开口意愿分。
 #[allow(clippy::too_many_arguments)]
@@ -112,6 +120,7 @@ pub(crate) async fn judge(
         content: format!("{rubric}\n\n实际人格画像：\n{gate_persona}"),
     }];
 
+    let turns = recent_turns(turns);
     let mut parts = vec![UserContent::Text(Text::new(format!(
         "{}最近的群聊：\n{}",
         scene.brief(),
@@ -208,6 +217,21 @@ fn parse_verdict(raw: &str) -> anyhow::Result<Verdict> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gate_reads_the_latest_twelve_turns() {
+        let turns: Vec<_> = (0..20)
+            .map(|index| Turn {
+                text: index.to_string(),
+                ..Turn::default()
+            })
+            .collect();
+        let recent = recent_turns(&turns);
+        assert_eq!(recent.len(), 12);
+        assert_eq!(recent.first().unwrap().text, "8");
+        assert_eq!(recent.last().unwrap().text, "19");
+        assert_eq!(recent_turns(&turns[..5]).len(), 5);
+    }
 
     /// 判定说明也只写「他会怎么估」，不写一串禁令。
     #[test]
