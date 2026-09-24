@@ -1031,7 +1031,7 @@ pub async fn dispatch_packet(
     if !created.is_empty() {
         plugins::repeater::confirm_send(ctx, packet);
     }
-    let ids = created
+    let ids: Vec<String> = created
         .iter()
         .map(|message| raw_id(message.get("id")))
         .filter(|id| !id.is_empty())
@@ -1039,7 +1039,8 @@ pub async fn dispatch_packet(
     *packet
         .receipt_message_ids
         .lock()
-        .map_err(|_| "发送回执锁已损坏")? = ids;
+        .map_err(|_| "发送回执锁已损坏")? = ids.clone();
+    plugins::recall::record_sent(ctx, writer, packet, &ids).await;
     Ok(())
 }
 

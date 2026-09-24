@@ -85,7 +85,7 @@ register_plugins!(
     recall {
         display_name: "消息撤回",
         section: "message",
-        summary: "撤回引用的消息（需引用后发送）",
+        summary: "引用后发送撤回指令；用户撤回触发消息时自动撤回对应回复（可关闭）",
         commands: cmds![("撤回", "引用要撤回的消息后发送")]
     },
     echo {
