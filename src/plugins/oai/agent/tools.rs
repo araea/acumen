@@ -17,6 +17,7 @@ const LOCAL: &[&str] = &["bash", "read", "write", "edit", "glob", "grep"];
 const CHAT: &[&str] = &[
     "satori_context",
     "satori_read",
+    "satori_observe",
     "satori_action",
     "satori_draw",
     "satori_music",
@@ -45,7 +46,8 @@ pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec
         None => {
             let mut all = LOCAL.to_vec();
             if chat {
-                all.extend_from_slice(CHAT);
+                // 房间的默认工具集保持精简；搭话会在自己的白名单中显式加入 observe。
+                all.extend(CHAT.iter().copied().filter(|name| *name != "satori_observe"));
             }
             if web {
                 all.extend_from_slice(WEB);
@@ -480,6 +482,13 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                 "required": ["message_id"]
             }),
         ),
+        "satori_observe" => (
+            "仅搭话：按需查看本群的群资料、眼前群友的名片或少量精华；不是批量查人。QQ 内核查询可能不回调，失败就不要重试；群聊现场仍以 satori_context 为准。每轮最多四次。",
+            json!({"type":"object","properties":{
+                "kind":{"type":"string","enum":["group","member","member_card","group_card","essence","title_display","honor_display"]},
+                "user_id":{"type":"string","description":"仅 member/member_card 需要，必须是当前群聊窗口出现过的 QQ 号或自己"}
+            },"required":["kind"],"additionalProperties":false}),
+        ),
         "satori_action" => (
             "立即执行一次真实 QQ 动作并返回回执。先看一眼上下文；send.parts 的 text 原样保留空格与换行，想怎么排都行。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，群里会看到两次）。做完最终输出 [silent] 即可，群友已经看见了。",
             json!({
@@ -697,7 +706,9 @@ mod tests {
             .into_iter()
             .map(|t| t.name)
             .collect();
-        assert_eq!(with_chat.len(), LOCAL.len() + CHAT.len());
+        assert_eq!(with_chat.len(), LOCAL.len() + CHAT.len() - 1);
+        assert!(!with_chat.contains(&"satori_observe".to_string()));
+        assert_eq!(definitions(Some("satori_observe"), true, false).len(), 1);
 
         // 白名单按写法返回，重复项去重。
         let picked: Vec<String> = definitions(Some("read, bash ,read,nope"), false, false)

@@ -62,6 +62,21 @@ pub(crate) enum Scene {
     Channel,
 }
 
+/// 搭话的只读探查白名单。参数全部由本群上下文构造，模型不能传入任意方法名、群号或分页游标。
+fn observation(kind: &str, group: i64, user_id: &str) -> Result<(&'static str, Value)> {
+    let guild = group.to_string();
+    Ok(match kind {
+        "group" => ("guild.get", json!({"guild_id":guild})),
+        "member" => ("guild.member.get", json!({"guild_id":guild,"user_id":user_id})),
+        "member_card" => ("internal/group_member_card", json!({"guild_id":guild,"user_id":user_id})),
+        "group_card" => ("internal/group_profile_card", json!({"guild_id":guild,"fetch_mode":"KFROMCACHE"})),
+        "essence" => ("internal/group_essence_list", json!({"guild_id":guild,"page_start":0,"page_limit":5})),
+        "title_display" => ("internal/title_display", json!({"guild_id":guild})),
+        "honor_display" => ("internal/honor_display", json!({"guild_id":guild})),
+        _ => anyhow::bail!("未知环境探查类型：{kind}"),
+    })
+}
+
 /// 平台明确拒绝过的能力记多久。
 ///
 /// 从前这份记账只活在一轮之内，于是每一轮都要再花掉一次动作额度，去按同一个
@@ -203,6 +218,7 @@ struct Session {
     music: usize,
     videos: usize,
     memos: usize,
+    observations: usize,
     spoke: bool,
     read_marked: bool,
     started: Instant,
@@ -259,6 +275,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         music: 0,
         videos: 0,
         memos: 0,
+        observations: 0,
         spoke: false,
         read_marked: false,
         started: Instant::now(),
@@ -468,6 +485,8 @@ impl Session {
                     "state":persona.get("state").and_then(Value::as_str).unwrap_or(""),
                     "remember":persona.get("remember").and_then(Value::as_str).unwrap_or(""),
                     "capabilities":capabilities,"rhythm":rhythm,"messages":turns,"media":media,
+                    "observations_remaining":if self.scene == Scene::Window {4usize.saturating_sub(self.observations)} else {0},
+                    "environment_lookups":if self.scene == Scene::Window {json!(["group","member","member_card","group_card","essence","title_display","honor_display"])} else {json!([])},
                     "writes_remaining":self.config.actions_budget.clamp(1,12).saturating_sub(self.writes),
                     "messages_remaining":self.config.messages_budget.clamp(1,5).saturating_sub(self.messages),
                     "draws_remaining":self.config.draw_budget.clamp(0,8).saturating_sub(self.draws),
@@ -523,6 +542,33 @@ impl Session {
                         .await?;
                     Ok(message)
                 }
+            }
+            "observe" => {
+                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.scene == Scene::Window, "环境探查只对搭话开放；房间使用现有上下文和精确消息读取");
+                ensure!(self.ctx.bot.adapter == "satori-qq", "环境探查需要 satori-qq");
+                ensure!(self.observations < 4, "本轮环境探查次数已用完");
+                let kind = request["kind"].as_str().unwrap_or("");
+                let user_id = request["user_id"].as_str().unwrap_or("");
+                // 只允许查本群窗口里真实出现过的人，不能把 QQ 号当成任意资料查询入口。
+                if matches!(kind, "member" | "member_card") {
+                    ensure!(user_id.parse::<i64>().is_ok_and(|id| id > 0), "需要有效的群成员 QQ 号");
+                    let known = window::with_group(self.group, |state| state.recent(80).iter().any(|t| t.user_id.to_string() == user_id));
+                    ensure!(known || user_id == self.ctx.bot.login_user.get().id, "只可探查当前群聊中出现的成员或自己");
+                }
+                let (method, params) = observation(kind, self.group, user_id)?;
+                if method.starts_with("internal/") {
+                    if self.capabilities.is_null() {
+                        self.capabilities = self.describe_capabilities().await;
+                    }
+                    let name = method.trim_start_matches("internal/");
+                    ensure!(self.capabilities["extension_actions"].as_array().is_some_and(|a| a.iter().any(|v| v == name)), "实现端未声明 {name} 能力");
+                }
+                self.observations += 1; // 失败也计入，避免失效的内核接口被反复探测。
+                let data = self.rpc(method, params).await?;
+                let text = serde_json::to_string(&data)?;
+                ensure!(text.len() <= 16_384, "平台返回过大，停止展示；不要重复查询");
+                Ok(json!({"kind":kind,"data":data,"source":method,"note":"QQ 内核资料可能滞后；返回值不等于实时现场，以回执和群聊记录为准"}))
             }
             "draw" => {
                 ensure!(self.enabled(), "本群的群聊功能已停用");
@@ -1792,6 +1838,20 @@ fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Pa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ambient_observation_never_accepts_an_arbitrary_rpc_or_group() {
+        for kind in ["group", "member", "member_card", "group_card", "essence", "title_display", "honor_display"] {
+            let (method, params) = observation(kind, 12345, "67890").unwrap();
+            assert!(method == "guild.get" || method == "guild.member.get" || method.starts_with("internal/"));
+            assert_eq!(params["guild_id"], "12345");
+            assert!(params.get("channel_id").is_none());
+        }
+        assert!(observation("group_quit", 12345, "67890").is_err());
+        assert!(observation("mark_all_read", 12345, "67890").is_err());
+        assert_eq!(observation("essence", 12345, "").unwrap().1["page_limit"], 5);
+    }
+
     use crate::plugins::ambient::AmbientConfig;
     include!("qq_tests.rs");
 
@@ -1822,6 +1882,28 @@ mod tests {
             scene: Scene::Window,
         })
         .await
+    }
+
+    #[tokio::test]
+    async fn observation_rejects_unknown_people_and_room_before_network() {
+        let group = -8_000_333;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "observe-test").unwrap();
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let ambient = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path()).await.unwrap();
+        let r = request(&ambient, json!({"id":"probe","op":"observe","kind":"member_card","user_id":"123456789"})).await;
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(calls.lock().unwrap().is_empty());
+        let room = super::start(ChatEnv {
+            ctx: &ctx, writer: &writer, group,
+            config: crate::plugins::ambient::chat_config(&config), enabled: true,
+            require_fresh: false, scratch: dir.path(), media: dir.path(),
+            persona: None, scene: Scene::Channel,
+        }).await.unwrap();
+        let r = request(&room, json!({"id":"probe","op":"observe","kind":"group"})).await;
+        assert_eq!(r["ok"], false, "{r}");
+        assert!(calls.lock().unwrap().is_empty());
+        server.abort();
     }
 
     /// 测试里的人格：一句固定的现场，打字快到不用等。
