@@ -105,6 +105,9 @@ pub(crate) struct GroupState {
     passive_gate_at: Option<Instant>,
     /// 睡着时自主开口的时刻，用于每小时上限——判定便宜、开口贵，这条管的是后者。
     doze_spoken: VecDeque<Instant>,
+    /// Opt-in chat screenshot gag: at most once per group per cooldown window.
+    last_screenshot: Option<Instant>,
+    last_screenshot_message: i64,
 }
 
 impl GroupState {
@@ -187,6 +190,20 @@ impl GroupState {
             // 不再允许引用、转发或再次撤回这个 ID。
             turn.message_id = 0;
         }
+    }
+
+    pub(crate) fn allow_screenshot(&self, cooldown_seconds: u64) -> bool {
+        self.last_screenshot
+            .is_none_or(|at| at.elapsed() >= Duration::from_secs(cooldown_seconds.max(3600)))
+    }
+
+    pub(crate) fn mark_screenshot(&mut self, message_id: i64) {
+        self.last_screenshot = Some(Instant::now());
+        self.last_screenshot_message = message_id;
+    }
+
+    pub(crate) fn screenshot_seen(&self, message_id: i64) -> bool {
+        self.last_screenshot_message == message_id && message_id != 0
     }
 
     pub(crate) fn take_mention(&mut self) -> bool {
@@ -496,7 +513,9 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                         text.push_str(&crate::adapters::satori::forward::mface_label(
                             data.get_str("summary").unwrap_or(""),
                         ));
-                    } else if crate::adapters::satori::forward::is_sticker_picture(data.get("sub_type")) {
+                    } else if crate::adapters::satori::forward::is_sticker_picture(
+                        data.get("sub_type"),
+                    ) {
                         text.push_str("[表情包]");
                     } else {
                         text.push_str("[图片]");
@@ -524,13 +543,15 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                 "json" => {
                     // QQ 的分享/小程序卡是 JSON 段；若只留在原始 elements，搭话与
                     // agent 房间的窗口都看不到卡片。落地地址复用指令侧已核过的提取规则。
-                    let payload = data.get_str("data").or_else(|| data.get_str("content"))
+                    let payload = data
+                        .get_str("data")
+                        .or_else(|| data.get_str("content"))
                         .unwrap_or("");
                     text.push_str("[卡片");
-                    if let Some(url) = crate::command::card_target_url(payload)
-                        .filter(|url| (url.starts_with("http://") || url.starts_with("https://"))
-                            && url.len() <= 2048)
-                    {
+                    if let Some(url) = crate::command::card_target_url(payload).filter(|url| {
+                        (url.starts_with("http://") || url.starts_with("https://"))
+                            && url.len() <= 2048
+                    }) {
                         text.push_str(": ");
                         text.push_str(&url);
                     }
@@ -614,7 +635,13 @@ pub(crate) fn turn_from_platform(
                 .map(str::to_string)
         })
         .collect();
-    let me = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or_default();
+    let me = ctx
+        .bot
+        .login_user
+        .get()
+        .id
+        .parse::<i64>()
+        .unwrap_or_default();
     Some(Turn {
         user_id,
         name,
@@ -762,7 +789,10 @@ mod tests {
             ..turn("[戳一戳：42 戳了 10000]", false)
         };
         let text = transcript(&[quoted, poked]);
-        assert!(text.contains("〔引用了你的消息〕〔引用 老张：这破依赖装了半天〕"), "{text}");
+        assert!(
+            text.contains("〔引用了你的消息〕〔引用 老张：这破依赖装了半天〕"),
+            "{text}"
+        );
         assert!(text.contains("〔戳了你〕"), "{text}");
         assert!(!text.contains("〔@了你〕"), "{text}");
     }
@@ -783,7 +813,10 @@ mod tests {
             state.quote_of(88),
             Some((false, "这破依赖装了半天 一直报错".to_string()))
         );
-        assert_eq!(state.quote_of(99), Some((true, "别用那个版本了".to_string())));
+        assert_eq!(
+            state.quote_of(99),
+            Some((true, "别用那个版本了".to_string()))
+        );
         // 引用到窗口外或没引用，都解析不出来。
         assert_eq!(state.quote_of(1_000), None);
         assert_eq!(state.quote_of(0), None);
@@ -922,11 +955,18 @@ mod tests {
             ]
         }));
         let turn = turn_from(&MessageEvent(&raw), 10000);
-        assert!(turn.text.contains("**公告** 今天更新 按钮: [查看] [稍后]"), "{}", turn.text);
-        assert!(turn.text.contains("[卡片: https://example.com/release]"), "{}", turn.text);
+        assert!(
+            turn.text.contains("**公告** 今天更新 按钮: [查看] [稍后]"),
+            "{}",
+            turn.text
+        );
+        assert!(
+            turn.text.contains("[卡片: https://example.com/release]"),
+            "{}",
+            turn.text
+        );
         assert!(transcript(&[turn]).contains("https://example.com/release"));
     }
-
 
     /// 商城表情带着自己的名字进记录：它没有图片地址，模型看不见它，只写 `[图片]`
     /// 就和截图混成一样的东西，也想不到那是一张能偷来回人的表情包。
@@ -960,7 +1000,12 @@ mod tests {
         assert_eq!(saved.images.len(), 2);
         assert!(turn.images.is_empty());
         // 与商城表情那一段原样留着，偷的时候取得到。
-        assert_eq!(crate::plugins::oai::chat::actions::sticker(&turn, 1).unwrap().type_, "mface");
+        assert_eq!(
+            crate::plugins::oai::chat::actions::sticker(&turn, 1)
+                .unwrap()
+                .type_,
+            "mface"
+        );
     }
 
     #[test]
@@ -976,7 +1021,6 @@ mod tests {
         assert!(turn.from_me);
         assert_eq!(turn.text, "[图片]");
     }
-
 
     #[test]
     fn quoting_rides_along_and_being_quoted_counts_as_being_called() {
@@ -1030,7 +1074,6 @@ mod tests {
         resolve_quote(&mut plain, |_| panic!("没有引用就不该查窗口"));
         assert!(plain.call.quote.is_empty());
     }
-
 
     #[test]
     fn a_mention_of_someone_else_is_written_the_way_the_persona_may_write_it() {

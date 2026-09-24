@@ -508,6 +508,11 @@ send_freshness_seconds = 25
 qq_typing = false
 # 回复前标记本群 QQ 已读；实验性，默认关闭。
 qq_mark_read = false
+# 被直接点名问「你是不是机器人」时，偶尔用 QQ 本群近期消息生成一张聊天记录图回应。
+# 图并不证明真人身份，图片与文字会发回原群；默认关闭，只有确认群友接受后才打开。
+screenshot_on_suspicion = false
+# 同一群至少间隔六小时，配置再小也会限制为一小时一次。
+screenshot_cooldown_seconds = 21600
 # 熟人记忆：落盘记住群里的人与旧事（data/ambient/memory/），并开放 satori_memo。
 memory_enabled = true
 # 每轮最多写几条记忆；0 关闭 satori_memo。

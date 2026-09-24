@@ -39,21 +39,14 @@ mod gate;
 mod integration_tests;
 mod mood;
 mod peak;
+mod screenshot;
 pub(crate) mod speak;
 mod voice;
 
 // 群聊能力层（看现场、查资料、动手）归内置智能体插件，搭话是它的一个人格外壳。
 use crate::plugins::oai::chat::{
-    ChatConfig, Persona,
-    attention,
-    identity,
-    memory,
-    now_context,
-    pace,
-    plain_text,
-    stickers,
-    tone,
-    vision,
+    ChatConfig, Persona, attention, identity, memory, now_context, pace, plain_text, stickers,
+    tone, vision,
     window::{self, Turn},
 };
 use speak::Called;
@@ -231,6 +224,11 @@ pub(crate) struct AmbientConfig {
     pub qq_typing: bool,
     /// 回话前在 QQ 原生内核中标记本群已读（实验性；默认关闭）。
     pub qq_mark_read: bool,
+    /// 群友直接质疑是不是机器人时，偶尔将本群最近 1-3 条消息渲染成图打趣回复。
+    /// 仅 satori-qq；图片不是身份凭据，默认关闭，避免自动转发群聊内容。
+    pub screenshot_on_suspicion: bool,
+    /// 同一群两次截图至少间隔多久（秒）；实际下限 1 小时。
+    pub screenshot_cooldown_seconds: u64,
     /// 一次发言最多拆成几条消息。
     pub messages_budget: usize,
     /// 一条消息大约多少字就该换气：超过大约一条半的长度时，把一段话在最自然的
@@ -306,6 +304,8 @@ impl Default for AmbientConfig {
             send_freshness_seconds: 25,
             qq_typing: false,
             qq_mark_read: false,
+            screenshot_on_suspicion: false,
+            screenshot_cooldown_seconds: 21_600,
             messages_budget: 3,
             split_chars: 60,
             actions_budget: 6,
@@ -343,7 +343,10 @@ impl AmbientConfig {
     }
 
     fn max_wait(&self) -> Duration {
-        Duration::from_secs(self.max_pending_seconds.clamp(self.debounce().as_secs(), 600))
+        Duration::from_secs(
+            self.max_pending_seconds
+                .clamp(self.debounce().as_secs(), 600),
+        )
     }
 
     fn gate_interval(&self) -> Duration {
@@ -500,7 +503,6 @@ impl AmbientConfig {
             ..self.swapped()
         }
     }
-
 }
 
 /// 看头像用的接口：判定模型那一份。配不出来就不看。
@@ -537,7 +539,6 @@ impl Ambient {
             avatar,
         }
     }
-
 }
 
 /// `[ambient]` 那份配置 → 能力层这一轮的额度与开关。
@@ -622,7 +623,12 @@ pub(crate) struct Scene {
 }
 
 impl Scene {
-    pub(crate) fn build(group: i64, config: &AmbientConfig, turns: &[Turn], rhythm: String) -> Self {
+    pub(crate) fn build(
+        group: i64,
+        config: &AmbientConfig,
+        turns: &[Turn],
+        rhythm: String,
+    ) -> Self {
         // 状态算一次用两处：一句给模型看的「你现在的状态」，以及挑样本的调子。
         let snapshot = config.mood_enabled.then(|| mood::snapshot(group));
         Self {
@@ -719,10 +725,7 @@ fn skills_root(base: &Path) -> PathBuf {
 /// 这一轮随身的 skill 目录清单。
 pub(crate) fn skill_dirs(base: &Path) -> Vec<PathBuf> {
     let root = skills_root(base);
-    SKILLS
-        .iter()
-        .map(|(name, _)| root.join(name))
-        .collect()
+    SKILLS.iter().map(|(name, _)| root.join(name)).collect()
 }
 
 /// 铺开人设与 skill。
@@ -1086,8 +1089,8 @@ async fn consider(
                 )
             });
         if let Err(error) = consider_batch(
-            ctx, writer, mgr, group, base, &config, &mut seq, &turns, mentioned, summoned, silent_for,
-            &rhythm, focused,
+            ctx, writer, mgr, group, base, &config, &mut seq, &turns, mentioned, summoned,
+            silent_for, &rhythm, focused,
         )
         .await
         {
@@ -1201,8 +1204,19 @@ async fn consider_batch(
         .len()
         .saturating_sub(config.context_turns.clamp(1, 80))..];
 
+    // An opt-in visual one-liner for a direct bot accusation. The renderer only reads QQ's
+    // same-group local history, and an unsuccessful render/send falls back to normal speech.
+    if screenshot::try_reply(ctx, writer, group, config, *seq, turns).await {
+        if config.mood_enabled {
+            mood::nudge(|mood, now| mood.spoke(group, now));
+        }
+        return Ok(());
+    }
+
     if !immediate_gate(turns, mentioned, summoned, focused)
-        && !window::with_group(group, |state| state.allow_passive_gate(config.gate_interval()))
+        && !window::with_group(group, |state| {
+            state.allow_passive_gate(config.gate_interval())
+        })
     {
         return Ok(());
     }
@@ -1223,7 +1237,13 @@ async fn consider_batch(
     }
     // 「我在这个群里是谁」在判定之前就要在手上：判定要认出「有人在叫我」，而群里
     // 叫人用的是名片上那几个字。资料按小时缓存，所以这一句绝大多数时候不出网。
-    identity::refresh(ctx, writer, avatar_endpoint(ctx, mgr, config).await.as_ref(), group).await;
+    identity::refresh(
+        ctx,
+        writer,
+        avatar_endpoint(ctx, mgr, config).await.as_ref(),
+        group,
+    )
+    .await;
     if !mentioned && !summoned && !current(ctx, group, *seq) {
         return Ok(());
     }
@@ -1744,7 +1764,10 @@ mod tests {
         };
         let mut data = simd_json::owned::Object::new();
         data.insert("emoji_id".into(), simd_json::owned::Value::from("296f"));
-        data.insert("emoji_package_id".into(), simd_json::owned::Value::from("241904"));
+        data.insert(
+            "emoji_package_id".into(),
+            simd_json::owned::Value::from("241904"),
+        );
         let segment = crate::message::Segment::new("mface", data);
         stickers::keep(&segment, &source, -1, "捂着嘴笑", None, 20);
 
@@ -1767,7 +1790,6 @@ mod tests {
         assert!(!scene.own.contains("捂着嘴笑"), "{}", scene.own);
         let _ = std::fs::remove_dir_all(dir);
     }
-
 
     #[test]
     fn defaults_stay_silent_until_a_group_is_named() {
@@ -2018,8 +2040,6 @@ mod tests {
         assert_eq!(config.gate_model, AmbientConfig::default().gate_model);
     }
 
-
-
     #[test]
     fn platform_events_preserve_targets_without_inventing_reaction_authors() {
         let poke = event(
@@ -2240,7 +2260,10 @@ mod tests {
             energy: 0.9,
             warmth: 0.9,
         };
-        assert!(config.threshold(tired, Pressure::default()) > config.threshold(lively, Pressure::default()));
+        assert!(
+            config.threshold(tired, Pressure::default())
+                > config.threshold(lively, Pressure::default())
+        );
         assert!(config.pace(tired).typing_cpm < config.pace(lively).typing_cpm);
         assert!(config.pace(tired).think_seconds > config.pace(lively).think_seconds);
         // 门槛仍留在有效区间里，不会被状态推到 0 或爆表。
