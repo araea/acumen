@@ -526,6 +526,17 @@ mod tests {
     }
 
     #[test]
+    fn malformed_xml_call_cannot_turn_into_two_group_messages() {
+        let raw = "<parameter name=\"request\">{\"action\":\"send\",\"parts\":[{\"type\":\"text\"\n\"text\":\"1.7 一度 这是服务区吧\"}],\"reply_to\":\"7689108452383409443\"}</parameter>";
+        assert!(matches!(parse(raw, 3, 14), Speech::Silent));
+        assert!(text_segments(raw).0.is_empty());
+        let good = "<parameter name=\"request\">{\"action\":\"send\",\"parts\":[{\"type\":\"text\",\"text\":\"1.7 一度 这是服务区吧\"}]}</parameter>";
+        let items = say(good);
+        assert!(items.iter().map(text_of).collect::<String>().contains("服务区"));
+        assert!(items.iter().all(|item| !text_of(item).contains("parameter")));
+    }
+
+    #[test]
     fn a_send_parts_call_does_not_leak_through_ambient_reply_parsing() {
         let raw = r#"[send]parts:[{"text":"痔疮还带揽客的呀","type":"text"},{"type":"sticker","id":1}]"#;
         let items = say(raw);

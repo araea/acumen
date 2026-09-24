@@ -20,15 +20,15 @@ use std::borrow::Cow;
 /// 伪工具调用的开头。真工具调用走的是结构化 `tool_calls`，不会带这些标记。
 const ACTION_MARKER: &str = "[satori_action:";
 const SEND_MARKER: &str = "[send]parts:";
+// 有的模型把工具调用写成 XML 参数块，甚至把 JSON 的逗号漏掉。
+// 匹配不完整的开头也要拦：不能让半截参数在断句后变成两条群消息。
+const PARAM_MARKER: &str = "<parameter name";
 
 fn next_marker(raw: &str) -> Option<(usize, &str)> {
-    match (raw.find(ACTION_MARKER), raw.find(SEND_MARKER)) {
-        (Some(action), Some(send)) if action < send => Some((action, ACTION_MARKER)),
-        (Some(_), Some(send)) => Some((send, SEND_MARKER)),
-        (Some(action), None) => Some((action, ACTION_MARKER)),
-        (None, Some(send)) => Some((send, SEND_MARKER)),
-        (None, None) => None,
-    }
+    [ACTION_MARKER, SEND_MARKER, PARAM_MARKER]
+        .into_iter()
+        .filter_map(|marker| raw.find(marker).map(|at| (at, marker)))
+        .min_by_key(|(at, _)| *at)
 }
 
 /// 摘掉正文里的伪工具调用，返回可以照常断句、翻译标记的文字。
@@ -42,6 +42,30 @@ pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
         // 标记之前的原文原样留着——它可能是上半句正常的话。
         out.push_str(&raw[cursor..at]);
         let tail = &raw[at + marker.len()..];
+        if marker == PARAM_MARKER {
+            // 只有完整闭合的参数块才允许继续读后文。残缺的 XML / JSON
+            // 一律丢弃余下整段，不能把 `"text"` 那半行漏给断句器。
+            let Some(close) = tail.find("</parameter>") else {
+                cursor = raw.len();
+                break;
+            };
+            let block = &tail[..close];
+            if let Some((_, body)) = block.split_once('>')
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(body.trim())
+                && let Some(text) = request_text(&value)
+            {
+                out.push_str(&text);
+            }
+            cursor = at + marker.len() + close + "</parameter>".len();
+            match next_marker(&raw[cursor..]) {
+                Some((next, found)) => {
+                    at = cursor + next;
+                    marker = found;
+                    continue;
+                }
+                None => break,
+            }
+        }
         let end = if marker == ACTION_MARKER {
             json_end(tail, b'{')
         } else {
@@ -133,7 +157,10 @@ fn json_end(text: &str, open: u8) -> Option<usize> {
 /// 交给 [`super::pace`] 同一套翻译；图片、文件、转发那类段留在原地不动（旧写法
 /// 没有对应形状），`send` 的价值主要在文字。别的动作返回 `None`，整段丢掉。
 fn send_text(value: Option<&serde_json::Value>) -> Option<String> {
-    let request = value?.get("request")?;
+    request_text(value?.get("request")?)
+}
+
+fn request_text(request: &serde_json::Value) -> Option<String> {
     if request.get("action")?.as_str()? != "send" {
         return None;
     }
@@ -277,6 +304,23 @@ mod tests {
             r#"[satori_action:{"request":{"action":"send","parts":[{"type":"text","text":"第二句"}]}}]"#,
         );
         assert_eq!(strip(raw), "第一句 中间 第二句");
+    }
+
+    #[test]
+    fn xml_parameter_send_is_cleaned_before_it_can_be_split() {
+        let raw = "<parameter name=\"request\">{\"action\":\"send\",\"parts\":[{\"type\":\"text\",\"text\":\"1.7 一度 这是服务区吧\"}],\"reply_to\":\"7689108452383409443\"}</parameter>";
+        assert_eq!(strip(raw), "1.7 一度 这是服务区吧");
+        assert_eq!(strip(&format!("前面 {raw} 后面")), "前面 1.7 一度 这是服务区吧 后面");
+    }
+
+    #[test]
+    fn malformed_or_partial_xml_parameter_never_leaks() {
+        let bad = "<parameter name=\"request\">{\"action\":\"send\",\"parts\":[{\"type\":\"text\"\n\"text\":\"1.7 一度 这是服务区吧\"}],\"reply_to\":\"7689108452383409443\"}</parameter>";
+        assert_eq!(strip(bad), "");
+        assert_eq!(strip(&format!("前半句 {bad} 后半句")), "前半句  后半句");
+        assert_eq!(strip("<parameter name=\"request\">{\"action\":\"send\""), "");
+        assert_eq!(strip("<parameter name=\"request\""), "");
+        assert_eq!(strip("<parameter name=\"request\">{\"action\":\"recall\",\"message_id\":\"1\"}</parameter>"), "");
     }
 
     /// 没有标记的文字一个字节都不动，也不多分配一次。

@@ -846,11 +846,13 @@ impl Session {
             "action" => {
                 // 一旦选择工具动作，就不再把最终解释当作第二份消息发送。
                 self.attempted.store(true, Ordering::SeqCst);
+                let action: Action = serde_json::from_value(request["request"].clone())?;
+                // 撤回已发出的自己的消息是补救，不是对旧话题继续发言。
+                // 新消息进群也应允许补救；停用的群仍然不许动作。
                 ensure!(
-                    self.current(),
+                    self.enabled() && (matches!(action, Action::Recall { .. }) || self.current()),
                     "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
                 );
-                let action: Action = serde_json::from_value(request["request"].clone())?;
                 let mut turns = self.scene_turns(80).await;
                 self.hydrate(&action, &mut turns).await?;
                 ensure!(
@@ -1356,7 +1358,7 @@ impl Session {
             "当前适配器未声明 QQ 扩展"
         );
         ensure!(
-            self.current(),
+            self.enabled() && (matches!(action, Action::Recall { .. }) || self.current()),
             "群聊已更新，动作未执行；请读 satori_context"
         );
         ensure!(
@@ -3023,6 +3025,27 @@ mod tests {
 
 
 
+
+    #[tokio::test]
+    async fn recall_own_message_even_after_new_group_activity() {
+        let group = -8_000_103;
+        let (ctx, writer, calls, server) = fixture(group).await;
+        let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "recall-stale").unwrap();
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+        let bridge = start(&ctx, &writer, group, 1, &config, dir.path(), dir.path()).await.unwrap();
+        let sent = action(&bridge, "send-first", json!({"action":"send","parts":[{"type":"text","text":"写错了"}]})).await;
+        assert_eq!(sent["ok"], true, "{sent}");
+        let mid = sent["result"]["message_id"].as_str().unwrap();
+        window::with_group(group, |s| s.seq += 1);
+        let deleted = action(&bridge, "undo", json!({"action":"recall","message_id":mid})).await;
+        assert_eq!(deleted["ok"], true, "{deleted}");
+        assert_eq!(action(&bridge, "other", json!({"action":"recall","message_id":"123"})).await["ok"], false);
+        assert_eq!(action(&bridge, "stale-send", json!({"action":"send","parts":[{"type":"text","text":"别发"}]})).await["ok"], false);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.iter().filter(|(method, _)| method == "message.delete").count(), 1);
+        drop(calls);
+        server.abort();
+    }
 
     #[tokio::test]
     async fn stale_context_disabled_group_and_private_files_do_not_send() {
