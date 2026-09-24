@@ -16,7 +16,8 @@
 //! 卡片后直接回复序号，再按需取得正文与链接。
 
 use super::api::{DailyBlock, DailyReport, HotTopic, Item, category_label};
-use super::leaderboard::{Board, Trend};
+use super::leaderboard::Board;
+use super::render::models_meta;
 use super::render::{RenderOptions, fmt_time, truncate};
 use anyhow::Result;
 use chrono::{DateTime, Timelike, Utc};
@@ -177,18 +178,13 @@ body{width:720px}
 .mname{display:flex;align-items:baseline;flex-wrap:wrap;gap:10px;
   font-size:var(--md-type-headline-small-size);line-height:1.4;font-weight:700;
   color:var(--md-sys-color-on-surface)}
-.trend{font-size:var(--md-type-label-large-size);font-weight:800;letter-spacing:.02em;
-  font-variant-numeric:tabular-nums;color:var(--md-sys-color-on-surface-faint)}
-.trend.up{color:var(--md-sys-color-success)}
-.trend.down{color:var(--md-sys-color-error)}
-.trend.new{color:var(--md-sys-color-primary)}
 .meter{margin-top:var(--md-space-3);height:7px;border-radius:var(--md-shape-full);
   background:var(--md-sys-color-surface-container-high);overflow:hidden}
 /* 分数条：浅头深尾的一条主色渐变。长度即分数，不做二次拉伸。 */
 .meter i{display:block;height:100%;border-radius:var(--md-shape-full);
   background:linear-gradient(90deg,var(--md-sys-color-primary-line),var(--md-sys-color-primary))}
 .mscore{text-align:right}
-/* 共识分是这张图唯一要「一眼看到」的数字，给到 headline-medium，其余都压在灰阶里 */
+/* 共识指数是这张图唯一要「一眼看到」的数字，给到 headline-medium，其余都压在灰阶里 */
 .mscore strong{display:block;font-size:var(--md-type-headline-medium-size);line-height:1;
   font-weight:800;letter-spacing:-.02em;color:var(--md-sys-color-primary);
   font-variant-numeric:tabular-nums}
@@ -238,7 +234,7 @@ fn shell(
 <div class="title md-title md-type-display-small md-balance">{title}</div>{subtitle}
 <hr class="rule md-rule">
 {body}
-<div class="foot md-foot md-foot-row"><div class="src"><span class="mark"></span>AIHOT · aihot.virxact.com</div><div>{foot_note}</div></div>
+<div class="foot md-foot md-foot-row"><div class="src"><span class="mark"></span>AIHOT · aihot.news</div><div>{foot_note}</div></div>
 </div></div></body></html>"#,
         css = css,
         seed = accent.0,
@@ -361,17 +357,17 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(count) = topic.source_count.filter(|c| *c > 0) {
-            meta.push(format!(r#"<span class="md-chip">{} 个信源</span>"#, count));
+            meta.push(format!(r#"<span class="md-chip">{} 个报道来源</span>"#, count));
         }
-        let names: Vec<String> = topic
-            .source_names
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .take(3)
-            .map(|s| format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(s)))
-            .collect();
-        meta.extend(names);
+        if let Some(count) = topic.participant_count.filter(|c| *c > 0) {
+            meta.push(format!(r#"<span>{} 人讨论</span>"#, count));
+        }
+        meta.extend(
+            topic
+                .display_sources(3)
+                .iter()
+                .map(|s| format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(s))),
+        );
         if let Some(t) = topic.latest_at.as_deref().and_then(fmt_time) {
             meta.push(format!(r#"<span>最新 {}</span>"#, esc(&t)));
         }
@@ -385,10 +381,16 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
                 esc(&truncate(summary, 100))
             ));
         }
+        if let Some(latest) = topic.latest.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            body.push_str(&format!(
+                r#"<div class="sum">最新进展：{}</div>"#,
+                esc(&truncate(latest, 90))
+            ));
+        }
         body.push_str("</div></div>");
     }
 
-    let subtitle = format!("跨信源聚合 · TOP {}", topics.len());
+    let subtitle = format!("过去 48 小时 · 跨信源聚合 · TOP {}", topics.len());
     shell(
         HOT,
         theme,
@@ -400,10 +402,10 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
     )
 }
 
-/// 模型榜卡片：一行一个模型，左名次、中模型与价格、右共识分。
+/// 模型榜卡片：一行一个模型，左名次、中模型与价格、右共识指数。
 ///
-/// 共识分是这张图唯一需要「一眼看到」的数字，所以给到 34px 主色 + 一条同色进度条；
-/// 其余信息（厂商、上线日期、价格）压到 15px 的灰阶里，不与之争。
+/// 共识指数是这张图唯一需要「一眼看到」的数字，所以给到 34px 主色 + 一条同色进度条；
+/// 其余信息（厂商、上线日期、价格、评测证据）压到 15px 的灰阶里，不与之争。
 pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String {
     let shown = &board.entries[..board.entries.len().min(max_items.max(1))];
     let mut body = String::new();
@@ -416,18 +418,9 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
             r#"<div class="mrow"><div><div class="{}">{}</div></div><div>"#,
             rank_cls, rank
         ));
-
-        let trend = model.trend();
-        let trend_html = match trend {
-            Trend::Flat => String::new(),
-            Trend::Up(_) => format!(r#"<span class="trend up">{}</span>"#, esc(&trend.marker())),
-            Trend::Down(_) => format!(r#"<span class="trend down">{}</span>"#, esc(&trend.marker())),
-            Trend::New => format!(r#"<span class="trend new">{}</span>"#, esc(&trend.marker())),
-        };
         body.push_str(&format!(
-            r#"<div class="mname">{}{}</div>"#,
-            esc(model.display_name()),
-            trend_html
+            r#"<div class="mname">{}</div>"#,
+            esc(model.display_name())
         ));
 
         let mut meta: Vec<String> = Vec::new();
@@ -436,9 +429,6 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
         }
         if let Some(date) = model.released_date() {
             meta.push(format!(r#"<span>上线 {}</span>"#, esc(date)));
-        }
-        if let Some(ctx_len) = model.context_text() {
-            meta.push(format!(r#"<span>上下文 {}</span>"#, esc(&ctx_len)));
         }
         if let Some(price) = model.price_text() {
             meta.push(format!(r#"<span>{}</span>"#, esc(&price)));
@@ -456,13 +446,13 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
         }
         body.push_str("</div>");
 
-        // 完整度与可信度各占一行：右栏窄，挤在一行会在「可信度」和「高」之间折行
+        // 评测项数与证据状态各占一行：右栏窄，挤在一行会折得七零八落
         let mut note = String::new();
-        if let Some(coverage) = model.coverage_text() {
-            note.push_str(&format!("<small>完整度 {}</small>", esc(&coverage)));
+        if let Some(count) = model.evaluations_text() {
+            note.push_str(&format!("<small>{}</small>", esc(&count)));
         }
-        if let Some(level) = model.confidence_label() {
-            note.push_str(&format!("<small>可信度 {}</small>", level));
+        if let Some(evidence) = model.evidence_text() {
+            note.push_str(&format!("<small>{}</small>", esc(&evidence)));
         }
         body.push_str(&format!(
             r#"<div class="mscore"><strong>{}</strong>{}</div></div>"#,
@@ -472,23 +462,17 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
     }
 
     body.push_str(
-        r#"<div class="note">共识分由多家公开评测榜单统一折算，只反映公开评测的汇总结果；价格为厂商官网参考价，人民币／百万 Token。</div>"#,
+        r#"<div class="note">共识指数按多项公开评测的共同证据排名，只反映公开评测的汇总结果；证据状态说明名次在删源、换权重后是否稳定。价格为厂商官网参考价，人民币／百万 Token。</div>"#,
     );
 
-    let mut subtitle: Vec<String> = Vec::new();
-    if let Some(count) = board.source_count {
-        subtitle.push(format!("综合 {} 家公开榜单", count));
-    }
-    if let Some(updated) = board.updated_at.as_deref().filter(|s| !s.is_empty()) {
-        subtitle.push(format!("更新于 {}", updated));
-    }
+    let mut subtitle = models_meta(board);
     subtitle.push(format!("TOP {}", shown.len()));
 
     shell(
         MODELS,
         theme,
         ("模型榜", "AI MODEL CONSENSUS"),
-        "AIHOT 大模型排行榜",
+        &format!("AIHOT {}", board.title()),
         &subtitle.join(" · "),
         &body,
         FOOT_LINKS,
@@ -644,7 +628,7 @@ mod tests {
                 summary: Some("模型在数学、代码与长文档理解等基准上取得明显提升，官方同时公布了新的定价方案与迁移指南，开发者可即刻通过 API 调用。".into()),
                 reason: Some("发布节奏与竞品形成直接对位，对下游应用的选型有实际影响。".into()),
                 source: Some(Source { name: Some((*src).into()) }),
-                links: Links { aihot: Some("https://aihot.virxact.com/i/1".into()), ..Default::default() },
+                links: Links { aihot: Some("https://aihot.news/items/1".into()), ..Default::default() },
                 published_at: Some("2026-08-21T01:20:00Z".into()),
                 discovered_at: None,
                 category: Some((*cat).into()),
@@ -660,8 +644,10 @@ mod tests {
                 summary: Some("多家媒体在同一时间窗内跟进报道，讨论集中在能力边界与落地成本两方面。".into()),
                 source_count: Some(12 - i as u32),
                 source_names: vec![(*src).into(), "机器之心".into(), "量子位".into()],
+                participant_count: Some(30 - i as u32),
                 latest_at: Some("2026-08-21T03:00:00Z".into()),
-                links: Links::default(),
+                latest: Some("官方随后补充了定价与上线节奏。".into()),
+                ..Default::default()
             })
             .collect();
 
@@ -700,32 +686,34 @@ mod tests {
         };
 
         let models = [
-            ("Claude Fable 5", "Anthropic", 89.4, 0.88, "HIGH", Some(1), 67.206, 336.03),
-            ("Claude Opus 5", "Anthropic", 86.2, 0.845, "HIGH", Some(0), 33.603, 168.015),
-            ("GPT-5.6 Sol", "OpenAI", 83.3, 0.845, "HIGH", Some(-1), 33.603, 201.62),
-            ("Kimi K3", "Moonshot AI", 79.9, 0.845, "MEDIUM", None, 8.0, 32.0),
-            ("GLM-5.3", "Z.ai", 76.9, 0.60, "LOW", Some(2), 4.0, 12.0),
+            ("Claude Opus 5.5", "Anthropic", 94.3, 8, "MEDIUM", "持续积累", Some("¥1.34"), "¥26.83", "¥134.15"),
+            ("GPT-6 Astra", "OpenAI", 94.2, 5, "LOW", "证据敏感", Some("¥6.71"), "¥67.07", "¥335.37"),
+            ("Claude Opus 5", "Anthropic", 93.7, 12, "HIGH", "较充分", Some("¥3.35"), "¥33.54", "¥167.69"),
+            ("Muse Spark 1.3", "Meta", 91.4, 11, "HIGH", "较充分", None, "¥8.38", "¥28.51"),
+            ("Qwen3.8 Max", "Alibaba", 84.2, 4, "LOW", "证据敏感", None, "¥12", "¥36"),
         ];
         let board = Board {
-            updated_at: Some("8月21日 20:00".into()),
-            source_count: Some(7),
+            category: "overall".into(),
+            title: Some("综合榜".into()),
+            evaluation_count: Some(20),
+            org_count: Some(9),
+            updated_at: Some("09/24 15:26".into()),
             entries: models
                 .iter()
                 .enumerate()
-                .map(|(i, (name, provider, score, coverage, confidence, change, input, output))| {
+                .map(|(i, (name, provider, score, evals, confidence, label, cache, input, output))| {
                     crate::plugins::ai_news::leaderboard::ModelEntry {
                         rank: Some(i as u32 + 1),
-                        previous_rank: change.map(|_| i as u32 + 1),
-                        rank_change: *change,
                         name: Some((*name).into()),
                         provider: Some((*provider).into()),
-                        released_at: Some("2026-06-09T00:00:00.000Z".into()),
-                        context_window_tokens: Some(1_000_000),
-                        input_price_per_million_cny: Some(*input),
-                        output_price_per_million_cny: Some(*output),
-                        score: Some(*score),
-                        coverage: Some(*coverage),
+                        released_at: Some("2026-09-17".into()),
+                        evaluations: Some(*evals),
                         confidence: Some((*confidence).into()),
+                        confidence_text: Some((*label).into()),
+                        cache_price: cache.map(str::to_string),
+                        input_price: Some((*input).into()),
+                        output_price: Some((*output).into()),
+                        score: Some(*score),
                         ..Default::default()
                     }
                 })
@@ -801,7 +789,7 @@ mod tests {
                 name: Some("官方博客".into()),
             }),
             links: Links {
-                aihot: Some("https://aihot.virxact.com/i/1".into()),
+                aihot: Some("https://aihot.news/items/1".into()),
                 ..Default::default()
             },
             published_at: Some("2026-08-21T01:00:00Z".into()),
@@ -820,7 +808,7 @@ mod tests {
         assert!(html.contains("08-21 09:00"), "时间应换算为北京时间");
         assert!(html.contains("0全部") && html.contains("取链接"));
         // 链接只走文本消息，不画进图里
-        assert!(!html.contains("aihot.virxact.com/i/1"));
+        assert!(!html.contains("aihot.news/items/1"));
     }
 
     #[test]

@@ -5,14 +5,20 @@
 //!   2. 支持服务端筛选（`mode` / `window` / `category` / `q` / `limit`），
 //!      推送多少条、推什么分类都交给服务端，客户端不必拉全量再本地过滤；
 //!   3. 每条带稳定 `id`，可做跨次推送去重，RSS 只能靠链接猜；
-//!   4. 额外提供热点榜与日报端点，RSS 只有三个固定 feed；
+//!   4. 额外提供热点榜、事件详情与日报端点，RSS 只有几个固定 feed；
 //!   5. 支持 `ETag` / `If-None-Match` 条件请求，轮询成本低。
 //!
 //! 契约要点（来自 AIHOT 官方 Agent 接入文档与 `llms.txt`）：
-//!   - Base URL `https://aihot.virxact.com`，匿名只读，不带 cookie；
+//!   - Base URL `https://aihot.news`（2026-09 从 `aihot.virxact.com` 迁来，旧域名整站 301），
+//!     匿名只读，不带 cookie；网页前面的 EdgeOne 校验层不拦 `/api/v1`；
 //!   - 时间窗仅承诺 `24h` 与 `7d`；
 //!   - 轮询间隔以响应 `Cache-Control` 的 `s-maxage` 为下限：
-//!     `/api/v1/items` 为 60 秒，`/api/v1/hot-topics` 为 300 秒；更密只会拿到同一份缓存副本；
+//!     `/api/v1/items`、`/api/v1/hot-topics` 与 `/api/v1/stories/*` 都是 60 秒；
+//!     更密只会拿到同一份缓存副本；
+//!   - 错误统一是 Problem JSON（`title` / `detail` / `code` / `requestId`），
+//!     报错时把这几项带进日志，反馈时凭 `requestId` 就能定位；
+//!   - 热点榜条目不再带摘要，事件的最新进展与 AI 综述要凭 `links.story` 末段的
+//!     publicId 去 `/api/v1/stories/{publicId}` 取（见 [`enrich_hot_topics`]）；
 //!   - 遇到 429 / 503 按 `Retry-After` 退避（见 [`backoff_seconds_left`]）；
 //!   - 官方明确「没有资讯推送通道」：REST / RSS 无 Webhook 或流式订阅，
 //!     MCP 也只在 Agent 主动调用时读取。因此实时推送只能是条件轮询（见 `realtime.rs`）；
@@ -28,8 +34,8 @@ use std::time::Duration;
 
 pub type ApiError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const BASE_URL: &str = "https://aihot.virxact.com";
-pub const ATTRIBUTION: &str = "数据来源：AIHOT (aihot.virxact.com)";
+pub const BASE_URL: &str = "https://aihot.news";
+pub const ATTRIBUTION: &str = "数据来源：AIHOT (aihot.news)";
 
 /// 允许的分类 slug（服务端可能新增值，这里只用于校验用户配置，不用于校验响应）
 pub const CATEGORIES: &[(&str, &str)] = &[
@@ -171,7 +177,14 @@ async fn get_json(
         .into());
     }
     if !status.is_success() {
-        return Err(format!("AIHOT 接口返回 {}：{}", status.as_u16(), path_and_query).into());
+        let problem = problem_text(&resp.text().await.unwrap_or_default());
+        return Err(format!(
+            "AIHOT 接口返回 {}：{}{}",
+            status.as_u16(),
+            path_and_query,
+            problem
+        )
+        .into());
     }
 
     if let Some(scope) = poll.scope()
@@ -186,6 +199,34 @@ async fn get_json(
     }
 
     Ok(Some(resp.json::<JsonValue>().await?))
+}
+
+/// 从 Problem JSON 里摘出能说明问题的几项，拼成「（…）」；不是 JSON 就返回空串
+fn problem_text(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<JsonValue>(body) else {
+        return String::new();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for key in ["detail", "title", "code"] {
+        if let Some(text) = value.get(key).and_then(JsonValue::as_str).map(str::trim)
+            && !text.is_empty()
+            && !parts.iter().any(|p| p == text)
+        {
+            parts.push(text.to_string());
+            if key == "detail" {
+                // 有 detail 就不必再重复笼统的 title
+                break;
+            }
+        }
+    }
+    if let Some(id) = value.get("requestId").and_then(JsonValue::as_str) {
+        parts.push(format!("requestId {}", id));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", parts.join("，"))
+    }
 }
 
 // ================= 数据结构 =================
@@ -223,6 +264,27 @@ impl Links {
             .as_deref()
             .or(self.original.as_deref())
             .filter(|s| !s.is_empty())
+    }
+
+    /// 事件页的 publicId：`links.story` 的最后一段路径。官方要求只从这里取，不要自己拼
+    pub fn story_id(&self) -> Option<&str> {
+        let url = self.story.as_deref()?.trim();
+        let path = url.split(['?', '#']).next().unwrap_or(url);
+        let (prefix, id) = path.trim_end_matches('/').rsplit_once('/')?;
+        (prefix.ends_with("/story") && !id.is_empty() && id.len() <= 128).then_some(id)
+    }
+
+    /// 给人点的事件页链接。服务端目前还会把它写成旧域名（整站 301 到新域名），
+    /// 这里直接换成新域名，省一次跳转
+    pub fn story_url(&self) -> Option<String> {
+        let url = self.story.as_deref()?.trim();
+        if url.is_empty() {
+            return None;
+        }
+        Some(match url.strip_prefix("https://aihot.virxact.com") {
+            Some(rest) => format!("{}{}", BASE_URL, rest),
+            None => url.to_string(),
+        })
     }
 }
 
@@ -305,18 +367,54 @@ pub struct ItemsResponse {
 pub struct HotTopic {
     #[serde(default)]
     pub rank: Option<u32>,
+    #[serde(default, deserialize_with = "flex_string")]
+    pub id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// 旧版接口带的摘要；v1 1.3 起热点榜不再返回，改由 [`enrich_hot_topics`]
+    /// 用事件详情的 AI 综述填上
     #[serde(default)]
     pub summary: Option<String>,
+    /// 代表报道的信源
+    #[serde(default)]
+    pub source: Option<Source>,
+    /// 报道来源数
     #[serde(default)]
     pub source_count: Option<u32>,
+    /// 讨论参与者数（编辑信源与社交信号去重合并后的独立参与者）
+    #[serde(default)]
+    pub participant_count: Option<u32>,
     #[serde(default)]
     pub source_names: Vec<String>,
     #[serde(default)]
     pub latest_at: Option<String>,
     #[serde(default)]
     pub links: Links,
+    /// 事件的最新进展（事件详情里的 `latest`），与标题、综述不同时才展示
+    #[serde(skip)]
+    pub latest: Option<String>,
+}
+
+impl HotTopic {
+    /// 去重、去掉「（RSS）」这类技术后缀后的报道来源名，与站点展示一致
+    pub fn display_sources(&self, limit: usize) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for name in &self.source_names {
+            let name = name.trim();
+            let name = name
+                .strip_suffix("（RSS）")
+                .or_else(|| name.strip_suffix("(RSS)"))
+                .unwrap_or(name)
+                .trim();
+            if !name.is_empty() && !out.iter().any(|n| n == name) {
+                out.push(name.to_string());
+            }
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -494,6 +592,94 @@ pub async fn fetch_hot_topics(
     Ok(Some(items))
 }
 
+/// 事件详情里用得上的两句话
+#[derive(Debug, Clone, Default)]
+pub struct StoryBrief {
+    /// 随事件演化增量改写的 AI 综述，可能为 null
+    pub digest: Option<String>,
+    /// 最新一条报道的标题
+    pub latest: Option<String>,
+}
+
+/// 事件详情：`GET /api/v1/stories/{publicId}`（只取综述与最新进展）
+pub async fn fetch_story(public_id: &str, timeout_secs: u64) -> Result<StoryBrief, ApiError> {
+    let path = format!("/api/v1/stories/{}", encode(public_id));
+    let value = get_json(&path, timeout_secs, Poll::Fresh)
+        .await?
+        .ok_or("AIHOT 事件详情无响应体")?;
+    let story = value.get("story").unwrap_or(&value);
+    Ok(StoryBrief {
+        digest: pick_str(story, &["digest"]),
+        latest: pick_str(story, &["latest"]),
+    })
+}
+
+/// 事件详情的短期缓存：publicId → (取回时刻, 内容)。热点榜一次要查十个事件，
+/// 连着查两次榜不该再打十次接口；10 分钟足够覆盖一轮讨论，又不至于让「最新进展」太旧
+type StoryCache = Mutex<HashMap<String, (std::time::Instant, StoryBrief)>>;
+
+fn story_cache() -> &'static StoryCache {
+    static CACHE: OnceLock<StoryCache> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+const STORY_TTL: Duration = Duration::from_secs(10 * 60);
+
+async fn story_brief(public_id: &str, timeout_secs: u64) -> Option<StoryBrief> {
+    if let Ok(guard) = story_cache().lock()
+        && let Some((at, brief)) = guard.get(public_id)
+        && at.elapsed() < STORY_TTL
+    {
+        return Some(brief.clone());
+    }
+    match fetch_story(public_id, timeout_secs).await {
+        Ok(brief) => {
+            if let Ok(mut guard) = story_cache().lock() {
+                guard.retain(|_, (at, _)| at.elapsed() < STORY_TTL);
+                guard.insert(public_id.to_string(), (std::time::Instant::now(), brief.clone()));
+            }
+            Some(brief)
+        }
+        Err(e) => {
+            debug!(target: super::LOG_TARGET, "事件详情 {} 取不到，跳过：{}", public_id, e);
+            None
+        }
+    }
+}
+
+/// 给热点榜补上事件的 AI 综述与最新进展。
+///
+/// 热点榜本身已不带摘要，只剩标题和计数，读起来不知道「这件事现在怎样了」。
+/// 这里按 `links.story` 并发查事件详情，单条失败只少一行说明，不影响整榜。
+/// 请求数最多等于榜单条数（Top 10），且有 10 分钟缓存。
+pub async fn enrich_hot_topics(topics: &mut [HotTopic], timeout_secs: u64) {
+    // 事件详情只是锦上添花，超时收紧一些，别让整张榜等它
+    let timeout_secs = timeout_secs.clamp(3, 8);
+    let briefs = futures_util::future::join_all(topics.iter().map(|topic| async move {
+        match topic.links.story_id() {
+            Some(id) => story_brief(id, timeout_secs).await,
+            None => None,
+        }
+    }))
+    .await;
+
+    for (topic, brief) in topics.iter_mut().zip(briefs) {
+        let Some(brief) = brief else { continue };
+        let has_summary = topic
+            .summary
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+        if !has_summary {
+            topic.summary = brief.digest.clone();
+        }
+        // 最新进展与标题、综述重复时不再多占一行
+        topic.latest = brief.latest.filter(|latest| {
+            topic.title.as_deref().map(str::trim) != Some(latest.as_str())
+                && topic.summary.as_deref() != Some(latest.as_str())
+        });
+    }
+}
+
 /// 日报索引：`GET /api/v1/dailies?limit=N`
 pub async fn fetch_daily_index(
     limit: u32,
@@ -643,10 +829,10 @@ mod tests {
         };
         assert_eq!(item.dedupe_key().as_deref(), Some("title:标题"));
 
-        item.links.aihot = Some("https://aihot.virxact.com/i/1".into());
+        item.links.aihot = Some("https://aihot.news/items/1".into());
         assert_eq!(
             item.dedupe_key().as_deref(),
-            Some("url:https://aihot.virxact.com/i/1")
+            Some("url:https://aihot.news/items/1")
         );
 
         item.id = Some("abc".into());
@@ -669,7 +855,7 @@ mod tests {
                                 "title": "条目A",
                                 "summary": "摘要A",
                                 "source": { "name": "IT之家" },
-                                "links": { "aihot": "https://aihot.virxact.com/items/1", "original": "https://x.com/1" }
+                                "links": { "aihot": "https://aihot.news/items/1", "original": "https://x.com/1" }
                             }
                         ]
                     }
@@ -699,7 +885,7 @@ mod tests {
         assert_eq!(report.sections[0].children[0].text.as_deref(), Some("摘要A"));
         assert_eq!(
             report.sections[0].children[0].url.as_deref(),
-            Some("https://aihot.virxact.com/items/1")
+            Some("https://aihot.news/items/1")
         );
 
         // 快讯的标题与链接解析，来源 + 时间合成 meta
@@ -711,6 +897,71 @@ mod tests {
     }
 
     #[test]
+    fn hot_topic_parses_v1_fields_and_story_link() {
+        // 与 2026-09 线上响应同构：没有 summary，多了 id / source / participantCount，
+        // links.story 还写着旧域名
+        let value: JsonValue = serde_json::json!({
+            "schemaVersion": 1,
+            "count": 1,
+            "items": [{
+                "rank": 1,
+                "id": "cmucyny580521roni2aiyh9xj",
+                "title": "Opus 5.5 发布",
+                "source": { "name": "Artificial Analysis" },
+                "links": {
+                    "aihot": "https://aihot.news/items/cmucyny580521roni2aiyh9xj",
+                    "original": "https://artificialanalysis.ai/articles/claude-opus-5-5",
+                    "story": "https://aihot.virxact.com/story/80211185-0b01-4268-b5f4-a37b003d4faa"
+                },
+                "sourceCount": 27,
+                "signalCount": 20,
+                "participantCount": 46,
+                "sourceNames": ["Hacker News：AI 热帖", "The Verge：AI（RSS）", "Hacker News：AI 热帖", "IT之家（RSS）"],
+                "latestAt": "2026-09-24T02:46:25.000Z"
+            }]
+        });
+        let parsed: HotTopicsResponse = serde_json::from_value(value).expect("热点榜应可解析");
+        let topic = &parsed.items[0];
+        assert_eq!(topic.id.as_deref(), Some("cmucyny580521roni2aiyh9xj"));
+        assert_eq!(topic.summary, None);
+        assert_eq!(topic.participant_count, Some(46));
+        assert_eq!(topic.source_count, Some(27));
+        assert_eq!(
+            topic.links.story_id(),
+            Some("80211185-0b01-4268-b5f4-a37b003d4faa")
+        );
+        assert_eq!(
+            topic.links.story_url().as_deref(),
+            Some("https://aihot.news/story/80211185-0b01-4268-b5f4-a37b003d4faa")
+        );
+        // 重复的来源只留一个，「（RSS）」后缀去掉
+        assert_eq!(
+            topic.display_sources(3),
+            vec!["Hacker News：AI 热帖", "The Verge：AI", "IT之家"]
+        );
+    }
+
+    #[test]
+    fn story_id_only_comes_from_story_links() {
+        let links = Links {
+            story: Some("https://aihot.news/items/abc".into()),
+            ..Default::default()
+        };
+        assert_eq!(links.story_id(), None);
+        assert_eq!(Links::default().story_id(), None);
+    }
+
+    #[test]
+    fn problem_json_is_summarised_for_logs() {
+        let body = r#"{"type":"about:blank","title":"Bad Request","status":400,"detail":"window must be 24h or 7d","code":"invalid_window","requestId":"req_1"}"#;
+        assert_eq!(
+            problem_text(body),
+            "（window must be 24h or 7d，requestId req_1）"
+        );
+        assert_eq!(problem_text("<html>502</html>"), "");
+    }
+
+    #[test]
     fn daily_index_parses_lead_title() {
         let value: JsonValue = serde_json::json!({
             "items": [
@@ -719,7 +970,7 @@ mod tests {
                     "generatedAt": "2026-08-21T00:01:06.088Z",
                     "leadTitle": "阿里发布 Qwen-UI-Agent",
                     "leadParagraph": null,
-                    "links": { "aihot": "https://aihot.virxact.com/daily/2026-08-21" }
+                    "links": { "aihot": "https://aihot.news/daily/2026-08-21" }
                 }
             ]
         });

@@ -348,15 +348,12 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(count) = topic.source_count.filter(|c| *c > 0) {
-            meta.push(format!("{} 个信源", count));
+            meta.push(format!("{} 个报道来源", count));
         }
-        let names: Vec<&str> = topic
-            .source_names
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .take(3)
-            .collect();
+        if let Some(count) = topic.participant_count.filter(|c| *c > 0) {
+            meta.push(format!("{} 人讨论", count));
+        }
+        let names = topic.display_sources(3);
         if !names.is_empty() {
             meta.push(names.join("、"));
         }
@@ -370,8 +367,21 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
         if let Some(summary) = topic.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             out.push_str(&format!("\n   {}", truncate(summary, 80)));
         }
+        if let Some(latest) = topic.latest.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            out.push_str(&format!("\n   最新进展：{}", truncate(latest, 80)));
+        }
+        // 事件页汇总了全部报道与时间线，比单篇报道更适合当热点的主链接
+        if let Some(story) = topic.links.story_url() {
+            out.push_str(&format!("\n   🔗 {}", story));
+            entry_links.links.push(EntryLink {
+                label: "事件页".to_string(),
+                url: story,
+            });
+        }
         if let Some(link) = topic.links.primary() {
-            out.push_str(&format!("\n   🔗 {}", link));
+            if entry_links.links.is_empty() {
+                out.push_str(&format!("\n   🔗 {}", link));
+            }
             entry_links.links.push(EntryLink {
                 label: "AIHOT".to_string(),
                 url: link.to_string(),
@@ -389,34 +399,31 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
     }
 }
 
-/// 模型榜：一条一段，先名次与模型名，再共识分与证据情况，最后上线日期与价格
+/// 模型榜：一条一段，先名次与模型名，再共识指数与证据情况，最后上线日期与价格
 pub fn render_models(board: &Board, max_items: usize) -> Rendered {
     let shown = &board.entries[..board.entries.len().min(max_items.max(1))];
     let mut entries = Vec::with_capacity(shown.len());
+    let mut links = Vec::with_capacity(shown.len());
 
     for (idx, model) in shown.iter().enumerate() {
         let rank = model.rank.unwrap_or((idx + 1) as u32);
-        let mut out = String::new();
-
-        let trend = model.trend().marker();
-        let head = match model.provider_name() {
+        let mut out = match model.provider_name() {
             Some(provider) => format!("第 {} 名 {}（{}）", rank, model.display_name(), provider),
             None => format!("第 {} 名 {}", rank, model.display_name()),
         };
-        out.push_str(&head);
-        if !trend.is_empty() {
-            out.push_str(&format!(" {}", trend));
-        }
 
         let mut score_line: Vec<String> = Vec::new();
         if let Some(score) = model.score_text() {
-            score_line.push(format!("共识分 {}", score));
+            score_line.push(format!("共识指数 {}", score));
         }
-        if let Some(coverage) = model.coverage_text() {
-            score_line.push(format!("完整度 {}", coverage));
+        if let Some(count) = model.evaluations_text() {
+            score_line.push(count);
         }
-        if let Some(level) = model.confidence_label() {
-            score_line.push(format!("可信度{}", level));
+        if let Some(evidence) = model.evidence_text() {
+            score_line.push(evidence);
+        }
+        if let Some(range) = model.rank_range().filter(|r| r.contains('—')) {
+            score_line.push(format!("名次范围 {}", range));
         }
         if !score_line.is_empty() {
             out.push_str(&format!("\n   {}", score_line.join(" · ")));
@@ -426,9 +433,6 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
         if let Some(date) = model.released_date() {
             meta.push(format!("上线 {}", date));
         }
-        if let Some(ctx_len) = model.context_text() {
-            meta.push(format!("上下文 {}", ctx_len));
-        }
         if let Some(price) = model.price_text() {
             meta.push(price);
         }
@@ -436,35 +440,59 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
             out.push_str(&format!("\n   {}", meta.join(" · ")));
         }
 
+        let mut entry_links = EntryLinks {
+            title: model.display_name().to_string(),
+            links: Vec::new(),
+        };
+        if let Some(url) = model.page_url() {
+            out.push_str(&format!("\n   🔗 {}", url));
+            entry_links.links.push(EntryLink {
+                label: "模型详情".to_string(),
+                url,
+            });
+        }
+
         entries.push(out);
+        links.push(entry_links);
     }
 
     let mut footer = String::from(leaderboard::ATTRIBUTION);
-    footer.push_str(&format!("\n🔗 {}", leaderboard::PAGE_URL));
-    footer.push_str("\n价格为厂商官网参考价，人民币／百万 Token；共识分只反映公开评测的汇总结果。");
+    footer.push_str(&format!("\n🔗 {}", board.page_url()));
+    footer.push_str(
+        "\n价格为厂商官网参考价，人民币／百万 Token；共识指数只反映公开评测的汇总结果。",
+    );
 
     Rendered {
         header: models_header(board),
         entries,
         footer,
-        links: Vec::new(),
+        links,
     }
 }
 
-/// 模型榜标题行：带上「汇总几家榜单」与站点标注的更新时间
+/// 模型榜标题行：带上榜名、评测规模与站点标注的更新时间
 pub(super) fn models_header(board: &Board) -> String {
-    let mut header = String::from("AIHOT 大模型排行榜");
-    let mut meta: Vec<String> = Vec::new();
-    if let Some(count) = board.source_count {
-        meta.push(format!("综合 {} 家公开榜单", count));
-    }
-    if let Some(updated) = board.updated_at.as_deref().filter(|s| !s.is_empty()) {
-        meta.push(format!("更新于 {}", updated));
-    }
+    let mut header = format!("AIHOT 大模型排行榜 · {}", board.title());
+    let meta = models_meta(board);
     if !meta.is_empty() {
         header.push_str(&format!("\n{}", meta.join(" · ")));
     }
     header
+}
+
+/// 「20 项评测 · 9 家机构 · 09/24 15:26 更新」，缺哪项就略过哪项
+pub(super) fn models_meta(board: &Board) -> Vec<String> {
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(count) = board.evaluation_count {
+        meta.push(format!("{} 项评测", count));
+    }
+    if let Some(count) = board.org_count {
+        meta.push(format!("{} 家机构", count));
+    }
+    if let Some(updated) = board.updated_at.as_deref().filter(|s| !s.is_empty()) {
+        meta.push(format!("{} 更新", updated));
+    }
+    meta
 }
 
 fn render_block(out: &mut String, block: &DailyBlock, depth: usize, budget: &mut usize) {
@@ -559,7 +587,7 @@ mod tests {
                 name: Some("官方博客".into()),
             }),
             links: Links {
-                aihot: Some("https://aihot.virxact.com/i/1".into()),
+                aihot: Some("https://aihot.news/items/1".into()),
                 original: Some("https://example.com/post".into()),
                 story: None,
             },
@@ -600,7 +628,7 @@ mod tests {
         };
         let text = render_items("测试", &[sample_item()], &opts).to_text();
         assert!(text.contains("某模型发布"));
-        assert!(text.contains("https://aihot.virxact.com/i/1"));
+        assert!(text.contains("https://aihot.news/items/1"));
         assert!(!text.contains("值得关注的理由"));
         assert!(!text.contains("https://example.com/post"));
         assert!(text.contains("共 1 条"));
@@ -655,22 +683,26 @@ mod tests {
         use crate::plugins::ai_news::leaderboard::ModelEntry;
 
         let board = Board {
-            updated_at: Some("8月21日 20:00".into()),
-            source_count: Some(7),
+            category: "coding".into(),
+            title: Some("编程榜".into()),
+            evaluation_count: Some(3),
+            org_count: Some(3),
+            updated_at: Some("09/24 15:26".into()),
             entries: vec![
                 ModelEntry {
                     rank: Some(1),
-                    rank_change: Some(1),
-                    previous_rank: Some(2),
+                    slug: Some("model-a".into()),
                     name: Some("Model A".into()),
                     provider: Some("Vendor".into()),
-                    released_at: Some("2026-06-09T00:00:00.000Z".into()),
-                    input_price_per_million_cny: Some(67.206),
-                    output_price_per_million_cny: Some(336.03),
-                    score: Some(89.4),
-                    coverage: Some(0.88),
-                    confidence: Some("HIGH".into()),
-                    ..Default::default()
+                    released_at: Some("2026-09-17".into()),
+                    evaluations: Some(8),
+                    confidence: Some("MEDIUM".into()),
+                    confidence_text: Some("持续积累".into()),
+                    confidence_note: Some("名次为 1—3。这是情景范围，不是置信区间。".into()),
+                    cache_price: Some("¥1.34".into()),
+                    input_price: Some("¥26.83".into()),
+                    output_price: Some("¥134.15".into()),
+                    score: Some(94.3),
                 },
                 // 只有名字和分数：其余字段一概不显示，也不填 0
                 ModelEntry {
@@ -682,16 +714,24 @@ mod tests {
             ],
         };
 
-        let text = render_models(&board, 12).to_text();
-        assert!(text.contains("综合 7 家公开榜单 · 更新于 8月21日 20:00"));
-        assert!(text.contains("第 1 名 Model A（Vendor） ↑1"));
-        assert!(text.contains("共识分 89.4 · 完整度 88% · 可信度高"));
-        assert!(text.contains("上线 2026-06-09 · 入 ¥67.21 / 出 ¥336"));
+        let rendered = render_models(&board, 12);
+        let text = rendered.to_text();
+        assert!(text.contains("AIHOT 大模型排行榜 · 编程榜"), "{}", text);
+        assert!(text.contains("3 项评测 · 3 家机构 · 09/24 15:26 更新"), "{}", text);
+        assert!(text.contains("第 1 名 Model A（Vendor）"));
+        assert!(text.contains("共识指数 94.3 · 8 项评测 · 证据持续积累 · 名次范围 1—3"), "{}", text);
+        assert!(text.contains("上线 2026-09-17 · 输入 ¥26.83 / 输出 ¥134.15 / 缓存 ¥1.34"));
+        assert!(text.contains("https://aihot.news/leaderboard/model-a"));
         assert!(text.contains("第 2 名 Model B"));
-        assert!(text.contains(leaderboard::PAGE_URL));
+        assert!(text.contains("https://aihot.news/leaderboard/category/coding"));
         // 缺失字段不编造
         assert!(!text.contains("¥0"));
-        assert!(!text.contains("完整度 0%"));
+        assert!(!text.contains("0 项评测"));
+
+        // 每个模型都能按序号提取详情页；没有 slug 的只有标题
+        assert!(rendered.has_links());
+        assert_eq!(rendered.links[0].links[0].url, "https://aihot.news/leaderboard/model-a");
+        assert!(rendered.links[1].links.is_empty());
     }
 
     #[test]
@@ -721,7 +761,7 @@ mod tests {
             title: None,
             lead: Some("今天的要点".into()),
             links: Links {
-                aihot: Some("https://aihot.virxact.com/daily/2026-08-21".into()),
+                aihot: Some("https://aihot.news/daily/2026-08-21".into()),
                 ..Default::default()
             },
             sections: vec![DailyBlock {
@@ -731,7 +771,7 @@ mod tests {
                 children: vec![DailyBlock {
                     title: Some("条目一".into()),
                     text: Some("说明".into()),
-                    url: Some("https://aihot.virxact.com/i/2".into()),
+                    url: Some("https://aihot.news/items/2".into()),
                     children: vec![],
                 }],
             }],

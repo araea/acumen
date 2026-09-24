@@ -617,7 +617,7 @@ pub async fn push_hot_topics(
     targets: Vec<PushTarget>,
 ) {
     let poll = api::Poll::Cached("hot");
-    let topics = match api::fetch_hot_topics(cfg.request_timeout_seconds, poll).await {
+    let mut topics = match api::fetch_hot_topics(cfg.request_timeout_seconds, poll).await {
         Ok(Some(topics)) => topics,
         Ok(None) => {
             info!(target: LOG_TARGET, "热点榜：服务端返回 304，无变化，跳过。");
@@ -633,6 +633,7 @@ pub async fn push_hot_topics(
         info!(target: LOG_TARGET, "热点榜：当前没有热点，跳过。");
         return;
     }
+    api::enrich_hot_topics(&mut topics, cfg.request_timeout_seconds).await;
 
     let rendered = render::render_hot_topics(&topics);
     let card_html = Some(card::hot_topics_card(

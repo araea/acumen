@@ -1,9 +1,10 @@
 //! ai_news 插件：向指定群聊推送 AI 新资讯（数据源 AIHOT）。
 //!
-//! 数据源选型：AIHOT 同时提供 RSS 与 v1 REST API，这里选用 **API**——
-//! 返回结构化 JSON，无需引入 XML 解析依赖；支持服务端按 `window` / `category` / `q`
-//! 筛选；每条带稳定 `id` 便于跨次推送去重；另有 RSS 没有的热点榜与日报端点。
-//! 详见 `api.rs` 顶部说明。
+//! 数据源选型：AIHOT（`aihot.news`，2026-09 由 `aihot.virxact.com` 迁来）同时提供
+//! RSS 与 v1 REST API，这里选用 **API**——返回结构化 JSON，无需引入 XML 解析依赖；
+//! 支持服务端按 `window` / `category` / `q` 筛选；每条带稳定 `id` 便于跨次推送去重；
+//! 另有 RSS 没有的热点榜、事件详情与日报端点。模型榜没有 API，读的是榜单页。
+//! 详见 `api.rs` 与 `leaderboard.rs` 顶部说明。
 //!
 //! ## 两条推送线并行
 //!
@@ -52,7 +53,7 @@
 //!   /ai资讯 · /ai新闻   立刻查看最近精选
 //!   /ai热点             当前热点榜
 //!   /ai日报             最新一期 AI 日报
-//!   /ai模型榜           AIHOT 大模型排行榜（共识分 Top N）
+//!   /ai模型榜 [编程|推理|知识|专业办公]   AIHOT 大模型排行榜（共识指数 Top N）
 //!   /ai搜索 <关键词>     按关键词检索
 //!   （提取无需指令：引用资讯图片后直接回复 `0` 全部 / `2` / `1,3-5` 即可）
 //!   /ai推送添加 <群|私聊> <ID> · /ai推送删除 <群|私聊> <ID>
@@ -66,7 +67,7 @@
 //!
 //! 使用边界：AIHOT 的匿名接口可用于个人非商业、公益非商业及组织内部使用；
 //! 面向外部的商业产品、数据转售、公开镜像等须先取得 AIHOT 书面授权
-//! （https://aihot.virxact.com/terms）。接口返回的标题、摘要等属外部内容，
+//! （https://aihot.news/terms）。接口返回的标题、摘要等属外部内容，
 //! 本插件只作展示，不参与任何指令解析。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
@@ -821,7 +822,7 @@ pub fn handle(
                 "ai热点" => query_hot_topics(&config).await,
                 "ai日报" => query_daily(&config).await,
                 "ai模型排行榜" | "ai模型榜" | "ai大模型排行榜" | "模型排行榜" | "模型榜" => {
-                    query_models(&config).await
+                    query_models(&config, &arg, &prefix).await
                 }
                 _ => query_brief(&config, current_target).await,
             };
@@ -1085,7 +1086,8 @@ async fn query_brief(config: &AiNewsConfig, target: Option<PushTarget>) -> Paylo
 
 async fn query_hot_topics(config: &AiNewsConfig) -> Payload {
     match api::fetch_hot_topics(config.request_timeout_seconds, api::Poll::Fresh).await {
-        Ok(Some(topics)) if !topics.is_empty() => {
+        Ok(Some(mut topics)) if !topics.is_empty() => {
+            api::enrich_hot_topics(&mut topics, config.request_timeout_seconds).await;
             let rendered = render::render_hot_topics(&topics);
             let html = card::hot_topics_card(
                 pusher::card_slice(&topics, config),
@@ -1120,10 +1122,22 @@ async fn query_daily(config: &AiNewsConfig) -> Payload {
     }
 }
 
-/// 模型榜：AIHOT 汇总多家公开评测榜单后的共识分排名
-async fn query_models(config: &AiNewsConfig) -> Payload {
+/// 模型榜：AIHOT 汇总多项公开评测后的共识指数排名；参数选能力分类，缺省是综合榜
+async fn query_models(config: &AiNewsConfig, arg: &str, prefix: &str) -> Payload {
+    let Some(category) = leaderboard::parse_category(arg) else {
+        let names: Vec<&str> = leaderboard::CATEGORIES
+            .iter()
+            .map(|(_, label, _)| *label)
+            .collect();
+        return notice(format!(
+            "❌ 没有「{}」这个榜\n用法：{prefix}ai模型榜 [{}]，不带参数是综合榜",
+            arg.trim(),
+            names[1..].join("|")
+        ));
+    };
     let max_items = config.leaderboard_max_items.clamp(1, 30);
     match leaderboard::fetch_cached(
+        category,
         config.request_timeout_seconds,
         config.leaderboard_cache_minutes,
     )
@@ -1742,7 +1756,7 @@ fn render_status(
     }
     out.push('\n');
     out.push_str(&format!(
-        "引用卡片回复 0全部/序号 提取\n   {p}ai资讯 · {p}ai热点 · {p}ai日报\n   {p}ai模型榜 · {p}ai搜索 <关键词>\n   {p}ai推送添加/删除 <群|私聊> <ID>\n   {p}ai推送列表 · {p}ai实时开启/关闭 · {p}ai实时模式 精选|全部\n   {p}ai分类 · {p}ai静默\n",
+        "引用卡片回复 0全部/序号 提取\n   {p}ai资讯 · {p}ai热点 · {p}ai日报\n   {p}ai模型榜 [编程|推理|知识|专业办公] · {p}ai搜索 <关键词>\n   {p}ai推送添加/删除 <群|私聊> <ID>\n   {p}ai推送列表 · {p}ai实时开启/关闭 · {p}ai实时模式 精选|全部\n   {p}ai分类 · {p}ai静默\n",
         p = prefix
     ));
     out.push_str(api::ATTRIBUTION);
@@ -1961,8 +1975,8 @@ mod tests {
         let rendered = Rendered {
             header: "AI 资讯速递 · 过去 24 小时".into(),
             entries: vec![
-                "1. 第一条\n   官方博客 · 08-21 09:00\n   一大段摘要\n   💡 理由\n   🔗 https://aihot.virxact.com/i/1\n   📄 https://example.com/1".into(),
-                "2. 第二条\n   🔗 https://aihot.virxact.com/i/2".into(),
+                "1. 第一条\n   官方博客 · 08-21 09:00\n   一大段摘要\n   💡 理由\n   🔗 https://aihot.news/items/1\n   📄 https://example.com/1".into(),
+                "2. 第二条\n   🔗 https://aihot.news/items/2".into(),
             ],
             footer: "AIHOT · 共 2 条".into(),
             links: vec![
@@ -1971,7 +1985,7 @@ mod tests {
                     links: vec![
                         render::EntryLink {
                             label: "AIHOT".into(),
-                            url: "https://aihot.virxact.com/i/1".into(),
+                            url: "https://aihot.news/items/1".into(),
                         },
                         render::EntryLink {
                             label: "原文".into(),
@@ -1983,7 +1997,7 @@ mod tests {
                     title: "第二条".into(),
                     links: vec![render::EntryLink {
                         label: "AIHOT".into(),
-                        url: "https://aihot.virxact.com/i/2".into(),
+                        url: "https://aihot.news/items/2".into(),
                     }],
                 },
             ],
@@ -1993,7 +2007,7 @@ mod tests {
         let text = selected.to_text();
         assert!(text.contains("AI 资讯速递 · 过去 24 小时 · 链接"), "{}", text);
         assert!(text.contains("2. 第二条"), "{}", text);
-        assert!(text.contains("🔗 AIHOT：https://aihot.virxact.com/i/2"), "{}", text);
+        assert!(text.contains("🔗 AIHOT：https://aihot.news/items/2"), "{}", text);
         assert!(!text.contains("一大段摘要"), "正文不应重现: {}", text);
         assert!(!text.contains("官方博客"), "元信息不应重现: {}", text);
         assert!(text.contains("已提取 1 / 2 条"), "{}", text);
@@ -2005,7 +2019,7 @@ mod tests {
         };
         let legacy_text = select_extraction(&legacy, "1").unwrap().to_text();
         assert!(legacy_text.contains("1. 第一条"), "{}", legacy_text);
-        assert!(legacy_text.contains("🔗 AIHOT：https://aihot.virxact.com/i/1"), "{}", legacy_text);
+        assert!(legacy_text.contains("🔗 AIHOT：https://aihot.news/items/1"), "{}", legacy_text);
         assert!(legacy_text.contains("🔗 原文：https://example.com/1"), "{}", legacy_text);
         assert!(!legacy_text.contains("一大段摘要"), "{}", legacy_text);
     }
@@ -2180,7 +2194,7 @@ mod tests {
         }
 
         #[tokio::test]
-        #[ignore = "需要访问 aihot.virxact.com"]
+        #[ignore = "需要访问 aihot.news"]
         async fn brief_endpoint_is_renderable() {
             let cfg = config();
             let items = pusher::fetch_brief(&cfg, api::Poll::Fresh)
@@ -2202,7 +2216,7 @@ mod tests {
         }
 
         #[tokio::test]
-        #[ignore = "需要访问 aihot.virxact.com"]
+        #[ignore = "需要访问 aihot.news"]
         async fn realtime_endpoint_defaults_to_selected_pool() {
             let cfg = config();
             let items = pusher::fetch_realtime_for_push(&cfg, api::Poll::Fresh)
@@ -2220,7 +2234,7 @@ mod tests {
         }
 
         #[tokio::test]
-        #[ignore = "需要访问 aihot.virxact.com"]
+        #[ignore = "需要访问 aihot.news"]
         async fn hot_topics_endpoint_is_renderable() {
             let topics = api::fetch_hot_topics(config().request_timeout_seconds, api::Poll::Fresh)
                 .await
@@ -2228,11 +2242,17 @@ mod tests {
                 .expect("非条件请求必然带响应体");
 
             assert!(topics.len() <= 10, "热点榜最多 Top 10");
+            let mut topics = topics;
+            api::enrich_hot_topics(&mut topics, 10).await;
+            assert!(
+                topics.iter().any(|t| t.summary.is_some() || t.latest.is_some()),
+                "事件详情至少应给一条热点补上说明"
+            );
             println!("{}", render::render_hot_topics(&topics).to_text());
         }
 
         #[tokio::test]
-        #[ignore = "需要访问 aihot.virxact.com"]
+        #[ignore = "需要访问 aihot.news"]
         async fn daily_endpoint_is_renderable() {
             let cfg = config();
             let report = api::fetch_latest_daily(cfg.request_timeout_seconds)
@@ -2248,7 +2268,7 @@ mod tests {
         }
 
         #[tokio::test]
-        #[ignore = "需要访问 aihot.virxact.com"]
+        #[ignore = "需要访问 aihot.news"]
         async fn search_falls_back_to_all_pool() {
             let (items, from_all_pool) = pusher::search(&config(), "OpenAI")
                 .await
