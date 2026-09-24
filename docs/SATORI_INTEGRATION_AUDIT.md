@@ -1,4 +1,6 @@
-# Satori 协作审计（实现端 0.28.0 / 客户端 0.28.0）
+# Satori 协作审计记录（历史版本：实现端 / 客户端 0.28.0）
+
+> 本文记录 2026-09-23 的协作审计，不是当前兼容性清单。当前信息见 [Satori 接入与兼容范围](SATORI.md)。
 
 对象是 [satori-qq](https://github.com/araea/satori-qq)（Satori v1 实现端，Zygisk 注入的纯 JNI 层）
 与 acumen 的 Satori 适配层。日期 2026-09-23，基线是实现端 0.27.1 / 客户端 `b716c03`。
