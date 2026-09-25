@@ -20,6 +20,15 @@ Acumen 连接 `/v1/events`，10 秒内发送 `IDENTIFY`。收到 `READY` 后建�
 
 HTTP 请求使用 `Authorization: Bearer …`，并带上 `Satori-Platform` 和 `Satori-User-ID`。身份来自 `READY`；同一账号更新资料时刷新登录信息，账号变化时重连，避免旧任务以新账号执行。
 
+`message.create` 超时为 100 秒，覆盖默认出站排队与媒体确认/重试；其他请求仍为 65 秒。
+satori-qq 0.29.6 起不会把没有回执的发送当作成功，超时可能返回 `send outcome unknown`。
+ai_news 图片确认成功后只发图片；明确失败才回退文本。结果不明或发送后 HTTP 响应丢失时，
+本条不自动重投或补发文本，并记录告警；这是避免重复的选择，不代表已确认送达，最终失败的条目可能漏发。
+
+锁屏时 ambient 没搭话，先对照日志：没有及时入站事件要查 QQ 冻结/后台调度及 Satori 断连；
+有 `保持沉默` 则判定已执行；`搭话失败` 中的模型超时要查网络与模型服务。
+QQ 的 Android 唤醒锁与 QQ 内核的前后台状态是两层；satori-qq 的 `kernel_foreground` 用于后者。
+
 ## 资源与消息
 
 实现端返回的资源地址不一定可直接下载。`internal:` 地址和 `READY` / `META` 提供的代理域名通过 `/v1/proxy/{url}` 获取；其他 HTTP(S) 地址直连。`data:`、`file:` 和本地路径不能作为远程下载地址。原始 `src` 保留在消息元素中，供插件回传。

@@ -27,6 +27,17 @@ pub mod qq;
 pub type BotError = Box<dyn std::error::Error + Send + Sync>;
 pub type LockedWriter = Arc<SatoriClient>;
 
+/// QQ has accepted a send, but its final receipt is missing. Retrying may duplicate it.
+pub fn delivery_uncertain(error: &(dyn std::error::Error + 'static)) -> bool {
+    if error.to_string().contains("send outcome unknown") {
+        return true;
+    }
+    // A lost HTTP response also cannot prove that QQ rejected the submission.
+    error.downcast_ref::<reqwest::Error>().is_some_and(|e| {
+        (e.is_timeout() || e.is_body() || e.is_decode() || e.is_request()) && !e.is_connect()
+    })
+}
+
 /// `message.create` 的可选时效条件（satori-qq 扩展）。
 ///
 /// 实现端在拿到出站队列的发送权、以及媒体转换与重试等待之后，才把消息交给 QQ
@@ -177,8 +188,9 @@ impl SatoriClient {
             request = request.bearer_auth(token);
         }
         // QQ/Satori 主进程若被 OEM freezer 暂停，loopback HTTP 也可能无限等待。
-        // 65 秒覆盖默认 30 秒出站排队和 QQ 侧 20 秒回调窗口，并保证最终可恢复。
-        let response = request.timeout(Duration::from_secs(65)).send().await?;
+        // message.create 留出 30 秒排队、45 秒媒体确认/重试及转换余量。
+        let timeout_seconds = if method == "message.create" { 100 } else { 65 };
+        let response = request.timeout(Duration::from_secs(timeout_seconds)).send().await?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
@@ -1241,7 +1253,7 @@ fn value_id(value: &Value) -> Option<i64> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1376,6 +1388,15 @@ mod tests {
         tokio::sync::mpsc::UnboundedReceiver<Value>,
         tokio::task::JoinHandle<()>,
     ) {
+        http_fixture(None).await
+    }
+
+    pub(crate) async fn http_fixture(reply: Option<(&'static str, &'static str)>) -> (
+        Context,
+        LockedWriter,
+        tokio::sync::mpsc::UnboundedReceiver<Value>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -1414,8 +1435,9 @@ mod tests {
                             .unwrap_or_default();
                         let body =
                             format!(r#"[{{"id":"bot-reply","login_user_id":"{selector}"}}]"#);
+                        let (status, body) = reply.unwrap_or(("200 OK", &body));
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             body.len(),
                             body
                         );

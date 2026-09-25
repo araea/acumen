@@ -232,15 +232,21 @@ pub async fn deliver(
     if let Some(b64) = &payload.image {
         match send_card_with_recovery(ctx, writer.clone(), group_id, user_id, b64, reply_to).await {
             Ok(Some(message_id)) => {
-                image_sent = true;
                 let target_id = group_id
                     .or_else(|| user_id.map(|id| -id))
                     .unwrap_or_default();
                 state::remember_extraction(target_id, message_id, payload.rendered.clone()).await;
+                return true;
             }
             Ok(None) => {
                 image_sent = true;
                 warn!(target: LOG_TARGET, "卡片图未返回消息 ID，无法关联引用提取，改由文本兜底。")
+            }
+            Err(e) if crate::adapters::satori::delivery_uncertain(e.as_ref()) => {
+                // QQ may still finish this exact message later. Consume this item once;
+                // neither a text fallback nor the realtime queue should resend it.
+                warn!(target: LOG_TARGET, "卡片投递结果未确认，停止本条自动重投与文本兜底，避免重复消息: {}", e);
+                return true;
             }
             Err(e) => warn!(target: LOG_TARGET, "卡片图发送失败，改由文本兜底: {}", e),
         }
@@ -664,6 +670,46 @@ pub fn window_label(window: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn card_delivery_only_falls_back_after_definite_failure() {
+        use crate::adapters::satori::tests::http_fixture;
+        let payload = Payload {
+            image: Some("aGVsbG8=".into()),
+            rendered: Rendered {
+                header: "news".into(),
+                entries: vec!["entry".into()],
+                ..Default::default()
+            },
+        };
+        for (reply, requests, consumed) in [
+            (None, 1, true),
+            (
+                Some(("500 Internal Server Error", r#"{"message":"send outcome unknown; do not retry"}"#)),
+                1,
+                true,
+            ),
+            (
+                Some(("500 Internal Server Error", r#"{"message":"rich media transfer failed"}"#)),
+                2,
+                false,
+            ),
+            (Some(("200 OK", "[]")), 2, true),
+        ] {
+            let (ctx, writer, mut sent, server) = http_fixture(reply).await;
+            assert_eq!(
+                deliver(&ctx, writer, Some(123), None, &AiNewsConfig::default(), &payload, None).await,
+                consumed
+            );
+            let first = sent.try_recv().unwrap();
+            assert!(first["content"].as_str().unwrap().contains("<img"));
+            if requests == 2 {
+                assert!(!sent.try_recv().unwrap()["content"].as_str().unwrap().contains("<img"));
+            }
+            assert!(sent.try_recv().is_err(), "must not duplicate card or text");
+            server.abort();
+        }
+    }
 
     #[test]
     fn realtime_and_scheduled_feeds_have_distinct_fixed_policies() {
