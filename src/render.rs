@@ -9,6 +9,7 @@
 pub mod canvas;
 pub mod font;
 pub mod kit;
+pub mod tokens;
 pub mod web;
 pub mod worker;
 

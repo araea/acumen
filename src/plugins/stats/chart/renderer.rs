@@ -83,10 +83,11 @@ impl ScaleGrid {
 /// - **数值与占比各自右对齐成固定的一列。** 跟着条尾走会排成一串阶梯，二十行
 ///   就是二十个不同的起点，上下比大小要一个个找；而且短条那几行的数字压在淡色
 ///   轨道上，长条那几行压在纸上，同一列字踩着两种底。
-/// - **色带上有构图线，但没有刻度。** 构图线等距排布、与数据无关，只为给右半边那片
-///   留白一点落点；刻度会被读成数值，而这根条的长度不与数值成正比（见
-///   `base_bar_min_width`），所以这张图上不能有刻度。精确的比较交给右边那两列数字，
-///   色带只负责一眼看出长尾有多陡。
+/// - **条长从零按比例映射。** 名称独占一行，零值不绘制实色条；精确值与占比独立显示。
+fn proportional_bar_width(value: i64, maximum: i64, width: f64) -> i32 {
+    (width * (value.max(0) as f64 / maximum.max(1) as f64).clamp(0.0, 1.0)).round() as i32
+}
+
 pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
@@ -114,7 +115,7 @@ pub fn draw_bar_chart(
     // 行距：之间留一道空档，条与条才分得开——紧挨着排会连成一整块三色板，
     // 排行读起来反而费劲。
     let row_height = 50 * s;
-    let row_gap = 10 * s;
+    let row_gap = 50 * s;
     let row_pitch = row_height + row_gap;
     let font_size = 30 * s;
     // 名次比昵称小两档：它只作次序参照，不该抢头像与名字的视线
@@ -137,18 +138,12 @@ pub fn draw_bar_chart(
     let meta_margin = 12 * s; // 标题与元信息行
     let title_margin = 24 * s; // 元信息行与列表
     let meta_y = padding + title_font_size + meta_margin;
-    let top_area_height = meta_y + meta_font_size + title_margin;
+    let top_area_height = meta_y + meta_font_size + title_margin + 40 * s;
 
-    // 条长 = 最短长度 + 比例长度。最短那一截是给名字留的——名字写在条内，值为 1 的
-    // 那一行也得写得下几个字，所以条不能从零开始。
-    //
-    // **代价是这根条的长度不与数值成正比**：值为 0 的条也占满轨道的 17.6%，值是榜首
-    // 一半的条看着有榜首的 59% 长。诚实的读法是看条**尾**的位置——位置对数值是仿射的，
-    // 所以两条的尾差与数值差成正比；不诚实的读法是量条长。这两种读法长得一模一样，
-    // 所以色带上不画任何刻度：一画，读者就会去量长度。精确的比较在右边两列数字里。
-    let base_bar_min_width = 150.0 * (s as f64);
-    let base_bar_scale_width = 700.0 * (s as f64);
-    let max_possible_bar_width = (base_bar_min_width + base_bar_scale_width) as u32;
+    // 条长严格从零按比例映射；昵称独占一行，不挤占数值长度。
+    let base_bar_min_width = 0.0;
+    let base_bar_scale_width = 850.0 * (s as f64);
+    let max_possible_bar_width = base_bar_scale_width as u32;
 
     let max_val = data.iter().map(|d| d.value).max().unwrap_or(1).max(1);
     let total_val: i64 = data.iter().map(|d| d.value).sum();
@@ -204,12 +199,8 @@ pub fn draw_bar_chart(
         .unwrap_or(0);
 
     // 计算内容区域尺寸
-    let content_width = rank_col_w
-        + rank_gap
-        + avatar_width
-        + avatar_gap
-        + max_possible_bar_width
-        + numbers_width;
+    let content_width =
+        rank_col_w + rank_gap + avatar_width + avatar_gap + max_possible_bar_width + numbers_width;
     // 最后一行的下面不留空档，否则底边会多出一段没有内容的留白。
     let content_height = data.len() as u32 * row_pitch - row_gap + top_area_height;
 
@@ -269,8 +260,7 @@ pub fn draw_bar_chart(
             .enumerate()
             .map(|(i, item)| {
                 let y = top_area_height as i32 + (i as u32 * row_pitch) as i32;
-                let ratio = item.value as f64 / max_val as f64;
-                let bar_w = (base_bar_min_width + base_bar_scale_width * ratio).round() as i32;
+                let bar_w = proportional_bar_width(item.value, max_val, base_bar_scale_width);
                 let bar = harmonize_theme(item.theme_color);
                 let track = track_tone(bar);
                 // 数字踩在什么底上，就按什么底量对比度：跟着条尾时压在淡色轨道上
@@ -285,11 +275,7 @@ pub fn draw_bar_chart(
                     value_ink,
                     // 占比是次要信息：把数值的墨往纸里调一点，同一支色相退半档，
                     // 退到刚好还在正文阈值上为止
-                    pct_ink: ensure_contrast(
-                        mix_with_color(value_ink, ground, 0.62),
-                        ground,
-                        4.5,
-                    ),
+                    pct_ink: ensure_contrast(mix_with_color(value_ink, ground, 0.62), ground, 4.5),
                 }
             })
             .collect();
@@ -358,7 +344,7 @@ pub fn draw_bar_chart(
                     bar_radius,
                     row.bar,
                 )?;
-            } else {
+            } else if row.bar_end_x > track_start_x {
                 draw_left_accent_bar(
                     &root,
                     track_start_x,
@@ -389,10 +375,9 @@ pub fn draw_bar_chart(
             root.draw_text(&rank_texts[i], &rank_style, (rank_right_x, text_mid_y))
                 .map_err(|e| e.to_string())?;
 
-            // 昵称：一律写在实色条内，放不下就截断。名字挪到条外读起来反而费劲，
-            // 短条那几行宁可截，也保持每行同一个视线落点。
-            let name_color = get_contrast_color(row.bar);
-            let max_name_width = (bar_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
+            // 名称放在条上方；小值与零值也能完整辨认。
+            let name_color = ink;
+            let max_name_width = (track_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
             let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
             if !display_name.is_empty() {
                 let name_style = get_font_with_color(config, font_size, &name_color)
@@ -400,7 +385,7 @@ pub fn draw_bar_chart(
                 root.draw_text(
                     &display_name,
                     &name_style,
-                    (start_x + text_inset as i32, text_mid_y + (2 * s as i32)),
+                    (start_x + text_inset as i32, y - (24 * s as i32)),
                 )
                 .map_err(|e| e.to_string())?;
             }
@@ -1001,7 +986,9 @@ pub fn draw_line_chart(
         let mut row_w = 0u32;
 
         for (idx, series) in series_list.iter().enumerate() {
-            let (tw, _) = legend_font.box_size(&series.name).unwrap_or((0, 0));
+            let (tw, _) = legend_font
+                .box_size(&format!("{} · {}", idx + 1, series.name))
+                .unwrap_or((0, 0));
             let item_w = 2 * dot_r + (8 * s) + tw;
             let new_w = if row.is_empty() {
                 item_w
@@ -1083,7 +1070,7 @@ pub fn draw_line_chart(
                     get_font_with_color(config, legend_font_size, &colors.text_primary)
                         .pos(Pos::new(HPos::Left, VPos::Center));
                 root.draw_text(
-                    &series_list[idx].name,
+                    &format!("{} · {}", idx + 1, series_list[idx].name),
                     &legend_style,
                     (
                         x + 2 * dot_r as i32 + (8 * s as i32),
@@ -1146,7 +1133,7 @@ pub fn draw_line_chart(
         }
 
         // 4.5 数据系列：面积填充(单系列) + 折线 + 白描边圆点
-        for series in &series_list {
+        for (series_index, series) in series_list.iter().enumerate() {
             let color = series.color;
 
             // 将系列数据点映射到统一 X 轴位置
@@ -1190,6 +1177,15 @@ pub fn draw_line_chart(
             // 纸是暖白的，压一圈纯白上去等于在每个点周围点了一圈更亮的光斑。
             for &(x, y) in &pts {
                 let (xi, yi) = (x.round() as i32, y.round() as i32);
+                if multi {
+                    root.draw(&Circle::new((xi, yi), (9 * s) as i32, page_bg.filled()))
+                        .map_err(|e| e.to_string())?;
+                    let marker = get_font_with_color(config, 12 * s, &colors.text_primary)
+                        .pos(Pos::new(HPos::Center, VPos::Center));
+                    root.draw_text(&(series_index + 1).to_string(), &marker, (xi, yi))
+                        .map_err(|e| e.to_string())?;
+                    continue;
+                }
                 root.draw(&Circle::new((xi, yi), (6 * s) as i32, page_bg.filled()))
                     .map_err(|e| e.to_string())?;
                 root.draw(&Circle::new((xi, yi), (4 * s) as i32, color.filled()))
@@ -1239,6 +1235,13 @@ pub fn draw_line_chart(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bar_lengths_preserve_zero_and_numeric_ratios() {
+        assert_eq!(super::proportional_bar_width(0, 100, 1000.0), 0);
+        assert_eq!(super::proportional_bar_width(50, 100, 1000.0), 500);
+        assert_eq!(super::proportional_bar_width(100, 100, 1000.0), 1000);
+    }
+
     use super::*;
     use crate::plugins::stats::chart::data_loader::message_type_style;
     use crate::plugins::stats::chart::utils::{
@@ -1456,7 +1459,6 @@ mod tests {
         dump_png(&dir, "ranking-full", &out);
     }
 
-
     /// 用磁盘上真实的头像缓存出一张榜。
     ///
     /// 合成样张里的假头像是一块块纯色，彩度比真头像高得多；真头像求完平均是一片
@@ -1524,13 +1526,11 @@ mod tests {
                     icon_char: d.icon_char.clone(),
                 })
                 .collect();
-            let out = draw_bar_chart(&config, "本群今日发言排行榜", rows)
-                .expect("真头像样张应当能渲染");
+            let out =
+                draw_bar_chart(&config, "本群今日发言排行榜", rows).expect("真头像样张应当能渲染");
             dump_png(&dir, name, &out);
         }
     }
-
-
 
     /// 三版取色的对照表：一行一个真头像，右边挨着摆原版、当前、提议三块色。
     ///
@@ -1596,13 +1596,16 @@ mod tests {
         let mut buffer = vec![0u8; (width * height * 3) as usize];
         {
             let root = BitMapBackend::with_buffer(&mut buffer, (width, height)).into_drawing_area();
-            root.fill(&colors.card_background).map_err(|e| e.to_string()).unwrap();
+            root.fill(&colors.card_background)
+                .map_err(|e| e.to_string())
+                .unwrap();
 
             for (i, label) in ["原版", "当前", "提议"].iter().enumerate() {
                 let style = get_font_with_color(&config, 22 * s, &colors.text_secondary)
                     .pos(Pos::new(HPos::Center, VPos::Center));
                 let x = (pad + cell) as i32 + (swatch_w * i as u32 + swatch_w / 2) as i32;
-                root.draw_text(label, &style, (x, (head / 2) as i32)).unwrap();
+                root.draw_text(label, &style, (x, (head / 2) as i32))
+                    .unwrap();
             }
 
             for (row, img) in imgs.iter().enumerate() {
@@ -1635,11 +1638,7 @@ mod tests {
         for y in 0..height {
             for x in 0..width {
                 let o = ((y * width + x) * 3) as usize;
-                sheet.put_pixel(
-                    x,
-                    y,
-                    Rgba([buffer[o], buffer[o + 1], buffer[o + 2], 255]),
-                );
+                sheet.put_pixel(x, y, Rgba([buffer[o], buffer[o + 1], buffer[o + 2], 255]));
             }
         }
         for (row, img) in imgs.iter().enumerate() {
@@ -1718,4 +1717,3 @@ mod tests {
         }
     }
 }
-

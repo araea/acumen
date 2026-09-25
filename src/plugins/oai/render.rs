@@ -68,7 +68,12 @@ fn build_html(card: &Card<'_>) -> String {
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_FOOTNOTES);
-    let parser = Parser::new_ext(card.markdown, options);
+    let parser = Parser::new_ext(card.markdown, options).map(|event| match event {
+        pulldown_cmark::Event::Html(text) | pulldown_cmark::Event::InlineHtml(text) => {
+            pulldown_cmark::Event::Text(text)
+        }
+        other => other,
+    });
     let mut body = String::new();
     html::push_html(&mut body, parser);
     let body = label_code_blocks(&body);
@@ -131,7 +136,10 @@ fn render_footer(footer: &Footer) -> String {
             ));
         }
         if step.repeats > 1 {
-            out.push_str(&format!(r#"<span class="trace-rep">×{}</span>"#, step.repeats));
+            out.push_str(&format!(
+                r#"<span class="trace-rep">×{}</span>"#,
+                step.repeats
+            ));
         }
         out.push_str("</div>");
     }
@@ -159,22 +167,11 @@ fn render_sources(sources: &[super::types::Source]) -> String {
                 r#"<li><span class="src-idx">{}</span><span class="src-title">{}</span><span class="src-host">{}</span></li>"#,
                 index + 1,
                 escape_html(&source.title),
-                escape_html(&host_of(&source.url)),
+                escape_html(&source.url),
             )
         })
         .collect::<String>();
     format!(r#"<div class="sources"><div class="src-head">参考来源</div><ol>{items}</ol></div>"#)
-}
-
-fn host_of(url: &str) -> String {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|parsed| {
-            parsed
-                .host_str()
-                .map(|host| host.trim_start_matches("www.").to_string())
-        })
-        .unwrap_or_else(|| super::utils::truncate_chars(url, 40))
 }
 
 pub(crate) fn escape_html(value: &str) -> String {
@@ -363,6 +360,20 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_html_cannot_restyle_or_hide_card() {
+        let card = super::Card {
+            title: "test",
+            markdown: "<style>body{display:none}</style><div style=\"color:red\">content</div>",
+            sources: &[],
+            footer: None,
+        };
+        let html = super::build_html(&card);
+        assert!(!html.contains("<style>body{display:none}"));
+        assert!(!html.contains("<div style=\"color:red\">"));
+        assert!(html.contains("&lt;style&gt;"));
+    }
+
     use super::*;
 
     /// 版式里不许出现 HTML 的成对标签——样式表塞进 `style` 元素时会被截断，
@@ -402,7 +413,10 @@ mod tests {
         assert!(html.contains("<h2>结论</h2>"), "{html}");
         assert!(html.contains(r#"<pre data-lang="rust">"#), "{html}");
         assert!(html.contains("openai.com"), "{html}");
-        assert!(!html.contains("utm=1"), "来源只展示域名");
+        assert!(
+            html.contains("https://www.openai.com/index/a?utm=1"),
+            "来源保留完整地址"
+        );
         assert!(html.contains("gpt-5.6-luna · 8.2秒"), "{html}");
         assert!(html.contains("bash"), "{html}");
         assert!(
@@ -431,12 +445,6 @@ mod tests {
     #[test]
     fn sources_block_is_omitted_when_empty() {
         assert!(render_sources(&[]).is_empty());
-    }
-
-    #[test]
-    fn host_falls_back_to_the_raw_value() {
-        assert_eq!(host_of("https://www.example.com/a"), "example.com");
-        assert_eq!(host_of("not a url"), "not a url");
     }
 }
 
@@ -518,7 +526,10 @@ mod live_tests {
             .unwrap();
         let image = image::load_from_memory(&bytes).unwrap();
         // 出图范围是 `.shot`：卡面 520 加两侧各 20 的相纸。
-        assert_eq!(image.width(), (f64::from(VIEWPORT_WIDTH) * DEVICE_SCALE) as u32);
+        assert_eq!(
+            image.width(),
+            (f64::from(VIEWPORT_WIDTH) * DEVICE_SCALE) as u32
+        );
         // 占位视口是 800，真实卡片必须比它高出一截才说明测量生效。
         assert!(image.height() > 900, "height = {}", image.height());
         std::fs::write(std::env::temp_dir().join("acumen-card.jpg"), &bytes).unwrap();

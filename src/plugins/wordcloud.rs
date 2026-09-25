@@ -68,8 +68,8 @@ pub fn handle(
             };
 
             if scope_str == "本群" && query_group_id.is_none() && msg.group_id().is_none() {
-                let reply =
-                    Message::new().text("❌ 这个范围只在群里有效\n用「本群」查群里的词云，或用「我的」查个人的");
+                let reply = Message::new()
+                    .text("❌ 这个范围只在群里有效\n用「本群」查群里的词云，或用「我的」查个人的");
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
@@ -92,9 +92,17 @@ pub fn handle(
 
             // 生成并发送
             match generate_image(&ctx, query_group_id, query_user_id, start_time, end_time).await {
-                Ok(b64) => {
-                    let img_msg = Message::new().image(b64);
-                    send_msg(&ctx, writer, target_group, target_user, img_msg).await?;
+                Ok((b64, text)) => {
+                    let img_msg = Message::new().image_described(b64, &title);
+                    send_msg(&ctx, writer.clone(), target_group, target_user, img_msg).await?;
+                    crate::adapters::satori::send_text_chunks(
+                        &ctx,
+                        writer,
+                        target_group,
+                        target_user,
+                        &format!("{title}\n{text}"),
+                    )
+                    .await?;
                 }
                 Err(GenError::Empty) => {
                     // 空态不是错误：说清为什么空，再给一条能立刻做的事。
@@ -143,7 +151,7 @@ pub async fn generate_image(
     query_user_id: Option<i64>,
     start_time: i64,
     end_time: i64,
-) -> Result<String, GenError> {
+) -> Result<(String, String), GenError> {
     let config: WordCloudConfig = get_config_or_default(ctx, "wordcloud");
 
     if !config.enabled {
@@ -171,6 +179,18 @@ pub async fn generate_image(
     let width = config.width;
     let height = config.height;
 
+    let mut words: Vec<_> = image::frequencies(&corpus).into_iter().collect();
+    words.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let text = format!(
+        "词频（最多 {} 个词）：\n{}",
+        limit.clamp(1, 200),
+        words
+            .iter()
+            .take(limit.clamp(1, 200))
+            .map(|(word, count)| format!("{word}：{count:.0}"))
+            .collect::<Vec<_>>()
+            .join("；")
+    );
     // 在阻塞线程中生成图片
     let task_result = crate::render::worker::run(move || {
         image::generate_word_cloud(corpus, font_path, font_family, limit, width, height)
@@ -178,7 +198,7 @@ pub async fn generate_image(
     .await;
 
     match task_result {
-        Ok(res) => res.map_err(GenError::Failed),
+        Ok(res) => res.map(|image| (image, text)).map_err(GenError::Failed),
         Err(e) => Err(GenError::Failed(format!("任务中断：{}", e))),
     }
 }

@@ -210,13 +210,13 @@
         <button class="icon-btn state" type="button" data-snack-close aria-label="关闭提示">${icon("close")}</button>
       </div>`
     );
-    snack.left = kind === "error" ? 10000 : 4000;
+    snack.left = kind === "error" ? Infinity : 4000;
     armSnack();
   }
 
   function armSnack() {
     clearTimeout(snack.timer);
-    if (snack.hold || !$("#snackbar .snackbar")) return;
+    if (snack.hold || !Number.isFinite(snack.left) || !$("#snackbar .snackbar")) return;
     const started = Date.now();
     snack.timer = setTimeout(() => put($("#snackbar"), ""), snack.left);
     snack.started = started;
@@ -389,6 +389,17 @@
     logs: () => logs.mount(),
   };
 
+  function formDirty(form) {
+    return $$('input, textarea', form).some(input => input.value !== input.defaultValue)
+      || $$('[data-form-switch]', form).some(button => button.dataset.initial !== undefined && button.dataset.initial !== button.getAttribute('aria-checked'))
+      || $$('select', form).some(select => select.value !== (select.defaultValue ?? [...select.options].find(option => option.defaultSelected)?.value))
+      || form.getAttribute('aria-busy') === 'true' || !!$('[data-path][aria-busy=true]', form);
+  }
+
+  function hasFormDrafts() {
+    return $$('#global-form, [data-bot], [data-config]').some(formDirty);
+  }
+
   let renderSeq = 0;
   let shown = null;
   const scrolls = new Map();
@@ -401,6 +412,10 @@
     }
     const route = parseRoute();
     const previous = shown;
+    if (previous && previous.key !== route.key && hasFormDrafts()) {
+      const leave = await confirmAction({ title: "离开未保存的编辑？", body: "本页仍有未保存的内容。离开将放弃这些修改。", confirm: "放弃并离开", danger: true });
+      if (!leave) { history.replaceState(null, "", `#/${previous.page}${previous.arg ? "/" + previous.arg : ""}`); return; }
+    }
     const changed = !previous || previous.key !== route.key;
     markNav(route.page);
     overviewFeed.stop();
@@ -439,10 +454,22 @@
     }
     if (seq !== renderSeq) return;
 
+    const oldFocus = document.activeElement;
+    const focusPath = oldFocus?.dataset?.path;
+    const focusId = oldFocus?.id;
+    const retainedForms = previous?.key === route.key
+      ? $$("#global-form, [data-bot], [data-config]").filter(form => form.dataset.refresh !== "replace" && formDirty(form)) : [];
     const keep = quiet ? scrollY : changed ? scrolls.get(route.key) || 0 : scrollY;
     shown = route;
     busy(false);
     put($("#view"), fragment);
+    for (const form of retainedForms) {
+      const selector = form.id ? `#${CSS.escape(form.id)}` : form.hasAttribute("data-bot")
+        ? `[data-bot="${CSS.escape(form.dataset.bot)}"]` : `[data-config="${CSS.escape(form.dataset.config)}"]`;
+      const fresh = $(selector);
+      if (fresh) fresh.replaceWith(form);
+      else if (form.dataset.bot === "") $("#bot-list")?.append(form);
+    }
     const page = $("#view > .page");
     if (changed && page) page.toggleAttribute("data-enter", true);
     const heading = $(".page-title");
@@ -450,8 +477,14 @@
     scrollTo({ top: keep, behavior: "instant" });
     watchTitle();
     MOUNT[route.page]?.();
+    for (const button of $$("[data-form-switch]")) button.dataset.initial ??= button.getAttribute("aria-checked");
     // 换页后把焦点交给新页的标题：读屏从这里开始读，键盘从这里继续走。
     if (changed && previous && !quiet) heading?.focus({ preventScroll: true });
+    else if (quiet && oldFocus && oldFocus !== document.body) {
+      const next = oldFocus.isConnected ? oldFocus : focusPath
+        ? $(`[data-path="${CSS.escape(focusPath)}"]`) : focusId ? document.getElementById(focusId) : null;
+      (next || heading)?.focus({ preventScroll: true });
+    }
   }
 
   /* ==================== §7 总览 ==================== */
@@ -722,7 +755,7 @@
     const heading = (tag, id, text, cls = "section-title") => raw(`<${tag} class="${cls}" id="${id}">${esc(text)}</${tag}>`);
     const fields = Object.entries(plugin.config)
       .filter(([key]) => key !== "enabled")
-      .map(([key, value]) => configField(key, key, value));
+      .map(([key, value]) => configField(key, key, value, plugin.field_help || {}, plugin.field_options || {}));
     const commands = plugin.commands.length
       ? h`<ul class="group">${plugin.commands.map(
           (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
@@ -752,7 +785,7 @@
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
           ${heading(sub, "config-title", "配置")}
-          <span class="section-meta">修改后离开输入框或按回车即保存</span>
+          <span class="section-meta">离开输入框保存；单行输入框也可按回车保存</span>
         </div>
         ${fields.length
           ? h`<form class="card config" data-config="${plugin.name}" novalidate>${fields}</form>`
@@ -784,38 +817,46 @@
   let fieldSeq = 0;
 
   /** 一个配置项。表与对象数组展开成 fieldset，叶子就地成为能改的控件。 */
-  function configField(path, key, value) {
+  function configField(path, key, value, help = {}, options = {}) {
     const id = `f${++fieldSeq}`;
-    if (Array.isArray(value) && value.every((item) => item === null || typeof item !== "object")) {
+    const description = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || `${Array.isArray(value) ? "列表" : typeof value === "boolean" ? "开关" : typeof value === "number" ? "数值" : "文本"}配置；保存时由插件校验类型与范围。`;
+    const label = h`<code>${key}</code><span class="field-hint">${description}</span>`;
+    if (options[path]?.length) {
+      return h`<div class="field"><label class="field-label" for="${id}">${label}</label>
+        <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}">
+        ${[...new Set([value, ...options[path]])].map(option => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
+        </select>${icon("down")}</span></div>`;
+    }
+    if (Array.isArray(value)) {
       return h`<div class="field">
-        <label class="field-label" for="${id}"><code>${key}</code></label>
-        <input class="input mono" id="${id}" data-path="${path}" data-kind="list" value="${value.join(", ")}"
+        <label class="field-label" for="${id}">${label}</label>
+        <input class="input mono" id="${id}" data-path="${path}" data-kind="list" value="${JSON.stringify(value)}"
           spellcheck="false" autocapitalize="off" aria-describedby="${id}-hint">
-        <span class="field-hint" id="${id}-hint">多个值用逗号分隔；留空表示空列表</span>
+        <span class="field-hint" id="${id}-hint">JSON 列表，空列表为 []；保留引号以区分文本和数字；对象列表可在此增删项目</span>
       </div>`;
     }
     if (value !== null && typeof value === "object") {
       const children = Array.isArray(value)
-        ? value.map((item, index) => configField(`${path}.${index}`, `[${index}]`, item))
-        : Object.entries(value).map(([child, item]) => configField(`${path}.${child}`, child, item));
+        ? value.map((item, index) => configField(`${path}.${index}`, `[${index}]`, item, help, options))
+        : Object.entries(value).map(([child, item]) => configField(`${path}.${child}`, child, item, help, options));
       return h`<fieldset class="config-group"><legend class="config-legend">${key}</legend>${children}</fieldset>`;
     }
     if (typeof value === "boolean") {
       return h`<div class="toggle-row">
-        <span class="field-label" id="${id}"><code>${key}</code></span>
+        <span class="field-label" id="${id}">${label}</span>
         <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"
           aria-checked="${value}" aria-labelledby="${id}"></button>
       </div>`;
     }
     if (typeof value === "string" && (value.includes("\n") || value.length > 80)) {
       return h`<div class="field">
-        <label class="field-label" for="${id}"><code>${key}</code></label>
+        <label class="field-label" for="${id}">${label}</label>
         <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false">${value}</textarea>
       </div>`;
     }
     const numeric = typeof value === "number";
     return h`<div class="field">
-      <label class="field-label" for="${id}"><code>${key}</code></label>
+      <label class="field-label" for="${id}">${label}</label>
       <input class="input${numeric ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
         value="${value ?? ""}" spellcheck="false" autocapitalize="off"${attr(numeric, 'inputmode="decimal"')}>
     </div>`;
@@ -828,14 +869,15 @@
       return value;
     }
     if (kind !== "list") return text;
-    const trimmed = text.trim();
-    if (!trimmed) return [];
-    return trimmed.split(/[,，]/).map((piece) => {
-      const item = piece.trim();
-      if (/^-?\d+$/.test(item)) return Number.parseInt(item, 10);
-      if (/^-?\d*\.\d+$/.test(item)) return Number.parseFloat(item);
-      return item.replace(/^["']|["']$/g, "");
-    });
+    try {
+      const value = JSON.parse(text.trim() || "[]");
+      if (!Array.isArray(value)) throw new Error();
+      if (JSON.stringify(value).includes("<已隐藏>")) throw new Error("masked");
+      return value;
+    } catch (error) {
+      if (error.message === "masked") throw new Error("列表含有已隐藏的凭据。请提供完整的新值，或使用维护命令按具体字段修改。");
+      throw new Error('请输入 JSON 列表，例如 ["文字", "含,逗号"] 或 [123, 456]。');
+    }
   }
 
   /** 就地校验：错在哪一格就在哪一格下面说，并立即播报。 */
@@ -864,12 +906,14 @@
 
   async function commitField(control) {
     const form = control.closest("[data-config]");
-    if (!form || control.getAttribute("aria-busy") === "true") return;
+    if (!form || control.disabled || control.getAttribute("aria-busy") === "true") return;
     const kind = control.dataset.kind;
+    const submitted = control.value;
+    let saved = false;
     let value;
     if (kind === "bool") value = control.getAttribute("aria-checked") !== "true";
     else {
-      if (control.value === control.defaultValue) return;
+      if (control.value === (control.defaultValue ?? control.dataset.initial)) return;
       try {
         value = parseValue(kind, control.value);
       } catch (error) {
@@ -884,7 +928,8 @@
         body: { path: control.dataset.path, value },
       });
       if (kind === "bool") control.setAttribute("aria-checked", String(value));
-      else control.defaultValue = control.value;
+      else control.defaultValue = submitted;
+      saved = true;
       clearFieldError(control);
       snackbar(reply.message);
       refreshDiff(form.dataset.config);
@@ -894,6 +939,7 @@
       else fieldError(control, error.message);
     } finally {
       control.removeAttribute("aria-busy");
+      if (saved && control.isConnected && kind !== "bool" && control.value !== submitted) void commitField(control);
     }
   }
 
@@ -948,8 +994,10 @@
     try {
       const reply = await api(`/plugins/${encodeURIComponent(name)}/reset`, { method: "POST", body: {} });
       snackbar(reply.message);
+      $(`[data-config="${CSS.escape(name)}"]`)?.remove();
       if (wide.matches && $("#plugin-detail")) await plugins.swapDetail(name);
       else await render({ quiet: true });
+      $(`[data-reset="${CSS.escape(name)}"]`)?.focus({ preventScroll: true });
     } catch (error) {
       report(error);
     }
@@ -1081,6 +1129,7 @@
               src="/api/ambient/sticker/${sticker.id}?t=${encodeURIComponent(token)}">`
           : h`<span class="sticker-img">商城表情<br>只保存了参数</span>`}
         <figcaption>
+          ${sticker.image ? h`<button class="btn btn-text" type="button" data-sticker-play="${sticker.id}" aria-pressed="false">播放原图</button>` : ""}
           <span class="sticker-label" title="${sticker.label}">${sticker.label || "未命名表情包"}</span>
           <span class="sticker-meta">#${sticker.id} · 用过 ${sticker.uses} 次 · ${ago(sticker.added_at)}</span>
         </figcaption>
@@ -1109,10 +1158,12 @@
     const state = $(`#source-${name}-state`);
     state.textContent = editorState(name);
     state.toggleAttribute("data-dirty", dirty(name));
-    $(`[data-save-source="${name}"]`).disabled = !dirty(name);
+    const button = $(`[data-save-source="${name}"]`);
+    button.disabled = button.getAttribute("aria-busy") === "true" || !dirty(name);
   }
 
   async function saveSource(button) {
+    if (button.getAttribute("aria-busy") === "true") return;
     const name = button.dataset.saveSource;
     const text = sourceText(name);
     button.disabled = true;
@@ -1120,16 +1171,19 @@
     try {
       const reply = await api("/ambient/source", { method: "POST", body: { name, text } });
       ambient.data[name] = text;
-      delete ambient.drafts[name];
+      if (ambient.drafts[name] === text) delete ambient.drafts[name];
       const state = $(`#source-${name}-state`);
-      state.textContent = editorState(name);
-      state.removeAttribute("data-dirty");
+      if (state) {
+        state.textContent = editorState(name);
+        state.toggleAttribute("data-dirty", dirty(name));
+      }
       snackbar(reply.message);
     } catch (error) {
       button.disabled = false;
       report(error);
     } finally {
       button.removeAttribute("aria-busy");
+      button.disabled = !dirty(name);
     }
   }
 
@@ -1453,7 +1507,7 @@
               <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${filter.enable_whitelist}" aria-labelledby="g-white-label"></button></div>
             ${textField("g-white", "白名单群号", "whitelist", list(filter.whitelist), "逗号分隔")}
           </div>
-          <p class="note span-all">两个名单都为空时对所有群生效；同时出现在两边的群按禁止处理。</p>
+          <p class="note span-all">启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单。关闭白名单后，启用的黑名单才生效。</p>
           <div class="actions span-all"><button class="btn btn-filled" type="submit">保存全局设置</button></div>
         </form>
       </section>
@@ -1586,10 +1640,15 @@
     const button = $('[type="submit"]', form);
     if (button?.getAttribute("aria-busy") === "true") return;
     button?.setAttribute("aria-busy", "true");
+    form.setAttribute("aria-busy", "true");
+    const controls = $$("input, select, textarea, button", form).filter(control => !control.disabled);
+    for (const control of controls) control.disabled = true;
     try {
       await work();
     } finally {
       button?.removeAttribute("aria-busy");
+      form.removeAttribute("aria-busy");
+      for (const control of controls) control.disabled = false;
     }
   }
 
@@ -1679,6 +1738,13 @@
       if (on("[data-retry]")) return render();
       if ((hit = on("[data-toggle]"))) return togglePlugin(hit);
       if ((hit = on('button[data-path][data-kind="bool"]'))) return commitField(hit);
+      if ((hit = on("[data-sticker-play]"))) {
+        const play = hit.getAttribute("aria-pressed") !== "true";
+        hit.setAttribute("aria-pressed", String(play));
+        hit.textContent = play ? "停止播放" : "播放原图";
+        $("img", hit.closest("figure")).src = `/api/ambient/sticker/${hit.dataset.stickerPlay}?t=${encodeURIComponent(token)}${play ? "&play=true" : ""}`;
+        return;
+      }
       if ((hit = on("[data-form-switch]"))) {
         hit.setAttribute("aria-checked", String(hit.getAttribute("aria-checked") !== "true"));
         return;
@@ -1745,6 +1811,19 @@
             method: "POST",
             body: { index, remove: true, enabled: false, protocol: "satori", url: "" },
           });
+          hit.closest("form")?.remove();
+          for (const form of $$("[data-bot]")) {
+            if (form.dataset.bot !== "" && Number(form.dataset.bot) > index) {
+              const oldIndex = form.dataset.bot;
+              form.dataset.bot = String(Number(oldIndex) - 1);
+              for (const node of [form, ...$$("*", form)]) {
+                for (const key of ["id", "for", "aria-labelledby", "aria-describedby"]) {
+                  if (node.hasAttribute(key)) node.setAttribute(key, node.getAttribute(key).replaceAll(`bot-${oldIndex}-`, `bot-${form.dataset.bot}-`));
+                }
+              }
+              $("[data-drop-bot]", form).dataset.dropBot = form.dataset.bot;
+            }
+          }
           snackbar(reply.message);
           await render({ quiet: true });
         } catch (error) {
@@ -1769,7 +1848,7 @@
 
     document.addEventListener("change", (event) => {
       const target = event.target;
-      if (target.matches?.("input[data-path], textarea[data-path]")) return void commitField(target);
+      if (target.matches?.("input[data-path], textarea[data-path], select[data-path]")) return void commitField(target);
       if (target.name === "log-level") {
         logs.level = target.value;
         logs.paint();
@@ -1830,6 +1909,7 @@
               input.defaultValue = input.value;
               clearFieldError(input);
             }
+            for (const button of $$("[data-form-switch]", form)) button.dataset.initial = button.getAttribute("aria-checked");
             snackbar(reply.message);
           } catch (error) {
             report(error);
@@ -1841,6 +1921,7 @@
         await submitWith(form, async () => {
           try {
             const reply = await api("/settings/bot", { method: "POST", body: botPayload(form) });
+            form.dataset.refresh = "replace";
             snackbar(reply.message);
             await render({ quiet: true });
           } catch (error) {
@@ -1871,9 +1952,9 @@
       if (!document.hidden && token) resume();
     });
     addEventListener("hashchange", () => render());
-    wide.addEventListener("change", () => render({ quiet: true }));
+    wide.addEventListener("change", () => { if (shown?.page === "plugins") render({ quiet: true }); });
     addEventListener("beforeunload", (event) => {
-      if (SOURCES.some((source) => dirty(source.name))) event.preventDefault();
+      if (hasFormDrafts() || SOURCES.some((source) => dirty(source.name))) event.preventDefault();
     });
   }
 

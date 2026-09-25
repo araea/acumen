@@ -234,9 +234,17 @@ pub fn handle(
         .await;
 
         match result_img {
-            Ok(b64) => {
-                let reply = Message::new().image(b64);
-                send_msg(&ctx, writer, group_id, Some(user_id), reply).await?;
+            Ok((b64, text)) => {
+                let reply = Message::new().image_described(b64, &title);
+                send_msg(&ctx, writer.clone(), group_id, Some(user_id), reply).await?;
+                crate::adapters::satori::send_text_chunks(
+                    &ctx,
+                    writer,
+                    group_id,
+                    Some(user_id),
+                    &text,
+                )
+                .await?;
             }
             Err(chart::ChartError::NoData) => {
                 // 空态不是错误：说清为什么空，再给一条能立刻做的事。

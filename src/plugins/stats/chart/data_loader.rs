@@ -43,24 +43,8 @@ pub struct MessageTypeStyle {
     pub icon: &'static str,
 }
 
-/// 图表用的五个色相：**一套色表，全站共用**。
-///
-/// 值与 `res/cards/m3e.css` 里那张色表逐字一致（主色、调色板的靛与紫、
-/// 控制卡的三级橄榄、警告赭金），词云用的也是这五个。选它们不是为了好看，
-/// 是因为在这张暖白纸上**彼此分得开**——排行榜里相邻两行常常不同色，
-/// 色相挨太近就糊成一片；同时又都在同一个低彩度家族里。
-///
-/// 从前这里散着两套 Tailwind 色（一份 `MESSAGE_TYPE_STYLES`、一份
-/// `get_palette_color`），还夹着 `#EF4444` 红与 `#EC4899` 粉：那些颜色在
-/// 一张偏绿的卡片旁边格外跳，而且和词云、和卡片没有任何关系。
-/// `every_swatch_matches_the_stylesheet` 那条单测钉着这五支色都还在样式表里。
-pub const HUES: [RGBColor; 5] = [
-    RGBColor(31, 99, 80),   // 主色（scheme-manual 的 primary）
-    RGBColor(62, 78, 158),  // 调色板的靛（--md-hue-indigo）
-    RGBColor(95, 58, 150),  // 调色板的紫（--md-hue-violet）
-    RGBColor(74, 91, 58),   // 控制卡的三级色（橄榄）
-    RGBColor(122, 83, 0),   // 警告赭金
-];
+/// 统计图与词云共用生成的 M3 语义色。系列编号提供独立于颜色的辨认通道。
+pub const HUES: [RGBColor; 5] = crate::render::tokens::HUES;
 
 /// 取不到头像色时的兜底色：就用主色。
 ///
@@ -70,12 +54,36 @@ pub const FALLBACK_THEME: RGBColor = HUES[0];
 
 pub const MESSAGE_TYPE_STYLES: [MessageTypeStyle; 6] = [
     // 文本取 on-surface-variant：它就是「没有别的东西」的那一类，不该抢眼
-    MessageTypeStyle { label: "文本", color: RGBColor(79, 92, 87), icon: "文" },
-    MessageTypeStyle { label: "图片", color: HUES[0], icon: "图" },
-    MessageTypeStyle { label: "语音", color: HUES[1], icon: "语" },
-    MessageTypeStyle { label: "视频", color: HUES[2], icon: "视" },
-    MessageTypeStyle { label: "动画表情", color: HUES[3], icon: "动" },
-    MessageTypeStyle { label: "表情", color: HUES[4], icon: "表" },
+    MessageTypeStyle {
+        label: "文本",
+        color: crate::render::tokens::ON_SURFACE_VARIANT,
+        icon: "文",
+    },
+    MessageTypeStyle {
+        label: "图片",
+        color: HUES[0],
+        icon: "图",
+    },
+    MessageTypeStyle {
+        label: "语音",
+        color: HUES[1],
+        icon: "语",
+    },
+    MessageTypeStyle {
+        label: "视频",
+        color: HUES[2],
+        icon: "视",
+    },
+    MessageTypeStyle {
+        label: "动画表情",
+        color: HUES[3],
+        icon: "动",
+    },
+    MessageTypeStyle {
+        label: "表情",
+        color: HUES[4],
+        icon: "表",
+    },
 ];
 
 /// 按类型名查找视觉样式，未知类型回退到主色

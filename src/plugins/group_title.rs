@@ -1,5 +1,5 @@
-use crate::adapters::satori::LockedWriter;
 use crate::adapters::satori::api;
+use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::match_command;
 use crate::config::build_config;
 use crate::event::{Context, EventType};
@@ -90,7 +90,15 @@ pub fn handle(
                             "[Group({})] 获取 Bot 成员信息失败: {}",
                             group_id, e
                         );
-                        return Ok(Some(ctx));
+                        send_msg(
+                            &ctx,
+                            writer,
+                            Some(group_id),
+                            Some(user_id),
+                            "暂时无法查询机器人群权限。请稍后重试；详细原因已记录在日志中。",
+                        )
+                        .await?;
+                        return Ok(None);
                     }
                 };
 
@@ -101,7 +109,15 @@ pub fn handle(
                     "[Group({})] Bot 不是群主，无法设置头衔",
                     group_id
                 );
-                return Ok(Some(ctx));
+                send_msg(
+                    &ctx,
+                    writer,
+                    Some(group_id),
+                    Some(user_id),
+                    "无法设置头衔：机器人需要群主权限。请由群主调整权限后重试。",
+                )
+                .await?;
+                return Ok(None);
             }
 
             // 4. 拼接头衔内容
@@ -175,7 +191,15 @@ pub fn handle(
                     "[Group({})] 设置头衔失败: {}",
                     group_id, e
                 );
-                return Ok(Some(ctx));
+                send_msg(
+                    &ctx,
+                    writer,
+                    Some(group_id),
+                    Some(user_id),
+                    "头衔未设置成功。请检查群权限与头衔长度后重试；详细原因已记录在日志中。",
+                )
+                .await?;
+                return Ok(None);
             }
 
             return Ok(None);

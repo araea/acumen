@@ -162,7 +162,20 @@ async fn plugin_detail(
     let commands: Vec<Value> = plugin
         .commands
         .iter()
-        .map(|cmd| json!({ "cmd": cmd.cmd, "note": cmd.note }))
+        .map(|cmd| {
+            let first = cmd.cmd.split(" / ").next().unwrap_or(cmd.cmd);
+            let prefix = config
+                .command_prefix
+                .first()
+                .map(String::as_str)
+                .unwrap_or("");
+            let text = if crate::plugins::help::needs_prefix(first) {
+                format!("{prefix}{first}")
+            } else {
+                first.to_string()
+            };
+            json!({ "cmd": text, "note": cmd.note })
+        })
         .collect();
 
     Json(json!({
@@ -175,6 +188,8 @@ async fn plugin_detail(
         "effect": crate::plugins::ctl::effect(plugin.name),
         "commands": commands,
         "config": crate::plugins::ctl::redacted(current),
+        "field_help": field_help(plugin.name),
+        "field_options": field_options(plugin.name, current),
         "defaults": crate::plugins::ctl::redacted(&defaults),
         "diff": diff,
     }))
@@ -356,9 +371,16 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
     .into_response()
 }
 
+#[derive(Deserialize)]
+struct StickerPreview {
+    #[serde(default)]
+    play: bool,
+}
+
 async fn sticker_image(
     State(_console): State<Arc<Console>>,
     AxumPath(id): AxumPath<u32>,
+    Query(preview): Query<StickerPreview>,
 ) -> Response {
     let entry = crate::plugins::oai::chat::stickers::by_id(id);
     let Some(entry) = entry else {
@@ -370,6 +392,39 @@ async fn sticker_image(
     };
     match tokio::fs::read(&path).await {
         Ok(bytes) => {
+            if !preview.play {
+                let decoded = crate::render::worker::run(move || -> Result<Vec<u8>, String> {
+                    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+                        .with_guessed_format()
+                        .map_err(|e| e.to_string())?;
+                    let mut limits = image::Limits::default();
+                    limits.max_image_width = Some(8192);
+                    limits.max_image_height = Some(8192);
+                    limits.max_alloc = Some(64 * 1024 * 1024);
+                    reader.limits(limits);
+                    let image = reader
+                        .decode()
+                        .map_err(|e| e.to_string())?
+                        .thumbnail(396, 396);
+                    let mut out = std::io::Cursor::new(Vec::new());
+                    image
+                        .write_to(&mut out, image::ImageFormat::Png)
+                        .map_err(|e| e.to_string())?;
+                    Ok(out.into_inner())
+                })
+                .await;
+                return match decoded {
+                    Ok(Ok(bytes)) => (
+                        [
+                            (axum::http::header::CONTENT_TYPE, "image/png"),
+                            (axum::http::header::CACHE_CONTROL, "private, max-age=86400"),
+                        ],
+                        bytes,
+                    )
+                        .into_response(),
+                    _ => super::server::fail(StatusCode::UNPROCESSABLE_ENTITY, "无法生成静态预览"),
+                };
+            }
             let mime = match path
                 .extension()
                 .and_then(|ext| ext.to_str())
@@ -387,7 +442,10 @@ async fn sticker_image(
             (
                 [
                     (axum::http::header::CONTENT_TYPE, mime),
-                    (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+                    (
+                        axum::http::header::CACHE_CONTROL,
+                        "public, max-age=31536000, immutable",
+                    ),
                 ],
                 bytes,
             )
@@ -611,7 +669,10 @@ async fn log_history(
     State(console): State<Arc<Console>>,
     Query(query): Query<LogQuery>,
 ) -> Response {
-    let limit = query.limit.unwrap_or(super::state::HISTORY_LIMIT).min(super::state::HISTORY_LIMIT);
+    let limit = query
+        .limit
+        .unwrap_or(super::state::HISTORY_LIMIT)
+        .min(super::state::HISTORY_LIMIT);
     Json(json!({ "lines": console.recent(limit) })).into_response()
 }
 
@@ -733,4 +794,89 @@ mod tests {
             "要给出一条此刻能照做的写法：{message}"
         );
     }
+}
+
+fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
+    let mut result = std::collections::BTreeMap::new();
+    let mut section = String::new();
+    let mut comments = Vec::new();
+    for line in include_str!("../../../config.example.toml").lines() {
+        let line = line.trim();
+        if let Some(comment) = line.strip_prefix("# ") {
+            if !comment.starts_with('=') {
+                comments.push(comment.to_string());
+            }
+        } else if line.starts_with('[') {
+            section = line.trim_matches(['[', ']']).to_string();
+            comments.clear();
+        } else if let Some((key, _)) = line.split_once('=') {
+            if section == plugin || section.starts_with(&format!("{plugin}.")) {
+                let prefix = section
+                    .strip_prefix(plugin)
+                    .unwrap()
+                    .trim_start_matches('.');
+                let path = if prefix.is_empty() {
+                    key.trim().to_string()
+                } else {
+                    format!("{prefix}.{}", key.trim())
+                };
+                if !comments.is_empty() {
+                    result.insert(path, comments.join(" "));
+                }
+            }
+            comments.clear();
+        } else {
+            comments.clear();
+        }
+    }
+    result
+}
+
+#[test]
+#[ignore = "exports isolated browser fixtures"]
+fn dump_console_fixture() {
+    let plugins: Vec<_> = get_plugins().iter().map(|plugin| json!({
+        "name": plugin.name, "display": plugin.display_name, "section": plugin.section,
+        "summary": plugin.summary, "on": true, "pending": false,
+        "effect": crate::plugins::ctl::effect(plugin.name),
+        "commands": plugin.commands.iter().map(|cmd| json!({"cmd": cmd.cmd, "note":cmd.note})).collect::<Vec<_>>(),
+        "config": crate::plugins::ctl::redacted(&(plugin.default_config)()),
+        "field_help": field_help(plugin.name), "field_options": field_options(plugin.name, &(plugin.default_config)()), "defaults": {}, "diff": []
+    })).collect();
+    assert_eq!(plugins.len(), 22);
+    std::fs::write(
+        std::env::var("ACUMEN_CONSOLE_FIXTURE").expect("fixture path"),
+        serde_json::to_vec_pretty(&plugins).unwrap(),
+    )
+    .unwrap();
+}
+
+fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<String, Vec<String>> {
+    fn visit(
+        plugin: &str,
+        value: &Toml,
+        prefix: &str,
+        out: &mut std::collections::BTreeMap<String, Vec<String>>,
+    ) {
+        if let Some(table) = value.as_table() {
+            for (key, value) in table {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                let options = crate::plugins::ctl::options(plugin, &path);
+                if !options.is_empty() {
+                    out.insert(
+                        path.clone(),
+                        options.iter().map(|s| s.to_string()).collect(),
+                    );
+                }
+                visit(plugin, value, &path, out);
+            }
+        }
+    }
+    let mut out = std::collections::BTreeMap::new();
+    visit(plugin, value, "", &mut out);
+    out
 }

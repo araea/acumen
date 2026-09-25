@@ -53,6 +53,19 @@ async function until(predicate, description) {
   assert(printed, 'startup log prints the console address');
   assert.equal(new URL(printed[0]).searchParams.get('t'), token, 'printed address round-trips the token');
   assert.equal((await api('/logs?limit=1')).lines.length, 1);
+  const all = await api('/plugins');
+  assert.equal(all.plugins.length, 22);
+  for (const plugin of all.plugins) {
+    const detail = await api('/plugins/' + plugin.name);
+    assert.equal(detail.name, plugin.name);
+    assert(detail.config && detail.field_help && Array.isArray(detail.commands), plugin.name);
+    assert(detail.commands.every(command=>!command.cmd.includes(' / ')), 'copy one command, not aliases');
+  }
+  const oai = await api('/plugins/oai');
+  assert(oai.commands.some(command=>command.cmd === '<名称>!'));
+  assert(oai.commands.some(command=>command.cmd === '<名称>~#<新名>'));
+  assert(!oai.commands.some(command=>command.cmd === '/<名称> <内容>'));
+
   // 配置写 5000，读出侧仍是 2000 那条口径（state::HISTORY_LIMIT）。
   assert((await api('/logs?limit=99999')).lines.length <= 2000, 'history read is capped at 2000');
   abort = new AbortController();

@@ -51,7 +51,13 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
             sub: format!("按用途查找功能 · 指令前缀 {prefix}"),
         },
         // 汇总启用与停用数量，状态清单在下方逐项展开
-        Block::Meter(groups.iter().flat_map(|g| g.items.iter()).map(|e| e.enabled).collect()),
+        Block::Meter(
+            groups
+                .iter()
+                .flat_map(|g| g.items.iter())
+                .map(|e| e.enabled)
+                .collect(),
+        ),
         Block::Rule,
     ];
 
@@ -79,7 +85,7 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
     blocks.push(Block::Callout {
         tone: Tone::Info,
         text: format!(
-            "Satori v1 · 管理开关与配置：{prefix}ctl（聊天）\n状态为配置开关；初始化及排期修改待重启"
+            "Satori v1 · 管理开关与配置：{prefix}ctl（聊天）\n状态为配置开关；首次启用自动初始化；排期修改下次连接生效"
         ),
     });
 
@@ -89,7 +95,10 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
         kicker: "ACUMEN · MANUAL".into(),
         blocks,
         foot: "开关状态以当前配置为准".into(),
-        hint: ("查看某个插件的全部指令".into(), format!("{prefix}help <插件名>")),
+        hint: (
+            "查看某个插件的全部指令".into(),
+            format!("{prefix}help <插件名>"),
+        ),
     })
 }
 
@@ -99,12 +108,20 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
         Block::Title {
             title: entry.display.into(),
             pill: Some((
-                if entry.enabled { "已启用" } else { "已停用" }.into(),
+                if entry.enabled {
+                    "已启用"
+                } else {
+                    "已停用"
+                }
+                .into(),
                 entry.enabled,
             )),
             sub: format!("配置键 {}", entry.name),
         },
-        Block::Callout { tone: Tone::Info, text: entry.desc.into() },
+        Block::Callout {
+            tone: Tone::Info,
+            text: entry.desc.into(),
+        },
     ];
 
     if cmds.is_empty() {
@@ -123,7 +140,11 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
                 .map(|c| {
                     let (primary, aliases) = split_aliases(c.cmd);
                     web::Cmd {
-                        prefix: if needs_prefix(primary) { prefix.into() } else { String::new() },
+                        prefix: if needs_prefix(primary) {
+                            prefix.into()
+                        } else {
+                            String::new()
+                        },
                         cmd: primary.into(),
                         note: c.note.into(),
                         aliases: aliases.iter().map(|a| full_cmd(prefix, a)).collect(),
@@ -136,7 +157,7 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
     blocks.push(Block::Callout {
         tone: Tone::Info,
         text: format!(
-            "管理：{p}ctl show {n}\n开关：{p}ctl on/off {n}\n首次初始化与定时排期修改待重启；详见 {p}ctl list",
+            "管理：{p}ctl show {n}\n开关：{p}ctl on/off {n}\n首次启用自动初始化；定时排期修改下次连接生效；详见 {p}ctl list",
             p = prefix,
             n = entry.name
         ),
@@ -178,7 +199,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         // 用真实注册表造样张：分区、条目数与线上完全一致
-        let known: Vec<&str> = crate::plugins::help::SECTIONS.iter().map(|(c, _, _)| *c).collect();
+        let known: Vec<&str> = crate::plugins::help::SECTIONS
+            .iter()
+            .map(|(c, _, _)| *c)
+            .collect();
         let groups: Vec<Group> = crate::plugins::help::SECTIONS
             .iter()
             .map(|(code, title, en)| Group {
@@ -187,7 +211,11 @@ mod tests {
                 items: get_plugins()
                     .iter()
                     .filter(|p| {
-                        let sec = if known.contains(&p.section) { p.section } else { "misc" };
+                        let sec = if known.contains(&p.section) {
+                            p.section
+                        } else {
+                            "misc"
+                        };
                         sec == *code
                     })
                     .enumerate()
@@ -217,21 +245,34 @@ mod tests {
         let cases: Vec<(&str, Card)> = vec![
             ("overview", overview(&groups, "/")),
             ("detail_ai_news", detail(&entry(ai, true), ai.commands, "/")),
-            ("detail_background", detail(&entry(bg, false), bg.commands, "/")),
-            ("detail_widest", detail(&entry(wide, true), wide.commands, "/")),
+            (
+                "detail_background",
+                detail(&entry(bg, false), bg.commands, "/"),
+            ),
+            (
+                "detail_widest",
+                detail(&entry(wide, true), wide.commands, "/"),
+            ),
         ];
         for (name, card) in cases {
             std::fs::write(format!("{dir}/{name}.html"), web::html(&card.0)).unwrap();
             let browser_path = std::env::var("CHROME_BIN").ok();
-            let b64 = card.render(3.0, browser_path.as_deref()).await.expect("浏览器应当出图");
+            let b64 = card
+                .render(3.0, browser_path.as_deref())
+                .await
+                .expect("浏览器应当出图");
             let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
                 .expect("应是合法 base64");
-            assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']), "{name} 应是 PNG");
+            assert!(
+                bytes.starts_with(&[0x89, b'P', b'N', b'G']),
+                "{name} 应是 PNG"
+            );
             std::fs::write(format!("{dir}/{name}.png"), &bytes).unwrap();
             // 同时查看手机宽度的预览，避免只看高分辨率原图误判字号。
             let img = image::load_from_memory(&bytes).unwrap();
             img.resize(420, u32::MAX, image::imageops::FilterType::Lanczos3)
-                .save(format!("{dir}/{name}_phone.png")).unwrap();
+                .save(format!("{dir}/{name}_phone.png"))
+                .unwrap();
             println!("{name} 出图 {} 字节", bytes.len());
         }
         cdp_html_shot::Browser::shutdown_global().await;

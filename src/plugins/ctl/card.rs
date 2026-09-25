@@ -54,7 +54,11 @@ pub fn usage(prefix: &str, cmds: &[crate::plugins::Cmd]) -> Card {
                         .map(|a| format!("{prefix}{}", a.trim()))
                         .collect();
                     web::Cmd {
-                        prefix: if needs_prefix(primary) { prefix.into() } else { String::new() },
+                        prefix: if needs_prefix(primary) {
+                            prefix.into()
+                        } else {
+                            String::new()
+                        },
                         cmd: primary.into(),
                         note: c.note.into(),
                         aliases,
@@ -83,9 +87,7 @@ pub fn usage(prefix: &str, cmds: &[crate::plugins::Cmd]) -> Card {
         },
         Block::Callout {
             tone: Tone::Info,
-            text: "带生命周期的插件（有 on_init / on_connected 的）首次启用与排期改动要等下次启动才完整生效，\
-                   状态清单里标注「待重启」；其余改动下一条消息即生效"
-                .into(),
+            text: "首次启用自动初始化；定时排期修改下次连接生效；其余改动下一条消息即生效".into(),
         },
     ];
     doc(

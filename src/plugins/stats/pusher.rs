@@ -31,12 +31,29 @@ async fn send_chart(
     title: &str,
 ) {
     match chart::generate(
-        c, false, data_type, chart_type,
-        Some(gid), None, 0,
-        range.0, range.1, title,
-    ).await {
-        Ok(b64) => {
-            let _ = send_msg_ack(c, w, Some(gid), None, Message::new().image(b64)).await;
+        c,
+        false,
+        data_type,
+        chart_type,
+        Some(gid),
+        None,
+        0,
+        range.0,
+        range.1,
+        title,
+    )
+    .await
+    {
+        Ok((b64, text)) => {
+            let _ = send_msg_ack(
+                c,
+                w.clone(),
+                Some(gid),
+                None,
+                Message::new().image_described(b64, "统计图片，完整数据见后续文本"),
+            )
+            .await;
+            let _ = crate::adapters::satori::send_text_chunks(c, w, Some(gid), None, &text).await;
         }
         // 没数据是常态（冷群），不该和真故障混在一个级别里。
         Err(chart::ChartError::NoData) => {
@@ -50,8 +67,16 @@ async fn send_chart(
 
 async fn send_wordcloud(c: &Context, w: LockedWriter, gid: i64, range: (i64, i64)) {
     match wordcloud::generate_image(c, Some(gid), None, range.0, range.1).await {
-        Ok(b64) => {
-            let _ = send_msg_ack(c, w, Some(gid), None, Message::new().image(b64)).await;
+        Ok((b64, text)) => {
+            let _ = send_msg_ack(
+                c,
+                w.clone(),
+                Some(gid),
+                None,
+                Message::new().image_described(b64, "统计图片，完整数据见后续文本"),
+            )
+            .await;
+            let _ = crate::adapters::satori::send_text_chunks(c, w, Some(gid), None, &text).await;
         }
         // 消息过少属正常现象，只记日志不打扰群；真失败才值得 warn。
         Err(wordcloud::GenError::Empty) => {
@@ -64,13 +89,7 @@ async fn send_wordcloud(c: &Context, w: LockedWriter, gid: i64, range: (i64, i64
 }
 
 /// 阈值预检：低于阈值返回 None，调用方据此跳过该群推送
-async fn precheck(
-    c: &Context,
-    gid: i64,
-    range: (i64, i64),
-    min: u64,
-    label: &str,
-) -> Option<u64> {
+async fn precheck(c: &Context, gid: i64, range: (i64, i64), min: u64, label: &str) -> Option<u64> {
     match queries::get_message_count(&c.db, Some(gid), None, range.0, range.1).await {
         Ok(count) => {
             if count < min {
@@ -111,11 +130,26 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: i64, min: u64)
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
-    send_text(&c, w.clone(), gid, format!(
-        "{} · 今日群聊小结\n全天共 {} 条消息，{} 位群友活跃",
-        date_str, count, users
-    )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群今日发言排行榜").await;
+    send_text(
+        &c,
+        w.clone(),
+        gid,
+        format!(
+            "{} · 今日群聊小结\n全天共 {} 条消息，{} 位群友活跃",
+            date_str, count, users
+        ),
+    )
+    .await;
+    send_chart(
+        &c,
+        w.clone(),
+        gid,
+        "发言",
+        "排行榜",
+        range,
+        "本群今日发言排行榜",
+    )
+    .await;
     send_wordcloud(&c, w, gid, range).await;
 }
 
@@ -129,16 +163,42 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
         None => return,
     };
     let users = active_users(&c, gid, range).await;
-    let yest = (Local::now() - Duration::days(1)).format("%m月%d日").to_string();
+    let yest = (Local::now() - Duration::days(1))
+        .format("%m月%d日")
+        .to_string();
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
-    send_text(&c, w.clone(), gid, format!(
-        "早安，昨日（{}）群活跃回顾\n共 {} 条消息，{} 位群友参与",
-        yest, count, users
-    )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群昨日发言排行榜").await;
-    send_chart(&c, w, gid, "发言", "走势", range, "本群昨日 24 小时活跃走势").await;
+    send_text(
+        &c,
+        w.clone(),
+        gid,
+        format!(
+            "早安，昨日（{}）群活跃回顾\n共 {} 条消息，{} 位群友参与",
+            yest, count, users
+        ),
+    )
+    .await;
+    send_chart(
+        &c,
+        w.clone(),
+        gid,
+        "发言",
+        "排行榜",
+        range,
+        "本群昨日发言排行榜",
+    )
+    .await;
+    send_chart(
+        &c,
+        w,
+        gid,
+        "发言",
+        "走势",
+        range,
+        "本群昨日 24 小时活跃走势",
+    )
+    .await;
 }
 
 /// [12:30 每日] 午间速览：今日上半场发言榜
@@ -153,11 +213,23 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: i64, min: u64) {
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
-    send_text(&c, w.clone(), gid, format!(
-        "中午好，今日上半场战报\n截至现在共 {} 条发言",
-        count
-    )).await;
-    send_chart(&c, w, gid, "发言", "排行榜", range, "本群今日上午发言排行榜").await;
+    send_text(
+        &c,
+        w.clone(),
+        gid,
+        format!("中午好，今日上半场战报\n截至现在共 {} 条发言", count),
+    )
+    .await;
+    send_chart(
+        &c,
+        w,
+        gid,
+        "发言",
+        "排行榜",
+        range,
+        "本群今日上午发言排行榜",
+    )
+    .await;
 }
 
 /// [周一 10:00] 上周回顾：上周发言榜 + 上周走势
@@ -173,11 +245,26 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) 
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
-    send_text(&c, w.clone(), gid, format!(
-        "新一周开工，上周群聊回顾\n全周 {} 条消息，{} 位群友活跃",
-        count, users
-    )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群上周发言排行榜").await;
+    send_text(
+        &c,
+        w.clone(),
+        gid,
+        format!(
+            "新一周开工，上周群聊回顾\n全周 {} 条消息，{} 位群友活跃",
+            count, users
+        ),
+    )
+    .await;
+    send_chart(
+        &c,
+        w.clone(),
+        gid,
+        "发言",
+        "排行榜",
+        range,
+        "本群上周发言排行榜",
+    )
+    .await;
     send_chart(&c, w, gid, "发言", "走势", range, "本群上周发言走势").await;
 }
 
@@ -192,15 +279,43 @@ pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
     };
     let users = active_users(&c, gid, range).await;
     let now = Local::now();
-    let last_month = if now.month() == 1 { 12 } else { now.month() - 1 };
+    let last_month = if now.month() == 1 {
+        12
+    } else {
+        now.month() - 1
+    };
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
-    send_text(&c, w.clone(), gid, format!(
-        "月度回顾 · {}月\n上月共 {} 条消息，{} 位群友活跃",
-        last_month, count, users
-    )).await;
-    send_chart(&c, w.clone(), gid, "发言", "排行榜", range, "本群上月发言排行榜").await;
-    send_chart(&c, w.clone(), gid, "发言", "走势", range, "本群上月发言走势").await;
+    send_text(
+        &c,
+        w.clone(),
+        gid,
+        format!(
+            "月度回顾 · {}月\n上月共 {} 条消息，{} 位群友活跃",
+            last_month, count, users
+        ),
+    )
+    .await;
+    send_chart(
+        &c,
+        w.clone(),
+        gid,
+        "发言",
+        "排行榜",
+        range,
+        "本群上月发言排行榜",
+    )
+    .await;
+    send_chart(
+        &c,
+        w.clone(),
+        gid,
+        "发言",
+        "走势",
+        range,
+        "本群上月发言走势",
+    )
+    .await;
     send_wordcloud(&c, w, gid, range).await;
 }

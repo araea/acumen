@@ -213,6 +213,10 @@
 
   /* —— 字阶（M3 type scale，rem 以跟随用户字号设置） ——
      强调档（M3E emphasized）只提字重，不改尺寸。 */
+  --md-sys-typescale-display-large-size: 3.5625rem;
+  --md-sys-typescale-display-large-line-height: 4rem;
+  --md-sys-typescale-display-medium-size: 2.8125rem;
+  --md-sys-typescale-display-medium-line-height: 3.25rem;
   --md-sys-typescale-display-small-size: 2.25rem;
   --md-sys-typescale-display-small-line-height: 2.75rem;
   --md-sys-typescale-headline-large-size: 2rem;

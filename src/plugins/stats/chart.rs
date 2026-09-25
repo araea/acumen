@@ -76,7 +76,7 @@ pub async fn generate(
     start_time: i64,
     end_time: i64,
     title: &str,
-) -> Result<String, ChartError> {
+) -> Result<(String, String), ChartError> {
     let db = &ctx.db;
     let config: StatsConfig = get_config_or_default(ctx, "stats");
 
@@ -95,11 +95,31 @@ pub async fn generate(
         )
         .await?;
 
-        return crate::render::worker::run(move || {
+        let text = format!(
+            "{title}\n{}",
+            chart_data
+                .iter()
+                .enumerate()
+                .map(|(index, series)| format!(
+                    "系列 {}：{}\n{}",
+                    index + 1,
+                    series.name,
+                    series
+                        .points
+                        .iter()
+                        .map(|point| format!("{}：{}", point.label, point.value))
+                        .collect::<Vec<_>>()
+                        .join("；")
+                ))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let image = crate::render::worker::run(move || {
             draw_with_font_panic_guard(&config, || draw_line_chart(&config, &title, chart_data))
         })
         .await
-        .map_err(|e| ChartError::Failed(format!("图表任务失败：{e}")))?;
+        .map_err(|e| ChartError::Failed(format!("图表任务失败：{e}")))??;
+        return Ok((image, text));
     }
 
     // 2. 柱状图 / 排行榜
@@ -115,12 +135,21 @@ pub async fn generate(
     )
     .await?;
 
+    let text = format!(
+        "{title}\n{}",
+        bar_data
+            .iter()
+            .enumerate()
+            .map(|(index, item)| format!("{}. {}：{}", index + 1, item.label, item.value))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
     // 3. 准备头像
     prepare_avatars(&mut bar_data).await;
 
     // 4. 绘图：消息类型用竖排信息卡，其余沿用头像条形榜
     let message_types = data_type == "消息类型";
-    crate::render::worker::run(move || {
+    let image = crate::render::worker::run(move || {
         draw_with_font_panic_guard(&config, || {
             if message_types {
                 draw_message_type_ranking(&config, &title, bar_data)
@@ -130,5 +159,6 @@ pub async fn generate(
         })
     })
     .await
-    .map_err(|e| format!("图表任务失败：{e}"))?
+    .map_err(|e| format!("图表任务失败：{e}"))??;
+    Ok((image, text))
 }

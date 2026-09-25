@@ -83,8 +83,15 @@ pub fn handle(
                     if args_text.is_empty() {
                         (3, 3)
                     } else {
-                        // 参数格式不对，跳过或返回
-                        return Ok(Some(ctx));
+                        send_msg(
+                            &ctx,
+                            writer,
+                            msg.group_id(),
+                            Some(msg.user_id()),
+                            "参数格式不正确。请用 行x列，例如 3x3，并附带或引用图片。",
+                        )
+                        .await?;
+                        return Ok(None);
                     }
                 }
             };
@@ -106,12 +113,25 @@ pub fn handle(
             }
 
             if rows == 0 || cols == 0 {
+                send_msg(
+                    &ctx,
+                    writer,
+                    msg.group_id(),
+                    Some(msg.user_id()),
+                    "行数和列数都须大于 0，例如 3x3。",
+                )
+                .await?;
                 return Ok(None);
             }
 
             // 3. 获取图片 URL (优先指令参数，其次引用消息)
-            let url = match get_image_url(&ctx, writer.clone(), &matched.args, matched.reply_id.as_ref())
-                .await
+            let url = match get_image_url(
+                &ctx,
+                writer.clone(),
+                &matched.args,
+                matched.reply_id.as_ref(),
+            )
+            .await
             {
                 Some(u) => u,
                 None => {
@@ -165,8 +185,11 @@ pub fn handle(
 
                     for (index, b64) in base64_list.into_iter().enumerate() {
                         let image_content = Message::new().image(format!("base64://{}", b64));
-                        forward_node_msg =
-                            forward_node_msg.node_custom(bot_id, format!("图 {}", index + 1), image_content);
+                        forward_node_msg = forward_node_msg.node_custom(
+                            bot_id,
+                            format!("图 {}", index + 1),
+                            image_content,
+                        );
                     }
 
                     if let Err(e) = send_msg(

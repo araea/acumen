@@ -103,6 +103,7 @@ pub(crate) fn sensitive(key: &str) -> bool {
         "apikey",
         "authorization",
         "credential",
+        "cookie",
     ]
     .iter()
     .any(|s| key.contains(s))
@@ -739,10 +740,21 @@ pub fn handle(
                 Ok(b64) => {
                     send_msg(
                         &ctx,
+                        writer.clone(),
+                        msg.group_id(),
+                        Some(msg.user_id()),
+                        Message::new().image_described(
+                            format!("base64://{b64}"),
+                            "控制卡片，完整内容见后续文本",
+                        ),
+                    )
+                    .await?;
+                    crate::adapters::satori::send_text_chunks(
+                        &ctx,
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        Message::new().image(format!("base64://{b64}")),
+                        &response.text,
                     )
                     .await?;
                     return Ok(None);

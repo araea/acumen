@@ -16,13 +16,12 @@ pub(crate) async fn reply_text(
     event: &MessageEvent<'_>,
     text: impl Into<String>,
 ) {
-    let msg = Message::new().reply(event.message_id()).text(text.into());
-    let _ = send_msg(
+    let _ = crate::adapters::satori::send_text_chunks(
         ctx,
         writer.clone(),
         event.group_id(),
         Some(event.user_id()),
-        msg,
+        &text.into(),
     )
     .await;
 }
@@ -53,52 +52,59 @@ async fn reply_card(
     sources: &[super::types::Source],
     footer: Option<super::render::Footer>,
 ) {
-    let msg = Message::new().reply(event.message_id());
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
-
-    if text_mode || !oai.image_enabled() {
-        let _ = send_msg(
-            ctx,
-            writer.clone(),
-            event.group_id(),
-            Some(event.user_id()),
-            msg.text(text),
-        )
-        .await;
-        return;
-    }
-
-    let card = super::render::Card {
-        title: header,
-        markdown: text,
-        sources,
-        footer,
-    };
-    match super::render::render_card(card, oai.image_scale()).await {
-        Ok(b64) => {
-            let _ = send_msg(
-                ctx,
-                writer.clone(),
-                event.group_id(),
-                Some(event.user_id()),
-                msg.image(format!("base64://{}", b64)),
-            )
-            .await;
-        }
-        Err(error) => {
-            warn!(target: "Plugin/OAI", "回复卡片渲染失败，退回纯文本：{error:#}");
-            let re = Regex::new(r"!\[.*?\]\((data:image/[^\s\)]+)\)").unwrap();
-            let clean_text = re.replace_all(text, "[图片渲染失败]").to_string();
-            let _ = send_msg(
-                ctx,
-                writer.clone(),
-                event.group_id(),
-                Some(event.user_id()),
-                msg.text(&clean_text),
-            )
-            .await;
+    let re = Regex::new(r"!\[.*?\]\((data:image/[^\s\)]+)\)").unwrap();
+    let mut accessible = re.replace_all(text, "[内嵌图片]").to_string();
+    if !sources.is_empty() {
+        accessible.push_str("\n\n参考来源：");
+        for (index, source) in sources.iter().enumerate() {
+            accessible.push_str(&format!(
+                "\n{}. {}\n{}",
+                index + 1,
+                source.title,
+                source.url
+            ));
         }
     }
+    if let Some(footer) = &footer {
+        if !footer.meta.is_empty() {
+            accessible.push_str(&format!("\n\n{}", footer.meta));
+        }
+        for step in &footer.trace {
+            accessible.push_str(&format!(
+                "\n工具：{} {} ×{}",
+                step.name, step.detail, step.repeats
+            ));
+        }
+        if footer.trace_overflow > 0 {
+            accessible.push_str(&format!("\n另有 {} 次工具调用", footer.trace_overflow));
+        }
+    }
+    if !text_mode && oai.image_enabled() {
+        let card = super::render::Card {
+            title: header,
+            markdown: text,
+            sources,
+            footer,
+        };
+        match super::render::render_card(card, oai.image_scale()).await {
+            Ok(b64) => {
+                let _ = send_msg(
+                    ctx,
+                    writer.clone(),
+                    event.group_id(),
+                    Some(event.user_id()),
+                    Message::new().reply(event.message_id()).image_described(
+                        format!("base64://{b64}"),
+                        format!("{header}，完整内容见后续文本"),
+                    ),
+                )
+                .await;
+            }
+            Err(error) => warn!(target: "Plugin/OAI", "回复卡片渲染失败，退回文本：{error:#}"),
+        }
+    }
+    reply_text(ctx, writer, event, accessible).await;
 }
 
 fn extract_image_urls(content: &str) -> Vec<String> {
@@ -304,27 +310,23 @@ async fn chat(
         super::mj::handle_agent(&agent, &cmd.args, imgs, ctx, writer, mgr).await;
         return;
     }
-    let (api_base, api_key) = match super::resolve_endpoint(
-        &oai.providers,
-        &api.0,
-        &api.1,
-        provider.as_deref(),
-    ) {
-        Some(endpoint) => endpoint,
-        None => {
-            reply_text(
-                ctx,
-                writer,
-                &event,
-                format!(
-                    "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
-                    provider.as_deref().unwrap_or_default()
-                ),
-            )
-            .await;
-            return;
-        }
-    };
+    let (api_base, api_key) =
+        match super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) {
+            Some(endpoint) => endpoint,
+            None => {
+                reply_text(
+                    ctx,
+                    writer,
+                    &event,
+                    format!(
+                        "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
+                        provider.as_deref().unwrap_or_default()
+                    ),
+                )
+                .await;
+                return;
+            }
+        };
 
     let is_priv_ctx = cmd.private_reply;
     let uid = event.user_id().to_string();
@@ -374,7 +376,20 @@ async fn chat(
         };
         let hist = prepare_history(current.history(is_priv_ctx, &uid), prompt, &imgs, regen);
         *current.history_mut(is_priv_ctx, &uid) = hist.clone();
-        mgr.save(&config);
+        if let Err(error) = mgr.save(&mut config) {
+            mgr.generating
+                .write()
+                .await
+                .set_generating(name, is_priv_ctx, &uid, false);
+            reply_text(
+                ctx,
+                writer,
+                &event,
+                format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+            )
+            .await;
+            return;
+        }
         (hist, id)
     };
 
@@ -478,7 +493,18 @@ async fn chat(
                         &reply.text,
                         vec![],
                     ));
-                    mgr.save(&config);
+                    if let Err(error) = mgr.save(&mut config) {
+                        reply_text(
+                            ctx,
+                            writer,
+                            &event,
+                            format!(
+                                "保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
                 } else {
                     outcome = Some(Ok(None));
                 }
@@ -912,7 +938,8 @@ async fn respond(
     }
     let msgs = build_chat_messages(agent, hist).await;
     Ok(Reply {
-        text: super::llm::complete(api_base, api_key, chat_model, msgs, thinking.as_deref()).await?,
+        text: super::llm::complete(api_base, api_key, chat_model, msgs, thinking.as_deref())
+            .await?,
         sources: Vec::new(),
         trace: Vec::new(),
         trace_overflow: 0,
@@ -1043,17 +1070,60 @@ pub async fn execute(
     let name = &cmd.agent;
     let uid = msg_event.user_id().to_string();
 
+    if matches!(
+        cmd.action,
+        Action::Delete
+            | Action::DeleteAt(_)
+            | Action::ClearHistory(_)
+            | Action::ClearAllPublic
+            | Action::ClearEverything
+    ) {
+        let config = mgr.config.read().await;
+        let fingerprint = format!(
+            "{:x}",
+            md5::compute(serde_json::to_vec(&*config).unwrap_or_default())
+        );
+        let key = format!("{:?}:{}:{:?}", msg_event.group_id(), uid, cmd);
+        let count = if name.is_empty() {
+            config.agents.len()
+        } else {
+            usize::from(config.agents.iter().any(|agent| agent.name == *name))
+        };
+        if !confirm_destructive(key, fingerprint) {
+            let scope = match cmd.action {
+                Action::Delete => "删除智能体及其全部历史",
+                Action::ClearEverything => "清空所有智能体的公开和私有历史（保留智能体）",
+                Action::ClearAllPublic => "清空所有智能体的公开历史（保留智能体）",
+                Action::ClearHistory(Scope::Private) | Action::DeleteAt(Scope::Private) => {
+                    "删除你在该智能体中的私有历史"
+                }
+                _ => "删除该智能体的公开历史",
+            };
+            reply_text(ctx, writer, &msg_event, format!("即将{scope}，涉及 {count} 个智能体。此操作不可撤销。请在 60 秒内再次发送同一条指令确认；不再发送即可取消。数据有变化时需重新确认。")).await;
+            return;
+        }
+    }
+
     match cmd.action {
         Action::UpdateApi(url, key) => {
             let url = super::utils::openai_api_base(&url);
             let mut c = mgr.config.write().await;
             c.api_base = url.clone();
             c.api_key = key;
-            mgr.save(&c);
+            if let Err(error) = mgr.save(&mut c) {
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                )
+                .await;
+                return;
+            }
             drop(c);
             reply_text(ctx, writer, &msg_event, format!("✅ API 已配置：{}", url)).await;
-            let filter = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai")
-                .model_filter;
+            let filter =
+                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai").model_filter;
             match mgr.fetch_models(&filter).await {
                 Ok(models) => {
                     reply_text(
@@ -1086,7 +1156,16 @@ pub async fn execute(
             let mut c = mgr.config.write().await;
             if let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) {
                 a.generation_id += 1;
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
                 reply_text(ctx, writer, &msg_event, "已停止").await;
             } else {
                 reply_text(
@@ -1115,7 +1194,13 @@ pub async fn execute(
             }
             let mut c = mgr.config.write().await;
             if c.agents.iter().any(|a| a.name == cmd.args) {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 已存在", cmd.args)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 已存在", cmd.args),
+                )
+                .await;
                 return;
             }
             if let Some(src) = c.agents.iter().find(|a| a.name == *name).cloned() {
@@ -1129,7 +1214,16 @@ pub async fn execute(
                 new_agent.set_engine(&src.engine, &src.model);
                 new_agent.description = src.description.clone();
                 c.agents.push(new_agent);
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
                 reply_text(
                     ctx,
                     writer,
@@ -1138,7 +1232,13 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::Rename => {
@@ -1171,7 +1271,16 @@ pub async fn execute(
             if let Some(idx) = idx_opt {
                 mgr.generating.write().await.cancel_room(name);
                 c.agents[idx].name = cmd.args.clone();
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
                 reply_text(
                     ctx,
                     writer,
@@ -1180,7 +1289,13 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::SetDesc => {
@@ -1191,10 +1306,25 @@ pub async fn execute(
             let mut c = mgr.config.write().await;
             if let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) {
                 a.description = cmd.args.clone();
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
                 reply_text(ctx, writer, &msg_event, format!("{} 描述已更新", name)).await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         // 同一个 `%` 既换模型也换引擎：`房间%agent` 转成内置智能体，`房间%agent 模型` 顺带
@@ -1239,7 +1369,13 @@ pub async fn execute(
                 return;
             };
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
                 return;
             };
             let old = room_model_label(a);
@@ -1249,7 +1385,16 @@ pub async fn execute(
                 a.thinking = level;
             }
             let new = room_model_label(a);
-            mgr.save(&c);
+            if let Err(error) = mgr.save(&mut c) {
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                )
+                .await;
+                return;
+            }
             reply_text(
                 ctx,
                 writer,
@@ -1265,7 +1410,13 @@ pub async fn execute(
             let global = oai.search.enabled;
             let mut c = mgr.config.write().await;
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
                 return;
             };
             if !a.uses_agent() {
@@ -1293,7 +1444,16 @@ pub async fn execute(
             };
             a.search = choice;
             let now = a.web_search(global);
-            mgr.save(&c);
+            if let Err(error) = mgr.save(&mut c) {
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                )
+                .await;
+                return;
+            }
             let state = match choice {
                 Some(true) => "已打开（按需触发）",
                 Some(false) => "已关闭",
@@ -1318,14 +1478,29 @@ pub async fn execute(
             let mut c = mgr.config.write().await;
             if let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) {
                 a.system_prompt = cmd.args.clone();
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
                 if cmd.args.is_empty() {
                     reply_text(ctx, writer, &msg_event, format!("{} 提示词已清空", name)).await;
                 } else {
                     reply_text(ctx, writer, &msg_event, format!("{} 提示词已更新", name)).await;
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::ViewPrompt => {
@@ -1360,7 +1535,13 @@ pub async fn execute(
                 )
                 .await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::List => {
@@ -1395,7 +1576,11 @@ pub async fn execute(
             let mut html_parts = Vec::new();
             for ((_, model), mut agents) in groups {
                 agents.sort_by_key(|a| a.1.name.to_lowercase());
-                html_parts.push(format!(r#"<div class="model-group"><div class="model-header"><span>{}</span><span class="model-count">{}</span></div><div class="agent-grid">"#, model, agents.len()));
+                html_parts.push(format!(
+                    "## {}（{}）\n",
+                    escape_markdown_special(&model),
+                    agents.len()
+                ));
                 for (real_idx, a) in agents {
                     let desc_display = if !a.description.is_empty() {
                         super::utils::truncate_str(&a.description, 20)
@@ -1410,9 +1595,13 @@ pub async fn execute(
                     } else {
                         desc_display
                     };
-                    html_parts.push(format!(r#"<div class="agent-mini"><div class="agent-mini-top"><div class="agent-idx">{}</div><div class="agent-mini-name">{}</div></div><div class="agent-mini-desc">{}</div></div>"#, real_idx, a.name, desc_display));
+                    html_parts.push(format!(
+                        "{}. **{}** — {}\n",
+                        real_idx,
+                        escape_markdown_special(&a.name),
+                        escape_markdown_special(&desc_display)
+                    ));
                 }
-                html_parts.push("</div></div>".to_string());
             }
             reply(
                 ctx,
@@ -1429,10 +1618,25 @@ pub async fn execute(
             if let Some(idx) = c.agents.iter().position(|a| a.name == *name) {
                 mgr.generating.write().await.cancel_room(name);
                 c.agents.remove(idx);
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
                 reply_text(ctx, writer, &msg_event, format!("已删除 {}", name)).await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::ListModels => {
@@ -1441,8 +1645,8 @@ pub async fn execute(
             reply_text(ctx, writer, &msg_event, "⏳ 正在刷新模型列表…").await;
 
             // 尝试获取，如果失败则仅提示警告，后续继续尝试展示缓存
-            let filter = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai")
-                .model_filter;
+            let filter =
+                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai").model_filter;
             if let Err(e) = mgr.fetch_models(&filter).await {
                 reply_text(
                     ctx,
@@ -1491,19 +1695,20 @@ pub async fn execute(
             }
             let mut html = String::new();
             let render_group = |title: &str, items: &Vec<(usize, String)>| -> String {
-                let mut s = format!(
-                    r#"<div class="mod-group"><div class="mod-title">{}</div><div class="chip-box">"#,
-                    title
-                );
+                let mut s = format!("## {}\n\n", escape_markdown_special(title));
                 for (idx, name) in items {
-                    let badge = if let Some(cnt) = usage_count.get(name) {
-                        format!(r#"<span class="chip-bad">{}用</span>"#, cnt)
-                    } else {
-                        String::new()
-                    };
-                    s.push_str(&format!(r#"<div class="chip"><span class="chip-idx">{}</span><span class="chip-name">{}</span>{}</div>"#, idx, name, badge));
+                    let badge = usage_count
+                        .get(name)
+                        .map(|count| format!("（{count} 个智能体使用）"))
+                        .unwrap_or_default();
+                    s.push_str(&format!(
+                        "{}. {}{}\n",
+                        idx,
+                        escape_markdown_special(name),
+                        badge
+                    ));
                 }
-                s.push_str("</div></div>");
+                s.push('\n');
                 s
             };
             for vendor in group_order {
@@ -1546,7 +1751,13 @@ pub async fn execute(
                 );
                 reply(ctx, writer, &msg_event, &content, cmd.text_mode, &header).await;
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::ViewAt(scope) => {
@@ -1642,7 +1853,13 @@ pub async fn execute(
                     }
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::Export(scope) => {
@@ -1708,7 +1925,13 @@ pub async fn execute(
                     }
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::EditAt(scope) => {
@@ -1729,13 +1952,30 @@ pub async fn execute(
                         .write()
                         .await
                         .set_generating(name, priv_scope, &uid, false);
-                    mgr.save(&c);
+                    if let Err(error) = mgr.save(&mut c) {
+                        reply_text(
+                            ctx,
+                            writer,
+                            &msg_event,
+                            format!(
+                                "保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
                     reply_text(ctx, writer, &msg_event, format!("已编辑第 {} 条", idx)).await;
                 } else {
                     reply_text(ctx, writer, &msg_event, format!("❌ 索引 {} 无效", idx)).await;
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::DeleteAt(scope) => {
@@ -1762,7 +2002,18 @@ pub async fn execute(
                 if deleted.is_empty() {
                     reply_text(ctx, writer, &msg_event, "❌ 索引无效").await;
                 } else {
-                    mgr.save(&c);
+                    if let Err(error) = mgr.save(&mut c) {
+                        reply_text(
+                            ctx,
+                            writer,
+                            &msg_event,
+                            format!(
+                                "保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
                     let s = deleted
                         .iter()
                         .map(|i| i.to_string())
@@ -1777,7 +2028,13 @@ pub async fn execute(
                     .await;
                 }
             } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 智能体 {} 不存在", name),
+                )
+                .await;
             }
         }
         Action::ClearHistory(scope) => {
@@ -1794,16 +2051,25 @@ pub async fn execute(
                 let s = if priv_scope { "私有" } else { "公有" };
                 a.clear_history(priv_scope, &uid);
                 a.generation_id += 1;
-                mgr.save(&c);
+                if let Err(error) = mgr.save(&mut c) {
+                    reply_text(
+                        ctx,
+                        writer,
+                        &msg_event,
+                        format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                    )
+                    .await;
+                    return;
+                }
+                reply_text(ctx, writer, &msg_event, format!("{} {}历史已清空", name, s)).await;
+            } else {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("{} {}历史已清空", name, s),
+                    format!("❌ 智能体 {} 不存在", name),
                 )
                 .await;
-            } else {
-                reply_text(ctx, writer, &msg_event, format!("❌ 智能体 {} 不存在", name)).await;
             }
         }
         Action::ClearAllPublic => {
@@ -1816,7 +2082,16 @@ pub async fn execute(
                 a.public_history.clear();
                 a.generation_id += 1;
             }
-            mgr.save(&c);
+            if let Err(error) = mgr.save(&mut c) {
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                )
+                .await;
+                return;
+            }
             reply_text(
                 ctx,
                 writer,
@@ -1838,7 +2113,16 @@ pub async fn execute(
                 a.private_histories.clear();
                 a.generation_id += 1;
             }
-            mgr.save(&c);
+            if let Err(error) = mgr.save(&mut c) {
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+                )
+                .await;
+                return;
+            }
             reply_text(
                 ctx,
                 writer,
@@ -2010,13 +2294,7 @@ pub async fn execute(
             };
 
             if target_agents.is_empty() {
-                reply_text(
-                    ctx,
-                    writer,
-                    &msg_event,
-                    "✅ 所有智能体均已有描述，无需处理",
-                )
-                .await;
+                reply_text(ctx, writer, &msg_event, "✅ 所有智能体均已有描述，无需处理").await;
                 return;
             }
             if api_config.0.is_empty() || api_config.1.is_empty() {
@@ -2046,20 +2324,17 @@ pub async fn execute(
                     content: vec![UserContent::Text(Text::new(gen_prompt))],
                 }];
 
-                if let Ok(content) = super::llm::complete(
-                    &api_config.0,
-                    &api_config.1,
-                    &use_model,
-                    msgs,
-                    None,
-                )
-                .await
+                if let Ok(content) =
+                    super::llm::complete(&api_config.0, &api_config.1, &use_model, msgs, None).await
                 {
                     let new_desc = content.trim().replace(['"', '“', '”', '。', '.'], "");
                     let mut c = mgr.config.write().await;
                     if let Some(a) = c.agents.iter_mut().find(|a| a.name == name) {
                         a.description = new_desc.clone();
-                        mgr.save(&c);
+                        if let Err(error) = mgr.save(&mut c) {
+                            reply_text(ctx, writer, &msg_event, format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}")).await;
+                            return;
+                        }
                         success_count += 1;
                     }
                 }
@@ -2124,7 +2399,16 @@ pub async fn handle_create(
             a.description = desc.to_string();
         }
         let updated_model = room_model_label(a);
-        mgr.save(&c);
+        if let Err(error) = mgr.save(&mut c) {
+            reply_text(
+                ctx,
+                writer,
+                &msg_event,
+                format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+            )
+            .await;
+            return;
+        }
         reply_text(
             ctx,
             writer,
@@ -2145,7 +2429,16 @@ pub async fn handle_create(
         }
         let label = room_model_label(&agent);
         c.agents.push(agent);
-        mgr.save(&c);
+        if let Err(error) = mgr.save(&mut c) {
+            reply_text(
+                ctx,
+                writer,
+                &msg_event,
+                format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
+            )
+            .await;
+            return;
+        }
         reply_text(
             ctx,
             writer,
@@ -2158,6 +2451,15 @@ pub async fn handle_create(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn destructive_confirmation_is_scoped_and_data_bound() {
+        assert!(!super::confirm_destructive("test:a".into(), "v1".into()));
+        assert!(!super::confirm_destructive("test:b".into(), "v1".into()));
+        assert!(!super::confirm_destructive("test:a".into(), "v2".into()));
+        assert!(super::confirm_destructive("test:a".into(), "v2".into()));
+        assert!(!super::confirm_destructive("test:a".into(), "v2".into()));
+    }
+
     use super::*;
 
     #[tokio::test]
@@ -2396,7 +2698,8 @@ mod tests {
     async fn new_agents_without_a_prompt_keep_an_empty_system_prompt() {
         use crate::event::{BotStatus, EventType};
 
-        let dir = std::env::temp_dir().join(format!("oai-noprompt-{:032x}", rand::random::<u128>()));
+        let dir =
+            std::env::temp_dir().join(format!("oai-noprompt-{:032x}", rand::random::<u128>()));
         let mgr = Arc::new(Manager::new(dir.clone()));
         let ctx = Context {
             event: EventType::Satori(
@@ -2444,4 +2747,24 @@ mod tests {
 
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+fn confirm_destructive(key: String, fingerprint: String) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static PENDING: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+    let now = Instant::now();
+    let mut pending = PENDING.get_or_init(Default::default).lock().unwrap();
+    pending.retain(|_, (_, at)| now.duration_since(*at) < Duration::from_secs(60));
+    if let Some((previous, _)) = pending.remove(&key)
+        && previous == fingerprint
+    {
+        return true;
+    }
+    if pending.len() >= 256 {
+        pending.clear();
+    }
+    pending.insert(key, (fingerprint, now));
+    false
 }

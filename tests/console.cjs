@@ -7,6 +7,14 @@ const http = require('node:http');
 const { spawn, execFileSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
+const fixturePath = path.join(require('node:os').tmpdir(), `acumen-plugins-${process.pid}.json`);
+execFileSync('cargo', ['test', '--locked', 'dump_console_fixture', '--', '--ignored', '--test-threads=1'], {
+  cwd: root, env: {...process.env, ACUMEN_CONSOLE_FIXTURE: fixturePath}, stdio: 'pipe'
+});
+const realPlugins = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+fs.unlinkSync(fixturePath);
+let realMode = false;
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const out = process.env.ACUMEN_CONSOLE_SHOTS;
 if (out) fs.mkdirSync(out, { recursive: true });
@@ -80,9 +88,9 @@ const server = http.createServer(async (req, res) => {
     plugins: { on: 22, total: 23, pending: 1 }, messages: { today: 3803, people: 711, week: 84737 },
     console: { address: 'http://127.0.0.1:7801/' },
   });
-  if (url.pathname === '/api/plugins') return reply({ plugins: plugins.map(({ config, defaults, diff, commands, ...rest }) => ({ ...rest, commands: commands.length })), sections });
+  if (url.pathname === '/api/plugins') return reply({ plugins: (realMode ? realPlugins : plugins).map(({ config, defaults, diff, commands, ...rest }) => ({ ...rest, commands: commands.length })), sections });
   if (url.pathname.startsWith('/api/plugins/')) {
-    const plugin = plugins.find(p => url.pathname === `/api/plugins/${p.name}`);
+    const plugin = (realMode ? realPlugins : plugins).find(p => url.pathname === `/api/plugins/${p.name}`);
     if (detailDelay && plugin?.name === 'oai') await sleep(400);
     return plugin ? reply(plugin) : reply({ error: '这里没有它' }, 404);
   }
@@ -247,7 +255,7 @@ const posted = where => posts.filter(p => p.path === where);
   await key(KEY.tab);
   await sleep(200);
   assert.equal(posts.filter(p => p.path === '/api/plugins/oai/config' && p.body.path === 'retries').length, 2, '回车已存，离开不重复提交');
-  await js(`const g=document.querySelector('[data-path="groups"]'); g.value='1, 2，3'; g.dispatchEvent(new Event('change',{bubbles:true}))`);
+  await js(`const g=document.querySelector('[data-path="groups"]'); g.value='[1, 2, 3]'; g.dispatchEvent(new Event('change',{bubbles:true}))`);
   await until(() => posts.some(p => p.body.path === 'groups'), '列表提交');
   assert.deepEqual(posts.find(p => p.body.path === 'groups').body.value, [1, 2, 3]);
   await click('[data-path="limits.peak.enabled"]');
@@ -300,12 +308,19 @@ const posted = where => posts.filter(p => p.path === where);
   await click('[data-run="show ambient"]');
   await until(() => posted('/api/command').length === 2, '快捷命令');
   await js('window.botForm = document.querySelector("[data-bot=\\"0\\"]")');
+  await type('#g-browser', '/unsaved/browser');
   await click('[data-bot="0"] [name=enabled]');
   await click('[data-bot="0"] [type=submit]');
   await until(() => posted('/api/settings/bot').length === 1, '保存连接');
   assert.equal(posted('/api/settings/bot')[0].body.enabled, false);
   assert.equal('access_token' in posted('/api/settings/bot')[0].body, false, '令牌留空即不动');
   await until(() => js('return !window.botForm.isConnected'), '保存后重画');
+  assert.equal(await js('return document.querySelector("#g-browser").value'), '/unsaved/browser', '保存连接保留全局草稿');
+  await viewport(800, 900);
+  assert.equal(await js('return document.querySelector("#g-browser").value'), '/unsaved/browser', '断点变化保留草稿');
+  await viewport(1400, 900);
+  await js('document.querySelector("#g-browser").value = document.querySelector("#g-browser").defaultValue');
+
   await click('[data-add-bot]');
   assert.equal(await js('return document.activeElement.id'), 'bot-new-url', '新草稿聚焦地址');
   await click('[data-bot=""] [data-drop-bot]');
@@ -319,6 +334,7 @@ const posted = where => posts.filter(p => p.path === where);
   await click('#global-form [type=submit]');
   await until(() => posted('/api/settings/global').length === 1, '保存全局');
   assert.deepEqual(posted('/api/settings/global')[0].body.global_filter.whitelist, [175131947]);
+  await until(() => js('return !document.querySelector("#global-form[aria-busy]")'), '全局设置完成保存');
 
   // —— 日志：突发有界、可暂停、筛选先于截断、导出、后台断流、断线退避 ——
   await route('logs');
@@ -437,6 +453,29 @@ const posted = where => posts.filter(p => p.path === where);
   if (out) fs.writeFileSync(path.join(out, 'accessibility.json'), JSON.stringify(accessibility, null, 2));
   assert.deepEqual(accessibility, [], '对比度、边界、名称、目标与可选 axe 审计');
 
+  // 所有注册插件使用真实的默认配置与说明，不复用通用假字段。
+  realMode = true;
+  assert.equal(realPlugins.length, 22);
+  for (const width of [320, 1400]) {
+    await viewport(width, 900);
+    for (const plugin of realPlugins) {
+      await route('plugins/' + plugin.name);
+      await until(() => js('return document.querySelector("[data-config]")?.dataset.config === arguments[0] || !arguments[1]', plugin.name, Object.keys(plugin.config).some(k=>k!=='enabled')), '真实插件详情');
+      assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `真实配置溢出 ${plugin.name}/${width}`);
+      const expected = [];
+      const walk = (value, prefix='') => Object.entries(value).forEach(([key,item])=> {
+        if (!prefix && key==='enabled') return;
+        const path = prefix ? prefix + '.' + key : key;
+        if (item && typeof item === 'object' && !Array.isArray(item)) walk(item,path); else expected.push(path);
+      });
+      walk(plugin.config);
+      assert.deepEqual((await js('return [...document.querySelectorAll("[data-config] [data-path]")].map(n=>n.dataset.path)')).sort(), expected.sort(), plugin.name + ': all editable fields');
+      await audit(`real/${width}/${plugin.name}`);
+    }
+  }
+  assert.deepEqual(accessibility, [], '全部插件真实配置无障碍检查');
+  realMode = false;
+
   // —— WCAG 1.4.12 文字间距：用户覆盖行高字距之后 320px 仍不横向溢出 ——
   await viewport(320, 720);
   for (const page of ['plugins/oai', 'settings', 'logs']) {
@@ -444,6 +483,15 @@ const posted = where => posts.filter(p => p.path === where);
     await js(`const s=document.createElement('style');s.id='spacing';s.textContent='*{line-height:1.5!important;letter-spacing:.12em!important;word-spacing:.16em!important} p{margin-bottom:2em!important}';document.head.append(s)`);
     assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `文字间距覆盖后溢出：${page}`);
     await js('document.querySelector("#spacing").remove()');
+  }
+
+  // 200% 文本缩放仍可回流；测试完成后恢复用户默认字号。
+  await viewport(390, 844);
+  for (const page of ['plugins/oai', 'settings', 'ambient']) {
+    await route(page);
+    await js('document.documentElement.style.fontSize="200%"');
+    assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `200% 字号溢出：${page}`);
+    await js('document.documentElement.style.fontSize=""');
   }
 
   // —— WCAG 2.4.11 焦点不被顶栏 / 底栏完全遮住；焦点环可见 ——

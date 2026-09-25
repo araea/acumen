@@ -72,7 +72,6 @@ fn get_font_db() -> &'static fontdb::Database {
     })
 }
 
-
 /// Termux 前缀与用户目录下的字体目录（`PREFIX` / `HOME` 由 Termux 注入）。
 fn user_font_dirs() -> Vec<std::path::PathBuf> {
     let mut dirs = Vec::new();
@@ -215,44 +214,27 @@ pub struct ColorScheme {
 }
 
 impl ColorScheme {
-    /// 卡面上够得着正文对比度的那档弱化前景。
-    ///
-    /// `on-surface-faint` 这支令牌压在 `#fffefa` 上量出来是 4.44∶1，离 WCAG 2.2 的
-    /// 正文 4.5∶1 差一线。可达性过不去就不发，
-    /// 所以这里**换取值来源**（从令牌推出来，不是另挑一个色），不放宽约束。
-    /// 留痕在这里：令牌本身该往深里走半档，那是卡片那侧的事，改了之后这个方法会
-    /// 自动变成恒等映射。
+    /// 弱化文本映射到共享的 on-surface-variant；保留对自定义底色的对比度兜底。
     pub fn readable_faint(&self) -> RGBColor {
         ensure_contrast(self.text_faint, self.card_background, 4.5)
     }
 }
 
 impl Default for ColorScheme {
-    /// 配色取卡片设计系统里的「手册」一套（`res/cards/m3e.css` 的 `scheme-manual`）。
-    ///
-    /// 统计图与卡片经常在同一条消息里前后出现，纸色、墨色与主色不一致，看起来就是
-    /// 两个产品各画各的：从前这里是一套 Tailwind 蓝（`#3B82F6` + 石板灰），与全站
-    /// 的松绿毫无关系，一张排行榜接在一张绿卡片后面，像换了个人做的。
-    ///
-    /// **对不上 CSS 的地方只有一处**：这里必须是字面量——plotters 画的是位图，
-    /// 拿不到 CSS 的自定义属性。改了 `m3e.css` 的 `scheme-manual`，这一组要跟着改
-    /// （surface / surface-dim / surface-container / surface-container-high / primary /
-    /// on-surface / on-surface-variant / on-surface-faint / outline / outline-variant），
-    /// `a_chart_is_painted_in_the_card_scheme` 那条单测逐个钉着它们。
+    /// 位图直接使用共享生成器的 Rust 令牌，不再维护手抄色表。
     fn default() -> Self {
+        use crate::render::tokens as t;
         Self {
-            // 相纸：卡片外的底
-            background: RGBColor(237, 241, 237),
-            // 卡面：统计图自己就是一张纸，用卡面那档
-            card_background: RGBColor(255, 254, 250),
-            container: RGBColor(241, 244, 241),
-            container_high: RGBColor(231, 236, 232),
-            primary: RGBColor(31, 99, 80),
-            text_primary: RGBColor(31, 42, 39),
-            text_secondary: RGBColor(79, 92, 87),
-            text_faint: RGBColor(109, 122, 116),
-            outline: RGBColor(163, 178, 170),
-            grid_line: RGBColor(222, 229, 223),
+            background: t::SURFACE_DIM,
+            card_background: t::SURFACE,
+            container: t::SURFACE_CONTAINER,
+            container_high: t::SURFACE_CONTAINER_HIGH,
+            primary: t::PRIMARY,
+            text_primary: t::ON_SURFACE,
+            text_secondary: t::ON_SURFACE_VARIANT,
+            text_faint: t::ON_SURFACE_VARIANT,
+            outline: t::OUTLINE,
+            grid_line: t::OUTLINE_VARIANT,
         }
     }
 }
@@ -295,7 +277,10 @@ mod color_scheme_guard {
             )
         };
         let colors = ColorScheme::default();
-        assert_eq!(colors.card_background, hex(&token("--md-sys-color-surface")));
+        assert_eq!(
+            colors.card_background,
+            hex(&token("--md-sys-color-surface"))
+        );
         assert_eq!(colors.background, hex(&token("--md-sys-color-surface-dim")));
         assert_eq!(
             colors.container,
@@ -306,14 +291,17 @@ mod color_scheme_guard {
             hex(&token("--md-sys-color-surface-container-high"))
         );
         assert_eq!(colors.primary, hex(&token("--md-sys-color-primary")));
-        assert_eq!(colors.text_primary, hex(&token("--md-sys-color-on-surface")));
+        assert_eq!(
+            colors.text_primary,
+            hex(&token("--md-sys-color-on-surface"))
+        );
         assert_eq!(
             colors.text_secondary,
             hex(&token("--md-sys-color-on-surface-variant"))
         );
         assert_eq!(
             colors.text_faint,
-            hex(&token("--md-sys-color-on-surface-faint"))
+            hex(&token("--md-sys-color-on-surface-variant"))
         );
         assert_eq!(colors.outline, hex(&token("--md-sys-color-outline")));
         assert_eq!(
@@ -407,11 +395,7 @@ pub fn format_percent(value: i64, total: i64) -> String {
 
 /// RGB → HSL，H 为 0—360，S/L 为 0—1。
 fn to_hsl(c: RGBColor) -> (f32, f32, f32) {
-    let (r, g, b) = (
-        c.0 as f32 / 255.0,
-        c.1 as f32 / 255.0,
-        c.2 as f32 / 255.0,
-    );
+    let (r, g, b) = (c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0);
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let l = (max + min) / 2.0;
@@ -724,8 +708,11 @@ pub fn draw_left_accent_bar<DB: DrawingBackend>(
     // 主体：右侧平齐，不画右圆角
     root.draw(&Rectangle::new([(x0 + r, y0), (x1, y1)], color.filled()))
         .map_err(|e| e.to_string())?;
-    root.draw(&Rectangle::new([(x0, y0 + r), (x0 + r, y1 - r)], color.filled()))
-        .map_err(|e| e.to_string())?;
+    root.draw(&Rectangle::new(
+        [(x0, y0 + r), (x0 + r, y1 - r)],
+        color.filled(),
+    ))
+    .map_err(|e| e.to_string())?;
     root.draw(&Circle::new((x0 + r, y0 + r), r, color.filled()))
         .map_err(|e| e.to_string())?;
     root.draw(&Circle::new((x0 + r, y1 - r), r, color.filled()))
@@ -956,7 +943,10 @@ mod tests {
             let track = track_tone(bar);
             let ink = deep_tone(bar, 0.34);
 
-            assert!(relative_luminance(track) > relative_luminance(bar), "轨道要比条浅");
+            assert!(
+                relative_luminance(track) > relative_luminance(bar),
+                "轨道要比条浅"
+            );
             assert!(contrast_ratio(ink, track) >= 4.5, "数字压不住轨道");
         }
 
@@ -1044,11 +1034,10 @@ mod tests {
             let ratio = contrast_ratio(ink, paper);
             assert!(ratio >= 4.5, "{name} 在卡面上只有 {ratio:.2}∶1");
         }
-        // 令牌原值差一线，`readable_faint` 就是为这条差额存在的；哪天卡片那侧把令牌
-        // 改深了，这里会失败，那时删掉这一行与那个方法即可
+        // 共享令牌本身必须满足对比度，不能只靠本地修正。
         assert!(
-            contrast_ratio(colors.text_faint, paper) < 4.5,
-            "on-surface-faint 已经够正文对比度了，readable_faint 可以退休"
+            contrast_ratio(colors.text_faint, paper) >= 4.5,
+            "共享的弱化文本必须满足正文对比度"
         );
         // 奖牌色也一样要能读
         for (i, medal) in MEDALS.iter().enumerate() {
@@ -1080,11 +1069,7 @@ mod tests {
                             "数值在 {ground:?} 上只有 {:.2}∶1",
                             contrast_ratio(value, ground)
                         );
-                        let pct = ensure_contrast(
-                            mix_with_color(value, ground, 0.62),
-                            ground,
-                            4.5,
-                        );
+                        let pct = ensure_contrast(mix_with_color(value, ground, 0.62), ground, 4.5);
                         assert!(contrast_ratio(pct, ground) >= 4.5);
                     }
                 }
@@ -1101,15 +1086,15 @@ mod tests {
     fn a_washed_out_avatar_still_keeps_its_own_hue() {
         // 左边是真头像缓存里量到的均色，右边是它该不该保住自己的色相
         let samples = [
-            ((119u8, 109, 98), true),  // 中位数那张：暖调，彩度 0.08
-            ((145, 160, 171), true),   // 偏蓝的合影
-            ((190, 180, 184), true),   // 淡粉灰，彩度 0.039
-            ((89, 97, 96), true),      // 偏青的暗调，彩度 0.031
-            ((238, 233, 230), true),   // 暖白的自拍，彩度 0.031
-            ((222, 223, 227), false),  // 冷灰，彩度 0.020——到线上了
-            ((220, 220, 220), false),  // 纯灰
-            ((234, 234, 233), false),  // 近白的灰
-            ((41, 42, 44), false),     // 近黑的剪影
+            ((119u8, 109, 98), true), // 中位数那张：暖调，彩度 0.08
+            ((145, 160, 171), true),  // 偏蓝的合影
+            ((190, 180, 184), true),  // 淡粉灰，彩度 0.039
+            ((89, 97, 96), true),     // 偏青的暗调，彩度 0.031
+            ((238, 233, 230), true),  // 暖白的自拍，彩度 0.031
+            ((222, 223, 227), false), // 冷灰，彩度 0.020——到线上了
+            ((220, 220, 220), false), // 纯灰
+            ((234, 234, 233), false), // 近白的灰
+            ((41, 42, 44), false),    // 近黑的剪影
         ];
         let fallback_hue = to_hsl(harmonize_theme(RGBColor(128, 128, 128))).0;
         for ((r, g, b), keeps_hue) in samples {
@@ -1150,8 +1135,7 @@ mod tests {
 
         let plain = get_average_color(&img);
         let weighted = avatar_theme_color(&img);
-        let chroma =
-            |c: RGBColor| (c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2)) as f32 / 255.0;
+        let chroma = |c: RGBColor| (c.0.max(c.1).max(c.2) - c.0.min(c.1).min(c.2)) as f32 / 255.0;
 
         // 两者的色相一致（白底不带色相，稀释的是强度不是方向）
         assert!((to_hsl(plain).0 - to_hsl(weighted).0).abs() < 6.0);
@@ -1305,4 +1289,3 @@ mod tests {
         assert_eq!(format_percent(5, 0), "0%");
     }
 }
-

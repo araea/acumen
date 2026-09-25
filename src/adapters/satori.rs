@@ -2141,3 +2141,57 @@ mod tests {
         server.abort();
     }
 }
+
+/// 信息卡的等价文本；分段限制单条长度，读屏和复制不依赖实现端的图片描述支持。
+pub async fn send_text_chunks(
+    ctx: &crate::event::Context,
+    writer: LockedWriter,
+    group: Option<i64>,
+    user: Option<i64>,
+    text: &str,
+) -> Result<(), BotError> {
+    for chunk in readable_chunks(text, 2800) {
+        send_msg(
+            ctx,
+            writer.clone(),
+            group,
+            user,
+            crate::message::Message::new().text(chunk),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+fn readable_chunks(text: &str, limit: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < chars.len() {
+        let mut end = (start + limit.max(1)).min(chars.len());
+        if end < chars.len() {
+            // 不把通常长度的 URL 或单词从中间切开；超长无空白内容才硬分段。
+            if let Some(at) = chars[start..end]
+                .iter()
+                .rposition(|c| *c == '\n')
+                .or_else(|| chars[start..end].iter().rposition(|c| c.is_whitespace()))
+            {
+                end = start + at + 1;
+            }
+        }
+        chunks.push(chars[start..end].iter().collect());
+        start = end;
+    }
+    chunks
+}
+
+#[test]
+fn readable_chunks_preserve_unicode_content_and_source_urls() {
+    let url = "https://example.com/source?id=123";
+    let text = format!("{}\n{}", "汉".repeat(2785), url);
+    let chunks = readable_chunks(&text, 2800);
+    assert_eq!(chunks.concat(), text);
+    assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 2800));
+    assert!(chunks.iter().any(|chunk| chunk.contains(url)));
+    assert!(readable_chunks("", 2800).is_empty());
+}

@@ -14,9 +14,9 @@ command_prefix = ["/"]
 # 网页截图与卡片出图的 Chrome/Chromium 路径；留空即自动查找。
 # browser_path = "/data/data/com.termux/files/usr/bin/chromium-browser"
 
-# 全局群黑白名单。语义与各插件自己的 channel 一致，这里是所有插件之上的一层。
-# 只配 black：除名单内的群以外都生效；只配 white：只有名单内的群生效；都空：全部生效。
-# 同时出现在两边时黑名单优先。
+# 全局群过滤与各插件的 channel 是独立规则。
+# 启用白名单：只允许白名单群；空白名单禁止所有群，忽略黑名单。
+# 白名单关闭时才检查启用的黑名单；两个开关均关闭时允许所有群。
 [global_filter]
 enable_blacklist = false
 blacklist = []

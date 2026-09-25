@@ -6,7 +6,14 @@ use super::*;
 /// agent 在进程内之后，「假模型」不再是一个假 CLI，而是一个 OpenAI 兼容的
 /// HTTP 服务：每次请求记一笔，等 `release` 出现再回话——调度回归要的正是
 /// 「上一轮还没收尾时新消息怎么排队」。
-async fn fake_model(reply: &str) -> (String, std::path::PathBuf, std::path::PathBuf, tokio::task::JoinHandle<()>) {
+async fn fake_model(
+    reply: &str,
+) -> (
+    String,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     let dir = std::env::temp_dir().join(format!("acumen-ambient-{:032x}", rand::random::<u128>()));
@@ -37,7 +44,8 @@ async fn fake_model(reply: &str) -> (String, std::path::PathBuf, std::path::Path
             let Ok((stream, _)) = listener.accept().await else {
                 break;
             };
-            let (started, release, body) = (task_started.clone(), task_release.clone(), body.clone());
+            let (started, release, body) =
+                (task_started.clone(), task_release.clone(), body.clone());
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stream);
                 let mut line = String::new();
@@ -88,8 +96,8 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     use crate::event::{BotStatus, EventType, LoginUser};
     use std::sync::RwLock;
 
-    let dir =
-        crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-test").unwrap();
+    let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-test")
+        .unwrap();
     let (base, started, release, server) =
         fake_model("[focus:{\"topic\":\"测试话题\",\"seconds\":30}]\n[silent]").await;
     // 第一轮的回话要等测试放行，第二轮（搭话指令）才不必再等。
@@ -128,17 +136,20 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
             login_user: LoginUser {
                 id: "10000".into(),
                 ..Default::default()
-            }.into(),
+            }
+            .into(),
         }),
     };
     let writer = Arc::new(crate::adapters::satori::SatoriClient::console());
-    let mgr = Arc::new(crate::plugins::oai::data::Manager::new(dir.path().to_path_buf()));
+    let mgr = Arc::new(crate::plugins::oai::data::Manager::new(
+        dir.path().to_path_buf(),
+    ));
     {
         // 模型端点指向假服务；密钥随便填，它只被塞进 Authorization 头。
         let mut c = mgr.config.write().await;
         c.api_base = base;
         c.api_key = "test-only".into();
-        mgr.save(&c);
+        mgr.save(&mut c).unwrap();
     }
     // 铺开的是进程级的那几样（搭话记忆、心情、偷来的表情包库）：动同一批全局数据的
     // 用例要串行，否则一边在写、一边被重铺，谁先谁后看运气。`memory::exclusive()`
@@ -165,8 +176,7 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
         assert!(state.receive(turn(1)));
     });
     let task = tokio::spawn({
-        let (ctx, writer, mgr, base) =
-            (ctx.clone(), writer.clone(), mgr.clone(), base.clone());
+        let (ctx, writer, mgr, base) = (ctx.clone(), writer.clone(), mgr.clone(), base.clone());
         async move { consider(&ctx, &writer, &mgr, group, &base).await.unwrap() }
     });
     tokio::time::timeout(Duration::from_secs(15), async {
@@ -192,8 +202,7 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     // 真去判定也会成功，而它走到人格那一轮并写下关注，说明指令确实绕过了判定。
     assert!(window::with_group(group, |state| state.summon()));
     let task = tokio::spawn({
-        let (ctx, writer, mgr, base) =
-            (ctx.clone(), writer.clone(), mgr.clone(), base.clone());
+        let (ctx, writer, mgr, base) = (ctx.clone(), writer.clone(), mgr.clone(), base.clone());
         async move { consider(&ctx, &writer, &mgr, group, &base).await.unwrap() }
     });
     tokio::time::timeout(Duration::from_secs(15), task)
@@ -213,8 +222,8 @@ async fn live_persona_and_gate_dialogue() {
     let data = PathBuf::from(std::env::var("ACUMEN_AMBIENT_LIVE_DATA").unwrap());
     let mgr = crate::plugins::oai::data::Manager::new(data.clone());
     let credentials = mgr.config.read().await;
-    let dir =
-        crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-live").unwrap();
+    let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-live")
+        .unwrap();
     // 铺开的是进程级的那几样（搭话记忆、心情、偷来的表情包库）：动同一批全局数据的
     // 用例要串行，否则一边在写、一边被重铺，谁先谁后看运气。`memory::exclusive()`
     // 就是那把锁——几样状态共用它。
@@ -275,7 +284,8 @@ async fn live_persona_and_gate_dialogue() {
         .await
         .unwrap();
         // 试聊同时查看人格决定，即便筛选不放行；线上仍按分数筛选。
-        let (provider, reply_model) = crate::plugins::oai::utils::split_provider(&config.reply_model);
+        let (provider, reply_model) =
+            crate::plugins::oai::utils::split_provider(&config.reply_model);
         let reply_base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE")
             .unwrap_or_else(|_| credentials.api_base.clone());
         let reply_key = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY")

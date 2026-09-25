@@ -206,9 +206,20 @@ pub fn handle(
             delete_replies(&ctx, writer.clone(), &channel, ids).await;
         }
 
-        if let Some(cmd) = match_command(&ctx, "撤回")
-            && let Some(reply_id_str) = cmd.reply_id
-        {
+        if let Some(cmd) = match_command(&ctx, "撤回") {
+            let Some(reply_id_str) = cmd.reply_id else {
+                if let Some(msg) = ctx.as_message() {
+                    crate::adapters::satori::send_msg(
+                        &ctx,
+                        writer,
+                        msg.group_id(),
+                        Some(msg.user_id()),
+                        "请先引用要撤回的消息，再发送撤回指令。",
+                    )
+                    .await?;
+                }
+                return Ok(None);
+            };
             let msg = match ctx.as_message() {
                 Some(m) => m,
                 None => return Ok(Some(ctx)),
@@ -218,6 +229,15 @@ pub fn handle(
             if let Ok(target_id) = reply_id_str.parse::<i64>() {
                 if let Err(error) = api::delete_msg(&ctx, writer.clone(), target_id).await {
                     warn!(target: "Plugin/Recall", "撤回引用消息 {target_id} 失败: {error}");
+                    crate::adapters::satori::send_msg(
+                        &ctx,
+                        writer,
+                        msg.group_id(),
+                        Some(msg.user_id()),
+                        "未能撤回引用消息。请检查机器人权限、消息归属和平台撤回时限后重试。",
+                    )
+                    .await?;
+                    return Ok(None);
                 }
                 if let Err(error) = api::delete_msg(&ctx, writer, command_msg_id).await {
                     warn!(target: "Plugin/Recall", "撤回指令消息 {command_msg_id} 失败: {error}");

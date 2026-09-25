@@ -8,7 +8,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
-const {spawn} = require('node:child_process');
+const {spawn, execFileSync} = require('node:child_process');
+const contrastProbe = execFileSync('python3', ['-c', 'import runpy; print(runpy.run_path("scripts/audit-contrast.py")["PROBE"])'], {cwd:path.resolve(__dirname,'..'), encoding:'utf8'});
 const {pathToFileURL} = require('node:url');
 const artifacts = process.env.CARD_ARTIFACTS;
 assert(artifacts, 'Set CARD_ARTIFACTS to the fixture directory');
@@ -56,9 +57,10 @@ async function main() {
   await cdp('Page.enable');
   await cdp('Emulation.setDeviceMetricsOverride', {width:640, height:800, deviceScaleFactor:1, mobile:false});
   const report = [];
+  const contrastFailures = [];
   for (const family of (process.env.CARD_FAMILIES || 'help,ctl,ai_news,oai').split(',')) {
     const dir = path.join(artifacts, family);
-    if (!fs.existsSync(dir)) { assert(!['help','ctl'].includes(family), family + ' fixtures missing'); continue; }
+    assert(fs.existsSync(dir), family + ' fixtures missing');
     const files = fs.readdirSync(dir).filter(file => file.endsWith('.html'));
     assert(files.length >= ({help:4,ctl:5,ai_news:5,oai:2}[family]));
     for (const file of files) {
@@ -81,6 +83,8 @@ async function main() {
       })()`);
       assert.equal(metrics.width, family === 'help' ? (file === 'overview.html' ? 920 : 640) : viewport, file);
       assert.equal(metrics.scriptRan, false, file + ': embedded script executed');
+      const contrast = await run('(function(){' + contrastProbe + '})()');
+      if (contrast.text.length) contrastFailures.push({file:family + '/' + file, failures:contrast.text});
       assert.deepEqual(metrics.overflow, [], file + ': content overflow');
       assert(metrics.height <= 16000, file + ': excessive height');
       if (file === 'overview.html') assert(metrics.items >= 20);
@@ -98,6 +102,7 @@ async function main() {
       console.log(`PASS ${family}/${file}: ${metrics.width} × ${metrics.height}, no overflow`);
     }
   }
+  assert.deepEqual(contrastFailures, [], 'all card text contrast');
   fs.writeFileSync(path.join(artifacts, 'layout-audit.json'), JSON.stringify(report, null, 2) + '\n');
   const pictures = report.map(item => item.file.replace('.html', '-review.png'));
   for (const family of ['stats', 'wordcloud']) {

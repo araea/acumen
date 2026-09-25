@@ -29,6 +29,7 @@ pub static MANAGER: OnceLock<Arc<Manager>> = OnceLock::new();
 
 pub struct Manager {
     pub config: RwLock<Config>,
+    persisted: std::sync::Mutex<Config>,
     pub generating: RwLock<GeneratingState>,
     pub mj_cache: RwLock<MjCache>,
     pub mj_inflight: RwLock<HashSet<String>>,
@@ -114,8 +115,12 @@ impl Manager {
                 } else {
                     &config.default_model
                 };
-                let mut room =
-                    super::types::Agent::new(BUILTIN_ROOM, model, BUILTIN_PERSONA, "终端与联网工具助手");
+                let mut room = super::types::Agent::new(
+                    BUILTIN_ROOM,
+                    model,
+                    BUILTIN_PERSONA,
+                    "终端与联网工具助手",
+                );
                 room.set_engine(super::types::ENGINE_AGENT, model);
                 config.agents.push(room);
             }
@@ -135,8 +140,8 @@ impl Manager {
             );
         }
 
-        if config_dirty && let Ok(serialized) = serde_json::to_string_pretty(&config) {
-            let _ = std::fs::write(&path, serialized);
+        if config_dirty && let Err(error) = write_config(&path, &config) {
+            error!(target: "Plugin/OAI", "初始化配置写入失败：{error:#}");
         }
 
         let mj_cache = std::fs::read_to_string(&mj_cache_path)
@@ -146,6 +151,7 @@ impl Manager {
         let _ = std::fs::create_dir_all(&mj_images_dir);
 
         Self {
+            persisted: std::sync::Mutex::new(config.clone()),
             config: RwLock::new(config),
             generating: RwLock::new(GeneratingState::default()),
             mj_cache: RwLock::new(mj_cache),
@@ -156,10 +162,18 @@ impl Manager {
         }
     }
 
-    pub fn save(&self, cfg: &Config) {
-        if let Ok(s) = serde_json::to_string_pretty(cfg) {
-            // 使用 std::fs 写文件，虽然是阻塞操作，但保存配置频率不高
-            let _ = std::fs::write(&self.path, s);
+    /// 原子保存；失败恢复最后一次持久化状态，调用者必须报告失败。
+    pub fn save(&self, cfg: &mut Config) -> anyhow::Result<()> {
+        let mut persisted = self.persisted.lock().unwrap();
+        match write_config(&self.path, cfg) {
+            Ok(()) => {
+                *persisted = cfg.clone();
+                Ok(())
+            }
+            Err(error) => {
+                *cfg = persisted.clone();
+                Err(error)
+            }
         }
     }
 
@@ -244,7 +258,7 @@ impl Manager {
         {
             let mut c = self.config.write().await;
             c.models = final_models.clone();
-            self.save(&c);
+            self.save(&mut c)?;
         }
         Ok(final_models)
     }
@@ -284,6 +298,23 @@ impl Manager {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn failed_save_restores_memory_and_preserves_disk() {
+        let dir = std::env::temp_dir().join(format!("acumen-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = super::Manager::new(dir.clone());
+        let mut config = mgr.config.write().await;
+        mgr.save(&mut config).unwrap();
+        let previous = std::fs::read(&mgr.path).unwrap();
+        let model = config.default_model.clone();
+        std::fs::create_dir(mgr.path.with_extension("json.tmp")).unwrap();
+        config.default_model = "unsaved".into();
+        assert!(mgr.save(&mut config).is_err());
+        assert_eq!(config.default_model, model);
+        assert_eq!(std::fs::read(&mgr.path).unwrap(), previous);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     use super::*;
 
     #[test]
@@ -314,7 +345,10 @@ mod tests {
         assert_eq!(config.default_model, DEFAULT_MODEL);
         assert_eq!(config.defaults_version, CURRENT_DEFAULTS_VERSION);
         assert!(
-            config.seeded_presets.iter().any(|name| name == BUILTIN_ROOM),
+            config
+                .seeded_presets
+                .iter()
+                .any(|name| name == BUILTIN_ROOM),
             "内置房间与其他内置房间共用「建过就记名」的规矩"
         );
 
@@ -322,7 +356,11 @@ mod tests {
         let mut pruned: Config =
             serde_json::from_str(&std::fs::read_to_string(&manager.path).unwrap()).unwrap();
         pruned.agents.retain(|agent| agent.name != BUILTIN_ROOM);
-        std::fs::write(&manager.path, serde_json::to_string_pretty(&pruned).unwrap()).unwrap();
+        std::fs::write(
+            &manager.path,
+            serde_json::to_string_pretty(&pruned).unwrap(),
+        )
+        .unwrap();
         let _ = Manager::new(dir.clone());
         let again: Config =
             serde_json::from_str(&std::fs::read_to_string(&manager.path).unwrap()).unwrap();
@@ -356,7 +394,8 @@ mod tests {
             seeded_presets: vec![BUILTIN_ROOM.to_string()],
             ..Default::default()
         };
-        let mut room = super::super::types::Agent::new("管家大人", "deepseek/deepseek-flash", "", "");
+        let mut room =
+            super::super::types::Agent::new("管家大人", "deepseek/deepseek-flash", "", "");
         room.engine = "pi".into();
         legacy.agents.push(room);
         std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
@@ -392,8 +431,12 @@ mod tests {
             defaults_version: CURRENT_DEFAULTS_VERSION,
             ..Default::default()
         };
-        let mut room = super::super::types::Agent::new("助手", "deepseek/deepseek-flash:high", "", "");
-        room.set_engine(super::super::types::ENGINE_CHAT, "deepseek/deepseek-flash:high");
+        let mut room =
+            super::super::types::Agent::new("助手", "deepseek/deepseek-flash:high", "", "");
+        room.set_engine(
+            super::super::types::ENGINE_CHAT,
+            "deepseek/deepseek-flash:high",
+        );
         legacy.agents.push(room);
         std::fs::write(&path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
 
@@ -406,12 +449,37 @@ mod tests {
 
         // 再启动一次不会二次改动（幂等）。
         let _ = Manager::new(dir.clone());
-        let again: Config =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let again: Config = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let room = again.agents.iter().find(|a| a.name == "助手").unwrap();
         assert_eq!(room.model, "deepseek/deepseek-flash");
         assert_eq!(room.thinking, "high");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
+}
+
+fn write_config(path: &std::path::Path, cfg: &Config) -> anyhow::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("json.tmp");
+    let result = (|| -> anyhow::Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        file.write_all(serde_json::to_string_pretty(cfg)?.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }

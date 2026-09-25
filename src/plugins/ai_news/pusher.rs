@@ -30,12 +30,7 @@ impl PushFeed {
         }
     }
 
-    fn request_limit(
-        self,
-        cfg: &AiNewsConfig,
-        has_group_override: bool,
-        realtime: bool,
-    ) -> u32 {
+    fn request_limit(self, cfg: &AiNewsConfig, has_group_override: bool, realtime: bool) -> u32 {
         if realtime {
             // 实时抓取固定取接口上限，再交给持久队列分批发送。这里若沿用展示
             // 条数，突发时排在 limit 之后的条目会因下一轮 304 而永久漏掉。
@@ -141,10 +136,7 @@ pub fn build_message(
 
     let login = ctx.bot.login_user.get();
     let bot_id = login.id.parse::<i64>().unwrap_or(10000);
-    let bot_name = login
-        .name
-        .clone()
-        .unwrap_or_else(|| "AI 资讯".to_string());
+    let bot_name = login.name.clone().unwrap_or_else(|| "AI 资讯".to_string());
 
     let nodes = rendered.nodes(cfg.forward_node_chars);
     let mut forward = Message::new();
@@ -187,7 +179,10 @@ async fn send_card_with_recovery(
             Some(id) => Message::new().reply(id),
             None => Message::new(),
         };
-        msg = msg.image(format!("base64://{b64}"));
+        msg = msg.image_described(
+            format!("base64://{b64}"),
+            "资讯卡片，完整内容与链接见后续文本",
+        );
 
         match send_msg_id(ctx, writer.clone(), group_id, user_id, msg).await {
             Ok(id) => return Ok(id),
@@ -196,7 +191,11 @@ async fn send_card_with_recovery(
                 if attempt == 2 || !retryable_pre_send_error(&detail) {
                     return Err(error);
                 }
-                let delay = if detail.contains("session stabilizing") { 32 } else { 5 };
+                let delay = if detail.contains("session stabilizing") {
+                    32
+                } else {
+                    5
+                };
                 warn!(
                     target: LOG_TARGET,
                     "卡片发送遇到可恢复的 Satori 状态（第 {}/3 次）: {}；{} 秒后重试",
@@ -229,15 +228,15 @@ pub async fn deliver(
     reply_to: Option<i64>,
 ) -> bool {
     let mut image_sent = false;
-    let mut extraction_saved = false;
 
     if let Some(b64) = &payload.image {
         match send_card_with_recovery(ctx, writer.clone(), group_id, user_id, b64, reply_to).await {
             Ok(Some(message_id)) => {
                 image_sent = true;
-                let target_id = group_id.or_else(|| user_id.map(|id| -id)).unwrap_or_default();
+                let target_id = group_id
+                    .or_else(|| user_id.map(|id| -id))
+                    .unwrap_or_default();
                 state::remember_extraction(target_id, message_id, payload.rendered.clone()).await;
-                extraction_saved = true;
             }
             Ok(None) => {
                 image_sent = true;
@@ -245,10 +244,6 @@ pub async fn deliver(
             }
             Err(e) => warn!(target: LOG_TARGET, "卡片图发送失败，改由文本兜底: {}", e),
         }
-    }
-
-    if extraction_saved {
-        return true;
     }
 
     // 图片若已发出但无法登记映射，兜底文本不再重复引用原指令。
@@ -421,10 +416,7 @@ pub(super) fn item_matches_target(cfg: &AiNewsConfig, target: PushTarget, item: 
 
 /// 关键词搜索：精选池查不到时，用完全相同的参数再查一次全量池。
 /// 返回 (条目, 是否来自全量池)。
-pub async fn search(
-    cfg: &AiNewsConfig,
-    query: &str,
-) -> Result<(Vec<Item>, bool), api::ApiError> {
+pub async fn search(cfg: &AiNewsConfig, query: &str) -> Result<(Vec<Item>, bool), api::ApiError> {
     let selected = api::fetch_items(
         "selected",
         "7d",
@@ -541,7 +533,6 @@ pub async fn push_brief(
         if sent {
             state::mark_brief_seen(target.state_id(), fresh).await;
         }
-
     }
 }
 
@@ -605,7 +596,6 @@ pub async fn push_daily(
         {
             state::mark_daily(target.state_id(), &date).await;
         }
-
     }
 }
 

@@ -88,7 +88,15 @@ pub fn handle(
 
                 // 3. 帮助指令
                 if matches!(cmd, "gif帮助" | "gifhelp") {
-                    let _ = send_msg(&ctx, writer, group_id, Some(user_id), HELP_TEXT).await;
+                    let prefix = crate::command::get_prefixes(&ctx)
+                        .first()
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut help = HELP_TEXT.to_string();
+                    for command in COMMANDS {
+                        help = help.replace(command, &format!("{prefix}{command}"));
+                    }
+                    let _ = send_msg(&ctx, writer, group_id, Some(user_id), help).await;
                     return Ok(None);
                 }
 
@@ -115,14 +123,7 @@ pub fn handle(
                     }
                 };
 
-                let _ = send_msg(
-                    &ctx,
-                    writer.clone(),
-                    group_id,
-                    Some(user_id),
-                    "⏳ 处理中…",
-                )
-                .await;
+                let _ = send_msg(&ctx, writer.clone(), group_id, Some(user_id), "⏳ 处理中…").await;
 
                 let img_bytes = match download_bytes(&img_url).await {
                     Ok(b) => b,

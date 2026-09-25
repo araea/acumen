@@ -75,6 +75,14 @@ impl Message {
         self.add("image", data)
     }
 
+    /// 信息图片须有描述；平台不暴露图片描述时仍需发送等价文本。
+    pub fn image_described(self, file: impl Into<String>, description: impl Into<String>) -> Self {
+        let mut data = Object::new();
+        data.insert("file".into(), Value::from(file.into()));
+        data.insert("summary".into(), Value::from(description.into()));
+        self.add("image", data)
+    }
+
     /// 语音
     /// - `file`: 文件名、URL、Base64 或文件路径
     pub fn record(self, file: impl Into<String>) -> Self {

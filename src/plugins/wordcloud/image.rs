@@ -8,7 +8,7 @@ use std::time::Instant;
 
 /// 词云的纸色。取设计系统的卡面（`res/cards/m3e.css` 的 `scheme-manual`），
 /// 与六张卡片、与统计图同一张纸——词云常常就插在一张统计卡片后面。
-const PAPER: &str = "#FFFEFA";
+const PAPER: &str = crate::render::tokens::SURFACE_HEX;
 
 /// 词与词之间的碰撞间距，同时也是内容边界外自带的一圈留白（画布像素）。
 const PADDING: u32 = 4;
@@ -21,20 +21,8 @@ const PADDING: u32 = 4;
 /// 算，边距给一个定值即可。
 const TRIM_MARGIN: u32 = 8;
 
-/// 词的五个色相。
-///
-/// 五个都取自设计系统那张色表：主色、调色板的靛与紫、控制卡的三级橄榄、警告赭金。
-/// 选它们是因为在这张纸上**彼此分得开**——云里相邻的词常常不同色，色相挨太近就糊成
-/// 一片；同时又都在同一个低彩度的家族里，不会像从前那样冒出一支与全站无关的蓝。
-/// 换个说法：不是新造一套配色，是把系统里已有的色按「能分辨」这个唯一标准挑五个。
-/// `the_word_hues_come_from_the_design_system` 那条单测钉着它们都还在样式表里。
-const WORD_COLORS: [&str; 5] = [
-    "#1F6350", // 主色（scheme-manual 的 primary）
-    "#3E4E9E", // 调色板的靛（--md-hue-indigo）
-    "#5F3A96", // 调色板的紫（--md-hue-violet）
-    "#4A5B3A", // 控制卡的三级色（橄榄）
-    "#7A5300", // 警告赭金
-];
+/// 由共享的 M3 令牌生成，不再手动复制卡片色值。
+const WORD_COLORS: [&str; 5] = crate::render::tokens::WORD_COLORS;
 
 static FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();
 
@@ -62,30 +50,14 @@ pub fn generate_word_cloud(
         return Err("词云尺寸须在 64—2048 像素之间，总面积不超过 400 万像素".into());
     }
 
-    let stop_words = get_stop_words();
-    let mut freq_map: HashMap<String, f64> = HashMap::new();
-
-    for line in corpus {
-        let words = line.split_whitespace();
-        for w in words {
-            let w_trim = w.trim();
-            if w_trim.chars().count() > 1
-                && !stop_words.contains(w_trim)
-                && !w_trim
-                    .chars()
-                    .all(|c| c.is_numeric() || c.is_ascii_punctuation())
-            {
-                *freq_map.entry(w_trim.to_string()).or_insert(0.0) += 1.0;
-            }
-        }
-    }
+    let freq_map = frequencies(&corpus);
 
     if freq_map.is_empty() {
         return Err("有效词汇为空（可能被过滤）".to_string());
     }
 
     let mut word_vec: Vec<(String, f64)> = freq_map.into_iter().collect();
-    word_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    word_vec.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
     let top_words: Vec<WordInput> = word_vec
         .into_iter()
@@ -203,11 +175,56 @@ mod tests {
 
     /// 五十个词，权重递减。用作样张，以及「词多到快铺满画布」那一侧的样本。
     const SAMPLE_WORDS: [&str; 50] = [
-        "生活", "阅读", "设计", "分享", "周末", "音乐", "天气", "咖啡", "散步", "编程", "朋友",
-        "电影", "旅行", "日常", "摄影", "星空", "故事", "灵感", "晚安", "城市", "考试", "加班",
-        "开会", "外卖", "快递", "游戏", "猫", "狗", "地铁", "机票", "医院", "作业", "论文", "面试",
-        "房租", "超市", "火锅", "奶茶", "健身", "旅游", "动画", "漫画", "耳机", "键盘", "显示器",
-        "显卡", "手机", "充电", "雨伞", "口罩",
+        "生活",
+        "阅读",
+        "设计",
+        "分享",
+        "周末",
+        "音乐",
+        "天气",
+        "咖啡",
+        "散步",
+        "编程",
+        "朋友",
+        "电影",
+        "旅行",
+        "日常",
+        "摄影",
+        "星空",
+        "故事",
+        "灵感",
+        "晚安",
+        "城市",
+        "考试",
+        "加班",
+        "开会",
+        "外卖",
+        "快递",
+        "游戏",
+        "猫",
+        "狗",
+        "地铁",
+        "机票",
+        "医院",
+        "作业",
+        "论文",
+        "面试",
+        "房租",
+        "超市",
+        "火锅",
+        "奶茶",
+        "健身",
+        "旅游",
+        "动画",
+        "漫画",
+        "耳机",
+        "键盘",
+        "显示器",
+        "显卡",
+        "手机",
+        "充电",
+        "雨伞",
+        "口罩",
     ];
 
     /// 第 i 个词出现 `len - i` 次：大字小字都有，和群里的长尾分布差不多。
@@ -234,7 +251,7 @@ mod tests {
         let sheet = crate::render::web::DESIGN_SYSTEM.to_ascii_uppercase();
         for color in std::iter::once(PAPER).chain(WORD_COLORS) {
             assert!(
-                sheet.contains(color),
+                sheet.contains(&color.to_ascii_uppercase()),
                 "{color} 不在 res/cards/m3e.css 里：词云的配色要取自系统那张色表"
             );
         }
@@ -251,8 +268,8 @@ mod tests {
     /// 裁完之后同样十个词，成图跟着内容缩到内容大小。
     #[test]
     fn a_sparse_cloud_comes_back_without_the_paper_ring() {
-        let out = generate_word_cloud(corpus_of(&SAMPLE_WORDS[..10]), None, None, 50, 800, 600)
-            .unwrap();
+        let out =
+            generate_word_cloud(corpus_of(&SAMPLE_WORDS[..10]), None, None, 50, 800, 600).unwrap();
 
         let img = image::load_from_memory(&decode(&out)).unwrap().to_rgb8();
         assert!(
@@ -299,4 +316,26 @@ mod tests {
             std::fs::write(format!("{dir}/{name}"), bytes).unwrap();
         }
     }
+}
+
+pub fn frequencies(corpus: &[String]) -> HashMap<String, f64> {
+    let stop_words = get_stop_words();
+    let mut freq_map: HashMap<String, f64> = HashMap::new();
+
+    for line in corpus {
+        let words = line.split_whitespace();
+        for w in words {
+            let w_trim = w.trim();
+            if w_trim.chars().count() > 1
+                && !stop_words.contains(w_trim)
+                && !w_trim
+                    .chars()
+                    .all(|c| c.is_numeric() || c.is_ascii_punctuation())
+            {
+                *freq_map.entry(w_trim.to_string()).or_insert(0.0) += 1.0;
+            }
+        }
+    }
+
+    freq_map
 }

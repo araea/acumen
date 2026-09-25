@@ -110,7 +110,7 @@ fn is_enabled(ctx: &Context, name: &str) -> bool {
 
 /// 符号指令（`/#`、`~名`、`##`、`-#` 等）本身就是完整指令，不再拼接前缀
 pub(crate) fn needs_prefix(cmd: &str) -> bool {
-    !cmd.starts_with(['/', '#', '~', '-'])
+    !cmd.starts_with(['/', '#', '~', '-', '<']) && !cmd.starts_with("画·")
 }
 
 fn prefix_of(ctx: &Context) -> String {
@@ -130,7 +130,11 @@ fn grouped(ctx: &Context) -> Vec<Group> {
             items: get_plugins()
                 .iter()
                 .filter(|p| {
-                    let sec = if known.contains(&p.section) { p.section } else { fallback };
+                    let sec = if known.contains(&p.section) {
+                        p.section
+                    } else {
+                        fallback
+                    };
                     sec == *code
                 })
                 .map(|p| Entry {
@@ -156,13 +160,18 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
         .count();
 
     // 不再用横线分隔：分组有 ▍、下一步有 💡，横线只是多占一行。
-    let mut out = format!("acumen 插件总览\n已启用 {enabled} / {total} 个插件 · 指令前缀 {prefix}\n");
+    let mut out =
+        format!("acumen 插件总览\n已启用 {enabled} / {total} 个插件 · 指令前缀 {prefix}\n");
 
     // 一条两行：首行是身份与开关，次行是它到底做什么，扫读时不必在长句里找边界
     for group in groups {
         out.push_str(&format!("\n▍{}（{} 项）\n", group.title, group.items.len()));
         for item in &group.items {
-            let mark = if item.enabled { "已启用" } else { "已停用" };
+            let mark = if item.enabled {
+                "已启用"
+            } else {
+                "已停用"
+            };
             out.push_str(&format!(
                 "{} {}（{}）\n   {}\n",
                 mark, item.display, item.name, item.desc
@@ -171,7 +180,7 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
     }
 
     out.push_str(&format!(
-        "\n💡 看全部指令：{p}help <插件名>\n管理开关与配置：{p}ctl（聊天）\n连接：Satori v1；状态为配置开关，初始化及排期修改待重启。",
+        "\n💡 看全部指令：{p}help <插件名>\n管理开关与配置：{p}ctl（聊天）\n连接：Satori v1；状态为配置开关，首次启用自动初始化；排期修改下次连接生效。",
         p = prefix
     ));
     out
@@ -214,7 +223,7 @@ fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
         }
     }
     out.pop();
-    out.push_str(&format!("\n管理：{prefix}ctl show {}；{prefix}ctl on/off {}\n首次初始化与定时排期修改待重启；详见 {prefix}ctl list", entry.name, entry.name));
+    out.push_str(&format!("\n管理：{prefix}ctl show {}；{prefix}ctl on/off {}\n首次启用自动初始化；定时排期修改下次连接生效；详见 {prefix}ctl list", entry.name, entry.name));
     out
 }
 
@@ -313,21 +322,44 @@ pub fn handle(
                 let mut out = Message::new().reply(msg.message_id());
                 let browser_path = ctx.config.read().unwrap().browser_path.clone();
                 let image = match (&reply.card, config.image_enabled) {
-                    (Some(c), true) => match c.render(config.image_scale, browser_path.as_deref()).await {
-                        Ok(b64) => Some(b64),
-                        Err(e) => {
-                            warn!(target: LOG_TARGET, "帮助网页卡片出图失败，改发纯文本：{e}");
-                            None
+                    (Some(c), true) => {
+                        match c.render(config.image_scale, browser_path.as_deref()).await {
+                            Ok(b64) => Some(b64),
+                            Err(e) => {
+                                warn!(target: LOG_TARGET, "帮助网页卡片出图失败，改发纯文本：{e}");
+                                None
+                            }
                         }
-                    },
+                    }
                     _ => None,
                 };
+                let illustrated = image.is_some();
                 out = match image {
-                    Some(b64) => out.image(format!("base64://{}", b64)),
-                    None => out.text(reply.text),
+                    Some(b64) => out.image_described(
+                        format!("base64://{}", b64),
+                        "帮助卡片，完整内容见后续文本",
+                    ),
+                    None => out.text(&reply.text),
                 };
 
-                send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), out).await?;
+                send_msg(
+                    &ctx,
+                    writer.clone(),
+                    msg.group_id(),
+                    Some(msg.user_id()),
+                    out,
+                )
+                .await?;
+                if illustrated {
+                    crate::adapters::satori::send_text_chunks(
+                        &ctx,
+                        writer,
+                        msg.group_id(),
+                        Some(msg.user_id()),
+                        &reply.text,
+                    )
+                    .await?;
+                }
                 return Ok(None);
             }
         }
@@ -412,7 +444,11 @@ mod tests {
             seen += get_plugins()
                 .iter()
                 .filter(|p| {
-                    let sec = if known.contains(&p.section) { p.section } else { fallback };
+                    let sec = if known.contains(&p.section) {
+                        p.section
+                    } else {
+                        fallback
+                    };
                     sec == *code
                 })
                 .count();
@@ -441,4 +477,3 @@ mod tests {
         assert!(!needs_prefix("-*"));
     }
 }
-

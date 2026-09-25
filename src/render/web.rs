@@ -20,7 +20,11 @@ pub enum Theme {
 ///
 /// 用它拼 `<style>` 时顺序不能换，版式在后：
 /// `format!("{}{}", render::DESIGN_SYSTEM, 本卡版式)`。
-pub(crate) const DESIGN_SYSTEM: &str = include_str!("../../res/cards/m3e.css");
+pub(crate) const DESIGN_SYSTEM: &str = concat!(
+    include_str!("../../res/cards/tokens.css"),
+    "\n",
+    include_str!("../../res/cards/m3e.css")
+);
 
 pub struct Item {
     pub name: String,
