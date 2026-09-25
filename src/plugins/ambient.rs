@@ -820,9 +820,7 @@ pub(crate) async fn observe(
         mood::nudge(|mood, now| mood.engaged(group, now));
     }
     let start = window::with_group(group, |state| {
-        let pushed = !empty && state.receive(turn);
-        // 闲着的群由指令自己叫起来；有 worker 在跑时它下一轮会看见这个标记。
-        pushed || (summoned && state.summon())
+        record_for_consideration(state, turn, empty, summoned)
     });
     if !start {
         return;
@@ -837,6 +835,19 @@ pub(crate) async fn observe(
             warn!(target: LOG_TARGET, "群 {group} 搭话失败：{error:#}");
         }
     });
+}
+
+/// 收消息并登记指令。带正文的指令不能因 receive 已启动 worker 而漏掉召唤标记。
+fn record_for_consideration(
+    state: &mut window::GroupState,
+    turn: Turn,
+    empty: bool,
+    summoned: bool,
+) -> bool {
+    let pushed = !empty && state.receive(turn);
+    // 不能短路：有 worker 在跑时也得留标记给下一批。
+    let called = summoned && state.summon();
+    pushed || called
 }
 
 /// 戳一戳和撤回也是互动；表态没有操作者，不能凭空归到某位群友头上。
@@ -1658,6 +1669,24 @@ mod tests {
         // 显式清空 gate_persona 时判定回退用完整人设。
         let no_gate_persona: AmbientConfig = toml::from_str("gate_persona = ''").unwrap();
         assert!(no_gate_persona.gate_persona.trim().is_empty());
+    }
+
+    #[test]
+    fn summon_with_text_stays_marked_after_receive_starts_the_worker() {
+        let mut state = window::GroupState::default();
+        let start = record_for_consideration(
+            &mut state,
+            Turn {
+                user_id: 42,
+                message_id: 99,
+                text: "你怎么看".into(),
+                ..Turn::default()
+            },
+            false,
+            true,
+        );
+        assert!(start);
+        assert!(state.take_summon(), "指令必须随正文送进首批，绕过判定");
     }
 
     #[test]
