@@ -276,11 +276,11 @@ impl Default for AmbientConfig {
             thinking: "low".to_string(),
             temperature: Some(1.3),
             tools: "read,write,bash".to_string(),
-            score_threshold: 60,
+            score_threshold: 55,
             silence_relief_per_10min: 0,
             silence_relief_cap: 0,
-            speech_penalty_per_turn: 12,
-            speech_penalty_cap: 36,
+            speech_penalty_per_turn: 8,
+            speech_penalty_cap: 24,
             focus_relief: 5,
             context_turns: 20,
             context_images: 2,
@@ -288,7 +288,7 @@ impl Default for AmbientConfig {
             max_pending_seconds: 12,
             gate_interval_seconds: 30,
             cooldown_seconds: 90,
-            cooldown_penalty: 25,
+            cooldown_penalty: 18,
             focus_max_seconds: 180,
             max_per_hour: 8,
             budget_penalty: 12,
@@ -1218,6 +1218,7 @@ async fn consider_batch(
             state.allow_passive_gate(config.gate_interval())
         })
     {
+        debug!(target: LOG_TARGET, "群 {group} 跳过本批判定：普通话题的判定间隔未到");
         return Ok(());
     }
 
@@ -1259,6 +1260,7 @@ async fn consider_batch(
             hourly_turns: state.spoken_last_hour(),
         });
         let threshold = config.threshold(mood::snapshot(group), pressure);
+        debug!(target: LOG_TARGET, "群 {group} 判定模型：{}", config.gate_model);
         let verdict = gate::judge(
             &api_base,
             &api_key,
@@ -1372,6 +1374,7 @@ async fn speak_up(
 
     let started = Instant::now();
     let (api_base, api_key, reply_model) = gate_endpoint(ctx, mgr, &config.reply_model).await?;
+    debug!(target: LOG_TARGET, "群 {group} 发言模型：{}", config.reply_model);
     let raw = speak::compose(
         &api_base,
         &api_key,
@@ -1802,7 +1805,7 @@ mod tests {
         // `cooldown_and_the_hourly_budget_raise_the_bar_instead_of_shutting_the_door`），
         // 所以有人真的在等它回话时不会被挡在外面。
         assert_eq!(config.cooldown(), Duration::from_secs(90));
-        assert_eq!(config.cooldown_penalty, 25);
+        assert_eq!(config.cooldown_penalty, 18);
         assert_eq!(config.max_per_hour, 8);
         assert_eq!(config.budget_penalty, 12);
         assert_eq!(config.effective_threshold(None), config.score_threshold);
@@ -1980,6 +1983,14 @@ mod tests {
         assert_eq!(swapped.context_turns, config.context_turns);
         assert_eq!(swapped.draw_budget, config.draw_budget);
         assert_eq!(swapped.messages_budget, config.messages_budget);
+        // 所有能力/预算/提示设置必须完全相同；以后新增字段也能被这里发现。
+        let mut before = serde_json::to_value(&config).unwrap();
+        let mut after = serde_json::to_value(&swapped).unwrap();
+        for key in ["gate_model", "reply_model"] {
+            before.as_object_mut().unwrap().remove(key);
+            after.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(before, after);
         // 主配置不动：离峰那一轮仍走 DeepSeek。
         assert_eq!(config.gate_model, "deepseek/deepseek-flash");
         assert_eq!(config.reply_model, "deepseek/deepseek-flash");

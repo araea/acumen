@@ -2,21 +2,13 @@
 //!
 //! 群里最常见的图恰恰是模型最常拒收的：QQ 表情包多是 GIF，而 Gemini 直接以
 //! 400/500 回绝 `image/gif`——一张表情包就能让整轮判定失败。这里在送进模型之前
-//! 统一过一道：认识的格式原样放行，不认识但解得开的（GIF 等）取首帧转成 PNG，
-//! 解不开的丢掉。顺带把过大的图缩到边长上限，省 token 也省手机的 CPU。
+//! 统一过一道：先验证真实图片内容，再取首帧转成 PNG；解不开的丢掉。
+//! 不能只信 HTTP 的 MIME：QQ 直链有时标成 PNG 实际是损坏/不受支持的内容，
+//! 原样透传会让 DeepSeek 与 MiMo 的整轮请求一起失败。过大的图也缩到边长上限。
 
 use super::window::Turn;
 use base64::Engine as _;
 use std::io::Cursor;
-
-/// 模型直接接受的图片类型。
-const PASSTHROUGH: [&str; 5] = [
-    "image/jpeg",
-    "image/png",
-    "image/webp",
-    "image/heic",
-    "image/heif",
-];
 
 /// 转码前的体积上限；再大的图在手机上解码不划算。
 const MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -26,8 +18,9 @@ const MAX_EDGE: u32 = 1024;
 /// 转码结果的缓存条数上限。一轮最多看两三张图，够覆盖判定与发言两次读取，
 /// 也够覆盖同一批消息被连续几轮反复带进上下文。
 const CACHE_ENTRIES: usize = 12;
-/// 缓存活多久。图片本身不会变，但 QQ 的直链是签名的，攒着过期的条目没意义。
+/// 成功的图片缓存半小时；下载失败可能只是短暂断网，不能跟坏图一样久。
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 直链 → （转好的 data URL 或「这张用不了」，记下的时刻）。
 type Cache = std::sync::Mutex<
@@ -46,7 +39,7 @@ fn cache() -> &'static Cache {
 fn cached(url: &str) -> Option<Option<String>> {
     let mut guard = cache().lock().unwrap_or_else(|error| error.into_inner());
     let (value, at) = guard.get(url)?;
-    if at.elapsed() > CACHE_TTL {
+    if at.elapsed() > if value.is_some() { CACHE_TTL } else { NEGATIVE_TTL } {
         guard.remove(url);
         return None;
     }
@@ -78,7 +71,7 @@ pub(crate) struct Usable {
     pub message_id: i64,
     /// 在这条消息里是第几张，1 起。
     pub index: usize,
-    /// 模型直接收得下的 data URL。
+    /// 已验证并转换为 PNG 的 data URL。
     pub data_url: String,
 }
 
@@ -145,12 +138,14 @@ pub(super) async fn usable_image(url: &str) -> Option<String> {
 /// data URL → 模型可接受的 data URL；无法使用时返回 `None`。
 fn normalize(data_url: &str) -> Option<String> {
     let (header, payload) = data_url.split_once(',')?;
-    let mime = header
-        .strip_prefix("data:")?
-        .strip_suffix(";base64")?
-        .to_ascii_lowercase();
-    if PASSTHROUGH.contains(&mime.as_str()) {
-        return Some(data_url.to_string());
+    let mime = header.strip_prefix("data:")?.strip_suffix(";base64")?;
+    if !mime.to_ascii_lowercase().starts_with("image/") {
+        return None;
+    }
+    // 不相信服务端给的 MIME，所有格式都检查实际字节。也避免 HEIC 等被模型
+    // 拒收，以及伪装成 PNG 的坏图使判定与发言一起报错。
+    if payload.len() > MAX_BYTES * 4 / 3 + 16 {
+        return None;
     }
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(payload)
@@ -197,10 +192,13 @@ mod tests {
     }
 
     #[test]
-    fn supported_types_pass_through_untouched() {
-        let url = data_url("image/jpeg", b"not really a jpeg");
-        assert_eq!(normalize(&url).as_deref(), Some(url.as_str()));
-        assert!(normalize(&data_url("IMAGE/PNG", b"x")).is_some());
+    fn mislabeled_or_broken_images_never_reach_the_model() {
+        assert!(normalize(&data_url("image/jpeg", b"not really a jpeg")).is_none());
+        assert!(normalize(&data_url("IMAGE/PNG", b"x")).is_none());
+        assert!(normalize(&data_url("image/heic", b"bad heic")).is_none());
+        assert!(normalize(&data_url("image/png", &vec![0; MAX_BYTES + 1])).is_none());
+        let valid = normalize(&data_url("image/jpeg", &gif(8, 8))).unwrap();
+        assert!(valid.starts_with("data:image/png;base64,"));
     }
 
     #[test]

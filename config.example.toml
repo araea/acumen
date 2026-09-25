@@ -368,6 +368,11 @@ media_deadline_seconds = 240
 api_base = "https://api.deepseek.com/v1"
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
+# 高峰使用 peak.model = "mimo/mimo-v2.6-flash" 时还需配置 MiMo 官方接口。
+# [oai.providers.mimo]
+# api_base = "https://api.xiaomimimo.com/v1"
+# api_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
 # 房间模型与判定模型都支持 `:强度` 后缀，强度取 off/minimal/low/medium/high。
 # 也可建房后单独改：`房间%deepseek-flash:high`。
 
@@ -472,12 +477,12 @@ summon_command = "/搭话"
 # 名字会撞车，把猜测当成点名会让它到处接话。少于两个字的一律不认。
 aliases = []
 # 开口意愿分门槛，调高更沉默。实际门槛还会随「最近十分钟自己说了几轮」抬高
-# （每轮 +12，最多 +36），随关注中的续聊下调 5 分，见 docs/ambient.md。
+# （每轮 +8，最多 +24），随关注中的续聊下调 5 分，见 docs/ambient.md。
 # 续聊折扣给得小是有意的：群里长期只聊一个话题时，「还在聊那个话题」会一直
 # 为真，折扣一大就等于常年半价放行。
-score_threshold = 60
-speech_penalty_per_turn = 12
-speech_penalty_cap = 36
+score_threshold = 55
+speech_penalty_per_turn = 8
+speech_penalty_cap = 24
 focus_relief = 5
 # 每轮最多 3 条消息、6 个平台写动作（含消息、点赞、撤回和失败尝试）。
 messages_budget = 3
@@ -529,7 +534,7 @@ silence_relief_cap = 0
 # 分数自然高，抬高的门槛挡不住那一句。被 @ 与搭话指令走的是另一条路，不受这两个影响。
 # 真嫌吵就把窗口拉长、罚款加重、目标调小；想要完全由人格自主控制节奏，写 0。
 cooldown_seconds = 90
-cooldown_penalty = 25
+cooldown_penalty = 18
 max_per_hour = 8
 budget_penalty = 12
 # 人格可选择短期跟进某位群友或话题，并在互动中续期。

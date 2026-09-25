@@ -192,18 +192,20 @@ fn transient(error: &anyhow::Error) -> bool {
 /// 宽松地解析判定输出。
 ///
 /// 模型时不时会在 JSON 外面裹一层代码块或一句「好的」，为此专门开 JSON 模式会
-/// 把可用的判定模型限制在支持该参数的那几个上，不划算——取第一个花括号块即可。
+/// 把可用的判定模型限制在支持该参数的那几个上。逐个尝试 JSON 起点，
+/// 只读取首个完整对象，避免前后附带示例/说明时用最后一个 `}` 截坏结果。
 fn parse_verdict(raw: &str) -> anyhow::Result<Verdict> {
-    let start = raw
-        .find('{')
-        .ok_or_else(|| anyhow::anyhow!("判定模型没有返回 JSON：{}", raw.trim()))?;
-    let end = raw
-        .rfind('}')
-        .ok_or_else(|| anyhow::anyhow!("判定模型返回的 JSON 不完整：{}", raw.trim()))?;
-    let value: serde_json::Value = serde_json::from_str(&raw[start..=end])?;
-    let score = value["score"]
-        .as_f64()
-        .ok_or_else(|| anyhow::anyhow!("判定结果缺少 score：{}", raw.trim()))?;
+    let value = raw
+        .match_indices('{')
+        .filter_map(|(start, _)| {
+            serde_json::Deserializer::from_str(&raw[start..])
+                .into_iter::<serde_json::Value>()
+                .next()
+                .and_then(Result::ok)
+        })
+        .find(|value| value["score"].as_f64().is_some())
+        .ok_or_else(|| anyhow::anyhow!("判定模型没有返回有效分数：{}", raw.trim()))?;
+    let score = value["score"].as_f64().unwrap();
     Ok(Verdict {
         score: score.clamp(0.0, 100.0) as u8,
         continuation: value["continuation"].as_bool().unwrap_or(false),
@@ -273,6 +275,8 @@ mod tests {
         assert_eq!(parse_verdict("{\"score\": 999}").unwrap().score, 100);
         assert!(parse_verdict("我觉得可以回复").is_err());
         assert!(parse_verdict("{\"reason\":\"x\"}").is_err());
+        assert_eq!(parse_verdict("示例 {\"score\":0} 实际 {\"score\":67}").unwrap().score, 0);
+        assert_eq!(parse_verdict("前缀 {坏的} {\"score\":67} 后缀 {注释}").unwrap().score, 67);
     }
 
     #[test]
