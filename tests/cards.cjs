@@ -98,6 +98,24 @@ async function main() {
         assert.equal(await run(`document.querySelector('.code-line').scrollWidth <= document.querySelector('.code-line').clientWidth + 1`), true);
         assert.equal(await run(`getComputedStyle(document.querySelector('.code-line code')).whiteSpace`), 'pre-wrap');
       }
+      // 指令列表（`<ol class=commands>`）必须与版心左边缘对齐。浏览器给 `<ol>` 塞了
+      // 40px 的 padding-inline-start，只写 list-style:none 去不掉——整列指令会右移，
+      // 左边留白比右边宽，与上下分区也对不齐。这条在 ctl/usage 与 help/detail_* 上命中。
+      const commands = await run(`(() => {
+        const list = document.querySelector('.commands');
+        if (!list) return null;
+        const card = document.querySelector('.card');
+        const cs = getComputedStyle(card), rect = card.getBoundingClientRect();
+        const edge = rect.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
+        const chip = list.querySelector('.command');
+        return {padding:getComputedStyle(list).paddingInlineStart,
+          offset:chip ? Math.round(chip.getBoundingClientRect().left - edge) : null};
+      })()`);
+      if (commands) {
+        assert.equal(commands.padding, '0px', file + ': 指令列表带 UA 默认缩进');
+        assert(Math.abs(commands.offset) <= 1,
+          file + ': 指令与版心左边缘未对齐（左移 ' + commands.offset + 'px）');
+      }
       report.push({file:family + '/' + file, ...metrics});
       console.log(`PASS ${family}/${file}: ${metrics.width} × ${metrics.height}, no overflow`);
     }

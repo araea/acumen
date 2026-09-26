@@ -133,8 +133,13 @@
 }
 
 /* —— 指令清单 —— */
+/* `<ol>` 自带浏览器的 `padding-inline-start: 40px`，只写 `list-style: none` 去不掉它：
+   整列指令会右移 40px，与上面的「指令」分区、下面的示例面板左边缘对不齐，
+   左边留白比右边宽出一截。oai 的来源列表早已显式清零，这里补上同一条。 */
 .commands {
   list-style: none;
+  padding: 0;
+  margin: 0;
 }
 .commands li {
   padding: var(--md-space-5) 0;
