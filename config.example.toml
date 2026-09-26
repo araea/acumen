@@ -242,6 +242,8 @@ ignore_commands = true
 # 被打断时插一句的概率（0—1）。默认不打断。
 interrupt_probability = 0.0
 interrupt_texts = ["打断复读", "打断施法"]
+# 跟读过的话多少小时内不再跟读，哪怕群友又接力起来（记录落盘，重启不忘）。0 为只按最近 128 条淘汰。
+remember_hours = 24
 
 [repeater.channel]
 white = []

@@ -12,8 +12,11 @@
 //!
 //! Bot 自己说的话（`BeforeSend` 拦截到的发送包，以及实现端回显的自身消息）
 //! 只更新状态、不参与计数，避免自己接自己的话形成连锁。
-//! 每个频道另存最近 128 条已确认跟读（含打断）的内容指纹，跨接力去重；
-//! 未实际发送的候选不入记录。记录随进程重启或频道状态淘汰清除。
+//! 每个频道另存最近 128 条已跟读（含打断）的内容指纹，跨接力去重：
+//! 同一句话跟读过一次，`remember_hours` 小时内再怎么接力也不再跟读。
+//! 记录以发送回执为准，回执丢了（报错但其实发出去了）也能由自己的回显补记；
+//! 未实际发送的候选不入记录。记录落盘在 `data/repeater/recent.json`，
+//! 重启、重连都不会忘。
 //!
 //! 触发点上依次过三道闸：冷却 → 概率 → 打断。命中打断则改发一句打断语，
 //! 概率未命中不置位 `repeated`，同一句话的下一条仍有机会触发。
@@ -31,7 +34,8 @@ use simd_json::OwnedValue;
 use simd_json::base::{ValueAsArray, ValueAsMutObject};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
@@ -64,6 +68,8 @@ pub struct RepeaterConfig {
     pub interrupt_probability: f64,
     /// 打断语文案池，随机取一条
     pub interrupt_texts: Vec<String>,
+    /// 跟读过的内容多少小时内不再跟读（跨重启保留）；0 为只按条数上限淘汰
+    pub remember_hours: u64,
     /// 群黑白名单
     pub channel: ChannelConfig,
 }
@@ -82,6 +88,7 @@ impl Default for RepeaterConfig {
             allow_media: true,
             interrupt_probability: 0.0,
             interrupt_texts: vec!["打断复读".to_string(), "打断施法".to_string()],
+            remember_hours: 24,
             channel: ChannelConfig::default(),
         }
     }
@@ -96,6 +103,10 @@ impl RepeaterConfig {
     fn threshold(&self) -> usize {
         self.min_times.max(2)
     }
+
+    fn remember_seconds(&self) -> Option<u64> {
+        (self.remember_hours > 0).then(|| self.remember_hours.saturating_mul(3600))
+    }
 }
 
 // ================= 状态定义 =================
@@ -105,6 +116,13 @@ impl RepeaterConfig {
 enum Sender {
     User(i64),
     Bot,
+}
+
+/// 一条跟读记录：内容指纹与跟读时刻（秒）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Remembered {
+    sig: String,
+    at: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -118,7 +136,7 @@ struct ChannelState {
     /// 本轮是否已经跟读过
     repeated: bool,
     /// 已确认发送的原接力指纹，独立于当前接力，按发送顺序淘汰
-    recent_repeats: VecDeque<String>,
+    recent_repeats: VecDeque<Remembered>,
     /// 上一条消息的来源
     last_sender: Option<Sender>,
     /// 上次实际复读的时间戳（跨轮保留，用于冷却）
@@ -132,24 +150,44 @@ impl ChannelState {
     fn restart(&mut self, sig: String, content: OwnedValue, sender: Sender) {
         self.generation = next_generation();
         // Bot 自己刚说的话和近期已跟读的内容都不再跟读。
-        self.repeated = sender == Sender::Bot || self.recent_repeats.contains(&sig);
+        self.repeated = sender == Sender::Bot || self.has_repeated(&sig);
         self.sig = sig;
         self.content = content;
         self.times = if sender == Sender::Bot { 0 } else { 1 };
         self.last_sender = Some(sender);
     }
 
-    fn remember_repeat(&mut self, sig: &str) {
+    fn has_repeated(&self, sig: &str) -> bool {
+        self.recent_repeats.iter().any(|known| known.sig == sig)
+    }
+
+    fn remember_repeat(&mut self, sig: &str, now: u64) {
         if self.sig == sig {
             self.repeated = true;
         }
-        if self.recent_repeats.iter().any(|known| known == sig) {
+        if self.has_repeated(sig) {
             return;
         }
         if self.recent_repeats.len() >= MAX_RECENT_REPEATS {
             self.recent_repeats.pop_front();
         }
-        self.recent_repeats.push_back(sig.to_owned());
+        self.recent_repeats.push_back(Remembered {
+            sig: sig.to_owned(),
+            at: now,
+        });
+        DIRTY.store(true, Ordering::Relaxed);
+    }
+
+    /// 超过记忆时长的跟读记录作废，那句话可以重新接力
+    fn forget_expired(&mut self, config: &RepeaterConfig, now: u64) {
+        if let Some(window) = config.remember_seconds() {
+            let before = self.recent_repeats.len();
+            self.recent_repeats
+                .retain(|known| now.saturating_sub(known.at) < window);
+            if self.recent_repeats.len() != before {
+                DIRTY.store(true, Ordering::Relaxed);
+            }
+        }
     }
 
     /// 打断接力：下一条消息一律从头开始数
@@ -165,11 +203,82 @@ impl ChannelState {
 static STATES: OnceLock<Mutex<HashMap<String, ChannelState>>> = OnceLock::new();
 
 /// 取状态表。锁中毒说明此前某次持锁 panic 过，状态本身仍可用，不再连坐 panic。
+/// 首次取用时从磁盘恢复跟读记录。
 fn states() -> MutexGuard<'static, HashMap<String, ChannelState>> {
     STATES
-        .get_or_init(|| Mutex::new(HashMap::new()))
+        .get_or_init(|| Mutex::new(load_memory()))
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
+}
+
+// ================= 跟读记录落盘 =================
+
+/// 跟读记录有变动、尚未落盘
+static DIRTY: AtomicBool = AtomicBool::new(false);
+const MEMORY_FILE: &str = "recent.json";
+
+/// 与 `get_data_dir("repeater")` 同一个目录；状态表是同步锁，这里只能同步读写。
+fn memory_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("data").join("repeater").join(MEMORY_FILE))
+}
+
+fn encode_memory(map: &HashMap<String, ChannelState>) -> serde_json::Result<String> {
+    let saved: HashMap<&str, &VecDeque<Remembered>> = map
+        .iter()
+        .filter(|(_, state)| !state.recent_repeats.is_empty())
+        .map(|(key, state)| (key.as_str(), &state.recent_repeats))
+        .collect();
+    serde_json::to_string(&saved)
+}
+
+fn decode_memory(text: &str, now: u64) -> serde_json::Result<HashMap<String, ChannelState>> {
+    let saved: HashMap<String, VecDeque<Remembered>> = serde_json::from_str(text)?;
+    Ok(saved
+        .into_iter()
+        .map(|(key, recent_repeats)| {
+            let state = ChannelState {
+                recent_repeats,
+                last_active: now,
+                ..Default::default()
+            };
+            (key, state)
+        })
+        .collect())
+}
+
+fn load_memory() -> HashMap<String, ChannelState> {
+    let Some(text) = memory_path().and_then(|path| std::fs::read_to_string(path).ok()) else {
+        return HashMap::new();
+    };
+    decode_memory(&text, now_secs()).unwrap_or_else(|e| {
+        warn!(target: LOG_TARGET, "跟读记录解析失败({e})，将重新开始记录。");
+        HashMap::new()
+    })
+}
+
+/// 跟读记录有变动就整份写回。调用方持有状态锁，写入顺序即变动顺序；
+/// 一频道十几秒最多跟读一次，文件也就几 KB，同步写无妨。
+fn persist(map: &HashMap<String, ChannelState>) {
+    if !DIRTY.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let Some(path) = memory_path() else {
+        return;
+    };
+    let temporary = path.with_extension("json.tmp");
+    let result = encode_memory(map)
+        .map_err(std::io::Error::other)
+        .and_then(|json| {
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            std::fs::write(&temporary, json)?;
+            std::fs::rename(&temporary, &path)
+        });
+    if let Err(e) = result {
+        warn!(target: LOG_TARGET, "跟读记录写入失败: {e}");
+    }
 }
 
 // 长期运行的 Bot 中频道数量可能膨胀。超过上限时先清理空闲频道，
@@ -326,6 +435,7 @@ fn feed(
     now: u64,
 ) -> Action {
     state.last_active = now;
+    state.forget_expired(config, now);
 
     if state.sig != sig {
         state.restart(sig, content, sender);
@@ -334,6 +444,11 @@ fn feed(
 
     // Bot 自己重复了这句话：只压住后续跟读，不计数
     if sender == Sender::Bot {
+        // 有人在接力的话从 Bot 嘴里出来了，就算跟读过。复读的回执可能因报错丢失，
+        // 自己的回显是它确实发出去的第二个凭据；别的插件恰好说了同一句也一样。
+        if state.times > 0 {
+            state.remember_repeat(&sig, now);
+        }
         state.generation = next_generation();
         state.repeated = true;
         state.last_sender = Some(Sender::Bot);
@@ -394,7 +509,9 @@ fn observe(
     let mut map = states();
     maybe_evict(&mut map, now);
     let state = map.entry(key).or_default();
-    feed(state, sig, content, sender, config, now)
+    let action = feed(state, sig, content, sender, config, now);
+    persist(&map);
+    action
 }
 
 // Updated synchronously at ingress, before event tasks can be reordered.
@@ -426,8 +543,7 @@ impl RepeatGuard {
     pub fn is_current(&self) -> bool {
         now_ms() < self.expires_at
             && states().get(&self.key).is_some_and(|state| {
-                state.generation == self.generation
-                    && !state.recent_repeats.contains(&self.sig)
+                state.generation == self.generation && !state.has_repeated(&self.sig)
             })
     }
 }
@@ -478,21 +594,22 @@ pub fn confirm_send(ctx: &Context, packet: &SendPacket) {
     };
     let config: RepeaterConfig = get_config_or_default(ctx, "repeater");
     let content = packet.message().cloned().unwrap_or_default();
+    let now = now_secs();
     let mut map = states();
     let Some(state) = map.get_mut(&guard.key) else {
         return;
     };
     // 回执可能晚于下一条入站消息；仍记录已发送的内容，但不覆盖新接力。
-    state.remember_repeat(&guard.sig);
-    if state.generation != guard.generation {
-        return;
-    }
-    match content.as_array().and_then(|arr| signature(arr, &config)) {
-        Some(sig) => {
-            feed(state, sig, content, Sender::Bot, &config, now_secs());
+    state.remember_repeat(&guard.sig, now);
+    if state.generation == guard.generation {
+        match content.as_array().and_then(|arr| signature(arr, &config)) {
+            Some(sig) => {
+                feed(state, sig, content, Sender::Bot, &config, now);
+            }
+            None => state.interrupt_chain(),
         }
-        None => state.interrupt_chain(),
     }
+    persist(&map);
 }
 
 pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepeat> {
@@ -565,6 +682,9 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
         &config,
         now / 1000,
     );
+    let (sig, generation) = (state.sig.clone(), state.generation);
+    persist(&map);
+    drop(map);
     let content = match action {
         Action::Silent => return None,
         Action::Repeat => content,
@@ -575,8 +695,8 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
     Some(PreparedRepeat {
         guard: RepeatGuard {
             key,
-            sig: state.sig.clone(),
-            generation: state.generation,
+            sig,
+            generation,
             expires_at,
             message_id: event
                 .get_str("message_id_str")
@@ -750,7 +870,7 @@ mod tests {
         assert!(!guard.is_current());
         guard.expires_at = now_ms() + 60_000;
         // 旧发送的成功回执晚到时，新一轮同内容的待发送任务也必须取消。
-        states().get_mut(&key).unwrap().remember_repeat(&guard.sig);
+        states().get_mut(&key).unwrap().remember_repeat(&guard.sig, 1_000);
         assert!(!guard.is_current());
         states().remove(&key);
         assert!(!guard.is_current());
@@ -848,23 +968,114 @@ mod tests {
         let config = cfg();
         let mut state = ChannelState::default();
         let original = signature(&text_chain("阿夜"), &config).unwrap();
-        state.remember_repeat(&original);
+        state.remember_repeat(&original, 1_000);
         state.interrupt_chain();
         assert_eq!(feed_text(&mut state, "阿夜", 1, &config), Action::Silent);
         assert_eq!(feed_text(&mut state, "阿夜", 2, &config), Action::Silent);
         for index in 0..MAX_RECENT_REPEATS - 1 {
-            state.remember_repeat(&format!("other-{index}"));
+            state.remember_repeat(&format!("other-{index}"), 1_000);
         }
         // 重复回执不应占据更多名额或挤掉其他记录。
-        state.remember_repeat(&original);
+        state.remember_repeat(&original, 1_000);
         assert_eq!(state.recent_repeats.len(), MAX_RECENT_REPEATS);
-        assert!(state.recent_repeats.contains(&original));
-        state.remember_repeat("newest");
+        assert!(state.has_repeated(&original));
+        state.remember_repeat("newest", 1_000);
         assert_eq!(state.recent_repeats.len(), MAX_RECENT_REPEATS);
-        assert!(!state.recent_repeats.contains(&original));
+        assert!(!state.has_repeated(&original));
         state.interrupt_chain();
         assert_eq!(feed_text(&mut state, "阿夜", 1, &config), Action::Silent);
         assert_eq!(feed_text(&mut state, "阿夜", 2, &config), Action::Repeat);
+    }
+
+    /// 跟读后群友接着复读、中间被别的话隔开、再接力，都不再跟读第二次。
+    fn feed_bot(state: &mut ChannelState, text: &str, config: &RepeaterConfig, now: u64) {
+        let segments = text_chain(text);
+        let sig = signature(&segments, config).unwrap();
+        feed(state, sig, segments.into(), Sender::Bot, config, now);
+    }
+
+    #[test]
+    fn a_repeated_line_is_never_repeated_again() {
+        let config = cfg();
+        let mut state = ChannelState::default();
+        feed_text(&mut state, "文本1", 1, &config);
+        assert_eq!(feed_text(&mut state, "文本1", 2, &config), Action::Repeat);
+        let sig = state.sig.clone();
+        state.remember_repeat(&sig, 1_000);
+        feed_bot(&mut state, "文本1", &config, 1_000);
+        for user in 3..6 {
+            assert_eq!(feed_text(&mut state, "文本1", user, &config), Action::Silent);
+        }
+        feed_text(&mut state, "插一句", 6, &config);
+        for user in 7..10 {
+            assert_eq!(feed_text(&mut state, "文本1", user, &config), Action::Silent);
+        }
+        state.interrupt_chain();
+        feed_text(&mut state, "文本1", 1, &config);
+        assert_eq!(feed_text(&mut state, "文本1", 2, &config), Action::Silent);
+    }
+
+    #[test]
+    fn the_bot_echo_records_a_repeat_whose_receipt_was_lost() {
+        let config = cfg();
+        let mut state = ChannelState::default();
+        feed_text(&mut state, "文本1", 1, &config);
+        assert_eq!(feed_text(&mut state, "文本1", 2, &config), Action::Repeat);
+        // 发送报错、没有回执，但消息其实发出去了：回显补记
+        feed_bot(&mut state, "文本1", &config, 1_000);
+        feed_text(&mut state, "插一句", 3, &config);
+        feed_text(&mut state, "文本1", 4, &config);
+        assert_eq!(feed_text(&mut state, "文本1", 5, &config), Action::Silent);
+    }
+
+    #[test]
+    fn the_bot_saying_something_first_is_not_a_repeat() {
+        let config = cfg();
+        let mut state = ChannelState::default();
+        feed_bot(&mut state, "早", &config, 1_000);
+        assert!(state.recent_repeats.is_empty());
+    }
+
+    #[test]
+    fn repeat_memory_expires_after_the_configured_hours() {
+        let config = RepeaterConfig {
+            remember_hours: 1,
+            ..cfg()
+        };
+        let mut state = ChannelState::default();
+        let sig = signature(&text_chain("文本1"), &config).unwrap();
+        state.remember_repeat(&sig, 1_000);
+        feed_text_at(&mut state, "文本1", 1, &config, 1_000 + 3_599);
+        assert_eq!(
+            feed_text_at(&mut state, "文本1", 2, &config, 1_000 + 3_599),
+            Action::Silent
+        );
+        state.interrupt_chain();
+        feed_text_at(&mut state, "文本1", 1, &config, 1_000 + 3_600);
+        assert_eq!(
+            feed_text_at(&mut state, "文本1", 2, &config, 1_000 + 3_600),
+            Action::Repeat
+        );
+    }
+
+    #[test]
+    fn repeat_memory_survives_a_restart() {
+        let config = cfg();
+        let mut map = HashMap::new();
+        let state: &mut ChannelState = map.entry("g".to_string()).or_default();
+        feed_text(state, "文本1", 1, &config);
+        assert_eq!(feed_text(state, "文本1", 2, &config), Action::Repeat);
+        let sig = state.sig.clone();
+        state.remember_repeat(&sig, 1_000);
+        map.insert("empty".to_string(), ChannelState::default());
+
+        let text = encode_memory(&map).unwrap();
+        let mut restored = decode_memory(&text, 2_000).unwrap();
+        assert!(!restored.contains_key("empty"), "没有记录的频道不落盘");
+        let state = restored.get_mut("g").unwrap();
+        assert_eq!(state.last_active, 2_000);
+        feed_text(state, "文本1", 3, &config);
+        assert_eq!(feed_text(state, "文本1", 4, &config), Action::Silent);
     }
 
     #[test]
