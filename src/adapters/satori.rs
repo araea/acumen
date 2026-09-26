@@ -190,7 +190,10 @@ impl SatoriClient {
         // QQ/Satori 主进程若被 OEM freezer 暂停，loopback HTTP 也可能无限等待。
         // message.create 留出 30 秒排队、45 秒媒体确认/重试及转换余量。
         let timeout_seconds = if method == "message.create" { 100 } else { 65 };
-        let response = request.timeout(Duration::from_secs(timeout_seconds)).send().await?;
+        let response = request
+            .timeout(Duration::from_secs(timeout_seconds))
+            .send()
+            .await?;
         let status = response.status();
         let bytes = response.bytes().await?;
         if !status.is_success() {
@@ -1391,7 +1394,9 @@ pub(crate) mod tests {
         http_fixture(None).await
     }
 
-    pub(crate) async fn http_fixture(reply: Option<(&'static str, &'static str)>) -> (
+    pub(crate) async fn http_fixture(
+        reply: Option<(&'static str, &'static str)>,
+    ) -> (
         Context,
         LockedWriter,
         tokio::sync::mpsc::UnboundedReceiver<Value>,

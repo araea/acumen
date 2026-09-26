@@ -188,7 +188,10 @@ pub async fn get_group_title_display(
             json!({"guild_id": group_id.to_string()}),
         )
         .await?;
-    Ok(value.get("title_open").and_then(Value::as_bool).unwrap_or(false))
+    Ok(value
+        .get("title_open")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
 }
 
 /// 打开或关闭群管理里「展示成员群头衔」的开关。
