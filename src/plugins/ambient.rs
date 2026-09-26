@@ -122,10 +122,10 @@ pub(crate) struct AmbientConfig {
     pub thinking: String,
     /// 发言模型的采样温度。`None`（不写这一项）交给接口自己的默认值。
     ///
-    /// 这里调的是「像不像人」那一档：同一句话有无穷多种说法，温度低了每轮都挑最
-    /// 稳妥的那种，几轮下来就露出一张嘴一个调子的机器样。1.3 是从 DeepSeek 官方
-    /// 那份通用对话档借来的，比接口默认的 1.0 松一档，换供应商也照用。判定模型
-    /// 不跟着动——它要的是分数稳。
+    /// 从前给到 1.3（DeepSeek 官方「通用对话」那一档），想让它别一张嘴一个调子。
+    /// 线上看下来那一档松过头了：一条里三个半截念头搅在一起、前一句认了后一句又
+    /// 翻回去，群友直说「前言不搭后语」（2026-09-26）。口气的变化交给样本和人设，
+    /// 温度回到接口默认的 1.0，先把话说连贯。判定模型不跟着动——它要的是分数稳。
     pub temperature: Option<f64>,
     /// 发言时开放的工具白名单，逗号分隔。
     ///
@@ -157,7 +157,9 @@ pub(crate) struct AmbientConfig {
     pub debounce_seconds: u64,
     /// 从第一条消息算起最多等多久就必须判定一次。
     pub max_pending_seconds: u64,
-    /// 普通话题两次主动判定的最短间隔；被叫到、发图与关注中的对话不受限。
+    /// 没人叫它时，隔多久「扫一眼群」（主动判定一次），实际间隔在它的 0.6–1.5 倍间
+    /// 随机；正聊着（在关注、或三分钟内开过口）时缩到三分之一。被 @、引用、戳、
+    /// 喊名字与搭话指令不等这一眼。这一眼之间的消息不会丢：下一眼连同前情一起看。
     pub gate_interval_seconds: u64,
     /// 两次主动开口之间的时间下限；0 关闭。
     ///
@@ -274,9 +276,9 @@ impl Default for AmbientConfig {
             gate_persona: GATE_PERSONA.to_string(),
             reply_model: "deepseek/deepseek-flash".to_string(),
             thinking: "low".to_string(),
-            temperature: Some(1.3),
+            temperature: Some(1.0),
             tools: "read,write,bash".to_string(),
-            score_threshold: 55,
+            score_threshold: 60,
             silence_relief_per_10min: 0,
             silence_relief_cap: 0,
             speech_penalty_per_turn: 8,
@@ -284,13 +286,13 @@ impl Default for AmbientConfig {
             focus_relief: 5,
             context_turns: 20,
             context_images: 2,
-            debounce_seconds: 3,
-            max_pending_seconds: 12,
-            gate_interval_seconds: 30,
-            cooldown_seconds: 90,
+            debounce_seconds: 6,
+            max_pending_seconds: 40,
+            gate_interval_seconds: 90,
+            cooldown_seconds: 150,
             cooldown_penalty: 18,
             focus_max_seconds: 180,
-            max_per_hour: 8,
+            max_per_hour: 5,
             budget_penalty: 12,
             reply_on_mention: true,
             aliases: Vec::new(),
@@ -306,7 +308,7 @@ impl Default for AmbientConfig {
             qq_mark_read: false,
             screenshot_on_suspicion: false,
             screenshot_cooldown_seconds: 21_600,
-            messages_budget: 3,
+            messages_budget: 2,
             split_chars: 60,
             actions_budget: 6,
             draw_budget: 2,
@@ -620,6 +622,11 @@ pub(crate) struct Scene {
     /// 这两样只影响「说出来的像不像他」，对「要不要接这句话」没用，所以不跟着
     /// [`Scene::brief`] 一起递给判定侧——那是每条消息都要付一次的账。
     pub own: String,
+    /// 判定那一眼注意到的是什么（它给的那句理由）；没经过判定时为空。
+    ///
+    /// 群里几摊话同时在聊时，人格从头读一遍记录，常常挑中另一摊、甚至把几摊搅成
+    /// 一句。把「刚才是哪件事让你想开口」递过去，它接的就是那一件。
+    pub noticed: String,
 }
 
 impl Scene {
@@ -649,6 +656,7 @@ impl Scene {
                 voice::brief(turns, voice_register(config, group)),
                 stickers::brief(turns, config.sticker_max)
             ),
+            noticed: String::new(),
         }
     }
 
@@ -704,7 +712,8 @@ fn facts_from(raw: &str) -> String {
         return String::new();
     }
     format!(
-        "关于你自己的一些事（别人问起、自己聊到时照这个来）：\n{}\n",
+        "关于你自己（背景资料：有人问到你、或者正好聊到你自己时照这个说，前后才对得上；\
+         平常接话用不着把它们往外掏，没人问你用什么手机、站哪家）：\n{}\n",
         facts.join("\n")
     )
 }
@@ -1038,22 +1047,95 @@ struct Worker {
     armed: bool,
 }
 
-fn immediate_gate(turns: &[Turn], mentioned: bool, summoned: bool, focused: bool) -> bool {
-    mentioned
-        || summoned
-        || focused
-        || turns
-            .iter()
-            .rev()
-            .find(|turn| !turn.from_me)
-            .is_some_and(|turn| turn.call.named_me || !turn.images.is_empty())
-}
 impl Drop for Worker {
     fn drop(&mut self) {
         if self.armed {
             window::with_group(self.group, |state| state.running = false);
         }
     }
+}
+
+/// 等到该看群的时候。
+///
+/// 没人叫它时，这一阵消息要等到下一眼才被看到（见 [`window::GroupState::look_due`]）；
+/// 等的这段时间里新来的消息照样进窗口，下一眼一起看，一条都不漏。有人叫它就不等
+/// 下一眼了——但没在聊的时候，从手机亮起到真的点开也要几秒到十几秒，秒回是机器。
+async fn wait_for_look(ctx: &Context, group: i64, config: &AmbientConfig) {
+    let interval = config.gate_interval();
+    loop {
+        let (urgent, engaged, due) = window::with_group(group, |state| {
+            (state.urgent(), state.engaged(), state.look_due(interval))
+        });
+        if urgent {
+            // 看群越勤，被叫到也看得越快；间隔调成 0 就是随叫随到。
+            if !engaged {
+                tokio::time::sleep(notice_delay().min(interval / 5)).await;
+            }
+            return;
+        }
+        if due.is_zero() {
+            return;
+        }
+        let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        if !latest.enabled || !latest.groups.contains(&group) {
+            return;
+        }
+        tokio::time::sleep(due.min(Duration::from_secs(2))).await;
+    }
+}
+
+/// 被叫到之后多久才真的看到：多数几秒，偶尔十几秒。
+fn notice_delay() -> Duration {
+    let roll = rand::random::<f32>();
+    Duration::from_secs_f32(3.0 + roll * roll * 14.0)
+}
+
+/// 进程起来之后第一次看这个群时，先把最近的聊天记录翻回来。
+///
+/// 窗口只在内存里，重启、崩溃、每天凌晨的例行重启都会把它清空；清空之后的第一轮
+/// 人格看不到自己刚说过的话，接出来的就是前言不搭后语。平台（satori-qq）自己存着
+/// 群消息，`message.list` 拿得到——翻两三页、只留三小时以内的，垫到窗口前面。
+/// 翻不到就算了：这是补救，不是前提，失败不重试，免得每一批都去敲一次平台。
+async fn hydrate(ctx: &Context, writer: &LockedWriter, group: i64) {
+    if window::with_group(group, |state| std::mem::replace(&mut state.hydrated, true)) {
+        return;
+    }
+    const PAGES: usize = 3;
+    const KEEP_SECONDS: i64 = 3 * 3_600;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..PAGES {
+        let mut body = serde_json::json!({"channel_id": group.to_string()});
+        if let Some(next) = &cursor {
+            body["next"] = serde_json::json!(next);
+        }
+        let listed: Result<serde_json::Value, _> = tokio::time::timeout(
+            Duration::from_secs(8),
+            writer.call(ctx, "message.list", body),
+        )
+        .await
+        .unwrap_or_else(|_| Err("超时".into()));
+        let Ok(listed) = listed else {
+            break;
+        };
+        items.extend(listed["data"].as_array().cloned().unwrap_or_default());
+        match listed["next"].as_str() {
+            Some(next) if !next.is_empty() => cursor = Some(next.to_string()),
+            _ => break,
+        }
+    }
+    let now = chrono::Local::now().timestamp();
+    let history: Vec<Turn> = items
+        .iter()
+        .filter_map(|item| window::turn_from_platform(ctx, writer, item))
+        .filter(|turn| now - turn.at < KEEP_SECONDS)
+        .collect();
+    if history.is_empty() {
+        debug!(target: LOG_TARGET, "群 {group} 没翻到可用的聊天记录");
+        return;
+    }
+    let (added, mine) = window::with_group(group, |state| state.seed(history));
+    info!(target: LOG_TARGET, "群 {group} 翻了翻聊天记录：补回 {added} 条，其中自己说的 {mine} 句");
 }
 
 async fn consider(
@@ -1064,6 +1146,7 @@ async fn consider(
     base: &Path,
 ) -> anyhow::Result<()> {
     let mut worker = Worker { group, armed: true };
+    hydrate(ctx, writer, group).await;
     loop {
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
         if config.focus_max_seconds == 0 {
@@ -1085,6 +1168,11 @@ async fn consider(
             if before == after || Instant::now() >= deadline {
                 break;
             }
+        }
+        wait_for_look(ctx, group, &config).await;
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        if !config.enabled || !config.groups.contains(&group) {
+            return Ok(());
         }
         let (mut seq, turns, mentioned, summoned, silent_for, rhythm, focused) =
             window::with_group(group, |state| {
@@ -1225,14 +1313,12 @@ async fn consider_batch(
         return Ok(());
     }
 
-    if !immediate_gate(turns, mentioned, summoned, focused)
-        && !window::with_group(group, |state| {
-            state.allow_passive_gate(config.gate_interval())
-        })
-    {
-        debug!(target: LOG_TARGET, "群 {group} 跳过本批判定：普通话题的判定间隔未到");
-        return Ok(());
-    }
+    // 这一眼看到了哪些：上一眼之后新来的几条，判定要把它们和前情分开看。
+    let (fresh, glance) = window::with_group(group, |state| {
+        let fresh = state.unseen();
+        state.mark_look();
+        (fresh, state.recent((fresh + 6).clamp(12, 36)))
+    });
 
     let persona = tokio::fs::read_to_string(persona_path(base))
         .await
@@ -1261,6 +1347,7 @@ async fn consider_batch(
         return Ok(());
     }
     let scene = Scene::build(group, config, turns, rhythm.to_string());
+    let mut noticed = String::new();
     if summoned {
         // 指令是人按下的：判定那一步整个不发生，这一批直接进第三步。
         info!(target: LOG_TARGET, "群 {group} 收到搭话指令，这一批交给人格");
@@ -1278,7 +1365,8 @@ async fn consider_batch(
             &api_key,
             &gate_model,
             config,
-            turns,
+            &glance,
+            fresh,
             &persona,
             &scene,
             None,
@@ -1290,6 +1378,7 @@ async fn consider_batch(
         }
         info!(target: LOG_TARGET, "群 {group} 交给人格决定（{}/{}，续聊={}，{}）",
             verdict.score, threshold, verdict.continuation, verdict.reason);
+        noticed = verdict.reason.clone();
         if !current(ctx, group, *seq) {
             return Ok(());
         }
@@ -1309,7 +1398,8 @@ async fn consider_batch(
     if !current(ctx, group, *seq) {
         return Ok(());
     }
-    let scene = Scene::build(group, config, &latest, rhythm);
+    let mut scene = Scene::build(group, config, &latest, rhythm);
+    scene.noticed = noticed;
     speak_up(
         ctx,
         writer,
@@ -1333,6 +1423,32 @@ fn current(ctx: &Context, group: i64, seq: u64) -> bool {
     config.enabled
         && config.groups.contains(&group)
         && window::with_group(group, |state| state.seq == seq)
+}
+
+/// 打完字那一刻，这句话还发不发。
+enum Sendable {
+    /// 群里没动静，照发。
+    Fresh,
+    /// 来了一两句无关的，照发并挂上引用。
+    Drifted,
+    /// 话题已经往前走了、或者有人点了它的名：这句作废，交回 worker 重看。
+    Stale,
+}
+
+/// 打字期间最多容忍几条新消息。群里正热闹时每几秒一条，一句话还没敲完就作废
+/// 的话，人格在活跃的群里几乎开不了口；多于这个数，现场多半已经变了。
+const DRIFT_SLACK: u64 = 2;
+
+fn sendable(ctx: &Context, group: i64, seq: u64) -> Sendable {
+    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+    if !config.enabled || !config.groups.contains(&group) {
+        return Sendable::Stale;
+    }
+    window::with_group(group, |state| match state.drift(seq) {
+        0 => Sendable::Fresh,
+        n if n <= DRIFT_SLACK && !state.has_unread_mention() => Sendable::Drifted,
+        _ => Sendable::Stale,
+    })
 }
 
 /// 兼容文字路径该引用哪条消息。
@@ -1430,6 +1546,7 @@ async fn speak_up(
             &gate_model,
             config,
             &latest,
+            0,
             persona,
             &fresh,
             Some(&raw),
@@ -1495,20 +1612,18 @@ async fn speak_up(
         if utterance.wait > 0.0 {
             tokio::time::sleep(Duration::from_secs_f32(utterance.wait)).await;
         }
-        let typing = pace.typing_delay(utterance.chars);
-        // 模型耗时已经是等待；首条不再额外假装打字十几秒。
-        tokio::time::sleep(if index == 0 {
-            typing.saturating_sub(started.elapsed())
-        } else {
-            typing
-        })
-        .await;
-        if !current(ctx, group, *seq) {
-            break;
-        }
+        // 模型那几秒是在读和想，不是在打字：字还得一个个敲出来。从前首条把模型耗时
+        // 从打字时间里扣掉，四十个字的答疑八秒就到，群友一眼看出「不到 5 秒回消息」。
+        tokio::time::sleep(pace.typing_delay(utterance.chars)).await;
+        let drifted = match sendable(ctx, group, *seq) {
+            Sendable::Stale => break,
+            Sendable::Fresh => false,
+            Sendable::Drifted => true,
+        };
 
         let mut message = Message::new();
-        if utterance.reply
+        // 打字的工夫里群里又冒出一两句：照样发，但首条挂上它回的那句，免得接错人。
+        if (utterance.reply || (drifted && index == 0))
             && let Some(id) = quote_target(utterance.reply_to, fallback, turns)
         {
             message = message.reply(id);
@@ -1654,9 +1769,9 @@ mod tests {
         let config: AmbientConfig = toml::from_str("").unwrap();
         assert_eq!(config.gate_model, "deepseek/deepseek-flash");
         assert_eq!(config.reply_model, "deepseek/deepseek-flash");
-        assert_eq!(config.gate_interval(), Duration::from_secs(30));
+        assert_eq!(config.gate_interval(), Duration::from_secs(90));
         // 发言温度默认比接口默认松一档，判定仍是接口默认。
-        assert_eq!(config.temperature, Some(1.3));
+        assert_eq!(config.temperature, Some(1.0));
         // 判定人设默认是浓缩画像，比完整人设便宜得多，且不会被空值覆盖。
         assert!(!config.gate_persona.trim().is_empty());
         let custom: AmbientConfig =
@@ -1690,19 +1805,41 @@ mod tests {
         assert!(state.take_summon(), "指令必须随正文送进首批，绕过判定");
     }
 
+    /// 被叫到不等下一眼；发图不再算被叫到——热闹的群里一张接一张，从前每张都
+    /// 让它立刻看一次，于是每张图都想接一句。
     #[test]
-    fn calls_and_new_images_skip_the_ordinary_gate_interval() {
-        let turn = Turn::default();
-        assert!(!immediate_gate(std::slice::from_ref(&turn), false, false, false));
-        assert!(immediate_gate(std::slice::from_ref(&turn), true, false, false));
-        assert!(immediate_gate(std::slice::from_ref(&turn), false, true, false));
-        assert!(immediate_gate(std::slice::from_ref(&turn), false, false, true));
-        let mut named = turn.clone();
-        named.call.named_me = true;
-        assert!(immediate_gate(&[named], false, false, false));
-        let mut image = turn;
+    fn calls_skip_the_wait_for_the_next_look_but_images_do_not() {
+        let mut state = window::GroupState::default();
+        let mut image = Turn {
+            user_id: 42,
+            message_id: 1,
+            ..Turn::default()
+        };
         image.images.push("image.png".into());
-        assert!(immediate_gate(&[image], false, false, false));
+        state.receive(image);
+        assert!(!state.urgent());
+        let mut at = Turn {
+            user_id: 42,
+            message_id: 2,
+            mentions_me: true,
+            ..Turn::default()
+        };
+        at.call.at_me = true;
+        state.receive(at);
+        assert!(state.urgent());
+        assert!(state.take_mention());
+        assert!(!state.urgent());
+        state.summon();
+        assert!(state.urgent(), "搭话指令同样不等");
+        state.take_summon();
+        let mut named = Turn {
+            user_id: 42,
+            message_id: 3,
+            ..Turn::default()
+        };
+        named.call.named_me = true;
+        state.receive(named);
+        assert!(state.urgent());
     }
 
     /// 人设是每轮都要付一次钱的东西，而它天然会长：每发现一种不满意的说法，
@@ -1766,12 +1903,13 @@ mod tests {
             "{}",
             scene.own
         );
+        // 样本只借口气：聊折叠屏的时候，他说过的折叠屏那几句不摆出来（见 voice::pick）。
         assert!(
-            scene
+            !scene
                 .own
                 .lines()
                 .any(|line| line.starts_with("- ") && line.contains("折叠")),
-            "贴题的样本没被挑出来：{}",
+            "贴题的样本被挑出来了：{}",
             scene.own
         );
         for tone in tones {
@@ -1834,9 +1972,9 @@ mod tests {
         // 聊嗨了的时段兜底。两条都不是墙，而是门槛上的一笔加价（见
         // `cooldown_and_the_hourly_budget_raise_the_bar_instead_of_shutting_the_door`），
         // 所以有人真的在等它回话时不会被挡在外面。
-        assert_eq!(config.cooldown(), Duration::from_secs(90));
+        assert_eq!(config.cooldown(), Duration::from_secs(150));
         assert_eq!(config.cooldown_penalty, 18);
-        assert_eq!(config.max_per_hour, 8);
+        assert_eq!(config.max_per_hour, 5);
         assert_eq!(config.budget_penalty, 12);
         assert_eq!(config.effective_threshold(None), config.score_threshold);
         let extreme = AmbientConfig {

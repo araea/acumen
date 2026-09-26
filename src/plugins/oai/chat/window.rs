@@ -22,6 +22,22 @@ use super::attention::Focus;
 /// 好让配置调大时不必等窗口重新攒满。
 const WINDOW_CAPACITY: usize = 80;
 
+/// 开过口之后多久之内还算「正聊着」：看群看得勤，见 [`GroupState::look_due`]。
+const ENGAGED_AFTER_SPEAKING: Duration = Duration::from_secs(180);
+/// 正聊着的时候，看群的间隔是平时的几分之几。
+const ENGAGED_LOOK: f32 = 0.3;
+
+/// 自己翻回来的一条是不是「说话」：只剩媒体或卡片的那种多半是别的插件发的
+/// （统计图、视频解析），不算人格开过口。
+fn speech_like(text: &str) -> bool {
+    let mut rest = text.to_string();
+    for tag in ["[图片]", "[表情包]", "[视频]", "[语音]", "[合并转发]", "[文件]"] {
+        rest = rest.replace(tag, "");
+    }
+    let rest = rest.trim();
+    !rest.is_empty() && !rest.starts_with("[卡片") && !rest.starts_with("[合并转发")
+}
+
 /// 「刚才说了几轮」的观察窗口。群聊的节奏以十分钟为单位看正合适：
 /// 再短看不出是不是一直在接话，再长又会把半小时前的事算到现在头上。
 pub(crate) const RECENT_SPEECH: std::time::Duration = std::time::Duration::from_secs(600);
@@ -102,7 +118,14 @@ pub(crate) struct GroupState {
     spoken: VecDeque<Instant>,
     /// 睡着（计价高峰）时上一次主动判定的时刻：把自主判定压到隔一段时间一次。
     doze_gate_at: Option<Instant>,
-    passive_gate_at: Option<Instant>,
+    /// 上一次「扫一眼群」（主动判定）的时刻；见 [`GroupState::look_due`]。
+    looked_at: Option<Instant>,
+    /// 上一眼看到的最新一条消息号：它之后的就是这一眼新看到的。
+    looked_id: i64,
+    /// 这一次隔多久再看的随机倍数。人看手机没有节拍器。
+    look_jitter: f32,
+    /// 进程起来之后是否已经从平台翻过这个群的聊天记录。
+    pub hydrated: bool,
     /// 睡着时自主开口的时刻，用于每小时上限——判定便宜、开口贵，这条管的是后者。
     doze_spoken: VecDeque<Instant>,
     /// Opt-in chat screenshot gag: at most once per group per cooldown window.
@@ -348,16 +371,126 @@ impl GroupState {
         true
     }
 
-    pub(crate) fn allow_passive_gate(&mut self, interval: Duration) -> bool {
-        let now = Instant::now();
-        if self
-            .passive_gate_at
-            .is_some_and(|at| now.duration_since(at) < interval)
-        {
-            return false;
+    /// 还要多久才到下一次「扫一眼群」。
+    ///
+    /// 人不是一直盯着群的：隔一会儿拿起手机看一眼，一眼看到的是一串消息。从前每阵
+    /// 消息一停就判一次，热闹的群里等于每句话都在它眼皮底下过一遍，于是每摊都想
+    /// 插一句。现在没人叫它的时候按 `interval` 上下浮动地看；正聊在兴头上（在关注、
+    /// 或者刚开过口）时看得勤，约三分之一的间隔——那时候人本来就捧着手机。
+    pub(crate) fn look_due(&self, interval: Duration) -> Duration {
+        let Some(at) = self.looked_at else {
+            return Duration::ZERO;
+        };
+        let scale = if self.engaged() {
+            ENGAGED_LOOK
+        } else if self.look_jitter > 0.0 {
+            self.look_jitter
+        } else {
+            1.0
+        };
+        interval.mul_f32(scale).saturating_sub(at.elapsed())
+    }
+
+    /// 记一次「看过了」：这一眼之前的消息都算看过，下一眼隔多久重新掷一次。
+    pub(crate) fn mark_look(&mut self) {
+        self.looked_at = Some(Instant::now());
+        self.looked_id = self
+            .turns
+            .iter()
+            .rev()
+            .find(|turn| turn.message_id != 0)
+            .map_or(0, |turn| turn.message_id);
+        self.look_jitter = 0.6 + rand::random::<f32>() * 0.9;
+    }
+
+    /// 上一眼之后又来了几条群友的消息。
+    ///
+    /// 按位置数，不按消息号大小：窗口里的顺序就是到达顺序，消息号未必处处递增。
+    /// 上一眼看到的那条已经滚出窗口（或者从没看过）时，整个窗口都算新的。
+    pub(crate) fn unseen(&self) -> usize {
+        let mut count = 0;
+        for turn in self.turns.iter().rev() {
+            if self.looked_id != 0 && turn.message_id == self.looked_id {
+                break;
+            }
+            if !turn.from_me {
+                count += 1;
+            }
         }
-        self.passive_gate_at = Some(now);
-        true
+        count
+    }
+
+    /// 正聊在兴头上：在关注某个人或话题，或者几分钟内刚开过口。
+    pub(crate) fn engaged(&self) -> bool {
+        self.active_focus().is_some()
+            || self
+                .last_spoke
+                .is_some_and(|at| at.elapsed() < ENGAGED_AFTER_SPEAKING)
+    }
+
+    /// 有人在叫它：@、引用、戳、搭话指令，或者上一眼之后有人喊了它的名字。
+    /// 这些不等下一眼——手机会亮，或者名字本来就扎眼。
+    pub(crate) fn urgent(&self) -> bool {
+        self.unread_mention
+            || self.unread_summon
+            || self
+                .turns
+                .iter()
+                .rev()
+                .take_while(|turn| self.looked_id == 0 || turn.message_id != self.looked_id)
+                .any(|turn| !turn.from_me && turn.call.named_me)
+    }
+
+    /// 还没被取走的点名：打字的工夫里有人 @ 了它，这一句就得重新想。
+    pub(crate) fn has_unread_mention(&self) -> bool {
+        self.unread_mention
+    }
+
+    /// 从 `seq` 那一刻起又来了多少条（群友消息、戳一戳、搭话指令都算一条）。
+    pub(crate) fn drift(&self, seq: u64) -> u64 {
+        self.seq.saturating_sub(seq)
+    }
+
+    /// 把从平台翻回来的旧消息垫到窗口前面。
+    ///
+    /// 窗口只在内存里，重启就空了：刚重启的那一轮，人格看不到自己五分钟前说过的话，
+    /// 于是前脚认了「是真的」，后脚又问「咋了」（线上 2026-09-26 10:36）。翻回来的
+    /// 记录按消息号去重、按时间排好，自己说过的那几句顺带把「这一小时说了几轮」的
+    /// 账补回来——否则每次重启都等于把发言额度清零。
+    pub(crate) fn seed(&mut self, history: Vec<Turn>) -> (usize, usize) {
+        let mut added = 0;
+        let mut mine = 0;
+        let now = chrono::Local::now().timestamp();
+        for turn in history {
+            if turn.message_id == 0
+                || self
+                    .turns
+                    .iter()
+                    .any(|old| old.message_id == turn.message_id)
+            {
+                continue;
+            }
+            if turn.from_me && speech_like(&turn.text) && now - turn.at < 3_600 {
+                if let Some(at) = Instant::now()
+                    .checked_sub(Duration::from_secs((now - turn.at).max(0) as u64))
+                {
+                    self.spoken.push_back(at);
+                    self.last_spoke = self.last_spoke.max(Some(at));
+                }
+                mine += 1;
+            }
+            self.turns.push_back(turn);
+            added += 1;
+        }
+        self.turns
+            .make_contiguous()
+            .sort_by_key(|turn| (turn.at, turn.message_id));
+        while self.turns.len() > WINDOW_CAPACITY {
+            self.turns.pop_front();
+        }
+        self.spoken.make_contiguous().sort();
+        self.hydrated = true;
+        (added, mine)
     }
 
     /// 睡着时最近一小时自主开口了几次。
@@ -898,12 +1031,91 @@ mod tests {
         assert_eq!(state.spoken_last_hour(), 0);
     }
 
+    /// 一眼之后新来的才算「新看到的」；有人喊名字不等下一眼；刚开过口看得勤。
+    #[test]
+    fn looking_tracks_what_is_new_and_who_is_calling() {
+        let mut state = GroupState::default();
+        for id in 1..=3 {
+            let mut old = turn("旧的", false);
+            old.message_id = id;
+            state.receive(old);
+        }
+        assert_eq!(state.unseen(), 3, "从没看过，整个窗口都是新的");
+        state.mark_look();
+        assert_eq!(state.unseen(), 0);
+        let mut fresh = turn("新的", false);
+        fresh.message_id = 4;
+        state.receive(fresh);
+        let mut mine = turn("我说的", true);
+        mine.message_id = 5;
+        state.receive(mine);
+        assert_eq!(state.unseen(), 1, "自己说的不算新看到的");
+        assert!(!state.urgent());
+        let mut named = turn("A宝你来说说", false);
+        named.message_id = 6;
+        named.call.named_me = true;
+        state.receive(named);
+        assert!(state.urgent(), "上一眼之后有人喊了名字");
+        state.mark_look();
+        assert!(!state.urgent(), "喊过的那一句已经看过了");
+
+        // 刚开过口：下一眼来得快得多。
+        let interval = Duration::from_secs(100);
+        let idle = state.look_due(interval);
+        state.mark_spoke();
+        assert!(state.engaged());
+        assert!(state.look_due(interval) < idle.min(Duration::from_secs(31)));
+
+        // 打字的工夫里来了几条：数得出来。
+        let seq = state.seq;
+        let mut late = turn("插一句", false);
+        late.message_id = 7;
+        state.receive(late);
+        assert_eq!(state.drift(seq), 1);
+    }
+
+    /// 重启后翻回来的记录垫在前面、按时间排好，自己说过的话把发言账补回来。
+    #[test]
+    fn seeding_history_restores_context_and_the_speech_ledger() {
+        let now = chrono::Local::now().timestamp();
+        let mut state = GroupState::default();
+        let mut live = turn("刚到的一条", false);
+        live.message_id = 30;
+        live.at = now;
+        state.receive(live);
+        let history: Vec<Turn> = [
+            (10, "刘欢去世了", false, now - 600),
+            (11, "行，我收回刚才那句", true, now - 300),
+            (12, "[图片]", true, now - 200),
+            (13, "很久以前说的", true, now - 7_200),
+            (30, "刚到的一条", false, now),
+        ]
+        .into_iter()
+        .map(|(id, text, mine, at)| Turn {
+            message_id: id,
+            at,
+            ..turn(text, mine)
+        })
+        .collect();
+        let (added, mine) = state.seed(history);
+        assert_eq!((added, mine), (4, 1), "去重；只剩图片的、一小时以前的不记账");
+        assert!(state.hydrated);
+        let texts: Vec<String> = state.recent(10).into_iter().map(|t| t.text).collect();
+        assert_eq!(texts.first().map(String::as_str), Some("很久以前说的"));
+        assert_eq!(texts.last().map(String::as_str), Some("刚到的一条"));
+        assert_eq!(state.spoken_last_hour(), 1);
+        let since = state.last_spoke.unwrap().elapsed().as_secs();
+        assert!((295..=310).contains(&since), "{since}");
+    }
+
     #[test]
     fn ordinary_judgements_are_bounded_without_affecting_doze() {
         let mut state = GroupState::default();
-        assert!(state.allow_passive_gate(Duration::from_secs(30)));
-        assert!(!state.allow_passive_gate(Duration::from_secs(30)));
-        assert!(state.allow_passive_gate(Duration::ZERO));
+        // 没看过就立刻看；看过一眼之后要隔一阵，间隔为 0 时随时都能看。
+        assert!(state.look_due(Duration::from_secs(90)).is_zero());
+        state.mark_look();
+        assert!(!state.look_due(Duration::from_secs(90)).is_zero());
+        assert!(state.look_due(Duration::ZERO).is_zero());
         assert!(state.allow_doze_gate(Duration::from_secs(30)));
     }
 

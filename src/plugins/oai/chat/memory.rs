@@ -26,7 +26,11 @@ pub(crate) const MAX_NOTE_CHARS: usize = 60;
 /// 一次注入提示词的熟人卡片上限。
 const BRIEF_PEOPLE: usize = 8;
 /// 一次注入提示词的旧事条数上限。
-const BRIEF_NOTES: usize = 6;
+const BRIEF_NOTES: usize = 3;
+/// 这么新的旧事不必贴题也带上：刚起的梗、刚答过的事，眼前多半还用得着。
+const FRESH_NOTE_SECONDS: i64 = 6 * 3_600;
+/// 猜「眼前在聊什么」只看最近这些条。
+const TOPIC_TURNS: usize = 12;
 /// 两次落盘之间至少隔多久。露面统计每条消息都在变，值不上一次写盘；
 /// 人格自己写下的印象走 [`flush_now`]，不受这个节流影响。
 const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
@@ -250,8 +254,10 @@ impl GroupMemory {
             if !person.address.is_empty() {
                 parts.push(format!("你平时叫他「{}」", person.address));
             }
+            // 没印象的熟脸不列：一串「眼熟，没什么具体印象」只会让人格觉得
+            // 该跟每个人都搭一句，而人对说不出什么的人本来就想不起什么。
             if parts.is_empty() {
-                parts.push("眼熟，没什么具体印象".to_string());
+                continue;
             }
             cards.push(format!("- {name}：{}{tail}", parts.join("；")));
         }
@@ -260,12 +266,27 @@ impl GroupMemory {
             out.push_str(&cards.join("\n"));
             out.push('\n');
         }
-        let mut notes: Vec<&Note> = self.notes.iter().collect();
-        notes.sort_by_key(|note| std::cmp::Reverse(note.at));
+        // 旧事只带「眼前用得上」的：跟最近几条在聊的沾边，或者就是这几个钟头的事。
+        // 从前按时间倒序全摆出来，人格会把三天前的梗硬塞进不相干的话里。
+        let recent: String = turns
+            .iter()
+            .rev()
+            .take(TOPIC_TURNS)
+            .map(|turn| turn.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let topic = super::tone::grams(&recent);
+        let mut notes: Vec<(f32, &Note)> = self
+            .notes
+            .iter()
+            .map(|note| (super::tone::affinity(&note.text, &topic), note))
+            .filter(|(score, note)| *score >= 0.6 || now - note.at < FRESH_NOTE_SECONDS)
+            .collect();
+        notes.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.at.cmp(&a.1.at)));
         let notes: Vec<String> = notes
             .into_iter()
             .take(BRIEF_NOTES)
-            .map(|note| format!("- {}（{}）", note.text, ago((now - note.at).max(0))))
+            .map(|(_, note)| format!("- {}（{}）", note.text, ago((now - note.at).max(0))))
             .collect();
         if !notes.is_empty() {
             out.push_str("这个群的旧事：\n");
@@ -535,19 +556,28 @@ mod tests {
         }
         memory.remember(42, "在修驾校那台破电脑").unwrap();
         memory.exchange(42, 100);
-        memory.jot("上周开始玩的梗", 0).unwrap();
+        memory.jot("上周开始玩的驾校坐牢梗", 0).unwrap();
+        memory.jot("老李的猫叫煤球", 0).unwrap();
         // 刚见过一两面的人是「新面孔」，不装熟。
         let mut fresh = GroupMemory::default();
         fresh.see(99, "路人", 0);
         assert!(fresh.brief(&[turn(99, "路人")], 0).contains("新面孔"));
 
-        let brief = memory.brief(&[turn(42, "群友42"), turn(43, "群友43")], 86_400);
+        let mut topical = turn(43, "群友43");
+        topical.text = "今天又去驾校坐牢了".into();
+        let brief = memory.brief(&[turn(42, "群友42"), topical], 86_400);
         assert!(brief.contains("在修驾校那台破电脑"), "{brief}");
         assert!(brief.contains("聊过 1 次"), "{brief}");
-        assert!(brief.contains("群友43(43)：眼熟"), "{brief}");
+        // 说不出印象的熟脸不占篇幅。
+        assert!(!brief.contains("群友43"), "{brief}");
         assert!(!brief.contains("群友44"), "{brief}");
-        assert!(brief.contains("上周开始玩的梗"), "{brief}");
+        // 旧事只带贴题的：驾校那条跟眼前沾边，猫那条不沾边、也不是这几个钟头的事。
+        assert!(brief.contains("上周开始玩的驾校坐牢梗"), "{brief}");
         assert!(brief.contains("1 天前"), "{brief}");
+        assert!(!brief.contains("煤球"), "{brief}");
+        // 刚记下的事不贴题也带着。
+        memory.jot("老王刚换了新手机", 86_000).unwrap();
+        assert!(memory.brief(&[turn(42, "群友42")], 86_400).contains("老王刚换了新手机"));
         assert!(GroupMemory::default().brief(&[turn(42, "谁")], 0).is_empty());
     }
 

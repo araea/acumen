@@ -5,10 +5,10 @@
 //! 样本库随 [`crate::plugins::ambient`] 一起编译进来，改它就等于改风格；文件里的
 //! 分节、调子标记与来源说明见 `res/ambient/voice.md`。
 //!
-//! 挑选做两件事。一是看这一轮群里在聊什么，把最贴题的那几条捞出来；二是看此刻的
-//! 精神头（[`Register`]）：活跃的时候语气词多、想到哪说到哪，冷静克制的时候短而
-//! 利落，同一个人这两个样子都有原话，挑错档就不像他了。冷门话题一条都贴不上时按
-//! 文件顺序补几条通用的，保证每轮都有实物可看。
+//! 挑选看两件事。一是此刻的精神头（[`Register`]）：活跃的时候语气词多，冷静克制
+//! 的时候短而利落，同一个人这两个样子都有原话，挑错档就不像他了。二是**避开**
+//! 眼前的话题：样本教的是口气，不是立场，贴题的样本会被模型当成此刻要表的态
+//! （见 [`pick`]）。
 
 use super::mood::Register;
 use crate::plugins::oai::chat::tone::{affinity, grams};
@@ -19,12 +19,15 @@ const VOICE: &str = include_str!("../../../res/ambient/voice.md");
 
 /// 一次最多贴几条。样本是标尺不是范文，三五条足够定调。
 const MAX_LINES: usize = 5;
-/// 一次最少贴几条；贴不满就从文件开头补通用句。
+/// 一次最少贴几条（库够大，随机取总能取满；测试守着这条线）。
+#[cfg(test)]
 const MIN_LINES: usize = 3;
 /// 贴出来的样本一共占多少字上限。它们跟着每轮的账单走。
 const MAX_CHARS: usize = 220;
 /// 只看最近的这些条消息来猜话题；再往前的时间隔得远，聊的多半是另一码事。
 const TOPIC_TURNS: usize = 12;
+/// 贴题到这个程度的样本不挑：再往上，模型就会把样本里的立场当成自己此刻的话。
+const OFF_TOPIC: f32 = 0.5;
 
 /// 样本库里的一条短句，以及它属于哪个调子（`None` 是两种状态都能用）。
 #[derive(Debug, PartialEq, Eq)]
@@ -74,9 +77,13 @@ fn fits(sample: &Sample<'_>, register: Register) -> bool {
 
 /// 挑出这一轮要贴的样本。
 ///
-/// 先按贴近程度取，再按文件顺序补足条数；已经出现在眼前这段记录里的（自己刚说过
-/// 的）跳过，免得把上一句又教一遍。
+/// 从前按贴题程度挑：聊华为就贴他说过的华为那几句。结果模型学走的不是口气，
+/// 是内容——「什么时候华为上双击熄屏 我就回归」被原样改写成一句立场，塞进一段
+/// 根本没人问它意见的聊天里（线上 2026-09-26 10:28）。样本只该教「怎么说」，所以
+/// 现在反过来：**跟眼前话题沾边的一律不挑**，在剩下的里随机取，长短搭配着摆。
+/// 已经出现在眼前这段记录里的（自己刚说过的）同样跳过。
 fn pick<'a>(turns: &[Turn], samples: &[Sample<'a>], register: Register) -> Vec<&'a str> {
+    use rand::seq::SliceRandom;
     let recent: String = turns
         .iter()
         .rev()
@@ -85,39 +92,68 @@ fn pick<'a>(turns: &[Turn], samples: &[Sample<'a>], register: Register) -> Vec<&
         .collect::<Vec<_>>()
         .join("\n");
     let topic = grams(&recent);
-    // 已经出现在眼前这段记录里的（多半是自己刚说过的）不当标尺，补通用句的时候
-    // 也不能把它捞回来——筛一遍就定下来，后面两个循环都用这一份。
-    let eligible: Vec<(usize, &Sample<'a>)> = samples
+    // 「沾边」看的是实词：两个字都不是虚字的字组（华为、折叠、手机），或者整个的
+    // 英文数字词（mate90、root）。「不是」「怎么」这种满库都是，不算话题。
+    let words = content_words(&recent);
+    let on_topic = |text: &str| {
+        !content_words(text).is_disjoint(&words) || affinity(text, &topic) >= OFF_TOPIC
+    };
+    let mut eligible: Vec<&Sample<'a>> = samples
         .iter()
-        .enumerate()
-        .filter(|(_, sample)| fits(sample, register) && !recent.contains(sample.text))
+        .filter(|sample| fits(sample, register) && !recent.contains(sample.text))
+        .filter(|sample| !on_topic(sample.text))
         .collect();
-    let mut ranked: Vec<(usize, f32)> = eligible
-        .iter()
-        .map(|(index, sample)| (*index, affinity(sample.text, &topic)))
-        .collect();
-    // 同分按文件顺序，结果才可复现。
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    eligible.shuffle(&mut rand::rng());
+    // 短句先占两个位置：他近一半的话在八个字以内，一屋子长句样本会把输出养胖。
+    let (short, long): (Vec<&Sample<'a>>, Vec<&Sample<'a>>) = eligible
+        .into_iter()
+        .partition(|sample| sample.text.chars().count() <= 8);
+    let mut order: Vec<&Sample<'a>> = short.iter().take(2).copied().collect();
+    let mut rest: Vec<&Sample<'a>> = short.into_iter().skip(2).chain(long).collect();
+    rest.shuffle(&mut rand::rng());
+    order.extend(rest);
 
     let mut chosen: Vec<&str> = Vec::new();
     let mut used = 0;
-    for (index, score) in &ranked {
+    for sample in order {
         if chosen.len() >= MAX_LINES {
-            break;
-        }
-        if *score <= 0.0 {
-            break;
-        }
-        take(samples[*index].text, &mut chosen, &mut used);
-    }
-    // 冷门话题可能一条都贴不上：从开头补通用的，标尺不能空着。
-    for (_, sample) in eligible.iter() {
-        if chosen.len() >= MIN_LINES {
             break;
         }
         take(sample.text, &mut chosen, &mut used);
     }
     chosen
+}
+
+/// 虚字：它们组成的字组说明不了在聊什么。
+const FUNCTION_CHARS: &str = "的了是不我你他她它们这那就还也都在有没么吗吧呢啊哈嘛呀哦个一二两上下来去说要会能可以到得着过把被给让很太真好对啥什怎样点些里时候看想又再才而且但就算然后";
+
+/// 一段话里的实词：中文按相邻两字取，两字都不是虚字才算；英文数字按整词取。
+fn content_words(text: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut word = String::new();
+    for (index, c) in chars.iter().enumerate() {
+        if c.is_ascii_alphanumeric() {
+            word.push(*c);
+            continue;
+        }
+        if word.chars().count() >= 2 {
+            out.insert(std::mem::take(&mut word));
+        }
+        word.clear();
+        let Some(next) = chars.get(index + 1) else {
+            continue;
+        };
+        let cjk = |c: &char| c.is_alphabetic() && !c.is_ascii();
+        if cjk(c) && cjk(next) && !FUNCTION_CHARS.contains(*c) && !FUNCTION_CHARS.contains(*next)
+        {
+            out.insert([*c, *next].iter().collect());
+        }
+    }
+    if word.chars().count() >= 2 {
+        out.insert(word);
+    }
+    out
 }
 
 /// 收下一条样本，前提是它还没把这一轮的字数用光。
@@ -137,11 +173,13 @@ fn take<'a>(text: &'a str, chosen: &mut Vec<&'a str>, used: &mut usize) {
 pub(crate) fn opening(register: Register) -> &'static str {
     match register {
         Register::Lively => {
-            "你今天话头松、语气词多，想到哪说到哪，有点冗余也没关系。这几句是你这么说话时的原话："
+            "你今天话头松、语气词多一点。下面几句是你平时的原话，借它们的口气和长短，内容跟眼下聊的无关："
         }
-        Register::Even => "你平时在群里就是这么说话的，照这个劲头、长短和口气说自己的话：",
+        Register::Even => {
+            "你平时在群里就是这么说话的。下面几句原话只借口气和长短，内容跟眼下聊的无关："
+        }
         Register::Calm => {
-            "你今天话说得紧、短而利落，一句话交代完就停。这几句是你这么说话时的原话："
+            "你今天话说得紧、短而利落，一句话交代完就停。下面几句是你平时的原话，借口气和长短，内容跟眼下聊的无关："
         }
     }
 }
@@ -292,16 +330,33 @@ mod tests {
         );
     }
 
-    /// 话题贴题：聊折叠屏的时候，折叠那几条该排在前面。
     #[test]
-    fn the_topic_decides_which_samples_come_first() {
+    fn content_words_skip_function_pairs() {
+        let words = content_words("华为新机 mate90 这次是不是换了芯片");
+        for word in ["华为", "新机", "mate90", "芯片"] {
+            assert!(words.contains(word), "{word} {words:?}");
+        }
+        for word in ["是不", "不是", "这次"] {
+            assert!(!words.contains(word), "{word} {words:?}");
+        }
+    }
+
+    /// 样本教口气，不教立场：聊华为的时候，他说过的华为那几句一条都不该上。
+    #[test]
+    fn samples_on_the_current_topic_stay_out() {
         let samples = parse(VOICE);
-        let picked = pick(
-            &[turn("小米也卖折叠屏吗 折叠的好不好用")],
-            &samples,
-            Register::Even,
-        );
-        assert!(picked.iter().any(|text| text.contains("折叠")), "{picked:?}");
+        assert!(samples.iter().any(|sample| sample.text.contains("华为")));
+        for _ in 0..20 {
+            let picked = pick(
+                &[turn("华为新机十月一发布 mate90 这次芯片换没换")],
+                &samples,
+                Register::Even,
+            );
+            assert!(!picked.iter().any(|text| text.contains("华为")), "{picked:?}");
+            assert!(picked.len() >= MIN_LINES, "{picked:?}");
+            // 短句要有：他近一半的话在八个字以内。
+            assert!(picked.iter().any(|text| text.chars().count() <= 8), "{picked:?}");
+        }
     }
 
     /// 自己刚说过的那条不该再当标尺贴回去。
@@ -329,24 +384,16 @@ mod tests {
         }
     }
 
-    /// 调子决定挑哪一档：同一次聊鸿蒙，松的时候「鸿蒙不太顶得住」上得来，紧的时候
-    /// 它进不了场。
-    ///
-    /// 话题写得具体到那句话本身，是为了让这条钉子盯住「哪一档」，而不是「谁排第五」：
-    /// 样本库会一轮轮变胖，泛泛聊鸿蒙时前五名谁属是浮动的。
+    /// 调子决定挑哪一档：挑出来的都得跟当下的调子对得上（两边通用的除外）。
     #[test]
     fn the_register_decides_which_shelf_the_samples_come_from() {
         let samples = parse(VOICE);
-        let topic = [turn("鸿蒙系统 顶得住吗 太顶了")];
-        let lively = pick(&topic, &samples, Register::Lively);
-        let calm = pick(&topic, &samples, Register::Calm);
-        assert!(lively.contains(&"鸿蒙不太顶得住"), "{lively:?}");
-        assert!(!calm.contains(&"鸿蒙不太顶得住"), "{calm:?}");
-        // 两档挑出来的都得跟当下的调子对得上（两边通用的除外）。
-        for (register, picked) in [(Register::Lively, &lively), (Register::Calm, &calm)] {
-            for text in picked.iter() {
-                let sample = samples.iter().find(|s| s.text == *text).unwrap();
-                assert!(fits(sample, register), "{register:?} 挑到了 {text}");
+        for _ in 0..20 {
+            for register in [Register::Lively, Register::Calm] {
+                for text in pick(&[turn("随便聊聊")], &samples, register) {
+                    let sample = samples.iter().find(|s| s.text == text).unwrap();
+                    assert!(fits(sample, register), "{register:?} 挑到了 {text}");
+                }
             }
         }
     }
@@ -355,6 +402,7 @@ mod tests {
     fn the_brief_names_itself_and_lists_samples() {
         let text = brief(&[turn("手机快没电了 有啥省电的办法")], Register::Even);
         assert!(text.contains("你平时在群里就是这么说话的"), "{text}");
+        assert!(text.contains("内容跟眼下聊的无关"), "{text}");
         assert!(text.lines().filter(|line| line.starts_with("- ")).count() >= MIN_LINES);
         // 先说调子，再摆原话：状态不一样，这段话就不一样。
         assert!(brief(&[], Register::Calm).contains("短而利落"), "{}", brief(&[], Register::Calm));

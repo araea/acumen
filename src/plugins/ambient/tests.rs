@@ -112,6 +112,8 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
         gate_model: "fake-model".into(),
         reply_model: "fake-model".into(),
         debounce_seconds: 1,
+        // 不等「下一眼」：这里测的是排队与交接，不是看群的节奏。
+        gate_interval_seconds: 0,
         context_images: 0,
         // 调度回归与计价时段无关；钉死它，免得这个测试在工作日上午换一种行为。
         peak: super::peak::PeakConfig {
@@ -281,6 +283,7 @@ async fn live_persona_and_gate_dialogue() {
             &gate_model,
             &config,
             &turns,
+            1,
             PERSONA,
             &scene,
             None,
@@ -366,6 +369,7 @@ async fn live_persona_and_gate_dialogue() {
             &gate_model,
             &config,
             &latest,
+            0,
             PERSONA,
             &Scene::build(group, &config, &latest, state.rhythm()),
             Some(draft),
@@ -374,5 +378,130 @@ async fn live_persona_and_gate_dialogue() {
         .unwrap();
         println!("草稿检查：{draft} → {verdict:?}");
         assert_eq!(verdict.score >= 50, expected);
+    }
+}
+
+/// 拿线上真实的一段群聊回放给判定与人格，打印它们各自看到的和说出来的。
+///
+/// 改人设、改提示词之前先跑一遍、改完再跑一遍，两边并排看——「像不像人」没法写成
+/// 断言，只能对着真记录看。记录由 `scripts/ambient-replay.py` 从 `data/bot.db` 导出；
+/// 每一个 `cut` 是一个时刻：只把那一刻之前的消息交给模型，好像它刚刚看到群。
+#[tokio::test]
+#[ignore = "需要 ACUMEN_REPLAY、ACUMEN_AMBIENT_LIVE_DATA 与模型接口；只打印，不发群消息"]
+#[allow(clippy::await_holding_lock)]
+async fn live_replay() {
+    #[derive(serde::Deserialize)]
+    struct Line {
+        id: i64,
+        user_id: i64,
+        name: String,
+        text: String,
+        at: i64,
+        #[serde(default)]
+        me: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Replay {
+        group: i64,
+        lines: Vec<Line>,
+        cuts: Vec<usize>,
+    }
+    let replay: Replay = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("ACUMEN_REPLAY").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let data = PathBuf::from(std::env::var("ACUMEN_AMBIENT_LIVE_DATA").unwrap());
+    let _guard = memory::exclusive();
+    crate::plugins::oai::chat::attach(&data).await.unwrap();
+    let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-replay")
+        .unwrap();
+    setup(dir.path()).await.unwrap();
+    let persona = std::env::var("ACUMEN_REPLAY_PERSONA")
+        .map(|path| std::fs::read_to_string(path).unwrap())
+        .unwrap_or_else(|_| PERSONA.to_string());
+    let config = AmbientConfig {
+        tools: "read".into(),
+        context_images: 0,
+        search_enabled: false,
+        reply_timeout_seconds: 120,
+        temperature: std::env::var("ACUMEN_REPLAY_TEMPERATURE")
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .or(AmbientConfig::default().temperature),
+        ..Default::default()
+    };
+    let base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE").unwrap();
+    let key = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY").unwrap();
+    let (_, gate_model) = crate::plugins::oai::utils::split_provider(&config.gate_model);
+    let (_, reply_model) = crate::plugins::oai::utils::split_provider(&config.reply_model);
+    let turns: Vec<Turn> = replay
+        .lines
+        .iter()
+        .map(|line| Turn {
+            user_id: line.user_id,
+            name: if line.me { "我".into() } else { line.name.clone() },
+            text: line.text.clone(),
+            message_id: line.id,
+            from_me: line.me,
+            at: line.at,
+            ..Turn::default()
+        })
+        .collect();
+    let show_prompt = std::env::var("ACUMEN_REPLAY_PROMPT").is_ok();
+    let mut state = window::GroupState::default();
+    let mut last_cut = 0;
+    for cut in replay.cuts {
+        let seen = &turns[..cut.min(turns.len())];
+        // 回放的是过去的一刻：把时间平移到「最后一条刚刚到」，否则现场说明里的
+        // 「现在几点」会让判定以为这些消息全都凉了。
+        let shift = chrono::Local::now().timestamp() - seen.last().map_or(0, |t| t.at);
+        let seen: Vec<Turn> = seen[seen.len().saturating_sub(config.context_turns)..]
+            .iter()
+            .cloned()
+            .map(|turn| Turn { at: turn.at + shift, ..turn })
+            .collect();
+        let seen = seen.as_slice();
+        let scene = Scene::build(replay.group, &config, seen, state.rhythm());
+        // 回放点之间新来的那几条，就是这一眼新看到的。
+        let fresh = seen
+            .iter()
+            .rev()
+            .take(cut.saturating_sub(last_cut))
+            .filter(|turn| !turn.from_me)
+            .count();
+        last_cut = cut;
+        let verdict = gate::judge(
+            &base, &key, &gate_model, &config, seen, fresh, &persona, &scene, None,
+        )
+        .await;
+        if show_prompt {
+            println!(
+                "===== 系统提示词 =====\n{}\n===== 正文 =====\n{}",
+                speak::system_prompt(&persona, &config, false, false, false),
+                speak::user_prompt(&scene, seen, Called::Ordinary, &[])
+            );
+        }
+        let raw = speak::compose(
+            &base,
+            &key,
+            &reply_model,
+            dir.path(),
+            &skill_dirs(dir.path()),
+            &persona,
+            &config,
+            &Default::default(),
+            Some(Duration::from_secs(60)),
+            seen,
+            &[],
+            Called::Ordinary,
+            &scene,
+            None,
+        )
+        .await;
+        let last = seen.last().map(|t| format!("{}: {}", t.name, t.text)).unwrap_or_default();
+        println!(
+            "----- #{cut} 最后一句 {last}\n判定 {verdict:?}\n人格 {}\n",
+            raw.map(|r| r.replace('\n', " ⏎ ")).unwrap_or_else(|e| format!("出错：{e:#}"))
+        );
     }
 }

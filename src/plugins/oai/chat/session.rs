@@ -397,6 +397,15 @@ impl Session {
             && (!self.require_fresh
                 || window::with_group(self.group, |s| s.seq) == self.seq.load(Ordering::SeqCst))
     }
+    /// 打完字那一刻还发不发：比 [`Self::current`] 宽一条——打字的工夫里群里冒出
+    /// 一句无关的，人照样会发出去；来了好几句、或者有人点了名，就得重看现场。
+    fn sendable(&self) -> bool {
+        self.enabled
+            && (!self.require_fresh
+                || window::with_group(self.group, |s| {
+                    s.drift(self.seq.load(Ordering::SeqCst)) <= 1 && !s.has_unread_mention()
+                }))
+    }
     async fn request(&mut self, request: Value) -> Value {
         let key = request["id"].as_str().unwrap_or("").to_string();
         if key.is_empty() || key.len() > 200 {
@@ -1530,17 +1539,18 @@ impl Session {
             .map(|persona| persona.pace(self.group))
             .unwrap_or_default();
         let typing = pace.typing_delay(spoken.chars().count());
+        // 模型耗时算在「读和想」里，字还得一个个敲：首条不再从打字时间里扣掉它。
         let delay = if self.spoke {
             pace.gap() + typing
         } else {
-            pace.think_delay(self.started.elapsed()) + typing.saturating_sub(self.started.elapsed())
+            pace.think_delay(self.started.elapsed()) + typing
         };
         // 思考/停顿结束、真的开始打字时才通知 QQ。实验性 JNI 能力是
         // best-effort：群里有新话题、实现端不支持或回调超时，都不应阻塞这句回复。
         let input_time = typing.min(delay);
         tokio::time::sleep(delay.saturating_sub(input_time)).await;
         ensure!(
-            self.current(),
+            self.sendable(),
             "准备发送期间群聊已更新，尚未发送；请读 satori_context"
         );
         if self.config.qq_mark_read && !self.read_marked
@@ -1566,7 +1576,7 @@ impl Session {
         }
         tokio::time::sleep(input_time).await;
         ensure!(
-            self.current(),
+            self.sendable(),
             "准备发送期间群聊已更新，尚未发送；请读 satori_context"
         );
         let receipt = send_fresh_msg_id(
