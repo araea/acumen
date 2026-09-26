@@ -202,10 +202,12 @@ pub(crate) struct AmbientConfig {
     pub reply_on_mention: bool,
     /// 群友还会怎么叫它：名片之外的小名、简称。
     ///
-    /// 名片是「A宝好腻害！」，群里喊的却是「A宝」——平台不会告诉你这件事，只能写在
+    /// 名片与平时称呼可能不同，平台不会告诉你那些小名，只能写在
     /// 这里。认出来只是在记录上加一个「叫了你的名字」的记号（见 [`identity`]），
     /// 不像 @ 那样直接把人格叫醒：猜错一次的代价是它冲着一句不相干的话接了嘴。
     pub aliases: Vec<String>,
+    /// 平时介绍自己用的称呼；留空沿用平台昵称，非空时优先于群名片。
+    pub preferred_name: String,
     /// 搭话指令：群里一条带它的消息跳过判定，直接把最近这段群聊交给人格。
     ///
     /// 指令本身不进窗口（`/搭话` 是命令，剥掉之后那一条消息才是群聊内容），
@@ -312,6 +314,7 @@ impl Default for AmbientConfig {
             budget_penalty: 12,
             reply_on_mention: true,
             aliases: Vec::new(),
+            preferred_name: String::new(),
             summon_command: "/搭话".to_string(),
             memory_enabled: true,
             mood_enabled: true,
@@ -679,7 +682,16 @@ impl Scene {
         // 状态算一次用两处：一句给模型看的「你现在的状态」，以及挑样本的调子。
         let snapshot = config.mood_enabled.then(|| mood::snapshot(group));
         Self {
-            identity: identity::brief(group),
+            identity: {
+                let mut brief = identity::brief(group);
+                let name = config.preferred_name.trim();
+                if !name.is_empty() {
+                    brief.push_str(&format!(
+                        "你平时叫「{name}」，介绍自己时用这个称呼；上面的群名片只是平台展示文字。\n"
+                    ));
+                }
+                brief
+            },
             rhythm,
             register: tone::register(turns),
             state: snapshot.map(mood::Snapshot::describe).unwrap_or_default(),
@@ -2563,6 +2575,29 @@ mod tests {
         // 现在与语感照旧在它前后，身份只是插进来的一段。
         assert!(brief.starts_with("现在："), "{brief}");
         assert!(brief.contains("本群此刻："), "{brief}");
+    }
+
+    #[test]
+    fn preferred_name_is_shared_by_gate_and_speech_despite_the_group_card() {
+        let group = -9_100_012;
+        identity::seed(group, identity::Identity {
+            name: "nawyjx".into(),
+            card: "A宝好腻害！".into(),
+            ..identity::Identity::default()
+        });
+        let config = AmbientConfig {
+            preferred_name: "n 宝".into(),
+            aliases: vec!["n宝".into(), "n 宝".into(), "神尊大人".into()],
+            ..AmbientConfig::default()
+        };
+        let scene = Scene::build(group, &config, &[], String::new());
+        assert!(scene.brief().contains("你平时叫「n 宝」"));
+        assert!(scene.identity.contains("群名片只是平台展示文字"));
+        for called in ["n宝在吗", "N 宝在吗", "神尊大人来啦"] {
+            assert!(identity::called_by_name(group, &config.aliases, called));
+        }
+        let default_scene = Scene::build(group, &AmbientConfig::default(), &[], String::new());
+        assert!(!default_scene.brief().contains("你平时叫"));
     }
 
     #[test]
