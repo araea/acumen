@@ -416,6 +416,11 @@ async fn live_replay() {
     let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-replay")
         .unwrap();
     setup(dir.path()).await.unwrap();
+    // 线上那份本体档案（self.md）在人格数据目录里；给了就带上，回放才看得到
+    // 「把话题往自己身上拉」这种毛病。
+    if let Ok(own) = std::env::var("ACUMEN_REPLAY_SELF_DIR") {
+        DATA_DIR.set(PathBuf::from(own)).ok();
+    }
     let persona = std::env::var("ACUMEN_REPLAY_PERSONA")
         .map(|path| std::fs::read_to_string(path).unwrap())
         .unwrap_or_else(|_| PERSONA.to_string());
@@ -480,6 +485,11 @@ async fn live_replay() {
                 speak::system_prompt(&persona, &config, false, false, false),
                 speak::user_prompt(&scene, seen, Called::Ordinary, &[])
             );
+        }
+        // 线上过线之后，判定那一眼注意到的事会递给人格；回放照样递。
+        let mut scene = scene;
+        if let Ok(verdict) = &verdict {
+            scene.noticed = verdict.reason.clone();
         }
         let raw = speak::compose(
             &base,
