@@ -24,6 +24,8 @@ const WINDOW_CAPACITY: usize = 80;
 
 /// 开过口之后多久之内还算「正聊着」：看群看得勤，见 [`GroupState::look_due`]。
 const ENGAGED_AFTER_SPEAKING: Duration = Duration::from_secs(180);
+/// 翻回来的记录里，自己隔这么近的几条算同一轮。
+const ROUND_GAP_SECONDS: i64 = 90;
 /// 正聊着的时候，看群的间隔是平时的几分之几。
 const ENGAGED_LOOK: f32 = 0.3;
 
@@ -461,6 +463,10 @@ impl GroupState {
         let mut added = 0;
         let mut mine = 0;
         let now = chrono::Local::now().timestamp();
+        // 账记的是「轮」不是「条」：一轮里分两三条发的，翻回来是挨着的几条。
+        let mut last_round: Option<i64> = None;
+        let mut history = history;
+        history.sort_by_key(|turn| (turn.at, turn.message_id));
         for turn in history {
             if turn.message_id == 0
                 || self
@@ -470,7 +476,12 @@ impl GroupState {
             {
                 continue;
             }
-            if turn.from_me && speech_like(&turn.text) && now - turn.at < 3_600 {
+            if turn.from_me
+                && speech_like(&turn.text)
+                && now - turn.at < 3_600
+                && last_round.is_none_or(|round| turn.at - round > ROUND_GAP_SECONDS)
+            {
+                last_round = Some(turn.at);
                 if let Some(at) = Instant::now()
                     .checked_sub(Duration::from_secs((now - turn.at).max(0) as u64))
                 {
@@ -1086,6 +1097,7 @@ mod tests {
         let history: Vec<Turn> = [
             (10, "刘欢去世了", false, now - 600),
             (11, "行，我收回刚才那句", true, now - 300),
+            (14, "界面新闻都发了", true, now - 295),
             (12, "[图片]", true, now - 200),
             (13, "很久以前说的", true, now - 7_200),
             (30, "刚到的一条", false, now),
@@ -1098,7 +1110,7 @@ mod tests {
         })
         .collect();
         let (added, mine) = state.seed(history);
-        assert_eq!((added, mine), (4, 1), "去重；只剩图片的、一小时以前的不记账");
+        assert_eq!((added, mine), (5, 1), "去重；挨着的两条算一轮；只剩图片的、一小时以前的不记账");
         assert!(state.hydrated);
         let texts: Vec<String> = state.recent(10).into_iter().map(|t| t.text).collect();
         assert_eq!(texts.first().map(String::as_str), Some("很久以前说的"));

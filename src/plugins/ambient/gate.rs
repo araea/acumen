@@ -21,6 +21,8 @@ pub(crate) struct Verdict {
     pub reason: String,
     /// 新消息是否仍在延续人格关注的那个人/话题。
     pub continuation: bool,
+    /// 有人认真求助、还没人答好，而他答得上。
+    pub help: bool,
 }
 
 impl Verdict {
@@ -50,6 +52,16 @@ impl Verdict {
             threshold
         };
         self.score >= bar
+    }
+
+    /// 有人在求助时的门槛：不吃「刚说过几轮」「这个小时说超了」那几笔加价，
+    /// 只按基础门槛再让一点。
+    ///
+    /// 那几笔加价管的是「别每摊都插一句」，不该把一个没人答的问题挡在外面——
+    /// 线上 2026-09-26 11:48 有人问「AMD 能不能装管家」，判定四次都认出「还没人答」，
+    /// 门槛却被刚才那一阵发言抬到了 100。
+    pub(crate) fn wants_to_help(&self, base: u8) -> bool {
+        self.help && self.score > 0 && self.score >= base.saturating_sub(HELP_RELIEF).max(1)
     }
 }
 
@@ -88,12 +100,17 @@ continuation 仅在当前关注仍有效、且最新消息确实延续那个话�
 即使 continuation 为 true，没什么可说就给 0；这个估分只是递给人格看一眼，
 开不开口是他的事。
 
+help 仅在新消息里有人认真求助或提问（报错、怎么弄、行不行、值不值）、群里还没人答好、
+而他答得上时为 true；闲聊里的反问、玩笑、已经有人答对的问题都是 false。
+
 reason 写让他想开口（或不想开口）的那一件事本身，具体到人和话题，比如「阿杰问怎么
 卸预装管家，还没人答」。
 
-只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false}";
+只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false}";
 
 const GATE_TURNS: usize = 12;
+/// 求助时门槛在基础值上再让的分。
+const HELP_RELIEF: u8 = 10;
 /// 一眼看到的新消息再多，判定也只读这么多条；再往前的早就滚过去了。
 const MAX_GATE_TURNS: usize = 36;
 
@@ -258,6 +275,7 @@ fn parse_verdict(raw: &str) -> anyhow::Result<Verdict> {
     Ok(Verdict {
         score: score.clamp(0.0, 100.0) as u8,
         continuation: value["continuation"].as_bool().unwrap_or(false),
+        help: value["help"].as_bool().unwrap_or(false),
         reason: value["reason"]
             .as_str()
             .unwrap_or_default()
@@ -344,7 +362,8 @@ mod tests {
             Verdict {
                 score: 73,
                 reason: "有错可纠".into(),
-                continuation: false
+                continuation: false,
+                help: false
             }
         );
         assert_eq!(parse_verdict("{\"score\": 999}").unwrap().score, 100);
@@ -370,6 +389,18 @@ mod tests {
         assert!(ordinary.wants_composition(50, 15, false));
         assert!(ordinary.wants_composition(60, 15, false));
         assert!(!ordinary.wants_composition(61, 15, false));
+    }
+
+    /// 没人答的求助不吃节奏加价：门槛抬到 100 时照样够得着，只按基础门槛让 10 分。
+    #[test]
+    fn an_unanswered_question_is_not_priced_out_by_recent_chatter() {
+        let asked = parse_verdict(r#"{"score":55,"help":true}"#).unwrap();
+        assert!(!asked.wants_composition(100, 5, false));
+        assert!(asked.wants_to_help(60));
+        assert!(!asked.wants_to_help(70));
+        let chatter = parse_verdict(r#"{"score":55}"#).unwrap();
+        assert!(!chatter.wants_to_help(60));
+        assert!(!parse_verdict(r#"{"score":0,"help":true}"#).unwrap().wants_to_help(0));
     }
 
     /// 「刚说过话」和「这个小时说超了」都不再是一道墙：它们抬高的只是门槛，

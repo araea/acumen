@@ -1372,12 +1372,14 @@ async fn consider_batch(
             None,
         )
         .await?;
-        if !verdict.wants_composition(threshold, config.focus_relief, focused) {
+        if !verdict.wants_composition(threshold, config.focus_relief, focused)
+            && !verdict.wants_to_help(config.score_threshold)
+        {
             debug!(target: LOG_TARGET, "群 {group} 保持沉默（{}/{}，{}）", verdict.score, threshold, verdict.reason);
             return Ok(());
         }
-        info!(target: LOG_TARGET, "群 {group} 交给人格决定（{}/{}，续聊={}，{}）",
-            verdict.score, threshold, verdict.continuation, verdict.reason);
+        info!(target: LOG_TARGET, "群 {group} 交给人格决定（{}/{}，续聊={}，求助={}，{}）",
+            verdict.score, threshold, verdict.continuation, verdict.help, verdict.reason);
         noticed = verdict.reason.clone();
         if !current(ctx, group, *seq) {
             return Ok(());
