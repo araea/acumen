@@ -213,8 +213,8 @@ async fn send_card_with_recovery(
 /// 投递一次推送。卡片成功发送时一级内容只有图片，并保存图片消息 ID 与文本的
 /// 映射；用户之后引用该图回复序号时，只发送标题与关键链接。
 ///
-/// 卡片渲染/发送失败，或实现端没有返回可关联的消息 ID 时，退回纯文本，避免
-/// 用户看到一张无法提取链接的孤立图片。
+/// 卡片渲染/发送失败时退回纯文本；卡片一发出就不再补文本（即使实现端没返回
+/// 可关联的消息 ID），否则群里会多出一条与卡片同内容的重复消息。
 pub async fn deliver(
     ctx: &Context,
     writer: LockedWriter,
@@ -224,8 +224,6 @@ pub async fn deliver(
     payload: &Payload,
     reply_to: Option<i64>,
 ) -> bool {
-    let mut image_sent = false;
-
     if let Some(b64) = &payload.image {
         match send_card_with_recovery(ctx, writer.clone(), group_id, user_id, b64, reply_to).await {
             Ok(Some(message_id)) => {
@@ -236,8 +234,10 @@ pub async fn deliver(
                 return true;
             }
             Ok(None) => {
-                image_sent = true;
-                warn!(target: LOG_TARGET, "卡片图未返回消息 ID，无法关联引用提取，改由文本兜底。")
+                // 图已经送出去了，没拿到消息 ID 只影响「按序号提取链接」，不该为此
+                // 再补一条与卡片同内容的文本。
+                warn!(target: LOG_TARGET, "卡片图未返回消息 ID，无法关联引用提取；不再补发文本。");
+                return true;
             }
             Err(e) if crate::adapters::satori::delivery_uncertain(e.as_ref()) => {
                 // QQ may still finish this exact message later. Consume this item once;
@@ -249,23 +249,14 @@ pub async fn deliver(
         }
     }
 
-    // 图片若已发出但无法登记映射，兜底文本不再重复引用原指令。
-    let body = build_message(
-        ctx,
-        cfg,
-        &payload.rendered,
-        if image_sent { None } else { reply_to },
-        false,
-    );
-    let text_sent = match send_msg(ctx, writer, group_id, user_id, body).await {
+    let body = build_message(ctx, cfg, &payload.rendered, reply_to, false);
+    match send_msg(ctx, writer, group_id, user_id, body).await {
         Ok(_) => true,
         Err(e) => {
             warn!(target: LOG_TARGET, "推送文本发送失败: {}", e);
             false
         }
-    };
-
-    image_sent || text_sent
+    }
 }
 
 /// 一次推送的标题组：文本消息的头一行，以及卡片图的主副标题
@@ -691,7 +682,8 @@ mod tests {
                 2,
                 false,
             ),
-            (Some(("200 OK", "[]")), 2, true),
+            // 实现端没回消息 ID：图已发出，不再补文本，因此只有一次请求。
+            (Some(("200 OK", "[]")), 1, true),
         ] {
             let (ctx, writer, mut sent, server) = http_fixture(reply).await;
             assert_eq!(
