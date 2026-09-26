@@ -5,7 +5,7 @@
 //!
 //! ```sh
 //! cargo test --bin acumen live_reads_the_metadata -- --ignored --nocapture
-//! ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116 \
+//! ACUMEN_VIDEO_PARSE_LIVE_GROUP=1126269891 \
 //!   cargo test --bin acumen live_takes_ -- --ignored --nocapture
 //! ```
 //!
@@ -90,7 +90,7 @@ async fn live_reads_the_metadata_and_the_stream_plan() {
 /// 这条会往群里发三四条（触发那条、成品那条气泡与文件），模块的
 /// 出站闸门是全局 20 条/分钟，别把它跟别的沙盒用例挤在同一分钟里跑。
 #[tokio::test]
-#[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
+#[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=1126269891；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
 async fn live_takes_a_link_from_the_sandbox_group() {
     let group: i64 = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
         .ok()
@@ -140,7 +140,7 @@ async fn live_takes_a_link_from_the_sandbox_group() {
 /// 跟短链、拉稿件信息、把原片发进群。载荷照真机收到的形状造，只有里面的 b23 短链换成
 /// 样品那条——真卡片指向的稿件随时可能被删，自检不能靠它。
 #[tokio::test]
-#[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=280183116；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
+#[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=1126269891；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
 async fn live_reads_a_card_from_the_sandbox_group() {
     let group: i64 = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
         .ok()

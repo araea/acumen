@@ -167,13 +167,13 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
 
 /// Every call goes through the Rust bridge; the fixed sandbox is an explicit opt-in.
 #[tokio::test]
-#[ignore = "ACUMEN_AMBIENT_LIVE_GROUP=280183116；会发送并撤回测试消息、修改并恢复自己的名片、短暂禁言小号、创建并清理文件夹"]
+#[ignore = "ACUMEN_AMBIENT_LIVE_GROUP=1126269891；会发送并撤回测试消息、修改并恢复自己的名片、短暂禁言小号、创建并清理文件夹"]
 async fn live_qq_sandbox_actions_and_environment() {
     assert_eq!(
         std::env::var("ACUMEN_AMBIENT_LIVE_GROUP").as_deref(),
-        Ok("280183116")
+        Ok("1126269891")
     );
-    let group = 280183116;
+    let group = 1126269891;
     let (ctx, _, _, mock) = fixture(group).await;
     mock.abort();
     let config_text = tokio::fs::read_to_string("config.toml").await.unwrap();
@@ -512,13 +512,13 @@ async fn live_agent_uses_the_new_card_action() {
 /// **平台上写的到底是什么**。所以拿沙箱群真问一遍，顺带确认判定模型收得下头像：
 /// 收不下的话，头像那一句会安静地变成空串，线上看不出任何异常。只读，不改任何东西。
 #[tokio::test]
-#[ignore = "ACUMEN_AMBIENT_LIVE_GROUP=280183116；只读地问一遍自己的群身份，并让判定模型看一眼头像"]
+#[ignore = "ACUMEN_AMBIENT_LIVE_GROUP=1126269891；只读地问一遍自己的群身份，并让判定模型看一眼头像"]
 async fn live_identity_reads_the_name_the_room_sees() {
     assert_eq!(
         std::env::var("ACUMEN_AMBIENT_LIVE_GROUP").as_deref(),
-        Ok("280183116")
+        Ok("1126269891")
     );
-    let group = 280183116;
+    let group = 1126269891;
     let (ctx, _, _, mock) = fixture(group).await;
     mock.abort();
     let disk: toml::Value = toml::from_str(&tokio::fs::read_to_string("config.toml").await.unwrap())
