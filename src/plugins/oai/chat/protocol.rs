@@ -31,6 +31,38 @@ fn next_marker(raw: &str) -> Option<(usize, &str)> {
         .min_by_key(|(at, _)| *at)
 }
 
+/// 行首引用标记摘下来之后，它原本想引的是谁。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Quote {
+    /// `[reply]`：引最后一条。
+    Latest,
+    /// `[reply:消息号]`：引点名那条。
+    Message(i64),
+}
+
+/// 摘掉每一行行首的 `[reply]` / `[reply:消息号]`，返回剩下的正文与第一个标记。
+///
+/// 那是文字路径的写法：行首写它，代码替你挂上引用。走工具发言时引用由
+/// `reply_to` 参数管，模型却时常照着文字路径的习惯把标记也写进 `text`——
+/// 于是群里看到一条带引用、正文开头还挂着「[reply] 」的消息（线上 2026-09-26
+/// 12:55「[reply] 布丁你这是以貌取片」）。只认行首：句子中间出现的方括号
+/// 多半是群友原话，不动。全角括号一并认，模型两种都写过。
+pub(crate) fn take_reply_markers(text: &str) -> (Cow<'_, str>, Option<Quote>) {
+    static MARKER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let marker = MARKER.get_or_init(|| {
+        regex::Regex::new(r"(?mi)^([ \t]*)[\[［]\s*reply\s*(?:[:：]\s*(\d+)\s*)?[\]］][ \t]*")
+            .unwrap()
+    });
+    let Some(first) = marker.captures(text) else {
+        return (Cow::Borrowed(text), None);
+    };
+    let quote = match first.get(2).and_then(|id| id.as_str().parse::<i64>().ok()) {
+        Some(id) if id != 0 => Quote::Message(id),
+        _ => Quote::Latest,
+    };
+    (marker.replace_all(text, "$1"), Some(quote))
+}
+
 /// 摘掉正文里的伪工具调用，返回可以照常断句、翻译标记的文字。
 pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
     let Some((mut at, mut marker)) = next_marker(raw) else {
@@ -214,6 +246,18 @@ fn id_text(value: &serde_json::Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn leading_reply_markers_come_off_and_say_whom_they_meant() {
+        let (text, quote) = take_reply_markers("[reply] 布丁你这是以貌取片");
+        assert_eq!((text.as_ref(), quote), ("布丁你这是以貌取片", Some(Quote::Latest)));
+        let (text, quote) = take_reply_markers("［reply:123］看这张\n[reply] 第二句");
+        assert_eq!(text.as_ref(), "看这张\n第二句");
+        assert_eq!(quote, Some(Quote::Message(123)));
+        // 句中的方括号是正文，不动。
+        let (text, quote) = take_reply_markers("他说 [reply] 是什么意思");
+        assert_eq!((text.as_ref(), quote), ("他说 [reply] 是什么意思", None));
+    }
 
     /// 线上那一串：模型把 `send` 的调用当正文写出来，正文在 JSON 里面。
     #[test]

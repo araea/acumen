@@ -1163,15 +1163,25 @@ impl Session {
                 // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
                 // 不是要说的话，而且必须在断句之前摘：JSON 里的逗号看着像换气处，
                 // 先切会把标记切成两半，后半截没有名字，照样漏进群。
+                // 行首的 `[reply]` 同理：那是文字路径的引用写法，这里摘掉，想引谁
+                // 就换成真引用（`reply_to` 已经给了就以它为准）。
+                let mut marked = None;
                 let parts: Vec<Part> = parts
                     .iter()
                     .map(|part| match part {
-                        Part::Text { text } => Part::Text {
-                            text: super::protocol::strip(text).into_owned(),
-                        },
+                        Part::Text { text } => {
+                            let text = super::protocol::strip(text);
+                            let (text, quote) = super::protocol::take_reply_markers(&text);
+                            marked = marked.or(quote);
+                            Part::Text {
+                                text: text.into_owned(),
+                            }
+                        }
                         other => other.clone(),
                     })
                     .collect();
+                let reply_to = reply_to.clone().or_else(|| quote_for(marked?, turns));
+                let reply_to = &reply_to;
                 // 摘干净之后什么都不剩（整条只有一个伪调用）就没有话要发。
                 if parts.is_empty()
                     || parts
@@ -1753,6 +1763,23 @@ async fn media_endpoint(
         .cloned()
         .unwrap_or_else(|| fallback.to_string());
     Ok((config.api_base.clone(), config.api_key.clone(), model))
+}
+
+/// 正文行首的 `[reply]` 想引的那条 → `reply_to`。点名的消息号得真在眼前的记录里，
+/// 否则一个随口写的号会让整条消息引到不存在的地方；`[reply]` 引最新那条群友消息。
+fn quote_for(quote: super::protocol::Quote, turns: &[Turn]) -> Option<String> {
+    let id = match quote {
+        super::protocol::Quote::Message(id) => turns
+            .iter()
+            .any(|turn| turn.message_id == id)
+            .then_some(id)?,
+        super::protocol::Quote::Latest => turns
+            .iter()
+            .rev()
+            .find(|turn| !turn.from_me && turn.message_id != 0)?
+            .message_id,
+    };
+    Some(id.to_string())
 }
 
 /// `@` 后面紧跟文字时要不要垫一个空格。
