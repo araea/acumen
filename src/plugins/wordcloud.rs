@@ -23,7 +23,7 @@ static COMMAND_REGEX: OnceLock<Regex> = OnceLock::new();
 fn get_regex() -> &'static Regex {
     COMMAND_REGEX.get_or_init(|| {
         Regex::new(
-            r"^(本群|跨群|我的)(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)词云$",
+            r"^(本群|跨群|我的)?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)词云$",
         )
         .unwrap()
     })
@@ -47,7 +47,8 @@ pub fn handle(
 
         let regex = get_regex();
         if let Some(caps) = regex.captures(content_to_match) {
-            let scope_str = caps.get(1).map_or("", |m| m.as_str());
+            // 范围可省，和统计图一样默认「本群」：「今日词云」即「本群今日词云」。
+            let scope_str = caps.get(1).map_or("本群", |m| m.as_str());
             let time_str = caps.get(2).map_or("", |m| m.as_str());
 
             info!(target: LOG_TARGET, "收到词云请求: Scope={}, Time={}", scope_str, time_str);
@@ -175,4 +176,19 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
     <WordCloudConfig as serde::Deserialize>::deserialize(value.clone())
         .map(|_| ())
         .map_err(|_| "词云配置类型错误".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_regex;
+
+    #[test]
+    fn scope_is_optional() {
+        let caps = get_regex().captures("今日词云").expect("省略范围也应匹配");
+        assert!(caps.get(1).is_none());
+        assert_eq!(&caps[2], "今日");
+        let caps = get_regex().captures("我的总词云").unwrap();
+        assert_eq!(&caps[1], "我的");
+        assert!(get_regex().captures("词云").is_none());
+    }
 }
