@@ -78,22 +78,10 @@ pub fn handle(
             let target_group = msg.group_id();
             let target_user = Some(msg.user_id());
 
-            // 发送提示
-            send_msg(
-                &ctx,
-                writer.clone(),
-                target_group,
-                target_user,
-                Message::new()
-                    .reply(reply_id)
-                    .text(format!("⏳ 正在生成 {}…", title)),
-            )
-            .await?;
-
-            // 生成并发送
+            // 生成很快，不先发「正在生成」；图直接引用请求，看得出是回谁的。
             match generate_image(&ctx, query_group_id, query_user_id, start_time, end_time).await {
                 Ok(b64) => {
-                    let img_msg = Message::new().image_described(b64, &title);
+                    let img_msg = Message::new().reply(reply_id).image_described(b64, &title);
                     send_msg(&ctx, writer, target_group, target_user, img_msg).await?;
                 }
                 Err(GenError::Empty) => {
