@@ -442,6 +442,8 @@ async fn qq_immediate_clear_reports_the_exact_compensated_scope() {
 
 #[tokio::test]
 #[ignore = "真实模型验证；所有 QQ 动作只发到本地假服务"]
+// 全局状态用例靠 `memory::exclusive()` 串行，跨 await 持锁在测试内是有意的。
+#[allow(clippy::await_holding_lock)]
 async fn live_agent_uses_the_new_card_action() {
     let group = -8_000_505;
     let (ctx, writer, calls, server) = fixture(group).await;

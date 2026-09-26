@@ -214,9 +214,7 @@ fn search_card_key(value: &OwnedValue, key: &str, depth: usize) -> Option<String
     if depth > MAX_DEPTH {
         return None;
     }
-    let Some(object) = value.as_object() else {
-        return None;
-    };
+    let object = value.as_object()?;
     if let Some(found) = object.get(key).and_then(non_empty) {
         return Some(found);
     }

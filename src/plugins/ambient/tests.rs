@@ -91,6 +91,8 @@ async fn fake_model(
 }
 
 #[tokio::test]
+// 全局状态用例靠 `memory::exclusive()` 串行，跨 await 持锁在测试内是有意的。
+#[allow(clippy::await_holding_lock)]
 async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     use crate::config::{AppConfig, build_config};
     use crate::event::{BotStatus, EventType, LoginUser};
@@ -218,6 +220,8 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
 
 #[tokio::test]
 #[ignore = "需要 ACUMEN_AMBIENT_LIVE_DATA、已配置的模型接口和网络；仅打印试聊，不发群消息"]
+// 全局状态用例靠 `memory::exclusive()` 串行，跨 await 持锁在测试内是有意的。
+#[allow(clippy::await_holding_lock)]
 async fn live_persona_and_gate_dialogue() {
     let data = PathBuf::from(std::env::var("ACUMEN_AMBIENT_LIVE_DATA").unwrap());
     let mgr = crate::plugins::oai::data::Manager::new(data.clone());

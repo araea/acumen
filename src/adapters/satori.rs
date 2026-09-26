@@ -533,7 +533,7 @@ async fn connect_and_listen(
 
     plugins::do_connected(connected_ctx, writer.clone()).await?;
 
-    let result = listen(
+    listen(
         &mut ws_read,
         &outbound,
         &writer,
@@ -546,9 +546,7 @@ async fn connect_and_listen(
         &matcher,
         session_sn,
     )
-    .await;
-
-    result
+    .await
 }
 
 /// 事件循环：`EVENT` 进插件流水线，`META` 刷新代理路由，`PING` 回 `PONG`。

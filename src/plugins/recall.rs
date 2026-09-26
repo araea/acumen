@@ -50,8 +50,8 @@ impl Pending {
     fn entry(&mut self, key: Key, now: Instant) -> &mut Entry {
         self.0
             .retain(|_, entry| now.duration_since(entry.at) < RETENTION);
-        if !self.0.contains_key(&key) && self.0.len() >= MAX_TRIGGERS {
-            if let Some(oldest) = self
+        if !self.0.contains_key(&key) && self.0.len() >= MAX_TRIGGERS
+            && let Some(oldest) = self
                 .0
                 .iter()
                 .min_by_key(|(_, entry)| entry.at)
@@ -59,7 +59,6 @@ impl Pending {
             {
                 self.0.remove(&oldest);
             }
-        }
         self.0.entry(key).or_insert_with(|| Entry {
             at: now,
             recalled: false,

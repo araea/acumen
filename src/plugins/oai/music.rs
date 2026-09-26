@@ -341,7 +341,7 @@ fn style_line(tags: &str) -> String {
         return tags.to_string();
     }
     let head: String = tags.chars().take(STYLE_MAX_CHARS).collect();
-    match head.rfind(|c| matches!(c, ',' | ';' | '，' | '；' | '/')) {
+    match head.rfind([',', ';', '，', '；', '/']) {
         Some(at) if !head[..at].trim().is_empty() => head[..at].trim_end().to_string(),
         _ => head.trim_end().to_string(),
     }

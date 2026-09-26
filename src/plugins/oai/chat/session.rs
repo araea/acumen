@@ -85,11 +85,10 @@ fn observation(kind: &str, group: i64, user_id: &str) -> Result<(&'static str, V
 const REFUSAL_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3_600);
 
 /// 跨轮的平台拒绝记录：能力键 → （原因，记下的时刻）。
-fn known_refusals() -> &'static std::sync::Mutex<HashMap<(String, String), (String, std::time::Instant)>>
-{
-    static KNOWN: std::sync::OnceLock<
-        std::sync::Mutex<HashMap<(String, String), (String, std::time::Instant)>>,
-    > = std::sync::OnceLock::new();
+type RefusalLog = HashMap<(String, String), (String, std::time::Instant)>;
+
+fn known_refusals() -> &'static std::sync::Mutex<RefusalLog> {
+    static KNOWN: std::sync::OnceLock<std::sync::Mutex<RefusalLog>> = std::sync::OnceLock::new();
     KNOWN.get_or_init(Default::default)
 }
 
@@ -2313,6 +2312,8 @@ mod tests {
     ///
     /// 商城表情走的是「参数原样再发一遍」：它没有文件可存，所以这条用例不必碰网络。
     #[tokio::test]
+    // 全局状态用例靠进程级锁串行，跨 await 持锁在测试内是有意的。
+    #[allow(clippy::await_holding_lock)]
     async fn a_stolen_sticker_stays_in_the_library_and_comes_back_by_id() {
         let _guard = stickers::tests::exclusive();
         let group = -8_000_110;
@@ -2680,6 +2681,8 @@ mod tests {
     /// 一轮只有几次动作。平台明确拒绝、动作根本没到达聊天的那一类失败，
     /// 不该把额度也一起吃掉，更不该让模型在同一轮里反复去撞同一堵墙。
     #[tokio::test]
+    // 全局状态用例靠进程级锁串行，跨 await 持锁在测试内是有意的。
+    #[allow(clippy::await_holding_lock)]
     async fn a_platform_refusal_gives_the_action_budget_back_and_is_not_retried() {
         let _serial = refusal_guard();
         let group = -8_000_104;
@@ -2775,6 +2778,8 @@ mod tests {
     /// （satori-qq 0.23.0 起是资料卡点赞），客户端读到这张表就该把它当不可用，
     /// 而不是先撞一次 404 再学乖：那一次尝试要花掉本轮仅有的几次动作额度。
     #[tokio::test]
+    // 全局状态用例靠进程级锁串行，跨 await 持锁在测试内是有意的。
+    #[allow(clippy::await_holding_lock)]
     async fn an_action_the_implementation_removed_is_unavailable_before_the_first_try() {
         let _serial = refusal_guard();
         let group = -8_000_121;

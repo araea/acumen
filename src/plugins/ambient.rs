@@ -671,10 +671,11 @@ impl Scene {
 ///
 /// 关掉状态（`mood_enabled = false`）时按不上不下处理，两档样本都能挑。
 fn voice_register(config: &AmbientConfig, group: i64) -> mood::Register {
-    config
-        .mood_enabled
-        .then(|| mood::snapshot(group).register())
-        .unwrap_or(mood::Register::Even)
+    if config.mood_enabled {
+        mood::snapshot(group).register()
+    } else {
+        mood::Register::Even
+    }
 }
 
 /// 本体档案 → 注入发言提示词的一段话。
@@ -1692,10 +1693,10 @@ mod tests {
     #[test]
     fn calls_and_new_images_skip_the_ordinary_gate_interval() {
         let turn = Turn::default();
-        assert!(!immediate_gate(&[turn.clone()], false, false, false));
-        assert!(immediate_gate(&[turn.clone()], true, false, false));
-        assert!(immediate_gate(&[turn.clone()], false, true, false));
-        assert!(immediate_gate(&[turn.clone()], false, false, true));
+        assert!(!immediate_gate(std::slice::from_ref(&turn), false, false, false));
+        assert!(immediate_gate(std::slice::from_ref(&turn), true, false, false));
+        assert!(immediate_gate(std::slice::from_ref(&turn), false, true, false));
+        assert!(immediate_gate(std::slice::from_ref(&turn), false, false, true));
         let mut named = turn.clone();
         named.call.named_me = true;
         assert!(immediate_gate(&[named], false, false, false));
@@ -2145,7 +2146,7 @@ mod tests {
         }
     }
 
-    /// 引用解析的三条路：引到别人、引到自己（等于被点名）、引到窗口外的旧消息。
+    // 引用解析的三条路：引到别人、引到自己（等于被点名）、引到窗口外的旧消息。
 
     /// 兼容文字路径的引用目标：先引叫到我的那条，没人叫才引最新一条；
     /// 引不了的消息（消息号为 0 的平台事件）与自己的话都跳过。

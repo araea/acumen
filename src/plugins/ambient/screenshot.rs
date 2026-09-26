@@ -43,13 +43,11 @@ fn candidate(turns: &[Turn], now: i64) -> Option<(i64, i64)> {
     let first = turns
         .iter()
         .rev()
-        .take(3)
-        .filter(|turn| {
+        .take(3).rfind(|turn| {
             turn.message_id > 1
                 && turn.message_id <= last.message_id
                 && now.saturating_sub(turn.at) <= 90
         })
-        .last()
         .map_or(last.message_id, |turn| turn.message_id);
     Some((first, last.message_id))
 }
@@ -111,7 +109,7 @@ pub(super) async fn try_reply(
     }
     let Some(freshness) = freshness_for(
         group,
-        Duration::from_secs(config.send_freshness_seconds.max(5).min(60)),
+        Duration::from_secs(config.send_freshness_seconds.clamp(5, 60)),
     )
     .filter(|f| f.message_id == end.to_string()) else {
         return false;

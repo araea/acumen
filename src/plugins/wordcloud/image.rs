@@ -137,6 +137,28 @@ fn load_font_by_family(family: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| "无法获取字体数据".to_string())
 }
 
+pub fn frequencies(corpus: &[String]) -> HashMap<String, f64> {
+    let stop_words = get_stop_words();
+    let mut freq_map: HashMap<String, f64> = HashMap::new();
+
+    for line in corpus {
+        let words = line.split_whitespace();
+        for w in words {
+            let w_trim = w.trim();
+            if w_trim.chars().count() > 1
+                && !stop_words.contains(w_trim)
+                && !w_trim
+                    .chars()
+                    .all(|c| c.is_numeric() || c.is_ascii_punctuation())
+            {
+                *freq_map.entry(w_trim.to_string()).or_insert(0.0) += 1.0;
+            }
+        }
+    }
+
+    freq_map
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,26 +338,4 @@ mod tests {
             std::fs::write(format!("{dir}/{name}"), bytes).unwrap();
         }
     }
-}
-
-pub fn frequencies(corpus: &[String]) -> HashMap<String, f64> {
-    let stop_words = get_stop_words();
-    let mut freq_map: HashMap<String, f64> = HashMap::new();
-
-    for line in corpus {
-        let words = line.split_whitespace();
-        for w in words {
-            let w_trim = w.trim();
-            if w_trim.chars().count() > 1
-                && !stop_words.contains(w_trim)
-                && !w_trim
-                    .chars()
-                    .all(|c| c.is_numeric() || c.is_ascii_punctuation())
-            {
-                *freq_map.entry(w_trim.to_string()).or_insert(0.0) += 1.0;
-            }
-        }
-    }
-
-    freq_map
 }
