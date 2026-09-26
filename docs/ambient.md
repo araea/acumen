@@ -28,7 +28,7 @@
 | 关注的话题被接住（`continuation`） | −5 | `focus_relief` |
 | 可选的沉默补偿 | 负 | 默认关闭 |
 
-发言频率、冷却时间和小时目标会提高判定门槛，但不会直接拦截回应。关注中的续聊只按 `focus_relief` 降低门槛，不绕过其他限制。调高 `score_threshold` 或 `speech_penalty_per_turn` 会减少主动发言；调低它们或提高 `focus_relief` 会增加发言机会。
+发言频率、冷却时间和小时目标会提高判定门槛，但不会直接拦截回应。有人认真求助、群里还没人答好、而它答得上时，判定会标 `help`：这时只按 `score_threshold` 再让 10 分，不吃上面这几笔加价——它们管的是「别每摊都插一句」，不该把一个没人答的问题挡在外面。关注中的续聊只按 `focus_relief` 降低门槛，不绕过其他限制。调高 `score_threshold` 或 `speech_penalty_per_turn` 会减少主动发言；调低它们或提高 `focus_relief` 会增加发言机会。
 
 人设可以输出内部状态行：
 
