@@ -23,6 +23,8 @@ pub(crate) struct Verdict {
     pub continuation: bool,
     /// 有人认真求助、还没人答好，而他答得上。
     pub help: bool,
+    /// 真出事了、晚了就来不及：够分的话连冷却与每小时那几笔一起越过去。
+    pub urgent: bool,
 }
 
 impl Verdict {
@@ -60,6 +62,15 @@ impl Verdict {
     /// 那几笔加价管的是「别每摊都插一句」，不该把一个没人答的问题挡在外面——
     /// 线上 2026-09-26 11:48 有人问「AMD 能不能装管家」，判定四次都认出「还没人答」，
     /// 门槛却被刚才那一阵发言抬到了 100。
+    /// 紧急突破：判定认定「真要紧」且分数够高时，不看门槛上的任何一笔账。
+    ///
+    /// 冷却、十分钟密度、每小时目标都是在「普通日子」里防吵的；有人喊救命、
+    /// 被骗子带着走、它刚说错的话正在误导人，这种时候还按节奏排队就是失职。
+    /// 次数另有每小时上限（`breakthrough_per_hour`），由调用方把关。
+    pub(crate) fn breaks_through(&self) -> bool {
+        self.urgent && self.score >= URGENT_SCORE
+    }
+
     pub(crate) fn wants_to_help(&self, base: u8) -> bool {
         self.help && self.score > 0 && self.score >= base.saturating_sub(HELP_RELIEF).max(1)
     }
@@ -103,14 +114,20 @@ continuation 仅在当前关注仍有效、且最新消息确实延续那个话�
 help 仅在新消息里有人认真求助或提问（报错、怎么弄、行不行、值不值）、群里还没人答好、
 而他答得上时为 true；闲聊里的反问、玩笑、已经有人答对的问题都是 false。
 
+urgent 留给真要紧、晚了就来不及的事：有人求救或说出了事（被骗、转账、设备要变砖、
+人身安全、情绪崩溃）；有人正在等他马上答、而且等得着急；他自己刚说的一句话错了、正在
+误导别人。玩笑里的「急了」「救命笑死」、普通提问、闲聊都是 false。
+
 reason 写让他想开口（或不想开口）的那一件事本身，具体到人和话题，比如「阿杰问怎么
 卸预装管家，还没人答」。
 
-只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false}";
+只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false, \"urgent\": false}";
 
 const GATE_TURNS: usize = 12;
 /// 求助时门槛在基础值上再让的分。
 const HELP_RELIEF: u8 = 10;
+/// 紧急突破要的最低分：判定得同时认定「要紧」且「他该说」。
+const URGENT_SCORE: u8 = 75;
 /// 一眼看到的新消息再多，判定也只读这么多条；再往前的早就滚过去了。
 const MAX_GATE_TURNS: usize = 36;
 
@@ -276,6 +293,7 @@ fn parse_verdict(raw: &str) -> anyhow::Result<Verdict> {
         score: score.clamp(0.0, 100.0) as u8,
         continuation: value["continuation"].as_bool().unwrap_or(false),
         help: value["help"].as_bool().unwrap_or(false),
+        urgent: value["urgent"].as_bool().unwrap_or(false),
         reason: value["reason"]
             .as_str()
             .unwrap_or_default()
@@ -363,7 +381,8 @@ mod tests {
                 score: 73,
                 reason: "有错可纠".into(),
                 continuation: false,
-                help: false
+                help: false,
+                urgent: false
             }
         );
         assert_eq!(parse_verdict("{\"score\": 999}").unwrap().score, 100);
@@ -389,6 +408,14 @@ mod tests {
         assert!(ordinary.wants_composition(50, 15, false));
         assert!(ordinary.wants_composition(60, 15, false));
         assert!(!ordinary.wants_composition(61, 15, false));
+    }
+
+    /// 紧急突破：认定要紧且分数够，才越过全部加价；光喊急、分数不够不算。
+    #[test]
+    fn only_a_scored_emergency_breaks_through() {
+        assert!(parse_verdict(r#"{"score":80,"urgent":true}"#).unwrap().breaks_through());
+        assert!(!parse_verdict(r#"{"score":60,"urgent":true}"#).unwrap().breaks_through());
+        assert!(!parse_verdict(r#"{"score":95}"#).unwrap().breaks_through());
     }
 
     /// 没人答的求助不吃节奏加价：门槛抬到 100 时照样够得着，只按基础门槛让 10 分。

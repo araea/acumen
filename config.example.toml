@@ -328,7 +328,7 @@ media_timeout_seconds = 900
 # 可见，默认要按群单独授权。
 management_groups = []
 # 一次发言最多几条（模型把一段话写长了，切开也算额度）。
-messages_budget = 3
+messages_budget = 2
 # 一轮最多几次写动作（发言、戳、点赞、撤回、转发……都算）。
 actions_budget = 6
 # 一轮最多写几条记忆、画几张图、写几首歌、拍几段视频。0 表示关掉那一项，
@@ -458,9 +458,16 @@ gate_model = "deepseek/deepseek-flash"
 # 默认与判定同一个便宜档。试过更贵的 Claude / Gemini，真实群聊里并不更像人。
 reply_model = "deepseek/deepseek-flash"
 thinking = "low"
-# 发言模型的采样温度。同一句话有无穷多种说法，温度低了每轮都挑最稳妥的那种，
-# 几轮下来就露出一个调子的机器样；1.3 比多数接口的默认值松一档。判定模型不跟着动。
-temperature = 1.3
+# 答疑那一轮（判定认出有人认真求助，或有人 @ 它问事）的思考强度与模型。
+# 平常接话 low 就够；答疑要先想清楚再开口。help_model 留空沿用 reply_model。
+help_thinking = "high"
+help_model = ""
+# 每群每小时最多紧急突破几次：判定认定「真要紧」（求救、被骗、设备要变砖、它自己
+# 说错的话正在误导人）且分数够高时，冷却与每小时目标这些加价全部不算。0 关闭。
+breakthrough_per_hour = 3
+# 发言模型的采样温度。1.3 实测会把几个半截念头搅成一句，1.0 先把话说连贯；
+# 口气的变化交给样本和人设。判定模型不跟着动。
+temperature = 1.0
 # 发言时额外开放的本地工具白名单（逗号分隔，可写 bash/read/write/edit/glob/grep）。
 # read/write/bash 让它能在本轮工作目录里整理材料再当文件发出去。
 # 聊天界面的 satori_* 工具由代码按下面的开关自动加上，不用写在这里。
@@ -480,7 +487,7 @@ aliases = []
 # （每轮 +8，最多 +24），随关注中的续聊下调 5 分，见 docs/ambient.md。
 # 续聊折扣给得小是有意的：群里长期只聊一个话题时，「还在聊那个话题」会一直
 # 为真，折扣一大就等于常年半价放行。
-score_threshold = 55
+score_threshold = 60
 speech_penalty_per_turn = 8
 speech_penalty_cap = 24
 focus_relief = 5
@@ -533,16 +540,18 @@ silence_relief_cap = 0
 # （`cooldown_penalty`、`budget_penalty`），一路加上去；群里真有人顺着它的话问下去时
 # 分数自然高，抬高的门槛挡不住那一句。被 @ 与搭话指令走的是另一条路，不受这两个影响。
 # 真嫌吵就把窗口拉长、罚款加重、目标调小；想要完全由人格自主控制节奏，写 0。
-cooldown_seconds = 90
+cooldown_seconds = 150
 cooldown_penalty = 18
-max_per_hour = 8
+max_per_hour = 5
 budget_penalty = 12
 # 人格可选择短期跟进某位群友或话题，并在互动中续期。
 # 关注意味着续聊判定为真、门槛打折（软钉子照旧），给太久会让一个不变的话题一直挂着。
 focus_max_seconds = 180
-debounce_seconds = 3
-max_pending_seconds = 12
-gate_interval_seconds = 30
+# 一阵消息静默 6 秒才算完（最多等 40 秒）；没人叫它时隔约 90 秒（0.6–1.5 倍随机）
+# 扫一眼群，正聊着时缩到三分之一。@、引用、戳、喊名字和「救命」「在线等」这类不等。
+debounce_seconds = 6
+max_pending_seconds = 40
+gate_interval_seconds = 90
 # 判定一轮最多花多少秒；超时按「不说话」算。这是每群固定要付的等待成本，
 # 调大只会让群里等得久，不会让它更聪明。
 gate_timeout_seconds = 45

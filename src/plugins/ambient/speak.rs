@@ -86,6 +86,19 @@ pub(super) fn system_prompt(
     )
 }
 
+/// 答疑那一轮追加的交代。
+///
+/// 群友说它「乱回答」的几次（2026-09-26）：把「电脑管家投不了屏」当成投电视，
+/// 把没装过的东西说成「装过，卡在安装包那一步」。都不是不会，是没弄清就答、
+/// 答不上就编。这段只讲答疑时怎么想，跟平常接话的口吻无关。
+pub(super) const ANSWER_RULES: &str = "\
+这一轮有人在认真问事，答之前先想清楚：
+- 他问的到底是什么？放在这个群的语境里读（「这个群」那段背景、前面几条在聊什么）。关键信息缺了（型号、版本、报错原文），就只问那一句。
+- 只说你有把握的。拿不准的事实、版本、步骤先 web_search 查；查不到就说不确定，给他一个能自己核实的方向。
+- 没亲手做过的事不说做过，没见过的界面不描述细节。
+- 答案一句一步，说到能用就停。宁可少说一句，也不说一句错的。
+";
+
 /// 这一轮递给人格的正文：现场、群聊记录与收尾那句。
 pub(super) fn user_prompt(
     scene: &Scene,
@@ -100,11 +113,12 @@ pub(super) fn user_prompt(
         String::new()
     };
     format!(
-        "{}{}最近的群聊记录：\n{}\n{}{}\n{}",
+        "{}{}最近的群聊记录：\n{}\n{}{}{}\n{}",
         scene.own,
         scene.brief(),
         transcript(turns),
         noticed,
+        if scene.careful { ANSWER_RULES } else { "" },
         closing(called),
         super::vision::provenance(images)
     )
@@ -425,6 +439,23 @@ mod tests {
             .chars()
             .count();
         assert!(full < 2650, "现场说明加全部工具说明 {full} 字");
+    }
+
+    /// 答疑的交代只在答疑那一轮出现，平常接话不背这一段。
+    #[test]
+    fn the_answer_rules_only_ride_along_when_someone_asks() {
+        let config = AmbientConfig::default();
+        let turns = [Turn {
+            user_id: 1,
+            name: "群友".into(),
+            text: "装上了但投不了屏".into(),
+            ..Turn::default()
+        }];
+        let mut scene = super::super::Scene::build(-3, &config, &turns, String::new());
+        assert!(!user_prompt(&scene, &turns, Called::Ordinary, &[]).contains(ANSWER_RULES));
+        scene.careful = true;
+        let prompt = user_prompt(&scene, &turns, Called::Ordinary, &[]);
+        assert!(prompt.contains("没亲手做过的事不说做过"), "{prompt}");
     }
 
     #[test]

@@ -127,6 +127,19 @@ pub(crate) struct AmbientConfig {
     /// 翻回去，群友直说「前言不搭后语」（2026-09-26）。口气的变化交给样本和人设，
     /// 温度回到接口默认的 1.0，先把话说连贯。判定模型不跟着动——它要的是分数稳。
     pub temperature: Option<f64>,
+    /// 答疑那一轮的思考强度：判定认出有人认真求助、或者有人 @ 它问事的时候用。
+    ///
+    /// 平常接话用 `thinking`（low）就够，快、便宜；答疑要的是先想清楚再开口——
+    /// 群友抱怨「乱回答」的几次都是没弄清问的是什么就答了。留空则跟 `thinking` 一样。
+    pub help_thinking: String,
+    /// 答疑那一轮换用的发言模型，写成 `供应商/模型`；留空沿用 `reply_model`。
+    pub help_model: String,
+    /// 每群每小时最多紧急突破几次；0 关闭突破。
+    ///
+    /// 判定认定「真要紧」（有人求救、被骗、设备要变砖、它自己说错的话正在误导人）
+    /// 且分数够高时，冷却、十分钟密度、每小时目标这几笔加价全部不算。次数设上限，
+    /// 免得有人天天喊「救命」把它刷成常态。
+    pub breakthrough_per_hour: usize,
     /// 发言时开放的工具白名单，逗号分隔。
     ///
     /// `read`/`write`/`bash` 让它能在本轮工作目录里整理材料再当文件发出去；
@@ -277,6 +290,9 @@ impl Default for AmbientConfig {
             reply_model: "deepseek/deepseek-flash".to_string(),
             thinking: "low".to_string(),
             temperature: Some(1.0),
+            help_thinking: "high".to_string(),
+            help_model: String::new(),
+            breakthrough_per_hour: 3,
             tools: "read,write,bash".to_string(),
             score_threshold: 60,
             silence_relief_per_10min: 0,
@@ -472,6 +488,23 @@ impl AmbientConfig {
         }
     }
 
+    /// 答疑那一轮的配置：想得深一档，需要的话换一个模型。
+    fn careful(&self) -> Self {
+        Self {
+            thinking: if self.help_thinking.trim().is_empty() {
+                self.thinking.clone()
+            } else {
+                self.help_thinking.clone()
+            },
+            reply_model: if self.help_model.trim().is_empty() {
+                self.reply_model.clone()
+            } else {
+                self.help_model.clone()
+            },
+            ..self.clone()
+        }
+    }
+
     /// 高峰时段照常跑、只把模型换成替补的一份配置。
     ///
     /// `mode = "swap"` 用这一份：节奏、联网、看图、绘图全跟平时一样，只有判定与
@@ -622,6 +655,13 @@ pub(crate) struct Scene {
     /// 这两样只影响「说出来的像不像他」，对「要不要接这句话」没用，所以不跟着
     /// [`Scene::brief`] 一起递给判定侧——那是每条消息都要付一次的账。
     pub own: String,
+    /// 这个群是干什么的：管理员写在 `groups/<群号>.md` 里的背景。
+    ///
+    /// 同一个词在不同群里是两回事：②群里「投不了屏」说的是电脑管家的多屏协同，
+    /// 人格当成了投电视，被群友说「乱回答」（2026-09-26 12:12）。判定与发言都带着它。
+    pub group_about: String,
+    /// 这一轮是在答疑：有人认真问事。人格收到一段「先弄清再答」的交代。
+    pub careful: bool,
     /// 判定那一眼注意到的是什么（它给的那句理由）；没经过判定时为空。
     ///
     /// 群里几摊话同时在聊时，人格从头读一遍记录，常常挑中另一摊、甚至把几摊搅成
@@ -657,12 +697,20 @@ impl Scene {
                 stickers::brief(turns, config.sticker_max)
             ),
             noticed: String::new(),
+            group_about: group_about(group),
+            careful: false,
         }
     }
 
     /// 现场 → 注入提示词的一段话。
     pub(crate) fn brief(&self) -> String {
-        let mut out = format!("{}\n{}{}\n", now_context(), self.identity, self.register);
+        let mut out = format!(
+            "{}\n{}{}{}\n",
+            now_context(),
+            self.identity,
+            self.group_about,
+            self.register
+        );
         if !self.state.is_empty() {
             out.push_str(&self.state);
             out.push('\n');
@@ -700,6 +748,29 @@ fn self_facts() -> String {
     }
 }
 
+/// 这个群的背景资料 → 提示词里那一段；没写就是空串。
+fn group_about(group: i64) -> String {
+    let Some(dir) = DATA_DIR.get() else {
+        return String::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(groups_dir(dir).join(format!("{group}.md"))) else {
+        return String::new();
+    };
+    let lines: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| format!("- {}", line.trim_start_matches("- ")))
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "这个群（背景，群里人默认都知道；问题先放在这个语境里理解）：\n{}\n",
+        lines.join("\n")
+    )
+}
+
 /// 档案正文 → 提示词里那一段。单独拎出来，好在测试里钉住注释与空行的处理。
 fn facts_from(raw: &str) -> String {
     let facts: Vec<String> = raw
@@ -726,6 +797,11 @@ fn persona_path(base: &Path) -> PathBuf {
 /// 本体档案的位置。
 fn self_path(base: &Path) -> PathBuf {
     base.join("self.md")
+}
+
+/// 各群背景资料的目录：`groups/<群号>.md`，管理员写，每轮现读。
+fn groups_dir(base: &Path) -> PathBuf {
+    base.join("groups")
 }
 
 fn skills_root(base: &Path) -> PathBuf {
@@ -762,6 +838,7 @@ pub(crate) async fn setup(base: &Path) -> std::io::Result<()> {
         tokio::fs::write(dir.join("SKILL.md"), body).await?;
     }
     tokio::fs::create_dir_all(base.join("media")).await?;
+    tokio::fs::create_dir_all(groups_dir(base)).await?;
     // 记忆、表情包库与群身份归能力层（`data/oai/chat/`），这里只管人格自己的那份
     // 状态曲线。能力层的数据目录由 oai 插件挂上；它没启用时这里补一次。
     mood::attach(base);
@@ -1276,7 +1353,9 @@ async fn consider_batch(
             adjusted = config.swapped();
             &adjusted
         }
-        peak::Stance::Dozing if mentioned || summoned => {
+        peak::Stance::Dozing
+            if mentioned || summoned || window::with_group(group, |state| state.pressing()) =>
+        {
             info!(target: LOG_TARGET, "群 {group} 在计价高峰时段被叫醒，省着回一句");
             adjusted = config.frugal();
             &adjusted
@@ -1348,6 +1427,7 @@ async fn consider_batch(
     }
     let scene = Scene::build(group, config, turns, rhythm.to_string());
     let mut noticed = String::new();
+    let mut careful = false;
     if summoned {
         // 指令是人按下的：判定那一步整个不发生，这一批直接进第三步。
         info!(target: LOG_TARGET, "群 {group} 收到搭话指令，这一批交给人格");
@@ -1372,12 +1452,22 @@ async fn consider_batch(
             None,
         )
         .await?;
-        if !verdict.wants_composition(threshold, config.focus_relief, focused)
-            && !verdict.wants_to_help(config.score_threshold)
-        {
+        let ordinary = verdict.wants_composition(threshold, config.focus_relief, focused)
+            || verdict.wants_to_help(config.score_threshold);
+        // 紧急突破：只在按平常的账过不去时才动用，免得白占一次名额。
+        let breakthrough = !ordinary
+            && verdict.breaks_through()
+            && window::with_group(group, |state| {
+                state.allow_breakthrough(config.breakthrough_per_hour)
+            });
+        if !ordinary && !breakthrough {
             debug!(target: LOG_TARGET, "群 {group} 保持沉默（{}/{}，{}）", verdict.score, threshold, verdict.reason);
             return Ok(());
         }
+        if breakthrough {
+            warn!(target: LOG_TARGET, "群 {group} 紧急突破（{}/{}）：{}", verdict.score, threshold, verdict.reason);
+        }
+        careful = verdict.help || verdict.urgent;
         info!(target: LOG_TARGET, "群 {group} 交给人格决定（{}/{}，续聊={}，求助={}，{}）",
             verdict.score, threshold, verdict.continuation, verdict.help, verdict.reason);
         noticed = verdict.reason.clone();
@@ -1386,6 +1476,13 @@ async fn consider_batch(
         }
     } else {
         info!(target: LOG_TARGET, "群 {group} 被点名，由人格决定是否回应");
+        // 被 @ 来问事的，同样按答疑来：想清楚、拿不准就查。
+        careful = turns
+            .iter()
+            .rev()
+            .filter(|turn| !turn.from_me && turn.call.mine())
+            .take(1)
+            .any(|turn| asks_for_answer(&turn.text));
     }
     // 判定之后重新取最新窗口，群友连续发几条消息不必从头再筛一遍。
     let (latest, mentioned, summoned, rhythm) = window::with_group(group, |state| {
@@ -1402,6 +1499,15 @@ async fn consider_batch(
     }
     let mut scene = Scene::build(group, config, &latest, rhythm);
     scene.noticed = noticed;
+    scene.careful = careful;
+    let adjusted;
+    let config = if careful {
+        info!(target: LOG_TARGET, "群 {group} 这一轮按答疑来（思考 {}）", config.careful().thinking);
+        adjusted = config.careful();
+        &adjusted
+    } else {
+        config
+    };
     speak_up(
         ctx,
         writer,
@@ -1417,6 +1523,16 @@ async fn consider_batch(
         doze,
     )
     .await
+}
+
+/// 一句 @ 它的话是不是在问事（而不是逗它）。刻意收窄：「你是不是人机」不算。
+fn asks_for_answer(text: &str) -> bool {
+    [
+        "怎么", "为什么", "为啥", "咋办", "咋弄", "咋整", "能不能", "可不可以", "如何",
+        "多少钱", "哪个好", "值不值", "报错", "教程", "什么意思", "是什么", "区别",
+    ]
+    .iter()
+    .any(|word| text.contains(word))
 }
 
 /// 停用配置或群聊推进后，放弃尚未发送的内容，交回 worker 读取新上下文。
@@ -1805,6 +1921,25 @@ mod tests {
         );
         assert!(start);
         assert!(state.take_summon(), "指令必须随正文送进首批，绕过判定");
+    }
+
+    /// @ 它问事按答疑来，逗它不算；答疑那一轮想得深一档。
+    #[test]
+    fn questions_turn_on_the_careful_round() {
+        assert!(asks_for_answer("@我 装上了但是投不了屏 怎么弄"));
+        assert!(asks_for_answer("这俩有啥区别"));
+        assert!(!asks_for_answer("@我 你是不是人机"));
+        assert!(!asks_for_answer("@我 太拉了"));
+        let config = AmbientConfig::default();
+        assert_eq!(config.careful().thinking, "high");
+        assert_eq!(config.careful().reply_model, config.reply_model);
+        let custom = AmbientConfig {
+            help_model: "deepseek/deepseek-v4-pro".into(),
+            help_thinking: String::new(),
+            ..AmbientConfig::default()
+        };
+        assert_eq!(custom.careful().reply_model, "deepseek/deepseek-v4-pro");
+        assert_eq!(custom.careful().thinking, custom.thinking);
     }
 
     /// 被叫到不等下一眼；发图不再算被叫到——热闹的群里一张接一张，从前每张都

@@ -1040,7 +1040,21 @@ pub async fn dispatch_packet(
             "expires_at": freshness.expires_at,
         });
     }
-    let created: Vec<Value> = writer.call(ctx, "message.create", params).await?;
+    let created: Vec<Value> = match writer.call(ctx, "message.create", params.clone()).await {
+        Ok(created) => created,
+        // satori-qq 0.27.1–0.29.6 组装表情包子类型图片时必然失败（标记写错了元素），
+        // 失败发生在交给 QQ 之前，什么都没发出去。去掉子类型当普通图片重发一次：
+        // 表情包变成一张图，总比整句没了强。实现端修好之后这条路不会再走到。
+        Err(error)
+            if error.to_string().contains("buildPicElement")
+                && let Some(plain) = without_sticker_flags(&content) =>
+        {
+            warn!("表情包子类型图片发送失败，改按普通图片重发：{error}");
+            params["content"] = json!(plain);
+            writer.call(ctx, "message.create", params).await?
+        }
+        Err(error) => return Err(error),
+    };
     if !created.is_empty() {
         plugins::repeater::confirm_send(ctx, packet);
     }
@@ -1055,6 +1069,23 @@ pub async fn dispatch_packet(
         .map_err(|_| "发送回执锁已损坏")? = ids.clone();
     plugins::recall::record_sent(ctx, writer, packet, &ids).await;
     Ok(())
+}
+
+/// 去掉 `<img>` 上的表情包子类型与摘要；没有可去的就返回 None。
+fn without_sticker_flags(content: &str) -> Option<String> {
+    static FLAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let flags = FLAGS.get_or_init(|| {
+        regex::Regex::new(r#"(<img\b[^>]*?)\s+(?:sub-type|summary)="[^"]*""#).unwrap()
+    });
+    let mut out = content.to_string();
+    loop {
+        let next = flags.replace_all(&out, "$1").into_owned();
+        if next == out {
+            break;
+        }
+        out = next;
+    }
+    (out != content).then_some(out)
 }
 
 fn normalize_event(
@@ -1256,6 +1287,16 @@ fn value_id(value: &Value) -> Option<i64> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn sticker_flags_can_be_dropped_for_a_plain_retry() {
+        let content = r#"<img src="a.gif" sub-type="1" summary="[动画表情]"/>看<img src="b.png"/>"#;
+        assert_eq!(
+            without_sticker_flags(content).as_deref(),
+            Some(r#"<img src="a.gif"/>看<img src="b.png"/>"#)
+        );
+        assert_eq!(without_sticker_flags(r#"<img src="b.png"/>"#), None);
+    }
 
     #[test]
     fn cursor_deduplicates_replay_and_resets_for_a_new_server_session() {

@@ -427,7 +427,7 @@ async fn live_replay() {
     let config = AmbientConfig {
         tools: "read".into(),
         context_images: 0,
-        search_enabled: false,
+        search_enabled: std::env::var("ACUMEN_REPLAY_SEARCH").is_ok(),
         reply_timeout_seconds: 120,
         temperature: std::env::var("ACUMEN_REPLAY_TEMPERATURE")
             .ok()
@@ -490,7 +490,15 @@ async fn live_replay() {
         let mut scene = scene;
         if let Ok(verdict) = &verdict {
             scene.noticed = verdict.reason.clone();
+            scene.careful = verdict.help || verdict.urgent;
         }
+        let careful_config;
+        let config = if scene.careful {
+            careful_config = config.careful();
+            &careful_config
+        } else {
+            &config
+        };
         let raw = speak::compose(
             &base,
             &key,
@@ -498,7 +506,7 @@ async fn live_replay() {
             dir.path(),
             &skill_dirs(dir.path()),
             &persona,
-            &config,
+            config,
             &Default::default(),
             Some(Duration::from_secs(60)),
             seen,

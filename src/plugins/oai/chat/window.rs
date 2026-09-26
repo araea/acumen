@@ -40,6 +40,17 @@ fn speech_like(text: &str) -> bool {
     !rest.is_empty() && !rest.starts_with("[卡片") && !rest.starts_with("[合并转发")
 }
 
+/// 看着就急的说法。刻意收得窄：「急了」「你急什么」这种玩笑满群都是，不算。
+const PRESSING: [&str; 14] = [
+    "救命", "求救", "求助", "在线等", "急急急", "很急", "挺急", "紧急", "帮帮我",
+    "被骗", "报警", "出事了", "有没有人", "有人在吗",
+];
+
+fn sounds_pressing(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    PRESSING.iter().any(|word| lower.contains(word)) || lower.contains("help")
+}
+
 /// 「刚才说了几轮」的观察窗口。群聊的节奏以十分钟为单位看正合适：
 /// 再短看不出是不是一直在接话，再长又会把半小时前的事算到现在头上。
 pub(crate) const RECENT_SPEECH: std::time::Duration = std::time::Duration::from_secs(600);
@@ -130,6 +141,8 @@ pub(crate) struct GroupState {
     pub hydrated: bool,
     /// 睡着时自主开口的时刻，用于每小时上限——判定便宜、开口贵，这条管的是后者。
     doze_spoken: VecDeque<Instant>,
+    /// 紧急突破的时刻，用于每小时上限：突破是给真出事的时候留的，不能被刷成常态。
+    breakthroughs: VecDeque<Instant>,
     /// Opt-in chat screenshot gag: at most once per group per cooldown window.
     last_screenshot: Option<Instant>,
     last_screenshot_message: i64,
@@ -435,12 +448,42 @@ impl GroupState {
     pub(crate) fn urgent(&self) -> bool {
         self.unread_mention
             || self.unread_summon
+            || self.pressing()
             || self
                 .turns
                 .iter()
                 .rev()
                 .take_while(|turn| self.looked_id == 0 || turn.message_id != self.looked_id)
                 .any(|turn| !turn.from_me && turn.call.named_me)
+    }
+
+    /// 上一眼之后有没有「看着就急」的话：救命、在线等、被骗……
+    ///
+    /// 只是个便宜的本地信号，让这一阵不等下一眼、立刻交给判定去认真估；真要不要
+    /// 破例开口，还是判定说了算（见 `Verdict::urgent`）。
+    pub(crate) fn pressing(&self) -> bool {
+        self.turns
+            .iter()
+            .rev()
+            .take_while(|turn| self.looked_id == 0 || turn.message_id != self.looked_id)
+            .any(|turn| !turn.from_me && sounds_pressing(&turn.text))
+    }
+
+    /// 这一小时还能不能紧急突破一次；能就记下这一次。
+    pub(crate) fn allow_breakthrough(&mut self, per_hour: usize) -> bool {
+        let now = Instant::now();
+        while self
+            .breakthroughs
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(3_600))
+        {
+            self.breakthroughs.pop_front();
+        }
+        if self.breakthroughs.len() >= per_hour {
+            return false;
+        }
+        self.breakthroughs.push_back(now);
+        true
     }
 
     /// 还没被取走的点名：打字的工夫里有人 @ 了它，这一句就得重新想。
@@ -1083,6 +1126,25 @@ mod tests {
         late.message_id = 7;
         state.receive(late);
         assert_eq!(state.drift(seq), 1);
+    }
+
+    /// 看着就急的话不等下一眼；玩笑里的「急了」不算。突破每小时有数。
+    #[test]
+    fn pressing_words_skip_the_wait_and_breakthroughs_are_rationed() {
+        let mut state = GroupState::default();
+        let mut joke = turn("你急了你急了", false);
+        joke.message_id = 1;
+        state.receive(joke);
+        assert!(!state.urgent());
+        let mut plea = turn("救命 手机一直重启进不去系统 在线等", false);
+        plea.message_id = 2;
+        state.receive(plea);
+        assert!(state.pressing() && state.urgent());
+        state.mark_look();
+        assert!(!state.pressing(), "看过的那句不再算");
+        assert!(state.allow_breakthrough(2));
+        assert!(state.allow_breakthrough(2));
+        assert!(!state.allow_breakthrough(2));
     }
 
     /// 重启后翻回来的记录垫在前面、按时间排好，自己说过的话把发言账补回来。
