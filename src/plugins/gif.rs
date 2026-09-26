@@ -123,8 +123,6 @@ pub fn handle(
                     }
                 };
 
-                let _ = send_msg(&ctx, writer.clone(), group_id, Some(user_id), "⏳ 处理中…").await;
-
                 let img_bytes = match download_bytes(&img_url).await {
                     Ok(b) => b,
                     Err(e) => {

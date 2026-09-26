@@ -1645,10 +1645,7 @@ pub async fn execute(
             }
         }
         Action::ListModels => {
-            // 每次查看都强制刷新，确保能获取最新模型
-            // 先发送提示，避免 API 响应慢导致用户以为无反应
-            reply_text(ctx, writer, &msg_event, "⏳ 正在刷新模型列表…").await;
-
+            // 每次查看都强制刷新，确保能获取最新模型；刷新不慢，不先发提示
             // 尝试获取，如果失败则仅提示警告，后续继续尝试展示缓存
             let filter =
                 crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai").model_filter;

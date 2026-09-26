@@ -147,15 +147,6 @@ pub fn handle(
                 }
             };
 
-            send_msg(
-                &ctx,
-                writer.clone(),
-                msg.group_id(),
-                Some(msg.user_id()),
-                format!("⏳ 正在切成 {} 行 × {} 列…", rows, cols),
-            )
-            .await?;
-
             // 4. 下载与处理
             let img_bytes = match download_bytes(&url).await {
                 Ok(b) => b,

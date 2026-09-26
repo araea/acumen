@@ -434,9 +434,8 @@ pub async fn try_handle_upscale_reply(
         };
         {
             let mut inflight = mgr.mj_inflight.write().await;
+            // 同一张已经在放大：结果到了自然会发，重复的请求不另作声。
             if !inflight.insert(cache_key.clone()) {
-                reply_text(ctx, writer, &event, format!("⏳ 第 {index} 张正在放大"))
-                    .await;
                 continue;
             }
         }
