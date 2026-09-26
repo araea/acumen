@@ -75,7 +75,7 @@ impl Message {
         self.add("image", data)
     }
 
-    /// 信息图片须有描述；平台不暴露图片描述时仍需发送等价文本。
+    /// 信息图片带一句描述，供记录与读屏识别；出图失败时才改发等价文本。
     pub fn image_described(self, file: impl Into<String>, description: impl Into<String>) -> Self {
         let mut data = Object::new();
         data.insert("file".into(), Value::from(file.into()));

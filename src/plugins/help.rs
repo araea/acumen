@@ -333,33 +333,19 @@ pub fn handle(
                     }
                     _ => None,
                 };
-                let illustrated = image.is_some();
                 out = match image {
-                    Some(b64) => out.image_described(
-                        format!("base64://{}", b64),
-                        "帮助卡片，完整内容见后续文本",
-                    ),
+                    Some(b64) => out.image_described(format!("base64://{}", b64), "帮助卡片"),
                     None => out.text(&reply.text),
                 };
 
                 send_msg(
                     &ctx,
-                    writer.clone(),
+                    writer,
                     msg.group_id(),
                     Some(msg.user_id()),
                     out,
                 )
                 .await?;
-                if illustrated {
-                    crate::adapters::satori::send_text_chunks(
-                        &ctx,
-                        writer,
-                        msg.group_id(),
-                        Some(msg.user_id()),
-                        &reply.text,
-                    )
-                    .await?;
-                }
                 return Ok(None);
             }
         }

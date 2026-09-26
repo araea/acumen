@@ -2164,7 +2164,7 @@ pub(crate) mod tests {
     }
 }
 
-/// 信息卡的等价文本；分段限制单条长度，读屏和复制不依赖实现端的图片描述支持。
+/// 图片没出成时的等价文本；分段限制单条长度，长内容不撞实现端的单条上限。
 pub async fn send_text_chunks(
     ctx: &crate::event::Context,
     writer: LockedWriter,

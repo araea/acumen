@@ -179,10 +179,7 @@ async fn send_card_with_recovery(
             Some(id) => Message::new().reply(id),
             None => Message::new(),
         };
-        msg = msg.image_described(
-            format!("base64://{b64}"),
-            "资讯卡片，完整内容与链接见后续文本",
-        );
+        msg = msg.image_described(format!("base64://{b64}"), "资讯卡片");
 
         match send_msg_id(ctx, writer.clone(), group_id, user_id, msg).await {
             Ok(id) => return Ok(id),

@@ -44,16 +44,15 @@ async fn send_chart(
     )
     .await
     {
-        Ok((b64, text)) => {
+        Ok(b64) => {
             let _ = send_msg_ack(
                 c,
-                w.clone(),
+                w,
                 Some(gid),
                 None,
-                Message::new().image_described(b64, "统计图片，完整数据见后续文本"),
+                Message::new().image_described(b64, "统计图表"),
             )
             .await;
-            let _ = crate::adapters::satori::send_text_chunks(c, w, Some(gid), None, &text).await;
         }
         // 没数据是常态（冷群），不该和真故障混在一个级别里。
         Err(chart::ChartError::NoData) => {
@@ -67,16 +66,15 @@ async fn send_chart(
 
 async fn send_wordcloud(c: &Context, w: LockedWriter, gid: i64, range: (i64, i64)) {
     match wordcloud::generate_image(c, Some(gid), None, range.0, range.1).await {
-        Ok((b64, text)) => {
+        Ok(b64) => {
             let _ = send_msg_ack(
                 c,
-                w.clone(),
+                w,
                 Some(gid),
                 None,
-                Message::new().image_described(b64, "统计图片，完整数据见后续文本"),
+                Message::new().image_described(b64, "词云图"),
             )
             .await;
-            let _ = crate::adapters::satori::send_text_chunks(c, w, Some(gid), None, &text).await;
         }
         // 消息过少属正常现象，只记日志不打扰群；真失败才值得 warn。
         Err(wordcloud::GenError::Empty) => {

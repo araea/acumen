@@ -234,8 +234,8 @@ pub fn handle(
         .await;
 
         match result_img {
-            Ok((b64, _text)) => {
-                // 主动查询只回一张图；完整数据仍供定时推送使用，不再额外刷一条文本榜。
+            Ok(b64) => {
+                // 主动查询只回一张图，不再额外刷一条文本榜。
                 let reply = Message::new().image_described(b64, &title);
                 send_msg(&ctx, writer, group_id, Some(user_id), reply).await?;
             }

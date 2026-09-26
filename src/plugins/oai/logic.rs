@@ -80,6 +80,7 @@ async fn reply_card(
             accessible.push_str(&format!("\n另有 {} 次工具调用", footer.trace_overflow));
         }
     }
+    let mut illustrated = false;
     if !text_mode && oai.image_enabled() {
         let card = super::render::Card {
             title: header,
@@ -89,22 +90,26 @@ async fn reply_card(
         };
         match super::render::render_card(card, oai.image_scale()).await {
             Ok(b64) => {
+                illustrated = true;
                 let _ = send_msg(
                     ctx,
                     writer.clone(),
                     event.group_id(),
                     Some(event.user_id()),
-                    Message::new().reply(event.message_id()).image_described(
-                        format!("base64://{b64}"),
-                        format!("{header}，完整内容见后续文本"),
-                    ),
+                    Message::new()
+                        .reply(event.message_id())
+                        .image_described(format!("base64://{b64}"), header),
                 )
                 .await;
             }
             Err(error) => warn!(target: "Plugin/OAI", "回复卡片渲染失败，退回文本：{error:#}"),
         }
     }
-    reply_text(ctx, writer, event, accessible).await;
+    // 出图成功后不再补发等价文本：卡片已经把正文、来源与页脚都画进去了，
+    // 再发一遍只是在群里刷屏。只有没出图时才退回文本。
+    if !illustrated {
+        reply_text(ctx, writer, event, accessible).await;
+    }
 }
 
 fn extract_image_urls(content: &str) -> Vec<String> {
