@@ -827,7 +827,8 @@ fn apply_login_update(body: &Value, bot: &BotStatus) {
 /// `READY` 的 `logins[].user` 与 `login-updated` 的 `login.user` 是同一份结构。
 fn login_user_of(user: &Value) -> LoginUser {
     LoginUser {
-        id: string_id(user.get("id")),
+        // 原样保留：satori-wx 的账号是 wxid，按数字解析会变成空账号。
+        id: raw_id(user.get("id")),
         name: optional_string(user.get("name")),
         nick: optional_string(user.get("nick")),
         avatar: optional_string(user.get("avatar")),
@@ -2062,6 +2063,7 @@ pub(crate) mod tests {
             "user": {"id": "wxid_alice"},
             "message": {"id": "3292", "content": "/help &amp; more"}
         });
+        assert_eq!(login_user_of(&json!({"id": "wxid_self"})).id, "wxid_self");
         let normalized = normalize_event(&event, &bot, &Default::default()).unwrap();
         let group = ids::intern("wechat", "45123456789@chatroom");
         assert_eq!(normalized.get_str("message_type"), Some("group"));
