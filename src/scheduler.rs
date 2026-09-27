@@ -214,7 +214,7 @@ impl Scheduler {
         pace: Pace,
         task_logic: F,
     ) where
-        F: Fn(Context, LockedWriter, i64) -> Fut + Send + Sync + 'static + Clone,
+        F: Fn(Context, LockedWriter, String) -> Fut + Send + Sync + 'static + Clone,
         Fut: Future<Output = ()> + Send + 'static,
     {
         // 1. 解析时间
@@ -278,7 +278,7 @@ impl Scheduler {
                 };
 
                 // 6. 过滤目标群
-                let target_groups: Vec<i64> = groups
+                let target_groups: Vec<String> = groups
                     .into_iter()
                     .map(|g| g.group_id)
                     .filter(|gid| {

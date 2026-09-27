@@ -17,14 +17,14 @@ const LOG_TARGET: &str = "Plugin/Stats";
 
 // ================= 通用工具 =================
 
-async fn send_text(c: &Context, w: LockedWriter, gid: i64, text: String) {
+async fn send_text(c: &Context, w: LockedWriter, gid: &str, text: String) {
     let _ = send_msg_ack(c, w, Some(gid), None, Message::new().text(text)).await;
 }
 
 async fn send_chart(
     c: &Context,
     w: LockedWriter,
-    gid: i64,
+    gid: &str,
     data_type: &str,
     chart_type: &str,
     range: (i64, i64),
@@ -37,7 +37,7 @@ async fn send_chart(
         chart_type,
         Some(gid),
         None,
-        0,
+        "",
         range.0,
         range.1,
         title,
@@ -64,7 +64,7 @@ async fn send_chart(
     }
 }
 
-async fn send_wordcloud(c: &Context, w: LockedWriter, gid: i64, range: (i64, i64)) {
+async fn send_wordcloud(c: &Context, w: LockedWriter, gid: &str, range: (i64, i64)) {
     match wordcloud::generate_image(c, Some(gid), None, range.0, range.1).await {
         Ok(b64) => {
             let _ = send_msg_ack(
@@ -87,7 +87,7 @@ async fn send_wordcloud(c: &Context, w: LockedWriter, gid: i64, range: (i64, i64
 }
 
 /// 阈值预检：低于阈值返回 None，调用方据此跳过该群推送
-async fn precheck(c: &Context, gid: i64, range: (i64, i64), min: u64, label: &str) -> Option<u64> {
+async fn precheck(c: &Context, gid: &str, range: (i64, i64), min: u64, label: &str) -> Option<u64> {
     match queries::get_message_count(&c.db, Some(gid), None, range.0, range.1).await {
         Ok(count) => {
             if count < min {
@@ -106,7 +106,7 @@ async fn precheck(c: &Context, gid: i64, range: (i64, i64), min: u64, label: &st
     }
 }
 
-async fn active_users(c: &Context, gid: i64, range: (i64, i64)) -> u64 {
+async fn active_users(c: &Context, gid: &str, range: (i64, i64)) -> u64 {
     queries::get_active_user_count(&c.db, Some(gid), range.0, range.1)
         .await
         .unwrap_or(0)
@@ -115,7 +115,8 @@ async fn active_users(c: &Context, gid: i64, range: (i64, i64)) -> u64 {
 // ================= 各推送任务 =================
 
 /// [23:30 每日] 当日总结：发言榜 + 词云
-pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: i64, min: u64) {
+pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u64) {
+    let gid = gid.as_str();
     let range = get_time_range("今日");
     let label = "当日总结";
 
@@ -152,7 +153,8 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: i64, min: u64)
 }
 
 /// [09:00 每日] 早安回顾：昨日发言榜 + 昨日 24h 走势
-pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: i64, min: u64) {
+pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u64) {
+    let gid = gid.as_str();
     let range = get_time_range("昨日");
     let label = "早安回顾";
 
@@ -200,7 +202,8 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: i64, min: u64)
 }
 
 /// [12:30 每日] 午间速览：今日上半场发言榜
-pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: i64, min: u64) {
+pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64) {
+    let gid = gid.as_str();
     let range = get_time_range("今日");
     let label = "午间速览";
 
@@ -231,7 +234,8 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: i64, min: u64) {
 }
 
 /// [周一 10:00] 上周回顾：上周发言榜 + 上周走势
-pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) {
+pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u64) {
+    let gid = gid.as_str();
     let range = get_time_range("上周");
     let label = "上周回顾";
 
@@ -267,7 +271,8 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) 
 }
 
 /// [每月 1 日 10:20] 上月回顾：上月发言榜 + 上月走势 + 上月词云
-pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: i64, min: u64) {
+pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: String, min: u64) {
+    let gid = gid.as_str();
     let range = get_time_range("上月");
     let label = "上月回顾";
 

@@ -1449,7 +1449,7 @@ mod tests {
                 BarData {
                     label: name.to_string(),
                     value,
-                    user_id: Some(10_000 + i as i64),
+                    user_id: Some((10_000 + i).to_string()),
                     avatar_url: None,
                     avatar_img: Some(fake_avatar(tints[i % tints.len()])),
                     theme_color: {
@@ -1503,7 +1503,7 @@ mod tests {
                 BarData {
                     label: format!("群友 {}", i + 1),
                     value: (4200.0 * 0.78f64.powi(i as i32)).round() as i64 + 1,
-                    user_id: Some(10_000 + i as i64),
+                    user_id: Some((10_000 + i).to_string()),
                     avatar_url: None,
                     theme_color: avatar_theme_color(&img),
                     avatar_img: Some(img),
@@ -1526,7 +1526,7 @@ mod tests {
                 .map(|d| BarData {
                     label: d.label.clone(),
                     value: d.value,
-                    user_id: d.user_id,
+                    user_id: d.user_id.clone(),
                     avatar_url: d.avatar_url.clone(),
                     avatar_img: d.avatar_img.clone(),
                     theme_color: d.theme_color,

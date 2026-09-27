@@ -74,8 +74,8 @@ pub(crate) struct Call {
     /// 与前三者不同，这一条是猜出来的而不是协议里的明码，所以它只加一个记号，
     /// 不进 [`Call::mine`]——见 [`super::identity::called_by_name`]。
     pub named_me: bool,
-    /// 这条消息引用了哪条消息；0 表示没有引用。
-    pub reply_to: i64,
+    /// 这条消息引用了哪条消息；空串表示没有引用。
+    pub reply_to: String,
     /// 被引用那条的摘要（`谁：说了什么`）；不在窗口里时为空。
     pub quote: String,
 }
@@ -90,14 +90,14 @@ impl Call {
 /// 群聊上下文里的一条消息。
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Turn {
-    pub user_id: i64,
+    pub user_id: String,
     pub name: String,
     pub text: String,
     /// 图片直链，供多模态判定使用。
     pub images: Vec<String>,
     /// 保留资源和引用参数，供工具按消息 ID 复用。
     pub elements: crate::message::Message,
-    pub message_id: i64,
+    pub message_id: String,
     /// 是否 @ 了机器人自己。
     pub mentions_me: bool,
     /// 被叫到的细节：哪一种动作、引用的是哪条。
@@ -134,7 +134,7 @@ pub(crate) struct GroupState {
     /// 上一次「扫一眼群」（主动判定）的时刻；见 [`GroupState::look_due`]。
     looked_at: Option<Instant>,
     /// 上一眼看到的最新一条消息号：它之后的就是这一眼新看到的。
-    looked_id: i64,
+    looked_id: String,
     /// 这一次隔多久再看的随机倍数。人看手机没有节拍器。
     look_jitter: f32,
     /// 进程起来之后是否已经从平台翻过这个群的聊天记录。
@@ -145,7 +145,7 @@ pub(crate) struct GroupState {
     breakthroughs: VecDeque<Instant>,
     /// Opt-in chat screenshot gag: at most once per group per cooldown window.
     last_screenshot: Option<Instant>,
-    last_screenshot_message: i64,
+    last_screenshot_message: String,
 }
 
 impl GroupState {
@@ -176,7 +176,7 @@ impl GroupState {
     /// 同一个 `message_id` 的第二次投递（先由能力层记下现场、搭话侧再补记号）
     /// 只换内容，不动节流状态，也不重新唤醒 worker。
     pub(crate) fn receive(&mut self, turn: Turn) -> bool {
-        let fresh = turn.message_id == 0
+        let fresh = turn.message_id.is_empty()
             || !self
                 .turns
                 .iter()
@@ -203,7 +203,7 @@ impl GroupState {
     /// 先记下的往往是「现场」（谁在什么时候说了什么），后到的可能带着更多记号
     /// （引用原话、是不是叫了你的名字）。返回 true 表示这是一条没见过的消息。
     pub(crate) fn record(&mut self, turn: Turn) -> bool {
-        if turn.message_id != 0
+        if !turn.message_id.is_empty()
             && let Some(old) = self
                 .turns
                 .iter_mut()
@@ -216,17 +216,17 @@ impl GroupState {
         true
     }
 
-    pub(crate) fn recall(&mut self, id: i64) {
+    pub(crate) fn recall(&mut self, id: &str) {
         if let Some(turn) = self
             .turns
             .iter_mut()
-            .find(|turn| turn.message_id == id && id != 0)
+            .find(|turn| !id.is_empty() && turn.message_id == id)
         {
             turn.text = "[消息已撤回]".into();
             turn.images.clear();
             turn.elements = crate::message::Message::new();
             // 不再允许引用、转发或再次撤回这个 ID。
-            turn.message_id = 0;
+            turn.message_id.clear();
         }
     }
 
@@ -235,13 +235,13 @@ impl GroupState {
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(cooldown_seconds.max(3600)))
     }
 
-    pub(crate) fn mark_screenshot(&mut self, message_id: i64) {
+    pub(crate) fn mark_screenshot(&mut self, message_id: &str) {
         self.last_screenshot = Some(Instant::now());
-        self.last_screenshot_message = message_id;
+        self.last_screenshot_message = message_id.to_string();
     }
 
-    pub(crate) fn screenshot_seen(&self, message_id: i64) -> bool {
-        self.last_screenshot_message == message_id && message_id != 0
+    pub(crate) fn screenshot_seen(&self, message_id: &str) -> bool {
+        !message_id.is_empty() && self.last_screenshot_message == message_id
     }
 
     pub(crate) fn take_mention(&mut self) -> bool {
@@ -318,8 +318,8 @@ impl GroupState {
     /// 摘要是给模型读的：群里的引用显示的是被引原话，模型也该看见，而不是一个
     /// 光秃秃的消息号。引用的是自己发的那条时换成「你说的」，好让它知道这是在
     /// 追问或吐槽它刚说的话。
-    pub(crate) fn quote_of(&self, id: i64) -> Option<(bool, String)> {
-        if id == 0 {
+    pub(crate) fn quote_of(&self, id: &str) -> Option<(bool, String)> {
+        if id.is_empty() {
             return None;
         }
         self.turns
@@ -413,8 +413,9 @@ impl GroupState {
             .turns
             .iter()
             .rev()
-            .find(|turn| turn.message_id != 0)
-            .map_or(0, |turn| turn.message_id);
+            .find(|turn| !turn.message_id.is_empty())
+            .map(|turn| turn.message_id.clone())
+            .unwrap_or_default();
         self.look_jitter = 0.6 + rand::random::<f32>() * 0.9;
     }
 
@@ -425,7 +426,7 @@ impl GroupState {
     pub(crate) fn unseen(&self) -> usize {
         let mut count = 0;
         for turn in self.turns.iter().rev() {
-            if self.looked_id != 0 && turn.message_id == self.looked_id {
+            if !self.looked_id.is_empty() && turn.message_id == self.looked_id {
                 break;
             }
             if !turn.from_me {
@@ -453,7 +454,7 @@ impl GroupState {
                 .turns
                 .iter()
                 .rev()
-                .take_while(|turn| self.looked_id == 0 || turn.message_id != self.looked_id)
+                .take_while(|turn| self.looked_id.is_empty() || turn.message_id != self.looked_id)
                 .any(|turn| !turn.from_me && turn.call.named_me)
     }
 
@@ -465,7 +466,7 @@ impl GroupState {
         self.turns
             .iter()
             .rev()
-            .take_while(|turn| self.looked_id == 0 || turn.message_id != self.looked_id)
+            .take_while(|turn| self.looked_id.is_empty() || turn.message_id != self.looked_id)
             .any(|turn| !turn.from_me && sounds_pressing(&turn.text))
     }
 
@@ -509,9 +510,9 @@ impl GroupState {
         // 账记的是「轮」不是「条」：一轮里分两三条发的，翻回来是挨着的几条。
         let mut last_round: Option<i64> = None;
         let mut history = history;
-        history.sort_by_key(|turn| (turn.at, turn.message_id));
+        history.sort_by(|a, b| (a.at, &a.message_id).cmp(&(b.at, &b.message_id)));
         for turn in history {
-            if turn.message_id == 0
+            if turn.message_id.is_empty()
                 || self
                     .turns
                     .iter()
@@ -538,7 +539,7 @@ impl GroupState {
         }
         self.turns
             .make_contiguous()
-            .sort_by_key(|turn| (turn.at, turn.message_id));
+            .sort_by(|a, b| (a.at, &a.message_id).cmp(&(b.at, &b.message_id)));
         while self.turns.len() > WINDOW_CAPACITY {
             self.turns.pop_front();
         }
@@ -594,7 +595,7 @@ pub(crate) fn transcript(turns: &[Turn]) -> String {
                     .to_string()
             })
             .unwrap_or_else(|| "--:--".to_string());
-        let who = if turn.from_me && turn.user_id == 0 {
+        let who = if turn.from_me && turn.user_id.is_empty() {
             "平台事件（操作者未知）".to_string()
         } else if turn.from_me {
             "你自己".to_string()
@@ -630,11 +631,11 @@ pub(crate) fn transcript(turns: &[Turn]) -> String {
 ///
 /// 群聊里的引用是连着原话一起显示的，人格看到的记录也该带上这句；解析到引用的
 /// 是自己发过的消息时，等于有人点了它的名，与 @ 一样直接把它叫醒。
-pub(crate) fn resolve_quote(turn: &mut Turn, lookup: impl FnOnce(i64) -> Option<(bool, String)>) {
-    if turn.call.reply_to == 0 {
+pub(crate) fn resolve_quote(turn: &mut Turn, lookup: impl FnOnce(&str) -> Option<(bool, String)>) {
+    if turn.call.reply_to.is_empty() {
         return;
     }
-    let Some((replied_me, quote)) = lookup(turn.call.reply_to) else {
+    let Some((replied_me, quote)) = lookup(&turn.call.reply_to) else {
         return;
     };
     if replied_me {
@@ -648,7 +649,7 @@ pub(crate) fn resolve_quote(turn: &mut Turn, lookup: impl FnOnce(i64) -> Option<
 ///
 /// 能力层与搭话都从这里进窗口，所以它只做「现场」那一层：谁在什么时候说了什么。
 /// 点名与引用是不是冲着人格来的，由调用方在自己那一侧补。
-pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
+pub(crate) fn turn_from(event: &MessageEvent<'_>, me: &str) -> Turn {
     let mut text = String::new();
     let mut images = Vec::new();
     let mut mentions_me = false;
@@ -677,7 +678,7 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                 }
                 "at" => {
                     let target = data.get_str("qq").unwrap_or_default();
-                    if target == me.to_string() {
+                    if !me.is_empty() && target == me {
                         mentions_me = true;
                         call.at_me = true;
                         text.push_str("@我 ");
@@ -713,15 +714,9 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
                 "video" => text.push_str("[视频]"),
                 "reply" => {
                     // 引用了哪条先记下来，等窗口在手里时再解析成「谁：说了什么」。
-                    let id = data
-                        .get_str("id")
-                        .and_then(|id| id.parse::<i64>().ok())
-                        .or_else(|| data.get_i64("id"))
-                        .unwrap_or(0);
-                    if id != 0 {
-                        call.reply_to = id;
-                    }
-                    text.push_str(&format!("[引用:{}] ", data.get_str("id").unwrap_or("?")));
+                    let id = data.get_str("id").unwrap_or_default();
+                    call.reply_to = id.to_string();
+                    text.push_str(&format!("[引用:{}] ", if id.is_empty() { "?" } else { id }));
                 }
                 "file" => text.push_str(&format!(
                     "[文件:{}]",
@@ -759,7 +754,7 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
     Turn {
-        user_id: event.user_id(),
+        user_id: event.user_id().to_string(),
         name: event.sender_name().to_string(),
         text,
         images,
@@ -768,10 +763,10 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: i64) -> Turn {
             .get("message")
             .and_then(|v| simd_json::serde::from_owned_value(v.clone()).ok())
             .unwrap_or_default(),
-        message_id: event.message_id(),
+        message_id: event.message_id().to_string(),
         mentions_me,
         call,
-        from_me: event.user_id() == me && me != 0,
+        from_me: !me.is_empty() && event.user_id() == me,
         at: event
             .0
             .get_i64("time")
@@ -788,16 +783,8 @@ pub(crate) fn turn_from_platform(
     writer: &crate::adapters::satori::LockedWriter,
     item: &serde_json::Value,
 ) -> Option<Turn> {
-    let message_id = item["id"]
-        .as_str()?
-        .parse::<i64>()
-        .ok()
-        .filter(|id| *id != 0)?;
-    let user_id = item["user"]["id"]
-        .as_str()
-        .unwrap_or("")
-        .parse::<i64>()
-        .unwrap_or(0);
+    let message_id = item["id"].as_str().filter(|id| !id.is_empty())?.to_string();
+    let user_id = item["user"]["id"].as_str().unwrap_or("").to_string();
     let name = item["member"]["nick"]
         .as_str()
         .filter(|nick| !nick.is_empty())
@@ -822,21 +809,15 @@ pub(crate) fn turn_from_platform(
                 .map(str::to_string)
         })
         .collect();
-    let me = ctx
-        .bot
-        .login_user
-        .get()
-        .id
-        .parse::<i64>()
-        .unwrap_or_default();
+    let me = ctx.bot.self_id();
     Some(Turn {
+        from_me: !user_id.is_empty() && user_id == me,
         user_id,
         name,
         text: crate::adapters::satori::forward::describe(&elements),
         images,
         elements,
         message_id,
-        from_me: user_id != 0 && user_id == me,
         at: item["created_at"]
             .as_i64()
             .map(|millis| millis / 1000)
@@ -845,15 +826,15 @@ pub(crate) fn turn_from_platform(
     })
 }
 
-fn states() -> &'static Mutex<HashMap<i64, GroupState>> {
-    static STATES: OnceLock<Mutex<HashMap<i64, GroupState>>> = OnceLock::new();
+fn states() -> &'static Mutex<HashMap<String, GroupState>> {
+    static STATES: OnceLock<Mutex<HashMap<String, GroupState>>> = OnceLock::new();
     STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// 取出锁访问某个群的状态。闭包里不要 await——锁是同步的。
-pub(crate) fn with_group<T>(group_id: i64, action: impl FnOnce(&mut GroupState) -> T) -> T {
+pub(crate) fn with_group<T>(group_id: &str, action: impl FnOnce(&mut GroupState) -> T) -> T {
     let mut guard = states().lock().unwrap_or_else(|error| error.into_inner());
-    action(guard.entry(group_id).or_default())
+    action(guard.entry(group_id.to_string()).or_default())
 }
 
 #[cfg(test)]
@@ -863,10 +844,10 @@ mod tests {
 
     fn turn(text: &str, from_me: bool) -> Turn {
         Turn {
-            user_id: 1,
+            user_id: "1".into(),
             name: "谁".into(),
             text: text.into(),
-            message_id: 1,
+            message_id: "1".into(),
             from_me,
             ..Turn::default()
         }
@@ -896,7 +877,7 @@ mod tests {
         assert!(state.take_mention());
         let snapshot = state.seq;
         let mut second = turn("接着聊", false);
-        second.message_id = 2;
+        second.message_id = "2".into();
         assert!(!state.receive(second.clone()));
         assert!(!state.receive(second)); // 重复事件不唤醒
         assert_eq!(state.seq, snapshot + 1);
@@ -907,7 +888,7 @@ mod tests {
         assert!(!state.finish_batch(state.seq));
         assert!(!state.running);
         let mut third = turn("新一轮", false);
-        third.message_id = 3;
+        third.message_id = "3".into();
         assert!(state.receive(third));
     }
 
@@ -933,7 +914,7 @@ mod tests {
     fn focus_expires_and_never_wakes_itself() {
         let mut state = GroupState {
             focus: Some(Focus {
-                users: vec![1],
+                users: vec!["1".into()],
                 topic: "游戏".into(),
                 until: Instant::now() + Duration::from_secs(30),
             }),
@@ -962,7 +943,7 @@ mod tests {
         let quoted = Turn {
             call: Call {
                 replied_me: true,
-                reply_to: 7,
+                reply_to: "7".into(),
                 quote: "老张：这破依赖装了半天".into(),
                 ..Call::default()
             },
@@ -989,29 +970,29 @@ mod tests {
     fn quoting_resolves_who_said_what_and_whether_it_was_mine() {
         let mut state = GroupState::default();
         let mut old = turn("这破依赖装了半天 一直报错", false);
-        old.message_id = 88;
+        old.message_id = "88".into();
         old.name = "老张".into();
         state.push(old);
         let mut mine = turn("别用那个版本了", true);
-        mine.message_id = 99;
+        mine.message_id = "99".into();
         state.push(mine);
 
         assert_eq!(
-            state.quote_of(88),
+            state.quote_of("88"),
             Some((false, "这破依赖装了半天 一直报错".to_string()))
         );
         assert_eq!(
-            state.quote_of(99),
+            state.quote_of("99"),
             Some((true, "别用那个版本了".to_string()))
         );
         // 引用到窗口外或没引用，都解析不出来。
-        assert_eq!(state.quote_of(1_000), None);
-        assert_eq!(state.quote_of(0), None);
+        assert_eq!(state.quote_of("1000"), None);
+        assert_eq!(state.quote_of("0"), None);
         // 太长的话压到上限再加省略号。
         let mut long = turn(&"错".repeat(120), false);
-        long.message_id = 77;
+        long.message_id = "77".into();
         state.push(long);
-        let (_, quote) = state.quote_of(77).unwrap();
+        let (_, quote) = state.quote_of("77").unwrap();
         assert_eq!(quote.chars().count(), QUOTE_PREVIEW_CHARS + 1);
         assert!(quote.ends_with('…'));
     }
@@ -1023,13 +1004,13 @@ mod tests {
         t.images.push("https://example.com/private.png".into());
         t.elements = crate::message::Message::new().text("不再显示");
         state.receive(t);
-        state.recall(1);
+        state.recall("1");
         let t = &state.recent(1)[0];
         assert_eq!(t.text, "[消息已撤回]");
         assert!(t.images.is_empty());
         assert!(t.elements.0.is_empty());
-        assert_eq!(t.message_id, 0);
-        assert_eq!(state.quote_of(1), None);
+        assert_eq!(t.message_id, "");
+        assert_eq!(state.quote_of("1"), None);
     }
 
     #[test]
@@ -1039,13 +1020,13 @@ mod tests {
         state.mark_spoke();
         let spoke_at = state.spoke_at.unwrap();
         let mut reply = turn("哦", false);
-        reply.message_id = 9;
+        reply.message_id = "9".into();
         reply.at = spoke_at + 12;
         state.receive(reply);
         assert_eq!(state.take_feedback(), Some(12));
         // 反馈只算一次，后面的消息不再反复给同一次发言打分。
         let mut later = turn("再说一句", false);
-        later.message_id = 10;
+        later.message_id = "10".into();
         later.at = spoke_at + 600;
         state.receive(later);
         assert_eq!(state.take_feedback(), None);
@@ -1091,22 +1072,22 @@ mod tests {
         let mut state = GroupState::default();
         for id in 1..=3 {
             let mut old = turn("旧的", false);
-            old.message_id = id;
+            old.message_id = id.to_string();
             state.receive(old);
         }
         assert_eq!(state.unseen(), 3, "从没看过，整个窗口都是新的");
         state.mark_look();
         assert_eq!(state.unseen(), 0);
         let mut fresh = turn("新的", false);
-        fresh.message_id = 4;
+        fresh.message_id = "4".into();
         state.receive(fresh);
         let mut mine = turn("我说的", true);
-        mine.message_id = 5;
+        mine.message_id = "5".into();
         state.receive(mine);
         assert_eq!(state.unseen(), 1, "自己说的不算新看到的");
         assert!(!state.urgent());
         let mut named = turn("A宝你来说说", false);
-        named.message_id = 6;
+        named.message_id = "6".into();
         named.call.named_me = true;
         state.receive(named);
         assert!(state.urgent(), "上一眼之后有人喊了名字");
@@ -1123,7 +1104,7 @@ mod tests {
         // 打字的工夫里来了几条：数得出来。
         let seq = state.seq;
         let mut late = turn("插一句", false);
-        late.message_id = 7;
+        late.message_id = "7".into();
         state.receive(late);
         assert_eq!(state.drift(seq), 1);
     }
@@ -1133,11 +1114,11 @@ mod tests {
     fn pressing_words_skip_the_wait_and_breakthroughs_are_rationed() {
         let mut state = GroupState::default();
         let mut joke = turn("你急了你急了", false);
-        joke.message_id = 1;
+        joke.message_id = "1".into();
         state.receive(joke);
         assert!(!state.urgent());
         let mut plea = turn("救命 手机一直重启进不去系统 在线等", false);
-        plea.message_id = 2;
+        plea.message_id = "2".into();
         state.receive(plea);
         assert!(state.pressing() && state.urgent());
         state.mark_look();
@@ -1153,7 +1134,7 @@ mod tests {
         let now = chrono::Local::now().timestamp();
         let mut state = GroupState::default();
         let mut live = turn("刚到的一条", false);
-        live.message_id = 30;
+        live.message_id = "30".into();
         live.at = now;
         state.receive(live);
         let history: Vec<Turn> = [
@@ -1166,7 +1147,7 @@ mod tests {
         ]
         .into_iter()
         .map(|(id, text, mine, at)| Turn {
-            message_id: id,
+            message_id: id.to_string(),
             at,
             ..turn(text, mine)
         })
@@ -1203,9 +1184,9 @@ mod tests {
         let raw = event(serde_json::json!({
             "post_type": "message",
             "message_type": "group",
-            "group_id": 1,
-            "user_id": 42,
-            "message_id": 7,
+            "group_id": "1",
+            "user_id": "42",
+            "message_id": "7",
             "time": 1_788_800_000_i64,
             "sender": {"nickname": "张三", "card": "老张"},
             "message": [
@@ -1215,12 +1196,12 @@ mod tests {
                 {"type": "image", "data": {"url": "https://example.com/a.png"}},
             ],
         }));
-        let turn = turn_from(&MessageEvent(&raw), 3_373_167_460);
+        let turn = turn_from(&MessageEvent(&raw), "3373167460");
         assert_eq!(turn.name, "老张");
         assert_eq!(turn.text, "[引用:6] @我 你怎么看[图片]");
         assert!(turn.mentions_me);
         assert!(turn.call.at_me);
-        assert_eq!(turn.call.reply_to, 6);
+        assert_eq!(turn.call.reply_to, "6");
         assert!(!turn.call.replied_me);
         assert!(turn.call.quote.is_empty(), "窗口没参与，摘要留空");
         assert!(!turn.from_me);
@@ -1231,8 +1212,8 @@ mod tests {
     #[test]
     fn bot_markdown_buttons_and_qq_card_are_visible_in_both_chat_windows() {
         let raw = event(serde_json::json!({
-            "post_type": "message", "message_type": "group", "group_id": 1,
-            "user_id": 42, "message_id": 77,
+            "post_type": "message", "message_type": "group", "group_id": "1",
+            "user_id": "42", "message_id": "77",
             "sender": {"nickname": "官方机器人"},
             "message": [
                 {"type":"text","data":{"text":"**公告**\n今天更新\n按钮: [查看] [稍后]"}},
@@ -1240,7 +1221,7 @@ mod tests {
                     "{\"meta\":{\"news\":{\"jumpUrl\":\"https:\\/\\/example.com\\/release\"}}}"}}
             ]
         }));
-        let turn = turn_from(&MessageEvent(&raw), 10000);
+        let turn = turn_from(&MessageEvent(&raw), "10000");
         assert!(
             turn.text.contains("**公告** 今天更新 按钮: [查看] [稍后]"),
             "{}",
@@ -1259,8 +1240,8 @@ mod tests {
     #[test]
     fn shop_stickers_are_named_apart_from_pictures() {
         let raw = event(serde_json::json!({
-            "post_type": "message", "message_type": "group", "group_id": 1,
-            "user_id": 42, "message_id": 9,
+            "post_type": "message", "message_type": "group", "group_id": "1",
+            "user_id": "42", "message_id": "9",
             "sender": {"nickname": "老张"},
             "message": [
                 {"type": "mface", "data": {"emoji_id": "296f", "emoji_package_id": 241904,
@@ -1268,12 +1249,12 @@ mod tests {
                 {"type": "mface", "data": {"emoji_id": "1"}},
             ],
         }));
-        let turn = turn_from(&MessageEvent(&raw), 10000);
+        let turn = turn_from(&MessageEvent(&raw), "10000");
         assert_eq!(turn.text, "[表情包:捂脸笑][表情包]");
         // 群里斗图多半用的是收藏表情：图片子类型 1。它有图，模型看得见，也照样记成表情包。
         let saved = event(serde_json::json!({
-            "post_type": "message", "message_type": "group", "group_id": 1,
-            "user_id": 42, "message_id": 10,
+            "post_type": "message", "message_type": "group", "group_id": "1",
+            "user_id": "42", "message_id": "10",
             "sender": {"nickname": "老张"},
             "message": [
                 {"type": "image", "data": {"url": "https://example.com/a.gif", "sub_type": 1,
@@ -1281,7 +1262,7 @@ mod tests {
                 {"type": "image", "data": {"url": "https://example.com/b.png"}},
             ],
         }));
-        let saved = turn_from(&MessageEvent(&saved), 10000);
+        let saved = turn_from(&MessageEvent(&saved), "10000");
         assert_eq!(saved.text, "[表情包][图片]");
         assert_eq!(saved.images.len(), 2);
         assert!(turn.images.is_empty());
@@ -1299,11 +1280,11 @@ mod tests {
         let raw = event(serde_json::json!({
             "post_type": "message",
             "message_type": "group",
-            "group_id": 1,
-            "user_id": 3_373_167_460_i64,
+            "group_id": "1",
+            "user_id": "3373167460",
             "message": [{"type": "image", "data": {"file": "https://example.com/b.png"}}],
         }));
-        let turn = turn_from(&MessageEvent(&raw), 3_373_167_460);
+        let turn = turn_from(&MessageEvent(&raw), "3373167460");
         assert!(turn.from_me);
         assert_eq!(turn.text, "[图片]");
     }
@@ -1313,14 +1294,14 @@ mod tests {
         let mut quoted = Turn {
             text: "[引用:88] 你说得对".into(),
             call: Call {
-                reply_to: 88,
+                reply_to: "88".into(),
                 ..Call::default()
             },
             ..Turn::default()
         };
         // 引的是群友的话：记下原话，但不算被叫到。
         resolve_quote(&mut quoted, |id| {
-            assert_eq!(id, 88);
+            assert_eq!(id, "88");
             Some((false, "老张：这破依赖装了半天".to_string()))
         });
         assert_eq!(quoted.call.quote, "老张：这破依赖装了半天");
@@ -1330,7 +1311,7 @@ mod tests {
         // 引的是自己发的那条：与 @ 同等地被叫醒。
         let mut called = Turn {
             call: Call {
-                reply_to: 99,
+                reply_to: "99".into(),
                 ..Call::default()
             },
             ..Turn::default()
@@ -1345,7 +1326,7 @@ mod tests {
         // 引用不在窗口里的旧消息：留个消息号，不编造内容，也不惊醒。
         let mut old = Turn {
             call: Call {
-                reply_to: 1_000,
+                reply_to: "1000".into(),
                 ..Call::default()
             },
             ..Turn::default()
@@ -1353,7 +1334,7 @@ mod tests {
         resolve_quote(&mut old, |_| None);
         assert!(old.call.quote.is_empty());
         assert!(!old.mentions_me);
-        assert_eq!(old.call.reply_to, 1_000);
+        assert_eq!(old.call.reply_to, "1000");
 
         // 没引用的时候压根不去查。
         let mut plain = Turn::default();
@@ -1366,9 +1347,9 @@ mod tests {
         let raw = event(serde_json::json!({
             "post_type": "message",
             "message_type": "group",
-            "group_id": 1,
-            "user_id": 42,
-            "message_id": 8,
+            "group_id": "1",
+            "user_id": "42",
+            "message_id": "8",
             "time": 1_788_800_000_i64,
             "sender": {"nickname": "张三", "card": "老张"},
             "message": [
@@ -1376,7 +1357,7 @@ mod tests {
                 {"type": "text", "data": {"text": "兄弟说到点子上了"}},
             ],
         }));
-        let turn = turn_from(&MessageEvent(&raw), 3_373_167_460);
+        let turn = turn_from(&MessageEvent(&raw), "3373167460");
         assert_eq!(turn.text, "[at:3938463481] 兄弟说到点子上了");
         assert!(!turn.mentions_me && !turn.call.at_me);
         assert!(transcript(&[turn]).contains("[at:3938463481] 兄弟说到点子上了"));
@@ -1385,9 +1366,9 @@ mod tests {
         let echoed = event(serde_json::json!({
             "post_type": "message",
             "message_type": "group",
-            "group_id": 1,
-            "user_id": 42,
-            "message_id": 9,
+            "group_id": "1",
+            "user_id": "42",
+            "message_id": "9",
             "time": 1_788_800_000_i64,
             "sender": {"nickname": "张三", "card": "老张"},
             "message": [
@@ -1395,7 +1376,7 @@ mod tests {
                 {"type": "text", "data": {"text": "@呜呜呜呜云 兄弟说到点子上了"}},
             ],
         }));
-        let turn = turn_from(&MessageEvent(&echoed), 3_373_167_460);
+        let turn = turn_from(&MessageEvent(&echoed), "3373167460");
         assert_eq!(turn.text, "[at:3938463481] 呜呜呜呜云 兄弟说到点子上了");
     }
 }

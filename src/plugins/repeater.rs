@@ -114,7 +114,7 @@ impl RepeaterConfig {
 /// 一条消息的来源：参与计数的人，或不参与计数的 Bot 自身
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Sender {
-    User(i64),
+    User(String),
     Bot,
 }
 
@@ -386,10 +386,10 @@ fn is_command(prefixes: &[String], text: &str) -> bool {
         .any(|prefix| !prefix.is_empty() && text.starts_with(prefix.as_str()))
 }
 
-fn channel_key(bot_id: &str, group_id: Option<i64>, user_id: i64) -> Option<String> {
+fn channel_key(bot_id: &str, group_id: Option<&str>, user_id: &str) -> Option<String> {
     match group_id {
         Some(gid) => Some(format!("{bot_id}#g{gid}")),
-        None if user_id != 0 => Some(format!("{bot_id}#p{user_id}")),
+        None if !user_id.is_empty() => Some(format!("{bot_id}#p{user_id}")),
         _ => None,
     }
 }
@@ -550,16 +550,16 @@ impl RepeatGuard {
 
 pub struct PreparedRepeat {
     guard: RepeatGuard,
-    group_id: Option<i64>,
-    user_id: i64,
+    group_id: Option<String>,
+    user_id: String,
     content: OwnedValue,
 }
 
 fn scoped_key(
     ctx: &Context,
     writer: &LockedWriter,
-    group: Option<i64>,
-    user: i64,
+    group: Option<&str>,
+    user: &str,
 ) -> Option<String> {
     channel_key(
         &format!(
@@ -579,7 +579,7 @@ pub fn interrupt(ctx: &Context, writer: &LockedWriter) {
         && let Some(key) = scoped_key(
             ctx,
             writer,
-            msg.group_id().filter(|id| *id != 0),
+            msg.group_id(),
             msg.user_id(),
         )
     {
@@ -634,7 +634,7 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
         return None;
     }
     let msg = ctx.as_message()?;
-    let group_id = msg.group_id().filter(|id| *id != 0);
+    let group_id = msg.group_id();
     if !config.channel.allows(group_id) {
         return None;
     }
@@ -665,10 +665,10 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
         return None;
     }
     let self_id = ctx.bot.self_id();
-    let sender = if user_id != 0 && user_id == self_id {
+    let sender = if !user_id.is_empty() && user_id == self_id {
         Sender::Bot
     } else {
-        Sender::User(user_id)
+        Sender::User(user_id.to_string())
     };
     let content = event.get("message")?.clone();
     let mut map = states();
@@ -698,13 +698,10 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
             sig,
             generation,
             expires_at,
-            message_id: event
-                .get_str("message_id_str")
-                .map(str::to_owned)
-                .unwrap_or_else(|| msg.message_id().to_string()),
+            message_id: msg.message_id().to_string(),
         },
-        group_id,
-        user_id,
+        group_id: group_id.map(str::to_owned),
+        user_id: user_id.to_string(),
         content,
     })
 }
@@ -719,8 +716,8 @@ pub async fn send_prepared(
             send_repeater_msg(
                 ctx,
                 writer,
-                pending.group_id,
-                Some(pending.user_id),
+                pending.group_id.as_deref(),
+                Some(&pending.user_id),
                 pending.content,
                 pending.guard,
             )
@@ -747,8 +744,8 @@ pub fn handle(
             }
             let config: RepeaterConfig = get_config_or_default(&ctx, "repeater");
             let now = now_secs();
-            let group_id = packet.group_id().filter(|id| *id != 0);
-            let user_id = packet.user_id().unwrap_or(0);
+            let group_id = packet.group_id();
+            let user_id = packet.user_id().unwrap_or("");
             let Some(key) = scoped_key(&ctx, &writer, group_id, user_id) else {
                 return Ok(Some(ctx));
             };
@@ -813,7 +810,7 @@ mod tests {
         let segments = text_chain(text);
         let sig = signature(&segments, config).expect("文本应当可复读");
         let content = OwnedValue::from(segments);
-        feed(state, sig, content, Sender::User(user), config, now)
+        feed(state, sig, content, Sender::User(user.to_string()), config, now)
     }
 
     #[test]
@@ -1198,14 +1195,14 @@ mod tests {
     #[test]
     fn channel_keys_never_collide() {
         assert_ne!(
-            channel_key("10000", Some(123), 0),
-            channel_key("10000", None, 123)
+            channel_key("10000", Some("123"), ""),
+            channel_key("10000", None, "123")
         );
         assert_ne!(
-            channel_key("10000", Some(123), 0),
-            channel_key("20000", Some(123), 0)
+            channel_key("10000", Some("123"), ""),
+            channel_key("20000", Some("123"), "")
         );
-        assert_eq!(channel_key("10000", None, 0), None);
+        assert_eq!(channel_key("10000", None, ""), None);
     }
 
     #[test]

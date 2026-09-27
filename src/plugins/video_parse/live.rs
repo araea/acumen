@@ -31,8 +31,8 @@ const SAMPLE_CAP: u64 = 20 * 1_048_576;
 /// 自检用的是同一条样品、同一个贴链接的人（`user_id = 1`），而线上要的就是
 /// 「同一个人十分钟内重贴同一条不取第二遍」——不清掉上一轮的名额，第二次跑会被
 /// 自己的去重挡住。这条只清自检自己那一份，不动别的会话。
-async fn forget_previous_take(group: i64) {
-    state::release(group, 1, SAMPLE_BVID).await;
+async fn forget_previous_take(group: &str) {
+    state::release(&format!("g:{group}"), "1", SAMPLE_BVID).await;
 }
 
 /// 拉一次样品的信息，并取 360P 档——真机上跑的是手机网络，一条自检别下几十兆。
@@ -92,15 +92,14 @@ async fn live_reads_the_metadata_and_the_stream_plan() {
 #[tokio::test]
 #[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=1126269891；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
 async fn live_takes_a_link_from_the_sandbox_group() {
-    let group: i64 = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
-        .ok()
-        .and_then(|value| value.parse().ok())
+    let group = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
         .expect("先给 ACUMEN_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+    let group = group.as_str();
     let (ctx, writer) = live_context().await;
     forget_previous_take(group).await;
     // 真机上这条链接是群友发的，这里造一条真实存在的。
     let trigger = post(&ctx, &writer, group, SAMPLE).await;
-    let (ctx, writer) = link_context(ctx, writer, group, trigger).await;
+    let (ctx, writer) = link_context(ctx, writer, group, &trigger).await;
     // 只为自检省流量：360P、20 MB 上限；两条腿都验，所以发法显式开成 both
     // （线上默认只发气泡）。
     cheaper_take(&ctx);
@@ -111,8 +110,8 @@ async fn live_takes_a_link_from_the_sandbox_group() {
     // 群里到底有没有：看实现端记下来的内容，不看日志。成品**不带引用**（带引用时
     // 视频不显示，见 `send`），所以用「比触发那条新」认这一轮的成品。
     let listed = recent_messages(&ctx, &writer, group).await;
-    let bubble = find_sent(&listed, "<video", trigger);
-    let file = find_sent(&listed, "<file", trigger);
+    let bubble = find_sent(&listed, "<video", &trigger);
+    let file = find_sent(&listed, "<file", &trigger);
     assert!(bubble.is_some(), "视频气泡没到群里");
     assert!(file.is_some(), "群文件没到群里");
     // 成品里不该出现引用段：那正是视频显示不出来的成因。只看这一轮发出去的——
@@ -120,8 +119,8 @@ async fn live_takes_a_link_from_the_sandbox_group() {
     for message in &listed {
         let newer = message["id"]
             .as_str()
-            .and_then(|id| id.parse::<i64>().ok())
-            .is_some_and(|id| id > trigger);
+            .and_then(|id| id.parse::<u128>().ok())
+            .is_some_and(|id| trigger.parse::<u128>().is_ok_and(|trigger| id > trigger));
         let content = message["content"].as_str().unwrap_or_default();
         assert!(
             !(newer && content.contains("<quote") && content.contains("<video")),
@@ -142,10 +141,9 @@ async fn live_takes_a_link_from_the_sandbox_group() {
 #[tokio::test]
 #[ignore = "ACUMEN_VIDEO_PARSE_LIVE_GROUP=1126269891；会真的往沙盒群发一条视频（气泡 + 群文件）并撤回"]
 async fn live_reads_a_card_from_the_sandbox_group() {
-    let group: i64 = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
-        .ok()
-        .and_then(|value| value.parse().ok())
+    let group = std::env::var("ACUMEN_VIDEO_PARSE_LIVE_GROUP")
         .expect("先给 ACUMEN_VIDEO_PARSE_LIVE_GROUP=<沙盒群号>");
+    let group = group.as_str();
     let (ctx, writer) = live_context().await;
     forget_previous_take(group).await;
     let trigger = post(&ctx, &writer, group, "[分享]视频").await;
@@ -159,20 +157,20 @@ async fn live_reads_a_card_from_the_sandbox_group() {
         "preview":"https://qq.ugcimg.cn/v1/test",
         "url":"m.q.qq.com/a/s/test",
         "qqdocurl":"https:\/\/b23.tv\/BV1GJ411x7h7"}}}"#;
-    let (ctx, writer) = card_context(ctx, writer, group, trigger, payload).await;
+    let (ctx, writer) = card_context(ctx, writer, group, &trigger, payload).await;
 
     let consumed = handle(ctx.clone(), writer.clone()).await.unwrap();
     assert!(consumed.is_none(), "卡片该由本插件吃掉");
 
     let listed = recent_messages(&ctx, &writer, group).await;
-    let bubble = find_sent(&listed, "<video", trigger);
+    let bubble = find_sent(&listed, "<video", &trigger);
     assert!(bubble.is_some(), "卡片没有换来原片");
 
     // 收工：这次发出去的连同触发那条一起撤回。
     let ids = [
         Some(trigger.to_string()),
         bubble,
-        find_sent(&listed, "<file", trigger),
+        find_sent(&listed, "<file", &trigger),
     ];
     for id in ids.into_iter().flatten() {
         recall(&ctx, &writer, group, &id).await;
@@ -183,8 +181,8 @@ async fn live_reads_a_card_from_the_sandbox_group() {
 ///
 /// 撤回失败只打印，不带红这条用例：QQ 偶尔会对一条刚发出去的富媒体回 `code=5`，
 /// 而这条用例要证明的是「片子到群里了没有」，不是「撤回一定成功」。
-async fn recall(ctx: &Context, writer: &LockedWriter, group: i64, id: &str) {
-    let body = json!({"channel_id": group.to_string(), "message_id": id});
+async fn recall(ctx: &Context, writer: &LockedWriter, group: &str, id: &str) {
+    let body = json!({"channel_id": group, "message_id": id});
     let deleted: Result<serde_json::Value, _> = writer.call(ctx, "message.delete", body).await;
     match deleted {
         Ok(result) => println!("撤回 {id}: {result}"),
@@ -199,13 +197,13 @@ async fn recall(ctx: &Context, writer: &LockedWriter, group: i64, id: &str) {
 async fn recent_messages(
     ctx: &Context,
     writer: &LockedWriter,
-    group: i64,
+    group: &str,
 ) -> Vec<serde_json::Value> {
     const PAGES: usize = 4;
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..PAGES {
-        let mut body = json!({"channel_id": group.to_string()});
+        let mut body = json!({"channel_id": group});
         if let Some(next) = &cursor {
             body["next"] = json!(next);
         }
@@ -221,15 +219,17 @@ async fn recent_messages(
 
 /// 在这批消息里找带某个记号、且比 `after` 新的那一条，回它的 ID。
 ///
-/// 成品不带引用，没法靠「引用的是这一轮的触发消息」认出自己那条；消息 ID 是递增的，
-/// 比触发那条大就一定是这一轮发出去的（上一轮留下的成品比它小）。
-fn find_sent(messages: &[serde_json::Value], marker: &str, after: i64) -> Option<String> {
+/// 成品不带引用，没法靠「引用的是这一轮的触发消息」认出自己那条；satori-qq 的消息 ID
+/// 是递增的数字，比触发那条大就一定是这一轮发出去的（上一轮留下的成品比它小）。
+/// 这是 QQ 沙盒群的自检，只有它能这样比大小。
+fn find_sent(messages: &[serde_json::Value], marker: &str, after: &str) -> Option<String> {
+    let after: u128 = after.parse().expect("satori-qq 的消息 ID 是数字");
     messages
         .iter()
         .filter(|message| {
             message["id"]
                 .as_str()
-                .and_then(|id| id.parse::<i64>().ok())
+                .and_then(|id| id.parse::<u128>().ok())
                 .is_some_and(|id| id > after)
         })
         .find(|message| {
@@ -244,16 +244,16 @@ fn find_sent(messages: &[serde_json::Value], marker: &str, after: i64) -> Option
 }
 
 /// 往沙盒群发一条真实存在的消息，拿它的 ID。
-async fn post(ctx: &Context, writer: &LockedWriter, group: i64, content: &str) -> i64 {
+async fn post(ctx: &Context, writer: &LockedWriter, group: &str, content: &str) -> String {
     let sent: serde_json::Value = writer
         .call(
             ctx,
             "message.create",
-            json!({"channel_id": group.to_string(), "content": content}),
+            json!({"channel_id": group, "content": content}),
         )
         .await
         .unwrap();
-    sent[0]["id"].as_str().unwrap().parse().unwrap()
+    sent[0]["id"].as_str().unwrap().to_string()
 }
 
 /// 自检用的取片参数：360P、20 MB 上限、两条腿都发（`Config::default()` 挑的是
@@ -272,8 +272,8 @@ fn cheaper_take(ctx: &Context) {
 async fn link_context(
     mut ctx: Context,
     writer: LockedWriter,
-    group: i64,
-    message_id: i64,
+    group: &str,
+    message_id: &str,
 ) -> (Context, LockedWriter) {
     ctx.event = EventType::Satori(
         simd_json::serde::to_owned_value(json!({
@@ -281,7 +281,7 @@ async fn link_context(
             "satori_type": "message-created",
             "message_type": "group",
             "group_id": group,
-            "user_id": 1,
+            "user_id": "1",
             "message_id": message_id,
             "raw_message": SAMPLE,
             "sender": {"nickname": "自检", "role": "member"},
@@ -297,8 +297,8 @@ async fn link_context(
 async fn card_context(
     mut ctx: Context,
     writer: LockedWriter,
-    group: i64,
-    message_id: i64,
+    group: &str,
+    message_id: &str,
     payload: &str,
 ) -> (Context, LockedWriter) {
     ctx.event = EventType::Satori(
@@ -307,7 +307,7 @@ async fn card_context(
             "satori_type": "message-created",
             "message_type": "group",
             "group_id": group,
-            "user_id": 1,
+            "user_id": "1",
             "message_id": message_id,
             "raw_message": format!("[CQ:json,data={payload}]"),
             "sender": {"nickname": "自检", "role": "member"},
@@ -350,9 +350,9 @@ async fn live_context() -> (Context, LockedWriter) {
                 "post_type": "message",
                 "satori_type": "message-created",
                 "message_type": "group",
-                "group_id": 0,
-                "user_id": 1,
-                "message_id": 1,
+                "group_id": "0",
+                "user_id": "1",
+                "message_id": "1",
                 "sender": {"nickname": "自检", "role": "member"},
                 "message": [{"type": "text", "data": {"text": "自检"}}]
             }))

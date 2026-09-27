@@ -32,12 +32,12 @@ fn next_marker(raw: &str) -> Option<(usize, &str)> {
 }
 
 /// 行首引用标记摘下来之后，它原本想引的是谁。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Quote {
     /// `[reply]`：引最后一条。
     Latest,
     /// `[reply:消息号]`：引点名那条。
-    Message(i64),
+    Message(String),
 }
 
 /// 摘掉每一行行首的 `[reply]` / `[reply:消息号]`，返回剩下的正文与第一个标记。
@@ -50,15 +50,15 @@ pub(crate) enum Quote {
 pub(crate) fn take_reply_markers(text: &str) -> (Cow<'_, str>, Option<Quote>) {
     static MARKER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let marker = MARKER.get_or_init(|| {
-        regex::Regex::new(r"(?mi)^([ \t]*)[\[［]\s*reply\s*(?:[:：]\s*(\d+)\s*)?[\]］][ \t]*")
+        regex::Regex::new(r"(?mi)^([ \t]*)[\[［]\s*reply\s*(?:[:：]\s*([^\]］\s]+)\s*)?[\]］][ \t]*")
             .unwrap()
     });
     let Some(first) = marker.captures(text) else {
         return (Cow::Borrowed(text), None);
     };
-    let quote = match first.get(2).and_then(|id| id.as_str().parse::<i64>().ok()) {
-        Some(id) if id != 0 => Quote::Message(id),
-        _ => Quote::Latest,
+    let quote = match first.get(2) {
+        Some(id) => Quote::Message(id.as_str().to_string()),
+        None => Quote::Latest,
     };
     (marker.replace_all(text, "$1"), Some(quote))
 }
@@ -253,7 +253,7 @@ mod tests {
         assert_eq!((text.as_ref(), quote), ("布丁你这是以貌取片", Some(Quote::Latest)));
         let (text, quote) = take_reply_markers("［reply:123］看这张\n[reply] 第二句");
         assert_eq!(text.as_ref(), "看这张\n第二句");
-        assert_eq!(quote, Some(Quote::Message(123)));
+        assert_eq!(quote, Some(Quote::Message("123".into())));
         // 句中的方括号是正文，不动。
         let (text, quote) = take_reply_markers("他说 [reply] 是什么意思");
         assert_eq!((text.as_ref(), quote), ("他说 [reply] 是什么意思", None));
@@ -313,7 +313,7 @@ mod tests {
     /// `at` 与 `face` 翻回旧写法，交给同一套标记翻译。
     #[test]
     fn at_and_face_parts_come_back_as_markup() {
-        let raw = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"at","user_id":"114514"},{"type":"face","id":"76"},{"type":"text","text":" 说得对"}]}}]"#;
+        let raw = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"at","user_id":114514},{"type":"face","id":"76"},{"type":"text","text":" 说得对"}]}}]"#;
         assert_eq!(strip(raw), "[at:114514][face:76] 说得对");
         // QQ 号写成数字也认。
         let numeric = r#"[satori_action:{"request":{"action":"send","parts":[{"type":"at","user_id":114514}]}}]"#;

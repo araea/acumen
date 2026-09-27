@@ -20,7 +20,6 @@ use tokio_tungstenite::{
 
 pub mod api;
 pub mod forward;
-pub mod ids;
 pub mod message;
 #[allow(dead_code)]
 pub mod qq;
@@ -58,9 +57,10 @@ pub struct Freshness {
 /// 时效条件的锚点必须和实现端的记账一致，而实现端记的是「推送给本应用的每一条
 /// 消息」——包括被指令消费掉、被过滤器拦掉、以及根本没走到某个插件的那些。所以
 /// 这笔账只能记在流水线之前的适配器层，不能由某个插件自己攒。
-fn latest_inbound() -> &'static std::sync::Mutex<std::collections::HashMap<i64, String>> {
-    static LATEST: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<i64, String>>> =
-        std::sync::OnceLock::new();
+fn latest_inbound() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+    static LATEST: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, String>>,
+    > = std::sync::OnceLock::new();
     LATEST.get_or_init(Default::default)
 }
 
@@ -70,11 +70,11 @@ pub fn note_inbound(event: &Event) {
     if event.get_str("satori_type") != Some("message-created") {
         return;
     }
-    let Some(group) = event.get_i64("group_id").filter(|id| *id != 0) else {
+    let Some(group) = event.get_str("group_id").filter(|id| !id.is_empty()) else {
         return;
     };
     let Some(id) = event
-        .get_str("message_id_str")
+        .get_str("message_id")
         .filter(|id| !id.is_empty())
         .map(str::to_owned)
     else {
@@ -87,18 +87,18 @@ pub fn note_inbound(event: &Event) {
     if guard.len() > 512 {
         guard.clear();
     }
-    guard.insert(group, id);
+    guard.insert(group.to_string(), id);
 }
 
 /// 取一个群的时效锚点；从未收到过消息时没有可锚定的对象。
-pub fn freshness_for(group_id: i64, valid_for: Duration) -> Option<Freshness> {
+pub fn freshness_for(group_id: &str, valid_for: Duration) -> Option<Freshness> {
     if valid_for.is_zero() {
         return None;
     }
     let message_id = latest_inbound()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .get(&group_id)
+        .get(group_id)
         .cloned()?;
     Some(Freshness {
         message_id,
@@ -166,21 +166,9 @@ impl SatoriClient {
         P: Serialize,
         R: serde::de::DeserializeOwned,
     {
-        if self.console {
-            if method == "message.create" {
-                let value = serde_json::to_value(params)?;
-                println!(
-                    "\x1b[36m[Bot Reply] > \x1b[0m{}",
-                    value.get("content").and_then(Value::as_str).unwrap_or("")
-                );
-                return Ok(serde_json::from_value(Value::Array(Vec::new()))?);
-            }
-            return Err(format!("控制台模式不支持 Satori API: {method}").into());
-        }
-
-        let mut params = serde_json::to_value(params)?;
-        // 目标属于另一个实现端（定时推送是拿先连上的那条连接注册的）就交给它发。
-        if let Some(route) = route_for(&ctx.bot, &mut params) {
+        let params = serde_json::to_value(params)?;
+        // 目标属于另一个实现端（定时推送是拿先连上的那条连接注册的）就交给它。
+        if let Some(route) = route_for(self, &params) {
             return route.client.post(&route.bot, method, params).await;
         }
         self.post(&ctx.bot, method, params).await
@@ -190,6 +178,22 @@ impl SatoriClient {
     where
         R: serde::de::DeserializeOwned,
     {
+        if self.console {
+            return match method {
+                "message.create" => {
+                    println!(
+                        "\x1b[36m[Bot Reply] > \x1b[0m{}",
+                        params.get("content").and_then(Value::as_str).unwrap_or("")
+                    );
+                    Ok(serde_json::from_value(Value::Array(Vec::new()))?)
+                }
+                // 控制台没有私聊频道这回事，拿用户 ID 充当即可。
+                "user.channel.create" => Ok(serde_json::from_value(
+                    json!({"id": params.get("user_id"), "type": 1}),
+                )?),
+                _ => Err(format!("控制台模式不支持 Satori API: {method}").into()),
+            };
+        }
         let url = format!("{}/v1/{}", self.endpoint, method);
         let mut request = self
             .http
@@ -250,7 +254,7 @@ impl SatoriClient {
     }
 }
 
-/// 同时连着几个实现端（satori-qq 与 satori-wx）时，每条连接都登记在这里。
+/// 同时连着几个实现端（satori-qq、satori-wx）时，每条连接都登记在这里。
 #[derive(Clone)]
 struct Route {
     client: Arc<SatoriClient>,
@@ -272,95 +276,81 @@ fn register_route(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     routes.push(Route { client, bot });
 }
 
-/// 账号本身是数字的登录（QQ）用的是数字 ID，其余平台的 ID 在 acumen 里是替身。
-fn numeric_login(bot: &BotStatus) -> bool {
-    bot.login_user.get().id.parse::<i64>().is_ok()
+/// 目录：每个频道、群、用户 ID 是在哪条连接上见到的（值是 `connection_key`）。
+///
+/// Satori 的 ID 只在各自平台内唯一，插件手里却只有 ID。回话时事件自带的连接就是对的；
+/// 定时推送这类拿着先连上的那条连接、目标却在另一个平台的调用，要靠目录找回主人。
+/// 目录从入站事件和连上时的 `guild.list` 学来，不落盘：重启后第一次 `guild.list` 就补齐了。
+fn directory() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, String>> {
+    static DIRECTORY: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, String>>,
+    > = std::sync::OnceLock::new();
+    DIRECTORY
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// 把参数里的替身 ID 换回原样，并在目标属于另一个实现端时找出那条连接。
-///
-/// 插件手里只有数字 ID，发给谁由 ID 本身决定：替身查反查表得到平台，纯数字归数字账号的
-/// 那个实现端。插件大多拿事件自带的连接回话，这时什么都不用换；只有定时推送这类
-/// 拿着先连上的那条连接、却要发到另一个平台的调用会被转过去。
-fn route_for(bot: &BotStatus, params: &mut Value) -> Option<Route> {
-    enum Owner {
-        Platform(String),
-        Numeric,
-    }
-    let mut owner = None;
-    for key in ["channel_id", "guild_id", "user_id"] {
-        let Some(value) = params.get_mut(key) else {
-            continue;
-        };
-        let text = match value {
-            Value::String(text) => text.clone(),
-            Value::Number(number) => number.to_string(),
-            _ => continue,
-        };
-        // satori-wx 的私聊频道就是对方的 wxid，所以 `private:` 前缀随替身一起换掉。
-        let Ok(id) = text
-            .strip_prefix("private:")
-            .unwrap_or(&text)
-            .parse::<i64>()
-        else {
-            continue;
-        };
-        if let Some(alias) = ids::lookup(id) {
-            *value = Value::String(alias.raw);
-            owner = Some(Owner::Platform(alias.platform));
-        } else if owner.is_none() {
-            owner = Some(Owner::Numeric);
+fn note_owner<'a>(client: &SatoriClient, ids: impl IntoIterator<Item = &'a str>) {
+    let owner = client.connection_key();
+    let mut directory = directory();
+    for id in ids.into_iter().filter(|id| !id.is_empty()) {
+        if directory.get(id).is_none_or(|known| known != owner) {
+            directory.insert(id.to_string(), owner.to_string());
         }
     }
-    let found = match owner? {
-        Owner::Platform(platform) if platform == bot.platform => return None,
-        Owner::Platform(platform) => routes()
-            .iter()
-            .find(|route| route.bot.platform == platform)
-            .cloned(),
-        Owner::Numeric if numeric_login(bot) => return None,
-        Owner::Numeric => routes()
-            .iter()
-            .find(|route| numeric_login(&route.bot))
-            .cloned(),
-    };
-    if found.is_none() {
-        debug!(target: "Bot", "目标所属的实现端未连接，仍交给当前连接：{params}");
-    }
-    found
 }
 
-/// 目标 ID 所在平台：替身看反查表，纯数字看是谁的账号是数字。
-fn platform_for(bot: &BotStatus, id: i64) -> String {
-    if let Some(alias) = ids::lookup(id) {
-        return alias.platform;
-    }
-    if numeric_login(bot) {
-        return bot.platform.clone();
+/// 参数里的目标 ID 属于另一条连接时，找出那条连接；属于当前连接或没见过就返回 None。
+fn route_for(current: &SatoriClient, params: &Value) -> Option<Route> {
+    let owner = {
+        let directory = directory();
+        ["channel_id", "guild_id", "user_id"]
+            .iter()
+            .filter_map(|key| params.get(*key)?.as_str())
+            .find_map(|id| directory.get(id).cloned())?
+    };
+    if owner == current.connection_key() {
+        return None;
     }
     routes()
         .iter()
-        .find(|route| numeric_login(&route.bot))
-        .map(|route| route.bot.platform.clone())
-        .unwrap_or_else(|| bot.platform.clone())
+        .find(|route| route.client.connection_key() == owner)
+        .cloned()
 }
 
-/// satori-wx 的 `message.create` 只发纯文本：`content` 原样当正文交给微信（不反转义），
-/// 至多 4000 字节，发得太快直接拒绝。所以出站前拍平成文字，超长截断而不拆条。
-const PLAIN_TEXT_PLATFORMS: &[&str] = &["wechat"];
-const PLAIN_TEXT_LIMIT: usize = 3990;
-
-fn truncate_plain(mut text: String) -> String {
-    if text.len() <= PLAIN_TEXT_LIMIT {
-        return text;
+/// 把连接上的群登记进目录。`guild.list` 按 `next` 翻页；失败只记一笔，入站事件照样会补。
+async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
+    let mut next: Option<String> = None;
+    for _ in 0..50 {
+        let params = match &next {
+            Some(next) => json!({ "next": next }),
+            None => json!({}),
+        };
+        let page: Value = match client.post(&bot, "guild.list", params).await {
+            Ok(page) => page,
+            Err(error) => {
+                debug!(target: "Bot", "guild.list 失败，目录只能靠入站事件补：{error}");
+                return;
+            }
+        };
+        let guilds = page.get("data").and_then(Value::as_array);
+        note_owner(
+            &client,
+            guilds
+                .into_iter()
+                .flatten()
+                .filter_map(|guild| guild.get("id")?.as_str()),
+        );
+        next = page
+            .get("next")
+            .and_then(Value::as_str)
+            .filter(|next| !next.is_empty())
+            .map(str::to_owned);
+        if next.is_none() {
+            return;
+        }
     }
-    let mut end = PLAIN_TEXT_LIMIT;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-    text.push('…');
-    text
 }
 
 /// HTTP 成功只代表 RPC 已应答；QQ 内核可以在 JSON 中报告失败。
@@ -624,6 +614,7 @@ async fn connect_and_listen(
     let writer = Arc::new(SatoriClient::new(endpoint.clone(), token));
     writer.set_proxy_urls(proxy_urls(&ready));
     register_route(writer.clone(), bot_status.clone());
+    tokio::spawn(learn_guilds(writer.clone(), bot_status.clone()));
     let matcher = Arc::new(Matcher::new());
 
     info!(
@@ -750,6 +741,13 @@ async fn listen(
                         };
                         // 时效锚点要和实现端的记账一致，必须先于插件流水线记下。
                         note_inbound(&event);
+                        note_owner(
+                            writer,
+                            ["group_id", "user_id", "channel_id"]
+                                .into_iter()
+                                .filter_map(|key| event.get_str(key)),
+                        );
+                        note_direct_channel(writer, &event);
                         let writer = writer.clone();
                         let config = global_config.clone();
                         let db = db.clone();
@@ -908,16 +906,14 @@ pub fn process_event(
     matcher: Arc<Matcher>,
     bot: Arc<BotStatus>,
 ) -> BoxFuture<'static, Result<(), BotError>> {
-    let group_id = event
-        .get_i64("group_id")
-        .or_else(|| event.get_u64("group_id").map(|value| value as i64));
-    if let Some(group_id) = group_id {
+    if let Some(group_id) = event.get_str("group_id").filter(|id| !id.is_empty()) {
         let should_drop = {
             let guard = config.read().unwrap();
+            let listed = |list: &[String]| list.iter().any(|id| id == group_id);
             if guard.global_filter.enable_whitelist {
-                !guard.global_filter.whitelist.contains(&group_id)
+                !listed(&guard.global_filter.whitelist)
             } else if guard.global_filter.enable_blacklist {
-                guard.global_filter.blacklist.contains(&group_id)
+                listed(&guard.global_filter.blacklist)
             } else {
                 false
             }
@@ -963,8 +959,8 @@ pub fn process_event(
 pub async fn send_msg<M>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
 ) -> Result<(), BotError>
 where
@@ -979,8 +975,8 @@ where
 pub async fn send_msg_ack<M>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
 ) -> Result<bool, BotError>
 where
@@ -997,8 +993,8 @@ where
 pub async fn send_msg_id<M>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
 ) -> Result<Option<String>, BotError>
 where
@@ -1018,8 +1014,8 @@ where
 pub async fn send_fresh_msg_id<M>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
     freshness: Option<Freshness>,
 ) -> Result<Option<String>, BotError>
@@ -1038,8 +1034,8 @@ where
 pub async fn send_repeater_msg<M: Serialize>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
     guard: plugins::repeater::RepeatGuard,
 ) -> Result<(), BotError> {
@@ -1051,8 +1047,8 @@ pub async fn send_repeater_msg<M: Serialize>(
 async fn dispatch_send<M>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
     repeat_guard: Option<plugins::repeater::RepeatGuard>,
 ) -> Result<Vec<String>, BotError>
@@ -1066,8 +1062,8 @@ where
 async fn dispatch_send_with<M>(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     message: M,
     repeat_guard: Option<plugins::repeater::RepeatGuard>,
     freshness: Option<Freshness>,
@@ -1075,9 +1071,9 @@ async fn dispatch_send_with<M>(
 where
     M: Serialize,
 {
-    let (message_type, group_id, user_id) = if let Some(id) = group_id.filter(|id| *id != 0) {
+    let (message_type, group_id, user_id) = if let Some(id) = group_id.filter(|id| !id.is_empty()) {
         ("group", Some(id), None)
-    } else if let Some(id) = user_id.filter(|id| *id != 0) {
+    } else if let Some(id) = user_id.filter(|id| !id.is_empty()) {
         ("private", None, Some(id))
     } else {
         return Ok(Vec::new());
@@ -1129,35 +1125,28 @@ pub async fn dispatch_packet(
     packet: &SendPacket,
 ) -> Result<(), BotError> {
     let group_id = packet.group_id();
-    let user_id = packet
-        .params
-        .get_i64("user_id")
-        .or_else(|| packet.params.get_u64("user_id").map(|value| value as i64));
-    let channel_id = if let Some(group_id) = group_id.filter(|id| *id != 0) {
-        group_id.to_string()
-    } else if let Some(user_id) = user_id.filter(|id| *id != 0) {
-        format!("private:{user_id}")
-    } else {
+    let user_id = packet.user_id();
+    if group_id.is_none() && user_id.is_none() {
         return Ok(());
+    }
+    // 目标不在当前连接上（定时推送拿的是先连上的那条）就换到它所在的连接。
+    let (client, bot) = match route_for(&writer, &json!({"guild_id": group_id, "user_id": user_id}))
+    {
+        Some(route) => (route.client, route.bot),
+        None => (writer.clone(), ctx.bot.clone()),
     };
-    let target = group_id.or(user_id).unwrap_or_default();
-    let content = if PLAIN_TEXT_PLATFORMS.contains(&platform_for(&ctx.bot, target).as_str()) {
-        let text = packet
-            .message()
-            .map(message::to_plain_text)
-            .unwrap_or_default();
-        if text.trim().is_empty() {
-            debug!(target: "Bot", "目标平台只收纯文本，这条没有文字可发，跳过");
-            return Ok(());
+    let channel_id = match (group_id, user_id) {
+        (Some(group_id), _) => group_id.to_string(),
+        (None, Some(user_id)) => {
+            direct_channel(&client, &bot, packet.original_event.as_ref(), user_id).await?
         }
-        truncate_plain(text)
-    } else {
-        packet
-            .message()
-            .map(message::to_content)
-            .unwrap_or_default()
+        (None, None) => unreachable!(),
     };
-    let mut params = json!({"channel_id": channel_id, "content": content});
+    let content = packet
+        .message()
+        .map(message::to_content)
+        .unwrap_or_default();
+    let mut params = json!({"channel_id": &channel_id, "content": content});
     if let Some(guard) = &packet.repeat_guard
         && !guard.is_current()
     {
@@ -1174,28 +1163,14 @@ pub async fn dispatch_packet(
         })
         .or_else(|| packet.freshness.clone());
     if let Some(freshness) = freshness
-        && ctx.bot.adapter == "satori-qq"
+        && bot.adapter == "satori-qq"
     {
         params["satori_qq"] = json!({
             "if_latest_message_id": freshness.message_id,
             "expires_at": freshness.expires_at,
         });
     }
-    let created: Vec<Value> = match writer.call(ctx, "message.create", params.clone()).await {
-        Ok(created) => created,
-        // satori-qq 0.27.1–0.29.6 组装表情包子类型图片时必然失败（标记写错了元素），
-        // 失败发生在交给 QQ 之前，什么都没发出去。去掉子类型当普通图片重发一次：
-        // 表情包变成一张图，总比整句没了强。实现端修好之后这条路不会再走到。
-        Err(error)
-            if error.to_string().contains("buildPicElement")
-                && let Some(plain) = without_sticker_flags(&content) =>
-        {
-            warn!("表情包子类型图片发送失败，改按普通图片重发：{error}");
-            params["content"] = json!(plain);
-            writer.call(ctx, "message.create", params).await?
-        }
-        Err(error) => return Err(error),
-    };
+    let created: Vec<Value> = client.post(&bot, "message.create", params).await?;
     if !created.is_empty() {
         plugins::repeater::confirm_send(ctx, packet);
     }
@@ -1208,25 +1183,71 @@ pub async fn dispatch_packet(
         .receipt_message_ids
         .lock()
         .map_err(|_| "发送回执锁已损坏")? = ids.clone();
+    plugins::recorder::record_sent(ctx, &bot, packet, &channel_id, &ids).await;
     plugins::recall::record_sent(ctx, writer, packet, &ids).await;
     Ok(())
 }
 
-/// 去掉 `<img>` 上的表情包子类型与摘要；没有可去的就返回 None。
-fn without_sticker_flags(content: &str) -> Option<String> {
-    static FLAGS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let flags = FLAGS.get_or_init(|| {
-        regex::Regex::new(r#"(<img\b[^>]*?)\s+(?:sub-type|summary)="[^"]*""#).unwrap()
-    });
-    let mut out = content.to_string();
-    loop {
-        let next = flags.replace_all(&out, "$1").into_owned();
-        if next == out {
-            break;
-        }
-        out = next;
+/// 私聊频道：`(connection_key, user_id) → channel.id`。
+fn direct_channels()
+-> std::sync::MutexGuard<'static, std::collections::HashMap<(String, String), String>> {
+    static CHANNELS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(String, String), String>>,
+    > = std::sync::OnceLock::new();
+    CHANNELS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 别人发来的私聊顺手记下它的频道；自己发的不记（那是对方的频道，不是自己的）。
+fn note_direct_channel(client: &SatoriClient, event: &Event) {
+    if event.get_str("message_type") != Some("private") {
+        return;
     }
-    (out != content).then_some(out)
+    let (Some(user), Some(channel)) = (event.get_str("user_id"), event.get_str("channel_id"))
+    else {
+        return;
+    };
+    if user.is_empty() || channel.is_empty() || Some(user) == event.get_str("self_id") {
+        return;
+    }
+    direct_channels().insert(
+        (client.connection_key().to_string(), user.to_string()),
+        channel.to_string(),
+    );
+}
+
+/// Satori 里消息发往频道；私聊要先知道和这个人的私聊频道。
+///
+/// 回话时触发事件本身就在那个频道里（包括自己在「文件传输助手」这类频道里发的指令），
+/// 直接用；否则查缓存，再不行问实现端 `user.channel.create`。
+async fn direct_channel(
+    client: &SatoriClient,
+    bot: &BotStatus,
+    original: Option<&Event>,
+    user_id: &str,
+) -> Result<String, BotError> {
+    if let Some(event) = original
+        && event.get_str("message_type") == Some("private")
+        && let Some(channel) = event.get_str("channel_id").filter(|id| !id.is_empty())
+        && [Some(user_id), event.get_str("self_id")].contains(&event.get_str("user_id"))
+    {
+        return Ok(channel.to_string());
+    }
+    let key = (client.connection_key().to_string(), user_id.to_string());
+    if let Some(channel) = direct_channels().get(&key) {
+        return Ok(channel.clone());
+    }
+    let channel: Value = client
+        .post(bot, "user.channel.create", json!({ "user_id": user_id }))
+        .await?;
+    let id = raw_id(channel.get("id"));
+    if id.is_empty() {
+        return Err(format!("user.channel.create 没给出频道：{channel}").into());
+    }
+    direct_channels().insert(key, id.clone());
+    Ok(id)
 }
 
 fn normalize_event(
@@ -1244,38 +1265,25 @@ fn normalize_event(
     let channel = body.get("channel").unwrap_or(&Value::Null);
     let user = body.get("user").unwrap_or(&Value::Null);
     let member = body.get("member").unwrap_or(&Value::Null);
-    // 账号不是数字的实现端（satori-wx），ID 一律换成数字替身，见 `ids`。QQ 这边照旧只认数字，
-    // 偶尔出现的非数字 ID（没解析出 QQ 号的 uid）仍记作 0，不进反查表。
-    let aliased = !numeric_login(bot);
-    let id_of = |value: Option<&Value>| {
-        if aliased {
-            ids::intern(&bot.platform, &raw_id(value))
-        } else {
-            value.and_then(value_id).unwrap_or_default()
-        }
-    };
-    let guild_id = id_of(guild.get("id"));
-    let group_id = if guild_id != 0 {
+    let guild_id = raw_id(guild.get("id"));
+    let group_id = if !guild_id.is_empty() {
         guild_id
     } else if channel.get("type").and_then(Value::as_i64) == Some(0) {
-        id_of(channel.get("id"))
+        raw_id(channel.get("id"))
     } else {
-        0
+        String::new()
     };
-    let mut user_id = id_of(user.get("id").or_else(|| member.pointer("/user/id")));
-    if user_id == 0 {
-        user_id = body
-            .pointer("/satori_qq/actual_user_id")
-            .and_then(value_id)
-            .unwrap_or_default();
-    }
+    // satori-qq 给 QQ 客户端手发的消息挂虚拟作者 `qq-client:{uin}`，真实账号在扩展字段里。
+    let user_id = body
+        .pointer("/satori_qq/actual_user_id")
+        .map(|id| raw_id(Some(id)))
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| raw_id(user.get("id").or_else(|| member.pointer("/user/id"))));
     // 协议规定每个事件都自带 login 资源，多登录场景下它才是这条事件的归属账号；
     // 缺失时退回当前记录的登录号。
-    let self_id = id_of(
-        body.pointer("/login/user/id")
-            .or_else(|| body.get("self_id")),
-    );
-    let self_id = if self_id != 0 { self_id } else { bot.self_id() };
+    let self_id = Some(raw_id(body.pointer("/login/user/id")))
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| bot.self_id());
     let mut out = json!({
         "time": timestamp,
         "self_id": self_id,
@@ -1294,21 +1302,22 @@ fn normalize_event(
             .filter(|segment| segment.type_ == "text")
             .filter_map(|segment| segment.data.get("text").and_then(|value| value.as_str()))
             .collect::<String>();
-        let message_id_str = string_id(message.get("id"));
-        let message_id = message_id_str.parse::<i64>().unwrap_or_default();
-        let group = group_id != 0;
+        let group = !group_id.is_empty();
         out["post_type"] = json!("message");
         out["message_type"] = json!(if group { "group" } else { "private" });
         out["sub_type"] = json!(if group { "normal" } else { "friend" });
         if group {
-            out["group_id"] = json!(group_id);
-            out["group_name"] = json!(
+            let pick = |key: &str| {
                 guild
-                    .get("name")
-                    .or_else(|| channel.get("name"))
+                    .get(key)
+                    .or_else(|| channel.get(key))
                     .and_then(Value::as_str)
                     .unwrap_or("")
-            );
+                    .to_string()
+            };
+            out["group_id"] = json!(group_id);
+            out["group_name"] = json!(pick("name"));
+            out["group_avatar"] = json!(pick("avatar"));
         }
         out["user_id"] = json!(user_id);
         out["manual_self"] = json!(
@@ -1316,8 +1325,7 @@ fn normalize_event(
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
         );
-        out["message_id"] = json!(message_id);
-        out["message_id_str"] = json!(message_id_str);
+        out["message_id"] = json!(raw_id(message.get("id")));
         out["raw_message"] = json!(raw_message);
         out["message"] = serde_json::to_value(chain)?;
         let role = member
@@ -1331,6 +1339,7 @@ fn normalize_event(
             "user_id": user_id,
             "nickname": user.get("name").and_then(Value::as_str).unwrap_or(""),
             "card": member.get("nick").or_else(|| member.get("name")).and_then(Value::as_str).unwrap_or(""),
+            "avatar": member.get("avatar").or_else(|| user.get("avatar")).and_then(Value::as_str).unwrap_or(""),
             "role": role,
         });
     } else {
@@ -1365,16 +1374,15 @@ fn normalize_event(
         out["notice_type"] = json!(notice_type);
         out["request_type"] = json!(request_type);
         out["sub_type"] = json!(sub_type);
-        if group_id != 0 {
+        if !group_id.is_empty() {
             out["group_id"] = json!(group_id);
         }
         out["user_id"] = json!(user_id);
-        // 申请类事件的 message.id 是审批 flag（非数字），只能按字符串保留。
-        let message_id_str = raw_id(body.pointer("/message/id"));
-        out["message_id"] = json!(message_id_str.parse::<i64>().unwrap_or_default());
-        out["message_id_str"] = json!(message_id_str);
+        // 申请类事件的 message.id 是审批 flag。
+        let message_id = raw_id(body.pointer("/message/id"));
+        out["message_id"] = json!(message_id);
         if post_type == "request" {
-            out["flag"] = json!(message_id_str);
+            out["flag"] = json!(message_id);
             out["comment"] = json!(
                 body.pointer("/message/content")
                     .and_then(Value::as_str)
@@ -1384,7 +1392,7 @@ fn normalize_event(
         if let Some(duration) = ban_duration {
             out["duration"] = json!(duration);
         }
-        out["operator_id"] = json!(id_of(body.pointer("/operator/id")));
+        out["operator_id"] = json!(raw_id(body.pointer("/operator/id")));
         if let Some(data) = body.get("_data") {
             out["satori_data"] = data.clone();
         }
@@ -1400,13 +1408,6 @@ fn optional_string(value: Option<&Value>) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
-}
-
-fn string_id(value: Option<&Value>) -> String {
-    value
-        .and_then(value_id)
-        .map(|value| value.to_string())
-        .unwrap_or_default()
 }
 
 /// 原样保留实现端给的 ID：申请类事件的 `message.id` 是审批 flag，不是数字。
@@ -1430,16 +1431,6 @@ fn value_id(value: &Value) -> Option<i64> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-
-    #[test]
-    fn sticker_flags_can_be_dropped_for_a_plain_retry() {
-        let content = r#"<img src="a.gif" sub-type="1" summary="[动画表情]"/>看<img src="b.png"/>"#;
-        assert_eq!(
-            without_sticker_flags(content).as_deref(),
-            Some(r#"<img src="a.gif"/>看<img src="b.png"/>"#)
-        );
-        assert_eq!(without_sticker_flags(r#"<img src="b.png"/>"#), None);
-    }
 
     #[test]
     fn cursor_deduplicates_replay_and_resets_for_a_new_server_session() {
@@ -1557,10 +1548,10 @@ pub(crate) mod tests {
             platform: "red".into(),
             login_user: Default::default(),
         };
-        let event = normalize_event(&json!({"type":"guild-member-updated","self_id":"10000","channel":{"id":"123","type":0},"member":{"user":{"id":"42"},"nick":"新名片"}}), &bot, &Default::default()).unwrap();
+        let event = normalize_event(&json!({"type":"guild-member-updated","login":{"user":{"id":"10000"}},"channel":{"id":"123","type":0},"member":{"user":{"id":"42"},"nick":"新名片"}}), &bot, &Default::default()).unwrap();
         assert_eq!(event.get_str("notice_type"), Some("group_member_update"));
-        assert_eq!(event.get_i64("self_id"), Some(10000));
-        assert_eq!(event.get_i64("user_id"), Some(42));
+        assert_eq!(event.get_str("self_id"), Some("10000"));
+        assert_eq!(event.get_str("user_id"), Some("42"));
         assert_eq!(event.get_str("channel_id"), Some("123"));
         assert_eq!(event.get_i64("duration"), None);
     }
@@ -1728,12 +1719,12 @@ pub(crate) mod tests {
     /// 适配器层，任何插件都能取到同一个锚点。
     #[test]
     fn the_freshness_anchor_follows_every_inbound_group_message() {
-        let group = -9_300_001;
+        let group = "freshness-anchor-test";
         let inbound = |id: &str, kind: &str| {
             simd_json::serde::to_owned_value(json!({
                 "satori_type": kind,
                 "group_id": group,
-                "message_id_str": id,
+                "message_id": id,
             }))
             .unwrap()
         };
@@ -1758,7 +1749,7 @@ pub(crate) mod tests {
         // 私聊没有群号，不参与这笔记账。
         note_inbound(
             &simd_json::serde::to_owned_value(
-                json!({"satori_type":"message-created","message_id_str":"103"}),
+                json!({"satori_type":"message-created","message_id":"103"}),
             )
             .unwrap(),
         );
@@ -1913,7 +1904,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let repeat = receive(&ctx, &writer, incoming(&ctx, "哈哈", 2, "2", now));
-        let input = ctx.wait_input(Some(123), Some(3), Duration::from_secs(5));
+        let input = ctx.wait_input(Some("123"), Some("3"), Duration::from_secs(5));
         tokio::pin!(input);
         assert!(futures_util::poll!(&mut input).is_pending());
         receive(&ctx, &writer, incoming(&ctx, "哈哈", 3, "3", now))
@@ -2034,18 +2025,18 @@ pub(crate) mod tests {
         });
         let normalized = normalize_event(&event, &bot, &Default::default()).unwrap();
         assert_eq!(normalized.get_str("post_type"), Some("message"));
-        assert_eq!(normalized.get_i64("group_id"), Some(123));
+        assert_eq!(normalized.get_str("group_id"), Some("123"));
         assert_eq!(
-            normalized.get_i64("message_id"),
-            Some(7_000_000_000_000_000_000)
+            normalized.get_str("message_id"),
+            Some("7000000000000000000")
         );
         assert_eq!(normalized.get_str("raw_message"), Some("hi "));
     }
 
     /// satori-wx 的事件没有 guild，群是 `type: 0` 的 `<数字>@chatroom` 频道，人是 wxid；
-    /// login 里只有 sn。换成替身之后，和 QQ 群消息走同一条路。
+    /// login 里只有 sn。ID 原样是字符串，和 QQ 群消息走同一条路。
     #[test]
-    fn wechat_string_ids_become_stable_aliases() {
+    fn wechat_string_ids_pass_through_unchanged() {
         let bot = BotStatus {
             adapter: "satori-wx".to_string(),
             platform: "wechat".to_string(),
@@ -2065,41 +2056,43 @@ pub(crate) mod tests {
         });
         assert_eq!(login_user_of(&json!({"id": "wxid_self"})).id, "wxid_self");
         let normalized = normalize_event(&event, &bot, &Default::default()).unwrap();
-        let group = ids::intern("wechat", "45123456789@chatroom");
         assert_eq!(normalized.get_str("message_type"), Some("group"));
-        assert_eq!(normalized.get_i64("group_id"), Some(group));
+        assert_eq!(normalized.get_str("group_id"), Some("45123456789@chatroom"));
         assert_eq!(
-            normalized.get_i64("user_id"),
-            Some(ids::intern("wechat", "wxid_alice"))
+            normalized.get_str("channel_id"),
+            Some("45123456789@chatroom")
         );
-        assert_eq!(normalized.get_i64("self_id"), Some(bot.self_id()));
-        assert_eq!(normalized.get_i64("message_id"), Some(3292));
+        assert_eq!(normalized.get_str("user_id"), Some("wxid_alice"));
+        assert_eq!(normalized.get_str("self_id"), Some("wxid_self"));
+        assert_eq!(normalized.get_str("message_id"), Some("3292"));
         assert_eq!(normalized.get_str("raw_message"), Some("/help & more"));
-
-        // 出站时换回原样；私聊频道就是对方的 wxid。
-        let mut params = json!({"channel_id": group.to_string(), "content": "x"});
-        assert!(route_for(&bot, &mut params).is_none());
-        assert_eq!(params["channel_id"], "45123456789@chatroom");
-        let alice = ids::intern("wechat", "wxid_alice");
-        let mut params = json!({"channel_id": format!("private:{alice}")});
-        route_for(&bot, &mut params);
-        assert_eq!(params["channel_id"], "wxid_alice");
-        assert_eq!(platform_for(&bot, group), "wechat");
     }
 
+    /// 定时推送拿的是先连上的那条连接；目标在另一条连接上见过，就交给那条。
     #[test]
-    fn plain_text_targets_get_flattened_and_bounded() {
-        let message: simd_json::OwnedValue = simd_json::serde::to_owned_value(json!([
-            {"type": "reply", "data": {"id": "1"}},
-            {"type": "at", "data": {"qq": "42", "name": "Alice"}},
-            {"type": "text", "data": {"text": "a < b & c"}},
-            {"type": "image", "data": {"file": "https://example.com/a.png"}}
-        ]))
-        .unwrap();
-        assert_eq!(message::to_plain_text(&message), "@Alice a < b & c");
-        let long = truncate_plain("字".repeat(2000));
-        assert!(long.len() <= PLAIN_TEXT_LIMIT + '…'.len_utf8());
-        assert!(long.ends_with('…'));
+    fn calls_are_routed_to_the_connection_that_owns_the_target() {
+        let qq = Arc::new(SatoriClient::new("http://qq.route.test".into(), None));
+        let wx = Arc::new(SatoriClient::new("http://wx.route.test".into(), None));
+        let bot = |platform: &str| {
+            Arc::new(BotStatus {
+                adapter: String::new(),
+                platform: platform.to_string(),
+                login_user: Default::default(),
+            })
+        };
+        register_route(qq.clone(), bot("red"));
+        register_route(wx.clone(), bot("wechat"));
+        note_owner(&qq, ["route-test-qq-group"]);
+        note_owner(&wx, ["route-test@chatroom", "route-test-wxid"]);
+
+        let to_wx = json!({"channel_id": "route-test@chatroom", "content": "x"});
+        let route = route_for(&qq, &to_wx).expect("微信群的调用应转给微信那条连接");
+        assert_eq!(route.client.connection_key(), wx.connection_key());
+        assert_eq!(route.bot.platform, "wechat");
+        // 目标就在当前连接上，或者没见过，都不转。
+        assert!(route_for(&qq, &json!({"guild_id": "route-test-qq-group"})).is_none());
+        assert!(route_for(&qq, &json!({"channel_id": "never-seen"})).is_none());
+        assert!(route_for(&wx, &json!({"user_id": "route-test-wxid"})).is_none());
     }
 
     #[test]
@@ -2121,11 +2114,9 @@ pub(crate) mod tests {
             "message": {"id": "7000000000000000000", "content": "hello"}
         });
         let normalized = normalize_event(&event, &bot, &Default::default()).unwrap();
-        let ctx_group = normalized
-            .get_i64("group_id")
-            .or_else(|| normalized.get_u64("group_id").map(|value| value as i64));
         assert_eq!(normalized.get_str("message_type"), Some("private"));
-        assert_eq!(ctx_group, None);
+        assert_eq!(normalized.get_str("group_id"), None);
+        assert_eq!(normalized.get_str("channel_id"), Some("private:42"));
     }
 
     /// QQ 客户端手发的消息带虚拟作者 `qq-client:{uin}`，真实身份在 satori_qq 扩展里。
@@ -2142,8 +2133,8 @@ pub(crate) mod tests {
             "message": {"id": "7000000000000000000", "content": "自己发的"}
         });
         let normalized = normalize_event(&event, &bot, &Default::default()).unwrap();
-        assert_eq!(normalized.get_i64("user_id"), Some(10000));
-        assert_eq!(normalized.get_i64("group_id"), Some(123));
+        assert_eq!(normalized.get_str("user_id"), Some("10000"));
+        assert_eq!(normalized.get_str("group_id"), Some("123"));
         assert_eq!(normalized.get_bool("manual_self"), Some(true));
     }
 
@@ -2315,9 +2306,9 @@ pub(crate) mod tests {
         assert_eq!(
             groups
                 .iter()
-                .map(|group| group.group_id)
+                .map(|group| group.group_id.as_str())
                 .collect::<Vec<_>>(),
-            vec![1, 2, 3]
+            vec!["1", "2", "3"]
         );
         // 每次回包给的令牌原样带回去；最后一页没有 next，就不再追问。
         assert_eq!(seen.try_recv().unwrap(), "/v1/guild.list {}");
@@ -2415,8 +2406,8 @@ pub(crate) mod tests {
 pub async fn send_text_chunks(
     ctx: &crate::event::Context,
     writer: LockedWriter,
-    group: Option<i64>,
-    user: Option<i64>,
+    group: Option<&str>,
+    user: Option<&str>,
     text: &str,
 ) -> Result<(), BotError> {
     for chunk in readable_chunks(text, 2800) {

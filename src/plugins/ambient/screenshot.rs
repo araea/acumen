@@ -14,11 +14,13 @@ struct Screenshot {
 }
 
 /// Use only fresh, directed questions. Never use an AI model's untrusted guessed IDs.
-fn candidate(turns: &[Turn], now: i64) -> Option<(i64, i64)> {
+fn candidate(turns: &[Turn], now: i64) -> Option<(String, String)> {
     let last = turns.last()?;
     if last.from_me
-        || last.user_id <= 0 // virtual qq-client:* / unknown author is not a group member accusing us
-        || last.message_id <= 1
+        // satori-qq 给 QQ 客户端手发消息挂的虚拟作者不是群友，谈不上在质问我们。
+        || last.user_id.is_empty()
+        || last.user_id.starts_with("qq-client:")
+        || last.message_id.is_empty()
         || now.saturating_sub(last.at) > 90
         || last.at > now + 10
         || !(last.mentions_me || last.call.named_me)
@@ -40,23 +42,22 @@ fn candidate(turns: &[Turn], now: i64) -> Option<(i64, i64)> {
         return None;
     }
     // 只给本群眼前的 3 条，防止一次玩笑顺带曝光半小时前的长段记录。
+    // 按窗口里的位置取：窗口顺序就是到达顺序，消息号不必可比大小。
     let first = turns
         .iter()
         .rev()
-        .take(3).rfind(|turn| {
-            turn.message_id > 1
-                && turn.message_id <= last.message_id
-                && now.saturating_sub(turn.at) <= 90
-        })
-        .map_or(last.message_id, |turn| turn.message_id);
-    Some((first, last.message_id))
+        .take(3)
+        .filter(|turn| !turn.message_id.is_empty() && now.saturating_sub(turn.at) <= 90)
+        .last()
+        .map_or_else(|| last.message_id.clone(), |turn| turn.message_id.clone());
+    Some((first, last.message_id.clone()))
 }
 
 /// Returns true only after a confirmed send. Failures fall through to ordinary ambient speech.
 pub(super) async fn try_reply(
     ctx: &Context,
     writer: &LockedWriter,
-    group: i64,
+    group: &str,
     config: &AmbientConfig,
     seq: u64,
     turns: &[Turn],
@@ -68,20 +69,20 @@ pub(super) async fn try_reply(
         return false;
     };
     if !window::with_group(group, |state| {
-        state.allow_screenshot(config.screenshot_cooldown_seconds) && !state.screenshot_seen(end)
+        state.allow_screenshot(config.screenshot_cooldown_seconds) && !state.screenshot_seen(&end)
     }) || !super::current(ctx, group, seq)
     {
         return false;
     }
     let channel = group.to_string();
     let mut image: Result<Screenshot, _> = qq::call(ctx, writer, "chat_screenshot", serde_json::json!({
-        "channel_id": channel, "start_message_id": start.to_string(), "end_message_id": end.to_string()
+        "channel_id": channel, "start_message_id": start, "end_message_id": end
     })).await;
     // On a cold QQ history cache the earliest local message can be absent. Retry once with
     // just the provoking message; never return a partial or unrelated group image.
     if image.is_err() && start != end {
         image = qq::call(ctx, writer, "chat_screenshot", serde_json::json!({
-            "channel_id": channel, "start_message_id": end.to_string(), "end_message_id": end.to_string()
+            "channel_id": channel, "start_message_id": end, "end_message_id": end
         })).await;
     }
     let image = match image {
@@ -111,7 +112,7 @@ pub(super) async fn try_reply(
         group,
         Duration::from_secs(config.send_freshness_seconds.clamp(5, 60)),
     )
-    .filter(|f| f.message_id == end.to_string()) else {
+    .filter(|f| f.message_id == end) else {
         return false;
     };
     // Send the image on its own. QQ may split a mixed image/text into two messages; if the
@@ -127,17 +128,17 @@ pub(super) async fn try_reply(
     )
     .await
     {
-        Ok(Some(id)) => id.parse::<i64>().unwrap_or_default(),
+        Ok(Some(id)) => id,
         Ok(None) => return false,
         Err(error) => {
             // Timeout has an unknown outcome. Do not answer a second time and risk a duplicate.
-            window::with_group(group, |state| state.mark_screenshot(end));
+            window::with_group(group, |state| state.mark_screenshot(&end));
             warn!(target: LOG_TARGET, "群 {group} 聊天记录截图发送结果未知：{error}");
             return true;
         }
     };
     window::with_group(group, |state| {
-        state.mark_screenshot(end);
+        state.mark_screenshot(&end);
         state.mark_spoke();
         state.receive(Turn {
             user_id: ctx.bot.self_id(),
@@ -153,7 +154,7 @@ pub(super) async fn try_reply(
     // The caption is best effort. Never send it if somebody has already moved the conversation on.
     if super::current(ctx, group, seq)
         && freshness_for(group, Duration::from_secs(25))
-            .is_some_and(|f| f.message_id == end.to_string())
+            .is_some_and(|f| f.message_id == end)
     {
         let caption = Message::new().text(CAPTION);
         match send_fresh_msg_id(
@@ -172,7 +173,7 @@ pub(super) async fn try_reply(
                     name: "我".into(),
                     text: CAPTION.into(),
                     elements: caption,
-                    message_id: id.parse().unwrap_or_default(),
+                    message_id: id,
                     from_me: true,
                     at: chrono::Local::now().timestamp(),
                     ..Turn::default()
@@ -191,10 +192,10 @@ mod tests {
     use super::*;
     fn turn(id: i64, text: &str, mine: bool) -> Turn {
         Turn {
-            message_id: id,
+            message_id: id.to_string(),
             text: text.into(),
             at: 1000,
-            user_id: if mine { 1 } else { 2 },
+            user_id: if mine { "1".into() } else { "2".into() },
             from_me: mine,
             mentions_me: !mine,
             ..Turn::default()
@@ -204,10 +205,10 @@ mod tests {
     fn cooldown_is_per_group_and_prevents_replaying_the_same_message() {
         let mut group = window::GroupState::default();
         assert!(group.allow_screenshot(21_600));
-        group.mark_screenshot(102);
+        group.mark_screenshot("102");
         assert!(!group.allow_screenshot(0)); // still at least one hour
-        assert!(group.screenshot_seen(102));
-        assert!(!group.screenshot_seen(103));
+        assert!(group.screenshot_seen("102"));
+        assert!(!group.screenshot_seen("103"));
         assert!(window::GroupState::default().allow_screenshot(21_600));
     }
 
@@ -217,14 +218,14 @@ mod tests {
             turn(101, "上一句", true),
             turn(102, "你是不是机器人？", false),
         ];
-        assert_eq!(candidate(&turns, 1010), Some((101, 102)));
+        assert_eq!(candidate(&turns, 1010), Some(("101".into(), "102".into())));
         turns[1].mentions_me = false;
         assert_eq!(candidate(&turns, 1010), None);
         turns[1].call.named_me = true;
-        assert_eq!(candidate(&turns, 1010), Some((101, 102)));
+        assert_eq!(candidate(&turns, 1010), Some(("101".into(), "102".into())));
         assert_eq!(candidate(&turns, 1200), None);
         turns[1].text = "你是 bot 吗？".into();
-        assert_eq!(candidate(&turns, 1010), Some((101, 102)));
+        assert_eq!(candidate(&turns, 1010), Some(("101".into(), "102".into())));
         turns[1].text = "你这个机器人做得怎么样？".into();
         assert_eq!(candidate(&turns, 1010), None);
         turns[1].text = "我在开发一个机器人".into();

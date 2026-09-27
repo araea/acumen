@@ -61,7 +61,7 @@ pub(crate) struct ChatConfig {
     /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片）的群号。
     ///
     /// 这些是会被全群看见的写操作，默认一个群都不放行，要用就按群单独列出来。
-    pub management_groups: Vec<i64>,
+    pub management_groups: Vec<String>,
     /// 一次发言最多几条（模型把一段话写长了，切开也算额度）。
     pub messages_budget: usize,
     /// 一轮最多几次写动作。
@@ -125,7 +125,7 @@ pub(crate) struct ChatEnv<'a> {
     pub ctx: &'a Context,
     pub writer: &'a crate::adapters::satori::LockedWriter,
     /// 群号。能力层只在群里工作——私聊没有群资料、没有群动作，也就没有这一层。
-    pub group: i64,
+    pub group: String,
     pub config: ChatConfig,
     /// 这一轮在这个群开着。房间总是开着，搭话看自己的开关与群列表。
     pub enabled: bool,
@@ -153,13 +153,13 @@ pub(crate) trait Persona: Send + Sync {
     ///
     /// 三个键：`register`（这个群此刻怎么说话）、`state`（自己什么精神头）、
     /// `remember`（记得的人和旧事）。没有的项给空串。
-    fn scene(&self, group: i64, turns: &[window::Turn], rhythm: &str) -> serde_json::Value;
+    fn scene(&self, group: &str, turns: &[window::Turn], rhythm: &str) -> serde_json::Value;
 
     /// 这一轮真的说出去了一句。搭话用它更新状态曲线；房间不需要。
-    fn spoke(&self, _group: i64) {}
+    fn spoke(&self, _group: &str) {}
 
     /// 打字与思考的节奏。
-    fn pace(&self, _group: i64) -> pace::Pace {
+    fn pace(&self, _group: &str) -> pace::Pace {
         pace::Pace::default()
     }
 

@@ -464,7 +464,7 @@ async fn chat(
 
     let annotate = !event.is_manual_self();
     if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), 124, true).await;
+        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", true).await;
     }
 
     let started = std::time::Instant::now();
@@ -506,7 +506,7 @@ async fn chat(
                 let chat = event.group_id().map(|group| super::agent::ChatContext {
                     ctx: ctx.clone(),
                     writer: writer.clone(),
-                    group,
+                    group: group.to_string(),
                     config: oai.chat.clone(),
                     tools: Some(room_tools(&oai.chat)),
                 });
@@ -721,7 +721,7 @@ async fn chat(
     }
 
     if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), 124, false).await;
+        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", false).await;
     }
 }
 
@@ -2482,7 +2482,7 @@ mod tests {
                         {"type":"at", "data":{"qq":"10000"}},
                         {"type":"text", "data":{"text":"画图 "}},
                         {"type":"at", "data":{"qq":"114514"}},
-                        {"type":"at", "data":{"qq":1919810}},
+                        {"type":"at", "data":{"qq":"1919810"}},
                         {"type":"at", "data":{"qq":"all"}},
                         {"type":"image", "data":{"url":png}},
                         {"type":"text", "data":{"text":" 把头像改成水彩 --quality high"}}
@@ -2712,9 +2712,9 @@ mod tests {
                 simd_json::serde::to_owned_value(serde_json::json!({
                     "post_type": "message",
                     "message_type": "group",
-                    "group_id": 1,
-                    "user_id": 42,
-                    "message_id": 7,
+                    "group_id": "1",
+                    "user_id": "42",
+                    "message_id": "7",
                     "time": 1_788_800_000_i64,
                     "message": [{"type": "text", "data": {"text": "画图"}}],
                 }))
@@ -2858,9 +2858,9 @@ mod tests {
                 simd_json::serde::to_owned_value(serde_json::json!({
                     "post_type": "message",
                     "message_type": "group",
-                    "group_id": 1,
-                    "user_id": 42,
-                    "message_id": 7,
+                    "group_id": "1",
+                    "user_id": "42",
+                    "message_id": "7",
                     "time": 1_788_800_000_i64,
                     "message": [{"type": "text", "data": {"text": "画图 一只橘猫"}}],
                 }))

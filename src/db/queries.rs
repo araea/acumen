@@ -24,16 +24,20 @@ pub struct TextData {
 /// 用户活跃排行（龙王榜）
 #[derive(Debug, FromQueryResult)]
 pub struct UserRanking {
-    pub user_id: i64,
+    pub user_id: String,
     pub nickname: String,
+    /// `user.avatar`，实现端没给时为空
+    pub avatar: String,
     pub count: i64,
 }
 
 /// 群组活跃排行
 #[derive(Debug, FromQueryResult)]
-pub struct GroupRanking {
-    pub group_id: i64,
-    pub group_name: String,
+pub struct GuildRanking {
+    pub guild_id: String,
+    pub guild_name: String,
+    /// `guild.avatar`，实现端没给时为空
+    pub avatar: String,
     pub count: i64,
 }
 
@@ -46,9 +50,9 @@ pub struct DailyTrend {
 
 /// 群组每日消息量走势 (用于多线图)
 #[derive(Debug, FromQueryResult)]
-pub struct GroupTrend {
+pub struct GuildTrend {
     pub date: String,
-    pub group_name: String,
+    pub guild_name: String,
     pub count: i64,
 }
 
@@ -110,12 +114,15 @@ pub struct MessageTypeStats {
 /// 构建非整日边界片段的 UNION ALL 子查询列表。
 ///
 /// 每个边界片段独立成段（而非 OR 条件合并）：实测 OR 条件会让查询计划退化为
-/// 按 group_id 前缀扫描全群索引条目，而分段后每段各自走 (group_id, time)
+/// 按 guild_id 前缀扫描全群索引条目，而分段后每段各自走 (guild_id, time)
 /// 索引范围扫描，边界片段通常只有一个残日，开销可忽略。
 ///
 /// `tmpl` 接收片段的 (start, end) 时间戳，返回一段完整的
 /// `UNION ALL SELECT ... FROM message_records WHERE time >= ? AND time < ? ...` 子查询。
-fn partial_union_subqueries(partials: &[(i64, i64)], tmpl: impl Fn(i64, i64) -> String) -> String {
+fn partial_union_subqueries(
+    partials: &[(i64, i64)],
+    mut tmpl: impl FnMut(i64, i64) -> String,
+) -> String {
     partials
         .iter()
         .map(|(s, e)| tmpl(*s, *e))
@@ -123,15 +130,35 @@ fn partial_union_subqueries(partials: &[(i64, i64)], tmpl: impl Fn(i64, i64) -> 
         .join(" ")
 }
 
-/// 群过滤条件（拼入聚合表 SQL；group_id 为数值，无注入风险）
-fn group_cond_sql(group_id: Option<i64>) -> String {
-    group_id
-        .map(|g| format!(" AND group_id = {}", g))
-        .unwrap_or_default()
+/// 聚合 SQL 的绑定参数。ID 是字符串，只能绑定、不能拼进 SQL：
+/// 片段里写 `?`，值按它在 SQL 文本里出现的先后收集。
+#[derive(Default)]
+struct Params(Vec<sea_orm::Value>);
+
+impl Params {
+    /// 群过滤条件片段；没指定群时为空。
+    fn guild(&mut self, guild_id: Option<&str>) -> &'static str {
+        match guild_id {
+            Some(id) => {
+                self.0.push(id.into());
+                " AND guild_id = ?"
+            }
+            None => "",
+        }
+    }
+
+    /// 绑定一个值，返回占位符。
+    fn bind(&mut self, value: &str) -> &'static str {
+        self.0.push(value.into());
+        "?"
+    }
+
+    fn statement(self, db: &DatabaseConnection, sql: String) -> Statement {
+        Statement::from_sql_and_values(db.get_database_backend(), sql, self.0)
+    }
 }
 
-async fn scalar_from_sql(db: &DatabaseConnection, sql: String) -> Result<i64, DbErr> {
-    let stmt = Statement::from_string(db.get_database_backend(), sql);
+async fn scalar_from_sql(db: &DatabaseConnection, stmt: Statement) -> Result<i64, DbErr> {
     let row = db.query_one_raw(stmt).await?;
     match row {
         Some(r) => Ok(r.try_get::<i64>("", "c")?),
@@ -147,12 +174,12 @@ async fn scalar_from_sql(db: &DatabaseConnection, sql: String) -> Result<i64, Db
 /// 上限 MAX_TEXT_CORPUS_LIMIT 条，实测极端规模（最活跃群 73 万行）下 ~25ms。
 pub async fn get_text_corpus(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<String>, DbErr> {
-    raw_text_corpus(db, group_id, user_id, start_time, end_time).await
+    raw_text_corpus(db, guild_id, user_id, start_time, end_time).await
 }
 
 /// 获取活跃用户排行（龙王榜）
@@ -161,33 +188,35 @@ pub async fn get_text_corpus(
 /// 非整日边界回退原始表，SQL 内 UNION ALL 合并后统一排序。
 pub async fn get_user_ranking(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
     limit: u64,
 ) -> Result<Vec<UserRanking>, DbErr> {
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_user_ranking(db, group_id, start_time, end_time, limit).await;
+        return raw_user_ranking(db, guild_id, start_time, end_time, limit).await;
     };
 
     let n = limit.min(MAX_RANKING_LIMIT);
-    let g = group_cond_sql(group_id);
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
     let partials = partial_union_subqueries(&sr.partials, |s, e| {
+        let g = params.guild(guild_id);
         format!(
-            "UNION ALL SELECT user_id, MAX(sender_nick) AS nickname, COUNT(*) AS cnt \
+            "UNION ALL SELECT user_id, MAX(member_nick) AS nickname, MAX(user_avatar) AS avatar, COUNT(*) AS cnt \
              FROM message_records WHERE time >= {s} AND time < {e}{g} GROUP BY user_id"
         )
     });
     let sql = format!(
-        "SELECT user_id, MAX(nickname) AS nickname, SUM(cnt) AS count FROM (\
-           SELECT user_id, nick AS nickname, msg_count AS cnt \
+        "SELECT user_id, MAX(nickname) AS nickname, MAX(avatar) AS avatar, SUM(cnt) AS count FROM (\
+           SELECT user_id, member_nick AS nickname, user_avatar AS avatar, msg_count AS cnt \
            FROM message_user_stats_daily \
            WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g} \
            {partials} \
          ) GROUP BY user_id ORDER BY count DESC LIMIT {n}"
     );
-    UserRanking::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+    UserRanking::find_by_statement(params.statement(db, sql))
         .all(db)
         .await
 }
@@ -195,33 +224,35 @@ pub async fn get_user_ranking(
 /// 获取群组活跃排行
 ///
 /// 整日部分走 message_stats_daily，非整日边界回退原始表。
-pub async fn get_group_ranking(
+pub async fn get_guild_ranking(
     db: &DatabaseConnection,
     start_time: i64,
     end_time: i64,
     limit: u64,
-) -> Result<Vec<GroupRanking>, DbErr> {
+) -> Result<Vec<GuildRanking>, DbErr> {
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_group_ranking(db, start_time, end_time, limit).await;
+        return raw_guild_ranking(db, start_time, end_time, limit).await;
     };
 
     let n = limit.min(MAX_RANKING_LIMIT);
     let partials = partial_union_subqueries(&sr.partials, |s, e| {
         format!(
-            "UNION ALL SELECT group_id, MAX(group_name) AS group_name, COUNT(*) AS cnt \
-             FROM message_records WHERE time >= {s} AND time < {e} AND group_id != 0 GROUP BY group_id"
+            "UNION ALL SELECT guild_id, MAX(guild_name) AS guild_name, COUNT(*) AS cnt \
+             FROM message_records WHERE time >= {s} AND time < {e} AND guild_id != '' GROUP BY guild_id"
         )
     });
     let sql = format!(
-        "SELECT group_id, MAX(group_name) AS group_name, SUM(cnt) AS count FROM (\
-           SELECT group_id, group_name, msg_count AS cnt \
+        "SELECT guild_id, MAX(guild_name) AS guild_name, \
+           (SELECT MAX(guild_avatar) FROM message_stats_daily a WHERE a.guild_id = t.guild_id) AS avatar, \
+           SUM(cnt) AS count FROM (\
+           SELECT guild_id, guild_name, msg_count AS cnt \
            FROM message_stats_daily \
-           WHERE group_id != 0 AND stat_date >= '{from}' AND stat_date <= '{to}' \
+           WHERE guild_id != '' AND stat_date >= '{from}' AND stat_date <= '{to}' \
            {partials} \
-         ) GROUP BY group_id ORDER BY count DESC LIMIT {n}"
+         ) t GROUP BY guild_id ORDER BY count DESC LIMIT {n}"
     );
-    GroupRanking::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+    GuildRanking::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
         .all(db)
         .await
 }
@@ -230,37 +261,42 @@ pub async fn get_group_ranking(
 ///
 /// 整日部分走 message_user_stats_daily（idx_user_stats_user_date 索引），
 /// 非整日边界回退原始表。
-pub async fn get_user_group_participation_ranking(
+pub async fn get_user_guild_participation_ranking(
     db: &DatabaseConnection,
-    user_id: i64,
+    user_id: &str,
     start_time: i64,
     end_time: i64,
     limit: u64,
-) -> Result<Vec<GroupRanking>, DbErr> {
+) -> Result<Vec<GuildRanking>, DbErr> {
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_user_group_participation_ranking(db, user_id, start_time, end_time, limit)
+        return raw_user_guild_participation_ranking(db, user_id, start_time, end_time, limit)
             .await;
     };
 
     let n = limit.min(MAX_RANKING_LIMIT);
+    let mut params = Params::default();
+    let user = params.bind(user_id);
     let partials = partial_union_subqueries(&sr.partials, |s, e| {
+        let user = params.bind(user_id);
         format!(
-            "UNION ALL SELECT group_id, MAX(group_name) AS group_name, COUNT(*) AS cnt \
+            "UNION ALL SELECT guild_id, MAX(guild_name) AS guild_name, COUNT(*) AS cnt \
              FROM message_records WHERE time >= {s} AND time < {e} \
-             AND user_id = {user_id} AND group_id != 0 GROUP BY group_id"
+             AND user_id = {user} AND guild_id != '' GROUP BY guild_id"
         )
     });
     let sql = format!(
-        "SELECT group_id, MAX(group_name) AS group_name, SUM(cnt) AS count FROM (\
-           SELECT group_id, group_name, msg_count AS cnt \
+        "SELECT guild_id, MAX(guild_name) AS guild_name, \
+           (SELECT MAX(guild_avatar) FROM message_stats_daily a WHERE a.guild_id = t.guild_id) AS avatar, \
+           SUM(cnt) AS count FROM (\
+           SELECT guild_id, guild_name, msg_count AS cnt \
            FROM message_user_stats_daily \
-           WHERE user_id = {user_id} AND group_id != 0 \
+           WHERE user_id = {user} AND guild_id != '' \
              AND stat_date >= '{from}' AND stat_date <= '{to}' \
            {partials} \
-         ) GROUP BY group_id ORDER BY count DESC LIMIT {n}"
+         ) t GROUP BY guild_id ORDER BY count DESC LIMIT {n}"
     );
-    GroupRanking::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+    GuildRanking::find_by_statement(params.statement(db, sql))
         .all(db)
         .await
 }
@@ -271,34 +307,36 @@ pub async fn get_user_group_participation_ranking(
 /// 非整日边界回退原始表。
 pub async fn get_user_emoji_ranking(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
     limit: u64,
 ) -> Result<Vec<UserRanking>, DbErr> {
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_user_emoji_ranking(db, group_id, start_time, end_time, limit).await;
+        return raw_user_emoji_ranking(db, guild_id, start_time, end_time, limit).await;
     };
 
     let n = limit.min(MAX_RANKING_LIMIT);
-    let g = group_cond_sql(group_id);
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
     let partials = partial_union_subqueries(&sr.partials, |s, e| {
+        let g = params.guild(guild_id);
         format!(
-            "UNION ALL SELECT user_id, MAX(sender_nick) AS nickname, \
+            "UNION ALL SELECT user_id, MAX(member_nick) AS nickname, MAX(user_avatar) AS avatar, \
              SUM(CAST(is_anim_emoji AS integer)) AS cnt \
              FROM message_records WHERE time >= {s} AND time < {e}{g} GROUP BY user_id"
         )
     });
     let sql = format!(
-        "SELECT user_id, MAX(nickname) AS nickname, SUM(cnt) AS count FROM (\
-           SELECT user_id, nick AS nickname, anim_emoji_count AS cnt \
+        "SELECT user_id, MAX(nickname) AS nickname, MAX(avatar) AS avatar, SUM(cnt) AS count FROM (\
+           SELECT user_id, member_nick AS nickname, user_avatar AS avatar, anim_emoji_count AS cnt \
            FROM message_user_stats_daily \
            WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g} \
            {partials} \
          ) GROUP BY user_id ORDER BY count DESC LIMIT {n}"
     );
-    UserRanking::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+    UserRanking::find_by_statement(params.statement(db, sql))
         .all(db)
         .await
 }
@@ -309,40 +347,40 @@ pub async fn get_user_emoji_ranking(
 /// 群/全局维度整日部分走 message_stats_daily，边界片段回退原始表。
 pub async fn get_daily_trend(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<DailyTrend>, DbErr> {
     if user_id.is_some() {
-        return raw_daily_trend(db, group_id, user_id, start_time, end_time).await;
+        return raw_daily_trend(db, guild_id, user_id, start_time, end_time).await;
     }
 
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_daily_trend(db, group_id, None, start_time, end_time).await;
+        return raw_daily_trend(db, guild_id, None, start_time, end_time).await;
     };
 
     let mut merged: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
 
     // 整日部分：每群每日一行的聚合表，按日求和
-    let g = group_cond_sql(group_id);
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
     let sql = format!(
         "SELECT stat_date AS date, SUM(msg_count) AS count FROM message_stats_daily \
          WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g} \
          GROUP BY stat_date ORDER BY stat_date"
     );
-    let rows: Vec<DailyTrend> =
-        DailyTrend::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
-            .all(db)
-            .await?;
+    let rows: Vec<DailyTrend> = DailyTrend::find_by_statement(params.statement(db, sql))
+        .all(db)
+        .await?;
     for r in rows {
         merged.insert(r.date, r.count);
     }
 
     // 边界片段：回退原始表
     for (s, e) in &sr.partials {
-        for r in raw_daily_trend(db, group_id, None, *s, *e).await? {
+        for r in raw_daily_trend(db, guild_id, None, *s, *e).await? {
             *merged.entry(r.date).or_insert(0) += r.count;
         }
     }
@@ -358,19 +396,19 @@ pub async fn get_daily_trend(
 ///
 /// 按小时聚合（by_hour）时区间必为单日（≤24h），直接走原始表；
 /// 按日聚合时整日部分走 message_stats_daily（自带最新群名）。
-pub async fn get_daily_trend_by_group(
+pub async fn get_daily_trend_by_guild(
     db: &DatabaseConnection,
     start_time: i64,
     end_time: i64,
     by_hour: bool,
-) -> Result<Vec<GroupTrend>, DbErr> {
+) -> Result<Vec<GuildTrend>, DbErr> {
     if by_hour {
-        return raw_daily_trend_by_group(db, start_time, end_time, true).await;
+        return raw_daily_trend_by_guild(db, start_time, end_time, true).await;
     }
 
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_daily_trend_by_group(db, start_time, end_time, false).await;
+        return raw_daily_trend_by_guild(db, start_time, end_time, false).await;
     };
 
     // (群名, 日期) → 消息数
@@ -378,30 +416,30 @@ pub async fn get_daily_trend_by_group(
         std::collections::HashMap::new();
 
     let sql = format!(
-        "SELECT stat_date AS date, group_name, msg_count AS count \
+        "SELECT stat_date AS date, guild_name, msg_count AS count \
          FROM message_stats_daily \
-         WHERE group_id != 0 AND stat_date >= '{from}' AND stat_date <= '{to}' \
+         WHERE guild_id != '' AND stat_date >= '{from}' AND stat_date <= '{to}' \
          ORDER BY stat_date"
     );
-    let rows: Vec<GroupTrend> =
-        GroupTrend::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+    let rows: Vec<GuildTrend> =
+        GuildTrend::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
             .all(db)
             .await?;
     for r in rows {
-        merged.insert((r.group_name, r.date), r.count);
+        merged.insert((r.guild_name, r.date), r.count);
     }
 
     for (s, e) in &sr.partials {
-        for r in raw_daily_trend_by_group(db, *s, *e, false).await? {
-            *merged.entry((r.group_name, r.date)).or_insert(0) += r.count;
+        for r in raw_daily_trend_by_guild(db, *s, *e, false).await? {
+            *merged.entry((r.guild_name, r.date)).or_insert(0) += r.count;
         }
     }
 
-    let mut result: Vec<GroupTrend> = merged
+    let mut result: Vec<GuildTrend> = merged
         .into_iter()
-        .map(|((group_name, date), count)| GroupTrend {
+        .map(|((guild_name, date), count)| GuildTrend {
             date,
-            group_name,
+            guild_name,
             count,
         })
         .collect();
@@ -416,8 +454,8 @@ pub async fn get_daily_trend_by_group(
 /// 按小时聚合仅用于 ≤24h 区间（无完整自然日），自动回退原始表。
 pub async fn get_message_type_trend(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
     by_hour: bool,
@@ -425,19 +463,20 @@ pub async fn get_message_type_trend(
     // 按小时聚合需要小时粒度，聚合表为日粒度，直接走原始表
     // （调用方仅在区间 ≤24h 时启用 by_hour，原始表扫描量很小）
     if by_hour || user_id.is_some() {
-        return raw_message_type_trend(db, group_id, user_id, start_time, end_time, by_hour).await;
+        return raw_message_type_trend(db, guild_id, user_id, start_time, end_time, by_hour).await;
     }
 
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_message_type_trend(db, group_id, None, start_time, end_time, false).await;
+        return raw_message_type_trend(db, guild_id, None, start_time, end_time, false).await;
     };
 
     let mut merged: std::collections::BTreeMap<String, MessageTypeTrend> =
         std::collections::BTreeMap::new();
 
     // 整日部分：聚合表逐日累计 6 类计数
-    let g = group_cond_sql(group_id);
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
     let sql = format!(
         "SELECT stat_date AS date, SUM(text_count) AS text, SUM(image_count) AS image, \
          SUM(voice_count) AS voice, SUM(video_count) AS video, \
@@ -447,7 +486,7 @@ pub async fn get_message_type_trend(
          GROUP BY stat_date ORDER BY stat_date"
     );
     let rows: Vec<MessageTypeTrend> =
-        MessageTypeTrend::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
+        MessageTypeTrend::find_by_statement(params.statement(db, sql))
             .all(db)
             .await?;
     for r in rows {
@@ -467,7 +506,7 @@ pub async fn get_message_type_trend(
 
     // 边界片段：回退原始表并逐字段累加
     for (s, e) in &sr.partials {
-        for r in raw_message_type_trend(db, group_id, None, *s, *e, false).await? {
+        for r in raw_message_type_trend(db, guild_id, None, *s, *e, false).await? {
             let entry = merged.entry(r.date.clone()).or_insert(MessageTypeTrend {
                 date: r.date.clone(),
                 text: 0,
@@ -498,12 +537,12 @@ pub async fn get_message_type_trend(
 /// time_hour 已物化为列，扫描量小。
 pub async fn get_hourly_activity(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<HourlyActivity>, DbErr> {
-    raw_hourly_activity(db, group_id, user_id, start_time, end_time).await
+    raw_hourly_activity(db, guild_id, user_id, start_time, end_time).await
 }
 
 /// 获取星期活跃分布
@@ -511,11 +550,11 @@ pub async fn get_hourly_activity(
 /// 始终走原始表：星期维度无聚合表，且该查询当前未被调用方使用。
 pub async fn get_weekday_activity(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<WeekdayActivity>, DbErr> {
-    raw_weekday_activity(db, group_id, start_time, end_time).await
+    raw_weekday_activity(db, guild_id, start_time, end_time).await
 }
 
 /// 获取 星期×小时 的热力分布数据
@@ -523,11 +562,11 @@ pub async fn get_weekday_activity(
 /// 始终走原始表：二维时间维度无聚合表，且该查询当前未被调用方使用。
 pub async fn get_heatmap_data(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<HeatmapData>, DbErr> {
-    raw_heatmap_data(db, group_id, start_time, end_time).await
+    raw_heatmap_data(db, guild_id, start_time, end_time).await
 }
 
 /// 获取消息类型统计 (总计)
@@ -536,21 +575,22 @@ pub async fn get_heatmap_data(
 /// 边界片段回退原始表后逐字段相加。
 pub async fn get_message_type_stats(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<MessageTypeStats, DbErr> {
     if user_id.is_some() {
-        return raw_message_type_stats(db, group_id, user_id, start_time, end_time).await;
+        return raw_message_type_stats(db, guild_id, user_id, start_time, end_time).await;
     }
 
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_message_type_stats(db, group_id, None, start_time, end_time).await;
+        return raw_message_type_stats(db, guild_id, None, start_time, end_time).await;
     };
 
-    let g = group_cond_sql(group_id);
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
     let sql = format!(
         "SELECT COALESCE(SUM(text_count), 0) AS text, COALESCE(SUM(image_count), 0) AS image, \
          COALESCE(SUM(voice_count), 0) AS voice, COALESCE(SUM(video_count), 0) AS video, \
@@ -559,21 +599,20 @@ pub async fn get_message_type_stats(
          FROM message_stats_daily \
          WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g}"
     );
-    let mut result =
-        MessageTypeStats::find_by_statement(Statement::from_string(db.get_database_backend(), sql))
-            .one(db)
-            .await?
-            .unwrap_or(MessageTypeStats {
-                text: 0,
-                image: 0,
-                voice: 0,
-                video: 0,
-                anim_emoji: 0,
-                face: 0,
-            });
+    let mut result = MessageTypeStats::find_by_statement(params.statement(db, sql))
+        .one(db)
+        .await?
+        .unwrap_or(MessageTypeStats {
+            text: 0,
+            image: 0,
+            voice: 0,
+            video: 0,
+            anim_emoji: 0,
+            face: 0,
+        });
 
     for (s, e) in &sr.partials {
-        let p = raw_message_type_stats(db, group_id, None, *s, *e).await?;
+        let p = raw_message_type_stats(db, guild_id, None, *s, *e).await?;
         result.text += p.text;
         result.image += p.image;
         result.voice += p.voice;
@@ -592,11 +631,11 @@ pub async fn get_message_type_stats(
 /// 等小范围区间，idx_records_group_time 索引下耗时可忽略。
 pub async fn get_active_user_count(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<u64, DbErr> {
-    raw_active_user_count(db, group_id, start_time, end_time).await
+    raw_active_user_count(db, guild_id, start_time, end_time).await
 }
 
 /// 获取指定条件下的消息数量
@@ -606,30 +645,31 @@ pub async fn get_active_user_count(
 /// 边界片段回退原始表小范围计数。
 pub async fn get_message_count(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<u64, DbErr> {
     if user_id.is_some() {
-        return raw_message_count(db, group_id, user_id, start_time, end_time).await;
+        return raw_message_count(db, guild_id, user_id, start_time, end_time).await;
     }
 
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_message_count(db, group_id, None, start_time, end_time).await;
+        return raw_message_count(db, guild_id, None, start_time, end_time).await;
     };
 
-    let g = group_cond_sql(group_id);
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
     let sql = format!(
         "SELECT COALESCE(SUM(msg_count), 0) AS c FROM message_stats_daily \
          WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g}"
     );
-    let agg = scalar_from_sql(db, sql).await?.max(0) as u64;
+    let agg = scalar_from_sql(db, params.statement(db, sql)).await?.max(0) as u64;
 
     let mut total = agg;
     for (s, e) in &sr.partials {
-        total += raw_message_count(db, group_id, None, *s, *e).await?;
+        total += raw_message_count(db, guild_id, None, *s, *e).await?;
     }
     Ok(total)
 }
@@ -638,8 +678,8 @@ pub async fn get_message_count(
 
 async fn raw_text_corpus(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<String>, DbErr> {
@@ -650,8 +690,8 @@ async fn raw_text_corpus(
         .filter(entity::Column::Time.lt(end_time))
         .filter(entity::Column::Tokens.ne(""));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));
@@ -667,7 +707,7 @@ async fn raw_text_corpus(
 
 async fn raw_user_ranking(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
     limit: u64,
@@ -676,8 +716,12 @@ async fn raw_user_ranking(
         .select_only()
         .column(entity::Column::UserId)
         .column_as(
-            Expr::from(Func::max(Expr::col(entity::Column::SenderNick))),
+            Expr::from(Func::max(Expr::col(entity::Column::MemberNick))),
             "nickname",
+        )
+        .column_as(
+            Expr::from(Func::max(Expr::col(entity::Column::UserAvatar))),
+            "avatar",
         )
         .column_as(
             Expr::from(Func::count(Expr::col(entity::Column::Id))),
@@ -686,8 +730,8 @@ async fn raw_user_ranking(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
 
     query
@@ -699,18 +743,22 @@ async fn raw_user_ranking(
         .await
 }
 
-async fn raw_group_ranking(
+async fn raw_guild_ranking(
     db: &DatabaseConnection,
     start_time: i64,
     end_time: i64,
     limit: u64,
-) -> Result<Vec<GroupRanking>, DbErr> {
+) -> Result<Vec<GuildRanking>, DbErr> {
     MessageLogs::find()
         .select_only()
-        .column(entity::Column::GroupId)
+        .column(entity::Column::GuildId)
         .column_as(
-            Expr::from(Func::max(Expr::col(entity::Column::GroupName))),
-            "group_name",
+            Expr::from(Func::max(Expr::col(entity::Column::GuildName))),
+            "guild_name",
+        )
+        .column_as(
+            Expr::from(Func::max(Expr::col(entity::Column::GuildAvatar))),
+            "avatar",
         )
         .column_as(
             Expr::from(Func::count(Expr::col(entity::Column::Id))),
@@ -718,28 +766,32 @@ async fn raw_group_ranking(
         )
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time))
-        .filter(entity::Column::GroupId.ne(0))
-        .group_by(entity::Column::GroupId)
+        .filter(entity::Column::GuildId.ne(""))
+        .group_by(entity::Column::GuildId)
         .order_by_desc(Expr::custom_keyword(Alias::new("count")))
         .limit(limit.min(MAX_RANKING_LIMIT))
-        .into_model::<GroupRanking>()
+        .into_model::<GuildRanking>()
         .all(db)
         .await
 }
 
-async fn raw_user_group_participation_ranking(
+async fn raw_user_guild_participation_ranking(
     db: &DatabaseConnection,
-    user_id: i64,
+    user_id: &str,
     start_time: i64,
     end_time: i64,
     limit: u64,
-) -> Result<Vec<GroupRanking>, DbErr> {
+) -> Result<Vec<GuildRanking>, DbErr> {
     MessageLogs::find()
         .select_only()
-        .column(entity::Column::GroupId)
+        .column(entity::Column::GuildId)
         .column_as(
-            Expr::from(Func::max(Expr::col(entity::Column::GroupName))),
-            "group_name",
+            Expr::from(Func::max(Expr::col(entity::Column::GuildName))),
+            "guild_name",
+        )
+        .column_as(
+            Expr::from(Func::max(Expr::col(entity::Column::GuildAvatar))),
+            "avatar",
         )
         .column_as(
             Expr::from(Func::count(Expr::col(entity::Column::Id))),
@@ -748,18 +800,18 @@ async fn raw_user_group_participation_ranking(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time))
         .filter(entity::Column::UserId.eq(user_id))
-        .filter(entity::Column::GroupId.ne(0))
-        .group_by(entity::Column::GroupId)
+        .filter(entity::Column::GuildId.ne(""))
+        .group_by(entity::Column::GuildId)
         .order_by_desc(Expr::custom_keyword(Alias::new("count")))
         .limit(limit.min(MAX_RANKING_LIMIT))
-        .into_model::<GroupRanking>()
+        .into_model::<GuildRanking>()
         .all(db)
         .await
 }
 
 async fn raw_user_emoji_ranking(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
     limit: u64,
@@ -774,15 +826,19 @@ async fn raw_user_emoji_ranking(
         .select_only()
         .column(entity::Column::UserId)
         .column_as(
-            Expr::from(Func::max(Expr::col(entity::Column::SenderNick))),
+            Expr::from(Func::max(Expr::col(entity::Column::MemberNick))),
             "nickname",
+        )
+        .column_as(
+            Expr::from(Func::max(Expr::col(entity::Column::UserAvatar))),
+            "avatar",
         )
         .column_as(sum_expr, "count")
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
 
     query
@@ -796,8 +852,8 @@ async fn raw_user_emoji_ranking(
 
 async fn raw_daily_trend(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<DailyTrend>, DbErr> {
@@ -813,8 +869,8 @@ async fn raw_daily_trend(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));
@@ -829,12 +885,12 @@ async fn raw_daily_trend(
         .await
 }
 
-async fn raw_daily_trend_by_group(
+async fn raw_daily_trend_by_guild(
     db: &DatabaseConnection,
     start_time: i64,
     end_time: i64,
     by_hour: bool,
-) -> Result<Vec<GroupTrend>, DbErr> {
+) -> Result<Vec<GuildTrend>, DbErr> {
     let time_expr = if by_hour {
         Expr::cust("strftime('%H:%M', datetime(time, 'unixepoch', 'localtime'))")
     } else {
@@ -844,27 +900,27 @@ async fn raw_daily_trend_by_group(
     MessageLogs::find()
         .select_only()
         .column_as(time_expr.clone(), "date")
-        .column(entity::Column::GroupName)
+        .column(entity::Column::GuildName)
         .column_as(
             Expr::from(Func::count(Expr::col(entity::Column::Id))),
             "count",
         )
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time))
-        .filter(entity::Column::GroupId.ne(0))
+        .filter(entity::Column::GuildId.ne(""))
         .group_by(time_expr)
-        .group_by(entity::Column::GroupId)
+        .group_by(entity::Column::GuildId)
         .order_by_asc(Expr::custom_keyword(Alias::new("date")))
         .limit(MAX_GROUP_TREND_LIMIT)
-        .into_model::<GroupTrend>()
+        .into_model::<GuildTrend>()
         .all(db)
         .await
 }
 
 async fn raw_message_type_trend(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
     by_hour: bool,
@@ -902,8 +958,8 @@ async fn raw_message_type_trend(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));
@@ -920,8 +976,8 @@ async fn raw_message_type_trend(
 
 async fn raw_hourly_activity(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<HourlyActivity>, DbErr> {
@@ -935,8 +991,8 @@ async fn raw_hourly_activity(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));
@@ -952,7 +1008,7 @@ async fn raw_hourly_activity(
 
 async fn raw_weekday_activity(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<WeekdayActivity>, DbErr> {
@@ -966,8 +1022,8 @@ async fn raw_weekday_activity(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
 
     query
@@ -980,7 +1036,7 @@ async fn raw_weekday_activity(
 
 async fn raw_heatmap_data(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<HeatmapData>, DbErr> {
@@ -995,8 +1051,8 @@ async fn raw_heatmap_data(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
 
     query
@@ -1009,8 +1065,8 @@ async fn raw_heatmap_data(
 
 async fn raw_message_type_stats(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<MessageTypeStats, DbErr> {
@@ -1032,8 +1088,8 @@ async fn raw_message_type_stats(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));
@@ -1053,7 +1109,7 @@ async fn raw_message_type_stats(
 
 async fn raw_active_user_count(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
+    guild_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<u64, DbErr> {
@@ -1063,8 +1119,8 @@ async fn raw_active_user_count(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
 
     let result: Option<i64> = query.into_tuple().one(db).await?;
@@ -1073,8 +1129,8 @@ async fn raw_active_user_count(
 
 async fn raw_message_count(
     db: &DatabaseConnection,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<u64, DbErr> {
@@ -1082,8 +1138,8 @@ async fn raw_message_count(
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
-    if let Some(gid) = group_id {
-        query = query.filter(entity::Column::GroupId.eq(gid));
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
     }
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));

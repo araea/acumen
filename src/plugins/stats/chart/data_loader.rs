@@ -27,7 +27,7 @@ pub struct SeriesData {
 pub struct BarData {
     pub label: String,
     pub value: i64,
-    pub user_id: Option<i64>, // 用于识别是否是发送者
+    pub user_id: Option<String>, // 用于识别是否是发送者
     pub avatar_url: Option<String>,
     pub avatar_img: Option<image::RgbaImage>,
     pub theme_color: RGBColor, // 从头像提取的主题色
@@ -107,8 +107,8 @@ pub async fn fetch_line_data(
     db: &DatabaseConnection,
     is_all_groups: bool,
     data_type: &str,
-    query_group: Option<i64>,
-    query_user: Option<i64>,
+    query_group: Option<&str>,
+    query_user: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<SeriesData>, String> {
@@ -119,7 +119,7 @@ pub async fn fetch_line_data(
 
     // 1. 所有群组今日发言走势 (多线)
     if is_all_groups && data_type == "发言" {
-        let trends = queries::get_daily_trend_by_group(db, start_time, end_time, is_hourly)
+        let trends = queries::get_daily_trend_by_guild(db, start_time, end_time, is_hourly)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -127,7 +127,7 @@ pub async fn fetch_line_data(
         let mut group_map: HashMap<String, Vec<ChartDataPoint>> = HashMap::new();
         for row in trends {
             group_map
-                .entry(row.group_name)
+                .entry(row.guild_name)
                 .or_default()
                 .push(ChartDataPoint {
                     label: row.date,
@@ -270,9 +270,9 @@ pub async fn fetch_bar_data(
     db: &DatabaseConnection,
     is_all_groups: bool,
     data_type: &str,
-    query_group: Option<i64>,
-    query_user: Option<i64>,
-    sender_id: i64,
+    query_group: Option<&str>,
+    query_user: Option<&str>,
+    sender_id: &str,
     start_time: i64,
     end_time: i64,
 ) -> Result<Vec<BarData>, String> {
@@ -324,17 +324,16 @@ pub async fn fetch_bar_data(
         && !is_all_groups
     {
         let ranking =
-            queries::get_user_group_participation_ranking(db, uid, start_time, end_time, limit)
+            queries::get_user_guild_participation_ranking(db, uid, start_time, end_time, limit)
                 .await
                 .map_err(|e| e.to_string())?;
 
         for r in ranking {
-            let url = format!("http://p.qlogo.cn/gh/{}/{}/100/", r.group_id, r.group_id);
             bar_data.push(BarData {
-                label: r.group_name,
+                label: r.guild_name,
                 value: r.count,
                 user_id: None,
-                avatar_url: Some(url),
+                avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
                 icon_char: None,
@@ -345,17 +344,16 @@ pub async fn fetch_bar_data(
 
     // 3. 所有群活跃排行
     if is_all_groups {
-        let ranking = queries::get_group_ranking(db, start_time, end_time, limit)
+        let ranking = queries::get_guild_ranking(db, start_time, end_time, limit)
             .await
             .map_err(|e| e.to_string())?;
 
         for r in ranking {
-            let url = format!("http://p.qlogo.cn/gh/{}/{}/100/", r.group_id, r.group_id);
             bar_data.push(BarData {
-                label: r.group_name,
+                label: r.guild_name,
                 value: r.count,
                 user_id: None,
-                avatar_url: Some(url),
+                avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
                 icon_char: None,
@@ -381,17 +379,16 @@ pub async fn fetch_bar_data(
         let mut label = r.nickname;
         let is_sender = r.user_id == sender_id;
 
-        if is_sender && sender_id != 0 {
+        if is_sender && !sender_id.is_empty() {
             label = format!("★ {}", label);
             sender_found = true;
         }
 
-        let url = format!("https://q1.qlogo.cn/g?b=qq&nk={}&s=640", r.user_id);
         bar_data.push(BarData {
             label,
             value: r.count,
             user_id: Some(r.user_id),
-            avatar_url: Some(url),
+            avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
             avatar_img: None,
             theme_color: FALLBACK_THEME,
             icon_char: None,
@@ -399,14 +396,14 @@ pub async fn fetch_bar_data(
     }
 
     // 补位逻辑
-    if !sender_found && sender_id != 0 {
+    if !sender_found && !sender_id.is_empty() {
         let count_query = MessageLogs::find()
             .filter(entity::Column::Time.gte(start_time))
             .filter(entity::Column::Time.lt(end_time))
             .filter(entity::Column::UserId.eq(sender_id));
 
         let count_query = if let Some(gid) = query_group {
-            count_query.filter(entity::Column::GroupId.eq(gid))
+            count_query.filter(entity::Column::GuildId.eq(gid))
         } else {
             count_query
         };
@@ -435,26 +432,24 @@ pub async fn fetch_bar_data(
         };
 
         if count > 0 {
-            let nick_query = MessageLogs::find()
+            let latest = MessageLogs::find()
                 .select_only()
-                .column(entity::Column::SenderNick)
+                .column(entity::Column::MemberNick)
+                .column(entity::Column::UserAvatar)
                 .filter(entity::Column::UserId.eq(sender_id))
-                .apply_if(query_group, |q, g| q.filter(entity::Column::GroupId.eq(g)))
+                .apply_if(query_group, |q, g| q.filter(entity::Column::GuildId.eq(g)))
                 .order_by_desc(entity::Column::Time)
-                .into_tuple::<String>()
+                .into_tuple::<(String, String)>()
                 .one(db)
                 .await
                 .unwrap_or(None);
 
-            let nick = nick_query.unwrap_or_else(|| sender_id.to_string());
-            let label = format!("★ {}", nick);
-            let url = format!("https://q1.qlogo.cn/g?b=qq&nk={}&s=640", sender_id);
-
+            let (nick, avatar) = latest.unwrap_or_else(|| (sender_id.to_string(), String::new()));
             bar_data.push(BarData {
-                label,
+                label: format!("★ {}", nick),
                 value: count,
-                user_id: Some(sender_id),
-                avatar_url: Some(url),
+                user_id: Some(sender_id.to_string()),
+                avatar_url: Some(avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
                 icon_char: None,

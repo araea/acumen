@@ -128,8 +128,8 @@ impl std::fmt::Display for GenError {
 /// 核心生成逻辑供外部调用 (例如综合日报插件)
 pub async fn generate_image(
     ctx: &Context,
-    query_group_id: Option<i64>,
-    query_user_id: Option<i64>,
+    query_group_id: Option<&str>,
+    query_user_id: Option<&str>,
     start_time: i64,
     end_time: i64,
 ) -> Result<String, GenError> {

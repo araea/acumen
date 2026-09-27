@@ -63,8 +63,8 @@ pub(crate) enum Scene {
 }
 
 /// 搭话的只读探查白名单。参数全部由本群上下文构造，模型不能传入任意方法名、群号或分页游标。
-fn observation(kind: &str, group: i64, user_id: &str) -> Result<(&'static str, Value)> {
-    let guild = group.to_string();
+fn observation(kind: &str, group: &str, user_id: &str) -> Result<(&'static str, Value)> {
+    let guild = group;
     Ok(match kind {
         "group" => ("guild.get", json!({"guild_id":guild})),
         "member" => ("guild.member.get", json!({"guild_id":guild,"user_id":user_id})),
@@ -202,7 +202,7 @@ impl crate::plugins::oai::agent::ChatBridge for Bridge {
 struct Session {
     ctx: Context,
     writer: LockedWriter,
-    group: i64,
+    group: String,
     config: ChatConfig,
     persona: Option<Arc<dyn Persona>>,
     scratch: PathBuf,
@@ -254,7 +254,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
     } = env;
     // 起点记下群聊现场走到哪一步：模型读完 `satori_context` 之后，这里就是它看过
     // 的那一版；期间群里又有人说话，动手之前就会被拦下。
-    let seq = Arc::new(AtomicU64::new(window::with_group(group, |s| s.seq)));
+    let seq = Arc::new(AtomicU64::new(window::with_group(&group, |s| s.seq)));
     let attempted = Arc::new(AtomicBool::new(false));
     let session = Session {
         ctx: ctx.clone(),
@@ -300,7 +300,7 @@ impl Session {
     /// 窗口那一侧直接读常驻窗口；房间那一侧向平台要最近一页，一轮只取一次。
     async fn scene_turns(&mut self, count: usize) -> Vec<Turn> {
         match self.scene {
-            Scene::Window => window::with_group(self.group, |state| state.recent(count)),
+            Scene::Window => window::with_group(&self.group, |state| state.recent(count)),
             Scene::Channel => {
                 if self.page.is_none() {
                     self.page = self.fetch_page(count).await.ok();
@@ -395,14 +395,14 @@ impl Session {
     fn current(&self) -> bool {
         self.enabled
             && (!self.require_fresh
-                || window::with_group(self.group, |s| s.seq) == self.seq.load(Ordering::SeqCst))
+                || window::with_group(&self.group, |s| s.seq) == self.seq.load(Ordering::SeqCst))
     }
     /// 打完字那一刻还发不发：比 [`Self::current`] 宽一条——打字的工夫里群里冒出
     /// 一句无关的，人照样会发出去；来了好几句、或者有人点了名，就得重看现场。
     fn sendable(&self) -> bool {
         self.enabled
             && (!self.require_fresh
-                || window::with_group(self.group, |s| {
+                || window::with_group(&self.group, |s| {
                     s.drift(self.seq.load(Ordering::SeqCst)) <= 1 && !s.has_unread_mention()
                 }))
     }
@@ -445,7 +445,7 @@ impl Session {
                 capabilities["unavailable"] = Value::Object(unavailable);
                 let count = self.config.context_turns.clamp(1, 80);
                 let (seq, turns, rhythm) = match self.scene {
-                    Scene::Window => window::with_group(self.group, |s| {
+                    Scene::Window => window::with_group(&self.group, |s| {
                         s.take_mention();
                         (s.seq, s.recent(count), s.rhythm())
                     }),
@@ -458,7 +458,7 @@ impl Session {
                 let persona = self
                     .persona
                     .as_ref()
-                    .map(|persona| persona.scene(self.group, &turns, &rhythm))
+                    .map(|persona| persona.scene(&self.group, &turns, &rhythm))
                     .unwrap_or(Value::Null);
                 let turns: Vec<Value> = turns.iter().map(|t| json!({
                     "message_id":t.message_id.to_string(),"user_id":t.user_id.to_string(),"name":t.name,
@@ -476,11 +476,11 @@ impl Session {
                     }
                 }
                 // 还没认过这个群就先问一遍「我在这个群里是谁」；有缓存时是一个空转。
-                if identity::of(self.group).is_none() {
+                if identity::of(&self.group).is_none() {
                     let avatar = self.persona.as_ref().and_then(|persona| persona.avatar());
-                    identity::refresh(&self.ctx, &self.writer, avatar.as_ref(), self.group).await;
+                    identity::refresh(&self.ctx, &self.writer, avatar.as_ref(), &self.group).await;
                 }
-                let identity = identity::of(self.group).map(|identity| json!({
+                let identity = identity::of(&self.group).map(|identity| json!({
                     "name": identity.name, "card": identity.card, "display": identity.display(),
                     "title": identity.title, "role": identity.role, "joined_at": identity.joined_at,
                     "group_name": identity.group_name, "avatar": identity.avatar,
@@ -511,7 +511,7 @@ impl Session {
                 if request["reactions"].as_bool().unwrap_or(false) {
                     self.rpc("internal/reaction_summary", json!({"channel_id":self.group.to_string(),"message_id":id})).await
                 } else if request["forward"].as_bool().unwrap_or(false) {
-                    let source = forward::source_of(&turn.elements, Some(turn.message_id))
+                    let source = forward::source_of(&turn.elements, Some(turn.message_id.clone()))
                         .ok_or_else(|| anyhow::anyhow!("该消息不是合并转发"))?
                         .in_channel(self.group.to_string());
                     let view = forward::expand(&self.ctx, &self.writer, source).await;
@@ -533,7 +533,7 @@ impl Session {
                         "transcript": view.transcript(),
                         "nodes": view.nodes.iter().map(|node| json!({
                             "depth": node.depth,
-                            "message_id": node.message_id.map(|id| id.to_string()),
+                            "message_id": node.message_id,
                             "user_id": node.user_id,
                             "name": node.name,
                             "time": node.time,
@@ -561,10 +561,10 @@ impl Session {
                 // 只允许查本群窗口里真实出现过的人，不能把 QQ 号当成任意资料查询入口。
                 if matches!(kind, "member" | "member_card") {
                     ensure!(user_id.parse::<i64>().is_ok_and(|id| id > 0), "需要有效的群成员 QQ 号");
-                    let known = window::with_group(self.group, |state| state.recent(80).iter().any(|t| t.user_id.to_string() == user_id));
+                    let known = window::with_group(&self.group, |state| state.recent(80).iter().any(|t| t.user_id.to_string() == user_id));
                     ensure!(known || user_id == self.ctx.bot.login_user.get().id, "只可探查当前群聊中出现的成员或自己");
                 }
-                let (method, params) = observation(kind, self.group, user_id)?;
+                let (method, params) = observation(kind, &self.group, user_id)?;
                 if method.starts_with("internal/") {
                     if self.capabilities.is_null() {
                         self.capabilities = self.describe_capabilities().await;
@@ -811,13 +811,13 @@ impl Session {
                             .find(|turn| turn.user_id == id)
                             .map(|turn| turn.name.clone())
                             .unwrap_or_default();
-                        memory::edit(self.group, |memory| {
-                            memory.see(id, &name, now);
+                        memory::edit(&self.group, |memory| {
+                            memory.see(&id, &name, now);
                             if let Some(address) = address {
-                                memory.address(id, address)?;
+                                memory.address(&id, address)?;
                             }
                             if let Some(note) = note {
-                                memory.remember(id, note)?;
+                                memory.remember(&id, note)?;
                             }
                             Ok::<_, anyhow::Error>(())
                         })?;
@@ -827,27 +827,27 @@ impl Session {
                 if let Some(notes) = request["notes"].as_array() {
                     for note in notes.iter().take(8) {
                         let text = note.as_str().unwrap_or("");
-                        memory::edit(self.group, |memory| memory.jot(text, now))?;
+                        memory::edit(&self.group, |memory| memory.jot(text, now))?;
                         done.push("记下一件事".to_string());
                     }
                 }
                 for entry in request["forget_people"].as_array().into_iter().flatten() {
                     let id = actions::id(entry.as_str().unwrap_or(""))?;
-                    if memory::edit(self.group, |memory| memory.forget(id)) {
+                    if memory::edit(&self.group, |memory| memory.forget(&id)) {
                         done.push(format!("忘掉 {id}"));
                     }
                 }
                 for entry in request["forget_notes"].as_array().into_iter().flatten() {
                     let text = entry.as_str().unwrap_or("");
-                    if memory::edit(self.group, |memory| memory.drop_note(text)) {
+                    if memory::edit(&self.group, |memory| memory.drop_note(text)) {
                         done.push("忘掉一件事".to_string());
                     }
                 }
                 ensure!(!done.is_empty(), "没有可写入的记忆内容");
-                memory::flush_now(self.group).await;
+                memory::flush_now(&self.group).await;
                 Ok(json!({
                     "applied": done,
-                    "summary": memory::with_group(self.group, |memory| memory.summary()),
+                    "summary": memory::with_group(&self.group, |memory| memory.summary()),
                     "memos_remaining": budget.saturating_sub(self.memos),
                 }))
             }
@@ -923,7 +923,7 @@ impl Session {
                                 "[动作未确认 {}：{}；结果未知，换个做法更稳]",
                                 request["request"]["action"], error
                             ),
-                            0,
+                            String::new(),
                             Message::new(),
                             false,
                         );
@@ -1093,7 +1093,7 @@ impl Session {
             if let Some(id) = stickers::keep(
                 &segment,
                 source,
-                self.group,
+                &self.group,
                 note,
                 bytes.as_deref(),
                 self.config.sticker_max,
@@ -1172,7 +1172,7 @@ impl Session {
                         Part::Text { text } => {
                             let text = super::protocol::strip(text);
                             let (text, quote) = super::protocol::take_reply_markers(&text);
-                            marked = marked.or(quote);
+                            marked = marked.take().or(quote);
                             Part::Text {
                                 text: text.into_owned(),
                             }
@@ -1259,7 +1259,7 @@ impl Session {
                 let mut msg = Message::new();
                 for id in message_ids {
                     let t = actions::message(turns, id)?;
-                    msg = msg.node_custom(t.user_id, &t.name, t.elements.clone());
+                    msg = msg.node_custom(&t.user_id, &t.name, t.elements.clone());
                 }
                 let login = self.ctx.bot.login_user.get();
                 for text in texts {
@@ -1412,11 +1412,9 @@ impl Session {
             _ => {}
         }
         if let Action::Recall { message_id } = action {
-            window::with_group(self.group, |s| {
-                s.recall(actions::id(message_id).unwrap_or(0))
-            });
+            window::with_group(&self.group, |s| s.recall(message_id.trim()));
         }
-        self.record(summary, 0, Message::new(), true);
+        self.record(summary, String::new(), Message::new(), true);
         Ok(json!({"status":"confirmed","data":result}))
     }
     /// QQ 的表态缓存可能晚于添加回执。仅对明确的“无已知表态”补偿，超时不重放。
@@ -1428,7 +1426,7 @@ impl Session {
                 self.own_reactions.remove(message_id);
                 self.record(
                     format!("[清除自己在消息 {message_id} 上的表态]"),
-                    0,
+                    String::new(),
                     Message::new(),
                     true,
                 );
@@ -1463,7 +1461,7 @@ impl Session {
                 }
                 self.record(
                     format!("[取消消息 {message_id} 的本轮表态 {cleared:?}；其他表态未知]"),
-                    0,
+                    String::new(),
                     Message::new(),
                     true,
                 );
@@ -1546,7 +1544,7 @@ impl Session {
         let pace = self
             .persona
             .as_ref()
-            .map(|persona| persona.pace(self.group))
+            .map(|persona| persona.pace(&self.group))
             .unwrap_or_default();
         let typing = pace.typing_delay(spoken.chars().count());
         // 模型耗时算在「读和想」里，字还得一个个敲：首条不再从打字时间里扣掉它。
@@ -1592,10 +1590,10 @@ impl Session {
         let receipt = send_fresh_msg_id(
             &self.ctx,
             self.writer.clone(),
-            Some(self.group),
+            Some(&self.group),
             None,
             &message,
-            freshness_for(self.group, std::time::Duration::from_secs(self.config.freshness_seconds)),
+            freshness_for(&self.group, std::time::Duration::from_secs(self.config.freshness_seconds)),
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1605,33 +1603,32 @@ impl Session {
                  先读 satori_context 看看现在在聊什么，再决定要不要说"
             )
         })?;
-        let numeric = actions::id(&id)?;
-        self.record(spoken, numeric, message, true);
+        self.record(spoken, id.clone(), message, true);
         Ok(json!({"status":"confirmed","message_id":id}))
     }
-    fn record(&mut self, text: String, message_id: i64, elements: Message, success: bool) {
+    fn record(&mut self, text: String, message_id: String, elements: Message, success: bool) {
         let me = self.ctx.bot.self_id();
-        info!(target: super::LOG_TARGET, "群 {} 动作：{}", self.group, text);
+        info!(target: super::LOG_TARGET, "群 {} 动作：{}", &self.group, text);
         if success && !self.spoke {
             // 锁不可重入：记忆与状态都在 window 的锁外面更新。
-            let target = window::with_group(self.group, |s| {
+            let target = window::with_group(&self.group, |s| {
                 s.recent(20)
                     .iter()
                     .rev()
                     .find(|turn| !turn.from_me)
-                    .map(|turn| turn.user_id)
+                    .map(|turn| turn.user_id.clone())
             });
             if let Some(persona) = &self.persona {
-                persona.spoke(self.group);
+                persona.spoke(&self.group);
             }
             if self.config.memory_enabled
                 && let Some(id) = target
             {
                 let now = chrono::Local::now().timestamp();
-                memory::edit(self.group, |memory| memory.exchange(id, now));
+                memory::edit(&self.group, |memory| memory.exchange(&id, now));
             }
         }
-        window::with_group(self.group, |s| {
+        window::with_group(&self.group, |s| {
             if success && !self.spoke {
                 s.mark_spoke();
             }
@@ -1768,18 +1765,16 @@ async fn media_endpoint(
 /// 正文行首的 `[reply]` 想引的那条 → `reply_to`。点名的消息号得真在眼前的记录里，
 /// 否则一个随口写的号会让整条消息引到不存在的地方；`[reply]` 引最新那条群友消息。
 fn quote_for(quote: super::protocol::Quote, turns: &[Turn]) -> Option<String> {
-    let id = match quote {
-        super::protocol::Quote::Message(id) => turns
-            .iter()
-            .any(|turn| turn.message_id == id)
-            .then_some(id)?,
+    match quote {
+        super::protocol::Quote::Message(id) => {
+            turns.iter().any(|turn| turn.message_id == id).then_some(id)
+        }
         super::protocol::Quote::Latest => turns
             .iter()
             .rev()
-            .find(|turn| !turn.from_me && turn.message_id != 0)?
-            .message_id,
-    };
-    Some(id.to_string())
+            .find(|turn| !turn.from_me && !turn.message_id.is_empty())
+            .map(|turn| turn.message_id.clone()),
+    }
 }
 
 /// `@` 后面紧跟文字时要不要垫一个空格。
@@ -1880,14 +1875,14 @@ mod tests {
     #[test]
     fn ambient_observation_never_accepts_an_arbitrary_rpc_or_group() {
         for kind in ["group", "member", "member_card", "group_card", "essence", "title_display", "honor_display"] {
-            let (method, params) = observation(kind, 12345, "67890").unwrap();
+            let (method, params) = observation(kind, "12345", "67890").unwrap();
             assert!(method == "guild.get" || method == "guild.member.get" || method.starts_with("internal/"));
             assert_eq!(params["guild_id"], "12345");
             assert!(params.get("channel_id").is_none());
         }
-        assert!(observation("group_quit", 12345, "67890").is_err());
-        assert!(observation("mark_all_read", 12345, "67890").is_err());
-        assert_eq!(observation("essence", 12345, "").unwrap().1["page_limit"], 5);
+        assert!(observation("group_quit", "12345", "67890").is_err());
+        assert!(observation("mark_all_read", "12345", "67890").is_err());
+        assert_eq!(observation("essence", "12345", "").unwrap().1["page_limit"], 5);
     }
 
     use crate::plugins::ambient::AmbientConfig;
@@ -1901,7 +1896,7 @@ mod tests {
     async fn start(
         ctx: &Context,
         writer: &LockedWriter,
-        group: i64,
+        group: &str,
         _seq: u64,
         config: &AmbientConfig,
         scratch: &Path,
@@ -1910,7 +1905,7 @@ mod tests {
         super::start(ChatEnv {
             ctx,
             writer,
-            group,
+            group: group.to_string(),
             config: crate::plugins::ambient::chat_config(config),
             enabled: config.enabled,
             require_fresh: true,
@@ -1924,7 +1919,7 @@ mod tests {
 
     #[tokio::test]
     async fn observation_rejects_unknown_people_and_room_before_network() {
-        let group = -8_000_333;
+        let group = "-8000333";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "observe-test").unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
@@ -1933,7 +1928,7 @@ mod tests {
         assert_eq!(r["ok"], false, "{r}");
         assert!(calls.lock().unwrap().is_empty());
         let room = super::start(ChatEnv {
-            ctx: &ctx, writer: &writer, group,
+            ctx: &ctx, writer: &writer, group: group.to_string(),
             config: crate::plugins::ambient::chat_config(&config), enabled: true,
             require_fresh: false, scratch: dir.path(), media: dir.path(),
             persona: None, scene: Scene::Channel,
@@ -1948,7 +1943,7 @@ mod tests {
     struct TestPersona;
 
     impl Persona for TestPersona {
-        fn scene(&self, _group: i64, _turns: &[Turn], _rhythm: &str) -> Value {
+        fn scene(&self, _group: &str, _turns: &[Turn], _rhythm: &str) -> Value {
             json!({
                 "register": "群里发着短句，一句一个意思",
                 "state": "你精神不错",
@@ -1956,7 +1951,7 @@ mod tests {
             })
         }
 
-        fn pace(&self, _group: i64) -> crate::plugins::oai::chat::pace::Pace {
+        fn pace(&self, _group: &str) -> crate::plugins::oai::chat::pace::Pace {
             crate::plugins::oai::chat::pace::Pace {
                 typing_cpm: 60_000,
                 voice_cpm: 60_000,
@@ -2171,7 +2166,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
     async fn fixture(
-        group: i64,
+        group: &str,
     ) -> (
         Context,
         LockedWriter,
@@ -2183,7 +2178,7 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let calls = requests.clone();
         // 真机那张「曾经有、现在没了」的表随版本变；这个群号上的假实现端按 0.24.0 回。
-        let capabilities = if group == -8_000_121 {
+        let capabilities = if group == "-8000121" {
             json!({
                 "version":"0.24.0",
                 "actions":["poke","sign","dice","rps"],
@@ -2264,7 +2259,7 @@ mod tests {
         });
         let ambient = AmbientConfig {
             enabled: true,
-            groups: vec![group],
+            groups: vec![group.to_string()],
             actions_budget: 12,
             messages_budget: 5,
             typing_cpm: 60000,
@@ -2304,18 +2299,18 @@ mod tests {
         window::with_group(group, |s| {
             *s = Default::default();
             s.receive(Turn {
-                user_id: 42,
+                user_id: "42".into(),
                 name: "群友".into(),
                 text: "测试".into(),
                 elements: Message::new()
                     .text("原文")
                     .image("https://example.com/a.gif"),
-                message_id: 123,
+                message_id: "123".into(),
                 ..Turn::default()
             });
             // 另一条带合并转发的消息，供 satori_read 展开。
             s.receive(Turn {
-                user_id: 42,
+                user_id: "42".into(),
                 name: "群友".into(),
                 text: "[合并转发，可用 satori_read 展开]".into(),
                 images: vec![],
@@ -2324,7 +2319,7 @@ mod tests {
                     data.insert("id".into(), simd_json::owned::Value::from("res-outer"));
                     data
                 }),
-                message_id: 124,
+                message_id: "124".into(),
                 ..Turn::default()
             });
         });
@@ -2353,7 +2348,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn a_stolen_sticker_stays_in_the_library_and_comes_back_by_id() {
         let _guard = stickers::tests::exclusive();
-        let group = -8_000_110;
+        let group = "-8000110";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-sticker")
@@ -2365,11 +2360,11 @@ mod tests {
         window::with_group(group, |s| {
             *s = Default::default();
             s.receive(Turn {
-                user_id: 42,
+                user_id: "42".into(),
                 name: "老张".into(),
                 text: "笑死".into(),
                 elements: Message::new().mface("296f8d87", "241904", "k1"),
-                message_id: 321,
+                message_id: "321".into(),
                 ..Turn::default()
             });
         });
@@ -2454,7 +2449,7 @@ mod tests {
 
     #[tokio::test]
     async fn reading_a_forward_prefers_the_kernel_copy_and_follows_the_nested_one() {
-        let group = -8_000_102;
+        let group = "-8000102";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-read")
@@ -2526,7 +2521,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_rpc_chain_retains_receipts_uploads_and_deduplicates() {
-        let group = -8_000_101;
+        let group = "-8000101";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-test")
@@ -2578,7 +2573,7 @@ mod tests {
             assert_eq!(r["ok"], true, "{id}: {r}");
         }
         assert!(!window::with_group(group, |s| s
-            .quote_of(mid.parse().unwrap())
+            .quote_of(mid)
             .is_some_and(|(mine, _)| mine)));
         assert_eq!(
             action(
@@ -2627,7 +2622,7 @@ mod tests {
     /// 变成一串方括号。不认识的方括号（`[笑]`）仍旧当文字，别误伤。
     #[tokio::test]
     async fn compat_markup_inside_tool_text_becomes_real_segments() {
-        let group = -8_000_109;
+        let group = "-8000109";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-markup")
@@ -2669,7 +2664,7 @@ mod tests {
     /// 不是那串 JSON。线上记录 id 134245：群里几个人照着这串东西抄了一遍。
     #[tokio::test]
     async fn a_pseudo_call_inside_tool_text_is_stripped_before_sending() {
-        let group = -8_000_120;
+        let group = "-8000120";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-pseudo")
@@ -2722,7 +2717,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn a_platform_refusal_gives_the_action_budget_back_and_is_not_retried() {
         let _serial = refusal_guard();
-        let group = -8_000_104;
+        let group = "-8000104";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-test")
@@ -2819,7 +2814,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn an_action_the_implementation_removed_is_unavailable_before_the_first_try() {
         let _serial = refusal_guard();
-        let group = -8_000_121;
+        let group = "-8000121";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-removed")
@@ -2864,7 +2859,7 @@ mod tests {
     /// 只有实现端看得见。
     #[tokio::test]
     async fn every_utterance_carries_the_server_side_freshness_condition() {
-        let group = -8_000_108;
+        let group = "-8000108";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-test")
@@ -2872,7 +2867,7 @@ mod tests {
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
         crate::adapters::satori::note_inbound(
             &simd_json::serde::to_owned_value(serde_json::json!({
-                "satori_type":"message-created","group_id":group,"message_id_str":"77123",
+                "satori_type":"message-created","group_id":group,"message_id":"77123",
             }))
             .unwrap(),
         );
@@ -2959,7 +2954,7 @@ mod tests {
     /// 一口气写完的一条 send，在换气处分成几条真消息发出去，额度照真条数扣。
     #[tokio::test]
     async fn one_long_send_leaves_the_group_as_several_messages() {
-        let group = -8_000_108;
+        let group = "-8000108";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-split")
@@ -3023,7 +3018,7 @@ mod tests {
     /// 补一个换行——还是那一条消息，但别连成一句。
     #[tokio::test]
     async fn a_send_with_media_keeps_a_break_between_its_texts() {
-        let group = -8_000_114;
+        let group = "-8000114";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-media")
@@ -3070,7 +3065,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_own_message_even_after_new_group_activity() {
-        let group = -8_000_103;
+        let group = "-8000103";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "recall-stale").unwrap();
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
@@ -3091,7 +3086,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_context_disabled_group_and_private_files_do_not_send() {
-        let group = -8_000_102;
+        let group = "-8000102";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-test")
@@ -3138,11 +3133,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "对真机只读；需要 ACUMEN_CHAT_LIVE_GROUP"]
     async fn live_room_context_reads_the_group_from_the_platform() {
-        let group: i64 = std::env::var("ACUMEN_CHAT_LIVE_GROUP")
-            .expect("先给 ACUMEN_CHAT_LIVE_GROUP=群号")
-            .trim()
-            .parse()
-            .expect("群号");
+        let group = std::env::var("ACUMEN_CHAT_LIVE_GROUP").expect("先给 ACUMEN_CHAT_LIVE_GROUP=群号");
+        let group = group.trim();
         let endpoint = std::env::var("ACUMEN_AMBIENT_LIVE_ENDPOINT")
             .unwrap_or_else(|_| "http://127.0.0.1:3001".to_string());
         let mut config = AppConfig::default();
@@ -3194,7 +3186,7 @@ mod tests {
         let room = super::start(ChatEnv {
             ctx: &ctx,
             writer: &writer,
-            group,
+            group: group.to_string(),
             config: ChatConfig::default(),
             enabled: true,
             require_fresh: false,
@@ -3225,7 +3217,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "真实模型验证；所有 QQ 动作只发到本地假服务"]
     async fn live_agent_social_tool_selection() {
-        let group = -8_000_103;
+        let group = "-8000103";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
@@ -3283,7 +3275,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "真实模型与真实搜索；QQ 动作只到本地假服务"]
     async fn live_agent_reaches_for_the_web_when_the_question_is_about_today() {
-        let group = -8_000_111;
+        let group = "-8000111";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
@@ -3343,7 +3335,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "真实模型验证；所有 QQ 动作只发到本地假服务"]
     async fn live_agent_keeps_its_head_when_the_chat_log_tries_to_reprogram_it() {
-        let group = -8_000_110;
+        let group = "-8000110";
         let (ctx, writer, calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
@@ -3481,7 +3473,7 @@ mod tests {
             }
         });
 
-        let group = -8_000_106;
+        let group = "-8000106";
         let (ctx, writer, _calls, qq) = fixture(group).await;
         let oai_dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "oai-media")
@@ -3573,7 +3565,7 @@ mod tests {
     /// 报错里点明是哪个配置项，人格才改得回来。
     #[tokio::test]
     async fn media_tools_are_gated_by_their_budgets() {
-        let group = -8_000_107;
+        let group = "-8000107";
         let (ctx, writer, _calls, server) = fixture(group).await;
         let dir =
             crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-gate")

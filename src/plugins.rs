@@ -439,14 +439,14 @@ pub async fn run(mut ctx: Context, writer: LockedWriter) -> Result<(), PluginErr
 #[serde(default)]
 pub struct ChannelConfig {
     /// 白名单：非空时只在这些群生效
-    pub white: Vec<i64>,
+    pub white: Vec<String>,
     /// 黑名单：这些群一律不生效
-    pub black: Vec<i64>,
+    pub black: Vec<String>,
 }
 
 impl ChannelConfig {
     /// 群是否放行。`None`（私聊）不受群名单约束。
-    pub fn allows(&self, group_id: Option<i64>) -> bool {
+    pub fn allows(&self, group_id: Option<&str>) -> bool {
         match group_id {
             Some(gid) => self.allows_group(gid),
             None => true,
@@ -454,11 +454,11 @@ impl ChannelConfig {
     }
 
     /// 群是否放行。主动推送只发群，没有"私聊放行"这一说，因此单独一个入口。
-    pub fn allows_group(&self, group_id: i64) -> bool {
-        if self.black.contains(&group_id) {
+    pub fn allows_group(&self, group_id: &str) -> bool {
+        if self.black.iter().any(|id| id == group_id) {
             return false;
         }
-        self.white.is_empty() || self.white.contains(&group_id)
+        self.white.is_empty() || self.white.iter().any(|id| id == group_id)
     }
 }
 
@@ -586,12 +586,12 @@ mod satori_compat_tests {
             "satori_type": "message-created",
             "message_type": "group",
             "time": 1_700_000_000i64,
-            "self_id": 10000,
-            "group_id": 123,
+            "self_id": "10000",
+            "group_id": "123",
             "group_name": "兼容性测试群",
-            "user_id": 42,
-            "message_id": 7_000_000_000_000_000_000i64,
-            "message_id_str": "7000000000000000000",
+            "user_id": "42",
+            "message_id": "7000000000000000000",
+            "message_id": "7000000000000000000",
             "raw_message": "兼容性审计",
             "sender": {"nickname": "Alice", "card": "A", "role": "member"},
             "message": [
@@ -624,10 +624,10 @@ mod satori_compat_tests {
             "satori_type": "message-created",
             "message_type": "private",
             "time": 1_700_000_001i64,
-            "self_id": 10000,
-            "user_id": 42,
-            "message_id": 7_000_000_000_000_000_001i64,
-            "message_id_str": "7000000000000000001",
+            "self_id": "10000",
+            "user_id": "42",
+            "message_id": "7000000000000000001",
+            "message_id": "7000000000000000001",
             "raw_message": "私聊兼容性审计",
             "sender": {"nickname": "Alice", "card": "", "role": "member"},
             "message": [{"type": "text", "data": {"text": "私聊兼容性审计"}}]
@@ -651,30 +651,30 @@ mod satori_compat_tests {
     #[test]
     fn channel_list_semantics() {
         let empty = ChannelConfig::default();
-        assert!(empty.allows_group(1), "两个名单都空时对所有群生效");
+        assert!(empty.allows_group("1"), "两个名单都空时对所有群生效");
 
         let black = ChannelConfig {
             white: vec![],
-            black: vec![2],
+            black: vec!["2".into()],
         };
-        assert!(black.allows_group(1), "只配黑名单时其余群照常生效");
-        assert!(!black.allows_group(2));
+        assert!(black.allows_group("1"), "只配黑名单时其余群照常生效");
+        assert!(!black.allows_group("2"));
 
         let white = ChannelConfig {
-            white: vec![1],
+            white: vec!["1".into()],
             black: vec![],
         };
-        assert!(white.allows_group(1));
-        assert!(!white.allows_group(3), "配了白名单就只对名单内的群生效");
+        assert!(white.allows_group("1"));
+        assert!(!white.allows_group("3"), "配了白名单就只对名单内的群生效");
 
         let both = ChannelConfig {
-            white: vec![1, 2],
-            black: vec![2],
+            white: vec!["1".into(), "2".into()],
+            black: vec!["2".into()],
         };
-        assert!(!both.allows_group(2), "黑名单优先于白名单");
+        assert!(!both.allows_group("2"), "黑名单优先于白名单");
 
         assert!(white.allows(None), "私聊不受群名单约束");
-        assert!(!white.allows(Some(3)));
+        assert!(!white.allows(Some("3")));
     }
 }
 

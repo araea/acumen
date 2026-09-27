@@ -50,8 +50,8 @@ const AVATAR_RUBRIC: &str = "\
 /// 在一个群里的身份。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Identity {
-    /// 自己的 QQ 号。
-    pub user_id: i64,
+    /// 自己的账号 ID。
+    pub user_id: String,
     /// 账号昵称：没设名片的群里，群友看到的就是它。
     pub name: String,
     /// 本群名片；与昵称相同或没设时为空。
@@ -113,7 +113,7 @@ impl Identity {
     ///
     /// 写成「群里看到的是什么」而不是一张字段表——人格要用的是「他们叫我 A宝」
     /// 这件事，不是 `card=A宝`。
-    pub(crate) fn brief(&self, group: i64, now: i64) -> String {
+    pub(crate) fn brief(&self, group: &str, now: i64) -> String {
         if self.name.is_empty() && self.card.is_empty() && self.group_name.is_empty() {
             return String::new();
         }
@@ -161,9 +161,9 @@ struct Entry {
 struct Store {
     /// 头像描述的落盘位置。
     path: Option<PathBuf>,
-    groups: HashMap<i64, Entry>,
+    groups: HashMap<String, Entry>,
     /// 群消息自己带着的群名（见 [`note_group_name`]）。
-    seen_names: HashMap<i64, String>,
+    seen_names: HashMap<String, String>,
     /// 已读过磁盘上那份头像描述。
     loaded: bool,
     avatar: Avatar,
@@ -219,17 +219,17 @@ fn ensure_loaded(store: &mut Store) {
 ///
 /// `guild.get` 并不总给得出 `name`——沙箱群 280183116 就只回 id 和头像，而同一个群的
 /// 每条消息都带着群名。平台那边问不到的时候，用群友刚发的那条消息上写的就是了。
-pub(crate) fn note_group_name(group: i64, name: &str) {
+pub(crate) fn note_group_name(group: &str, name: &str) {
     if name.is_empty() {
         return;
     }
     let mut store = lock();
-    if store.seen_names.get(&group).is_some_and(|had| had == name) {
+    if store.seen_names.get(group).is_some_and(|had| had == name) {
         return;
     }
-    store.seen_names.insert(group, name.to_string());
+    store.seen_names.insert(group.to_string(), name.to_string());
     // 已经缓存着一份没有群名的身份时顺手补上，不必等它过期。
-    if let Some(entry) = store.groups.get_mut(&group)
+    if let Some(entry) = store.groups.get_mut(group)
         && entry.identity.group_name.is_empty()
     {
         entry.identity.group_name = name.to_string();
@@ -238,9 +238,9 @@ pub(crate) fn note_group_name(group: i64, name: &str) {
 
 /// 直接摆一份身份进缓存。测试用：认名字与提示词拼装都不该为了一次断言去连平台。
 #[cfg(test)]
-pub(crate) fn seed(group: i64, identity: Identity) {
+pub(crate) fn seed(group: &str, identity: Identity) {
     lock().groups.insert(
-        group,
+        group.to_string(),
         Entry {
             identity,
             at: Instant::now(),
@@ -249,12 +249,12 @@ pub(crate) fn seed(group: i64, identity: Identity) {
 }
 
 /// 手上这份身份资料；没取到过就是 `None`。
-pub(crate) fn of(group: i64) -> Option<Identity> {
-    lock().groups.get(&group).map(|e| e.identity.clone())
+pub(crate) fn of(group: &str) -> Option<Identity> {
+    lock().groups.get(group).map(|e| e.identity.clone())
 }
 
 /// 注入提示词的那一段；还没取到时为空串。
-pub(crate) fn brief(group: i64) -> String {
+pub(crate) fn brief(group: &str) -> String {
     of(group)
         .map(|identity| identity.brief(group, chrono::Local::now().timestamp()))
         .unwrap_or_default()
@@ -265,7 +265,7 @@ pub(crate) fn brief(group: i64) -> String {
 /// @ 和引用在协议里是明码，喊名字不是——群友多数时候就是打两个字。认出来只加一个
 /// 记号（见 [`super::window::transcript`]），不像 @ 那样直接把人格叫醒：名字是会
 /// 撞车的，「秘」既是它的名片也是别人的半句话，把这种猜测当成点名会让它到处接话。
-pub(crate) fn called_by_name(group: i64, aliases: &[String], text: &str) -> bool {
+pub(crate) fn called_by_name(group: &str, aliases: &[String], text: &str) -> bool {
     if text.is_empty() {
         return false;
     }
@@ -290,27 +290,27 @@ pub(crate) async fn refresh(
     ctx: &Context,
     writer: &LockedWriter,
     avatar: Option<&AvatarAuth>,
-    group: i64,
+    group: &str,
 ) {
     let fresh = {
         let store = lock();
         store
             .groups
-            .get(&group)
+            .get(group)
             .is_some_and(|entry| entry.at.elapsed() < TTL)
     };
     if fresh {
         return;
     }
     let login = ctx.bot.login_user.get();
-    let Ok(me) = login.id.parse::<i64>() else {
+    if login.id.is_empty() {
         return;
-    };
+    }
     let mut identity = probe(
         ctx,
         writer,
         group,
-        me,
+        &login.id,
         login
             .name
             .clone()
@@ -321,7 +321,7 @@ pub(crate) async fn refresh(
     identity.avatar = avatar_note(avatar, login.avatar.as_deref()).await;
     let mut store = lock();
     store.groups.insert(
-        group,
+        group.to_string(),
         Entry {
             identity,
             at: Instant::now(),
@@ -336,12 +336,12 @@ pub(crate) async fn refresh(
 pub(super) async fn probe(
     ctx: &Context,
     writer: &LockedWriter,
-    group: i64,
-    me: i64,
+    group: &str,
+    me: &str,
     account_name: String,
 ) -> Identity {
     let mut identity = Identity {
-        user_id: me,
+        user_id: me.to_string(),
         name: account_name,
         ..Identity::default()
     };
@@ -368,7 +368,7 @@ pub(super) async fn probe(
         identity.card.clear();
     }
     if identity.group_name.is_empty()
-        && let Some(seen) = lock().seen_names.get(&group)
+        && let Some(seen) = lock().seen_names.get(group)
     {
         identity.group_name = seen.clone();
     }
@@ -493,7 +493,7 @@ mod tests {
 
     fn sample() -> Identity {
         Identity {
-            user_id: 3373167460,
+            user_id: "3373167460".into(),
             name: "nawyjx".into(),
             card: "A宝好腻害！".into(),
             title: "不再遗憾啦".into(),
@@ -507,7 +507,7 @@ mod tests {
     /// 群里叫的是名片，不是 QQ 号——这一段的全部意义就在这里。
     #[test]
     fn the_brief_leads_with_the_name_people_actually_see() {
-        let brief = sample().brief(818965288, 0);
+        let brief = sample().brief("818965288", 0);
         assert!(brief.contains("群里看到的你叫「A宝好腻害！」"), "{brief}");
         assert!(brief.contains("账号昵称是「nawyjx」"), "{brief}");
         assert!(brief.contains("不再遗憾啦"), "{brief}");
@@ -524,7 +524,7 @@ mod tests {
             ..sample()
         };
         assert_eq!(identity.display(), "nawyjx");
-        let brief = identity.brief(2, 0);
+        let brief = identity.brief("2", 0);
         assert!(brief.contains("群里看到的你叫「nawyjx」"), "{brief}");
         assert!(!brief.contains("名片"), "{brief}");
     }
@@ -532,7 +532,7 @@ mod tests {
     /// 什么都没取到时给空串：宁可不带这一段，也不摆一份空表让模型去填。
     #[test]
     fn nothing_known_means_nothing_injected() {
-        assert!(Identity::default().brief(2, 0).is_empty());
+        assert!(Identity::default().brief("2", 0).is_empty());
     }
 
     #[test]
@@ -562,7 +562,7 @@ mod tests {
     /// 群里喊的是名片上的字。认出来的是名片、账号昵称和写在配置里的小名。
     #[test]
     fn a_plain_name_in_the_text_counts_as_being_called() {
-        let group = -9_200_001;
+        let group = "-9200001";
         seed(group, sample());
         let aliases = vec!["A宝".to_string()];
         assert!(called_by_name(group, &aliases, "A宝 在吗"));
@@ -575,7 +575,7 @@ mod tests {
     /// 一个字的名字在中文里到处都是；认它等于每句话都算点名。
     #[test]
     fn single_character_names_are_never_matched() {
-        let group = -9_200_002;
+        let group = "-9200002";
         seed(
             group,
             Identity {

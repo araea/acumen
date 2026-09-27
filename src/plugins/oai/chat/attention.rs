@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub(crate) struct Focus {
-    pub users: Vec<i64>,
+    pub users: Vec<String>,
     pub topic: String,
     pub until: Instant,
 }
@@ -19,7 +19,7 @@ struct Request {
     seconds: u64,
 }
 
-/// QQ 号在记录里是数字，模型有时写成字符串（`"416012267"`）。
+/// 用户 ID 是字符串；模型照着记录抄数字号码时常写成 JSON 数字（`416012267`）。
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Id {
@@ -28,10 +28,10 @@ enum Id {
 }
 
 impl Id {
-    fn qq(&self) -> Option<i64> {
+    fn get(&self) -> Option<String> {
         match self {
-            Id::Number(id) => Some(*id),
-            Id::Text(raw) => raw.trim().parse().ok(),
+            Id::Number(id) => Some(id.to_string()),
+            Id::Text(raw) => Some(raw.trim().to_string()).filter(|id| !id.is_empty()),
         }
     }
 }
@@ -83,12 +83,11 @@ pub(crate) fn extract(
                     let users = request
                         .users
                         .iter()
-                        .filter_map(Id::qq)
+                        .filter_map(Id::get)
                         .filter(|id| {
-                            *id > 0
-                                && turns
-                                    .iter()
-                                    .any(|turn| !turn.from_me && turn.user_id == *id)
+                            turns
+                                .iter()
+                                .any(|turn| !turn.from_me && turn.user_id == *id)
                         })
                         .take(3)
                         .collect::<Vec<_>>();
@@ -142,16 +141,16 @@ mod tests {
         let raw = "<focus:{\"users\":[\"416012267\"],\"topic\":\"发言统计口径偏差、对错梗图\",\"seconds\":180}>";
         assert!(is_control(raw));
         let turns = [Turn {
-            user_id: 416012267,
+            user_id: "416012267".into(),
             name: "群友".into(),
             text: "hi".into(),
-            message_id: 1,
+            message_id: "1".into(),
             ..Turn::default()
         }];
         let (body, update) = extract(raw, &turns, 300);
         assert_eq!(body, "");
         let focus = update.unwrap().unwrap();
-        assert_eq!(focus.users, vec![416012267]);
+        assert_eq!(focus.users, vec!["416012267"]);
         assert_eq!(focus.topic, "发言统计口径偏差、对错梗图");
         // 混用括号（`[focus:…>`）也认，别让它从缝里漏出去。
         assert!(is_control("[focus:{\"seconds\":0}>"));

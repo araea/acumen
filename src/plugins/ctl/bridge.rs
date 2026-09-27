@@ -39,7 +39,7 @@ const SKILL: &str = include_str!("../../../res/ctl/skills/acumen-control/SKILL.m
 struct Grant {
     ctx: Context,
     /// 触发这一轮对话的 QQ 号，只用于日志追溯。
-    user: i64,
+    user: String,
     expires: Instant,
 }
 
@@ -96,7 +96,10 @@ pub(crate) async fn lease(ctx: &Context) -> Option<Lease> {
     if !enabled(ctx) {
         return None;
     }
-    let user = ctx.as_message().map(|event| event.user_id()).unwrap_or(0);
+    let user = ctx
+        .as_message()
+        .map(|event| event.user_id().to_string())
+        .unwrap_or_default();
     let (socket, skill) = match ensure_server().await {
         Ok(paths) => paths,
         Err(error) => {
@@ -236,7 +239,7 @@ async fn handle(request: Request) -> Response {
         grants.retain(|_, grant| grant.expires > now);
         grants
             .get(&request.token)
-            .map(|grant| (grant.ctx.clone(), grant.user))
+            .map(|grant| (grant.ctx.clone(), grant.user.clone()))
     };
     let Some((ctx, user)) = grant else {
         // 凭据过期或伪造：不透露任何配置，也不区分两者。
@@ -334,7 +337,7 @@ mod tests {
             event: EventType::Satori(
                 simd_json::serde::to_owned_value(serde_json::json!({
                     "post_type": "message", "message_type": "private",
-                    "user_id": 42, "message_id": 1, "raw_message": "看看插件",
+                    "user_id": "42", "message_id": "1", "raw_message": "看看插件",
                     "message": [{"type": "text", "data": {"text": "看看插件"}}]
                 }))
                 .unwrap(),

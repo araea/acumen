@@ -295,7 +295,7 @@ fn build_reply(ctx: &Context, arg: &str) -> Reply {
 ///
 /// `private_only` 打开后只在私聊开口；群聊里的 help 是普通消息，原样放行给
 /// 后面的插件，而不是被静默吃掉。抽成纯函数是为了能不启浏览器就测这条门禁。
-fn answers(config: &Config, group_id: Option<i64>) -> bool {
+fn answers(config: &Config, group_id: Option<&str>) -> bool {
     !(config.private_only && group_id.is_some())
 }
 
@@ -370,12 +370,12 @@ mod tests {
     fn private_only_answers_private_but_lets_group_pass_through() {
         let private: Config = toml::from_str("enabled = true\nprivate_only = true").unwrap();
         assert!(answers(&private, None), "私聊必须应答");
-        assert!(!answers(&private, Some(123456)), "群聊必须放行");
+        assert!(!answers(&private, Some("123456")), "群聊必须放行");
 
         // 默认（不设 private_only）时群里也应答，保持历史行为。
         let everywhere: Config = toml::from_str("enabled = true").unwrap();
         assert!(answers(&everywhere, None));
-        assert!(answers(&everywhere, Some(123456)));
+        assert!(answers(&everywhere, Some("123456")));
     }
 
     /// 分区代号写错会静默落到「其他」，看图的人不会察觉——所以在这里拦下

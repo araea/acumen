@@ -1,7 +1,7 @@
 // Runs in bridge::tests so the mock and the real server exercise the same bridge.
 #[tokio::test]
 async fn qq_management_is_scoped_bounded_and_deduplicated() {
-    let group = -8_000_501;
+    let group = "-8000501";
     let (ctx, writer, calls, server) = fixture(group).await;
     let dir =
         crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "qq-actions").unwrap();
@@ -26,7 +26,7 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
     assert_eq!(blocked["ok"], false);
     assert!(calls.lock().unwrap().is_empty());
     // 管理动作的授权在开一轮时就定下了：授权改完得重开一轮（一轮只活几十秒）。
-    config.management_groups = vec![group];
+    config.management_groups = vec![group.to_string()];
     let bridge = start(&ctx, &writer, group, 0, &config, dir.path(), dir.path())
         .await
         .unwrap();
@@ -173,7 +173,7 @@ async fn live_qq_sandbox_actions_and_environment() {
         std::env::var("ACUMEN_AMBIENT_LIVE_GROUP").as_deref(),
         Ok("1126269891")
     );
-    let group = 1126269891;
+    let group = "1126269891";
     let (ctx, _, _, mock) = fixture(group).await;
     mock.abort();
     let config_text = tokio::fs::read_to_string("config.toml").await.unwrap();
@@ -224,7 +224,7 @@ async fn live_qq_sandbox_actions_and_environment() {
     );
     let old_card = member["nick"].as_str().unwrap_or("").to_string();
     let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
-    config.management_groups = vec![group];
+    config.management_groups = vec![group.to_string()];
     config.send_freshness_seconds = 0;
     ctx.config
         .write()
@@ -383,7 +383,7 @@ async fn live_qq_sandbox_actions_and_environment() {
 
 #[tokio::test]
 async fn qq_immediate_clear_reports_the_exact_compensated_scope() {
-    let group = -8_000_504;
+    let group = "-8000504";
     let (ctx, writer, calls, server) = fixture(group).await;
     let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "qq-reactions")
         .unwrap();
@@ -445,7 +445,7 @@ async fn qq_immediate_clear_reports_the_exact_compensated_scope() {
 // 全局状态用例靠 `memory::exclusive()` 串行，跨 await 持锁在测试内是有意的。
 #[allow(clippy::await_holding_lock)]
 async fn live_agent_uses_the_new_card_action() {
-    let group = -8_000_505;
+    let group = "-8000505";
     let (ctx, writer, calls, server) = fixture(group).await;
     let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "social-live")
         .unwrap();
@@ -518,7 +518,7 @@ async fn live_identity_reads_the_name_the_room_sees() {
         std::env::var("ACUMEN_AMBIENT_LIVE_GROUP").as_deref(),
         Ok("1126269891")
     );
-    let group = 1126269891;
+    let group = "1126269891";
     let (ctx, _, _, mock) = fixture(group).await;
     mock.abort();
     let disk: toml::Value = toml::from_str(&tokio::fs::read_to_string("config.toml").await.unwrap())
@@ -546,9 +546,9 @@ async fn live_identity_reads_the_name_the_room_sees() {
         token,
     ));
     let login: Value = writer.call(&ctx, "login.get", json!({})).await.unwrap();
-    let me: i64 = login["user"]["id"].as_str().unwrap().parse().unwrap();
+    let me = login["user"]["id"].as_str().unwrap().to_string();
     ctx.bot.login_user.set(LoginUser {
-        id: me.to_string(),
+        id: me.clone(),
         name: login["user"]["name"].as_str().map(str::to_string),
         avatar: login["user"]["avatar"].as_str().map(str::to_string),
         ..Default::default()
@@ -563,7 +563,7 @@ async fn live_identity_reads_the_name_the_room_sees() {
         &ctx,
         &writer,
         group,
-        me,
+        &me,
         login["user"]["name"].as_str().unwrap_or_default().to_string(),
     )
     .await;

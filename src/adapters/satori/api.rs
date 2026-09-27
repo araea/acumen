@@ -38,13 +38,13 @@ where
 pub async fn delete_msg(
     ctx: &Context,
     writer: LockedWriter,
-    message_id: i64,
+    message_id: &str,
 ) -> Result<(), ApiError> {
     let _: Value = writer
         .call(
             ctx,
             "message.delete",
-            json!({"channel_id": channel_id(ctx)?, "message_id": message_id.to_string()}),
+            json!({"channel_id": channel_id(ctx)?, "message_id": message_id}),
         )
         .await?;
     Ok(())
@@ -62,8 +62,7 @@ pub struct SenderInfo {
 pub struct MsgData {
     pub time: i64,
     pub message_type: String,
-    pub message_id: i64,
-    pub real_id: i64,
+    pub message_id: String,
     pub sender: SenderInfo,
     pub message: Message,
 }
@@ -71,37 +70,36 @@ pub struct MsgData {
 pub async fn get_msg(
     ctx: &Context,
     writer: LockedWriter,
-    message_id: i64,
+    message_id: &str,
 ) -> Result<MsgData, ApiError> {
     let value: Value = writer
         .call(
             ctx,
             "message.get",
-            json!({"channel_id": channel_id(ctx)?, "message_id": message_id.to_string()}),
+            json!({"channel_id": channel_id(ctx)?, "message_id": message_id}),
         )
         .await?;
     let resources = writer.resources();
     let channel = value.get("channel").unwrap_or(&Value::Null);
     let user = value.get("user").unwrap_or(&Value::Null);
     let member = value.get("member").unwrap_or(&Value::Null);
-    let id = value.get("id").and_then(value_id).unwrap_or(message_id);
     Ok(MsgData {
         time: value
             .get("created_at")
             .and_then(Value::as_i64)
             .unwrap_or_default()
             / 1000,
-        message_type: if channel
-            .get("id")
-            .and_then(Value::as_str)
-            .is_some_and(|id| id.starts_with("private:"))
-        {
+        // Satori Channel.Type：1 是私聊（DIRECT）。
+        message_type: if channel.get("type").and_then(Value::as_i64) == Some(1) {
             "private".to_string()
         } else {
             "group".to_string()
         },
-        message_id: id,
-        real_id: id,
+        message_id: value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or(message_id)
+            .to_string(),
         sender: SenderInfo {
             nickname: optional_string(user.get("name")),
             card: optional_string(member.get("nick")).or_else(|| optional_string(user.get("nick"))),
@@ -141,10 +139,7 @@ pub async fn get_forward_msg(
                 &resources,
             );
             chain = chain.node_custom(
-                item.get("user")
-                    .and_then(|user| user.get("id"))
-                    .and_then(value_id)
-                    .unwrap_or_default(),
+                user.get("id").and_then(Value::as_str).unwrap_or_default(),
                 user.get("name").and_then(Value::as_str).unwrap_or(""),
                 content,
             );
@@ -156,8 +151,8 @@ pub async fn get_forward_msg(
 pub async fn set_group_special_title(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: i64,
-    user_id: i64,
+    group_id: &str,
+    user_id: &str,
     special_title: String,
     _duration: i64,
 ) -> Result<(), ApiError> {
@@ -166,8 +161,8 @@ pub async fn set_group_special_title(
             ctx,
             "internal/special_title",
             json!({
-                "guild_id": group_id.to_string(),
-                "user_id": user_id.to_string(),
+                "guild_id": group_id,
+                "user_id": user_id,
                 "title": special_title,
             }),
         )
@@ -179,14 +174,10 @@ pub async fn set_group_special_title(
 pub async fn get_group_title_display(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: i64,
+    group_id: &str,
 ) -> Result<bool, ApiError> {
     let value: Value = writer
-        .call(
-            ctx,
-            "internal/title_display",
-            json!({"guild_id": group_id.to_string()}),
-        )
+        .call(ctx, "internal/title_display", json!({"guild_id": group_id}))
         .await?;
     Ok(value
         .get("title_open")
@@ -198,14 +189,14 @@ pub async fn get_group_title_display(
 pub async fn set_group_title_display(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: i64,
+    group_id: &str,
     show: bool,
 ) -> Result<(), ApiError> {
     let _: Value = writer
         .call(
             ctx,
             "internal/title_display",
-            json!({"guild_id": group_id.to_string(), "show": show}),
+            json!({"guild_id": group_id, "show": show}),
         )
         .await?;
     Ok(())
@@ -213,8 +204,8 @@ pub async fn set_group_title_display(
 
 #[derive(Debug, Deserialize)]
 pub struct GroupMemberInfo {
-    pub group_id: i64,
-    pub user_id: i64,
+    pub group_id: String,
+    pub user_id: String,
     pub nickname: String,
     pub card: String,
     pub sex: String,
@@ -233,15 +224,15 @@ pub struct GroupMemberInfo {
 pub async fn get_group_member_info(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: i64,
-    user_id: i64,
+    group_id: &str,
+    user_id: &str,
     _no_cache: bool,
 ) -> Result<GroupMemberInfo, ApiError> {
     let value: Value = writer
         .call(
             ctx,
             "guild.member.get",
-            json!({"guild_id": group_id.to_string(), "user_id": user_id.to_string()}),
+            json!({"guild_id": group_id, "user_id": user_id}),
         )
         .await?;
     let user = value.get("user").unwrap_or(&Value::Null);
@@ -254,8 +245,8 @@ pub async fn get_group_member_info(
         .unwrap_or("member")
         .to_string();
     Ok(GroupMemberInfo {
-        group_id,
-        user_id,
+        group_id: group_id.to_string(),
+        user_id: user_id.to_string(),
         nickname: user
             .get("name")
             .and_then(Value::as_str)
@@ -302,7 +293,7 @@ pub async fn get_group_member_info(
 
 #[derive(Debug, Deserialize)]
 pub struct LoginInfo {
-    pub user_id: i64,
+    pub user_id: String,
     pub nickname: String,
 }
 
@@ -310,7 +301,11 @@ pub async fn get_login_info(ctx: &Context, writer: LockedWriter) -> Result<Login
     let value: Value = writer.call(ctx, "login.get", json!({})).await?;
     let user = value.get("user").unwrap_or(&Value::Null);
     Ok(LoginInfo {
-        user_id: user.get("id").and_then(value_id).unwrap_or_default(),
+        user_id: user
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         nickname: user
             .get("name")
             .or_else(|| user.get("nick"))
@@ -322,7 +317,7 @@ pub async fn get_login_info(ctx: &Context, writer: LockedWriter) -> Result<Login
 
 #[derive(Debug, Deserialize)]
 pub struct GroupInfo {
-    pub group_id: i64,
+    pub group_id: String,
     pub group_name: String,
     pub member_count: Option<i32>,
     pub max_member_count: Option<i32>,
@@ -335,13 +330,13 @@ pub struct GroupInfo {
 pub async fn get_guild_info(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: i64,
+    group_id: &str,
 ) -> Result<GroupInfo, ApiError> {
     let value: Value = writer
-        .call(ctx, "guild.get", json!({"guild_id": group_id.to_string()}))
+        .call(ctx, "guild.get", json!({"guild_id": group_id}))
         .await?;
     Ok(GroupInfo {
-        group_id,
+        group_id: group_id.to_string(),
         group_name: value
             .get("name")
             .and_then(Value::as_str)
@@ -382,7 +377,11 @@ pub async fn get_group_list(
                 .flatten()
                 .filter_map(|guild| {
                     Some(GroupInfo {
-                        group_id: guild.get("id").and_then(value_id)?,
+                        group_id: guild
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())?
+                            .to_string(),
                         group_name: guild
                             .get("name")
                             .and_then(Value::as_str)
@@ -412,8 +411,8 @@ pub async fn get_group_list(
 pub async fn upload_file(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     file: &str,
     name: &str,
 ) -> Result<(), ApiError> {
@@ -443,8 +442,8 @@ pub async fn upload_file(
 pub async fn set_msg_emoji_like(
     ctx: &Context,
     writer: LockedWriter,
-    message_id: i64,
-    emoji_id: i64,
+    message_id: &str,
+    emoji_id: &str,
     set: bool,
 ) -> Result<(), ApiError> {
     let method = if set {
@@ -458,8 +457,8 @@ pub async fn set_msg_emoji_like(
             method,
             json!({
                 "channel_id": channel_id(ctx)?,
-                "message_id": message_id.to_string(),
-                "emoji_id": emoji_id.to_string(),
+                "message_id": message_id,
+                "emoji_id": emoji_id,
             }),
         )
         .await?;
@@ -473,32 +472,11 @@ pub(crate) fn channel_id(ctx: &Context) -> Result<String, ApiError> {
         EventType::Init => None,
     }
     .ok_or("当前上下文没有 Satori 频道")?;
-    if let Some(channel) = event.get_str("channel_id").filter(|id| !id.is_empty()) {
-        return Ok(channel.to_string());
-    }
-    let group_id = event
-        .get_i64("group_id")
-        .or_else(|| event.get_u64("group_id").map(|value| value as i64))
-        .unwrap_or_default();
-    if group_id != 0 {
-        return Ok(group_id.to_string());
-    }
-    let user_id = event
-        .get_i64("user_id")
-        .or_else(|| event.get_u64("user_id").map(|value| value as i64))
-        .unwrap_or_default();
-    if user_id != 0 {
-        Ok(format!("private:{user_id}"))
-    } else {
-        Err("当前上下文缺少 Satori channel_id".into())
-    }
-}
-
-fn value_id(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+    event
+        .get_str("channel_id")
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| "当前上下文缺少 Satori channel_id".into())
 }
 
 fn optional_string(value: Option<&Value>) -> Option<String> {

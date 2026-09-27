@@ -87,26 +87,17 @@ pub fn handle(
                     let content = format_message(params.get("message"));
 
                     if msg_type == "group" {
-                        let gid = params
-                            .get_i64("group_id")
-                            .or_else(|| params.get_u64("group_id").map(|v| v as i64))
-                            .unwrap_or(0);
-
-                        // 尝试从原始事件中获取上下文信息 (如群名)
-                        let mut group_info = gid.to_string();
-                        if let Some(origin) = &packet.original_event {
-                            let origin_gid = origin
-                                .get_i64("group_id")
-                                .or_else(|| origin.get_u64("group_id").map(|v| v as i64))
-                                .unwrap_or(0);
-
-                            // 如果发送的目标群与原始事件的群一致，则复用群名
-                            if origin_gid == gid
-                                && let Some(name) = origin.get_str("group_name")
-                            {
-                                group_info = format!("{}|{}", name, gid);
-                            }
-                        }
+                        let gid = packet.group_id().unwrap_or("");
+                        // 发送的目标群与原始事件的群一致时，复用群名
+                        let group_info = match packet
+                            .original_event
+                            .as_ref()
+                            .filter(|origin| origin.get_str("group_id") == Some(gid))
+                            .and_then(|origin| origin.get_str("group_name"))
+                        {
+                            Some(name) => format!("{name}|{gid}"),
+                            None => gid.to_string(),
+                        };
 
                         info!(
                             target: "Chat",
@@ -114,10 +105,7 @@ pub fn handle(
                             group_info, content
                         );
                     } else if msg_type == "private" {
-                        let uid = params
-                            .get_i64("user_id")
-                            .or_else(|| params.get_u64("user_id").map(|v| v as i64))
-                            .unwrap_or(0);
+                        let uid = packet.user_id().unwrap_or("");
                         info!(
                             target: "Chat",
                             "发送 -> 私聊 [User({})] {}",

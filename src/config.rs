@@ -27,9 +27,9 @@ pub struct AppConfig {
 #[serde(default)]
 pub struct GlobalFilterConfig {
     pub enable_blacklist: bool,
-    pub blacklist: Vec<i64>,
+    pub blacklist: Vec<String>,
     pub enable_whitelist: bool,
-    pub whitelist: Vec<i64>,
+    pub whitelist: Vec<String>,
 }
 
 impl AppConfig {

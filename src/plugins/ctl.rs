@@ -19,7 +19,7 @@ pub mod card;
 struct Config {
     enabled: bool,
     /// Global operators, not group administrators. Empty means console only.
-    admins: Vec<i64>,
+    admins: Vec<String>,
     /// 允许在内置智能体房间里用自然语言驱动 ctl（见 bridge）。关闭后那些房间拿不到凭据。
     agent_control: bool,
     /// 是否把用法、状态、配置与差异排版成卡片图；关掉或没有可用字体时退回纯文本。
@@ -45,7 +45,7 @@ pub fn default_config() -> Value {
 pub fn validate_config(value: &Value) -> Result<(), String> {
     Config::deserialize(value.clone())
         .map(|_| ())
-        .map_err(|_| "admins 必须是 QQ 号整数数组，agent_control、image_enabled 必须是布尔值，image_scale 必须是数字".into())
+        .map_err(|_| "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、image_enabled 必须是布尔值，image_scale 必须是数字".into())
 }
 pub fn is_manager(ctx: &Context) -> bool {
     if ctx.bot.adapter == "console" && ctx.bot.platform == "console" {
@@ -58,10 +58,10 @@ pub fn is_manager(ctx: &Context) -> bool {
         .and_then(|v| v.get("admins"))
         .and_then(Value::as_array);
     ctx.as_message().is_some_and(|msg| {
-        admins.is_some_and(|ids| ids.iter().any(|id| id.as_integer() == Some(msg.user_id())))
+        admins.is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(msg.user_id())))
     })
 }
-pub const DENIED: &str = "此操作仅限 ctl.admins 中的全局管理员；请由本机维护者在 config.toml 的 [ctl] 中配置 admins = [QQ号]";
+pub const DENIED: &str = "此操作仅限 ctl.admins 中的全局管理员；请由本机维护者在 config.toml 的 [ctl] 中配置 admins = [\"用户 ID\"]";
 
 pub(crate) fn resolve(name: &str) -> Result<&'static Plugin, String> {
     get_plugins()
@@ -363,7 +363,7 @@ where
             .get("ctl")
             .and_then(|v| v.get("admins"))
             .and_then(Value::as_array)
-            .is_some_and(|ids| ids.iter().any(|id| id.as_integer() == Some(msg.user_id())));
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(msg.user_id())));
         if !retained {
             return Err("不能移除自己的管理权限；请先交由另一位管理员操作或停机编辑配置".into());
         }
@@ -441,7 +441,7 @@ fn usage(prefix: &str) -> String {
 中文操作：列表、开启、关闭、查看、默认、设置、重置、差异\n\
 插件名支持英文及中文显示名；多个名称以空格或逗号分隔。\n\
 例：{prefix}ctl on 帮助中心 echo\n\
-例：{prefix}ctl set repeater channel.white [123456]\n\
+例：{prefix}ctl set repeater channel.white [\"123456\"]\n\
 例：{prefix}ctl set oai plain_text_max_chars 120\n\
 配置查看与修改仅限 ctl.admins；控制台可管理。全局开关影响全部群与私聊。\n\
 ctl 保留管理入口；修改它的 admins 请在私聊或控制台执行。\n\
@@ -788,7 +788,7 @@ mod tests {
             std::env::temp_dir().join(format!("acumen-ctl-test-{}.toml", rand::random::<u64>()));
         Context {
             event: EventType::Satori(simd_json::serde::to_owned_value(serde_json::json!({
-                "post_type":"message", "message_type":"private", "user_id":42, "message_id":1,
+                "post_type":"message", "message_type":"private", "user_id":"42", "message_id":"1",
                 "raw_message":"/ctl list", "message":[{"type":"text","data":{"text":"/ctl list"}}]
             })).unwrap()),
             config: Arc::new(RwLock::new(config)), config_save_lock: Arc::new(Mutex::new(())),
@@ -840,7 +840,7 @@ mod tests {
             assert!(execute(&ctx, input).await.is_err(), "{input}");
         }
         ctx.config.write().unwrap().plugins.get_mut("ctl").unwrap()["admins"] =
-            Value::Array(vec![Value::Integer(42)]);
+            Value::Array(vec![Value::String("42".into())]);
         ctx.config.write().unwrap().plugins.get_mut("ctl").unwrap()["enabled"] =
             Value::Boolean(false);
         assert!(is_manager(&ctx));
@@ -870,7 +870,7 @@ mod tests {
     async fn nested_edits_validate_empty_arrays_numeric_ranges_and_unknown_keys() {
         let ctx = context(true).await;
         for input in [
-            "set repeater channel.white [\"oops\"]",
+            "set repeater channel.white [123]",
             "set repeater probability 1.5",
             "set help image_scale nan",
             "set restart time 26:00",
@@ -880,10 +880,10 @@ mod tests {
         ] {
             assert!(execute(&ctx, input).await.is_err(), "{input}");
         }
-        execute(&ctx, "set repeater channel.white [123, 456]")
+        execute(&ctx, "set repeater channel.white [\"123\", \"456\"]")
             .await
             .unwrap();
-        execute(&ctx, "set repeater channel.white.1 789")
+        execute(&ctx, "set repeater channel.white.1 \"789\"")
             .await
             .unwrap();
         execute(&ctx, "set help image_scale 2").await.unwrap();
@@ -946,7 +946,7 @@ mod tests {
         execute(&ctx, "set webshot allow_private_hosts true")
             .await
             .unwrap();
-        execute(&ctx, "set repeater channel.black [123456789]")
+        execute(&ctx, "set repeater channel.black [\"123456789\"]")
             .await
             .unwrap();
         execute(&ctx, "off webshot").await.unwrap();
@@ -955,8 +955,8 @@ mod tests {
             .unwrap();
         let saved: AppConfig = toml::from_str(&disk).unwrap();
         assert_eq!(
-            saved.plugins["repeater"]["channel"]["black"][0].as_integer(),
-            Some(123456789)
+            saved.plugins["repeater"]["channel"]["black"][0].as_str(),
+            Some("123456789")
         );
         assert_eq!(
             saved.plugins["webshot"]["allow_private_hosts"].as_bool(),
@@ -1042,7 +1042,7 @@ mod tests {
     async fn cannot_remove_own_remote_access() {
         let ctx = context(false).await;
         ctx.config.write().unwrap().plugins.get_mut("ctl").unwrap()["admins"] =
-            Value::Array(vec![Value::Integer(42)]);
+            Value::Array(vec![Value::String("42".into())]);
         assert!(execute(&ctx, "set ctl admins []").await.is_err());
         execute(&ctx, "reset ctl --confirm").await.unwrap();
         assert!(is_manager(&ctx));
@@ -1060,7 +1060,7 @@ mod tests {
             (vec!["/".into()], "/插件列表", false),
         ] {
             ctx.config.write().unwrap().command_prefix = prefixes;
-            ctx.event = EventType::Satori(simd_json::serde::to_owned_value(serde_json::json!({"post_type":"message","message_type":"private","user_id":42,"message":[{"type":"reply","data":{"id":"7"}},{"type":"at","data":{"qq":"100"}},{"type":"text","data":{"text":text}}]})).unwrap());
+            ctx.event = EventType::Satori(simd_json::serde::to_owned_value(serde_json::json!({"post_type":"message","message_type":"private","user_id":"42","message":[{"type":"reply","data":{"id":"7"}},{"type":"at","data":{"qq":"100"}},{"type":"text","data":{"text":text}}]})).unwrap());
             assert_eq!(
                 ["ctl", "控制", "插件"]
                     .iter()

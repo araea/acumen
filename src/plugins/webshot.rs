@@ -143,7 +143,7 @@ const UNCAPTURABLE_DOMAINS: &[&str] = &["dontboardme.com"];
 /// 号主与机器人共用同一个 QQ 号：他在客户端手打的消息同样带着这个号进来，
 /// satori-qq 会给这类事件打上 `manual_self`。只跳过机器人自己的回声，
 /// 号主贴的链接要照常截图——从前只看 `user_id == self_id`，把他一起漏掉了。
-fn is_own_echo(msg: &crate::event::MessageEvent<'_>, self_id: i64) -> bool {
+fn is_own_echo(msg: &crate::event::MessageEvent<'_>, self_id: &str) -> bool {
     msg.user_id() == self_id && !msg.is_manual_self()
 }
 
@@ -162,17 +162,16 @@ const OFFICIAL_BOT_ID_PREFIXES: &[&str] = &["2854", "3889"];
 
 /// 官方机器人的号都是 10 位，比这短的一概不算——早年发出去的 4—9 位号里，
 /// 恰好以 `2854` / `3889` 开头的会被前缀匹配误伤。
-const OFFICIAL_BOT_ID_MIN: i64 = 1_000_000_000;
+const OFFICIAL_BOT_ID_MIN_DIGITS: usize = 10;
 
 /// 这个号是不是 QQ 官方机器人。按十进制前缀匹配，见 [`OFFICIAL_BOT_ID_PREFIXES`]。
-fn is_official_bot(user_id: i64) -> bool {
-    if user_id < OFFICIAL_BOT_ID_MIN {
-        return false;
-    }
-    let id = user_id.to_string();
-    OFFICIAL_BOT_ID_PREFIXES
-        .iter()
-        .any(|prefix| id.starts_with(prefix))
+/// 不是纯数字的 ID（别的平台）一概不算。
+fn is_official_bot(user_id: &str) -> bool {
+    user_id.len() >= OFFICIAL_BOT_ID_MIN_DIGITS
+        && user_id.bytes().all(|byte| byte.is_ascii_digit())
+        && OFFICIAL_BOT_ID_PREFIXES
+            .iter()
+            .any(|prefix| user_id.starts_with(prefix))
 }
 
 /// 链接是否允许截图，不允许时返回可写进日志的原因。
@@ -619,7 +618,7 @@ pub fn handle(
         }
 
         let user_id = msg_event.user_id();
-        if is_own_echo(&msg_event, ctx.bot.self_id())
+        if is_own_echo(&msg_event, &ctx.bot.self_id())
         {
             return Ok(Some(ctx));
         }
@@ -852,45 +851,47 @@ mod tests {
     /// 号主与机器人共用同一个 QQ 号，判定要看 `manual_self`。
     #[test]
     fn the_owners_own_messages_are_not_treated_as_echoes() {
-        let event = |user_id: i64, manual_self: bool| {
+        let event = |user_id: &str, manual_self: bool| {
             simd_json::serde::to_owned_value(serde_json::json!({
                 "post_type": "message",
                 "message_type": "group",
-                "group_id": 1,
+                "group_id": "1",
                 "user_id": user_id,
                 "manual_self": manual_self,
-                "message_id": 1,
+                "message_id": "1",
                 "message": [{"type": "text", "data": {"text": "https://example.com"}}]
             }))
             .unwrap()
         };
-        let typed = event(7, true);
+        let typed = event("7", true);
         assert!(
-            !is_own_echo(&crate::event::MessageEvent(&typed), 7),
+            !is_own_echo(&crate::event::MessageEvent(&typed), "7"),
             "号主手打的消息不该被当成回声"
         );
-        let echoed = event(7, false);
+        let echoed = event("7", false);
         assert!(
-            is_own_echo(&crate::event::MessageEvent(&echoed), 7),
+            is_own_echo(&crate::event::MessageEvent(&echoed), "7"),
             "机器人自己的回声要跳过"
         );
-        let member = event(42, false);
-        assert!(!is_own_echo(&crate::event::MessageEvent(&member), 7));
+        let member = event("42", false);
+        assert!(!is_own_echo(&crate::event::MessageEvent(&member), "7"));
     }
 
     /// 两个号段都认，段外的号（含号主自己的号）一个都不能碰。
     #[test]
     fn official_bot_ids_are_recognised_by_prefix() {
         for id in [
-            2854196310, // Q群管家
-            2854211260, // 萌卡
-            3889029313, // 小北
-            3889001845, // 夜夜酱
+            "2854196310", // Q群管家
+            "2854211260", // 萌卡
+            "3889029313", // 小北
+            "3889001845", // 夜夜酱
         ] {
             assert!(is_official_bot(id), "{id} 应当判为 QQ 官方机器人");
         }
         // 短号不算：早年发出去的小号里，恰好以这几个数字开头的会被前缀匹配误伤。
-        for id in [0, 42, 3373167460, 3667456514, 2959738664, 2854, 3889] {
+        for id in [
+            "", "42", "3373167460", "3667456514", "2959738664", "2854", "3889", "3889abcdefg",
+        ] {
             assert!(!is_official_bot(id), "{id} 不该判为 QQ 官方机器人");
         }
     }

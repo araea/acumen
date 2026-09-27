@@ -42,14 +42,11 @@ pub async fn prepare_avatars(data: &mut [BarData]) {
         .map(|item| {
             let url = item.avatar_url.clone();
             let cache_dir = cache_dir.clone();
-            // 简单用 URL 的 hash 或 userID 做文件名，这里如果有 ID 优先用 ID
-            let file_key = if let Some(uid) = item.user_id {
-                format!("u_{}", uid)
-            } else if let Some(u) = &url {
-                format!("h_{:x}", md5::compute(u.as_bytes()))
-            } else {
-                "unknown".to_string()
-            };
+            // 按头像地址缓存：换了头像地址就变，跨平台也不会撞。
+            let file_key = url
+                .as_ref()
+                .map(|u| format!("h_{:x}", md5::compute(u.as_bytes())))
+                .unwrap_or_default();
 
             async move {
                 if let Some(url) = url {

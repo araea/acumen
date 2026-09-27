@@ -205,7 +205,7 @@ mod tests {
 
     fn turn(text: &str) -> Turn {
         Turn {
-            user_id: 7,
+            user_id: "7".into(),
             name: "群友".into(),
             text: text.into(),
             ..Turn::default()

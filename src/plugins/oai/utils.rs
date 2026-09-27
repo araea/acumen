@@ -363,8 +363,7 @@ pub async fn get_full_content(
             None => data.get_i64("id").map(|i| i.to_string()),
         };
         if let Some(id_str) = id_str_opt
-            && let Ok(id) = id_str.parse::<i64>()
-            && let Ok(ret) = api::get_msg(ctx, writer.clone(), id).await
+            && let Ok(ret) = api::get_msg(ctx, writer.clone(), &id_str).await
         {
             let mut temp_text = String::new();
             // 这里 Message 结构体内部也是 Segment 列表
@@ -423,7 +422,7 @@ pub async fn get_full_content(
         .find(|seg| seg.get_str("type") == Some("forward"))
         .and_then(|seg| seg.get("data"))
         .and_then(|data| data.get_str("id"))
-        .map(|id| forward::Source::new(Some(id.to_string()), Some(crate::event::MessageEvent(event).message_id())))
+        .map(|id| forward::Source::new(Some(id.to_string()), Some(crate::event::MessageEvent(event).message_id().to_string())))
     {
         append_forward(
             ctx,

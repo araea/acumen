@@ -80,8 +80,7 @@ async fn handle_to_url(
 
     // 2. 检查引用消息
     if let Some(reply_id_str) = matched.reply_id
-        && let Ok(reply_id) = reply_id_str.parse::<i64>()
-        && let Ok(res) = api::get_msg(&ctx, writer.clone(), reply_id).await
+        && let Ok(res) = api::get_msg(&ctx, writer.clone(), &reply_id_str).await
     {
         for seg in res.message.0 {
             let type_ = seg.type_.as_str();
@@ -165,8 +164,7 @@ async fn handle_to_media(
     // 2. 如果参数没有 URL，尝试从引用消息的文本中提取
     if target_url.is_none()
         && let Some(reply_id_str) = matched.reply_id
-        && let Ok(reply_id) = reply_id_str.parse::<i64>()
-        && let Ok(res) = api::get_msg(&ctx, writer.clone(), reply_id).await
+        && let Ok(res) = api::get_msg(&ctx, writer.clone(), &reply_id_str).await
     {
         target_url = res.message.0.iter().find_map(|seg| {
             if seg.type_ == "text"
@@ -208,7 +206,7 @@ async fn handle_to_media(
 /// **视频那条不带引用**：语音、视频、群文件在 QQ 里是「顺媒体」，只能单独成条——带引用
 /// 的话实现端会把它们拆成两条发（见 satori-qq 的 `docs/SATORI_SUPPORT.md`），而这里要的
 /// 就是一条视频。图片没有这个限制，照旧引用。
-fn deliver_message(request_id: i64, url: String, is_video: bool) -> Message {
+fn deliver_message(request_id: &str, url: String, is_video: bool) -> Message {
     if is_video {
         Message::new().video(url)
     } else {
@@ -240,7 +238,7 @@ mod tests {
     fn the_video_take_leaves_the_quote_out() {
         assert_eq!(
             kinds(&deliver_message(
-                7,
+                "7",
                 "https://example.com/a.mp4".into(),
                 true
             )),
@@ -248,7 +246,7 @@ mod tests {
         );
         assert_eq!(
             kinds(&deliver_message(
-                7,
+                "7",
                 "https://example.com/a.png".into(),
                 false
             )),

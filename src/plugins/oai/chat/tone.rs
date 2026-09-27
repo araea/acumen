@@ -61,7 +61,7 @@ pub(crate) fn register(turns: &[Turn]) -> String {
     let bodies: Vec<String> = others.iter().map(|turn| visible(&turn.text)).collect();
     let spoken: Vec<&String> = bodies.iter().filter(|body| !body.is_empty()).collect();
     let speakers = {
-        let mut ids: Vec<i64> = others.iter().map(|turn| turn.user_id).collect();
+        let mut ids: Vec<&str> = others.iter().map(|turn| turn.user_id.as_str()).collect();
         ids.sort_unstable();
         ids.dedup();
         ids.len()
@@ -195,10 +195,14 @@ mod tests {
 
     fn turn(user_id: i64, text: &str, at: i64) -> Turn {
         Turn {
-            user_id,
+            user_id: if user_id == 0 {
+                String::new()
+            } else {
+                user_id.to_string()
+            },
             name: format!("群友{user_id}"),
             text: text.into(),
-            message_id: at,
+            message_id: at.to_string(),
             from_me: user_id == 0,
             at,
             ..Turn::default()

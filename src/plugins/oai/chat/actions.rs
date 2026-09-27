@@ -132,10 +132,10 @@ fn one() -> u8 {
     1
 }
 
-pub(crate) fn id(raw: &str) -> Result<i64> {
-    let value: i64 = raw.parse()?;
-    ensure!(value != 0, "ID 用一个非零的数字");
-    Ok(value)
+pub(crate) fn id(raw: &str) -> Result<String> {
+    let value = raw.trim();
+    ensure!(!value.is_empty(), "ID 不能是空的");
+    Ok(value.to_string())
 }
 pub(crate) fn message<'a>(turns: &'a [Turn], raw: &str) -> Result<&'a Turn> {
     let id = id(raw)?;
@@ -144,28 +144,22 @@ pub(crate) fn message<'a>(turns: &'a [Turn], raw: &str) -> Result<&'a Turn> {
         .find(|t| t.message_id == id)
         .ok_or_else(|| anyhow::anyhow!("消息不在本群当前窗口内，先读 satori_context"))
 }
-pub(crate) fn user(turns: &[Turn], raw: &str) -> Result<i64> {
+pub(crate) fn user(turns: &[Turn], raw: &str) -> Result<String> {
     let id = id(raw)?;
     ensure!(
-        id > 0 && turns.iter().any(|t| t.user_id == id),
+        turns.iter().any(|t| t.user_id == id),
         "目标取自当前群记录里的成员"
     );
     Ok(id)
 }
 
 /// 递归扫一遍动作的 JSON：消息号与群友号各收一栏。
-fn collect_ids(value: &serde_json::Value, messages: &mut Vec<i64>, users: &mut Vec<i64>) {
-    let push = |raw: &serde_json::Value, out: &mut Vec<i64>| match raw {
-        serde_json::Value::String(text) => {
-            if let Ok(id) = text.parse() {
-                out.push(id);
-            }
+fn collect_ids(value: &serde_json::Value, messages: &mut Vec<String>, users: &mut Vec<String>) {
+    let push = |raw: &serde_json::Value, out: &mut Vec<String>| match raw {
+        serde_json::Value::String(text) if !text.trim().is_empty() => {
+            out.push(text.trim().to_string());
         }
-        serde_json::Value::Number(number) => {
-            if let Some(id) = number.as_i64() {
-                out.push(id);
-            }
-        }
+        serde_json::Value::Number(number) => out.push(number.to_string()),
         _ => {}
     };
     match value {
@@ -208,7 +202,7 @@ impl Action {
     /// 房间那一侧没有常驻窗口，动手之前要把这些号换成眼前看得见的那份记录，校验与
     /// 执行才仍然只认一条规矩。字段名是这份协议的一部分，照着扫一遍比另维护一张
     /// 对应表更不容易漏——`message_id` / `user_id` 出现在哪个动作里都是同一个意思。
-    pub(crate) fn referenced(&self) -> (Vec<i64>, Vec<i64>) {
+    pub(crate) fn referenced(&self) -> (Vec<String>, Vec<String>) {
         let mut messages = Vec::new();
         let mut users = Vec::new();
         if let Ok(value) = serde_json::to_value(self) {
@@ -448,11 +442,11 @@ mod tests {
     use crate::message::Message;
     fn turns() -> Vec<Turn> {
         vec![Turn {
-            user_id: 42,
+            user_id: "42".into(),
             name: "群友".into(),
             text: "hi".into(),
             elements: Message::new().image("https://example.com/a.gif"),
-            message_id: 123,
+            message_id: "123".into(),
             ..Turn::default()
         }]
     }
@@ -485,10 +479,10 @@ mod tests {
     fn saying_the_same_thing_twice_is_rejected_before_it_costs_a_write() {
         let mut turns = turns();
         turns.push(Turn {
-            user_id: 10_000,
+            user_id: "10000".into(),
             name: "我".into(),
             text: "那你重启一下路由器试试 不行再说".into(),
-            message_id: 124,
+            message_id: "124".into(),
             from_me: true,
             ..Turn::default()
         });
@@ -533,7 +527,7 @@ mod tests {
 
     #[test]
     fn ids_keep_qq_precision_and_stickers_keep_resources() {
-        assert_eq!(id("7837409278651234567").unwrap(), 7837409278651234567);
+        assert_eq!(id("7837409278651234567").unwrap(), "7837409278651234567");
         let mut ts = turns();
         ts[0].from_me = true;
         Action::Recall {

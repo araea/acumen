@@ -64,10 +64,9 @@ pub struct BotStatus {
 }
 
 impl BotStatus {
-    /// 自己的号，和事件里的 `user_id` 同一套数字：QQ 就是 QQ 号，微信是 wxid 的替身。
-    /// 判断「这条是不是自己发的」要用它，别直接 parse 登录 ID（wxid 会变成 0）。
-    pub fn self_id(&self) -> i64 {
-        crate::adapters::satori::ids::intern(&self.platform, &self.login_user.get().id)
+    /// 自己的账号 ID（Satori `login.user.id`），和事件里的 `user_id` 可以直接比较。
+    pub fn self_id(&self) -> String {
+        self.login_user.get().id.clone()
     }
 }
 
@@ -113,8 +112,8 @@ impl Context {
     /// 等待特定条件的用户输入 (交互式操作)
     pub async fn wait_input(
         &self,
-        group_id: Option<i64>,
-        user_id: Option<i64>,
+        group_id: Option<&str>,
+        user_id: Option<&str>,
         timeout: Duration,
     ) -> Option<Event> {
         self.matcher.wait(group_id, user_id, timeout).await
@@ -137,27 +136,19 @@ impl<'a> GeneralEventView<'a> {
 pub struct MessageEvent<'a>(pub &'a Event);
 
 impl<'a> MessageEvent<'a> {
-    /// 获取群号 (如果是群消息)
-    pub fn group_id(&self) -> Option<i64> {
-        self.0
-            .get_i64("group_id")
-            .or_else(|| self.0.get_u64("group_id").map(|v| v as i64))
+    /// 群号（群消息才有）。与 Satori 一致，ID 一律是字符串。
+    pub fn group_id(&self) -> Option<&'a str> {
+        self.0.get_str("group_id").filter(|id| !id.is_empty())
     }
 
-    /// 获取用户 ID
-    pub fn user_id(&self) -> i64 {
-        self.0
-            .get_i64("user_id")
-            .or_else(|| self.0.get_u64("user_id").map(|v| v as i64))
-            .unwrap_or(0)
+    /// 发送者 ID。
+    pub fn user_id(&self) -> &'a str {
+        self.0.get_str("user_id").unwrap_or("")
     }
 
-    /// 获取消息 ID
-    pub fn message_id(&self) -> i64 {
-        self.0
-            .get_i64("message_id")
-            .or_else(|| self.0.get_u64("message_id").map(|v| v as i64))
-            .unwrap_or(0)
+    /// 消息 ID。
+    pub fn message_id(&self) -> &'a str {
+        self.0.get_str("message_id").unwrap_or("")
     }
 
     /// 获取纯文本内容 (raw_message)
@@ -246,18 +237,14 @@ pub struct SendPacket {
 }
 
 impl SendPacket {
-    /// 尝试从发送包中提取目标群号
-    pub fn group_id(&self) -> Option<i64> {
-        self.params
-            .get_i64("group_id")
-            .or_else(|| self.params.get_u64("group_id").map(|v| v as i64))
+    /// 目标群号
+    pub fn group_id(&self) -> Option<&str> {
+        self.params.get_str("group_id").filter(|id| !id.is_empty())
     }
 
-    /// 尝试从发送包中提取目标用户号（私聊）
-    pub fn user_id(&self) -> Option<i64> {
-        self.params
-            .get_i64("user_id")
-            .or_else(|| self.params.get_u64("user_id").map(|v| v as i64))
+    /// 目标用户（私聊）
+    pub fn user_id(&self) -> Option<&str> {
+        self.params.get_str("user_id").filter(|id| !id.is_empty())
     }
 
     /// 获取 message 字段的 Value

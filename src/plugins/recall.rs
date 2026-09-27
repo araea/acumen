@@ -99,28 +99,16 @@ fn enabled(ctx: &Context) -> bool {
 
 fn id(event: &Event) -> Option<String> {
     event
-        .get_str("message_id_str")
-        .filter(|id| !id.is_empty() && *id != "0")
+        .get_str("message_id")
+        .filter(|id| !id.is_empty())
         .map(str::to_owned)
-        .or_else(|| {
-            event
-                .get_i64("message_id")
-                .filter(|id| *id != 0)
-                .map(|id| id.to_string())
-        })
 }
 
 fn key(ctx: &Context, event: &Event) -> Option<Key> {
     let channel = event
-        .get_i64("group_id")
-        .filter(|id| *id != 0)
-        .map(|id| id.to_string())
-        .or_else(|| {
-            event
-                .get_i64("user_id")
-                .filter(|id| *id != 0)
-                .map(|id| format!("private:{id}"))
-        })?;
+        .get_str("channel_id")
+        .filter(|id| !id.is_empty())?
+        .to_string();
     Some((
         format!(
             "{}:{}:{}",
@@ -134,18 +122,17 @@ fn key(ctx: &Context, event: &Event) -> Option<Key> {
 }
 
 fn same_channel(source: &Event, packet: &SendPacket) -> bool {
-    if let Some(group) = source.get_i64("group_id").filter(|id| *id != 0) {
-        packet.group_id() == Some(group)
-    } else {
-        packet.group_id().is_none_or(|id| id == 0) && packet.user_id() == source.get_i64("user_id")
+    match source.get_str("group_id").filter(|id| !id.is_empty()) {
+        Some(group) => packet.group_id() == Some(group),
+        None => packet.group_id().is_none() && packet.user_id() == source.get_str("user_id"),
     }
 }
 
 fn user_trigger(ctx: &Context, event: &Event) -> bool {
     event.get_str("satori_type") == Some("message-created")
         && event
-            .get_i64("user_id")
-            .is_some_and(|id| id != 0 && id != ctx.bot.self_id())
+            .get_str("user_id")
+            .is_some_and(|id| !id.is_empty() && id != ctx.bot.self_id())
         && !event.get_bool("manual_self").unwrap_or(false)
 }
 
@@ -196,7 +183,7 @@ pub fn handle(
             && let EventType::Satori(event) = &ctx.event
             && event.get_str("satori_type") == Some("message-deleted")
             && event
-                .get_i64("user_id")
+                .get_str("user_id")
                 .is_none_or(|id| id != ctx.bot.self_id())
             && let Some(key) = key(&ctx, event)
         {
@@ -225,7 +212,8 @@ pub fn handle(
             };
             let command_msg_id = msg.message_id();
 
-            if let Ok(target_id) = reply_id_str.parse::<i64>() {
+            {
+                let target_id = reply_id_str.as_str();
                 if let Err(error) = api::delete_msg(&ctx, writer.clone(), target_id).await {
                     warn!(target: "Plugin/Recall", "撤回引用消息 {target_id} 失败: {error}");
                     crate::adapters::satori::send_msg(
@@ -315,7 +303,7 @@ mod tests {
     #[test]
     fn only_track_responses_in_the_trigger_channel() {
         let event = |value| simd_json::serde::to_owned_value(value).unwrap();
-        let packet = |group_id: Option<i64>, user_id: Option<i64>| SendPacket {
+        let packet = |group_id: Option<&str>, user_id: Option<&str>| SendPacket {
             action: "message.create".into(),
             repeat_guard: None,
             freshness: None,
@@ -323,12 +311,12 @@ mod tests {
             original_event: None,
             receipt_message_ids: Default::default(),
         };
-        let group = event(serde_json::json!({"group_id": 42, "user_id": 7}));
-        assert!(same_channel(&group, &packet(Some(42), None)));
-        assert!(!same_channel(&group, &packet(Some(43), None)));
-        assert!(!same_channel(&group, &packet(None, Some(7))));
-        let private = event(serde_json::json!({"user_id": 7}));
-        assert!(same_channel(&private, &packet(None, Some(7))));
-        assert!(!same_channel(&private, &packet(None, Some(8))));
+        let group = event(serde_json::json!({"group_id": "42", "user_id": "7"}));
+        assert!(same_channel(&group, &packet(Some("42"), None)));
+        assert!(!same_channel(&group, &packet(Some("43"), None)));
+        assert!(!same_channel(&group, &packet(None, Some("7"))));
+        let private = event(serde_json::json!({"user_id": "7"}));
+        assert!(same_channel(&private, &packet(None, Some("7"))));
+        assert!(!same_channel(&private, &packet(None, Some("8"))));
     }
 }

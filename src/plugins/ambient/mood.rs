@@ -60,7 +60,7 @@ pub(crate) struct Mood {
     drift: Decaying,
     /// 每个群的兴致偏移（相对 [`WARMTH_BASE`]）。
     #[serde(default)]
-    warmth: HashMap<i64, Decaying>,
+    warmth: HashMap<String, Decaying>,
 }
 
 /// 某一刻的状态快照。
@@ -99,7 +99,7 @@ impl Register {
 }
 
 impl Mood {
-    pub(crate) fn snapshot(&self, group: i64, now: i64) -> Snapshot {
+    pub(crate) fn snapshot(&self, group: &str, now: i64) -> Snapshot {
         let hour = chrono::DateTime::from_timestamp(now, 0)
             .map(|time| {
                 use chrono::Timelike as _;
@@ -108,7 +108,7 @@ impl Mood {
             .unwrap_or(12);
         let warmth = self
             .warmth
-            .get(&group)
+            .get(group)
             .copied()
             .unwrap_or_default()
             .get(now, WARMTH_HALF_LIFE);
@@ -123,24 +123,24 @@ impl Mood {
     /// 这一下有意给得很轻。兴致会压低开口门槛，而说话又抬升兴致——给重了就是一个
     /// 正反馈：说得越多越想说，热闹的群里再也停不住。真正让人收住的是「刚才已经
     /// 说了几轮」那笔加价，不是这里。
-    pub(crate) fn spoke(&mut self, group: i64, now: i64) {
+    pub(crate) fn spoke(&mut self, group: &str, now: i64) {
         self.drift.nudge(-0.03, now, DRIFT_HALF_LIFE, 0.3);
         self.warm(group, 0.04, now);
     }
 
     /// 被 @、被戳、被人接住话：来劲了。
-    pub(crate) fn engaged(&mut self, group: i64, now: i64) {
+    pub(crate) fn engaged(&mut self, group: &str, now: i64) {
         self.drift.nudge(0.04, now, DRIFT_HALF_LIFE, 0.3);
         self.warm(group, 0.16, now);
     }
 
     /// 说完一句没人搭理：兴致降下来，别追着刷存在感。
-    pub(crate) fn ignored(&mut self, group: i64, now: i64) {
+    pub(crate) fn ignored(&mut self, group: &str, now: i64) {
         self.warm(group, -0.20, now);
     }
 
-    fn warm(&mut self, group: i64, delta: f32, now: i64) {
-        self.warmth.entry(group).or_default().nudge(
+    fn warm(&mut self, group: &str, delta: f32, now: i64) {
+        self.warmth.entry(group.to_string()).or_default().nudge(
             delta,
             now,
             WARMTH_HALF_LIFE,
@@ -238,7 +238,7 @@ fn ensure_loaded(store: &mut Store) {
 }
 
 /// 读当前状态。
-pub(crate) fn snapshot(group: i64) -> Snapshot {
+pub(crate) fn snapshot(group: &str) -> Snapshot {
     let mut store = lock();
     ensure_loaded(&mut store);
     store.mood.snapshot(group, chrono::Local::now().timestamp())
@@ -312,8 +312,8 @@ mod tests {
     #[test]
     fn the_clock_alone_makes_late_nights_quieter_than_evenings() {
         let mood = Mood::default();
-        let night = mood.snapshot(1, at_hour(4));
-        let evening = mood.snapshot(1, at_hour(21));
+        let night = mood.snapshot("1", at_hour(4));
+        let evening = mood.snapshot("1", at_hour(21));
         assert!(night.energy < evening.energy, "{night:?} {evening:?}");
         // 困的时候更沉默、打字更慢、想得更久。
         assert!(night.threshold_shift() > evening.threshold_shift());
@@ -326,17 +326,17 @@ mod tests {
     fn interaction_warms_the_room_and_then_it_cools_off() {
         let now = at_hour(20);
         let mut mood = Mood::default();
-        let cold = mood.snapshot(1, now).warmth;
-        mood.engaged(1, now);
-        let warm = mood.snapshot(1, now).warmth;
+        let cold = mood.snapshot("1", now).warmth;
+        mood.engaged("1", now);
+        let warm = mood.snapshot("1", now).warmth;
         assert!(warm > cold, "{warm} vs {cold}");
         // 只影响这个群。
-        assert_eq!(mood.snapshot(2, now).warmth, cold);
+        assert_eq!(mood.snapshot("2", now).warmth, cold);
         // 一小时之后基本凉透。
-        let later = mood.snapshot(1, now + 3_600).warmth;
+        let later = mood.snapshot("1", now + 3_600).warmth;
         assert!(later < cold + 0.05, "{later}");
-        mood.ignored(1, now + 3_600);
-        assert!(mood.snapshot(1, now + 3_600).warmth < cold);
+        mood.ignored("1", now + 3_600);
+        assert!(mood.snapshot("1", now + 3_600).warmth < cold);
     }
 
 

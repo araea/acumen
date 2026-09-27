@@ -57,7 +57,7 @@ fn card_theme(cfg: &AiNewsConfig) -> card::CardTheme {
 }
 
 /// 全局频道过滤只约束群聊；显式加入的私聊目标不属于频道黑白名单。
-pub(super) fn is_allowed(ctx: &Context, target: PushTarget) -> bool {
+pub(super) fn is_allowed(ctx: &Context, target: &PushTarget) -> bool {
     let PushTarget::Group(group_id) = target else {
         return true;
     };
@@ -118,7 +118,7 @@ pub fn build_message(
     ctx: &Context,
     cfg: &AiNewsConfig,
     rendered: &Rendered,
-    reply_to: Option<i64>,
+    reply_to: Option<&str>,
     force_forward: bool,
 ) -> Message {
     let threshold = cfg.forward_threshold_chars;
@@ -135,7 +135,7 @@ pub fn build_message(
     }
 
     let login = ctx.bot.login_user.get();
-    let bot_id = login.id.parse::<i64>().unwrap_or(10000);
+    let bot_id = login.id.as_str();
     let bot_name = login.name.clone().unwrap_or_else(|| "AI 资讯".to_string());
 
     let nodes = rendered.nodes(cfg.forward_node_chars);
@@ -168,10 +168,10 @@ fn retryable_pre_send_error(error: &str) -> bool {
 async fn send_card_with_recovery(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<&str>,
+    user_id: Option<&str>,
     b64: &str,
-    reply_to: Option<i64>,
+    reply_to: Option<&str>,
 ) -> Result<Option<String>, BotError> {
     let mut last_error = None;
     for attempt in 0..3 {
@@ -218,19 +218,21 @@ async fn send_card_with_recovery(
 pub async fn deliver(
     ctx: &Context,
     writer: LockedWriter,
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    target: &PushTarget,
     cfg: &AiNewsConfig,
     payload: &Payload,
-    reply_to: Option<i64>,
+    reply_to: Option<&str>,
 ) -> bool {
+    let (group_id, user_id) = (target.group_id(), target.user_id());
     if let Some(b64) = &payload.image {
         match send_card_with_recovery(ctx, writer.clone(), group_id, user_id, b64, reply_to).await {
             Ok(Some(message_id)) => {
-                let target_id = group_id
-                    .or_else(|| user_id.map(|id| -id))
-                    .unwrap_or_default();
-                state::remember_extraction(target_id, message_id, payload.rendered.clone()).await;
+                state::remember_extraction(
+                    target.state_id(),
+                    message_id,
+                    payload.rendered.clone(),
+                )
+                .await;
                 return true;
             }
             Ok(None) => {
@@ -275,7 +277,7 @@ pub(super) struct Headline<'a> {
 pub(super) async fn deliver_items(
     ctx: &Context,
     writer: LockedWriter,
-    target: PushTarget,
+    target: &PushTarget,
     cfg: &AiNewsConfig,
     headline: Headline<'_>,
     items: &[Item],
@@ -294,8 +296,7 @@ pub(super) async fn deliver_items(
     deliver(
         ctx,
         writer,
-        target.group_id(),
-        target.user_id(),
+        target,
         cfg,
         &payload,
         None,
@@ -403,7 +404,7 @@ pub async fn fetch_realtime_for_push(
     fetch_feed_for_push(cfg, poll, feed, true).await
 }
 
-pub(super) fn item_matches_target(cfg: &AiNewsConfig, target: PushTarget, item: &Item) -> bool {
+pub(super) fn item_matches_target(cfg: &AiNewsConfig, target: &PushTarget, item: &Item) -> bool {
     let category = cfg.category_for_target(target);
     category.is_empty() || item.category.as_deref() == Some(category)
 }
@@ -476,7 +477,7 @@ pub async fn push_brief(
     let header = format!("AI 资讯速递 · {}", subtitle);
 
     let mut attempted_any = false;
-    for target in targets {
+    for target in &targets {
         if !is_allowed(&ctx, target) {
             continue;
         }
@@ -563,7 +564,7 @@ pub async fn push_daily(
     let payload = Payload::build(&cfg, rendered, card_html).await;
 
     let mut attempted_any = false;
-    for target in targets {
+    for target in &targets {
         if !is_allowed(&ctx, target) {
             continue;
         }
@@ -580,8 +581,7 @@ pub async fn push_daily(
         if deliver(
             &ctx,
             writer.clone(),
-            target.group_id(),
-            target.user_id(),
+            target,
             &cfg,
             &payload,
             None,
@@ -627,7 +627,7 @@ pub async fn push_hot_topics(
     let payload = Payload::build(&cfg, rendered, card_html).await;
 
     let mut attempted_any = false;
-    for target in targets {
+    for target in &targets {
         if !is_allowed(&ctx, target) {
             continue;
         }
@@ -638,8 +638,7 @@ pub async fn push_hot_topics(
         let _ = deliver(
             &ctx,
             writer.clone(),
-            target.group_id(),
-            target.user_id(),
+            target,
             &cfg,
             &payload,
             None,
@@ -687,7 +686,7 @@ mod tests {
         ] {
             let (ctx, writer, mut sent, server) = http_fixture(reply).await;
             assert_eq!(
-                deliver(&ctx, writer, Some(123), None, &AiNewsConfig::default(), &payload, None).await,
+                deliver(&ctx, writer, &PushTarget::Group("123".into()), &AiNewsConfig::default(), &payload, None).await,
                 consumed
             );
             let first = sent.try_recv().unwrap();

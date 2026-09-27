@@ -156,10 +156,10 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
         .targets()
         .into_iter()
         .filter(|target| {
-            if cfg.target_realtime_muted(*target) {
+            if cfg.target_realtime_muted(target) {
                 return false;
             }
-            let (start, end) = cfg.quiet_for_target(*target);
+            let (start, end) = cfg.quiet_for_target(target);
             !in_quiet_hours(clock_now, start, end)
         })
         .collect();
@@ -172,7 +172,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
     // 会正常送达，不会在“第一次看到内容变化”时才建基线并被吃掉。
     let mut statuses = HashMap::with_capacity(targets.len());
     for target in &targets {
-        if !pusher::is_allowed(&ctx, *target) {
+        if !pusher::is_allowed(&ctx, target) {
             continue;
         }
         let status = state::realtime_status(target.state_id()).await;
@@ -182,7 +182,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
                 "{} 已建立实时基线，从此刻后的新资讯开始推送。", target
             );
         }
-        statuses.insert(*target, status);
+        statuses.insert(target.clone(), status);
     }
     if statuses.is_empty() {
         return;
@@ -220,7 +220,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
     let max_per_hour = cfg.realtime_max_per_hour.max(1);
     let mut pushed_any = false;
 
-    for target in targets {
+    for target in &targets {
         let Some(status) = statuses.get(&target).copied() else {
             continue;
         };
@@ -326,13 +326,13 @@ struct DeliveryBackoff {
     retry_after: i64,
 }
 
-fn delivery_backoff() -> &'static Mutex<HashMap<i64, DeliveryBackoff>> {
-    static STATE: OnceLock<Mutex<HashMap<i64, DeliveryBackoff>>> = OnceLock::new();
+fn delivery_backoff() -> &'static Mutex<HashMap<String, DeliveryBackoff>> {
+    static STATE: OnceLock<Mutex<HashMap<String, DeliveryBackoff>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// 还需等待的秒数；不在退避中返回 `None`
-fn delivery_backoff_remaining(target: PushTarget) -> Option<i64> {
+fn delivery_backoff_remaining(target: &PushTarget) -> Option<i64> {
     let guard = delivery_backoff().lock().ok()?;
     let entry = guard.get(&target.state_id())?;
     let remaining = entry.retry_after - Utc::now().timestamp();
@@ -340,7 +340,7 @@ fn delivery_backoff_remaining(target: PushTarget) -> Option<i64> {
 }
 
 /// 记一次投递失败，返回本次要等待的秒数
-fn note_delivery_failure(target: PushTarget) -> u64 {
+fn note_delivery_failure(target: &PushTarget) -> u64 {
     let Ok(mut guard) = delivery_backoff().lock() else {
         return 0;
     };
@@ -354,7 +354,7 @@ fn note_delivery_failure(target: PushTarget) -> u64 {
     wait
 }
 
-fn note_delivery_success(target: PushTarget) {
+fn note_delivery_success(target: &PushTarget) {
     if let Ok(mut guard) = delivery_backoff().lock() {
         guard.remove(&target.state_id());
     }

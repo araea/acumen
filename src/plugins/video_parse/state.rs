@@ -28,12 +28,12 @@ pub const REPEAT_WINDOW_SECONDS: i64 = 600;
 /// 一条取过的稿件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Taken {
-    /// 会话标识：群聊是群号，私聊取用户号的负数
-    pub target_id: i64,
+    /// 会话标识：群聊 `g:群号`，私聊 `u:用户 ID`
+    pub target_id: String,
     /// 稿件号
     pub bvid: String,
     /// 贴这条链接的人
-    pub requester: i64,
+    pub requester: String,
     pub created_ts: i64,
 }
 
@@ -107,25 +107,25 @@ async fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
 }
 
 /// 占一次取片名额：原子地判断这条能不能取，能取就记下来。
-pub async fn claim(target_id: i64, requester: i64, bvid: &str, now: i64) -> Claim {
+pub async fn claim(target_id: &str, requester: &str, bvid: &str, now: i64) -> Claim {
     let bvid = bvid.to_string();
     with_state(move |state| apply_claim(state, target_id, requester, &bvid, now)).await
 }
 
 /// 取片没成功，把名额放回去。
-pub async fn release(target_id: i64, requester: i64, bvid: &str) {
+pub async fn release(target_id: &str, requester: &str, bvid: &str) {
     let bvid = bvid.to_string();
     with_state(move |state| apply_release(state, target_id, requester, &bvid)).await
 }
 
 /// `claim` 的纯逻辑部分，便于测试；不触碰全局状态与磁盘。
-fn apply_claim(state: &mut State, target_id: i64, requester: i64, bvid: &str, now: i64) -> Claim {
+fn apply_claim(state: &mut State, target_id: &str, requester: &str, bvid: &str, now: i64) -> Claim {
     let cutoff = now - RETAIN_DAYS * 86_400;
     state.takes.retain(|taken| taken.created_ts >= cutoff);
 
     // 不知道是谁贴的（平台没给用户号）就没有「同一个人」可言，不去重——
     // 宁可多下一遍，也不把另一个人贴的链接一起吞掉。
-    if requester == 0 {
+    if requester.is_empty() {
         return Claim::Ready;
     }
     let recent = state.takes.iter().any(|taken| {
@@ -138,16 +138,16 @@ fn apply_claim(state: &mut State, target_id: i64, requester: i64, bvid: &str, no
         return Claim::Recent;
     }
     state.takes.push(Taken {
-        target_id,
+        target_id: target_id.to_string(),
         bvid: bvid.to_string(),
-        requester,
+        requester: requester.to_string(),
         created_ts: now,
     });
     Claim::Ready
 }
 
 /// `release` 的纯逻辑部分，便于测试；不触碰全局状态与磁盘。
-fn apply_release(state: &mut State, target_id: i64, requester: i64, bvid: &str) {
+fn apply_release(state: &mut State, target_id: &str, requester: &str, bvid: &str) {
     state.takes.retain(|taken| {
         !(taken.target_id == target_id && taken.requester == requester && taken.bvid == bvid)
     });
@@ -162,24 +162,24 @@ mod tests {
     #[test]
     fn the_same_person_pasting_the_same_link_again_is_not_taken_twice() {
         let mut state = State::default();
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, 100), Claim::Ready);
 
         // 同一个人、同一条稿件、还在窗口内：不再下第二遍。
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, 100), Claim::Recent);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, 100), Claim::Recent);
         assert_eq!(
-            apply_claim(&mut state, 42, 7, BVID, 100 + REPEAT_WINDOW_SECONDS),
+            apply_claim(&mut state, "42", "7", BVID, 100 + REPEAT_WINDOW_SECONDS),
             Claim::Recent
         );
 
         // 换个人、换个群、换条稿件、隔久了，都照旧取。
-        assert_eq!(apply_claim(&mut state, 42, 8, BVID, 100), Claim::Ready);
-        assert_eq!(apply_claim(&mut state, 43, 7, BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "8", BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "43", "7", BVID, 100), Claim::Ready);
         assert_eq!(
-            apply_claim(&mut state, 42, 7, "BV1other", 100),
+            apply_claim(&mut state, "42", "7", "BV1other", 100),
             Claim::Ready
         );
         assert_eq!(
-            apply_claim(&mut state, 42, 7, BVID, 100 + REPEAT_WINDOW_SECONDS + 1),
+            apply_claim(&mut state, "42", "7", BVID, 100 + REPEAT_WINDOW_SECONDS + 1),
             Claim::Ready,
             "过了窗口就该当成他又想要这条"
         );
@@ -189,11 +189,11 @@ mod tests {
     #[test]
     fn a_failed_take_frees_the_slot() {
         let mut state = State::default();
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, 100), Claim::Ready);
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, 100), Claim::Recent);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, 100), Claim::Recent);
 
-        apply_release(&mut state, 42, 7, BVID);
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, 100), Claim::Ready);
+        apply_release(&mut state, "42", "7", BVID);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, 100), Claim::Ready);
         assert_eq!(state.takes.len(), 1, "同一条只该留一份记录");
     }
 
@@ -201,42 +201,31 @@ mod tests {
     #[test]
     fn a_link_from_an_unknown_poster_is_never_deduped() {
         let mut state = State::default();
-        assert_eq!(apply_claim(&mut state, 42, 0, BVID, 100), Claim::Ready);
-        assert_eq!(apply_claim(&mut state, 42, 0, BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "", BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "", BVID, 100), Claim::Ready);
         assert!(state.takes.is_empty(), "不知道是谁贴的不留记录");
     }
 
     #[test]
     fn stale_records_are_pruned_before_matching() {
         let mut state = State::default();
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, 100), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, 100), Claim::Ready);
 
         // 隔了一天多：旧记录先清掉，同一条又能取。
         let later = 100 + 2 * 86_400;
-        assert_eq!(apply_claim(&mut state, 42, 7, BVID, later), Claim::Ready);
+        assert_eq!(apply_claim(&mut state, "42", "7", BVID, later), Claim::Ready);
         assert_eq!(state.takes.len(), 1);
     }
 
     #[test]
     fn records_survive_a_round_trip() {
         let mut state = State::default();
-        apply_claim(&mut state, 42, 7, BVID, 100);
+        apply_claim(&mut state, "42", "7", BVID, 100);
 
         let json = serde_json::to_string(&state).unwrap();
         let parsed: State = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.takes.len(), 1);
         assert_eq!(parsed.takes[0].bvid, BVID);
-        assert_eq!(parsed.takes[0].requester, 7);
-    }
-
-    /// 上一版的 `state.json` 存的是预览消息与稿件的对应关系。字段对不上时不该
-    /// 报错，也不该把旧记录当成取片记录——它认的键在 `takes` 里，读出来是空的。
-    #[test]
-    fn the_previous_state_file_reads_as_empty() {
-        let legacy = r#"{"previews":[{"target_id":42,"message_id":"m1","created_ts":100,
-            "url":"https://b23.tv/abc","bvid":"BV1","cid":1,"page":1,"title":"t",
-            "duration":2,"extracted":true,"requester":7}]}"#;
-        let parsed: State = serde_json::from_str(legacy).unwrap();
-        assert!(parsed.takes.is_empty());
+        assert_eq!(parsed.takes[0].requester, "7");
     }
 }

@@ -286,8 +286,7 @@ pub async fn get_image_url(
     }
 
     // 2. 引用回复中的图片
-    let rid = reply_id?.parse::<i64>().ok()?;
-    let resp = api::get_msg(ctx, writer, rid).await.ok()?;
+    let resp = api::get_msg(ctx, writer, reply_id?).await.ok()?;
     resp.message.0.iter().find_map(|seg| {
         if seg.type_ == "image"
             && let Some(url) = seg.data.get("url").and_then(|v| v.as_str())

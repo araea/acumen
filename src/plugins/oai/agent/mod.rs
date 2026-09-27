@@ -198,7 +198,7 @@ pub(crate) struct AgentReply {
 pub(crate) struct ChatContext {
     pub ctx: crate::event::Context,
     pub writer: crate::adapters::satori::LockedWriter,
-    pub group: i64,
+    pub group: String,
     /// 这一轮允许做什么：额度、开关、管理群，见 [`crate::plugins::oai::chat::ChatConfig`]。
     pub config: crate::plugins::oai::chat::ChatConfig,
     /// 工具白名单；`None` 表示有什么挂什么。
@@ -233,7 +233,7 @@ pub(crate) async fn conversation(
             let opened = crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
                 ctx: &chat.ctx,
                 writer: &chat.writer,
-                group: chat.group,
+                group: chat.group.clone(),
                 config: chat.config.clone(),
                 // 房间总是开着：用户问一句就答一句；动手也不必等群聊停下来。
                 enabled: true,

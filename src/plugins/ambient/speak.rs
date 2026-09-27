@@ -180,7 +180,7 @@ pub(crate) async fn compose(
     live: Option<(
         &crate::event::Context,
         &crate::adapters::satori::LockedWriter,
-        i64,
+        &str,
         &mut u64,
     )>,
 ) -> anyhow::Result<String> {
@@ -208,7 +208,7 @@ pub(crate) async fn compose(
             crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
                 ctx,
                 writer,
-                group: *group,
+                group: group.to_string(),
                 config: chat,
                 enabled: config.enabled,
                 require_fresh: true,
@@ -446,12 +446,12 @@ mod tests {
     fn the_answer_rules_only_ride_along_when_someone_asks() {
         let config = AmbientConfig::default();
         let turns = [Turn {
-            user_id: 1,
+            user_id: "1".into(),
             name: "群友".into(),
             text: "装上了但投不了屏".into(),
             ..Turn::default()
         }];
-        let mut scene = super::super::Scene::build(-3, &config, &turns, String::new());
+        let mut scene = super::super::Scene::build("-3", &config, &turns, String::new());
         assert!(!user_prompt(&scene, &turns, Called::Ordinary, &[]).contains(ANSWER_RULES));
         scene.careful = true;
         let prompt = user_prompt(&scene, &turns, Called::Ordinary, &[]);

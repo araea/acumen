@@ -185,9 +185,12 @@ fn take_candidate(ctx: &Context) -> Option<String> {
         .find(|url| is_video_link(url))
 }
 
-/// 会话标识：群聊用群号，私聊取用户号的负数。
-fn target_key(group_id: Option<i64>, user_id: i64) -> i64 {
-    group_id.filter(|id| *id != 0).unwrap_or(-user_id.max(1))
+/// 会话标识：群聊 `g:群号`，私聊 `u:用户 ID`。
+fn target_key(group_id: Option<&str>, user_id: &str) -> String {
+    match group_id {
+        Some(group) => format!("g:{group}"),
+        None => format!("u:{user_id}"),
+    }
 }
 
 /// 插件边界上的错误（`BotError` / `PluginError`）进不了 anyhow，这里翻一层，
@@ -204,8 +207,8 @@ async fn take(
     writer: &LockedWriter,
     config: &Config,
     raw_url: &str,
-    group_id: Option<i64>,
-    user_id: i64,
+    group_id: Option<&str>,
+    user_id: &str,
 ) -> Result<()> {
     let url = resolve_link(raw_url).await?;
     let reference = bilibili::reference(&url).ok_or_else(|| anyhow!("链接没落到稿件页"))?;
@@ -216,7 +219,7 @@ async fn take(
     // 一次是短链、一次是长链时，光比地址认不出来。
     let target = target_key(group_id, user_id);
     let now = chrono::Utc::now().timestamp();
-    if state::claim(target, user_id, &video.bvid, now).await == state::Claim::Recent {
+    if state::claim(&target, user_id, &video.bvid, now).await == state::Claim::Recent {
         info!(target: LOG_TARGET, "同一条刚由同一个人贴过，不再取第二遍：{}", video.bvid);
         return Ok(());
     }
@@ -224,7 +227,7 @@ async fn take(
     let result = extract(ctx, writer, config, &video, group_id, user_id).await;
     if result.is_err() {
         // 没取到就把名额放回去：他重贴一次还能再来。
-        state::release(target, user_id, &video.bvid).await;
+        state::release(&target, user_id, &video.bvid).await;
     }
     result
 }
@@ -239,8 +242,8 @@ async fn extract(
     writer: &LockedWriter,
     config: &Config,
     video: &bilibili::Video,
-    group_id: Option<i64>,
-    user_id: i64,
+    group_id: Option<&str>,
+    user_id: &str,
 ) -> Result<()> {
     let cap = config.max_size_mb.clamp(1, 2048) * 1_048_576;
     let budget = Duration::from_secs(config.timeout_seconds.clamp(30, 1800));
@@ -373,8 +376,8 @@ async fn send(
     streams: &bilibili::Streams,
     size: u64,
     path: &Path,
-    group_id: Option<i64>,
-    user_id: i64,
+    group_id: Option<&str>,
+    user_id: &str,
 ) -> Result<()> {
     let name = format!("{}.mp4", safe_file_name(&video.title));
     let bytes = tokio::fs::read(path).await?;
@@ -482,7 +485,7 @@ mod tests {
     use tokio::sync::Mutex as AsyncMutex;
 
     const SAMPLE: &str = "https://www.bilibili.com/video/BV1GJ411x7h7";
-    const GROUP: i64 = 1000;
+    const GROUP: &str = "1000";
 
     #[test]
     fn only_the_video_pages_we_can_parse_are_taken_over() {
@@ -519,9 +522,9 @@ mod tests {
 
     #[test]
     fn a_group_and_a_private_chat_do_not_share_a_key() {
-        assert_eq!(target_key(Some(42), 7), 42);
-        assert_eq!(target_key(None, 7), -7);
-        assert_eq!(target_key(Some(0), 7), -7);
+        assert_eq!(target_key(Some("42"), "7"), "g:42");
+        assert_eq!(target_key(None, "7"), "u:7");
+        assert_ne!(target_key(Some("7"), "7"), target_key(None, "7"));
     }
 
     // ============ 分流 ============
@@ -548,9 +551,9 @@ mod tests {
             "satori_type": "message-created",
             "message_type": "group",
             "group_id": GROUP,
-            "user_id": user_id,
+            "user_id": user_id.to_string(),
             "manual_self": manual_self,
-            "message_id": 9001,
+            "message_id": "9001",
             "raw_message": text,
             "sender": {"nickname": "群友", "role": "member"},
             "message": message
@@ -566,8 +569,8 @@ mod tests {
             "satori_type": "message-created",
             "message_type": "group",
             "group_id": GROUP,
-            "user_id": 42,
-            "message_id": 9002,
+            "user_id": "42",
+            "message_id": "9002",
             "raw_message": format!("[CQ:json,data={payload}]"),
             "sender": {"nickname": "群友", "role": "member"},
             "message": [{"type": "json", "data": {"data": payload}}]
@@ -643,7 +646,7 @@ mod tests {
         {
             let mut config = ctx.config.write().unwrap();
             let value = config.plugins.get_mut("video_parse").unwrap();
-            value["channel"]["black"] = toml::Value::Array(vec![toml::Value::Integer(GROUP)]);
+            value["channel"]["black"] = toml::Value::Array(vec![toml::Value::String(GROUP.into())]);
         }
         assert!(
             handle(ctx, writer).await.unwrap().is_some(),

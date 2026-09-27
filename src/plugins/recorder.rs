@@ -21,26 +21,43 @@ use toml::Value;
 pub mod entity {
     use sea_orm::entity::prelude::*;
 
+    /// 一条消息记录。资源字段照 Satori 协议取名取型：所有 ID 都是字符串，
+    /// 同一个 ID 只在它的 `platform` 里唯一；`self_id` 是收到（或发出）这条消息的登录账号。
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
     #[sea_orm(table_name = "message_records")]
     pub struct Model {
         #[sea_orm(primary_key)]
-        pub id: i32,
+        pub id: i64,
+        /// `login.platform`
         pub platform: String,
-
-        pub group_id: i64,
-        pub group_name: String,
-
-        pub user_id: i64,
-        pub user_name: String,   // 对应 nickname (用户本名)
-        pub sender_nick: String, // 对应 card (群名片)
-
-        pub message_type: String,
+        /// `login.user.id`
+        pub self_id: String,
+        /// `message.id`
+        pub message_id: String,
+        /// `channel.id`
+        pub channel_id: String,
+        /// `channel.type`：0 群聊（TEXT），1 私聊（DIRECT）
+        pub channel_type: i32,
+        /// `guild.id`；私聊为空串
+        pub guild_id: String,
+        /// `guild.name`
+        pub guild_name: String,
+        /// `guild.avatar`
+        pub guild_avatar: String,
+        /// `user.id`
+        pub user_id: String,
+        /// `user.name`
+        pub user_name: String,
+        /// `member.nick`（群名片），没有时同 `user.name`
+        pub member_nick: String,
+        /// `member.avatar`，没有时同 `user.avatar`
+        pub user_avatar: String,
+        /// 成员角色（owner / admin / member / self）
+        pub member_role: String,
 
         pub content_rich: String, // 富文本摘要
         pub tokens: String,       // 分词结果（空格分隔）
 
-        pub role: String,
         pub is_reply: bool,
         pub length: i32,
         pub time: i64,
@@ -125,16 +142,16 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         // 2. 创建索引
         let indexes = vec![
             sea_orm::sea_query::Index::create()
-                .name("idx_records_group_time")
+                .name("idx_records_guild_time")
                 .table(RecordEntity)
-                .col(entity::Column::GroupId)
+                .col(entity::Column::GuildId)
                 .col(entity::Column::Time)
                 .if_not_exists()
                 .to_owned(),
             sea_orm::sea_query::Index::create()
-                .name("idx_records_group_user_time")
+                .name("idx_records_guild_user_time")
                 .table(RecordEntity)
-                .col(entity::Column::GroupId)
+                .col(entity::Column::GuildId)
                 .col(entity::Column::UserId)
                 .col(entity::Column::Time)
                 .if_not_exists()
@@ -159,7 +176,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             let _ = db.execute_raw(stmt).await;
         }
 
-        // 3. 初始化统计聚合表（建表；若有历史数据则一次性回填，否则自愈近 7 天）
+        // 3. 初始化统计聚合表（建表并自愈近 7 天）
         if let Err(e) = crate::db::stats::init(db).await {
             warn!(target: LOG_TARGET, "统计聚合表初始化失败: {}", e);
         }
@@ -236,201 +253,150 @@ pub fn handle(
     _writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let config: RecorderConfig = get_config_or_default(&ctx, "recorder");
-
-        let mut record = RecordActiveModel {
-            platform: Set("qq".to_string()),
-            tokens: Set("".to_string()),
-            ..Default::default()
-        };
-
-        // 用于接收计算出的纯文本长度和待分词文本
-        let mut text_len = 0;
-        let mut raw_text_for_tokens = String::new();
-
-        let should_insert = match &ctx.event {
-            // === 接收消息 ===
-            EventType::Satori(ev) => {
-                let post_type = ev.get_str("post_type").unwrap_or("");
-                if post_type != "message" {
-                    return Ok(Some(ctx));
-                }
-
-                // 1. 基础信息
-                record.time = Set(ev
-                    .get_i64("time")
-                    .or_else(|| ev.get_u64("time").map(|v| v as i64))
-                    .unwrap_or(0));
-                record.message_type =
-                    Set(ev.get_str("message_type").unwrap_or("unknown").to_string());
-
-                // 2. 群组信息 (Group)
-                let group_id = ev
-                    .get_i64("group_id")
-                    .or_else(|| ev.get_u64("group_id").map(|v| v as i64))
-                    .unwrap_or(0);
-                let group_name = ev.get_str("group_name").unwrap_or("");
-
-                record.group_id = Set(group_id);
-                record.group_name = Set(group_name.to_string());
-
-                // 3. 用户信息
-                record.user_id = Set(ev
-                    .get_i64("user_id")
-                    .or_else(|| ev.get_u64("user_id").map(|v| v as i64))
-                    .unwrap_or(0));
-
-                if let Some(sender) = ev.get("sender") {
-                    let nick = sender.get_str("nickname").unwrap_or("");
-                    let card = sender.get_str("card").unwrap_or("");
-
-                    record.user_name = Set(nick.to_string());
-                    record.sender_nick = Set(if !card.is_empty() {
-                        card.to_string()
-                    } else {
-                        nick.to_string()
-                    });
-
-                    record.role = Set(sender.get_str("role").unwrap_or("member").to_string());
-                }
-
-                // 4. 消息内容
-                let msg_val = ev.get("message");
-                // 解析富文本，填充 content_rich 和获取待分词文本
-                let (len, raw) = parse_message_content(msg_val, &mut record);
-                text_len = len;
-                raw_text_for_tokens = raw;
-
-                true
-            }
-            // === 发送消息 (Bot 自身) ===
-            EventType::BeforeSend(packet) => {
-                if !config.record_self {
-                    return Ok(Some(ctx));
-                }
-                let now = Local::now().timestamp();
-                record.time = Set(now);
-                record.message_type = Set(packet.message_type().unwrap_or("unknown").to_string());
-
-                let group_id = packet.group_id().unwrap_or(0);
-                record.group_id = Set(group_id);
-
-                // 尝试获取群名（如果 available）
-                if let Some(origin) = &packet.original_event {
-                    let origin_gid = origin
-                        .get_i64("group_id")
-                        .or_else(|| origin.get_u64("group_id").map(|v| v as i64))
-                        .unwrap_or(0);
-
-                    if origin_gid != 0 && origin_gid == group_id {
-                        let g_name = origin.get_str("group_name").unwrap_or("").to_string();
-                        record.group_name = Set(g_name);
-                    } else {
-                        record.group_name = Set("".to_string());
-                    }
-                } else {
-                    record.group_name = Set("".to_string());
-                }
-
-                let login = ctx.bot.login_user.get();
-                record.user_id = Set(ctx.bot.self_id());
-                record.user_name = Set(login.name.clone().unwrap_or_default());
-                record.sender_nick = Set(login
-                    .nick
-                    .clone()
-                    .or(login.name.clone())
-                    .unwrap_or_default());
-                record.role = Set("self".to_string());
-
-                let msg_val = packet.message();
-
-                let (len, raw) = parse_message_content(msg_val, &mut record);
-                text_len = len;
-                raw_text_for_tokens = raw;
-
-                true
-            }
-            _ => false,
-        };
-
-        if should_insert {
-            // 计算时间衍生字段
-            let ts = match record.time {
-                ActiveValue::Set(t) | ActiveValue::Unchanged(t) => t,
-                _ => 0,
+        if let EventType::Satori(ev) = &ctx.event
+            && ev.get_str("post_type") == Some("message")
+        {
+            let group = ev.get_str("group_id").unwrap_or("");
+            let sender = ev.get("sender");
+            let user_name = sender.and_then(|s| s.get_str("nickname")).unwrap_or("");
+            let card = sender.and_then(|s| s.get_str("card")).unwrap_or("");
+            let record = RecordActiveModel {
+                message_id: Set(ev.get_str("message_id").unwrap_or("").to_string()),
+                channel_id: Set(ev.get_str("channel_id").unwrap_or("").to_string()),
+                channel_type: Set(if group.is_empty() { 1 } else { 0 }),
+                guild_id: Set(group.to_string()),
+                guild_name: Set(ev.get_str("group_name").unwrap_or("").to_string()),
+                guild_avatar: Set(ev.get_str("group_avatar").unwrap_or("").to_string()),
+                user_id: Set(ev.get_str("user_id").unwrap_or("").to_string()),
+                user_name: Set(user_name.to_string()),
+                member_nick: Set(if card.is_empty() { user_name } else { card }.to_string()),
+                user_avatar: Set(sender
+                    .and_then(|s| s.get_str("avatar"))
+                    .unwrap_or("")
+                    .to_string()),
+                member_role: Set(sender
+                    .and_then(|s| s.get_str("role"))
+                    .unwrap_or("member")
+                    .to_string()),
+                ..Default::default()
             };
-
-            if let Some(dt) = Local.timestamp_opt(ts, 0).single() {
-                record.time_hour = Set(dt.hour() as i32);
-                record.time_weekday = Set(dt.weekday().num_days_from_sunday() as i32);
-            }
-
-            // 计算长度 (仅统计文本消息的字符数)
-            record.length = Set(text_len);
-
-            if !raw_text_for_tokens.is_empty() {
-                let tokens = tokio::task::spawn_blocking(move || {
-                    let jieba = get_jieba();
-                    jieba
-                        .cut(&raw_text_for_tokens, false)
-                        .into_iter()
-                        .map(|t| t.word)
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .await
-                .unwrap_or_default();
-                record.tokens = Set(tokens);
-            } else {
-                record.tokens = Set("".to_string());
-            }
-
-            // 构建统计聚合增量（与消息入库同事务执行，保证两表一致）
-            let delta = crate::db::stats::MessageStatsDelta {
-                group_id: active_i64(&record.group_id),
-                group_name: active_str(&record.group_name),
-                user_id: active_i64(&record.user_id),
-                nick: active_str(&record.sender_nick),
-                time: ts,
-                length: active_i32(&record.length),
-                image_count: active_i32(&record.image_count),
-                is_anim_emoji: active_bool(&record.is_anim_emoji),
-                is_voice: active_bool(&record.is_voice),
-                is_video: active_bool(&record.is_video),
-                face_count: active_i32(&record.face_count),
-            };
-
-            // 消息插入 + 聚合 UPSERT 在同一事务内：要么同时生效，要么同时回滚
-            let insert_res = ctx
-                .db
-                .transaction(|txn| {
-                    let record = record;
-                    let delta = delta;
-                    Box::pin(async move {
-                        record.insert(txn).await?;
-                        crate::db::stats::upsert_message_stats(txn, &delta).await?;
-                        Ok::<(), sea_orm::DbErr>(())
-                    })
-                })
-                .await;
-
-            if let Err(e) = insert_res {
-                error!(target: LOG_TARGET, "消息记录失败: {}", e);
-            }
+            let time = ev
+                .get_i64("time")
+                .or_else(|| ev.get_u64("time").map(|v| v as i64))
+                .unwrap_or(0);
+            insert(&ctx, &ctx.bot, record, time, ev.get("message")).await;
         }
-
         Ok(Some(ctx))
     })
 }
 
-/// 读取 ActiveModel 字段当前值（未设置时返回默认值），用于构建统计聚合增量
-fn active_i64(v: &ActiveValue<i64>) -> i64 {
-    match v {
-        ActiveValue::Set(x) | ActiveValue::Unchanged(x) => *x,
-        _ => 0,
+/// 记下自己发出的消息。由适配器在 `message.create` 成功之后调用：这时才知道消息 ID
+/// 和它真正落在哪个频道（私聊频道要先问实现端）。
+pub async fn record_sent(
+    ctx: &Context,
+    bot: &crate::event::BotStatus,
+    packet: &crate::event::SendPacket,
+    channel_id: &str,
+    message_ids: &[String],
+) {
+    let config: RecorderConfig = get_config_or_default(ctx, "recorder");
+    if !config.enabled || !config.record_self {
+        return;
+    }
+    let guild = packet.group_id().unwrap_or("");
+    let origin = packet
+        .original_event
+        .as_ref()
+        .filter(|origin| origin.get_str("group_id") == Some(guild));
+    let origin_str = |key| origin.and_then(|origin| origin.get_str(key)).unwrap_or("");
+    let login = bot.login_user.get();
+    let user_name = login.name.clone().unwrap_or_default();
+    let record = RecordActiveModel {
+        message_id: Set(message_ids.first().cloned().unwrap_or_default()),
+        channel_id: Set(channel_id.to_string()),
+        channel_type: Set(if guild.is_empty() { 1 } else { 0 }),
+        guild_id: Set(guild.to_string()),
+        guild_name: Set(origin_str("group_name").to_string()),
+        guild_avatar: Set(origin_str("group_avatar").to_string()),
+        user_id: Set(login.id.clone()),
+        user_avatar: Set(login.avatar.clone().unwrap_or_default()),
+        member_nick: Set(login.nick.clone().unwrap_or_else(|| user_name.clone())),
+        user_name: Set(user_name),
+        member_role: Set("self".to_string()),
+        ..Default::default()
+    };
+    insert(ctx, bot, record, Local::now().timestamp(), packet.message()).await;
+}
+
+/// 补齐派生字段（时段、长度、分词、消息特征），与当日统计聚合同事务写入。
+async fn insert(
+    ctx: &Context,
+    bot: &crate::event::BotStatus,
+    mut record: RecordActiveModel,
+    time: i64,
+    message: Option<&OwnedValue>,
+) {
+    let config: RecorderConfig = get_config_or_default(ctx, "recorder");
+    if !config.enabled {
+        return;
+    }
+    record.platform = Set(bot.platform.clone());
+    record.self_id = Set(bot.self_id());
+    record.time = Set(time);
+    if let Some(dt) = Local.timestamp_opt(time, 0).single() {
+        record.time_hour = Set(dt.hour() as i32);
+        record.time_weekday = Set(dt.weekday().num_days_from_sunday() as i32);
+    }
+    let (text_len, raw_text) = parse_message_content(message, &mut record);
+    record.length = Set(text_len);
+    let tokens = if raw_text.is_empty() {
+        String::new()
+    } else {
+        tokio::task::spawn_blocking(move || {
+            get_jieba()
+                .cut(&raw_text, false)
+                .into_iter()
+                .map(|t| t.word)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .await
+        .unwrap_or_default()
+    };
+    record.tokens = Set(tokens);
+
+    let delta = crate::db::stats::MessageStatsDelta {
+        guild_id: active_str(&record.guild_id),
+        guild_name: active_str(&record.guild_name),
+        guild_avatar: active_str(&record.guild_avatar),
+        user_id: active_str(&record.user_id),
+        member_nick: active_str(&record.member_nick),
+        user_avatar: active_str(&record.user_avatar),
+        time,
+        length: text_len,
+        image_count: active_i32(&record.image_count),
+        is_anim_emoji: active_bool(&record.is_anim_emoji),
+        is_voice: active_bool(&record.is_voice),
+        is_video: active_bool(&record.is_video),
+        face_count: active_i32(&record.face_count),
+    };
+    // 消息插入 + 聚合 UPSERT 在同一事务内：要么同时生效，要么同时回滚
+    let inserted = ctx
+        .db
+        .transaction(|txn| {
+            Box::pin(async move {
+                record.insert(txn).await?;
+                crate::db::stats::upsert_message_stats(txn, &delta).await?;
+                Ok::<(), sea_orm::DbErr>(())
+            })
+        })
+        .await;
+    if let Err(e) = inserted {
+        error!(target: LOG_TARGET, "消息记录失败: {}", e);
     }
 }
 
+/// 读取 ActiveModel 字段当前值（未设置时返回默认值），用于构建统计聚合增量
 fn active_i32(v: &ActiveValue<i32>) -> i32 {
     match v {
         ActiveValue::Set(x) | ActiveValue::Unchanged(x) => *x,

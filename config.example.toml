@@ -59,8 +59,8 @@ enabled = true
 # 聊天里走 /ctl，agent 房间里走 `acumen --ctl`（一次性凭据）。两者都按这份 admins 判权。
 [ctl]
 enabled = true
-# 维护者 QQ 号。空列表表示只允许本机控制台管理，聊天里谁也不许改。
-# 例如 [123456789]。改这一项要在私聊或控制台里做——群里的 ctl 动不了 admins。
+# 维护者的用户 ID（QQ 号、wxid……）。空列表表示只允许本机控制台管理，聊天里谁也不许改。
+# 例如 ["123456789"]（ID 一律写成字符串，同 Satori 协议）。改这一项要在私聊或控制台里做——群里的 ctl 动不了 admins。
 admins = []
 # 允许管理员在 agent 房间里用自然语言驱动 ctl（凭据仅本轮有效，见 docs/CONTROL.md）。
 agent_control = true
@@ -184,9 +184,9 @@ cookie = ""
 [video_parse.channel]
 white = []
 black = [
-    818965288,
-    924989840,
-    1095695449,
+    "818965288",
+    "924989840",
+    "1095695449",
 ]
 
 # 网页截图：消息里的网页链接自动截成图。视频站链接交给 [video_parse]，这里跳过。
@@ -617,7 +617,7 @@ enabled = true
 # —— 推送目标 ——
 # 群号与私聊分别存，同号不会混淆。这两个列表用指令增删更省事：
 #   /ai推送添加 群 123456 · /ai推送删除 群 123456 · /ai推送列表
-groups = [175131947]
+groups = ["175131947"]
 private_users = []
 
 # —— 抓取参数 ——
@@ -764,7 +764,7 @@ monthly_recap_time = "10:20:00"
 # 只配 black：除名单内的群以外，所有群都生效并推送；
 # 只配 white：只有名单内的群生效并推送；
 # 两个都空：对所有群生效。同时出现在两边时黑名单优先。
-#   /ctl set stats channel.black [123456789]
+#   /ctl set stats channel.black ["123456789"]
 [stats.channel]
 white = []
 black = []

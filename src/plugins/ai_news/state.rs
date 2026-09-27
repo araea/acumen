@@ -62,7 +62,7 @@ pub struct GroupState {
 /// 不同实现端的局部消息 ID 碰撞。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractionRecord {
-    pub target_id: i64,
+    pub target_id: String,
     pub message_id: String,
     pub created_ts: i64,
     pub rendered: Rendered,
@@ -165,14 +165,14 @@ pub async fn preload() {
 /// 标记已推送是 `mark_brief_seen` 的职责——只有真正发出去了才记，
 /// 否则条目数未达阈值或发送失败时就再也不会补推了。
 pub async fn unseen_brief_keys(
-    group_id: i64,
+    group_id: String,
     keys: Vec<String>,
     retain_days: i64,
 ) -> Vec<String> {
     let cutoff = Utc::now().timestamp() - retain_days.max(1) * 86_400;
 
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         entry.brief_seen.retain(|s| s.ts >= cutoff);
 
         keys.into_iter()
@@ -183,10 +183,10 @@ pub async fn unseen_brief_keys(
 }
 
 /// 记录这些条目已经通过定时精选推送给该群。
-pub async fn mark_brief_seen(group_id: i64, keys: Vec<String>) {
+pub async fn mark_brief_seen(group_id: String, keys: Vec<String>) {
     let now = Utc::now().timestamp();
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         remember(&mut entry.brief_seen, keys, now);
     })
     .await
@@ -214,10 +214,10 @@ pub struct RealtimeStatus {
 }
 
 /// 读取该群的实时推送状态；首次调用会以当前时刻建立基线
-pub async fn realtime_status(group_id: i64) -> RealtimeStatus {
+pub async fn realtime_status(group_id: String) -> RealtimeStatus {
     let now = Utc::now().timestamp();
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         entry.realtime_pushes.retain(|ts| *ts > now - 3_600);
 
         let just_primed = entry.realtime_since.is_none();
@@ -233,10 +233,10 @@ pub async fn realtime_status(group_id: i64) -> RealtimeStatus {
 }
 
 /// 记录一次实时推送：条目计入去重，同时留下一个时间戳供频次上限统计
-pub async fn mark_realtime_sent(group_id: i64, keys: Vec<String>) {
+pub async fn mark_realtime_sent(group_id: String, keys: Vec<String>) {
     let now = Utc::now().timestamp();
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         let sent: HashSet<&str> = keys.iter().map(String::as_str).collect();
         entry
             .realtime_pending
@@ -249,13 +249,13 @@ pub async fn mark_realtime_sent(group_id: i64, keys: Vec<String>) {
 
 /// 把新抓到的实时资讯并入持久队列；已发送或已在队列中的条目不会重复加入。
 pub async fn enqueue_realtime(
-    group_id: i64,
+    group_id: String,
     items: Vec<(String, Item, i64)>,
     retain_days: i64,
 ) -> usize {
     let cutoff = Utc::now().timestamp() - retain_days.max(1) * 86_400;
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         enqueue_pending(entry, items, cutoff)
     })
     .await
@@ -290,24 +290,24 @@ fn enqueue_pending(
 
 /// 查看下一批待发资讯。过期条目以及已被定时档送达的条目会在这里淘汰。
 pub async fn realtime_pending(
-    group_id: i64,
+    group_id: String,
     max_items: usize,
     max_age_minutes: i64,
 ) -> Vec<(String, Item)> {
     let cutoff = Utc::now().timestamp() - max_age_minutes.max(1) * 60;
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         next_pending(entry, max_items, cutoff)
     })
     .await
 }
 
-pub async fn realtime_pending_count(group_id: i64, max_age_minutes: i64) -> usize {
+pub async fn realtime_pending_count(group_id: String, max_age_minutes: i64) -> usize {
     let cutoff = Utc::now().timestamp() - max_age_minutes.max(1) * 60;
     with_state(move |state| {
         state
             .groups
-            .get_mut(&group_id.to_string())
+            .get_mut(&group_id)
             .map_or(0, |entry| {
                 prune_pending(entry, cutoff);
                 entry.realtime_pending.len()
@@ -344,10 +344,10 @@ fn prune_pending(entry: &mut GroupState, freshness_cutoff: i64) {
 /// 把实时基线对齐到当前时刻，并清空旧频次窗口。
 ///
 /// 群暂停实时快报后重新开启时调用，确保暂停期间积压的条目不会突然集中补发。
-pub async fn align_realtime_baseline(group_id: i64) {
+pub async fn align_realtime_baseline(group_id: String) {
     let now = Utc::now().timestamp();
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         entry.realtime_since = Some(now);
         entry.realtime_pushes.clear();
         entry.realtime_pending.clear();
@@ -356,12 +356,12 @@ pub async fn align_realtime_baseline(group_id: i64) {
 }
 
 /// 该群是否已经推送过这一期日报
-pub async fn has_pushed_daily(group_id: i64, date: &str) -> bool {
+pub async fn has_pushed_daily(group_id: String, date: &str) -> bool {
     let date = date.to_string();
     with_state(move |state| {
         state
             .groups
-            .get(&group_id.to_string())
+            .get(&group_id)
             .and_then(|g| g.last_daily_date.as_deref())
             == Some(date.as_str())
     })
@@ -369,25 +369,25 @@ pub async fn has_pushed_daily(group_id: i64, date: &str) -> bool {
 }
 
 /// 记录该群已推送的日报期号
-pub async fn mark_daily(group_id: i64, date: &str) {
+pub async fn mark_daily(group_id: String, date: &str) {
     let date = date.to_string();
     with_state(move |state| {
-        let entry = state.groups.entry(group_id.to_string()).or_default();
+        let entry = state.groups.entry(group_id.clone()).or_default();
         entry.last_daily_date = Some(date);
     })
     .await
 }
 
 /// 清空某个群的去重记录（用于 `/ai推送重置`，便于重新推送一遍）
-pub async fn reset_group(group_id: i64) {
+pub async fn reset_group(group_id: String) {
     with_state(move |state| {
-        state.groups.remove(&group_id.to_string());
+        state.groups.remove(&group_id);
     })
     .await
 }
 
 /// 保存图片消息与其文本/链接的映射，供用户稍后引用图片提取。
-pub async fn remember_extraction(target_id: i64, message_id: String, rendered: Rendered) {
+pub async fn remember_extraction(target_id: String, message_id: String, rendered: Rendered) {
     let now = Utc::now().timestamp();
     let cutoff = now - EXTRACTION_RETAIN_DAYS * 86_400;
     with_state(move |state| {
@@ -407,7 +407,7 @@ pub async fn remember_extraction(target_id: i64, message_id: String, rendered: R
 }
 
 /// 读取被引用卡片的可提取内容。超过 30 天的映射会顺手清理。
-pub async fn extraction(target_id: i64, message_id: &str) -> Option<Rendered> {
+pub async fn extraction(target_id: String, message_id: &str) -> Option<Rendered> {
     let message_id = message_id.to_string();
     let cutoff = Utc::now().timestamp() - EXTRACTION_RETAIN_DAYS * 86_400;
     with_state(move |state| {
@@ -440,7 +440,7 @@ pub enum ExtractionOutcome {
 /// 只返回仍可提取的下标，并把它们并入已提取集合；全部被跳过时返回
 /// [`ExtractionOutcome::AlreadyExtracted`]。
 pub async fn extract_entries(
-    target_id: i64,
+    target_id: String,
     message_id: &str,
     wanted: &[usize],
 ) -> ExtractionOutcome {
@@ -454,7 +454,7 @@ pub async fn extract_entries(
 /// `extract_entries` 的纯逻辑部分，便于测试；不触碰全局状态与磁盘。
 fn apply_extraction(
     state: &mut State,
-    target_id: i64,
+    target_id: String,
     message_id: &str,
     wanted: &BTreeSet<usize>,
     cutoff: i64,
@@ -543,7 +543,7 @@ mod tests {
     fn extraction_records_roundtrip_and_default_for_legacy_state() {
         let state = State {
             extractions: vec![ExtractionRecord {
-                target_id: 42,
+                target_id: "42".into(),
                 message_id: "9001".into(),
                 created_ts: 123,
                 rendered: Rendered {
@@ -569,7 +569,7 @@ mod tests {
     fn extraction_tracks_already_used_indices_and_skips_them() {
         let mut state = State {
             extractions: vec![ExtractionRecord {
-                target_id: 42,
+                target_id: "42".into(),
                 message_id: "m1".into(),
                 created_ts: 100,
                 rendered: Rendered {
@@ -586,7 +586,7 @@ mod tests {
 
         // 请求 1,2：其中 2 已提取，只返回 1-based 第 1 条
         let wanted: BTreeSet<usize> = [0usize, 1].into_iter().collect();
-        match apply_extraction(&mut state, 42, "m1", &wanted, 0) {
+        match apply_extraction(&mut state, "42".into(), "m1", &wanted, 0) {
             ExtractionOutcome::Ready(_, fresh) => assert_eq!(fresh, vec![0]),
             _ => panic!("应返回 Ready"),
         }
@@ -597,21 +597,21 @@ mod tests {
         // 再次请求同样的下标：全部已提取
         let wanted2: BTreeSet<usize> = [0usize, 1].into_iter().collect();
         assert!(matches!(
-            apply_extraction(&mut state, 42, "m1", &wanted2, 0),
+            apply_extraction(&mut state, "42".into(), "m1", &wanted2, 0),
             ExtractionOutcome::AlreadyExtracted
         ));
 
         // 请求未知下标的新条目仍可提取
         let wanted3: BTreeSet<usize> = [2usize].into_iter().collect();
         assert!(matches!(
-            apply_extraction(&mut state, 42, "m1", &wanted3, 0),
+            apply_extraction(&mut state, "42".into(), "m1", &wanted3, 0),
             ExtractionOutcome::Ready(_, _)
         ));
 
         // 未找到卡片
         let missing: BTreeSet<usize> = [0usize].into_iter().collect();
         assert!(matches!(
-            apply_extraction(&mut state, 42, "nope", &missing, 0),
+            apply_extraction(&mut state, "42".into(), "nope", &missing, 0),
             ExtractionOutcome::Missing
         ));
     }
@@ -623,7 +623,7 @@ mod tests {
         let mut state = State {
             extractions: vec![
                 ExtractionRecord {
-                    target_id: 111,
+                    target_id: "111".into(),
                     message_id: "m_a".into(),
                     created_ts: 100,
                     rendered: Rendered {
@@ -635,7 +635,7 @@ mod tests {
                     extracted: Vec::new(),
                 },
                 ExtractionRecord {
-                    target_id: 222,
+                    target_id: "222".into(),
                     message_id: "m_b".into(),
                     created_ts: 100,
                     rendered: Rendered {
@@ -653,7 +653,7 @@ mod tests {
         // 群 A 提取第 2 条
         let wanted_a: BTreeSet<usize> = [1usize].into_iter().collect();
         assert!(matches!(
-            apply_extraction(&mut state, 111, "m_a", &wanted_a, 0),
+            apply_extraction(&mut state, "111".into(), "m_a", &wanted_a, 0),
             ExtractionOutcome::Ready(_, _)
         ));
         // A 已标记，B 不受影响
@@ -663,7 +663,7 @@ mod tests {
         // 群 B 仍可提取自己的第 2 条（序号互不干扰）
         let wanted_b: BTreeSet<usize> = [1usize].into_iter().collect();
         assert!(matches!(
-            apply_extraction(&mut state, 222, "m_b", &wanted_b, 0),
+            apply_extraction(&mut state, "222".into(), "m_b", &wanted_b, 0),
             ExtractionOutcome::Ready(_, _)
         ));
         assert_eq!(state.extractions[1].extracted, vec![1]);

@@ -104,10 +104,10 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
         fake_model("[focus:{\"topic\":\"测试话题\",\"seconds\":30}]\n[silent]").await;
     // 第一轮的回话要等测试放行，第二轮（搭话指令）才不必再等。
     let _ = std::fs::remove_file(&release);
-    let group = -8_000_001;
+    let group = "-8000001";
     let ambient = AmbientConfig {
         enabled: true,
-        groups: vec![group],
+        groups: vec![group.to_string()],
         // 判定模型与发言模型都指向这个假端点：没有供应商前缀，走 oai 默认接口。
         gate_model: "fake-model".into(),
         reply_model: "fake-model".into(),
@@ -162,7 +162,7 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     setup(dir.path()).await.unwrap();
     let base = dir.path().to_path_buf();
     let turn = |id| Turn {
-        user_id: 42,
+        user_id: "42".into(),
         name: "群友".into(),
         text: "@你 测试话题".into(),
         message_id: id,
@@ -177,7 +177,7 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     };
     window::with_group(group, |state| {
         *state = Default::default();
-        assert!(state.receive(turn(1)));
+        assert!(state.receive(turn("1".into())));
     });
     let task = tokio::spawn({
         let (ctx, writer, mgr, base) = (ctx.clone(), writer.clone(), mgr.clone(), base.clone());
@@ -190,7 +190,7 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     })
     .await
     .unwrap();
-    window::with_group(group, |state| assert!(!state.receive(turn(2))));
+    window::with_group(group, |state| assert!(!state.receive(turn("2".into()))));
     std::fs::write(&release, "go").unwrap();
     tokio::time::timeout(Duration::from_secs(15), task)
         .await
@@ -253,7 +253,7 @@ async fn live_persona_and_gate_dialogue() {
         "判定模型 {} 带供应商前缀，请设置 ACUMEN_AMBIENT_LIVE_GATE_BASE / _KEY",
         config.gate_model
     );
-    let group = -8_000_002;
+    let group = "-8000002";
     let mut turns = Vec::new();
     let mut state = window::GroupState::default();
     for (index, text) in [
@@ -269,10 +269,10 @@ async fn live_persona_and_gate_dialogue() {
     .enumerate()
     {
         turns.push(Turn {
-            user_id: 114514,
+            user_id: "114514".into(),
             name: "群友甲".into(),
             text: (*text).into(),
-            message_id: index as i64 + 1,
+            message_id: (index + 1).to_string(),
             at: chrono::Local::now().timestamp(),
             ..Turn::default()
         });
@@ -335,7 +335,7 @@ async fn live_persona_and_gate_dialogue() {
                     let text = plain_text(&item.message);
                     assert!(!text.contains("[focus:"));
                     turns.push(Turn {
-                        user_id: 10000,
+                        user_id: "10000".into(),
                         name: "我".into(),
                         text,
                         from_me: true,
@@ -356,10 +356,10 @@ async fn live_persona_and_gate_dialogue() {
         ),
     ] {
         let latest = [Turn {
-            user_id: 114514,
+            user_id: "114514".into(),
             name: "群友甲".into(),
             text: text.into(),
-            message_id: 9,
+            message_id: "9".into(),
             at: chrono::Local::now().timestamp(),
             ..Turn::default()
         }];
@@ -392,8 +392,8 @@ async fn live_persona_and_gate_dialogue() {
 async fn live_replay() {
     #[derive(serde::Deserialize)]
     struct Line {
-        id: i64,
-        user_id: i64,
+        id: String,
+        user_id: String,
         name: String,
         text: String,
         at: i64,
@@ -402,7 +402,7 @@ async fn live_replay() {
     }
     #[derive(serde::Deserialize)]
     struct Replay {
-        group: i64,
+        group: String,
         lines: Vec<Line>,
         cuts: Vec<usize>,
     }
@@ -443,10 +443,10 @@ async fn live_replay() {
         .lines
         .iter()
         .map(|line| Turn {
-            user_id: line.user_id,
+            user_id: line.user_id.clone(),
             name: if line.me { "我".into() } else { line.name.clone() },
             text: line.text.clone(),
-            message_id: line.id,
+            message_id: line.id.clone(),
             from_me: line.me,
             at: line.at,
             ..Turn::default()
@@ -466,7 +466,7 @@ async fn live_replay() {
             .map(|turn| Turn { at: turn.at + shift, ..turn })
             .collect();
         let seen = seen.as_slice();
-        let scene = Scene::build(replay.group, &config, seen, state.rhythm());
+        let scene = Scene::build(&replay.group, &config, seen, state.rhythm());
         // 回放点之间新来的那几条，就是这一眼新看到的。
         let fresh = seen
             .iter()

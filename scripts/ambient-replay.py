@@ -9,7 +9,7 @@
 """
 import argparse, datetime, json, re, sqlite3, sys
 
-ME = 3373167460
+ME = "3373167460"
 TZ = datetime.timezone(datetime.timedelta(hours=8))
 
 
@@ -22,7 +22,7 @@ def clean(text: str) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("group", type=int)
+    ap.add_argument("group")
     ap.add_argument("start")
     ap.add_argument("end")
     ap.add_argument("--db", default="data/bot.db")
@@ -31,8 +31,8 @@ def main() -> None:
     stamp = lambda s: int(datetime.datetime.fromisoformat(s).replace(tzinfo=TZ).timestamp())
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     rows = db.execute(
-        "select id, user_id, user_name, content_rich, time from message_records "
-        "where group_id=? and time between ? and ? order by time, id",
+        "select message_id, user_id, member_nick, content_rich, time from message_records "
+        "where guild_id=? and time between ? and ? order by time, id",
         (args.group, stamp(args.start), stamp(args.end)),
     ).fetchall()
     lines = [

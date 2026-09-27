@@ -19,7 +19,7 @@ pub(crate) struct Utterance {
     pub reply: bool,
     /// 要引哪条消息：模型写 `[reply:消息号]` 点名时是它，`[reply]` 时为 None
     /// （由发言侧退回本批默认目标）。
-    pub reply_to: Option<i64>,
+    pub reply_to: Option<String>,
     /// 发出前额外停顿的秒数（模型显式要求的 `[wait:n]`）。
     pub wait: f32,
 }
@@ -104,7 +104,7 @@ enum Draft {
     Text {
         body: String,
         reply: bool,
-        reply_to: Option<i64>,
+        reply_to: Option<String>,
     },
 }
 
@@ -197,7 +197,7 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
                         chars,
                         // 引用只挂在第一条上：后面几条是同一口气里接着说的。
                         reply: reply && index == 0,
-                        reply_to: if index == 0 { reply_to } else { None },
+                        reply_to: if index == 0 { reply_to.clone() } else { None },
                         wait: if index == 0 { wait } else { 0.0 },
                     });
                 }
@@ -216,7 +216,7 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
 ///
 /// 返回「是否引用、点名的消息号、剩下要发的正文」。号码写得不合法时整行原样当文字
 /// 处理——群友本来就会打方括号，认不出来的那种留着比吞掉好。
-fn reply_prefix(line: &str) -> (bool, Option<i64>, &str) {
+fn reply_prefix(line: &str) -> (bool, Option<String>, &str) {
     let Some(rest) = line.strip_prefix("[reply") else {
         return (false, None, line);
     };
@@ -225,10 +225,9 @@ fn reply_prefix(line: &str) -> (bool, Option<i64>, &str) {
     }
     if let Some(rest) = rest.strip_prefix(':')
         && let Some((id, rest)) = rest.split_once(']')
-        && let Ok(id) = id.trim().parse::<i64>()
-        && id != 0
+        && !id.trim().is_empty()
     {
-        return (true, Some(id), rest.trim_start());
+        return (true, Some(id.trim().to_string()), rest.trim_start());
     }
     (false, None, line)
 }
@@ -438,11 +437,11 @@ mod tests {
         let items = say("[reply:61150]这张我上个月拍过同款");
         assert_eq!(items.len(), 1);
         assert!(items[0].reply);
-        assert_eq!(items[0].reply_to, Some(61150));
+        assert_eq!(items[0].reply_to, Some("61150".into()));
         assert_eq!(text_of(&items[0]), "这张我上个月拍过同款");
 
-        // 号码不合法时整行原样当文字，不吞内容也不谎报目标。
-        for raw in ["[reply:abc] 上面那张", "[reply:] 上面那张", "[reply:0] 上面那张"] {
+        // 没写号码时整行原样当文字，不吞内容也不谎报目标。
+        for raw in ["[reply:] 上面那张", "[reply: ] 上面那张"] {
             let items = say(raw);
             assert!(!items[0].reply, "{raw}");
             assert_eq!(items[0].reply_to, None, "{raw}");

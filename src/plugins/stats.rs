@@ -344,7 +344,7 @@ pub fn on_connected(
                         current.weekly_recap_enabled,
                         current.monthly_recap_enabled,
                     ];
-                    if current.enabled && switches[index] && current.channel.allows_group(gid) {
+                    if current.enabled && switches[index] && current.channel.allows_group(&gid) {
                         runner(c, w, gid, current.push_min_messages).await;
                     }
                 },
@@ -355,7 +355,7 @@ pub fn on_connected(
     })
 }
 
-type PushFn = fn(Context, LockedWriter, i64, u64) -> futures_util::future::BoxFuture<'static, ()>;
+type PushFn = fn(Context, LockedWriter, String, u64) -> futures_util::future::BoxFuture<'static, ()>;
 
 /// Validate control edits against the plugin's actual configuration type.
 pub fn validate_config(value: &toml::Value) -> Result<(), String> {

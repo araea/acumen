@@ -54,7 +54,7 @@ pub(crate) struct Entry {
     pub kind: Kind,
     /// 谁发的，从哪个群偷的。
     pub from: String,
-    pub group: i64,
+    pub group: String,
     pub added_at: i64,
     /// 用过几次、最后一次什么时候用的：库满了先丢最没人用的。
     pub uses: u32,
@@ -148,7 +148,7 @@ pub(crate) fn by_id(id: u32) -> Option<Entry> {
 pub(crate) fn keep(
     segment: &Segment,
     source: &Turn,
-    group: i64,
+    group: &str,
     label: &str,
     bytes: Option<&[u8]>,
     max: usize,
@@ -200,7 +200,7 @@ pub(crate) fn keep(
         label,
         kind,
         from: source.name.trim().to_string(),
-        group,
+        group: group.to_string(),
         added_at: now,
         uses: 0,
         last_used: 0,
@@ -323,7 +323,7 @@ fn loot(turns: &[Turn]) -> Vec<String> {
         .iter()
         .rev()
         .take(TOPIC_TURNS)
-        .filter(|turn| !turn.from_me && turn.message_id != 0)
+        .filter(|turn| !turn.from_me && !turn.message_id.is_empty())
         .filter_map(|turn| {
             let count = turn
                 .elements
@@ -473,7 +473,7 @@ pub(crate) mod tests {
 
     fn turn(name: &str, text: &str) -> Turn {
         Turn {
-            user_id: 7,
+            user_id: "7".into(),
             name: name.into(),
             text: text.into(),
             ..Turn::default()
@@ -508,12 +508,12 @@ pub(crate) mod tests {
         let dir = scratch("shop");
         let source = turn("老张", "笑死");
         assert_eq!(
-            keep(&shop("296f", "241904"), &source, 1, "猫捂着嘴笑", None, 20),
+            keep(&shop("296f", "241904"), &source, "1", "猫捂着嘴笑", None, 20),
             Some(1)
         );
         // 同一张再偷一次认原来那条。
         assert_eq!(
-            keep(&shop("296f", "241904"), &source, 1, "", None, 20),
+            keep(&shop("296f", "241904"), &source, "1", "", None, 20),
             Some(1)
         );
         assert_eq!(count(), 1);
@@ -535,10 +535,10 @@ pub(crate) mod tests {
         let _guard = exclusive();
         let dir = scratch("fallback");
         let source = turn("老张", "笑死");
-        keep(&shop("1", "2"), &source, 1, "", None, 20);
+        keep(&shop("1", "2"), &source, "1", "", None, 20);
         assert_eq!(take(1, "").unwrap().label, "[开心]");
         // 图没有摘要，退回偷它时群里那句话。
-        keep(&picture(), &turn("阿云", "今天又要加班"), 1, "", Some(PNG), 20);
+        keep(&picture(), &turn("阿云", "今天又要加班"), "1", "", Some(PNG), 20);
         assert_eq!(take(2, "").unwrap().label, "今天又要加班");
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -549,7 +549,7 @@ pub(crate) mod tests {
         let dir = scratch("image");
         let source = turn("老张", "笑死");
         assert_eq!(
-            keep(&picture(), &source, 1, "一只在笑的猫", Some(PNG), 20),
+            keep(&picture(), &source, "1", "一只在笑的猫", Some(PNG), 20),
             Some(1)
         );
         let entry = take(1, "").unwrap();
@@ -563,7 +563,7 @@ pub(crate) mod tests {
         assert_eq!(take(1, "").unwrap().label, "一只在笑的猫");
         // 同一张图从别的群偷来也还是这一条。
         assert_eq!(
-            keep(&picture(), &turn("别人", "哈哈"), 2, "", Some(PNG), 20),
+            keep(&picture(), &turn("别人", "哈哈"), "2", "", Some(PNG), 20),
             Some(1)
         );
         assert_eq!(count(), 1);
@@ -581,9 +581,9 @@ pub(crate) mod tests {
         let dir = scratch("big");
         let source = turn("老张", "笑死");
         let bytes = vec![0u8; MAX_BYTES + 1];
-        assert_eq!(keep(&picture(), &source, 1, "大图", Some(&bytes), 20), None);
+        assert_eq!(keep(&picture(), &source, "1", "大图", Some(&bytes), 20), None);
         // 没带字节（下载没成）也一样：不存，窗口里照样偷。
-        assert_eq!(keep(&picture(), &source, 1, "没下下来", None, 20), None);
+        assert_eq!(keep(&picture(), &source, "1", "没下下来", None, 20), None);
         assert_eq!(count(), 0);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -598,7 +598,7 @@ pub(crate) mod tests {
             keep(
                 &shop(&format!("{index}"), "9"),
                 &source,
-                1,
+                "1",
                 &format!("第 {index} 张"),
                 None,
                 3,
@@ -607,13 +607,13 @@ pub(crate) mod tests {
         take(1, "");
         take(1, "");
         take(2, "");
-        keep(&shop("new", "9"), &source, 1, "新偷的", None, 3);
+        keep(&shop("new", "9"), &source, "1", "新偷的", None, 3);
         assert_eq!(count(), 3);
         let ids: Vec<u32> = lock().library.entries.iter().map(|e| e.id).collect();
         assert_eq!(ids, [1, 2, 4], "该丢的是没人用的第 3 张");
         // 关掉库就不再攒新的，也不影响已经存下的。
         assert_eq!(
-            keep(&shop("off", "9"), &source, 1, "关掉时偷的", None, 0),
+            keep(&shop("off", "9"), &source, "1", "关掉时偷的", None, 0),
             None
         );
         assert_eq!(count(), 3);
@@ -626,9 +626,9 @@ pub(crate) mod tests {
         let _guard = exclusive();
         let dir = scratch("brief");
         let source = turn("老张", "笑死");
-        keep(&shop("1", "9"), &source, 1, "猫捂着嘴笑", None, 20);
-        keep(&shop("2", "9"), &source, 1, "加班到天亮", None, 20);
-        keep(&shop("3", "9"), &source, 1, "裂开", None, 20);
+        keep(&shop("1", "9"), &source, "1", "猫捂着嘴笑", None, 20);
+        keep(&shop("2", "9"), &source, "1", "加班到天亮", None, 20);
+        keep(&shop("3", "9"), &source, "1", "裂开", None, 20);
         let text = brief(&[turn("群友", "今天又要加班到几点啊")], 20);
         assert!(text.contains("一共 3 张"), "{text}");
         let first = text.lines().nth(1).unwrap();
@@ -655,7 +655,7 @@ pub(crate) mod tests {
             keep(
                 &shop(&format!("{index}"), "9"),
                 &source,
-                1,
+                "1",
                 &format!("第 {index} 张"),
                 None,
                 20,
@@ -681,15 +681,15 @@ pub(crate) mod tests {
         assert!(brief(&[turn("群友", "今天又要加班")], 20).is_empty());
 
         let mut meme = turn("老张", "[表情包:捂脸笑]");
-        meme.message_id = 321;
+        meme.message_id = "321".into();
         meme.elements = crate::message::Message::new().mface("296f", "241904", "k1");
         let mut pics = turn("阿云", "看这个[图片]");
-        pics.message_id = 322;
+        pics.message_id = "322".into();
         pics.elements = crate::message::Message::new()
             .image("https://example.com/a.png")
             .image("https://example.com/b.png");
         let mut mine = turn("我", "[图片]");
-        mine.message_id = 323;
+        mine.message_id = "323".into();
         mine.from_me = true;
         mine.elements = crate::message::Message::new().image("https://example.com/c.png");
         let text = brief(&[meme, pics, turn("群友", "笑死"), mine], 20);
@@ -705,9 +705,9 @@ pub(crate) mod tests {
         }
 
         // 库里有货之后「库还空着」那句就不说了，货架和能偷的两段都在。
-        keep(&shop("1", "9"), &turn("老张", "笑死"), 1, "猫捂着嘴笑", None, 20);
+        keep(&shop("1", "9"), &turn("老张", "笑死"), "1", "猫捂着嘴笑", None, 20);
         let mut again = turn("老张", "[图片]");
-        again.message_id = 400;
+        again.message_id = "400".into();
         again.elements = crate::message::Message::new().image("https://example.com/d.png");
         let text = brief(&[again], 20);
         assert!(!text.contains("库还空着"), "{text}");
@@ -740,7 +740,7 @@ pub(crate) mod tests {
         let _guard = exclusive();
         let dir = scratch("rename");
         let source = turn("老张", "笑死");
-        keep(&shop("1", "9"), &source, 1, "", None, 20);
+        keep(&shop("1", "9"), &source, "1", "", None, 20);
         assert_eq!(take(1, "  这才是  它真正的样子 ").unwrap().label, "这才是 它真正的样子");
         // 空名字不改动，也不影响取用。
         assert_eq!(take(1, "  ").unwrap().label, "这才是 它真正的样子");

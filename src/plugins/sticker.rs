@@ -49,7 +49,7 @@ pub fn handle(
         if let Some(matched) = first_command_match(&ctx, COMMANDS) {
                 // 必须通过引用回复
                 let reply_id = match matched.reply_id {
-                    Some(id_str) => id_str.parse::<i64>().unwrap_or(0),
+                    Some(id_str) => id_str,
                     None => {
                         let _ = send_msg(
                             &ctx,
@@ -65,7 +65,7 @@ pub fn handle(
                     }
                 };
 
-                match api::get_msg(&ctx, writer.clone(), reply_id).await {
+                match api::get_msg(&ctx, writer.clone(), &reply_id).await {
                     Ok(res) => {
                         let urls: Vec<String> = res
                             .message

@@ -83,7 +83,7 @@ pub(crate) struct Note {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(crate) struct GroupMemory {
     #[serde(default)]
-    pub people: HashMap<i64, Person>,
+    pub people: HashMap<String, Person>,
     #[serde(default)]
     pub notes: Vec<Note>,
 }
@@ -111,11 +111,11 @@ pub(crate) fn ago(seconds: i64) -> String {
 
 impl GroupMemory {
     /// 见到某人发了一条消息。只更新统计，不花任何模型开销。
-    pub(crate) fn see(&mut self, user_id: i64, name: &str, at: i64) {
-        if user_id <= 0 {
+    pub(crate) fn see(&mut self, user_id: &str, name: &str, at: i64) {
+        if user_id.is_empty() {
             return;
         }
-        let person = self.people.entry(user_id).or_insert_with(|| Person {
+        let person = self.people.entry(user_id.to_string()).or_insert_with(|| Person {
             first_seen: at,
             ..Person::default()
         });
@@ -130,32 +130,32 @@ impl GroupMemory {
     }
 
     /// 自己回应了某人一次。
-    pub(crate) fn exchange(&mut self, user_id: i64, at: i64) {
-        if let Some(person) = self.people.get_mut(&user_id) {
+    pub(crate) fn exchange(&mut self, user_id: &str, at: i64) {
+        if let Some(person) = self.people.get_mut(user_id) {
             person.exchanges = person.exchanges.saturating_add(1);
             person.last_seen = person.last_seen.max(at);
         }
     }
 
     /// 写下（或改写）对一个人的印象；空字符串等于把印象抹掉但仍认得这个人。
-    pub(crate) fn remember(&mut self, user_id: i64, note: &str) -> anyhow::Result<()> {
-        anyhow::ensure!(user_id > 0, "QQ 号无效");
-        let person = self.people.entry(user_id).or_default();
+    pub(crate) fn remember(&mut self, user_id: &str, note: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(!user_id.is_empty(), "用户 ID 是空的");
+        let person = self.people.entry(user_id.to_string()).or_default();
         person.note = tidy(note);
         Ok(())
     }
 
     /// 写下（或改写）平时怎么称呼他；空字符串等于回到跟着群名片叫。
-    pub(crate) fn address(&mut self, user_id: i64, address: &str) -> anyhow::Result<()> {
-        anyhow::ensure!(user_id > 0, "QQ 号无效");
-        let person = self.people.entry(user_id).or_default();
+    pub(crate) fn address(&mut self, user_id: &str, address: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(!user_id.is_empty(), "用户 ID 是空的");
+        let person = self.people.entry(user_id.to_string()).or_default();
         person.address = tidy(address);
         Ok(())
     }
 
     /// 彻底忘掉一个人。
-    pub(crate) fn forget(&mut self, user_id: i64) -> bool {
-        self.people.remove(&user_id).is_some()
+    pub(crate) fn forget(&mut self, user_id: &str) -> bool {
+        self.people.remove(user_id).is_some()
     }
 
     /// 记下群里的一件事。重复的旧事只刷新时间，不堆成一摞。
@@ -192,10 +192,10 @@ impl GroupMemory {
             self.notes.drain(..excess);
         }
         if self.people.len() > MAX_PEOPLE {
-            let mut ranked: Vec<(i64, i64, bool)> = self
+            let mut ranked: Vec<(String, i64, bool)> = self
                 .people
                 .iter()
-                .map(|(id, person)| (*id, person.last_seen, person.note.is_empty()))
+                .map(|(id, person)| (id.clone(), person.last_seen, person.note.is_empty()))
                 .collect();
             // 先淘汰没有印象的，再按最久没露面淘汰。
             ranked.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.cmp(&b.1)));
@@ -209,12 +209,12 @@ impl GroupMemory {
     ///
     /// 只列眼前这些人：把整本通讯录倒进上下文既贵又没用，人也不是那样想事情的。
     pub(crate) fn brief(&self, turns: &[Turn], now: i64) -> String {
-        let mut seen: Vec<i64> = Vec::new();
+        let mut seen: Vec<&str> = Vec::new();
         for turn in turns.iter().rev() {
-            if turn.from_me || turn.user_id <= 0 || seen.contains(&turn.user_id) {
+            if turn.from_me || turn.user_id.is_empty() || seen.contains(&turn.user_id.as_str()) {
                 continue;
             }
-            seen.push(turn.user_id);
+            seen.push(&turn.user_id);
             if seen.len() >= BRIEF_PEOPLE {
                 break;
             }
@@ -222,7 +222,7 @@ impl GroupMemory {
         let mut out = String::new();
         let mut cards = Vec::new();
         for id in seen {
-            let Some(person) = self.people.get(&id) else {
+            let Some(person) = self.people.get(id) else {
                 continue;
             };
             let name = if person.name.is_empty() {
@@ -312,9 +312,9 @@ impl GroupMemory {
 #[derive(Default)]
 struct Store {
     dir: Option<PathBuf>,
-    groups: HashMap<i64, GroupMemory>,
-    dirty: HashSet<i64>,
-    written: HashMap<i64, Instant>,
+    groups: HashMap<String, GroupMemory>,
+    dirty: HashSet<String>,
+    written: HashMap<String, Instant>,
 }
 
 fn store() -> &'static Mutex<Store> {
@@ -326,8 +326,9 @@ fn lock() -> MutexGuard<'static, Store> {
     store().lock().unwrap_or_else(|error| error.into_inner())
 }
 
-fn path_of(dir: &Path, group: i64) -> PathBuf {
-    dir.join(format!("{group}.json"))
+/// 一个群一份文件，文件名就是群 ID。ID 由实现端给出，路径分隔符换掉，免得跑出目录。
+fn path_of(dir: &Path, group: &str) -> PathBuf {
+    dir.join(format!("{}.json", group.replace(['/', '\\'], "_")))
 }
 
 /// 指定记忆的落盘位置；启动时调用一次。
@@ -343,22 +344,19 @@ pub(crate) fn attach(base: &Path) {
 ///
 /// 以内存那份为准：落盘是节流的（见 [`WRITE_INTERVAL`]），磁盘上那份随时可能落后
 /// 几十秒。内存里还没有的群从磁盘补上——进程刚起来、那个群还没说过话时就是这种。
-pub(crate) fn snapshot() -> Vec<(i64, GroupMemory)> {
+pub(crate) fn snapshot() -> Vec<(String, GroupMemory)> {
     let store = lock();
-    let mut out: Vec<(i64, GroupMemory)> = store
+    let mut out: Vec<(String, GroupMemory)> = store
         .groups
         .iter()
-        .map(|(group, memory)| (*group, memory.clone()))
+        .map(|(group, memory)| (group.clone(), memory.clone()))
         .collect();
     if let Some(dir) = store.dir.as_ref()
         && let Ok(entries) = std::fs::read_dir(dir)
     {
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let Some(raw) = name.to_string_lossy().strip_suffix(".json").map(str::to_string) else {
-                continue;
-            };
-            let Ok(group) = raw.parse::<i64>() else {
+            let Some(group) = name.to_string_lossy().strip_suffix(".json").map(str::to_string) else {
                 continue;
             };
             if store.groups.contains_key(&group) {
@@ -371,62 +369,62 @@ pub(crate) fn snapshot() -> Vec<(i64, GroupMemory)> {
             }
         }
     }
-    out.sort_by_key(|(group, _)| *group);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
 
 /// 取出某个群的记忆做一次修改。闭包里不要 await——锁是同步的。
-pub(crate) fn with_group<T>(group: i64, action: impl FnOnce(&mut GroupMemory) -> T) -> T {
+pub(crate) fn with_group<T>(group: &str, action: impl FnOnce(&mut GroupMemory) -> T) -> T {
     let mut store = lock();
-    if !store.groups.contains_key(&group) {
+    if !store.groups.contains_key(group) {
         let loaded = store
             .dir
             .as_ref()
             .and_then(|dir| std::fs::read_to_string(path_of(dir, group)).ok())
             .and_then(|raw| serde_json::from_str::<GroupMemory>(&raw).ok())
             .unwrap_or_default();
-        store.groups.insert(group, loaded);
+        store.groups.insert(group.to_string(), loaded);
     }
-    action(store.groups.get_mut(&group).expect("just inserted"))
+    action(store.groups.get_mut(group).expect("just inserted"))
 }
 
 /// 同上，但顺带标记「有改动，待落盘」。
-pub(crate) fn edit<T>(group: i64, action: impl FnOnce(&mut GroupMemory) -> T) -> T {
+pub(crate) fn edit<T>(group: &str, action: impl FnOnce(&mut GroupMemory) -> T) -> T {
     let result = with_group(group, action);
-    lock().dirty.insert(group);
+    lock().dirty.insert(group.to_string());
     result
 }
 
 /// 把待落盘的改动写出去，最多每 [`WRITE_INTERVAL`] 一次。没有改动时不碰磁盘。
-pub(crate) async fn flush(group: i64) {
+pub(crate) async fn flush(group: &str) {
     write(group, false).await
 }
 
 /// 立刻落盘，不受节流限制：人格刚写下的印象值得马上留住。
-pub(crate) async fn flush_now(group: i64) {
+pub(crate) async fn flush_now(group: &str) {
     write(group, true).await
 }
 
-async fn write(group: i64, force: bool) {
+async fn write(group: &str, force: bool) {
     let payload = {
         let mut store = lock();
-        if !store.dirty.contains(&group) {
+        if !store.dirty.contains(group) {
             return;
         }
         if !force
             && store
                 .written
-                .get(&group)
+                .get(group)
                 .is_some_and(|at| at.elapsed() < WRITE_INTERVAL)
         {
             return;
         }
-        store.dirty.remove(&group);
-        store.written.insert(group, Instant::now());
+        store.dirty.remove(group);
+        store.written.insert(group.to_string(), Instant::now());
         let Some(dir) = store.dir.clone() else {
             return;
         };
-        store.groups.get_mut(&group).map(|memory| {
+        store.groups.get_mut(group).map(|memory| {
             memory.prune(chrono::Local::now().timestamp());
             (
                 path_of(&dir, group),
@@ -463,10 +461,10 @@ mod tests {
 
     fn turn(user_id: i64, name: &str) -> Turn {
         Turn {
-            user_id,
+            user_id: user_id.to_string(),
             name: name.into(),
             text: "在的".into(),
-            message_id: user_id,
+            message_id: user_id.to_string(),
             ..Turn::default()
         }
     }
@@ -475,43 +473,43 @@ mod tests {
     #[test]
     fn impressions_are_trimmed_flattened_and_replaceable() {
         let mut memory = GroupMemory::default();
-        memory.see(42, "老张", 0);
+        memory.see("42", "老张", 0);
         memory
-            .remember(42, &format!("修车的\n{}", "很".repeat(200)))
+            .remember("42", &format!("修车的\n{}", "很".repeat(200)))
             .unwrap();
-        let note = memory.people[&42].note.clone();
+        let note = memory.people["42"].note.clone();
         assert!(note.chars().count() <= MAX_NOTE_CHARS);
         assert!(!note.contains('\n'));
-        memory.remember(42, "改行卖鱼了").unwrap();
-        assert_eq!(memory.people[&42].note, "改行卖鱼了");
-        assert!(memory.remember(0, "x").is_err());
-        assert!(memory.forget(42));
-        assert!(!memory.forget(42));
+        memory.remember("42", "改行卖鱼了").unwrap();
+        assert_eq!(memory.people["42"].note, "改行卖鱼了");
+        assert!(memory.remember("", "x").is_err());
+        assert!(memory.forget("42"));
+        assert!(!memory.forget("42"));
     }
 
     /// 称呼是单独一格：写称呼不该动印象，反之亦然；写空就是回到跟着名片叫。
     #[test]
     fn how_you_call_someone_is_its_own_slot() {
         let mut memory = GroupMemory::default();
-        memory.see(42, "冰糖狐禄", 0);
-        memory.address(42, "狐禄大人").unwrap();
-        memory.remember(42, "爱抬杠").unwrap();
-        assert_eq!(memory.people[&42].address, "狐禄大人");
-        assert_eq!(memory.people[&42].note, "爱抬杠");
+        memory.see("42", "冰糖狐禄", 0);
+        memory.address("42", "狐禄大人").unwrap();
+        memory.remember("42", "爱抬杠").unwrap();
+        assert_eq!(memory.people["42"].address, "狐禄大人");
+        assert_eq!(memory.people["42"].note, "爱抬杠");
         // 只写称呼的人不再是「新面孔」；印象清空也不影响称呼。
-        assert!(!memory.people[&42].stranger(0));
+        assert!(!memory.people["42"].stranger(0));
         // 印象与称呼同时存在时并成一句，中间不换行。
         let brief = memory.brief(&[turn(42, "冰糖狐禄")], 0);
         assert!(brief.contains("爱抬杠；你平时叫他「狐禄大人」"), "{brief}");
-        memory.remember(42, "").unwrap();
-        assert_eq!(memory.people[&42].address, "狐禄大人");
+        memory.remember("42", "").unwrap();
+        assert_eq!(memory.people["42"].address, "狐禄大人");
         assert_eq!(
             memory.brief(&[turn(42, "冰糖狐禄")], 0),
             "你记得的人：\n- 冰糖狐禄(42)：你平时叫他「狐禄大人」\n"
         );
-        memory.address(42, "").unwrap();
-        assert!(memory.people[&42].address.is_empty());
-        assert!(memory.address(0, "谁").is_err());
+        memory.address("42", "").unwrap();
+        assert!(memory.people["42"].address.is_empty());
+        assert!(memory.address("", "谁").is_err());
     }
 
     #[test]
@@ -536,14 +534,14 @@ mod tests {
     fn pruning_keeps_the_people_worth_remembering() {
         let mut memory = GroupMemory::default();
         for id in 1..=(MAX_PEOPLE as i64 + 20) {
-            memory.see(id, "路人", id);
+            memory.see(&id.to_string(), "路人", id);
         }
-        memory.remember(1, "最早认识的那个").unwrap();
+        memory.remember("1", "最早认识的那个").unwrap();
         memory.prune(1_000_000);
         assert_eq!(memory.people.len(), MAX_PEOPLE);
         // 有印象的人即使最久没露面也留着；没印象的路人先被忘掉。
-        assert!(memory.people.contains_key(&1));
-        assert!(!memory.people.contains_key(&2));
+        assert!(memory.people.contains_key("1"));
+        assert!(!memory.people.contains_key("2"));
     }
 
     #[test]
@@ -551,16 +549,16 @@ mod tests {
         let mut memory = GroupMemory::default();
         for id in [42, 43, 44] {
             for _ in 0..20 {
-                memory.see(id, &format!("群友{id}"), 0);
+                memory.see(&id.to_string(), &format!("群友{id}"), 0);
             }
         }
-        memory.remember(42, "在修驾校那台破电脑").unwrap();
-        memory.exchange(42, 100);
+        memory.remember("42", "在修驾校那台破电脑").unwrap();
+        memory.exchange("42", 100);
         memory.jot("上周开始玩的驾校坐牢梗", 0).unwrap();
         memory.jot("老李的猫叫煤球", 0).unwrap();
         // 刚见过一两面的人是「新面孔」，不装熟。
         let mut fresh = GroupMemory::default();
-        fresh.see(99, "路人", 0);
+        fresh.see("99", "路人", 0);
         assert!(fresh.brief(&[turn(99, "路人")], 0).contains("新面孔"));
 
         let mut topical = turn(43, "群友43");
@@ -590,33 +588,33 @@ mod tests {
         let base = std::env::temp_dir().join(format!("acumen-memory-{}", rand::random::<u64>()));
         attach(&base);
         let now = chrono::Local::now().timestamp();
-        edit(7, |memory| {
-            memory.see(42, "老张", now);
-            memory.remember(42, "在修驾校那台破电脑").unwrap();
+        edit("7", |memory| {
+            memory.see("42", "老张", now);
+            memory.remember("42", "在修驾校那台破电脑").unwrap();
         });
-        flush(7).await;
-        let path = path_of(&base.join("memory"), 7);
+        flush("7").await;
+        let path = path_of(&base.join("memory"), "7");
         assert!(path.exists(), "{path:?}");
 
         // 刚写过就再改，普通 flush 让位给节流；人格自己写下的印象立刻落盘。
-        edit(7, |memory| memory.jot("刚起的梗", now).unwrap());
-        flush(7).await;
+        edit("7", |memory| memory.jot("刚起的梗", now).unwrap());
+        flush("7").await;
         assert!(!std::fs::read_to_string(&path).unwrap().contains("刚起的梗"));
-        flush_now(7).await;
+        flush_now("7").await;
         assert!(std::fs::read_to_string(&path).unwrap().contains("刚起的梗"));
 
         // 没有改动就不碰磁盘。
         let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
-        flush_now(7).await;
+        flush_now("7").await;
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
 
         // 重新 attach 等于重启一次：还认得这个人，也记得那个梗。
         attach(&base);
         assert_eq!(
-            with_group(7, |memory| memory.people[&42].note.clone()),
+            with_group("7", |memory| memory.people["42"].note.clone()),
             "在修驾校那台破电脑"
         );
-        assert_eq!(with_group(7, |memory| memory.notes[0].text.clone()), "刚起的梗");
+        assert_eq!(with_group("7", |memory| memory.notes[0].text.clone()), "刚起的梗");
 
         attach(&std::env::temp_dir().join("acumen-memory-detached"));
         let _ = std::fs::remove_dir_all(&base);

@@ -31,16 +31,16 @@ pub struct Source {
     /// `<message forward id="...">` 里的 resId。
     pub resource_id: Option<String>,
     /// 携带这条合并转发的那条消息的 ID，用于走内核缓存。
-    pub message_id: Option<i64>,
+    pub message_id: Option<String>,
     /// 这条消息所在的会话。satori-qq 的父消息缓存被淘汰后靠它重新定位内核记录。
     pub channel: Option<String>,
 }
 
 impl Source {
-    pub fn new(resource_id: Option<String>, message_id: Option<i64>) -> Self {
+    pub fn new(resource_id: Option<String>, message_id: Option<String>) -> Self {
         Self {
             resource_id: resource_id.filter(|value| !value.is_empty()),
-            message_id: message_id.filter(|value| *value != 0),
+            message_id: message_id.filter(|value| !value.is_empty()),
             channel: None,
         }
     }
@@ -63,7 +63,7 @@ pub struct Node {
     /// 0 是最外层，往里每嵌套一层加一。
     pub depth: usize,
     /// 内核路径才有；伪造节点协议返回空 ID。
-    pub message_id: Option<i64>,
+    pub message_id: Option<String>,
     pub user_id: String,
     pub name: String,
     /// Unix 秒；0 表示这条路径没给时间。
@@ -165,7 +165,7 @@ pub async fn expand(ctx: &Context, writer: &LockedWriter, source: Source) -> Vie
 }
 
 /// 从一条消息里找出合并转发的入口；`message_id` 是这条消息自己的 ID。
-pub fn source_of(message: &Message, message_id: Option<i64>) -> Option<Source> {
+pub fn source_of(message: &Message, message_id: Option<String>) -> Option<Source> {
     let forward = message
         .0
         .iter()
@@ -231,7 +231,7 @@ async fn resolve(
     view: &mut View,
 ) -> Option<Vec<Node>> {
     let mut failures = Vec::new();
-    if let Some(message_id) = source.message_id {
+    if let Some(message_id) = &source.message_id {
         match fetch(
             ctx,
             writer,
@@ -299,7 +299,7 @@ fn parse(value: &Value, resources: &message::ResourceProxy) -> Vec<Node> {
         let user = item.get("user").unwrap_or(&Value::Null);
         out.push(Node {
             depth: 0,
-            message_id: item.get("id").and_then(number),
+            message_id: item.get("id").and_then(text_id),
             user_id: user
                 .get("id")
                 .and_then(text_id)
@@ -337,7 +337,7 @@ fn nested_sources(node: &Node, channel: Option<&str>) -> Vec<Source> {
                     .get("id")
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
-                node.message_id,
+                node.message_id.clone(),
             )
             .in_channel(channel.unwrap_or_default())
         })
@@ -470,14 +470,6 @@ fn string<'a>(segment: &'a Segment, key: &str) -> &'a str {
         .unwrap_or("")
 }
 
-fn number(value: &Value) -> Option<i64> {
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-        .filter(|id| *id != 0)
-}
-
 fn text_id(value: &Value) -> Option<String> {
     value
         .as_str()
@@ -518,7 +510,7 @@ mod tests {
              "content":"<img src=\"http://127.0.0.1:3001/v1/assets/abc.image\"/>"}]});
         let nodes = parse(&value, &proxy());
         assert_eq!(nodes.len(), 2);
-        assert_eq!(nodes[0].message_id, Some(7683193934447916799));
+        assert_eq!(nodes[0].message_id, Some("7683193934447916799".into()));
         assert_eq!(nodes[0].name, "清");
         assert_eq!(nodes[0].time, 1788879862);
         let view = View {
@@ -552,7 +544,7 @@ mod tests {
         let nested = nested_sources(&nodes[0], Some("282381753"));
         assert_eq!(nested.len(), 1);
         assert_eq!(nested[0].resource_id.as_deref(), Some("res-inner"));
-        assert_eq!(nested[0].message_id, Some(99));
+        assert_eq!(nested[0].message_id, Some("99".into()));
         assert_eq!(nested[0].channel.as_deref(), Some("282381753"));
         assert!(describe(&nodes[0].message).contains("嵌套合并转发"));
     }
@@ -636,12 +628,12 @@ mod tests {
         let (message_id, message) = items
             .iter()
             .find_map(|item| {
-                let id = item["id"].as_str().and_then(|id| id.parse::<i64>().ok());
+                let id = item["id"].as_str().map(str::to_owned);
                 let message = message::from_content_with(
                     item["content"].as_str().unwrap_or(""),
                     &writer.resources(),
                 );
-                source_of(&message, id).map(|_| (id, message))
+                source_of(&message, id.clone()).map(|_| (id, message))
             })
             .expect("这个群最近没有合并转发可读");
         let source = source_of(&message, message_id)
@@ -660,14 +652,14 @@ mod tests {
     #[test]
     fn source_of_reads_the_forward_entry_point() {
         let message = message::from_content_with("<message forward id=\"abc\"/>", &proxy());
-        let source = source_of(&message, Some(12)).expect("forward source");
+        let source = source_of(&message, Some("12".into())).expect("forward source");
         assert_eq!(source.resource_id.as_deref(), Some("abc"));
-        assert_eq!(source.message_id, Some(12));
+        assert_eq!(source.message_id, Some("12".into()));
         assert_eq!(source.clone().in_channel("").channel, None);
         assert_eq!(
             source.in_channel("46360522").channel.as_deref(),
             Some("46360522")
         );
-        assert!(source_of(&Message::new().text("hi"), Some(12)).is_none());
+        assert!(source_of(&Message::new().text("hi"), Some("12".into())).is_none());
     }
 }

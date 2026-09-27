@@ -105,9 +105,9 @@ pub(crate) struct AmbientConfig {
     /// 总开关。
     pub enabled: bool,
     /// 开启搭话的群号；空列表等于不开启。
-    pub groups: Vec<i64>,
+    pub groups: Vec<String>,
     /// 允许人格执行群管理的群；还须具备 QQ 对应权限。
-    pub management_groups: Vec<i64>,
+    pub management_groups: Vec<String>,
     /// 判定模型：便宜、快、能看图。写 `供应商/模型` 时按 `[oai.providers]` 取接口，
     /// 默认走 DeepSeek 官方的 V4.1 Flash（API 模型名为 deepseek-flash）。
     pub gate_model: String,
@@ -605,7 +605,7 @@ pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
 }
 
 impl Persona for Ambient {
-    fn scene(&self, group: i64, turns: &[Turn], _rhythm: &str) -> serde_json::Value {
+    fn scene(&self, group: &str, turns: &[Turn], _rhythm: &str) -> serde_json::Value {
         let snapshot = self.config.mood_enabled.then(|| mood::snapshot(group));
         serde_json::json!({
             "register": tone::register(turns),
@@ -620,13 +620,13 @@ impl Persona for Ambient {
         })
     }
 
-    fn spoke(&self, group: i64) {
+    fn spoke(&self, group: &str) {
         if self.config.mood_enabled {
             mood::nudge(|mood, now| mood.spoke(group, now));
         }
     }
 
-    fn pace(&self, group: i64) -> pace::Pace {
+    fn pace(&self, group: &str) -> pace::Pace {
         self.config.pace(mood::snapshot(group))
     }
 
@@ -674,7 +674,7 @@ pub(crate) struct Scene {
 
 impl Scene {
     pub(crate) fn build(
-        group: i64,
+        group: &str,
         config: &AmbientConfig,
         turns: &[Turn],
         rhythm: String,
@@ -738,7 +738,7 @@ impl Scene {
 /// 这一刻说话的调子：精神头定松紧，挑样本与写日志用的都是它。
 ///
 /// 关掉状态（`mood_enabled = false`）时按不上不下处理，两档样本都能挑。
-fn voice_register(config: &AmbientConfig, group: i64) -> mood::Register {
+fn voice_register(config: &AmbientConfig, group: &str) -> mood::Register {
     if config.mood_enabled {
         mood::snapshot(group).register()
     } else {
@@ -761,7 +761,7 @@ fn self_facts() -> String {
 }
 
 /// 这个群的背景资料 → 提示词里那一段；没写就是空串。
-fn group_about(group: i64) -> String {
+fn group_about(group: &str) -> String {
     let Some(dir) = DATA_DIR.get() else {
         return String::new();
     };
@@ -874,18 +874,16 @@ pub(crate) async fn observe(
         observe_notice(ctx, writer, mgr, base, &config).await;
         return;
     };
-    let Some(group) = event.group_id().filter(|id| config.groups.contains(id)) else {
+    let Some(group) = event
+        .group_id()
+        .filter(|id| config.groups.iter().any(|group| group == id))
+        .map(str::to_owned)
+    else {
         return;
     };
+    let group = group.as_str();
 
-    let me = ctx
-        .bot
-        .login_user
-        .get()
-        .id
-        .parse::<i64>()
-        .unwrap_or_default();
-    let mut turn = window::turn_from(&event, me);
+    let mut turn = window::turn_from(&event, &ctx.bot.self_id());
     // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
     // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。
     window::with_group(group, |state| {
@@ -912,8 +910,8 @@ pub(crate) async fn observe(
         return;
     }
     if config.memory_enabled && !turn.from_me {
-        let (id, name, at) = (turn.user_id, turn.name.clone(), turn.at);
-        memory::edit(group, |memory| memory.see(id, &name, at));
+        let (id, name, at) = (turn.user_id.clone(), turn.name.clone(), turn.at);
+        memory::edit(group, |memory| memory.see(&id, &name, at));
     }
     if config.mood_enabled && turn.mentions_me && !turn.from_me {
         mood::nudge(|mood, now| mood.engaged(group, now));
@@ -929,8 +927,9 @@ pub(crate) async fn observe(
     let writer = writer.clone();
     let mgr = mgr.clone();
     let base = base.to_path_buf();
+    let group = group.to_string();
     tokio::spawn(async move {
-        if let Err(error) = consider(&ctx, &writer, &mgr, group, &base).await {
+        if let Err(error) = consider(&ctx, &writer, &mgr, &group, &base).await {
             warn!(target: LOG_TARGET, "群 {group} 搭话失败：{error:#}");
         }
     });
@@ -961,24 +960,25 @@ async fn observe_notice(
         return;
     };
     let Some(group) = raw
-        .get_i64("group_id")
-        .filter(|g| config.groups.contains(g))
+        .get_str("group_id")
+        .filter(|id| config.groups.iter().any(|group| group == id))
+        .map(str::to_owned)
     else {
         return;
     };
-    let Some((turn, recalled)) = notice_turn(raw, ctx.bot.self_id())
-    else {
+    let group = group.as_str();
+    let Some((turn, recalled)) = notice_turn(raw, &ctx.bot.self_id()) else {
         return;
     };
     if config.mood_enabled && turn.mentions_me {
         mood::nudge(|mood, now| mood.engaged(group, now));
     }
     let start = window::with_group(group, |state| {
-        if let Some(id) = recalled {
+        if let Some(id) = &recalled {
             state.recall(id);
         }
         // 平台变化使已准备的动作过时，但不单独唤醒人格。
-        if turn.from_me && turn.user_id == 0 {
+        if turn.from_me && turn.user_id.is_empty() {
             state.seq += 1;
         }
         state.receive(turn)
@@ -986,17 +986,18 @@ async fn observe_notice(
     if start {
         let (ctx, writer, mgr) = (ctx.clone(), writer.clone(), mgr.clone());
         let base = base.to_path_buf();
+        let group = group.to_string();
         tokio::spawn(async move {
-            if let Err(error) = consider(&ctx, &writer, &mgr, group, &base).await {
+            if let Err(error) = consider(&ctx, &writer, &mgr, &group, &base).await {
                 warn!(target: LOG_TARGET, "群 {group} 互动处理失败：{error:#}");
             }
         });
     }
 }
 
-fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64>)> {
-    let user = raw.get_i64("user_id").unwrap_or(0);
-    let mid = raw.get_i64("message_id").unwrap_or(0);
+fn notice_turn(raw: &simd_json::OwnedValue, me: &str) -> Option<(Turn, Option<String>)> {
+    let user = raw.get_str("user_id").unwrap_or("");
+    let mid = raw.get_str("message_id").unwrap_or("");
     let kind = raw.get_str("satori_type").unwrap_or("");
     let mut recalled = None;
     let mut mentions_me = false;
@@ -1007,15 +1008,15 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
             let data = raw.get("satori_data")?;
             let target = data
                 .get_str("target_id")
-                .and_then(|s| s.parse::<i64>().ok())
-                .or_else(|| data.get_i64("target_id"))
-                .unwrap_or(0);
+                .map(str::to_owned)
+                .or_else(|| data.get_i64("target_id").map(|id| id.to_string()))
+                .unwrap_or_default();
             mentions_me = target == me && user != me;
             call.poked_me = mentions_me;
             format!("[戳一戳：{user} 戳了 {target}]")
         }
         "message-deleted" => {
-            recalled = Some(mid);
+            recalled = Some(mid.to_string());
             format!("[消息 {mid} 已撤回]")
         }
         "reaction-added" | "reaction-removed" | "reaction-deleted" => {
@@ -1038,13 +1039,13 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
         "guild-member-added" => format!("[群成员 {user} 加入了群聊]"),
         "guild-member-removed" => format!(
             "[群成员 {user} 离开了群聊；操作者 {}]",
-            raw.get_i64("operator_id").unwrap_or(0)
+            raw.get_str("operator_id").unwrap_or("")
         ),
         "guild-member-updated" => {
             // 管理动作的事件只更新现场，避免自己管理→自己评论的循环。
             from_me = true;
             if raw.get_str("notice_type") == Some("group_ban") {
-                let target = if user == 0 {
+                let target = if user.is_empty() {
                     "全体成员".into()
                 } else {
                     user.to_string()
@@ -1082,7 +1083,11 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
     };
     Some((
         Turn {
-            user_id: if from_me && user != me { 0 } else { user },
+            user_id: if from_me && user != me {
+                String::new()
+            } else {
+                user.to_string()
+            },
             name: if from_me && user != me {
                 "平台事件".into()
             } else {
@@ -1091,7 +1096,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: i64) -> Option<(Turn, Option<i64
             text,
             images: vec![],
             elements: Message::new(),
-            message_id: 0,
+            message_id: String::new(),
             mentions_me,
             call,
             from_me,
@@ -1132,14 +1137,14 @@ fn strip_summon(text: &mut String, command: &str) -> bool {
 
 /// 取消/异常时释放 worker；正常交接已在锁内完成，不能再清掉新 worker 的标记。
 struct Worker {
-    group: i64,
+    group: String,
     armed: bool,
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
         if self.armed {
-            window::with_group(self.group, |state| state.running = false);
+            window::with_group(&self.group, |state| state.running = false);
         }
     }
 }
@@ -1149,7 +1154,7 @@ impl Drop for Worker {
 /// 没人叫它时，这一阵消息要等到下一眼才被看到（见 [`window::GroupState::look_due`]）；
 /// 等的这段时间里新来的消息照样进窗口，下一眼一起看，一条都不漏。有人叫它就不等
 /// 下一眼了——但没在聊的时候，从手机亮起到真的点开也要几秒到十几秒，秒回是机器。
-async fn wait_for_look(ctx: &Context, group: i64, config: &AmbientConfig) {
+async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
     let interval = config.gate_interval();
     loop {
         let (urgent, engaged, due) = window::with_group(group, |state| {
@@ -1166,7 +1171,7 @@ async fn wait_for_look(ctx: &Context, group: i64, config: &AmbientConfig) {
             return;
         }
         let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
-        if !latest.enabled || !latest.groups.contains(&group) {
+        if !latest.enabled || !latest.groups.iter().any(|id| id == group) {
             return;
         }
         tokio::time::sleep(due.min(Duration::from_secs(2))).await;
@@ -1185,7 +1190,7 @@ fn notice_delay() -> Duration {
 /// 人格看不到自己刚说过的话，接出来的就是前言不搭后语。平台（satori-qq）自己存着
 /// 群消息，`message.list` 拿得到——翻两三页、只留三小时以内的，垫到窗口前面。
 /// 翻不到就算了：这是补救，不是前提，失败不重试，免得每一批都去敲一次平台。
-async fn hydrate(ctx: &Context, writer: &LockedWriter, group: i64) {
+async fn hydrate(ctx: &Context, writer: &LockedWriter, group: &str) {
     if window::with_group(group, |state| std::mem::replace(&mut state.hydrated, true)) {
         return;
     }
@@ -1231,17 +1236,20 @@ async fn consider(
     ctx: &Context,
     writer: &LockedWriter,
     mgr: &Arc<crate::plugins::oai::data::Manager>,
-    group: i64,
+    group: &str,
     base: &Path,
 ) -> anyhow::Result<()> {
-    let mut worker = Worker { group, armed: true };
+    let mut worker = Worker {
+        group: group.to_string(),
+        armed: true,
+    };
     hydrate(ctx, writer, group).await;
     loop {
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
         if config.focus_max_seconds == 0 {
             window::with_group(group, |state| state.focus = None);
         }
-        if !config.enabled || !config.groups.contains(&group) {
+        if !config.enabled || !config.groups.iter().any(|id| id == group) {
             return Ok(());
         }
         let deadline = Instant::now() + config.max_wait();
@@ -1260,7 +1268,7 @@ async fn consider(
         }
         wait_for_look(ctx, group, &config).await;
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
-        if !config.enabled || !config.groups.contains(&group) {
+        if !config.enabled || !config.groups.iter().any(|id| id == group) {
             return Ok(());
         }
         let (mut seq, turns, mentioned, summoned, silent_for, rhythm, focused) =
@@ -1332,7 +1340,7 @@ async fn consider_batch(
     ctx: &Context,
     writer: &LockedWriter,
     mgr: &Arc<crate::plugins::oai::data::Manager>,
-    group: i64,
+    group: &str,
     base: &Path,
     config: &AmbientConfig,
     seq: &mut u64,
@@ -1548,10 +1556,10 @@ fn asks_for_answer(text: &str) -> bool {
 }
 
 /// 停用配置或群聊推进后，放弃尚未发送的内容，交回 worker 读取新上下文。
-fn current(ctx: &Context, group: i64, seq: u64) -> bool {
+fn current(ctx: &Context, group: &str, seq: u64) -> bool {
     let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
     config.enabled
-        && config.groups.contains(&group)
+        && config.groups.iter().any(|id| id == group)
         && window::with_group(group, |state| state.seq == seq)
 }
 
@@ -1569,9 +1577,9 @@ enum Sendable {
 /// 的话，人格在活跃的群里几乎开不了口；多于这个数，现场多半已经变了。
 const DRIFT_SLACK: u64 = 2;
 
-fn sendable(ctx: &Context, group: i64, seq: u64) -> Sendable {
+fn sendable(ctx: &Context, group: &str, seq: u64) -> Sendable {
     let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
-    if !config.enabled || !config.groups.contains(&group) {
+    if !config.enabled || !config.groups.iter().any(|id| id == group) {
         return Sendable::Stale;
     }
     window::with_group(group, |state| match state.drift(seq) {
@@ -1585,26 +1593,30 @@ fn sendable(ctx: &Context, group: i64, seq: u64) -> Sendable {
 ///
 /// 优先「叫到我的那条」——@、引用我、戳我，那才是这句回应真正对着的话；没人叫的
 /// 时候才落到本批最后一条群友消息。消息号为 0 的平台事件（戳一戳、撤回）引不了。
-fn reply_target(turns: &[Turn]) -> Option<i64> {
+fn reply_target(turns: &[Turn]) -> Option<String> {
     let candidates: Vec<&Turn> = turns
         .iter()
         .rev()
-        .filter(|turn| !turn.from_me && turn.message_id != 0)
+        .filter(|turn| !turn.from_me && !turn.message_id.is_empty())
         .collect();
     candidates
         .iter()
         .find(|turn| turn.mentions_me)
         .or_else(|| candidates.first())
-        .map(|turn| turn.message_id)
+        .map(|turn| turn.message_id.clone())
 }
 
 /// 这条消息实际引谁。
 ///
 /// 模型点名的那条优先——但得真在本批记录里，否则它随口写的一个消息号会让整条消息
 /// 引到不存在的目标上；点不出或没点名，才用 [`reply_target`] 的默认目标。
-fn quote_target(explicit: Option<i64>, fallback: Option<i64>, turns: &[Turn]) -> Option<i64> {
+fn quote_target(
+    explicit: Option<String>,
+    fallback: Option<String>,
+    turns: &[Turn],
+) -> Option<String> {
     explicit
-        .filter(|id| *id != 0 && turns.iter().any(|turn| turn.message_id == *id))
+        .filter(|id| turns.iter().any(|turn| turn.message_id == *id))
         .or(fallback)
 }
 
@@ -1614,7 +1626,7 @@ async fn speak_up(
     ctx: &Context,
     writer: &LockedWriter,
     mgr: &Arc<crate::plugins::oai::data::Manager>,
-    group: i64,
+    group: &str,
     base: &Path,
     config: &AmbientConfig,
     turns: &[Turn],
@@ -1727,13 +1739,7 @@ async fn speak_up(
     let pace = config.pace(mood::snapshot(group));
     tokio::time::sleep(pace.think_delay(started.elapsed())).await;
 
-    let me = ctx
-        .bot
-        .login_user
-        .get()
-        .id
-        .parse::<i64>()
-        .unwrap_or_default();
+    let me = ctx.bot.self_id();
     let mut sent = false;
     for (index, utterance) in utterances.into_iter().enumerate() {
         if index > 0 {
@@ -1754,7 +1760,7 @@ async fn speak_up(
         let mut message = Message::new();
         // 打字的工夫里群里又冒出一两句：照样发，但首条挂上它回的那句，免得接错人。
         if (utterance.reply || (drifted && index == 0))
-            && let Some(id) = quote_target(utterance.reply_to, fallback, turns)
+            && let Some(id) = quote_target(utterance.reply_to, fallback.clone(), turns)
         {
             message = message.reply(id);
         }
@@ -1770,7 +1776,7 @@ async fn speak_up(
         )
         .await
         {
-            Ok(Some(id)) => id.parse::<i64>().unwrap_or_default(),
+            Ok(Some(id)) => id,
             Ok(None) => {
                 info!(target: LOG_TARGET, "群 {group} 这句话没发出去：交给 QQ 之前群里又说了话");
                 break;
@@ -1798,7 +1804,7 @@ async fn speak_up(
             }
             // 服务端自发事件可能先到；按回执 ID 去重。
             state.receive(Turn {
-                user_id: me,
+                user_id: me.clone(),
                 name: "我".to_string(),
                 text: spoken,
                 elements: message.clone(),
@@ -1819,8 +1825,8 @@ async fn speak_up(
         if config.memory_enabled
             && let Some(target) = turns.iter().rev().find(|turn| !turn.from_me)
         {
-            let (id, at) = (target.user_id, chrono::Local::now().timestamp());
-            memory::edit(group, |memory| memory.exchange(id, at));
+            let at = chrono::Local::now().timestamp();
+            memory::edit(group, |memory| memory.exchange(&target.user_id, at));
         }
     }
     Ok(())
@@ -1923,8 +1929,8 @@ mod tests {
         let start = record_for_consideration(
             &mut state,
             Turn {
-                user_id: 42,
-                message_id: 99,
+                user_id: "42".into(),
+                message_id: "99".into(),
                 text: "你怎么看".into(),
                 ..Turn::default()
             },
@@ -1960,16 +1966,16 @@ mod tests {
     fn calls_skip_the_wait_for_the_next_look_but_images_do_not() {
         let mut state = window::GroupState::default();
         let mut image = Turn {
-            user_id: 42,
-            message_id: 1,
+            user_id: "42".into(),
+            message_id: "1".into(),
             ..Turn::default()
         };
         image.images.push("image.png".into());
         state.receive(image);
         assert!(!state.urgent());
         let mut at = Turn {
-            user_id: 42,
-            message_id: 2,
+            user_id: "42".into(),
+            message_id: "2".into(),
             mentions_me: true,
             ..Turn::default()
         };
@@ -1982,8 +1988,8 @@ mod tests {
         assert!(state.urgent(), "搭话指令同样不等");
         state.take_summon();
         let mut named = Turn {
-            user_id: 42,
-            message_id: 3,
+            user_id: "42".into(),
+            message_id: "3".into(),
             ..Turn::default()
         };
         named.call.named_me = true;
@@ -2033,12 +2039,12 @@ mod tests {
     fn only_the_speaking_round_carries_his_own_words() {
         let config = AmbientConfig::default();
         let turns = vec![Turn {
-            user_id: 7,
+            user_id: "7".into(),
             name: "群友".into(),
             text: "这台折叠屏值不值".into(),
             ..Turn::default()
         }];
-        let scene = Scene::build(-1, &config, &turns, "刚接了两次话".into());
+        let scene = Scene::build("-1", &config, &turns, "刚接了两次话".into());
         // 调子按当下状态浮动，所以认的是「哪一段在不在」，不是具体一句话。
         let tones = [
             mood::Register::Lively,
@@ -2077,7 +2083,7 @@ mod tests {
         let _guard = memory::exclusive();
         let dir = stickers::tests::scratch("scene");
         let source = Turn {
-            user_id: 7,
+            user_id: "7".into(),
             name: "老张".into(),
             text: "笑死".into(),
             ..Turn::default()
@@ -2089,16 +2095,16 @@ mod tests {
             simd_json::owned::Value::from("241904"),
         );
         let segment = crate::message::Segment::new("mface", data);
-        stickers::keep(&segment, &source, -1, "捂着嘴笑", None, 20);
+        stickers::keep(&segment, &source, "-1", "捂着嘴笑", None, 20);
 
         let config = AmbientConfig::default();
         let turns = vec![Turn {
-            user_id: 7,
+            user_id: "7".into(),
             name: "群友".into(),
             text: "这台折叠屏值不值".into(),
             ..Turn::default()
         }];
-        let scene = Scene::build(-1, &config, &turns, "刚接了两次话".into());
+        let scene = Scene::build("-1", &config, &turns, "刚接了两次话".into());
         assert!(scene.own.contains("捂着嘴笑"), "{}", scene.own);
         assert!(!scene.brief().contains("捂着嘴笑"), "{}", scene.brief());
         // 库关掉（`sticker_max = 0`）时这一段整个不出现。
@@ -2106,7 +2112,7 @@ mod tests {
             sticker_max: 0,
             ..AmbientConfig::default()
         };
-        let scene = Scene::build(-1, &off, &turns, "刚接了两次话".into());
+        let scene = Scene::build("-1", &off, &turns, "刚接了两次话".into());
         assert!(!scene.own.contains("捂着嘴笑"), "{}", scene.own);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2158,7 +2164,7 @@ mod tests {
         };
         assert_eq!(huge.freshness_window(), Duration::from_secs(300));
         // 旧配置里没有这个键也读得出来，取默认值。
-        let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();
+        let legacy: AmbientConfig = toml::from_str("groups = ['1']").unwrap();
         assert_eq!(legacy.send_freshness_seconds, config.send_freshness_seconds);
     }
 
@@ -2260,7 +2266,7 @@ mod tests {
         // 没配替补模型，高峰那一轮仍用主模型。
         assert!(config.peak.model.is_empty());
         // 旧配置里没有这张表也能读出来。
-        let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();
+        let legacy: AmbientConfig = toml::from_str("groups = ['1']").unwrap();
         assert_eq!(legacy.peak.windows, config.peak.windows);
         assert_eq!(legacy.peak.doze_gate(), config.peak.doze_gate());
         assert!(legacy.peak.model.is_empty());
@@ -2351,7 +2357,7 @@ mod tests {
         assert!(config.search_enabled);
         assert_eq!(config.search_budget, 3);
         // 旧配置里没有这两个键也读得出来。
-        let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();
+        let legacy: AmbientConfig = toml::from_str("groups = ['1']").unwrap();
         assert!(legacy.search_enabled);
         assert_eq!(legacy.search_budget, config.search_budget);
         // 想关就写 false；写 0 也等于关。
@@ -2363,48 +2369,48 @@ mod tests {
 
     #[test]
     fn legacy_and_partial_tables_fall_back_to_defaults() {
-        let config: AmbientConfig = toml::from_str("groups = [123]\nunknown_key = 1").unwrap();
-        assert_eq!(config.groups, [123]);
+        let config: AmbientConfig = toml::from_str("groups = ['123']\nunknown_key = 1").unwrap();
+        assert_eq!(config.groups, ["123"]);
         assert_eq!(config.gate_model, AmbientConfig::default().gate_model);
     }
 
     #[test]
     fn platform_events_preserve_targets_without_inventing_reaction_authors() {
         let poke = event(
-            serde_json::json!({"satori_type":"internal","sub_type":"poke","user_id":42,"satori_data":{"target_id":"10000"}}),
+            serde_json::json!({"satori_type":"internal","sub_type":"poke","user_id":"42","satori_data":{"target_id":"10000"}}),
         );
-        let (turn, _) = notice_turn(&poke, 10000).unwrap();
+        let (turn, _) = notice_turn(&poke, "10000").unwrap();
         assert!(turn.mentions_me);
         assert!(turn.call.poked_me, "被戳要单独记下来，接法跟被 @ 不一样");
         assert!(!turn.from_me);
-        assert_eq!(turn.message_id, 0);
+        assert_eq!(turn.message_id, "");
         let reaction = event(
-            serde_json::json!({"satori_type":"reaction-added","message_id":123,"_satori":{"emoji":{"id":"76"}}}),
+            serde_json::json!({"satori_type":"reaction-added","message_id":"123","_satori":{"emoji":{"id":"76"}}}),
         );
-        let (turn, _) = notice_turn(&reaction, 10000).unwrap();
-        assert_eq!(turn.user_id, 0);
+        let (turn, _) = notice_turn(&reaction, "10000").unwrap();
+        assert_eq!(turn.user_id, "");
         assert!(turn.from_me);
         assert!(!turn.mentions_me);
         assert!(window::transcript(&[turn]).contains("操作者未知"));
         let recall = event(
-            serde_json::json!({"satori_type":"message-deleted","message_id":123,"user_id":42}),
+            serde_json::json!({"satori_type":"message-deleted","message_id":"123","user_id":"42"}),
         );
-        assert_eq!(notice_turn(&recall, 10000).unwrap().1, Some(123));
+        assert_eq!(notice_turn(&recall, "10000").unwrap().1, Some("123".into()));
     }
 
     #[test]
     fn environment_notices_keep_subjects_separate_from_the_bot() {
         for (raw, expected) in [
             (
-                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_ban","user_id":42,"duration":60}),
+                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_ban","user_id":"42","duration":60}),
                 "42 被禁言 60 秒",
             ),
             (
-                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_ban","user_id":0,"duration":0}),
+                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_ban","duration":0}),
                 "全体成员 已解除禁言",
             ),
             (
-                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_member_update","user_id":42,"_satori":{"member":{"nick":"新名片"}}}),
+                serde_json::json!({"satori_type":"guild-member-updated","notice_type":"group_member_update","user_id":"42","_satori":{"member":{"nick":"新名片"}}}),
                 "新名片",
             ),
             (
@@ -2412,24 +2418,24 @@ mod tests {
                 "新群名",
             ),
             (
-                serde_json::json!({"satori_type":"reaction-deleted","message_id":123,"_satori":{"emoji":{"id":"76"}}}),
+                serde_json::json!({"satori_type":"reaction-deleted","message_id":"123","_satori":{"emoji":{"id":"76"}}}),
                 "减少表态",
             ),
         ] {
-            let (turn, _) = notice_turn(&event(raw), 10000).unwrap();
+            let (turn, _) = notice_turn(&event(raw), "10000").unwrap();
             assert!(turn.text.contains(expected), "{}", turn.text);
-            assert_eq!(turn.user_id, 0);
+            assert_eq!(turn.user_id, "");
             assert!(turn.from_me && !turn.mentions_me);
             assert!(!window::transcript(&[turn]).contains("你自己"));
         }
         for kind in ["guild-member-added", "guild-member-removed"] {
             let (turn, _) = notice_turn(
-                &event(serde_json::json!({"satori_type":kind,"user_id":42})),
-                10000,
+                &event(serde_json::json!({"satori_type":kind,"user_id":"42"})),
+                "10000",
             )
             .unwrap();
             assert!(!turn.from_me);
-            assert_eq!(turn.user_id, 42);
+            assert_eq!(turn.user_id, "42");
         }
     }
 
@@ -2440,7 +2446,7 @@ mod tests {
     #[test]
     fn the_legacy_reply_quotes_the_message_that_called_us() {
         let spoken = |id: i64, from_me: bool, mentioned: bool| Turn {
-            message_id: id,
+            message_id: if id == 0 { String::new() } else { id.to_string() },
             from_me,
             mentions_me: mentioned,
             call: window::Call {
@@ -2455,10 +2461,10 @@ mod tests {
             spoken(12, false, false),
             spoken(13, true, false),
         ];
-        assert_eq!(reply_target(&turns), Some(11));
+        assert_eq!(reply_target(&turns), Some("11".into()));
         // 没人叫我：引最新一条群友消息。
         let turns = [spoken(11, false, false), spoken(13, true, false)];
-        assert_eq!(reply_target(&turns), Some(11));
+        assert_eq!(reply_target(&turns), Some("11".into()));
         // 消息号为 0 的平台事件（戳一戳）不能引；只有它时就没人可引。
         let poked = Turn {
             mentions_me: true,
@@ -2476,21 +2482,21 @@ mod tests {
     #[test]
     fn an_explicit_quote_target_wins_over_the_default() {
         let turn = |id: i64| Turn {
-            message_id: id,
+            message_id: id.to_string(),
             ..Turn::default()
         };
         // 两条群友消息，谁也没叫我：默认只会引最新那条（12，也就是第二张图）。
         let turns = [turn(11), turn(12)];
         let fallback = reply_target(&turns);
-        assert_eq!(fallback, Some(12), "没人叫我时默认引最新一条");
+        assert_eq!(fallback, Some("12".into()), "没人叫我时默认引最新一条");
         // 模型讲的是第一张图，点名引 11：就算默认目标是 12，也听它的。
-        assert_eq!(quote_target(Some(11), fallback, &turns), Some(11));
+        assert_eq!(quote_target(Some("11".into()), fallback.clone(), &turns), Some("11".into()));
         // 点名的是一个本批记录里没有的消息号：退回默认目标，别引到引不到的地方。
-        assert_eq!(quote_target(Some(999), fallback, &turns), Some(12));
+        assert_eq!(quote_target(Some("999".into()), fallback.clone(), &turns), Some("12".into()));
         // 没点名就照默认来。
-        assert_eq!(quote_target(None, fallback, &turns), Some(12));
+        assert_eq!(quote_target(None, fallback, &turns), Some("12".into()));
         // 默认也引不了（记录里全是自己或消息号为 0 的平台事件）时，点名仍能定准。
-        assert_eq!(quote_target(Some(11), None, &turns), Some(11));
+        assert_eq!(quote_target(Some("11".into()), None, &turns), Some("11".into()));
         assert_eq!(quote_target(None, None, &turns), None);
     }
 
@@ -2507,22 +2513,22 @@ mod tests {
     #[test]
     fn the_scene_carries_every_local_anchor_and_drops_the_ones_turned_off() {
         let _guard = memory::exclusive();
-        let group = -9_100_001;
+        let group = "-9100001";
         let turns: Vec<Turn> = (0..6)
             .map(|index| Turn {
-                user_id: 42,
+                user_id: "42".into(),
                 name: "老张".into(),
                 text: "这破依赖装了半天".into(),
-                message_id: index + 1,
+                message_id: (index + 1).to_string(),
                 at: chrono::Local::now().timestamp() + index * 20,
                 ..Turn::default()
             })
             .collect();
         memory::edit(group, |memory| {
             for _ in 0..10 {
-                memory.see(42, "老张", chrono::Local::now().timestamp() - 86_400);
+                memory.see("42", "老张", chrono::Local::now().timestamp() - 86_400);
             }
-            memory.remember(42, "在修驾校那台破电脑").unwrap();
+            memory.remember("42", "在修驾校那台破电脑").unwrap();
         });
         let config = AmbientConfig::default();
         let brief = Scene::build(group, &config, &turns, "尚未发言".into()).brief();
@@ -2549,9 +2555,9 @@ mod tests {
     /// 还没问到平台之前这一段是空的——宁可不带，也不能摆一份空表让模型去填。
     #[test]
     fn the_scene_carries_the_name_the_room_sees() {
-        let group = -9_100_002;
+        let group = "-9100002";
         let turns = [Turn {
-            user_id: 42,
+            user_id: "42".into(),
             name: "老张".into(),
             text: "A宝在吗".into(),
             ..Turn::default()
@@ -2562,7 +2568,7 @@ mod tests {
         identity::seed(
             group,
             identity::Identity {
-                user_id: 3373167460,
+                user_id: "3373167460".into(),
                 name: "nawyjx".into(),
                 card: "A宝好腻害！".into(),
                 group_name: "②群心情管家•助手".into(),
@@ -2579,7 +2585,7 @@ mod tests {
 
     #[test]
     fn preferred_name_is_shared_by_gate_and_speech_despite_the_group_card() {
-        let group = -9_100_012;
+        let group = "-9100012";
         identity::seed(group, identity::Identity {
             name: "nawyjx".into(),
             card: "A宝好腻害！".into(),
@@ -2792,7 +2798,7 @@ mod tests {
         let config = AmbientConfig::default();
         assert_eq!(config.summon_command, "/搭话");
         // 旧配置里没有这个键也读得出来。
-        let legacy: AmbientConfig = toml::from_str("groups = [1]").unwrap();
+        let legacy: AmbientConfig = toml::from_str("groups = ['1']").unwrap();
         assert_eq!(legacy.summon_command, config.summon_command);
         // 想关掉就写空。
         let off: AmbientConfig = toml::from_str("summon_command = ''").unwrap();

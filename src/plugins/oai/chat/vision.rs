@@ -67,8 +67,8 @@ fn remember(url: &str, value: Option<String>) {
 /// 时，模型看得到两张图、却分不清哪个块是哪条消息里的——于是它明明在讲第一张，
 /// 引用却指到了第二张。出处随图一起递过去，模型照着记录上的消息号引用就不会指错。
 pub(crate) struct Usable {
-    /// 这张图来自哪条消息；0 表示不来自记录（比如头像）。
-    pub message_id: i64,
+    /// 这张图来自哪条消息；空串表示不来自记录（比如头像）。
+    pub message_id: String,
     /// 在这条消息里是第几张，1 起。
     pub index: usize,
     /// 已验证并转换为 PNG 的 data URL。
@@ -88,7 +88,7 @@ pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<Usable> {
         for (index, url) in turn.images.iter().enumerate().rev() {
             if let Some(data_url) = usable_image(url).await {
                 out.push(Usable {
-                    message_id: turn.message_id,
+                    message_id: turn.message_id.clone(),
                     index: index + 1,
                     data_url,
                 });
@@ -112,7 +112,7 @@ pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<Usable> {
 pub(crate) fn provenance(images: &[Usable]) -> String {
     let entries: Vec<String> = images
         .iter()
-        .filter(|image| image.message_id != 0)
+        .filter(|image| !image.message_id.is_empty())
         .map(|image| format!("id={} 的第 {} 张", image.message_id, image.index))
         .collect();
     if entries.is_empty() {
@@ -251,12 +251,12 @@ mod tests {
     fn provenance_lists_each_image_with_its_message() {
         let images = [
             Usable {
-                message_id: 111,
+                message_id: "111".into(),
                 index: 1,
                 data_url: "data:,".into(),
             },
             Usable {
-                message_id: 222,
+                message_id: "222".into(),
                 index: 2,
                 data_url: "data:,".into(),
             },
@@ -266,7 +266,7 @@ mod tests {
         assert!(text.contains("id=222 的第 2 张"), "{text}");
         // 不来自记录的那张（头像）不占用对应关系。
         let avatar = [Usable {
-            message_id: 0,
+            message_id: String::new(),
             index: 1,
             data_url: "data:,".into(),
         }];

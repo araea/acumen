@@ -20,8 +20,8 @@ pub struct Matcher {
 struct Waiter {
     id: u64,
     // 消息匹配条件
-    group_id: Option<i64>,
-    user_id: Option<i64>,
+    group_id: Option<String>,
+    user_id: Option<String>,
     sender: oneshot::Sender<Event>,
 }
 
@@ -50,12 +50,16 @@ impl Matcher {
     /// 注册一个消息等待者 (群号/用户)
     pub async fn wait(
         &self,
-        group_id: Option<i64>,
-        user_id: Option<i64>,
+        group_id: Option<&str>,
+        user_id: Option<&str>,
         timeout_duration: Duration,
     ) -> Option<Event> {
-        self.wait_internal(group_id, user_id, timeout_duration)
-            .await
+        self.wait_internal(
+            group_id.map(str::to_owned),
+            user_id.map(str::to_owned),
+            timeout_duration,
+        )
+        .await
     }
 
     fn drop_waiter(&self, id: u64) {
@@ -68,8 +72,8 @@ impl Matcher {
 
     async fn wait_internal(
         &self,
-        group_id: Option<i64>,
-        user_id: Option<i64>,
+        group_id: Option<String>,
+        user_id: Option<String>,
         timeout_duration: Duration,
     ) -> Option<Event> {
         let (tx, rx) = oneshot::channel();
@@ -97,12 +101,8 @@ impl Matcher {
             return Some(event);
         }
 
-        let g_id = event
-            .get_i64("group_id")
-            .or_else(|| event.get_u64("group_id").map(|v| v as i64));
-        let u_id = event
-            .get_i64("user_id")
-            .or_else(|| event.get_u64("user_id").map(|v| v as i64));
+        let g_id = event.get_str("group_id").map(str::to_owned);
+        let u_id = event.get_str("user_id").map(str::to_owned);
         // 只有消息事件参与交互等待
         if g_id.is_none() && u_id.is_none() {
             return Some(event);
@@ -148,12 +148,12 @@ mod tests {
     #[tokio::test]
     async fn cancelled_wait_removes_registration() {
         let matcher = Matcher::new();
-        let mut waiting = Box::pin(matcher.wait(Some(7), Some(9), Duration::from_secs(60)));
+        let mut waiting = Box::pin(matcher.wait(Some("7"), Some("9"), Duration::from_secs(60)));
         assert!(futures_util::poll!(&mut waiting).is_pending());
         assert_eq!(matcher.waiter_count.load(Ordering::Acquire), 1);
         drop(waiting);
         assert_eq!(matcher.waiter_count.load(Ordering::Acquire), 0);
-        let event = simd_json::json!({"group_id":7,"user_id":9});
+        let event = simd_json::json!({"group_id":"7","user_id":"9"});
         assert!(matcher.dispatch(event).is_some());
     }
 
@@ -164,16 +164,16 @@ mod tests {
         drop(rx);
         matcher.waiters.lock().unwrap().push(Waiter {
             id: 0,
-            group_id: Some(7),
+            group_id: Some("7".into()),
             user_id: None,
             sender: tx,
         });
         matcher.waiter_count.store(1, Ordering::Release);
-        let mut live = Box::pin(matcher.wait(Some(7), None, Duration::from_secs(1)));
+        let mut live = Box::pin(matcher.wait(Some("7"), None, Duration::from_secs(1)));
         assert!(futures_util::poll!(&mut live).is_pending());
         assert!(
             matcher
-                .dispatch(simd_json::json!({"group_id":7,"user_id":9}))
+                .dispatch(simd_json::json!({"group_id":"7","user_id":"9"}))
                 .is_none()
         );
         assert!(live.await.is_some());

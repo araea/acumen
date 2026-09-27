@@ -126,7 +126,7 @@ pub async fn handle_agent(
 
     let annotate = !event.is_manual_self();
     if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), 124, true).await;
+        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", true).await;
     }
     let bases = api_bases(&configured_base);
     let result = async {
@@ -142,7 +142,7 @@ pub async fn handle_agent(
     .await;
 
     if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), 124, false).await;
+        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", false).await;
     }
     match result {
         Ok((base, task)) => {
@@ -283,7 +283,7 @@ async fn deliver_task(
     mgr: &Arc<Manager>,
     api_base: &str,
     task: &MjTask,
-    reply_to: i64,
+    reply_to: &str,
 ) {
     let event = match ctx.as_message() {
         Some(event) => event,
@@ -410,7 +410,7 @@ pub async fn try_handle_upscale_reply(
     };
     let annotate = !event.is_manual_self();
     if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), 124, true).await;
+        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", true).await;
     }
 
     for index in indices {
@@ -474,7 +474,7 @@ pub async fn try_handle_upscale_reply(
         }
     }
     if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), 124, false).await;
+        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", false).await;
     }
     true
 }
@@ -586,7 +586,7 @@ async fn send_cached_image(
     ctx: &Context,
     writer: &LockedWriter,
     source: &str,
-    reply_to: i64,
+    reply_to: &str,
 ) -> bool {
     let event = match ctx.as_message() {
         Some(event) => event,

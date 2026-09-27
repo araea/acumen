@@ -2,7 +2,7 @@ use crate::adapters::satori::api;
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::match_command;
 use crate::config::build_config;
-use crate::event::{Context, EventType};
+use crate::event::Context;
 use crate::plugins::PluginError;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -25,10 +25,10 @@ pub fn default_config() -> Value {
 /// QQ 对群设置的写有过一天写太多就限流的先例（2026-09-19，code=1010），这个开关
 /// 一旦查到是开的就不会再写，正常情况下这道频根本用不上；只在开关被反复关掉、
 /// 或者短时间内很多人同时触发指令时兜底，避免对同一个群短时间内连续发起写请求。
-static SWITCH_ENABLE_COOLDOWN_UNTIL: OnceLock<Mutex<HashMap<i64, Instant>>> = OnceLock::new();
+static SWITCH_ENABLE_COOLDOWN_UNTIL: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 const SWITCH_ENABLE_COOLDOWN: Duration = Duration::from_secs(300);
 
-fn switch_enable_cooldowns() -> MutexGuard<'static, HashMap<i64, Instant>> {
+fn switch_enable_cooldowns() -> MutexGuard<'static, HashMap<String, Instant>> {
     SWITCH_ENABLE_COOLDOWN_UNTIL
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -36,16 +36,16 @@ fn switch_enable_cooldowns() -> MutexGuard<'static, HashMap<i64, Instant>> {
 }
 
 /// 这个群最近是否已经尝试过打开开关；没有就登记本次尝试，返回 true 放行。
-fn should_try_enable_switch(group_id: i64) -> bool {
+fn should_try_enable_switch(group_id: &str) -> bool {
     let mut cooldowns = switch_enable_cooldowns();
     let now = Instant::now();
     let recently_tried = cooldowns
-        .get(&group_id)
+        .get(group_id)
         .is_some_and(|last| now.duration_since(*last) < SWITCH_ENABLE_COOLDOWN);
     if recently_tried {
         return false;
     }
-    cooldowns.insert(group_id, now);
+    cooldowns.insert(group_id.to_string(), now);
     true
 }
 
@@ -68,19 +68,13 @@ pub fn handle(
 
             let user_id = msg.user_id();
 
-            // 2. 获取 Bot 自身的 ID (self_id)
-            let self_id = if let EventType::Satori(ev) = &ctx.event {
-                ev.get_i64("self_id")
-                    .or_else(|| ev.get_u64("self_id").map(|v| v as i64))
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+            // 2. Bot 自身的 ID
+            let self_id = ctx.bot.self_id();
 
             // 3. 检查 Bot 是否为群主
             // 只有群主才有权限设置群头衔
             let bot_info =
-                match api::get_group_member_info(&ctx, writer.clone(), group_id, self_id, true)
+                match api::get_group_member_info(&ctx, writer.clone(), group_id, &self_id, true)
                     .await
                 {
                     Ok(info) => info,

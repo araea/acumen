@@ -2,7 +2,7 @@
 //!
 //! ## 为什么需要聚合表
 //! 基准测试（300 万行原始消息、最活跃群 73 万行/180 天）表明：
-//! - 纯计数（`COUNT(*)`）可走 `idx_records_group_time` 覆盖索引，只数索引条目，不读消息行；
+//! - 纯计数（`COUNT(*)`）可走 `idx_records_guild_time` 覆盖索引，只数索引条目，不读消息行；
 //! - 但消息类型统计、每日走势、各类排行榜等聚合查询必须**扫描区间内全部原始消息行**，
 //!   "今年/总"范围下单次可达 0.5~1 秒。
 //!
@@ -32,27 +32,11 @@ pub const SELF_HEAL_DAYS: i64 = 7;
 
 // ================= 初始化与维护 =================
 
-/// 初始化聚合表：建表 + 首次全量回填（或启动自愈）。
+/// 初始化聚合表：建表 + 启动自愈。
 /// 依赖 message_records 表已存在（由 recorder::init 先行创建）。
 pub async fn init(db: &DatabaseConnection) -> Result<(), DbErr> {
     create_tables(db).await?;
-
-    let stats_rows = scalar_i64(db, "SELECT COUNT(*) AS c FROM message_stats_daily").await?;
-    let raw_rows = scalar_i64(db, "SELECT COUNT(*) AS c FROM message_records").await?;
-    if raw_rows == 0 {
-        return Ok(());
-    }
-
-    if stats_rows == 0 {
-        // 升级场景：已有历史消息但聚合表为空 → 一次性全量回填
-        info!(target: "Database/Stats", "检测到 {} 条历史消息，开始回填统计聚合表...", raw_rows);
-        backfill_all(db).await?;
-        info!(target: "Database/Stats", "统计聚合表回填完成。");
-    } else {
-        // 常规启动：重建近 7 天聚合行，修复可能的漂移
-        self_heal_recent(db).await?;
-    }
-    Ok(())
+    self_heal_recent(db).await
 }
 
 async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
@@ -61,9 +45,10 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         // 群 × 日 聚合（含 6 类消息类型计数，口径与原实时查询完全一致：
         // image = SUM(image_count) - SUM(is_anim_emoji)，此处直接存净额）
         r#"CREATE TABLE IF NOT EXISTS message_stats_daily (
-            group_id      INTEGER NOT NULL,
+            guild_id      TEXT    NOT NULL,
             stat_date     TEXT    NOT NULL,
-            group_name    TEXT    NOT NULL DEFAULT '',
+            guild_name    TEXT    NOT NULL DEFAULT '',
+            guild_avatar  TEXT    NOT NULL DEFAULT '',
             msg_count     INTEGER NOT NULL DEFAULT 0,
             text_count    INTEGER NOT NULL DEFAULT 0,
             image_count   INTEGER NOT NULL DEFAULT 0,
@@ -71,73 +56,29 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
             video_count   INTEGER NOT NULL DEFAULT 0,
             anim_emoji_count INTEGER NOT NULL DEFAULT 0,
             face_count    INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (group_id, stat_date)
+            PRIMARY KEY (guild_id, stat_date)
         )"#,
         // 群 × 用户 × 日 聚合（服务发言榜/表情包榜/我的群排行等）
         r#"CREATE TABLE IF NOT EXISTS message_user_stats_daily (
-            group_id      INTEGER NOT NULL,
+            guild_id      TEXT    NOT NULL,
             stat_date     TEXT    NOT NULL,
-            user_id       INTEGER NOT NULL,
-            nick          TEXT    NOT NULL DEFAULT '',
-            group_name    TEXT    NOT NULL DEFAULT '',
+            user_id       TEXT    NOT NULL,
+            member_nick   TEXT    NOT NULL DEFAULT '',
+            user_avatar   TEXT    NOT NULL DEFAULT '',
+            guild_name    TEXT    NOT NULL DEFAULT '',
             msg_count     INTEGER NOT NULL DEFAULT 0,
             anim_emoji_count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (group_id, stat_date, user_id)
+            PRIMARY KEY (guild_id, stat_date, user_id)
         )"#,
         // 覆盖"按用户查日期范围"的查询（我的群组参与排行）
         "CREATE INDEX IF NOT EXISTS idx_user_stats_user_date \
-         ON message_user_stats_daily (user_id, stat_date, group_id)",
+         ON message_user_stats_daily (user_id, stat_date, guild_id)",
     ];
 
     for sql in stmts {
         db.execute_raw(Statement::from_string(backend, sql.to_owned()))
             .await?;
     }
-    Ok(())
-}
-
-/// 全量回填（仅在聚合表为空时执行一次）
-async fn backfill_all(db: &DatabaseConnection) -> Result<(), DbErr> {
-    let backend = db.get_database_backend();
-
-    db.execute_raw(Statement::from_string(
-        backend,
-        r#"INSERT INTO message_stats_daily
-           (group_id, stat_date, group_name, msg_count, text_count, image_count,
-            voice_count, video_count, anim_emoji_count, face_count)
-           SELECT group_id,
-                  strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime')),
-                  MAX(group_name),
-                  COUNT(*),
-                  SUM(CASE WHEN length > 0 THEN 1 ELSE 0 END),
-                  SUM(image_count) - SUM(is_anim_emoji),
-                  SUM(is_voice),
-                  SUM(is_video),
-                  SUM(is_anim_emoji),
-                  SUM(face_count)
-           FROM message_records
-           GROUP BY group_id, 2"#
-            .to_owned(),
-    ))
-    .await?;
-
-    db.execute_raw(Statement::from_string(
-        backend,
-        r#"INSERT INTO message_user_stats_daily
-           (group_id, stat_date, user_id, nick, group_name, msg_count, anim_emoji_count)
-           SELECT group_id,
-                  strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime')),
-                  user_id,
-                  MAX(sender_nick),
-                  MAX(group_name),
-                  COUNT(*),
-                  SUM(is_anim_emoji)
-           FROM message_records
-           GROUP BY group_id, 2, user_id"#
-            .to_owned(),
-    ))
-    .await?;
-
     Ok(())
 }
 
@@ -210,17 +151,17 @@ async fn rebuild_range(
         backend,
         format!(
             r#"INSERT INTO message_stats_daily
-               (group_id, stat_date, group_name, msg_count, text_count, image_count,
+               (guild_id, stat_date, guild_name, guild_avatar, msg_count, text_count, image_count,
                 voice_count, video_count, anim_emoji_count, face_count)
-               SELECT group_id,
+               SELECT guild_id,
                       strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime')),
-                      MAX(group_name), COUNT(*),
+                      MAX(guild_name), MAX(guild_avatar), COUNT(*),
                       SUM(CASE WHEN length > 0 THEN 1 ELSE 0 END),
                       SUM(image_count) - SUM(is_anim_emoji),
                       SUM(is_voice), SUM(is_video), SUM(is_anim_emoji), SUM(face_count)
                FROM message_records
                WHERE time >= {t_from} AND time < {t_to}
-               GROUP BY group_id, 2"#
+               GROUP BY guild_id, 2"#
         ),
     ))
     .await?;
@@ -229,13 +170,13 @@ async fn rebuild_range(
         backend,
         format!(
             r#"INSERT INTO message_user_stats_daily
-               (group_id, stat_date, user_id, nick, group_name, msg_count, anim_emoji_count)
-               SELECT group_id,
+               (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count)
+               SELECT guild_id,
                       strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime')),
-                      user_id, MAX(sender_nick), MAX(group_name), COUNT(*), SUM(is_anim_emoji)
+                      user_id, MAX(member_nick), MAX(user_avatar), MAX(guild_name), COUNT(*), SUM(is_anim_emoji)
                FROM message_records
                WHERE time >= {t_from} AND time < {t_to}
-               GROUP BY group_id, 2, user_id"#
+               GROUP BY guild_id, 2, user_id"#
         ),
     ))
     .await?;
@@ -247,10 +188,12 @@ async fn rebuild_range(
 
 /// 单条消息的聚合增量
 pub struct MessageStatsDelta {
-    pub group_id: i64,
-    pub group_name: String,
-    pub user_id: i64,
-    pub nick: String,
+    pub guild_id: String,
+    pub guild_name: String,
+    pub guild_avatar: String,
+    pub user_id: String,
+    pub member_nick: String,
+    pub user_avatar: String,
     pub time: i64,
     pub length: i32,
     pub image_count: i32,
@@ -280,11 +223,12 @@ where
     let stmt = Statement::from_sql_and_values(
         backend,
         r#"INSERT INTO message_stats_daily
-           (group_id, stat_date, group_name, msg_count, text_count, image_count,
+           (guild_id, stat_date, guild_name, guild_avatar, msg_count, text_count, image_count,
             voice_count, video_count, anim_emoji_count, face_count)
-           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-           ON CONFLICT (group_id, stat_date) DO UPDATE SET
-             group_name = excluded.group_name,
+           VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (guild_id, stat_date) DO UPDATE SET
+             guild_name = excluded.guild_name,
+             guild_avatar = excluded.guild_avatar,
              msg_count = message_stats_daily.msg_count + 1,
              text_count = message_stats_daily.text_count + excluded.text_count,
              image_count = message_stats_daily.image_count + excluded.image_count,
@@ -293,9 +237,10 @@ where
              anim_emoji_count = message_stats_daily.anim_emoji_count + excluded.anim_emoji_count,
              face_count = message_stats_daily.face_count + excluded.face_count"#,
         vec![
-            d.group_id.into(),
+            d.guild_id.clone().into(),
             date.clone().into(),
-            d.group_name.clone().into(),
+            d.guild_name.clone().into(),
+            d.guild_avatar.clone().into(),
             text.into(),
             image.into(),
             voice.into(),
@@ -309,19 +254,21 @@ where
     let stmt = Statement::from_sql_and_values(
         backend,
         r#"INSERT INTO message_user_stats_daily
-           (group_id, stat_date, user_id, nick, group_name, msg_count, anim_emoji_count)
-           VALUES (?, ?, ?, ?, ?, 1, ?)
-           ON CONFLICT (group_id, stat_date, user_id) DO UPDATE SET
-             nick = excluded.nick,
-             group_name = excluded.group_name,
+           (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+           ON CONFLICT (guild_id, stat_date, user_id) DO UPDATE SET
+             member_nick = excluded.member_nick,
+             user_avatar = excluded.user_avatar,
+             guild_name = excluded.guild_name,
              msg_count = message_user_stats_daily.msg_count + 1,
              anim_emoji_count = message_user_stats_daily.anim_emoji_count + excluded.anim_emoji_count"#,
         vec![
-            d.group_id.into(),
+            d.guild_id.clone().into(),
             date.into(),
-            d.user_id.into(),
-            d.nick.clone().into(),
-            d.group_name.clone().into(),
+            d.user_id.clone().into(),
+            d.member_nick.clone().into(),
+            d.user_avatar.clone().into(),
+            d.guild_name.clone().into(),
             anim.into(),
         ],
     );
