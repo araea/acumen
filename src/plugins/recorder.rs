@@ -333,9 +333,7 @@ pub fn handle(
                 }
 
                 let login = ctx.bot.login_user.get();
-                if let Ok(uid) = login.id.parse::<i64>() {
-                    record.user_id = Set(uid);
-                }
+                record.user_id = Set(ctx.bot.self_id());
                 record.user_name = Set(login.name.clone().unwrap_or_default());
                 record.sender_nick = Set(login
                     .nick
