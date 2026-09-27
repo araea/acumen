@@ -123,6 +123,68 @@ fn extract_image_urls(content: &str) -> Vec<String> {
     urls
 }
 
+/// 去掉正文里的 markdown 图片；图片另作真图发出，文字部分留给卡片或文本。
+fn strip_markdown_images(content: &str) -> String {
+    let re = Regex::new(r"!\[.*?\]\(((?:https?://|data:image/)[^\s\)]+)\)").unwrap();
+    let stripped = re.replace_all(content, "");
+    let blank_runs = Regex::new(r"\n{3,}").unwrap();
+    blank_runs.replace_all(stripped.trim(), "\n\n").into_owned()
+}
+
+/// 把图片逐张作为真图发出，返回没发出去的那些。`quote` 为真时第一张引用用户那句话。
+async fn send_images<'a>(
+    ctx: &Context,
+    writer: &LockedWriter,
+    event: &MessageEvent<'_>,
+    urls: &'a [String],
+    quote: bool,
+) -> Vec<&'a str> {
+    let mut failed = Vec::new();
+    for (index, url) in urls.iter().enumerate() {
+        let file = match url.strip_prefix("data:") {
+            Some(data) => match data.split_once(',') {
+                Some((_, base64_data)) => format!("base64://{base64_data}"),
+                None => {
+                    failed.push(url.as_str());
+                    continue;
+                }
+            },
+            None => url.clone(),
+        };
+        let mut message = Message::new();
+        if quote && index == 0 {
+            message = message.reply(event.message_id());
+        }
+        if let Err(error) = send_msg(
+            ctx,
+            writer.clone(),
+            event.group_id(),
+            Some(event.user_id()),
+            message.image(file),
+        )
+        .await
+        {
+            warn!(target: "Plugin/OAI", "图片发送失败 {}: {error}", super::utils::truncate_str(url, 80));
+            failed.push(url.as_str());
+        }
+    }
+    failed
+}
+
+/// 图片没发出去时的说明。生成一次要花钱，远程直链至少留给人自己去打开。
+fn undelivered_notice(failed: &[&str]) -> String {
+    let links: Vec<&str> = failed
+        .iter()
+        .copied()
+        .filter(|url| !url.starts_with("data:"))
+        .collect();
+    if links.is_empty() {
+        format!("❌ 有 {} 张图片没发出去", failed.len())
+    } else {
+        format!("❌ 图片没发出去，原图链接：\n{}", links.join("\n"))
+    }
+}
+
 fn extract_video_urls(content: &str) -> Vec<String> {
     let re = Regex::new(r"\[download video\]\((https?://[^\s\)]+)\)").unwrap();
     re.captures_iter(content)
@@ -567,88 +629,52 @@ async fn chat(
                 )
             };
 
-            let display_content = if !image_urls.is_empty() && !cmd.text_mode {
-                let urls_text = image_urls
-                    .iter()
-                    .map(|u| {
-                        if u.starts_with("data:") {
-                            "- [Base64 Image]".to_string()
-                        } else {
-                            format!("- {}", u)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                format!("{}\n\n---\n**图片链接：**\n{}", content, urls_text)
+            // 图片一律作为真图单独发出，正文里只留文字。卡片只放行 data: 图片，
+            // 远程直链在卡里是个空框；把图再塞进卡片或附一串链接只是重复。
+            //
+            // 画图房间的正文是「加粗的提示词 + 图片链接」，那是留给历史记录与垫图回放
+            // 的，不是给人看的：只发成品图，引用着用户那句话。
+            let prose = if draw && !image_urls.is_empty() {
+                String::new()
             } else {
-                content.clone()
+                strip_markdown_images(&content)
             };
 
-            let reply_text_content = if cmd.text_mode && !image_urls.is_empty() {
-                let re = Regex::new(r"!\[.*?\]\(((?:https?://|data:image/)[^\s\)]+)\)").unwrap();
-                re.replace_all(&content, |caps: &regex::Captures| {
-                    let url = &caps[1];
-                    if url.starts_with("data:") {
-                        "[图片]".to_string()
-                    } else {
-                        url.to_string()
-                    }
-                })
-                .to_string()
-            } else {
-                display_content.clone()
-            };
+            let mut spoke = false;
+            if !prose.trim().is_empty() || !reply_data.sources.is_empty() {
+                // 一两句话没必要走一次浏览器截图：文本更快，也方便直接复制。
+                let plain = cmd.text_mode
+                    || reply_data.plain
+                    || (reply_data.sources.is_empty()
+                        && is_plain_enough(&prose, oai.plain_text_max_chars()));
+                let footer = (oai.show_trace_footer() && !plain).then(|| super::render::Footer {
+                    meta: format!(
+                        "{} · {}",
+                        reply_data.model.as_deref().unwrap_or(&agent.model),
+                        super::utils::format_elapsed(started)
+                    ),
+                    trace: reply_data.trace.clone(),
+                    trace_overflow: reply_data.trace_overflow,
+                });
 
-            // 一两句话没必要走一次浏览器截图：文本更快，也方便直接复制。
-            let plain = cmd.text_mode
-                || reply_data.plain
-                || (image_urls.is_empty()
-                    && reply_data.sources.is_empty()
-                    && is_plain_enough(&content, oai.plain_text_max_chars()));
-            let footer = (oai.show_trace_footer() && !plain).then(|| super::render::Footer {
-                meta: format!(
-                    "{} · {}",
-                    reply_data.model.as_deref().unwrap_or(&agent.model),
-                    super::utils::format_elapsed(started)
-                ),
-                trace: reply_data.trace.clone(),
-                trace_overflow: reply_data.trace_overflow,
-            });
+                reply_card(
+                    ctx,
+                    writer,
+                    &event,
+                    &prose,
+                    plain,
+                    &header,
+                    &reply_data.sources,
+                    footer,
+                )
+                .await;
+                spoke = true;
+            }
 
-            reply_card(
-                ctx,
-                writer,
-                &event,
-                &reply_text_content,
-                plain,
-                &header,
-                &reply_data.sources,
-                footer,
-            )
-            .await;
-
-            for url in &image_urls {
-                if url.starts_with("data:") {
-                    if let Some(base64_data) = url.split(',').nth(1) {
-                        let _ = send_msg(
-                            ctx,
-                            writer.clone(),
-                            event.group_id(),
-                            Some(event.user_id()),
-                            Message::new().image(format!("base64://{}", base64_data)),
-                        )
-                        .await;
-                    }
-                } else {
-                    let _ = send_msg(
-                        ctx,
-                        writer.clone(),
-                        event.group_id(),
-                        Some(event.user_id()),
-                        Message::new().image(url),
-                    )
-                    .await;
-                }
+            // 正文没说话时由第一张图引住用户那句话，免得群里分不清是给谁画的。
+            let failed = send_images(ctx, writer, &event, &image_urls, !spoke).await;
+            if !failed.is_empty() {
+                reply_text(ctx, writer, &event, undelivered_notice(&failed)).await;
             }
 
             for url in extract_video_urls(&content) {
@@ -1830,29 +1856,7 @@ pub async fn execute(
                         &format!("{} 历史记录", name),
                     )
                     .await;
-                    for url in extra_images {
-                        if url.starts_with("data:") {
-                            if let Some(base64_data) = url.split(',').nth(1) {
-                                let _ = send_msg(
-                                    ctx,
-                                    writer.clone(),
-                                    msg_event.group_id(),
-                                    Some(msg_event.user_id()),
-                                    Message::new().image(format!("base64://{}", base64_data)),
-                                )
-                                .await;
-                            }
-                        } else {
-                            let _ = send_msg(
-                                ctx,
-                                writer.clone(),
-                                msg_event.group_id(),
-                                Some(msg_event.user_id()),
-                                Message::new().image(&url),
-                            )
-                            .await;
-                        }
-                    }
+                    send_images(ctx, writer, &msg_event, &extra_images, false).await;
                 }
             } else {
                 reply_text(
@@ -2748,6 +2752,178 @@ mod tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 画图房间只发一条「引用 + 成品图」，不再先来一张提示词卡片；
+    /// 图发不出去时补一句带原图链接的说明，生成的结果不至于丢掉。
+    #[tokio::test]
+    async fn draw_rooms_send_only_the_quoted_image() {
+        for fail_images in [false, true] {
+            let sent = run_draw_room(fail_images).await;
+            let (images, others): (Vec<_>, Vec<_>) =
+                sent.iter().partition(|content| content.contains("<img"));
+            assert_eq!(images.len(), 1, "{sent:?}");
+            assert!(images[0].contains("<quote id=\"7\"/>"), "{sent:?}");
+            assert!(
+                images[0].contains("https://example.invalid/result.png"),
+                "{sent:?}"
+            );
+            if fail_images {
+                assert_eq!(others.len(), 1, "{sent:?}");
+                assert!(
+                    others[0].contains("https://example.invalid/result.png"),
+                    "{sent:?}"
+                );
+            } else {
+                assert!(others.is_empty(), "提示词卡片或等价文本不该再发：{sent:?}");
+            }
+        }
+    }
+
+    /// 起一个同时扮演中转站图像接口与 Satori 实现端的本地服务，跑一轮画图房间，
+    /// 返回实现端收到的全部 message.create 正文。
+    async fn run_draw_room(fail_images: bool) -> Vec<String> {
+        use crate::event::{BotStatus, EventType};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut bytes = Vec::new();
+                let mut buf = [0; 4096];
+                let (head, body) = loop {
+                    let n = stream.read(&mut buf).await.unwrap();
+                    assert!(n > 0, "请求没读完连接就断了");
+                    bytes.extend_from_slice(&buf[..n]);
+                    let Some(start) = bytes.windows(4).position(|s| s == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&bytes[..start]).to_string();
+                    let length: usize = head
+                        .to_ascii_lowercase()
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .map_or(0, |value| value.trim().parse().unwrap());
+                    if bytes.len() >= start + 4 + length {
+                        break (head, bytes[start + 4..start + 4 + length].to_vec());
+                    }
+                };
+                let (status, response) = if head.starts_with("POST /v1/images/") {
+                    (
+                        "200 OK",
+                        r#"{"data":[{"url":"https://example.invalid/result.png"}]}"#.to_string(),
+                    )
+                } else if head.starts_with("POST /v1/message.create") {
+                    let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                    let content = body["content"].as_str().unwrap_or_default().to_string();
+                    let failed = fail_images && content.contains("<img");
+                    tx.send(content).unwrap();
+                    if failed {
+                        (
+                            "500 Internal Server Error",
+                            r#"{"message":"rich media transfer failed"}"#.to_string(),
+                        )
+                    } else {
+                        ("200 OK", r#"[{"id":"bot-reply"}]"#.to_string())
+                    }
+                } else {
+                    ("200 OK", "{}".to_string())
+                };
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                            response.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("oai-draw-{:032x}", rand::random::<u128>()));
+        let mgr = Arc::new(Manager::new(dir.clone()));
+        {
+            let mut config = mgr.config.write().await;
+            config.api_base = format!("{endpoint}/v1");
+            config.api_key = "test-only".into();
+            config
+                .agents
+                .push(Agent::new("画图", "gpt-image-2.5-flare", "", ""));
+        }
+        let ctx = Context {
+            event: EventType::Satori(
+                simd_json::serde::to_owned_value(serde_json::json!({
+                    "post_type": "message",
+                    "message_type": "group",
+                    "group_id": 1,
+                    "user_id": 42,
+                    "message_id": 7,
+                    "time": 1_788_800_000_i64,
+                    "message": [{"type": "text", "data": {"text": "画图 一只橘猫"}}],
+                }))
+                .unwrap(),
+            ),
+            config: Arc::new(std::sync::RwLock::new(crate::config::AppConfig::default())),
+            config_save_lock: Arc::new(tokio::sync::Mutex::new(())),
+            db: sea_orm::Database::connect("sqlite::memory:").await.unwrap(),
+            scheduler: Arc::new(crate::scheduler::Scheduler::new()),
+            matcher: Arc::new(crate::matcher::Matcher::new()),
+            config_path: Arc::from("unused-draw-test.toml"),
+            bot: Arc::new(BotStatus::default()),
+        };
+        let writer: LockedWriter =
+            Arc::new(crate::adapters::satori::SatoriClient::new(endpoint, None));
+        let cmd = Command::new("画图", Action::Chat);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            chat(
+                "画图",
+                "一只橘猫",
+                Vec::new(),
+                false,
+                &cmd,
+                &ctx,
+                &writer,
+                &mgr,
+            ),
+        )
+        .await
+        .unwrap();
+        server.abort();
+        std::fs::remove_dir_all(dir).ok();
+
+        let mut sent = Vec::new();
+        while let Ok(content) = rx.try_recv() {
+            sent.push(content);
+        }
+        sent
+    }
+
+    #[test]
+    fn card_prose_drops_markdown_images() {
+        let content = "**一只橘猫**\n\n![image](https://example.invalid/a.png)\n\n\n\n看这里 ![x](data:image/png;base64,AAAA)\n结尾";
+        assert_eq!(
+            strip_markdown_images(content),
+            "**一只橘猫**\n\n看这里 \n结尾"
+        );
+        assert_eq!(
+            strip_markdown_images("![image](https://example.invalid/a.png)"),
+            ""
+        );
+        assert_eq!(
+            undelivered_notice(&[
+                "https://example.invalid/a.png",
+                "data:image/png;base64,AAAA"
+            ]),
+            "❌ 图片没发出去，原图链接：\nhttps://example.invalid/a.png"
+        );
+        assert_eq!(
+            undelivered_notice(&["data:image/png;base64,AAAA"]),
+            "❌ 有 1 张图片没发出去"
+        );
     }
 }
 
