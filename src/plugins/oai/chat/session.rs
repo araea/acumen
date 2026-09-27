@@ -1610,7 +1610,7 @@ impl Session {
         Ok(json!({"status":"confirmed","message_id":id}))
     }
     fn record(&mut self, text: String, message_id: i64, elements: Message, success: bool) {
-        let me = self.ctx.bot.login_user.get().id.parse().unwrap_or(0);
+        let me = self.ctx.bot.self_id();
         info!(target: super::LOG_TARGET, "群 {} 动作：{}", self.group, text);
         if success && !self.spoke {
             // 锁不可重入：记忆与状态都在 window 的锁外面更新。

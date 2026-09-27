@@ -619,7 +619,7 @@ pub fn handle(
         }
 
         let user_id = msg_event.user_id();
-        if is_own_echo(&msg_event, ctx.bot.login_user.get().id.parse::<i64>().unwrap_or(0))
+        if is_own_echo(&msg_event, ctx.bot.self_id())
         {
             return Ok(Some(ctx));
         }

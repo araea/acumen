@@ -664,7 +664,7 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
         break_chain(key, now / 1000);
         return None;
     }
-    let self_id = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or(0);
+    let self_id = ctx.bot.self_id();
     let sender = if user_id != 0 && user_id == self_id {
         Sender::Bot
     } else {

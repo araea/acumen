@@ -966,7 +966,7 @@ async fn observe_notice(
     else {
         return;
     };
-    let Some((turn, recalled)) = notice_turn(raw, ctx.bot.login_user.get().id.parse().unwrap_or(0))
+    let Some((turn, recalled)) = notice_turn(raw, ctx.bot.self_id())
     else {
         return;
     };

@@ -145,7 +145,7 @@ fn user_trigger(ctx: &Context, event: &Event) -> bool {
     event.get_str("satori_type") == Some("message-created")
         && event
             .get_i64("user_id")
-            .is_some_and(|id| id != 0 && id.to_string() != ctx.bot.login_user.get().id)
+            .is_some_and(|id| id != 0 && id != ctx.bot.self_id())
         && !event.get_bool("manual_self").unwrap_or(false)
 }
 
@@ -197,7 +197,7 @@ pub fn handle(
             && event.get_str("satori_type") == Some("message-deleted")
             && event
                 .get_i64("user_id")
-                .is_none_or(|id| id.to_string() != ctx.bot.login_user.get().id)
+                .is_none_or(|id| id != ctx.bot.self_id())
             && let Some(key) = key(&ctx, event)
         {
             let channel = key.1.clone();

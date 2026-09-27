@@ -453,6 +453,50 @@ pub fn to_content(value: &OwnedValue) -> String {
     }
 }
 
+/// 拍平成只有文字的正文（不转义），给只收纯文本的实现端（satori-wx）。
+///
+/// 引用、图片、表情这些发不出去的元素直接省掉；@ 有名字就写成「@名字」，
+/// 合并转发把每条的文字按行接起来。
+pub fn to_plain_text(value: &OwnedValue) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    let Some(segments) = value.as_array() else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for segment in segments {
+        let data = segment.get("data").unwrap_or(segment);
+        match segment.get_str("type").unwrap_or("text") {
+            "text" => out.push_str(data.get_str("text").unwrap_or("")),
+            "markdown" => out.push_str(data.get_str("content").unwrap_or("")),
+            "at" => match data.get_str("name").filter(|name| !name.is_empty()) {
+                Some(name) => {
+                    out.push('@');
+                    out.push_str(name);
+                    out.push(' ');
+                }
+                None if scalar(data.get("qq")).eq_ignore_ascii_case("all") => {
+                    out.push_str("@所有人 ")
+                }
+                None => {}
+            },
+            "node" => {
+                let text = data.get("content").map(to_plain_text).unwrap_or_default();
+                if !text.trim().is_empty() {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(text.trim_end());
+                    out.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+    out.trim_end().to_string()
+}
+
 fn segment_to_content(segment: &OwnedValue) -> String {
     let kind = segment.get_str("type").unwrap_or("text");
     let data = segment.get("data").unwrap_or(segment);

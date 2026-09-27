@@ -140,7 +140,7 @@ pub(super) async fn try_reply(
         state.mark_screenshot(end);
         state.mark_spoke();
         state.receive(Turn {
-            user_id: ctx.bot.login_user.get().id.parse().unwrap_or_default(),
+            user_id: ctx.bot.self_id(),
             name: "我".into(),
             text: "[聊天记录图]".into(),
             elements: picture,
@@ -168,7 +168,7 @@ pub(super) async fn try_reply(
         {
             Ok(Some(id)) => window::with_group(group, |state| {
                 state.receive(Turn {
-                    user_id: ctx.bot.login_user.get().id.parse().unwrap_or_default(),
+                    user_id: ctx.bot.self_id(),
                     name: "我".into(),
                     text: CAPTION.into(),
                     elements: caption,

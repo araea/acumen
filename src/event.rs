@@ -63,6 +63,14 @@ pub struct BotStatus {
     pub login_user: SharedLogin,
 }
 
+impl BotStatus {
+    /// 自己的号，和事件里的 `user_id` 同一套数字：QQ 就是 QQ 号，微信是 wxid 的替身。
+    /// 判断「这条是不是自己发的」要用它，别直接 parse 登录 ID（wxid 会变成 0）。
+    pub fn self_id(&self) -> i64 {
+        crate::adapters::satori::ids::intern(&self.platform, &self.login_user.get().id)
+    }
+}
+
 /// 统一的上下文，包含事件数据、可变配置和任务调度器
 /// 注意：event 字段直接持有 EventType，支持在插件链中移交所有权从而实现修改。
 /// Context 实现了 Clone（因为 EventType 包含的 simd_json::OwnedValue 实现了 Clone），

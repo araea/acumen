@@ -20,6 +20,7 @@ use tokio_tungstenite::{
 
 pub mod api;
 pub mod forward;
+pub mod ids;
 pub mod message;
 #[allow(dead_code)]
 pub mod qq;
@@ -177,12 +178,24 @@ impl SatoriClient {
             return Err(format!("控制台模式不支持 Satori API: {method}").into());
         }
 
+        let mut params = serde_json::to_value(params)?;
+        // 目标属于另一个实现端（定时推送是拿先连上的那条连接注册的）就交给它发。
+        if let Some(route) = route_for(&ctx.bot, &mut params) {
+            return route.client.post(&route.bot, method, params).await;
+        }
+        self.post(&ctx.bot, method, params).await
+    }
+
+    async fn post<R>(&self, bot: &BotStatus, method: &str, params: Value) -> Result<R, BotError>
+    where
+        R: serde::de::DeserializeOwned,
+    {
         let url = format!("{}/v1/{}", self.endpoint, method);
         let mut request = self
             .http
             .post(url)
-            .header("Satori-Platform", &ctx.bot.platform)
-            .header("Satori-User-ID", &ctx.bot.login_user.get().id)
+            .header("Satori-Platform", &bot.platform)
+            .header("Satori-User-ID", &bot.login_user.get().id)
             .json(&params);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
@@ -235,6 +248,119 @@ impl SatoriClient {
         }
         Ok(serde_json::from_slice(&bytes)?)
     }
+}
+
+/// 同时连着几个实现端（satori-qq 与 satori-wx）时，每条连接都登记在这里。
+#[derive(Clone)]
+struct Route {
+    client: Arc<SatoriClient>,
+    bot: Arc<BotStatus>,
+}
+
+fn routes() -> std::sync::MutexGuard<'static, Vec<Route>> {
+    static ROUTES: std::sync::OnceLock<std::sync::Mutex<Vec<Route>>> = std::sync::OnceLock::new();
+    ROUTES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 连上（或重连上）一个实现端时登记；同一地址只留最新的一份。
+fn register_route(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
+    let mut routes = routes();
+    routes.retain(|route| route.client.connection_key() != client.connection_key());
+    routes.push(Route { client, bot });
+}
+
+/// 账号本身是数字的登录（QQ）用的是数字 ID，其余平台的 ID 在 acumen 里是替身。
+fn numeric_login(bot: &BotStatus) -> bool {
+    bot.login_user.get().id.parse::<i64>().is_ok()
+}
+
+/// 把参数里的替身 ID 换回原样，并在目标属于另一个实现端时找出那条连接。
+///
+/// 插件手里只有数字 ID，发给谁由 ID 本身决定：替身查反查表得到平台，纯数字归数字账号的
+/// 那个实现端。插件大多拿事件自带的连接回话，这时什么都不用换；只有定时推送这类
+/// 拿着先连上的那条连接、却要发到另一个平台的调用会被转过去。
+fn route_for(bot: &BotStatus, params: &mut Value) -> Option<Route> {
+    enum Owner {
+        Platform(String),
+        Numeric,
+    }
+    let mut owner = None;
+    for key in ["channel_id", "guild_id", "user_id"] {
+        let Some(value) = params.get_mut(key) else {
+            continue;
+        };
+        let text = match value {
+            Value::String(text) => text.clone(),
+            Value::Number(number) => number.to_string(),
+            _ => continue,
+        };
+        // satori-wx 的私聊频道就是对方的 wxid，所以 `private:` 前缀随替身一起换掉。
+        let Ok(id) = text
+            .strip_prefix("private:")
+            .unwrap_or(&text)
+            .parse::<i64>()
+        else {
+            continue;
+        };
+        if let Some(alias) = ids::lookup(id) {
+            *value = Value::String(alias.raw);
+            owner = Some(Owner::Platform(alias.platform));
+        } else if owner.is_none() {
+            owner = Some(Owner::Numeric);
+        }
+    }
+    let found = match owner? {
+        Owner::Platform(platform) if platform == bot.platform => return None,
+        Owner::Platform(platform) => routes()
+            .iter()
+            .find(|route| route.bot.platform == platform)
+            .cloned(),
+        Owner::Numeric if numeric_login(bot) => return None,
+        Owner::Numeric => routes()
+            .iter()
+            .find(|route| numeric_login(&route.bot))
+            .cloned(),
+    };
+    if found.is_none() {
+        debug!(target: "Bot", "目标所属的实现端未连接，仍交给当前连接：{params}");
+    }
+    found
+}
+
+/// 目标 ID 所在平台：替身看反查表，纯数字看是谁的账号是数字。
+fn platform_for(bot: &BotStatus, id: i64) -> String {
+    if let Some(alias) = ids::lookup(id) {
+        return alias.platform;
+    }
+    if numeric_login(bot) {
+        return bot.platform.clone();
+    }
+    routes()
+        .iter()
+        .find(|route| numeric_login(&route.bot))
+        .map(|route| route.bot.platform.clone())
+        .unwrap_or_else(|| bot.platform.clone())
+}
+
+/// satori-wx 的 `message.create` 只发纯文本：`content` 原样当正文交给微信（不反转义），
+/// 至多 4000 字节，发得太快直接拒绝。所以出站前拍平成文字，超长截断而不拆条。
+const PLAIN_TEXT_PLATFORMS: &[&str] = &["wechat"];
+const PLAIN_TEXT_LIMIT: usize = 3990;
+
+fn truncate_plain(mut text: String) -> String {
+    if text.len() <= PLAIN_TEXT_LIMIT {
+        return text;
+    }
+    let mut end = PLAIN_TEXT_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push('…');
+    text
 }
 
 /// HTTP 成功只代表 RPC 已应答；QQ 内核可以在 JSON 中报告失败。
@@ -497,6 +623,7 @@ async fn connect_and_listen(
     );
     let writer = Arc::new(SatoriClient::new(endpoint.clone(), token));
     writer.set_proxy_urls(proxy_urls(&ready));
+    register_route(writer.clone(), bot_status.clone());
     let matcher = Arc::new(Matcher::new());
 
     info!(
@@ -1012,10 +1139,23 @@ pub async fn dispatch_packet(
     } else {
         return Ok(());
     };
-    let content = packet
-        .message()
-        .map(message::to_content)
-        .unwrap_or_default();
+    let target = group_id.or(user_id).unwrap_or_default();
+    let content = if PLAIN_TEXT_PLATFORMS.contains(&platform_for(&ctx.bot, target).as_str()) {
+        let text = packet
+            .message()
+            .map(message::to_plain_text)
+            .unwrap_or_default();
+        if text.trim().is_empty() {
+            debug!(target: "Bot", "目标平台只收纯文本，这条没有文字可发，跳过");
+            return Ok(());
+        }
+        truncate_plain(text)
+    } else {
+        packet
+            .message()
+            .map(message::to_content)
+            .unwrap_or_default()
+    };
     let mut params = json!({"channel_id": channel_id, "content": content});
     if let Some(guard) = &packet.repeat_guard
         && !guard.is_current()
@@ -1103,15 +1243,25 @@ fn normalize_event(
     let channel = body.get("channel").unwrap_or(&Value::Null);
     let user = body.get("user").unwrap_or(&Value::Null);
     let member = body.get("member").unwrap_or(&Value::Null);
-    let guild_id = parse_id(guild.get("id"));
+    // 账号不是数字的实现端（satori-wx），ID 一律换成数字替身，见 `ids`。QQ 这边照旧只认数字，
+    // 偶尔出现的非数字 ID（没解析出 QQ 号的 uid）仍记作 0，不进反查表。
+    let aliased = !numeric_login(bot);
+    let id_of = |value: Option<&Value>| {
+        if aliased {
+            ids::intern(&bot.platform, &raw_id(value))
+        } else {
+            value.and_then(value_id).unwrap_or_default()
+        }
+    };
+    let guild_id = id_of(guild.get("id"));
     let group_id = if guild_id != 0 {
         guild_id
     } else if channel.get("type").and_then(Value::as_i64) == Some(0) {
-        parse_id(channel.get("id"))
+        id_of(channel.get("id"))
     } else {
         0
     };
-    let mut user_id = parse_id(user.get("id").or_else(|| member.pointer("/user/id")));
+    let mut user_id = id_of(user.get("id").or_else(|| member.pointer("/user/id")));
     if user_id == 0 {
         user_id = body
             .pointer("/satori_qq/actual_user_id")
@@ -1120,15 +1270,11 @@ fn normalize_event(
     }
     // 协议规定每个事件都自带 login 资源，多登录场景下它才是这条事件的归属账号；
     // 缺失时退回当前记录的登录号。
-    let self_id = parse_id(
+    let self_id = id_of(
         body.pointer("/login/user/id")
             .or_else(|| body.get("self_id")),
     );
-    let self_id = if self_id != 0 {
-        self_id
-    } else {
-        bot.login_user.get().id.parse::<i64>().unwrap_or_default()
-    };
+    let self_id = if self_id != 0 { self_id } else { bot.self_id() };
     let mut out = json!({
         "time": timestamp,
         "self_id": self_id,
@@ -1237,7 +1383,7 @@ fn normalize_event(
         if let Some(duration) = ban_duration {
             out["duration"] = json!(duration);
         }
-        out["operator_id"] = json!(parse_id(body.pointer("/operator/id")));
+        out["operator_id"] = json!(id_of(body.pointer("/operator/id")));
         if let Some(data) = body.get("_data") {
             out["satori_data"] = data.clone();
         }
@@ -1271,10 +1417,6 @@ fn raw_id(value: Option<&Value>) -> String {
             .unwrap_or_default(),
         None => String::new(),
     }
-}
-
-fn parse_id(value: Option<&Value>) -> i64 {
-    value.and_then(value_id).unwrap_or_default()
 }
 
 fn value_id(value: &Value) -> Option<i64> {
@@ -1897,6 +2039,65 @@ pub(crate) mod tests {
             Some(7_000_000_000_000_000_000)
         );
         assert_eq!(normalized.get_str("raw_message"), Some("hi "));
+    }
+
+    /// satori-wx 的事件没有 guild，群是 `type: 0` 的 `<数字>@chatroom` 频道，人是 wxid；
+    /// login 里只有 sn。换成替身之后，和 QQ 群消息走同一条路。
+    #[test]
+    fn wechat_string_ids_become_stable_aliases() {
+        let bot = BotStatus {
+            adapter: "satori-wx".to_string(),
+            platform: "wechat".to_string(),
+            login_user: LoginUser {
+                id: "wxid_self".to_string(),
+                ..Default::default()
+            }
+            .into(),
+        };
+        let event = json!({
+            "type": "message-created",
+            "timestamp": 1_700_000_000_000i64,
+            "login": {"sn": 1},
+            "channel": {"id": "45123456789@chatroom", "type": 0},
+            "user": {"id": "wxid_alice"},
+            "message": {"id": "3292", "content": "/help &amp; more"}
+        });
+        let normalized = normalize_event(&event, &bot, &Default::default()).unwrap();
+        let group = ids::intern("wechat", "45123456789@chatroom");
+        assert_eq!(normalized.get_str("message_type"), Some("group"));
+        assert_eq!(normalized.get_i64("group_id"), Some(group));
+        assert_eq!(
+            normalized.get_i64("user_id"),
+            Some(ids::intern("wechat", "wxid_alice"))
+        );
+        assert_eq!(normalized.get_i64("self_id"), Some(bot.self_id()));
+        assert_eq!(normalized.get_i64("message_id"), Some(3292));
+        assert_eq!(normalized.get_str("raw_message"), Some("/help & more"));
+
+        // 出站时换回原样；私聊频道就是对方的 wxid。
+        let mut params = json!({"channel_id": group.to_string(), "content": "x"});
+        assert!(route_for(&bot, &mut params).is_none());
+        assert_eq!(params["channel_id"], "45123456789@chatroom");
+        let alice = ids::intern("wechat", "wxid_alice");
+        let mut params = json!({"channel_id": format!("private:{alice}")});
+        route_for(&bot, &mut params);
+        assert_eq!(params["channel_id"], "wxid_alice");
+        assert_eq!(platform_for(&bot, group), "wechat");
+    }
+
+    #[test]
+    fn plain_text_targets_get_flattened_and_bounded() {
+        let message: simd_json::OwnedValue = simd_json::serde::to_owned_value(json!([
+            {"type": "reply", "data": {"id": "1"}},
+            {"type": "at", "data": {"qq": "42", "name": "Alice"}},
+            {"type": "text", "data": {"text": "a < b & c"}},
+            {"type": "image", "data": {"file": "https://example.com/a.png"}}
+        ]))
+        .unwrap();
+        assert_eq!(message::to_plain_text(&message), "@Alice a < b & c");
+        let long = truncate_plain("字".repeat(2000));
+        assert!(long.len() <= PLAIN_TEXT_LIMIT + '…'.len_utf8());
+        assert!(long.ends_with('…'));
     }
 
     #[test]

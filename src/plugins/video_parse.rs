@@ -153,7 +153,7 @@ pub fn handle(
         // 号主与机器人共用同一个 QQ 号：他自己手打的消息也带着这个号进来，
         // 靠 `manual_self` 分辨。只跳过机器人自己发出去的那一份回声，
         // 别把号主贴的链接一起跳掉。
-        let self_id = ctx.bot.login_user.get().id.parse::<i64>().unwrap_or(0);
+        let self_id = ctx.bot.self_id();
         if user_id == self_id && !msg.is_manual_self() {
             return Ok(Some(ctx));
         }
