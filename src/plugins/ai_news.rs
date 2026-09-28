@@ -2258,6 +2258,31 @@ mod tests {
             );
         }
 
+        /// 拿线上此刻的精选动态过一遍事件折叠，人工对照官网首页看折得对不对
+        #[tokio::test]
+        #[ignore = "需要访问 aihot.news"]
+        async fn live_feed_folds_into_events() {
+            let cfg = config();
+            let items = pusher::fetch_realtime_for_push(&cfg, api::Poll::Fresh)
+                .await
+                .expect("精选动态接口应可访问")
+                .expect("非条件请求必然带响应体");
+            let total = items.len();
+            let clusters = cluster::fold(items);
+            println!("{} 条报道 → {} 个事件", total, clusters.len());
+            for c in &clusters {
+                println!(
+                    "· {}{}",
+                    c.lead.title.as_deref().unwrap_or_default(),
+                    match c.other_sources().len() {
+                        0 => String::new(),
+                        n => format!("　[另有 {} 家：{}]", n, c.other_sources().join("、")),
+                    }
+                );
+            }
+            assert!(clusters.len() <= total);
+        }
+
         #[tokio::test]
         #[ignore = "需要访问 aihot.news"]
         async fn hot_topics_endpoint_is_renderable() {
