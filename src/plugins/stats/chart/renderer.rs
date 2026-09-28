@@ -4,9 +4,9 @@ use super::ChartError;
 use super::data_loader::{BarData, SeriesData};
 use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
-    format_percent, format_thousands, get_contrast_color, get_font, get_font_family,
-    get_font_with_color, harmonize_theme, mix_with_color, mix_with_white, overlay_image, rank_ink,
-    save_rgba_to_base64, track_tone, truncate_text_to_fit,
+    format_percent, format_thousands, get_font, get_font_family, get_font_with_color,
+    handle_tone, harmonize_theme, mix_with_color, mix_with_white, on_bar_ink, overlay_image,
+    rank_ink, save_rgba_to_base64, track_tone, truncate_text_to_fit,
 };
 use crate::plugins::stats::StatsConfig;
 use chrono::Local;
@@ -14,12 +14,14 @@ use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
-/// 一行的几何与配色：位置、条尾、以及从同一支色相里分出来的四个调子。
+/// 一行的几何与配色：位置、条尾、以及从同一支色相里分出来的几个调子。
 struct RowStyle {
     y: i32,
     bar_end_x: i32,
     bar: RGBColor,
     track: RGBColor,
+    handle: RGBColor,
+    name_ink: RGBColor,
     value_ink: RGBColor,
     pct_ink: RGBColor,
 }
@@ -52,7 +54,8 @@ impl ScaleGrid {
         root: &DrawingArea<DB, plotters::coord::Shift>,
         row_tops: impl Iterator<Item = i32> + Clone,
     ) -> Result<(), String> {
-        let color = RGBAColor(0, 0, 0, 0.08);
+        // 条是浅容器之后，从前那档 8% 的黑在条上显得比条尾的把手还抢眼，退到 5%
+        let color = RGBAColor(0, 0, 0, 0.05);
         let mut x = self.first_x;
         while x <= self.end_x {
             // 末尾那道向内收一个线宽，落在轨道里，不跑到数字那一列的留白上
@@ -72,7 +75,7 @@ impl ScaleGrid {
 
 /// 绘制水平条形图 (排行榜)
 ///
-/// 版式分成五个纵列：名次 → 头像 → 横条（实色进度 + 淡色轨道）→ 数值 → 占比。
+/// 版式分成五个纵列：名次 → 头像 → 横条（浅色容器条 + 条尾把手 + 淡色轨道）→ 数值 → 占比。
 ///
 /// 三条排版上的约定：
 ///
@@ -127,6 +130,11 @@ pub fn draw_bar_chart(
     let text_inset = 10 * s; // 文字距条端/轨道端的内缩
     // 色带的圆角：约条高的两成，够软但仍是一根条，不至于圆成胶囊
     let bar_radius = 10 * s as i32;
+    // 条尾的把手（M3E 滑块的 handle）：一道窄的竖向胶囊，两侧各让出一道纸色的缝，
+    // 上下各探出条外一点。条是浅色的容器，条尾在哪由它交代——见 `utils` 里的调子表。
+    let handle_w = 4 * s as i32;
+    let handle_gap = 3 * s as i32;
+    let handle_overhang = 3 * s as i32;
 
     // 标题区：标题在最上，时间、榜单范围与合计并成一行小字跟在下面。
     // 把时间挪到标题之下是 iOS/Material 一类版式的通行做法——先看清这是什么，
@@ -187,7 +195,7 @@ pub fn draw_bar_chart(
         formatted_counts.push((value_text, pct_text));
     }
     let numbers_width = if follows_bar {
-        text_inset + max_count_text_width
+        (handle_gap as u32) + text_inset + max_count_text_width
     } else {
         gap_text + value_col_w + pct_gap + pct_col_w
     };
@@ -252,10 +260,9 @@ pub fn draw_bar_chart(
         root.draw_text(&meta, &meta_style, (canvas_width as i32 / 2, meta_y as i32))
             .map_err(|e| e.to_string())?;
 
-        // 每行的行位、条长与这一行的四个色调只算一次，后面几趟共用。
-        // 一行四色全部出自同一支色相：实色条 → 淡色轨道 → 条外的数值 → 占比，
-        // 明度依次拉开，底淡字深，二十行也就是二十套同构的配色。
-        // 数值与占比落在纸上（不再压着轨道），所以都按纸面量对比度。
+        // 每行的行位、条长与这一行的色调只算一次，后面几趟共用。
+        // 一行的颜色全部出自同一支色相：轨道 → 条 → 把手 → 名字与数值 → 占比，
+        // tone 依次压深，底淡字深，二十行也就是二十套同构的配色。
         let rows: Vec<RowStyle> = data
             .iter()
             .enumerate()
@@ -268,12 +275,15 @@ pub fn draw_bar_chart(
                 // 数字踩在什么底上，就按什么底量对比度：跟着条尾时压在淡色轨道上
                 // （榜首那一行越过轨道落在纸上，纸更浅，一并够）；排成列时全在纸上。
                 let ground = if follows_bar { track } else { page_bg };
-                let value_ink = ensure_contrast(deep_tone(bar, 0.34), ground, 4.5);
+                let name_ink = on_bar_ink(bar);
+                let value_ink = ensure_contrast(name_ink, ground, 4.5);
                 RowStyle {
                     y,
                     bar_end_x: track_start_x + bar_w,
                     bar,
                     track,
+                    handle: handle_tone(bar),
+                    name_ink,
                     value_ink,
                     // 占比是次要信息：把数值的墨往纸里调一点，同一支色相退半档，
                     // 退到刚好还在正文阈值上为止
@@ -333,25 +343,15 @@ pub fn draw_bar_chart(
         if !config.ranking_grid_over_bars {
             grid.draw(&root, row_tops())?;
         }
+        // 条收在把手左侧那道缝之前，右端平切；把手本身就是条尾的轮廓。
         for row in rows.iter() {
-            // 条没铺满整条色带时右端平切，与后面的轨道接成一条；铺满了（榜首）
-            // 就连右边两个角一起圆，正好落在色带的轮廓上。
-            if row.bar_end_x >= track_end_x {
-                draw_rounded_rect(
-                    &root,
-                    track_start_x,
-                    row.y,
-                    track_end_x,
-                    row.y + row_height as i32,
-                    bar_radius,
-                    row.bar,
-                )?;
-            } else if row.bar_end_x > track_start_x {
+            let fill_end = row.bar_end_x - handle_w - handle_gap;
+            if fill_end > track_start_x {
                 draw_left_accent_bar(
                     &root,
                     track_start_x,
                     row.y,
-                    row.bar_end_x,
+                    fill_end,
                     row.y + row_height as i32,
                     bar_radius,
                     row.bar,
@@ -361,6 +361,30 @@ pub fn draw_bar_chart(
 
         if config.ranking_grid_over_bars {
             grid.draw(&root, row_tops())?;
+        }
+
+        // 把手与它两侧的缝最后画，构图线不会从上面穿过去。榜首那一行的把手落在
+        // 色带的尽头，右侧那道缝正好把轨道的圆角让出去，与滑块拖到最右时一个样子。
+        for row in rows.iter() {
+            let right = row.bar_end_x;
+            let left = right - handle_w;
+            root.draw(&Rectangle::new(
+                [
+                    (left - handle_gap, row.y),
+                    ((right + handle_gap).min(track_end_x), row.y + row_height as i32),
+                ],
+                page_bg.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+            draw_rounded_rect(
+                &root,
+                left,
+                row.y - handle_overhang,
+                right,
+                row.y + row_height as i32 + handle_overhang,
+                handle_w / 2,
+                row.handle,
+            )?;
         }
 
         // 第三趟：行内文字（名次、昵称、数值、占比），始终画在最上层
@@ -378,8 +402,9 @@ pub fn draw_bar_chart(
                 .map_err(|e| e.to_string())?;
 
             // 昵称写在实色条内，放不下就截断；短条也有固定的最小宽度容纳名字。
-            let name_color = get_contrast_color(row.bar);
-            let max_name_width = (bar_end_x - start_x - 2 * text_inset as i32).max(0) as u32;
+            let name_color = row.name_ink;
+            let max_name_width =
+                (bar_end_x - handle_w - handle_gap - start_x - 2 * text_inset as i32).max(0) as u32;
             let display_name = truncate_text_to_fit(&font_obj, &item.label, max_name_width);
             if !display_name.is_empty() {
                 let name_style = get_font_with_color(config, font_size, &name_color)
@@ -395,7 +420,7 @@ pub fn draw_bar_chart(
             // 数值与占比
             let (value_text, pct_text) = &formatted_counts[i];
             if follows_bar {
-                let count_x = bar_end_x + text_inset as i32;
+                let count_x = bar_end_x + handle_gap + text_inset as i32;
                 let count_style = get_font_with_color(config, font_size, &row.value_ink)
                     .pos(Pos::new(HPos::Left, VPos::Center));
                 root.draw_text(value_text, &count_style, (count_x, text_mid_y))
@@ -448,7 +473,7 @@ pub fn draw_bar_chart(
                 .map_err(|e| e.to_string())?;
 
             // 圆内字符 (同色相的深调/浅调)
-            let icon_color = get_contrast_color(accent);
+            let icon_color = on_bar_ink(accent);
             let icon_style = get_font_with_color(config, 24 * s, &icon_color)
                 .pos(Pos::new(HPos::Center, VPos::Center));
             root.draw_text(icon_char, &icon_style, (cx, cy + (2 * s as i32)))

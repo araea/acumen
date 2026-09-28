@@ -391,7 +391,7 @@ pub fn format_percent(value: i64, total: i64) -> String {
 // 条色是从头像里取的平均色，什么都有：雪白的自拍、全黑的剪影、荧光的二次元图。
 // 直接拿来铺条，一张二十行的榜就是二十种互不相干的颜色，字色也只能碰运气。
 // 这里按 Material 3 的 tonal 思路收一道：色相留给个人，饱和度与明度收进一条窄带，
-// 条上的浅字、条外的深字都从同一支色相里取——底淡字深，对比稳定，通篇一套调子。
+// 条是浅而有色的容器，条上条下的字都取同一支色相的深调——底淡字深，对比稳定，通篇一套调子。
 
 /// RGB → HSL，H 为 0—360，S/L 为 0—1。
 fn to_hsl(c: RGBColor) -> (f32, f32, f32) {
@@ -457,28 +457,52 @@ const HUE_NOISE_FLOOR: f32 = 0.02;
 /// 回退色相：系统主色的那一支。灰头像不是"没有颜色"，是"没有自己的颜色"，
 /// 于是跟着全站走，而不是退成一块纯灰——成片的中性色发灰，与主色也不像一家人。
 fn fallback_hue() -> f32 {
-    to_hsl(RGBColor(31, 99, 80)).0
+    to_hsl(crate::render::tokens::PRIMARY).0
 }
 
-/// 实色条的目标亮度。**这是 WCAG 的相对亮度，不是 HSL 的明度。**
-///
-/// HSL 的明度不是视觉亮度：同一条 HSL 明度带（l=0.43, s=0.34）上，黄的实际亮度是
-/// 0.275，紫是 0.101，差将近三倍。于是二十行的榜上，黄绿那几行永远比蓝紫那几行扎眼，
-/// 整张图的"重量"忽轻忽重——看久了累，就是这么来的。
-///
-/// M3 的 tonal palette 用感知明度（HCT 的 tone）解决同一件事：同一个 tone 上的所有
-/// 色相分量一样重，差别只剩色相。这里用 WCAG 的相对亮度做同样的归一。
-const BAR_LUMINANCE: f32 = 0.16;
+// ---- 一行的五个调子 ----
+//
+// 调子按 M3 的 **tone**（HCT 的感知明度，就是 CIELAB 的 L*）来定。L* 只是相对亮度
+// Y 的函数，所以「定住色相、把 tone 推到 T」与「把 WCAG 相对亮度推到 Y(T)」是
+// 同一件事，下面的 `at_luminance` 直接复用；任意两个 tone 之间的对比度也就与色相
+// 无关，可以在这里一次算清。
+//
+// 从前条是 T47 的实色、名字是近白：二十根一指厚的深色块摞在一起，整张图很"实"，
+// 而且长段的浅字压深底本就比深字压浅底费眼。现在改成 M3 的 container / on-container
+// 那一对——条是浅而有色的容器，名字是同一支色相的深调，像从这块颜色里长出来的。
+//
+//     轨道   T94   条尾之后那一截，淡到只剩一点色相
+//     条     T84   容器色：浅，但色相读得出来
+//     标记   T40   条尾的一道竖向把手（M3E 滑块的 handle），与条 4.3∶1、与轨道 5.6∶1
+//     墨     T30   条上的名字、条外的数值（on-container），在条上 6.2∶1、在轨道上 8.1∶1
+//
+// 条与轨道之间只差 1.3∶1，这是有意的：条尾在哪由那道把手交代（WCAG 2.2 的 1.4.11
+// 要求 3∶1 的是"看懂内容所必需的图形"，把手对两侧都过线），条本身只负责轻轻地
+// 铺出长度，不必再是一块压着人的深色。
 
-/// 淡色轨道的目标亮度。与 `BAR_LUMINANCE` 的对比度是 (0.68+0.05)/(0.16+0.05) ≈ 3.5∶1，
-/// 过 WCAG 2.2 非文字元素的 3∶1——条尾在哪要看得出来，那是这张图的主要信息。
-/// 从前轨道是「条色混一半白」，比例固定而对比度不固定：浅黄那一支只有 1.50∶1。
-const TRACK_LUMINANCE: f32 = 0.68;
+/// M3 tone（L*，0—100）→ WCAG 相对亮度。
+fn tone_luminance(tone: f32) -> f32 {
+    let f = (tone + 16.0) / 116.0;
+    if tone > 8.0 {
+        f * f * f
+    } else {
+        tone / 903.3
+    }
+}
 
-/// 彩度上限。亮度归一之后，各行之间剩下的差别只有色相与彩度；上限压到 0.30，
-/// 二十行连起来才是一套调子，不是一道彩虹。
-const MAX_SATURATION: f32 = 0.30;
-const MIN_SATURATION: f32 = 0.16;
+const TRACK_TONE: f32 = 94.0;
+const BAR_TONE: f32 = 84.0;
+const HANDLE_TONE: f32 = 40.0;
+const INK_TONE: f32 = 30.0;
+
+/// 条色的饱和度窄带。浅调上同样的 HSL 饱和度给出的彩度只有中间调的一半不到，
+/// 所以这条带比从前（0.16—0.30，配 T47）整体往上挪；上限仍然压着，二十行连起来
+/// 是一套调子，不是一道彩虹。
+const MAX_SATURATION: f32 = 0.62;
+const MIN_SATURATION: f32 = 0.36;
+/// 读不出色相的头像只带一点主色，比窄带的下限还低：它不该因为"没有颜色"
+/// 反而成为整张榜上最扎眼的一条。
+const FALLBACK_SATURATION: f32 = 0.18;
 
 /// 定住色相与饱和度，把明度推到指定的相对亮度上。
 ///
@@ -497,28 +521,45 @@ fn at_luminance(h: f32, s: f32, target: f32) -> RGBColor {
     from_hsl(h, s, (lo + hi) / 2.0)
 }
 
-/// 主题色只留色相，彩度收进窄带，亮度归一到 `BAR_LUMINANCE`。
+/// 同一支色相、同一档饱和度，换到另一个 tone。
+fn at_tone(color: RGBColor, tone: f32) -> RGBColor {
+    let (h, s, _) = to_hsl(color);
+    at_luminance(h, s, tone_luminance(tone))
+}
+
+/// 主题色只留色相，饱和度收进窄带，明度归一到 `BAR_TONE`。
 pub fn harmonize_theme(color: RGBColor) -> RGBColor {
     let (h, s, _) = to_hsl(color);
     let chroma =
         (color.0.max(color.1).max(color.2) - color.0.min(color.1).min(color.2)) as f32 / 255.0;
     // 彩度低到读不出方向的头像（纯灰的线稿、雪白、近黑）退到固定的回退色相，
-    // 但**彩度压到窄带之下**：一张本来就没有颜色的头像，不该因为"没有颜色"
-    // 反而成为整张榜上最扎眼的一条。它看着仍然是一块灰，只是带着系统那一点绿，
-    // 不是纯灰——成片的中性色发灰，和主色也不像一家人。
+    // 饱和度压到窄带之下：看着仍然是一块灰，只是带着系统主色那一点蓝紫。
     if chroma < HUE_NOISE_FLOOR {
-        return at_luminance(fallback_hue(), 0.08, BAR_LUMINANCE);
+        return at_luminance(fallback_hue(), FALLBACK_SATURATION, tone_luminance(BAR_TONE));
     }
-    at_luminance(h, s.clamp(MIN_SATURATION, MAX_SATURATION), BAR_LUMINANCE)
+    at_luminance(
+        h,
+        s.clamp(MIN_SATURATION, MAX_SATURATION),
+        tone_luminance(BAR_TONE),
+    )
 }
 
-/// 这一行的淡色轨道：同一支色相，亮度归一到 `TRACK_LUMINANCE`。
-///
-/// 也归一，是因为「混一半白」得到的是固定的**比例**，不是固定的**对比度**：
-/// 一支本来就亮的黄，混一半白之后与自己只差 1.50∶1，条尾在哪根本看不出来。
+/// 这一行的淡色轨道：同一支色相，推到 `TRACK_TONE`。
 pub fn track_tone(bar: RGBColor) -> RGBColor {
-    let (h, s, _) = to_hsl(bar);
-    at_luminance(h, s, TRACK_LUMINANCE)
+    at_tone(bar, TRACK_TONE)
+}
+
+/// 条尾的把手：同一支色相的中深调，对条与轨道都过非文字的 3∶1。
+pub fn handle_tone(bar: RGBColor) -> RGBColor {
+    at_tone(bar, HANDLE_TONE)
+}
+
+/// 条上、条旁的字色（on-container）：同一支色相的深调，名字跟着条色走。
+///
+/// tone 之间的对比度与色相无关，T30 在 T84 上恒为 6.2∶1；最后仍过一遍
+/// `ensure_contrast`，挡住 8 位取整把哪一支推到线下的万一。
+pub fn on_bar_ink(bar: RGBColor) -> RGBColor {
+    ensure_contrast(at_tone(bar, INK_TONE), bar, 4.5)
 }
 
 /// 同色相的深调：`strength` 越小越深。给淡底上的字用。
@@ -542,20 +583,6 @@ fn yiq_brightness(c: RGBColor) -> u32 {
 /// 这块底上该写深字还是浅字：黑与白各量一次，谁的对比度高就往谁那边走。
 fn prefers_dark_ink(bg: RGBColor) -> bool {
     contrast_ratio(RGBColor(0, 0, 0), bg) >= contrast_ratio(RGBColor(255, 255, 255), bg)
-}
-
-/// 实色条上的字色。纯白/纯黑盖在彩色上像两片贴纸；取同色相的极浅调或极深调，
-/// 对比度一样够，字却像是从这块颜色里长出来的。
-///
-/// 起手的那一档只是个起点：条色来自头像，什么色相都可能，总有那么一两支
-/// 刚好卡在 4.5∶1 的线下（荧光粉就是），所以最后一律过一遍阈值再交出去。
-pub fn get_contrast_color(bg_color: RGBColor) -> RGBColor {
-    let seed = if prefers_dark_ink(bg_color) {
-        deep_tone(bg_color, 0.26)
-    } else {
-        mix_with_white(bg_color, 0.10)
-    };
-    ensure_contrast(seed, bg_color, 4.5)
 }
 
 // ================= 对比度 =================
@@ -941,7 +968,7 @@ mod tests {
         for raw in samples {
             let bar = harmonize_theme(raw);
             let track = track_tone(bar);
-            let ink = deep_tone(bar, 0.34);
+            let ink = on_bar_ink(bar);
 
             assert!(
                 relative_luminance(track) > relative_luminance(bar),
@@ -1006,7 +1033,7 @@ mod tests {
         // 回退色相就是主色那一支，不是一块纯灰
         assert!(fallback.0 != fallback.1 || fallback.1 != fallback.2);
         let (fh, _, _) = to_hsl(fallback);
-        let (ph, _, _) = to_hsl(RGBColor(31, 99, 80));
+        let (ph, _, _) = to_hsl(crate::render::tokens::PRIMARY);
         assert!((fh - ph).abs() < 1.0, "回退色相取的是主色那一支");
 
         // 本来就有色相的头像不受影响。雪白的自拍 `(238,234,228)` 也在此列：
@@ -1054,7 +1081,7 @@ mod tests {
             for s in [0.0f32, 0.35, 0.7, 1.0] {
                 for l in [0.05f32, 0.25, 0.5, 0.75, 0.95] {
                     let bar = harmonize_theme(from_hsl(h as f32, s, l));
-                    let on_bar = get_contrast_color(bar);
+                    let on_bar = on_bar_ink(bar);
                     let ratio = contrast_ratio(on_bar, bar);
                     assert!(
                         ratio >= 4.5,
@@ -1063,7 +1090,7 @@ mod tests {
                     // 条外的数值有两种底：跟着条尾时压在淡色轨道上，排成右对齐的
                     // 一列时落在纸上。两种版式各按自己的底收墨，都得过 4.5∶1。
                     for ground in [track_tone(bar), paper] {
-                        let value = ensure_contrast(deep_tone(bar, 0.34), ground, 4.5);
+                        let value = ensure_contrast(on_bar_ink(bar), ground, 4.5);
                         assert!(
                             contrast_ratio(value, ground) >= 4.5,
                             "数值在 {ground:?} 上只有 {:.2}∶1",
@@ -1206,61 +1233,59 @@ mod tests {
         assert_eq!(get_average_color(&blank), ColorScheme::default().primary);
     }
 
-    /// 条的长度是「必须看得懂才读得出内容」的图形元素，它与自己那条轨道之间
-    /// 按 WCAG 2.2 的非文字阈值要够 3∶1——不然条尾在哪就只能靠猜。
+    /// 条尾在哪是「必须看得懂才读得出内容」的图形信息，按 WCAG 2.2 的非文字阈值
+    /// 要够 3∶1。条本身是浅容器、与轨道只差 1.3∶1，这件事交给条尾的把手：它对条、
+    /// 对轨道、对两侧那道纸色的缝都得过线。扫整个色相环，不挑样本。
     #[test]
-    fn the_bar_stands_out_from_its_own_track() {
+    fn the_bar_end_is_marked_by_a_handle_that_clears_three_to_one() {
+        let paper = ColorScheme::default().card_background;
         let mut worst = (99.0f32, RGBColor(0, 0, 0));
         for h in 0..360 {
             for s in [0.0f32, 0.35, 0.7, 1.0] {
                 for l in [0.05f32, 0.25, 0.5, 0.75, 0.95] {
                     let bar = harmonize_theme(from_hsl(h as f32, s, l));
-                    let track = track_tone(bar);
-                    let r = contrast_ratio(bar, track);
-                    if r < worst.0 {
-                        worst = (r, bar);
+                    let handle = handle_tone(bar);
+                    for ground in [bar, track_tone(bar), paper] {
+                        let r = contrast_ratio(handle, ground);
+                        if r < worst.0 {
+                            worst = (r, bar);
+                        }
                     }
                 }
             }
         }
-        println!("条与轨道最差的一支：{:?} {:.2}∶1", worst.1, worst.0);
-        assert!(worst.0 >= 3.0, "条与轨道只有 {:.2}∶1", worst.0);
+        println!("把手最差的一支：{:?} {:.2}∶1", worst.1, worst.0);
+        assert!(worst.0 >= 3.0, "把手只有 {:.2}∶1", worst.0);
     }
 
-    /// 条上的名字**每一行都是浅色**，这是亮度归一之后的必然结果，不是巧合。
+    /// 条上的名字取**同一支色相的深调**（M3 的 on-container），名字跟着条色走。
     ///
-    /// `get_contrast_color` 的黑白切换还在，而且照样每次都量（消息类型卡的浅色图标
-    /// 底板上它仍然翻到深色字）；只是条色现在全部落在 `BAR_LUMINANCE = 0.16`，
-    /// 而黑白的临界点在亮度 0.179——整条窄带都在同一侧，于是它不需要翻。
-    ///
-    /// 从前之所以黑白混着，正是我们后来修掉的那个毛病：HSL 明度不是视觉亮度，
-    /// 同一条明度带上黄绿那半圈落在临界点之上、蓝紫那半圈落在之下，于是名字的颜色
-    /// 沿色相环在 h≈30 与 h≈205 翻了两次——名字是黑是白取决于头像偏什么色，不取决于
-    /// 任何有意义的东西；而且翻转点附近最好也只有 4.59∶1，贴着线走。
-    ///
-    /// **想换成深色字**：把 `BAR_LUMINANCE` 抬到 0.179 以上（0.21 左右），
-    /// `TRACK_LUMINANCE` 要跟着抬到 0.78 才保得住条与轨道的 3∶1，代价是轨道逼近纸色、
-    /// 整行不再像一条带子。这条测试会在那时失败，提醒改的人一起想这两件事。
+    /// 从前条是 T47 的实色、名字一律近白；现在条是 T84 的浅容器，名字是 T30。
+    /// 这条钉住三件事：字比底深；色相与条相同（不是一律的黑，也不是一律的系统色）；
+    /// 对比度留足余量，不是贴着 4.5∶1 走——tone 之间的对比度与色相无关，理论值 6.2∶1。
     #[test]
-    fn every_name_on_a_bar_is_light_ink() {
+    fn every_name_takes_the_deep_tone_of_its_own_bar() {
         for h in 0..360 {
             for s in [0.0f32, 0.35, 0.7, 1.0] {
                 let bar = harmonize_theme(from_hsl(h as f32, s, 0.5));
-                let ink = get_contrast_color(bar);
+                let ink = on_bar_ink(bar);
                 assert!(
-                    relative_luminance(ink) > relative_luminance(bar),
-                    "h={h} 的条 {bar:?} 上写的是深色字 {ink:?}，整张榜的字色应当一致"
+                    relative_luminance(ink) < relative_luminance(bar),
+                    "h={h} 的条 {bar:?} 上写的是浅色字 {ink:?}"
                 );
-                assert!(contrast_ratio(ink, bar) >= 4.5);
+                let ratio = contrast_ratio(ink, bar);
+                assert!(ratio >= 5.8, "h={h} 的名字只有 {ratio:.2}∶1");
+                if s > 0.0 {
+                    let (bh, _, _) = to_hsl(bar);
+                    let (ih, _, _) = to_hsl(ink);
+                    let d = (bh - ih).abs();
+                    assert!(
+                        d.min(360.0 - d) < 6.0,
+                        "h={h} 的名字 {ink:?} 离开了条 {bar:?} 的色相"
+                    );
+                }
             }
         }
-        // 机制本身还在：换一块浅底，它照样翻到深色字
-        let tile = mix_with_color(RGBColor(31, 99, 80), ColorScheme::default().container, 0.20);
-        let icon = get_contrast_color(tile);
-        assert!(
-            relative_luminance(icon) < relative_luminance(tile),
-            "浅底上应当翻成深色字，黑白切换不是被关掉了"
-        );
     }
 
     #[test]
