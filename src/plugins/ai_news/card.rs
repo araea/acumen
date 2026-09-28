@@ -632,6 +632,7 @@ mod tests {
                 published_at: Some("2026-08-21T01:20:00Z".into()),
                 discovered_at: None,
                 category: Some((*cat).into()),
+                score: Some(72.0),
             })
             .collect();
 
@@ -795,6 +796,7 @@ mod tests {
             published_at: Some("2026-08-21T01:00:00Z".into()),
             discovered_at: None,
             category: Some("ai-models".into()),
+            score: None,
         };
         let opts = RenderOptions {
             summary_max_chars: 100,

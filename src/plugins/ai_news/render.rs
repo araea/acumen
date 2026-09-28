@@ -594,6 +594,7 @@ mod tests {
             published_at: Some("2026-08-21T01:00:00Z".into()),
             discovered_at: Some("2026-08-21T02:00:00Z".into()),
             category: Some("ai-models".into()),
+            score: Some(67.0),
         }
     }
 

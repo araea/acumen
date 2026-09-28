@@ -200,7 +200,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
                 .into_iter()
                 .filter_map(|item| {
                     Some(Stamped {
-                        ts: item.discovered_ts()?,
+                        ts: item.timeline_ts()?,
                         key: item.dedupe_key()?,
                         item,
                     })

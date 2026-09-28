@@ -37,14 +37,31 @@ pub type ApiError = Box<dyn std::error::Error + Send + Sync>;
 pub const BASE_URL: &str = "https://aihot.news";
 pub const ATTRIBUTION: &str = "数据来源：AIHOT (aihot.news)";
 
-/// 允许的分类 slug（服务端可能新增值，这里只用于校验用户配置，不用于校验响应）
+/// 允许的分类 slug（服务端可能新增值，这里只用于校验用户配置，不用于校验响应）。
+///
+/// 官网分类栏是「模型 / 产品 / 行业 / 论文 / 教程 / 观点」六类，接口只有五个 slug：
+/// 官网的「观点」（Sam Altman、Gary Marcus 这类个人评论）在接口里并进了 `tip`，
+/// 按 `category=tip` 取回来的是教程与观点的合集。所以这里不能把 `tip` 叫「技巧」
+/// 或「教程」，那会把观点贴成教程；照实写成「教程·观点」。
 pub const CATEGORIES: &[(&str, &str)] = &[
     ("ai-models", "模型"),
     ("ai-products", "产品"),
     ("industry", "行业"),
     ("paper", "论文"),
-    ("tip", "技巧"),
+    ("tip", "教程·观点"),
 ];
+
+/// 指令里认得的分类名（含官网叫法与旧叫法）→ slug
+pub fn parse_category(word: &str) -> Option<&'static str> {
+    match word.trim().to_ascii_lowercase().as_str() {
+        "模型" | "ai-models" => Some("ai-models"),
+        "产品" | "ai-products" => Some("ai-products"),
+        "行业" | "industry" => Some("industry"),
+        "论文" | "paper" => Some("paper"),
+        "教程" | "观点" | "教程观点" | "技巧" | "tip" | "opinion" => Some("tip"),
+        _ => None,
+    }
+}
 
 pub fn category_label(slug: &str) -> &str {
     CATEGORIES
@@ -320,6 +337,9 @@ pub struct Item {
     pub discovered_at: Option<String>,
     #[serde(default)]
     pub category: Option<String>,
+    /// AIHOT 的 AI 评分（0—100），官网卡片上的「AI 评分」
+    #[serde(default)]
+    pub score: Option<f64>,
 }
 
 impl Item {
@@ -342,18 +362,68 @@ impl Item {
         self.title.as_deref().is_some_and(|t| !t.trim().is_empty())
     }
 
-    /// 「这条有多新」的时间戳（Unix 秒）：以 AIHOT 首次收录时间为准，
-    /// 缺失时退回原文发布时间。
+    /// 「这条在官网时间轴上排哪儿」的时间戳（Unix 秒），口径与接口默认的 `by=timeline`
+    /// 一致：补录超过 72 小时的旧文章仍按原文发布时间排，其余按 AIHOT 首次收录时间。
     ///
     /// 用收录时间而非发布时间，是因为实时推送关心的是「刚刚出现在 AIHOT 上」——
-    /// 一篇三天前发布、今天才被收录的文章，对群里同样是新消息。
-    pub fn discovered_ts(&self) -> Option<i64> {
-        self.discovered_at
-            .as_deref()
-            .or(self.published_at.as_deref())
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.timestamp())
+    /// 一篇昨天发布、今天才被收录的文章，对群里同样是新消息。但补录不是：
+    /// 几年前的老文章被信源慢推、今天才收进来，官网把它留在原来的日期上，
+    /// 群里也不该把它当成刚发生的事。缺一个时间时用另一个；两个都没有返回 `None`。
+    pub fn timeline_ts(&self) -> Option<i64> {
+        let parse = |s: &Option<String>| {
+            s.as_deref()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp())
+        };
+        let discovered = parse(&self.discovered_at);
+        let published = parse(&self.published_at);
+        match (discovered, published) {
+            (Some(d), Some(p)) if d - p > BACKFILL_SECONDS => Some(p),
+            (Some(d), _) => Some(d),
+            (None, p) => p,
+        }
     }
+
+    /// 谁先报的：原文发布时间优先，缺失时用收录时间。同一事件里取最早的当代表。
+    pub fn first_reported_ts(&self) -> Option<i64> {
+        [&self.published_at, &self.discovered_at]
+            .into_iter()
+            .find_map(|s| {
+                s.as_deref()
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.timestamp())
+            })
+    }
+
+    /// 展示用的信源名：见 [`clean_source_name`]
+    pub fn source_label(&self) -> Option<String> {
+        self.source
+            .as_ref()
+            .and_then(|s| s.name.as_deref())
+            .map(clean_source_name)
+            .filter(|name| !name.is_empty())
+    }
+}
+
+/// 收录时间比发布时间晚过这么久，就算补录（官网时间轴同一口径）
+const BACKFILL_SECONDS: i64 = 72 * 3600;
+
+/// 信源名去掉技术后缀，与官网展示一致：`The Verge：AI（RSS）` → `The Verge：AI`，
+/// `X：Sam Altman (@sama)` → `X：Sam Altman`。
+pub fn clean_source_name(raw: &str) -> String {
+    let mut name = raw.trim();
+    for suffix in ["（RSS）", "(RSS)", "（网页）", "(网页)"] {
+        if let Some(rest) = name.strip_suffix(suffix) {
+            name = rest.trim_end();
+        }
+    }
+    // 末尾的 `(@handle)`：X 信源的账号名，名字本身已经够认了
+    if let Some((head, tail)) = name.rsplit_once(" (@")
+        && tail.ends_with(')')
+    {
+        name = head.trim_end();
+    }
+    name.to_string()
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -400,14 +470,9 @@ impl HotTopic {
     pub fn display_sources(&self, limit: usize) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         for name in &self.source_names {
-            let name = name.trim();
-            let name = name
-                .strip_suffix("（RSS）")
-                .or_else(|| name.strip_suffix("(RSS)"))
-                .unwrap_or(name)
-                .trim();
-            if !name.is_empty() && !out.iter().any(|n| n == name) {
-                out.push(name.to_string());
+            let name = clean_source_name(name);
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
             }
             if out.len() >= limit {
                 break;

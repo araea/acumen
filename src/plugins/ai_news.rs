@@ -88,6 +88,7 @@ use toml::Value;
 
 pub mod api;
 mod card;
+mod cluster;
 pub mod leaderboard;
 mod pusher;
 mod realtime;
