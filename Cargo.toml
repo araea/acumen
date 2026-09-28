@@ -3,7 +3,7 @@ name = "acumen"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
-description = "群聊机器人 · 知微。"
+description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"
 
 [dependencies]
 # 错误处理
