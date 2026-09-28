@@ -483,11 +483,7 @@ fn fallback_hue() -> f32 {
 /// M3 tone（L*，0—100）→ WCAG 相对亮度。
 fn tone_luminance(tone: f32) -> f32 {
     let f = (tone + 16.0) / 116.0;
-    if tone > 8.0 {
-        f * f * f
-    } else {
-        tone / 903.3
-    }
+    if tone > 8.0 { f * f * f } else { tone / 903.3 }
 }
 
 const TRACK_TONE: f32 = 94.0;
@@ -535,7 +531,11 @@ pub fn harmonize_theme(color: RGBColor) -> RGBColor {
     // 彩度低到读不出方向的头像（纯灰的线稿、雪白、近黑）退到固定的回退色相，
     // 饱和度压到窄带之下：看着仍然是一块灰，只是带着系统主色那一点蓝紫。
     if chroma < HUE_NOISE_FLOOR {
-        return at_luminance(fallback_hue(), FALLBACK_SATURATION, tone_luminance(BAR_TONE));
+        return at_luminance(
+            fallback_hue(),
+            FALLBACK_SATURATION,
+            tone_luminance(BAR_TONE),
+        );
     }
     at_luminance(
         h,

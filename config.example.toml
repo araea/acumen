@@ -741,6 +741,11 @@ ranking_grid_over_bars = true
 #       还得横着扫到画面最右边，再回头认这是哪一行。
 #   /ctl set stats ranking_value_follows_bar false
 ranking_value_follows_bar = true
+# 排行榜默认列出多少名。指令后面跟数字可以临时改：「本群今日发言排行榜 30」。
+#   /ctl set stats ranking_limit 30
+ranking_limit = 20
+# 指令里那个数字的上限，超过按上限出图（一行约 120 像素，100 名已是万把像素的长图）。
+ranking_max_limit = 100
 # 定时推送的条数门槛：这批消息少于这么多就不推，免得冷清的群每天收到一张空的图。
 push_min_messages = 20
 # 多个群之间的发送间隔区间（秒），错峰用。

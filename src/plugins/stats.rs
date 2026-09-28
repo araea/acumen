@@ -44,6 +44,12 @@ pub struct StatsConfig {
     /// 还得横着扫到画面最右边，再回头认这是哪一行。
     pub ranking_value_follows_bar: bool,
 
+    /// 排行榜默认列出多少名。指令后面跟一个数字可以临时改，如「本群今日发言排行榜 30」。
+    pub ranking_limit: u32,
+    /// 指令里那个数字的上限，超过按上限出图。一行约 120 像素高，100 名就是一万两千
+    /// 像素的长图，再长手机上翻不动，出图也要多等一截。
+    pub ranking_max_limit: u32,
+
     /// 群名单：配了黑名单就对名单外的所有群生效并推送，配了白名单则只对名单内的群
     /// 生效并推送。查询指令与主动推送共用这份名单，不会出现「能查不能推」的错位。
     pub channel: ChannelConfig,
@@ -100,6 +106,8 @@ impl Default for StatsConfig {
             height: 800,
             ranking_grid_over_bars: true,
             ranking_value_follows_bar: true,
+            ranking_limit: 20,
+            ranking_max_limit: 100,
             channel: ChannelConfig::default(),
             push_min_messages: 20,
             push_group_gap_min_seconds: 20,
@@ -130,7 +138,7 @@ static REGEX_NORMAL: OnceLock<Regex> = OnceLock::new();
 fn get_regex_global() -> &'static Regex {
     REGEX_GLOBAL.get_or_init(|| {
         Regex::new(
-            r"^所有群(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)发言(排行榜|走势)$",
+            r"^所有群(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)发言(排行榜|走势)(?:\s*([0-9０-９]+))?$",
         )
         .unwrap()
     })
@@ -138,7 +146,7 @@ fn get_regex_global() -> &'static Regex {
 
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型)(排行榜|走势)$")
+        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
             .unwrap()
     })
 }
@@ -165,21 +173,38 @@ pub fn handle(
             return Ok(Some(ctx));
         }
 
-        let (scope, time_str, data_type, chart_type, is_all_groups) =
+        let (scope, time_str, data_type, chart_type, is_all_groups, count) =
             if let Some(caps) = get_regex_global().captures(content) {
                 let t = caps.get(1).map_or("", |m| m.as_str());
                 let c_type = caps.get(2).map_or("", |m| m.as_str());
-                ("跨群", t, "发言", c_type, true)
+                (
+                    "跨群",
+                    t,
+                    "发言",
+                    c_type,
+                    true,
+                    caps.get(3).map(|m| m.as_str()),
+                )
             } else if let Some(caps) = get_regex_normal().captures(content) {
                 let s = caps.get(1).map_or("本群", |m| m.as_str());
                 let t = caps.get(2).map_or("", |m| m.as_str());
                 let d = caps.get(3).map_or("", |m| m.as_str());
                 let c = caps.get(4).map_or("", |m| m.as_str());
                 let final_scope = if s.is_empty() { "本群" } else { s };
-                (final_scope, t, d, c, false)
+                (final_scope, t, d, c, false, caps.get(5).map(|m| m.as_str()))
             } else {
                 return Ok(Some(ctx));
             };
+
+        // 名次数只对排行榜有意义；「走势 5」「排行榜 0」不是这个插件的指令，静默放过
+        let limit = match count {
+            None => ranking_limit(&config, None),
+            Some(_) if chart_type != "排行榜" => return Ok(Some(ctx)),
+            Some(raw) => match parse_count(raw) {
+                Some(n) => ranking_limit(&config, Some(n)),
+                None => return Ok(Some(ctx)),
+            },
+        };
 
         let group_id = msg.group_id();
         let user_id = msg.user_id();
@@ -198,8 +223,8 @@ pub fn handle(
 
         info!(
             target: "Plugin/Stats",
-            "Req: Scope={}, Time={}, Data={}, Chart={}, Global={}",
-            scope, time_str, data_type, chart_type, is_all_groups
+            "Req: Scope={}, Time={}, Data={}, Chart={}, Global={}, Limit={}",
+            scope, time_str, data_type, chart_type, is_all_groups, limit
         );
 
         let (start_time, end_time) = get_time_range(time_str);
@@ -229,6 +254,7 @@ pub fn handle(
             user_id,
             start_time,
             end_time,
+            limit,
             &title,
         )
         .await;
@@ -264,6 +290,28 @@ pub fn handle(
 
         Ok(None)
     })
+}
+
+/// 指令里的名次数：全角数字（输入法常给）当半角读；0 不算数。
+/// 位数长到溢出的，当作「要很多」，交给上限去收。
+fn parse_count(raw: &str) -> Option<u64> {
+    let digits: String = raw
+        .chars()
+        .map(|c| match c {
+            '０'..='９' => char::from(b'0' + (c as u32 - '０' as u32) as u8),
+            _ => c,
+        })
+        .collect();
+    let n = digits.parse::<u64>().unwrap_or(u64::MAX);
+    (n > 0).then_some(n)
+}
+
+/// 这一张榜列多少名：指令给了就用指令的，没给用配置的默认值；都收进 1—上限。
+fn ranking_limit(config: &StatsConfig, requested: Option<u64>) -> usize {
+    let max = config.ranking_max_limit.max(1) as u64;
+    requested
+        .unwrap_or(config.ranking_limit as u64)
+        .clamp(1, max) as usize
 }
 
 pub fn on_connected(
@@ -355,11 +403,61 @@ pub fn on_connected(
     })
 }
 
-type PushFn = fn(Context, LockedWriter, String, u64) -> futures_util::future::BoxFuture<'static, ()>;
+type PushFn =
+    fn(Context, LockedWriter, String, u64) -> futures_util::future::BoxFuture<'static, ()>;
 
 /// Validate control edits against the plugin's actual configuration type.
 pub fn validate_config(value: &toml::Value) -> Result<(), String> {
     <StatsConfig as serde::Deserialize>::deserialize(value.clone())
         .map(|_| ())
         .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trailing_number_sets_how_many_rows() {
+        let caps = get_regex_normal()
+            .captures("本群今日发言排行榜 30")
+            .unwrap();
+        assert_eq!(caps.get(5).map(|m| m.as_str()), Some("30"));
+        // 不加空格、全角数字都认——群里手打的样子各种各样
+        let caps = get_regex_normal().captures("今日发言排行榜３０").unwrap();
+        assert_eq!(parse_count(caps.get(5).unwrap().as_str()), Some(30));
+        let caps = get_regex_global()
+            .captures("所有群本周发言排行榜 5")
+            .unwrap();
+        assert_eq!(caps.get(3).map(|m| m.as_str()), Some("5"));
+        // 数字后面再跟别的字就不是这条指令
+        assert!(
+            get_regex_normal()
+                .captures("本群今日发言排行榜 30 名")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn the_row_count_stays_between_one_and_the_ceiling() {
+        let config = StatsConfig::default();
+        assert_eq!(ranking_limit(&config, None), 20);
+        assert_eq!(ranking_limit(&config, Some(5)), 5);
+        assert_eq!(ranking_limit(&config, Some(500)), 100);
+        // 位数长到溢出也只是「很多」，不是解析失败
+        assert_eq!(
+            ranking_limit(&config, parse_count("99999999999999999999999")),
+            100
+        );
+        // 0 不算数，由调用方静默放过
+        assert_eq!(parse_count("0"), None);
+        assert_eq!(parse_count("００"), None);
+        // 上限配成 0 也至少出一名，不出一张空图
+        let odd = StatsConfig {
+            ranking_max_limit: 0,
+            ranking_limit: 0,
+            ..StatsConfig::default()
+        };
+        assert_eq!(ranking_limit(&odd, None), 1);
+    }
 }

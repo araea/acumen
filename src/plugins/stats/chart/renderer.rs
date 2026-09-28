@@ -4,9 +4,9 @@ use super::ChartError;
 use super::data_loader::{BarData, SeriesData};
 use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
-    format_percent, format_thousands, get_font, get_font_family, get_font_with_color,
-    handle_tone, harmonize_theme, mix_with_color, mix_with_white, on_bar_ink, overlay_image,
-    rank_ink, save_rgba_to_base64, track_tone, truncate_text_to_fit,
+    format_percent, format_thousands, get_font, get_font_family, get_font_with_color, handle_tone,
+    harmonize_theme, mix_with_color, mix_with_white, on_bar_ink, overlay_image, rank_ink,
+    save_rgba_to_base64, track_tone, truncate_text_to_fit,
 };
 use crate::plugins::stats::StatsConfig;
 use chrono::Local;
@@ -371,7 +371,10 @@ pub fn draw_bar_chart(
             root.draw(&Rectangle::new(
                 [
                     (left - handle_gap, row.y),
-                    ((right + handle_gap).min(track_end_x), row.y + row_height as i32),
+                    (
+                        (right + handle_gap).min(track_end_x),
+                        row.y + row_height as i32,
+                    ),
                 ],
                 page_bg.filled(),
             ))
@@ -1499,7 +1502,7 @@ mod tests {
     /// 取色相关的改动都要看这一张。
     ///
     /// `STATS_AVATAR_CACHE=<目录> STATS_CARD_DUMP=<目录> cargo test
-    /// dump_real_avatar_ranking -- --ignored`
+    /// dump_real_avatar_ranking -- --ignored`（`STATS_RANKING_ROWS=100` 看长榜）
     #[test]
     #[ignore = "用真实头像缓存出样张"]
     fn dump_real_avatar_ranking() {
@@ -1521,7 +1524,13 @@ mod tests {
         let data: Vec<BarData> = files
             .iter()
             .filter_map(|path| image::open(path).ok())
-            .take(20)
+            // 指令能要到上限那么多名，长榜的版式（三位数名次、长尾全挤在最短处）也得看
+            .take(
+                std::env::var("STATS_RANKING_ROWS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(20),
+            )
             .enumerate()
             .map(|(i, img)| {
                 let img = img.to_rgba8();

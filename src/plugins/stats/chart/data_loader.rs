@@ -275,9 +275,9 @@ pub async fn fetch_bar_data(
     sender_id: &str,
     start_time: i64,
     end_time: i64,
+    limit: usize,
 ) -> Result<Vec<BarData>, String> {
     let mut bar_data: Vec<BarData> = Vec::new();
-    let limit = 20;
 
     // 1. 消息类型统计
     if data_type == "消息类型" {
@@ -323,10 +323,15 @@ pub async fn fetch_bar_data(
         && query_group.is_none()
         && !is_all_groups
     {
-        let ranking =
-            queries::get_user_guild_participation_ranking(db, uid, start_time, end_time, limit)
-                .await
-                .map_err(|e| e.to_string())?;
+        let ranking = queries::get_user_guild_participation_ranking(
+            db,
+            uid,
+            start_time,
+            end_time,
+            limit as u64,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         for r in ranking {
             bar_data.push(BarData {
@@ -344,7 +349,7 @@ pub async fn fetch_bar_data(
 
     // 3. 所有群活跃排行
     if is_all_groups {
-        let ranking = queries::get_guild_ranking(db, start_time, end_time, limit)
+        let ranking = queries::get_guild_ranking(db, start_time, end_time, limit as u64)
             .await
             .map_err(|e| e.to_string())?;
 
@@ -364,11 +369,11 @@ pub async fn fetch_bar_data(
 
     // 4. 用户排行 (发言 或 表情包)
     let ranking = if data_type == "表情包" {
-        queries::get_user_emoji_ranking(db, query_group, start_time, end_time, limit)
+        queries::get_user_emoji_ranking(db, query_group, start_time, end_time, limit as u64)
             .await
             .map_err(|e| e.to_string())?
     } else {
-        queries::get_user_ranking(db, query_group, start_time, end_time, limit)
+        queries::get_user_ranking(db, query_group, start_time, end_time, limit as u64)
             .await
             .map_err(|e| e.to_string())?
     };

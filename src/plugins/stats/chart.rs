@@ -75,6 +75,7 @@ pub async fn generate(
     sender_id: &str,
     start_time: i64,
     end_time: i64,
+    limit: usize,
     title: &str,
 ) -> Result<String, ChartError> {
     let db = &ctx.db;
@@ -113,6 +114,7 @@ pub async fn generate(
         sender_id,
         start_time,
         end_time,
+        limit,
     )
     .await?;
 

@@ -9,6 +9,7 @@ use crate::db::queries;
 use crate::db::utils::get_time_range;
 use crate::event::Context;
 use crate::message::Message;
+use crate::plugins::get_config_or_default;
 use crate::plugins::stats::chart;
 use crate::plugins::wordcloud;
 use chrono::{Datelike, Duration, Local};
@@ -40,6 +41,7 @@ async fn send_chart(
         "",
         range.0,
         range.1,
+        super::ranking_limit(&get_config_or_default(c, "stats"), None),
         title,
     )
     .await
