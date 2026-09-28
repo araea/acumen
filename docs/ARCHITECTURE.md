@@ -1,6 +1,6 @@
-# 架构说明
+# 架构
 
-本文记录 Acumen 当前的模块边界和维护约定。界面设计规范见 [WebUI 设计系统](DESIGN_SYSTEM.md)，运行和配置管理见[插件控制](CONTROL.md)。
+模块边界与维护约定。界面设计规范见 [WebUI 设计系统](DESIGN_SYSTEM.md)，运行和配置管理见[插件控制](CONTROL.md)。
 
 ## 源码结构
 

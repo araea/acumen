@@ -3,6 +3,7 @@ name = "acumen"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
+description = "群聊机器人 · 知微。"
 
 [dependencies]
 # 错误处理
