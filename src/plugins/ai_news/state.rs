@@ -341,6 +341,41 @@ fn remember(history: &mut Vec<SeenEntry>, sent: Vec<(String, Item)>, now: i64) {
     }
 }
 
+/// 给升级前落盘、没带文字的已推记录补上标题与摘要。
+///
+/// 事件比对靠已推条目的文字；升级前推过的那些只有 id，若不补，刚推完的一件事的
+/// 后续报道在头 36 小时里认不出来。接口的 24 小时窗口里多半还留着它们，
+/// 按 id 对上就能补，补一次以后不再有这件事。
+pub async fn backfill_text(group_id: String, items: Vec<Item>) {
+    let now = Utc::now().timestamp();
+    with_state(move |state| {
+        let Some(entry) = state.groups.get_mut(&group_id) else {
+            return;
+        };
+        fill_missing_text(&mut entry.realtime_seen, &items, now);
+        fill_missing_text(&mut entry.brief_seen, &items, now);
+    })
+    .await
+}
+
+fn fill_missing_text(history: &mut [SeenEntry], items: &[Item], now: i64) -> usize {
+    let mut filled = 0;
+    for seen in history
+        .iter_mut()
+        .filter(|s| s.title.is_none() && now - s.ts <= cluster::WINDOW_SECONDS)
+    {
+        if let Some(item) = items
+            .iter()
+            .find(|item| item.dedupe_key().as_deref() == Some(seen.key.as_str()))
+        {
+            seen.title = item.title.clone();
+            seen.summary = item.summary.clone();
+            filled += 1;
+        }
+    }
+    filled
+}
+
 /// 事件窗口之外的记录只留 id，把标题与摘要丢掉
 fn forget_old_text(history: &mut [SeenEntry], now: i64) {
     for entry in history.iter_mut() {
@@ -1053,6 +1088,33 @@ mod tests {
         fresh.0 = "id:fresh".into();
         let out = enqueue_pending(&mut group, vec![fresh], 0, now, true);
         assert_eq!(out, Enqueued { added: 1, folded: 0 });
+    }
+
+    #[test]
+    fn records_from_before_this_release_get_their_text_back_from_the_feed() {
+        let batch = sonnet();
+        let now = clock(&batch);
+        let mut history = vec![
+            seen(&batch[0].0, now - 600),
+            seen("id:not-in-feed", now - 600),
+            seen("id:days-ago", now - 2 * cluster::WINDOW_SECONDS),
+        ];
+        let mut days_ago = batch[1].1.clone();
+        days_ago.id = Some("days-ago".into());
+        let mut feed: Vec<Item> = batch.iter().map(|(_, item, _)| item.clone()).collect();
+        feed.push(days_ago);
+
+        assert_eq!(fill_missing_text(&mut history, &feed, now), 1);
+        assert!(history[0].title.is_some());
+        assert!(history[1].title.is_none(), "接口里没有的补不了");
+        assert!(history[2].title.is_none(), "窗口之外的不补");
+
+        // 补完之后，同一件事的后续报道就认得出来了
+        let mut group = GroupState::default();
+        group.realtime_seen = history;
+        let out = enqueue_pending(&mut group, vec![batch[1].clone()], 0, now, true);
+        assert_eq!(out, Enqueued { added: 0, folded: 1 });
+        assert_eq!(fill_missing_text(&mut group.realtime_seen, &feed, now), 0, "补过不再补");
     }
 
     #[test]

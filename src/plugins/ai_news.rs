@@ -17,6 +17,11 @@
 //! 基线、去重与持久待发队列负责避免重复和丢失；单批与小时容量保留宽松上限，
 //! 防止异常数据造成失控刷屏，详见 `realtime.rs` 顶部说明。
 //!
+//! **一件事只推一次。** 官网首页按事件排卡片，同一场发布会的多家报道折成一张、写
+//! 「另有 N 家信源报道」；接口却逐篇返回，只按 id 去重就会把一件事推好几遍。
+//! `cluster.rs` 在本地按标题与摘要的词元重合认出同一事件，实时、速递、手动查询
+//! 都按事件出卡，引用提取还能取到其它信源的链接。配置 `fold_same_event` 可关。
+//!
 //! **定时档**：日报、精选速递、热点榜按固定排期推送，负责节奏与总结。
 //! 两条线分别去重：实时线不漏资讯，定时线仍可把其中的精选内容做成回顾；
 //! 同一条内容不会在同一条推送线上反复出现。
@@ -1701,7 +1706,7 @@ fn render_status(
             quiet_label(config, target)
         ));
         if let Some(pending_items) = pending_items {
-            out.push_str(&format!("   待发队列：{} 条\n", pending_items));
+            out.push_str(&format!("   待发队列：{} 个事件\n", pending_items));
         }
     } else {
         out.push_str("已停用　实时快报，只按下方排期推送\n");
@@ -1723,6 +1728,14 @@ fn render_status(
     if config.realtime_enabled && config.brief_enabled {
         out.push_str("   （与实时线独立去重，用于精选回顾）\n");
     }
+    out.push_str(&format!(
+        "同一事件：{}\n",
+        if config.fold_same_event {
+            "多家报道折成一条，另有 N 家信源写在卡片上"
+        } else {
+            "不折叠，一家报一条"
+        }
+    ));
     out.push_str(&format!(
         "{}　热点榜　{}\n",
         switch(config.hot_topics_enabled),

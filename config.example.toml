@@ -626,13 +626,17 @@ mode = "selected"
 # 时间窗。AIHOT v1 只支持 24h 与 7d。
 window = "24h"
 # 分类过滤：ai-models / ai-products / industry / paper / tip；留空表示不限。
+# 官网的「教程」与「观点」是两类，接口合成了一个 tip。
 category = ""
 # 单次推送最多几条（1—100）。
 limit = 30
-# 去重后新条目少于这个数就本轮不推，避免只有一条也刷屏。
+# 去重后新事件少于这个数就本轮不推，避免只有一条也刷屏。
 min_items = 1
 # 同一条资讯的去重记忆天数。
 dedupe_days = 7
+# 同一件事的多家报道折成一条，卡片上写「另有 N 家信源报道」，与官网首页一致。
+# 接口逐篇返回、没有这层归并，关掉就是一家报一条。
+fold_same_event = true
 # 单次请求超时（秒）。
 request_timeout_seconds = 15
 
@@ -676,7 +680,7 @@ realtime_enabled = true
 realtime_mode = "selected"
 # 轮询间隔（秒）。低于 60 秒无意义：AIHOT 的 CDN 缓存就是 60 秒，更密只会拿到同一份副本。
 realtime_interval_seconds = 60
-# 保鲜期（分钟）：只推收录时间在此之内的条目。Bot 离线一天再上线时，
+# 保鲜期（分钟）：只推官网时间轴上落在此之内的条目。Bot 离线一天再上线时，
 # 不会把这一天的旧闻当成「刚刚发生」补发一遍。
 realtime_max_age_minutes = 1440
 # 单次实时推送最多几条，多出来的留到下一轮。

@@ -144,6 +144,7 @@ body{width:720px}
   gap:4px 12px;font-size:var(--md-type-body-small-size);line-height:1.6;
   color:var(--md-sys-color-on-surface-faint)}
 .also b{font-weight:700;color:var(--md-sys-color-on-surface-variant)}
+.also span+span::before{content:"·";margin-right:12px;color:var(--md-sys-color-outline)}
 /* 推荐理由用引语块：主色淡底 + 左界 + 收一个角（M3 的角形处理） */
 .why{margin-top:var(--md-space-3);padding:var(--md-space-3) var(--md-space-4);
   border-left:4px solid var(--md-sys-color-primary);
