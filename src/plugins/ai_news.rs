@@ -61,7 +61,7 @@
 //!   /ai推送列表 · /ai推送状态 · /ai推送重置
 //!   /ai实时开启 · /ai实时关闭   当前或指定目标只收定时档还是也收实时快报
 //!   /ai实时模式 <精选|全部>      控制实时快报读取精选池还是全量池
-//!   /ai分类 <模型|产品|行业|论文|技巧|全部|默认>   设置当前目标
+//!   /ai分类 <模型|产品|行业|论文|教程观点|全部|默认>   设置当前目标（官网的「教程」「观点」接口合成一类）
 //!   /ai静默 <HH:MM-HH:MM|关闭|默认>              设置当前目标
 //!   /ctl set ai_news card_theme auto|light|dark   自动 / 白天 / 夜晚阅读主题
 //!
@@ -134,10 +134,13 @@ pub struct AiNewsConfig {
     pub category: String,
     /// 单次推送最多条数（1—100）
     pub limit: u32,
-    /// 去重后新条目少于该值则本轮不推送，避免只有一条也刷屏
+    /// 去重后新事件少于该值则本轮不推送，避免只有一条也刷屏
     pub min_items: u32,
     /// 同一条资讯的去重记忆天数
     pub dedupe_days: i64,
+    /// 把同一件事的多家报道折成一条（官网首页的「另有 N 家信源报道」）。
+    /// 接口逐篇返回、没有这层归并，关掉就是一家报一条
+    pub fold_same_event: bool,
     /// 单次请求超时（秒）
     pub request_timeout_seconds: u64,
 
@@ -319,6 +322,7 @@ impl Default for AiNewsConfig {
             limit: default_limit(),
             min_items: default_min_items(),
             dedupe_days: default_dedupe_days(),
+            fold_same_event: true,
             request_timeout_seconds: default_timeout(),
             summary_max_chars: default_summary_chars(),
             show_reason: true,
@@ -1059,12 +1063,13 @@ async fn query_brief(config: &AiNewsConfig, target: Option<&PushTarget>) -> Payl
     match pusher::fetch_brief(&scoped_config, api::Poll::Fresh).await {
         Ok(Some(items)) if !items.is_empty() => {
             let opts = pusher::render_options(config);
+            let clusters = cluster::fold_if(config.fold_same_event, items);
             let rendered =
-                render::render_items(&format!("AI 资讯速递 · {}", window), &items, &opts);
+                render::render_items(&format!("AI 资讯速递 · {}", window), &clusters, &opts);
             let html = card::items_card(
                 "AI 资讯速递",
                 window,
-                pusher::card_slice(&items, config),
+                pusher::card_slice(&clusters, config),
                 &opts,
                 card::resolve_theme(&config.card_theme),
             );
@@ -1177,11 +1182,12 @@ async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Pay
                     format!("「{}」· 近 7 天精选", keyword),
                 )
             };
-            let rendered = render::render_items(&header, &items, &opts);
+            let clusters = cluster::fold_if(config.fold_same_event, items);
+            let rendered = render::render_items(&header, &clusters, &opts);
             let html = card::items_card(
                 "关键词检索",
                 &subtitle,
-                pusher::card_slice(&items, config),
+                pusher::card_slice(&clusters, config),
                 &opts,
                 card::resolve_theme(&config.card_theme),
             );
@@ -1524,21 +1530,19 @@ async fn update_target_category(ctx: &Context, target: &PushTarget, raw: &str) -
             api::category_label(current)
         };
         return format!(
-            "{target} 当前接收：{label}\n用法：{prefix}ai分类 <模型|产品|行业|论文|技巧|全部|默认>"
+            "{target} 当前接收：{label}\n用法：{prefix}ai分类 <模型|产品|行业|论文|教程观点|全部|默认>"
         );
     }
 
     let category = match raw.to_ascii_lowercase().as_str() {
-        "模型" | "ai-models" => Some("ai-models".to_string()),
-        "产品" | "ai-products" => Some("ai-products".to_string()),
-        "行业" | "industry" => Some("industry".to_string()),
-        "论文" | "paper" => Some("paper".to_string()),
-        "技巧" | "tip" => Some("tip".to_string()),
         "全部" | "不限" | "all" | "off" => Some(String::new()),
         "默认" | "继承" | "default" | "inherit" => None,
-        _ => {
-            return "❌ 未识别该分类\n可选：模型、产品、行业、论文、技巧、全部或默认".to_string();
-        }
+        other => match api::parse_category(other) {
+            Some(slug) => Some(slug.to_string()),
+            None => {
+                return "❌ 未识别该分类\n可选：模型、产品、行业、论文、教程观点、全部或默认".to_string();
+            }
+        },
     };
     let stored = category.clone();
     let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
@@ -2216,9 +2220,10 @@ mod tests {
             );
 
             let header = format!("AI 资讯速递 · {}", pusher::window_label(&cfg.window));
+            let clusters = cluster::fold_if(cfg.fold_same_event, items);
             println!(
                 "{}",
-                render::render_items(&header, &items, &pusher::render_options(&cfg)).to_text()
+                render::render_items(&header, &clusters, &pusher::render_options(&cfg)).to_text()
             );
         }
 

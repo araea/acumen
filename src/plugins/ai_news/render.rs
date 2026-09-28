@@ -13,6 +13,7 @@
 //! （[`Rendered::links`]），供引用卡片后回复序号只回链接、不再复述图片上的正文。
 
 use super::api::{DailyBlock, DailyReport, HotTopic, Item, category_label};
+use super::cluster::Cluster;
 use super::leaderboard::{self, Board};
 use chrono::{DateTime, FixedOffset};
 use serde::{Deserialize, Serialize};
@@ -239,12 +240,7 @@ fn strip_entry_prefix(line: &str) -> &str {
 
 /// 一条资讯的时间行：来源 · 时间（无法取得原文时间时标注为收录时间）
 fn meta_line(item: &Item) -> Option<String> {
-    let source = item
-        .source
-        .as_ref()
-        .and_then(|s| s.name.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    let source = item.source_label();
 
     let time = item
         .published_at
@@ -260,7 +256,7 @@ fn meta_line(item: &Item) -> Option<String> {
 
     let category = item.category.as_deref().map(category_label);
 
-    let parts: Vec<String> = [source.map(str::to_string), category.map(str::to_string), time]
+    let parts: Vec<String> = [source, category.map(str::to_string), time]
         .into_iter()
         .flatten()
         .collect();
@@ -278,12 +274,14 @@ pub struct RenderOptions {
     pub show_original_link: bool,
 }
 
-/// 资讯列表（速递 / 搜索结果共用）
-pub fn render_items(header: &str, items: &[Item], opts: &RenderOptions) -> Rendered {
-    let mut entries = Vec::with_capacity(items.len());
-    let mut links = Vec::with_capacity(items.len());
+/// 资讯列表（速递 / 搜索结果共用）。一条是一个事件：代表报道的正文，
+/// 后面跟「另有 N 家信源报道」，那几家的链接也随提取一并给出。
+pub fn render_items(header: &str, clusters: &[Cluster], opts: &RenderOptions) -> Rendered {
+    let mut entries = Vec::with_capacity(clusters.len());
+    let mut links = Vec::with_capacity(clusters.len());
 
-    for (idx, item) in items.iter().enumerate() {
+    for (idx, cluster) in clusters.iter().enumerate() {
+        let item = &cluster.lead;
         let mut out = String::new();
         let title = item.title.as_deref().unwrap_or("（无标题）").trim();
         let mut entry_links = EntryLinks {
@@ -297,6 +295,10 @@ pub fn render_items(header: &str, items: &[Item], opts: &RenderOptions) -> Rende
         }
         if let Some(summary) = item.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             out.push_str(&format!("\n   {}", truncate(summary, opts.summary_max_chars)));
+        }
+        let others = cluster.other_reports();
+        if !others.is_empty() {
+            out.push_str(&format!("\n   {}", also_line(&others)));
         }
         if opts.show_reason
             && let Some(reason) = item.reason.as_deref().map(str::trim).filter(|s| !s.is_empty())
@@ -319,6 +321,15 @@ pub fn render_items(header: &str, items: &[Item], opts: &RenderOptions) -> Rende
                 url: orig.to_string(),
             });
         }
+        // 其它信源只进提取的链接，不进正文：正文里已经写了它们的名字，再列一串网址会把这一条撑得很长
+        for (name, other) in &others {
+            if let Some(url) = other.links.primary() {
+                entry_links.links.push(EntryLink {
+                    label: name.clone(),
+                    url: url.to_string(),
+                });
+            }
+        }
         entries.push(out);
         links.push(entry_links);
     }
@@ -326,9 +337,17 @@ pub fn render_items(header: &str, items: &[Item], opts: &RenderOptions) -> Rende
     Rendered {
         header: header.to_string(),
         entries,
-        footer: format!("{} · 共 {} 条", super::api::ATTRIBUTION, items.len()),
+        footer: format!("{} · 共 {} 条", super::api::ATTRIBUTION, clusters.len()),
         links,
     }
+}
+
+/// 「另有 3 家信源报道：A、B、C」；名字最多列四家，其余写「等」
+pub(super) fn also_line(others: &[(String, &Item)]) -> String {
+    const SHOWN: usize = 4;
+    let names: Vec<&str> = others.iter().take(SHOWN).map(|(name, _)| name.as_str()).collect();
+    let etc = if others.len() > SHOWN { " 等" } else { "" };
+    format!("另有 {} 家信源报道：{}{}", others.len(), names.join("、"), etc)
 }
 
 /// 热点榜：按 rank 展示「第 N 名」，不展示或推算热度值
@@ -627,7 +646,7 @@ mod tests {
             show_reason: false,
             show_original_link: false,
         };
-        let text = render_items("测试", &[sample_item()], &opts).to_text();
+        let text = render_items("测试", &[Cluster::single(sample_item())], &opts).to_text();
         assert!(text.contains("某模型发布"));
         assert!(text.contains("https://aihot.news/items/1"));
         assert!(!text.contains("值得关注的理由"));
@@ -645,7 +664,7 @@ mod tests {
             show_reason: true,
             show_original_link: true,
         };
-        let text = render_items("测试", &[item], &opts).to_text();
+        let text = render_items("测试", &[Cluster::single(item)], &opts).to_text();
         assert!(!text.contains("💡"));
         assert!(text.contains("📄 https://example.com/post"));
     }
@@ -657,8 +676,8 @@ mod tests {
             show_reason: false,
             show_original_link: false,
         };
-        let items: Vec<Item> = (0..6).map(|_| sample_item()).collect();
-        let rendered = render_items("测试", &items, &opts);
+        let clusters: Vec<Cluster> = (0..6).map(|_| Cluster::single(sample_item())).collect();
+        let rendered = render_items("测试", &clusters, &opts);
 
         let nodes = rendered.nodes(120);
         assert!(nodes.len() > 1, "超长内容应拆成多个节点");
@@ -670,6 +689,40 @@ mod tests {
         for idx in 1..=6 {
             assert!(joined.contains(&format!("{}. 某模型发布", idx)), "缺少第 {} 条", idx);
         }
+    }
+
+    #[test]
+    fn an_event_lists_the_other_outlets_and_carries_their_links() {
+        let mut cluster = Cluster::single(sample_item());
+        for (id, source) in [("2", "Hacker News：AI 热帖"), ("3", "The Verge：AI（RSS）"), ("4", "官方博客")] {
+            let mut other = sample_item();
+            other.id = Some(id.into());
+            other.source = Some(Source { name: Some(source.into()) });
+            other.links.aihot = Some(format!("https://aihot.news/items/{id}"));
+            other.published_at = Some("2026-08-21T03:00:00Z".into());
+            cluster.also.push(other);
+        }
+        let opts = RenderOptions { summary_max_chars: 100, show_reason: true, show_original_link: true };
+        let rendered = render_items("测试", &[cluster], &opts);
+        let text = rendered.to_text();
+
+        // 与代表报道同名的信源不算「另有一家」，后缀去掉
+        assert!(text.contains("另有 2 家信源报道：Hacker News：AI 热帖、The Verge：AI"), "{text}");
+        // 提取时拿得到每一家的链接，正文里不列网址
+        let links = rendered.entry_links(0);
+        let labels: Vec<&str> = links.links.iter().map(|l| l.label.as_str()).collect();
+        assert_eq!(labels, ["AIHOT", "原文", "Hacker News：AI 热帖", "The Verge：AI"]);
+        assert!(!text.contains("items/2"));
+        assert!(text.contains("共 1 条"));
+    }
+
+    #[test]
+    fn a_long_list_of_outlets_is_cut_with_etc() {
+        let others: Vec<(String, &Item)> = Vec::new();
+        assert_eq!(also_line(&others), "另有 0 家信源报道：");
+        let item = sample_item();
+        let many: Vec<(String, &Item)> = (1..=6).map(|i| (format!("信源{i}"), &item)).collect();
+        assert_eq!(also_line(&many), "另有 6 家信源报道：信源1、信源2、信源3、信源4 等");
     }
 
     #[test]

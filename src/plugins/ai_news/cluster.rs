@@ -342,10 +342,11 @@ pub fn fold(items: Vec<Item>) -> Vec<Cluster> {
         .collect()
 }
 
+/// 测试夹具：2026-09-28 夜里从 AIHOT 取的真实条目，按事件分好了组。
+/// 状态层的测试也用它，所以放在外面。
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::plugins::ai_news::api::Source;
+pub(super) mod fixture {
+    use super::super::api::{Item, Source};
     use serde::Deserialize;
     use std::collections::HashMap;
 
@@ -368,8 +369,7 @@ mod tests {
         source: String,
     }
 
-    /// 2026-09-28 夜里从 AIHOT 取的真实条目，按事件分好了组
-    fn fixture() -> (Vec<Item>, HashMap<String, Vec<String>>) {
+    pub fn load() -> (Vec<Item>, HashMap<String, Vec<String>>) {
         let raw: Fixture =
             serde_json::from_str(include_str!("fixtures/aihot-2026-09-28.json")).unwrap();
         let items = raw
@@ -390,7 +390,7 @@ mod tests {
         (items, raw.groups)
     }
 
-    fn pick(items: &[Item], ids: &[String]) -> Vec<Item> {
+    pub fn pick(items: &[Item], ids: &[String]) -> Vec<Item> {
         ids.iter()
             .map(|id| {
                 items
@@ -401,6 +401,13 @@ mod tests {
             })
             .collect()
     }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::{load as fixture, pick};
+    use super::*;
 
     fn title_of(c: &Cluster) -> &str {
         c.lead.title.as_deref().unwrap()

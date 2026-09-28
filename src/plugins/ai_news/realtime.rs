@@ -234,10 +234,19 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
             .map(|stamped| (stamped.key.clone(), stamped.item.clone(), stamped.ts))
             .collect();
         if !candidates.is_empty() {
-            let added =
-                state::enqueue_realtime(target.state_id(), candidates, cfg.dedupe_days).await;
-            if added > 0 {
-                info!(target: LOG_TARGET, "实时推送：{} 新增 {} 条待发资讯。", target, added);
+            let added = state::enqueue_realtime(
+                target.state_id(),
+                candidates,
+                cfg.dedupe_days,
+                cfg.fold_same_event,
+            )
+            .await;
+            if added.added + added.folded > 0 {
+                info!(
+                    target: LOG_TARGET,
+                    "实时推送：{} 新增 {} 个待发事件，另有 {} 条是同一件事的别家报道，已并入。",
+                    target, added.added, added.folded
+                );
             }
         }
 
@@ -268,8 +277,6 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
         if picked.is_empty() {
             continue;
         }
-        let picked_keys: Vec<String> = picked.iter().map(|(key, _)| key.clone()).collect();
-        let picked_items: Vec<Item> = picked.into_iter().map(|(_, item)| item).collect();
 
         // 目标间隔：和定时档一样错开，不让多个会话在同一秒收到同一张图
         if pushed_any {
@@ -291,25 +298,28 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
                 card_title: "AI 资讯快报",
                 card_subtitle: &format!("实时推送 · {}", clock),
             },
-            &picked_items,
+            &picked,
         )
         .await;
 
         if sent {
             info!(
                 target: LOG_TARGET,
-                "实时推送：{} 收到 {} 条新资讯。", target, picked_items.len()
+                "实时推送：{} 收到 {} 个事件（{} 条报道）。",
+                target,
+                picked.len(),
+                picked.iter().map(|c| c.also.len() + 1).sum::<usize>()
             );
-            state::mark_realtime_sent(target.state_id(), picked_keys).await;
+            state::mark_realtime_sent(target.state_id(), picked).await;
             note_delivery_success(target);
         } else {
             let wait = note_delivery_failure(target);
             warn!(
                 target: LOG_TARGET,
-                "实时推送：{} 投递失败，{} 分钟内不再重试；{} 条待发资讯留在队列里。",
+                "实时推送：{} 投递失败，{} 分钟内不再重试；{} 个待发事件留在队列里。",
                 target,
                 wait / 60,
-                picked_items.len()
+                picked.len()
             );
         }
     }

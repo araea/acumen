@@ -5,6 +5,7 @@
 
 use super::api::{self, Item};
 use super::card;
+use super::cluster::{self, Cluster};
 use super::render::{self, RenderOptions, Rendered};
 use super::state;
 use super::{AiNewsConfig, LOG_TARGET, PushTarget};
@@ -268,26 +269,26 @@ pub(super) struct Headline<'a> {
     pub card_subtitle: &'a str,
 }
 
-/// 把一批资讯渲染成卡片图并投递给某一个群。
+/// 把一批事件渲染成卡片图并投递给某一个群。
 ///
-/// 定时速递与实时快报都走这里：两者的差别只在标题与挑选条目的规则，
+/// 定时速递与实时快报都走这里：两者的差别只在标题与挑选事件的规则，
 /// 排版、截图和引用提取的投递逻辑完全一致。
 ///
-/// 每个群去重后的条目各不相同，卡片只能逐群渲染，无法像日报那样共用一张图。
+/// 每个群去重后的事件各不相同，卡片只能逐群渲染，无法像日报那样共用一张图。
 pub(super) async fn deliver_items(
     ctx: &Context,
     writer: LockedWriter,
     target: &PushTarget,
     cfg: &AiNewsConfig,
     headline: Headline<'_>,
-    items: &[Item],
+    clusters: &[Cluster],
 ) -> bool {
     let opts = render_options(cfg);
-    let rendered = render::render_items(headline.text, items, &opts);
+    let rendered = render::render_items(headline.text, clusters, &opts);
     let card_html = card::items_card(
         headline.card_title,
         headline.card_subtitle,
-        card_slice(items, cfg),
+        card_slice(clusters, cfg),
         &opts,
         card_theme(cfg),
     );
@@ -445,7 +446,8 @@ pub async fn search(cfg: &AiNewsConfig, query: &str) -> Result<(Vec<Item>, bool)
 
 // ================= 定时推送 =================
 
-/// 精选速递：只推该目标没见过的条目
+/// 精选速递：只推该目标没见过的事件——同一件事的几家报道折成一条，
+/// 前一档或实时线已经推过的事也不再重复。
 pub async fn push_brief(
     ctx: Context,
     writer: LockedWriter,
@@ -482,28 +484,32 @@ pub async fn push_brief(
             continue;
         }
 
-        let group_items: Vec<&(String, Item)> = keyed
+        let group_items: Vec<(String, Item)> = keyed
             .iter()
             .filter(|(_, item)| item_matches_target(&cfg, target, item))
             .take(cfg.limit.clamp(1, 100) as usize)
+            .cloned()
             .collect();
-        let keys: Vec<String> = group_items.iter().map(|(key, _)| key.clone()).collect();
-        let fresh = state::unseen_brief_keys(target.state_id(), keys, cfg.dedupe_days).await;
+        let fresh = state::unseen_brief(
+            target.state_id(),
+            group_items,
+            cfg.dedupe_days,
+            cfg.fold_same_event,
+        )
+        .await;
+        let clusters = cluster::fold_if(
+            cfg.fold_same_event,
+            fresh.iter().map(|(_, item)| item.clone()).collect(),
+        );
 
-        if (fresh.len() as u32) < cfg.min_items.max(1) {
+        if (clusters.len() as u32) < cfg.min_items.max(1) {
             info!(
                 target: LOG_TARGET,
-                "{} 新增条目 {} 条，低于阈值 {}，跳过。",
-                target, fresh.len(), cfg.min_items.max(1)
+                "{} 新增事件 {} 个，低于阈值 {}，跳过。",
+                target, clusters.len(), cfg.min_items.max(1)
             );
             continue;
         }
-
-        let picked: Vec<Item> = group_items
-            .iter()
-            .filter(|(key, _)| fresh.contains(key))
-            .map(|(_, item)| (*item).clone())
-            .collect();
 
         if attempted_any {
             pace(&cfg).await;
@@ -520,11 +526,11 @@ pub async fn push_brief(
                 card_title: "AI 资讯速递",
                 card_subtitle: subtitle,
             },
-            &picked,
+            &clusters,
         )
         .await;
 
-        // 只有真正发出去了才记入去重，发送失败的条目下次继续推
+        // 只有真正发出去了才记入去重，发送失败的条目下次继续推；折进事件里的报道一并记下
         if sent {
             state::mark_brief_seen(target.state_id(), fresh).await;
         }

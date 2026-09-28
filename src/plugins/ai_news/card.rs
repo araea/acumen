@@ -16,6 +16,7 @@
 //! 卡片后直接回复序号，再按需取得正文与链接。
 
 use super::api::{DailyBlock, DailyReport, HotTopic, Item, category_label};
+use super::cluster::Cluster;
 use super::leaderboard::Board;
 use super::render::models_meta;
 use super::render::{RenderOptions, fmt_time, truncate};
@@ -138,6 +139,11 @@ body{width:720px}
   color:var(--md-sys-color-on-surface-variant)}
 .sum{margin-top:var(--md-space-3);font-size:var(--md-type-body-medium-size);
   line-height:1.76;color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+/* 「另有 N 家信源报道」：官网卡片上同一位置的折叠行，这里直接展开成名字 */
+.also{margin-top:var(--md-space-3);display:flex;flex-wrap:wrap;align-items:baseline;
+  gap:4px 12px;font-size:var(--md-type-body-small-size);line-height:1.6;
+  color:var(--md-sys-color-on-surface-faint)}
+.also b{font-weight:700;color:var(--md-sys-color-on-surface-variant)}
 /* 推荐理由用引语块：主色淡底 + 左界 + 收一个角（M3 的角形处理） */
 .why{margin-top:var(--md-space-3);padding:var(--md-space-3) var(--md-space-4);
   border-left:4px solid var(--md-sys-color-primary);
@@ -256,14 +262,8 @@ const FOOT_LINKS: &str = "引用本图回复 0全部｜序号 取链接";
 fn meta_html(item: &Item) -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(name) = item
-        .source
-        .as_ref()
-        .and_then(|s| s.name.as_deref())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        parts.push(format!(r#"<span>{}</span>"#, esc(name)));
+    if let Some(name) = item.source_label() {
+        parts.push(format!(r#"<span>{}</span>"#, esc(&name)));
     }
     if let Some(cat) = item.category.as_deref().filter(|c| !c.trim().is_empty()) {
         parts.push(format!(r#"<span class="md-chip">{}</span>"#, esc(category_label(cat))));
@@ -282,6 +282,10 @@ fn meta_html(item: &Item) -> String {
     if let Some(t) = time {
         parts.push(format!(r#"<span>{}</span>"#, esc(&t)));
     }
+    // 官网卡片上的「AI 评分」
+    if let Some(score) = item.score.filter(|s| *s > 0.0) {
+        parts.push(format!(r#"<span>评分 {:.0}</span>"#, score));
+    }
 
     if parts.is_empty() {
         return String::new();
@@ -292,17 +296,19 @@ fn meta_html(item: &Item) -> String {
     )
 }
 
-/// 资讯列表卡片（速递 / 搜索结果共用）
+/// 资讯列表卡片（速递 / 搜索结果共用）。一行一个事件，与官网首页的卡片一一对应：
+/// 代表报道的标题与摘要，其后是「另有 N 家信源报道」，最后是推荐理由。
 pub fn items_card(
     title: &str,
     subtitle: &str,
-    items: &[Item],
+    clusters: &[Cluster],
     opts: &RenderOptions,
     theme: CardTheme,
 ) -> String {
     let mut body = String::new();
 
-    for (idx, item) in items.iter().enumerate() {
+    for (idx, cluster) in clusters.iter().enumerate() {
+        let item = &cluster.lead;
         body.push_str(&format!(
             r#"<div class="row"><div class="idx">{:02}</div><div>"#,
             idx + 1
@@ -319,6 +325,22 @@ pub fn items_card(
                 esc(&truncate(summary, 100))
             ));
         }
+        let others = cluster.other_reports();
+        if !others.is_empty() {
+            const SHOWN: usize = 4;
+            let names: Vec<String> = others
+                .iter()
+                .take(SHOWN)
+                .map(|(name, _)| format!("<span>{}</span>", esc(name)))
+                .collect();
+            let etc = if others.len() > SHOWN { "<span>等</span>" } else { "" };
+            body.push_str(&format!(
+                r#"<div class="also"><b>另有 {} 家信源报道</b>{}{}</div>"#,
+                others.len(),
+                names.join(""),
+                etc
+            ));
+        }
         if opts.show_reason
             && let Some(reason) = item.reason.as_deref().map(str::trim).filter(|s| !s.is_empty())
         {
@@ -332,8 +354,8 @@ pub fn items_card(
     }
 
     let subtitle = match subtitle.is_empty() {
-        true => format!("共 {} 条", items.len()),
-        false => format!("{} · 共 {} 条", subtitle, items.len()),
+        true => format!("共 {} 条", clusters.len()),
+        false => format!("{} · 共 {} 条", subtitle, clusters.len()),
     };
     shell(BRIEF, theme, ("AI 资讯", "AI NEWS"), title, &subtitle, &body, FOOT_LINKS)
 }
@@ -636,6 +658,18 @@ mod tests {
             })
             .collect();
 
+        // 第一条是「多家都报了」的事件，卡片上要有「另有 N 家信源报道」那一行
+        let mut clusters: Vec<Cluster> = items.iter().cloned().map(Cluster::single).collect();
+        for (n, name) in ["Hacker News：AI 热帖", "X：Sam Altman (@sama)", "The Verge：AI（RSS）"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut other = clusters[0].lead.clone();
+            other.id = Some(format!("also-{n}"));
+            other.source = Some(Source { name: Some(name.into()) });
+            clusters[0].also.push(other);
+        }
+
         let topics: Vec<HotTopic> = titles
             .iter()
             .enumerate()
@@ -727,7 +761,7 @@ mod tests {
                 items_card(
                     "AI 资讯速递",
                     "过去 24 小时",
-                    &items,
+                    &clusters,
                     &opts,
                     CardTheme::Light,
                 ),
@@ -737,7 +771,7 @@ mod tests {
                 items_card(
                     "AI 资讯速递",
                     "过去 24 小时",
-                    &items,
+                    &clusters,
                     &opts,
                     CardTheme::Dark,
                 ),
@@ -772,6 +806,34 @@ mod tests {
     }
 
     #[test]
+    fn items_card_folds_other_outlets_into_one_line_like_the_site() {
+        use crate::plugins::ai_news::api::Source;
+        let lead = Item {
+            id: Some("1".into()),
+            title: Some("Anthropic 发布 Claude Sonnet 5.5".into()),
+            source: Some(Source { name: Some("Claude：YouTube（RSS）".into()) }),
+            score: Some(67.0),
+            ..Default::default()
+        };
+        let mut cluster = Cluster::single(lead.clone());
+        for (id, name) in [("2", "Claude：YouTube（RSS）"), ("3", "Hacker News：AI 热帖"), ("4", "X：马东锡 NLP (@dongxi_nlp)")] {
+            let mut other = lead.clone();
+            other.id = Some(id.into());
+            other.source = Some(Source { name: Some(name.into()) });
+            cluster.also.push(other);
+        }
+        let opts = RenderOptions { summary_max_chars: 100, show_reason: true, show_original_link: false };
+        let html = items_card("AI 资讯快报", "", &[cluster], &opts, CardTheme::Light);
+
+        // 同一家信源连发两条只算一次；名字去掉 (@账号) 与（RSS）
+        assert!(html.contains("另有 2 家信源报道"), "{html}");
+        assert!(html.contains("Hacker News：AI 热帖") && html.contains("X：马东锡 NLP<"));
+        assert!(!html.contains("dongxi_nlp") && !html.contains("（RSS）"));
+        assert!(html.contains("评分 67"));
+        assert!(html.contains("共 1 条"), "副标题数的是事件，不是报道");
+    }
+
+    #[test]
     fn escapes_html_in_external_content() {
         let html = esc(r#"<script>alert("x")</script>"#);
         assert!(!html.contains('<'));
@@ -803,7 +865,7 @@ mod tests {
             show_reason: true,
             show_original_link: false,
         };
-        let html = items_card("过去 24 小时", "", &[item], &opts, CardTheme::Dark);
+        let html = items_card("过去 24 小时", "", &[Cluster::single(item)], &opts, CardTheme::Dark);
 
         assert!(html.contains("某模型发布"));
         assert!(html.contains("官方博客"));
