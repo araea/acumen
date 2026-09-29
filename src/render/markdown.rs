@@ -1,5 +1,5 @@
-//! Markdown → 卡片页 HTML。本仓库所有把 Markdown 画成图的地方（`markdown` 插件、
-//! `oai` 回复卡）都走这一处，不各写一套。
+//! Markdown → 卡片页 HTML，`markdown` 插件专用。`oai` 的回复卡有自己的渲染与取舍
+//! （单张卡、来源与工具轨迹附录），两边职责不同，不共用。
 //!
 //! 这一层只做「文本 → 若干页 HTML」，不碰浏览器与消息：解析、分块、估高、分页、
 //! 拼页全在这里，所以可以脱离机器人单测，也可以把每页 HTML 存下来肉眼核对。
@@ -43,16 +43,6 @@ pub struct Settings {
     /// 每页的目标高度（CSS 像素）。软上限：块不拆开时可以略超。
     pub page_height: f64,
     pub max_pages: usize,
-    /// 页眉左端的卡片名与其英文眉标。
-    pub kicker: String,
-    pub kicker_en: String,
-    /// 页眉右端的说明（模型、耗时之类，纯文本）；多页时后面接页码。
-    pub stamp: String,
-    /// 正文前的标题行（纯文本），空则不画。
-    pub title: String,
-    /// 末页正文之后的附录（来源、轨迹之类）。调用方负责转义；样式用 `extra_css`。
-    pub footer_html: String,
-    pub extra_css: &'static str,
 }
 
 impl Default for Settings {
@@ -63,12 +53,6 @@ impl Default for Settings {
             keep_breaks: true,
             page_height: 2000.0,
             max_pages: 6,
-            kicker: "Markdown".into(),
-            kicker_en: "ACUMEN".into(),
-            stamp: String::new(),
-            title: String::new(),
-            footer_html: String::new(),
-            extra_css: "",
         }
     }
 }
@@ -1159,44 +1143,22 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
         }
         refs.push_str("</ol></section>");
     }
-    let stamp = match (doc.s.stamp.trim(), total > 1) {
-        ("", false) => String::new(),
-        ("", true) => format!("{index} / {total}"),
-        (text, false) => text.to_string(),
-        (text, true) => format!("{text} · {index} / {total}"),
-    };
-    let pager = if stamp.is_empty() {
+    let pager = if total > 1 {
+        format!("<span class=\"md-stamp\">{index} / {total}</span>")
+    } else {
         String::new()
-    } else {
-        format!("<span class=\"md-stamp\">{}</span>", esc(&stamp))
-    };
-    let title = if doc.s.title.trim().is_empty() || index > 1 {
-        String::new()
-    } else {
-        format!(
-            "<div class=\"head md-title md-type-title-small\">{}</div><hr class=\"md-divider\">",
-            esc(doc.s.title.trim())
-        )
-    };
-    let footer = if index == total {
-        doc.s.footer_html.as_str()
-    } else {
-        ""
     };
     let width = doc.s.width;
     format!(
         r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:">
-<title>Markdown</title><style>{DESIGN_SYSTEM}{CSS}{extra}</style></head>
+<title>Markdown</title><style>{DESIGN_SYSTEM}{CSS}</style></head>
 <body class="md-text{dark}" style="width:{outer}px"><main class="shot"><article class="card md-card" style="width:{width}px">
-<div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>{kicker}<span class="md-kicker-en">{kicker_en}</span></div>{pager}</div>
-{title}<div class="doc">{body}</div></div>{refs}{footer}</article></main></body></html>"#,
+<div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>Markdown<span class="md-kicker-en">ACUMEN</span></div>{pager}</div>
+<div class="doc">{body}</div></div>{refs}</article></main></body></html>"#,
         dark = if doc.s.dark { " dark" } else { "" },
         outer = width + 40,
-        extra = doc.s.extra_css,
-        kicker = esc(&doc.s.kicker),
-        kicker_en = esc(&doc.s.kicker_en),
     )
 }
 
@@ -1426,20 +1388,6 @@ mod tests {
             second.contains(&format!("事项 {start} ")),
             "序号要与内容对得上"
         );
-    }
-
-    #[test]
-    fn appendix_title_and_stamp_come_from_the_caller() {
-        let mut s = settings();
-        s.title = "研究 #3".into();
-        s.stamp = "模型 · 8 秒".into();
-        s.kicker = "智能回复".into();
-        s.footer_html = "<div class=\"foot\">尾</div>".into();
-        let html = render("正文", &s).pages.remove(0);
-        assert!(html.contains("研究 #3"));
-        assert!(html.contains("模型 · 8 秒"));
-        assert!(html.contains("智能回复"));
-        assert!(html.contains("<div class=\"foot\">尾</div>"));
     }
 
     #[test]
