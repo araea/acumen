@@ -29,14 +29,21 @@ pub(crate) const CSS: &str = include_str!("../../res/cards/markdown.css");
 
 /// 卡面左右内边距（与 `markdown.css` 的 `.card` 一致，估高要用）。
 const PAD: f64 = 28.0;
-/// 正文字号与行高（`body-large` 与 1.75 倍行距）。
-const BODY: f64 = 20.0;
-const LINE: f64 = 35.0;
-const GAP: f64 = 16.0;
+/// 设计基准字号：`tokens.css` 把 `1rem` 定在 20px，版面上的字号都按它标定。
+/// `Settings::font_size` 改的是这个基准，估高把版面上的字号按 `font_size / 20`
+/// 缩放；间距令牌是 px 定值，不跟着缩，所以字越小屏上越密。
+const BASE_FONT: f64 = 20.0;
+/// 正文行高倍数，与 `markdown.css` 的 `.card` 保持一致（估高要用）。
+const LINE_RATIO: f64 = 1.6;
+/// 块与块之间的间距（`--md-space-3`），与各块自己的下边距一致。
+const GAP: f64 = 12.0;
 
 pub struct Settings {
     /// 卡面宽度（CSS 像素）。
     pub width: u32,
+    /// 正文字号（CSS 像素）。整套 `rem` 字阶跟着它缩放，间距令牌不缩：
+    /// 卡片要在手机上全屏看，字号相对卡宽越小、每行塞得下的字越多、扫读越快。
+    pub font_size: f64,
     pub dark: bool,
     /// 单个换行按换行显示（聊天里的写法），而不是按 CommonMark 合成一个空格。
     pub keep_breaks: bool,
@@ -48,7 +55,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            width: 480,
+            width: 560,
+            font_size: 18.0,
             dark: false,
             keep_breaks: true,
             page_height: 2000.0,
@@ -275,6 +283,21 @@ impl<'a> Doc<'a> {
         self.s.width as f64 - PAD * 2.0 - inset
     }
 
+    /// 字号相对设计基准的倍率：版面上的 `rem` 字号（标题、代码、表格、页脚）
+    /// 都乘它，估高因此与实际排出来的高度同步。
+    fn k(&self) -> f64 {
+        self.s.font_size / BASE_FONT
+    }
+
+    /// 正文字号与行高（CSS 像素）。
+    fn body(&self) -> f64 {
+        self.s.font_size
+    }
+
+    fn line(&self) -> f64 {
+        self.s.font_size * LINE_RATIO
+    }
+
     /// 吃掉当前容器直到与之配对的 `End`（含）。
     fn skip(&self, it: &mut Events<'a>) {
         let mut depth = 0usize;
@@ -483,7 +506,7 @@ impl<'a> Doc<'a> {
                 if inl.is_empty() {
                     return;
                 }
-                let h = inl.height(BODY, LINE, avail) + GAP;
+                let h = inl.height(self.body(), self.line(), avail) + GAP;
                 out.push(Block::body(format!("<p>{}</p>", inl.html), h).with_refs(&inl));
             }
             Tag::Heading { level, .. } => {
@@ -491,13 +514,15 @@ impl<'a> Doc<'a> {
                 if inl.is_empty() {
                     return;
                 }
+                // 字号与行高随正文缩放；页边距是 px 令牌，不缩。
+                let k = self.k();
                 let (n, font, line, extra) = match level {
-                    HeadingLevel::H1 => (1, 35.0, 45.0, 44.0),
-                    HeadingLevel::H2 => (2, 27.5, 35.0, 36.0),
-                    HeadingLevel::H3 => (3, 20.0, 30.0, 28.0),
-                    HeadingLevel::H4 => (4, 17.5, 28.0, 24.0),
-                    HeadingLevel::H5 => (5, 15.0, 24.0, 20.0),
-                    HeadingLevel::H6 => (6, 15.0, 24.0, 20.0),
+                    HeadingLevel::H1 => (1, 35.0 * k, 45.0 * k, 44.0),
+                    HeadingLevel::H2 => (2, 27.5 * k, 35.0 * k, 36.0),
+                    HeadingLevel::H3 => (3, 20.0 * k, 30.0 * k, 28.0),
+                    HeadingLevel::H4 => (4, 17.5 * k, 28.0 * k, 24.0),
+                    HeadingLevel::H5 => (5, 15.0 * k, 24.0 * k, 20.0),
+                    HeadingLevel::H6 => (6, 15.0 * k, 24.0 * k, 20.0),
                 };
                 let h = inl.height(font, line, avail) + extra;
                 let mut block =
@@ -557,17 +582,18 @@ impl<'a> Doc<'a> {
                 if raw.trim().is_empty() || raw.trim_start().starts_with("<!--") {
                     return;
                 }
+                let k = self.k();
                 let lines = raw
                     .lines()
                     .map(|l| {
-                        (text_em(l) * 15.0 / (avail - 32.0).max(40.0))
+                        (text_em(l) * 15.0 * k / (avail - 32.0).max(40.0))
                             .ceil()
                             .max(1.0)
                     })
                     .sum::<f64>();
                 out.push(Block::body(
                     format!("<pre class=\"raw\">{}</pre>", esc(raw)),
-                    lines * 24.0 + 32.0 + GAP,
+                    lines * 24.0 * k + 32.0 + GAP,
                 ));
             }
             Tag::FootnoteDefinition(label) => {
@@ -584,7 +610,7 @@ impl<'a> Doc<'a> {
                         Event::End(_) => break,
                         Event::Start(Tag::DefinitionListTitle) => {
                             let inl = self.inline(it);
-                            h += inl.height(BODY, LINE, avail) + 4.0;
+                            h += inl.height(self.body(), self.line(), avail) + 4.0;
                             html.push_str(&format!("<dt>{}</dt>", inl.html));
                             links.extend(inl.links);
                             notes.extend(inl.notes);
@@ -623,7 +649,9 @@ impl<'a> Doc<'a> {
                     } else {
                         format!("<p class=\"doc-meta\">{}</p>", esc(&front.meta.join(" · ")))
                     };
-                    let title_h = ((text_em(&front.title) * 35.0 / avail).ceil().max(1.0)) * 45.0;
+                    let k = self.k();
+                    let title_h =
+                        ((text_em(&front.title) * 35.0 * k / avail).ceil().max(1.0)) * 45.0 * k;
                     let mut block = Block::body(
                         format!(
                             "<header class=\"doc-head\"><h1>{}</h1>{meta}</header>",
@@ -651,7 +679,7 @@ impl<'a> Doc<'a> {
                 self.inline_event(event, 0..0, it, &mut inl);
                 self.drain_inline(it, &mut inl);
                 if !inl.is_empty() {
-                    let h = inl.height(BODY, LINE, self.avail(inset)) + GAP;
+                    let h = inl.height(self.body(), self.line(), self.avail(inset)) + GAP;
                     out.push(Block::body(format!("<p>{}</p>", inl.html), h).with_refs(&inl));
                 }
                 continue;
@@ -686,7 +714,7 @@ impl<'a> Doc<'a> {
             () => {
                 if let Some(inl) = run.take() {
                     if !inl.is_empty() {
-                        h += inl.height(BODY, LINE, avail);
+                        h += inl.height(self.body(), self.line(), avail);
                         html.push_str(&inl.html);
                         links.extend(inl.links);
                         notes.extend(inl.notes);
@@ -728,8 +756,9 @@ impl<'a> Doc<'a> {
     fn code(&mut self, lang: &str, code: &str, avail: f64, out: &mut Vec<Block>) {
         let label = highlight::display_name(lang);
         let is_md = matches!(lang.trim().to_ascii_lowercase().as_str(), "md" | "markdown");
-        // 等宽 15px：拉丁约 0.6em、汉字 1em，换行处按容器宽折。
-        let cols_em = ((avail - 34.0) / 15.0).max(8.0);
+        // 等宽 body-small（设计基准 15px）：拉丁约 0.6em、汉字 1em，换行处按容器宽折。
+        let (code_font, code_line) = (15.0 * self.k(), 24.0 * self.k());
+        let cols_em = ((avail - 34.0) / code_font).max(8.0);
         let rows_of = |line: &str| -> f64 {
             let em: f64 = line
                 .chars()
@@ -738,7 +767,7 @@ impl<'a> Doc<'a> {
             (em / cols_em).ceil().max(1.0)
         };
         let lines: Vec<&str> = code.split('\n').collect();
-        let budget_rows = (self.s.page_height * 0.8 / 24.0).max(12.0);
+        let budget_rows = (self.s.page_height * 0.8 / code_line).max(12.0);
 
         // 按可见行数把过长的代码切成几段，各段自成一块。
         let mut chunks: Vec<(usize, usize, f64)> = Vec::new();
@@ -779,7 +808,7 @@ impl<'a> Doc<'a> {
             let cap = if tag.is_empty() { 0.0 } else { 30.0 };
             out.push(Block::body(
                 format!("<figure class=\"code\">{tag}<pre><code>{body}</code></pre></figure>"),
-                rows * 24.0 + 28.0 + cap + GAP,
+                rows * code_line + 28.0 + cap + GAP,
             ));
         }
     }
@@ -813,7 +842,7 @@ impl<'a> Doc<'a> {
                     };
                     items.push(Item {
                         html,
-                        h: h.max(LINE) + 6.0,
+                        h: h.max(self.line()) + 6.0,
                         links,
                         notes,
                     });
@@ -902,7 +931,9 @@ impl<'a> Doc<'a> {
             return;
         }
         let dense = cols >= 5;
-        let font = if dense { 15.0 } else { 17.5 };
+        let k = self.k();
+        // body-medium / body-small，随正文缩放；单元格内边距是 px 定值，不缩。
+        let font = if dense { 15.0 * k } else { 17.5 * k };
         let col_w = ((avail - 2.0) / cols as f64 - 26.0).max(24.0);
         // 每列最长的不可断词加起来放得下，就只在词与汉字之间断行；放不下才允许词中间断，
         // 否则表格会撑出卡面被裁掉。
@@ -1149,8 +1180,11 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
         String::new()
     };
     let width = doc.s.width;
+    // 字阶的根：`tokens.css` 把 `1rem` 定在 20px（`:root` 的 font-size），
+    // 这里在 html 上以内联样式盖掉它，整套 `rem` 字号就按正文字号缩放。
+    // 内联样式优先于样式表的 `:root` 规则，不必与令牌表争顺序。
     format!(
-        r#"<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+        r#"<!doctype html><html lang="zh-CN" style="font-size:{font}px"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:">
 <title>Markdown</title><style>{DESIGN_SYSTEM}{CSS}</style></head>
@@ -1158,6 +1192,7 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
 <div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>Markdown<span class="md-kicker-en">ACUMEN</span></div>{pager}</div>
 <div class="doc">{body}</div></div>{refs}</article></main></body></html>"#,
         dark = if doc.s.dark { " dark" } else { "" },
+        font = doc.s.font_size,
         outer = width + 40,
     )
 }
@@ -1395,6 +1430,47 @@ mod tests {
         let mut s = settings();
         s.dark = true;
         assert!(render("x", &s).pages[0].contains("class=\"md-text dark\""));
+    }
+
+    /// 字阶的根写在 `html` 的内联样式上，令牌表的 `:root { font-size: 20px }` 被它盖掉。
+    #[test]
+    fn font_size_sets_the_root_type_scale() {
+        let mut s = settings();
+        assert_eq!(s.font_size, 18.0);
+        let html = render("正文", &s).pages.remove(0);
+        assert!(html.contains("style=\"font-size:18px\""), "{html}");
+        s.font_size = 22.0;
+        let html = render("正文", &s).pages.remove(0);
+        assert!(html.contains("style=\"font-size:22px\""), "{html}");
+    }
+
+    /// 字号相对卡宽越小，一页排得下的块越多：这是「一屏能读多少」的那根杆。
+    #[test]
+    fn a_smaller_body_fits_more_into_a_page() {
+        let source = (0..200)
+            .map(|i| format!("第 {i} 段，用来量一页能装下多少行正文。"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let dense = render(
+            &source,
+            &Settings {
+                font_size: 15.0,
+                ..settings()
+            },
+        );
+        let loose = render(
+            &source,
+            &Settings {
+                font_size: 26.0,
+                ..settings()
+            },
+        );
+        assert!(
+            dense.total_pages < loose.total_pages,
+            "15px 用了 {} 页，26px 用了 {} 页",
+            dense.total_pages,
+            loose.total_pages
+        );
     }
 
     // ---------- 对比度：按 WCAG 2.2 AA 把用到的前景/背景对卡在 4.5:1 ----------

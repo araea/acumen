@@ -7,16 +7,17 @@
    例外只有版式参数：行高倍数、边框粗细、图标尺寸、卡面内边距。
 
    阅读优先，几处取舍：
-   - 正文取 body-large，行高 1.75：中文长段落行距要宽，行距紧了读久了发闷。
-   - 层级靠字号阶差、字重与一小块色，不靠满屏色块；色块只给「另一类东西」
+   - 正文取 body-large，行高 1.6：卡面比早先宽、每行约 28 个汉字，行距按「一屏扫
+     完」收紧；行距再紧，中文长段会糊成一坨，再松就不够快。
+   - 层级靠字号阶差、字重与一小块色，不靠满屏色块；色块只留给「另一类东西」
      （代码、引用、提示、表格、页底附录）。
    - 强调、链接都不只靠颜色：强调有字重，链接有下划线与编号。
-   - 卡宽窄、字号大：这是要在手机上全屏看的图，缩到屏宽后正文仍有约 14dp。 */
+   - 卡宽与字号都可在 `[markdown]` 里改：字号相对卡宽越小，每行塞得下的字越多。 */
 
 .card {
   font-family: var(--md-font-plain);
   font-size: var(--md-type-body-large-size);
-  line-height: 1.75;
+  line-height: 1.6;
   color: var(--md-sys-color-on-surface);
   overflow-wrap: anywhere;
   word-break: normal;
@@ -42,7 +43,7 @@
 
 /* —— 段落与行内 —— */
 p {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
   text-wrap: pretty;
 }
 strong {
@@ -194,7 +195,7 @@ h6 {
 /* —— 列表 —— */
 ul,
 ol {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
   padding-left: 1.55em;
 }
 li {
@@ -260,7 +261,7 @@ li.done > .task-text {
 
 /* —— 引用与提示 —— */
 blockquote {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
   padding: var(--md-space-3) var(--md-space-4) var(--md-space-3) var(--md-space-5);
   border-left: 4px solid var(--md-sys-color-primary-line);
   border-radius: var(--md-corner-notched);
@@ -327,7 +328,7 @@ blockquote blockquote {
 
 /* —— 代码 —— */
 .code {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
   border-radius: var(--md-shape-l);
   background: var(--md-sys-color-surface-container);
   overflow: hidden;
@@ -363,7 +364,7 @@ blockquote blockquote {
   tab-size: 4;
 }
 .raw {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
   padding: var(--md-space-3) var(--md-space-4);
   border: 1px dashed var(--md-sys-color-outline-variant);
   border-radius: var(--md-shape-m);
@@ -424,7 +425,7 @@ blockquote blockquote {
 
 /* —— 表格 —— */
 .table {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
   border: 1px solid var(--md-sys-color-outline-variant);
   border-radius: var(--md-shape-m);
   overflow: hidden;
@@ -474,7 +475,7 @@ hr {
   border-top: 1px solid var(--md-sys-color-outline-variant);
 }
 dl {
-  margin: var(--md-space-4) 0;
+  margin: var(--md-space-3) 0;
 }
 dt {
   font-weight: 700;

@@ -37,8 +37,12 @@ struct Config {
     enabled: bool,
     /// 配色：light 或 dark。
     theme: String,
-    /// 卡面宽度（CSS 像素）。窄而字大：图要在手机上全屏看，缩到屏宽后字仍读得舒服。
+    /// 卡面宽度（CSS 像素）。宽一点每行才放得下更多字；图要在手机上全屏看，
+    /// 字与卡宽的比例才是决定「一屏能读多少」的那一个。
     width: u32,
+    /// 正文字号（CSS 像素）。整套字阶跟着它缩放，间距不缩：字号相对卡宽越小，
+    /// 每行塞得下的字越多、扫读越快。
+    font_size: u32,
     /// 出图倍率（1—4）。
     image_scale: f64,
     /// 每页的目标高度（CSS 像素）；块不拆开时可以略超。
@@ -56,7 +60,8 @@ impl Default for Config {
         Self {
             enabled: true,
             theme: "light".into(),
-            width: 480,
+            width: 560,
+            font_size: 18,
             image_scale: 2.0,
             page_height: 2000,
             max_pages: 6,
@@ -77,8 +82,11 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
     if !matches!(config.theme.as_str(), "light" | "dark") {
         return Err("theme 只能是 light 或 dark".into());
     }
-    if !(320..=960).contains(&config.width) {
-        return Err("width 需在 320—960 之间".into());
+    if !(320..=1200).contains(&config.width) {
+        return Err("width 需在 320—1200 之间".into());
+    }
+    if !(14..=26).contains(&config.font_size) {
+        return Err("font_size 需在 14—26 之间".into());
     }
     if !(1.0..=4.0).contains(&config.image_scale) {
         return Err("image_scale 需在 1—4 之间".into());
@@ -195,11 +203,11 @@ pub fn handle(
         // 2. 渲染。
         let settings = Settings {
             width: config.width,
+            font_size: config.font_size as f64,
             dark: config.theme == "dark",
             keep_breaks: config.keep_line_breaks,
             page_height: config.page_height as f64,
             max_pages: config.max_pages,
-            ..Settings::default()
         };
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
         let outcome = tokio::time::timeout(
@@ -280,7 +288,7 @@ async fn render_images(
         let image = web::shoot(
             Shot::new(html, settings.width + 40)
                 .scale(scale)
-                .max_height(settings.page_height as f64 * 8.0)
+                .max_height(settings.page_height * 8.0)
                 .browser(browser_path),
         )
         .await?;
@@ -298,6 +306,12 @@ mod tests {
         let value = default_config();
         validate_config(&value).unwrap();
         assert_eq!(value.get("theme").and_then(|v| v.as_str()), Some("light"));
+        // 默认就是密排那一档：宽 560、正文 18px。
+        assert_eq!(value.get("width").and_then(|v| v.as_integer()), Some(560));
+        assert_eq!(
+            value.get("font_size").and_then(|v| v.as_integer()),
+            Some(18)
+        );
     }
 
     #[test]
@@ -305,6 +319,9 @@ mod tests {
         let mut value = default_config();
         value["width"] = Value::Integer(100);
         assert!(validate_config(&value).unwrap_err().contains("width"));
+        let mut value = default_config();
+        value["font_size"] = Value::Integer(40);
+        assert!(validate_config(&value).unwrap_err().contains("font_size"));
         let mut value = default_config();
         value["theme"] = Value::String("sepia".into());
         assert!(validate_config(&value).unwrap_err().contains("theme"));
