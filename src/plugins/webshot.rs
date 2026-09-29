@@ -39,7 +39,8 @@ pub struct Config {
     pub allow_private_hosts: bool,
     /// 是否跳过截出来没有内容的站点。默认开启——见 `WALLED_DOMAINS`。
     pub block_walled_sites: bool,
-    /// 是否跳过 QQ 官方机器人发的消息。默认开启——见 `OFFICIAL_BOT_ID_PREFIXES`。
+    /// 是否跳过 QQ 官方机器人与微信公众号 / 服务通知发的消息。默认开启——
+    /// 见 `OFFICIAL_BOT_ID_PREFIXES` 与 `is_wechat_official_account`。
     pub skip_official_bots: bool,
     /// 群名单：配了黑名单就对名单外的所有群截图，配了白名单则只对名单内的群截图。
     pub channel: ChannelConfig,
@@ -163,6 +164,14 @@ const OFFICIAL_BOT_ID_PREFIXES: &[&str] = &["2854", "3889"];
 /// 官方机器人的号都是 10 位，比这短的一概不算——早年发出去的 4—9 位号里，
 /// 恰好以 `2854` / `3889` 开头的会被前缀匹配误伤。
 const OFFICIAL_BOT_ID_MIN_DIGITS: usize = 10;
+
+/// 这个号是不是微信公众号 / 服务通知（微信支付、银行交易提醒、订阅号推文……）。
+///
+/// 这类账号在微信里的 ID 一律是 `gh_` 开头。它们的私聊是单向推送：卡片里的链接
+/// 是支付详情、授权跳转、文章，截出来没有意义，回一张图更是发进了公众号的会话里。
+fn is_wechat_official_account(id: &str) -> bool {
+    id.strip_prefix("gh_").is_some_and(|rest| !rest.is_empty())
+}
 
 /// 这个号是不是 QQ 官方机器人。按十进制前缀匹配，见 [`OFFICIAL_BOT_ID_PREFIXES`]。
 /// 不是纯数字的 ID（别的平台）一概不算。
@@ -631,7 +640,12 @@ pub fn handle(
         }
 
         // QQ 官方机器人回的是模板消息，里面的链接没有截图的价值。
-        if config.skip_official_bots && is_official_bot(user_id) {
+        // 微信公众号 / 服务通知的推送同理；私聊里它既是发送者也是会话。
+        if config.skip_official_bots
+            && (is_official_bot(user_id)
+                || is_wechat_official_account(user_id)
+                || is_wechat_official_account(msg_event.channel_id()))
+        {
             return Ok(Some(ctx));
         }
 
@@ -900,6 +914,17 @@ mod tests {
             "", "42", "3373167460", "3667456514", "2959738664", "2854", "3889", "3889abcdefg",
         ] {
             assert!(!is_official_bot(id), "{id} 不该判为 QQ 官方机器人");
+        }
+    }
+
+    /// 微信公众号与服务通知的账号都是 `gh_` 开头，普通 wxid 与 QQ 号不受影响。
+    #[test]
+    fn wechat_official_accounts_are_recognised_by_prefix() {
+        for id in ["gh_3dfda90e39d6", "gh_47203b861352", "gh_a"] {
+            assert!(is_wechat_official_account(id), "{id} 应当判为公众号");
+        }
+        for id in ["", "gh_", "wxid_8zxjsghrk8vz41", "filehelper", "3373167460", "xgh_1", "GH_1"] {
+            assert!(!is_wechat_official_account(id), "{id} 不该判为公众号");
         }
     }
 
