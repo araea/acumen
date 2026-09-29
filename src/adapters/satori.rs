@@ -9,7 +9,7 @@ use sea_orm::DatabaseConnection;
 use serde::Serialize;
 use serde_json::{Value, json};
 use simd_json::base::ValueAsScalar;
-use simd_json::derived::ValueObjectAccessAsScalar;
+use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
@@ -20,6 +20,7 @@ use tokio_tungstenite::{
 
 pub mod api;
 pub mod forward;
+pub mod inline;
 pub mod message;
 #[allow(dead_code)]
 pub mod qq;
@@ -228,6 +229,18 @@ impl SatoriClient {
         name: &str,
         mime: &str,
     ) -> Result<Value, BotError> {
+        self.upload_as(&ctx.bot, data, name, mime).await
+    }
+
+    /// 以指定登录上传。发送经路由换到另一条连接时，上传也要跟着走：`internal:` 链接只在
+    /// 签发它的实现端里解析得开。
+    pub async fn upload_as(
+        &self,
+        bot: &BotStatus,
+        data: Vec<u8>,
+        name: &str,
+        mime: &str,
+    ) -> Result<Value, BotError> {
         if self.console {
             return Err("控制台模式不支持文件上传".into());
         }
@@ -238,8 +251,8 @@ impl SatoriClient {
         let mut request = self
             .http
             .post(format!("{}/v1/upload.create", self.endpoint))
-            .header("Satori-Platform", &ctx.bot.platform)
-            .header("Satori-User-ID", &ctx.bot.login_user.get().id)
+            .header("Satori-Platform", &bot.platform)
+            .header("Satori-User-ID", &bot.login_user.get().id)
             .multipart(form);
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
@@ -423,10 +436,7 @@ struct EventCursor {
 }
 impl EventCursor {
     fn ready(&mut self, ready: &Value, platform: &str, user: &str) {
-        let session = ready
-            .pointer("/body/satori_qq/session_id")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
+        let session = session_id(ready);
         let account = (platform.to_string(), user.to_string());
         if self.session != session || self.account.as_ref().is_some_and(|v| v != &account) {
             self.sn = None;
@@ -443,7 +453,7 @@ impl EventCursor {
         {
             return true;
         }
-        let Some(sn) = body.get("sn").and_then(Value::as_i64) else {
+        let Some(sn) = body.get("sn").and_then(event_sn) else {
             return true;
         };
         if self.sn.is_some_and(|previous| sn <= previous) {
@@ -452,6 +462,27 @@ impl EventCursor {
         self.sn = Some(sn);
         true
     }
+}
+
+/// 实现端进程的会话标识：各实现把它放在自己的扩展对象里（`satori_qq`、`satori_wx`），
+/// 形如 `{"session_id": "...", "sn": ...}`。标识变了就是实现端重启过，旧游标不再作数。
+fn session_id(ready: &Value) -> Option<String> {
+    ready
+        .get("body")?
+        .as_object()?
+        .values()
+        .find_map(|extension| extension.get("session_id")?.as_str())
+        .map(str::to_owned)
+}
+
+/// 事件序号是整数；容忍写成 `1.79e+15` 或 `123.0` 的浮点形态（整数值），否则游标会漏记这一条。
+fn event_sn(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        value
+            .as_f64()
+            .filter(|float| float.fract() == 0.0 && float.abs() < 9_007_199_254_740_992.0)
+            .map(|float| float as i64)
+    })
 }
 
 fn belongs_to_login(body: &Value, bot: &BotStatus) -> bool {
@@ -587,7 +618,19 @@ async fn connect_and_listen(
         Err("Satori 在 READY 前关闭连接".into())
     })
     .await
-    .map_err(|_| "等待 Satori READY 超时")??;
+    .map_err(|_| BotError::from("等待 Satori READY 超时"))
+    .and_then(|result| result);
+    let ready = match ready {
+        Ok(ready) => ready,
+        Err(error) => {
+            // 带着旧游标恢复被拒（对方在 IDENTIFY 后直接关连接）：这个游标再也用不上了，
+            // 不丢掉的话每次重连都带着它被拒，永远连不上。丢掉后新会话只会漏掉断线期间的事件。
+            if session_sn.sn.take().is_some() {
+                warn!(target: "Bot", "Satori [{}] 会话恢复没有成功（{error}），丢弃旧游标，下次重新开始。", endpoint);
+            }
+            return Err(error);
+        }
+    };
 
     let login = ready
         .pointer("/body/logins/0")
@@ -1142,16 +1185,21 @@ pub async fn dispatch_packet(
         }
         (None, None) => unreachable!(),
     };
-    let content = packet
-        .message()
-        .map(message::to_content)
-        .unwrap_or_default();
-    let mut params = json!({"channel_id": &channel_id, "content": content});
     if let Some(guard) = &packet.repeat_guard
         && !guard.is_current()
     {
         debug!(target: "Plugin/Repeater", "发送前丢弃过时复读");
         return Ok(());
+    }
+    // 内联的 base64 / data: 媒体先 upload.create 换成 internal: 链接（资源指南的推荐做法）。
+    let content = match packet.message() {
+        Some(message) => message::to_content(&inline::externalize(&client, &bot, message).await),
+        None => String::new(),
+    };
+    let mut params = json!({"channel_id": &channel_id, "content": content});
+    // 被动请求：来源事件带 referrer 的话，原样交还给发出它的那个登录。
+    if let Some(referrer) = referrer_for(packet.original_event.as_ref(), &bot) {
+        params["referrer"] = referrer;
     }
     // 复读的接力条件本身就是一份时效条件；其余调用方（搭话）自己带一份来。
     let freshness = packet
@@ -1186,6 +1234,33 @@ pub async fn dispatch_packet(
     plugins::recorder::record_sent(ctx, &bot, packet, &channel_id, &ids).await;
     plugins::recall::record_sent(ctx, writer, packet, &ids).await;
     Ok(())
+}
+
+/// 被动请求（[`referrer`](https://satori.chat/advanced/passive.html)）：实现端在事件里下发的
+/// 来源上下文，回复时要原样作为 `message.create` 的参数传回，平台才认得这是对那次触发的响应。
+/// 内容由适配器定义，不解读。只交还给发出它的登录：事件的 `login` 与这次发送用的登录不是
+/// 同一个（比如定时推送换到了另一条连接）就不带。
+fn referrer_for(event: Option<&Event>, bot: &BotStatus) -> Option<Value> {
+    let body = event?.get("_satori")?;
+    let referrer = body.get("referrer").filter(|value| {
+        !matches!(
+            value,
+            simd_json::OwnedValue::Static(simd_json::StaticNode::Null)
+        )
+    })?;
+    let platform = body
+        .get("login")
+        .and_then(|login| login.get_str("platform"));
+    let user = body
+        .get("login")
+        .and_then(|login| login.get("user"))
+        .and_then(|user| user.get_str("id"));
+    let same_login = platform.is_none_or(|platform| platform == bot.platform)
+        && user.is_none_or(|user| user.is_empty() || user == bot.self_id());
+    if !same_login {
+        return None;
+    }
+    serde_json::to_value(referrer).ok()
 }
 
 /// 私聊频道：`(connection_key, user_id) → channel.id`。
@@ -1452,6 +1527,168 @@ pub(crate) mod tests {
         assert!(cursor.accept(&json!({"type":"message-created","sn":1})));
     }
 
+    /// satori-wx 把会话标识放在自己的扩展对象里，序号有时被印成整数值的浮点（`1.79e+15`）：
+    /// 两种都要认，否则重启后的旧游标压住新事件，或者这一条漏出游标之外、重连时被补发第二遍。
+    #[test]
+    fn cursor_reads_any_implementations_session_and_tolerates_float_sequences() {
+        let mut cursor = EventCursor::default();
+        let ready =
+            |session: &str| json!({"body": {"satori_wx": {"session_id": session, "sn": 1}}});
+        cursor.ready(&ready("a"), "wechat", "wxid_self");
+        assert!(cursor.accept(&json!({"type": "message-created", "sn": 1.7907233899972e15})));
+        assert_eq!(cursor.sn, Some(1_790_723_389_997_200));
+        assert!(
+            !cursor.accept(&json!({"type": "message-created", "sn": 1_790_723_389_997_200i64}))
+        );
+        cursor.ready(&ready("a"), "wechat", "wxid_self");
+        assert_eq!(cursor.sn, Some(1_790_723_389_997_200), "同一个会话保留游标");
+        cursor.ready(&ready("b"), "wechat", "wxid_self");
+        assert_eq!(cursor.sn, None, "实现端重启了，旧游标作废");
+        // 读不出整数的序号不参与游标，也不挡路。
+        assert!(cursor.accept(&json!({"type": "message-created", "sn": 12.5})));
+        assert_eq!(cursor.sn, None);
+    }
+
+    /// 带旧游标恢复被拒（IDENTIFY 之后直接关连接）时，游标必须丢掉：不丢的话每次重连都
+    /// 带着它被拒，永远连不上——satori-wx 曾经就是这样对待跨重启的游标的。
+    #[tokio::test]
+    async fn a_refused_resume_drops_the_cursor_instead_of_retrying_it_forever() {
+        use futures_util::StreamExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let identify = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            let _ = ws.close(None).await;
+            identify.to_string()
+        });
+        let (ctx, _) = bare_context(&format!("http://{addr}")).await;
+        let config = BotConfig {
+            url: Some(format!("http://{addr}")),
+            ..Default::default()
+        };
+        let mut cursor = EventCursor {
+            sn: Some(1_790_722_204_762_224),
+            ..Default::default()
+        };
+        let result = connect_and_listen(
+            &config,
+            ctx.config.clone(),
+            ctx.db.clone(),
+            ctx.scheduler.clone(),
+            ctx.config_save_lock.clone(),
+            ctx.config_path.clone(),
+            &mut cursor,
+        )
+        .await;
+        assert!(result.is_err());
+        let identify: Value = serde_json::from_str(&server.await.unwrap()).unwrap();
+        assert_eq!(
+            identify["body"]["sn"], 1_790_722_204_762_224i64,
+            "第一次带着游标去恢复"
+        );
+        assert_eq!(cursor.sn, None, "被拒之后游标作废，下一次从头开始");
+    }
+
+    /// 被动请求：事件里的 `referrer` 只交还给发出它的那个登录，别的连接、别的账号都不带。
+    #[test]
+    fn referrer_goes_back_only_to_the_login_that_issued_it() {
+        let event = |login: Value| {
+            simd_json::serde::to_owned_value(json!({
+                "_satori": {
+                    "type": "message-created",
+                    "login": login,
+                    "referrer": {"type": "im.message.receive_v1", "event": {"message": {"message_id": "m1"}}}
+                }
+            }))
+            .unwrap()
+        };
+        let bot = test_bot();
+        let own = event(json!({"platform": "red", "user": {"id": "10000"}}));
+        assert_eq!(
+            referrer_for(Some(&own), &bot).unwrap()["event"]["message"]["message_id"],
+            "m1"
+        );
+        assert!(
+            referrer_for(
+                Some(&event(
+                    json!({"platform": "wechat", "user": {"id": "10000"}})
+                )),
+                &bot
+            )
+            .is_none()
+        );
+        assert!(
+            referrer_for(
+                Some(&event(json!({"platform": "red", "user": {"id": "20000"}}))),
+                &bot
+            )
+            .is_none()
+        );
+        let plain =
+            simd_json::serde::to_owned_value(json!({"_satori": {"login": {"platform": "red"}}}))
+                .unwrap();
+        assert!(
+            referrer_for(Some(&plain), &bot).is_none(),
+            "没有 referrer 就不带"
+        );
+        assert!(referrer_for(None, &bot).is_none());
+    }
+
+    /// 一条带内联图、回复某个事件的消息：先 upload.create，再 message.create——正文里是
+    /// `internal:` 链接而不是整段 base64，来源事件的 referrer 原样跟在参数里。
+    #[tokio::test]
+    async fn a_reply_uploads_its_inline_picture_and_hands_back_the_referrer() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let (endpoint, mut seen, server) = scripted_peer(vec![
+            (200, r#"{"file":"internal:red/10000/_tmp/pic1"}"#.into()),
+            (200, r#"[{"id":"501"}]"#.into()),
+        ])
+        .await;
+        let (mut ctx, writer) = bare_context(&endpoint).await;
+        ctx.event = EventType::Satori(
+            simd_json::serde::to_owned_value(json!({
+                "post_type": "message",
+                "satori_type": "message-created",
+                "message_type": "group",
+                "group_id": "123",
+                "channel_id": "123",
+                "_satori": {
+                    "type": "message-created",
+                    "login": {"platform": "red", "user": {"id": "10000"}},
+                    "referrer": {"ticket": "abc"}
+                }
+            }))
+            .unwrap(),
+        );
+        let png = STANDARD.encode(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        let id = send_msg_id(
+            &ctx,
+            writer,
+            Some("123"),
+            None,
+            crate::message::Message::new()
+                .text("图来了")
+                .image(format!("base64://{png}")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(id.as_deref(), Some("501"));
+        let upload = seen.try_recv().unwrap();
+        assert!(upload.starts_with("/v1/upload.create "), "{upload}");
+        let create = seen.try_recv().unwrap();
+        let (path, body) = create.split_once(' ').unwrap();
+        assert_eq!(path, "/v1/message.create");
+        let body: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(
+            body["content"],
+            r#"图来了<img src="internal:red/10000/_tmp/pic1"/>"#
+        );
+        assert_eq!(body["referrer"], json!({"ticket": "abc"}));
+        server.abort();
+    }
+
     #[test]
     fn foreign_login_does_not_advance_the_local_cursor() {
         let bot = test_bot();
@@ -1601,6 +1838,18 @@ pub(crate) mod tests {
                             .unwrap();
                         if bytes.len() < start + 4 + len {
                             continue;
+                        }
+                        // 内联媒体先走 upload.create（multipart，不是 JSON）：给个内部链接就好，
+                        // 不算进「发出去的消息」。
+                        if headers.starts_with("post /v1/upload.create ") {
+                            let body = r#"{"file":"internal:red/10000/_tmp/fixture"}"#;
+                            let response = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            stream.write_all(response.as_bytes()).await.unwrap();
+                            break;
                         }
                         tx.send(
                             serde_json::from_slice(&bytes[start + 4..start + 4 + len]).unwrap(),

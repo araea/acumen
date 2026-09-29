@@ -232,7 +232,8 @@ fn attr(element: &Element, key: &str) -> String {
 }
 
 fn append_element(out: &mut Message, mut element: Element, proxy: &ResourceProxy) {
-    if let Some(name) = element.name.strip_prefix("satori-qq:") {
+    // 平台原生元素带适配器名前缀（`satori-qq:json`、`satori-wx:…`）；插件按不带前缀的名字认。
+    if let Some((_, name)) = element.name.split_once(':') {
         element.name = name.to_string();
     }
     let mut data = Object::new();
@@ -636,6 +637,24 @@ mod tests {
             assert_eq!(to_content(&old), to_content(&new));
             assert!(to_content(&new).starts_with(&format!("<satori-qq:{name}")));
         }
+    }
+
+    /// 任何适配器的原生元素都按不带前缀的名字认：新接入的实现端不必逐个登记前缀。
+    #[test]
+    fn native_element_prefixes_of_any_adapter_are_dropped() {
+        let message =
+            from_content(r#"<satori-wx:sticker id="1"/>x<kook:card>卡片正文</kook:card>"#);
+        let text = message
+            .0
+            .iter()
+            .filter(|segment| segment.type_ == "text")
+            .filter_map(|segment| segment.data.get("text").and_then(|value| value.as_str()))
+            .collect::<String>();
+        assert_eq!(text, "x卡片正文");
+        assert_eq!(
+            from_content(r#"<satori-wx:json data="{}"/>"#).0[0].type_,
+            "json"
+        );
     }
 
     #[test]
