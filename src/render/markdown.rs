@@ -1634,7 +1634,7 @@ mod tests {
         let width: u32 = std::env::var("MD_WIDTH")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(480);
+            .unwrap_or_else(|| Settings::default().width);
         // `MD_SRC` 指向另一份 Markdown 时按它出图，方便拿真实内容核对。
         let sample = std::env::var("MD_SRC")
             .ok()
