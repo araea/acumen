@@ -18,7 +18,7 @@ access_token = ""
 - `url` 可使用 `http(s)://`、`ws(s)://` 或完整的 `/v1/events` 地址，启动时规范化为 API 根地址与 WebSocket 事件地址。
 - 连接 `/v1/events`，10 秒内发送 `IDENTIFY`；收到 `READY` 后建立登录状态并通知插件。
 - 每 10 秒发送一次 `PING`；收到反向 `PING` 也回复 `PONG`。
-- 断线后从 3 秒起指数退避，最长 60 秒；重连时携带最后收到的事件序号 `sn`，请求实现端补发断线期间的事件。
+- 断线后从 3 秒起指数退避，最长 60 秒；重连时携带最后收到的事件序号 `sn`，请求实现端补发断线期间的事件。`READY` 里任何扩展对象（`satori_qq`、`satori_wx`）的 `session_id` 变了，说明实现端进程重启过，旧序号作废；带旧序号恢复被拒（IDENTIFY 之后直接关连接）也丢弃它，下一次从头开始，不会带着它永远重连。序号写成整数值的浮点（`1.79e+15`）也认。
 - HTTP 请求使用 `Authorization: Bearer …`，并带上 `Satori-Platform` 与 `Satori-User-ID`。身份来自 `READY`；账号资料更新时刷新，账号变化时重连。
 
 `message.create` 超时为 100 秒，覆盖默认出站排队与媒体确认 / 重试；其他请求为 65 秒。satori-qq 0.29.6 起不会把没有回执的发送当作成功，超时可能返回 `send outcome unknown`。`ai_news` 图片确认成功后只发图片，明确失败才回退文本；结果不明或发送后 HTTP 响应丢失时，本条不自动重投或补发文本并记录告警。
@@ -28,6 +28,10 @@ access_token = ""
 ## 资源与消息
 
 实现端返回的资源地址不一定可直接下载。`internal:` 地址与 `READY` / `META` 提供的代理域名通过 `/v1/proxy/{url}` 获取；其他 HTTP(S) 地址直连。`data:`、`file:` 与本地路径不能作为远程下载地址。原始 `src` 保留在消息元素中，供插件回传。
+
+消息里内联的 `base64://` 与 `data:` 媒体，发送前先经 `upload.create` 换成 `internal:` 链接再写进元素：资源指南不推荐内联编码（消息体积大幅增加、实现端得在处理消息时解码），而且实现端的内联上限远低于上传上限（satori-wx 内联图片 8 MiB、上传 1 GiB）。上传跟着消息走路由后的那条连接和登录；上传失败退回内联，消息照发。
+
+事件里带 `referrer`（被动请求的来源上下文，实现端自己定义内容）时，回复的 `message.create` 原样带回它，只交还给发出它的登录。satori-qq 与 satori-wx 目前都不下发 `referrer`，这一步对它们是空操作。
 
 文本内容按 Satori 规则转义 `<`、`>` 和 `&`，属性值还转义双引号。为保留段首或段尾换行，Acumen 将其转换为 `<br/>`，段内换行保持原样。
 
@@ -49,7 +53,7 @@ access_token = ""
 
 ## 兼容性边界
 
-生产目标是本机 [satori-qq](https://github.com/araea/satori-qq)，默认地址 `http://127.0.0.1:3001`。它使用平台名 `red`；支持范围以该仓库的 [Satori v1 接口表](https://github.com/araea/satori-qq/blob/master/docs/SATORI_SUPPORT.md) 为准。
+生产目标是本机 [satori-qq](https://github.com/araea/satori-qq)，默认地址 `http://127.0.0.1:3001`。它使用平台名 `red`；支持范围以该仓库的 [Satori v1 接口表](https://github.com/araea/satori-qq/blob/master/docs/SATORI_SUPPORT.md) 为准。同一份配置里可以再接一段 [satori-wx](https://github.com/araea/satori-wx)（平台名 `wechat`，地址 `http://127.0.0.1:5601`），两个实现用同一套协议约定：字符串 ID、`created_at`、资源提升、`upload.create` 的 `internal:` 链接、`session_id`。两端都带同一份黑盒探针 `conformance.py`，改动任何一端之后先跑它。
 
 - `reaction.clear` 在标准协议中语义是清除所有人的回应，QQ 实现端不提供；清除自己的回应用 `internal/reaction_clear`。
 - `typing` 与 `mark_read` 是实现端扩展，不是标准 Satori 方法，调用前应查询能力并检查回执。
