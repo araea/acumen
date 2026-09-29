@@ -186,19 +186,26 @@ impl<'a> MessageEvent<'a> {
         self.0.get("sender").and_then(|s| s.get_str("role"))
     }
 
-    /// 是否为 satori-qq 为 QQ 客户端手发消息补发的自发事件。
+    /// 频道 ID（Satori `channel.id`）。私聊里它是对方的会话，不是自己的号。
+    pub fn channel_id(&self) -> &'a str {
+        self.0.get_str("channel_id").unwrap_or("")
+    }
+
+    /// 是否为号主自己手发的消息（与机器人自己发出去的回声相对）。
     ///
-    /// 这类事件仍然允许进入插件流水线（便于机器人账号本人调用指令），但不能对其
+    /// satori-qq 为 QQ 客户端手发的消息补发自发事件，satori-wx 给微信里手发的消息打
+    /// 同样的标记。这类事件仍然允许进入插件流水线（便于机器人账号本人调用指令），但不能对其
     /// 执行 reaction API；satori-qq 使用的虚拟 `qq-client:*` 作者会让表情落错目标。
     pub fn is_manual_self(&self) -> bool {
         self.0.get_bool("manual_self").unwrap_or(false)
-            || self
-                .0
-                .get("_satori")
-                .and_then(|value| value.get("satori_qq"))
-                .and_then(|value| value.get("manual_self"))
-                .and_then(|value| value.as_bool())
-                .unwrap_or(false)
+            || ["satori_qq", "satori_wx"].into_iter().any(|extension| {
+                self.0
+                    .get("_satori")
+                    .and_then(|value| value.get(extension))
+                    .and_then(|value| value.get("manual_self"))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+            })
     }
 }
 
@@ -276,6 +283,10 @@ mod tests {
             "_satori": {"satori_qq": {"manual_self": true}}
         }));
         assert!(MessageEvent(&raw).is_manual_self());
+        let wechat = message_event(json!({
+            "_satori": {"satori_wx": {"manual_self": true}}
+        }));
+        assert!(MessageEvent(&wechat).is_manual_self());
 
         let ordinary = message_event(json!({"manual_self": false}));
         assert!(!MessageEvent(&ordinary).is_manual_self());

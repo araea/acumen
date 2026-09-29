@@ -1320,10 +1320,11 @@ fn normalize_event(
             out["group_avatar"] = json!(pick("avatar"));
         }
         out["user_id"] = json!(user_id);
+        // 号主手发的消息：satori-qq 挂在 `satori_qq`，satori-wx 挂在 `satori_wx`。
         out["manual_self"] = json!(
-            body.pointer("/satori_qq/manual_self")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
+            ["/satori_qq/manual_self", "/satori_wx/manual_self"]
+                .iter()
+                .any(|path| body.pointer(path).and_then(Value::as_bool) == Some(true))
         );
         out["message_id"] = json!(raw_id(message.get("id")));
         out["raw_message"] = json!(raw_message);
@@ -2136,6 +2137,39 @@ pub(crate) mod tests {
         assert_eq!(normalized.get_str("user_id"), Some("10000"));
         assert_eq!(normalized.get_str("group_id"), Some("123"));
         assert_eq!(normalized.get_bool("manual_self"), Some(true));
+    }
+
+    /// satori-wx 给号主在微信里手发的消息打 `satori_wx.manual_self`，机器人自己发出去的回声不打。
+    #[test]
+    fn wechat_manual_self_marker_is_carried() {
+        let bot = BotStatus {
+            adapter: "satori-wx".to_string(),
+            platform: "wechat".to_string(),
+            login_user: LoginUser {
+                id: "wxid_self".to_string(),
+                ..Default::default()
+            }
+            .into(),
+        };
+        let event = |manual: bool| {
+            let mut body = json!({
+                "type": "message-created",
+                "timestamp": 1_700_000_000_000i64,
+                "login": {"sn": 1},
+                "channel": {"id": "wxid_friend", "type": 1},
+                "user": {"id": "wxid_self"},
+                "message": {"id": "9", "content": "https://example.com"}
+            });
+            if manual {
+                body["satori_wx"] = json!({"manual_self": true});
+            }
+            body
+        };
+        let typed = normalize_event(&event(true), &bot, &Default::default()).unwrap();
+        assert_eq!(typed.get_bool("manual_self"), Some(true));
+        assert_eq!(typed.get_str("message_type"), Some("private"));
+        let echo = normalize_event(&event(false), &bot, &Default::default()).unwrap();
+        assert_eq!(echo.get_bool("manual_self"), Some(false));
     }
 
     /// 加群申请的 `message.id` 是审批 flag，不是数字 ID，必须原样留住。
