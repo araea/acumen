@@ -1,0 +1,539 @@
+/* Markdown 卡片的版式（`render::markdown`）。
+   令牌与组件基元在 tokens.css / m3e.css，两层拼成一个 style 的内容，顺序不能换。
+   注释里不要写出 HTML 的成对标签：样式表是塞在 style 元素里的，
+   raw text 解析一遇到闭合标签就截断，页面不报错、只是静悄悄退回无样式。
+
+   本文件里不写色值、字号、圆角、阴影的字面量，一律 var() 取令牌。
+   例外只有版式参数：行高倍数、边框粗细、图标尺寸、卡面内边距。
+
+   阅读优先，几处取舍：
+   - 正文取 body-large，行高 1.75：中文长段落行距要宽，行距紧了读久了发闷。
+   - 层级靠字号阶差、字重与一小块色，不靠满屏色块；色块只给「另一类东西」
+     （代码、引用、提示、表格、页底附录）。
+   - 强调、链接都不只靠颜色：强调有字重，链接有下划线与编号。
+   - 卡宽窄、字号大：这是要在手机上全屏看的图，缩到屏宽后正文仍有约 14dp。 */
+
+.card {
+  font-family: var(--md-font-plain);
+  font-size: var(--md-type-body-large-size);
+  line-height: 1.75;
+  color: var(--md-sys-color-on-surface);
+  overflow-wrap: anywhere;
+  word-break: normal;
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+.inner {
+  padding: var(--md-space-7) var(--md-space-7) var(--md-space-8);
+}
+.md-eyebrow {
+  margin-bottom: var(--md-space-6);
+}
+.head {
+  margin-bottom: var(--md-space-3);
+}
+.doc > *:first-child {
+  margin-top: 0;
+}
+.doc > *:last-child {
+  margin-bottom: 0;
+}
+
+/* —— 段落与行内 —— */
+p {
+  margin: var(--md-space-4) 0;
+  text-wrap: pretty;
+}
+strong {
+  font-weight: 700;
+}
+em {
+  font-style: italic;
+}
+del {
+  color: var(--md-sys-color-on-surface-variant);
+  text-decoration-thickness: 2px;
+}
+.lk {
+  color: var(--md-sys-color-primary);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
+  text-decoration-color: var(--md-sys-color-primary-line);
+}
+sup.lk-n,
+sup.fn-ref {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-primary-tint-strong);
+  color: var(--md-sys-color-primary);
+  font-size: 0.62em;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: super;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.md-code-inline {
+  padding: 1px 6px;
+  font-size: 0.84em;
+  line-height: 1;
+}
+.math {
+  padding: 0 4px;
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-tertiary);
+  font-family: var(--md-font-mono);
+  font-size: 0.86em;
+  white-space: pre-wrap;
+}
+.math-block {
+  display: block;
+  margin: var(--md-space-3) 0;
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-m);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-tertiary);
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.6;
+  text-align: center;
+  white-space: pre-wrap;
+}
+.img-ph {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  padding: 2px var(--md-space-3);
+  border: 1px dashed var(--md-sys-color-outline);
+  border-radius: var(--md-shape-s);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-large-size);
+  line-height: 1.5;
+}
+.img-ph svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+/* —— 标题 —— */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: var(--md-sys-color-on-surface);
+  font-weight: 700;
+  text-wrap: balance;
+}
+h1 {
+  margin: var(--md-space-8) 0 var(--md-space-4);
+  padding-bottom: var(--md-space-3);
+  font-size: var(--md-type-headline-medium-size);
+  line-height: var(--md-type-headline-medium-line);
+  letter-spacing: 0;
+  border-bottom: 2px solid var(--md-sys-color-primary-line);
+}
+h2 {
+  position: relative;
+  margin: var(--md-space-8) 0 var(--md-space-3);
+  padding-left: var(--md-space-4);
+  font-size: var(--md-type-title-large-size);
+  line-height: var(--md-type-title-large-line);
+}
+/* 二级标题左边一根主色短竖：一节的开头，比整条分割线轻 */
+h2::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.22em;
+  bottom: 0.22em;
+  width: 6px;
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-primary);
+}
+h3 {
+  margin: var(--md-space-7) 0 var(--md-space-2);
+  font-size: var(--md-type-title-medium-size);
+  line-height: var(--md-type-title-medium-line);
+  color: var(--md-sys-color-primary);
+}
+h4 {
+  margin: var(--md-space-6) 0 var(--md-space-2);
+  font-size: var(--md-type-title-small-size);
+  line-height: var(--md-type-title-small-line);
+}
+h5,
+h6 {
+  margin: var(--md-space-5) 0 var(--md-space-1);
+  font-size: var(--md-type-label-medium-size);
+  line-height: var(--md-type-label-medium-line);
+  letter-spacing: 0.06em;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.doc-head {
+  margin-bottom: var(--md-space-5);
+}
+.doc-head h1 {
+  margin: 0;
+  padding-bottom: var(--md-space-3);
+}
+.doc-meta {
+  margin: var(--md-space-3) 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-large-size);
+  line-height: 1.5;
+}
+
+/* —— 列表 —— */
+ul,
+ol {
+  margin: var(--md-space-4) 0;
+  padding-left: 1.55em;
+}
+li {
+  margin: var(--md-space-2) 0;
+  padding-left: 2px;
+}
+li > p {
+  margin: var(--md-space-2) 0;
+}
+li > ul,
+li > ol {
+  margin: var(--md-space-2) 0 var(--md-space-1);
+}
+li::marker {
+  color: var(--md-sys-color-primary);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+ul {
+  list-style-type: disc;
+}
+ul ul {
+  list-style-type: circle;
+}
+ul ul ul {
+  list-style-type: square;
+}
+li.task {
+  list-style: none;
+  margin-left: -1.55em;
+  padding-left: 0;
+  display: flex;
+  gap: var(--md-space-3);
+  align-items: flex-start;
+}
+.check {
+  flex: none;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  margin-top: 6px;
+  border: 2px solid var(--md-sys-color-outline);
+  border-radius: var(--md-shape-xs);
+  color: transparent;
+}
+.check svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+li.done > .check {
+  border-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+li.done > .task-text {
+  color: var(--md-sys-color-on-surface-variant);
+}
+.task-text {
+  min-width: 0;
+  flex: 1;
+}
+
+/* —— 引用与提示 —— */
+blockquote {
+  margin: var(--md-space-4) 0;
+  padding: var(--md-space-3) var(--md-space-4) var(--md-space-3) var(--md-space-5);
+  border-left: 4px solid var(--md-sys-color-primary-line);
+  border-radius: var(--md-corner-notched);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface-variant);
+}
+blockquote > *:first-child {
+  margin-top: 0;
+}
+blockquote > *:last-child {
+  margin-bottom: 0;
+}
+blockquote p {
+  margin: var(--md-space-2) 0;
+}
+blockquote blockquote {
+  background: var(--md-sys-color-surface-container);
+}
+/* 提示块：底是角色色对卡面的 14% 色调，正文仍是 on-surface，只有标题与图标着角色色。
+   这样浅深两套都稳：容器色（如深色下的 tertiary-container）本来是配自己那对前景的，
+   拿去与卡面混合会破坏对比；而角色色在卡面上本来就过 4.5:1。 */
+.alert {
+  --alert: var(--md-sys-color-primary);
+  border-left-width: 0;
+  border-radius: var(--md-shape-l);
+  padding: var(--md-space-4) var(--md-space-5);
+  background: color-mix(in srgb, var(--alert) 14%, var(--md-sys-color-surface));
+  color: var(--md-sys-color-on-surface);
+}
+.alert-title {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-2);
+  margin-bottom: var(--md-space-1);
+  color: var(--alert);
+  font-size: var(--md-type-label-large-size);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.alert-title svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+.alert-note {
+  --alert: var(--md-sys-color-primary);
+}
+.alert-tip {
+  --alert: var(--md-sys-color-success);
+}
+.alert-important {
+  --alert: var(--md-sys-color-tertiary);
+}
+.alert-warning {
+  --alert: var(--md-sys-color-warning);
+}
+.alert-caution {
+  --alert: var(--md-sys-color-error);
+}
+.alert .lk {
+  color: var(--md-sys-color-primary);
+}
+
+/* —— 代码 —— */
+.code {
+  margin: var(--md-space-4) 0;
+  border-radius: var(--md-shape-l);
+  background: var(--md-sys-color-surface-container);
+  overflow: hidden;
+}
+.code figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--md-space-2) var(--md-space-4) 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-medium-size);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.6;
+}
+.code pre {
+  margin: 0;
+  padding: var(--md-space-3) var(--md-space-4);
+}
+.code figcaption + pre {
+  padding-top: var(--md-space-1);
+}
+.code code {
+  display: block;
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.6;
+  color: var(--md-sys-color-on-surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-variant-ligatures: none;
+  font-variant-numeric: normal;
+  tab-size: 4;
+}
+.raw {
+  margin: var(--md-space-4) 0;
+  padding: var(--md-space-3) var(--md-space-4);
+  border: 1px dashed var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-m);
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--md-font-mono);
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* 语法着色：全部取 M3 角色色，前景与代码面的对比度由测试卡在 4.5:1 以上。
+   区分只靠色相时，关键字另加字重，注释不用斜体（汉字没有真斜体）。 */
+.tk-k {
+  color: var(--md-sys-color-primary);
+  font-weight: 700;
+}
+.tk-s {
+  color: var(--md-sys-color-success);
+}
+.tk-n {
+  color: var(--md-sys-color-warning);
+}
+.tk-f {
+  color: var(--md-sys-color-tertiary);
+}
+.tk-t {
+  color: var(--md-sys-color-secondary);
+  font-weight: 700;
+}
+.tk-a {
+  color: var(--md-sys-color-primary);
+}
+.tk-c {
+  color: var(--md-sys-color-on-surface-variant);
+}
+/* diff：每行是一个块，换行收在块内，背景铺满代码面 */
+.dl {
+  display: block;
+  margin: 0 calc(var(--md-space-4) * -1);
+  padding: 0 var(--md-space-4);
+}
+/* 增删两行用 on-surface 而不是成功色 / 错误色：底色的 18% 色调已经区分开，
+   字色再着色在浅底上压不到 4.5:1；行首的 + / - 也让它不只靠颜色 */
+.dl-add {
+  background: color-mix(in srgb, var(--md-sys-color-success) 18%, transparent);
+}
+.dl-del {
+  background: color-mix(in srgb, var(--md-sys-color-error) 18%, transparent);
+}
+.dl-hunk {
+  color: var(--md-sys-color-tertiary);
+  font-weight: 700;
+}
+.dl-meta {
+  color: var(--md-sys-color-on-surface-variant);
+  font-weight: 700;
+}
+
+/* —— 表格 —— */
+.table {
+  margin: var(--md-space-4) 0;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-shape-m);
+  overflow: hidden;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--md-type-body-medium-size);
+  line-height: 1.5;
+}
+.table.dense table {
+  font-size: var(--md-type-body-small-size);
+}
+th,
+td {
+  padding: var(--md-space-2) var(--md-space-3);
+  text-align: left;
+  vertical-align: top;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+thead th {
+  border-top: 0;
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface);
+  font-weight: 700;
+}
+tbody tr:nth-child(even) td {
+  background: var(--md-sys-color-surface-container-low);
+}
+.al-c {
+  text-align: center;
+}
+.al-r {
+  text-align: right;
+}
+
+/* —— 其余 —— */
+hr {
+  height: 0;
+  margin: var(--md-space-6) 0;
+  border: 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+dl {
+  margin: var(--md-space-4) 0;
+}
+dt {
+  font-weight: 700;
+}
+dd {
+  margin: var(--md-space-1) 0 var(--md-space-3) var(--md-space-4);
+  padding-left: var(--md-space-3);
+  border-left: 3px solid var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* —— 页底附录：链接与脚注。整块通栏，另一张纸 —— */
+.refs {
+  padding: var(--md-space-4) var(--md-space-7) var(--md-space-5);
+  background: var(--md-sys-color-surface-container-low);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+.refs h2 {
+  margin: 0 0 var(--md-space-2);
+  padding: 0;
+  font-size: var(--md-type-label-medium-size);
+  line-height: var(--md-type-label-medium-line);
+  letter-spacing: 0.08em;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.refs h2::before {
+  display: none;
+}
+.refs ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.refs li {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: var(--md-space-2);
+  align-items: baseline;
+  margin: var(--md-space-1) 0;
+  padding: 0;
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.55;
+}
+.ref-n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  font-size: var(--md-type-label-small-size);
+  font-weight: 700;
+}
+.ref-url {
+  min-width: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-family: var(--md-font-mono);
+  overflow-wrap: anywhere;
+}
+.ref-text {
+  min-width: 0;
+  color: var(--md-sys-color-on-surface-variant);
+}
+.ref-text p {
+  margin: 0;
+}

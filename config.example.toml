@@ -147,6 +147,26 @@ follow_recall = true
 [echo]
 enabled = true
 
+# Markdown 转图：/md 后面直接写 Markdown（可多行），或引用一条消息只发 /md，回一张排版好的图。
+# 支持标题、列表、任务清单、引用与 GFM 提示块、表格、代码（带语法着色）、脚注与链接编号。
+# 链接与图片不会被加载，链接的完整地址列在图底；原始 HTML 一律当文字显示。
+[markdown]
+enabled = true
+# 配色：light 或 dark。
+theme = "light"
+# 卡面宽度（CSS 像素）。窄而字大：图要在手机上全屏看，缩到屏宽后字仍读得舒服。
+width = 480
+# 出图倍率，1 到 4。
+image_scale = 2.0
+# 每页的目标高度（CSS 像素）。长文按块断页，标题不落在页尾；单个块不拆开时可以略超。
+page_height = 2000
+# 最多发几页，超出的不发并在消息里说明。
+max_pages = 6
+# 单次最多渲染多少字。
+max_chars = 20000
+# 单个换行按换行显示（聊天里的写法）。关掉则相邻行并成一段（CommonMark 的写法）。
+keep_line_breaks = true
+
 # GIF 工具箱：合成、变速、倒放、缩放、旋转、翻转、拆分、拼图。
 [gif]
 enabled = true

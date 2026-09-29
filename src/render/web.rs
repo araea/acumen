@@ -89,7 +89,7 @@ pub struct Doc {
     pub hint: (String, String),
 }
 
-fn esc(text: &str) -> String {
+pub(crate) fn esc(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

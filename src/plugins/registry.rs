@@ -103,6 +103,17 @@ register_plugins!(
         summary: "回显参数内容（支持图片等富文本）",
         commands: cmds![("echo <内容>", "原样回显参数")]
     },
+    markdown {
+        display_name: "Markdown 转图",
+        section: "message",
+        summary: "把 Markdown 渲染成排版精致的图片：指令后直接写，或引用一条消息再发指令；长文自动分页",
+        commands: cmds![
+            (
+                "md / markdown / 渲染 <Markdown>",
+                "指令后直接写内容，可多行；也可引用一条消息只发指令"
+            ),
+        ]
+    },
     repeater {
         display_name: "复读机",
         section: "play",
