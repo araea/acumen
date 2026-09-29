@@ -453,6 +453,13 @@ impl ChannelConfig {
         }
     }
 
+    /// 私聊是否放行。私聊没有群号，不受白名单约束；黑名单可以点名对方——
+    /// 私聊频道 ID 或对方的账号（微信里公众号、服务通知也是这样的会话，如 `gh_xxxx`）。
+    pub fn allows_direct(&self, ids: &[&str]) -> bool {
+        !ids.iter()
+            .any(|id| !id.is_empty() && self.black.iter().any(|black| black == id))
+    }
+
     /// 群是否放行。主动推送只发群，没有"私聊放行"这一说，因此单独一个入口。
     pub fn allows_group(&self, group_id: &str) -> bool {
         if self.black.iter().any(|id| id == group_id) {
@@ -674,6 +681,20 @@ mod satori_compat_tests {
         assert!(!both.allows_group("2"), "黑名单优先于白名单");
 
         assert!(white.allows(None), "私聊不受群名单约束");
+        assert!(
+            white.allows_direct(&["gh_1", "wxid_a"]),
+            "私聊不受白名单约束"
+        );
+        let pay = ChannelConfig {
+            white: vec![],
+            black: vec!["gh_pay".into()],
+        };
+        assert!(
+            !pay.allows_direct(&["gh_pay", "gh_pay"]),
+            "黑名单可以点名私聊会话"
+        );
+        assert!(!pay.allows_direct(&["", "gh_pay"]));
+        assert!(pay.allows_direct(&["wxid_a", ""]), "没点名的私聊照常放行");
         assert!(!white.allows(Some("3")));
     }
 }

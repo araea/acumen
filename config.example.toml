@@ -243,7 +243,8 @@ quality = 80
 # 单次截图的超时（秒）。
 timeout_seconds = 30
 
-# 语义同 [stats.channel]。
+# 语义同 [stats.channel]。私聊不受白名单约束，但黑名单可以点名会话（对方的账号，
+# 微信里公众号与服务通知是 `gh_` 开头的账号，如微信支付 gh_3dfda90e39d6）。
 [webshot.channel]
 white = []
 black = []

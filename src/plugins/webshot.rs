@@ -611,9 +611,16 @@ pub fn handle(
         // 获取全局浏览器路径配置
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
 
-        // 检查群组黑白名单
+        // 检查群组黑白名单；私聊没有群号，只看黑名单有没有点名这个会话
+        // （微信支付、银行通知这类服务号的私聊卡片不该截图）。
         let group_id = msg_event.group_id();
-        if !config.channel.allows(group_id) {
+        let allowed = match group_id {
+            Some(_) => config.channel.allows(group_id),
+            None => config
+                .channel
+                .allows_direct(&[msg_event.channel_id(), msg_event.user_id()]),
+        };
+        if !allowed {
             return Ok(Some(ctx));
         }
 
