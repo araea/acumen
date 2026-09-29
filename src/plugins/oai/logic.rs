@@ -1086,6 +1086,60 @@ fn is_plain_enough(text: &str, max_chars: usize) -> bool {
     })
 }
 
+/// `/#` 房间列表的 Markdown 正文。
+///
+/// 分区与组内排序只影响展示，所以序号在这里按**展示顺序**从 1 编到 N。早先把房间
+/// 在配置里的下标当序号，分组排序后同一个组里的数字既不连续、也不再是 1..N；
+/// Markdown 的有序列表只认首个编号、其余逐条递增，于是图上会出现「48 个房间
+/// 标到七八十」。序号是给人数的，从 1 数到底就好。
+fn agent_list_markdown(agents: &[Agent], search_default: bool) -> String {
+    use std::collections::BTreeMap;
+    // 分区优先于模型：内置预设那一批的共同点是「预设」而不是「跑哪个模型」，
+    // 混进用户自建的同模型房间里就找不着了。带分区的排在前面（false < true）。
+    let mut groups: BTreeMap<(bool, String), Vec<&Agent>> = BTreeMap::new();
+    for a in agents {
+        let section = a.section.trim();
+        let key = if section.is_empty() {
+            (true, room_model_label(a))
+        } else {
+            (false, format!("{section} · {}", room_model_label(a)))
+        };
+        groups.entry(key).or_default().push(a);
+    }
+    let mut html_parts = Vec::new();
+    let mut seq = 0usize;
+    for ((_, model), mut group) in groups {
+        group.sort_by_key(|a| a.name.to_lowercase());
+        html_parts.push(format!(
+            "## {}（{}）\n",
+            escape_markdown_special(&model),
+            group.len()
+        ));
+        for a in group {
+            seq += 1;
+            let desc_display = if !a.description.is_empty() {
+                super::utils::truncate_str(&a.description, 20)
+            } else if !a.system_prompt.is_empty() {
+                super::utils::truncate_str(&a.system_prompt, 20)
+            } else {
+                "无描述".to_string()
+            };
+            // 联网的房间标一句：一眼看出哪几间会出去查资料。
+            let desc_display = if a.uses_agent() && a.web_search(search_default) {
+                format!("联网 · {desc_display}")
+            } else {
+                desc_display
+            };
+            html_parts.push(format!(
+                "{seq}. **{}** — {}\n",
+                escape_markdown_special(&a.name),
+                escape_markdown_special(&desc_display)
+            ));
+        }
+    }
+    html_parts.join("\n")
+}
+
 pub async fn execute(
     cmd: Command,
     prompt: String,
@@ -1591,54 +1645,12 @@ pub async fn execute(
                 .await;
                 return;
             }
-            use std::collections::BTreeMap;
-            // 分区优先于模型：内置预设那一批的共同点是「预设」而不是「跑哪个模型」，
-            // 混进用户自建的同模型房间里就找不着了。带分区的排在前面（false < true）。
-            let mut groups: BTreeMap<(bool, String), Vec<(usize, &Agent)>> = BTreeMap::new();
-            for (i, a) in c.agents.iter().enumerate() {
-                let section = a.section.trim();
-                let key = if section.is_empty() {
-                    (true, room_model_label(a))
-                } else {
-                    (false, format!("{section} · {}", room_model_label(a)))
-                };
-                groups.entry(key).or_default().push((i + 1, a));
-            }
-            let mut html_parts = Vec::new();
-            for ((_, model), mut agents) in groups {
-                agents.sort_by_key(|a| a.1.name.to_lowercase());
-                html_parts.push(format!(
-                    "## {}（{}）\n",
-                    escape_markdown_special(&model),
-                    agents.len()
-                ));
-                for (real_idx, a) in agents {
-                    let desc_display = if !a.description.is_empty() {
-                        super::utils::truncate_str(&a.description, 20)
-                    } else if !a.system_prompt.is_empty() {
-                        super::utils::truncate_str(&a.system_prompt, 20)
-                    } else {
-                        "无描述".to_string()
-                    };
-                    // 联网的房间标一句：一眼看出哪几间会出去查资料。
-                    let desc_display = if a.uses_agent() && a.web_search(search_default) {
-                        format!("联网 · {}", desc_display)
-                    } else {
-                        desc_display
-                    };
-                    html_parts.push(format!(
-                        "{}. **{}** — {}\n",
-                        real_idx,
-                        escape_markdown_special(&a.name),
-                        escape_markdown_special(&desc_display)
-                    ));
-                }
-            }
+            let list = agent_list_markdown(&c.agents, search_default);
             reply(
                 ctx,
                 writer,
                 &msg_event,
-                &html_parts.join("\n"),
+                &list,
                 cmd.text_mode,
                 &format!("智能体列表 (共{}个)", c.agents.len()),
             )
@@ -2467,6 +2479,37 @@ mod tests {
     }
 
     use super::*;
+
+    /// 房间列表的序号按展示顺序从 1 数到 N，不跟着房间在配置里的下标乱跳。
+    ///
+    /// 早先直接拿配置下标当序号，分组排序后同一个组里的数字既不连续、也不再是
+    /// 1..N；Markdown 的有序列表只认首个编号、其余逐条递增，图上于是出现
+    /// 「48 个房间标到七八十」。
+    #[test]
+    fn agent_list_numbers_rooms_in_display_order() {
+        let mut agents = Vec::new();
+        // 48 个房间散布在多个分区与模型里，名字刻意打乱顺序。
+        for i in 0..48 {
+            let mut agent = Agent::new(
+                &format!("房间-{:02}", (i * 17) % 48),
+                ["gpt-5.6-luna", "claude-4", "gemini-3.6-flash"][i % 3],
+                "提示词",
+                "描述",
+            );
+            if i % 4 != 0 {
+                agent.section = ["预设", "自定义", "工作"][i % 3].to_string();
+            }
+            agents.push(agent);
+        }
+        let markdown = agent_list_markdown(&agents, false);
+
+        let numbers: Vec<usize> = markdown
+            .lines()
+            .filter_map(|line| line.split_once(". **"))
+            .filter_map(|(head, _)| head.parse().ok())
+            .collect();
+        assert_eq!(numbers, (1..=48).collect::<Vec<_>>(), "{markdown}");
+    }
 
     #[tokio::test]
     async fn mentioned_avatars_reach_gpt_image_edits() {
