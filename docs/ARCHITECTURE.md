@@ -17,7 +17,7 @@ src/
   message.rs       消息构造
   plugins.rs       插件接口、注册表、事件流水线与配置读写
   plugins/         插件实现；registry.rs 是唯一插件清单
-  render/          卡片渲染、原生字体与画布
+  render/          卡片渲染、原生字体与画布；render/markdown 是 Markdown 排版的唯一实现
   scheduler.rs     定时任务与错峰推送
   db/              SeaORM 实体与 SQLite 查询
 res/               词库、提示词、技能、卡片与控制台资源
@@ -62,6 +62,8 @@ tests/             前台运行、重启与渲染测试
 无需修改帮助、控制或渲染模块；新增帮助分区时才需同时修改 `help::SECTIONS`。
 
 ## 图片渲染与资源限制
+
+Markdown 的解析、排版、分页与代码着色只在 `render::markdown` 一处，`markdown` 插件与 `oai` 回复卡共用，不各写一套；调用方只交代眉标、标题与页底附录。
 
 HTML 卡片统一经 `render::web::shoot` 渲染。调用方提供内容与宽度，共享层处理字体、图片加载、布局测量、截图格式与并发限制。字体与内嵌图片解码完成后再测量；headless Chromium 不保证触发 `requestAnimationFrame`，不要用它等待布局。
 

@@ -54,6 +54,7 @@ Agent 房间的 `bash` 等本机工具不是安全沙箱，具有当前系统账
 - [群聊搭话](docs/ambient.md)
 - [内置 Agent 房间](docs/agent.md)
 - [视频解析](docs/video_parse.md)
+- [Markdown 转图](docs/markdown.md)
 - [插件控制与部署](docs/CONTROL.md)
 - [架构与插件开发](docs/ARCHITECTURE.md)
 - [WebUI 设计系统](docs/DESIGN_SYSTEM.md)

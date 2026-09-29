@@ -454,6 +454,11 @@ thead th {
 tbody tr:nth-child(even) td {
   background: var(--md-sys-color-surface-container-low);
 }
+/* 列宽放得下整词时不在词中间断行（break-word 的最小宽度按整词算，列宽会让给它） */
+.table.whole-words th,
+.table.whole-words td {
+  overflow-wrap: break-word;
+}
 .al-c {
   text-align: center;
 }

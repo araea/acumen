@@ -145,6 +145,10 @@ struct Inl {
     lines: Vec<f64>,
     links: Vec<usize>,
     notes: Vec<usize>,
+    /// 当前不含空白、汉字的连续拉丁串宽度，与见过的最长者（em）。
+    /// 表格用它判断列宽够不够放下整词，够就不在词中间断行。
+    run: f64,
+    token: f64,
 }
 
 impl Inl {
@@ -158,11 +162,20 @@ impl Inl {
     fn text(&mut self, text: &str) {
         self.html.push_str(&esc(text));
         *self.lines.last_mut().unwrap() += text_em(text);
+        for c in text.chars() {
+            if c.is_ascii() && !c.is_whitespace() {
+                self.run += em_width(c);
+                self.token = self.token.max(self.run);
+            } else {
+                self.run = 0.0;
+            }
+        }
     }
 
     fn raw(&mut self, html: &str, em: f64) {
         self.html.push_str(html);
         *self.lines.last_mut().unwrap() += em;
+        self.token = self.token.max(em);
     }
 
     fn line_break(&mut self) {
@@ -182,6 +195,7 @@ impl Inl {
         self.lines.extend(lines);
         self.links.extend(sub.links);
         self.notes.extend(sub.notes);
+        self.token = self.token.max(sub.token);
     }
 
     fn is_empty(&self) -> bool {
@@ -868,6 +882,7 @@ impl<'a> Doc<'a> {
         struct Cell {
             html: String,
             em: f64,
+            token: f64,
         }
         let cols = aligns.len().max(1);
         let mut head: Vec<Cell> = Vec::new();
@@ -889,7 +904,11 @@ impl<'a> Doc<'a> {
                     links.extend(inl.links.iter().copied());
                     notes.extend(inl.notes.iter().copied());
                     let em = inl.lines.iter().cloned().fold(0.0, f64::max);
-                    row.push(Cell { html: inl.html, em });
+                    row.push(Cell {
+                        html: inl.html,
+                        em,
+                        token: inl.token,
+                    });
                 }
                 Event::Start(_) => self.skip(it),
                 _ => {}
@@ -901,6 +920,15 @@ impl<'a> Doc<'a> {
         let dense = cols >= 5;
         let font = if dense { 15.0 } else { 17.5 };
         let col_w = ((avail - 2.0) / cols as f64 - 26.0).max(24.0);
+        // 每列最长的不可断词加起来放得下，就只在词与汉字之间断行；放不下才允许词中间断，
+        // 否则表格会撑出卡面被裁掉。
+        let mut widest = vec![0.0f64; cols];
+        for cells in std::iter::once(&head).chain(rows.iter()) {
+            for (i, cell) in cells.iter().enumerate().take(cols) {
+                widest[i] = widest[i].max(cell.token);
+            }
+        }
+        let fits = widest.iter().sum::<f64>() * font + 26.0 * cols as f64 <= avail - 2.0;
         let row_h = |cells: &[Cell]| -> f64 {
             cells
                 .iter()
@@ -946,8 +974,9 @@ impl<'a> Doc<'a> {
             let body: String = rows[from..to].iter().map(|r| render_row(r, "td")).collect();
             let mut block = Block::body(
                 format!(
-                    "<div class=\"table{}\"><table>{head_html}<tbody>{body}</tbody></table></div>",
-                    if dense { " dense" } else { "" }
+                    "<div class=\"table{}{}\"><table>{head_html}<tbody>{body}</tbody></table></div>",
+                    if dense { " dense" } else { "" },
+                    if fits { " whole-words" } else { "" }
                 ),
                 acc + 2.0 + GAP,
             );
@@ -1582,13 +1611,18 @@ mod tests {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(480);
+        // `MD_SRC` 指向另一份 Markdown 时按它出图，方便拿真实内容核对。
+        let sample = std::env::var("MD_SRC")
+            .ok()
+            .map(|path| std::fs::read_to_string(path).expect("读 MD_SRC"))
+            .unwrap_or_else(|| SAMPLE.to_string());
         for (name, dark) in [("light", false), ("dark", true)] {
             let s = Settings {
                 dark,
                 width,
                 ..Settings::default()
             };
-            let rendered = render(SAMPLE, &s);
+            let rendered = render(&sample, &s);
             for (i, html) in rendered.pages.iter().enumerate() {
                 std::fs::write(format!("{dir}/{name}-{}.html", i + 1), html).unwrap();
                 let b64 = crate::render::web::shoot(
