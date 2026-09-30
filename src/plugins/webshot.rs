@@ -84,10 +84,9 @@ const MAX_LINKS_PER_MESSAGE: usize = 4;
 /// 单张截图的像素上限（含 `device_scale_factor`），与 `render/web.rs` 保持一致。
 const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
 
-/// 截出来没有内容的站点。两种成因，结果一样——发给群里的图不是登录页就是验证页，
-/// 所以默认跳过（`block_walled_sites` 可关）。
-///
-/// 只列**稳定**如此、且正文必须登录的站点。实测能正常渲染的（CSDN、虎扑、豆瓣、
+/// 截出来没有内容的站点。几种成因——登录墙、风控验证页、只有微信客户端能开的
+/// 模板页——结果一样：发给群里的图不是登录页就是「请在客户端打开」的死页，
+/// 所以默认跳过（`block_walled_sites` 可关）。实测能正常渲染的（CSDN、虎扑、豆瓣、
 /// 今日头条、淘宝、闲鱼、BOSS直聘、AcFun、晋江、起点、番茄、Tumblr、Threads、
 /// B 站的番剧与直播页、`m.weibo.cn`）都不在此列；贴吧的「百度安全验证」是偶发的，重测
 /// 三次有两次能出内容，也不列。按域名后缀匹配，`douyin.com` 覆盖分享短链的落点
@@ -125,6 +124,12 @@ const WALLED_DOMAINS: &[&str] = &[
     // 店铺和主图。2026-09-16 连测两轮都是同一张验证页。
     "qr.1688.com",
     "m.1688.com",
+    // 微信客户端专属页。合并转发、收藏这类卡片的 XML 里自带一条
+    // `support.weixin.qq.com` 的 readtemplate 兜底链接，satori-wx 解不出卡片时
+    // 把它当普通链接发进来，手动复制也有同样效果；整站（首页、readtemplate 各页）
+    // 实测都只有「This function requires WeChat」一类的死页，换 UA 也没用。
+    // 2026-09-30 起合并转发消息本插件整条跳过，这条挡的是兜底链接与手动粘贴。
+    "support.weixin.qq.com",
 ];
 
 /// 静态截图做不了的站点。
@@ -164,6 +169,20 @@ const OFFICIAL_BOT_ID_PREFIXES: &[&str] = &["2854", "3889"];
 /// 官方机器人的号都是 10 位，比这短的一概不算——早年发出去的 4—9 位号里，
 /// 恰好以 `2854` / `3889` 开头的会被前缀匹配误伤。
 const OFFICIAL_BOT_ID_MIN_DIGITS: usize = 10;
+
+/// 这条消息是不是合并转发卡片。
+///
+/// 卡片本身（`forward` 段，`<message forward id=…>`）与解码后的内嵌聊天记录
+/// （`node` 段，satori-wx 把「聊天记录」卡片的 `<recorditem>` 还原成一行行发言）
+/// 里的链接都来自**被转发的旧消息**：转发进来的是一份现成的记录，逐条截图发回
+/// 群里既重复又吵，卡片按整体对待，一条也不截。
+fn is_forward_card(event: &crate::event::Event) -> bool {
+    event.get_array("message").is_some_and(|segments| {
+        segments
+            .iter()
+            .any(|segment| matches!(segment.get_str("type"), Some("forward") | Some("node")))
+    })
+}
 
 /// 这个号是不是微信公众号 / 服务通知（微信支付、银行交易提醒、订阅号推文……）。
 ///
@@ -649,6 +668,14 @@ pub fn handle(
             return Ok(Some(ctx));
         }
 
+        // 合并转发整条跳过，见 `is_forward_card`。
+        if let crate::event::EventType::Satori(event) = &ctx.event
+            && is_forward_card(event)
+        {
+            debug!(target: "Plugin/WebShot", "跳过截图：合并转发消息");
+            return Ok(Some(ctx));
+        }
+
         // 一条消息可以贴好几条链接，全收下来一起处理：各截一张，合成一条消息发出去。
         // 只取正文（`text` 段）；没有 `message` 数组时退回整条 `raw_message`。
         let candidates = if let crate::event::EventType::Satori(event) = &ctx.event {
@@ -809,6 +836,8 @@ mod tests {
             // 1688 分享短链与它跳转的移动站落点，都停在滑块验证页。
             "https://qr.1688.com/s/7HOhG7uS",
             "https://m.1688.com/offer/1046051827096.html",
+            // 微信卡片自带的兜底链接：只有微信客户端能开的模板页。
+            "https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport&from=singlemessage&isappinstalled=0",
         ] {
             assert!(check_url(raw, &strict).await.is_err(), "{raw} 不应放行");
         }
@@ -984,6 +1013,34 @@ mod tests {
         assert_eq!(scale_factor(f64::INFINITY), 1.0);
         assert_eq!(scale_factor(0.1), 0.5);
         assert_eq!(scale_factor(9.0), 4.0);
+    }
+
+    /// 合并转发整条不截：卡片段与解码后的内嵌记录都算，普通文本不受影响。
+    #[test]
+    fn forward_cards_are_skipped_wholesale() {
+        let event = |message: serde_json::Value| {
+            simd_json::serde::to_owned_value(serde_json::json!({
+                "post_type": "message",
+                "message": message,
+            }))
+            .unwrap()
+        };
+        // 卡片本体：`<message forward id="resId"/>`。
+        let card = event(serde_json::json!([{"type": "forward", "data": {"id": "res-1"}}]));
+        assert!(is_forward_card(&card));
+        // satori-wx 解码后的聊天记录：一行行 node。
+        let nodes = event(serde_json::json!([
+            {"type": "node", "data": {"content": [{"type": "text", "data": {"text": "https://a.com/1"}}]}}
+        ]));
+        assert!(is_forward_card(&nodes));
+        // 普通消息：链接照截。
+        let text = event(serde_json::json!([
+            {"type": "text", "data": {"text": "看看这个 https://a.com/1"}},
+            {"type": "quote", "data": {"id": "1"}},
+        ]));
+        assert!(!is_forward_card(&text));
+        // 引用段不是转发：引用里的原文不算卡片。
+        assert!(!is_forward_card(&event(serde_json::json!([]))));
     }
 
     /// 一条消息里的多条链接都要按顺序收下来；只有 `text` 段算正文，
