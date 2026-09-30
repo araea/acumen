@@ -213,6 +213,26 @@ black = [
     "1095695449",
 ]
 
+# 点歌：`点歌 <关键词>` 在 B 站搜歌、由便宜模型挑一条最贴近的结果，
+# 再走 [video_parse] 的同一条链路把原片发进群。全程只在群里出成品那一条：
+# 搜不到、挑不出、取不到都不吭声，原因写进日志。
+[song]
+enabled = true
+# 挑结果用的模型，写 `供应商/模型`（接口取自 [oai.providers]）。
+# 判断只看标题、UP 主与时长，便宜档足够。
+model = "mimo/mimo-v2.6-flash"
+# 交给模型的候选上限，取相关度靠前的几条。
+candidates = 10
+# 成品时长上限（秒）：超长的直接从候选里去掉，不让几个小时的视频进群。
+max_seconds = 600
+# 等模型挑结果的时间上限（秒）；等不到就退回相关度最高的候选。
+timeout_seconds = 30
+
+# 语义同 [stats.channel]。
+[song.channel]
+white = []
+black = []
+
 # 网页截图：消息里的网页链接自动截成图。视频站链接交给 [video_parse]，这里跳过。
 [webshot]
 enabled = true

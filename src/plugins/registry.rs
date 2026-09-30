@@ -179,6 +179,14 @@ register_plugins!(
         section: "message",
         summary: "视频站链接（正文、小程序卡、分享卡）就地取原片进群，成品默认只发视频气泡"
     },
+    song {
+        display_name: "点歌",
+        section: "play",
+        summary: "点歌 <关键词>：B 站搜歌并由模型挑选，只回成品视频一条消息，不报错不吭声",
+        commands: cmds![
+            ("点歌 <歌名或关键词>", "找一首歌发进群；没写歌手名优先原唱与官方 MV"),
+        ]
+    },
     webshot {
         display_name: "网页截图",
         section: "message",

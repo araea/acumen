@@ -18,7 +18,7 @@
 //! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
 //! 截图那边直接跳过，两处不会各截一次又取一次。
 
-mod bilibili;
+pub(crate) mod bilibili;
 mod state;
 
 #[cfg(test)]
@@ -230,6 +230,28 @@ async fn take(
         state::release(&target, user_id, &video.bvid).await;
     }
     result
+}
+
+/// 供「点歌」这类插件复用取片链路：按稿件号把原片取进群。
+///
+/// 与链接入口共用同一条路——挑画质、下载、闸门与发送全在 [`extract`] 里，
+/// 配置也读 `[video_parse]`（体积上限、画质、发法、超时与 Cookie）。不经过
+/// [`state`] 的去重：点歌是明确的指令，同一首歌被多个人点就各发各的。
+pub(crate) async fn take_by_bvid(
+    ctx: &Context,
+    writer: &LockedWriter,
+    config: &Config,
+    bvid: &str,
+    group_id: Option<&str>,
+    user_id: &str,
+) -> Result<()> {
+    let reference = bilibili::VideoRef {
+        bvid: Some(bvid.to_string()),
+        aid: None,
+        page: 1,
+    };
+    let video = bilibili::info(&reference, &config.cookie, API_TIMEOUT).await?;
+    extract(ctx, writer, config, &video, group_id, user_id).await
 }
 
 /// 挑画质、下载到本地、发进群，最后把本地那份删掉。
