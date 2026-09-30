@@ -48,7 +48,7 @@ cargo build --release --locked
 
 Agent 房间的 `bash` 等本机工具不是安全沙箱，具有当前系统账户权限；共享房间不应开放 Agent 控制通道。
 
-## 链接
+## 必要链接
 
 - [Satori 接入与兼容范围](docs/SATORI.md)
 - [群聊搭话](docs/ambient.md)

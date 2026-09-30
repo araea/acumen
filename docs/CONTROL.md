@@ -114,7 +114,7 @@ Termux 可通过 `termux-services`（runit）托管。服务脚本位于 `script
 
 Android 厂商可能直接结束 Termux，runit 无法恢复被结束的宿主应用。`scripts/97-termux-revive.sh` 与 `scripts/termux-revive.sh` 提供 root 侧恢复方案，安装步骤与状态检查见脚本注释。
 
-开机自启无需额外方案，本机实测（2026-09-29）重启后依次发生：解锁后系统广播 `BOOT_COMPLETED`，Termux 被拉起并启动 runsvdir，runit 拉起已 `enable` 的 acumen，root 侧看守由 `service.d/97-termux-revive.sh` 在开机后启动，只在这条链断开时补位。验证看 `./bot status`、`sv status acumen` 与 `/data/local/tmp/termux-revive.log`。限制：设有锁屏凭据时，重启后须先解锁一次——解锁前 Termux 目录处于加密状态不可读，任何方案都无法先行启动。
+开机自启无需额外方案，本机实测重启后依次发生：解锁后系统广播 `BOOT_COMPLETED`，Termux 被拉起并启动 runsvdir，runit 拉起已 `enable` 的 acumen，root 侧看守由 `service.d/97-termux-revive.sh` 在开机后启动，只在这条链断开时补位。验证看 `./bot status`、`sv status acumen` 与 `/data/local/tmp/termux-revive.log`。限制：设有锁屏凭据时，重启后须先解锁一次。解锁前 Termux 目录处于加密状态不可读，任何方案都无法先行启动。
 
 浏览器卡片需要 Chrome/Chromium 与系统中日韩字体。出图失败时帮助与控制回退到文本；运行浏览器类插件时可通过全局 `browser_path` 指定浏览器。
 
