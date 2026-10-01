@@ -470,7 +470,7 @@ body.dark {
   --md-sys-color-warning-container: #ecb375;
   --md-sys-color-on-warning-container: #563200;
   font-size: 20px;
-  --md-font-plain: var(--md-ref-typeface-plain);
+  --md-font-plain: "MiSans", var(--md-ref-typeface-plain);
   --md-font-mono: var(--md-ref-typeface-mono);
   --md-type-display-large-size: var(--md-sys-typescale-display-large-size);
   --md-type-display-large-line: var(--md-sys-typescale-display-large-line-height);

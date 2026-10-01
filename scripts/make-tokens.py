@@ -123,8 +123,11 @@ def card_tokens(tokens: str) -> str:
         out += [selector + " {", *block(dark, 0.0),
                 "  --md-sys-color-on-surface-faint: var(--md-sys-color-on-surface-variant);",
                 "  --md-sys-color-on-inverse-surface: var(--md-sys-color-inverse-on-surface);", "}"]
+    # 卡片是服务端出图，读者的平台字体用不上：`system-ui` 在出图机上会落到 DejaVu Sans，
+    # 拉丁字母又宽又散，汉字另走思源黑体（只有 Regular 一档，500 / 600 的字重出不来）。
+    # MiSans 汉字拉丁一体、字重齐全（Thin–Heavy），排在最前；没装它的机器照旧走后面的栈。
     out += [":root {", *light, "  font-size: 20px;",
-            "  --md-font-plain: var(--md-ref-typeface-plain);", "  --md-font-mono: var(--md-ref-typeface-mono);"]
+            '  --md-font-plain: "MiSans", var(--md-ref-typeface-plain);', "  --md-font-mono: var(--md-ref-typeface-mono);"]
     for category in ("display", "headline", "title", "body", "label"):
         for size in ("large", "medium", "small"):
             name = category + "-" + size
