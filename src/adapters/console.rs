@@ -14,7 +14,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Serialize)]
 struct MockSender {
-    user_id: i64,
+    user_id: String,
     nickname: String,
     card: String,
 }
@@ -24,10 +24,10 @@ struct MockMessageEvent {
     post_type: String,
     message_type: String,
     time: u64,
-    self_id: i64,
+    self_id: String,
     sub_type: String,
-    user_id: i64,
-    message_id: i64,
+    user_id: String,
+    message_id: String,
     sender: MockSender,
     raw_message: String,
     message: Message,
@@ -89,12 +89,12 @@ pub fn entry(
                 post_type: "message".to_string(),
                 message_type: "private".to_string(),
                 time: timestamp,
-                self_id: 0,
+                self_id: "0".to_string(),
                 sub_type: "friend".to_string(),
-                user_id: 1,
-                message_id,
+                user_id: "1".to_string(),
+                message_id: message_id.to_string(),
                 sender: MockSender {
-                    user_id: 1,
+                    user_id: "1".to_string(),
                     nickname: "ConsoleUser".to_string(),
                     card: String::new(),
                 },
