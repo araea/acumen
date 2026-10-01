@@ -551,7 +551,8 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                     }), "description": "对某人的记忆；note 与 address 至少给一个"},
                     "notes": {"type": "array", "maxItems": 8, "items": {"type": "string"}, "description": "群里的一件旧事/梗，一句话"},
                     "forget_people": {"type": "array", "maxItems": 8, "items": {"type": "string"}},
-                    "forget_notes": {"type": "array", "maxItems": 8, "items": {"type": "string"}, "description": "要忘掉的旧事，按内容匹配"}
+                    "forget_notes": {"type": "array", "maxItems": 8, "items": {"type": "string"}, "description": "要忘掉的旧事，按内容匹配"},
+                    "forget_claims": {"type": "array", "maxItems": 8, "items": {"type": "string"}, "description": "要忘掉的、你自己说过的话（记错或说错了），按内容匹配"}
                 }
             }),
         ),

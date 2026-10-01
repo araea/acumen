@@ -843,6 +843,12 @@ impl Session {
                         done.push("忘掉一件事".to_string());
                     }
                 }
+                for entry in request["forget_claims"].as_array().into_iter().flatten() {
+                    let text = entry.as_str().unwrap_or("");
+                    if memory::edit(&self.group, |memory| memory.drop_claim(text)) {
+                        done.push("忘掉一条自己说过的话".to_string());
+                    }
+                }
                 ensure!(!done.is_empty(), "没有可写入的记忆内容");
                 memory::flush_now(&self.group).await;
                 Ok(json!({

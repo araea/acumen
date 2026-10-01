@@ -31,13 +31,15 @@ def main() -> None:
     stamp = lambda s: int(datetime.datetime.fromisoformat(s).replace(tzinfo=TZ).timestamp())
     db = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     rows = db.execute(
-        "select message_id, user_id, member_nick, content_rich, time from message_records "
+        "select message_id, user_id, member_nick, content_rich, time, member_role from message_records "
         "where guild_id=? and time between ? and ? order by time, id",
         (args.group, stamp(args.start), stamp(args.end)),
     ).fetchall()
+    # `manual`：号主本人亲手打的（同一个号里 role 不是 self 的那些），回放里与机器人说的分开。
     lines = [
-        {"id": i, "user_id": u, "name": n, "text": clean(c), "at": t, "me": u == ME}
-        for i, u, n, c, t in rows
+        {"id": i, "user_id": u, "name": n, "text": clean(c), "at": t, "me": u == ME,
+         "manual": u == ME and role != "self"}
+        for i, u, n, c, t, role in rows
     ]
     if args.every:
         cuts = list(range(args.every, len(lines) + 1, args.every))

@@ -41,6 +41,7 @@ mod mood;
 mod peak;
 mod quick;
 mod quote;
+mod reflect;
 mod screenshot;
 pub(crate) mod speak;
 mod voice;
@@ -236,6 +237,9 @@ pub(crate) struct AmbientConfig {
     /// 判定与发言两个模型都不走 DeepSeek 时，全天一个价，这一整段让路。
     /// `peak.model` 可以给高峰时段单独配一个便宜模型顶替主模型。
     pub peak: peak::PeakConfig,
+    /// 隔一阵子复盘一次群聊（见 [`reflect`]）：整理几摊事、对人的新印象、新梗与自己说过的话，
+    /// 写进群记忆。一次便宜的调用，计价高峰不做。需要 `memory_enabled`。
+    pub reflect_enabled: bool,
     /// 每群每小时最多随口吭几声（见 [`quick`]）；0 关闭。
     ///
     /// 判定打分落在 `quick_floor` 与开口门槛之间时，按几率不调用发言模型、只随口回一两个字。
@@ -338,6 +342,7 @@ impl Default for AmbientConfig {
             search_enabled: true,
             search_budget: 3,
             peak: peak::PeakConfig::default(),
+            reflect_enabled: true,
             quick_per_hour: 4,
             quick_floor: 38,
             owner_quiet_seconds: 480,
@@ -735,8 +740,15 @@ impl Scene {
                 String::new()
             },
             own: format!(
-                "{}{}{}",
+                "{}{}{}{}",
                 self_facts(),
+                if config.memory_enabled {
+                    memory::with_group(group, |memory| {
+                        memory.claims_brief(chrono::Local::now().timestamp())
+                    })
+                } else {
+                    String::new()
+                },
                 voice::brief(turns, voice_register(config, group)),
                 stickers::brief(turns, config.sticker_max)
             ),
@@ -947,6 +959,9 @@ pub(crate) async fn observe(
     }
     if config.mood_enabled && turn.mentions_me && !turn.from_me {
         mood::nudge(|mood, now| mood.engaged(group, now));
+    }
+    if !turn.from_me && !empty {
+        reflect::note(group);
     }
     let start = window::with_group(group, |state| {
         record_for_consideration(state, turn, empty, summoned)
@@ -1363,11 +1378,48 @@ async fn consider(
         // 记性和状态每批都落盘：绝大多数批次以沉默收场，只在开口时保存等于几乎不保存。
         memory::flush(group).await;
         mood::flush().await;
+        review_if_due(ctx, mgr, group, &config);
         if !window::with_group(group, |state| state.finish_batch(seq)) {
             worker.armed = false;
             return Ok(());
         }
     }
+}
+
+/// 到点了就在后台复盘一次群聊（见 [`reflect`]）。不阻塞这一群的 worker。
+///
+/// 计价高峰不做：这件事不急，等到平价时段再整理也一样；高峰换了替补模型的话，
+/// 就用替补，跟判定走同一条路。
+fn review_if_due(
+    ctx: &Context,
+    mgr: &Arc<crate::plugins::oai::data::Manager>,
+    group: &str,
+    config: &AmbientConfig,
+) {
+    if !config.reflect_enabled || !config.memory_enabled {
+        return;
+    }
+    let config = match config.peak_stance() {
+        peak::Stance::Asleep | peak::Stance::Dozing => return,
+        peak::Stance::Swapped => config.swapped(),
+        peak::Stance::Awake => config.clone(),
+    };
+    if !reflect::claim_due(group) {
+        return;
+    }
+    let (ctx, mgr, group) = (ctx.clone(), mgr.clone(), group.to_string());
+    tokio::spawn(async move {
+        match reflect::run(&ctx, &mgr, &group, &config).await {
+            Ok(summary) => {
+                info!(target: LOG_TARGET, "群 {group} 复盘：{summary}");
+                reflect::finish(&group, true);
+            }
+            Err(error) => {
+                debug!(target: LOG_TARGET, "群 {group} 复盘没成：{error:#}");
+                reflect::finish(&group, false);
+            }
+        }
+    });
 }
 
 /// 一个模型要用的接口、密钥与纯模型 id。

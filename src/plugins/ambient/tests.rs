@@ -545,6 +545,8 @@ async fn live_replay() {
         at: i64,
         #[serde(default)]
         me: bool,
+        #[serde(default)]
+        manual: bool,
     }
     #[derive(serde::Deserialize)]
     struct Replay {
@@ -594,6 +596,7 @@ async fn live_replay() {
             text: line.text.clone(),
             message_id: line.id.clone(),
             from_me: line.me,
+            manual: line.manual,
             at: line.at,
             ..Turn::default()
         })
@@ -667,5 +670,115 @@ async fn live_replay() {
             "----- #{cut} 最后一句 {last}\n判定 {verdict:?}\n人格 {}\n",
             raw.map(|r| r.replace('\n', " ⏎ ")).unwrap_or_else(|e| format!("出错：{e:#}"))
         );
+    }
+}
+
+/// 把回放文件读成记录（供下面两个只读试跑共用）。
+#[cfg(test)]
+fn replay_turns() -> (String, Vec<Turn>, Vec<usize>) {
+    #[derive(serde::Deserialize)]
+    struct Line {
+        id: String,
+        user_id: String,
+        name: String,
+        text: String,
+        at: i64,
+        #[serde(default)]
+        me: bool,
+        #[serde(default)]
+        manual: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Replay {
+        group: String,
+        lines: Vec<Line>,
+        cuts: Vec<usize>,
+    }
+    let replay: Replay = serde_json::from_str(
+        &std::fs::read_to_string(std::env::var("ACUMEN_REPLAY").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let turns = replay
+        .lines
+        .iter()
+        .map(|line| Turn {
+            user_id: line.user_id.clone(),
+            name: if line.me { "我".into() } else { line.name.clone() },
+            text: line.text.clone(),
+            message_id: line.id.clone(),
+            from_me: line.me,
+            manual: line.manual,
+            at: line.at,
+            ..Turn::default()
+        })
+        .collect();
+    (replay.group, turns, replay.cuts)
+}
+
+/// 对一段真实群聊试跑一次复盘：只打印整理出的东西，不写任何记忆、不发群消息。
+#[tokio::test]
+#[ignore = "需要 ACUMEN_REPLAY、ACUMEN_AMBIENT_LIVE_GATE_BASE/KEY 与网络；只打印"]
+async fn live_reflect() {
+    let (group, turns, _) = replay_turns();
+    let config = AmbientConfig::default();
+    let base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE").unwrap();
+    let key = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY").unwrap();
+    let (_, model) = crate::plugins::oai::utils::split_provider(&config.gate_model);
+    let existing = crate::plugins::oai::chat::memory::GroupMemory::default();
+    let tail = &turns[turns.len().saturating_sub(60)..];
+    let (system, user) = reflect::prompt(tail, &existing);
+    if std::env::var("ACUMEN_REPLAY_PROMPT").is_ok() {
+        println!("===== 系统 =====\n{system}\n===== 正文 =====\n{user}");
+    }
+    let raw = crate::plugins::oai::llm::complete(
+        &base,
+        &key,
+        &model,
+        vec![
+            rig_core::completion::Message::System { content: system },
+            rig_core::completion::Message::User {
+                content: vec![rig_core::completion::message::UserContent::Text(
+                    rig_core::completion::message::Text::new(user),
+                )],
+            },
+        ],
+        None,
+    )
+    .await
+    .unwrap();
+    println!("群 {group} 复盘原文：\n{raw}\n");
+    let parsed = reflect::parse(&raw);
+    println!("解析：{parsed:#?}");
+    let mut memory = existing;
+    let authors = tail
+        .iter()
+        .filter(|turn| !turn.from_me)
+        .map(|turn| turn.user_id.clone())
+        .collect();
+    if let Some(parsed) = parsed {
+        let wrote = reflect::apply(&mut memory, &parsed, &authors, chrono::Local::now().timestamp());
+        println!("写入：{wrote:?}\n{}", memory.brief(tail, chrono::Local::now().timestamp()));
+        println!("{}", memory.claims_brief(chrono::Local::now().timestamp()));
+    }
+}
+
+/// 对一段真实群聊的每个回放点试跑「随口一句」：只打印，不发群消息。
+#[tokio::test]
+#[ignore = "需要 ACUMEN_REPLAY、ACUMEN_AMBIENT_LIVE_GATE_BASE/KEY 与网络；只打印"]
+async fn live_quick_word() {
+    let (group, turns, cuts) = replay_turns();
+    let config = AmbientConfig::default();
+    let base = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_BASE").unwrap();
+    let key = std::env::var("ACUMEN_AMBIENT_LIVE_GATE_KEY").unwrap();
+    let (_, model) = crate::plugins::oai::utils::split_provider(&config.gate_model);
+    for cut in cuts {
+        let seen = &turns[..cut.min(turns.len())];
+        let voice = voice::short_lines(seen, mood::Register::Even, 5);
+        let reply = quick::react(
+            &base, &key, &model, &config, PERSONA, seen, "最新一句想吭一声", &voice,
+        )
+        .await;
+        let last = seen.last().map(|t| format!("{}: {}", t.name, t.text)).unwrap_or_default();
+        println!("----- #{cut} [{group}] 最后一句 {last}\n随口 {reply:?}\n");
     }
 }
