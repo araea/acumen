@@ -55,7 +55,7 @@ const ambient = {
   config: {},
 };
 const token = 'fixture token';
-let posts = [], streams = new Set(), sequence = 0, detailDelay = false, rejectStreams = false;
+let posts = [], streams = new Set(), sequence = 0, detailDelay = false, rejectStreams = false, globalDelay = 0;
 const line = text => ({ at: '12:30:00', level: ['INFO', 'WARN', 'ERRO', 'DEBG'][sequence++ % 4], target: 'Plugin/Console', text });
 let history = Array.from({ length: 80 }, (_, i) => line(`运行记录 ${i} · 已完成处理`));
 function emit(count) {
@@ -79,6 +79,7 @@ const server = http.createServer(async (req, res) => {
     const match = url.pathname.match(/^\/api\/plugins\/([^/]+)\/enabled$/);
     if (match) { const plugin = plugins.find(p => p.name === match[1]); plugin.on = body.on; plugin.pending = body.on && plugin.name === 'stats'; }
     if (url.pathname.endsWith('/config') && body.path === 'retries' && body.value > 10) { await sleep(40); return reply({ error: 'retries 不能大于 10' }, 400); }
+    if (url.pathname === '/api/settings/global') await sleep(globalDelay);
     await sleep(60);
     return reply({ message: `已保存 · ${body.input || body.path || ''}` });
   }
@@ -333,8 +334,30 @@ const posted = where => posts.filter(p => p.path === where);
   await js('document.querySelector("#g-white").value = "175131947"');
   await click('#global-form [type=submit]');
   await until(() => posted('/api/settings/global').length === 1, '保存全局');
-  assert.deepEqual(posted('/api/settings/global')[0].body.global_filter.whitelist, [175131947]);
+  assert.deepEqual(posted('/api/settings/global')[0].body.global_filter.whitelist, ['175131947']);
   await until(() => js('return !document.querySelector("#global-form[aria-busy]")'), '全局设置完成保存');
+
+  // 保存还在路上就换页：写入已经在路上，不该弹「未保存」，也不该挡换页（回执照常落库）
+  globalDelay = 700;
+  await js('document.querySelector("#g-prefix").value = "/, #"');
+  await click('#global-form [type=submit]');
+  await until(() => posted('/api/settings/global').length === 2, '在途保存已发出');
+  await click('[data-nav="overview"]');
+  await sleep(400);
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false, '在途保存不算未保存');
+  assert.equal(await js('return location.hash'), '#/overview', '在途保存不挡换页');
+  assert.deepEqual(posted('/api/settings/global')[1].body.command_prefix, ['/', '#'], '在途保存照常落库');
+  globalDelay = 0;
+  await route('settings');
+
+  // 反向对照：真有未保存改动时仍然要拦
+  await js('document.querySelector("#g-prefix").value = "/, #"');
+  await click('[data-nav="overview"]');
+  await sleep(200);
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), true, '真有未保存改动仍要拦');
+  await click('dialog [value=cancel]');
+  await until(() => js('return location.hash === "#/settings"'), '取消后留在设置页');
+  await js('document.querySelector("#g-prefix").value = document.querySelector("#g-prefix").defaultValue');
 
   // —— 日志：突发有界、可暂停、筛选先于截断、导出、后台断流、断线退避 ——
   await route('logs');
@@ -455,7 +478,7 @@ const posted = where => posts.filter(p => p.path === where);
 
   // 所有注册插件使用真实的默认配置与说明，不复用通用假字段。
   realMode = true;
-  assert.equal(realPlugins.length, 23);
+  assert.equal(realPlugins.length, 24);
   for (const width of [320, 1400]) {
     await viewport(width, 900);
     for (const plugin of realPlugins) {

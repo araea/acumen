@@ -389,15 +389,22 @@
     logs: () => logs.mount(),
   };
 
-  function formDirty(form) {
-    return $$('input, textarea', form).some(input => input.value !== input.defaultValue)
+  /** 表单里有没有改动。`busyCounts` 决定「正在保存」算不算改动：
+   *  跨重画保留草稿用默认 true（在途的值也不能被重画冲掉），
+   *  离开确认传 false——写入已经在路上，拿它拦人是误报。 */
+  function formDirty(form, busyCounts = true) {
+    if (form.getAttribute('aria-busy') === 'true') return busyCounts;
+    const saving = (control) => control.getAttribute('aria-busy') === 'true';
+    return $$('input, textarea', form).some(input => (busyCounts || !saving(input)) && input.value !== input.defaultValue)
       || $$('[data-form-switch]', form).some(button => button.dataset.initial !== undefined && button.dataset.initial !== button.getAttribute('aria-checked'))
-      || $$('select', form).some(select => select.value !== (select.defaultValue ?? [...select.options].find(option => option.defaultSelected)?.value))
-      || form.getAttribute('aria-busy') === 'true' || !!$('[data-path][aria-busy=true]', form);
+      || $$('select', form).some(select => (busyCounts || !saving(select)) && select.value !== (select.defaultValue ?? [...select.options].find(option => option.defaultSelected)?.value))
+      || (busyCounts && !!$('[data-path][aria-busy=true]', form));
   }
 
+  /** 离开时要不要拦人。正在保存的控件不算未保存：提交会自己跑完，回执到了基线才更新，
+   *  否则「点保存→立刻换页」会弹一个假的「离开未保存的编辑」。 */
   function hasFormDrafts() {
-    return $$('#global-form, [data-bot], [data-config]').some(formDirty);
+    return $$('#global-form, [data-bot], [data-config]').some(form => formDirty(form, false));
   }
 
   let renderSeq = 0;
