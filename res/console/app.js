@@ -1619,9 +1619,9 @@
         .filter(Boolean);
     const groups = (name) =>
       split(name).map((piece) => {
-        const id = Number(piece);
-        if (!Number.isInteger(id)) throw Object.assign(new Error(`「${piece}」不是群号`), { field: form.elements[name] });
-        return id;
+        // 后端名单是字符串列表，这里只校验、不转数字——转了会反序列化失败。
+        if (!/^\d+$/.test(piece)) throw Object.assign(new Error(`「${piece}」不是群号`), { field: form.elements[name] });
+        return piece;
       });
     const flag = (name) => $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
     return {
