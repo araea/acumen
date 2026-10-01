@@ -62,8 +62,9 @@ const KEYED_PROVIDERS: &[&str] = &["tavily", "brave", "serper", "exa", "bocha", 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct SearchConfig {
-    /// 内置 agent 房间的开关；默认关闭。群聊搭话另有 `[ambient] search_enabled`，
-    /// 两者彼此独立，各自管一个调用方。
+    /// 内置 agent 房间的开关；默认开启。群聊搭话另有 `[ambient] search_enabled`，
+    /// 两者彼此独立，各自管一个调用方。房间侧工具表恒把这两个出网工具写进白名单
+    /// （见 [`super::logic::room_tools`]），这里一关，管家就比群聊搭话还聋了。
     pub enabled: bool,
     /// 后端顺序：前面不可用或失败就顺延，`"auto"` 展开成「免密钥的两个 + 配好的密钥后端」。
     pub providers: Vec<String>,
@@ -80,7 +81,7 @@ pub(crate) struct SearchConfig {
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             providers: vec!["auto".to_string()],
             max_uses: 4,
             timeout_seconds: 20,
