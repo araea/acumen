@@ -49,7 +49,8 @@ const API_TIMEOUT: Duration = Duration::from_secs(10);
 /// 同时进行的取片上限。任意群友贴一条链接就能让我们下几十兆，没有闸门时
 /// 一个人连贴五条链接就是五份并发下载，手机的网络与内存都吃不下。
 /// 排队排在下载预算之外：等闸门的时间不算进单片的超时，也不在群里冒出一句状态。
-static TAKE_GATE: Semaphore = Semaphore::const_new(2);
+/// 点歌的「导出音频」也走这道闸：都是在本机下片子的重活，别跟取片挤在一起。
+pub(crate) static TAKE_GATE: Semaphore = Semaphore::const_new(2);
 
 // ================= Config =================
 

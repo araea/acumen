@@ -8,20 +8,25 @@
 //!
 //! 群里只有成品那一条消息：不回「正在找」，搜不到、挑不出、取不到也都不吭声，
 //! 原因写进日志。模型失手时不至于没结果——解析不出编号就退回相关度最高的那条。
+//!
+//! 另有一条手动指令「导出音频」（[`export`]）：引用一条视频消息发过去，画面去掉、
+//! 声音作为一个音频文件发回群里。这条是用户点名的活，成不了会在群里回一句原因。
 
+mod export;
 mod search;
 
-use crate::adapters::satori::LockedWriter;
-use crate::command::{extract_text_arg, first_command_match};
+use crate::adapters::satori::{LockedWriter, send_msg};
+use crate::command::{extract_text_arg, first_command_match, match_command};
 use crate::config::build_config;
 use crate::event::Context;
+use crate::message::Message;
 use crate::plugins::oai::llm;
 use crate::plugins::oai::{self};
 use crate::plugins::video_parse;
 use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
 use anyhow::Result;
 use futures_util::future::BoxFuture;
-use rig_core::completion::Message;
+use rig_core::completion::Message as LlmMessage;
 use rig_core::completion::message::{Text, UserContent};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -90,6 +95,25 @@ pub fn handle(
         let self_id = ctx.bot.self_id();
         if msg.user_id() == self_id && !msg.is_manual_self() {
             return Ok(Some(ctx));
+        }
+
+        // 手动指令「导出音频」：引用一条视频消息，画面去掉、声音作为文件进群。
+        // 与点歌不同，这是用户点名的活，成不了要在群里给个说法。
+        if let Some(matched) = export::COMMANDS.iter().find_map(|cmd| match_command(&ctx, cmd)) {
+            if let Err(error) = export::run(&ctx, &writer, &matched).await {
+                warn!(target: LOG_TARGET, "导出音频失败：{error}");
+                let _ = send_msg(
+                    &ctx,
+                    writer.clone(),
+                    msg.group_id(),
+                    Some(msg.user_id()),
+                    Message::new()
+                        .reply(msg.message_id())
+                        .text(format!("音频没导出来：{error}")),
+                )
+                .await;
+            }
+            return Ok(None);
         }
 
         let Some(matched) = first_command_match(&ctx, COMMANDS) else {
@@ -169,7 +193,7 @@ async fn pick<'a>(
     pool: &'a [search::Candidate],
 ) -> Option<(usize, &'a search::Candidate)> {
     let (base, key, model) = model_endpoint(ctx, &config.model).await?;
-    let history = vec![Message::User {
+    let history = vec![LlmMessage::User {
         content: vec![UserContent::Text(Text::new(prompt_for(keyword, pool)))],
     }];
     let budget = Duration::from_secs(config.timeout_seconds.clamp(5, 120));
