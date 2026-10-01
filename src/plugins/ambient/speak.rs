@@ -161,6 +161,30 @@ impl Called {
     }
 }
 
+/// 一轮发言的结果：模型最后留下的正文，以及这一轮是不是已经用动作工具说过话了。
+///
+/// 用了工具的那一轮，话早就在工具里发出去了，正文只剩 `[silent]` 与关注行——日志要把
+/// 这两种沉默分开，否则「想了想，还是没说话」会出现在明明刚开过口的那一轮之后
+/// （2026-10-01 排查时就被它误导过）。
+pub(crate) struct Composed {
+    pub text: String,
+    /// 这一轮至少发出过一次动作（说话、表态、戳一戳等）。
+    pub acted: bool,
+}
+
+impl std::ops::Deref for Composed {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl std::fmt::Display for Composed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
 /// 让人格模型读一遍群聊，拿回它想说的话（可能是 `[silent]`）。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn compose(
@@ -183,7 +207,7 @@ pub(crate) async fn compose(
         &str,
         &mut u64,
     )>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Composed> {
     let dir = agent::ScratchDir::under(base, "runs")?;
     // 白名单是一道闸：没写进来的工具不会被挂上去，所以每个可选工具都要跟着
     // 它自己那个开关一起进出。群聊工具那一串由能力层给（见 [`chat::tool_names`]），
@@ -290,9 +314,15 @@ pub(crate) async fn compose(
             .filter(|line| crate::plugins::oai::chat::attention::is_control(line))
             .collect::<Vec<_>>()
             .join("\n");
-        Ok(format!("{focus}\n[silent]"))
+        Ok(Composed {
+            text: format!("{focus}\n[silent]"),
+            acted: true,
+        })
     } else {
-        Ok(reply.text)
+        Ok(Composed {
+            text: reply.text,
+            acted: false,
+        })
     }
 }
 

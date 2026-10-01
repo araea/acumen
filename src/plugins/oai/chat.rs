@@ -167,6 +167,14 @@ pub(crate) trait Persona: Send + Sync {
     fn avatar(&self) -> Option<Avatar> {
         None
     }
+
+    /// 模型想引用 `target` 回这一句，这条引用留不留。
+    ///
+    /// 引用是指路牌，不是回话的固定动作；留不留看现场有多乱（见搭话那边的算法）。
+    /// 房间没有人格，永远留着。
+    fn keeps_quote(&self, _target: &str, _turns: &[window::Turn]) -> bool {
+        true
+    }
 }
 
 /// 给模型看头像用的接口与模型。

@@ -39,6 +39,7 @@ mod gate;
 mod integration_tests;
 mod mood;
 mod peak;
+mod quote;
 mod screenshot;
 pub(crate) mod speak;
 mod voice;
@@ -632,6 +633,10 @@ impl Persona for Ambient {
 
     fn avatar(&self) -> Option<crate::plugins::oai::chat::Avatar> {
         self.avatar.clone()
+    }
+
+    fn keeps_quote(&self, target: &str, turns: &[Turn]) -> bool {
+        quote::keeps(target, turns, rand::random::<f32>())
     }
 }
 
@@ -1645,7 +1650,7 @@ async fn speak_up(
     let started = Instant::now();
     let (api_base, api_key, reply_model) = gate_endpoint(ctx, mgr, &config.reply_model).await?;
     debug!(target: LOG_TARGET, "群 {group} 发言模型：{}", config.reply_model);
-    let raw = speak::compose(
+    let composed = speak::compose(
         &api_base,
         &api_key,
         &reply_model,
@@ -1663,7 +1668,13 @@ async fn speak_up(
     )
     .await?;
 
-    let (raw, focus) = attention::extract(&raw, turns, config.focus_max_seconds);
+    let acted = composed.acted;
+    let (raw, focus) = attention::extract(&composed, turns, config.focus_max_seconds);
+    // 接口把拒绝句当回复递回来：那不是它想说的话，当没说。
+    if crate::plugins::oai::chat::protocol::is_provider_noise(&raw) {
+        warn!(target: LOG_TARGET, "群 {group} 模型返回的是接口的拒绝句，当作没说：{}", raw.trim());
+        return Ok(());
+    }
     // 沉默不需要检查草稿；新消息留给下一批。关注仍可在本轮更新。
     let silent = matches!(
         pace::parse(&raw, config.messages_budget.clamp(1, 5), config.split_chars),
@@ -1712,7 +1723,11 @@ async fn speak_up(
     let mut utterances =
         match pace::parse(&raw, config.messages_budget.clamp(1, 5), config.split_chars) {
             pace::Speech::Silent => {
-                info!(target: LOG_TARGET, "群 {group} 想了想，还是没说话");
+                if acted {
+                    debug!(target: LOG_TARGET, "群 {group} 这一轮用动作工具说过了");
+                } else {
+                    info!(target: LOG_TARGET, "群 {group} 想了想，还是没说话");
+                }
                 return Ok(());
             }
             pace::Speech::Say(items) => items,

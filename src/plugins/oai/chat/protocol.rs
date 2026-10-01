@@ -63,6 +63,29 @@ pub(crate) fn take_reply_markers(text: &str) -> (Cow<'_, str>, Option<Quote>) {
     (marker.replace_all(text, "$1"), Some(quote))
 }
 
+/// 供应商把「拒绝 / 报错」当成回复正文递回来的几个固定句式。
+///
+/// 内容安全拦截、网关限流这类错误有的接口会以 200 + 一句话的形式返回，模型层看不出
+/// 异常，那句话就一路走到发送——线上 2026-09-23 09:05 群里真的收到过一条
+/// 「The request was rejected because it was considered high risk」。
+/// 只收几句整句的特征，不收「rate limit」这种单词：群友问起限流时，说出来的话里
+/// 可以有它。
+pub(crate) fn is_provider_noise(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    [
+        "request was rejected because it was considered",
+        "considered high risk",
+        "content_filter",
+        "violates our usage policy",
+        "service is too busy",
+        "providerresponseerror",
+        "the model is overloaded",
+        "你的请求被拒绝，因为",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
 /// 摘掉正文里的伪工具调用，返回可以照常断句、翻译标记的文字。
 pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
     let Some((mut at, mut marker)) = next_marker(raw) else {
@@ -373,5 +396,18 @@ mod tests {
         let raw = "行 图我先收了 [笑] 下次轮到你";
         assert!(matches!(strip(raw), Cow::Borrowed(_)));
         assert_eq!(strip(raw), raw);
+    }
+
+    /// 供应商的拒绝句不是群友说的话；群友聊起限流时的正常话不受影响。
+    #[test]
+    fn provider_boilerplate_is_noise_but_talk_about_errors_is_not() {
+        assert!(is_provider_noise(
+            "The request was rejected because it was considered high risk"
+        ));
+        assert!(is_provider_noise("Service is too busy. We advise users to retry"));
+        assert!(is_provider_noise("ProviderResponseError: status 200 OK"));
+        assert!(!is_provider_noise("这接口老是 rate limit 真烦"));
+        assert!(!is_provider_noise("高风险操作先备份"));
+        assert!(!is_provider_noise("哈哈 笑死"));
     }
 }

@@ -1165,6 +1165,12 @@ impl Session {
                 // 先切会把标记切成两半，后半截没有名字，照样漏进群。
                 // 行首的 `[reply]` 同理：那是文字路径的引用写法，这里摘掉，想引谁
                 // 就换成真引用（`reply_to` 已经给了就以它为准）。
+                // 接口把拒绝句当回复递回来时，那是报错不是话；发出去群友只会看到一句英文。
+                if parts.iter().any(|part| {
+                    matches!(part, Part::Text { text } if super::protocol::is_provider_noise(text))
+                }) {
+                    return Ok(json!({"status":"skipped","note":"那是接口的报错，不是要说的话"}));
+                }
                 let mut marked = None;
                 let parts: Vec<Part> = parts
                     .iter()
@@ -1181,6 +1187,12 @@ impl Session {
                     })
                     .collect();
                 let reply_to = reply_to.clone().or_else(|| quote_for(marked?, turns));
+                // 人格那边决定这条引用留不留：两个人对聊时每句都挂引用，是机器人的样子。
+                let reply_to = reply_to.filter(|id| {
+                    self.persona
+                        .as_ref()
+                        .is_none_or(|persona| persona.keeps_quote(id, turns))
+                });
                 let reply_to = &reply_to;
                 // 摘干净之后什么都不剩（整条只有一个伪调用）就没有话要发。
                 if parts.is_empty()
