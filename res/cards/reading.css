@@ -63,10 +63,11 @@ code {
 .head .md-subtitle {
   margin-top: var(--md-space-2);
 }
-/* 导语与上面的小标题（配置键、副题）隔开一档：两段字号相近，贴在一起会读成一段 */
+/* 导语与上面的小标题（配置键、副题）隔开一档、并用正文色：两段字号相近，
+   同色又贴着，会读成一段话 */
 .lead {
-  margin-top: var(--md-space-5);
-  color: var(--md-sys-color-on-surface-variant);
+  margin-top: var(--md-space-6);
+  color: var(--md-sys-color-on-surface);
   text-wrap: pretty;
 }
 
