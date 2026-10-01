@@ -585,7 +585,14 @@ impl GroupState {
             {
                 continue;
             }
-            if turn.from_me
+            // 号主亲手打的不算机器人开过口：它不占「这一小时说了几轮」的账，
+            // 却说明他刚才在场——按那条消息离现在多久，把「本人在场」的钟补回来。
+            if turn.manual {
+                let age = Duration::from_secs((now - turn.at).max(0) as u64);
+                if let Some(at) = Instant::now().checked_sub(age) {
+                    self.owner_at = self.owner_at.max(Some(at));
+                }
+            } else if turn.from_me
                 && speech_like(&turn.text)
                 && now - turn.at < 3_600
                 && last_round.is_none_or(|round| turn.at - round > ROUND_GAP_SECONDS)
@@ -1374,6 +1381,31 @@ mod tests {
 
     /// 本人亲自上场：窗口记下他在场、没处理的点名归他、在途草稿作废；
     /// 机器人自己发的话与别人的话都不会让他「在场」。
+    /// 重启后翻回来的记录里，号主亲手打的字不记进机器人的发言账，但把「本人在场」的钟补回来。
+    #[test]
+    fn seeding_history_keeps_the_owners_typing_out_of_the_speech_ledger() {
+        let now = chrono::Local::now().timestamp();
+        let made = |id: &str, text: &str, manual: bool, age: i64| Turn {
+            user_id: "10000".into(),
+            name: "我".into(),
+            text: text.into(),
+            message_id: id.into(),
+            from_me: true,
+            manual,
+            at: now - age,
+            ..Turn::default()
+        };
+        let mut state = GroupState::default();
+        let (added, mine) = state.seed(vec![
+            made("a", "此处应有 opus 5.5（", true, 120),
+            made("b", "机器人说的一句话", false, 300),
+        ]);
+        assert_eq!((added, mine), (2, 1), "只有机器人那句记进发言账");
+        assert_eq!(state.spoken_within(RECENT_SPEECH), 1);
+        assert!(state.owner_active(Duration::from_secs(300)), "两分钟前他还在打字");
+        assert!(!state.owner_active(Duration::from_secs(60)));
+    }
+
     #[test]
     fn the_owner_stepping_in_takes_the_room_back() {
         let mut state = GroupState::default();

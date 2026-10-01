@@ -28,6 +28,7 @@ use crate::plugins::{PluginError, get_data_dir};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -1304,10 +1305,17 @@ async fn hydrate(ctx: &Context, writer: &LockedWriter, group: &str) {
         }
     }
     let now = chrono::Local::now().timestamp();
+    // 平台翻回来的记录分不出「号主亲手打的」和「机器人发的」，本机的聊天记录库分得出
+    // （机器人发出去的那份记作 self）：按消息号对一遍，免得重启后把号主说的话算成自己说的。
+    let typed = manual_ids(ctx, group, now - KEEP_SECONDS).await;
     let history: Vec<Turn> = items
         .iter()
         .filter_map(|item| window::turn_from_platform(ctx, writer, item))
         .filter(|turn| now - turn.at < KEEP_SECONDS)
+        .map(|mut turn| {
+            turn.manual = turn.from_me && typed.contains(&turn.message_id);
+            turn
+        })
         .collect();
     if history.is_empty() {
         debug!(target: LOG_TARGET, "群 {group} 没翻到可用的聊天记录");
@@ -1315,6 +1323,28 @@ async fn hydrate(ctx: &Context, writer: &LockedWriter, group: &str) {
     }
     let (added, mine) = window::with_group(group, |state| state.seed(history));
     info!(target: LOG_TARGET, "群 {group} 翻了翻聊天记录：补回 {added} 条，其中自己说的 {mine} 句");
+}
+
+/// 本群最近号主亲手打的消息号（同一个号里不是机器人发的那些）。查不到就是空集，不影响别的。
+async fn manual_ids(ctx: &Context, group: &str, since: i64) -> HashSet<String> {
+    use sea_orm::{ConnectionTrait, Statement};
+    let me = ctx.bot.self_id();
+    if me.is_empty() {
+        return HashSet::new();
+    }
+    let rows = ctx
+        .db
+        .query_all_raw(Statement::from_sql_and_values(
+            ctx.db.get_database_backend(),
+            "select message_id from message_records \
+             where guild_id = ? and user_id = ? and member_role != 'self' and time >= ?",
+            [group.into(), me.into(), since.into()],
+        ))
+        .await
+        .unwrap_or_default();
+    rows.iter()
+        .filter_map(|row| row.try_get::<String>("", "message_id").ok())
+        .collect()
 }
 
 async fn consider(
