@@ -220,6 +220,152 @@ async fn new_messages_drain_into_the_next_round_and_a_summon_skips_the_gate() {
     server.abort();
 }
 
+/// 调度类用例共用的一套假环境：假模型端点 + 指定配置的 Context。
+async fn harness(
+    ambient: AmbientConfig,
+    reply: &str,
+) -> (
+    Context,
+    Arc<crate::adapters::satori::SatoriClient>,
+    Arc<crate::plugins::oai::data::Manager>,
+    crate::plugins::oai::agent::ScratchDir,
+    std::path::PathBuf,
+    tokio::task::JoinHandle<()>,
+) {
+    use crate::config::{AppConfig, build_config};
+    use crate::event::{BotStatus, EventType, LoginUser};
+    use std::sync::RwLock;
+
+    let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "ambient-test")
+        .unwrap();
+    let (base, started, release, server) = fake_model(reply).await;
+    // 这批用例只关心「有没有去问模型」，所以让假端点立刻放行，靠 started 文件看有没有请求。
+    std::fs::write(&release, "go").unwrap();
+    let mut config = AppConfig::default();
+    config
+        .plugins
+        .insert("ambient".into(), build_config(ambient));
+    let ctx = Context {
+        event: EventType::Init,
+        config: Arc::new(RwLock::new(config)),
+        config_save_lock: Arc::new(tokio::sync::Mutex::new(())),
+        db: sea_orm::Database::connect("sqlite::memory:").await.unwrap(),
+        scheduler: Arc::new(crate::scheduler::Scheduler::new()),
+        matcher: Arc::new(crate::matcher::Matcher::new()),
+        config_path: Arc::from("unused-ambient-test.toml"),
+        bot: Arc::new(BotStatus {
+            adapter: "satori-qq".into(),
+            platform: "qq".into(),
+            login_user: LoginUser {
+                id: "10000".into(),
+                ..Default::default()
+            }
+            .into(),
+        }),
+    };
+    let writer = Arc::new(crate::adapters::satori::SatoriClient::console());
+    let mgr = Arc::new(crate::plugins::oai::data::Manager::new(
+        dir.path().to_path_buf(),
+    ));
+    {
+        let mut c = mgr.config.write().await;
+        c.api_base = base;
+        c.api_key = "test-only".into();
+        mgr.save(&mut c).unwrap();
+    }
+    (ctx, writer, mgr, dir, started, server)
+}
+
+/// 本人在线时：没人叫它，这一眼连判定都不发生；被点名则先等他自己答，他答了就不再接。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn while_the_owner_is_typing_the_room_is_his() {
+    let group = "-8000003";
+    let ambient = AmbientConfig {
+        enabled: true,
+        groups: vec![group.to_string()],
+        gate_model: "fake-model".into(),
+        reply_model: "fake-model".into(),
+        debounce_seconds: 1,
+        gate_interval_seconds: 0,
+        context_images: 0,
+        owner_quiet_seconds: 600,
+        owner_grace_seconds: 6,
+        peak: super::peak::PeakConfig {
+            mode: super::peak::Mode::Normal,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let (ctx, writer, mgr, dir, started, server) = harness(ambient, "{\"score\":95}").await;
+    let _guard = memory::exclusive();
+    setup(dir.path()).await.unwrap();
+    let base = dir.path().to_path_buf();
+    let said = |id: &str, text: &str| Turn {
+        user_id: "42".into(),
+        name: "群友".into(),
+        text: text.into(),
+        message_id: id.into(),
+        at: chrono::Local::now().timestamp(),
+        ..Turn::default()
+    };
+    let typed = |id: &str| Turn {
+        user_id: "10000".into(),
+        name: "我".into(),
+        text: "我自己来".into(),
+        message_id: id.into(),
+        from_me: true,
+        manual: true,
+        at: chrono::Local::now().timestamp(),
+        ..Turn::default()
+    };
+    // 一、本人刚打过字，随后群友聊了一句：连判定都不去问。
+    window::with_group(group, |state| {
+        *state = Default::default();
+        state.receive(typed("o1"));
+        assert!(state.receive(said("1", "今天这个版本好像有点问题")));
+    });
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        consider(&ctx, &writer, &mgr, group, &base),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!started.exists(), "本人在线，不该去问判定模型");
+    window::with_group(group, |state| assert!(!state.running));
+
+    // 二、点名来了、本人又先开了口：这条点名归他，机器人什么都不问。
+    let mut call = said("2", "@你 这个怎么弄");
+    call.mentions_me = true;
+    call.call.at_me = true;
+    window::with_group(group, |state| {
+        *state = Default::default();
+        state.receive(typed("o2"));
+        assert!(state.receive(call));
+    });
+    let task = tokio::spawn({
+        let (ctx, writer, mgr, base) = (ctx.clone(), writer.clone(), mgr.clone(), base.clone());
+        async move { consider(&ctx, &writer, &mgr, group, &base).await }
+    });
+    tokio::time::sleep(Duration::from_millis(3_000)).await;
+    window::with_group(group, |state| {
+        // 等他的这几秒里，他自己答了。
+        state.receive(typed("o3"));
+    });
+    tokio::time::timeout(Duration::from_secs(15), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(!started.exists(), "他自己答了，机器人不该再接");
+    window::with_group(group, |state| {
+        assert!(!state.running);
+        assert!(!state.take_mention());
+    });
+    server.abort();
+}
+
 #[tokio::test]
 #[ignore = "需要 ACUMEN_AMBIENT_LIVE_DATA、已配置的模型接口和网络；仅打印试聊，不发群消息"]
 // 全局状态用例靠 `memory::exclusive()` 串行，跨 await 持锁在测试内是有意的。

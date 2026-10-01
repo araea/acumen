@@ -55,6 +55,9 @@ fn sounds_pressing(text: &str) -> bool {
 /// 再短看不出是不是一直在接话，再长又会把半小时前的事算到现在头上。
 pub(crate) const RECENT_SPEECH: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// 号主亲手插话时给 `seq` 加多少：比搭话能容忍的「打字期间新来几条」大，保证在途草稿作废。
+const OWNER_DRIFT: u64 = 4;
+
 /// 一条消息「冲着谁来的」：@、引用，还是戳。
 ///
 /// 三者在群里是三种不同的动作，接法也不一样——被 @ 是要你答话，被引用多半是追问
@@ -104,6 +107,11 @@ pub(crate) struct Turn {
     pub call: Call,
     /// 是否是机器人自己说的话。
     pub from_me: bool,
+    /// 这句是号主本人在 QQ 客户端里亲手打的（`manual_self`），不是机器人发的。
+    ///
+    /// 两者共用同一个账号，`from_me` 分不开。只有实时到达的事件带得出这个标记；
+    /// 重启后从平台翻回来的旧记录没有，一律当作不是。
+    pub manual: bool,
     /// Unix 秒。
     pub at: i64,
 }
@@ -146,6 +154,10 @@ pub(crate) struct GroupState {
     /// Opt-in chat screenshot gag: at most once per group per cooldown window.
     last_screenshot: Option<Instant>,
     last_screenshot_message: String,
+    /// 号主本人上一次在这个群里亲手打字的时刻。
+    owner_at: Option<Instant>,
+    /// 号主亲手打过几条（只增不减）：等他答话时靠它看「他有没有开口」。
+    owner_marks: u64,
 }
 
 impl GroupState {
@@ -182,6 +194,14 @@ impl GroupState {
                 .iter()
                 .any(|old| old.message_id == turn.message_id);
         let incoming = !turn.from_me;
+        if fresh && turn.manual {
+            // 本人亲自上场了：他在看这个群，手里准备好的话和没处理的点名都归他。
+            // 让位的细则在 [`GroupState::owner_active`]；这里让在途的草稿作废。
+            self.owner_at = Some(Instant::now());
+            self.owner_marks += 1;
+            self.unread_mention = false;
+            self.seq += OWNER_DRIFT;
+        }
         if fresh && incoming {
             self.seq += 1;
             self.unread_mention |= turn.mentions_me;
@@ -487,6 +507,24 @@ impl GroupState {
         true
     }
 
+    /// 号主本人在 `within` 之内亲手在这个群里打过字。
+    ///
+    /// 账号是他的，机器人只是他不在时替他蹲着：他自己在群里说话的时候，机器人再
+    /// 插话就是同一个账号两个人在抢话，群友已经为此开过「被夺舍了」的玩笑。
+    pub(crate) fn owner_active(&self, within: Duration) -> bool {
+        !within.is_zero() && self.owner_at.is_some_and(|at| at.elapsed() < within)
+    }
+
+    /// 号主亲手打过的条数，等他答话时用来判断「他开口了没有」。
+    pub(crate) fn owner_marks(&self) -> u64 {
+        self.owner_marks
+    }
+
+    /// 还没被取走的搭话指令（人按下的键，不等号主）。
+    pub(crate) fn has_unread_summon(&self) -> bool {
+        self.unread_summon
+    }
+
     /// 还没被取走的点名：打字的工夫里有人 @ 了它，这一句就得重新想。
     pub(crate) fn has_unread_mention(&self) -> bool {
         self.unread_mention
@@ -597,6 +635,8 @@ pub(crate) fn transcript(turns: &[Turn]) -> String {
             .unwrap_or_else(|| "--:--".to_string());
         let who = if turn.from_me && turn.user_id.is_empty() {
             "平台事件（操作者未知）".to_string()
+        } else if turn.manual {
+            "你自己（亲手打的）".to_string()
         } else if turn.from_me {
             "你自己".to_string()
         } else {
@@ -767,6 +807,7 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: &str) -> Turn {
         mentions_me,
         call,
         from_me: !me.is_empty() && event.user_id() == me,
+        manual: !me.is_empty() && event.user_id() == me && event.is_manual_self(),
         at: event
             .0
             .get_i64("time")
@@ -1273,6 +1314,67 @@ mod tests {
                 .type_,
             "mface"
         );
+    }
+
+    /// 号主亲手打的字带 `manual_self`，机器人自己发的不带：两者共用一个账号，只有这个标记分得开。
+    #[test]
+    fn the_owners_own_typing_is_told_apart_from_the_bots() {
+        let make = |manual: bool| {
+            let raw = event(serde_json::json!({
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": "1",
+                "user_id": "3373167460",
+                "manual_self": manual,
+                "message": [{"type": "text", "data": {"text": "此处应有 opus 5.5（"}}],
+            }));
+            turn_from(&MessageEvent(&raw), "3373167460")
+        };
+        let typed = make(true);
+        assert!(typed.from_me && typed.manual);
+        assert!(transcript(&[typed]).contains("你自己（亲手打的）"));
+        let echoed = make(false);
+        assert!(echoed.from_me && !echoed.manual);
+        assert!(!transcript(&[echoed]).contains("亲手打的"));
+        // 别人的消息即使带着这个标记也不算：它只对自己的账号有意义。
+        let raw = event(serde_json::json!({
+            "post_type": "message", "message_type": "group", "group_id": "1",
+            "user_id": "42", "manual_self": true,
+            "message": [{"type": "text", "data": {"text": "路过"}}],
+        }));
+        assert!(!turn_from(&MessageEvent(&raw), "3373167460").manual);
+    }
+
+    /// 本人亲自上场：窗口记下他在场、没处理的点名归他、在途草稿作废；
+    /// 机器人自己发的话与别人的话都不会让他「在场」。
+    #[test]
+    fn the_owner_stepping_in_takes_the_room_back() {
+        let mut state = GroupState::default();
+        let mut mention = turn("@你", false);
+        mention.message_id = "m1".into();
+        mention.mentions_me = true;
+        state.receive(mention);
+        assert!(state.has_unread_mention());
+        let seq = state.seq;
+        assert!(!state.owner_active(Duration::from_secs(60)));
+
+        let mut bot = turn("机器人说的", true);
+        bot.message_id = "b1".into();
+        state.receive(bot);
+        assert!(!state.owner_active(Duration::from_secs(60)), "机器人说话不算本人在场");
+
+        let mut typed = turn("我自己来", true);
+        typed.message_id = "o1".into();
+        typed.manual = true;
+        state.receive(typed.clone());
+        assert!(state.owner_active(Duration::from_secs(60)));
+        assert!(!state.owner_active(Duration::ZERO), "0 等于关闭");
+        assert!(!state.has_unread_mention(), "他说话了，点名归他");
+        assert!(state.drift(seq) > 2, "在途草稿要作废：{}", state.drift(seq));
+        assert_eq!(state.owner_marks(), 1);
+        // 同一条消息再投递一次不重复计数。
+        state.receive(typed);
+        assert_eq!(state.owner_marks(), 1);
     }
 
     #[test]

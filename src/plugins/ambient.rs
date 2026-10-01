@@ -235,6 +235,14 @@ pub(crate) struct AmbientConfig {
     /// 判定与发言两个模型都不走 DeepSeek 时，全天一个价，这一整段让路。
     /// `peak.model` 可以给高峰时段单独配一个便宜模型顶替主模型。
     pub peak: peak::PeakConfig,
+    /// 号主本人在这个群亲手打字之后，多久之内机器人不主动接话（秒）；0 关闭。
+    ///
+    /// 同一个账号，他在线时机器人不该跟他抢话——群友已经为「同一个号两种口气」开过
+    /// 「被夺舍了」的玩笑（2026-10-01）。窗口内只剩被点名与搭话指令能叫醒它。
+    pub owner_quiet_seconds: u64,
+    /// 号主刚在群里说过话、这时有人点名（@、引用、喊名字）：先等他自己答多久（秒）；
+    /// 0 不等。他在这段时间里开口了，这条点名就归他，机器人不再重复答一遍。
+    pub owner_grace_seconds: u64,
     /// 消息时效窗口（秒）：请求交给 satori-qq 之后，群里只要又有人说话就不再发
     /// 出这一句。0 关闭。见 [`crate::adapters::satori::Freshness`]。
     pub send_freshness_seconds: u64,
@@ -323,6 +331,8 @@ impl Default for AmbientConfig {
             search_enabled: true,
             search_budget: 3,
             peak: peak::PeakConfig::default(),
+            owner_quiet_seconds: 480,
+            owner_grace_seconds: 75,
             send_freshness_seconds: 25,
             qq_typing: false,
             qq_mark_read: false,
@@ -377,6 +387,14 @@ impl AmbientConfig {
 
     fn cooldown(&self) -> Duration {
         Duration::from_secs(self.cooldown_seconds)
+    }
+
+    fn owner_quiet(&self) -> Duration {
+        Duration::from_secs(self.owner_quiet_seconds.min(3_600))
+    }
+
+    fn owner_grace(&self) -> Duration {
+        Duration::from_secs(self.owner_grace_seconds.min(600))
     }
 
     pub(crate) fn gate_timeout(&self) -> Duration {
@@ -1105,6 +1123,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: &str) -> Option<(Turn, Option<St
             mentions_me,
             call,
             from_me,
+            manual: false,
             at: raw
                 .get_i64("time")
                 .unwrap_or_else(|| chrono::Local::now().timestamp()),
@@ -1170,6 +1189,7 @@ async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
             if !engaged {
                 tokio::time::sleep(notice_delay().min(interval / 5)).await;
             }
+            wait_for_owner(ctx, group, config).await;
             return;
         }
         if due.is_zero() {
@@ -1180,6 +1200,39 @@ async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
             return;
         }
         tokio::time::sleep(due.min(Duration::from_secs(2))).await;
+    }
+}
+
+/// 号主刚在群里亲手说过话时，有人点名：先让他自己答。
+///
+/// 账号是他的，点名多半是冲着他本人来的。他还在线（`owner_quiet_seconds` 之内打过字）
+/// 就等一会儿——他开口了，窗口那一侧会把这条点名记成已处理（见
+/// [`window::GroupState::receive`]），机器人这一批什么都不用做；等满了他还没动静，
+/// 才由机器人接。搭话指令是人按下的键，不等。
+async fn wait_for_owner(ctx: &Context, group: &str, config: &AmbientConfig) {
+    let grace = config.owner_grace();
+    let (present, summoned, baseline) = window::with_group(group, |state| {
+        (
+            state.owner_active(config.owner_quiet()),
+            state.has_unread_summon(),
+            state.owner_marks(),
+        )
+    });
+    if grace.is_zero() || !present || summoned {
+        return;
+    }
+    info!(target: LOG_TARGET, "群 {group} 有人叫，但本人刚在群里说过话，先等他自己答（最多 {} 秒）", grace.as_secs());
+    let deadline = Instant::now() + grace;
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        if !latest.enabled || !latest.groups.iter().any(|id| id == group) {
+            return;
+        }
+        if window::with_group(group, |state| state.owner_marks() != baseline) {
+            info!(target: LOG_TARGET, "群 {group} 本人自己答了，这条点名不用再接");
+            return;
+        }
     }
 }
 
@@ -1423,6 +1476,16 @@ async fn consider_batch(
         state.mark_look();
         (fresh, state.recent((fresh + 6).clamp(12, 36)))
     });
+
+    // 号主本人在线：机器人不主动插话。这一眼算看过了（上面已经 mark_look），他看过的
+    // 话题不会等他走了再被机器人翻出来接。被点名与搭话指令不在此列。
+    if !mentioned
+        && !summoned
+        && window::with_group(group, |state| state.owner_active(config.owner_quiet()))
+    {
+        debug!(target: LOG_TARGET, "群 {group} 本人刚在群里说过话，这一眼不插话");
+        return Ok(());
+    }
 
     let persona = tokio::fs::read_to_string(persona_path(base))
         .await
@@ -1828,6 +1891,7 @@ async fn speak_up(
                 mentions_me: false,
                 call: window::Call::default(),
                 from_me: true,
+                manual: false,
                 at: chrono::Local::now().timestamp(),
             });
         });
