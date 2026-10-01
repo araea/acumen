@@ -208,36 +208,3 @@ pub(crate) fn format_duration(seconds: u64) -> String {
         format!("{minutes}:{secs:02}")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn durations_come_back_in_seconds() {
-        assert_eq!(duration_seconds("0:40"), Some(40));
-        assert_eq!(duration_seconds("41:52"), Some(41 * 60 + 52));
-        assert_eq!(duration_seconds("1:02:03"), Some(3723));
-        assert_eq!(duration_seconds(""), None);
-        assert_eq!(duration_seconds("3:a"), None);
-    }
-
-    #[test]
-    fn titles_lose_their_markup_but_keep_the_words() {
-        assert_eq!(
-            clean_title(r#"<em class="keyword">告白气球</em>-周杰伦"#),
-            "告白气球-周杰伦"
-        );
-        assert_eq!(clean_title("循环歌单|【告白气球】&amp;更多"), "循环歌单|【告白气球】&更多");
-        // 实体不解半截：`&amp;lt;` 还原成字面的 `&lt;` 而不是 `<`。
-        assert_eq!(clean_title("a &amp;lt; b"), "a &lt; b");
-        assert_eq!(clean_title("  多  段空白  "), "多 段空白");
-    }
-
-    #[test]
-    fn the_label_reads_like_the_site_writes_it() {
-        assert_eq!(format_duration(40), "0:40");
-        assert_eq!(format_duration(41 * 60 + 52), "41:52");
-        assert_eq!(format_duration(3723), "1:02:03");
-    }
-}

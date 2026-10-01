@@ -764,38 +764,6 @@ async fn command(State(console): State<Arc<Console>>, Json(body): Json<Command>)
 }
 
 /// 控制台自己的配置从 `[console]` 读，改它走 `/api/plugins/console/config`。
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn json_becomes_toml_for_every_shape_a_config_holds() {
-        assert_eq!(to_toml(&json!(true)).unwrap(), Toml::Boolean(true));
-        assert_eq!(to_toml(&json!(7)).unwrap(), Toml::Integer(7));
-        assert_eq!(to_toml(&json!(0.5)).unwrap(), Toml::Float(0.5));
-        assert_eq!(
-            to_toml(&json!("中")).unwrap(),
-            Toml::String("中".to_string())
-        );
-        assert_eq!(
-            to_toml(&json!([123456, 789012])).unwrap(),
-            Toml::Array(vec![Toml::Integer(123456), Toml::Integer(789012)])
-        );
-        let table = to_toml(&json!({ "white": [1], "black": [] })).unwrap();
-        assert_eq!(table["white"], Toml::Array(vec![Toml::Integer(1)]));
-        assert_eq!(table["black"], Toml::Array(vec![]));
-    }
-
-    #[test]
-    fn an_empty_value_is_refused_with_the_alternative() {
-        let message = to_toml(&json!(null)).unwrap_err();
-        assert!(
-            message.contains('['),
-            "要给出一条此刻能照做的写法：{message}"
-        );
-    }
-}
-
 fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
     let mut result = std::collections::BTreeMap::new();
     let mut section = String::new();

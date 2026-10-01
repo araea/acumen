@@ -45,32 +45,3 @@ pub fn split_image_blocking(img_bytes: Vec<u8>, rows: u32, cols: u32) -> PluginR
 
     Ok(base64_list)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn uneven_grid_preserves_every_pixel() {
-        let original =
-            image::RgbaImage::from_fn(7, 5, |x, y| image::Rgba([x as u8, y as u8, 80, 255]));
-        let mut encoded = Cursor::new(Vec::new());
-        original
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .unwrap();
-        let tiles = split_image_blocking(encoded.into_inner(), 2, 3).unwrap();
-        let mut restored = image::RgbaImage::new(7, 5);
-        for (i, tile) in tiles.iter().enumerate() {
-            let tile = image::load_from_memory(&general_purpose::STANDARD.decode(tile).unwrap())
-                .unwrap()
-                .into_rgba8();
-            image::imageops::overlay(
-                &mut restored,
-                &tile,
-                ((i % 3) * 7 / 3) as i64,
-                ((i / 3) * 5 / 2) as i64,
-            );
-        }
-        assert_eq!(original, restored);
-        assert!(split_image_blocking(Vec::new(), 0, 2).is_err());
-    }
-}

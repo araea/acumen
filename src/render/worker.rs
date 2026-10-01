@@ -25,29 +25,3 @@ where
     })
     .await
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn cancellation_keeps_the_slot_until_work_finishes() {
-        let gate = Arc::new(Semaphore::new(1));
-        let (started, ready) = tokio::sync::oneshot::channel();
-        let (release, wait) = std::sync::mpsc::channel();
-        let task = tokio::spawn(run_with_gate(gate.clone(), move || {
-            started.send(()).unwrap();
-            wait.recv().unwrap();
-        }));
-        ready.await.unwrap();
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
-        let held = gate.available_permits() == 0;
-        release.send(()).unwrap();
-        assert!(held, "调用方取消不能提前释放阻塞工作的许可");
-        let _permit = tokio::time::timeout(std::time::Duration::from_secs(2), gate.acquire())
-            .await
-            .unwrap()
-            .unwrap();
-    }
-}

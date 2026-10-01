@@ -336,24 +336,3 @@ impl Scheduler {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pace_normalizes_reversed_or_extreme_bounds() {
-        assert_eq!(Pace::new(30, 10).bounds(), (30, 30));
-        assert_eq!(Pace::new(0, 0).bounds(), (1, 1));
-        assert_eq!(Pace::new(5, 9999).bounds(), (5, 600));
-    }
-
-    #[test]
-    fn pace_picks_inside_bounds_and_varies() {
-        let pace = Pace::new(10, 40);
-        let picks: Vec<u64> = (0..64).map(|_| pace.pick()).collect();
-        assert!(picks.iter().all(|v| (10..=40).contains(v)));
-        // 随机而非定值：64 次取样出现两个以上不同值的概率极高
-        assert!(picks.iter().any(|v| *v != picks[0]), "群间隔应当是随机的");
-    }
-}

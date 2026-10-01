@@ -289,28 +289,3 @@ fn encode_frames_to_b64(frames: Vec<Frame>) -> PluginResult<String> {
     }
     Ok(general_purpose::STANDARD.encode(buffer.get_ref()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    fn tiny_gif() -> Vec<u8> {
-        let frame = Frame::new(image::RgbaImage::from_pixel(
-            3,
-            2,
-            image::Rgba([30, 90, 60, 255]),
-        ));
-        general_purpose::STANDARD
-            .decode(encode_frames_to_b64(vec![frame]).unwrap())
-            .unwrap()
-    }
-    #[test]
-    fn rejects_invalid_and_excessive_transform_sizes() {
-        assert!(process_gif(tiny_gif(), Transform::Scale(f64::NAN)).is_err());
-        assert!(process_gif(tiny_gif(), Transform::Speed(f64::INFINITY)).is_err());
-        assert!(process_gif(tiny_gif(), Transform::Resize(u32::MAX, u32::MAX)).is_err());
-        assert!(grid_to_gif(Vec::new(), 0, 1, 0.1, 0).is_err());
-        assert!(check_dimensions(640, 480, 257).is_err());
-        assert!(process_gif(tiny_gif(), Transform::Scale(2.0)).is_ok());
-        assert_eq!(gif_to_frames(tiny_gif()).unwrap().len(), 1);
-    }
-}

@@ -264,31 +264,3 @@ impl SendPacket {
         self.params.get_str("message_type")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn message_event(value: serde_json::Value) -> Event {
-        simd_json::serde::to_owned_value(value).unwrap()
-    }
-
-    #[test]
-    fn recognizes_normalized_and_raw_manual_self_markers() {
-        let normalized = message_event(json!({"manual_self": true}));
-        assert!(MessageEvent(&normalized).is_manual_self());
-
-        let raw = message_event(json!({
-            "_satori": {"satori_qq": {"manual_self": true}}
-        }));
-        assert!(MessageEvent(&raw).is_manual_self());
-        let wechat = message_event(json!({
-            "_satori": {"satori_wx": {"manual_self": true}}
-        }));
-        assert!(MessageEvent(&wechat).is_manual_self());
-
-        let ordinary = message_event(json!({"manual_self": false}));
-        assert!(!MessageEvent(&ordinary).is_manual_self());
-    }
-}

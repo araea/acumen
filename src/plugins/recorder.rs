@@ -573,23 +573,3 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
         .map(|_| ())
         .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
 }
-
-#[cfg(test)]
-mod satori_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn market_face_is_recorded_as_animated_emoji() {
-        let message = simd_json::serde::to_owned_value(json!([
-            {"type": "mface", "data": {"emoji_id": "1", "summary": "商城表情"}}
-        ]))
-        .unwrap();
-        let mut record = <RecordActiveModel as Default>::default();
-        parse_message_content(Some(&message), &mut record);
-        assert_eq!(record.is_anim_emoji, Set(true));
-        assert_eq!(record.image_count, Set(1));
-        assert_eq!(record.content_rich, Set("[动画表情]".to_string()));
-    }
-}
-

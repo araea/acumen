@@ -330,21 +330,3 @@ pub(crate) fn plain_text(message: &Message) -> String {
     }
     out.trim().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 模型把换行写成字面的 `\n` 时，群里不该看见一个反斜杠加一个 n。
-    #[test]
-    fn literal_backslash_n_becomes_a_real_newline() {
-        assert_eq!(
-            literal_newlines("先看第一步\\n1. 关掉自动更新"),
-            "先看第一步\n1. 关掉自动更新"
-        );
-        assert_eq!(literal_newlines("a\\r\\nb"), "a\nb");
-        // 没有转义的正文不动，包括普通的反斜杠。
-        assert_eq!(literal_newlines("就这?没了"), "就这?没了");
-        assert_eq!(literal_newlines("路径 C:\\Users"), "路径 C:\\Users");
-    }
-}

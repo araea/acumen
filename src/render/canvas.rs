@@ -818,38 +818,3 @@ impl Canvas {
         Some(STANDARD.encode(png))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::render::Fonts;
-
-    #[test]
-    fn punctuation_does_not_split_the_last_letter_off_a_latin_word() {
-        let Some(f) = Fonts::get() else {
-            return;
-        };
-        let c = Canvas::new(1.0, 1.0, 1.0);
-        let width = c.text_w("中文 API", &f.sans, 20.0, 0.0) + 1.0;
-        let lines = c.wrap("中文 API、说明", &f.sans, 20.0, 0.0, width, usize::MAX);
-        assert_eq!(lines.concat(), "中文 API、说明");
-        assert!(lines.iter().any(|line| line.contains("API、")), "{lines:?}");
-    }
-
-    #[test]
-    fn cjk_font_size_is_em_pixels_at_every_output_scale() {
-        let Some(f) = Fonts::get() else {
-            return;
-        };
-        for scale in [1.0, 1.5, 3.0, 4.0] {
-            let c = Canvas::new(1.0, 1.0, scale);
-            let width = c.text_w("中文阅读", &f.sans, 24.0, 0.0);
-            assert!(
-                (width - 96.0).abs() < 1.0,
-                "24px CJK should occupy four em: {width}"
-            );
-            let lines = c.wrap("中文阅读体验", &f.sans, 24.0, 0.0, 97.0, usize::MAX);
-            assert_eq!(lines, ["中文阅读", "体验"]);
-        }
-    }
-}

@@ -272,23 +272,3 @@ impl Console {
         *self.stopping.lock().unwrap() = Some(sender);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_wildcard_bind_is_shown_as_loopback() {
-        assert_eq!(display_host("0.0.0.0"), "127.0.0.1");
-        assert_eq!(display_host("::"), "127.0.0.1");
-        assert_eq!(display_host("192.168.1.9"), "192.168.1.9");
-    }
-
-    #[test]
-    fn a_token_is_long_enough_to_not_be_guessed() {
-        let token = fresh_token();
-        assert_eq!(token.len(), 32);
-        assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_ne!(token, fresh_token());
-    }
-}

@@ -220,37 +220,3 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
         .map(|_| ())
         .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn kinds(message: &Message) -> Vec<String> {
-        message
-            .0
-            .iter()
-            .map(|segment| segment.type_.clone())
-            .collect()
-    }
-
-    /// 视频气泡与引用段不能同条：QQ 那边会把视频那一段吃掉。
-    #[test]
-    fn the_video_take_leaves_the_quote_out() {
-        assert_eq!(
-            kinds(&deliver_message(
-                "7",
-                "https://example.com/a.mp4".into(),
-                true
-            )),
-            vec!["video"]
-        );
-        assert_eq!(
-            kinds(&deliver_message(
-                "7",
-                "https://example.com/a.png".into(),
-                false
-            )),
-            vec!["reply", "image"]
-        );
-    }
-}

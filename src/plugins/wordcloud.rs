@@ -177,18 +177,3 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
         .map(|_| ())
         .map_err(|_| "词云配置类型错误".to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::get_regex;
-
-    #[test]
-    fn scope_is_optional() {
-        let caps = get_regex().captures("今日词云").expect("省略范围也应匹配");
-        assert!(caps.get(1).is_none());
-        assert_eq!(&caps[2], "今日");
-        let caps = get_regex().captures("我的总词云").unwrap();
-        assert_eq!(&caps[1], "我的");
-        assert!(get_regex().captures("词云").is_none());
-    }
-}

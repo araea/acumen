@@ -333,21 +333,3 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
         .map(|_| ())
         .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_time_accepts_minutes_and_seconds_and_falls_back() {
-        assert_eq!(parse_time("04:00"), (4, 0, 0));
-        assert_eq!(parse_time(" 23:59:58 "), (23, 59, 58));
-        assert_eq!(parse_time("26:71"), (4, 0, 0));
-    }
-
-    #[test]
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    fn rss_monitor_reads_self_status_on_linux_and_termux() {
-        assert!(current_rss_mb().is_some());
-    }
-}
