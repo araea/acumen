@@ -21,13 +21,27 @@ const WARMTH_HALF_LIFE: f32 = 1_200.0;
 /// 兴致的静息值：没什么事发生时的默认热度。
 const WARMTH_BASE: f32 = 0.35;
 
-/// 一天里的精神头曲线（按本机小时取）。夜里低、上午回升、晚上最活跃。
-fn baseline(hour: u32) -> f32 {
-    const CURVE: [f32; 24] = [
-        0.55, 0.45, 0.34, 0.22, 0.18, 0.18, 0.25, 0.40, 0.50, 0.60, 0.70, 0.72, 0.60, 0.50, 0.58,
-        0.70, 0.75, 0.72, 0.68, 0.80, 0.88, 0.90, 0.85, 0.70,
+/// 一天里的精神头基线：照号主本人的在线节奏，不是凭印象画的。
+///
+/// 原先这条曲线把凌晨三点当成最困的时候，而他恰恰常在零点前后最活跃、半夜也常在群里
+/// 说话；工作日白天（十一点到下午两点）才是他最不在的时段，与档案里「白天基本不在，
+/// 晚上和周末话多」对得上。表由 `scripts/owner-rhythm.py` 从聊天记录里量出来：数他
+/// 在每个钟点的十分钟格子里有没有亲手发过消息（量在线，不量话量），三点环形平滑，
+/// 拉到 0.30–0.92；周末样本只有十来天，与工作日对半混。换一阵子重量一次，把脚本打印的
+/// 两行贴回这里。
+///
+/// 样本：2026-08-27 至 2026-10-01，5699 条手打消息，26 个工作日 + 10 个周末日。
+fn baseline(hour: u32, weekend: bool) -> f32 {
+    const WEEKDAY: [f32; 24] = [
+        0.85, 0.68, 0.50, 0.39, 0.35, 0.39, 0.42, 0.52, 0.57, 0.55, 0.43, 0.30, 0.31, 0.30, 0.44,
+        0.54, 0.74, 0.65, 0.59, 0.56, 0.68, 0.80, 0.87, 0.92,
     ];
-    CURVE[(hour % 24) as usize]
+    const WEEKEND: [f32; 24] = [
+        0.62, 0.50, 0.41, 0.31, 0.32, 0.33, 0.37, 0.39, 0.44, 0.42, 0.43, 0.42, 0.43, 0.37, 0.37,
+        0.58, 0.81, 0.86, 0.72, 0.59, 0.63, 0.65, 0.71, 0.66,
+    ];
+    let table = if weekend { &WEEKEND } else { &WEEKDAY };
+    table[(hour % 24) as usize]
 }
 
 /// 一段随时间回落的偏移量。
@@ -100,12 +114,13 @@ impl Register {
 
 impl Mood {
     pub(crate) fn snapshot(&self, group: &str, now: i64) -> Snapshot {
-        let hour = chrono::DateTime::from_timestamp(now, 0)
+        let (hour, weekend) = chrono::DateTime::from_timestamp(now, 0)
             .map(|time| {
-                use chrono::Timelike as _;
-                time.with_timezone(&chrono::Local).hour()
+                use chrono::{Datelike as _, Timelike as _};
+                let local = time.with_timezone(&chrono::Local);
+                (local.hour(), local.weekday().number_from_monday() >= 6)
             })
-            .unwrap_or(12);
+            .unwrap_or((12, false));
         let warmth = self
             .warmth
             .get(group)
@@ -113,7 +128,7 @@ impl Mood {
             .unwrap_or_default()
             .get(now, WARMTH_HALF_LIFE);
         Snapshot {
-            energy: (baseline(hour) + self.drift.get(now, DRIFT_HALF_LIFE)).clamp(0.05, 1.0),
+            energy: (baseline(hour, weekend) + self.drift.get(now, DRIFT_HALF_LIFE)).clamp(0.05, 1.0),
             warmth: (WARMTH_BASE + warmth).clamp(0.0, 1.0),
         }
     }
@@ -309,17 +324,30 @@ mod tests {
             .timestamp()
     }
 
+    /// 精神头跟着号主的在线节奏走：他工作日白天最不在、深夜最活跃；
+    /// 并且不再把凌晨当成「困得厉害」——他那会儿经常还在群里。
     #[test]
-    fn the_clock_alone_makes_late_nights_quieter_than_evenings() {
-        let mood = Mood::default();
-        let night = mood.snapshot("1", at_hour(4));
-        let evening = mood.snapshot("1", at_hour(21));
-        assert!(night.energy < evening.energy, "{night:?} {evening:?}");
-        // 困的时候更沉默、打字更慢、想得更久。
-        assert!(night.threshold_shift() > evening.threshold_shift());
-        assert!(night.typing_scale() < evening.typing_scale());
-        assert!(night.think_scale() > evening.think_scale());
-        assert!(night.describe().contains("困"), "{}", night.describe());
+    fn the_clock_follows_the_owners_real_rhythm() {
+        // 工作日：中午（他最不在）比深夜（他最活跃）安静，打字更慢、想得更久。
+        let (noon, late) = (baseline(12, false), baseline(23, false));
+        assert!(noon < late, "{noon} {late}");
+        let at = |energy: f32| Snapshot { energy, warmth: WARMTH_BASE };
+        assert!(at(noon).threshold_shift() > at(late).threshold_shift());
+        assert!(at(noon).typing_scale() < at(late).typing_scale());
+        assert!(at(noon).think_scale() > at(late).think_scale());
+        // 凌晨三点只是「没什么劲」，不是「困得厉害」：基线压不到那一档。
+        let small_hours = at(baseline(3, false)).describe();
+        assert!(small_hours.contains("没什么劲"), "{small_hours}");
+        // 周末傍晚比工作日傍晚更活跃一点，周末的中午也没有工作日那么空。
+        assert!(baseline(17, true) > baseline(17, false));
+        assert!(baseline(12, true) > baseline(12, false));
+        // 全表都落在可用范围里，没有哪个钟点会把精神头直接归零。
+        for hour in 0..24 {
+            for weekend in [false, true] {
+                let value = baseline(hour, weekend);
+                assert!((0.30..=0.92).contains(&value), "{hour} {weekend} {value}");
+            }
+        }
     }
 
     #[test]
