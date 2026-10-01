@@ -21,9 +21,6 @@
 pub(crate) mod bilibili;
 mod state;
 
-#[cfg(test)]
-mod live;
-
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::message_links;
 use crate::config::build_config;

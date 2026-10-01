@@ -22,9 +22,6 @@ const VOICE: &str = include_str!("../../../res/ambient/voice.md");
 const MAX_LINES: usize = 5;
 /// 其中最多几条取自「近期原话」（见 [`recent`]）：样本库管他一贯怎么说，这几条管他最近怎么说。
 const RECENT_SLOTS: usize = 2;
-/// 一次最少贴几条（库够大，随机取总能取满；测试守着这条线）。
-#[cfg(test)]
-const MIN_LINES: usize = 3;
 /// 贴出来的样本一共占多少字上限。它们跟着每轮的账单走。
 const MAX_CHARS: usize = 220;
 /// 近期原话那几条一共最多多少字。

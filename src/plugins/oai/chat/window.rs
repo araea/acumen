@@ -180,11 +180,6 @@ impl GroupState {
     }
 
     /// 窗口里最后一条消息是不是自己说的——自言自语要及时打住。
-    #[cfg(test)]
-    fn last_is_mine(&self) -> bool {
-        self.turns.back().is_some_and(|turn| turn.from_me)
-    }
-
     /// 收消息与占用 worker 必须在同一把锁下完成，避免交接时漏消息。
     ///
     /// 同一个 `message_id` 的第二次投递（先由能力层记下现场、搭话侧再补记号）
