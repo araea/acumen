@@ -591,8 +591,23 @@ memory_enabled = true
 # 每轮最多写几条记忆；0 关闭 satori_memo。
 memo_budget = 3
 # 按作息与互动起伏的内部状态（data/ambient/mood.json）：影响开口门槛、打字快慢
-# 和提示词里那句「你现在的状态」。关掉则任何时刻都一个样。
+# 和提示词里那句「你现在的状态」。关掉则任何时刻都一个样。作息基线是号主本人的真实
+# 在线节奏（scripts/owner-rhythm.py 量出来的表，写在 src/plugins/ambient/mood.rs）。
 mood_enabled = true
+# 复盘：群里新来 24 条以上、距上次 25 分钟以上、不在计价高峰时，后台用判定模型把
+# 群聊整理成几摊事、对人的新印象、新梗与自己说过的话，写进群记忆。一次便宜的调用；
+# 需要 memory_enabled。
+reflect_enabled = true
+# 随口一句：判定分数落在 quick_floor 与开口门槛之间（想吭一声、可不吭）、现场够新、
+# 两分钟没开过口、本人不在时，按 45% 几率只回一两个字（不调用发言模型）。
+# quick_per_hour 是每群每小时上限，0 关闭。
+quick_per_hour = 4
+quick_floor = 38
+# 号主本人在线时机器人让位（同一个号，不抢话）：他在这个群亲手打字之后
+# owner_quiet_seconds 秒内不主动接话；这期间有人点名，先等 owner_grace_seconds 秒让他
+# 自己答，他开口了这条点名就归他。0 分别关闭这两层。
+owner_quiet_seconds = 480
+owner_grace_seconds = 75
 
 # 默认不因沉默而强行降低门槛。
 silence_relief_per_10min = 0
