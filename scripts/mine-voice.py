@@ -70,25 +70,40 @@ def width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
 
 
-def load(db: str, uid: str, days: int) -> list[tuple[int, int, str]]:
+def load(dbs: list[str], uid: str, days: int) -> list[tuple[str, int, str]]:
     """按时间正序取他手打的消息：`(群号, 时刻, 正文)`。
 
     群号与时刻不是为了展示，是为了认出词意猜词——那些词只能靠「在哪、什么时候」
     分辨（见 [`guesses`]）。
+
+    记录库在 2026-09-27 迁成了字符串 ID 的新结构（`guild_id` / `member_role`），迁移前的
+    那份留作备份（列名是 `group_id` / `role`）。两份都读、按各自的列名取，核对旧样本时
+    才不会因为它们只在备份里而误报「找不到原文」。
     """
-    if not os.path.exists(db):
-        sys.exit(f"找不到记录库：{db}（在 bot 的工作目录下跑，或用 --db 指定）")
-    what = (
-        "select group_id, time, content_rich from message_records "
-        "where user_id=? and role != 'self'"
-    )
-    args: list[object] = [uid]
-    if days > 0:
-        what += " and time >= strftime('%s','now') - ?"
-        args.append(days * 86_400)
-    what += " order by time"
-    con = sqlite3.connect(db)
-    return [(row[0], row[1], row[2] or "") for row in con.execute(what, args)]
+    rows: list[tuple[str, int, str]] = []
+    found = False
+    for db in dbs:
+        if not os.path.exists(db):
+            continue
+        found = True
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        cols = {row[1] for row in con.execute("pragma table_info(message_records)")}
+        group = "guild_id" if "guild_id" in cols else "group_id"
+        role = "member_role" if "member_role" in cols else "role"
+        # 同一个号里 role 为 self 的是机器人发的，其余才是这个号后面那个人手打的。
+        what = (
+            f"select {group}, time, content_rich from message_records "
+            f"where cast(user_id as text)=? and {role} != 'self'"
+        )
+        args: list[object] = [uid]
+        if days > 0:
+            what += " and time >= strftime('%s','now') - ?"
+            args.append(days * 86_400)
+        rows += [(str(row[0]), row[1], row[2] or "") for row in con.execute(what, args)]
+    if not found:
+        sys.exit(f"找不到记录库：{' / '.join(dbs)}（在 bot 的工作目录下跑，或用 --db 指定）")
+    rows.sort(key=lambda row: row[1])
+    return rows
 
 
 # 光秃秃的两三个汉字：没有标点、没有语气词、没有字母数字。
@@ -98,7 +113,7 @@ GUESS_WINDOW = 90
 GUESS_RUN = 3
 
 
-def guesses(rows: list[tuple[int, int, str]]) -> set[int]:
+def guesses(rows: list[tuple[str, int, str]]) -> set[int]:
     """认出词意游戏里那些猜词，返回它们在 `rows` 里的下标。
 
     群里玩词意的时候，他一口气打十几个两字词（「悲伤」「伤心」「伤人」「重伤」），
@@ -123,7 +138,7 @@ def guesses(rows: list[tuple[int, int, str]]) -> set[int]:
     return out
 
 
-def chatter(rows: list[tuple[int, int, str]]) -> list[str]:
+def chatter(rows: list[tuple[str, int, str]]) -> list[str]:
     """记录 → 他真正拿来说话的那些句子（去掉指令与词意猜词）。"""
     skip = guesses(rows)
     out = []
@@ -137,7 +152,7 @@ def chatter(rows: list[tuple[int, int, str]]) -> list[str]:
 
 
 def candidates(
-    rows: list[tuple[int, int, str]], limit: int, max_chars: int, known: set[str]
+    rows: list[tuple[str, int, str]], limit: int, max_chars: int, known: set[str]
 ) -> dict[str, list[str]]:
     """按场景分组的候选；`known` 是已经在样本库里的那些，不必再看第二遍。"""
     out: dict[str, list[str]] = {}
@@ -170,7 +185,7 @@ def speech_like(text: str) -> bool:
     return bool(HAN.search(text)) or len(LATIN_WORD.findall(text)) >= 2
 
 
-def verify(rows: list[tuple[int, int, str]], path: str) -> int:
+def verify(rows: list[tuple[str, int, str]], path: str) -> int:
     samples = samples_of(path)
     pool = [clean(raw) for _, _, raw in rows]
     missing = [s for s in samples if not any(s in row for row in pool)]
@@ -230,7 +245,7 @@ def profile(texts: list[str]) -> tuple[list[float], list[float]]:
     return bands, marks
 
 
-def shape(rows: list[tuple[int, int, str]], path: str) -> int:
+def shape(rows: list[tuple[str, int, str]], path: str) -> int:
     """把「他本人」和「样本库」的形状并排打出来。
 
     样本是模型唯一的标尺，所以库的形状就是它写出来的字的形状。差得远的那一档
@@ -269,7 +284,12 @@ def main() -> int:
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     parser = argparse.ArgumentParser(description="捞号主本人手打的短句")
     parser.add_argument("--uid", required=True, help="号主的 QQ 号")
-    parser.add_argument("--db", default=os.path.join(here, "data", "bot.db"))
+    parser.add_argument(
+        "--db",
+        action="append",
+        default=None,
+        help="记录库，可重复；默认读 data/bot.db 与迁移前的备份",
+    )
     parser.add_argument("--voice", default=os.path.join(here, "res", "ambient", "voice.md"))
     parser.add_argument("--days", type=int, default=30, help="只看最近这些天，0 表示全部")
     parser.add_argument("--limit", type=int, default=40, help="每组最多打印几条")
@@ -278,7 +298,11 @@ def main() -> int:
     parser.add_argument("--shape", action="store_true", help="比对样本库与他本人的长短分布")
     args = parser.parse_args()
 
-    rows = load(args.db, args.uid, args.days)
+    dbs = args.db or [
+        os.path.join(here, "data", "bot.db.pre-string-ids"),
+        os.path.join(here, "data", "bot.db"),
+    ]
+    rows = load(dbs, args.uid, args.days)
     print(f"取到 {len(rows)} 条本人发言（最近 {args.days} 天）", file=sys.stderr)
     if args.verify:
         return verify(rows, args.voice)

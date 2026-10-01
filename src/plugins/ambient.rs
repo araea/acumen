@@ -41,6 +41,7 @@ mod mood;
 mod peak;
 mod quick;
 mod quote;
+mod recent;
 mod reflect;
 mod screenshot;
 pub(crate) mod speak;
@@ -927,6 +928,8 @@ pub(crate) async fn observe(
     };
     let group = group.as_str();
 
+    // 号主最近亲手打的话：隔几个钟头从聊天记录里重捞一次，给发言当最新的口吻标尺。
+    recent::ensure_fresh(ctx);
     let mut turn = window::turn_from(&event, &ctx.bot.self_id());
     // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
     // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。

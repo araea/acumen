@@ -11,6 +11,7 @@
 //! （见 [`pick`]）。
 
 use super::mood::Register;
+use super::recent;
 use crate::plugins::oai::chat::tone::{affinity, grams};
 use super::window::Turn;
 
@@ -19,11 +20,15 @@ const VOICE: &str = include_str!("../../../res/ambient/voice.md");
 
 /// 一次最多贴几条。样本是标尺不是范文，三五条足够定调。
 const MAX_LINES: usize = 5;
+/// 其中最多几条取自「近期原话」（见 [`recent`]）：样本库管他一贯怎么说，这几条管他最近怎么说。
+const RECENT_SLOTS: usize = 2;
 /// 一次最少贴几条（库够大，随机取总能取满；测试守着这条线）。
 #[cfg(test)]
 const MIN_LINES: usize = 3;
 /// 贴出来的样本一共占多少字上限。它们跟着每轮的账单走。
 const MAX_CHARS: usize = 220;
+/// 近期原话那几条一共最多多少字。
+const RECENT_CHARS: usize = 80;
 /// 只看最近的这些条消息来猜话题；再往前的时间隔得远，聊的多半是另一码事。
 const TOPIC_TURNS: usize = 12;
 /// 贴题到这个程度的样本不挑：再往上，模型就会把样本里的立场当成自己此刻的话。
@@ -83,6 +88,17 @@ fn fits(sample: &Sample<'_>, register: Register) -> bool {
 /// 现在反过来：**跟眼前话题沾边的一律不挑**，在剩下的里随机取，长短搭配着摆。
 /// 已经出现在眼前这段记录里的（自己刚说过的）同样跳过。
 fn pick<'a>(turns: &[Turn], samples: &[Sample<'a>], register: Register) -> Vec<&'a str> {
+    pick_within(turns, samples, register, MAX_LINES, MAX_CHARS)
+}
+
+/// 同 [`pick`]，只是条数与字数上限由调用方给（近期原话先占了几个位置）。
+fn pick_within<'a>(
+    turns: &[Turn],
+    samples: &[Sample<'a>],
+    register: Register,
+    slots: usize,
+    budget: usize,
+) -> Vec<&'a str> {
     use rand::seq::SliceRandom;
     let recent: String = turns
         .iter()
@@ -116,10 +132,56 @@ fn pick<'a>(turns: &[Turn], samples: &[Sample<'a>], register: Register) -> Vec<&
     let mut chosen: Vec<&str> = Vec::new();
     let mut used = 0;
     for sample in order {
-        if chosen.len() >= MAX_LINES {
+        if chosen.len() >= slots {
             break;
         }
-        take(sample.text, &mut chosen, &mut used);
+        take(sample.text, budget, &mut chosen, &mut used);
+    }
+    chosen
+}
+
+/// 样本库里的全部原话（近期那一层要避开它们）。
+pub(crate) fn bank_lines() -> Vec<&'static str> {
+    parse(VOICE).into_iter().map(|sample| sample.text).collect()
+}
+
+/// 从近期原话里抽几条：与样本库一样避开眼前的话题、不重复记录里已有的。
+///
+/// 近期原话没有调子标记（活 / 静）：它们是他这几天随手打的，两种状态都可能这么说。
+fn pick_recent(turns: &[Turn], recent: &[String]) -> Vec<String> {
+    use rand::seq::SliceRandom;
+    if recent.is_empty() {
+        return Vec::new();
+    }
+    let window: String = turns
+        .iter()
+        .rev()
+        .take(TOPIC_TURNS)
+        .map(|turn| turn.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let topic = grams(&window);
+    let words = content_words(&window);
+    let mut eligible: Vec<&String> = recent
+        .iter()
+        .filter(|line| !window.contains(line.as_str()))
+        .filter(|line| {
+            content_words(line).is_disjoint(&words) && affinity(line, &topic) < OFF_TOPIC
+        })
+        .collect();
+    eligible.shuffle(&mut rand::rng());
+    let mut chosen = Vec::new();
+    let mut used = 0;
+    for line in eligible {
+        if chosen.len() >= RECENT_SLOTS {
+            break;
+        }
+        let chars = line.chars().count();
+        if used + chars > RECENT_CHARS {
+            continue;
+        }
+        used += chars;
+        chosen.push(line.clone());
     }
     chosen
 }
@@ -186,9 +248,9 @@ fn content_words(text: &str) -> std::collections::HashSet<String> {
 }
 
 /// 收下一条样本，前提是它还没把这一轮的字数用光。
-fn take<'a>(text: &'a str, chosen: &mut Vec<&'a str>, used: &mut usize) {
+fn take<'a>(text: &'a str, budget: usize, chosen: &mut Vec<&'a str>, used: &mut usize) {
     let chars = text.chars().count();
-    if *used + chars > MAX_CHARS {
+    if *used + chars > budget {
         return;
     }
     *used += chars;
@@ -215,15 +277,27 @@ pub(crate) fn opening(register: Register) -> &'static str {
 
 /// 这一轮的样本段；样本库为空时返回空串。
 pub(crate) fn brief(turns: &[Turn], register: Register) -> String {
+    use rand::seq::SliceRandom;
     let samples = parse(VOICE);
     if samples.is_empty() {
         return String::new();
     }
-    let picked = pick(turns, &samples, register);
-    if picked.is_empty() {
+    let recent = pick_recent(turns, &recent::lines());
+    let used: usize = recent.iter().map(|line| line.chars().count()).sum();
+    let picked = pick_within(
+        turns,
+        &samples,
+        register,
+        MAX_LINES - recent.len(),
+        MAX_CHARS.saturating_sub(used),
+    );
+    // 两处来的原话混在一起摆：哪几条是新的，对模型没有意义。
+    let mut lines: Vec<String> = picked.iter().map(|text| text.to_string()).chain(recent).collect();
+    if lines.is_empty() {
         return String::new();
     }
-    let lines: Vec<String> = picked.iter().map(|text| format!("- {text}")).collect();
+    lines.shuffle(&mut rand::rng());
+    let lines: Vec<String> = lines.iter().map(|text| format!("- {text}")).collect();
     format!("{}\n{}\n", opening(register), lines.join("\n"))
 }
 
@@ -461,5 +535,28 @@ mod tests {
                 assert!(!line.contains("华为"), "{line}");
             }
         }
+    }
+
+    /// 近期原话与样本库混着摆，只占有限的位置、避开眼前话题、不重复记录里已有的。
+    #[test]
+    fn recent_lines_fill_a_few_slots_and_stay_off_topic() {
+        let recent: Vec<String> = ["又快又好（", "好闺蜜）", "华为新机真香（", "此处应有 opus 5.5（"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for _ in 0..30 {
+            let picked = pick_recent(&[turn("华为新机发布 mate90")], &recent);
+            assert!(picked.len() <= RECENT_SLOTS, "{picked:?}");
+            assert!(!picked.iter().any(|line| line.contains("华为")), "{picked:?}");
+        }
+        assert!(pick_recent(&[turn("随便聊")], &[]).is_empty());
+        // 眼前记录里已经有的那条不再当标尺。
+        for _ in 0..30 {
+            let picked = pick_recent(&[turn("好闺蜜）")], &recent);
+            assert!(!picked.contains(&"好闺蜜）".to_string()), "{picked:?}");
+        }
+        // 样本库的总量仍守着条数上限。
+        let text = brief(&[turn("zzz qqq 12345")], Register::Even);
+        assert!(text.lines().filter(|line| line.starts_with("- ")).count() <= MAX_LINES, "{text}");
     }
 }

@@ -782,3 +782,22 @@ async fn live_quick_word() {
         println!("----- #{cut} [{group}] 最后一句 {last}\n随口 {reply:?}\n");
     }
 }
+
+/// 对真实的记录库试跑「近期原话」：只读，打印捞到的那些。
+#[tokio::test]
+#[ignore = "需要 ACUMEN_RECENT_DB（记录库路径）与 ACUMEN_RECENT_ME（号主 QQ 号）；只读、只打印"]
+async fn live_recent_lines() {
+    let path = std::env::var("ACUMEN_RECENT_DB").unwrap();
+    let me = std::env::var("ACUMEN_RECENT_ME").unwrap();
+    let db = sea_orm::Database::connect(format!("sqlite:{path}?mode=ro"))
+        .await
+        .unwrap();
+    let (ctx, _writer, _mgr, _dir, _started, server) = harness(AmbientConfig::default(), "x").await;
+    let ctx = Context { db, ..ctx };
+    let lines = recent::load(&ctx, &me).await.unwrap();
+    println!("捞到 {} 条", lines.len());
+    for line in &lines {
+        println!("- {line}");
+    }
+    server.abort();
+}
