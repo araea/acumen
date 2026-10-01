@@ -112,6 +112,47 @@ async fn reply_card(
     }
 }
 
+/// 把一份列表渲染成卡片图发出；`text_mode`、关掉出图、或渲染失败时退回同一份数据的文本。
+///
+/// 与 [`reply_card`] 的分工：回复卡渲染的是模型写的 Markdown（要转义、要防注入、带来源与页脚），
+/// 列表是插件自己整理的结构化数据，直接走手册卡 / 控制卡那套文档模型。
+async fn reply_list(
+    ctx: &Context,
+    writer: &LockedWriter,
+    event: &MessageEvent<'_>,
+    listing: &super::lists::Listing,
+    text_mode: bool,
+    header: &str,
+) {
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
+    if !text_mode && oai.image_enabled() {
+        let browser_path = ctx.config.read().unwrap().browser_path.clone();
+        match crate::render::web::capture(
+            &listing.doc(),
+            oai.image_scale(),
+            browser_path.as_deref(),
+        )
+        .await
+        {
+            Ok(b64) => {
+                let _ = send_msg(
+                    ctx,
+                    writer.clone(),
+                    event.group_id(),
+                    Some(event.user_id()),
+                    Message::new()
+                        .reply(event.message_id())
+                        .image_described(format!("base64://{b64}"), header),
+                )
+                .await;
+                return;
+            }
+            Err(error) => warn!(target: "Plugin/OAI", "列表卡片渲染失败，退回文本：{error:#}"),
+        }
+    }
+    reply_text(ctx, writer, event, listing.markdown()).await;
+}
+
 fn extract_image_urls(content: &str) -> Vec<String> {
     let re = Regex::new(r"!\[.*?\]\(((?:https?://|data:image/)[^\s\)]+)\)|(?:https?://[^\s]+\.(?:png|jpg|jpeg|gif|webp|bmp))").unwrap();
     let mut urls: Vec<String> = re
@@ -755,7 +796,7 @@ fn search_state(agent: &Agent, global: bool) -> String {
 
 /// 房间列表和回执里显示的模型：内置 agent 房间前面挂上引擎，一眼能看出这间屋子
 /// 谁在跑；设了思考强度就一并标出。
-fn room_model_label(agent: &Agent) -> String {
+pub(super) fn room_model_label(agent: &Agent) -> String {
     let base = if !agent.uses_agent() {
         agent.model.clone()
     } else if super::agent::uses_default_model(&agent.model) {
@@ -1032,60 +1073,6 @@ fn is_plain_enough(text: &str, max_chars: usize) -> bool {
                 !head.is_empty() && head.chars().all(|c| c.is_ascii_digit())
             })
     })
-}
-
-/// `/#` 房间列表的 Markdown 正文。
-///
-/// 分区与组内排序只影响展示，所以序号在这里按**展示顺序**从 1 编到 N。早先把房间
-/// 在配置里的下标当序号，分组排序后同一个组里的数字既不连续、也不再是 1..N；
-/// Markdown 的有序列表只认首个编号、其余逐条递增，于是图上会出现「48 个房间
-/// 标到七八十」。序号是给人数的，从 1 数到底就好。
-fn agent_list_markdown(agents: &[Agent], search_default: bool) -> String {
-    use std::collections::BTreeMap;
-    // 分区优先于模型：内置预设那一批的共同点是「预设」而不是「跑哪个模型」，
-    // 混进用户自建的同模型房间里就找不着了。带分区的排在前面（false < true）。
-    let mut groups: BTreeMap<(bool, String), Vec<&Agent>> = BTreeMap::new();
-    for a in agents {
-        let section = a.section.trim();
-        let key = if section.is_empty() {
-            (true, room_model_label(a))
-        } else {
-            (false, format!("{section} · {}", room_model_label(a)))
-        };
-        groups.entry(key).or_default().push(a);
-    }
-    let mut html_parts = Vec::new();
-    let mut seq = 0usize;
-    for ((_, model), mut group) in groups {
-        group.sort_by_key(|a| a.name.to_lowercase());
-        html_parts.push(format!(
-            "## {}（{}）\n",
-            escape_markdown_special(&model),
-            group.len()
-        ));
-        for a in group {
-            seq += 1;
-            let desc_display = if !a.description.is_empty() {
-                super::utils::truncate_str(&a.description, 20)
-            } else if !a.system_prompt.is_empty() {
-                super::utils::truncate_str(&a.system_prompt, 20)
-            } else {
-                "无描述".to_string()
-            };
-            // 联网的房间标一句：一眼看出哪几间会出去查资料。
-            let desc_display = if a.uses_agent() && a.web_search(search_default) {
-                format!("联网 · {desc_display}")
-            } else {
-                desc_display
-            };
-            html_parts.push(format!(
-                "{seq}. **{}** — {}\n",
-                escape_markdown_special(&a.name),
-                escape_markdown_special(&desc_display)
-            ));
-        }
-    }
-    html_parts.join("\n")
 }
 
 pub async fn execute(
@@ -1593,12 +1580,15 @@ pub async fn execute(
                 .await;
                 return;
             }
-            let list = agent_list_markdown(&c.agents, search_default);
-            reply(
+            let listing = super::lists::Listing::Rooms(super::lists::Rooms::new(
+                &c.agents,
+                search_default,
+            ));
+            reply_list(
                 ctx,
                 writer,
                 &msg_event,
-                &list,
+                &listing,
                 cmd.text_mode,
                 &format!("智能体列表 (共{}个)", c.agents.len()),
             )
@@ -1658,57 +1648,16 @@ pub async fn execute(
                 return;
             }
 
-            use std::collections::HashMap;
-            let mut usage_count = HashMap::new();
-            for agent in &c.agents {
-                *usage_count.entry(agent.model.clone()).or_insert(0) += 1;
-            }
-
-            // 按厂商分区；分区顺序取各组首次出现的次序，模型列表本身已按 id 排序，
-            // 因此同一厂商的条目天然连在一起，顺序稳定可预期。
-            let mut groups: HashMap<&'static str, Vec<(usize, String)>> = HashMap::new();
-            let mut group_order: Vec<&'static str> = Vec::new();
-            for (i, m) in models.iter().enumerate() {
-                let vendor = crate::plugins::oai::utils::model_vendor(m);
-                let entry = groups.entry(vendor).or_insert_with(|| {
-                    group_order.push(vendor);
-                    Vec::new()
-                });
-                entry.push((i + 1, m.clone()));
-            }
-            // 认不出厂商的一律排到最后，别插在正经分区中间
-            if let Some(pos) = group_order.iter().position(|v| *v == "其他") {
-                let other = group_order.remove(pos);
-                group_order.push(other);
-            }
-            let mut html = String::new();
-            let render_group = |title: &str, items: &Vec<(usize, String)>| -> String {
-                let mut s = format!("## {}\n\n", escape_markdown_special(title));
-                for (idx, name) in items {
-                    let badge = usage_count
-                        .get(name)
-                        .map(|count| format!("（{count} 个智能体使用）"))
-                        .unwrap_or_default();
-                    s.push_str(&format!(
-                        "{}. {}{}\n",
-                        idx,
-                        escape_markdown_special(name),
-                        badge
-                    ));
-                }
-                s.push('\n');
-                s
-            };
-            for vendor in group_order {
-                if let Some(items) = groups.get(vendor) {
-                    html.push_str(&render_group(vendor, items));
-                }
-            }
-            reply(
+            let listing = super::lists::Listing::Models(super::lists::Models::new(
+                models,
+                &c.agents,
+                &c.default_model,
+            ));
+            reply_list(
                 ctx,
                 writer,
                 &msg_event,
-                &html,
+                &listing,
                 cmd.text_mode,
                 &format!("模型列表 (共{}个)", models.len()),
             )

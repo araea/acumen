@@ -2,15 +2,13 @@
 
 use super::{Entry, Group, needs_prefix};
 use crate::plugins::Cmd;
-use crate::render::web::{self, Block, Doc, Item, Theme, Tone};
+use crate::render::web::{self, Block, Doc, Fact, Item, State, Theme, Tile, Tone};
 
-/// 总览版心宽度。总览是「目录」，条目多、每条约两句，
-/// 版心放宽到两列并排，高度随之减半，一屏能扫完。
-const OVERVIEW_WIDTH: f32 = 920.0;
-/// 总览的列数：两列网格并排，条目左右对齐，同行的分隔线也齐平
-const OVERVIEW_COLS: usize = 2;
-/// 详情版心宽度（单栏，长指令自动换行）
-const DETAIL_WIDTH: f32 = 640.0;
+/// 成图宽度：卡面 520 加两侧各 20 的相纸，与智能回复卡同宽。
+///
+/// 总览与详情共用这一档。早先总览放宽到 920 两列并排、一屏扫完，代价是手机里全屏看时
+/// 字只剩 8dp 上下；现在宁可图长一些，也让每个字在手机上不必放大就能读。
+const WIDTH: f32 = 560.0;
 
 /// `"收 / 偷 / 存表情"` → 主指令 + 别名。清单里的别名用 ` / ` 分隔，
 /// 图里把第一个抬成主指令，其余降级成小字，避免一行挤三个同义词。
@@ -39,26 +37,37 @@ impl Card {
     }
 }
 
-/// 总览卡：分区 → 两列目录，状态文字与颜色同时呈现。
-///
-/// 条目按两列网格排，而不是拉成一长串：目录的意义是「一眼扫全」，
-/// 单列会把 20 来个插件堆成一张需要往下翻很久的长图。
+/// 总览卡：分区 → 分段列表，停用的条目挂徽章，启用是常态不挂。
 pub fn overview(groups: &[Group], prefix: &str) -> Card {
+    let total = groups.iter().map(|g| g.items.len()).sum::<usize>();
+    let on = groups
+        .iter()
+        .flat_map(|g| g.items.iter())
+        .filter(|e| e.enabled)
+        .count();
     let mut blocks = vec![
         Block::Title {
             title: "插件总览".into(),
             pill: None,
             sub: format!("按用途查找功能 · 指令前缀 {prefix}"),
         },
-        // 汇总启用与停用数量，状态清单在下方逐项展开
-        Block::Meter(
-            groups
-                .iter()
-                .flat_map(|g| g.items.iter())
-                .map(|e| e.enabled)
-                .collect(),
-        ),
-        Block::Rule,
+        Block::Tiles(vec![
+            Tile {
+                value: total.to_string(),
+                label: "全部".into(),
+                state: State::Plain,
+            },
+            Tile {
+                value: on.to_string(),
+                label: "已启用".into(),
+                state: State::On,
+            },
+            Tile {
+                value: (total - on).to_string(),
+                label: "已停用".into(),
+                state: State::Off,
+            },
+        ]),
     ];
 
     for group in groups {
@@ -67,8 +76,8 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
             en: group.en.into(),
             count: format!("{} 项", group.items.len()),
         });
-        blocks.push(Block::Items {
-            items: group
+        blocks.push(Block::Items(
+            group
                 .items
                 .iter()
                 .map(|e| Item {
@@ -78,20 +87,18 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
                     on: e.enabled,
                 })
                 .collect(),
-            cols: OVERVIEW_COLS,
-        });
+        ));
     }
 
-    blocks.push(Block::Callout {
-        tone: Tone::Info,
-        text: format!(
-            "Satori v1 · 管理开关与配置：{prefix}ctl（聊天）\n状态为配置开关；首次启用自动初始化；排期修改下次连接生效"
-        ),
-    });
+    blocks.push(Block::Notes(vec![
+        "没标「已停用」的插件都是启用状态".into(),
+        format!("开关与配置用 {prefix}ctl；首次启用会自动初始化"),
+        "定时排期的改动要到下次连接才生效".into(),
+    ]));
 
     Card(Doc {
         theme: Theme::Help,
-        width: OVERVIEW_WIDTH,
+        width: WIDTH,
         kicker: "ACUMEN · MANUAL".into(),
         blocks,
         foot: "开关状态以当前配置为准".into(),
@@ -102,7 +109,7 @@ pub fn overview(groups: &[Group], prefix: &str) -> Card {
     })
 }
 
-/// 详情卡：一条指令一格，主指令抬到 chip 里，别名与说明依次下沉
+/// 详情卡：简介一段，指令一条一格；照打的字与占位符分开着色
 pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
     let mut blocks = vec![
         Block::Title {
@@ -118,10 +125,7 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
             )),
             sub: format!("配置键 {}", entry.name),
         },
-        Block::Callout {
-            tone: Tone::Info,
-            text: entry.desc.into(),
-        },
+        Block::Lead(entry.desc.into()),
     ];
 
     if cmds.is_empty() {
@@ -154,18 +158,33 @@ pub fn detail(entry: &Entry, cmds: &[Cmd], prefix: &str) -> Card {
         ));
     }
 
+    blocks.push(Block::Section {
+        title: "管理".into(),
+        en: "MANAGE".into(),
+        count: String::new(),
+    });
+    blocks.push(Block::Facts(vec![
+        Fact {
+            label: "查看配置".into(),
+            command: format!("{prefix}ctl show {}", entry.name),
+        },
+        Fact {
+            label: "启用".into(),
+            command: format!("{prefix}ctl on {}", entry.name),
+        },
+        Fact {
+            label: "停用".into(),
+            command: format!("{prefix}ctl off {}", entry.name),
+        },
+    ]));
     blocks.push(Block::Callout {
         tone: Tone::Info,
-        text: format!(
-            "管理：{p}ctl show {n}\n开关：{p}ctl on/off {n}\n首次启用自动初始化；定时排期修改下次连接生效；详见 {p}ctl list",
-            p = prefix,
-            n = entry.name
-        ),
+        text: format!("首次启用自动初始化；定时排期的改动要到下次连接才生效。全部插件的状态见 {prefix}ctl list"),
     });
 
     Card(Doc {
         theme: Theme::Help,
-        width: DETAIL_WIDTH,
+        width: WIDTH,
         kicker: "MANUAL · PLUGIN".into(),
         blocks,
         foot: "ACUMEN · 插件手册".into(),

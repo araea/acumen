@@ -542,3 +542,34 @@
   margin: 0 var(--md-space-2);
   color: var(--md-sys-color-on-surface-variant);
 }
+
+/* —— 分段列表（M3E segmented list） —— */
+/* 一组条目共用一个轮廓：组的两端是大圆角，组内相邻处只留小圆角，条与条之间一道细缝。
+   不画分隔线、不给每条各描一圈边——「这些条目是一组」由形状说出来。
+   底色走 `--md-seg-bg`（默认 surface-container-low），要换一档在使用处改这个变量。
+   只有一条时整条都是大圆角。 */
+.md-seg {
+  --md-seg-bg: var(--md-sys-color-surface-container-low);
+  --md-seg-outer: var(--md-shape-l-plus);
+  --md-seg-inner: var(--md-shape-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.md-seg > li {
+  min-width: 0;
+  padding: var(--md-space-4) var(--md-space-5);
+  border-radius: var(--md-seg-inner);
+  background: var(--md-seg-bg);
+}
+.md-seg > li:first-child {
+  border-top-left-radius: var(--md-seg-outer);
+  border-top-right-radius: var(--md-seg-outer);
+}
+.md-seg > li:last-child {
+  border-bottom-left-radius: var(--md-seg-outer);
+  border-bottom-right-radius: var(--md-seg-outer);
+}

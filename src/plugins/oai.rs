@@ -12,6 +12,7 @@ use toml::Value;
 
 pub mod data;
 pub mod images;
+pub(crate) mod lists;
 pub(crate) mod llm;
 pub mod logic;
 pub mod mj;

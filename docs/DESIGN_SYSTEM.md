@@ -17,6 +17,7 @@
 - 同一脚本生成 `res/cards/tokens.css` 与 `src/render/tokens.rs`，卡片、原生统计图与词云不得手抄配色；卡片的语义角色与控制台一致。卡片根字号 20px，用同一 rem 字阶适配群聊缩略图，空间间距按 4px 基线映射。
 - 颜色配对成套使用：`primary/on-primary` 主操作；`primary-container/on-primary-container` 运行卡；`secondary-container/on-secondary-container` 选中；`tertiary-container/on-tertiary-container` 插件总数强调；`surface-container-*` 其余表面。`outline` 用于需要 3:1 的控件边界，`outline-variant` 仅用于装饰线；文字不使用 `outline`。
 - 字体使用系统无衬线，日志 / 代码使用系统等宽，数据用 `tabular-nums`。字号用 rem，输入框不得小于 16px。圆角使用 M3E shape scale，不启用 squircle 或其它形状体系。
+- **聊天卡片的字体与控制台不同**：卡片在服务端出图，读者的平台字体用不上，而 `system-ui` 在出图机上会落到 DejaVu Sans（拉丁字母又宽又散，汉字另走只有 Regular 一档的思源黑体，500 / 600 字重出不来）。所以 `scripts/make-tokens.py` 在卡片令牌里把 MiSans 排在最前——汉字拉丁一体、字重 Thin–Heavy 齐全；没装它的机器照旧走控制台那一串。装在 `$PREFIX/share/fonts/TTF/MiSans`，属设备本地状态。
 - 颜色反馈使用状态层（hover 8%，focus / pressed 10%）；位置与尺寸用 spatial fast / default（350 / 500ms），透明度 / 颜色用 effects（150 / 200 / 300ms）。减少动态时空间动画归零、循环动画停用。阴影仅用于浮层，内容卡片以容器色分层。
 
 ## 布局
@@ -57,7 +58,8 @@ python3 scripts/audit-contrast.py   # 对运行中的本机控制台只读检查
 
 ## 聊天、内容与数据契约
 
-- help、ctl、oai、ai_news 的信息卡出图成功后只发卡片图，不再补发等价文本；图片没出成（关掉出图或渲染失败）才退回文本。统计图与词云同此口径。长文本按适配器容量分段，资讯长内容沿用合并转发。图中来源保留完整 URL，OAI 卡片同时带来源与工具回执。`image_enabled=false` 仍可选择纯文本。
+- **信息卡版式**（手册、控制、智能体与模型列表共用 `render::web` 的文档模型与 `res/cards/reading.css`）：卡面统一 520 宽（成图 560，与智能回复卡同宽），手机全屏看时正文约 13dp，**内容多就让图变长，不让字变小**；一组条目用 M3E 分段列表（`md-seg`）收成一块——外端大圆角、组内小圆角、条间一道细缝，不再每条画一圈边。指令里照打的字用主色加粗，`<占位>` 与 `[可选]` 降一档；状态永远带文字，圆点另有实心 / 空心 / 带环三种形状；启用是常态，只给例外（已停用、待重启）挂标记。只剩一个成员的分组不单独立标题，并进「其他」，成员自己带上原本挂在标题上的那一项。
+- help、ctl、oai（回复卡与两张列表）、ai_news 的信息卡出图成功后只发卡片图，不再补发等价文本；图片没出成（关掉出图或渲染失败）才退回文本。统计图与词云同此口径。长文本按适配器容量分段，资讯长内容沿用合并转发。图中来源保留完整 URL，OAI 卡片同时带来源与工具回执。`image_enabled=false` 仍可选择纯文本。
 - 渲染不信任模型 HTML，原始标签作为文本转义。内置清单使用 Markdown，让图片与文本共用同一份内容。Markdown 卡的元素样式、分页与对比度检查见 [Markdown 转图](markdown.md)；代码着色只取 M3 角色色，前景与代码面的对比度由测试卡在 4.5:1 以上。
 - 图表条长从零正比映射，名称与数值分开布局；多系列折线的编号同时出现在图例与数据点，不能仅凭颜色区分。
 - 指令元数据以真实解析器为准，复制按钮只复制一个模板，按当前配置补词前缀；符号指令与智能体名称保持原样。尖括号表示需要替换的参数。

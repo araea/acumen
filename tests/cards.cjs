@@ -1,7 +1,8 @@
 // Generate real-registry fixtures first:
 // HELP_CARD_DUMP=/tmp/cards/help CTL_CARD_DUMP=/tmp/cards/ctl cargo test renders_sample_cards_to_png -- --ignored --test-threads=1
 // CARD_ARTIFACTS=/tmp/cards node tests/cards.cjs
-// Also accepts ai_news and oai fixtures; writes screenshots and a layout report.
+// oai fixtures are the model / room list cards (CARD_FAMILIES=help,ctl,oai by default); ai_news only when its fixtures exist.
+// Writes screenshots and a layout report.
 // Uses only local HTML fixtures and an isolated Chromium profile.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -58,13 +59,13 @@ async function main() {
   await cdp('Emulation.setDeviceMetricsOverride', {width:640, height:800, deviceScaleFactor:1, mobile:false});
   const report = [];
   const contrastFailures = [];
-  for (const family of (process.env.CARD_FAMILIES || 'help,ctl,ai_news,oai').split(',')) {
+  for (const family of (process.env.CARD_FAMILIES || 'help,ctl,oai').split(',')) {
     const dir = path.join(artifacts, family);
     assert(fs.existsSync(dir), family + ' fixtures missing');
     const files = fs.readdirSync(dir).filter(file => file.endsWith('.html'));
     assert(files.length >= ({help:4,ctl:5,ai_news:5,oai:2}[family]));
     for (const file of files) {
-      const viewport = {help:920,ctl:640,ai_news:720,oai:560}[family];
+      const viewport = {help:560,ctl:560,ai_news:720,oai:560}[family];
       await cdp('Emulation.setDeviceMetricsOverride', {width:viewport, height:800, deviceScaleFactor:1, mobile:false});
       await cdp('Page.navigate', {url:pathToFileURL(path.resolve(dir, file)).href});
       await until(() => run(`document.readyState === 'complete' && !!document.querySelector('.card')`));
@@ -78,38 +79,39 @@ async function main() {
         }).map(el => el.className || el.tagName);
         return {x:shot.x,y:shot.y,width:shot.width, height:shot.height, overflow, scriptRan:!!window.cardScriptRan,
           commands:document.querySelectorAll('.command').length,
-          items:document.querySelectorAll('.item').length,
-          states:document.querySelectorAll('.status-row').length};
+          items:document.querySelectorAll('.items > li').length,
+          cells:document.querySelectorAll('.cells > li').length};
       })()`);
-      assert.equal(metrics.width, family === 'help' ? (file === 'overview.html' ? 920 : 640) : viewport, file);
+      assert.equal(metrics.width, viewport, file);
       assert.equal(metrics.scriptRan, false, file + ': embedded script executed');
       const contrast = await run('(function(){' + contrastProbe + '})()');
       if (contrast.text.length) contrastFailures.push({file:family + '/' + file, failures:contrast.text});
       assert.deepEqual(metrics.overflow, [], file + ': content overflow');
       assert(metrics.height <= 16000, file + ': excessive height');
       if (file === 'overview.html') assert(metrics.items >= 20);
+      if (file === 'list.html') assert(metrics.cells >= 20);
       if (file === 'detail_widest.html') assert(metrics.commands >= 10);
       // Capture the complete local document.
       const capture = await cdp('Page.captureScreenshot', {format:'png', captureBeyondViewport:true, clip:{x:metrics.x,y:metrics.y,width:metrics.width,height:metrics.height,scale:1}});
       fs.writeFileSync(path.join(dir, file.replace('.html', '-review.png')), Buffer.from(capture.data, 'base64'));
       // Probe long unbroken values, aliases, escaping and CSS whitespace preservation in the browser.
       if (file === 'config.html') {
-        await run(`document.querySelector('.code-line code').textContent = '  key = "' + 'LongValue中文'.repeat(100) + '"'; true`);
+        await run(`document.querySelector('.code-line').textContent = '  key = "' + 'LongValue中文'.repeat(100) + '"'; true`);
         assert.equal(await run(`document.querySelector('.code-line').scrollWidth <= document.querySelector('.code-line').clientWidth + 1`), true);
-        assert.equal(await run(`getComputedStyle(document.querySelector('.code-line code')).whiteSpace`), 'pre-wrap');
+        assert.equal(await run(`getComputedStyle(document.querySelector('.code-line')).whiteSpace`), 'pre-wrap');
       }
       // 指令列表（`<ol class=commands>`）必须与版心左边缘对齐。浏览器给 `<ol>` 塞了
       // 40px 的 padding-inline-start，只写 list-style:none 去不掉——整列指令会右移，
       // 左边留白比右边宽，与上下分区也对不齐。这条在 ctl/usage 与 help/detail_* 上命中。
+      // 量的是列表本身（分段列表的外缘），不是里面的指令文字——后者还要再退一个条目内边距。
       const commands = await run(`(() => {
         const list = document.querySelector('.commands');
         if (!list) return null;
         const card = document.querySelector('.card');
         const cs = getComputedStyle(card), rect = card.getBoundingClientRect();
         const edge = rect.left + parseFloat(cs.borderLeftWidth) + parseFloat(cs.paddingLeft);
-        const chip = list.querySelector('.command');
         return {padding:getComputedStyle(list).paddingInlineStart,
-          offset:chip ? Math.round(chip.getBoundingClientRect().left - edge) : null};
+          offset:Math.round(list.getBoundingClientRect().left - edge)};
       })()`);
       if (commands) {
         assert.equal(commands.padding, '0px', file + ': 指令列表带 UA 默认缩进');

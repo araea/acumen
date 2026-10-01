@@ -12,7 +12,7 @@
 //! 估高，超出 `page_height` 就另起一页；标题不落在页尾，过长的代码块、表格与列表在块内按行、
 //! 按行、按项拆开（表头随页重复）。估高是估的，只决定「在哪里断页」，不影响排版本身。
 
-mod highlight;
+pub(crate) mod highlight;
 
 use crate::render::web::{DESIGN_SYSTEM, esc};
 use pulldown_cmark::{

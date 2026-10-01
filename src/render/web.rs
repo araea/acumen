@@ -26,6 +26,7 @@ pub(crate) const DESIGN_SYSTEM: &str = concat!(
     include_str!("../../res/cards/m3e.css")
 );
 
+/// 总览里的一个插件条目。
 pub struct Item {
     pub name: String,
     pub key: String,
@@ -38,15 +39,65 @@ pub struct Cmd {
     pub note: String,
     pub aliases: Vec<String>,
 }
-pub struct Row {
-    pub on: bool,
+/// 状态：圆点的形状与颜色、读数格的底色都由它定。
+///
+/// 颜色从来不单独传信息——同一处总有文字（分组标题、徽章、读数标签）说出同一件事，
+/// 圆点另外用实心 / 空心 / 带环三种形状区分。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    On,
+    Off,
+    Pending,
+    /// 中性：不代表任何状态，只是一个数。
+    Plain,
+}
+impl State {
+    fn class(self) -> &'static str {
+        match self {
+            State::On => "on",
+            State::Off => "off",
+            State::Pending => "pending",
+            State::Plain => "plain",
+        }
+    }
+}
+/// 状态清单里的一格：名称、配置键与状态。
+pub struct Cell {
     pub main: String,
     pub sub: String,
-    pub tail: String,
+    pub state: State,
 }
 pub struct Tile {
     pub value: String,
     pub label: String,
+    pub state: State,
+}
+/// 「标签 — 指令」的一行，用于「管理」这类告诉读者下一步怎么打的清单。
+pub struct Fact {
+    pub label: String,
+    pub command: String,
+}
+/// 配置差异的一项。`old` 为空表示默认值里没有这一项（额外项）。
+pub struct DiffRow {
+    pub key: String,
+    pub old: Option<String>,
+    pub new: String,
+}
+/// 房间列表的一行：名称、简介，以及要不要挂「联网」与所用模型。
+pub struct RoomRow {
+    pub name: String,
+    pub desc: String,
+    pub search: bool,
+    /// 分区标题里没写模型的行才自己带一行模型。
+    pub model: Option<String>,
+}
+/// 模型列表的一行：序号（可直接当指令里的模型写）、名称与几枚标签。
+pub struct ModelRow {
+    pub index: usize,
+    pub name: String,
+    pub vendor: Option<String>,
+    pub used: usize,
+    pub default: bool,
 }
 pub enum Tone {
     Info,
@@ -58,23 +109,40 @@ pub enum Block {
         pill: Option<(String, bool)>,
         sub: String,
     },
-    Meter(Vec<bool>),
+    /// 标题下的一段导语。
+    Lead(String),
+    /// 一排读数格。
+    Tiles(Vec<Tile>),
     Rule,
     Section {
         title: String,
         en: String,
         count: String,
     },
-    /// 条目清单。`cols` 为 1 时逐条竖排；大于 1 时排成多列网格
-    /// （目前样式只定义了 `.cols-2`），让「一眼看全」的目录不被撑成一张长图。
-    Items {
-        items: Vec<Item>,
-        cols: usize,
+    /// 分区标题的另一种写法：右边不是英文代号，而是一枚等宽芯片（模型名）。
+    SectionChip {
+        title: String,
+        chip: String,
+        count: String,
     },
+    /// 插件条目：分段列表，名称、配置键与简介；停用的才挂徽章。
+    Items(Vec<Item>),
+    /// 房间列表：名称一列、简介一列，对着读。
+    Rooms(Vec<RoomRow>),
+    /// 模型列表：序号、名称、标签。
+    Models(Vec<ModelRow>),
     Cmds(Vec<Cmd>),
-    Rows(Vec<Row>),
-    Code(Vec<String>),
-    Tiles(Vec<Tile>),
+    /// 状态清单：两列并排的小格，一格一个插件。
+    Grid(Vec<Cell>),
+    /// 等宽面板。`lang` 给了就按该语言着色（认不出则原样转义）。
+    Code {
+        lang: Option<&'static str>,
+        lines: Vec<String>,
+    },
+    Diff(Vec<DiffRow>),
+    Facts(Vec<Fact>),
+    /// 几条并列的说明，每条一个圆点。
+    Notes(Vec<String>),
     Callout {
         tone: Tone,
         text: String,
@@ -102,12 +170,6 @@ fn badge(label: &str, state: &str) -> String {
         esc(label)
     )
 }
-fn status(on: bool) -> String {
-    badge(
-        if on { "已启用" } else { "已停用" },
-        if on { "on" } else { "off" },
-    )
-}
 
 /// 出图时刻，落在页眉右端。
 ///
@@ -130,35 +192,129 @@ fn kicker_en(kicker: &str) -> &str {
         .trim()
 }
 
+/// 指令写成 HTML：`<名称>`、`[路径]` 这类占位符与照打的字分两种样式。
+///
+/// 一条指令里哪些字要原样敲、哪些要换成自己的内容，是读指令时最先要分清的事；
+/// 全写成一个颜色，读者得回头去数尖括号。占位符降一档、字重放轻，照打的部分
+/// 保持主色加粗。前缀（`/`）本身就是要打的，算照打的一部分。
+fn command_html(prefix: &str, cmd: &str) -> String {
+    let mut out = String::new();
+    let mut literal = String::from(prefix);
+    let flush = |literal: &mut String, out: &mut String| {
+        if !literal.is_empty() {
+            out.push_str(&esc(literal));
+            literal.clear();
+        }
+    };
+    let mut chars = cmd.char_indices().peekable();
+    while let Some((start, ch)) = chars.next() {
+        let close = match ch {
+            '<' => '>',
+            '[' => ']',
+            _ => {
+                literal.push(ch);
+                continue;
+            }
+        };
+        // 找不到收尾的括号就当普通字符，不吞掉后面的内容。
+        let Some(len) = cmd[start..].find(close) else {
+            literal.push(ch);
+            continue;
+        };
+        flush(&mut literal, &mut out);
+        let end = start + len + close.len_utf8();
+        out.push_str(&format!(
+            r#"<span class="ph">{}</span>"#,
+            esc(&cmd[start..end])
+        ));
+        while chars.peek().is_some_and(|(i, _)| *i < end) {
+            chars.next();
+        }
+    }
+    flush(&mut literal, &mut out);
+    out
+}
+
+/// 逐行着色后的面板内容。着色器认得的语言走 `tk-*`，其余原样转义；
+/// 每行单独成块，折行时才能悬挂缩进。
+fn code_lines(lang: Option<&str>, lines: &[String]) -> String {
+    let joined = lines.join("\n");
+    let colored = lang
+        .and_then(|lang| crate::render::markdown::highlight::highlight(lang, &joined))
+        .unwrap_or_else(|| esc(&joined));
+    colored
+        .split('\n')
+        .map(|line| {
+            let line = if line.is_empty() { "&#8203;" } else { line };
+            format!("<span class=\"code-line\">{line}</span>")
+        })
+        .collect()
+}
+
 pub fn html(doc: &Doc) -> String {
     let mut body = String::new();
     for block in &doc.blocks {
         match block {
             Block::Title { title, pill, sub } => {
-                body.push_str(&format!("<header class=head><div class=heading><h1 class=\"md-title md-type-headline-large md-balance\">{}</h1>{}</div><p class=\"subtitle md-subtitle md-type-title-small\">{}</p></header>",
+                body.push_str(&format!("<header class=head><div class=heading><h1 class=\"md-title md-type-headline-large md-balance\">{}</h1>{}</div><p class=\"md-subtitle md-type-title-small\">{}</p></header>",
                     esc(title), pill.as_ref().map(|(label, on)| badge(label, if *on { "on" } else { "off" })).unwrap_or_default(), esc(sub)));
             }
-            Block::Meter(states) => {
-                let on = states.iter().filter(|s| **s).count();
-                body.push_str(&format!("<div class=\"summary md-readings\"><span class=md-reading><span class=md-reading-key>全部</span><b class=md-reading-value>{}</b></span><span class=md-reading><span class=md-reading-key>已启用</span><b class=md-reading-value>{on}</b></span><span class=md-reading><span class=md-reading-key>已停用</span><b class=md-reading-value>{}</b></span></div>", states.len(), states.len() - on));
-            }
-            Block::Rule => body.push_str("<hr class=\"md-divider\">"),
-            Block::Section { title, en, count } => body.push_str(&format!(
-                "<div class=\"section md-section\"><h2 class=\"md-title md-type-title-large md-balance\">{}</h2><span class=md-section-en>{}</span><span class=md-count>{}</span></div>", esc(title), esc(en), esc(count))),
-            Block::Items { items, cols } => {
-                let cols = (*cols).max(1);
-                body.push_str(&format!("<div class=\"items cols-{cols}\">"));
-                for item in items {
-                    body.push_str(&format!("<article class=item><div class=item-heading><h3 class=\"md-title md-type-title-large\">{}</h3><span class=key>{}</span>{}</div><p class=\"description md-type-body-large\">{}</p></article>",
-                        esc(&item.name), esc(&item.key), status(item.on), esc(&item.desc)));
+            Block::Lead(text) => body.push_str(&format!("<p class=\"lead md-type-body-large\">{}</p>", esc(text))),
+            Block::Tiles(tiles) => {
+                body.push_str("<div class=\"tiles md-tiles\">");
+                for tile in tiles {
+                    body.push_str(&format!("<div class=\"md-tile tile-{}\"><b>{}</b><span>{}</span></div>", tile.state.class(), esc(&tile.value), esc(&tile.label)));
                 }
                 body.push_str("</div>");
             }
+            Block::Rule => body.push_str("<hr class=\"md-divider\">"),
+            Block::Section { title, en, count } => body.push_str(&format!(
+                "<div class=\"section md-section\"><h2 class=\"md-title md-type-title-medium md-balance\">{}</h2>{}{}</div>",
+                esc(title),
+                if en.is_empty() { String::new() } else { format!("<span class=md-section-en>{}</span>", esc(en)) },
+                if count.is_empty() { String::new() } else { format!("<span class=md-count>{}</span>", esc(count)) })),
+            Block::SectionChip { title, chip, count } => body.push_str(&format!(
+                "<div class=\"section md-section\"><h2 class=\"md-title md-type-title-medium md-balance\">{}</h2><code class=section-chip>{}</code><span class=md-count>{}</span></div>",
+                esc(title), esc(chip), esc(count))),
+            Block::Rooms(rooms) => {
+                body.push_str("<ul class=\"md-seg rooms\">");
+                for room in rooms {
+                    body.push_str(&format!("<li><div class=room-name><h3>{}</h3>{}</div><div class=room-body><p class=room-desc>{}</p>{}</div></li>",
+                        esc(&room.name),
+                        if room.search { "<span class=room-tag>联网</span>" } else { "" },
+                        esc(&room.desc),
+                        room.model.as_ref().map(|m| format!("<code class=room-model>{}</code>", esc(m))).unwrap_or_default()));
+                }
+                body.push_str("</ul>");
+            }
+            Block::Models(models) => {
+                body.push_str("<ul class=\"md-seg models\">");
+                for model in models {
+                    let mut tags = String::new();
+                    if model.default { tags.push_str("<span class=\"model-tag tag-default\">默认</span>"); }
+                    if let Some(vendor) = &model.vendor { tags.push_str(&format!("<span class=\"model-tag\">{}</span>", esc(vendor))); }
+                    if model.used > 0 { tags.push_str(&format!("<span class=\"model-tag tag-used\">{} 个智能体使用</span>", model.used)); }
+                    body.push_str(&format!("<li><span class=model-index>{}</span><span class=model-name>{}</span>{}</li>",
+                        model.index, esc(&model.name),
+                        if tags.is_empty() { String::new() } else { format!("<span class=model-tags>{tags}</span>") }));
+                }
+                body.push_str("</ul>");
+            }
+            Block::Items(items) => {
+                body.push_str("<ul class=\"md-seg items\">");
+                for item in items {
+                    body.push_str(&format!("<li><div class=item-head><h3 class=item-name>{}</h3><code class=item-key>{}</code>{}</div><p class=item-desc>{}</p></li>",
+                        esc(&item.name), esc(&item.key),
+                        if item.on { String::new() } else { badge("已停用", "off") },
+                        esc(&item.desc)));
+                }
+                body.push_str("</ul>");
+            }
             Block::Cmds(cmds) => {
-                body.push_str("<ol class=commands>");
+                body.push_str("<ol class=\"md-seg commands\">");
                 for cmd in cmds {
-                    body.push_str(&format!("<li><code class=\"command md-command\">{}{}</code>", esc(&cmd.prefix), esc(&cmd.cmd)));
-                    if !cmd.note.is_empty() { body.push_str(&format!("<p class=\"description md-type-body-large\">{}</p>", esc(&cmd.note))); }
+                    body.push_str(&format!("<li><code class=command>{}</code>", command_html(&cmd.prefix, &cmd.cmd)));
+                    if !cmd.note.is_empty() { body.push_str(&format!("<p class=item-desc>{}</p>", esc(&cmd.note))); }
                     if !cmd.aliases.is_empty() {
                         body.push_str("<div class=aliases><span>别名</span>");
                         for alias in &cmd.aliases { body.push_str(&format!("<code>{}</code>", esc(alias))); }
@@ -168,27 +324,42 @@ pub fn html(doc: &Doc) -> String {
                 }
                 body.push_str("</ol>");
             }
-            Block::Rows(rows) => {
-                body.push_str("<div class=status-list>");
+            Block::Grid(cells) => {
+                body.push_str("<ul class=cells>");
+                for cell in cells {
+                    body.push_str(&format!("<li class=\"cell cell-{}\"><i class=cell-dot></i><div class=cell-text><h3 class=cell-main>{}</h3><code class=cell-sub>{}</code></div></li>",
+                        cell.state.class(), esc(&cell.main), esc(&cell.sub)));
+                }
+                body.push_str("</ul>");
+            }
+            Block::Code { lang, lines } => {
+                body.push_str(&format!("<div class=code-panel>{}</div>", code_lines(*lang, lines)));
+            }
+            Block::Diff(rows) => {
+                body.push_str("<ul class=\"md-seg diffs\">");
                 for row in rows {
-                    body.push_str(&format!("<div class=status-row><div class=identity><h3 class=\"md-title md-type-title-large\">{}</h3><div class=key>{}</div></div><div class=states>{}{}</div></div>",
-                        esc(&row.main), esc(&row.sub), status(row.on),
-                        if row.tail.is_empty() { String::new() } else { badge(&row.tail, "pending") }));
+                    body.push_str(&format!("<li><code class=diff-key>{}</code>", esc(&row.key)));
+                    if let Some(old) = &row.old {
+                        body.push_str(&format!(
+                            "<div class=\"diff-line diff-old\"><span class=diff-tag>默认</span><code>{}</code></div>", esc(old)));
+                    }
+                    body.push_str(&format!(
+                        "<div class=\"diff-line diff-new\"><span class=diff-tag>{}</span><code>{}</code></div></li>",
+                        if row.old.is_some() { "当前" } else { "额外" }, esc(&row.new)));
                 }
-                body.push_str("</div>");
+                body.push_str("</ul>");
             }
-            Block::Code(lines) => {
-                body.push_str("<div class=\"code-panel md-code-panel\">");
-                for line in lines {
-                    let class = if line.trim().starts_with('[') { "code-line md-code-line md-code-key" } else { "code-line md-code-line" };
-                    body.push_str(&format!("<div class=\"{class}\"><code>{}</code></div>", if line.is_empty() { "&#8203;".into() } else { esc(line) }));
+            Block::Facts(facts) => {
+                body.push_str("<dl class=facts>");
+                for fact in facts {
+                    body.push_str(&format!("<div class=fact><dt>{}</dt><dd><code>{}</code></dd></div>", esc(&fact.label), esc(&fact.command)));
                 }
-                body.push_str("</div>");
+                body.push_str("</dl>");
             }
-            Block::Tiles(tiles) => {
-                body.push_str("<div class=\"tiles md-tiles\">");
-                for tile in tiles { body.push_str(&format!("<div class=md-tile><b>{}</b><span>{}</span></div>", esc(&tile.value), esc(&tile.label))); }
-                body.push_str("</div>");
+            Block::Notes(notes) => {
+                body.push_str("<aside class=\"callout md-callout notes\"><ul>");
+                for note in notes { body.push_str(&format!("<li>{}</li>", esc(note))); }
+                body.push_str("</ul></aside>");
             }
             Block::Callout { tone, text } => body.push_str(&format!("<aside class=\"callout md-callout md-type-body-medium {}\">{}</aside>",
                 match tone { Tone::Info => "info", Tone::Empty => "md-callout-empty" }, esc(text))),
