@@ -263,6 +263,9 @@ max_height = 5000
 quality = 80
 # 单次截图的超时（秒）。
 timeout_seconds = 30
+# 手动名单：这些群不自动截图，只能用「截图 <链接>」指令（或引用一条含链接的消息）
+# 现截一张。想让一个群彻底不碰截图，用下面 [webshot.channel] 的 black。
+manual_channels = []
 
 # 语义同 [stats.channel]。私聊不受白名单约束，但黑名单可以点名会话（对方的账号，
 # 微信里公众号与服务通知是 `gh_` 开头的账号，如微信支付 gh_3dfda90e39d6）。

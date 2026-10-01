@@ -1,5 +1,7 @@
-use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::command::find_urls;
+use crate::adapters::satori::{LockedWriter, api, send_msg};
+use crate::command::{
+    CommandMatch, extract_text_arg, find_urls, first_command_match,
+};
 use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
@@ -9,6 +11,7 @@ use anyhow::{Result, anyhow};
 use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, LaunchOptions, Viewport};
 use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
+use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
@@ -42,6 +45,9 @@ pub struct Config {
     /// 是否跳过 QQ 官方机器人与微信公众号 / 服务通知发的消息。默认开启——
     /// 见 `OFFICIAL_BOT_ID_PREFIXES` 与 `is_wechat_official_account`。
     pub skip_official_bots: bool,
+    /// 手动名单：这些群不自动截图，只能用「截图」指令现截一张。
+    /// 想让一个群彻底不碰截图（连指令也关掉），用 [`ChannelConfig`] 的黑名单。
+    pub manual_channels: Vec<String>,
     /// 群名单：配了黑名单就对名单外的所有群截图，配了白名单则只对名单内的群截图。
     pub channel: ChannelConfig,
 }
@@ -59,6 +65,7 @@ impl Default for Config {
             allow_private_hosts: false,
             block_walled_sites: true,
             skip_official_bots: true,
+            manual_channels: vec![],
             channel: ChannelConfig::default(),
         }
     }
@@ -622,6 +629,111 @@ fn links_in_segments(event: &crate::event::Event) -> Vec<String> {
 
 // ================= Main Handler =================
 
+/// 手动截图指令。
+const COMMANDS: &[&str] = &["截图", "webshot"];
+
+/// 这个群是否在手动名单里：不自动截图，只有 [`COMMANDS`] 指令能触发。
+fn is_manual_only(config: &Config, group_id: Option<&str>) -> bool {
+    group_id
+        .is_some_and(|gid| config.manual_channels.iter().any(|id| id.trim() == gid))
+}
+
+/// 引用消息正文里的文本（`text` 段拼接，段间补空格）。
+fn quoted_text(message: &Message) -> String {
+    message
+        .0
+        .iter()
+        .filter(|segment| segment.type_ == "text")
+        .filter_map(|segment| segment.data.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// 逐条准入，跳过的不算数；收到上限就不再往下看。
+async fn admit_links(candidates: Vec<String>, config: &Config) -> Vec<Url> {
+    let mut urls = Vec::new();
+    for candidate in candidates {
+        if urls.len() >= MAX_LINKS_PER_MESSAGE {
+            info!(
+                target: "Plugin/WebShot",
+                "超过上限，本条消息只截前 {} 条链接", MAX_LINKS_PER_MESSAGE
+            );
+            break;
+        }
+        match check_url(&candidate, config).await {
+            Ok(url) => urls.push(url),
+            Err(reason) => info!(target: "Plugin/WebShot", "跳过截图：{}", reason),
+        }
+    }
+    urls
+}
+
+/// 手动截图：指令参数里写链接，或引用一条含链接的消息。
+///
+/// 指令走遍所有名单——自动截图关掉的群（[`Config::manual_channels`]，乃至
+/// `channel` 名单外的群）就靠它临时出一张。这是打字的人自己点的名，不算打扰。
+// 事件四要素（群、人、消息 ID）与指令匹配结果都是现成的标量，收拢成结构体反而多一层。
+#[allow(clippy::too_many_arguments)]
+async fn manual(
+    ctx: Context,
+    writer: LockedWriter,
+    config: &Config,
+    browser_path: Option<String>,
+    group_id: Option<String>,
+    user_id: String,
+    message_id: String,
+    matched: CommandMatch,
+) -> Result<Option<Context>, PluginError> {
+    let group_id = group_id.as_deref();
+    let user_id = user_id.as_str();
+
+    // 链接先认指令参数；参数里没有，再去找引用的那条消息。
+    let arg_text = extract_text_arg(&matched.args);
+    let mut candidates = find_urls(&arg_text);
+    if candidates.is_empty()
+        && let Some(reply_id) = matched.reply_id
+    {
+        match api::get_msg(&ctx, writer.clone(), &reply_id).await {
+            Ok(quoted) => candidates = find_urls(&quoted_text(&quoted.message)),
+            Err(e) => {
+                warn!(target: "Plugin/WebShot", "取引用消息失败：{}", e);
+            }
+        }
+    }
+
+    let urls = admit_links(candidates, config).await;
+    if urls.is_empty() {
+        let hint = Message::new()
+            .reply(&message_id)
+            .text("没有可截图的链接：指令后面写链接，或引用一条含链接的消息");
+        send_msg(&ctx, writer, group_id, Some(user_id), hint).await?;
+        return Ok(None);
+    }
+
+    info!(
+        target: "Plugin/WebShot",
+        "手动截图：{}",
+        urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
+    );
+
+    let images = capture_all(&urls, config, browser_path).await;
+    if images.is_empty() {
+        let note = Message::new()
+            .reply(&message_id)
+            .text("没截出图（页面可能有验证墙），详见日志");
+        send_msg(&ctx, writer, group_id, Some(user_id), note).await?;
+        return Ok(None);
+    }
+
+    // 多张图合成一条消息，回在指令那条下面。
+    let mut msg = Message::new().reply(&message_id);
+    for base64_img in images {
+        msg = msg.image(format!("base64://{}", base64_img));
+    }
+    send_msg(&ctx, writer, group_id, Some(user_id), msg).await?;
+    Ok(None)
+}
+
 pub fn handle(
     ctx: Context,
     writer: LockedWriter,
@@ -639,22 +751,41 @@ pub fn handle(
         // 获取全局浏览器路径配置
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
 
+        let user_id = msg_event.user_id().to_string();
+        let group_id = msg_event.group_id().map(str::to_string);
+        let message_id = msg_event.message_id().to_string();
+        if is_own_echo(&msg_event, &ctx.bot.self_id()) {
+            return Ok(Some(ctx));
+        }
+
+        // 手动指令排在一切名单之前：自动截图关掉的群就靠它临时出一张。
+        // 名单判定都跳过，只保留回声检查——这是打字的人自己点的名。
+        if let Some(matched) = first_command_match(&ctx, COMMANDS) {
+            return manual(
+                ctx,
+                writer,
+                &config,
+                browser_path,
+                group_id,
+                user_id,
+                message_id,
+                matched,
+            )
+            .await;
+        }
+
+        let user_id = user_id.as_str();
+        let group_id = group_id.as_deref();
+
         // 检查群组黑白名单；私聊没有群号，只看黑名单有没有点名这个会话
         // （微信支付、银行通知这类服务号的私聊卡片不该截图）。
-        let group_id = msg_event.group_id();
         let allowed = match group_id {
             Some(_) => config.channel.allows(group_id),
             None => config
                 .channel
                 .allows_direct(&[msg_event.channel_id(), msg_event.user_id()]),
         };
-        if !allowed {
-            return Ok(Some(ctx));
-        }
-
-        let user_id = msg_event.user_id();
-        if is_own_echo(&msg_event, &ctx.bot.self_id())
-        {
+        if !allowed || is_manual_only(&config, group_id) {
             return Ok(Some(ctx));
         }
 
@@ -692,18 +823,8 @@ pub fn handle(
             return Ok(Some(ctx));
         }
 
-        // 逐条准入，跳过的不算数；收到上限就不再往下看。
-        let mut urls = Vec::new();
-        for candidate in candidates {
-            if urls.len() >= MAX_LINKS_PER_MESSAGE {
-                info!(target: "Plugin/WebShot", "超过上限，本条消息只截前 {} 条链接", MAX_LINKS_PER_MESSAGE);
-                break;
-            }
-            match check_url(&candidate, &config).await {
-                Ok(url) => urls.push(url),
-                Err(reason) => info!(target: "Plugin/WebShot", "跳过截图：{}", reason),
-            }
-        }
+        // 逐条准入，跳过的不算数。
+        let urls = admit_links(candidates, &config).await;
 
         if urls.is_empty() {
             return Ok(Some(ctx));
@@ -1005,6 +1126,33 @@ mod tests {
         assert!(WECHAT_REHYDRATE_JS.contains("data-src"));
         // 「SVG 交互」长图：真地址在 `data-lazy-bgimg` 上，画出来的是占位 gif。
         assert!(WECHAT_REHYDRATE_JS.contains("data-lazy-bgimg"));
+    }
+
+    /// 手动名单只关自动截图：名单内的群命中，名单外与私聊都不命中。
+    #[test]
+    fn manual_only_channels_disable_auto_capture() {
+        let mut config = config();
+        assert!(!is_manual_only(&config, Some("123")), "名单为空时谁都不命中");
+        assert!(!is_manual_only(&config, None));
+
+        config.manual_channels = vec!["123".into(), " 456 ".into()];
+        assert!(is_manual_only(&config, Some("123")));
+        assert!(is_manual_only(&config, Some("456")), "名单项先去空白再比");
+        assert!(!is_manual_only(&config, Some("789")));
+        assert!(!is_manual_only(&config, None), "私聊不受手动名单约束");
+    }
+
+    /// 引用消息的正文按 text 段拼接；图片段里的地址不算正文。
+    #[test]
+    fn quoted_text_joins_text_segments_only() {
+        let message: Message = serde_json::from_value(serde_json::json!([
+            {"type": "text", "data": {"text": "看看这个"}},
+            {"type": "image", "data": {"url": "https://cover.example.com/x.png"}},
+            {"type": "text", "data": {"text": "https://a.com/1"}}
+        ]))
+        .unwrap();
+        assert_eq!(quoted_text(&message), "看看这个 https://a.com/1");
+        assert_eq!(quoted_text(&Message::new()), "");
     }
 
     #[test]

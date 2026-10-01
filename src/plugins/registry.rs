@@ -190,7 +190,10 @@ register_plugins!(
     webshot {
         display_name: "网页截图",
         section: "message",
-        summary: "给消息里的网页链接自动截图（视频站链接交给「视频解析」）"
+        summary: "给消息里的网页链接自动截图（视频站链接交给「视频解析」）；manual_channels 名单内的群不自动截，可用指令手动触发",
+        commands: cmds![
+            ("截图 <链接> / webshot", "手动截图：链接写在指令后面，或引用一条含链接的消息"),
+        ]
     },
     oai {
         display_name: "智能对话",
