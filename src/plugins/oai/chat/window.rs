@@ -158,6 +158,8 @@ pub(crate) struct GroupState {
     owner_at: Option<Instant>,
     /// 号主亲手打过几条（只增不减）：等他答话时靠它看「他有没有开口」。
     owner_marks: u64,
+    /// 随口一句的时刻，用于每小时上限。
+    quick: VecDeque<Instant>,
 }
 
 impl GroupState {
@@ -505,6 +507,31 @@ impl GroupState {
         }
         self.breakthroughs.push_back(now);
         true
+    }
+
+    /// 最近一小时随口回过几次。
+    pub(crate) fn quick_last_hour(&mut self) -> usize {
+        let now = Instant::now();
+        while self
+            .quick
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= Duration::from_secs(3_600))
+        {
+            self.quick.pop_front();
+        }
+        self.quick.len()
+    }
+
+    /// 记一次随口一句。
+    pub(crate) fn mark_quick(&mut self) {
+        self.quick.push_back(Instant::now());
+    }
+
+    /// 窗口里最新一条消息：是不是自己的、多久以前（秒）。空窗口是 `None`。
+    pub(crate) fn newest(&self, now: i64) -> Option<(bool, i64)> {
+        self.turns
+            .back()
+            .map(|turn| (turn.from_me, (now - turn.at).max(0)))
     }
 
     /// 号主本人在 `within` 之内亲手在这个群里打过字。

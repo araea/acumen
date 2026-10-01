@@ -124,6 +124,35 @@ fn pick<'a>(turns: &[Turn], samples: &[Sample<'a>], register: Register) -> Vec<&
     chosen
 }
 
+/// 「随口一句」要的调子：几条最短的原话（六个字以内），跟眼前话题无关。
+///
+/// 号主手打的消息有四分之一在四到六个字以内，短到只剩一个反应（「？」「笑死」
+/// 「好可爱啊」）；机器人每次开口都带着内容，这一档几乎是空的。随口一句的提示词里只
+/// 摆这几条，模型才写得出那么短的话。
+pub(crate) fn short_lines(turns: &[Turn], register: Register, count: usize) -> Vec<&'static str> {
+    use rand::seq::SliceRandom;
+    let samples = parse(VOICE);
+    let recent: String = turns
+        .iter()
+        .rev()
+        .take(TOPIC_TURNS)
+        .map(|turn| turn.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let words = content_words(&recent);
+    let mut shorts: Vec<&'static str> = samples
+        .iter()
+        .filter(|sample| fits(sample, register))
+        .filter(|sample| (1..=6).contains(&sample.text.chars().count()))
+        .filter(|sample| !recent.contains(sample.text))
+        .filter(|sample| content_words(sample.text).is_disjoint(&words))
+        .map(|sample| sample.text)
+        .collect();
+    shorts.shuffle(&mut rand::rng());
+    shorts.truncate(count);
+    shorts
+}
+
 /// 虚字：它们组成的字组说明不了在聊什么。
 const FUNCTION_CHARS: &str = "的了是不我你他她它们这那就还也都在有没么吗吧呢啊哈嘛呀哦个一二两上下来去说要会能可以到得着过把被给让很太真好对啥什怎样点些里时候看想又再才而且但就算然后";
 
@@ -416,6 +445,20 @@ mod tests {
             let text = brief(&[turn("笑死")], register);
             for word in ["禁止", "不得", "必须", "不要", "不能"] {
                 assert!(!text.contains(word), "样本说明里出现了禁令「{word}」：{text}");
+            }
+        }
+    }
+
+    /// 随口一句的样本只有短的，且不沾眼前的话题。
+    #[test]
+    fn short_lines_are_short_and_off_topic() {
+        for _ in 0..20 {
+            let lines = short_lines(&[turn("华为新机发布 mate90")], Register::Even, 4);
+            assert!(!lines.is_empty(), "短句库不能是空的");
+            assert!(lines.len() <= 4);
+            for line in &lines {
+                assert!(line.chars().count() <= 6, "{line}");
+                assert!(!line.contains("华为"), "{line}");
             }
         }
     }

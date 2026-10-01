@@ -39,6 +39,7 @@ mod gate;
 mod integration_tests;
 mod mood;
 mod peak;
+mod quick;
 mod quote;
 mod screenshot;
 pub(crate) mod speak;
@@ -235,6 +236,12 @@ pub(crate) struct AmbientConfig {
     /// 判定与发言两个模型都不走 DeepSeek 时，全天一个价，这一整段让路。
     /// `peak.model` 可以给高峰时段单独配一个便宜模型顶替主模型。
     pub peak: peak::PeakConfig,
+    /// 每群每小时最多随口吭几声（见 [`quick`]）；0 关闭。
+    ///
+    /// 判定打分落在 `quick_floor` 与开口门槛之间时，按几率不调用发言模型、只随口回一两个字。
+    pub quick_per_hour: usize,
+    /// 随口一句的分数下限：判定低于它说明连吭一声的兴致都没有。
+    pub quick_floor: u8,
     /// 号主本人在这个群亲手打字之后，多久之内机器人不主动接话（秒）；0 关闭。
     ///
     /// 同一个账号，他在线时机器人不该跟他抢话——群友已经为「同一个号两种口气」开过
@@ -331,6 +338,8 @@ impl Default for AmbientConfig {
             search_enabled: true,
             search_budget: 3,
             peak: peak::PeakConfig::default(),
+            quick_per_hour: 4,
+            quick_floor: 38,
             owner_quiet_seconds: 480,
             owner_grace_seconds: 75,
             send_freshness_seconds: 25,
@@ -1550,6 +1559,20 @@ async fn consider_batch(
             });
         if !ordinary && !breakthrough {
             debug!(target: LOG_TARGET, "群 {group} 保持沉默（{}/{}，{}）", verdict.score, threshold, verdict.reason);
+            quick_word(
+                ctx,
+                writer,
+                group,
+                config,
+                (&api_base, &api_key, &gate_model),
+                &persona,
+                &verdict,
+                threshold,
+                silent_for,
+                doze,
+                seq,
+            )
+            .await;
             return Ok(());
         }
         if breakthrough {
@@ -1611,6 +1634,75 @@ async fn consider_batch(
         doze,
     )
     .await
+}
+
+/// 判定没过线、但落在「想吭一声」区间里时：按几率随口回一两个字（见 [`quick`]）。
+///
+/// 不调用发言模型、不碰工具，失败一律当没发生——这一步是锦上添花，不该让任何一次
+/// 出错变成日志里的警告。
+#[allow(clippy::too_many_arguments)]
+async fn quick_word(
+    ctx: &Context,
+    writer: &LockedWriter,
+    group: &str,
+    config: &AmbientConfig,
+    (api_base, api_key, model): (&str, &str, &str),
+    persona: &str,
+    verdict: &gate::Verdict,
+    threshold: u8,
+    silent_for: Option<Duration>,
+    doze: bool,
+    seq: &mut u64,
+) {
+    let now = chrono::Local::now().timestamp();
+    let facts = window::with_group(group, |state| quick::Facts {
+        score: verdict.score,
+        threshold,
+        newest: state.newest(now),
+        since_last_spoke: silent_for,
+        quick_last_hour: state.quick_last_hour(),
+        owner_present: state.owner_active(config.owner_quiet()),
+        dozing: doze,
+    });
+    if !quick::wants(config, facts, rand::random::<f32>()) || !current(ctx, group, *seq) {
+        return;
+    }
+    let turns = window::with_group(group, |state| {
+        state.recent(config.context_turns.clamp(1, 80))
+    });
+    let voice = voice::short_lines(&turns, voice_register(config, group), 5);
+    let started = Instant::now();
+    let text = match quick::react(
+        api_base,
+        api_key,
+        model,
+        config,
+        persona,
+        &turns,
+        &verdict.reason,
+        &voice,
+    )
+    .await
+    {
+        Ok(Some(text)) if !quick::repeats(&text, &turns) => text,
+        Ok(_) => return,
+        Err(error) => {
+            debug!(target: LOG_TARGET, "群 {group} 随口一句没成：{error:#}");
+            return;
+        }
+    };
+    // 问模型的这几秒里群里又动了：这一声就不吭了。
+    if !current(ctx, group, *seq) {
+        return;
+    }
+    let pace::Speech::Say(utterances) = pace::parse(&text, 1, 0) else {
+        return;
+    };
+    info!(target: LOG_TARGET, "群 {group} 随口一句（{}/{}）：{}", verdict.score, threshold, verdict.reason);
+    window::with_group(group, |state| state.mark_quick());
+    if let Err(error) = deliver(ctx, writer, group, config, &turns, utterances, seq, false, started).await {
+        debug!(target: LOG_TARGET, "群 {group} 随口一句没发出去：{error:#}");
+    }
 }
 
 /// 一句 @ 它的话是不是在问事（而不是逗它）。刻意收窄：「你是不是人机」不算。
@@ -1783,7 +1875,7 @@ async fn speak_up(
     if let Some(focus) = focus {
         window::with_group(group, |state| state.focus = focus);
     }
-    let mut utterances =
+    let utterances =
         match pace::parse(&raw, config.messages_budget.clamp(1, 5), config.split_chars) {
             pace::Speech::Silent => {
                 if acted {
@@ -1795,6 +1887,28 @@ async fn speak_up(
             }
             pace::Speech::Say(items) => items,
         };
+    deliver(
+        ctx, writer, group, config, turns, utterances, seq, doze, started,
+    )
+    .await?;
+    Ok(())
+}
+
+/// 按人的节奏把一批话发出去：先想一会儿，再一条条打字、检查现场还新不新、发送并记账。
+///
+/// 兼容文字路径的发言与「随口一句」都走这里。返回有没有真的发出过一条。
+#[allow(clippy::too_many_arguments)]
+async fn deliver(
+    ctx: &Context,
+    writer: &LockedWriter,
+    group: &str,
+    config: &AmbientConfig,
+    turns: &[Turn],
+    mut utterances: Vec<pace::Utterance>,
+    seq: &mut u64,
+    doze: bool,
+    started: Instant,
+) -> anyhow::Result<bool> {
     // 人不会把刚说过的话换个标点再说一遍；小模型在同一段上下文里被反复唤起时会。
     let history = window::with_group(group, |state| state.recent(40));
     utterances.retain(|utterance| {
@@ -1806,7 +1920,7 @@ async fn speak_up(
         true
     });
     if utterances.is_empty() {
-        return Ok(());
+        return Ok(false);
     }
 
     // 兼容文字路径要引谁：模型用 `[reply:消息号]` 点名了就引那条（须在本批记录里，
@@ -1908,7 +2022,7 @@ async fn speak_up(
             memory::edit(group, |memory| memory.exchange(&target.user_id, at));
         }
     }
-    Ok(())
+    Ok(sent)
 }
 
 pub fn default_config() -> Value {
