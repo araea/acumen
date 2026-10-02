@@ -471,28 +471,87 @@ async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     }
 }
 
-/// 控制台「选群」要用的一条：群号、群名，以及它是在哪个平台上的。
+/// 控制台名单编辑器要挑选的名册：已加入的群，或好友（私聊对象）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Roster {
+    Groups,
+    Friends,
+}
+
+impl Roster {
+    fn method(self) -> &'static str {
+        match self {
+            Roster::Groups => "guild.list",
+            Roster::Friends => "friend.list",
+        }
+    }
+}
+
+/// 名册里的一条：ID、名字，以及它是在哪个平台上的。
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct KnownGuild {
+pub(crate) struct RosterEntry {
     pub id: String,
     pub name: String,
-    /// `login.platform`，如 `qq`、`wechat`。两个平台同时在线时，页面靠它区分同名的群。
+    /// 另一个叫法（好友的昵称或备注，与 `name` 不同时才有），搜索时也认它。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub alias: String,
+    /// `login.platform`，如 `red`（QQ）、`wechat`。两个平台同时在线时，页面靠它区分同名的人。
     pub platform: String,
 }
 
-/// 把每条在线连接的 `guild.list` 都翻到底，列出「已加入的群」。
+/// 一条分页数据读成 [`RosterEntry`]。
 ///
-/// 只读，也不进目录：这是给人挑群用的，和 [`learn_guilds`] 的路由学习是两件事。某条连接离线、
+/// `guild.list` 给的是 `{id, name}`；`friend.list` 在两个实现端里都是 `{user: {id, name, nick}, nick}`
+/// （与群成员同形），标准里的裸 `User` 也兼容。好友的 `name` 与 `nick` 谁是备注、谁是昵称
+/// 各平台说法不一，所以取一个作名字、不同的那个留作别名，两个都能搜到。
+fn roster_entry(kind: Roster, item: &Value, platform: &str) -> Option<RosterEntry> {
+    let user = item.get("user").unwrap_or(item);
+    let id = user
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())?;
+    let text = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    let (name, alias) = match kind {
+        Roster::Groups => (text(item.get("name")), String::new()),
+        Roster::Friends => {
+            let name = text(user.get("name"));
+            let nick = Some(text(user.get("nick")))
+                .filter(|nick| !nick.is_empty())
+                .unwrap_or_else(|| text(item.get("nick")));
+            match (name.is_empty(), nick == name) {
+                (true, _) => (nick, String::new()),
+                (false, true) => (name, String::new()),
+                (false, false) => (name, nick),
+            }
+        }
+    };
+    Some(RosterEntry {
+        id: id.to_string(),
+        name,
+        alias,
+        platform: platform.to_string(),
+    })
+}
+
+/// 把每条在线连接的名册都翻到底（`guild.list` / `friend.list` 都是标准分页列表）。
+///
+/// 只读，也不进目录：这是给人挑选用的，和 [`learn_guilds`] 的路由学习是两件事。某条连接离线、
 /// 不支持或翻页异常就跳过它——一个坏连接不该让整张表空着。第二项是没问成的连接数，
 /// 页面据此说明「这张表可能不全」。
-pub(crate) async fn list_guilds() -> (Vec<KnownGuild>, usize) {
+pub(crate) async fn list_roster(kind: Roster) -> (Vec<RosterEntry>, usize) {
     const MAX_PAGES: usize = 64;
     let connected: Vec<Route> = routes()
         .iter()
         .filter(|route| !route.client.console)
         .cloned()
         .collect();
-    let mut out: Vec<KnownGuild> = Vec::new();
+    let mut out: Vec<RosterEntry> = Vec::new();
     let mut failed = 0;
     for route in connected {
         let platform = route.bot.platform.clone();
@@ -504,42 +563,28 @@ pub(crate) async fn list_guilds() -> (Vec<KnownGuild>, usize) {
                 Some(cursor) => json!({ "next": cursor }),
                 None => json!({}),
             };
-            let page: Value = match route.client.post(&route.bot, "guild.list", params).await {
+            let page: Value = match route.client.post(&route.bot, kind.method(), params).await {
                 Ok(page) => page,
                 Err(error) => {
-                    debug!(target: "Bot", "控制台读 guild.list 失败（{platform}）：{error}");
+                    debug!(target: "Bot", "控制台读 {} 失败（{platform}）：{error}", kind.method());
                     break;
                 }
             };
-            for guild in page
+            for item in page
                 .get("data")
                 .and_then(Value::as_array)
                 .into_iter()
                 .flatten()
             {
-                let Some(id) = guild
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty())
-                else {
+                let Some(entry) = roster_entry(kind, item, &platform) else {
                     continue;
                 };
-                if out
+                if !out
                     .iter()
-                    .any(|known| known.id == id && known.platform == platform)
+                    .any(|known| known.id == entry.id && known.platform == platform)
                 {
-                    continue;
+                    out.push(entry);
                 }
-                out.push(KnownGuild {
-                    id: id.to_string(),
-                    name: guild
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string(),
-                    platform: platform.clone(),
-                });
             }
             next = page
                 .get("next")
@@ -1938,5 +1983,43 @@ mod contract_tests {
         assert_eq!(account_name(&json!({"name": "甲", "nick": "群名片"})).as_deref(), Some("甲"));
         assert_eq!(account_name(&json!({"nick": "mi"})).as_deref(), Some("mi"));
         assert_eq!(account_name(&json!({"id": "x"})), None);
+    }
+
+    fn entry(kind: Roster, item: Value) -> (String, String, String) {
+        let found = roster_entry(kind, &item, "red").expect("有 ID 就该读得出");
+        (found.id, found.name, found.alias)
+    }
+
+    #[test]
+    fn roster_reads_groups_and_both_friend_shapes() {
+        let strings = |(id, name, alias): (&str, &str, &str)| {
+            (id.to_string(), name.to_string(), alias.to_string())
+        };
+        // 群：只有名字。
+        assert_eq!(
+            entry(Roster::Groups, json!({"id": "1", "name": " 白虎 "})),
+            strings(("1", "白虎", ""))
+        );
+        // satori-qq 的好友：`nick` 为空，只有 `name`。
+        let qq = json!({"user": {"id": "2", "name": "Aloe"}, "nick": ""});
+        assert_eq!(entry(Roster::Friends, qq), strings(("2", "Aloe", "")));
+        // satori-wx 的好友：备注与昵称都在，一个作名字、另一个留作别名。
+        let wx = json!({"user": {"id": "wxid_a", "name": "陈师傅", "nick": "渡一场风"}, "nick": "渡一场风"});
+        assert_eq!(
+            entry(Roster::Friends, wx),
+            strings(("wxid_a", "陈师傅", "渡一场风"))
+        );
+        // 只有昵称：昵称就是名字，没有别名；两个相同也不重复。
+        let only_nick = json!({"user": {"id": "3", "nick": "mi"}});
+        assert_eq!(entry(Roster::Friends, only_nick), strings(("3", "mi", "")));
+        let same = json!({"user": {"id": "4", "name": "同名", "nick": "同名"}});
+        assert_eq!(entry(Roster::Friends, same), strings(("4", "同名", "")));
+        // 标准里的裸 User 也认；没有 ID 的条目直接丢掉。
+        assert_eq!(
+            entry(Roster::Friends, json!({"id": "5", "name": "乙"})),
+            strings(("5", "乙", ""))
+        );
+        assert!(roster_entry(Roster::Friends, &json!({"user": {"name": "无名"}}), "red").is_none());
+        assert!(roster_entry(Roster::Groups, &json!({"id": "", "name": "空"}), "red").is_none());
     }
 }

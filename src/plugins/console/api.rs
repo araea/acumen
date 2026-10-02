@@ -6,6 +6,7 @@
 
 use super::state::Console;
 
+use crate::adapters::satori::Roster;
 use crate::plugins::{get_plugins, pending_startup};
 use axum::Json;
 use axum::Router;
@@ -33,6 +34,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/settings/bot", post(save_bot))
         .route("/settings/global", post(save_global))
         .route("/groups", get(groups))
+        .route("/friends", get(friends))
         .route("/logs", get(log_history))
         .route("/logs/stream", get(log_stream))
         .route("/command", post(command));
@@ -682,30 +684,40 @@ fn tidy_ids(ids: &[String]) -> Vec<String> {
 }
 
 #[derive(Deserialize, Default)]
-struct GroupQuery {
+struct RosterQuery {
     /// 带上它（值不拘）就绕过缓存，重新问一遍实现端。
     refresh: Option<String>,
 }
 
 /// 已加入的群：给名单编辑器「从已加入的群里选」用，也用来把名单里的群号翻成群名。
-///
-/// 数据是实现端的 `guild.list` 现问的，所以只有连着的账号才看得到；30 秒内重复打开页面不再重问。
-/// `failed` 是没问成的连接数，大于 0 时页面要说明这张表可能不全。
-async fn groups(Query(query): Query<GroupQuery>) -> Response {
+async fn groups(Query(query): Query<RosterQuery>) -> Response {
+    roster(Roster::Groups, query).await
+}
+
+/// 好友：给私聊对象的名单（资讯推送的私聊目标、管理员……）挑人、把账号翻成昵称用。
+async fn friends(Query(query): Query<RosterQuery>) -> Response {
+    roster(Roster::Friends, query).await
+}
+
+/// 名册现问实现端，所以只有连着的账号才看得到；30 秒内重复打开页面不再重问。
+/// `items` 是 `{id, name, alias?, platform}`；`failed` 是没问成的连接数，大于 0 时页面要说明这张表可能不全。
+async fn roster(kind: Roster, query: RosterQuery) -> Response {
     const FRESH: std::time::Duration = std::time::Duration::from_secs(30);
-    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Value)>> = std::sync::Mutex::new(None);
+    type Cache = std::sync::Mutex<[Option<(std::time::Instant, Value)>; 2]>;
+    static CACHE: Cache = std::sync::Mutex::new([None, None]);
+    let slot = kind as usize;
 
     if query.refresh.is_none()
-        && let Some((at, cached)) = CACHE.lock().unwrap().as_ref()
+        && let Some((at, cached)) = &CACHE.lock().unwrap()[slot]
         && at.elapsed() < FRESH
     {
         return Json(cached.clone()).into_response();
     }
-    let (guilds, failed) = crate::adapters::satori::list_guilds().await;
-    let value = json!({ "groups": guilds, "failed": failed });
+    let (items, failed) = crate::adapters::satori::list_roster(kind).await;
+    let value = json!({ "items": items, "failed": failed });
     // 一条都没问到就不留：连接刚恢复时不该还顶着一张空表。
-    if !guilds.is_empty() {
-        *CACHE.lock().unwrap() = Some((std::time::Instant::now(), value.clone()));
+    if !items.is_empty() {
+        CACHE.lock().unwrap()[slot] = Some((std::time::Instant::now(), value.clone()));
     }
     Json(value).into_response()
 }
