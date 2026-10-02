@@ -553,10 +553,13 @@ struct BotEdit {
     protocol: String,
     #[serde(default)]
     url: String,
-    /// 不给表示「不动原来那个」（页面上读到的永远是隐去后的样子）；
-    /// 给空串表示清掉。
+    /// 不给（或只给空白）表示「不动原来那个」：页面上读到的永远是隐去后的样子，
+    /// 「没写字」只能当「别动它」。
     #[serde(default)]
     access_token: Option<String>,
+    /// 把已设的令牌清掉（改成不鉴权）。要明说，不能靠留空——留空是「不动」。
+    #[serde(default)]
+    clear_token: bool,
 }
 
 async fn save_bot(State(console): State<Arc<Console>>, Json(body): Json<BotEdit>) -> Response {
@@ -590,10 +593,14 @@ async fn save_bot(State(console): State<Arc<Console>>, Json(body): Json<BotEdit>
             enabled: body.enabled,
             protocol: protocol.to_string(),
             url: (!url.is_empty()).then(|| url.to_string()),
-            // 页面读不到原来的令牌，所以「没写字」当「别动它」处理。
-            access_token: token
-                .clone()
-                .or_else(|| previous.and_then(|bot| bot.access_token.clone())),
+            // 页面读不到原来的令牌，所以「没写字」当「别动它」处理；清掉要明说。
+            access_token: if body.clear_token {
+                None
+            } else {
+                token
+                    .clone()
+                    .or_else(|| previous.and_then(|bot| bot.access_token.clone()))
+            },
         };
 
         match body.index {

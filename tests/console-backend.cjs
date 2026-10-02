@@ -93,6 +93,20 @@ async function until(predicate, description) {
   child.stdin.write('/ctl list\n');
   await until(() => events.length > previous, 'SSE still delivers');
   assert.equal((await api('/plugins/logger')).config.debug, true);
+  // 连接设置：令牌「留空 = 不动」，要清掉得明说（页面读不到原值，过去设了就清不掉）。
+  // 先停用再存，保证不会在这个隔离实例里起真适配器。
+  const post = (route, body) => fetch(base + '/api' + route, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const bots = async () => (await api('/settings')).bots;
+  assert.equal((await post('/settings/bot', { enabled: false, protocol: 'satori', url: 'http://127.0.0.1:1', access_token: 'secret' })).status, 200);
+  assert.deepEqual((await bots()).map(bot => bot.has_token), [true], '新增连接带上令牌');
+  assert.equal((await post('/settings/bot', { index: 0, enabled: false, protocol: 'satori', url: 'http://127.0.0.1:2' })).status, 200);
+  assert.deepEqual((await bots()).map(bot => [bot.url, bot.has_token]), [['http://127.0.0.1:2', true]], '留空不动令牌');
+  assert.equal((await post('/settings/bot', { index: 0, enabled: false, protocol: 'satori', url: 'http://127.0.0.1:2', access_token: '  ' })).status, 200);
+  assert.equal((await bots())[0].has_token, true, '只给空白也不动令牌');
+  assert.equal((await post('/settings/bot', { index: 0, enabled: false, protocol: 'satori', url: 'http://127.0.0.1:2', clear_token: true })).status, 200);
+  assert.equal((await bots())[0].has_token, false, '明说清除才清掉');
+  assert.equal((await post('/settings/bot', { index: 0, remove: true })).status, 200);
+  assert.deepEqual(await bots(), [], '删除连接');
   const timings=[];
   for(let i=0;i<10;i++) {const t=performance.now(); await api('/overview'); timings.push(performance.now()-t);}
   abort.abort(); await reading;

@@ -339,7 +339,7 @@ const posted = where => posts.filter(p => p.path === where);
 
   // 保存还在路上就换页：写入已经在路上，不该弹「未保存」，也不该挡换页（回执照常落库）
   globalDelay = 700;
-  await js('document.querySelector("#g-prefix").value = "/, #"');
+  await type('#g-prefix', ', #');
   await click('#global-form [type=submit]');
   await until(() => posted('/api/settings/global').length === 2, '在途保存已发出');
   await click('[data-nav="overview"]');
@@ -351,13 +351,91 @@ const posted = where => posts.filter(p => p.path === where);
   await route('settings');
 
   // 反向对照：真有未保存改动时仍然要拦
-  await js('document.querySelector("#g-prefix").value = "/, #"');
+  await type('#g-prefix', ', #');
   await click('[data-nav="overview"]');
   await sleep(200);
   assert.equal(await js('return !!document.querySelector("dialog")?.open'), true, '真有未保存改动仍要拦');
   await click('dialog [value=cancel]');
   await until(() => js('return location.hash === "#/settings"'), '取消后留在设置页');
   await js('document.querySelector("#g-prefix").value = document.querySelector("#g-prefix").defaultValue');
+
+  // —— 「未保存」只认用户亲手输入：打开就走不弹窗；自动填充 / 扩展写值不算；点开再点关不算 ——
+  await route('overview');
+  await click('[data-nav="settings"]');
+  await until(ready, '设置页');
+  await click('[data-nav="overview"]');
+  await sleep(300);
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false, '什么都没改就走不该弹窗');
+  assert.equal(await js('return location.hash'), '#/overview');
+  await click('[data-nav="settings"]');
+  await until(ready, '设置页');
+  // 密码管理器自动把控制台口令填进令牌框并补发 input / change：不留在框里
+  await js(`const t=document.querySelector('[name=access_token]'); t.value='console-password';
+    t.dispatchEvent(new Event('input',{bubbles:true})); t.dispatchEvent(new Event('change',{bubbles:true}))`);
+  assert.equal(await js(`return document.querySelector('[name=access_token]').value`), '', '自动填进来的令牌被清掉');
+  // 没有任何事件的静默写值（扩展、表单恢复）：既不算未保存，也不会被当成令牌提交
+  await js(`document.querySelector('[name=access_token]').value='console-password'; document.querySelector('#g-prefix').value='/auto'`);
+  const botPosts = posted('/api/settings/bot').length;
+  await click('[data-bot="0"] [type=submit]');
+  await until(() => posted('/api/settings/bot').length === botPosts + 1, '保存连接');
+  assert.equal('access_token' in posted('/api/settings/bot').at(-1).body, false, '没亲手输入的令牌不提交');
+  await until(() => js('return !document.querySelector("[data-bot=\\"0\\"][aria-busy]")'), '保存完成');
+  // 要清掉已设的令牌得明说：打开「清除已设的令牌」，令牌框停用，提交带 clear_token 而不带令牌
+  await click('[data-bot="0"] [name=clear_token]');
+  assert.equal(await js(`return document.querySelector('[data-bot="0"] [name=access_token]').disabled`), true, '清除时令牌框停用');
+  await click('[data-bot="0"] [type=submit]');
+  await until(() => posted('/api/settings/bot').length === botPosts + 2, '清除令牌');
+  const cleared = posted('/api/settings/bot').at(-1).body;
+  assert.equal(cleared.clear_token, true);
+  assert.equal('access_token' in cleared, false);
+  await until(() => js('return !document.querySelector("[data-bot=\\"0\\"][aria-busy]")'), '清除完成');
+  await js(`document.querySelector('#g-prefix').value='/auto'`);
+  await click('[data-nav="overview"]');
+  await sleep(300);
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false, '自动写入的值不算未保存');
+  await click('[data-nav="settings"]');
+  await until(ready, '设置页');
+  // 关闭状态的开关必须是 aria-checked="false"，不能是空串；点开再点关等于没改
+  assert.equal(await js('return [...document.querySelectorAll("[role=switch]")].every(b => ["true","false"].includes(b.getAttribute("aria-checked")))'), true, '开关状态是 true / false');
+  await click('#global-form [name=enable_blacklist]');
+  await click('#global-form [name=enable_blacklist]');
+  await click('[data-bot="0"] [name=enabled]');
+  await click('[data-bot="0"] [name=enabled]');
+  await click('[data-nav="overview"]');
+  await sleep(300);
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false, '点开再点关不算未保存');
+
+  // 真有改动：对话框点名是哪里没保存，默认焦点在「继续编辑」；取消后历史原路退回，不留重复条目
+  await click('[data-nav="settings"]');
+  await until(ready, '设置页');
+  await click('#global-form [name=enable_blacklist]');
+  await click('[data-bot="0"] [name=enabled]');
+  await click('[data-nav="overview"]');
+  await until(() => js('return document.querySelector("dialog").open'), '离开确认');
+  assert.equal(await js('return document.querySelector("#dialog-body").textContent.includes("「全局设置」") && document.querySelector("#dialog-body").textContent.includes("「连接 1」")'), true, '点名未保存的表单');
+  assert.equal(await js('return document.activeElement.textContent'), '继续编辑');
+  await key(KEY.escape);
+  await until(() => js('return !document.querySelector("dialog").open && location.hash === "#/settings"'), '取消后留在设置页');
+  await sleep(300);
+  assert.equal(await js('return document.querySelector("[data-bot=\\"0\\"] [name=enabled]").getAttribute("aria-checked")'), 'false', '草稿还在');
+  await click('#global-form [name=enable_blacklist]');
+  await click('[data-bot="0"] [name=enabled]');
+  await js('history.back()');
+  await until(() => js('return location.hash === "#/overview"'), '取消那一步没有在历史里留下重复条目');
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false);
+
+  // 浏览器后退 / 手势返回同样走确认，取消后原地不动
+  await click('[data-nav="settings"]');
+  await until(ready, '设置页');
+  await click('#global-form [name=enable_whitelist]');
+  await js('history.back()');
+  await until(() => js('return document.querySelector("dialog").open'), '后退也要确认');
+  await click('dialog [value=cancel]');
+  await until(() => js('return location.hash === "#/settings"'), '取消后退');
+  await sleep(300);
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false, '取消后不再弹第二次');
+  await click('#global-form [name=enable_whitelist]');
+  await route('overview');
 
   // —— 日志：突发有界、可暂停、筛选先于截断、导出、后台断流、断线退避 ——
   await route('logs');

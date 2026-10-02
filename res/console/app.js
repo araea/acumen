@@ -49,6 +49,9 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const attr = (condition, name) => (condition ? raw(` ${name}`) : "");
+  /** ARIA 的布尔状态要写成 "true" / "false"。h`` 会把 false 渲染成空串，
+   *  aria-checked="" 等于没写：读屏读不出「关」，表单基线也会和后来写入的 "false" 对不上。 */
+  const bool = (value) => (value ? "true" : "false");
 
   /* ==================== §2 图标 ==================== */
   /* 24 网格、圆头圆角描边，笔画粗细取 --zw-icon-stroke。装饰性，对辅助技术隐藏。 */
@@ -232,7 +235,7 @@
   }
 
   /** 确认对话框：原生 dialog 负责焦点陷阱、Esc 与返回键；初始焦点落在「取消」。 */
-  function confirmAction({ title, body, confirm, danger = false }) {
+  function confirmAction({ title, body, confirm, cancel = "取消", danger = false }) {
     const dialog = $("#dialog");
     const opener = document.activeElement;
     put(
@@ -240,7 +243,7 @@
       h`<h2 class="dialog-title" id="dialog-title">${title}</h2>
         <p class="dialog-body" id="dialog-body">${body}</p>
         <div class="actions actions-end">
-          <button class="btn btn-text" type="button" value="cancel" autofocus>取消</button>
+          <button class="btn btn-text" type="button" value="cancel" autofocus>${cancel}</button>
           <button class="btn btn-filled${danger ? " btn-danger" : ""}" type="button" value="confirm">${confirm}</button>
         </div>`
     );
@@ -389,22 +392,84 @@
     logs: () => logs.mount(),
   };
 
-  /** 表单里有没有改动。`busyCounts` 决定「正在保存」算不算改动：
+  /** 用户亲手输入过的文本框。真实输入（键入、粘贴、输入法、拖放、撤销）会发 `beforeinput`，
+   *  随后的 `input` 也带非空的 `inputType`；浏览器与密码管理器的自动填充、扩展写值、表单恢复
+   *  两样都没有——这些值再不同于基线，也不是「用户没保存的编辑」，更不该拿来拦人换页。 */
+  const typed = new WeakSet();
+  const markTyped = (event) => {
+    const target = event.target;
+    const real = event.type === "beforeinput" || (typeof event.inputType === "string" && event.inputType !== "");
+    if (real && event.isTrusted && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) typed.add(target);
+  };
+
+  /** 访问令牌框：浏览器按本站（口令框）存过的登录自动填进来的只可能是控制台口令，绝不是实现端令牌。 */
+  const tokenField = (form) => $('input[name="access_token"]', form);
+  const tokenValue = (form) => {
+    const field = tokenField(form);
+    return field && typed.has(field) ? field.value : "";
+  };
+  function scrubAutofill(root) {
+    for (const field of $$('input[name="access_token"]', root ?? document)) if (field.value && !typed.has(field)) field.value = "";
+  }
+
+  /** 开关现在和打开页面时是否不同。两边都只看是不是 "true"，写成 ""、"false" 或没写都一样。 */
+  const switchChanged = (button) =>
+    button.dataset.initial !== undefined && (button.dataset.initial === "true") !== (button.getAttribute("aria-checked") === "true");
+
+  /** 表单里有没有用户没保存的改动。`busyCounts` 决定「正在保存」算不算改动：
    *  跨重画保留草稿用默认 true（在途的值也不能被重画冲掉），
    *  离开确认传 false——写入已经在路上，拿它拦人是误报。 */
   function formDirty(form, busyCounts = true) {
-    if (form.getAttribute('aria-busy') === 'true') return busyCounts;
-    const saving = (control) => control.getAttribute('aria-busy') === 'true';
-    return $$('input, textarea', form).some(input => (busyCounts || !saving(input)) && input.value !== input.defaultValue)
-      || $$('[data-form-switch]', form).some(button => button.dataset.initial !== undefined && button.dataset.initial !== button.getAttribute('aria-checked'))
-      || $$('select', form).some(select => (busyCounts || !saving(select)) && select.value !== (select.defaultValue ?? [...select.options].find(option => option.defaultSelected)?.value))
-      || (busyCounts && !!$('[data-path][aria-busy=true]', form));
+    if (form.getAttribute("aria-busy") === "true") return busyCounts;
+    const saving = (control) => control.getAttribute("aria-busy") === "true";
+    return $$("input, textarea", form).some((input) => (busyCounts || !saving(input)) && typed.has(input) && input.value !== input.defaultValue)
+      || $$("[data-form-switch]", form).some(switchChanged)
+      || $$("select", form).some((select) => (busyCounts || !saving(select)) && select.value !== (select.defaultValue ?? [...select.options].find((option) => option.defaultSelected)?.value))
+      || (busyCounts && !!$("[data-path][aria-busy=true]", form));
+  }
+
+  const FORMS = "#global-form, [data-bot], [data-config]";
+
+  /** 带着没保存改动的表单，用人话命名，给离开确认列出来。 */
+  function unsavedAreas() {
+    return $$(FORMS).filter((form) => formDirty(form, false)).map((form) => {
+      if (form.id === "global-form") return "全局设置";
+      if (form.hasAttribute("data-bot")) return form.dataset.bot === "" ? "新连接" : `连接 ${Number(form.dataset.bot) + 1}`;
+      const plugin = plugins.data?.plugins.find((item) => item.name === form.dataset.config);
+      return `${plugin?.display || form.dataset.config} 的配置`;
+    });
   }
 
   /** 离开时要不要拦人。正在保存的控件不算未保存：提交会自己跑完，回执到了基线才更新，
    *  否则「点保存→立刻换页」会弹一个假的「离开未保存的编辑」。 */
-  function hasFormDrafts() {
-    return $$('#global-form, [data-bot], [data-config]').some(form => formDirty(form, false));
+  const hasFormDrafts = () => $$(FORMS).some((form) => formDirty(form, false));
+
+  /* 历史条目的单调编号：只用来判断「这一步是前进还是后退」，取消离开时好原路退回，
+     而不是 replaceState 把后退栈改写成两个同样的条目（安卓手势返回会因此「按一下没反应」）。 */
+  let entryClock = 0;
+  let undoing = 0;
+  const routeHash = (route) => `#/${route.page}${route.arg ? "/" + encodeURIComponent(route.arg) : ""}`;
+
+  function claimEntry(route) {
+    if (history.state?.zw === undefined) {
+      entryClock = Math.max(entryClock + 1, Date.now());
+      history.replaceState({ zw: entryClock }, "");
+    }
+    route.entry = history.state.zw;
+  }
+
+  /** 地址栏和屏幕上的页对不上时，以屏幕上的为准。 */
+  function settleUrl() {
+    clearTimeout(undoing);
+    undoing = 0;
+    if (shown && parseRoute().key !== shown.key) history.replaceState(history.state, "", routeHash(shown));
+  }
+
+  function undoNavigation(previous) {
+    const arrived = history.state?.zw;
+    const forward = arrived === undefined || arrived > (previous.entry ?? 0);
+    undoing = setTimeout(settleUrl, 500);
+    history.go(forward ? -1 : 1);
   }
 
   let renderSeq = 0;
@@ -419,9 +484,22 @@
     }
     const route = parseRoute();
     const previous = shown;
-    if (previous && previous.key !== route.key && hasFormDrafts()) {
-      const leave = await confirmAction({ title: "离开未保存的编辑？", body: "本页仍有未保存的内容。离开将放弃这些修改。", confirm: "放弃并离开", danger: true });
-      if (!leave) { history.replaceState(null, "", `#/${previous.page}${previous.arg ? "/" + previous.arg : ""}`); return; }
+    if (previous && previous.key !== route.key) {
+      const unsaved = unsavedAreas();
+      if (unsaved.length) {
+        const names = unsaved.length > 3 ? `${unsaved.slice(0, 3).map((name) => `「${name}」`).join("")}等 ${unsaved.length} 处` : unsaved.map((name) => `「${name}」`).join("");
+        const leave = await confirmAction({
+          title: "还有没保存的修改",
+          body: `${names}的修改还没有保存，现在离开会丢掉它们。`,
+          confirm: "放弃修改并离开",
+          cancel: "继续编辑",
+          danger: true,
+        });
+        if (!leave) {
+          undoNavigation(previous);
+          return;
+        }
+      }
     }
     const changed = !previous || previous.key !== route.key;
     markNav(route.page);
@@ -431,6 +509,7 @@
     // 宽屏插件页：列表已经在屏上，只换右侧详情，搜索词、焦点与滚动都不动。
     if (!quiet && previous?.page === "plugins" && route.page === "plugins" && wide.matches && $("#plugin-detail")) {
       shown = route;
+      claimEntry(route);
       await plugins.swapDetail(route.arg);
       return;
     }
@@ -448,6 +527,7 @@
       if (seq !== renderSeq || error?.status === 401) return;
       busy(false);
       shown = route;
+      claimEntry(route);
       put(
         $("#view"),
         h`<div class="page">${pageHead("没能打开这一页")}
@@ -468,8 +548,10 @@
       ? $$("#global-form, [data-bot], [data-config]").filter(form => form.dataset.refresh !== "replace" && formDirty(form)) : [];
     const keep = quiet ? scrollY : changed ? scrolls.get(route.key) || 0 : scrollY;
     shown = route;
+    claimEntry(route);
     busy(false);
     put($("#view"), fragment);
+    scrubAutofill();
     for (const form of retainedForms) {
       const selector = form.id ? `#${CSS.escape(form.id)}` : form.hasAttribute("data-bot")
         ? `[data-bot="${CSS.escape(form.dataset.bot)}"]` : `[data-config="${CSS.escape(form.dataset.config)}"]`;
@@ -643,7 +725,7 @@
       const counts = new Map();
       for (const plugin of this.data.plugins) counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
       const chip = (code, label, total) =>
-        h`<button class="chip state" type="button" data-section="${code}" aria-pressed="${this.section === code}">
+        h`<button class="chip state" type="button" data-section="${code}" aria-pressed="${bool(this.section === code)}">
           ${icon("check")}${label}<span class="chip-count">${total}</span></button>`;
       return [
         chip("", "全部", this.data.plugins.length),
@@ -699,7 +781,7 @@
 
   /** 插件开关。名字固定为「启用 某某」，状态交给 aria-checked：开关的名字不随状态变。 */
   const switchButton = (plugin, { label = "", labelledby = "", describedby = "" }) =>
-    h`<button class="switch" type="button" role="switch" data-toggle="${plugin.name}" aria-checked="${plugin.on}"
+    h`<button class="switch" type="button" role="switch" data-toggle="${plugin.name}" aria-checked="${bool(plugin.on)}"
         ${label ? h`aria-label="${label}"` : h`aria-labelledby="${labelledby}" aria-describedby="${describedby}"`}
         ${attr(plugin.name === "ctl", 'disabled title="控制插件不能停用"')}></button>`;
 
@@ -795,7 +877,7 @@
           <span class="section-meta">离开输入框保存；单行输入框也可按回车保存</span>
         </div>
         ${fields.length
-          ? h`<form class="card config" data-config="${plugin.name}" novalidate>${fields}</form>`
+          ? h`<form class="card config" data-config="${plugin.name}" autocomplete="off" novalidate>${fields}</form>`
           : h`<p class="note">没有可以调整的配置项。</p>`}
         ${fields.length
           ? h`<div class="actions"><button class="btn btn-outlined btn-danger" type="button" data-reset="${plugin.name}" data-display="${plugin.display}">恢复默认参数</button></div>`
@@ -852,7 +934,7 @@
       return h`<div class="toggle-row">
         <span class="field-label" id="${id}">${label}</span>
         <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"
-          aria-checked="${value}" aria-labelledby="${id}"></button>
+          aria-checked="${bool(value)}" aria-labelledby="${id}"></button>
       </div>`;
     }
     if (typeof value === "string" && (value.includes("\n") || value.length > 80)) {
@@ -1053,7 +1135,7 @@
         <div class="tabs" role="tablist" aria-label="搭话内容">
           ${tabs.map(
             (tab) => h`<button class="tab state" type="button" role="tab" id="tab-${tab.id}" data-tab="${tab.id}"
-              aria-controls="panel-${tab.id}" aria-selected="${ambient.tab === tab.id}" tabindex="${ambient.tab === tab.id ? 0 : -1}">
+              aria-controls="panel-${tab.id}" aria-selected="${bool(ambient.tab === tab.id)}" tabindex="${ambient.tab === tab.id ? 0 : -1}">
               ${tab.label}${tab.count !== undefined ? h`<span class="tab-count">${tab.count}</span>` : ""}</button>`
           )}
         </div>
@@ -1457,7 +1539,7 @@
             )}
           </fieldset>
           <div class="actions">
-            <button class="btn ${logs.follow ? "btn-tonal" : "btn-outlined"}" type="button" id="log-follow" aria-pressed="${logs.follow}">${icon("latest")}跟随最新</button>
+            <button class="btn ${logs.follow ? "btn-tonal" : "btn-outlined"}" type="button" id="log-follow" aria-pressed="${bool(logs.follow)}">${icon("latest")}跟随最新</button>
             <button class="icon-btn state" type="button" id="log-export" aria-label="导出当前筛选的日志" title="导出当前筛选的日志">${icon("download")}</button>
             <button class="icon-btn state" type="button" id="log-clear" aria-label="清空屏幕上的日志" title="清空屏幕上的日志">${icon("trash")}</button>
           </div>
@@ -1501,17 +1583,17 @@
           <h2 class="section-title" id="global-title">全局</h2>
           <span class="section-meta">前缀与名单下一条消息生效</span>
         </div>
-        <form id="global-form" class="form-grid" novalidate>
+        <form id="global-form" class="form-grid" autocomplete="off" novalidate>
           ${textField("g-prefix", "指令前缀", "command_prefix", list(data.command_prefix), "多个用逗号分隔，例如 /, #")}
           ${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；下次启动生效")}
           <div class="field">
             <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
-              <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${filter.enable_blacklist}" aria-labelledby="g-black-label"></button></div>
+              <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${bool(filter.enable_blacklist)}" aria-labelledby="g-black-label"></button></div>
             ${textField("g-black", "黑名单群号", "blacklist", list(filter.blacklist), "逗号分隔")}
           </div>
           <div class="field">
             <div class="toggle-row"><span class="field-label" id="g-white-label">启用群白名单</span>
-              <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${filter.enable_whitelist}" aria-labelledby="g-white-label"></button></div>
+              <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${bool(filter.enable_whitelist)}" aria-labelledby="g-white-label"></button></div>
             ${textField("g-white", "白名单群号", "whitelist", list(filter.whitelist), "逗号分隔")}
           </div>
           <p class="note span-all">启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单。关闭白名单后，启用的黑名单才生效。</p>
@@ -1576,12 +1658,12 @@
     const known = ["satori", "console"];
     const protocols = known.includes(bot.protocol) ? known : [...known, bot.protocol];
     const title = index === "" ? "新连接" : `连接 ${Number(index) + 1}`;
-    return h`<form class="bot" data-bot="${index}" aria-labelledby="${id}-title" novalidate>
+    return h`<form class="bot" data-bot="${index}" aria-labelledby="${id}-title" autocomplete="off" novalidate>
       <div class="bot-head">
         <h3 class="bot-title" id="${id}-title">${title}${bot.has_token ? h`<span class="status">已设令牌</span>` : ""}</h3>
         <div class="toggle-row">
           <span class="field-label" id="${id}-on">启用</span>
-          <button class="switch" type="button" role="switch" data-form-switch name="enabled" aria-checked="${bot.enabled}" aria-labelledby="${id}-on"></button>
+          <button class="switch" type="button" role="switch" data-form-switch name="enabled" aria-checked="${bool(bot.enabled)}" aria-labelledby="${id}-on"></button>
         </div>
       </div>
       <div class="form-grid">
@@ -1595,8 +1677,17 @@
         <div class="field span-all">
           <label class="field-label" for="${id}-token">访问令牌</label>
           <input class="input mono" id="${id}-token" name="access_token" type="password" autocomplete="off" spellcheck="false"
+            data-1p-ignore data-lpignore="true" data-bwignore="true"
             placeholder="${bot.has_token ? "已设置；留空保持不变" : "留空表示不鉴权"}">
         </div>
+        ${bot.has_token
+          ? h`<div class="field span-all">
+              <div class="toggle-row"><span class="field-label" id="${id}-clear">清除已设的令牌</span>
+                <button class="switch" type="button" role="switch" data-form-switch name="clear_token" aria-checked="false"
+                  aria-labelledby="${id}-clear" aria-describedby="${id}-clear-hint"></button></div>
+              <span class="field-hint" id="${id}-clear-hint">打开后保存，这条连接改为不鉴权。留空只是不改动。</span>
+            </div>`
+          : ""}
       </div>
       <div class="actions">
         <button class="btn btn-filled" type="submit">保存</button>
@@ -1607,13 +1698,14 @@
 
   function botPayload(form) {
     const value = (name) => form.elements[name]?.value ?? "";
-    const access = value("access_token");
+    const access = tokenValue(form);
+    const clear = $('[name="clear_token"]', form)?.getAttribute("aria-checked") === "true";
     return {
       index: form.dataset.bot === "" ? undefined : Number(form.dataset.bot),
       enabled: $('[name="enabled"]', form)?.getAttribute("aria-checked") === "true",
       protocol: value("protocol"),
       url: value("url"),
-      ...(access.trim() ? { access_token: access } : {}),
+      ...(clear ? { clear_token: true } : access.trim() ? { access_token: access } : {}),
     };
   }
 
@@ -1753,7 +1845,17 @@
         return;
       }
       if ((hit = on("[data-form-switch]"))) {
-        hit.setAttribute("aria-checked", String(hit.getAttribute("aria-checked") !== "true"));
+        const checked = hit.getAttribute("aria-checked") !== "true";
+        hit.setAttribute("aria-checked", String(checked));
+        if (hit.name === "clear_token") {
+          // 要清掉就别再填新的：令牌框停用并清空，免得两个意思同时提交。
+          const field = tokenField(hit.closest("form"));
+          if (field) {
+            field.disabled = checked;
+            if (checked) field.value = "";
+            field.placeholder = checked ? "保存后改为不鉴权" : "已设置；留空保持不变";
+          }
+        }
         return;
       }
       if ((hit = on("[data-section]"))) {
@@ -1862,8 +1964,17 @@
       }
     });
 
+    // 用户亲手输入才算编辑（见 typed）。
+    document.addEventListener("beforeinput", markTyped);
+    // 自动填充会写 value 并补发 input / change，也可能在聚焦时才填：这些都不是用户的输入。
+    document.addEventListener("focusin", (event) => {
+      if (event.target.name === "access_token") scrubAutofill(event.target.form);
+    });
+
     document.addEventListener("input", (event) => {
       const target = event.target;
+      markTyped(event);
+      if (target.name === "access_token") scrubAutofill(target.form);
       if (target.id === "plugin-search") {
         plugins.query = target.value;
         plugins.repaint();
@@ -1956,9 +2067,13 @@
       overviewFeed.stop();
     });
     addEventListener("pageshow", () => {
+      scrubAutofill();
       if (!document.hidden && token) resume();
     });
-    addEventListener("hashchange", () => render());
+    addEventListener("hashchange", () => {
+      if (undoing) settleUrl();
+      else render();
+    });
     wide.addEventListener("change", () => { if (shown?.page === "plugins") render({ quiet: true }); });
     addEventListener("beforeunload", (event) => {
       if (hasFormDrafts() || SOURCES.some((source) => dirty(source.name))) event.preventDefault();
