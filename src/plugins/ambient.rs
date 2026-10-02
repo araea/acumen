@@ -540,6 +540,22 @@ impl AmbientConfig {
         }
     }
 
+    /// 被点名那一轮第一次没答出来之后的一份精简配置：退回没被换过的发言模型与平常的
+    /// 思考强度，不联网、不画图写歌拍片，总时限压到一分半——这时人家已经等了一阵，
+    /// 要的是尽快回一句，不是回得多周全。
+    fn lean_retry(&self, original: &Self) -> Self {
+        Self {
+            reply_model: original.reply_model.clone(),
+            thinking: original.thinking.clone(),
+            search_enabled: false,
+            draw_budget: 0,
+            music_budget: 0,
+            video_budget: 0,
+            reply_timeout_seconds: self.reply_timeout_seconds.min(90),
+            ..self.clone()
+        }
+    }
+
     /// 高峰时段照常跑、只把模型换成替补的一份配置。
     ///
     /// `mode = "swap"` 用这一份：节奏、联网、看图、绘图全跟平时一样，只有判定与
@@ -1452,6 +1468,17 @@ fn review_if_due(
     });
 }
 
+/// 单次模型请求多久没有回音就算卡死。
+///
+/// 全局的 `request_stall_seconds` 是给什么都等得起的场合定的（三分钟）；群里有人在等回话，
+/// 2026-10-02 16:26 有人 @ 它，高峰期换上的替补模型一声不吭，一直耗到整轮四分钟的预算
+/// 用完才报错，那条 @ 就这么没了下文。平常接话 75 秒没动静就算卡死（执行层会换一次请求
+/// 重来，见 `agent::run`），答疑要想得久，给 150 秒。配成不检测（0）的就仍然不检测。
+fn speak_stall(global: Option<Duration>, careful: bool) -> Option<Duration> {
+    let cap = Duration::from_secs(if careful { 150 } else { 75 });
+    global.map(|limit| limit.min(cap))
+}
+
 /// 一个模型要用的接口、密钥与纯模型 id。
 ///
 /// 模型写成 `供应商/模型` 时按 `[oai.providers]` 取该供应商的接口
@@ -1503,6 +1530,8 @@ async fn consider_batch(
     if turns.is_empty() {
         return Ok(());
     }
+    // 下面会按计价时段与答疑把 `config` 换成别的模型；被点名的那一轮答不出来时要退回这一份。
+    let original = config;
     // 计价高峰时段：价格翻倍。最省事的做法是换一家全天同价的便宜模型照常跑
     // （`swap`）；想更保守可以让它睡着（`sleep`：不跟着消息频率一直判定，只隔
     // `doze_gate_seconds` 看一眼，每小时自主开口不超过 `doze_reply_limit` 次，
@@ -1714,6 +1743,7 @@ async fn consider_batch(
         &scene,
         seq,
         doze,
+        original,
     )
     .await
 }
@@ -1878,6 +1908,8 @@ async fn speak_up(
     seq: &mut u64,
     // 这一句是睡着时的自主开口，用来计进高峰时段的每小时上限。
     doze: bool,
+    // 没被计价时段或答疑换过模型的原配置：被点名那一轮答不出来时退回它。
+    original: &AmbientConfig,
 ) -> anyhow::Result<()> {
     let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai");
     // 与判定看到的是同一批图：已转码成模型收得下的格式，GIF 表情包也不例外。
@@ -1887,7 +1919,7 @@ async fn speak_up(
     let started = Instant::now();
     let (api_base, api_key, reply_model) = gate_endpoint(ctx, mgr, &config.reply_model).await?;
     debug!(target: LOG_TARGET, "群 {group} 发言模型：{}", config.reply_model);
-    let composed = speak::compose(
+    let first = speak::compose(
         &api_base,
         &api_key,
         &reply_model,
@@ -1896,14 +1928,44 @@ async fn speak_up(
         persona,
         config,
         &oai.search,
-        oai.request_stall(),
+        speak_stall(oai.request_stall(), scene.careful),
         turns,
         &images,
         called,
         scene,
         Some((ctx, writer, group, seq)),
     )
-    .await?;
+    .await;
+    let composed = match first {
+        Ok(composed) => composed,
+        // 有人冲着它来（@、引用、戳、搭话指令），答不出来就是一个人对着空气说了话。
+        // 平常自己想开口的那种失败无人知晓，不值得再花一次钱。
+        Err(error) if called != Called::Ordinary => {
+            warn!(target: LOG_TARGET, "群 {group} 被点名的这一轮没答出来：{error:#}；换原来的模型精简着再试一次");
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            let retry = config.lean_retry(original);
+            let (api_base, api_key, reply_model) =
+                gate_endpoint(ctx, mgr, &retry.reply_model).await?;
+            speak::compose(
+                &api_base,
+                &api_key,
+                &reply_model,
+                base,
+                &skill_dirs(base),
+                persona,
+                &retry,
+                &oai.search,
+                speak_stall(oai.request_stall(), false),
+                turns,
+                &images,
+                called,
+                scene,
+                Some((ctx, writer, group, seq)),
+            )
+            .await?
+        }
+        Err(error) => return Err(error),
+    };
 
     let acted = composed.acted;
     let (raw, focus) = attention::extract(&composed, turns, config.focus_max_seconds);

@@ -210,6 +210,10 @@ pub(crate) async fn compose(
     )>,
 ) -> anyhow::Result<Composed> {
     let dir = agent::ScratchDir::under(base, "runs")?;
+    let group_label = live
+        .as_ref()
+        .map(|(_, _, group, _)| group.to_string())
+        .unwrap_or_default();
     // 白名单是一道闸：没写进来的工具不会被挂上去，所以每个可选工具都要跟着
     // 它自己那个开关一起进出。群聊工具那一串由能力层给（见 [`chat::tool_names`]），
     // 于是白名单、提示词里那句「手边有什么」与真正按得动的按钮始终是同一份开关。
@@ -284,7 +288,8 @@ pub(crate) async fn compose(
             thinking: Some(&config.thinking),
             temperature: config.temperature,
             skills,
-            retry_stalled: bridge.is_none(),
+            // 卡死且还没动过任何会留痕的工具时由执行层重来一次（动过就不重放，见 agent::run）。
+            retry_stalled: true,
             tools: Some(&tools),
             bridge: bridge
                 .clone()
@@ -302,13 +307,28 @@ pub(crate) async fn compose(
     {
         *seq = bridge.revision();
     }
-    let reply = reply.map_err(|_| {
-        anyhow::anyhow!(
-            "发言超时（{} 秒），已终止智能体",
-            config.reply_timeout().as_secs()
-        )
-    })??;
-    if bridge.as_ref().is_some_and(|b| b.used()) {
+    let spoke = bridge.as_ref().is_some_and(|b| b.used());
+    // 话已经在工具里发出去了、之后才出的错（超时、断线）：这一轮算说过，不报错。报错
+    // 会让调用方换个模型重来一遍，群里就是同一句话说两遍。
+    let reply = match reply {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(error)) if spoke => {
+            warn!(target: super::LOG_TARGET, "群 {} 发言发出去之后出错了，不重来：{error:#}", group_label);
+            return Ok(Composed { text: "[silent]".into(), acted: true });
+        }
+        Err(_) if spoke => {
+            warn!(target: super::LOG_TARGET, "群 {} 发言发出去之后超时了，不重来", group_label);
+            return Ok(Composed { text: "[silent]".into(), acted: true });
+        }
+        Ok(Err(error)) => return Err(error),
+        Err(_) => {
+            return Err(anyhow::anyhow!(
+                "发言超时（{} 秒），已终止智能体",
+                config.reply_timeout().as_secs()
+            ));
+        }
+    };
+    if spoke {
         let focus = reply
             .text
             .lines()
