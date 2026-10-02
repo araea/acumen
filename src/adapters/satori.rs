@@ -119,6 +119,18 @@ pub struct SatoriClient {
     console: bool,
     /// `READY` / `META` 下发的代理路由前缀，决定哪些平台链接要经 `/v1/proxy` 取。
     proxy_urls: RwLock<Arc<Vec<String>>>,
+    /// 登录声明的标准方法（`login.features`）。还没拿到（或实现端没声明）时为空，
+    /// 空表示「不知道」而不是「都不支持」，不据此拒绝任何调用。
+    features: RwLock<Arc<std::collections::HashSet<String>>>,
+    /// 实现端经 `internal/capabilities` 声明的收发限额；没声明的项为 `None`。
+    limits: RwLock<Limits>,
+}
+
+/// 实现端声明的限额。取不到就是「不设防」，调用方照旧自己兜底。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Limits {
+    /// 单个上传文件的字节上限（`upload.create`）。
+    pub upload_bytes: Option<u64>,
 }
 
 impl SatoriClient {
@@ -129,6 +141,8 @@ impl SatoriClient {
             http: crate::http::client(),
             console: false,
             proxy_urls: RwLock::new(Arc::new(Vec::new())),
+            features: RwLock::default(),
+            limits: RwLock::default(),
         }
     }
 
@@ -139,11 +153,92 @@ impl SatoriClient {
             http: crate::http::client(),
             console: true,
             proxy_urls: RwLock::new(Arc::new(Vec::new())),
+            features: RwLock::default(),
+            limits: RwLock::default(),
         }
     }
 
     pub fn set_proxy_urls(&self, urls: Vec<String>) {
         *self.proxy_urls.write().unwrap() = Arc::new(urls);
+    }
+
+    /// 记下登录声明的标准方法（`READY` 的 `logins[]` 与 `login-updated` 的 `login` 同一份结构）。
+    /// 没带 `features` 的快照保持原样。
+    pub fn set_features(&self, login: &Value) {
+        let Some(list) = login.get("features").and_then(Value::as_array) else {
+            return;
+        };
+        let set = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        *self.features.write().unwrap() = Arc::new(set);
+    }
+
+    /// 实现端是否提供这个标准方法。没声明过任何方法时说「提供」：不知道就不拦。
+    /// 扩展方法（`internal/…`）不在 `features` 里，不归这里管。
+    pub fn supports(&self, method: &str) -> bool {
+        let features = self.features.read().unwrap();
+        features.is_empty() || features.contains(method)
+    }
+
+    pub fn limits(&self) -> Limits {
+        *self.limits.read().unwrap()
+    }
+
+    pub fn set_limits(&self, limits: Limits) {
+        *self.limits.write().unwrap() = limits;
+    }
+
+    /// 把调用方想要的上传字节上限收窄到实现端声明的上限之内。
+    pub fn fit_upload_cap(&self, wanted: u64) -> u64 {
+        self.limits()
+            .upload_bytes
+            .map_or(wanted, |limit| wanted.min(limit))
+    }
+
+    fn check_declared(&self, method: &str) -> Result<(), BotError> {
+        if method.starts_with("internal/") || self.supports(method) {
+            return Ok(());
+        }
+        Err(Box::new(SatoriApiError {
+            method: method.into(),
+            status: 404,
+            code: Some("unsupported_method".into()),
+            message: format!("实现端没有声明 {method}"),
+        }))
+    }
+
+    /// 发一次请求并读完响应体；非 2xx 变成 [`SatoriApiError`]。
+    ///
+    /// 503 加 `Retry-After` 是实现端在说「现在处理不了，过几秒再来」（satori-qq 的会话稳定期）：
+    /// 请求没有被执行，重来是安全的。等一等再试，累计不超过 [`UNAVAILABLE_PATIENCE`]，
+    /// 要等得更久的就原样报错，让调用方自己决定。
+    async fn round_trip(
+        &self,
+        method: &str,
+        build: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<Vec<u8>, BotError> {
+        let mut waited = Duration::ZERO;
+        loop {
+            let (status, retry_after, bytes) = read_reply(build().send().await?).await?;
+            if status.is_success() {
+                return Ok(bytes);
+            }
+            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                && let Some(wait) = retry_after
+                && waited + wait <= UNAVAILABLE_PATIENCE
+            {
+                // 让出一点余量：「还剩 1 秒」到点那一刻服务端可能还差几十毫秒。
+                let wait = wait + Duration::from_millis(300);
+                warn!(target: "Bot", "Satori {method} 暂不可用，{:.1} 秒后重试", wait.as_secs_f32());
+                tokio::time::sleep(wait).await;
+                waited += wait;
+                continue;
+            }
+            return Err(api_error(method, status, &bytes));
+        }
     }
 
     /// 解析消息元素里 `src` 的取件方式，交给 `message` 模块使用。
@@ -195,28 +290,25 @@ impl SatoriClient {
                 _ => Err(format!("控制台模式不支持 Satori API: {method}").into()),
             };
         }
+        self.check_declared(method)?;
         let url = format!("{}/v1/{}", self.endpoint, method);
-        let mut request = self
-            .http
-            .post(url)
-            .header("Satori-Platform", &bot.platform)
-            .header("Satori-User-ID", &bot.login_user.get().id)
-            .json(&params);
-        if let Some(token) = &self.token {
-            request = request.bearer_auth(token);
-        }
         // QQ/Satori 主进程若被 OEM freezer 暂停，loopback HTTP 也可能无限等待。
         // message.create 留出 30 秒排队、45 秒媒体确认/重试及转换余量。
-        let timeout_seconds = if method == "message.create" { 100 } else { 65 };
-        let response = request
-            .timeout(Duration::from_secs(timeout_seconds))
-            .send()
+        let timeout = Duration::from_secs(if method == "message.create" { 100 } else { 65 });
+        let bytes = self
+            .round_trip(method, || {
+                let mut request = self
+                    .http
+                    .post(&url)
+                    .header("Satori-Platform", &bot.platform)
+                    .header("Satori-User-ID", &bot.login_user.get().id)
+                    .json(&params);
+                if let Some(token) = &self.token {
+                    request = request.bearer_auth(token);
+                }
+                request.timeout(timeout)
+            })
             .await?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
-        if !status.is_success() {
-            return Err(api_error(method, status, &bytes));
-        }
         let value = decode_response(method, &bytes)?;
         Ok(serde_json::from_value(value)?)
     }
@@ -244,22 +336,33 @@ impl SatoriClient {
         if self.console {
             return Err("控制台模式不支持文件上传".into());
         }
+        self.check_declared("upload.create")?;
+        // 实现端声明了上限就别白传一遍：明知会被拒的大文件在这里直接报错。
+        if let Some(limit) = self.limits().upload_bytes
+            && data.len() as u64 > limit
+        {
+            return Err(Box::new(SatoriApiError {
+                method: "upload.create".into(),
+                status: 413,
+                code: Some("payload_too_large".into()),
+                message: format!("文件 {} 字节，超过实现端上限 {limit} 字节", data.len()),
+            }));
+        }
+        // 上传的表单整份压在内存里、不能重放，所以不走 `round_trip` 的等待重试：失败原样交给调用方。
         let part = reqwest::multipart::Part::bytes(data)
             .file_name(name.to_string())
             .mime_str(mime)?;
-        let form = reqwest::multipart::Form::new().part("file", part);
         let mut request = self
             .http
             .post(format!("{}/v1/upload.create", self.endpoint))
             .header("Satori-Platform", &bot.platform)
             .header("Satori-User-ID", &bot.login_user.get().id)
-            .multipart(form);
+            .multipart(reqwest::multipart::Form::new().part("file", part));
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
         let response = request.timeout(Duration::from_secs(65)).send().await?;
-        let status = response.status();
-        let bytes = response.bytes().await?;
+        let (status, _, bytes) = read_reply(response).await?;
         if !status.is_success() {
             return Err(api_error("upload.create", status, &bytes));
         }
@@ -366,6 +469,53 @@ async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     }
 }
 
+/// 向实现端问一次它声明的限额。两个实现端的 `internal/capabilities` 用同一份 `limits` 口径；
+/// 问不到不要紧，没有声明就没有限额，调用方照旧自己兜底。
+async fn learn_limits(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
+    match client
+        .post::<Value>(&bot, "internal/capabilities", json!({}))
+        .await
+    {
+        Ok(capabilities) => client.set_limits(limits_of(&capabilities)),
+        Err(error) => debug!(target: "Bot", "internal/capabilities 失败，按没有声明限额处理：{error}"),
+    }
+}
+
+fn limits_of(capabilities: &Value) -> Limits {
+    Limits {
+        upload_bytes: capabilities
+            .pointer("/limits/upload_bytes")
+            .and_then(Value::as_u64)
+            .filter(|bytes| *bytes > 0),
+    }
+}
+
+/// `login.status` 变化时记一笔。状态本身不拦调用：实现端离线时自己回 503，
+/// 这里只是让日志里看得见「什么时候掉的线、什么时候回来」。
+fn note_login_status(login: &Value, last: &mut Option<i64>) {
+    let Some(status) = login.get("status").and_then(Value::as_i64) else {
+        return;
+    };
+    if last.replace(status) == Some(status) {
+        return;
+    }
+    let label = match status {
+        0 => "离线",
+        1 => "在线",
+        2 => "连接中",
+        3 => "正在断开",
+        4 => "重连中",
+        _ => "未知",
+    };
+    info!(target: "Bot", "Satori 登录状态：{label}（{status}）");
+}
+
+/// 用户自己的名字。协议里 `name` 是用户名、`nick` 是昵称，实现端各填各的：
+/// satori-qq 的 `name` 是 QQ 昵称，satori-wx 的 `name` 多半缺席、昵称在 `nick`。两个都认，`name` 在前。
+pub(crate) fn account_name(user: &Value) -> Option<String> {
+    optional_string(user.get("name")).or_else(|| optional_string(user.get("nick")))
+}
+
 /// HTTP 成功只代表 RPC 已应答；QQ 内核可以在 JSON 中报告失败。
 fn decode_response(method: &str, bytes: &[u8]) -> Result<Value, BotError> {
     if bytes.iter().all(u8::is_ascii_whitespace) {
@@ -378,10 +528,10 @@ fn decode_response(method: &str, bytes: &[u8]) -> Result<Value, BotError> {
     Ok(value)
 }
 
-/// 把非 2xx 的响应体变成错误文案。
+/// 把非 2xx 的响应体变成错误。
 ///
-/// 实现端从 0.23.1 起在错误体里给机器可读的 `code`（例如 `removed_action`），这里一并带上：
-/// 上游按 code 判断就不必去匹配会变的中文文案。
+/// 两个实现端的错误体都是 `{"code": "<机器可读的短名>", "message": "<给人看的>"}`：
+/// 上游按 `code` 判断（例如 `removed_action`、`session_stabilizing`），不必去匹配会变的中文文案。
 #[derive(Debug)]
 pub struct SatoriApiError {
     pub method: String,
@@ -403,20 +553,44 @@ impl std::fmt::Display for SatoriApiError {
     }
 }
 impl std::error::Error for SatoriApiError {}
+
+/// 503 之后愿意为「稍后再来」累计等待的时间。satori-qq 的会话稳定期默认 30 秒。
+const UNAVAILABLE_PATIENCE: Duration = Duration::from_secs(45);
+
+/// `Retry-After` 的秒数形式；HTTP 日期形式实现端不会发，不解析。
+fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+async fn read_reply(
+    response: reqwest::Response,
+) -> Result<(reqwest::StatusCode, Option<Duration>, Vec<u8>), BotError> {
+    let status = response.status();
+    let retry_after = retry_after(response.headers());
+    let bytes = response.bytes().await?;
+    Ok((status, retry_after, bytes.to_vec()))
+}
+
 fn api_error(method: &str, status: reqwest::StatusCode, bytes: &[u8]) -> BotError {
     let parsed = serde_json::from_slice::<Value>(bytes).ok();
+    let text = |key: &str| {
+        parsed
+            .as_ref()
+            .and_then(|v| v.get(key)?.as_str())
+            .map(str::to_owned)
+    };
     Box::new(SatoriApiError {
         method: method.into(),
         status: status.as_u16(),
-        code: parsed
-            .as_ref()
-            .and_then(|v| v.get("code")?.as_str())
-            .map(str::to_owned),
-        message: parsed
-            .as_ref()
-            .and_then(|v| v.get("message")?.as_str())
-            .map(str::to_owned)
-            .unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
+        code: text("code"),
+        message: text("message").unwrap_or_else(|| String::from_utf8_lossy(bytes).into_owned()),
     })
 }
 
@@ -656,8 +830,10 @@ async fn connect_and_listen(
     );
     let writer = Arc::new(SatoriClient::new(endpoint.clone(), token));
     writer.set_proxy_urls(proxy_urls(&ready));
+    writer.set_features(login);
     register_route(writer.clone(), bot_status.clone());
     tokio::spawn(learn_guilds(writer.clone(), bot_status.clone()));
+    tokio::spawn(learn_limits(writer.clone(), bot_status.clone()));
     let matcher = Arc::new(Matcher::new());
 
     info!(
@@ -730,6 +906,7 @@ async fn listen(
     session_sn: &mut EventCursor,
 ) -> Result<(), BotError> {
     let mut pong_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut login_status = None;
     loop {
         let frame = tokio::select! {
             frame = ws_read.next() => match frame { Some(frame) => frame?, None => return Ok(()) },
@@ -768,6 +945,10 @@ async fn listen(
                             Some("login-updated" | "login-removed") => {
                                 if body["type"] == "login-removed" {
                                     return Ok(());
+                                }
+                                if let Some(login) = body.get("login") {
+                                    writer.set_features(login);
+                                    note_login_status(login, &mut login_status);
                                 }
                                 apply_login_update(body, bot_status);
                                 continue;
@@ -1413,7 +1594,7 @@ fn normalize_event(
             .unwrap_or("member");
         out["sender"] = json!({
             "user_id": user_id,
-            "nickname": user.get("name").and_then(Value::as_str).unwrap_or(""),
+            "nickname": account_name(user).unwrap_or_default(),
             "card": member.get("nick").or_else(|| member.get("name")).and_then(Value::as_str).unwrap_or(""),
             "avatar": member.get("avatar").or_else(|| user.get("avatar")).and_then(Value::as_str).unwrap_or(""),
             "role": role,
@@ -1556,4 +1737,123 @@ fn readable_chunks_preserve_unicode_content_and_source_urls() {
     assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 2800));
     assert!(chunks.iter().any(|chunk| chunk.contains(url)));
     assert!(readable_chunks("", 2800).is_empty());
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn bot() -> BotStatus {
+        BotStatus {
+            adapter: "satori-qq".into(),
+            platform: "red".into(),
+            login_user: LoginUser {
+                id: "1".into(),
+                ..Default::default()
+            }
+            .into(),
+        }
+    }
+
+    fn reply(status: &str, headers: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\n{headers}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// 只会按剧本答话的本地服务：每个元素是对下一个请求的一整段原始响应。
+    async fn script(replies: Vec<String>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for reply in replies {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                socket.write_all(reply.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn unavailable_with_retry_after_waits_and_retries_once() {
+        let endpoint = script(vec![
+            reply(
+                "503 Service Unavailable",
+                "Retry-After: 1\r\n",
+                r#"{"code":"session_stabilizing","message":"QQ session stabilizing; retry after 1s"}"#,
+            ),
+            reply("200 OK", "", r#"[{"id":"m1"}]"#),
+        ])
+        .await;
+        let client = SatoriClient::new(endpoint, None);
+        let started = std::time::Instant::now();
+        let created: Vec<Value> = client
+            .post(&bot(), "message.create", json!({"channel_id": "1", "content": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(created[0]["id"], "m1");
+        assert!(started.elapsed() >= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn unavailable_without_a_promise_or_beyond_patience_is_reported_as_is() {
+        let endpoint = script(vec![
+            reply("503 Service Unavailable", "", r#"{"code":"login_offline","message":"登录离线"}"#),
+            reply(
+                "503 Service Unavailable",
+                "Retry-After: 120\r\n",
+                r#"{"code":"session_stabilizing","message":"later"}"#,
+            ),
+        ])
+        .await;
+        let client = SatoriClient::new(endpoint, None);
+        for expected in ["login_offline", "session_stabilizing"] {
+            let error = client
+                .post::<Value>(&bot(), "message.create", json!({}))
+                .await
+                .unwrap_err();
+            let error = error.downcast_ref::<SatoriApiError>().unwrap();
+            assert_eq!(error.status, 503);
+            assert_eq!(error.code.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn undeclared_standard_methods_fail_before_the_wire() {
+        let client = SatoriClient::new("http://127.0.0.1:1".into(), None);
+        // 没拿到 features 之前什么都不拦。
+        assert!(client.check_declared("reaction.create").is_ok());
+        client.set_features(&json!({"features": ["message.create", "login.get"]}));
+        assert!(client.check_declared("message.create").is_ok());
+        assert!(client.check_declared("internal/typing").is_ok());
+        let error = client.check_declared("reaction.create").unwrap_err();
+        let error = error.downcast_ref::<SatoriApiError>().unwrap();
+        assert_eq!(error.code.as_deref(), Some("unsupported_method"));
+        // 缺 features 的快照不会把已知的表清空。
+        client.set_features(&json!({"status": 1}));
+        assert!(client.check_declared("reaction.create").is_err());
+    }
+
+    #[test]
+    fn declared_upload_limit_narrows_what_callers_ask_for() {
+        let client = SatoriClient::new("http://127.0.0.1:1".into(), None);
+        assert_eq!(client.fit_upload_cap(80 << 20), 80 << 20);
+        client.set_limits(limits_of(&json!({"limits": {"upload_bytes": 67_108_864}})));
+        assert_eq!(client.fit_upload_cap(80 << 20), 64 << 20);
+        assert_eq!(client.fit_upload_cap(8 << 20), 8 << 20);
+        assert_eq!(limits_of(&json!({"limits": {"upload_bytes": 0}})), Limits::default());
+        assert_eq!(limits_of(&json!({})), Limits::default());
+    }
+
+    #[test]
+    fn account_name_reads_name_or_nick() {
+        // satori-qq：`name` 是 QQ 昵称；satori-wx：只有 `nick`。
+        assert_eq!(account_name(&json!({"name": "甲", "nick": "群名片"})).as_deref(), Some("甲"));
+        assert_eq!(account_name(&json!({"nick": "mi"})).as_deref(), Some("mi"));
+        assert_eq!(account_name(&json!({"id": "x"})), None);
+    }
 }

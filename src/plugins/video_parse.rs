@@ -265,7 +265,8 @@ async fn extract(
     group_id: Option<&str>,
     user_id: &str,
 ) -> Result<()> {
-    let cap = config.max_size_mb.clamp(1, 2048) * 1_048_576;
+    // 实现端声明了上传上限就按它收窄：超过它的片子下载下来也送不进去。
+    let cap = writer.fit_upload_cap(config.max_size_mb.clamp(1, 2048) * 1_048_576);
     let budget = Duration::from_secs(config.timeout_seconds.clamp(30, 1800));
     let streams = bilibili::plan(
         &video.bvid,

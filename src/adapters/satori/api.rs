@@ -101,7 +101,7 @@ pub async fn get_msg(
             .unwrap_or(message_id)
             .to_string(),
         sender: SenderInfo {
-            nickname: optional_string(user.get("name")),
+            nickname: super::account_name(user),
             card: optional_string(member.get("nick")).or_else(|| optional_string(user.get("nick"))),
             other: Default::default(),
         },
@@ -247,11 +247,7 @@ pub async fn get_group_member_info(
     Ok(GroupMemberInfo {
         group_id: group_id.to_string(),
         user_id: user_id.to_string(),
-        nickname: user
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+        nickname: super::account_name(user).unwrap_or_default(),
         card: value
             .get("nick")
             .or_else(|| value.get("name"))
