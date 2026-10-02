@@ -79,6 +79,14 @@ pub(crate) struct PeakConfig {
     pub windows: Vec<String>,
     /// 算作高峰的星期几，1=周一 … 7=周日；空列表等于每天都算。
     pub weekdays: Vec<u8>,
+    /// 中国法定节假日，`YYYY-MM-DD` 或 `YYYY-MM-DD..YYYY-MM-DD`（含两端），按北京时间。
+    ///
+    /// DeepSeek 的规则是「周一至周五（**不含**中国法定节假日）」才是高峰，节假日全天与周末一样
+    /// 是空闲时段。只看星期几的话，国庆那几天会被当成高峰：2026-10-02（周五，国庆第二天）
+    /// 它就按高峰换上了替补模型。调休的周末上班日不用写——周末本来就不是高峰。
+    /// 国务院每年十一月公布下一年的安排，到时候照抄进来；列表非空却没有今年的条目时，
+    /// 启动后第一次判断时段会在日志里提醒一次。空列表等于不排除任何日子。
+    pub holidays: Vec<String>,
     /// 高峰时段顶上来的模型（`供应商/模型`）。峰谷价把 DeepSeek 的高峰抬成一倍，
     /// 与其为这两段多付一倍，不如把它们交给一家全天同价的便宜模型：`mode = "swap"`
     /// 就照常跑、只换这一个模型，`mode = "sleep"` 则连上下文一起省着来。
@@ -107,6 +115,18 @@ impl Default for PeakConfig {
             mode: Mode::Sleep,
             windows: vec!["09:00-12:00".to_string(), "14:00-18:00".to_string()],
             weekdays: vec![1, 2, 3, 4, 5],
+            // 国务院办公厅《关于 2026 年部分节假日安排的通知》（2025-11-04）。
+            holidays: [
+                "2026-01-01..2026-01-03",
+                "2026-02-15..2026-02-23",
+                "2026-04-04..2026-04-06",
+                "2026-05-01..2026-05-05",
+                "2026-06-19..2026-06-21",
+                "2026-09-25..2026-09-27",
+                "2026-10-01..2026-10-07",
+            ]
+            .map(str::to_string)
+            .to_vec(),
             model: String::new(),
             swap_reply: false,
             doze_gate_seconds: 0,
@@ -128,13 +148,55 @@ fn parse_clock(clock: &str) -> Option<u32> {
     (hour < 24 && minute < 60).then_some(hour * 60 + minute)
 }
 
+/// `YYYY-MM-DD` 或 `YYYY-MM-DD..YYYY-MM-DD` → 起止日期（含两端）。写坏的当作不存在。
+fn parse_holiday(entry: &str) -> Option<(chrono::NaiveDate, chrono::NaiveDate)> {
+    let date = |text: &str| chrono::NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok();
+    match entry.split_once("..") {
+        Some((from, to)) => Some((date(from)?, date(to)?)),
+        None => date(entry).map(|day| (day, day)),
+    }
+}
+
+/// 节假日表里没有今年的条目时只提醒一次（按年记）：表过期了，节假日会被悄悄当成高峰。
+fn warn_if_stale(holidays: &[String], year: i32) {
+    use chrono::Datelike as _;
+    use std::sync::atomic::{AtomicI32, Ordering};
+    static WARNED: AtomicI32 = AtomicI32::new(0);
+    if holidays.is_empty()
+        || holidays
+            .iter()
+            .filter_map(|entry| parse_holiday(entry))
+            .any(|(from, to)| from.year() == year || to.year() == year)
+        || WARNED.swap(year, Ordering::Relaxed) == year
+    {
+        return;
+    }
+    warn!(
+        target: "Plugin/Ambient",
+        "[ambient.peak].holidays 里没有 {year} 年的法定节假日：节假日会被当成高峰（国务院每年十一月公布下一年的安排，照抄进来）"
+    );
+}
+
 impl PeakConfig {
-    /// 这个时刻算不算高峰。跨零点的时段按当时那一刻的星期几判断。
+    /// 这一天是不是（表里写的）法定节假日。
+    fn is_holiday(&self, day: chrono::NaiveDate) -> bool {
+        self.holidays
+            .iter()
+            .filter_map(|entry| parse_holiday(entry))
+            .any(|(from, to)| from <= day && day <= to)
+    }
+
+    /// 这个时刻算不算高峰。跨零点的时段按当时那一刻的星期几与日期判断；
+    /// 法定节假日全天不是高峰。
     pub(crate) fn is_peak_at<Tz: chrono::TimeZone>(&self, at: chrono::DateTime<Tz>) -> bool {
         use chrono::{Datelike as _, Timelike as _};
         let at = at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3_600).expect("北京时间"));
         let weekday = at.weekday().number_from_monday() as u8;
         if !self.weekdays.is_empty() && !self.weekdays.contains(&weekday) {
+            return false;
+        }
+        warn_if_stale(&self.holidays, at.year());
+        if self.is_holiday(at.date_naive()) {
             return false;
         }
         let minutes = at.hour() * 60 + at.minute();
