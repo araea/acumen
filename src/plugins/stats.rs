@@ -57,6 +57,9 @@ pub struct StatsConfig {
     // —— 主动推送总开关与阈值 ——
     /// 群在统计区间内消息数低于此值则跳过推送（避免打扰冷群）
     pub push_min_messages: u64,
+    /// 主动推送时是否先发一条文字提示（小结、数字、标题等），再发图。
+    /// 默认 false：保持静默，只把结果图片发进群，不输出任何文字。
+    pub push_text_enabled: bool,
 
     // —— 多群推送节奏 ——
     /// 群与群之间的最小等待秒数
@@ -110,6 +113,7 @@ impl Default for StatsConfig {
             ranking_max_limit: 100,
             channel: ChannelConfig::default(),
             push_min_messages: 20,
+            push_text_enabled: false,
             push_group_gap_min_seconds: 20,
             push_group_gap_max_seconds: 75,
             daily_push_enabled: true,
@@ -339,35 +343,35 @@ pub fn on_connected(
                 "MorningRecap",
                 config.morning_recap_time.clone(),
                 PushFrequency::Daily,
-                |c, w, gid, m| Box::pin(pusher::push_morning_recap(c, w, gid, m)),
+                |c, w, gid, m, t| Box::pin(pusher::push_morning_recap(c, w, gid, m, t)),
             ),
             (
                 config.noon_brief_enabled,
                 "NoonBrief",
                 config.noon_brief_time.clone(),
                 PushFrequency::Daily,
-                |c, w, gid, m| Box::pin(pusher::push_noon_brief(c, w, gid, m)),
+                |c, w, gid, m, t| Box::pin(pusher::push_noon_brief(c, w, gid, m, t)),
             ),
             (
                 config.daily_push_enabled,
                 "DailySummary",
                 config.daily_push_time.clone(),
                 PushFrequency::Daily,
-                |c, w, gid, m| Box::pin(pusher::push_daily_summary(c, w, gid, m)),
+                |c, w, gid, m, t| Box::pin(pusher::push_daily_summary(c, w, gid, m, t)),
             ),
             (
                 config.weekly_recap_enabled,
                 "WeeklyRecap",
                 config.weekly_recap_time.clone(),
                 PushFrequency::Weekly(Weekday::Mon),
-                |c, w, gid, m| Box::pin(pusher::push_weekly_recap(c, w, gid, m)),
+                |c, w, gid, m, t| Box::pin(pusher::push_weekly_recap(c, w, gid, m, t)),
             ),
             (
                 config.monthly_recap_enabled,
                 "MonthlyRecap",
                 config.monthly_recap_time.clone(),
                 PushFrequency::Monthly(1),
-                |c, w, gid, m| Box::pin(pusher::push_monthly_recap(c, w, gid, m)),
+                |c, w, gid, m, t| Box::pin(pusher::push_monthly_recap(c, w, gid, m, t)),
             ),
         ];
 
@@ -393,7 +397,14 @@ pub fn on_connected(
                         current.monthly_recap_enabled,
                     ];
                     if current.enabled && switches[index] && current.channel.allows_group(&gid) {
-                        runner(c, w, gid, current.push_min_messages).await;
+                        runner(
+                            c,
+                            w,
+                            gid,
+                            current.push_min_messages,
+                            current.push_text_enabled,
+                        )
+                        .await;
                     }
                 },
             );
@@ -403,8 +414,13 @@ pub fn on_connected(
     })
 }
 
-type PushFn =
-    fn(Context, LockedWriter, String, u64) -> futures_util::future::BoxFuture<'static, ()>;
+type PushFn = fn(
+    Context,
+    LockedWriter,
+    String,
+    u64,
+    bool,
+) -> futures_util::future::BoxFuture<'static, ()>;
 
 /// Validate control edits against the plugin's actual configuration type.
 pub fn validate_config(value: &toml::Value) -> Result<(), String> {

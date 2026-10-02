@@ -818,6 +818,10 @@ ranking_limit = 20
 ranking_max_limit = 100
 # 定时推送的条数门槛：这批消息少于这么多就不推，免得冷清的群每天收到一张空的图。
 push_min_messages = 20
+# 定时推送是否先发一条文字提示（小结、数字、标题等），再发结果图。
+# 默认 false：保持静默，只把结果图片发进群，不输出任何文字。
+#   /ctl set stats push_text_enabled true
+push_text_enabled = false
 # 多个群之间的发送间隔区间（秒），错峰用。
 push_group_gap_min_seconds = 20
 push_group_gap_max_seconds = 75

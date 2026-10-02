@@ -18,7 +18,11 @@ const LOG_TARGET: &str = "Plugin/Stats";
 
 // ================= 通用工具 =================
 
-async fn send_text(c: &Context, w: LockedWriter, gid: &str, text: String) {
+/// 文字提示：仅当配置开启时发送。默认静默，只推结果图片，不刷任何文本。
+async fn send_text(c: &Context, w: LockedWriter, gid: &str, enabled: bool, text: String) {
+    if !enabled {
+        return;
+    }
     let _ = send_msg_ack(c, w, Some(gid), None, Message::new().text(text)).await;
 }
 
@@ -117,7 +121,7 @@ async fn active_users(c: &Context, gid: &str, range: (i64, i64)) -> u64 {
 // ================= 各推送任务 =================
 
 /// [23:30 每日] 当日总结：发言榜 + 词云
-pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u64) {
+pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u64, text_enabled: bool) {
     let gid = gid.as_str();
     let range = get_time_range("今日");
     let label = "当日总结";
@@ -135,6 +139,7 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u
         &c,
         w.clone(),
         gid,
+        text_enabled,
         format!(
             "{} · 今日群聊小结\n全天共 {} 条消息，{} 位群友活跃",
             date_str, count, users
@@ -155,7 +160,7 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u
 }
 
 /// [09:00 每日] 早安回顾：昨日发言榜 + 昨日 24h 走势
-pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u64) {
+pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u64, text_enabled: bool) {
     let gid = gid.as_str();
     let range = get_time_range("昨日");
     let label = "早安回顾";
@@ -175,6 +180,7 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u
         &c,
         w.clone(),
         gid,
+        text_enabled,
         format!(
             "早安，昨日（{}）群活跃回顾\n共 {} 条消息，{} 位群友参与",
             yest, count, users
@@ -204,7 +210,7 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u
 }
 
 /// [12:30 每日] 午间速览：今日上半场发言榜
-pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64) {
+pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64, text_enabled: bool) {
     let gid = gid.as_str();
     let range = get_time_range("今日");
     let label = "午间速览";
@@ -220,6 +226,7 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64)
         &c,
         w.clone(),
         gid,
+        text_enabled,
         format!("中午好，今日上半场战报\n截至现在共 {} 条发言", count),
     )
     .await;
@@ -236,7 +243,7 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64)
 }
 
 /// [周一 10:00] 上周回顾：上周发言榜 + 上周走势
-pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u64) {
+pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u64, text_enabled: bool) {
     let gid = gid.as_str();
     let range = get_time_range("上周");
     let label = "上周回顾";
@@ -253,6 +260,7 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u6
         &c,
         w.clone(),
         gid,
+        text_enabled,
         format!(
             "新一周开工，上周群聊回顾\n全周 {} 条消息，{} 位群友活跃",
             count, users
@@ -273,7 +281,7 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u6
 }
 
 /// [每月 1 日 10:20] 上月回顾：上月发言榜 + 上月走势 + 上月词云
-pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: String, min: u64) {
+pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: String, min: u64, text_enabled: bool) {
     let gid = gid.as_str();
     let range = get_time_range("上月");
     let label = "上月回顾";
@@ -296,6 +304,7 @@ pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: String, min: u
         &c,
         w.clone(),
         gid,
+        text_enabled,
         format!(
             "月度回顾 · {}月\n上月共 {} 条消息，{} 位群友活跃",
             last_month, count, users
