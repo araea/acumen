@@ -23,6 +23,7 @@
 //! 压下来，最省事的做法是 `mode = "swap"`——节奏、联网、看图、绘图都跟平时一样，
 //! 只是高峰这几段换成替补；想更保守就仍用 `mode = "sleep"`（睡着，连上下文一起
 //! 省），或 `mode = "pause"` 整段不出声。`model` 留空则以上都不发生，沿主模型。
+//! 替补默认只接手判定（`swap_reply = false`）：判定量大、在后台，发言少而有人在等。
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -83,6 +84,13 @@ pub(crate) struct PeakConfig {
     /// 就照常跑、只换这一个模型，`mode = "sleep"` 则连上下文一起省着来。
     /// 空字符串（默认）表示不换，仍用 `gate_model` / `reply_model`。
     pub model: String,
+    /// 高峰时段发言模型也换成 `model`（默认不换，只换判定）。
+    ///
+    /// 判定是量最大的调用（一个晚上几百次）又在后台，慢一点没人看得见，换成便宜模型最划算；
+    /// 发言一天只有几十次、有人在等，省不了几个钱，却最怕慢——2026-10-02 对着日志量过，替补
+    /// 模型 mimo 判定中位 14 秒（DeepSeek 4 秒）、发言中位 52 秒（DeepSeek 12 秒），发言
+    /// 11 次里有 2 次耗满整轮预算，其中一次是有人 @ 它。要把发言也交给替补就写 `true`。
+    pub swap_reply: bool,
     /// 睡着时两次主动判定之间的最短间隔（秒）。高峰价格翻倍，但群里该接的话
     /// 隔一会儿看一眼仍接得住；这个间隔把「跟着消息频率一直在判定」压成
     /// 「隔一段时间看一眼」。写 0 表示完全睡着，只有被点名才醒（旧行为）；
@@ -100,6 +108,7 @@ impl Default for PeakConfig {
             windows: vec!["09:00-12:00".to_string(), "14:00-18:00".to_string()],
             weekdays: vec![1, 2, 3, 4, 5],
             model: String::new(),
+            swap_reply: false,
             doze_gate_seconds: 0,
             doze_reply_limit: 2,
         }

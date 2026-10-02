@@ -572,7 +572,12 @@ impl AmbientConfig {
     fn swapped(&self) -> Self {
         Self {
             gate_model: self.peak.model_or(&self.gate_model).to_string(),
-            reply_model: self.peak.model_or(&self.reply_model).to_string(),
+            // 发言默认不换：见 `peak.swap_reply`。
+            reply_model: if self.peak.swap_reply {
+                self.peak.model_or(&self.reply_model).to_string()
+            } else {
+                self.reply_model.clone()
+            },
             ..self.clone()
         }
     }
