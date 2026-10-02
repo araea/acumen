@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use toml::Value;
 
 mod gate;
+mod habit;
 mod mood;
 mod peak;
 mod quick;
@@ -756,7 +757,7 @@ impl Scene {
                 String::new()
             },
             own: format!(
-                "{}{}{}{}{}",
+                "{}{}{}{}{}{}",
                 self_facts(),
                 if config.memory_enabled {
                     memory::with_group(group, |memory| {
@@ -765,6 +766,7 @@ impl Scene {
                 } else {
                     String::new()
                 },
+                recent::habit_brief(group),
                 recent::recalled(group, turns),
                 voice::brief(turns, voice_register(config, group), group),
                 stickers::brief(turns, config.sticker_max)

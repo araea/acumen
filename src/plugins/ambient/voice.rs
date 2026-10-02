@@ -146,7 +146,7 @@ pub(crate) fn bank_lines() -> Vec<&'static str> {
 ///
 /// 近期原话没有调子标记（活 / 静）：它们是他这几天随手打的，两种状态都可能这么说。
 /// 第一条尽量取自这个群：他在这群人面前怎么说话、怎么称呼群友，比别处的更对这群听众。
-fn pick_recent(turns: &[Turn], recent: &[recent::Line], group: &str) -> Vec<String> {
+fn pick_recent(turns: &[Turn], recent: &[recent::Line], here: &[recent::Line]) -> Vec<String> {
     use rand::seq::SliceRandom;
     if recent.is_empty() {
         return Vec::new();
@@ -160,23 +160,25 @@ fn pick_recent(turns: &[Turn], recent: &[recent::Line], group: &str) -> Vec<Stri
         .join("\n");
     let topic = grams(&window);
     let words = content_words(&window);
-    let mut eligible: Vec<&recent::Line> = recent
+    let usable = |line: &&recent::Line| {
+        !window.contains(line.text.as_str())
+            && content_words(&line.text).is_disjoint(&words)
+            && affinity(&line.text, &topic) < OFF_TOPIC
+    };
+    let mut mine: Vec<&recent::Line> = here.iter().filter(usable).collect();
+    let mut elsewhere: Vec<&recent::Line> = recent
         .iter()
-        .filter(|line| !window.contains(line.text.as_str()))
-        .filter(|line| {
-            content_words(&line.text).is_disjoint(&words)
-                && affinity(&line.text, &topic) < OFF_TOPIC
-        })
+        .filter(usable)
+        .filter(|line| !mine.iter().any(|own| own.text == line.text))
         .collect();
-    eligible.shuffle(&mut rand::rng());
-    let (mut here, elsewhere): (Vec<&recent::Line>, Vec<&recent::Line>) =
-        eligible.into_iter().partition(|line| line.group == group);
+    mine.shuffle(&mut rand::rng());
+    elsewhere.shuffle(&mut rand::rng());
     let mut ordered: Vec<&recent::Line> = Vec::new();
-    if !here.is_empty() {
-        ordered.push(here.remove(0));
+    if !mine.is_empty() {
+        ordered.push(mine.remove(0));
     }
     ordered.extend(elsewhere);
-    ordered.extend(here);
+    ordered.extend(mine);
     let mut chosen = Vec::new();
     let mut used = 0;
     for line in ordered {
@@ -225,12 +227,16 @@ pub(crate) fn short_lines(
         .map(|sample| sample.text)
         .collect();
     shorts.shuffle(&mut rand::rng());
+    let here = recent::lines_in(group);
     let mut fresh: Vec<recent::Line> = recent::lines()
         .into_iter()
+        .chain(here)
         .filter(|line| short(&line.text))
         .filter(|line| !recent_text.contains(line.text.as_str()))
         .filter(|line| content_words(&line.text).is_disjoint(&words))
         .collect();
+    fresh.sort_by(|a, b| a.text.cmp(&b.text));
+    fresh.dedup_by(|a, b| a.text == b.text);
     fresh.shuffle(&mut rand::rng());
     // 这个群里说的先上。
     fresh.sort_by_key(|line| line.group != group);
@@ -313,7 +319,7 @@ pub(crate) fn brief(turns: &[Turn], register: Register, group: &str) -> String {
     if samples.is_empty() {
         return String::new();
     }
-    let recent = pick_recent(turns, &recent::lines(), group);
+    let recent = pick_recent(turns, &recent::lines(), &recent::lines_in(group));
     let used: usize = recent.iter().map(|line| line.chars().count()).sum();
     let picked = pick_within(
         turns,

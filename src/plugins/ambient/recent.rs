@@ -20,10 +20,11 @@
 //!
 //! 数据由库派生，丢了下次重捞；不落盘、不进仓库。
 
+use super::habit::Habit;
 use super::recall;
 use crate::event::Context;
 use sea_orm::{ConnectionTrait, Statement};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -33,6 +34,11 @@ const DAYS: i64 = 21;
 const CORPUS_DAYS: i64 = 60;
 /// 近期原话最多留多少条（最新的）。
 const KEEP: usize = 80;
+/// 另外每个群各留他在那个群里说的最新几条：放假一天他在二十几个群手打一千多句，
+/// 全局最新八十条只够盖住最近一两个钟头，轮不到安静的群。
+const GROUP_KEEP: usize = 40;
+/// 打字习惯看最近多少天：句尾挂「（」这种习惯几周就能变（8 月底 0.3%，10 月初 8%）。
+const HABIT_DAYS: i64 = 30;
 /// 隔多久重捞一次。他刚说过的话二十分钟内就进得了样本，口头禅换得再快也跟得上。
 const REFRESH: Duration = Duration::from_secs(20 * 60);
 /// 失败后隔多久再试。
@@ -68,6 +74,10 @@ pub(super) struct Line {
 #[derive(Default)]
 pub(super) struct Loaded {
     lines: Vec<Line>,
+    /// 每个群里他最近说的话（最新的在前）。
+    by_group: HashMap<String, Vec<Line>>,
+    /// 每个群里的打字习惯（量得出的群才有）。
+    habits: HashMap<String, Habit>,
     corpus: recall::Corpus,
     /// 每个钟点的精神头基线（0.30–0.92）；日子不够时没有。
     energy: Option<[f32; 24]>,
@@ -92,6 +102,26 @@ fn lock() -> std::sync::MutexGuard<'static, State> {
 /// 当前这批近期原话（最新的在前）。
 pub(super) fn lines() -> Vec<Line> {
     lock().loaded_data.lines.clone()
+}
+
+/// 他在这个群里最近说的话（最新的在前）。
+pub(super) fn lines_in(group: &str) -> Vec<Line> {
+    lock()
+        .loaded_data
+        .by_group
+        .get(group)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// 他在这个群里的打字习惯，已经排好版的一句；这个群里他说得太少、量不出来就是空串。
+pub(super) fn habit_brief(group: &str) -> String {
+    lock()
+        .loaded_data
+        .habits
+        .get(group)
+        .map(Habit::brief)
+        .unwrap_or_default()
 }
 
 /// 眼前这段聊天沾边的、号主以前说过的话，已经排好版摆进提示词的一段；没有就是空串。
@@ -134,8 +164,9 @@ pub(super) fn ensure_fresh(ctx: &Context) {
             Ok(loaded) => {
                 info!(
                     target: super::LOG_TARGET,
-                    "号主语料：近期原话 {} 条，话题回忆 {} 句，在线节奏{}",
+                    "号主语料：近期原话 {} 条，{} 个群有打字习惯，话题回忆 {} 句，在线节奏{}",
                     loaded.lines.len(),
+                    loaded.habits.len(),
                     loaded.corpus.len(),
                     if loaded.energy.is_some() { "已校准" } else { "日子不够" }
                 );
@@ -183,6 +214,9 @@ pub(super) async fn load(ctx: &Context, me: &str) -> Result<Loaded, sea_orm::DbE
 
 /// 2026-09-27 记录库迁成字符串 ID 的新结构时，旧库留作备份（`group_id` / `role` 两列、
 /// 整数的 `user_id`）。号主在那里面手打了一个多月的话，不读等于白白丢掉。
+///
+/// **旧库把私聊也记在里面（`group_id = 0`）**，新库不记（`guild_id` 为空）。私聊是说给一个人
+/// 听的，这里的语料会摆进群里的提示词，所以一条都不能读：必须滤掉 `group_id = 0`。
 async fn legacy_rows(me: &str, since: i64) -> Vec<Row> {
     const PATH: &str = "data/bot.db.pre-string-ids";
     let Ok(me) = me.parse::<i64>() else {
@@ -207,7 +241,7 @@ async fn legacy_rows(me: &str, since: i64) -> Vec<Row> {
         .query_all_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
             "select cast(group_id as text) as guild_id, time, content_rich from message_records \
-             where user_id = ? and role != 'self' and time >= ? order by time",
+             where user_id = ? and role != 'self' and group_id != 0 and time >= ? order by time",
             [me.into(), since.into()],
         ))
         .await;
@@ -245,11 +279,44 @@ pub(super) fn assemble(rows: &[Row], now: i64, known: &HashSet<String>) -> Loade
             (text.chars().count() >= MIN_RECALL_CHARS).then(|| (group.clone(), *at, text))
         },
     ));
+    let (lines, by_group) = pick(&rows[start..], known);
     Loaded {
-        lines: pick(&rows[start..], known),
+        lines,
+        by_group,
+        habits: habits(rows, &skip, now),
         corpus,
         energy: energy_table(rows.iter().map(|row| row.1), now),
     }
+}
+
+/// 每个群里他最近亲手打字的习惯。
+///
+/// 词意猜词（九十秒内连着三个以上光秃秃的两三字词）不算：玩那个游戏的群里，它能把
+/// 中位字数从 7 拉到 2。带 @ 的消息只算引用与回合、不算字数——`@昵称` 那几个字不是他打的。
+fn habits(rows: &[Row], skip: &HashSet<usize>, now: i64) -> HashMap<String, Habit> {
+    let from = now - HABIT_DAYS * 86_400;
+    let mut per_group: HashMap<&str, Vec<(i64, String, bool)>> = HashMap::new();
+    for (index, (group, at, raw)) in rows.iter().enumerate() {
+        if *at < from || skip.contains(&index) || is_command(raw) {
+            continue;
+        }
+        let text = if raw.contains("[@") {
+            String::new()
+        } else {
+            strip_placeholders(raw)
+        };
+        if is_command(&text) {
+            continue;
+        }
+        per_group
+            .entry(group)
+            .or_default()
+            .push((*at, text, raw.contains("[回复]")));
+    }
+    per_group
+        .into_iter()
+        .filter_map(|(group, rows)| Habit::measure(&rows).map(|habit| (group.to_string(), habit)))
+        .collect()
 }
 
 /// 样本库里已有的原话：近期这一层不再重复它们。
@@ -377,11 +444,15 @@ fn usable(raw: &str) -> Option<String> {
     .then_some(text)
 }
 
-/// 记录（按时间正序）→ 近期原话，最新的在前。
-pub(super) fn pick(rows: &[Row], known: &HashSet<String>) -> Vec<Line> {
+/// 记录（按时间正序）→ 近期原话（全局最新的八十条）与每个群各自最新的几条，都是最新的在前。
+pub(super) fn pick(
+    rows: &[Row],
+    known: &HashSet<String>,
+) -> (Vec<Line>, HashMap<String, Vec<Line>>) {
     let skip = guesses(rows);
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
+    let mut by_group: HashMap<String, Vec<Line>> = HashMap::new();
     for (index, (group, _, raw)) in rows.iter().enumerate().rev() {
         if skip.contains(&index) {
             continue;
@@ -392,15 +463,19 @@ pub(super) fn pick(rows: &[Row], known: &HashSet<String>) -> Vec<Line> {
         if known.contains(&text) || !seen.insert(text.clone()) {
             continue;
         }
-        out.push(Line {
+        let line = Line {
             group: group.clone(),
             text,
-        });
-        if out.len() >= KEEP {
-            break;
+        };
+        let mine = by_group.entry(group.clone()).or_default();
+        if mine.len() < GROUP_KEEP {
+            mine.push(line.clone());
+        }
+        if out.len() < KEEP {
+            out.push(line);
         }
     }
-    out
+    (out, by_group)
 }
 
 /// 他最近每个钟点有没有在线 → 精神头基线。
