@@ -1784,6 +1784,9 @@ async fn quick_word(
         newest: state.newest(now),
         since_last_spoke: silent_for,
         quick_last_hour: state.quick_last_hour(),
+        quick_limit: config
+            .quick_per_hour
+            .min(recent::hourly_target(group).map_or(usize::MAX, |target| target * 2)),
         owner_present: state.owner_active(config.owner_quiet()),
         dozing: doze,
     });

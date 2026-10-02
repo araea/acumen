@@ -38,6 +38,9 @@ pub(super) struct Facts {
     pub newest: Option<(bool, i64)>,
     pub since_last_spoke: Option<Duration>,
     pub quick_last_hour: usize,
+    /// 这个群这一小时最多吭几声：配置的上限，与他本人在这个群里平时的发言量（见
+    /// [`super::habit::Habit::hourly_target`]，吭声算一个回合的一半）里较小的那个。
+    pub quick_limit: usize,
     /// 号主本人刚在群里亲手打过字。
     pub owner_present: bool,
     /// 计价高峰的省钱档：这一档连判定都是偶尔的，不再添随口一句。
@@ -59,7 +62,7 @@ pub(super) fn wants(config: &AmbientConfig, facts: Facts, roll: f32) -> bool {
     if facts.since_last_spoke.is_some_and(|elapsed| elapsed < GAP) {
         return false;
     }
-    facts.quick_last_hour < config.quick_per_hour && roll < CHANCE
+    facts.quick_last_hour < facts.quick_limit && roll < CHANCE
 }
 
 /// 模型的输出 → 能发的一句；不是一句短话（沉默、带标记、太长、带链接）就是 `None`。
