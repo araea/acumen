@@ -31,6 +31,7 @@ const WARMTH_BASE: f32 = 0.35;
 /// 两行贴回这里。
 ///
 /// 样本：2026-08-27 至 2026-10-01，5699 条手打消息，26 个工作日 + 10 个周末日。
+/// 运行时还会拿最近两周的实际情况对半混进来（见下面的 [`baseline`] 与 [`super::recent`]）。
 fn baseline(hour: u32, weekend: bool) -> f32 {
     const WEEKDAY: [f32; 24] = [
         0.85, 0.68, 0.50, 0.39, 0.35, 0.39, 0.42, 0.52, 0.57, 0.55, 0.43, 0.30, 0.31, 0.30, 0.44,
@@ -41,7 +42,14 @@ fn baseline(hour: u32, weekend: bool) -> f32 {
         0.58, 0.81, 0.86, 0.72, 0.59, 0.63, 0.65, 0.71, 0.66,
     ];
     let table = if weekend { &WEEKEND } else { &WEEKDAY };
-    table[(hour % 24) as usize]
+    let baked = table[(hour % 24) as usize];
+    // 内置的表是 2026 年 8–9 月量的、按星期分的；他放假、熬夜、换了作息，它就不准了。
+    // 近两周实际的在线情况（见 [`super::recent`]）与它对半混：既跟得上整段的变化，
+    // 又不至于被某几天带偏，也留着「周末与工作日不一样」这条底子。
+    match super::recent::energy_at(hour) {
+        Some(recent) => (baked + recent) / 2.0,
+        None => baked,
+    }
 }
 
 /// 一段随时间回落的偏移量。

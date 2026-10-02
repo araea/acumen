@@ -145,7 +145,8 @@ pub(crate) fn bank_lines() -> Vec<&'static str> {
 /// 从近期原话里抽几条：与样本库一样避开眼前的话题、不重复记录里已有的。
 ///
 /// 近期原话没有调子标记（活 / 静）：它们是他这几天随手打的，两种状态都可能这么说。
-fn pick_recent(turns: &[Turn], recent: &[String]) -> Vec<String> {
+/// 第一条尽量取自这个群：他在这群人面前怎么说话、怎么称呼群友，比别处的更对这群听众。
+fn pick_recent(turns: &[Turn], recent: &[recent::Line], group: &str) -> Vec<String> {
     use rand::seq::SliceRandom;
     if recent.is_empty() {
         return Vec::new();
@@ -159,26 +160,35 @@ fn pick_recent(turns: &[Turn], recent: &[String]) -> Vec<String> {
         .join("\n");
     let topic = grams(&window);
     let words = content_words(&window);
-    let mut eligible: Vec<&String> = recent
+    let mut eligible: Vec<&recent::Line> = recent
         .iter()
-        .filter(|line| !window.contains(line.as_str()))
+        .filter(|line| !window.contains(line.text.as_str()))
         .filter(|line| {
-            content_words(line).is_disjoint(&words) && affinity(line, &topic) < OFF_TOPIC
+            content_words(&line.text).is_disjoint(&words)
+                && affinity(&line.text, &topic) < OFF_TOPIC
         })
         .collect();
     eligible.shuffle(&mut rand::rng());
+    let (mut here, elsewhere): (Vec<&recent::Line>, Vec<&recent::Line>) =
+        eligible.into_iter().partition(|line| line.group == group);
+    let mut ordered: Vec<&recent::Line> = Vec::new();
+    if !here.is_empty() {
+        ordered.push(here.remove(0));
+    }
+    ordered.extend(elsewhere);
+    ordered.extend(here);
     let mut chosen = Vec::new();
     let mut used = 0;
-    for line in eligible {
+    for line in ordered {
         if chosen.len() >= RECENT_SLOTS {
             break;
         }
-        let chars = line.chars().count();
+        let chars = line.text.chars().count();
         if used + chars > RECENT_CHARS {
             continue;
         }
         used += chars;
-        chosen.push(line.clone());
+        chosen.push(line.text.clone());
     }
     chosen
 }
@@ -216,7 +226,7 @@ pub(crate) fn short_lines(turns: &[Turn], register: Register, count: usize) -> V
 const FUNCTION_CHARS: &str = "的了是不我你他她它们这那就还也都在有没么吗吧呢啊哈嘛呀哦个一二两上下来去说要会能可以到得着过把被给让很太真好对啥什怎样点些里时候看想又再才而且但就算然后";
 
 /// 一段话里的实词：中文按相邻两字取，两字都不是虚字才算；英文数字按整词取。
-fn content_words(text: &str) -> std::collections::HashSet<String> {
+pub(super) fn content_words(text: &str) -> std::collections::HashSet<String> {
     let mut out = std::collections::HashSet::new();
     let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
     let mut word = String::new();
@@ -273,13 +283,13 @@ pub(crate) fn opening(register: Register) -> &'static str {
 }
 
 /// 这一轮的样本段；样本库为空时返回空串。
-pub(crate) fn brief(turns: &[Turn], register: Register) -> String {
+pub(crate) fn brief(turns: &[Turn], register: Register, group: &str) -> String {
     use rand::seq::SliceRandom;
     let samples = parse(VOICE);
     if samples.is_empty() {
         return String::new();
     }
-    let recent = pick_recent(turns, &recent::lines());
+    let recent = pick_recent(turns, &recent::lines(), group);
     let used: usize = recent.iter().map(|line| line.chars().count()).sum();
     let picked = pick_within(
         turns,

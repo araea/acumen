@@ -39,6 +39,7 @@ mod mood;
 mod peak;
 mod quick;
 mod quote;
+mod recall;
 mod recent;
 mod reflect;
 mod screenshot;
@@ -755,7 +756,7 @@ impl Scene {
                 String::new()
             },
             own: format!(
-                "{}{}{}{}",
+                "{}{}{}{}{}",
                 self_facts(),
                 if config.memory_enabled {
                     memory::with_group(group, |memory| {
@@ -764,7 +765,8 @@ impl Scene {
                 } else {
                     String::new()
                 },
-                voice::brief(turns, voice_register(config, group)),
+                recent::recalled(group, turns),
+                voice::brief(turns, voice_register(config, group), group),
                 stickers::brief(turns, config.sticker_max)
             ),
             noticed: String::new(),
