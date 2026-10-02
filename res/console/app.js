@@ -12,7 +12,7 @@
    - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
    §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
-   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §12 解锁 · §13 事件 · §14 启动
+   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -77,6 +77,8 @@
     play: '<path d="M8 5.5v13l10-6.5z"/>',
     alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.5h.01"/>',
     logout: '<path d="M14 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M10 16.5 5.5 12 10 7.5M5.5 12h9"/>',
+    groups: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9.5" r="2.4"/><path d="M16 14.2a4.6 4.6 0 0 1 4.5 4.3"/>',
+    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.5h.01"/>',
     inbox: '<path d="M4 13.5 6.5 5.5h11l2.5 8v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>',
   };
 
@@ -199,21 +201,25 @@
 
   /* ==================== §5 反馈 ==================== */
 
-  const snack = { timer: 0, hold: false, left: 0 };
+  const snack = { timer: 0, hold: false, left: 0, action: null };
 
   /** 提示条。成功与进行中是 status（礼貌播报），失败是 alert（立即播报）。
-   *  鼠标悬停或键盘聚焦在提示条上时暂停计时（WCAG 2.2.1）。 */
-  function snackbar(message, kind = "info") {
+   *  鼠标悬停或键盘聚焦在提示条上时暂停计时（WCAG 2.2.1）。
+   *  `action` 是 `{ label, run }`：提示条上的一个文字按钮，常用来「撤销」刚做的事。 */
+  function snackbar(message, kind = "info", action = null) {
     clearTimeout(snack.timer);
     const host = $("#snackbar");
     put(
       host,
       h`<div class="snackbar${kind === "error" ? " snackbar-error" : ""}">
         <span class="snackbar-text" role="${kind === "error" ? "alert" : "status"}">${message}</span>
+        ${action ? h`<button class="btn btn-text snackbar-action" type="button" data-snack-action>${action.label}</button>` : ""}
         <button class="icon-btn state" type="button" data-snack-close aria-label="关闭提示">${icon("close")}</button>
       </div>`
     );
-    snack.left = kind === "error" ? Infinity : 4000;
+    snack.action = action?.run ?? null;
+    // 带「撤销」的多留一会儿：读完再决定需要时间（悬停与聚焦仍会暂停计时）。
+    snack.left = kind === "error" ? Infinity : action ? 8000 : 4000;
     armSnack();
   }
 
@@ -905,6 +911,10 @@
 
   let fieldSeq = 0;
 
+  /** 群号列表：名单、开启搭话 / 推送的群等。其余列表（前缀、别名、时间点……）仍是 JSON 编辑。 */
+  const GROUP_LIST = /(^|\.)(channel\.(white|black)|groups|management_groups|realtime_muted_groups|manual_channels)$/;
+  const isGroupList = (path, value) => GROUP_LIST.test(path) && value.every((item) => typeof item === "string");
+
   /** 一个配置项。表与对象数组展开成 fieldset，叶子就地成为能改的控件。 */
   function configField(path, key, value, help = {}, options = {}) {
     const id = `f${++fieldSeq}`;
@@ -915,6 +925,16 @@
         <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}">
         ${[...new Set([value, ...options[path]])].map(option => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
         </select>${icon("down")}</span></div>`;
+    }
+    if (Array.isArray(value) && isGroupList(path, value)) {
+      const role = /(^|\.)channel\.white$/.test(path) ? "channel-white" : /(^|\.)channel\.black$/.test(path) ? "channel-black" : "";
+      const fallback = { "channel-white": "非空时，只在名单里的群生效。", "channel-black": "名单里的群一律不生效，优先于白名单。" }[role];
+      const text = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || fallback || "群号列表。";
+      const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role];
+      return picker({
+        id, mode: "save", ids: value, path, role, title: title || key,
+        label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${text}</span>`,
+      });
     }
     if (Array.isArray(value)) {
       return h`<div class="field">
@@ -1563,6 +1583,7 @@
     const [data, overview] = await Promise.all([api("/settings"), api("/overview").catch(() => null)]);
     const list = (values) => values.join(", ");
     const filter = data.global_filter;
+    const flags = { white: !!filter.enable_whitelist, black: !!filter.enable_blacklist };
     return h`<div class="page">
       ${pageHead("设置", "连接、全局行为与维护命令。这些项目不属于任何插件。")}
 
@@ -1589,14 +1610,14 @@
           <div class="field">
             <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
               <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${bool(filter.enable_blacklist)}" aria-labelledby="g-black-label"></button></div>
-            ${textField("g-black", "黑名单群号", "blacklist", list(filter.blacklist), "逗号分隔")}
+            ${picker({ id: "g-black", label: "黑名单群号", title: "黑名单", ids: filter.blacklist, mode: "stage", name: "blacklist", role: "global-black", flags })}
           </div>
           <div class="field">
             <div class="toggle-row"><span class="field-label" id="g-white-label">启用群白名单</span>
               <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${bool(filter.enable_whitelist)}" aria-labelledby="g-white-label"></button></div>
-            ${textField("g-white", "白名单群号", "whitelist", list(filter.whitelist), "逗号分隔")}
+            ${picker({ id: "g-white", label: "白名单群号", title: "白名单", ids: filter.whitelist, mode: "stage", name: "whitelist", role: "global-white", flags })}
           </div>
-          <p class="note span-all">启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单。关闭白名单后，启用的黑名单才生效。</p>
+          <p class="note span-all">名单只认群号。启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单，关闭白名单后，启用的黑名单才生效。名单里的群，消息会被整个忽略。</p>
           <div class="actions span-all"><button class="btn btn-filled" type="submit">保存全局设置</button></div>
         </form>
       </section>
@@ -1716,12 +1737,14 @@
         .split(/[,，]/)
         .map((piece) => piece.trim())
         .filter(Boolean);
-    const groups = (name) =>
-      split(name).map((piece) => {
-        // 后端名单是字符串列表，这里只校验、不转数字——转了会反序列化失败。
-        if (!/^\d+$/.test(piece)) throw Object.assign(new Error(`「${piece}」不是群号`), { field: form.elements[name] });
-        return piece;
-      });
+    // 输入框里还悬着没加进去的群号，保存前先收进名单；收不进去就停在这里，错误已写在那一格下面。
+    for (const root of $$(".picker", form)) {
+      if (!pickerSubmitText(root)) {
+        // 提交期间整张表单的控件是停用的，焦点要等它们恢复后再还给出问题的那一格（见提交处）。
+        throw Object.assign(new Error("名单输入框里还有没加进去的内容"), { refocus: pickerAdd(root) });
+      }
+    }
+    const groups = (name) => readIds($(`.picker-value[name="${name}"]`, form).closest(".picker"));
     const flag = (name) => $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
     return {
       command_prefix: split("command_prefix"),
@@ -1774,6 +1797,481 @@
     }
   }
 
+  /* ==================== §11a 名单编辑器 ==================== */
+  /* 群名单（全局黑白名单、各插件的 channel 与「开启的群」）说到底是一串群号。手打 JSON 引号、
+     数逗号、记群号都不是人该干的事：这里改成从已加入的群里点选、粘贴一串自动拆开、
+     一键移除并能撤销。名单本身仍是字符串数组，写入口径一个字都没变。 */
+
+  const ID_SPLIT = /[\s,，、;；|]+/u;
+  const ID_EDGE = /^["'“”‘’「」『』《》()（）[\]【】{}<>]+|["'“”‘’「」『』《》()（）[\]【】{}<>]+$/gu;
+  const ID_SHAPE = /^[\w-][\w.@:+-]{0,127}$/;
+
+  /** 从一段文字里拆出群号：逗号、顿号、分号、空白、换行都当分隔；两端的引号括号剥掉，
+   *  整段是 JSON 数组也认得；全角数字先折成半角。认不出的原样放进 `rejected`，由调用方说明。
+   *  微信的群号是 `…@chatroom`、私聊账号可以是 `wxid_…` / `gh_…`，所以只管「像不像一个 ID」，不限数字。 */
+  function parseIds(text) {
+    const ids = [];
+    const rejected = [];
+    const clean = String(text).normalize("NFKC").replace(/[​-‍⁠﻿]/g, "");
+    for (const piece of clean.split(ID_SPLIT)) {
+      const token = piece.replace(ID_EDGE, "");
+      if (!token) continue;
+      if (!ID_SHAPE.test(token)) rejected.push(token);
+      else if (!ids.includes(token)) ids.push(token);
+    }
+    return { ids, rejected };
+  }
+
+  const sameIds = (a, b) => a.length === b.length && a.every((id, index) => id === b[index]);
+  const PLATFORM_NAMES = { qq: "QQ", wechat: "微信", wx: "微信" };
+
+  /** 已加入的群（群号 → 群名）。名单里存的是群号，人要看的是群名：页面一出现名单就去问后端要一次，
+   *  回来后把群号补上名字；问不到（实现端没连上）也不影响手输群号。 */
+  const directory = {
+    list: [],
+    byId: new Map(),
+    platforms: 0,
+    failed: 0,
+    loaded: false,
+    error: false,
+    at: 0,
+    pending: null,
+    load(force = false) {
+      if (this.pending) return this.pending;
+      if (!force && this.loaded && !this.error && Date.now() - this.at < 60000) return Promise.resolve(this);
+      this.pending = api(`/groups${force ? "?refresh=1" : ""}`)
+        .then((data) => {
+          this.list = Array.isArray(data.groups) ? data.groups : [];
+          this.byId = new Map();
+          for (const group of this.list) if (!this.byId.has(group.id)) this.byId.set(group.id, group);
+          this.platforms = new Set(this.list.map((group) => group.platform)).size;
+          this.failed = Number(data.failed) || 0;
+          this.loaded = true;
+          this.error = false;
+          this.at = Date.now();
+        })
+        .catch((error) => {
+          if (error?.status !== 401) this.error = true;
+        })
+        .then(() => {
+          this.pending = null;
+          return this;
+        });
+      return this.pending;
+    },
+  };
+
+  const groupName = (id) => directory.byId.get(id)?.name || "";
+  /** 「白虎（175131947）」；群名未知时就是群号本身。给读屏名与提示文字用。 */
+  const groupTitle = (id) => (groupName(id) ? `${groupName(id)}（${id}）` : id);
+  const platformTag = (id) => {
+    const group = directory.byId.get(id);
+    // 只连了一个平台时标出来是噪音；两个平台都在线才有区分的价值。
+    return group && directory.platforms > 1 ? h`<span class="tag">${PLATFORM_NAMES[group.platform] ?? String(group.platform).toUpperCase()}</span>` : "";
+  };
+
+  /** 名单当前的效果，用人话说。全局两张名单是互相牵连的（白名单开着就不查黑名单），
+   *  所以要带上两个开关的状态；返回 [语气, 文字]。 */
+  const STATUS = {
+    "global-white": (n, on) =>
+      !on.white
+        ? ["info", "未启用，名单暂不生效。"]
+        : n
+          ? ["ok", `只处理这 ${n} 个群的消息，其余的群完全忽略。`]
+          : ["warn", "名单是空的：现在所有群都会被忽略，知微不处理任何群的消息。"],
+    "global-black": (n, on) =>
+      on.white
+        ? ["info", "白名单已启用，此时不检查黑名单。"]
+        : !on.black
+          ? ["info", "未启用，名单暂不生效。"]
+          : n
+            ? ["ok", `这 ${n} 个群的消息会被完全忽略。`]
+            : ["info", "名单是空的，没有群被排除。"],
+    "channel-white": (n) => (n ? ["ok", `只在这 ${n} 个群里生效。`] : ["info", "名单是空的：所有群都生效。"]),
+    "channel-black": (n) => (n ? ["ok", `这 ${n} 个群不生效，且优先于白名单。`] : ["info", "名单是空的：没有群被排除。"]),
+  };
+
+  const statusLine = (role, n, on) => {
+    const [tone, text] = STATUS[role](n, on);
+    return { tone, html: h`${icon(tone === "warn" ? "alert" : tone === "ok" ? "check" : "info")}<span>${text}</span>` };
+  };
+
+  function pickerRow(id) {
+    const name = groupName(id);
+    const stale = directory.loaded && directory.list.length > 0 && !directory.byId.has(id);
+    return h`<li class="item picker-row">
+      <span class="item-leading" aria-hidden="true">${name ? [...name][0] : "#"}</span>
+      <div class="item-content">
+        <span class="item-title">${name || h`<span class="mono">${id}</span>`}${platformTag(id)}</span>
+        ${name || stale ? h`<span class="item-sub">${name ? h`<span class="mono">${id}</span>` : "不在已加入的群里"}</span>` : ""}
+      </div>
+      <div class="item-trailing">
+        <button class="icon-btn state" type="button" data-picker-remove="${id}" aria-label="移除 ${groupTitle(id)}">${icon("close")}</button>
+      </div>
+    </li>`;
+  }
+
+  /** 群名单编辑器。`mode`：save = 每次改动立刻写进插件配置；stage = 只改页面上的草稿，随表单一起保存。
+   *  真正的值放在一个藏起来的文本框里（JSON 数组），其余都是它的视图。
+   *  不用 type=hidden：它的 value 与 defaultValue 是同一个特性，分不出「改没改」。 */
+  function picker({ id, label, title = "", ids, mode, name = "", path = "", role = "", flags = {} }) {
+    void directory.load().then(paintPickers);
+    const list = [...new Set(ids.map(String))];
+    const status = role ? statusLine(role, list.length, flags) : null;
+    return h`<div class="field picker" role="group" aria-labelledby="${id}-label" data-picker="${mode}" data-role="${role}" data-title="${title}">
+      <div class="picker-head">
+        <span class="field-label" id="${id}-label">${label}</span>
+        <span class="picker-count num">${list.length ? `${list.length} 个` : ""}</span>
+      </div>
+      <ul class="group picker-list" aria-label="已选的群">${list.map(pickerRow)}</ul>
+      ${status ? h`<p class="picker-status" data-tone="${status.tone}">${status.html}</p>` : ""}
+      <div class="picker-controls">
+        <div class="picker-add">
+          <div class="picker-input">
+            <input class="input mono" id="${id}-add" type="text" inputmode="text" enterkeyhint="done" spellcheck="false"
+              autocapitalize="off" autocomplete="off" placeholder="输入或粘贴群号，回车添加" aria-label="添加群号" aria-describedby="${id}-hint">
+          </div>
+          <button class="btn btn-outlined" type="button" data-picker-add disabled>添加</button>
+        </div>
+        <button class="btn btn-tonal picker-choose" type="button" data-picker-open>${icon("groups")}从已加入的群里选</button>
+      </div>
+      <span class="field-hint" id="${id}-hint">可以整段粘贴：逗号、空格、换行、引号都行。</span>
+      <input class="picker-value" id="${id}" type="text" hidden tabindex="-1" autocomplete="off" value="${JSON.stringify(list)}"
+        ${name ? h`name="${name}"` : ""} ${path ? h`data-path="${path}" data-kind="list"` : ""}>
+      <span class="visually-hidden picker-live" role="status"></span>
+    </div>`;
+  }
+
+  const pickerValue = (root) => $(".picker-value", root);
+  const pickerAdd = (root) => $(".picker-add input", root);
+
+  function readIds(root) {
+    try {
+      const value = JSON.parse(pickerValue(root).value);
+      return Array.isArray(value) ? value.map(String) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function paintStatus(root, ids = readIds(root)) {
+    const node = $(".picker-status", root);
+    if (!node || !STATUS[root.dataset.role]) return;
+    const form = root.closest("form");
+    const on = (name) => $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
+    const { tone, html } = statusLine(root.dataset.role, ids.length, { white: on("enable_whitelist"), black: on("enable_blacklist") });
+    node.dataset.tone = tone;
+    put(node, html);
+  }
+
+  /** 重画一张名单。`late`：群名是后来才到的——那时若焦点正落在某一行的按钮上就先别动它，
+   *  免得一次重画把键盘用户的焦点抢走。 */
+  function paintPicker(root, { late = false } = {}) {
+    const ids = readIds(root);
+    const list = $(".picker-list", root);
+    if (!(late && list.contains(document.activeElement))) put(list, ids.map(pickerRow));
+    $(".picker-count", root).textContent = ids.length ? `${ids.length} 个` : "";
+    paintStatus(root, ids);
+  }
+
+  const paintPickers = () => {
+    for (const root of $$(".picker")) paintPicker(root, { late: true });
+  };
+
+  const refreshStatuses = (form) => {
+    for (const root of $$(".picker", form)) paintStatus(root);
+  };
+
+  /** 把新名单写进视图。「是不是亲手改的」只认这里（见 typed）。 */
+  function applyIds(root, ids) {
+    const input = pickerValue(root);
+    input.value = JSON.stringify(ids);
+    typed.add(input);
+    paintPicker(root);
+  }
+
+  function describeChange(prev, next) {
+    const added = next.filter((id) => !prev.includes(id));
+    const removed = prev.filter((id) => !next.includes(id));
+    const say = (verb, ids) => (ids.length === 1 ? `${verb}「${groupName(ids[0]) || ids[0]}」` : `${verb} ${ids.length} 个群`);
+    return [added.length && say("加入", added), removed.length && say("移除", removed)].filter(Boolean).join("，");
+  }
+
+  /** 改名单的唯一入口。先改页面，再按模式处理：save 立刻落盘，stage 只留草稿。
+   *  每次改动都能撤销（撤销本身不再给撤销）。 */
+  async function pickerEdit(root, next, { lead = "", undoable = true } = {}) {
+    const prev = readIds(root);
+    if (sameIds(prev, next)) return;
+    const said = lead || `已${describeChange(prev, next)}`;
+    applyIds(root, next);
+    const undo = undoable
+      ? {
+          label: "撤销",
+          run: () => {
+            void pickerEdit(root, prev, { lead: "已撤销", undoable: false });
+            $(".picker-choose", root)?.focus({ preventScroll: true });
+          },
+        }
+      : null;
+    if (root.dataset.picker === "save") return pickerSave(root, said, undo);
+    $(".picker-live", root).textContent = `${said}，现在共 ${next.length} 个。`;
+    // 草稿里加一个群不必打扰；移除才值得留一条能撤销的提示。
+    if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
+  }
+
+  /** 把名单写进插件配置。保存期间的新改动合并成一次补写，失败则退回上次保存的样子并说明原因。 */
+  async function pickerSave(root, said, undo) {
+    const input = pickerValue(root);
+    const form = input.closest("[data-config]");
+    if (!form) return;
+    if (root.dataset.saving) {
+      root.pending = { said, undo };
+      return;
+    }
+    const submitted = input.value;
+    if (submitted === input.defaultValue) return;
+    root.dataset.saving = "1";
+    input.setAttribute("aria-busy", "true");
+    const add = pickerAdd(root);
+    try {
+      const reply = await api(`/plugins/${encodeURIComponent(form.dataset.config)}/config`, {
+        method: "POST",
+        body: { path: input.dataset.path, value: JSON.parse(submitted) },
+      });
+      input.defaultValue = submitted;
+      clearFieldError(add);
+      snackbar(`${said}，已保存。${reply.message.replace(/^已保存 [^。]*。/, "")}`, "info", undo);
+      refreshDiff(form.dataset.config);
+    } catch (error) {
+      if (error.status === 401) return;
+      input.value = input.defaultValue;
+      paintPicker(root);
+      fieldError(add, `没能保存，名单已退回原样：${error.message}`);
+    } finally {
+      delete root.dataset.saving;
+      input.removeAttribute("aria-busy");
+      const later = root.pending;
+      root.pending = null;
+      if (later && root.isConnected && input.value !== input.defaultValue) void pickerSave(root, later.said, later.undo);
+    }
+  }
+
+  async function pickerRemove(button) {
+    const root = button.closest(".picker");
+    const id = button.dataset.pickerRemove;
+    const ids = readIds(root);
+    const index = ids.indexOf(id);
+    if (index < 0) return;
+    // 同步段先跑完（名单已重画），再把焦点交给顶上来的那一行：键盘用户连着删不必重新找位置。
+    const done = pickerEdit(root, ids.filter((item) => item !== id));
+    const buttons = $$("[data-picker-remove]", root);
+    (buttons[Math.min(index, buttons.length - 1)] ?? pickerAdd(root))?.focus({ preventScroll: true });
+    await done;
+  }
+
+  const syncAddButton = (root) => {
+    const button = $("[data-picker-add]", root);
+    if (button) button.disabled = !pickerAdd(root).value.trim();
+  };
+
+  /** 输入框里的文字变成群号加进名单。`explicit`：用户按了回车或「添加」——文字不像群号时，
+   *  若它能对上某个群名就替他打开选群面板，而不是只丢一句报错。离开输入框时也走这里（离开即保存）。
+   *  返回输入框里是否已经没有悬着的内容。 */
+  function pickerSubmitText(root, { explicit = false } = {}) {
+    const add = pickerAdd(root);
+    const text = add.value;
+    if (!text.trim()) return true;
+    const { ids, rejected } = parseIds(text);
+    if (!ids.length) {
+      const query = text.trim().toLowerCase();
+      if (explicit && directory.list.some((group) => group.name.toLowerCase().includes(query))) {
+        // 字交给面板的搜索框去用，这边清空：免得面板收起后输入框里还留着一句过期的报错。
+        add.value = "";
+        syncAddButton(root);
+        clearFieldError(add);
+        void pickerChoose(root, text.trim());
+        return false;
+      }
+      fieldError(add, `「${rejected[0] ?? text.trim()}」不像群号。群号是一串数字；想按群名找，点下面的「从已加入的群里选」。`);
+      return false;
+    }
+    const current = readIds(root);
+    const fresh = ids.filter((id) => !current.includes(id));
+    add.value = rejected.join(" ");
+    syncAddButton(root);
+    clearFieldError(add);
+    if (rejected.length) fieldError(add, `「${rejected.join("、")}」不像群号，没有加；其余的已处理。`);
+    if (!fresh.length) {
+      snackbar(ids.length === 1 ? `「${groupName(ids[0]) || ids[0]}」已经在名单里了。` : "这些群都已经在名单里了。");
+    } else void pickerEdit(root, [...current, ...fresh]);
+    return !rejected.length;
+  }
+
+  async function pickerChoose(root, query = "") {
+    if ($("#sheet").open) return;
+    const picked = await openSheet({ selected: readIds(root), query, title: root.dataset.title });
+    if (picked) await pickerEdit(root, picked);
+  }
+
+  /** 选群面板：已加入的群逐行勾选，搜索群名或群号。「完成」才一并生效，取消 / Esc 什么都不改。
+   *  勾选状态只存在这里的集合里，重画列表（搜索、刷新、名字晚到）不会丢。 */
+  function openSheet({ selected, query = "", title = "" }) {
+    const dialog = $("#sheet");
+    const opener = document.activeElement;
+    const initial = new Set(selected);
+    const picked = new Set(selected);
+    const order = [...selected];
+    const stop = new AbortController();
+    let search = query;
+
+    const visible = () => {
+      const terms = search.normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
+      const hit = (group) => terms.every((term) => `${group.name} ${group.id}`.toLowerCase().includes(term));
+      // 进来时已在名单里的排最前（不在已加入的群里的也要能取消勾选）；之后顺序不再变，免得点一下行就跳走。
+      const lead = [...initial].map((id) => directory.byId.get(id) ?? { id, name: "", platform: "", stale: true });
+      const rest = directory.list.filter((group) => !initial.has(group.id));
+      return [...lead, ...rest].filter(hit);
+    };
+    const option = (group) => h`<label class="item option">
+      <input class="check" type="checkbox" value="${group.id}"${attr(picked.has(group.id), "checked")}>
+      <span class="item-content">
+        <span class="item-title">${group.name || h`<span class="mono">${group.id}</span>`}${platformTag(group.id)}</span>
+        <span class="item-sub">${group.name ? h`<span class="mono">${group.id}</span>` : "不在已加入的群里"}</span>
+      </span>
+    </label>`;
+
+    const count = (shown) => {
+      const total = directory.list.length;
+      const scope = search.trim() ? `显示 ${shown} 个` : `共 ${total} 个群`;
+      $("#sheet-count", dialog).textContent = `已选 ${picked.size} 个${total ? ` · ${scope}` : ""}`;
+    };
+    const paint = () => {
+      const body = $("#sheet-body", dialog);
+      const top = body.scrollTop;
+      const rows = visible();
+      const asId = parseIds(search);
+      const typedId = asId.ids.length === 1 && !asId.rejected.length ? asId.ids[0] : "";
+      const offer = typedId && !picked.has(typedId) && !directory.byId.has(typedId) && !initial.has(typedId);
+      const waiting = !directory.loaded && directory.pending;
+      put(
+        body,
+        h`${directory.error ? h`<p class="note sheet-note" role="alert">${icon("alert")}<span>没能读到最新的群，${directory.list.length ? "下面是上次读到的。" : "可以直接回去输入群号。"}</span></p>` : ""}
+        ${directory.failed ? h`<p class="note sheet-note">${icon("info")}<span>有 ${directory.failed} 条连接没读到，这张表可能不全。</span></p>` : ""}
+        ${rows.length || offer
+          ? h`<div class="group" role="group" aria-label="群列表">
+              ${offer ? h`<button class="item option option-add" type="button" data-sheet-add="${typedId}">
+                <span class="item-leading" aria-hidden="true">${icon("plus")}</span>
+                <span class="item-content"><span class="item-title">添加 <span class="mono">${typedId}</span></span>
+                <span class="item-sub">不在已加入的群里，按群号直接添加</span></span></button>` : ""}
+              ${rows.map(option)}
+            </div>`
+          : emptyState(
+              waiting
+                ? "正在读取已加入的群…"
+                : directory.list.length
+                  ? "没有匹配的群。可以换个关键词，或直接输入群号。"
+                  : "没有读到已加入的群。账号可能还没连上实现端；也可以回去直接输入群号。",
+              waiting ? "groups" : "inbox"
+            )}`
+      );
+      body.scrollTop = top;
+      count(rows.length);
+    };
+
+    put(
+      dialog,
+      h`<div class="sheet-head">
+          <h2 class="dialog-title" id="sheet-title" tabindex="-1">选择群${title ? ` · ${title}` : ""}</h2>
+          <button class="icon-btn state" type="button" data-sheet="cancel" aria-label="关闭，不保存">${icon("close")}</button>
+        </div>
+        <div class="sheet-tools">
+          <div class="search">${icon("search")}
+            <input class="input" id="sheet-search" type="search" value="${query}" placeholder="搜索群名或群号" aria-label="搜索群名或群号"
+              autocomplete="off" spellcheck="false" enterkeyhint="search">
+          </div>
+          <div class="sheet-meta">
+            <span id="sheet-count" role="status"></span>
+            <button class="btn btn-text" type="button" data-sheet="refresh">${icon("refresh")}刷新</button>
+          </div>
+        </div>
+        <div class="sheet-body" id="sheet-body" tabindex="-1"></div>
+        <div class="actions actions-end sheet-foot">
+          <button class="btn btn-text" type="button" data-sheet="cancel">取消</button>
+          <button class="btn btn-filled" type="button" data-sheet="done">完成</button>
+        </div>`
+    );
+
+    const { signal } = stop;
+    dialog.addEventListener(
+      "input",
+      (event) => {
+        if (event.target.id !== "sheet-search") return;
+        search = event.target.value;
+        paint();
+        $("#sheet-body", dialog).scrollTop = 0;
+      },
+      { signal }
+    );
+    dialog.addEventListener(
+      "change",
+      (event) => {
+        const box = event.target;
+        if (!box.matches?.(".check")) return;
+        if (box.checked) {
+          picked.add(box.value);
+          if (!order.includes(box.value)) order.push(box.value);
+        } else picked.delete(box.value);
+        count(visible().length);
+      },
+      { signal }
+    );
+    dialog.addEventListener(
+      "click",
+      async (event) => {
+        const hit = event.target.closest?.("[data-sheet], [data-sheet-add]");
+        if (!hit) return;
+        if (hit.dataset.sheetAdd) {
+          picked.add(hit.dataset.sheetAdd);
+          if (!order.includes(hit.dataset.sheetAdd)) order.push(hit.dataset.sheetAdd);
+          search = "";
+          $("#sheet-search", dialog).value = "";
+          paint();
+          $("#sheet-search", dialog).focus();
+        } else if (hit.dataset.sheet === "refresh") {
+          hit.setAttribute("aria-busy", "true");
+          await directory.load(true);
+          hit.removeAttribute("aria-busy");
+          if (dialog.open) paint();
+        } else dialog.close(hit.dataset.sheet);
+      },
+      { signal }
+    );
+    dialog.addEventListener("keydown", (event) => {
+      // 搜索框里回车不该提交任何东西，也不要把面板关掉。
+      if (event.key === "Enter" && event.target.id === "sheet-search") event.preventDefault();
+    }, { signal });
+
+    return new Promise((resolve) => {
+      dialog.addEventListener(
+        "close",
+        () => {
+          stop.abort();
+          if (opener instanceof HTMLElement && opener.isConnected) opener.focus({ preventScroll: true });
+          resolve(dialog.returnValue === "done" ? order.filter((id) => picked.has(id)) : null);
+        },
+        { once: true }
+      );
+      dialog.returnValue = "";
+      paint();
+      dialog.showModal();
+      // 触屏上一弹出就聚焦搜索框会把键盘顶起来盖住列表；只给精确指针自动聚焦。
+      (matchMedia("(pointer: fine)").matches ? $("#sheet-search", dialog) : $("#sheet-title", dialog)).focus({ preventScroll: true });
+      void directory.load().then(() => {
+        if (dialog.open) paint();
+      });
+    });
+  }
+
   /* ==================== §12 解锁 ==================== */
 
   function lock(reason = "") {
@@ -1822,11 +2320,21 @@
       const on = (selector) => target.closest(selector);
       let hit;
 
+      if (on("[data-snack-action]")) {
+        const run = snack.action;
+        clearTimeout(snack.timer);
+        put($("#snackbar"), "");
+        run?.();
+        return;
+      }
       if (on("[data-snack-close]")) {
         clearTimeout(snack.timer);
         put($("#snackbar"), "");
         return;
       }
+      if ((hit = on("[data-picker-remove]"))) return pickerRemove(hit);
+      if ((hit = on("[data-picker-add]"))) return void pickerSubmitText(hit.closest(".picker"), { explicit: true });
+      if ((hit = on("[data-picker-open]"))) return pickerChoose(hit.closest(".picker"));
       if (on("#refresh")) {
         const button = $("#refresh");
         if (button.dataset.busy !== undefined) return;
@@ -1847,6 +2355,8 @@
       if ((hit = on("[data-form-switch]"))) {
         const checked = hit.getAttribute("aria-checked") !== "true";
         hit.setAttribute("aria-checked", String(checked));
+        // 白名单开着就不查黑名单：开关一动，两张名单底下那句「现在的效果」都要跟着变。
+        if (hit.name === "enable_whitelist" || hit.name === "enable_blacklist") refreshStatuses(hit.closest("form"));
         if (hit.name === "clear_token") {
           // 要清掉就别再填新的：令牌框停用并清空，免得两个意思同时提交。
           const field = tokenField(hit.closest("form"));
@@ -1975,7 +2485,18 @@
       const target = event.target;
       markTyped(event);
       if (target.name === "access_token") scrubAutofill(target.form);
-      if (target.id === "plugin-search") {
+      if (target.matches?.(".picker-add input")) {
+        const root = target.closest(".picker");
+        // 刚加完一个又敲了空格：框里只剩空白就清掉，别留个看不见的前导空格。
+        if (target.value && !target.value.trim()) target.value = "";
+        syncAddButton(root);
+        clearFieldError(target);
+        // 打下分隔符就等于「这一个写完了」；输入法拼写中、或夹着认不出的字时不抢着加。
+        if (!event.isComposing && /[\s,，、;；]/u.test(target.value) && target.value.trim()) {
+          const { ids, rejected } = parseIds(target.value);
+          if (ids.length && !rejected.length) pickerSubmitText(root);
+        }
+      } else if (target.id === "plugin-search") {
         plugins.query = target.value;
         plugins.repaint();
       } else if (target.id === "log-search") {
@@ -1985,9 +2506,34 @@
       else if (target.getAttribute?.("aria-invalid") === "true") clearFieldError(target);
     });
 
+    // 整段粘贴（一串群号、带引号的 JSON、从别处复制来的名单）直接拆开加进去，不用先落进输入框再整理。
+    // 输入框里已经有字，说明人在手打：那就按普通粘贴走，别把半个群号当成整个。
+    document.addEventListener("paste", (event) => {
+      const target = event.target;
+      if (!target.matches?.(".picker-add input") || target.value) return;
+      const text = event.clipboardData?.getData("text") ?? "";
+      if (!parseIds(text).ids.length) return;
+      event.preventDefault();
+      target.value = text;
+      pickerSubmitText(target.closest(".picker"), { explicit: true });
+    });
+
+    // 离开输入框即保存，与插件配置里其他格子一致。
+    document.addEventListener("focusout", (event) => {
+      const target = event.target;
+      if (!target.matches?.(".picker-add input") || !target.isConnected || !target.value.trim()) return;
+      pickerSubmitText(target.closest(".picker"));
+    });
+
     document.addEventListener("keydown", (event) => {
       const target = event.target;
       if (event.isComposing) return;
+      if (event.key === "Enter" && target.matches?.(".picker-add input")) {
+        // 表单里回车默认会提交整张表单；在这里它的意思只是「把这个群号加进去」。
+        event.preventDefault();
+        pickerSubmitText(target.closest(".picker"), { explicit: true });
+        return;
+      }
       if (event.key === "Enter" && target.matches?.("input[data-path]")) {
         event.preventDefault();
         commitField(target);
@@ -2013,12 +2559,14 @@
       }
       if (form.id === "command-form") return runCommand($("#command-input").value);
       if (form.id === "global-form") {
+        let refocus = null;
         await submitWith(form, async () => {
           let body;
           try {
             body = globalPayload(form);
           } catch (error) {
             if (error.field) fieldError(error.field, error.message);
+            refocus = error.refocus ?? null;
             return;
           }
           try {
@@ -2033,6 +2581,7 @@
             report(error);
           }
         });
+        refocus?.focus();
         return;
       }
       if (form.matches("[data-bot]")) {

@@ -34,13 +34,14 @@ const plugins = [
   effect: '下一条消息生效', commands: name === 'oai' ? [{ cmd: '/oai 房间', note: '列出房间' }, { cmd: '/oai 新建 <名字>', note: '新建一个房间' }] : [],
   config: { enabled: index !== 5, model: '示例模型', retries: 2, temperature: 0.7, stream: true,
     groups: [175131947, 818965288], prompt: '你是一个耐心的助手。\n先听懂，再回答。',
-    limits: { per_hour: 30, cooldown: 12, peak: { mode: 'sleep', enabled: false } } },
+    limits: { per_hour: 30, cooldown: 12, peak: { mode: 'sleep', enabled: false } },
+    ...(name === 'stats' ? { channel: { white: [], black: ['818965288'] } } : {}) },
   defaults: {}, diff: name === 'oai' ? ['model: "默认模型" → "示例模型"'] : [],
 }));
 const settings = {
   bots: [{ enabled: true, protocol: 'satori', url: 'http://127.0.0.1:3001', has_token: true }],
   command_prefix: ['/'], browser_path: '',
-  global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: true, whitelist: [175131947] },
+  global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: true, whitelist: ['175131947'] },
 };
 const ambient = {
   ready: true, persona: '自然参与群聊，先听懂，再开口。', self: '我叫知微。',
@@ -54,6 +55,16 @@ const ambient = {
   stickers: Array.from({ length: 75 }, (_, i) => ({ id: i + 1, label: i % 7 ? `表情 ${i + 1}` : '', from: '1001', group: '175131947', uses: i, added_at: Date.now() / 1000 - i * 3600, image: i % 11 !== 0 })),
   config: {},
 };
+// 已加入的群（/api/groups）：形状与 api.rs 一致；其中混入一个超长群名，确认窄屏换行不撑破。
+const groupsData = [
+  { id: '175131947', name: '白虎/秘修四圣驾校', platform: 'qq' },
+  { id: '818965288', name: '②群心情管家', platform: 'qq' },
+  { id: '924989840', name: '③群心情管家', platform: 'qq' },
+  { id: '719518427', name: 'oobabooga-testbot', platform: 'qq' },
+  ...Array.from({ length: 36 }, (_, i) => ({ id: String(500000000 + i * 7919), platform: 'qq',
+    name: `示例群 ${i + 1}${i % 9 === 0 ? '（一个名字特别特别长的群，用来确认窄屏下标题会换行而不是撑破布局）' : ''}` })),
+];
+let groupsFail = false, groupRequests = [];
 const token = 'fixture token';
 let posts = [], streams = new Set(), sequence = 0, detailDelay = false, rejectStreams = false, globalDelay = 0;
 const line = text => ({ at: '12:30:00', level: ['INFO', 'WARN', 'ERRO', 'DEBG'][sequence++ % 4], target: 'Plugin/Console', text });
@@ -79,6 +90,11 @@ const server = http.createServer(async (req, res) => {
     const match = url.pathname.match(/^\/api\/plugins\/([^/]+)\/enabled$/);
     if (match) { const plugin = plugins.find(p => p.name === match[1]); plugin.on = body.on; plugin.pending = body.on && plugin.name === 'stats'; }
     if (url.pathname.endsWith('/config') && body.path === 'retries' && body.value > 10) { await sleep(40); return reply({ error: 'retries 不能大于 10' }, 400); }
+    if (url.pathname.endsWith('/config') && /^channel\./.test(body.path)) {
+      await sleep(60);
+      if (body.value.includes('666')) return reply({ error: '示例：后端不收这个群号' }, 400);
+      return reply({ message: `已保存 ${url.pathname.split('/')[3]}.${body.path}。下一条消息生效。` });
+    }
     if (url.pathname === '/api/settings/global') await sleep(globalDelay);
     await sleep(60);
     return reply({ message: `已保存 · ${body.input || body.path || ''}` });
@@ -96,6 +112,10 @@ const server = http.createServer(async (req, res) => {
     return plugin ? reply(plugin) : reply({ error: '这里没有它' }, 404);
   }
   if (url.pathname === '/api/settings') return reply(settings);
+  if (url.pathname === '/api/groups') {
+    groupRequests.push(url.searchParams.has('refresh'));
+    return groupsFail ? reply({ error: '实现端没有回应' }, 502) : reply({ groups: groupsData, failed: 0 });
+  }
   if (url.pathname === '/api/ambient') return reply(ambient);
   if (url.pathname.startsWith('/api/ambient/sticker/')) { res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(png); }
   if (url.pathname === '/api/logs') return reply({ lines: history.slice(-Number(url.searchParams.get('limit') || 2000)) });
@@ -327,14 +347,135 @@ const posted = where => posts.filter(p => p.path === where);
   await click('[data-bot=""] [data-drop-bot]');
   assert.equal(await js('return !document.querySelector("[data-bot=\\"\\"]")'), true, '草稿离开页面');
   assert.equal(posted('/api/settings/bot').length, 1, '放弃草稿不写配置');
-  await js('document.querySelector("#g-white").value = "175131947, 群二"');
+
+  // —— 名单编辑器（全局，草稿随表单保存）：群名、粘贴、移除与撤销、选群面板、一句「现在的效果」 ——
+  const listOf = id => js('return JSON.parse(document.getElementById(arguments[0]).value)', id);
+  const rowsOf = id => js(`return [...document.getElementById(arguments[0]).closest('.picker').querySelectorAll('.picker-row')]
+    .map(r => r.querySelector('.item-title').textContent.trim() + '|' + (r.querySelector('.item-sub')?.textContent.trim() ?? ''))`, id);
+  const statusOf = id => js(`return document.getElementById(arguments[0]).closest('.picker').querySelector('.picker-status').textContent.trim()`, id);
+  const paste = (selector, text) => js(`const i=document.querySelector(arguments[0]); i.focus();
+    const dt=new DataTransfer(); dt.setData('text', arguments[1]);
+    const e=new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}); i.dispatchEvent(e); return e.defaultPrevented`, selector, text);
+  await until(async () => (await rowsOf('g-white'))[0] === '白虎/秘修四圣驾校|175131947', '名单里的群号补上群名');
+  assert.equal(await statusOf('g-white'), '只处理这 1 个群的消息，其余的群完全忽略。', '白名单启用时说清效果');
+  assert.equal(await statusOf('g-black'), '白名单已启用，此时不检查黑名单。', '白名单压过黑名单要说出来');
+  assert.equal(await js('return document.querySelector("#g-white").closest(".picker").querySelector(".picker-count").textContent'), '1 个');
+  assert.equal(await js('return document.querySelector("#g-white-add").closest(".picker").querySelector("[data-picker-add]").disabled'), true, '没写字时「添加」不可点');
+  // 认不出的字：留在框里并就地说明；认得出的照加；保存被拦下
+  await type('#g-white-add', '175131947, 群二');
+  assert.equal(await js('return document.querySelector("#g-white-add").closest(".picker").querySelector("[data-picker-add]").disabled'), false);
+  await key(KEY.enter);
+  await until(() => js('return document.querySelector("#g-white-add").getAttribute("aria-invalid") === "true"'), '群号校验');
+  assert.equal(await js('return document.querySelector("#g-white-add").value'), '群二', '认不出的留在框里');
+  assert.equal(await js('return document.querySelector("#g-white-add-error").getAttribute("role")'), 'alert');
+  assert.equal(posted('/api/settings/global').length, 0, '回车不会提交整张表单');
   await click('#global-form [type=submit]');
-  await until(() => js('return document.querySelector("#g-white").getAttribute("aria-invalid") === "true"'), '群号校验');
-  assert.equal(posted('/api/settings/global').length, 0);
-  await js('document.querySelector("#g-white").value = "175131947"');
+  await sleep(150);
+  assert.equal(posted('/api/settings/global').length, 0, '输入框里还悬着认不出的内容时不保存');
+  assert.equal(await js('return document.activeElement.id'), 'g-white-add', '焦点回到出问题的输入框');
+  // 群名能对上就替人打开选群面板，而不是只丢一句报错
+  await js('document.querySelector("#g-white-add").value = "心情"');
+  await key(KEY.enter);
+  await until(() => js('return document.querySelector("#sheet").open'), '群名对得上：打开选群面板');
+  assert.equal(await js('return document.querySelector("#sheet-search").value'), '心情', '搜索框带上输入的字');
+  assert.equal(await js('return document.querySelectorAll("#sheet-body .option .check").length'), 2, '搜索框带着「心情」：只剩两个心情管家群');
+  assert.equal(await js('return document.querySelector("#g-white-add").value'), '', '字交给面板，输入框清空');
+  assert.equal(await js('return !document.querySelector("#g-white-add-error")'), true, '不留过期的报错');
+  await key(KEY.escape);
+  await until(() => js('return !document.querySelector("#sheet").open'), 'Esc 关闭');
+  assert.equal(await js('return document.activeElement.id'), 'g-white-add', '关闭后焦点回到触发处');
+  await js('document.querySelector("#g-white-add").value = ""');
+  // 打下分隔符就加；框里留空
+  await js('document.querySelector("[data-snack-close]")?.click()');
+  await type('#g-white-add', '818965288,');
+  await until(async () => (await listOf('g-white')).length === 2, '分隔符触发添加');
+  assert.equal(await js('return document.querySelector("#g-white-add").value'), '');
+  assert.deepEqual(await rowsOf('g-white'), ['白虎/秘修四圣驾校|175131947', '②群心情管家|818965288']);
+  assert.equal(await js('return !document.querySelector(".snackbar")'), true, '往草稿里加群不弹提示');
+  // 整段粘贴：带引号的 JSON、全角逗号、换行都认
+  assert.equal(await paste('#g-white-add', '["924989840", "719518427"]\n，９９９９９９９９９'), true, '粘贴被接管');
+  assert.deepEqual(await listOf('g-white'), ['175131947', '818965288', '924989840', '719518427', '999999999'], '全角数字折成半角');
+  assert.deepEqual((await rowsOf('g-white')).at(-1), '999999999|不在已加入的群里', '不在已加入的群里的要标出来');
+  // 已有的群再加一次：不重复，只提示
+  await type('#g-white-add', '924989840');
+  await key(KEY.enter);
+  await until(() => js('return document.querySelector(".snackbar-text")?.textContent.includes("已经在名单里")'), '重复添加的提示');
+  assert.equal((await listOf('g-white')).length, 5);
+  // 移除：焦点交给顶上来的那一行；提示条带「撤销」，撤销放回原位
+  await click('.picker:has(#g-white) [data-picker-remove="818965288"]');
+  assert.deepEqual(await listOf('g-white'), ['175131947', '924989840', '719518427', '999999999']);
+  assert.equal(await js('return document.activeElement.dataset.pickerRemove'), '924989840', '焦点落在顶上来的那一行');
+  assert.match(await js('return document.querySelector(".snackbar-text").textContent'), /已移除「②群心情管家」/);
+  await click('[data-snack-action]');
+  await until(async () => (await listOf('g-white')).length === 5, '撤销');
+  assert.deepEqual(await listOf('g-white'), ['175131947', '818965288', '924989840', '719518427', '999999999'], '撤销放回原来的位置');
+  // 选群面板：已选的排最前；搜索；勾选；「完成」才生效；不在列表里的群号也能取消勾选
+  await click('.picker:has(#g-white) [data-picker-open]');
+  await until(() => js('return document.querySelector("#sheet").open'), '选群面板');
+  assert.equal(await js('return document.querySelector("#sheet-title").textContent'), '选择群 · 白名单', '面板标题带上是哪张名单');
+  assert.match(await js('return document.querySelector("#sheet-count").textContent'), /^已选 5 个 · 共 40 个群$/);
+  assert.equal(await js('return document.querySelector("#sheet-body .option .item-title").textContent.trim()'), '白虎/秘修四圣驾校', '进来时已在名单里的排最前');
+  assert.equal(await js('return document.querySelector("#sheet-body .option:nth-child(5) .item-sub").textContent.trim()'), '不在已加入的群里', '名单里有、群里没有的也排在已选里，能取消勾选');
+  assert.equal(await js('return document.querySelectorAll("#sheet-body .option").length'), 41, '40 个已加入的群 + 1 个名单里有、群里没有的');
+  await type('#sheet-search', '示例群 2');
+  await until(() => js('return document.querySelectorAll("#sheet-body .option").length < 41'), '搜索过滤');
+  assert.match(await js('return document.querySelector("#sheet-count").textContent'), /^已选 5 个 · 显示 \d+ 个$/);
+  await click('#sheet-body .option .check:not(:checked)');
+  assert.match(await js('return document.querySelector("#sheet-count").textContent'), /^已选 6 个/);
+  await js('document.querySelector("#sheet-search").value=""; document.querySelector("#sheet-search").dispatchEvent(new Event("input",{bubbles:true}))');
+  await click('#sheet-body .option:has(input[value="999999999"]) .check');
+  await click('#sheet-body .option:has(input[value="719518427"]) .check');
+  await click('[data-sheet=done]');
+  await until(() => js('return !document.querySelector("#sheet").open'), '完成关闭');
+  const afterSheet = await listOf('g-white');
+  assert.equal(afterSheet.length, 4, '取消勾选两个、新勾一个：5 − 2 + 1');
+  assert(!afterSheet.includes('999999999') && !afterSheet.includes('719518427') && afterSheet.includes('175131947'));
+  // 取消不改任何东西
+  await click('.picker:has(#g-white) [data-picker-open]');
+  await until(() => js('return document.querySelector("#sheet").open'), '再开面板');
+  await click('#sheet-body .option .check');
+  await click('[data-sheet=cancel]');
+  await until(() => js('return !document.querySelector("#sheet").open'), '取消关闭');
+  assert.deepEqual(await listOf('g-white'), afterSheet, '取消不改名单');
+  // 选群面板里直接输入一个不在列表里的群号，也能添加
+  await click('.picker:has(#g-white) [data-picker-open]');
+  await until(() => js('return document.querySelector("#sheet").open'), '再开面板');
+  await type('#sheet-search', '888888888');
+  await until(() => js('return !!document.querySelector("#sheet-body [data-sheet-add]")'), '给出「添加」');
+  await click('#sheet-body [data-sheet-add]');
+  await click('[data-sheet=done]');
+  await until(async () => (await listOf('g-white')).includes('888888888'), '按群号直接添加');
+  // 实现端没连上：面板说明原因、仍可输入群号；失败不缓存空表
+  groupsFail = true;
+  await js('document.querySelector("#g-black-add").focus()');
+  await click('.picker:has(#g-black) [data-picker-open]');
+  await until(() => js('return document.querySelector("#sheet").open'), '面板');
+  await click('[data-sheet=refresh]');
+  await until(() => js('return !!document.querySelector("#sheet-body [role=alert]")'), '读不到群时说明');
+  await key(KEY.escape);
+  groupsFail = false;
+  // 开关一动，两张名单底下那句效果跟着变；白名单开着却是空名单要警示
+  await click('#global-form [name=enable_whitelist]');
+  assert.equal(await statusOf('g-white'), '未启用，名单暂不生效。');
+  assert.equal(await statusOf('g-black'), '未启用，名单暂不生效。', '白名单关了，黑名单自己还没开');
+  await click('#global-form [name=enable_blacklist]');
+  assert.equal(await statusOf('g-black'), '名单是空的，没有群被排除。');
+  await click('#global-form [name=enable_blacklist]');
+  await click('#global-form [name=enable_whitelist]');
+  // 离开确认点名「全局设置」：名单草稿也是没保存的改动
+  await click('[data-nav="overview"]');
+  await until(() => js('return document.querySelector("dialog").open'), '名单草稿也要拦');
+  assert.equal(await js('return document.querySelector("#dialog-body").textContent.includes("「全局设置」")'), true);
+  await click('dialog [value=cancel]');
+  await until(() => js('return location.hash === "#/settings"'), '留在设置页');
+  // 收尾：清理成要保存的样子
+  await js('document.querySelector("#g-white-add").value = ""');
+  for (const id of await listOf('g-white')) if (id !== '175131947' && id !== '924989840') await click(`.picker:has(#g-white) [data-picker-remove="${id}"]`);
+  assert.deepEqual(await listOf('g-white'), ['175131947', '924989840']);
   await click('#global-form [type=submit]');
   await until(() => posted('/api/settings/global').length === 1, '保存全局');
-  assert.deepEqual(posted('/api/settings/global')[0].body.global_filter.whitelist, ['175131947']);
+  assert.deepEqual(posted('/api/settings/global')[0].body.global_filter.whitelist, ['175131947', '924989840']);
+  assert.deepEqual(posted('/api/settings/global')[0].body.global_filter.blacklist, []);
   await until(() => js('return !document.querySelector("#global-form[aria-busy]")'), '全局设置完成保存');
 
   // 保存还在路上就换页：写入已经在路上，不该弹「未保存」，也不该挡换页（回执照常落库）
@@ -437,6 +578,55 @@ const posted = where => posts.filter(p => p.path === where);
   await click('#global-form [name=enable_whitelist]');
   await route('overview');
 
+  // —— 名单编辑器（插件 channel）：每次改动立刻保存、带撤销，失败退回原样，连着改合并成一次补写 ——
+  await viewport(1400, 900);
+  await route('plugins/stats');
+  const channel = (role, selector = '') => `.picker[data-role="channel-${role}"] ${selector}`.trim();
+  await until(() => js('return !!document.querySelector(arguments[0])', channel('black')), '名单编辑器出现在插件配置里');
+  assert.equal(await js('return !document.querySelector("[data-path=\\"channel.white\\"]:not(.picker-value)")'), true, '名单不再是 JSON 输入框');
+  await until(() => js('return document.querySelector(arguments[0] + " .item-title")?.textContent.trim() === "②群心情管家"', channel('black')), '群名补上');
+  assert.equal(await js('return document.querySelector(arguments[0]).textContent.trim()', channel('black', '.picker-status')), '这 1 个群不生效，且优先于白名单。');
+  assert.equal(await js('return document.querySelector(arguments[0]).textContent.trim()', channel('white', '.picker-status')), '名单是空的：所有群都生效。');
+  const white = channel('white', '.picker-add input');
+  const configPosts = () => posts.filter(p => p.path === '/api/plugins/stats/config');
+  await type(white, '123456');
+  await key(KEY.enter);
+  await until(() => configPosts().length === 1, '加一个群立刻保存');
+  assert.deepEqual(configPosts()[0].body, { path: 'channel.white', value: ['123456'] }, '写入的仍是字符串数组');
+  await until(() => js('return document.querySelector(".snackbar-text")?.textContent.includes("已保存")'), '保存回执');
+  assert.match(await js('return document.querySelector(".snackbar-text").textContent'), /^已加入「123456」，已保存。下一条消息生效。$/);
+  await click('[data-snack-action]');
+  await until(() => configPosts().length === 2, '撤销也是一次保存');
+  assert.deepEqual(configPosts()[1].body.value, []);
+  // 后端不收：名单退回原样，错误写在输入框下面
+  await type(white, '666');
+  await key(KEY.enter);
+  await until(() => js('return document.querySelector(arguments[0]).getAttribute("aria-invalid") === "true"', white), '失败时就地报错');
+  assert.deepEqual(await js('return JSON.parse(document.querySelector(arguments[0]).value)', channel('white', '.picker-value')), [], '失败后名单退回已保存的样子');
+  assert.equal(await js('return document.querySelectorAll(arguments[0]).length', channel('white', '.picker-row')), 0);
+  assert.match(await js('return document.querySelector(arguments[0] + "-error").textContent', '#' + await js('return document.querySelector(arguments[0]).id', white)), /没能保存，名单已退回原样：示例：后端不收这个群号/);
+  // 连着改：保存在路上的新改动合并成一次补写，最后落库的是最新的完整名单
+  const before = configPosts().length;
+  await type(white, '111');
+  await key(KEY.enter);
+  await type(white, '222');
+  await key(KEY.enter);
+  await until(() => js('return !document.querySelector(arguments[0] + "[aria-busy]")', channel('white', '.picker-value')), '保存完成');
+  await sleep(200);
+  assert.deepEqual(configPosts().at(-1).body.value, ['111', '222'], '连着改不丢');
+  assert(configPosts().length - before <= 2, '合并成至多两次写入');
+  // 选群面板同样落盘；删除后焦点留在名单里
+  await click(channel('white', '[data-picker-open]'));
+  await until(() => js('return document.querySelector("#sheet").open'), '面板');
+  await click('#sheet-body .option .check:not(:checked)');
+  await click('[data-sheet=done]');
+  await until(() => js('return JSON.parse(document.querySelector(arguments[0]).value).length === 3', channel('white', '.picker-value')), '面板里选的进了名单');
+  await click(channel('white', '[data-picker-remove="111"]'));
+  assert.match(await js('return document.activeElement.getAttribute("aria-label")'), /^移除 /, '删除后焦点还在名单的移除键上');
+  await until(() => js('return !document.querySelector(arguments[0] + "[aria-busy]")', channel('white', '.picker-value')), '保存完成');
+  assert(!(await js('return JSON.parse(document.querySelector(arguments[0]).value)', channel('white', '.picker-value'))).includes('111'));
+  assert.equal(await js('return !!document.querySelector("dialog")?.open'), false);
+
   // —— 日志：突发有界、可暂停、筛选先于截断、导出、后台断流、断线退避 ——
   await route('logs');
   await until(() => streams.size === 1, 'SSE 连接');
@@ -511,7 +701,7 @@ const posted = where => posts.filter(p => p.path === where);
     return { ...line(text), level, target: ['Plugin/Ambient', 'Adapter/Satori', 'Plugin/Stats'][i % 3] };
   });
   const accessibility = [];
-  const pages = ['overview', 'plugins', 'plugins/oai', 'ambient', 'logs', 'settings'];
+  const pages = ['overview', 'plugins', 'plugins/oai', 'plugins/stats', 'ambient', 'logs', 'settings'];
   const audit = async label => {
     const contrast = await js(contrastProbe);
     const failures = Object.fromEntries(['text', 'borders', 'nameless', 'tiny', 'hints'].map(k => [k, contrast[k]]));
@@ -549,6 +739,33 @@ const posted = where => posts.filter(p => p.path === where);
     await media([{ name: 'prefers-color-scheme', value: theme }, { name: 'prefers-contrast', value: 'more' }]);
     for (const page of pages) { await route(page); await sleep(150); await audit(`contrast-more/${theme}/${page}`); snapshots++; }
     await shot(`contrast-more-${theme}-overview`);
+  }
+  // 名单编辑器与选群面板：窄 / 宽 × 浅 / 深。面板打开时同样过对比度、边界、名称、目标审计，且不横向溢出。
+  for (const [label, width, height] of [['compact', 390, 844], ['expanded', 1400, 900]]) {
+    await viewport(width, height);
+    for (const theme of ['light', 'dark']) {
+      await media([{ name: 'prefers-color-scheme', value: theme }]);
+      await route('settings');
+      await js('document.querySelector("#g-white").closest(".picker").scrollIntoView({block:"start"})');
+      await sleep(250);
+      await shot(`picker-${label}-${theme}-settings`);
+      await audit(`picker/${label}/${theme}/settings`);
+      await click('.picker:has(#g-white) [data-picker-open]');
+      await until(() => js('return document.querySelector("#sheet").open'), '面板');
+      await sleep(300);
+      await shot(`sheet-${label}-${theme}`);
+      await audit(`sheet/${label}/${theme}`);
+      assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `面板横向溢出：${label}/${theme}`);
+      assert(await js(`const r=document.querySelector('#sheet').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight`), `面板超出视口：${label}/${theme}`);
+      await key(KEY.escape);
+      await until(() => js('return !document.querySelector("#sheet").open'), '关闭面板');
+      await route('plugins/stats');
+      await js('document.querySelector(".picker[data-role=channel-black]").scrollIntoView({block:"center"})');
+      await sleep(250);
+      await shot(`channel-${label}-${theme}`);
+      await audit(`channel/${label}/${theme}`);
+      snapshots += 3;
+    }
   }
   await media([]);
   if (out) fs.writeFileSync(path.join(out, 'accessibility.json'), JSON.stringify(accessibility, null, 2));

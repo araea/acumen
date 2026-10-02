@@ -1102,6 +1102,18 @@ button.item:active::after {
   opacity: var(--md-sys-state-pressed-opacity);
 }
 
+/* 选中的列表行底色是 secondary-container：关着的开关若仍用 outline 描边，深色下只剩 2.4:1，
+   不到 WCAG 1.4.11 的 3:1。这种行里改用该容器的前景色。 */
+.item[aria-current="true"] .switch:not([aria-checked="true"]),
+.item:has(.item-link[aria-current="page"]) .switch:not([aria-checked="true"]) {
+  border-color: var(--md-sys-color-on-secondary-container);
+}
+
+.item[aria-current="true"] .switch:not([aria-checked="true"])::before,
+.item:has(.item-link[aria-current="page"]) .switch:not([aria-checked="true"])::before {
+  background: var(--md-sys-color-on-secondary-container);
+}
+
 .switch[aria-checked="true"] {
   border-color: var(--md-sys-color-primary);
   background: var(--md-sys-color-primary);
@@ -1487,6 +1499,106 @@ button.item:active::after {
   outline-offset: var(--zw-space-02);
 }
 
+/* —— 群名单编辑器 ——
+   一张名单 = 已选的群（M3E 分段列表）+ 输入框 + 选群入口 + 一句「现在的效果」。
+   群名是主、群号是辅；移除键是 48px 的独立命中区，行本身不可点，避免误删。 */
+.picker {
+  gap: var(--zw-space-04);
+}
+
+.picker-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--zw-space-04);
+}
+
+.picker-count {
+  flex: none;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.picker-list:empty {
+  display: none;
+}
+
+.picker-row .item-title,
+.picker-row .item-sub {
+  overflow-wrap: anywhere;
+}
+
+.picker-row .item-trailing {
+  margin-inline-end: calc(var(--zw-space-03) * -1);
+}
+
+/* 说明文字另起一行：配置项的名字（code）是第一行，这句话是它的注解，不能和计数挤在一起。 */
+.picker .field-label .field-hint {
+  display: block;
+  margin-top: var(--zw-space-01);
+  font-weight: var(--md-sys-typescale-weight-regular);
+}
+
+/* 控件区：输入框与「添加」并排，选群按钮在宽处跟在后面、窄处换到下一行。
+   校验错误写在输入框正下方（所以按钮顶对齐）。 */
+.picker-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--zw-space-03) var(--zw-space-04);
+}
+
+.picker-add {
+  display: flex;
+  flex: 1 1 17rem;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+}
+
+.picker-input {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--zw-space-02);
+  min-width: 0;
+}
+
+.picker-choose {
+  flex: none;
+}
+
+/* 名单现在的效果：图标 + 文字，三种语气不只靠颜色区分（对勾 / 信息 / 警示）。 */
+.picker-status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+}
+
+.picker-status svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: calc((var(--md-sys-typescale-body-medium-line-height) - var(--zw-size-icon-small)) / 2);
+}
+
+.picker-status[data-tone="ok"] {
+  background: var(--md-sys-color-success-container);
+  color: var(--md-sys-color-on-success-container);
+}
+
+.picker-status[data-tone="warn"] {
+  background: var(--md-sys-color-warning-container);
+  color: var(--md-sys-color-on-warning-container);
+}
+
 /* ==================== §6 反馈 ==================== */
 
 /* 状态标签：点 + 字，永远带文字（颜色不是唯一线索）。 */
@@ -1572,6 +1684,12 @@ button.item:active::after {
   color: var(--md-sys-color-inverse-on-surface);
 }
 
+/* 提示条上的动作（撤销）：M3 用 inverse-primary，在 inverse-surface 上自带足够对比度。 */
+.snackbar .snackbar-action {
+  --_btn-fg: var(--md-sys-color-inverse-primary);
+  padding-inline: var(--zw-space-04);
+}
+
 @keyframes snackbar-in {
   from {
     opacity: 0;
@@ -1619,6 +1737,170 @@ button.item:active::after {
     opacity: 0;
     transform: scale(0.96);
   }
+}
+
+/* —— 选群面板 ——
+   窄屏是全屏对话框（M3 full-screen dialog：搜索与列表都有整屏的地方，底部是拇指够得着的动作条），
+   宽屏收成居中的基础对话框。列表自己滚，头部与动作条不动。 */
+.sheet {
+  width: min(calc(100vw - var(--zw-space-07)), 36rem);
+  height: min(calc(100dvh - var(--zw-space-09)), 46rem);
+  padding: 0;
+  overflow: hidden;
+}
+
+.sheet[open] {
+  gap: 0;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-04);
+  padding: var(--zw-space-04) var(--zw-space-03) var(--zw-space-02) var(--zw-space-06);
+}
+
+.sheet-head .dialog-title:focus-visible {
+  outline: none;
+}
+
+.sheet-tools {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-02);
+  padding: var(--zw-space-02) var(--zw-space-06) var(--zw-space-02);
+}
+
+.sheet-tools .search {
+  flex: none;
+}
+
+.sheet-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-04);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-meta .btn {
+  padding-inline: var(--zw-space-04);
+}
+
+.sheet-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  min-height: 0;
+  padding: var(--zw-space-02) var(--zw-space-06) var(--zw-space-04);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sheet-body:focus-visible {
+  outline: none;
+}
+
+.sheet-foot {
+  padding: var(--zw-space-04) var(--zw-space-06) var(--zw-space-05);
+  border-top: var(--zw-border-width) solid var(--md-sys-color-outline-variant);
+}
+
+.sheet-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.sheet-note svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: calc((var(--md-sys-typescale-body-medium-line-height) - var(--zw-size-icon-small)) / 2);
+}
+
+@media (max-width: 599.98px) {
+  .sheet {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .sheet-head {
+    padding-top: calc(var(--zw-space-04) + var(--zw-safe-top));
+    padding-left: calc(var(--zw-page-gutter) + var(--zw-safe-left));
+  }
+
+  .sheet-tools,
+  .sheet-body {
+    padding-inline: calc(var(--zw-page-gutter) + var(--zw-safe-left)) calc(var(--zw-page-gutter) + var(--zw-safe-right));
+  }
+
+  .sheet-foot {
+    padding-inline: calc(var(--zw-page-gutter) + var(--zw-safe-left)) calc(var(--zw-page-gutter) + var(--zw-safe-right));
+    padding-bottom: calc(var(--zw-space-04) + var(--zw-safe-bottom));
+  }
+}
+
+/* 一行一个群，整行是勾选框的命中区；选中的行换 secondary-container，勾选框本身也在变——不只靠颜色。 */
+.option {
+  cursor: pointer;
+}
+
+.option:has(.check:checked) {
+  --_item-bg: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.option:has(.check:checked) .item-sub {
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.option:has(.check:focus-visible),
+.option-add:focus-visible {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.option .item-title,
+.option .item-sub {
+  overflow-wrap: anywhere;
+}
+
+.check {
+  flex: none;
+  width: var(--zw-size-icon);
+  height: var(--zw-size-icon);
+  margin: 0;
+  accent-color: var(--md-sys-color-primary);
+  cursor: inherit;
+}
+
+.option-add {
+  width: 100%;
+  border: 0;
+  font: inherit;
+}
+
+@media (hover: hover) {
+  .option:hover::after {
+    opacity: var(--md-sys-state-hover-opacity);
+  }
+}
+
+.option:active::after {
+  opacity: var(--md-sys-state-pressed-opacity);
 }
 
 /* —— 加载占位（M3E 表面层级） —— */
@@ -2352,6 +2634,7 @@ button.item:active::after {
   .segment,
   .item,
   .card,
+  .picker-status,
   .btn-filled,
   .btn-tonal {
     border: var(--zw-border-width) solid CanvasText;
@@ -2364,6 +2647,7 @@ button.item:active::after {
   .switch[aria-checked="true"]::before,
   .chip[aria-pressed="true"],
   .segment:has(input:checked),
+  .option:has(.check:checked),
   .nav-item[aria-current="page"],
   .tab[aria-selected="true"]::before {
     background: Highlight;
