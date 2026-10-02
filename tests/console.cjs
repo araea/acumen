@@ -35,7 +35,8 @@ const plugins = [
   config: { enabled: index !== 5, model: '示例模型', retries: 2, temperature: 0.7, stream: true,
     groups: [175131947, 818965288], prompt: '你是一个耐心的助手。\n先听懂，再回答。',
     limits: { per_hour: 30, cooldown: 12, peak: { mode: 'sleep', enabled: false } },
-    ...(name === 'stats' ? { channel: { white: [], black: ['818965288'] } } : {}) },
+    ...(name === 'stats' ? { channel: { white: [], black: ['818965288'] } } : {}),
+    ...(name === 'ambient' ? { private_users: ['10001'], realtime_muted_private_users: [] } : {}) },
   defaults: {}, diff: name === 'oai' ? ['model: "默认模型" → "示例模型"'] : [],
 }));
 const settings = {
@@ -64,6 +65,14 @@ const groupsData = [
   ...Array.from({ length: 36 }, (_, i) => ({ id: String(500000000 + i * 7919), platform: 'red',
     name: `示例群 ${i + 1}${i % 9 === 0 ? '（一个名字特别特别长的群，用来确认窄屏下标题会换行而不是撑破布局）' : ''}` })),
 ];
+// 好友（/api/friends）：与群同形；混入一个带昵称（alias）的微信好友，两个平台同时在线时每行带平台标签。
+const friendsData = [
+  { id: '10001', name: '知微的主人', platform: 'red' },
+  { id: '2332390039', name: '喰', platform: 'red' },
+  { id: '3427131184', name: '九申', platform: 'red' },
+  { id: 'wxid_js4fhacr8i8i22', name: '陈师傅', alias: '渡一场风', platform: 'wechat' },
+  ...Array.from({ length: 30 }, (_, i) => ({ id: String(600000000 + i * 104729), name: `示例好友 ${i + 1}`, platform: 'red' })),
+];
 let groupsFail = false, groupRequests = [];
 const token = 'fixture token';
 let posts = [], streams = new Set(), sequence = 0, detailDelay = false, rejectStreams = false, globalDelay = 0;
@@ -90,7 +99,7 @@ const server = http.createServer(async (req, res) => {
     const match = url.pathname.match(/^\/api\/plugins\/([^/]+)\/enabled$/);
     if (match) { const plugin = plugins.find(p => p.name === match[1]); plugin.on = body.on; plugin.pending = body.on && plugin.name === 'stats'; }
     if (url.pathname.endsWith('/config') && body.path === 'retries' && body.value > 10) { await sleep(40); return reply({ error: 'retries 不能大于 10' }, 400); }
-    if (url.pathname.endsWith('/config') && /^channel\./.test(body.path)) {
+    if (url.pathname.endsWith('/config') && /^channel\.|private_users$/.test(body.path)) {
       await sleep(60);
       if (body.value.includes('666')) return reply({ error: '示例：后端不收这个群号' }, 400);
       return reply({ message: `已保存 ${url.pathname.split('/')[3]}.${body.path}。下一条消息生效。` });
@@ -114,8 +123,9 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/api/settings') return reply(settings);
   if (url.pathname === '/api/groups') {
     groupRequests.push(url.searchParams.has('refresh'));
-    return groupsFail ? reply({ error: '实现端没有回应' }, 502) : reply({ groups: groupsData, failed: 0 });
+    return groupsFail ? reply({ error: '实现端没有回应' }, 502) : reply({ items: groupsData, failed: 0 });
   }
+  if (url.pathname === '/api/friends') return reply({ items: friendsData, failed: 0 });
   if (url.pathname === '/api/ambient') return reply(ambient);
   if (url.pathname.startsWith('/api/ambient/sticker/')) { res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(png); }
   if (url.pathname === '/api/logs') return reply({ lines: history.slice(-Number(url.searchParams.get('limit') || 2000)) });
@@ -642,6 +652,59 @@ const posted = where => posts.filter(p => p.path === where);
   await until(() => js('return !document.querySelector(arguments[0] + "[aria-busy]")', channel('white', '.picker-value')), '保存完成');
   assert(!(await js('return JSON.parse(document.querySelector(arguments[0]).value)', channel('white', '.picker-value'))).includes('111'));
   assert.equal(await js('return !!document.querySelector("dialog")?.open'), false);
+
+  // —— 名单编辑器（私聊用户）：同一个编辑器，换成好友名册；搜索认昵称 / 备注，不像账号的字能对上名字就去面板找 ——
+  await route('plugins/ambient');
+  const user = (path, selector = '') => `.picker[data-kind="user"]:has(.picker-value[data-path="${path}"]) ${selector}`.trim();
+  await until(() => js('return !!document.querySelector(arguments[0])', user('private_users')), '私聊用户名单也是编辑器');
+  assert.equal(await js('return !document.querySelector("[data-path=\\"private_users\\"]:not(.picker-value)")'), true, '不再是 JSON 输入框');
+  assert.equal(await js('return document.querySelector(arguments[0]).textContent.trim()', user('private_users', '[data-picker-open]')), '从好友里选');
+  assert.equal(await js('return document.querySelector(arguments[0]).placeholder', user('private_users', '.picker-add input')), '输入或粘贴 QQ 号或微信号，回车添加');
+  assert.equal(await js('return !document.querySelector(arguments[0])', user('private_users', '.picker-status')), true, '用户名单没有「现在的效果」那句');
+  await until(() => js('return document.querySelector(arguments[0] + " .picker-row .item-title")?.textContent.includes("知微的主人")', user('private_users')), '账号补上昵称');
+  const userPosts = () => posts.filter(p => p.path === '/api/plugins/ambient/config');
+  await js('document.querySelector(arguments[0]).scrollIntoView({block:"center"})', user('private_users'));
+  await sleep(200);
+  await shot('user-picker');
+  // 搜别名：微信好友「陈师傅」的昵称是「渡一场风」
+  await click(user('private_users', '[data-picker-open]'));
+  await until(() => js('return document.querySelector("#sheet").open'), '好友面板');
+  assert.equal(await js('return document.querySelector("#sheet-title").textContent'), '选择好友 · private_users');
+  assert.equal(await js('return document.querySelector("#sheet-search").placeholder'), '搜索昵称、备注或账号');
+  assert.match(await js('return document.querySelector("#sheet-count").textContent'), /^已选 1 个 · 共 34 位好友$/);
+  await type('#sheet-search', '渡一');
+  await sleep(250);
+  await shot('user-sheet');
+  await until(() => js('return document.querySelectorAll("#sheet-body .option").length === 1'), '按昵称搜到');
+  assert.equal(await js('return document.querySelector("#sheet-body .option .item-sub").textContent.trim()'), 'wxid_js4fhacr8i8i22 · 渡一场风', '账号旁带上昵称');
+  assert.equal(await js('return document.querySelector("#sheet-body .option .tag").textContent'), '微信');
+  await click('#sheet-body .option .check');
+  await click('[data-sheet=done]');
+  await until(() => userPosts().length === 1, '选好友立刻保存');
+  assert.deepEqual(userPosts()[0].body, { path: 'private_users', value: ['10001', 'wxid_js4fhacr8i8i22'] });
+  await until(() => js('return document.querySelector(".snackbar-text")?.textContent.includes("陈师傅")'), '保存回执');
+  assert.match(await js('return document.querySelector(".snackbar-text").textContent'), /^已加入「陈师傅」，已保存。下一条消息生效。$/);
+  // 手输账号照样收（QQ 号、wxid 都行）；不像账号的字若对得上某位好友的名字，就替人打开面板
+  const userInput = user('private_users', '.picker-add input');
+  await type(userInput, '88888888');
+  await key(KEY.enter);
+  await until(() => userPosts().length === 2, '手输账号');
+  assert.deepEqual(userPosts()[1].body.value, ['10001', 'wxid_js4fhacr8i8i22', '88888888']);
+  assert.equal(await js('return [...document.querySelectorAll(arguments[0] + " .picker-row")].at(-1).querySelector(".item-sub").textContent.trim()', user('private_users')), '不在好友列表里', '不是好友的账号要标出来');
+  await type(userInput, '九申');
+  await key(KEY.enter);
+  await until(() => js('return document.querySelector("#sheet").open'), '对上好友名字：打开面板');
+  assert.equal(await js('return document.querySelector("#sheet-search").value'), '九申');
+  assert.equal(await js('return document.querySelectorAll("#sheet-body .option").length'), 1);
+  await key(KEY.escape);
+  await until(() => js('return !document.querySelector("#sheet").open'), '关闭');
+  assert.equal(userPosts().length, 2, '取消不写配置');
+  // 对不上名字的字：就地说明，口径是「账号」而不是「群号」
+  await type(userInput, '完全没有这个人');
+  await key(KEY.enter);
+  await until(() => js('return document.querySelector(arguments[0]).getAttribute("aria-invalid") === "true"', userInput), '不像账号');
+  assert.match(await js('return document.querySelector("#" + document.querySelector(arguments[0]).id + "-error").textContent', userInput), /不像账号。QQ 号是一串数字，微信号形如 wxid_/);
+  await js('document.querySelector(arguments[0]).value = ""', userInput);
 
   // —— 日志：突发有界、可暂停、筛选先于截断、导出、后台断流、断线退避 ——
   await route('logs');

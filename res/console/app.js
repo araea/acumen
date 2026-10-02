@@ -78,6 +78,7 @@
     alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.5h.01"/>',
     logout: '<path d="M14 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M10 16.5 5.5 12 10 7.5M5.5 12h9"/>',
     groups: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9.5" r="2.4"/><path d="M16 14.2a4.6 4.6 0 0 1 4.5 4.3"/>',
+    user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5a7 7 0 0 1 14 0"/>',
     info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.5h.01"/>',
     inbox: '<path d="M4 13.5 6.5 5.5h11l2.5 8v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>',
   };
@@ -913,7 +914,10 @@
 
   /** 群号列表：名单、开启搭话 / 推送的群等。其余列表（前缀、别名、时间点……）仍是 JSON 编辑。 */
   const GROUP_LIST = /(^|\.)(channel\.(white|black)|groups|management_groups|realtime_muted_groups|manual_channels)$/;
-  const isGroupList = (path, value) => GROUP_LIST.test(path) && value.every((item) => typeof item === "string");
+  const USER_LIST = /(^|\.)(private_users|realtime_muted_private_users|admins)$/;
+  /** 这一项是不是 ID 名单，是哪一种；不是（或混着数字对象）就返回空串，仍走 JSON 编辑。 */
+  const listKind = (path, value) =>
+    !value.every((item) => typeof item === "string") ? "" : GROUP_LIST.test(path) ? "group" : USER_LIST.test(path) ? "user" : "";
 
   /** 一个配置项。表与对象数组展开成 fieldset，叶子就地成为能改的控件。 */
   function configField(path, key, value, help = {}, options = {}) {
@@ -926,13 +930,14 @@
         ${[...new Set([value, ...options[path]])].map(option => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
         </select>${icon("down")}</span></div>`;
     }
-    if (Array.isArray(value) && isGroupList(path, value)) {
+    const kind = Array.isArray(value) ? listKind(path, value) : "";
+    if (kind) {
       const role = /(^|\.)channel\.white$/.test(path) ? "channel-white" : /(^|\.)channel\.black$/.test(path) ? "channel-black" : "";
       const fallback = { "channel-white": "非空时，只在名单里的群生效。", "channel-black": "名单里的群一律不生效，优先于白名单。" }[role];
-      const text = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || fallback || "群号列表。";
+      const text = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || fallback || (kind === "user" ? "用户账号列表。" : "群号列表。");
       const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role];
       return picker({
-        id, mode: "save", ids: value, path, role, title: title || key,
+        id, kind, mode: "save", ids: value, path, role, title: title || key,
         label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${text}</span>`,
       });
     }
@@ -1798,9 +1803,10 @@
   }
 
   /* ==================== §11a 名单编辑器 ==================== */
-  /* 群名单（全局黑白名单、各插件的 channel 与「开启的群」）说到底是一串群号。手打 JSON 引号、
-     数逗号、记群号都不是人该干的事：这里改成从已加入的群里点选、粘贴一串自动拆开、
-     一键移除并能撤销。名单本身仍是字符串数组，写入口径一个字都没变。 */
+  /* 群名单（全局黑白名单、各插件的 channel 与「开启的群」）和私聊用户名单（资讯推送的私聊目标、
+     管理员）说到底是一串 ID。手打 JSON 引号、数逗号、记账号都不是人该干的事：这里改成从已加入的群
+     / 好友里点选、粘贴一串自动拆开、一键移除并能撤销。名单本身仍是字符串数组，写入口径一个字都没变。
+     两种名单只是名册和措辞不同（KINDS），其余完全共用。 */
 
   const ID_SPLIT = /[\s,，、;；|]+/u;
   const ID_EDGE = /^["'“”‘’「」『』《》()（）[\]【】{}<>]+|["'“”‘’「」『』《》()（）[\]【】{}<>]+$/gu;
@@ -1826,9 +1832,9 @@
   // Satori 里 QQ 的平台名是 red（QQ NT 协议），微信是 wechat；认不得的原样大写显示。
   const PLATFORM_NAMES = { red: "QQ", qq: "QQ", wechat: "微信", wx: "微信" };
 
-  /** 已加入的群（群号 → 群名）。名单里存的是群号，人要看的是群名：页面一出现名单就去问后端要一次，
-   *  回来后把群号补上名字；问不到（实现端没连上）也不影响手输群号。 */
-  const directory = {
+  /** 一份名册（ID → 名字）：已加入的群，或好友。名单里存的是 ID，人要看的是名字：页面一出现名单就去
+   *  问后端要一次，回来后把 ID 补上名字；问不到（实现端没连上）也不影响手输 ID。 */
+  const makeRoster = (endpoint) => ({
     list: [],
     byId: new Map(),
     platforms: 0,
@@ -1840,12 +1846,12 @@
     load(force = false) {
       if (this.pending) return this.pending;
       if (!force && this.loaded && !this.error && Date.now() - this.at < 60000) return Promise.resolve(this);
-      this.pending = api(`/groups${force ? "?refresh=1" : ""}`)
+      this.pending = api(`${endpoint}${force ? "?refresh=1" : ""}`)
         .then((data) => {
-          this.list = Array.isArray(data.groups) ? data.groups : [];
+          this.list = Array.isArray(data.items) ? data.items : [];
           this.byId = new Map();
-          for (const group of this.list) if (!this.byId.has(group.id)) this.byId.set(group.id, group);
-          this.platforms = new Set(this.list.map((group) => group.platform)).size;
+          for (const entry of this.list) if (!this.byId.has(entry.id)) this.byId.set(entry.id, entry);
+          this.platforms = new Set(this.list.map((entry) => entry.platform)).size;
           this.failed = Number(data.failed) || 0;
           this.loaded = true;
           this.error = false;
@@ -1860,15 +1866,61 @@
         });
       return this.pending;
     },
+  });
+
+  /** 两种名册与它们的措辞。键是 `data-kind`：group 是群号名单，user 是私聊对象名单。 */
+  const KINDS = {
+    group: {
+      roster: makeRoster("/groups"),
+      icon: "groups",
+      idNoun: "群号",
+      placeholder: "输入或粘贴群号，回车添加",
+      pick: "从已加入的群里选",
+      sheet: "选择群",
+      search: "搜索群名或群号",
+      aria: "已选的群",
+      listAria: "群列表",
+      total: (n) => `共 ${n} 个群`,
+      stale: "不在已加入的群里",
+      offer: "不在已加入的群里，按群号直接添加",
+      reading: "正在读取已加入的群…",
+      nomatch: "没有匹配的群。可以换个关键词，或直接输入群号。",
+      none: "没有读到已加入的群。账号可能还没连上实现端；也可以回去直接输入群号。",
+      stale_read: "没能读到最新的群，",
+      notId: (text) => `「${text}」不像群号。群号是一串数字；想按群名找，点下面的「从已加入的群里选」。`,
+    },
+    user: {
+      roster: makeRoster("/friends"),
+      icon: "user",
+      idNoun: "账号",
+      placeholder: "输入或粘贴 QQ 号或微信号，回车添加",
+      pick: "从好友里选",
+      sheet: "选择好友",
+      search: "搜索昵称、备注或账号",
+      aria: "已选的用户",
+      listAria: "好友列表",
+      total: (n) => `共 ${n} 位好友`,
+      stale: "不在好友列表里",
+      offer: "不在好友列表里，按账号直接添加",
+      reading: "正在读取好友…",
+      nomatch: "没有匹配的好友。可以换个关键词，或直接输入账号。",
+      none: "没有读到好友。账号可能还没连上实现端；也可以回去直接输入账号。",
+      stale_read: "没能读到最新的好友，",
+      notId: (text) => `「${text}」不像账号。QQ 号是一串数字，微信号形如 wxid_…；想按昵称找，点下面的「从好友里选」。`,
+    },
   };
 
-  const groupName = (id) => directory.byId.get(id)?.name || "";
-  /** 「白虎（175131947）」；群名未知时就是群号本身。给读屏名与提示文字用。 */
-  const groupTitle = (id) => (groupName(id) ? `${groupName(id)}（${id}）` : id);
-  const platformTag = (id) => {
-    const group = directory.byId.get(id);
+  const kindOf = (node) => (node.dataset?.kind === "user" ? "user" : "group");
+  const entryName = (kind, id) => KINDS[kind].roster.byId.get(id)?.name || "";
+  /** 「白虎（175131947）」；名字未知时就是 ID 本身。给读屏名与提示文字用。 */
+  const entryTitle = (kind, id) => (entryName(kind, id) ? `${entryName(kind, id)}（${id}）` : id);
+  /** 搜索认名字、别名（昵称 / 备注）与 ID。 */
+  const searchable = (entry) => `${entry.name} ${entry.alias ?? ""} ${entry.id}`.toLowerCase();
+  const platformTag = (kind, id) => {
+    const { roster } = KINDS[kind];
+    const entry = roster.byId.get(id);
     // 只连了一个平台时标出来是噪音；两个平台都在线才有区分的价值。
-    return group && directory.platforms > 1 ? h`<span class="tag">${PLATFORM_NAMES[group.platform] ?? String(group.platform).toUpperCase()}</span>` : "";
+    return entry && roster.platforms > 1 ? h`<span class="tag">${PLATFORM_NAMES[entry.platform] ?? String(entry.platform).toUpperCase()}</span>` : "";
   };
 
   /** 名单当前的效果，用人话说。全局两张名单是互相牵连的（白名单开着就不查黑名单），
@@ -1897,44 +1949,50 @@
     return { tone, html: h`${icon(tone === "warn" ? "alert" : tone === "ok" ? "check" : "info")}<span>${text}</span>` };
   };
 
-  function pickerRow(id) {
-    const name = groupName(id);
-    const stale = directory.loaded && directory.list.length > 0 && !directory.byId.has(id);
+  /** 一行：名字为主，ID（与别名）为辅；名册读到了却没有这一项就标出来。 */
+  const pickerRow = (kind) => (id) => {
+    const { roster, stale } = KINDS[kind];
+    const entry = roster.byId.get(id);
+    const missing = roster.loaded && roster.list.length > 0 && !entry;
     return h`<li class="item picker-row">
-      <span class="item-leading" aria-hidden="true">${name ? [...name][0] : "#"}</span>
+      <span class="item-leading" aria-hidden="true">${entry?.name ? [...entry.name][0] : "#"}</span>
       <div class="item-content">
-        <span class="item-title">${name || h`<span class="mono">${id}</span>`}${platformTag(id)}</span>
-        ${name || stale ? h`<span class="item-sub">${name ? h`<span class="mono">${id}</span>` : "不在已加入的群里"}</span>` : ""}
+        <span class="item-title">${entry?.name || h`<span class="mono">${id}</span>`}${platformTag(kind, id)}</span>
+        ${entry?.name || missing
+          ? h`<span class="item-sub">${entry?.name ? h`<span class="mono">${id}</span>${entry.alias ? ` · ${entry.alias}` : ""}` : stale}</span>`
+          : ""}
       </div>
       <div class="item-trailing">
-        <button class="icon-btn state" type="button" data-picker-remove="${id}" aria-label="移除 ${groupTitle(id)}">${icon("close")}</button>
+        <button class="icon-btn state" type="button" data-picker-remove="${id}" aria-label="移除 ${entryTitle(kind, id)}">${icon("close")}</button>
       </div>
     </li>`;
-  }
+  };
 
-  /** 群名单编辑器。`mode`：save = 每次改动立刻写进插件配置；stage = 只改页面上的草稿，随表单一起保存。
+  /** 名单编辑器。`kind`：group = 群号名单，user = 私聊对象名单。
+   *  `mode`：save = 每次改动立刻写进插件配置；stage = 只改页面上的草稿，随表单一起保存。
    *  真正的值放在一个藏起来的文本框里（JSON 数组），其余都是它的视图。
    *  不用 type=hidden：它的 value 与 defaultValue 是同一个特性，分不出「改没改」。 */
-  function picker({ id, label, title = "", ids, mode, name = "", path = "", role = "", flags = {} }) {
-    void directory.load().then(paintPickers);
+  function picker({ id, label, title = "", kind = "group", ids, mode, name = "", path = "", role = "", flags = {} }) {
+    const text = KINDS[kind];
+    void text.roster.load().then(paintPickers);
     const list = [...new Set(ids.map(String))];
     const status = role ? statusLine(role, list.length, flags) : null;
-    return h`<div class="field picker" role="group" aria-labelledby="${id}-label" data-picker="${mode}" data-role="${role}" data-title="${title}">
+    return h`<div class="field picker" role="group" aria-labelledby="${id}-label" data-picker="${mode}" data-kind="${kind}" data-role="${role}" data-title="${title}">
       <div class="picker-head">
         <span class="field-label" id="${id}-label">${label}</span>
         <span class="picker-count num">${list.length ? `${list.length} 个` : ""}</span>
       </div>
-      <ul class="group picker-list" aria-label="已选的群">${list.map(pickerRow)}</ul>
+      <ul class="group picker-list" aria-label="${text.aria}">${list.map(pickerRow(kind))}</ul>
       ${status ? h`<p class="picker-status" data-tone="${status.tone}">${status.html}</p>` : ""}
       <div class="picker-controls">
         <div class="picker-add">
           <div class="picker-input">
             <input class="input mono" id="${id}-add" type="text" inputmode="text" enterkeyhint="done" spellcheck="false"
-              autocapitalize="off" autocomplete="off" placeholder="输入或粘贴群号，回车添加" aria-label="添加群号" aria-describedby="${id}-hint">
+              autocapitalize="off" autocomplete="off" placeholder="${text.placeholder}" aria-label="添加${text.idNoun}" aria-describedby="${id}-hint">
           </div>
           <button class="btn btn-outlined" type="button" data-picker-add disabled>添加</button>
         </div>
-        <button class="btn btn-tonal picker-choose" type="button" data-picker-open>${icon("groups")}从已加入的群里选</button>
+        <button class="btn btn-tonal picker-choose" type="button" data-picker-open>${icon(text.icon)}${text.pick}</button>
       </div>
       <span class="field-hint" id="${id}-hint">可以整段粘贴：逗号、空格、换行、引号都行。</span>
       <input class="picker-value" id="${id}" type="text" hidden tabindex="-1" autocomplete="off" value="${JSON.stringify(list)}"
@@ -1970,7 +2028,7 @@
   function paintPicker(root, { late = false } = {}) {
     const ids = readIds(root);
     const list = $(".picker-list", root);
-    if (!(late && list.contains(document.activeElement))) put(list, ids.map(pickerRow));
+    if (!(late && list.contains(document.activeElement))) put(list, ids.map(pickerRow(kindOf(root))));
     $(".picker-count", root).textContent = ids.length ? `${ids.length} 个` : "";
     paintStatus(root, ids);
   }
@@ -1991,10 +2049,10 @@
     paintPicker(root);
   }
 
-  function describeChange(prev, next) {
+  function describeChange(kind, prev, next) {
     const added = next.filter((id) => !prev.includes(id));
     const removed = prev.filter((id) => !next.includes(id));
-    const say = (verb, ids) => (ids.length === 1 ? `${verb}「${groupName(ids[0]) || ids[0]}」` : `${verb} ${ids.length} 个群`);
+    const say = (verb, ids) => (ids.length === 1 ? `${verb}「${entryName(kind, ids[0]) || ids[0]}」` : `${verb} ${ids.length} 个`);
     return [added.length && say("加入", added), removed.length && say("移除", removed)].filter(Boolean).join("，");
   }
 
@@ -2003,7 +2061,7 @@
   async function pickerEdit(root, next, { lead = "", undoable = true } = {}) {
     const prev = readIds(root);
     if (sameIds(prev, next)) return;
-    const said = lead || `已${describeChange(prev, next)}`;
+    const said = lead || `已${describeChange(kindOf(root), prev, next)}`;
     applyIds(root, next);
     const undo = undoable
       ? {
@@ -2082,10 +2140,12 @@
     const add = pickerAdd(root);
     const text = add.value;
     if (!text.trim()) return true;
+    const kind = kindOf(root);
+    const { roster, idNoun, notId } = KINDS[kind];
     const { ids, rejected } = parseIds(text);
     if (!ids.length) {
       const query = text.trim().toLowerCase();
-      if (explicit && directory.list.some((group) => group.name.toLowerCase().includes(query))) {
+      if (explicit && roster.list.some((entry) => searchable(entry).includes(query))) {
         // 字交给面板的搜索框去用，这边清空：免得面板收起后输入框里还留着一句过期的报错。
         add.value = "";
         syncAddButton(root);
@@ -2093,7 +2153,7 @@
         void pickerChoose(root, text.trim());
         return false;
       }
-      fieldError(add, `「${rejected[0] ?? text.trim()}」不像群号。群号是一串数字；想按群名找，点下面的「从已加入的群里选」。`);
+      fieldError(add, notId(rejected[0] ?? text.trim()));
       return false;
     }
     const current = readIds(root);
@@ -2101,22 +2161,24 @@
     add.value = rejected.join(" ");
     syncAddButton(root);
     clearFieldError(add);
-    if (rejected.length) fieldError(add, `「${rejected.join("、")}」不像群号，没有加；其余的已处理。`);
+    if (rejected.length) fieldError(add, `「${rejected.join("、")}」不像${idNoun}，没有加；其余的已处理。`);
     if (!fresh.length) {
-      snackbar(ids.length === 1 ? `「${groupName(ids[0]) || ids[0]}」已经在名单里了。` : "这些群都已经在名单里了。");
+      snackbar(ids.length === 1 ? `「${entryName(kind, ids[0]) || ids[0]}」已经在名单里了。` : "这些都已经在名单里了。");
     } else void pickerEdit(root, [...current, ...fresh]);
     return !rejected.length;
   }
 
   async function pickerChoose(root, query = "") {
     if ($("#sheet").open) return;
-    const picked = await openSheet({ selected: readIds(root), query, title: root.dataset.title });
+    const picked = await openSheet({ selected: readIds(root), query, title: root.dataset.title, kind: kindOf(root) });
     if (picked) await pickerEdit(root, picked);
   }
 
-  /** 选群面板：已加入的群逐行勾选，搜索群名或群号。「完成」才一并生效，取消 / Esc 什么都不改。
+  /** 选择面板：已加入的群（或好友）逐行勾选，搜索名字、别名或 ID。「完成」才一并生效，取消 / Esc 什么都不改。
    *  勾选状态只存在这里的集合里，重画列表（搜索、刷新、名字晚到）不会丢。 */
-  function openSheet({ selected, query = "", title = "" }) {
+  function openSheet({ selected, query = "", title = "", kind = "group" }) {
+    const text = KINDS[kind];
+    const { roster } = text;
     const dialog = $("#sheet");
     const opener = document.activeElement;
     const initial = new Set(selected);
@@ -2127,23 +2189,23 @@
 
     const visible = () => {
       const terms = search.normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
-      const hit = (group) => terms.every((term) => `${group.name} ${group.id}`.toLowerCase().includes(term));
-      // 进来时已在名单里的排最前（不在已加入的群里的也要能取消勾选）；之后顺序不再变，免得点一下行就跳走。
-      const lead = [...initial].map((id) => directory.byId.get(id) ?? { id, name: "", platform: "", stale: true });
-      const rest = directory.list.filter((group) => !initial.has(group.id));
+      const hit = (entry) => terms.every((term) => searchable(entry).includes(term));
+      // 进来时已在名单里的排最前（名册里没有的也要能取消勾选）；之后顺序不再变，免得点一下行就跳走。
+      const lead = [...initial].map((id) => roster.byId.get(id) ?? { id, name: "", platform: "" });
+      const rest = roster.list.filter((entry) => !initial.has(entry.id));
       return [...lead, ...rest].filter(hit);
     };
-    const option = (group) => h`<label class="item option">
-      <input class="check" type="checkbox" value="${group.id}"${attr(picked.has(group.id), "checked")}>
+    const option = (entry) => h`<label class="item option">
+      <input class="check" type="checkbox" value="${entry.id}"${attr(picked.has(entry.id), "checked")}>
       <span class="item-content">
-        <span class="item-title">${group.name || h`<span class="mono">${group.id}</span>`}${platformTag(group.id)}</span>
-        <span class="item-sub">${group.name ? h`<span class="mono">${group.id}</span>` : "不在已加入的群里"}</span>
+        <span class="item-title">${entry.name || h`<span class="mono">${entry.id}</span>`}${platformTag(kind, entry.id)}</span>
+        <span class="item-sub">${entry.name ? h`<span class="mono">${entry.id}</span>${entry.alias ? ` · ${entry.alias}` : ""}` : text.stale}</span>
       </span>
     </label>`;
 
     const count = (shown) => {
-      const total = directory.list.length;
-      const scope = search.trim() ? `显示 ${shown} 个` : `共 ${total} 个群`;
+      const total = roster.list.length;
+      const scope = search.trim() ? `显示 ${shown} 个` : text.total(total);
       $("#sheet-count", dialog).textContent = `已选 ${picked.size} 个${total ? ` · ${scope}` : ""}`;
     };
     const paint = () => {
@@ -2152,28 +2214,21 @@
       const rows = visible();
       const asId = parseIds(search);
       const typedId = asId.ids.length === 1 && !asId.rejected.length ? asId.ids[0] : "";
-      const offer = typedId && !picked.has(typedId) && !directory.byId.has(typedId) && !initial.has(typedId);
-      const waiting = !directory.loaded && directory.pending;
+      const offer = typedId && !picked.has(typedId) && !roster.byId.has(typedId) && !initial.has(typedId);
+      const waiting = !roster.loaded && roster.pending;
       put(
         body,
-        h`${directory.error ? h`<p class="note sheet-note" role="alert">${icon("alert")}<span>没能读到最新的群，${directory.list.length ? "下面是上次读到的。" : "可以直接回去输入群号。"}</span></p>` : ""}
-        ${directory.failed ? h`<p class="note sheet-note">${icon("info")}<span>有 ${directory.failed} 条连接没读到，这张表可能不全。</span></p>` : ""}
+        h`${roster.error ? h`<p class="note sheet-note" role="alert">${icon("alert")}<span>${text.stale_read}${roster.list.length ? "下面是上次读到的。" : `可以直接回去输入${text.idNoun}。`}</span></p>` : ""}
+        ${roster.failed ? h`<p class="note sheet-note">${icon("info")}<span>有 ${roster.failed} 条连接没读到，这张表可能不全。</span></p>` : ""}
         ${rows.length || offer
-          ? h`<div class="group" role="group" aria-label="群列表">
+          ? h`<div class="group" role="group" aria-label="${text.listAria}">
               ${offer ? h`<button class="item option option-add" type="button" data-sheet-add="${typedId}">
                 <span class="item-leading" aria-hidden="true">${icon("plus")}</span>
                 <span class="item-content"><span class="item-title">添加 <span class="mono">${typedId}</span></span>
-                <span class="item-sub">不在已加入的群里，按群号直接添加</span></span></button>` : ""}
+                <span class="item-sub">${text.offer}</span></span></button>` : ""}
               ${rows.map(option)}
             </div>`
-          : emptyState(
-              waiting
-                ? "正在读取已加入的群…"
-                : directory.list.length
-                  ? "没有匹配的群。可以换个关键词，或直接输入群号。"
-                  : "没有读到已加入的群。账号可能还没连上实现端；也可以回去直接输入群号。",
-              waiting ? "groups" : "inbox"
-            )}`
+          : emptyState(waiting ? text.reading : roster.list.length ? text.nomatch : text.none, waiting ? text.icon : "inbox")}`
       );
       body.scrollTop = top;
       count(rows.length);
@@ -2182,12 +2237,12 @@
     put(
       dialog,
       h`<div class="sheet-head">
-          <h2 class="dialog-title" id="sheet-title" tabindex="-1">选择群${title ? ` · ${title}` : ""}</h2>
+          <h2 class="dialog-title" id="sheet-title" tabindex="-1">${text.sheet}${title ? ` · ${title}` : ""}</h2>
           <button class="icon-btn state" type="button" data-sheet="cancel" aria-label="关闭，不保存">${icon("close")}</button>
         </div>
         <div class="sheet-tools">
           <div class="search">${icon("search")}
-            <input class="input" id="sheet-search" type="search" value="${query}" placeholder="搜索群名或群号" aria-label="搜索群名或群号"
+            <input class="input" id="sheet-search" type="search" value="${query}" placeholder="${text.search}" aria-label="${text.search}"
               autocomplete="off" spellcheck="false" enterkeyhint="search">
           </div>
           <div class="sheet-meta">
@@ -2240,7 +2295,7 @@
           $("#sheet-search", dialog).focus();
         } else if (hit.dataset.sheet === "refresh") {
           hit.setAttribute("aria-busy", "true");
-          await directory.load(true);
+          await roster.load(true);
           hit.removeAttribute("aria-busy");
           if (dialog.open) paint();
         } else dialog.close(hit.dataset.sheet);
@@ -2267,7 +2322,7 @@
       dialog.showModal();
       // 触屏上一弹出就聚焦搜索框会把键盘顶起来盖住列表；只给精确指针自动聚焦。
       (matchMedia("(pointer: fine)").matches ? $("#sheet-search", dialog) : $("#sheet-title", dialog)).focus({ preventScroll: true });
-      void directory.load().then(() => {
+      void roster.load().then(() => {
         if (dialog.open) paint();
       });
     });
