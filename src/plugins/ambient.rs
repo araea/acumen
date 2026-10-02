@@ -382,6 +382,9 @@ struct Pressure {
     recent_turns: usize,
     /// 这一小时说过几轮。
     hourly_turns: usize,
+    /// 他本人在这个群里平时每小时说几轮、放宽一点之后的数（见 [`habit::Habit::hourly_target`]）；
+    /// 量不出来是 None。机器人在一个他平时几乎不说话的大群里，不该比他本人更活跃。
+    hourly_target: Option<usize>,
 }
 
 impl AmbientConfig {
@@ -482,7 +485,10 @@ impl AmbientConfig {
         if self.max_per_hour == 0 || self.budget_penalty == 0 {
             return 0;
         }
-        let over = pressure.hourly_turns.saturating_sub(self.max_per_hour);
+        let target = self
+            .max_per_hour
+            .min(pressure.hourly_target.unwrap_or(usize::MAX));
+        let over = pressure.hourly_turns.saturating_sub(target);
         (over as i16).saturating_mul(i16::from(self.budget_penalty))
     }
 
@@ -1649,6 +1655,7 @@ async fn consider_batch(
             since_last_spoke: silent_for,
             recent_turns: state.spoken_within(window::RECENT_SPEECH),
             hourly_turns: state.spoken_last_hour(),
+            hourly_target: recent::hourly_target(group),
         });
         let threshold = config.threshold(mood::snapshot(group), pressure);
         debug!(target: LOG_TARGET, "群 {group} 判定模型：{}", config.gate_model);

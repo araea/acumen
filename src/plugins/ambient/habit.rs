@@ -27,7 +27,18 @@ pub(super) struct Habit {
     pub quoted: f32,
     /// 一个回合（三十秒内连着发的算一个回合）只发一条的比例。
     pub single: f32,
+    /// 他在这个群里平时一天说几个回合（按天取中位数，不被放假那种一天爆发的日子带偏）；
+    /// 日子不够、量不出来是 `None`。
+    pub daily_turns: Option<f32>,
 }
+
+/// 他一天里大概有几个钟头会在群里说话：把「一天几个回合」摊成「每小时几个回合」用的。
+const ACTIVE_HOURS: f32 = 10.0;
+/// 机器人在群里的发言轮数，允许比他本人平时多这么多倍：它顶的是他不在的时候，
+/// 但不该比他本人在群里还爱说话。
+const HEADROOM: f32 = 1.5;
+/// 量日均回合数至少要有几天的跨度。
+const MIN_SPAN_DAYS: i64 = 5;
 
 /// 三十秒内接着发的，算同一个回合。
 const TURN_GAP: i64 = 30;
@@ -35,7 +46,7 @@ const TURN_GAP: i64 = 30;
 impl Habit {
     /// `rows` 是这个群里他亲手打的消息 `(时刻, 清掉占位符的正文, 带不带引用)`，按时间正序。
     /// 空正文（只有图、只有表情）不算文字消息，但算引用与回合。
-    pub(super) fn measure(rows: &[(i64, String, bool)]) -> Option<Habit> {
+    pub(super) fn measure(rows: &[(i64, String, bool)], now: i64) -> Option<Habit> {
         let mut lengths: Vec<usize> = rows
             .iter()
             .filter(|(_, text, _)| !text.is_empty())
@@ -54,7 +65,7 @@ impl Habit {
             / texts;
         let quoted = rows.iter().filter(|(_, _, quoted)| *quoted).count() as f32
             / rows.len() as f32;
-        let mut turns = 0usize;
+        let mut starts: Vec<i64> = Vec::new();
         let mut singles = 0usize;
         let mut run = 0usize;
         let mut last = i64::MIN;
@@ -65,19 +76,15 @@ impl Habit {
                 if run == 1 {
                     singles += 1;
                 }
-                if run > 0 {
-                    turns += 1;
-                }
                 run = 1;
+                starts.push(*time);
             }
             last = *time;
         }
         if run == 1 {
             singles += 1;
         }
-        if run > 0 {
-            turns += 1;
-        }
+        let turns = starts.len();
         Some(Habit {
             lines: lengths.len(),
             p25: at(0.25),
@@ -86,7 +93,18 @@ impl Habit {
             paren,
             quoted,
             single: singles as f32 / turns.max(1) as f32,
+            daily_turns: median_daily(&starts, now),
         })
+    }
+
+    /// 机器人在这个群里每小时说几轮算「跟他本人差不多」：他平时的日均回合数摊到每小时，
+    /// 再放宽一点，至少一轮。量不出来就是 `None`，由配置里的统一值管。
+    ///
+    /// 同样是搭话群，驾校群里他一天说十来句、占全群的一成多；④群大群里一个月都说不了几句。
+    /// 前者每小时一两轮是他的常态，后者一小时说两轮，就已经是他平时一整天的量了。
+    pub(super) fn hourly_target(&self) -> Option<usize> {
+        self.daily_turns
+            .map(|daily| ((daily / ACTIVE_HOURS) * HEADROOM).ceil().max(1.0) as usize)
     }
 
     /// 放进发言提示词的一句。
@@ -127,4 +145,33 @@ impl Habit {
             parts.join("；")
         )
     }
+}
+
+/// 回合起点（Unix 秒）→ 每天回合数的中位数。今天还没过完，不算；没说话的日子算 0。
+fn median_daily(starts: &[i64], now: i64) -> Option<f32> {
+    use chrono::TimeZone as _;
+    let day = |at: i64| chrono::Local.timestamp_opt(at, 0).single().map(|t| t.date_naive());
+    let today = day(now)?;
+    let mut per_day: std::collections::BTreeMap<chrono::NaiveDate, usize> = Default::default();
+    for start in starts {
+        let date = day(*start)?;
+        if date < today {
+            *per_day.entry(date).or_default() += 1;
+        }
+    }
+    let first = *per_day.keys().next()?;
+    let span = (today - first).num_days();
+    if span < MIN_SPAN_DAYS {
+        return None;
+    }
+    let mut counts: Vec<usize> = (0..span)
+        .map(|offset| {
+            per_day
+                .get(&(first + chrono::Duration::days(offset)))
+                .copied()
+                .unwrap_or(0)
+        })
+        .collect();
+    counts.sort_unstable();
+    Some(counts[counts.len() / 2] as f32)
 }

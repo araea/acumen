@@ -124,6 +124,15 @@ pub(super) fn habit_brief(group: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 机器人在这个群里每小时说几轮算「跟他本人差不多」（见 [`Habit::hourly_target`]）；量不出来是 `None`。
+pub(super) fn hourly_target(group: &str) -> Option<usize> {
+    lock()
+        .loaded_data
+        .habits
+        .get(group)
+        .and_then(Habit::hourly_target)
+}
+
 /// 眼前这段聊天沾边的、号主以前说过的话，已经排好版摆进提示词的一段；没有就是空串。
 pub(super) fn recalled(group: &str, turns: &[super::window::Turn]) -> String {
     let guard = lock();
@@ -315,7 +324,7 @@ fn habits(rows: &[Row], skip: &HashSet<usize>, now: i64) -> HashMap<String, Habi
     }
     per_group
         .into_iter()
-        .filter_map(|(group, rows)| Habit::measure(&rows).map(|habit| (group.to_string(), habit)))
+        .filter_map(|(group, rows)| Habit::measure(&rows, now).map(|habit| (group.to_string(), habit)))
         .collect()
 }
 
