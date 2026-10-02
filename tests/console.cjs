@@ -57,11 +57,11 @@ const ambient = {
 };
 // 已加入的群（/api/groups）：形状与 api.rs 一致；其中混入一个超长群名，确认窄屏换行不撑破。
 const groupsData = [
-  { id: '175131947', name: '白虎/秘修四圣驾校', platform: 'qq' },
-  { id: '818965288', name: '②群心情管家', platform: 'qq' },
-  { id: '924989840', name: '③群心情管家', platform: 'qq' },
-  { id: '719518427', name: 'oobabooga-testbot', platform: 'qq' },
-  ...Array.from({ length: 36 }, (_, i) => ({ id: String(500000000 + i * 7919), platform: 'qq',
+  { id: '175131947', name: '白虎/秘修四圣驾校', platform: 'red' },
+  { id: '818965288', name: '②群心情管家', platform: 'red' },
+  { id: '924989840', name: '③群心情管家', platform: 'red' },
+  { id: '719518427', name: 'oobabooga-testbot', platform: 'red' },
+  ...Array.from({ length: 36 }, (_, i) => ({ id: String(500000000 + i * 7919), platform: 'red',
     name: `示例群 ${i + 1}${i % 9 === 0 ? '（一个名字特别特别长的群，用来确认窄屏下标题会换行而不是撑破布局）' : ''}` })),
 ];
 let groupsFail = false, groupRequests = [];
@@ -621,6 +621,22 @@ const posted = where => posts.filter(p => p.path === where);
   await click('#sheet-body .option .check:not(:checked)');
   await click('[data-sheet=done]');
   await until(() => js('return JSON.parse(document.querySelector(arguments[0]).value).length === 3', channel('white', '.picker-value')), '面板里选的进了名单');
+  // 微信的群与账号：群号带 @chatroom、账号是 wxid_…，都填得进；两个平台同时在线时每行标出平台
+  groupsData.push({ id: '7483563305@chatroom', name: '微信示例群', platform: 'wechat' });
+  await click(channel('white', '[data-picker-open]'));
+  await until(() => js('return document.querySelector("#sheet").open'), '面板');
+  await click('[data-sheet=refresh]');
+  await until(() => js('return !!document.querySelector("#sheet-body input[value=\\"7483563305@chatroom\\"]")'), '刷新后微信的群出现');
+  assert.equal(groupRequests.at(-1), true, '刷新键绕过缓存');
+  assert.equal(await js('return document.querySelector("#sheet-body label:has(input[value=\\"7483563305@chatroom\\"]) .tag").textContent'), '微信');
+  assert.equal(await js('return document.querySelector("#sheet-body label:has(input[value=\\"175131947\\"]) .tag").textContent'), 'QQ', 'red 就是 QQ');
+  await click('#sheet-body label:has(input[value="7483563305@chatroom"]) .check');
+  await click('[data-sheet=done]');
+  await until(() => js('return JSON.parse(document.querySelector(arguments[0]).value).includes("7483563305@chatroom")', channel('white', '.picker-value')), '微信群进了名单');
+  await type(white, 'wxid_abc123');
+  await key(KEY.enter);
+  await until(() => js('return JSON.parse(document.querySelector(arguments[0]).value).includes("wxid_abc123")', channel('white', '.picker-value')), '微信账号也填得进');
+  await until(() => js('return !document.querySelector(arguments[0] + "[aria-busy]")', channel('white', '.picker-value')), '保存完成');
   await click(channel('white', '[data-picker-remove="111"]'));
   assert.match(await js('return document.activeElement.getAttribute("aria-label")'), /^移除 /, '删除后焦点还在名单的移除键上');
   await until(() => js('return !document.querySelector(arguments[0] + "[aria-busy]")', channel('white', '.picker-value')), '保存完成');

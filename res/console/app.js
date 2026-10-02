@@ -1823,7 +1823,8 @@
   }
 
   const sameIds = (a, b) => a.length === b.length && a.every((id, index) => id === b[index]);
-  const PLATFORM_NAMES = { qq: "QQ", wechat: "微信", wx: "微信" };
+  // Satori 里 QQ 的平台名是 red（QQ NT 协议），微信是 wechat；认不得的原样大写显示。
+  const PLATFORM_NAMES = { red: "QQ", qq: "QQ", wechat: "微信", wx: "微信" };
 
   /** 已加入的群（群号 → 群名）。名单里存的是群号，人要看的是群名：页面一出现名单就去问后端要一次，
    *  回来后把群号补上名字；问不到（实现端没连上）也不影响手输群号。 */
