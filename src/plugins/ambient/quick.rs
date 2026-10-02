@@ -96,7 +96,7 @@ pub(super) async fn react(
     persona: &str,
     turns: &[Turn],
     reason: &str,
-    voice: &[&str],
+    voice: &[String],
 ) -> anyhow::Result<Option<String>> {
     let profile = if config.gate_persona.trim().is_empty() {
         persona

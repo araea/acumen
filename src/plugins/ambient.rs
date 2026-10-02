@@ -1784,7 +1784,7 @@ async fn quick_word(
     let turns = window::with_group(group, |state| {
         state.recent(config.context_turns.clamp(1, 80))
     });
-    let voice = voice::short_lines(&turns, voice_register(config, group), 5);
+    let voice = voice::short_lines(&turns, voice_register(config, group), 5, group);
     let started = Instant::now();
     let text = match quick::react(
         api_base,
@@ -1809,9 +1809,16 @@ async fn quick_word(
     if !current(ctx, group, *seq) {
         return;
     }
-    let pace::Speech::Say(utterances) = pace::parse(&text, 1, 0) else {
+    let pace::Speech::Say(mut utterances) = pace::parse(&text, 1, 0) else {
         return;
     };
+    // 号主四个字以内的话只有 7.4% 带引用（九到十六个字 27%，十七个字以上 38%）：
+    // 短反应不挂引用才像他；几个人同时在聊、对不上号时才按现场的赔率引，所以只给一半。
+    if let Some(target) = reply_target(&turns)
+        && let Some(first) = utterances.first_mut()
+    {
+        first.reply = quote::keeps(&target, &turns, rand::random::<f32>() * 2.0);
+    }
     info!(target: LOG_TARGET, "群 {group} 随口一句（{}/{}）：{}", verdict.score, threshold, verdict.reason);
     window::with_group(group, |state| state.mark_quick());
     if let Err(error) = deliver(ctx, writer, group, config, &turns, utterances, seq, false, started).await {

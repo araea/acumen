@@ -197,29 +197,53 @@ fn pick_recent(turns: &[Turn], recent: &[recent::Line], group: &str) -> Vec<Stri
 ///
 /// 号主手打的消息有四分之一在四到六个字以内，短到只剩一个反应（「？」「笑死」
 /// 「好可爱啊」）；机器人每次开口都带着内容，这一档几乎是空的。随口一句的提示词里只
-/// 摆这几条，模型才写得出那么短的话。
-pub(crate) fn short_lines(turns: &[Turn], register: Register, count: usize) -> Vec<&'static str> {
+/// 摆这几条，模型才写得出那么短的话。样本库里挑三条，再从他最近几天亲手打的短句里补
+/// 两条（见 [`recent`]）：这几天挂在嘴边的「（」「绷不住了」，样本库里没有。
+pub(crate) fn short_lines(
+    turns: &[Turn],
+    register: Register,
+    count: usize,
+    group: &str,
+) -> Vec<String> {
     use rand::seq::SliceRandom;
     let samples = parse(VOICE);
-    let recent: String = turns
+    let recent_text: String = turns
         .iter()
         .rev()
         .take(TOPIC_TURNS)
         .map(|turn| turn.text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    let words = content_words(&recent);
+    let words = content_words(&recent_text);
+    let short = |text: &str| (1..=6).contains(&text.chars().count());
     let mut shorts: Vec<&'static str> = samples
         .iter()
         .filter(|sample| fits(sample, register))
-        .filter(|sample| (1..=6).contains(&sample.text.chars().count()))
-        .filter(|sample| !recent.contains(sample.text))
+        .filter(|sample| short(sample.text))
+        .filter(|sample| !recent_text.contains(sample.text))
         .filter(|sample| content_words(sample.text).is_disjoint(&words))
         .map(|sample| sample.text)
         .collect();
     shorts.shuffle(&mut rand::rng());
-    shorts.truncate(count);
-    shorts
+    let mut fresh: Vec<recent::Line> = recent::lines()
+        .into_iter()
+        .filter(|line| short(&line.text))
+        .filter(|line| !recent_text.contains(line.text.as_str()))
+        .filter(|line| content_words(&line.text).is_disjoint(&words))
+        .collect();
+    fresh.shuffle(&mut rand::rng());
+    // 这个群里说的先上。
+    fresh.sort_by_key(|line| line.group != group);
+    let fresh: Vec<String> = fresh.into_iter().map(|line| line.text).take(2).collect();
+    let mut out: Vec<String> = fresh;
+    out.extend(
+        shorts
+            .into_iter()
+            .map(str::to_string)
+            .take(count.saturating_sub(out.len())),
+    );
+    out.shuffle(&mut rand::rng());
+    out
 }
 
 /// 虚字：它们组成的字组说明不了在聊什么。

@@ -178,7 +178,7 @@ impl Corpus {
 /// 「相邻两个字组拼起来」才站得住——「大肥」「肥鱼」同时出现，说明两边都有「大肥鱼」
 /// 三个字，比单独一个二字词可靠得多。
 fn is_topic(words: &[(String, f32)], ceiling: f32) -> bool {
-    let ascii = |word: &str| word.chars().all(|c| c.is_ascii());
+    let ascii = |word: &str| word.is_ascii();
     if words.iter().any(|(word, rarity)| {
         (ascii(word) && *rarity >= RARE * ceiling) || *rarity >= VERY_RARE * ceiling
     }) {
