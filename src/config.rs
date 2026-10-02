@@ -32,6 +32,25 @@ pub struct GlobalFilterConfig {
     pub whitelist: Vec<String>,
 }
 
+impl GlobalFilterConfig {
+    /// 这个群是否放行。所有入口（收到的事件、定时推送、资讯推送）共用这一处判断，
+    /// 口径只有一份：
+    ///
+    /// - 启用白名单：只放行名单内的群，空名单即全部拒绝，**不再看黑名单**；
+    /// - 否则启用黑名单：名单内的群拒绝，其余放行；
+    /// - 两个开关都关：全部放行。
+    pub fn allows(&self, group_id: &str) -> bool {
+        let listed = |list: &[String]| list.iter().any(|id| id == group_id);
+        if self.enable_whitelist {
+            listed(&self.whitelist)
+        } else if self.enable_blacklist {
+            !listed(&self.blacklist)
+        } else {
+            true
+        }
+    }
+}
+
 impl AppConfig {
     pub async fn save(&self, path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let toml_string = toml::to_string_pretty(self)?;
@@ -162,4 +181,54 @@ pub fn build_config<T: Serialize>(data: T) -> Value {
         map.insert("enabled".to_string(), Value::Boolean(true));
     }
     val
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GlobalFilterConfig;
+
+    fn filter(
+        enable_white: bool,
+        white: &[&str],
+        enable_black: bool,
+        black: &[&str],
+    ) -> GlobalFilterConfig {
+        let owned = |list: &[&str]| list.iter().map(|id| id.to_string()).collect();
+        GlobalFilterConfig {
+            enable_whitelist: enable_white,
+            whitelist: owned(white),
+            enable_blacklist: enable_black,
+            blacklist: owned(black),
+        }
+    }
+
+    #[test]
+    fn both_switches_off_lets_every_group_through_even_if_listed() {
+        // 名单写着、开关关着：不生效。定时推送曾经只看名单不看开关。
+        let filter = filter(false, &["1"], false, &["2"]);
+        assert!(filter.allows("1") && filter.allows("2") && filter.allows("3"));
+    }
+
+    #[test]
+    fn blacklist_only_applies_while_enabled() {
+        let off = filter(false, &[], false, &["2"]);
+        assert!(off.allows("2"), "黑名单没启用就不该拦人");
+        let on = filter(false, &[], true, &["2"]);
+        assert!(!on.allows("2") && on.allows("3"));
+    }
+
+    #[test]
+    fn whitelist_admits_only_listed_groups_and_an_empty_one_admits_none() {
+        let some = filter(true, &["1"], false, &[]);
+        assert!(some.allows("1") && !some.allows("2"));
+        let empty = filter(true, &[], false, &[]);
+        assert!(!empty.allows("1"), "空白名单禁止所有群");
+    }
+
+    #[test]
+    fn enabled_whitelist_overrides_the_blacklist() {
+        // 白名单开着时不查黑名单：同时写在两边的群照样放行。
+        let both = filter(true, &["1"], true, &["1"]);
+        assert!(both.allows("1"));
+    }
 }

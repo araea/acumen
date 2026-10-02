@@ -267,46 +267,26 @@ impl Scheduler {
                     }
                 };
 
-                // 5. 准备过滤规则
-                let (whitelist_mode, whitelist, blacklist) = {
+                // 5. 过滤目标群（全局黑白名单，口径见 `GlobalFilterConfig::allows`）
+                let target_groups: Vec<String> = {
                     let guard = ctx.config.read().unwrap();
-                    (
-                        guard.global_filter.enable_whitelist,
-                        guard.global_filter.whitelist.clone(),
-                        guard.global_filter.blacklist.clone(),
-                    )
+                    groups
+                        .into_iter()
+                        .map(|g| g.group_id)
+                        .filter(|gid| guard.global_filter.allows(gid))
+                        .collect()
                 };
-
-                // 6. 过滤目标群
-                let target_groups: Vec<String> = groups
-                    .into_iter()
-                    .map(|g| g.group_id)
-                    .filter(|gid| {
-                        if whitelist_mode {
-                            whitelist.contains(gid)
-                        } else {
-                            !blacklist.contains(gid)
-                        }
-                    })
-                    .collect();
 
                 if target_groups.is_empty() {
                     info!(target: log_target.as_str(), "[{}] 没有符合条件的群组，跳过推送。", label);
                     return;
                 }
 
-                // 7. 遍历执行：群与群之间留一段随机间隔，避免所有群同一秒收到推送
+                // 6. 遍历执行：群与群之间留一段随机间隔，避免所有群同一秒收到推送
                 let total = target_groups.len();
                 for (idx, gid) in target_groups.into_iter().enumerate() {
-                    let should_skip = {
-                        let guard = ctx.config.read().unwrap();
-                        if guard.global_filter.enable_whitelist {
-                            !guard.global_filter.whitelist.contains(&gid)
-                        } else {
-                            guard.global_filter.blacklist.contains(&gid)
-                        }
-                    };
-                    if should_skip {
+                    // 推送途中名单可能被改过：每个群发之前再认一次。
+                    if !ctx.config.read().unwrap().global_filter.allows(&gid) {
                         continue;
                     }
 

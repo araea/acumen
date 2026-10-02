@@ -1224,18 +1224,8 @@ pub fn process_event(
     bot: Arc<BotStatus>,
 ) -> BoxFuture<'static, Result<(), BotError>> {
     if let Some(group_id) = event.get_str("group_id").filter(|id| !id.is_empty()) {
-        let should_drop = {
-            let guard = config.read().unwrap();
-            let listed = |list: &[String]| list.iter().any(|id| id == group_id);
-            if guard.global_filter.enable_whitelist {
-                !listed(&guard.global_filter.whitelist)
-            } else if guard.global_filter.enable_blacklist {
-                listed(&guard.global_filter.blacklist)
-            } else {
-                false
-            }
-        };
-        if should_drop {
+        let allowed = config.read().unwrap().global_filter.allows(group_id);
+        if !allowed {
             return Box::pin(async { Ok(()) });
         }
     }
