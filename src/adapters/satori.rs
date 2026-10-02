@@ -212,8 +212,8 @@ impl SatoriClient {
 
     /// 发一次请求并读完响应体；非 2xx 变成 [`SatoriApiError`]。
     ///
-    /// 503 加 `Retry-After` 是实现端在说「现在处理不了，过几秒再来」（satori-qq 的会话稳定期）：
-    /// 请求没有被执行，重来是安全的。等一等再试，累计不超过 [`UNAVAILABLE_PATIENCE`]，
+    /// 503 / 429 加 `Retry-After` 是实现端在说「现在处理不了，过几秒再来」（satori-qq 的会话稳定期、
+    /// 每分钟发送额度）：请求没有被执行，重来是安全的。等一等再试，累计不超过 [`UNAVAILABLE_PATIENCE`]，
     /// 要等得更久的就原样报错，让调用方自己决定。
     async fn round_trip(
         &self,
@@ -226,8 +226,10 @@ impl SatoriClient {
             if status.is_success() {
                 return Ok(bytes);
             }
-            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                && let Some(wait) = retry_after
+            if matches!(
+                status,
+                reqwest::StatusCode::SERVICE_UNAVAILABLE | reqwest::StatusCode::TOO_MANY_REQUESTS
+            ) && let Some(wait) = retry_after
                 && waited + wait <= UNAVAILABLE_PATIENCE
             {
                 // 让出一点余量：「还剩 1 秒」到点那一刻服务端可能还差几十毫秒。
@@ -554,7 +556,7 @@ impl std::fmt::Display for SatoriApiError {
 }
 impl std::error::Error for SatoriApiError {}
 
-/// 503 之后愿意为「稍后再来」累计等待的时间。satori-qq 的会话稳定期默认 30 秒。
+/// 503 / 429 之后愿意为「稍后再来」累计等待的时间。satori-qq 的会话稳定期默认 30 秒。
 const UNAVAILABLE_PATIENCE: Duration = Duration::from_secs(45);
 
 /// `Retry-After` 的秒数形式；HTTP 日期形式实现端不会发，不解析。

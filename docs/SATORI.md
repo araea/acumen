@@ -25,6 +25,17 @@ access_token = ""
 
 锁屏时 `ambient` 没搭话，先对照日志：没有及时入站事件要查 QQ 冻结 / 后台调度及 Satori 断连；有 `保持沉默` 则判定已执行；`搭话失败` 中的模型超时要查网络与模型服务。QQ 的 Android 唤醒锁与 QQ 内核前后台状态是两层，satori-qq 的 `kernel_foreground` 用于后者。
 
+## 协商与错误
+
+两个实现端的错误体和能力声明用同一套口径，Acumen 按声明办事，不靠适配器名字猜：
+
+- **错误体**：每个非 2xx 响应都是 `{"code": "<机器可读的短名>", "message": "<给人看的>"}`，Acumen 解成 `SatoriApiError { status, code, message }`，上游按 `code` 判断（`removed_action`、`unsupported_method`、`session_stabilizing`……）。
+- **暂时不可用**：实现端在请求交给平台之前就把它挡下时回 503（内核离线、上线后的稳定期、队列满、熔断中）或 429（超出发送额度），能给出恢复时间的带 `Retry-After`。请求没有被执行，原样再发是安全的：Acumen 等够 `Retry-After`（累计不超过 45 秒）再发一次；没带承诺的、要等更久的，原样报错。发出之后才出的错（`send outcome unknown`）不在此列，不会自动重发。
+- **标准方法**：`READY` 与 `login-updated` 里 `login.features` 记在连接上；没有声明的标准方法（比如微信上的 `reaction.create`）直接报 `unsupported_method`，不再白跑一趟 HTTP。没拿到 `features` 时不拦任何调用。扩展方法（`internal/…`）不在 `features` 里，归扩展自己的能力声明管。
+- **限额**：连上后读一次 `internal/capabilities`，两个实现端都用同一份 `limits`；目前用到 `upload_bytes`——视频取片的体积上限取 `[video_parse].max_size_mb` 与它的较小值，明知会被拒的上传在发出前就报错。取不到就当没有限额。
+- **登录状态**：`login-updated` 里 `status` 的变化记进日志（在线、离线、重连中……）；状态本身不拦调用，离线时实现端自己会回 503。
+- **发送者名字**：协议里 `user.name` 是用户名、`user.nick` 是昵称，两个实现各填各的（satori-qq 的 `name` 是 QQ 昵称，satori-wx 的昵称在 `nick`，`name` 只在设了备注或微信号时才有）。Acumen 认 `name`，缺了认 `nick`；群名片取 `member.nick`。
+
 ## 资源与消息
 
 实现端返回的资源地址不一定可直接下载。`internal:` 地址与 `READY` / `META` 提供的代理域名通过 `/v1/proxy/{url}` 获取；其他 HTTP(S) 地址直连。`data:`、`file:` 与本地路径不能作为远程下载地址。原始 `src` 保留在消息元素中，供插件回传。
