@@ -471,6 +471,97 @@ async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     }
 }
 
+/// 控制台「选群」要用的一条：群号、群名，以及它是在哪个平台上的。
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct KnownGuild {
+    pub id: String,
+    pub name: String,
+    /// `login.platform`，如 `qq`、`wechat`。两个平台同时在线时，页面靠它区分同名的群。
+    pub platform: String,
+}
+
+/// 把每条在线连接的 `guild.list` 都翻到底，列出「已加入的群」。
+///
+/// 只读，也不进目录：这是给人挑群用的，和 [`learn_guilds`] 的路由学习是两件事。某条连接离线、
+/// 不支持或翻页异常就跳过它——一个坏连接不该让整张表空着。第二项是没问成的连接数，
+/// 页面据此说明「这张表可能不全」。
+pub(crate) async fn list_guilds() -> (Vec<KnownGuild>, usize) {
+    const MAX_PAGES: usize = 64;
+    let connected: Vec<Route> = routes()
+        .iter()
+        .filter(|route| !route.client.console)
+        .cloned()
+        .collect();
+    let mut out: Vec<KnownGuild> = Vec::new();
+    let mut failed = 0;
+    for route in connected {
+        let platform = route.bot.platform.clone();
+        let mut next: Option<String> = None;
+        let mut cursors = std::collections::HashSet::new();
+        let mut complete = false;
+        for _ in 0..MAX_PAGES {
+            let params = match &next {
+                Some(cursor) => json!({ "next": cursor }),
+                None => json!({}),
+            };
+            let page: Value = match route.client.post(&route.bot, "guild.list", params).await {
+                Ok(page) => page,
+                Err(error) => {
+                    debug!(target: "Bot", "控制台读 guild.list 失败（{platform}）：{error}");
+                    break;
+                }
+            };
+            for guild in page
+                .get("data")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                let Some(id) = guild
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty())
+                else {
+                    continue;
+                };
+                if out
+                    .iter()
+                    .any(|known| known.id == id && known.platform == platform)
+                {
+                    continue;
+                }
+                out.push(KnownGuild {
+                    id: id.to_string(),
+                    name: guild
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                    platform: platform.clone(),
+                });
+            }
+            next = page
+                .get("next")
+                .and_then(Value::as_str)
+                .filter(|cursor| !cursor.is_empty())
+                .map(str::to_owned);
+            match &next {
+                None => {
+                    complete = true;
+                    break;
+                }
+                Some(cursor) if !cursors.insert(cursor.clone()) => break,
+                Some(_) => {}
+            }
+        }
+        if !complete {
+            failed += 1;
+        }
+    }
+    (out, failed)
+}
+
 /// 向实现端问一次它声明的限额。两个实现端的 `internal/capabilities` 用同一份 `limits` 口径；
 /// 问不到不要紧，没有声明就没有限额，调用方照旧自己兜底。
 async fn learn_limits(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {

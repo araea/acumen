@@ -32,6 +32,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/settings", get(settings))
         .route("/settings/bot", post(save_bot))
         .route("/settings/global", post(save_global))
+        .route("/groups", get(groups))
         .route("/logs", get(log_history))
         .route("/logs/stream", get(log_stream))
         .route("/command", post(command));
@@ -655,7 +656,11 @@ async fn save_global(
             .collect();
         let path = body.browser_path.trim();
         config.browser_path = (!path.is_empty()).then(|| path.to_string());
-        config.global_filter = body.global_filter.clone();
+        config.global_filter = crate::config::GlobalFilterConfig {
+            blacklist: tidy_ids(&body.global_filter.blacklist),
+            whitelist: tidy_ids(&body.global_filter.whitelist),
+            ..body.global_filter.clone()
+        };
         Ok("已保存全局设置；前缀与名单下一条消息生效，浏览器路径下次启动生效。".to_string())
     })
     .await;
@@ -663,6 +668,46 @@ async fn save_global(
         Ok(message) => Json(json!({ "message": message })).into_response(),
         Err(message) => bad(message),
     }
+}
+
+/// 名单去掉首尾空白、空串与重复项，顺序照旧——页面之外（`curl`、脚本）也能写这个接口。
+fn tidy_ids(ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()) {
+        if !out.iter().any(|known| known == id) {
+            out.push(id.to_string());
+        }
+    }
+    out
+}
+
+#[derive(Deserialize, Default)]
+struct GroupQuery {
+    /// 带上它（值不拘）就绕过缓存，重新问一遍实现端。
+    refresh: Option<String>,
+}
+
+/// 已加入的群：给名单编辑器「从已加入的群里选」用，也用来把名单里的群号翻成群名。
+///
+/// 数据是实现端的 `guild.list` 现问的，所以只有连着的账号才看得到；30 秒内重复打开页面不再重问。
+/// `failed` 是没问成的连接数，大于 0 时页面要说明这张表可能不全。
+async fn groups(Query(query): Query<GroupQuery>) -> Response {
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(30);
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Value)>> = std::sync::Mutex::new(None);
+
+    if query.refresh.is_none()
+        && let Some((at, cached)) = CACHE.lock().unwrap().as_ref()
+        && at.elapsed() < FRESH
+    {
+        return Json(cached.clone()).into_response();
+    }
+    let (guilds, failed) = crate::adapters::satori::list_guilds().await;
+    let value = json!({ "groups": guilds, "failed": failed });
+    // 一条都没问到就不留：连接刚恢复时不该还顶着一张空表。
+    if !guilds.is_empty() {
+        *CACHE.lock().unwrap() = Some((std::time::Instant::now(), value.clone()));
+    }
+    Json(value).into_response()
 }
 
 // ==================== 日志 ====================
