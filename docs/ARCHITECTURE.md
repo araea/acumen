@@ -1,6 +1,6 @@
 # 架构
 
-模块边界与维护约定。界面规范见 [WebUI 设计系统](DESIGN_SYSTEM.md)，运行与配置管理见[插件控制](CONTROL.md)。
+模块边界与维护约定。界面规范见 [WebUI 设计系统](DESIGN_SYSTEM.md)，运行与配置管理见[插件控制](CONTROL.md)
 
 ## 源码结构
 
@@ -33,7 +33,7 @@ tests/             前台运行、重启与渲染测试
 - `Ok(None)`：事件已处理，结束流水线
 - `Err`：记录错误并按已处理结束，不会让适配器崩溃
 
-未被消费的事件随后派发 `BeforeSend`。Context 通过所有权移动，不复制整份事件。顺序有语义：过滤器与 `ctl` 靠前，记录插件在业务插件前读取原始消息，`video_parse` 在 `webshot` 前接收视频链接。共享的链接与内网准入判据必须复用现有函数，避免重复处理或访问本机地址。
+未被消费的事件随后派发 `BeforeSend`。Context 通过所有权移动，不复制整份事件。顺序有语义：过滤器与 `ctl` 靠前，记录插件在业务插件前读取原始消息，`video_parse` 在 `webshot` 前接收视频链接。共享的链接与内网准入判据必须复用现有函数。
 
 ## 插件接口
 
@@ -47,28 +47,28 @@ tests/             前台运行、重启与渲染测试
 | `init` | 可选 | 启动时初始化数据或资源 |
 | `on_connected` | 可选 | 适配器连接就绪后启动任务 |
 
-用户可见的名称、分区、摘要与指令在 `registry.rs` 声明；`/help`、`/ctl` 与 Web 控制台均读取该注册表，不维护重复清单。
+用户可见的名称、分区、摘要与指令在 `registry.rs` 声明；`/help`、`/ctl` 与 Web 控制台均读取该注册表。
 
 插件配置使用顶层 `[插件名]` 表与 `enabled` 开关。配置结构体使用一份 `Default` 实现，并在容器级设置 `serde(default)`。读取用 `get_config_or_default`；反序列化失败时记录告警并使用默认值。
 
 消息匹配与发送复用 `crate::command`、`crate::message` 与 `crate::adapters::satori`。插件错误使用 `PluginError` / `PluginResult`；发送失败向上返回，不要用 `let _ =` 忽略。
 
-## 新增插件
+新增插件的步骤：
 
 1. 在 `src/plugins/` 新建模块，实现 `handle`、`default_config`、`validate_config`；需要启动钩子时再实现 `init` 或 `on_connected`。
 2. 在 `src/plugins/registry.rs` 添加元数据与钩子；注册表顺序决定事件处理顺序。
 3. 运行 `cargo test --locked`，检查摘要、分区、帮助清单与 Satori 兼容性。
 
-无需修改帮助、控制或渲染模块；新增帮助分区时才需同时修改 `help::SECTIONS`。
+新增帮助分区时才需同时修改 `help::SECTIONS`。
 
 ## 图片渲染与资源限制
 
-`markdown` 插件的解析、排版、分页与代码着色在 `render::markdown`；`oai` 回复卡另有自己的渲染，两边职责不同，不共用。
+`markdown` 插件的解析、排版、分页与代码着色在 `render::markdown`；`oai` 回复卡有独立渲染，两边不共用代码。
 
 HTML 卡片统一经 `render::web::shoot` 渲染。调用方提供内容与宽度，共享层处理字体、图片加载、布局测量、截图格式与并发限制。字体与内嵌图片解码完成后再测量；headless Chromium 不保证触发 `requestAnimationFrame`，不要用它等待布局。
 
 - 卡片最多等待 45 秒（不含排队），高度上限 16,000 CSS px，像素预算 6,400 万。
-- 超时、无法测量或超限时返回错误，由调用方回退完整文本，不能发送截断图片。
+- 超时、无法测量或超限时返回错误，由调用方回退完整文本，不发送截断图片。
 - 动态内容须 HTML 转义；卡片不加载外部资源、不执行脚本。
 - 并发闸门：卡片最多 3 项，网页截图最多 2 项，互不占用额度。
 - 统计图、词云、GIF 与图片切分经 `render/worker.rs` 的两槽阻塞工作池执行；执行槽由实际计算闭包持有，调用方取消不能提前释放。

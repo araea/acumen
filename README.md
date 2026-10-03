@@ -20,9 +20,7 @@ cargo build --release --locked
 
 ## 快速使用
 
-默认连接 `http://127.0.0.1:3001`。启动后日志显示控制台地址，默认监听 `127.0.0.1:7801` 并使用口令保护，通过 `[console]` 配置；`--no-ui` 关闭本次运行的 Web 界面。
-
-在 `[ctl]` 中设置 `admins` 后，才能从群聊管理插件。
+默认连接 `http://127.0.0.1:3001`。在 `[ctl]` 中设置 `admins` 后，才能从群聊管理插件。
 
 ```sh
 ./bot status
@@ -32,17 +30,15 @@ cargo build --release --locked
 ./bot ui url   # 只打印地址
 ```
 
-发送 `/help` 查看指令，发送 `/ctl` 查看插件状态、开关和配置。Termux 用户可用 `termux-services` 将进程交给 runit 托管。
+发送 `/help` 查看指令，发送 `/ctl` 查看插件状态、开关和配置。控制台地址、`--no-ui` 与 runit 托管见[插件控制与部署](docs/CONTROL.md)。
 
 ## 配置
 
-连接实现端在 `config.toml` 的 `[[bots]]` 中配置，每段一个 `protocol`、`url` 与 `access_token`。`ACUMEN_SATORI_TOKEN` 环境变量优先于 `access_token`。生产目标为本机 [satori-qq](https://github.com/araea/satori-qq)，默认地址 `http://127.0.0.1:3001`。
+连接实现端在 `config.toml` 的 `[[bots]]` 中配置，每段一个 `protocol`、`url` 与 `access_token`。`ACUMEN_SATORI_TOKEN` 环境变量优先于 `access_token`。默认地址 `http://127.0.0.1:3001`。
 
-完整配置项见 [`config.example.toml`](config.example.toml)。权限、控制台与 Agent 控制通道见[插件控制与部署](docs/CONTROL.md)；Satori 接入与兼容范围见[Satori 接入](docs/SATORI.md)。
+完整配置项见 [`config.example.toml`](config.example.toml)。
 
 ## 限制 / 风险
-
-浏览器卡片需要 Chrome/Chromium 与系统中日韩字体，出图失败时回退文本。
 
 部分能力（视频解析的 1080P、AI 生图 / 生歌 / 生视频）依赖外部服务并可能产生费用，启用前确认账号与价格。
 
@@ -50,10 +46,11 @@ Agent 房间的 `bash` 等本机工具不是安全沙箱，具有当前系统账
 
 ## 必要链接
 
-- [Satori 接入与兼容范围](docs/SATORI.md)
+- [Satori 接入](docs/SATORI.md)
 - [群聊搭话](docs/ambient.md)
 - [内置 Agent 房间](docs/agent.md)
 - [视频解析](docs/video_parse.md)
+- [点歌](docs/song.md)
 - [Markdown 转图](docs/markdown.md)
 - [二维码识别](docs/qr_scan.md)
 - [插件控制与部署](docs/CONTROL.md)

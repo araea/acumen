@@ -1,6 +1,6 @@
 # 插件控制与部署
 
-`/help` 查看功能与状态，`/ctl` 管理插件开关与配置；中文别名为 `/控制`、`/插件`。
+`/help` 查看功能与状态，`/ctl` 管理插件开关与配置；中文别名为 `/控制`、`/插件`
 
 ## 权限与初始配置
 
@@ -16,7 +16,7 @@ admins = [123456789]
 
 修改配置前先运行 `./bot stop`。运行中的实例退出时会把内存配置写回文件，在线编辑可能被覆盖；解析失败时不会覆盖原文件。
 
-## 常用指令
+## 指令
 
 默认前缀为 `/`。修改 `command_prefix` 后使用新前缀；空数组表示无前缀。
 
@@ -38,9 +38,9 @@ admins = [123456789]
 
 `set` 按真实配置类型校验。保存使用临时文件与原子替换；校验或写入失败不会留下部分修改。批量开关先验证全部名称再统一写入。敏感字段（含 Cookie）在回复中隐藏；凭据请在本机配置，避免在群聊或 Agent 房间发送原始值。
 
-配置升级只补缺失字段，不覆盖已有值，也不自动删除旧字段。首次启用自动初始化；连接钩子在下次连接时执行，定时排期修改也在下次连接后生效。已开始的请求与任务不会因关闭开关而强制取消。
+配置写入只补缺失字段，不覆盖已有值，也不删除多余字段。首次启用自动初始化；连接钩子在下次连接时执行，定时排期修改也在下次连接后生效。已开始的请求与任务不会因关闭开关而强制取消。
 
-## 群名单与模型列表
+## 名单与模型列表
 
 `repeater`、`webshot`、`stats` 等插件使用相同的群黑白名单规则：
 
@@ -63,7 +63,7 @@ admins = [123456789]
 
 `[ctl].agent_control` 默认开启时，Agent 房间可以运行 `acumen --ctl` 修改插件配置。Acumen 为每轮对话提供一次性凭据，最长有效 30 分钟，不写入磁盘或命令行；操作会记录在日志中。
 
-**Agent 房间中的任何成员都可能借此修改机器人配置。** 该功能不提供成员级权限隔离；Agent 的本机 `bash` 工具也不是沙箱。共享房间不应开放这项能力。可用 `/ctl set ctl agent_control false` 关闭通道；要限制整个房间的工具权限，需修改 Agent 工具白名单。
+Agent 房间中的任何成员都可能借此修改机器人配置。该功能不提供成员级权限隔离；Agent 的本机 `bash` 工具也不是沙箱。共享房间不应开放这项能力。可用 `/ctl set ctl agent_control false` 关闭通道；要限制整个房间的工具权限，需修改 Agent 工具白名单。
 
 该通道只修改 `config.toml` 中的插件配置，不管理连接凭据、群名单、数据库业务数据或 OAI 独立配置。不要通过通道传递 Cookie 或其他未脱敏凭据。
 
@@ -80,7 +80,7 @@ token = ""
 log_lines = 400
 ```
 
-`token` 留空时首次启动自动生成，保存到 `data/console/token`（权限 `0600`）；启动日志会输出含口令的 URL。**不要把 `bind` 改为 `0.0.0.0`，除非已确认网络隔离与口令保护足够。** `--no-ui` 只关闭本次运行的 Web 界面，不影响机器人指令、定时任务与推送。
+`token` 留空时首次启动自动生成，保存到 `data/console/token`（权限 `0600`）；启动日志会输出含口令的 URL。不要把 `bind` 改为 `0.0.0.0`，除非已确认网络隔离与口令保护足够。`--no-ui` 只关闭本次运行的 Web 界面，不影响机器人指令、定时任务与推送。
 
 ```sh
 ./bot ui       # 打开控制台
@@ -93,7 +93,7 @@ log_lines = 400
 
 ## 运行与更新
 
-推荐按以下顺序部署：
+按以下顺序部署：
 
 1. 运行 `cargo test --locked` 与 `cargo build --release --locked`。
 2. 运行 `./bot stop` 并等待进程退出。
@@ -116,7 +116,7 @@ Termux 可通过 `termux-services`（runit）托管。服务脚本位于 `script
 
 Android 厂商可能直接结束 Termux，runit 无法恢复被结束的宿主应用。`scripts/97-termux-revive.sh` 与 `scripts/termux-revive.sh` 提供 root 侧恢复方案，安装步骤与状态检查见脚本注释。
 
-开机自启无需额外方案，本机实测重启后依次发生：解锁后系统广播 `BOOT_COMPLETED`，Termux 被拉起并启动 runsvdir，runit 拉起已 `enable` 的 acumen，root 侧看守由 `service.d/97-termux-revive.sh` 在开机后启动，只在这条链断开时补位。验证看 `./bot status`、`sv status acumen` 与 `/data/local/tmp/termux-revive.log`。限制：设有锁屏凭据时，重启后须先解锁一次。解锁前 Termux 目录处于加密状态不可读，任何方案都无法先行启动。
+开机自启链路：解锁后系统广播 `BOOT_COMPLETED`，Termux 被拉起并启动 runsvdir，runit 拉起已 `enable` 的 acumen，root 侧看守由 `service.d/97-termux-revive.sh` 在开机后启动，只在链条断开时补位。验证看 `./bot status`、`sv status acumen` 与 `/data/local/tmp/termux-revive.log`。设有锁屏凭据时，重启后须先解锁一次：解锁前 Termux 目录处于加密状态不可读。
 
 浏览器卡片需要 Chrome/Chromium 与系统中日韩字体。出图失败时帮助与控制回退到文本；运行浏览器类插件时可通过全局 `browser_path` 指定浏览器。
 
