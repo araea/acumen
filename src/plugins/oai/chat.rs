@@ -175,6 +175,12 @@ pub(crate) trait Persona: Send + Sync {
     fn keeps_quote(&self, _target: &str, _turns: &[window::Turn]) -> bool {
         true
     }
+
+    /// 一条正文发出去之前最后看一眼：返回 `Some(原因)` 就拦下，原因原样回给模型，
+    /// 让它换个说法或者干脆不说。房间不拦。
+    fn vet_text(&self, _group: &str, _text: &str, _turns: &[window::Turn]) -> Option<String> {
+        None
+    }
 }
 
 /// 给模型看头像用的接口与模型。

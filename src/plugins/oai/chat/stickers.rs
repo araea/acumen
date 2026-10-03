@@ -319,11 +319,13 @@ pub(crate) fn brief(turns: &[Turn], max: usize) -> String {
 ///
 /// 自己发的不算——那张要么本来就在库里，要么是自己画的。
 fn loot(turns: &[Turn]) -> Vec<String> {
+    // 「刚有人发了」得是真的刚：隔了半小时的图还摆在眼前，模型会去接一张早就聊过的图。
+    let now = chrono::Local::now().timestamp();
     turns
         .iter()
         .rev()
         .take(TOPIC_TURNS)
-        .filter(|turn| !turn.from_me && !turn.message_id.is_empty())
+        .filter(|turn| !turn.from_me && !turn.message_id.is_empty() && now - turn.at <= 15 * 60)
         .filter_map(|turn| {
             let count = turn
                 .elements

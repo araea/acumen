@@ -75,16 +75,37 @@ pub(crate) struct Usable {
     pub data_url: String,
 }
 
+/// 图片只在「还在聊着」的时候才递给模型：最近这么多条消息之内。
+const FRESH_TURNS: usize = 6;
+/// 且不能太旧：夜里一小时才一条消息，六条以内的图也可能是半天前的。
+const FRESH_SECONDS: i64 = 15 * 60;
+
 /// 最近的若干张图片，转成可直接送进模型的 data URL，按时间正序，各带出处。
 ///
 /// 下载与转码都可能失败，失败的那张直接跳过——判定宁可少看一张图，也不该因为
 /// 一张表情包整轮报废。
+///
+/// 只递「眼前还在聊」的图：最近几条消息里的，或者被最近几条引用着的。从前一律取窗口里
+/// 最新的几张，话早就聊到别处、被人戳一下醒来的那一轮，十几分钟前的一张图照样附在
+/// 提示词后面，模型看见图就想评一句——群友正在说它「自说自话」的当口，它接了一句
+/// 「这图里挨抽的白毛怎么看着有点眼熟」（线上 2026-10-03 09:39）。
 pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<Usable> {
     if limit == 0 {
         return Vec::new();
     }
+    let now = chrono::Local::now().timestamp();
+    let tail = turns.len().saturating_sub(FRESH_TURNS);
+    let quoted: std::collections::HashSet<&str> = turns[tail..]
+        .iter()
+        .map(|turn| turn.call.reply_to.as_str())
+        .filter(|id| !id.is_empty())
+        .collect();
     let mut out = Vec::new();
-    for turn in turns.iter().rev() {
+    for (position, turn) in turns.iter().enumerate().rev() {
+        let fresh = position >= tail && now - turn.at <= FRESH_SECONDS;
+        if !fresh && !quoted.contains(turn.message_id.as_str()) {
+            continue;
+        }
         for (index, url) in turn.images.iter().enumerate().rev() {
             if let Some(data_url) = usable_image(url).await {
                 out.push(Usable {

@@ -31,11 +31,16 @@ pub(crate) const MAX_THREADS: usize = 5;
 /// 一条印象或旧事的字数上限——记忆是提示，不是日记。
 pub(crate) const MAX_NOTE_CHARS: usize = 60;
 /// 一次注入提示词的熟人卡片上限。
-const BRIEF_PEOPLE: usize = 8;
+const BRIEF_PEOPLE: usize = 6;
+/// 熟人卡片只给最近这些条消息里开过口的人：两小时前说过一句的人，今天这一茬早就不是他了，
+/// 把他的印象摆在眼前，人格就会没头没脑地提起他。
+const PEOPLE_TURNS: usize = 12;
+/// 一次注入提示词的自述条数上限。
+const BRIEF_CLAIMS: usize = 4;
 /// 一次注入提示词的旧事条数上限。
 const BRIEF_NOTES: usize = 3;
 /// 这么新的旧事不必贴题也带上：刚起的梗、刚答过的事，眼前多半还用得着。
-const FRESH_NOTE_SECONDS: i64 = 6 * 3_600;
+const FRESH_NOTE_SECONDS: i64 = 30 * 60;
 /// 猜「眼前在聊什么」只看最近这些条。
 const TOPIC_TURNS: usize = 12;
 /// 两次落盘之间至少隔多久。露面统计每条消息都在变，值不上一次写盘；
@@ -253,12 +258,17 @@ impl GroupMemory {
         self.claims.len() != before
     }
 
-    /// 自己说过的关于自己的话 → 发言提示词里的一段；没有就是空串。
-    pub(crate) fn claims_brief(&self, now: i64) -> String {
+    /// 自己说过的、跟眼前话题沾边的话 → 发言提示词里的一段；没有就是空串。
+    pub(crate) fn claims_brief(&self, turns: &[Turn], now: i64) -> String {
+        // 只带跟眼前话题沾边的：从前不管聊什么都摆最近六条，「认为那款众筹游戏不值一千万」
+        // 就在一句没人问起的话里被翻了出来（线上 2026-10-03 09:24「上次说不值一千万是我嘴硬了」），
+        // 群友回了一句「笨笨的」。说过的话是为了在被问起、被提起时前后对得上，不是用来起话头的。
+        let topic = super::tone::content_words(&super::tone::spoken_by_others(turns, TOPIC_TURNS));
         let mut live: Vec<&Note> = self
             .claims
             .iter()
             .filter(|claim| now - claim.at < CLAIM_TTL_DAYS * 86_400)
+            .filter(|claim| super::tone::touches(&claim.text, &topic))
             .collect();
         live.sort_by_key(|claim| std::cmp::Reverse(claim.at));
         if live.is_empty() {
@@ -266,11 +276,11 @@ impl GroupMemory {
         }
         let lines: Vec<String> = live
             .into_iter()
-            .take(6)
+            .take(BRIEF_CLAIMS)
             .map(|claim| format!("- {}（{}）", claim.text, ago((now - claim.at).max(0))))
             .collect();
         format!(
-            "你前面在群里自己说过（前后要对得上，别说反；这是记录，没人问起不必再提）：\n{}\n",
+            "眼前聊到的事，你以前在群里自己说过（前后要对得上，别说反；是记录，没人问起不必提，更别说「上次说过」）：\n{}\n",
             lines.join("\n")
         )
     }
@@ -304,12 +314,15 @@ impl GroupMemory {
         }
     }
 
-    /// 当前这段聊天里出现的人 + 群里的旧事 → 注入提示词的一段话。
+    /// 当前这段聊天里出现的人 + 跟眼前沾边的几摊事与旧事 → 注入提示词的一段话。
     ///
     /// 只列眼前这些人：把整本通讯录倒进上下文既贵又没用，人也不是那样想事情的。
+    /// 记忆是背景，不是话题——凡是不沾眼前这几句的，宁可不给：线上人格几次把没人提起的
+    /// 旧事、一个钟头前的话头、两小时前才露过面的人，没头没脑地搬到眼前的话里，群友一
+    /// 看就是「自说自话」。
     pub(crate) fn brief(&self, turns: &[Turn], now: i64) -> String {
         let mut seen: Vec<&str> = Vec::new();
-        for turn in turns.iter().rev() {
+        for turn in turns.iter().rev().take(PEOPLE_TURNS) {
             if turn.from_me || turn.user_id.is_empty() || seen.contains(&turn.user_id.as_str()) {
                 continue;
             }
@@ -318,14 +331,25 @@ impl GroupMemory {
                 break;
             }
         }
+        let topic_text = super::tone::spoken_by_others(turns, TOPIC_TURNS);
+        let topic_words = super::tone::content_words(&topic_text);
         let mut out = String::new();
-        if !self.threads.lines.is_empty() && now - self.threads.at < THREADS_FRESH_SECONDS {
-            out.push_str(&format!(
-                "这阵子群里在聊的几摊事（{}复盘的，看现场有没有变）：\n",
-                ago((now - self.threads.at).max(0))
-            ));
-            for line in &self.threads.lines {
-                out.push_str(&format!("- {line}\n"));
+        // 几摊事是复盘时对整段群聊的概括；只留跟眼前几句沾边的，其余是上一阵的事。
+        if now - self.threads.at < THREADS_FRESH_SECONDS {
+            let lines: Vec<&String> = self
+                .threads
+                .lines
+                .iter()
+                .filter(|line| super::tone::touches(line, &topic_words))
+                .collect();
+            if !lines.is_empty() {
+                out.push_str(&format!(
+                    "跟眼前沾边的几摊事（{}复盘的，现场已经聊到别处就别接）：\n",
+                    ago((now - self.threads.at).max(0))
+                ));
+                for line in lines {
+                    out.push_str(&format!("- {line}\n"));
+                }
             }
         }
         let mut cards = Vec::new();
@@ -370,20 +394,14 @@ impl GroupMemory {
             cards.push(format!("- {name}：{}{tail}", parts.join("；")));
         }
         if !cards.is_empty() {
-            out.push_str("你记得的人：\n");
+            out.push_str("你记得的人（印象而已，拿来拿捏分寸；不是话题，别主动提起他们的事）：\n");
             out.push_str(&cards.join("\n"));
             out.push('\n');
         }
-        // 旧事只带「眼前用得上」的：跟最近几条在聊的沾边，或者就是这几个钟头的事。
-        // 从前按时间倒序全摆出来，人格会把三天前的梗硬塞进不相干的话里。
-        let recent: String = turns
-            .iter()
-            .rev()
-            .take(TOPIC_TURNS)
-            .map(|turn| turn.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let topic = super::tone::grams(&recent);
+        // 旧事只带「眼前用得上」的：跟最近几条在聊的沾边，或者就是这半小时的事。
+        // 从前按时间倒序全摆出来，人格会把三天前的梗硬塞进不相干的话里；后来留了六小时
+        // 的「刚起的梗」例外，同样会把一个钟头前的话头拎回来，所以缩到半小时。
+        let topic = super::tone::grams(&topic_text);
         let mut notes: Vec<(f32, &Note)> = self
             .notes
             .iter()
@@ -397,7 +415,7 @@ impl GroupMemory {
             .map(|(_, note)| format!("- {}（{}）", note.text, ago((now - note.at).max(0))))
             .collect();
         if !notes.is_empty() {
-            out.push_str("这个群的旧事：\n");
+            out.push_str("这个群的旧事（背景；眼前的话没碰到它就别提）：\n");
             out.push_str(&notes.join("\n"));
             out.push('\n');
         }

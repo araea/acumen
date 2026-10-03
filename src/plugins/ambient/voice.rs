@@ -12,6 +12,7 @@
 
 use super::mood::Register;
 use super::recent;
+pub(super) use crate::plugins::oai::chat::tone::content_words;
 use crate::plugins::oai::chat::tone::{affinity, grams};
 use super::window::Turn;
 
@@ -249,38 +250,6 @@ pub(crate) fn short_lines(
             .take(count.saturating_sub(out.len())),
     );
     out.shuffle(&mut rand::rng());
-    out
-}
-
-/// 虚字：它们组成的字组说明不了在聊什么。
-const FUNCTION_CHARS: &str = "的了是不我你他她它们这那就还也都在有没么吗吧呢啊哈嘛呀哦个一二两上下来去说要会能可以到得着过把被给让很太真好对啥什怎样点些里时候看想又再才而且但就算然后";
-
-/// 一段话里的实词：中文按相邻两字取，两字都不是虚字才算；英文数字按整词取。
-pub(super) fn content_words(text: &str) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
-    let mut word = String::new();
-    for (index, c) in chars.iter().enumerate() {
-        if c.is_ascii_alphanumeric() {
-            word.push(*c);
-            continue;
-        }
-        if word.chars().count() >= 2 {
-            out.insert(std::mem::take(&mut word));
-        }
-        word.clear();
-        let Some(next) = chars.get(index + 1) else {
-            continue;
-        };
-        let cjk = |c: &char| c.is_alphabetic() && !c.is_ascii();
-        if cjk(c) && cjk(next) && !FUNCTION_CHARS.contains(*c) && !FUNCTION_CHARS.contains(*next)
-        {
-            out.insert([*c, *next].iter().collect());
-        }
-    }
-    if word.chars().count() >= 2 {
-        out.insert(word);
-    }
     out
 }
 

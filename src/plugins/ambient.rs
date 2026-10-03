@@ -45,6 +45,7 @@ mod recent;
 mod reflect;
 mod screenshot;
 pub(crate) mod speak;
+mod stray;
 mod voice;
 
 // 群聊能力层（看现场、查资料、动手）归内置智能体插件，搭话是它的一个人格外壳。
@@ -698,6 +699,14 @@ impl Persona for Ambient {
     fn keeps_quote(&self, target: &str, turns: &[Turn]) -> bool {
         quote::keeps(target, turns, rand::random::<f32>())
     }
+
+    fn vet_text(&self, _group: &str, text: &str, turns: &[Turn]) -> Option<String> {
+        stray::is_ungrounded_callback(text, turns).then(|| {
+            "这句在翻旧账：眼前几条里没人提起过去，你说的「上次/之前说过」也跟眼前聊的碰不上，\
+             多半是从记忆里搬出来的，群友一看就是自说自话。接眼前正在聊的事，或者干脆先放着"
+                .to_string()
+        })
+    }
 }
 
 /// 一轮判定与发言共用的「现场」。
@@ -772,7 +781,7 @@ impl Scene {
                 self_facts(),
                 if config.memory_enabled {
                     memory::with_group(group, |memory| {
-                        memory.claims_brief(chrono::Local::now().timestamp())
+                        memory.claims_brief(turns, chrono::Local::now().timestamp())
                     })
                 } else {
                     String::new()
@@ -2064,6 +2073,20 @@ async fn speak_up(
     Ok(())
 }
 
+/// 这次戳一戳该不该发：只戳眼前这几位群友，不戳自己，也不在两分钟内连戳。
+///
+/// 号码是模型写的，认不出是谁就是编的；而人戳人是逗一下，连着戳就成了骚扰。
+fn nudge_allowed(target: &str, me: &str, turns: &[Turn], history: &[Turn]) -> bool {
+    const COOLDOWN: i64 = 120;
+    if target == me || !turns.iter().any(|turn| !turn.from_me && turn.user_id == target) {
+        return false;
+    }
+    let now = chrono::Local::now().timestamp();
+    !history.iter().any(|turn| {
+        turn.from_me && turn.text.starts_with("[戳一戳") && now - turn.at < COOLDOWN
+    })
+}
+
 /// 按人的节奏把一批话发出去：先想一会儿，再一条条打字、检查现场还新不新、发送并记账。
 ///
 /// 兼容文字路径的发言与「随口一句」都走这里。返回有没有真的发出过一条。
@@ -2087,6 +2110,11 @@ async fn deliver(
             info!(target: LOG_TARGET, "群 {group} 咽回一句复读：{text}");
             return false;
         }
+        // 眼前没人提起，却说「上次说过」：那是从记忆里搬来的（见 [`stray`]）。
+        if stray::is_ungrounded_callback(&text, turns) {
+            info!(target: LOG_TARGET, "群 {group} 咽回一句没来头的翻旧账：{text}");
+            return false;
+        }
         true
     });
     if utterances.is_empty() {
@@ -2103,6 +2131,7 @@ async fn deliver(
 
     let me = ctx.bot.self_id();
     let mut sent = false;
+    let mut nudged = false;
     for (index, utterance) in utterances.into_iter().enumerate() {
         if index > 0 {
             tokio::time::sleep(pace.gap()).await;
@@ -2118,6 +2147,41 @@ async fn deliver(
             Sendable::Fresh => false,
             Sendable::Drifted => true,
         };
+
+        // 戳一戳是点头像的动作，不是一条消息：走平台的戳一戳接口，对方那边弹「戳了你」。
+        if let Some(target) = utterance.nudge {
+            if nudged || !nudge_allowed(&target, &me, turns, &history) {
+                info!(target: LOG_TARGET, "群 {group} 咽回一次戳一戳：{target} 不在眼前，或刚戳过人");
+                continue;
+            }
+            if let Err(error) = crate::adapters::satori::qq::poke(ctx, writer, group, &target).await
+            {
+                warn!(target: LOG_TARGET, "群 {group} 戳一戳失败：{error}");
+                break;
+            }
+            info!(target: LOG_TARGET, "群 {group} 戳了 {target} 一下");
+            window::with_group(group, |state| {
+                if !sent {
+                    state.mark_spoke();
+                    if doze {
+                        state.mark_doze_spoke();
+                    }
+                }
+                // 与工具路径的记法一致；平台随后回来的戳一戳事件按时间与内容并不去重，
+                // 多一行不碍事，没有这一行下一轮就看不见自己刚戳过。
+                state.receive(Turn {
+                    user_id: me.clone(),
+                    name: "我".to_string(),
+                    text: format!("[戳一戳 {target}]"),
+                    from_me: true,
+                    at: chrono::Local::now().timestamp(),
+                    ..Turn::default()
+                });
+            });
+            sent = true;
+            nudged = true;
+            continue;
+        }
 
         let mut message = Message::new();
         // 打字的工夫里群里又冒出一两句：照样发，但首条挂上它回的那句，免得接错人。

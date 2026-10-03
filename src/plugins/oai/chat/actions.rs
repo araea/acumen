@@ -237,6 +237,12 @@ impl Action {
                                 !text.lines().any(super::attention::is_control),
                                 "关注指令写在最终输出里，不随消息正文发出"
                             );
+                            // 「[戳一戳]」是记录里对动作的描述；当正文发出去，群里就多一条
+                            // 孤零零的文字。要戳人用 poke 动作。
+                            ensure!(
+                                !super::pace::is_poke_placeholder(text),
+                                "「[戳一戳]」只是记录里的占位符，发出去就是一条文字；要戳人用 poke 动作"
+                            );
                             chars += text.chars().count();
                         }
                         Part::Face { id } => {

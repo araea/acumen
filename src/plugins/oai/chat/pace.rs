@@ -22,6 +22,13 @@ pub(crate) struct Utterance {
     pub reply_to: Option<String>,
     /// 发出前额外停顿的秒数（模型显式要求的 `[wait:n]`）。
     pub wait: f32,
+    /// 不发消息，真戳这位群友一下（`[poke:QQ号]`）。
+    ///
+    /// 消息里的「戳一戳」是一枚超级表情，要作为一条消息发进群；群友戳人用的是点头像，
+    /// 对方那边弹的是「戳了你」。从前这里照着消息元素发，群里就多出一条孤零零的
+    /// `[戳一戳]`（2026-10-03 09:39 线上记录），一眼不是人。所以它不再是消息，而是动作：
+    /// 发的时候走平台的戳一戳接口（见 `ambient::deliver`）。
+    pub nudge: Option<String>,
 }
 
 /// 模型这一轮的决定。
@@ -98,9 +105,27 @@ fn action() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^\[(poke:(\d{5,12})|dice|rps|wait:(\d+(?:\.\d+)?))\]$").unwrap())
 }
 
+/// 记录里戳一戳的占位写法：`[戳一戳]`、`[戳一戳 123456]`、`[戳一戳:123456]`，以及入站事件
+/// 那种 `[戳一戳：甲 戳了 乙]`。
+///
+/// 那是记录对动作的描述，不是发出去的标记；模型照着自己的历史把它当正文写出来，
+/// 群里就多出一条文字「[戳一戳]」。带号码的还原成真戳，不带号码的无从知道戳谁，丢掉。
+fn poke_note() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"^[\[［]戳一戳(?:\s*[:：]?\s*(\d{5,12})|[:：][^\]］]{0,80})?[\]］]$").unwrap()
+    })
+}
+
+/// 这段文字是不是只有一个戳一戳占位符。
+pub(crate) fn is_poke_placeholder(text: &str) -> bool {
+    poke_note().is_match(text.trim())
+}
+
 /// 解析出来但还没定形的一条：动作照原样，文字要先等断句分完剩下的额度。
 enum Draft {
     Act(Message),
+    Nudge(String),
     Text {
         body: String,
         reply: bool,
@@ -130,6 +155,17 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
         if line.eq_ignore_ascii_case("[silent]") {
             return Speech::Silent;
         }
+        if let Some(caps) = poke_note().captures(line) {
+            if drafts.len() < max_messages
+                && let Some(target) = caps.get(1)
+            {
+                drafts.push((
+                    Draft::Nudge(target.as_str().to_string()),
+                    std::mem::take(&mut pending_wait),
+                ));
+            }
+            continue;
+        }
         if let Some(caps) = action().captures(line) {
             if let Some(seconds) = caps.get(3) {
                 pending_wait = (pending_wait + seconds.as_str().parse::<f32>().unwrap_or(0.0))
@@ -139,12 +175,12 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
             if drafts.len() >= max_messages {
                 continue;
             }
-            let message = match caps.get(2) {
-                Some(target) => Message::new().poke(target.as_str()),
-                None if caps[1].starts_with("dice") => Message::new().dice(),
-                None => Message::new().rps(),
+            let draft = match caps.get(2) {
+                Some(target) => Draft::Nudge(target.as_str().to_string()),
+                None if caps[1].starts_with("dice") => Draft::Act(Message::new().dice()),
+                None => Draft::Act(Message::new().rps()),
             };
-            drafts.push((Draft::Act(message), std::mem::take(&mut pending_wait)));
+            drafts.push((draft, std::mem::take(&mut pending_wait)));
             continue;
         }
         if drafts.len() >= max_messages {
@@ -175,6 +211,15 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
                 reply: false,
                 reply_to: None,
                 wait,
+                nudge: None,
+            }),
+            Draft::Nudge(user) => out.push(Utterance {
+                message: Message::new(),
+                chars: 0,
+                reply: false,
+                reply_to: None,
+                wait,
+                nudge: Some(user),
             }),
             Draft::Text {
                 body,
@@ -199,6 +244,7 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
                         reply: reply && index == 0,
                         reply_to: if index == 0 { reply_to.clone() } else { None },
                         wait: if index == 0 { wait } else { 0.0 },
+                        nudge: None,
                     });
                 }
             }

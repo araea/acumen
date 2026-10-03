@@ -22,7 +22,7 @@ fn noise() -> &'static Regex {
 const STOP: &str = "的了是我你他她它不在这那有就也很吗吧啊呢么什怎都还要没个会说去来能好过想把被给和跟又再只但而且";
 
 /// 去掉占位标记之后真正被打出来的正文。
-fn visible(text: &str) -> String {
+pub(crate) fn visible(text: &str) -> String {
     noise().replace_all(text, " ").trim().to_string()
 }
 
@@ -187,4 +187,56 @@ pub(crate) fn affinity(sample: &str, topic: &HashSet<String>) -> f32 {
     }
     let shared = own.iter().filter(|gram| topic.contains(*gram)).count();
     shared as f32 / (own.len() as f32).sqrt()
+}
+
+/// 虚字：它们组成的字组说明不了在聊什么。
+const FUNCTION_CHARS: &str = "的了是不我你他她它们这那就还也都在有没么吗吧呢啊哈嘛呀哦个一二两上下来去说要会能可以到得着过把被给让很太真好对啥什怎样点些里时候看想又再才而且但就算然后";
+
+/// 一段话里的实词：中文按相邻两字取，两字都不是虚字才算；英文数字按整词取。
+pub(crate) fn content_words(text: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let mut word = String::new();
+    for (index, c) in chars.iter().enumerate() {
+        if c.is_ascii_alphanumeric() {
+            word.push(*c);
+            continue;
+        }
+        if word.chars().count() >= 2 {
+            out.insert(std::mem::take(&mut word));
+        }
+        word.clear();
+        let Some(next) = chars.get(index + 1) else {
+            continue;
+        };
+        let cjk = |c: &char| c.is_alphabetic() && !c.is_ascii();
+        if cjk(c) && cjk(next) && !FUNCTION_CHARS.contains(*c) && !FUNCTION_CHARS.contains(*next)
+        {
+            out.insert([*c, *next].iter().collect());
+        }
+    }
+    if word.chars().count() >= 2 {
+        out.insert(word);
+    }
+    out
+}
+
+/// 眼前在聊什么：最近几条别人说的话，去掉占位标记。
+///
+/// 只看别人：自己刚说过的话天然和自己记着的事沾边，拿它当话题，记忆就会顺着自己的话
+/// 一路往外翻，越说越远。别人一句都没有（只剩自己）就是空串——眼前没有话题可言。
+pub(crate) fn spoken_by_others(turns: &[Turn], take: usize) -> String {
+    turns
+        .iter()
+        .rev()
+        .filter(|turn| !turn.from_me)
+        .take(take)
+        .map(|turn| visible(&turn.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 一条记忆跟眼前的话题沾不沾边：至少共有一个实词（见 [`content_words`]）。
+pub(crate) fn touches(text: &str, topic: &HashSet<String>) -> bool {
+    !content_words(text).is_disjoint(topic)
 }

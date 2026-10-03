@@ -889,6 +889,21 @@ impl Session {
                     }
                 }
                 action.validate(&turns)?;
+                if let Action::Send { parts, .. } = &action
+                    && let Some(persona) = &self.persona
+                {
+                    let body = parts
+                        .iter()
+                        .filter_map(|part| match part {
+                            Part::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if let Some(reason) = persona.vet_text(&self.group, &body, &turns) {
+                        anyhow::bail!("{reason}");
+                    }
+                }
                 // 平台已经明确拒绝过的能力不再占额度：那一次尝试没有产生任何副作用，
                 // 让它把本轮仅有的几次动作耗在必然失败的按钮上只会换来一次沉默。
                 if let Some(reason) = self.refused(&action) {
