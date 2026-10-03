@@ -174,6 +174,17 @@ register_plugins!(
         summary: "将一张图按行列切片",
         commands: cmds![("裁剪 <行>x<列> / 切图 / 分割", "如：裁剪 3x3")]
     },
+    qr_scan {
+        display_name: "二维码识别",
+        section: "message",
+        summary: "把图片里的全部二维码转成文字与链接：指令后附图，或引用一张图再发指令；多个码在原图上标序号，与清单对应",
+        commands: cmds![
+            (
+                "扫码 / 识别二维码 / 二维码 / qr",
+                "图片附在指令前后，或引用一张含二维码的图片再发指令"
+            ),
+        ]
+    },
     video_parse {
         display_name: "视频解析",
         section: "message",

@@ -875,7 +875,7 @@ fn dump_console_fixture() {
         "config": crate::plugins::ctl::redacted(&(plugin.default_config)()),
         "field_help": field_help(plugin.name), "field_options": field_options(plugin.name, &(plugin.default_config)()), "defaults": {}, "diff": []
     })).collect();
-    assert_eq!(plugins.len(), 24);
+    assert_eq!(plugins.len(), 25);
     std::fs::write(
         std::env::var("ACUMEN_CONSOLE_FIXTURE").expect("fixture path"),
         serde_json::to_vec_pretty(&plugins).unwrap(),

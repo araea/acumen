@@ -14,6 +14,7 @@ jieba-rs = "0.10"     # 中文分词
 regex = "1.13"        # 正则表达式
 pulldown-cmark = "0.13" # Markdown 解析
 glob = "0.3"          # 内置 agent 的文件匹配工具
+encoding_rs = "0.8"   # 二维码里非 UTF-8 的中文（GBK 等）转码
 walkdir = "2"         # 内置 agent 的目录遍历工具
 
 # 序列化与反序列化
@@ -57,6 +58,7 @@ ab_glyph = "0.2"      # 原生文字光栅化
 fontdb = "0.24"       # 字体处理
 araea-wordcloud = "0.1.13"   # 词云生成
 cdp-html-shot = "0.3.0"     # HTML 截图
+rxing = { version = "0.9", default-features = false, features = ["qrcode", "decoders", "multi_barcode_readers", "encoding_rs"] }  # 二维码识别（zxing-cpp 的 Rust 移植，耗时有界）
 
 # 时间与随机数
 chrono = "0.4"
@@ -64,3 +66,13 @@ rand = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # 取消时终止同组工具进程
+
+[dev-dependencies]
+qrcode = { version = "0.14", default-features = false }
+
+# 调试构建里二维码识别（rxing）与图像解码慢一个数量级，测试里的大图要跑很久；
+# 这两个依赖只编一次，优化它们几乎不增加构建时间。
+[profile.dev.package.rxing]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3

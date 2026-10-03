@@ -852,7 +852,7 @@ const posted = where => posts.filter(p => p.path === where);
 
   // 所有注册插件使用真实的默认配置与说明，不复用通用假字段。
   realMode = true;
-  assert.equal(realPlugins.length, 24);
+  assert.equal(realPlugins.length, 25);
   for (const width of [320, 1400]) {
     await viewport(width, 900);
     for (const plugin of realPlugins) {

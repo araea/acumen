@@ -54,7 +54,7 @@ async function until(predicate, description) {
   assert.equal(new URL(printed[0]).searchParams.get('t'), token, 'printed address round-trips the token');
   assert.equal((await api('/logs?limit=1')).lines.length, 1);
   const all = await api('/plugins');
-  assert.equal(all.plugins.length, 24);
+  assert.equal(all.plugins.length, 25);
   for (const plugin of all.plugins) {
     const detail = await api('/plugins/' + plugin.name);
     assert.equal(detail.name, plugin.name);
