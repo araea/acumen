@@ -1,4 +1,4 @@
-use crate::adapters::satori::{LockedWriter, api, send_msg};
+use crate::adapters::satori::{LockedWriter, api, delivery_uncertain, send_msg};
 use crate::command::{
     CommandMatch, extract_text_arg, find_urls, first_command_match,
 };
@@ -8,7 +8,7 @@ use crate::message::Message;
 use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
 use crate::render::web::TabGuard;
 use anyhow::{Result, anyhow};
-use cdp_html_shot::{Browser, CaptureOptions, ImageFormat, LaunchOptions, Viewport};
+use cdp_html_shot::{Browser, CaptureOptions, ClipRegion, ImageFormat, LaunchOptions, Viewport};
 use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use simd_json::base::ValueAsScalar;
@@ -26,8 +26,18 @@ use url::{Host, Url};
 #[serde(default)]
 pub struct Config {
     pub enabled: bool,
-    /// 成图的高度上限（像素）。网页多长就截多长，超过这个数就截断。
+    /// 整页截图的总高度上限（CSS 像素）。网页多长就截多长，超过这个数就截断，
+    /// 并在消息里说一句。
     pub max_height: u32,
+    /// 单张图的目标高度（CSS 像素）。页面比这更长就切成几张，切点尽量落在
+    /// 文字行之间的空白处。QQ 对单张图的高度有上限（实测 1280 宽的图，2.8 万像素
+    /// 以内发得出去，3.2 万像素就「rich media transfer failed」），而且图越长
+    /// 手机上越难读，所以长页不发成一张。
+    pub slice_height: u32,
+    /// 单张图的体积预算（KB）。超了就降画质重截，最多降三档。
+    pub max_image_kb: u32,
+    /// 一次要发的图超过这个张数，就折成一条合并转发，免得长页把群聊刷成一面墙。
+    pub fold_images: usize,
     /// 单次截图的超时（秒）。
     pub timeout_seconds: u64,
     /// JPEG 画质（0—100）。
@@ -56,7 +66,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_height: 5000,
+            max_height: 30_000,
+            slice_height: 6000,
+            max_image_kb: 2500,
+            fold_images: 3,
             timeout_seconds: 30,
             quality: 80,
             viewport_width: 1280,
@@ -454,18 +467,35 @@ async fn rehydrate_wechat_images(tab: &cdp_html_shot::Tab) -> u64 {
     }
 }
 
+/// 一张页面截下来的结果。
+struct Captured {
+    /// 自上而下的 base64 图；页面不长时只有一张。
+    images: Vec<String>,
+    /// 实际截下来的高度（CSS 像素）。
+    height: u32,
+    /// 页面比 `max_height` 更长，只截了上面一段。
+    truncated: bool,
+}
+
+/// 一条链接截出来的东西，`host` 用来给合并转发里的每一段起名。
+struct Shot {
+    host: String,
+    captured: Captured,
+}
+
 /// 截一张图。闸门、总超时和页面清理都在这里，`capture_page` 只管渲染。
 async fn capture_url(
     url: &Url,
     config: &Config,
     browser_path: Option<String>,
-) -> Result<Option<String>> {
+) -> Result<Option<Captured>> {
     let _permit = CAPTURE_GATE
         .acquire()
         .await
         .map_err(|_| anyhow!("截图闸门不可用"))?;
 
-    let budget = Duration::from_secs(config.timeout_seconds.clamp(5, 120) + 15);
+    // 加载另有自己的 `timeout_seconds`；多出来的 45 秒留给分段截图与降画质重截。
+    let budget = Duration::from_secs(config.timeout_seconds.clamp(5, 120) + 45);
     let width = capture_width(url, config);
     let wechat = is_wechat_article(url);
     // page 放在超时之外：无论正常返回、报错还是超时，都能走到下面的清理。
@@ -484,7 +514,14 @@ async fn capture_url(
             }
         };
         page = Some(TabGuard::new(browser.new_tab().await?));
-        capture_page(page.as_ref().unwrap().tab(), url.as_str(), config, width, wechat).await
+        capture_page(
+            page.as_ref().unwrap().tab(),
+            url.as_str(),
+            config,
+            width,
+            wechat,
+        )
+        .await
     })
     .await;
 
@@ -508,7 +545,7 @@ async fn capture_page(
     config: &Config,
     width: u32,
     wechat: bool,
-) -> Result<Option<String>> {
+) -> Result<Option<Captured>> {
     let width = width.clamp(200, 4096);
     let scale = scale_factor(config.device_scale_factor);
     let load_timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 120));
@@ -545,48 +582,253 @@ async fn capture_page(
     let page_height = tab.evaluate(height_js).await?.as_f64().unwrap_or(800.0) as u32;
 
     // 先按配置上限收口，再按像素预算收口，超长页面不会把内存吃干。
-    let max_height = config.max_height.clamp(100, 20000);
-    let pixel_cap = (MAX_CAPTURE_PIXELS / (f64::from(width) * scale * scale)).floor().max(100.0);
+    // 以前这里只改了视口高度，截图用的是整页模式，上限形同虚设：实测一页 45485 像素
+    // 的规则文档整张发出去，QQ 回 rich media transfer failed。现在上限是真的。
+    let max_height = config.max_height.clamp(100, 60_000);
+    let pixel_cap = (MAX_CAPTURE_PIXELS / (f64::from(width) * scale * scale))
+        .floor()
+        .max(100.0);
     let final_height = (page_height.max(100).min(max_height) as f64).min(pixel_cap) as u32;
+    let truncated = page_height > final_height;
 
-    let capture_viewport = Viewport::new(width, final_height).with_device_scale_factor(scale);
-
-    tab.set_viewport(&capture_viewport).await?;
+    // 视口拉到整页那么高：懒加载的图只有进了视口才会开始取。
+    tab.set_viewport(&Viewport::new(width, final_height).with_device_scale_factor(scale))
+        .await?;
 
     if page_height > 800 {
         time::sleep(Duration::from_millis(500)).await;
     }
 
-    let quality = config.quality.clamp(1, 100);
-    let format = if quality >= 100 {
-        ImageFormat::Png
+    // 页面长到要切时，先问页面哪里能下刀（视口定了才量，布局已是最终的）。
+    let slice_height = config.slice_height.clamp(1000, 12_000);
+    let gaps = if final_height > slice_height {
+        page_gaps(tab).await
     } else {
-        ImageFormat::Jpeg
+        Vec::new()
     };
+    let spans = plan_slices(final_height, slice_height, &gaps);
+    let budget = u64::from(config.max_image_kb.clamp(200, 20_000)) * 1024;
 
-    let opts = CaptureOptions::new()
-        .with_viewport(capture_viewport)
-        .with_format(format)
-        .with_quality(quality)
-        .with_full_page(true);
-
-    let image = tab
-        .screenshot(opts)
-        .await
-        .map_err(|e| anyhow!("Screenshot failed: {}", e))?;
-    Ok(Some(image))
+    let mut images = Vec::with_capacity(spans.len());
+    for (top, bottom) in &spans {
+        images.push(shoot_slice(tab, width, *top, *bottom, config.quality, budget).await?);
+    }
+    debug!(
+        target: "Plugin/WebShot",
+        "{} 页高 {page_height}，截 {final_height}，切成 {} 张{}",
+        url,
+        images.len(),
+        if truncated { "（已到上限）" } else { "" }
+    );
+    Ok(Some(Captured {
+        images,
+        height: final_height,
+        truncated,
+    }))
 }
 
-/// 一条消息里的多条链接，逐条截图，按链接顺序返回成功的 base64。
+/// 问页面：哪些纵向区间里没有字、没有图，切在那里不会把一行字拦腰截断。
+///
+/// 收集每个文本节点的行盒（`Range.getClientRects`，一个段落会给出每一行）和
+/// 图片、视频、画布、表单控件的外框，排序后扫一遍，缝隙就是可以下刀的地方。
+/// 定位成 `fixed` / `sticky` 的不算：它们浮在整页上，会把每一处都「盖住」。
+/// 返回 `[[顶, 底], …]`，最多 2 万条；脚本出错就当没有缝隙，退回等分。
+const PAGE_GAPS_JS: &str = r#"(() => {
+  const rects = [];
+  const floating = (el) => {
+    const cs = getComputedStyle(el);
+    return cs.display === 'none' || cs.visibility === 'hidden'
+      || cs.position === 'fixed' || cs.position === 'sticky';
+  };
+  const push = (r) => {
+    if (r.width > 0 && r.height > 0) rects.push([r.top + window.scrollY, r.bottom + window.scrollY]);
+  };
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  for (let n = walker.nextNode(); n && rects.length < 60000; n = walker.nextNode()) {
+    if (!n.nodeValue || !n.nodeValue.trim()) continue;
+    if (n.parentElement && floating(n.parentElement)) continue;
+    range.selectNodeContents(n);
+    for (const r of range.getClientRects()) push(r);
+  }
+  const boxes = 'img,video,canvas,svg,iframe,picture,input,textarea,select,button,hr';
+  for (const el of document.querySelectorAll(boxes)) {
+    if (!floating(el)) push(el.getBoundingClientRect());
+  }
+  rects.sort((a, b) => a[0] - b[0]);
+  const gaps = [];
+  let end = 0;
+  for (const [top, bottom] of rects) {
+    if (top > end + 1) gaps.push([end, top]);
+    if (bottom > end) end = bottom;
+  }
+  return gaps.slice(0, 20000);
+})()"#;
+
+async fn page_gaps(tab: &cdp_html_shot::Tab) -> Vec<(f64, f64)> {
+    match tab.evaluate(PAGE_GAPS_JS).await {
+        Ok(value) => value
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| Some((row.get(0)?.as_f64()?, row.get(1)?.as_f64()?)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        Err(e) => {
+            warn!(target: "Plugin/WebShot", "量页面缝隙失败，按等分切：{}", e);
+            Vec::new()
+        }
+    }
+}
+
+/// 把 `0..total` 切成若干段，返回各段的 `(顶, 底)`。
+///
+/// `target` 是希望的段高：段数取能让每段不超过它的最少个数，再把总高等分作理想
+/// 切点——不会出现一张很长、一张只剩几十像素的尾巴。每个切点在理想位置附近找
+/// `gaps`（页面上没有字也没有图的纵向区间）里最近的一处下刀，缝隙越宽越好；找不到
+/// （整段都是一张大图或一整段连续的字）就直接切在理想位置。为了给下刀留余地，
+/// 实际段高可以在理想长度的六成到 `target` 的 1.25 倍之间浮动。
+fn plan_slices(total: u32, target: u32, gaps: &[(f64, f64)]) -> Vec<(u32, u32)> {
+    let target = target.max(1);
+    if total <= target {
+        return vec![(0, total)];
+    }
+    let parts = total.div_ceil(target);
+    let ideal = f64::from(total) / f64::from(parts);
+    let min_slice = (ideal * 0.6).floor();
+    let max_slice = (f64::from(target) * 1.25).ceil();
+    let mut cuts = vec![0.0_f64];
+    for i in 1..parts {
+        let prev = *cuts.last().unwrap();
+        let left = f64::from(parts - i);
+        // 这一刀之后还剩 `left` 段：它们各自既不能超长，也不能太短。
+        let lower = (prev + min_slice).max(f64::from(total) - left * max_slice);
+        let upper = (prev + max_slice).min(f64::from(total) - left * min_slice);
+        let goal = ideal * f64::from(i);
+        let cut = if lower <= upper {
+            best_cut(gaps, lower, upper, goal.clamp(lower, upper))
+        } else {
+            goal
+        };
+        cuts.push(cut.round());
+    }
+    cuts.push(f64::from(total));
+    cuts.windows(2)
+        .map(|pair| (pair[0] as u32, pair[1] as u32))
+        .collect()
+}
+
+/// 在 `[lower, upper]` 里挑切点：优先缝隙，离 `target` 越近越好，缝隙越宽越好；
+/// 没有缝隙就用 `target`。
+fn best_cut(gaps: &[(f64, f64)], lower: f64, upper: f64, target: f64) -> f64 {
+    let mut best: Option<(f64, f64)> = None; // (得分, 切点)
+    for &(top, bottom) in gaps {
+        let (from, to) = (top.max(lower), bottom.min(upper));
+        if from > to {
+            continue;
+        }
+        let point = target.clamp(from, to);
+        // 宽缝（段落之间）比行距更体面：每多一像素缝宽抵一像素距离，抵到 60 为止。
+        let score = (point - target).abs() - (bottom - top).min(60.0);
+        if best.is_none_or(|(current, _)| score < current) {
+            best = Some((score, point));
+        }
+    }
+    best.map_or(target, |(_, point)| point)
+}
+
+/// base64 解开后的字节数，不真去解。
+fn decoded_len(base64: &str) -> u64 {
+    let padding = base64.bytes().rev().take_while(|&b| b == b'=').count() as u64;
+    (base64.len() as u64 / 4 * 3).saturating_sub(padding)
+}
+
+/// 超出体积预算时的下一档画质：PNG 先退到 JPEG 85，之后每档降 15，最低 35。
+fn next_quality(png: bool, quality: u8) -> Option<u8> {
+    if png {
+        Some(85)
+    } else if quality > 35 {
+        Some(quality.saturating_sub(15).max(35))
+    } else {
+        None
+    }
+}
+
+/// 截下 `top..bottom` 这一段。超出体积预算就降画质重截，降到底也超就照发——
+/// 体积只是预算，不是拒绝出图的理由。
+async fn shoot_slice(
+    tab: &cdp_html_shot::Tab,
+    width: u32,
+    top: u32,
+    bottom: u32,
+    quality: u8,
+    budget: u64,
+) -> Result<String> {
+    let clip = ClipRegion::new(
+        0.0,
+        f64::from(top),
+        f64::from(width),
+        f64::from(bottom - top),
+    );
+    let mut quality = quality.clamp(1, 100);
+    let mut png = quality >= 100;
+    loop {
+        let format = if png {
+            ImageFormat::Png
+        } else {
+            ImageFormat::Jpeg
+        };
+        let image = tab
+            .screenshot(
+                CaptureOptions::new()
+                    .with_format(format)
+                    .with_quality(quality)
+                    .with_full_page(true)
+                    .with_clip(clip),
+            )
+            .await
+            .map_err(|e| anyhow!("Screenshot failed: {}", e))?;
+        let bytes = decoded_len(&image);
+        if bytes <= budget {
+            return Ok(image);
+        }
+        match next_quality(png, quality) {
+            Some(next) => {
+                debug!(
+                    target: "Plugin/WebShot",
+                    "{top}..{bottom} 一段 {} KB 超过预算 {} KB，画质降到 {next} 重截",
+                    bytes / 1024,
+                    budget / 1024
+                );
+                png = false;
+                quality = next;
+            }
+            None => {
+                warn!(
+                    target: "Plugin/WebShot",
+                    "{top}..{bottom} 一段降到最低画质仍有 {} KB，照发",
+                    bytes / 1024
+                );
+                return Ok(image);
+            }
+        }
+    }
+}
+
+/// 一条消息里的多条链接，逐条截图，按链接顺序返回成功的。
 ///
 /// 并发跑：闸门（[`CAPTURE_GATE`]）自己把同时渲染的数量压在 2 条以内，这里多开的
 /// 只是排队，不会多占浏览器。某一条失败或没有内容只丢它自己，不连坐其余的。
-async fn capture_all(urls: &[Url], config: &Config, browser_path: Option<String>) -> Vec<String> {
+async fn capture_all(urls: &[Url], config: &Config, browser_path: Option<String>) -> Vec<Shot> {
     let captures = urls.iter().map(|url| {
         let browser_path = browser_path.clone();
         async move {
             match capture_url(url, config, browser_path).await {
-                Ok(Some(image)) => Some(image),
+                Ok(Some(captured)) => Some(Shot {
+                    host: url.host_str().unwrap_or("网页").to_string(),
+                    captured,
+                }),
                 // 页面没有可发的内容（验证页），原因上面已经记过日志。
                 Ok(None) => None,
                 Err(e) => {
@@ -596,11 +838,163 @@ async fn capture_all(urls: &[Url], config: &Config, browser_path: Option<String>
             }
         }
     });
-    join_all(captures)
-        .await
-        .into_iter()
-        .flatten()
-        .collect()
+    join_all(captures).await.into_iter().flatten().collect()
+}
+
+// ================= 发送 =================
+
+/// 合并转发里的一段。
+#[derive(Debug, PartialEq)]
+struct Node {
+    name: String,
+    image: String,
+    note: Option<String>,
+}
+
+/// 这一轮截图怎么发出去。
+#[derive(Debug, PartialEq)]
+enum Delivery {
+    /// 回在触发那条消息下面：全部图 + 一句说明（有的话）。
+    Plain {
+        images: Vec<String>,
+        note: Option<String>,
+    },
+    /// 折成一条合并转发，每段一个节点。
+    Forward(Vec<Node>),
+}
+
+/// 页面被截断时的一句说明。只有一条链接时不必点名。
+fn truncation_note(host: &str, height: u32, several: bool) -> String {
+    if several {
+        format!("{host} 页面很长，只截了上面 {height} 像素")
+    } else {
+        format!("页面很长，只截了上面 {height} 像素")
+    }
+}
+
+/// 决定怎么发：张数不多就老样子，图直接回在原消息下面；超过 `fold_images`
+/// 张（长页切开之后很容易到这个数）就折成合并转发，群里只多一张卡片。
+fn plan_delivery(shots: &[Shot], fold_images: usize) -> Delivery {
+    let total: usize = shots.iter().map(|shot| shot.captured.images.len()).sum();
+    let several = shots.len() > 1;
+    if total <= fold_images.max(1) {
+        let images = shots
+            .iter()
+            .flat_map(|shot| shot.captured.images.iter().cloned())
+            .collect();
+        let notes: Vec<String> = shots
+            .iter()
+            .filter(|shot| shot.captured.truncated)
+            .map(|shot| truncation_note(&shot.host, shot.captured.height, several))
+            .collect();
+        return Delivery::Plain {
+            images,
+            note: (!notes.is_empty()).then(|| notes.join("\n")),
+        };
+    }
+    let mut nodes = Vec::with_capacity(total);
+    for shot in shots {
+        let count = shot.captured.images.len();
+        for (index, image) in shot.captured.images.iter().enumerate() {
+            let name = if count == 1 {
+                shot.host.clone()
+            } else {
+                format!("{} · {}/{}", shot.host, index + 1, count)
+            };
+            let last = index + 1 == count;
+            nodes.push(Node {
+                name,
+                image: image.clone(),
+                note: (last && shot.captured.truncated)
+                    .then(|| truncation_note(&shot.host, shot.captured.height, several)),
+            });
+        }
+    }
+    Delivery::Forward(nodes)
+}
+
+fn plain_message(reply_to: &str, images: &[String], note: Option<&str>) -> Message {
+    let mut msg = Message::new().reply(reply_to);
+    for image in images {
+        msg = msg.image(format!("base64://{image}"));
+    }
+    match note {
+        Some(note) => msg.text(note),
+        None => msg,
+    }
+}
+
+/// 把截好的图发回去。
+///
+/// 合并转发发失败时（风控、对端不支持）退回平铺发送，但只在**确定没发出去**时：
+/// 「结果未知」（`send outcome unknown`）可能晚到，再发一遍就是重复，那种情况直接报错。
+async fn deliver(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: Option<&str>,
+    user_id: &str,
+    reply_to: &str,
+    shots: &[Shot],
+    config: &Config,
+) -> Result<(), PluginError> {
+    let delivery = plan_delivery(shots, config.fold_images);
+    let sizes = || {
+        shots
+            .iter()
+            .map(|shot| {
+                let kb: u64 = shot
+                    .captured
+                    .images
+                    .iter()
+                    .map(|i| decoded_len(i) / 1024)
+                    .sum();
+                format!(
+                    "{}张/{kb}KB/{}px",
+                    shot.captured.images.len(),
+                    shot.captured.height
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("、")
+    };
+    match delivery {
+        Delivery::Plain { images, note } => {
+            let msg = plain_message(reply_to, &images, note.as_deref());
+            send_msg(ctx, writer, group_id, Some(user_id), msg)
+                .await
+                .inspect_err(
+                    |e| error!(target: "Plugin/WebShot", "发送失败（{}）：{}", sizes(), e),
+                )?;
+        }
+        Delivery::Forward(nodes) => {
+            let bot_id = ctx.bot.self_id();
+            let mut forward = Message::new();
+            for node in &nodes {
+                let mut content = Message::new().image(format!("base64://{}", node.image));
+                if let Some(note) = &node.note {
+                    content = content.text(note.clone());
+                }
+                forward = forward.node_custom(&bot_id, node.name.clone(), content);
+            }
+            match send_msg(ctx, writer.clone(), group_id, Some(user_id), forward).await {
+                Ok(()) => {}
+                Err(e) if delivery_uncertain(&*e) => {
+                    error!(target: "Plugin/WebShot", "合并转发结果未知（{}）：{}", sizes(), e);
+                    return Err(e);
+                }
+                Err(e) => {
+                    warn!(target: "Plugin/WebShot", "合并转发没发出去，改平铺发送（{}）：{}", sizes(), e);
+                    let images: Vec<String> = nodes.iter().map(|node| node.image.clone()).collect();
+                    let note = nodes.iter().rev().find_map(|node| node.note.clone());
+                    let msg = plain_message(reply_to, &images, note.as_deref());
+                    send_msg(ctx, writer, group_id, Some(user_id), msg).await.inspect_err(
+                        |e| error!(target: "Plugin/WebShot", "平铺发送也失败（{}）：{}", sizes(), e),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 消息 `message` 数组里所有正文链接，按出现顺序去重。
@@ -716,8 +1110,8 @@ async fn manual(
         urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
     );
 
-    let images = capture_all(&urls, config, browser_path).await;
-    if images.is_empty() {
+    let shots = capture_all(&urls, config, browser_path).await;
+    if shots.is_empty() {
         let note = Message::new()
             .reply(&message_id)
             .text("没截出图（页面可能有验证墙），详见日志");
@@ -725,12 +1119,8 @@ async fn manual(
         return Ok(None);
     }
 
-    // 多张图合成一条消息，回在指令那条下面。
-    let mut msg = Message::new().reply(&message_id);
-    for base64_img in images {
-        msg = msg.image(format!("base64://{}", base64_img));
-    }
-    send_msg(&ctx, writer, group_id, Some(user_id), msg).await?;
+    // 多张图合成一条消息，回在指令那条下面；太多就折成合并转发。
+    deliver(&ctx, writer, group_id, user_id, &message_id, &shots, config).await?;
     Ok(None)
 }
 
@@ -836,16 +1226,21 @@ pub fn handle(
             urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
         );
 
-        let images = capture_all(&urls, &config, browser_path).await;
+        let shots = capture_all(&urls, &config, browser_path).await;
 
         // 全都没出图（都是验证页之类）就什么都不发。
-        if !images.is_empty() {
+        if !shots.is_empty() {
             // 多张图合成一条消息：一轮分享只打扰群聊一次。
-            let mut msg = Message::new().reply(msg_event.message_id());
-            for base64_img in images {
-                msg = msg.image(format!("base64://{}", base64_img));
-            }
-            send_msg(&ctx, writer, group_id, Some(user_id), msg).await?;
+            deliver(
+                &ctx,
+                writer,
+                group_id,
+                user_id,
+                msg_event.message_id(),
+                &shots,
+                &config,
+            )
+            .await?;
         }
 
         Ok(Some(ctx))
@@ -1161,6 +1556,207 @@ mod tests {
         assert_eq!(scale_factor(f64::INFINITY), 1.0);
         assert_eq!(scale_factor(0.1), 0.5);
         assert_eq!(scale_factor(9.0), 4.0);
+    }
+
+    /// 长页切开：每段都不超长也不太短，首尾相接、正好盖满全高。
+    #[test]
+    fn slices_cover_the_page_without_gaps_or_overlaps() {
+        for total in [
+            1, 999, 6000, 6001, 7000, 12_001, 29_999, 30_000, 45_485, 60_000,
+        ] {
+            for target in [1000, 4000, 6000, 12_000] {
+                let spans = plan_slices(total, target, &[]);
+                assert_eq!(spans.first().unwrap().0, 0);
+                assert_eq!(spans.last().unwrap().1, total);
+                for pair in spans.windows(2) {
+                    assert_eq!(pair[0].1, pair[1].0, "相邻两段要首尾相接");
+                }
+                let limit = (f64::from(target) * 1.25).ceil() as u32;
+                for (top, bottom) in &spans {
+                    assert!(bottom > top, "{total}/{target} 出现空段 {top}..{bottom}");
+                    if total > target {
+                        assert!(
+                            bottom - top <= limit,
+                            "{total}/{target} 有一段超长：{}",
+                            bottom - top
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// 不长的页面不切，也不必量缝隙。
+    #[test]
+    fn a_short_page_is_one_slice() {
+        assert_eq!(plan_slices(4800, 6000, &[]), vec![(0, 4800)]);
+        assert_eq!(plan_slices(6000, 6000, &[]), vec![(0, 6000)]);
+    }
+
+    /// 没有缝隙可用时按总高等分：7000 切成两张 3500，而不是 6000 加 1000 的尾巴。
+    #[test]
+    fn without_gaps_the_page_is_split_evenly() {
+        assert_eq!(plan_slices(7000, 6000, &[]), vec![(0, 3500), (3500, 7000)]);
+        assert_eq!(
+            plan_slices(30_000, 6000, &[]),
+            vec![
+                (0, 6000),
+                (6000, 12_000),
+                (12_000, 18_000),
+                (18_000, 24_000),
+                (24_000, 30_000)
+            ]
+        );
+    }
+
+    /// 切点落在文字之间的缝里，而不是理想位置上的某一行字中间。
+    #[test]
+    fn cuts_land_in_gaps_between_lines() {
+        // 理想切点 3500 正压在一块 3400..3600 的内容上；缝隙在 3380..3400 与 3600..3640。
+        let gaps = [(3380.0, 3400.0), (3600.0, 3640.0)];
+        let spans = plan_slices(7000, 6000, &gaps);
+        assert_eq!(spans.len(), 2);
+        let cut = spans[0].1;
+        assert!(
+            (3380..=3400).contains(&cut) || (3600..=3640).contains(&cut),
+            "切点 {cut} 不在缝里"
+        );
+        // 离理想位置近的缝里，3600 一侧更宽（40 对 20），分差抵过 100 像素的距离差？
+        // 3400 距 100、宽 20 → 80；3600 距 100、宽 40 → 60，所以选 3600 一侧。
+        assert_eq!(cut, 3600);
+    }
+
+    /// 缝隙在允许的范围之外（会切出过长或过短的段）就不能用。
+    #[test]
+    fn gaps_outside_the_allowed_window_are_ignored() {
+        // 7000 分两段，第一段只能在 [3000×0.6.., 7500] 的窗口里：1800 之前的缝隙不算。
+        let gaps = [(100.0, 140.0), (6900.0, 6950.0)];
+        let spans = plan_slices(7000, 6000, &gaps);
+        assert_eq!(spans, vec![(0, 3500), (3500, 7000)]);
+    }
+
+    /// 缝隙越宽越好：同样的距离下，段落间距比行距更体面。
+    #[test]
+    fn a_wider_gap_beats_a_narrower_one_at_equal_distance() {
+        let gaps = [(3490.0, 3496.0), (3504.0, 3534.0)];
+        assert_eq!(best_cut(&gaps, 2000.0, 5000.0, 3500.0), 3504.0);
+    }
+
+    #[test]
+    fn base64_length_is_measured_without_decoding() {
+        assert_eq!(decoded_len(""), 0);
+        assert_eq!(decoded_len("AAAA"), 3);
+        assert_eq!(decoded_len("AAA="), 2);
+        assert_eq!(decoded_len("AA=="), 1);
+        assert_eq!(decoded_len("AAAAAAAA"), 6);
+    }
+
+    /// 超预算后画质一档一档往下降，降到 35 为止；PNG 先落回 JPEG。
+    #[test]
+    fn quality_steps_down_to_a_floor() {
+        assert_eq!(next_quality(true, 100), Some(85));
+        let mut ladder = vec![80];
+        while let Some(next) = next_quality(false, *ladder.last().unwrap()) {
+            ladder.push(next);
+        }
+        assert_eq!(ladder, vec![80, 65, 50, 35]);
+        assert_eq!(next_quality(false, 20), None);
+    }
+
+    fn shot(host: &str, images: usize, truncated: bool) -> Shot {
+        Shot {
+            host: host.to_string(),
+            captured: Captured {
+                images: (0..images).map(|i| format!("{host}-{i}")).collect(),
+                height: 30_000,
+                truncated,
+            },
+        }
+    }
+
+    /// 张数不多：回在原消息下面，图按顺序平铺，不折叠。
+    #[test]
+    fn a_few_images_are_sent_plainly() {
+        let delivery = plan_delivery(&[shot("a.com", 1, false), shot("b.com", 2, false)], 3);
+        assert_eq!(
+            delivery,
+            Delivery::Plain {
+                images: vec!["a.com-0".into(), "b.com-0".into(), "b.com-1".into()],
+                note: None
+            }
+        );
+    }
+
+    /// 超过阈值折成合并转发：每段一个节点，多段的链接带 `n/m` 序号。
+    #[test]
+    fn many_images_fold_into_a_forward() {
+        let Delivery::Forward(nodes) =
+            plan_delivery(&[shot("a.com", 1, false), shot("b.com", 4, true)], 3)
+        else {
+            panic!("5 张图应当折叠");
+        };
+        let names: Vec<_> = nodes.iter().map(|node| node.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "a.com",
+                "b.com · 1/4",
+                "b.com · 2/4",
+                "b.com · 3/4",
+                "b.com · 4/4"
+            ]
+        );
+        // 截断的说明只挂在那条链接的最后一段，并点明是哪个站。
+        let notes: Vec<_> = nodes.iter().map(|node| node.note.clone()).collect();
+        assert_eq!(notes[..4], [None, None, None, None]);
+        assert_eq!(
+            notes[4].as_deref(),
+            Some("b.com 页面很长，只截了上面 30000 像素")
+        );
+    }
+
+    /// 只有一条链接时说明不必点名；阈值为 0 也按 1 处理，不会一张图都发不出去。
+    #[test]
+    fn truncation_is_mentioned_once_and_zero_threshold_is_safe() {
+        let delivery = plan_delivery(&[shot("a.com", 2, true)], 3);
+        assert_eq!(
+            delivery,
+            Delivery::Plain {
+                images: vec!["a.com-0".into(), "a.com-1".into()],
+                note: Some("页面很长，只截了上面 30000 像素".into())
+            }
+        );
+        assert!(matches!(
+            plan_delivery(&[shot("a.com", 1, false)], 0),
+            Delivery::Plain { .. }
+        ));
+        assert!(matches!(
+            plan_delivery(&[shot("a.com", 2, false)], 0),
+            Delivery::Forward(_)
+        ));
+    }
+
+    /// 平铺消息：先引用，再按顺序放图，说明放最后。
+    #[test]
+    fn the_plain_message_quotes_then_shows_images_then_the_note() {
+        let msg = plain_message("42", &["x".into(), "y".into()], Some("注"));
+        let kinds: Vec<_> = msg.0.iter().map(|segment| segment.type_.as_str()).collect();
+        assert_eq!(kinds, ["reply", "image", "image", "text"]);
+    }
+
+    /// QQ 实测：1280 宽、高度 2.8 万以内的图发得出去，3.2 万就不行。默认值必须离这条线足够远。
+    #[test]
+    fn defaults_keep_every_image_far_below_the_qq_height_limit() {
+        let config = Config::default();
+        let hard_max = f64::from(config.slice_height) * 1.25;
+        assert!(
+            hard_max <= 10_000.0,
+            "单张图最高 {hard_max} 像素，离 QQ 的上限（约 3 万）不够远"
+        );
+        assert!(
+            config.max_height >= config.slice_height,
+            "总高上限不该比单张还矮"
+        );
     }
 
     /// 合并转发整条不截：卡片段与解码后的内嵌记录都算，普通文本不受影响。
