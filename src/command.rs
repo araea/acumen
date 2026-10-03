@@ -312,10 +312,47 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
     let prefixes = get_prefixes(ctx);
     // 仅处理 MessageEvent
     let msg_arr = ctx.as_message()?.0.get_array("message")?;
+    match_segments(msg_arr, &prefixes, command_name, strict)
+}
 
+/// 紧跟在 `at` 元素后面的那串显示文字之后的候选起点。
+///
+/// QQ 在引用回复（或手动 @）时，除了 `<at id="…"/>` 之外，还把「@昵称 」当作**普通文字**
+/// 紧跟在后面：`<quote/><at id="3844710092"/>@lary /扫码`。指令因此不在文字开头，
+/// 要先越过这段显示名才找得到。昵称里可以有空格（「@汽修二班 阿洛」），所以按空白依次
+/// 试：跳过 1 到 3 个词之后剩下的部分都是候选，至多三个——名字再长就不是在叫人，是在说话。
+/// 不以 `@` 开头的文字没有这回事，返回空。
+pub fn mention_tails(text: &str) -> Vec<&str> {
+    let text = text.trim_start();
+    if !text.starts_with('@') {
+        return Vec::new();
+    }
+    let mut tails = Vec::new();
+    let mut rest = text;
+    for _ in 0..3 {
+        let Some(end) = rest.find(char::is_whitespace) else {
+            break;
+        };
+        rest = rest[end..].trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        tails.push(rest);
+    }
+    tails
+}
+
+/// [`match_command_inner`] 里不依赖上下文的那一半：在消息段里找指令，便于单测。
+fn match_segments(
+    msg_arr: &[OwnedValue],
+    prefixes: &[String],
+    command_name: &str,
+    strict: bool,
+) -> Option<CommandMatch> {
     let mut reply_id = None;
     let mut at_ids = Vec::new();
-
+    // 上一段是 `at`：它后面的文字开头可能是那个 @ 的显示名，见 [`mention_tails`]。
+    let mut after_at = false;
     for (i, segment) in msg_arr.iter().enumerate() {
         let type_ = segment.get_str("type")?;
         let data = segment.get("data")?;
@@ -341,6 +378,7 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
                 if let Some(qq) = qq_str {
                     at_ids.push(qq);
                 }
+                after_at = true;
             }
             "text" => {
                 let raw_text = data.get_str("text").unwrap_or("");
@@ -350,42 +388,49 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
                     continue;
                 }
 
-                // 找到第一个有效文本节点，尝试匹配
-                for prefix in &prefixes {
-                    let target = format!("{}{}", prefix, command_name);
-                    if trimmed_start.starts_with(&target) {
-                        // 匹配成功
-                        let mut args = Vec::new();
+                // 找到第一个有效文本节点，尝试匹配：先按原文，紧跟在 @ 后面的再试着
+                // 越过那段显示名（引用回复时 QQ 自带的「@昵称 」）。
+                let mut candidates = vec![trimmed_start];
+                if after_at {
+                    candidates.extend(mention_tails(trimmed_start));
+                }
+                for candidate in candidates {
+                    for prefix in prefixes {
+                        let target = format!("{}{}", prefix, command_name);
+                        if candidate.starts_with(&target) {
+                            // 匹配成功
+                            let mut args = Vec::new();
 
-                        // 处理当前文本节点剩余部分
-                        let rest_of_text = &trimmed_start[target.len()..];
-                        // 指令后通常有空格，作为参数时去除左侧空格
-                        if strict
-                            && rest_of_text
-                                .chars()
-                                .next()
-                                .is_some_and(|c| !c.is_whitespace())
-                        {
-                            continue;
+                            // 处理当前文本节点剩余部分
+                            let rest_of_text = &candidate[target.len()..];
+                            // 指令后通常有空格，作为参数时去除左侧空格
+                            if strict
+                                && rest_of_text
+                                    .chars()
+                                    .next()
+                                    .is_some_and(|c| !c.is_whitespace())
+                            {
+                                continue;
+                            }
+                            let args_text = rest_of_text.trim_start();
+
+                            if !args_text.is_empty() {
+                                let mut new_seg = segment.clone();
+                                new_seg["data"]["text"] = OwnedValue::from(args_text);
+                                args.push(new_seg);
+                            }
+
+                            // 将后续所有节点加入 args
+                            for seg in msg_arr.iter().skip(i + 1) {
+                                args.push(seg.clone());
+                            }
+
+                            return Some(CommandMatch {
+                                reply_id,
+                                at_ids,
+                                args,
+                            });
                         }
-                        let args_text = rest_of_text.trim_start();
-
-                        if !args_text.is_empty() {
-                            let mut new_seg = segment.clone();
-                            new_seg["data"]["text"] = OwnedValue::from(args_text);
-                            args.push(new_seg);
-                        }
-
-                        // 将后续所有节点加入 args
-                        for seg in msg_arr.iter().skip(i + 1) {
-                            args.push(seg.clone());
-                        }
-
-                        return Some(CommandMatch {
-                            reply_id,
-                            at_ids,
-                            args,
-                        });
                     }
                 }
                 // 如果遇到第一个有效文本但未匹配成功，则视为匹配失败
@@ -397,4 +442,104 @@ fn match_command_inner(ctx: &Context, command_name: &str, strict: bool) -> Optio
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use simd_json::base::ValueAsArray;
+
+    fn segments(value: serde_json::Value) -> Vec<OwnedValue> {
+        simd_json::serde::to_owned_value(value)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .to_vec()
+    }
+
+    fn slash() -> Vec<String> {
+        vec!["/".to_string()]
+    }
+
+    fn text(value: &str) -> serde_json::Value {
+        serde_json::json!({"type": "text", "data": {"text": value}})
+    }
+
+    fn at(id: &str) -> serde_json::Value {
+        serde_json::json!({"type": "at", "data": {"qq": id}})
+    }
+
+    /// 线上抓到的形状：引用回复时 QQ 自带 `<at/>`，并把「@lary 」当普通文字紧跟在后面。
+    #[test]
+    fn a_quoted_reply_with_the_auto_mention_still_matches() {
+        let message = segments(serde_json::json!([
+            {"type": "reply", "data": {"id": "7692256523120004036"}},
+            at("3844710092"),
+            text("@lary /扫码"),
+        ]));
+        let matched = match_segments(&message, &slash(), "扫码", true).expect("应当认出指令");
+        assert_eq!(matched.reply_id.as_deref(), Some("7692256523120004036"));
+        assert_eq!(matched.at_ids, ["3844710092"]);
+        assert!(matched.args.is_empty());
+    }
+
+    #[test]
+    fn the_mention_may_have_spaces_and_the_command_may_have_arguments() {
+        let message = segments(serde_json::json!([at("1"), text("@汽修二班 阿洛 /md # 标题")]));
+        let matched = match_segments(&message, &slash(), "md", true).unwrap();
+        assert_eq!(crate::command::extract_text_arg(&matched.args), "# 标题");
+        // 后面跟的图片等段落照常进参数。
+        let with_image = segments(serde_json::json!([
+            at("1"),
+            text("@lary /扫码 "),
+            {"type": "image", "data": {"url": "http://a/1.png"}},
+        ]));
+        let matched = match_segments(&with_image, &slash(), "扫码", true).unwrap();
+        assert_eq!(matched.args.len(), 1);
+    }
+
+    /// 越过显示名只在 @ 之后、只试前三个词：普通聊天里夹着指令词不触发。
+    #[test]
+    fn mid_sentence_mentions_do_not_trigger() {
+        for message in [
+            // 没有 at 段：文字再像也不越过。
+            serde_json::json!([text("@lary /扫码")]),
+            // 名字不会有四个词那么长。
+            serde_json::json!([at("1"), text("@a b c d /扫码")]),
+            // 指令词后紧跟别的字（strict）。
+            serde_json::json!([at("1"), text("@lary /扫码连热点")]),
+            // at 之后的文字不以 @ 开头：照旧要求一上来就是指令。
+            serde_json::json!([at("1"), text("你看 /扫码")]),
+        ] {
+            let message_segments = segments(message.clone());
+            assert!(
+                match_segments(&message_segments, &slash(), "扫码", true).is_none(),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn mention_tails_skip_one_to_three_words() {
+        assert_eq!(mention_tails("@lary /扫码"), ["/扫码"]);
+        assert_eq!(
+            mention_tails("@汽修二班 阿洛 /扫码"),
+            ["阿洛 /扫码", "/扫码"]
+        );
+        assert_eq!(mention_tails("@a b c /x y").len(), 3);
+        assert!(mention_tails("没有艾特 /扫码").is_empty());
+        assert!(mention_tails("@lary").is_empty());
+        assert!(mention_tails("@lary   ").is_empty());
+    }
+
+    /// 原有的匹配不受影响：没有 @ 时与从前一样。
+    #[test]
+    fn plain_commands_match_as_before() {
+        let message = segments(serde_json::json!([text("/echo 你好")]));
+        let matched = match_segments(&message, &slash(), "echo", false).unwrap();
+        assert_eq!(crate::command::extract_text_arg(&matched.args), "你好");
+        assert!(match_segments(&message, &slash(), "ech0", false).is_none());
+        let leading_at = segments(serde_json::json!([at("1"), text(" /echo 你好")]));
+        assert!(match_segments(&leading_at, &slash(), "echo", false).is_some());
+    }
 }

@@ -10,7 +10,7 @@
 //! 只响应指令，不去扫群里每一张图：那样既费电又会在不相干的群里冒出来。
 
 use crate::adapters::satori::{LockedWriter, api, delivery_uncertain, send_msg};
-use crate::command::get_prefixes;
+use crate::command::{self, get_prefixes};
 use crate::config::build_config;
 use crate::event::Context;
 use crate::http::download_bytes;
@@ -106,6 +106,8 @@ fn parse_request(segments: &[OwnedValue], prefixes: &[String]) -> Option<Request
     let mut reply_id = None;
     let mut image_urls = Vec::new();
     let mut matched = false;
+    // 上一段是 @：引用回复时 QQ 会在 `<at/>` 后面紧跟一段「@昵称 」的普通文字，指令在它后面。
+    let mut after_at = false;
     for segment in segments {
         let data = segment.get("data");
         match segment.get_str("type") {
@@ -119,7 +121,7 @@ fn parse_request(segments: &[OwnedValue], prefixes: &[String]) -> Option<Request
                     });
                 }
             }
-            Some("at") => {}
+            Some("at") => after_at = true,
             Some("image") => image_urls.extend(data.and_then(image_url_of)),
             Some("text") if !matched => {
                 let text = data.and_then(|data| data.get_str("text")).unwrap_or("");
@@ -127,7 +129,14 @@ fn parse_request(segments: &[OwnedValue], prefixes: &[String]) -> Option<Request
                 if text.is_empty() {
                     continue;
                 }
-                if !starts_with_command(text, prefixes) {
+                let mut candidates = vec![text];
+                if after_at {
+                    candidates.extend(command::mention_tails(text));
+                }
+                if !candidates
+                    .iter()
+                    .any(|candidate| starts_with_command(candidate, prefixes))
+                {
                     return None;
                 }
                 matched = true;
@@ -530,6 +539,33 @@ mod tests {
                 reply_id: Some("m-9".into())
             }
         );
+    }
+
+    /// 线上抓到的形状：引用回复时 QQ 自带 `<at/>`，并把「@lary 」当普通文字紧跟在后面。
+    /// 2026-10-03 用户在群里引用别人发 `/扫码` 没反应，就是因为这一段挡在指令前面。
+    #[test]
+    fn the_auto_mention_qq_adds_to_a_quoted_reply_is_skipped() {
+        let message = segments(serde_json::json!([
+            {"type": "reply", "data": {"id": "7692256523120004036"}},
+            {"type": "at", "data": {"qq": "3844710092"}},
+            text("@lary /扫码"),
+        ]));
+        let request = parse_request(&message, &slash()).expect("应当认出指令");
+        assert_eq!(request.reply_id.as_deref(), Some("7692256523120004036"));
+        // 昵称带空格、图片附在后面，同样认。
+        let spaced = segments(serde_json::json!([
+            {"type": "at", "data": {"qq": "1"}},
+            text("@汽修二班 阿洛 /二维码 "),
+            image("http://a/1.png"),
+        ]));
+        assert_eq!(parse_request(&spaced, &slash()).unwrap().image_urls, ["http://a/1.png"]);
+        // 没有 @ 段、或 @ 后面夹着别的话，仍不触发。
+        for message in [
+            serde_json::json!([text("@lary /扫码")]),
+            serde_json::json!([{"type": "at", "data": {"qq": "1"}}, text("@lary 看这个 你们 谁 /扫码")]),
+        ] {
+            assert!(parse_request(&segments(message), &slash()).is_none());
+        }
     }
 
     #[test]
