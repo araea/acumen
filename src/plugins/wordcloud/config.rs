@@ -9,6 +9,8 @@ pub struct WordCloudConfig {
     pub enabled: bool,
     /// 画面里最多排几个词，按出现次数从多到少取。
     pub limit: usize,
+    /// 让约三成的词竖排：字保持正的，自上而下排成一列（英文词转 90°）。关掉就全部横排。
+    pub vertical: bool,
     /// 排词的画布宽度（像素）。成图会裁到内容边界，画布只决定词排得开不开。
     pub width: u32,
     /// 排词的画布高度（像素）。
@@ -26,6 +28,7 @@ impl Default for WordCloudConfig {
         Self {
             enabled: true,
             limit: 50,
+            vertical: true,
             width: 800,
             height: 600,
             font_path: None,

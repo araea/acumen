@@ -812,6 +812,8 @@ enabled = true
 width = 800
 height = 600
 limit = 50
+# 约三成的词竖排：字保持正的、自上而下排成一列（英文词转 90°）。false 则全部横排。
+vertical = true
 # 一次最多读多少条原始记录。放大它更全面，代价是出图前那一段等待。
 max_msg = 50000
 

@@ -24,6 +24,11 @@ const TRIM_MARGIN: u32 = 8;
 /// 由共享的 M3 令牌生成，不再手动复制卡片色值。
 const WORD_COLORS: [&str; 5] = crate::render::tokens::WORD_COLORS;
 
+/// 开启竖排时的角度表。库给每个词从表里等概率抽一个角度，所以三项里放一个 -90°
+/// 就是约三成的词竖排；开了 `vertical_writing`，±90° 的词不是把字转倒，而是字保持
+/// 正的、自上而下排成一列。竖排只当点缀，比例再高，相邻的竖排词就会连成一片读不清。
+const VERTICAL_ANGLES: [f32; 3] = [0.0, 0.0, -90.0];
+
 static FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();
 
 fn get_font_db() -> &'static fontdb::Database {
@@ -39,6 +44,7 @@ pub fn generate_word_cloud(
     font_path: Option<String>,
     font_family: Option<String>,
     limit: usize,
+    vertical: bool,
     width: u32,
     height: u32,
 ) -> Result<String, String> {
@@ -97,9 +103,14 @@ pub fn generate_word_cloud(
         }
     }
 
+    let angles = if vertical {
+        VERTICAL_ANGLES.to_vec()
+    } else {
+        vec![0.0]
+    };
     let wordcloud = builder
-        .angles(vec![0.0])
-        .vertical_writing(false)
+        .angles(angles)
+        .vertical_writing(vertical)
         .build(&top_words)
         .map_err(|e| format!("词云布局失败：{}", e))?;
 

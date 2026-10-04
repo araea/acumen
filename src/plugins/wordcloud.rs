@@ -157,12 +157,13 @@ pub async fn generate_image(
     let font_path = config.font_path.clone();
     let font_family = config.font_family.clone();
     let limit = config.limit;
+    let vertical = config.vertical;
     let width = config.width;
     let height = config.height;
 
     // 在阻塞线程中生成图片
     let task_result = crate::render::worker::run(move || {
-        image::generate_word_cloud(corpus, font_path, font_family, limit, width, height)
+        image::generate_word_cloud(corpus, font_path, font_family, limit, vertical, width, height)
     })
     .await;
 
