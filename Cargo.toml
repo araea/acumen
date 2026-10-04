@@ -56,7 +56,7 @@ image = "0.25"
 plotters = { version = "0.3", default-features = false, features = ["all_elements", "all_series", "bitmap_backend", "bitmap_encoder", "bitmap_gif", "chrono", "colormaps", "deprecated_items", "full_palette", "image", "svg_backend", "ab_glyph"] }         # 图表绘制
 ab_glyph = "0.2"      # 原生文字光栅化
 fontdb = "0.24"       # 字体处理
-araea-wordcloud = "0.1.13"   # 词云生成
+araea-wordcloud = "0.1.14"   # 词云生成
 cdp-html-shot = "0.3.0"     # HTML 截图
 rxing = { version = "0.9", default-features = false, features = ["qrcode", "decoders", "multi_barcode_readers", "encoding_rs"] }  # 二维码识别（zxing-cpp 的 Rust 移植，耗时有界）
 qrcode = { version = "0.14", default-features = false }  # 文字转二维码（只用编码，自己按整数像素画图）

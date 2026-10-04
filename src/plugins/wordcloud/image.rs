@@ -25,8 +25,9 @@ const TRIM_MARGIN: u32 = 8;
 const WORD_COLORS: [&str; 5] = crate::render::tokens::WORD_COLORS;
 
 /// 开启竖排时的角度表。库给每个词从表里等概率抽一个角度，所以三项里放一个 -90°
-/// 就是约三成的词竖排；开了 `vertical_writing`，±90° 的词不是把字转倒，而是字保持
-/// 正的、自上而下排成一列。竖排只当点缀，比例再高，相邻的竖排词就会连成一片读不清。
+/// 就是约三成的词竖排；开了 `vertical_writing`，±90° 且整词都是方块字的词不是把字
+/// 转倒，而是字保持正的、自上而下排成一列，英文等其余词仍转 -90° 侧放。竖排只当点缀：
+/// 比例再高，整张图就成了一片竖条，扫一眼读不出词了。
 const VERTICAL_ANGLES: [f32; 3] = [0.0, 0.0, -90.0];
 
 static FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();

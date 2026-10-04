@@ -140,9 +140,9 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "araea-wordcloud"
-version = "0.1.13"
+version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b1bdcd7128762fdadfcdf95380ff4b63bc03c4d6694f996049e651990db4c5"
+checksum = "75bd7fd43dc6a949dcdde5248335438cee412d718e8e497f4300de8c2b6824a8"
 dependencies = [
  "fontdue",
  "image 0.25.10",
