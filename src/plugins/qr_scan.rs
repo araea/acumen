@@ -1,5 +1,6 @@
-//! 二维码识别：指令后附图，或引用一张图再发指令，把图里**全部**二维码转成文字与链接。
+//! 二维码：识别与生成两个方向，同一组指令。
 //!
+//! **识别**：指令后附图，或引用一张图再发指令，把图里**全部**二维码转成文字与链接。
 //! 一个码就一行标题加内容，原样放在单独一行，长按可复制、QQ 自己会认出链接；
 //! 多个码按阅读顺序编号，并在原图上把每个框出来、标上同样的序号。展示用文字而不是
 //! 图片——图里的链接复制不了，也就失去了「二维码转链接」的意义（见 [`content`]）。
@@ -8,6 +9,10 @@
 //! 或者什么都没识别出来时才说话，并给出下一步。
 //!
 //! 只响应指令，不去扫群里每一张图：那样既费电又会在不相干的群里冒出来。
+//!
+//! **生成**（[`generate`]）：`/生成二维码 内容`，或引用一条消息再发 `/生成二维码`，回一张好扫的图。
+//! `/二维码`、`/qr` 两个两头都沾的指令词看手里有什么：有图就识别，没图而有文字就生成——
+//! 人说「二维码 github.com」时，要的显然不是去找图。
 
 use crate::adapters::satori::{LockedWriter, api, delivery_uncertain, send_msg};
 use crate::command::{self, get_prefixes};
@@ -29,13 +34,36 @@ use toml::Value;
 
 pub mod annotate;
 pub mod content;
+pub mod generate;
 pub mod scan;
 
 const LOG_TARGET: &str = "Plugin/QrScan";
 
+/// 指令要做哪个方向。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Intent {
+    /// 只认图：把图里的二维码转成文字。
+    Scan,
+    /// 只认文字：把内容转成二维码图。
+    Generate,
+    /// 有图就识别；没图而有文字就生成。
+    Either,
+}
+
 /// 指令词。`扫码` 最顺口，`qr` 给英文输入法；词后须有空白或结尾，
 /// 所以「扫码连热点」「二维码怎么用」这样的话不会触发。
-const COMMANDS: [&str; 5] = ["扫码", "识别二维码", "二维码", "qr", "qrcode"];
+const COMMANDS: [(&str, Intent); 10] = [
+    ("扫码", Intent::Scan),
+    ("识别二维码", Intent::Scan),
+    ("二维码", Intent::Either),
+    ("qr", Intent::Either),
+    ("qrcode", Intent::Either),
+    ("生成二维码", Intent::Generate),
+    ("转二维码", Intent::Generate),
+    ("做二维码", Intent::Generate),
+    ("二维码生成", Intent::Generate),
+    ("qrgen", Intent::Generate),
+];
 
 /// 单张图下载后的体积上限。QQ 里发的图远小于它；挡的是别处来的怪文件。
 const MAX_IMAGE_BYTES: usize = 30 * 1024 * 1024;
@@ -54,6 +82,8 @@ struct Config {
     annotate: bool,
     /// 下载加识别的总预算（秒）；到点用已经找到的结果收工。
     timeout_seconds: u64,
+    /// 是否提供「文字转二维码」。关掉后只剩识别，`/二维码` 等指令词也只当识别用。
+    generate: bool,
 }
 
 impl Default for Config {
@@ -64,6 +94,7 @@ impl Default for Config {
             max_codes: 12,
             annotate: true,
             timeout_seconds: 30,
+            generate: true,
         }
     }
 }
@@ -90,10 +121,13 @@ pub fn validate_config(value: &toml::Value) -> Result<(), String> {
 
 // ================= 取指令与图片 =================
 
-/// 一条触发了本插件的消息：指令前后附的图，与被引用的那条。
+/// 一条触发了本插件的消息：指令前后附的图、指令词后面的文字，与被引用的那条。
 #[derive(Debug, PartialEq)]
 struct Request {
+    intent: Intent,
     image_urls: Vec<String>,
+    /// 指令词后面的文字（已去首尾空白）。识别时只是参数、不看；生成时就是要转的内容。
+    text: String,
     reply_id: Option<String>,
 }
 
@@ -101,11 +135,14 @@ struct Request {
 ///
 /// 通用的指令匹配遇到图片就停手，而 QQ 里「先贴图、再打字」是常见的发法，
 /// 所以这里自己走一遍：引用、@、图片都跳过，第一段有内容的文字必须以
-/// 前缀加指令词开头，其后是空白或结尾；其余文字当参数、不看。
-fn parse_request(segments: &[OwnedValue], prefixes: &[String]) -> Option<Request> {
+/// 前缀加指令词开头，其后是空白或结尾；词后的文字原样收下当参数。
+///
+/// `generate` 为假时，生成类的指令词不认，两头都沾的当识别用。
+fn parse_request(segments: &[OwnedValue], prefixes: &[String], generate: bool) -> Option<Request> {
     let mut reply_id = None;
     let mut image_urls = Vec::new();
-    let mut matched = false;
+    let mut intent = None;
+    let mut text = String::new();
     // 上一段是 @：引用回复时 QQ 会在 `<at/>` 后面紧跟一段「@昵称 」的普通文字，指令在它后面。
     let mut after_at = false;
     for segment in segments {
@@ -123,48 +160,61 @@ fn parse_request(segments: &[OwnedValue], prefixes: &[String]) -> Option<Request
             }
             Some("at") => after_at = true,
             Some("image") => image_urls.extend(data.and_then(image_url_of)),
-            Some("text") if !matched => {
-                let text = data.and_then(|data| data.get_str("text")).unwrap_or("");
-                let text = text.trim_start();
-                if text.is_empty() {
+            Some("text") if intent.is_none() => {
+                let head = data.and_then(|data| data.get_str("text")).unwrap_or("");
+                let head = head.trim_start();
+                if head.is_empty() {
                     continue;
                 }
-                let mut candidates = vec![text];
+                let mut candidates = vec![head];
                 if after_at {
-                    candidates.extend(command::mention_tails(text));
+                    candidates.extend(command::mention_tails(head));
                 }
-                if !candidates
-                    .iter()
-                    .any(|candidate| starts_with_command(candidate, prefixes))
-                {
-                    return None;
-                }
-                matched = true;
+                let (found, rest) = candidates
+                    .into_iter()
+                    .find_map(|candidate| match_command_word(candidate, prefixes, generate))?;
+                intent = Some(found);
+                text.push_str(rest);
             }
-            Some("text") => {}
+            Some("text") => text.push_str(data.and_then(|data| data.get_str("text")).unwrap_or("")),
             // 指令之前出现别的东西（表情、文件……）：这不是在对机器人说话。
-            _ if !matched => return None,
+            _ if intent.is_none() => return None,
             _ => {}
         }
     }
-    matched.then_some(Request {
+    Some(Request {
+        intent: intent?,
         image_urls,
+        text: text.trim().to_string(),
         reply_id,
     })
 }
 
-fn starts_with_command(text: &str, prefixes: &[String]) -> bool {
-    prefixes.iter().any(|prefix| {
-        COMMANDS.iter().any(|command| {
-            let target = format!("{prefix}{command}");
-            text.get(..target.len())
-                .is_some_and(|head| head.eq_ignore_ascii_case(&target))
-                && text[target.len()..]
-                    .chars()
-                    .next()
-                    .is_none_or(char::is_whitespace)
-        })
-    })
+/// 文字是不是以「前缀 + 指令词」开头、词后是空白或结尾；是就给出意图和词后面的那段。
+fn match_command_word<'a>(
+    text: &'a str,
+    prefixes: &[String],
+    generate: bool,
+) -> Option<(Intent, &'a str)> {
+    for prefix in prefixes {
+        for (word, intent) in COMMANDS {
+            let intent = match (intent, generate) {
+                (Intent::Generate, false) => continue,
+                (Intent::Either, false) => Intent::Scan,
+                (intent, _) => intent,
+            };
+            let target = format!("{prefix}{word}");
+            let Some(head) = text.get(..target.len()) else {
+                continue;
+            };
+            let rest = &text[target.len()..];
+            if head.eq_ignore_ascii_case(&target) && rest.chars().next().is_none_or(char::is_whitespace)
+            {
+                return Some((intent, rest));
+            }
+        }
+    }
+    None
 }
 
 fn image_url_of(data: &OwnedValue) -> Option<String> {
@@ -174,21 +224,33 @@ fn image_url_of(data: &OwnedValue) -> Option<String> {
         .map(String::from)
 }
 
-/// 被引用那条消息里的全部图片地址。
-fn image_urls_of(message: &Message) -> Vec<String> {
-    message
-        .0
-        .iter()
-        .filter(|segment| segment.type_ == "image")
-        .filter_map(|segment| {
-            segment
-                .data
-                .get("url")
-                .and_then(|value| value.as_str())
-                .filter(|url| !url.is_empty())
-                .map(String::from)
-        })
-        .collect()
+/// 被引用的那条消息里能用的东西：图片地址与文字。
+#[derive(Debug, Default)]
+struct Quoted {
+    image_urls: Vec<String>,
+    text: String,
+}
+
+impl Quoted {
+    fn of(message: &Message) -> Self {
+        let mut quoted = Quoted::default();
+        for segment in &message.0 {
+            let value = |key: &str| {
+                segment
+                    .data
+                    .get(key)
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.is_empty())
+            };
+            match segment.type_.as_str() {
+                "image" => quoted.image_urls.extend(value("url").map(String::from)),
+                "text" => quoted.text.push_str(value("text").unwrap_or("")),
+                _ => {}
+            }
+        }
+        quoted.text = quoted.text.trim().to_string();
+        quoted
+    }
 }
 
 // ================= 识别 =================
@@ -321,7 +383,22 @@ fn failure_text(title: &str, hint: &str) -> String {
     format!("❌ {title}\n{hint}")
 }
 
-const USAGE: &str = "❌ 没有找到图片\n发「/扫码」时附上图片，或引用一张图片再发「/扫码」";
+const USAGE_SCAN: &str = "❌ 没有找到图片\n发「/扫码」时附上图片，或引用一张图片再发「/扫码」";
+const USAGE_GENERATE: &str =
+    "❌ 没有可以转成二维码的内容\n发「/生成二维码 内容」，或引用一条文字消息再发「/生成二维码」";
+/// 要生成的内容为空，而手里却有图：多半是把识别和生成弄混了。
+const USAGE_GENERATE_WITH_IMAGE: &str =
+    "❌ 没有可以转成二维码的内容\n要识别图片里的二维码，请发「/扫码」";
+const USAGE_EITHER: &str = "❌ 没有找到图片或文字\n识别：发「/二维码」时附上图片，或引用一张图片再发\n生成：发「/二维码 内容」，或引用一条文字消息再发";
+
+/// 没读到被引用的消息时，告诉人怎么绕过去。
+fn quote_failure_hint(intent: Intent) -> &'static str {
+    match intent {
+        Intent::Scan => "请把图片直接附在「/扫码」后面发送",
+        Intent::Generate => "请把内容直接写在「/生成二维码」后面",
+        Intent::Either => "请把图片附在「/二维码」后面，或把要转的内容直接写在后面",
+    }
+}
 
 // ================= 插件入口 =================
 
@@ -336,14 +413,14 @@ pub fn handle(
         let Some(segments) = event.0.get_array("message") else {
             return Ok(Some(ctx));
         };
+        let config: Config = get_config_or_default(&ctx, "qr_scan");
         let prefixes = get_prefixes(&ctx);
-        let Some(request) = parse_request(segments, &prefixes) else {
+        let Some(request) = parse_request(segments, &prefixes, config.generate) else {
             return Ok(Some(ctx));
         };
         let group_id = event.group_id().map(str::to_string);
         let user_id = event.user_id().to_string();
         let message_id = event.message_id().to_string();
-        let config: Config = get_config_or_default(&ctx, "qr_scan");
 
         respond(
             &ctx,
@@ -359,6 +436,37 @@ pub fn handle(
     })
 }
 
+/// 这一次回复要往哪去：识别哪几张图、转哪段文字，或者告诉人缺了什么。
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Scan(Vec<String>),
+    Generate(String),
+    Usage(&'static str),
+}
+
+/// 手里有什么、指令是哪个方向，决定做什么。图与文字都是「指令里自带的优先，没有再用被引用那条的」。
+fn plan(intent: Intent, request_images: Vec<String>, request_text: String, quoted: Quoted) -> Plan {
+    let images = if request_images.is_empty() {
+        quoted.image_urls
+    } else {
+        request_images
+    };
+    let text = if request_text.is_empty() {
+        quoted.text
+    } else {
+        request_text
+    };
+    match intent {
+        Intent::Scan if images.is_empty() => Plan::Usage(USAGE_SCAN),
+        Intent::Scan => Plan::Scan(images),
+        Intent::Either if !images.is_empty() => Plan::Scan(images),
+        Intent::Either | Intent::Generate if !text.is_empty() => Plan::Generate(text),
+        Intent::Generate if !images.is_empty() => Plan::Usage(USAGE_GENERATE_WITH_IMAGE),
+        Intent::Generate => Plan::Usage(USAGE_GENERATE),
+        Intent::Either => Plan::Usage(USAGE_EITHER),
+    }
+}
+
 async fn respond(
     ctx: &Context,
     writer: LockedWriter,
@@ -369,36 +477,138 @@ async fn respond(
     message_id: &str,
 ) -> Result<(), PluginError> {
     let reply = |text: String| Message::new().reply(message_id).text(text);
+    let Request {
+        intent,
+        image_urls,
+        text,
+        reply_id,
+    } = request;
 
-    // 1. 图：指令里附的优先，没有再看被引用的那条。
-    let mut urls = request.image_urls;
-    if urls.is_empty()
-        && let Some(reply_id) = &request.reply_id
-    {
+    // 1. 被引用的那条：指令里没给够东西时才去读。
+    let mut quoted = Quoted::default();
+    let lacking = match intent {
+        Intent::Generate => text.is_empty(),
+        Intent::Scan | Intent::Either => image_urls.is_empty(),
+    };
+    if lacking && let Some(reply_id) = &reply_id {
         match api::get_msg(ctx, writer.clone(), reply_id).await {
-            Ok(quoted) => urls = image_urls_of(&quoted.message),
+            Ok(message) => quoted = Quoted::of(&message.message),
+            // 生成不需要被引用的那条：指令后面自己写了内容就接着做。
+            Err(e) if intent == Intent::Generate && !text.is_empty() => {
+                warn!(target: LOG_TARGET, "读取被引用的消息失败（改用指令里的内容）: {}", e);
+            }
             Err(e) => {
                 warn!(target: LOG_TARGET, "读取被引用的消息失败: {}", e);
-                let text = failure_text("没读到被引用的消息", "请把图片直接附在「/扫码」后面发送");
+                let text = failure_text("没读到被引用的消息", quote_failure_hint(intent));
                 send_msg(ctx, writer, group_id, Some(user_id), reply(text)).await?;
                 return Ok(());
             }
         }
     }
-    if urls.is_empty() {
-        send_msg(
-            ctx,
-            writer,
-            group_id,
-            Some(user_id),
-            reply(USAGE.to_string()),
-        )
-        .await?;
-        return Ok(());
+
+    match plan(intent, image_urls, text, quoted) {
+        Plan::Usage(usage) => {
+            send_msg(ctx, writer, group_id, Some(user_id), reply(usage.to_string())).await
+        }
+        Plan::Scan(urls) => {
+            respond_scan(ctx, writer, config, urls, group_id, user_id, message_id).await
+        }
+        Plan::Generate(content) => {
+            respond_generate(ctx, writer, &content, group_id, user_id, message_id).await
+        }
     }
+}
+
+// ================= 生成 =================
+
+/// 回复里随图带的说明：补了协议头要交代，码太密要提醒；都没有就只发图。
+fn generate_caption(prepared: &generate::Prepared, rendered: &generate::Rendered) -> Option<String> {
+    let mut notes = Vec::new();
+    if prepared.completed {
+        notes.push(format!("🔗 已补全协议头\n{}", prepared.text));
+    }
+    if rendered.is_dense() {
+        notes.push("⚠️ 内容较多，二维码比较密\n扫不出来时，先把图片放大再扫，或缩短内容".to_string());
+    }
+    (!notes.is_empty()).then(|| notes.join("\n\n"))
+}
+
+fn too_long_text(chars: usize) -> String {
+    failure_text(
+        "内容太长，一个二维码装不下",
+        &format!(
+            "这段有 {chars} 个字，一个码最多装约 980 个汉字或 2900 个英文字符\n长内容可以先放到网页或文档里，再用链接生成"
+        ),
+    )
+}
+
+async fn respond_generate(
+    ctx: &Context,
+    writer: LockedWriter,
+    content: &str,
+    group_id: Option<&str>,
+    user_id: &str,
+    message_id: &str,
+) -> Result<(), PluginError> {
+    let reply = |text: String| Message::new().reply(message_id).text(text);
+    let prepared = generate::prepare(content);
+    let to_encode = prepared.text.clone();
+    // 编一张码是毫秒级的事，不去排渲染池的队：别人的长图识别占着池子时，生成不该跟着等。
+    let rendered = match tokio::task::spawn_blocking(move || generate::render(&to_encode)).await {
+        Ok(Ok(rendered)) => rendered,
+        Ok(Err(generate::TooLong { chars })) => {
+            send_msg(ctx, writer, group_id, Some(user_id), reply(too_long_text(chars))).await?;
+            return Ok(());
+        }
+        Err(e) => {
+            error!(target: LOG_TARGET, "生成任务异常：{}", e);
+            let text = failure_text("二维码没能生成", "稍后再试一次");
+            send_msg(ctx, writer, group_id, Some(user_id), reply(text)).await?;
+            return Ok(());
+        }
+    };
+    // 内容可能是密码、密钥，日志只记规模。
+    info!(
+        target: LOG_TARGET,
+        "生成二维码：{} 字，{} 格",
+        prepared.text.chars().count(),
+        rendered.modules
+    );
+
+    let mut message = Message::new().reply(message_id).image_described(
+        format!("base64://{}", STANDARD.encode(&rendered.png)),
+        "二维码",
+    );
+    if let Some(caption) = generate_caption(&prepared, &rendered) {
+        message = message.text(caption);
+    }
+    match send_msg(ctx, writer.clone(), group_id, Some(user_id), message).await {
+        Ok(()) => Ok(()),
+        // 结果未知的不能再发一遍：那一条可能晚到，会重复。
+        Err(e) if delivery_uncertain(&*e) => Err(e),
+        Err(e) => {
+            warn!(target: LOG_TARGET, "二维码图片发送失败: {}", e);
+            let text = failure_text("二维码图片没能发出", "稍后再试一次");
+            send_msg(ctx, writer, group_id, Some(user_id), reply(text)).await
+        }
+    }
+}
+
+// ================= 识别并回复 =================
+
+async fn respond_scan(
+    ctx: &Context,
+    writer: LockedWriter,
+    config: &Config,
+    mut urls: Vec<String>,
+    group_id: Option<&str>,
+    user_id: &str,
+    message_id: &str,
+) -> Result<(), PluginError> {
+    let reply = |text: String| Message::new().reply(message_id).text(text);
     urls.truncate(config.max_images.clamp(1, 8));
 
-    // 2. 逐张下载、识别。一张失败不连坐别的。
+    // 逐张下载、识别。一张失败不连坐别的。
     let limits = scan::Limits {
         max_codes: config.max_codes.clamp(1, 50),
         deadline: Instant::now() + Duration::from_secs(config.timeout_seconds.clamp(5, 120)),
@@ -439,7 +649,7 @@ async fn respond(
         urls.len()
     );
 
-    // 3. 发送。多个码时先放标好序号的原图，再放清单；图发不出去就只发清单。
+    // 发送。多个码时先放标好序号的原图，再放清单；图发不出去就只发清单。
     let text = reply_text(&arrangement, urls.len(), &failures);
     let annotated = if config.annotate && arrangement.entries.len() + arrangement.omitted > 1 {
         annotated_images(&scanned, &arrangement)
@@ -498,6 +708,10 @@ mod tests {
         vec!["/".to_string()]
     }
 
+    fn parse(segments: &[OwnedValue], prefixes: &[String]) -> Option<Request> {
+        parse_request(segments, prefixes, true)
+    }
+
     fn text(value: &str) -> serde_json::Value {
         serde_json::json!({"type": "text", "data": {"text": value}})
     }
@@ -509,21 +723,21 @@ mod tests {
     #[test]
     fn the_command_can_carry_the_image_before_or_after_it() {
         // 指令后附图。
-        let after = parse_request(
+        let after = parse(
             &segments(serde_json::json!([text("/扫码"), image("http://a/1.png")])),
             &slash(),
         )
         .unwrap();
         assert_eq!(after.image_urls, ["http://a/1.png"]);
         // 先贴图、再打字，也是常见的发法。
-        let before = parse_request(
+        let before = parse(
             &segments(serde_json::json!([image("http://a/2.png"), text("/扫码")])),
             &slash(),
         )
         .unwrap();
         assert_eq!(before.image_urls, ["http://a/2.png"]);
         // 引用一条消息再发指令：图在被引用的那条里，这里只带回 reply_id。
-        let quoted = parse_request(
+        let quoted = parse(
             &segments(serde_json::json!([
                 {"type": "reply", "data": {"id": "m-9"}},
                 {"type": "at", "data": {"qq": "123"}},
@@ -535,7 +749,9 @@ mod tests {
         assert_eq!(
             quoted,
             Request {
+                intent: Intent::Either,
                 image_urls: vec![],
+                text: String::new(),
                 reply_id: Some("m-9".into())
             }
         );
@@ -550,7 +766,7 @@ mod tests {
             {"type": "at", "data": {"qq": "3844710092"}},
             text("@lary /扫码"),
         ]));
-        let request = parse_request(&message, &slash()).expect("应当认出指令");
+        let request = parse(&message, &slash()).expect("应当认出指令");
         assert_eq!(request.reply_id.as_deref(), Some("7692256523120004036"));
         // 昵称带空格、图片附在后面，同样认。
         let spaced = segments(serde_json::json!([
@@ -558,13 +774,13 @@ mod tests {
             text("@汽修二班 阿洛 /二维码 "),
             image("http://a/1.png"),
         ]));
-        assert_eq!(parse_request(&spaced, &slash()).unwrap().image_urls, ["http://a/1.png"]);
+        assert_eq!(parse(&spaced, &slash()).unwrap().image_urls, ["http://a/1.png"]);
         // 没有 @ 段、或 @ 后面夹着别的话，仍不触发。
         for message in [
             serde_json::json!([text("@lary /扫码")]),
             serde_json::json!([{"type": "at", "data": {"qq": "1"}}, text("@lary 看这个 你们 谁 /扫码")]),
         ] {
-            assert!(parse_request(&segments(message), &slash()).is_none());
+            assert!(parse(&segments(message), &slash()).is_none());
         }
     }
 
@@ -572,11 +788,11 @@ mod tests {
     fn every_alias_works_and_reply_ids_may_be_numbers() {
         for command in ["/扫码", "/识别二维码", "/二维码", "/qr", "/QR", "/qrcode"] {
             assert!(
-                parse_request(&segments(serde_json::json!([text(command)])), &slash()).is_some(),
+                parse(&segments(serde_json::json!([text(command)])), &slash()).is_some(),
                 "{command}"
             );
         }
-        let request = parse_request(
+        let request = parse(
             &segments(serde_json::json!([{"type": "reply", "data": {"id": 42}}, text("/qr")])),
             &slash(),
         )
@@ -597,7 +813,7 @@ mod tests {
             serde_json::json!([text("/qrcodes")]),
         ] {
             assert!(
-                parse_request(&segments(message.clone()), &slash()).is_none(),
+                parse(&segments(message.clone()), &slash()).is_none(),
                 "{message}"
             );
         }
@@ -605,7 +821,7 @@ mod tests {
 
     #[test]
     fn text_after_the_command_is_just_an_argument() {
-        let request = parse_request(
+        let request = parse(
             &segments(serde_json::json!([
                 text("/扫码 这张"),
                 text("随便"),
@@ -617,7 +833,7 @@ mod tests {
         assert_eq!(request.image_urls, ["http://a/1.png"]);
         // 多个前缀都认。
         let prefixes = vec!["/".to_string(), "!".to_string()];
-        assert!(parse_request(&segments(serde_json::json!([text("!扫码")])), &prefixes).is_some());
+        assert!(parse(&segments(serde_json::json!([text("!扫码")])), &prefixes).is_some());
     }
 
     #[test]
@@ -629,7 +845,7 @@ mod tests {
             {"type": "image", "data": {"url": ""}},
         ]));
         assert_eq!(
-            parse_request(&from_file, &slash()).unwrap().image_urls,
+            parse(&from_file, &slash()).unwrap().image_urls,
             ["https://a/f.png"]
         );
     }
@@ -709,6 +925,204 @@ mod tests {
             text.contains("有 1 张图没能读取：第 2 张下载超时"),
             "{text}"
         );
+    }
+
+    fn parsed(value: serde_json::Value) -> Request {
+        parse(&segments(value), &slash()).expect("应当认出指令")
+    }
+
+    /// 生成：指令词后面的文字（含换行、符号、网址里的 &）原样收下，只去首尾空白。
+    #[test]
+    fn generate_commands_carry_their_text_verbatim() {
+        for word in ["生成二维码", "转二维码", "做二维码", "二维码生成", "qrgen"] {
+            let request = parsed(serde_json::json!([text(&format!("/{word} https://a.com/?x=1&y=2 "))]));
+            assert_eq!(request.intent, Intent::Generate, "{word}");
+            assert_eq!(request.text, "https://a.com/?x=1&y=2", "{word}");
+        }
+        // 换行当分隔也行；多行内容的中间不动。
+        let request = parsed(serde_json::json!([text("/生成二维码\n第一行\n  第二行\n")]));
+        assert_eq!(request.text, "第一行\n  第二行");
+        // 文字被拆成几段发来（中间夹着表情之类）也接得上。
+        let request = parsed(serde_json::json!([
+            text("/生成二维码 前半"),
+            {"type": "face", "data": {"id": "1"}},
+            text("后半"),
+        ]));
+        assert_eq!(request.text, "前半后半");
+        // 引用回复自带的「@昵称 」不挡路，引用的 id 也带回来。
+        let request = parsed(serde_json::json!([
+            {"type": "reply", "data": {"id": "m-1"}},
+            {"type": "at", "data": {"qq": "3844710092"}},
+            text("@lary /转二维码 hello"),
+        ]));
+        assert_eq!(request.text, "hello");
+        assert_eq!(request.reply_id.as_deref(), Some("m-1"));
+        // 光有指令词：内容为空，交给引用的那条补。
+        assert_eq!(parsed(serde_json::json!([text("/生成二维码")])).text, "");
+    }
+
+    /// `二维码`、`qr` 两头都沾；`扫码` 只认图、`生成二维码` 只认字。
+    #[test]
+    fn ambiguous_words_are_marked_as_such() {
+        for (command, intent) in [
+            ("/扫码", Intent::Scan),
+            ("/识别二维码", Intent::Scan),
+            ("/二维码", Intent::Either),
+            ("/QR", Intent::Either),
+            ("/qrcode", Intent::Either),
+            ("/生成二维码", Intent::Generate),
+        ] {
+            assert_eq!(parsed(serde_json::json!([text(command)])).intent, intent, "{command}");
+        }
+        // 识别时词后的文字只是参数；图片照常收。
+        let request = parsed(serde_json::json!([text("/二维码 这张"), image("http://a/1.png")]));
+        assert_eq!(request.intent, Intent::Either);
+        assert_eq!(request.image_urls, ["http://a/1.png"]);
+        assert_eq!(request.text, "这张");
+    }
+
+    /// 关掉生成后：生成指令词不认，两头都沾的退回纯识别。
+    #[test]
+    fn turning_generation_off_leaves_only_scanning() {
+        let off = |value| parse_request(&segments(value), &slash(), false);
+        assert!(off(serde_json::json!([text("/生成二维码 hello")])).is_none());
+        assert!(off(serde_json::json!([text("/qrgen hello")])).is_none());
+        assert_eq!(off(serde_json::json!([text("/二维码 hello")])).unwrap().intent, Intent::Scan);
+        assert_eq!(off(serde_json::json!([text("/扫码")])).unwrap().intent, Intent::Scan);
+    }
+
+    /// 生成指令词后紧跟别的字、或不是指令的闲聊，一概不触发。
+    #[test]
+    fn generate_words_need_a_boundary_too() {
+        for message in [
+            serde_json::json!([text("/生成二维码怎么用")]),
+            serde_json::json!([text("/qrgenerator hello")]),
+            serde_json::json!([text("/转二维码的软件有哪些")]),
+            serde_json::json!([text("生成二维码 hello")]),
+            serde_json::json!([text("帮我 /生成二维码 hello")]),
+        ] {
+            assert!(parse(&segments(message.clone()), &slash()).is_none(), "{message}");
+        }
+    }
+
+    fn quoted(images: &[&str], text: &str) -> Quoted {
+        Quoted {
+            image_urls: images.iter().map(|url| url.to_string()).collect(),
+            text: text.to_string(),
+        }
+    }
+
+    fn urls(list: &[&str]) -> Vec<String> {
+        list.iter().map(|url| url.to_string()).collect()
+    }
+
+    /// 谁优先、缺什么说什么：这是用户每天会撞上的几十种组合，逐个钉住。
+    #[test]
+    fn the_plan_follows_what_is_at_hand() {
+        let none = || quoted(&[], "");
+        // 识别：指令里的图优先，没有再用引用的图；字不管。
+        assert_eq!(
+            plan(Intent::Scan, urls(&["a"]), "随便".into(), quoted(&["q"], "字")),
+            Plan::Scan(urls(&["a"]))
+        );
+        assert_eq!(
+            plan(Intent::Scan, vec![], String::new(), quoted(&["q"], "")),
+            Plan::Scan(urls(&["q"]))
+        );
+        assert_eq!(
+            plan(Intent::Scan, vec![], "hello".into(), quoted(&[], "只有字")),
+            Plan::Usage(USAGE_SCAN)
+        );
+        // 生成：指令后的字优先，没有再用引用那条的字；有图也不去识别。
+        assert_eq!(
+            plan(Intent::Generate, urls(&["a"]), "hello".into(), quoted(&[], "旧")),
+            Plan::Generate("hello".into())
+        );
+        assert_eq!(
+            plan(Intent::Generate, vec![], String::new(), quoted(&[], "引用的话")),
+            Plan::Generate("引用的话".into())
+        );
+        assert_eq!(
+            plan(Intent::Generate, vec![], String::new(), quoted(&["q"], "")),
+            Plan::Usage(USAGE_GENERATE_WITH_IMAGE)
+        );
+        assert_eq!(
+            plan(Intent::Generate, urls(&["a"]), String::new(), none()),
+            Plan::Usage(USAGE_GENERATE_WITH_IMAGE)
+        );
+        assert_eq!(
+            plan(Intent::Generate, vec![], String::new(), none()),
+            Plan::Usage(USAGE_GENERATE)
+        );
+        // 两头都沾：有图识别；没图有字生成；都没有两个方向都提示。
+        assert_eq!(
+            plan(Intent::Either, urls(&["a"]), "这张".into(), none()),
+            Plan::Scan(urls(&["a"]))
+        );
+        assert_eq!(
+            plan(Intent::Either, vec![], "这张".into(), quoted(&["q"], "字")),
+            Plan::Scan(urls(&["q"])),
+            "引用了图就是想识别它，哪怕后面还跟了字"
+        );
+        assert_eq!(
+            plan(Intent::Either, vec![], "github.com".into(), quoted(&[], "")),
+            Plan::Generate("github.com".into())
+        );
+        assert_eq!(
+            plan(Intent::Either, vec![], String::new(), quoted(&[], "引用的话")),
+            Plan::Generate("引用的话".into())
+        );
+        assert_eq!(
+            plan(Intent::Either, vec![], String::new(), none()),
+            Plan::Usage(USAGE_EITHER)
+        );
+    }
+
+    #[test]
+    fn a_quoted_message_gives_its_images_and_joined_text() {
+        let message: Message = simd_json::serde::from_owned_value(
+            simd_json::serde::to_owned_value(serde_json::json!([
+                {"type": "text", "data": {"text": " 看这个 "}},
+                {"type": "image", "data": {"url": "http://a/1.png"}},
+                {"type": "face", "data": {"id": "1"}},
+                {"type": "text", "data": {"text": "https://a.com\n"}},
+                {"type": "image", "data": {"url": ""}},
+            ]))
+            .unwrap(),
+        )
+        .map(Message)
+        .unwrap();
+        let quoted = Quoted::of(&message);
+        assert_eq!(quoted.image_urls, ["http://a/1.png"]);
+        assert_eq!(quoted.text, "看这个 https://a.com");
+    }
+
+    /// 回复里只在有话要交代时才带文字：补了协议头、码太密。平常就是一张图。
+    #[test]
+    fn the_caption_appears_only_when_there_is_something_to_say() {
+        let plain = generate::prepare("hello");
+        let rendered = generate::render(&plain.text).unwrap();
+        assert_eq!(generate_caption(&plain, &rendered), None);
+
+        let completed = generate::prepare("github.com/araea");
+        let rendered = generate::render(&completed.text).unwrap();
+        assert_eq!(
+            generate_caption(&completed, &rendered).as_deref(),
+            Some("🔗 已补全协议头\nhttps://github.com/araea")
+        );
+
+        let long = generate::prepare(&"长文本".repeat(100));
+        let rendered = generate::render(&long.text).unwrap();
+        let caption = generate_caption(&long, &rendered).unwrap();
+        assert!(caption.starts_with("⚠️ 内容较多"), "{caption}");
+    }
+
+    #[test]
+    fn too_long_content_gets_a_way_out() {
+        let text = too_long_text(1500);
+        assert!(text.starts_with("❌ 内容太长"), "{text}");
+        assert!(text.contains("1500 个字"), "{text}");
+        assert!(text.contains("链接"), "{text}");
     }
 
     #[test]
