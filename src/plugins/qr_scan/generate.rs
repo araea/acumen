@@ -9,7 +9,8 @@
 //! 并把补完的整串原样放在单独一行，方便复制。
 
 use image::{GrayImage, ImageFormat, Luma};
-use qrcode::{Color, EcLevel, QrCode};
+use qrcode::bits::Bits;
+use qrcode::{Color, EcLevel, QrCode, Version};
 use std::io::Cursor;
 
 /// 静区格数。规范要求至少 4，少了就有扫码器找不到边。
@@ -114,10 +115,9 @@ pub struct TooLong {
 
 /// 编成二维码图（PNG）。纠错先取 M（损一成多仍能读）；装不下再退到 L，换最大的容量。
 pub fn render(text: &str) -> Result<Rendered, TooLong> {
-    // 失败只会是装不下（空内容调用方已先拦掉），所以任何错误都往下一档试。
     let code = [EcLevel::M, EcLevel::L]
         .into_iter()
-        .find_map(|level| QrCode::with_error_correction_level(text, level).ok())
+        .find_map(|level| encode(text, level))
         .ok_or_else(|| TooLong {
             chars: text.chars().count(),
         })?;
@@ -125,6 +125,35 @@ pub fn render(text: &str) -> Result<Rendered, TooLong> {
         modules: code.width(),
         png: draw(&code),
     })
+}
+
+/// 挑最小的版本把内容装进去。装不下返回 `None`。
+///
+/// **不能交给 `qrcode` 的自动分段**：它会把 UTF-8 里碰巧落在 Shift-JIS 汉字区的字节对
+/// （中文几乎处处是）切成 Kanji 模式，扫码器按日文解码，中文就成了乱码——短到二十来个字
+/// 就会发生。所以这里只用数字、字母数字、字节三种模式，整串挑一种。
+fn encode(text: &str, level: EcLevel) -> Option<QrCode> {
+    let data = text.as_bytes();
+    let numeric = data.iter().all(u8::is_ascii_digit);
+    let alphanumeric = data.iter().all(|&b| is_alphanumeric_mode(b));
+    (1..=40).find_map(|version| {
+        let mut bits = Bits::new(Version::Normal(version));
+        if numeric {
+            bits.push_numeric_data(data)
+        } else if alphanumeric {
+            bits.push_alphanumeric_data(data)
+        } else {
+            bits.push_byte_data(data)
+        }
+        .ok()?;
+        bits.push_terminator(level).ok()?;
+        QrCode::with_bits(bits, level).ok()
+    })
+}
+
+/// 字母数字模式的字符集：数字、大写字母与 ` $%*+-./:`。
+fn is_alphanumeric_mode(byte: u8) -> bool {
+    byte.is_ascii_digit() || byte.is_ascii_uppercase() || b" $%*+-./:".contains(&byte)
 }
 
 fn draw(code: &QrCode) -> Vec<u8> {
@@ -187,6 +216,54 @@ mod tests {
             let rendered = render(text).unwrap();
             assert_eq!(decode(&rendered.png), [text], "{text:?}");
         }
+    }
+
+    /// 回归：`qrcode` 自带的自动分段会把中文的 UTF-8 字节误判成 Shift-JIS 汉字，
+    /// 扫出来前半段对、后半段是乱码。这条句子在 28 个字时就会中招。
+    #[test]
+    fn chinese_is_never_mistaken_for_kanji() {
+        let text = "这是一段比较长的话，用来看二维码变密以后还扫不扫得出来。";
+        assert_eq!(decode(&render(text).unwrap().png), [text]);
+        for repeat in [3, 12, 30] {
+            let text = text.repeat(repeat);
+            let rendered = render(&text).unwrap();
+            assert_eq!(decode(&rendered.png), [text], "重复 {repeat} 次");
+        }
+    }
+
+    /// 常用汉字、日文假名、全角符号混排，长短不一，逐条读回——不靠某句碰巧过关。
+    #[test]
+    fn assorted_cjk_text_round_trips() {
+        // 确定性的伪随机，免得测试时好时坏。
+        let mut state = 20_261_004u32;
+        let mut next = move |n: u32| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 8) % n
+        };
+        for length in [1, 2, 5, 9, 16, 28, 50, 90, 160, 300] {
+            let text: String = (0..length)
+                .map(|_| match next(10) {
+                    0 => char::from_u32(0x3041 + next(80)).unwrap(),
+                    1 => ['，', '。', '！', '？', '、', '：', '（', '）'][next(8) as usize],
+                    2 => char::from_u32(0x20 + next(0x5f)).unwrap(),
+                    _ => char::from_u32(0x4e00 + next(0x51a5)).unwrap(),
+                })
+                .collect();
+            let rendered = render(&text).unwrap();
+            assert_eq!(decode(&rendered.png), [text.clone()], "长 {length}：{text}");
+        }
+    }
+
+    /// 纯数字与纯大写字母数字走更省地方的模式，格数比字节模式少。
+    #[test]
+    fn digits_and_capitals_use_the_denser_modes() {
+        let digits = "1234567890".repeat(8);
+        let capitals = "HELLO WORLD 2026 ".repeat(5).trim_end().to_string();
+        let bytes = "hello world 2026 ".repeat(5).trim_end().to_string();
+        let (d, c, b) = (render(&digits).unwrap(), render(&capitals).unwrap(), render(&bytes).unwrap());
+        assert_eq!(decode(&d.png), [digits.clone()]);
+        assert_eq!(decode(&c.png), [capitals.clone()]);
+        assert!(d.modules < c.modules && c.modules < b.modules, "{} {} {}", d.modules, c.modules, b.modules);
     }
 
     /// 由 `prepare` 补过协议头的网址，扫出来的就是补完的整串。
