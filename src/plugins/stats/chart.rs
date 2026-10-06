@@ -1,5 +1,6 @@
 pub mod avatar;
 pub mod data_loader;
+pub mod medal;
 pub mod renderer;
 pub mod utils;
 

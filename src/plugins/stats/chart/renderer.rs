@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::ChartError;
 use super::data_loader::{BarData, SeriesData};
+use super::medal;
 use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
     format_percent, format_thousands, get_font, get_font_family, get_font_with_color, handle_tone,
@@ -82,7 +83,8 @@ impl ScaleGrid {
 /// - **名次单独成列。** 从前这张榜只能靠数行数才知道第几名——排行榜没有名次，
 ///   是缺了它最该有的那一列。前三名走固定的奖牌色，不跟头像色走：名次的颜色
 ///   本身就是含义，跟着主题走一遍就不认得了。数字本身是第二个通道，转成灰度
-///   也还读得出第几名。
+///   也还读得出第几名。头像外也包一圈同色的奖牌圈，榜首另有柔光与小皇冠
+///   （见 [`super::medal`]）：同一个含义再说一遍，让视线先落在榜首上。
 /// - **数值与占比各自右对齐成固定的一列。** 跟着条尾走会排成一串阶梯，二十行
 ///   就是二十个不同的起点，上下比大小要一个个找；而且短条那几行的数字压在淡色
 ///   轨道上，长条那几行压在纸上，同一列字踩着两种底。
@@ -225,6 +227,17 @@ pub fn draw_bar_chart(
     let value_right_x = track_end_x + (gap_text + value_col_w) as i32;
     let pct_right_x = value_right_x + (pct_gap + pct_col_w) as i32;
 
+    // 前三名头像的圆心（像素）。名次就是行号，所以这里不需要等行样式算出来。
+    let avatar_radius = (avatar_width / 2) as f32;
+    let medal_center = |index: usize| {
+        (index < data.len().min(3)).then(|| {
+            (
+                (avatar_x + (avatar_width / 2) as i32) as f32,
+                (top_area_height + index as u32 * row_pitch + row_height / 2) as f32,
+            )
+        })
+    };
+
     // === 2. 绘图 ===
     let mut buffer = vec![0u8; (canvas_width * canvas_height * 3) as usize];
     {
@@ -232,6 +245,14 @@ pub fn draw_bar_chart(
             .into_drawing_area();
 
         root.fill(&page_bg).map_err(|e| e.to_string())?;
+
+        // 榜首头像外的一圈柔光：先于一切条与文字写进画布，之后画的东西会盖住它，
+        // 它只染纸面（见 `medal` 模块的说明）。
+        if let (Some((cx, cy)), Some(champion)) = (medal_center(0), medal::medal(1)) {
+            for (x, y, color) in champion.glow(cx, cy, avatar_radius, s as f32, page_bg) {
+                root.draw_pixel((x, y), &color).map_err(|e| e.to_string())?;
+            }
+        }
 
         let title_style = get_font_with_color(config, title_font_size, &ink)
             .pos(Pos::new(HPos::Center, VPos::Top));
@@ -294,8 +315,9 @@ pub fn draw_bar_chart(
 
         // 头像底下垫一圈发丝细的暗边：浅色头像贴在暖白纸上边缘会化掉，
         // 一圈描边正好把圆形收住（iOS 给头像与应用图标描内边同理）。
-        for (row, item) in rows.iter().zip(data.iter()) {
-            if item.avatar_img.is_none() {
+        // 前三名有奖牌圈包着，不再垫这一圈。
+        for (index, (row, item)) in rows.iter().zip(data.iter()).enumerate() {
+            if item.avatar_img.is_none() || medal_center(index).is_some() {
                 continue;
             }
             root.draw(&Circle::new(
@@ -504,6 +526,16 @@ pub fn draw_bar_chart(
             let y_pos = top_area_height as i32 + (i as u32 * row_pitch) as i32;
             overlay_image(&mut rgba_image, avatar, avatar_x, y_pos);
         }
+    }
+
+    // 奖牌圈压在头像之上、条与文字之下的位置已由绘制顺序保证：条与文字在 plotters 那一趟
+    // 里画完了，圈落在它们之间的纸缝里，不与任何一样相交。
+    for rank in 1..=data.len().min(3) {
+        let (Some((cx, cy)), Some(medal)) = (medal_center(rank - 1), medal::medal(rank)) else {
+            continue;
+        };
+        medal.paint_ring(&mut rgba_image, cx, cy, avatar_radius, s as f32);
+        medal.paint_crown(&mut rgba_image, cx, cy, avatar_radius, s as f32);
     }
 
     save_rgba_to_base64(rgba_image).map_err(ChartError::Failed)
