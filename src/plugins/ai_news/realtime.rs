@@ -156,7 +156,7 @@ async fn tick(ctx: Context, writer: LockedWriter) {
 
 /// 抓一次配置的数据源，把够新的条目发给还没看过它们的目标
 async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
-    let clock_now = Utc::now().with_timezone(&super::render::beijing()).time();
+    let clock_now = Utc::now().with_timezone(&crate::clock::beijing()).time();
     let targets: Vec<PushTarget> = cfg
         .targets()
         .into_iter()
@@ -297,7 +297,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
         pushed_any = true;
 
         let clock = Utc::now()
-            .with_timezone(&super::render::beijing())
+            .with_timezone(&crate::clock::beijing())
             .format("%H:%M")
             .to_string();
         let sent = pusher::deliver_items(

@@ -190,7 +190,7 @@ impl PeakConfig {
     /// 法定节假日全天不是高峰。
     pub(crate) fn is_peak_at<Tz: chrono::TimeZone>(&self, at: chrono::DateTime<Tz>) -> bool {
         use chrono::{Datelike as _, Timelike as _};
-        let at = at.with_timezone(&chrono::FixedOffset::east_opt(8 * 3_600).expect("北京时间"));
+        let at = at.with_timezone(&crate::clock::beijing());
         let weekday = at.weekday().number_from_monday() as u8;
         if !self.weekdays.is_empty() && !self.weekdays.contains(&weekday) {
             return false;

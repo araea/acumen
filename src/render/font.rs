@@ -124,13 +124,13 @@ impl Fonts {
     }
 
     fn load() -> Option<Fonts> {
-        let db = load_db();
+        let db = database();
         // 单个字重的首选字体：族名查询 → 文件兜底 → 换字族再来一遍
         let pick =
             |own_fam: &[&str], own_files: &[&str], alt_fam: &[&str], alt_files: &[&str], w| {
-                load_family(&db, own_fam, w)
+                load_family(db, own_fam, w)
                     .or_else(|| load_files(own_files))
-                    .or_else(|| load_family(&db, alt_fam, w))
+                    .or_else(|| load_family(db, alt_fam, w))
                     .or_else(|| load_files(alt_files))
             };
         let serif = |w| pick(SERIF_FAMILIES, SERIF_FILES, SANS_FAMILIES, SANS_FILES, w);
@@ -138,7 +138,7 @@ impl Fonts {
 
         // 回退链公用的两个「广覆盖」字体：黑体常规覆盖面最大，符号字体兜底
         let broad = || {
-            load_family(&db, SANS_FAMILIES, fontdb::Weight::NORMAL)
+            load_family(db, SANS_FAMILIES, fontdb::Weight::NORMAL)
                 .or_else(|| load_files(SANS_FILES))
         };
         let symbols = || load_files(SYMBOL_FILES);
@@ -161,6 +161,14 @@ impl Fonts {
             sans: chain(sans(fontdb::Weight::NORMAL)?),
         })
     }
+}
+
+static DATABASE: std::sync::OnceLock<fontdb::Database> = std::sync::OnceLock::new();
+
+/// 进程内共享的系统字体库：fontdb 默认只认桌面发行版的目录，这里补上 Android / Termux 的
+/// 系统字体目录与用户字体目录。词云、统计图与原生卡片查字体都从这一份来。
+pub fn database() -> &'static fontdb::Database {
+    DATABASE.get_or_init(load_db)
 }
 
 fn load_db() -> fontdb::Database {

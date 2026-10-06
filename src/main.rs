@@ -1,4 +1,5 @@
 mod adapters;
+mod clock;
 mod command;
 mod config;
 mod db;

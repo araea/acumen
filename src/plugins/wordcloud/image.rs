@@ -3,7 +3,6 @@ use araea_wordcloud::{WordCloudBuilder, WordInput};
 use base64::{Engine as _, engine::general_purpose};
 use rand::RngExt;
 use std::collections::HashMap;
-use std::sync::OnceLock;
 use std::time::Instant;
 
 /// 词云的纸色。取设计系统的卡面（`res/cards/m3e.css` 的 `scheme-manual`），
@@ -29,16 +28,6 @@ const WORD_COLORS: [&str; 5] = crate::render::tokens::WORD_COLORS;
 /// 转倒，而是字保持正的、自上而下排成一列，英文等其余词仍转 -90° 侧放。竖排只当点缀：
 /// 比例再高，整张图就成了一片竖条，扫一眼读不出词了。
 const VERTICAL_ANGLES: [f32; 3] = [0.0, 0.0, -90.0];
-
-static FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();
-
-fn get_font_db() -> &'static fontdb::Database {
-    FONT_DB.get_or_init(|| {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts(); // 扫描系统字体
-        db
-    })
-}
 
 pub fn generate_word_cloud(
     corpus: Vec<String>,
@@ -132,7 +121,7 @@ pub fn generate_word_cloud(
 
 /// 查找并读取字体数据
 fn load_font_by_family(family: &str) -> Result<Vec<u8>, String> {
-    let db = get_font_db();
+    let db = crate::render::font::database();
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family), fontdb::Family::SansSerif],
         weight: fontdb::Weight::NORMAL,

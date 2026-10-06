@@ -157,12 +157,20 @@ pub struct Doc {
     pub hint: (String, String),
 }
 
+/// 动态内容进 HTML 之前一律先过这里：卡片的文字、属性值都靠它转义。
 pub(crate) fn esc(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    let mut out = String::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 fn badge(label: &str, state: &str) -> String {
     format!(
@@ -177,7 +185,7 @@ fn badge(label: &str, state: &str) -> String {
 /// 手册与控制这两张从前右边空着——补上时刻是为了让「开关状态以当前配置为准」
 /// 这句有个可核对的落点：图是什么时候出的，一眼就知道该不该重新查一遍。
 fn stamp() -> String {
-    crate::render::beijing_now()
+    crate::clock::beijing_now()
         .format("%Y-%m-%d %H:%M")
         .to_string()
 }

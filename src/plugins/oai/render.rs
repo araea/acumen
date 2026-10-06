@@ -10,7 +10,7 @@
 //! 区分、代码块深色高对比、表格斑马纹、长 URL 强制断行；正文之外还能挂来源列表
 //! 与耗时页脚，让读者一眼看清结论出处与代价。
 
-use crate::render::web as render;
+use crate::render::web::{self as render, esc};
 use pulldown_cmark::{Options, Parser, html};
 use regex::Regex;
 use std::sync::OnceLock;
@@ -90,7 +90,7 @@ fn build_html(card: &Card<'_>) -> String {
     let stamp = if stamp.is_empty() {
         String::new()
     } else {
-        format!(r#"<span class="md-stamp">{}</span>"#, escape_html(&stamp))
+        format!(r#"<span class="md-stamp">{}</span>"#, esc(&stamp))
     };
 
     format!(
@@ -99,7 +99,7 @@ fn build_html(card: &Card<'_>) -> String {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{SYSTEM}{CSS}</style></head>
 <body class="scheme-reply md-text"><div class="shot"><div class="card md-card"><div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>智能回复<span class="md-kicker-en">REPLY</span></div>{stamp}</div><div class="head md-title md-type-title-small">{title}</div><hr class="md-divider"><div class="body">{body}</div></div>{sources}{footer}</div></div></body></html>"#,
         SYSTEM = crate::render::web::DESIGN_SYSTEM,
-        title = escape_html(card.title),
+        title = esc(card.title),
     )
 }
 
@@ -109,7 +109,7 @@ fn label_code_blocks(html: &str) -> String {
     static CODE: OnceLock<Regex> = OnceLock::new();
     CODE.get_or_init(|| Regex::new(r#"(?is)<pre><code class="language-([^"]+)">"#).unwrap())
         .replace_all(html, |caps: &regex::Captures| {
-            format!(r#"<pre data-lang="{}"><code>"#, escape_html(&caps[1]))
+            format!(r#"<pre data-lang="{}"><code>"#, esc(&caps[1]))
         })
         .into_owned()
 }
@@ -127,12 +127,12 @@ fn render_footer(footer: &Footer) -> String {
     for step in &footer.trace {
         out.push_str(&format!(
             r#"<div class="trace-row"><span class="trace-name">{}</span>"#,
-            escape_html(&step.name)
+            esc(&step.name)
         ));
         if !step.detail.is_empty() {
             out.push_str(&format!(
                 r#"<span class="trace-arg">{}</span>"#,
-                escape_html(&step.detail)
+                esc(&step.detail)
             ));
         }
         if step.repeats > 1 {
@@ -166,27 +166,12 @@ fn render_sources(sources: &[super::types::Source]) -> String {
             format!(
                 r#"<li><span class="src-idx">{}</span><span class="src-title">{}</span><span class="src-host">{}</span></li>"#,
                 index + 1,
-                escape_html(&source.title),
-                escape_html(&source.url),
+                esc(&source.title),
+                esc(&source.url),
             )
         })
         .collect::<String>();
     format!(r#"<div class="sources"><div class="src-head">参考来源</div><ol>{items}</ol></div>"#)
-}
-
-pub(crate) fn escape_html(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// 回复卡的版式。

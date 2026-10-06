@@ -24,7 +24,7 @@
 //!     MCP 也只在 Agent 主动调用时读取。因此实时推送只能是条件轮询（见 `realtime.rs`）；
 //!   - 返回内容属于不可信外部数据，只作为资讯展示，不参与任何指令解析。
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -847,7 +847,7 @@ fn is_iso_date(s: &str) -> bool {
 /// ISO8601 → `MM-DD HH:MM`（北京时间），供日报快讯的发布时间展示
 fn format_time(iso: &str) -> Option<String> {
     DateTime::parse_from_rfc3339(iso).ok().map(|dt| {
-        dt.with_timezone(&FixedOffset::east_opt(8 * 3600).expect("UTC+8 是合法时区偏移"))
+        dt.with_timezone(&crate::clock::beijing())
             .format("%m-%d %H:%M")
             .to_string()
     })

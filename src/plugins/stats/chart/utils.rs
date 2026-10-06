@@ -32,16 +32,6 @@ const CJK_FALLBACK_FAMILIES: &[&str] = &[
     "Arial Unicode MS",
 ];
 
-/// fontdb 的 `load_system_fonts` 明确排除了 Android，Termux 里因此一个系统字体
-/// 都发现不了，图表会直接报 FontUnavailable。这里补上 Android / Termux 的字体目录。
-const EXTRA_FONT_DIRS: &[&str] = &[
-    "/system/fonts",
-    "/system/font",
-    "/data/fonts",
-    "/product/fonts",
-    "/system/product/fonts",
-];
-
 /// 连族名都查不到时的兜底字体文件（Android 自带的 CJK 字体）。
 /// `.ttc` 取第 0 号 face，够用来渲染中日韩汉字。
 const CJK_FALLBACK_FILES: &[&str] = &[
@@ -51,39 +41,7 @@ const CJK_FALLBACK_FILES: &[&str] = &[
     "/system/fonts/DroidSansFallback.ttf",
 ];
 
-static FONT_DB: OnceLock<fontdb::Database> = OnceLock::new();
 static RESOLVED_FONT: OnceLock<String> = OnceLock::new();
-
-fn get_font_db() -> &'static fontdb::Database {
-    FONT_DB.get_or_init(|| {
-        let mut db = fontdb::Database::new();
-        db.load_system_fonts();
-        for dir in EXTRA_FONT_DIRS {
-            if Path::new(dir).is_dir() {
-                db.load_fonts_dir(dir);
-            }
-        }
-        for dir in user_font_dirs() {
-            if dir.is_dir() {
-                db.load_fonts_dir(&dir);
-            }
-        }
-        db
-    })
-}
-
-/// Termux 前缀与用户目录下的字体目录（`PREFIX` / `HOME` 由 Termux 注入）。
-fn user_font_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(prefix) = std::env::var("PREFIX") {
-        dirs.push(Path::new(&prefix).join("share/fonts"));
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        dirs.push(Path::new(&home).join(".fonts"));
-        dirs.push(Path::new(&home).join(".local/share/fonts"));
-    }
-    dirs
-}
 
 /// 将字节注册到 plotters 的 ab_glyph 后端。注册成功返回 true。
 /// 注意：plotters 需要 `'static` 字节切片，因此我们 leak 一次（每进程最多发生一次）。
@@ -118,7 +76,7 @@ fn try_load_path(path: &str) -> bool {
 
 /// 通过 fontdb 在系统字体中查找 family 并注册。
 fn try_load_family(family: &str) -> bool {
-    let db = get_font_db();
+    let db = crate::render::font::database();
     let query = fontdb::Query {
         families: &[fontdb::Family::Name(family)],
         ..Default::default()

@@ -631,7 +631,7 @@ fn next_beijing_run(
     minute: u32,
     second: u32,
 ) -> Option<chrono::DateTime<Local>> {
-    let timezone = render::beijing();
+    let timezone = crate::clock::beijing();
     let now = local_now.with_timezone(&timezone);
     let today = now.date_naive();
     let target_today = timezone

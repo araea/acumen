@@ -20,6 +20,7 @@ use super::cluster::Cluster;
 use super::leaderboard::Board;
 use super::render::models_meta;
 use super::render::{RenderOptions, fmt_time, truncate};
+use crate::render::web::esc;
 use anyhow::Result;
 use chrono::{DateTime, Timelike, Utc};
 
@@ -63,7 +64,7 @@ impl CardTheme {
 
 /// 解析主题配置。未知值安全回退到自动，避免手改配置导致渲染失败。
 pub fn resolve_theme(mode: &str) -> CardTheme {
-    resolve_theme_at(mode, Utc::now().with_timezone(&super::render::beijing()))
+    resolve_theme_at(mode, Utc::now().with_timezone(&crate::clock::beijing()))
 }
 
 fn resolve_theme_at(mode: &str, now: DateTime<chrono::FixedOffset>) -> CardTheme {
@@ -78,24 +79,9 @@ fn resolve_theme_at(mode: &str, now: DateTime<chrono::FixedOffset>) -> CardTheme
 /// 卡片渲染宽度（CSS 像素）。实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 2160px）
 const WIDTH: u32 = 720;
 
-fn esc(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 8);
-    for ch in text.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
 /// 出图时刻（北京时间），放在页眉右上角
 fn stamp() -> String {
-    crate::render::beijing_now().format("%Y-%m-%d %H:%M").to_string()
+    crate::clock::beijing_now().format("%Y-%m-%d %H:%M").to_string()
 }
 
 /// 资讯卡的版式。

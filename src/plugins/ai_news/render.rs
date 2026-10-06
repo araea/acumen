@@ -15,7 +15,7 @@
 use super::api::{DailyBlock, DailyReport, HotTopic, Item, category_label};
 use super::cluster::Cluster;
 use super::leaderboard::{self, Board};
-use chrono::{DateTime, FixedOffset};
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 
 
@@ -167,16 +167,11 @@ impl Rendered {
     }
 }
 
-/// 北京时间（UTC+8）。实现在 [`crate::render::beijing`]——六张卡片共用同一个口径。
-pub(super) fn beijing() -> FixedOffset {
-    crate::render::beijing()
-}
-
 /// ISO8601 → `MM-DD HH:MM`（北京时间）
 pub(super) fn fmt_time(iso: &str) -> Option<String> {
     DateTime::parse_from_rfc3339(iso)
         .ok()
-        .map(|dt| dt.with_timezone(&beijing()).format("%m-%d %H:%M").to_string())
+        .map(|dt| dt.with_timezone(&crate::clock::beijing()).format("%m-%d %H:%M").to_string())
 }
 
 /// 按字符（而非字节）截断，避免切坏中文
