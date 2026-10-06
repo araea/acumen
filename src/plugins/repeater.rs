@@ -21,11 +21,13 @@
 //! 触发点上依次过三道闸：冷却 → 概率 → 打断。命中打断则改发一句打断语，
 //! 概率未命中不置位 `repeated`，同一句话的下一条仍有机会触发。
 
-use crate::adapters::satori::{LockedWriter, send_repeater_msg};
+use crate::adapters::satori::{Freshness, LockedWriter, send_guarded_msg};
 use crate::command::get_prefixes;
-use crate::event::{Context, EventType, SendPacket};
+use crate::event::{Context, EventType, SendGuard, SendPacket};
 use crate::message::Message;
-use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
+use crate::plugins::{
+    ChannelConfig, Receipt, PluginConfig, PluginError, get_config_or_default,
+};
 use futures_util::future::BoxFuture;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -35,9 +37,8 @@ use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjec
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
-use toml::Value as TomlValue;
 
 const LOG_TARGET: &str = "Plugin/Repeater";
 
@@ -527,16 +528,28 @@ pub struct RepeatGuard {
     /// 触发接力的指纹；发送打断语时也应记住原内容
     sig: String,
     generation: u64,
-    pub expires_at: u64,
-    pub message_id: String,
+    expires_at: u64,
+    message_id: String,
 }
 
-impl RepeatGuard {
-    pub fn is_current(&self) -> bool {
+impl SendGuard for RepeatGuard {
+    fn is_current(&self) -> bool {
         now_ms() < self.expires_at
             && states().get(&self.key).is_some_and(|state| {
                 state.generation == self.generation && !state.has_repeated(&self.sig)
             })
+    }
+
+    /// 接力条件本身就是一份时效条件：锚点是触发这次复读的那条消息。
+    fn freshness(&self) -> Option<Freshness> {
+        Some(Freshness {
+            message_id: self.message_id.clone(),
+            expires_at: self.expires_at,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -579,9 +592,26 @@ pub fn interrupt(ctx: &Context, writer: &LockedWriter) {
     }
 }
 
+/// 发出之后的钩子：确认一次条件发送，把它记成已跟读。
+pub fn on_sent<'a>(
+    ctx: &'a Context,
+    _writer: &'a LockedWriter,
+    sent: &'a Receipt<'a>,
+) -> BoxFuture<'a, ()> {
+    Box::pin(async move {
+        if !sent.message_ids.is_empty() {
+            confirm_send(ctx, sent.packet);
+        }
+    })
+}
+
 /// Record a confirmed conditional send without overwriting a newer conversation.
-pub fn confirm_send(ctx: &Context, packet: &SendPacket) {
-    let Some(guard) = &packet.repeat_guard else {
+fn confirm_send(ctx: &Context, packet: &SendPacket) {
+    let Some(guard) = packet
+        .guard
+        .as_ref()
+        .and_then(|guard| guard.as_any().downcast_ref::<RepeatGuard>())
+    else {
         return;
     };
     let config: RepeaterConfig = get_config_or_default(ctx);
@@ -613,18 +643,6 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
     }
     event.as_object_mut()?.insert(OBSERVED.into(), true.into());
     let config: RepeaterConfig = get_config_or_default(ctx);
-    if !ctx
-        .config
-        .read()
-        .unwrap()
-        .plugins
-        .get("repeater")
-        .and_then(|v| v.get("enabled"))
-        .and_then(TomlValue::as_bool)
-        .unwrap_or(false)
-    {
-        return None;
-    }
     let msg = ctx.as_message()?;
     let group_id = msg.group_id();
     if !config.channel.allows(group_id) {
@@ -698,25 +716,36 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
     })
 }
 
-pub async fn send_prepared(
+/// 收到事件时的钩子：在事件进入流水线之前、按收到的顺序同步更新接力状态；
+/// 该跟读（或打断）时，返回流水线之前要先发出去的那一条。
+pub fn on_receive(
+    ctx: &mut Context,
+    writer: &LockedWriter,
+) -> Option<BoxFuture<'static, Result<(), PluginError>>> {
+    let pending = prepare(ctx, writer)?;
+    let (ctx, writer) = (ctx.clone(), writer.clone());
+    Some(Box::pin(async move {
+        send_prepared(&ctx, writer, pending).await
+    }))
+}
+
+async fn send_prepared(
     ctx: &Context,
     writer: LockedWriter,
-    pending: Option<PreparedRepeat>,
+    pending: PreparedRepeat,
 ) -> Result<(), PluginError> {
-    if let Some(pending) = pending {
-        if pending.guard.is_current() {
-            send_repeater_msg(
-                ctx,
-                writer,
-                pending.group_id.as_deref(),
-                Some(&pending.user_id),
-                pending.content,
-                pending.guard,
-            )
-            .await?;
-        } else {
-            debug!(target: LOG_TARGET, "丢弃过时复读");
-        }
+    if pending.guard.is_current() {
+        send_guarded_msg(
+            ctx,
+            writer,
+            pending.group_id.as_deref(),
+            Some(&pending.user_id),
+            pending.content,
+            Arc::new(pending.guard),
+        )
+        .await?;
+    } else {
+        debug!(target: LOG_TARGET, "丢弃过时复读");
     }
     Ok(())
 }
@@ -727,11 +756,12 @@ pub fn handle(
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
         if ctx.as_message().is_some() {
-            let pending = prepare(&mut ctx, &writer);
-            send_prepared(&ctx, writer, pending).await?;
+            if let Some(pending) = prepare(&mut ctx, &writer) {
+                send_prepared(&ctx, writer, pending).await?;
+            }
         } else if let EventType::BeforeSend(packet) = &ctx.event {
             // An interrupt phrase must not invalidate its own pending send.
-            if packet.repeat_guard.is_some() {
+            if packet.guard.is_some() {
                 return Ok(Some(ctx));
             }
             let config: RepeaterConfig = get_config_or_default(&ctx);

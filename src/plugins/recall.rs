@@ -1,7 +1,7 @@
 use crate::adapters::satori::{LockedWriter, api};
 use crate::command::match_command;
 use crate::event::{Context, Event, EventType, SendPacket};
-use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, Receipt, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::ValueObjectAccessAsScalar;
@@ -145,9 +145,17 @@ async fn delete_replies(ctx: &Context, writer: LockedWriter, channel: &str, ids:
     }
 }
 
-/// Called after message.create has returned all IDs (including split media messages).
-/// A withdrawal while the reply was still being generated/sent is handled here too.
-pub async fn record_sent(ctx: &Context, writer: LockedWriter, packet: &SendPacket, ids: &[String]) {
+/// 发出之后的钩子：`message.create` 已返回全部 ID（含拆开发的媒体消息）。
+/// 回复还在生成、发送途中就被撤回的情形也在这里处理。
+pub fn on_sent<'a>(
+    ctx: &'a Context,
+    writer: &'a LockedWriter,
+    sent: &'a Receipt<'a>,
+) -> BoxFuture<'a, ()> {
+    Box::pin(record_sent(ctx, writer.clone(), sent.packet, sent.message_ids))
+}
+
+async fn record_sent(ctx: &Context, writer: LockedWriter, packet: &SendPacket, ids: &[String]) {
     if ids.is_empty() || !enabled(ctx) {
         return;
     }

@@ -2,7 +2,7 @@
 
 use crate::adapters::satori::{LockedWriter, dispatch_packet};
 use crate::config::build_config;
-use crate::event::{BotStatus, Context, Event, EventType};
+use crate::event::{BotStatus, Context, Event, EventType, SendPacket};
 use crate::matcher::Matcher;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -38,6 +38,30 @@ pub type PluginHandler =
 
 pub type PluginInitHandler = fn(Context) -> BoxFuture<'static, Result<(), PluginError>>;
 
+/// 事件进入流水线之前、按收到的顺序**同步**调用一次，可以改写事件。
+///
+/// 要在「事件任务可能被重排之前」就更新状态的插件用它（复读要按收到顺序计数）。
+/// 返回的 future 在流水线之前执行（比如先把复读发出去）。
+pub type ReceiveHandler =
+    fn(&mut Context, &LockedWriter) -> Option<BoxFuture<'static, Result<(), PluginError>>>;
+
+/// 一条消息被交互等待（`Matcher`）消费、不再进入流水线时调用。
+pub type ConsumedHandler = fn(&Context, &LockedWriter);
+
+/// 一次 `message.create` 发出并拿到回执之后调用。
+pub type SentHandler =
+    for<'a> fn(&'a Context, &'a LockedWriter, &'a Receipt<'a>) -> BoxFuture<'a, ()>;
+
+/// 一条已经发出的消息的回执：发送包、它真正落在的频道、实现端分配的消息 ID。
+///
+/// `bot` 是实际发送所用的登录——目标不在当前连接上时与 `ctx.bot` 不是同一个。
+pub struct Receipt<'a> {
+    pub packet: &'a SendPacket,
+    pub bot: &'a BotStatus,
+    pub channel_id: &'a str,
+    pub message_ids: &'a [String],
+}
+
 /// 一条面向用户的指令说明。
 ///
 /// `cmd` 可含参数占位符（`<必填>` / `[可选]`）与 ` / ` 分隔的别名，
@@ -63,6 +87,12 @@ pub struct Plugin {
     pub on_init: Option<PluginInitHandler>,
     /// 当 Bot 连接成功且获取到自身信息后触发 (用于注册主动推送任务等)
     pub on_connected: Option<PluginHandler>,
+    /// 事件进入流水线之前按收到顺序同步调用，见 [`ReceiveHandler`]
+    pub on_receive: Option<ReceiveHandler>,
+    /// 消息被交互等待消费时调用，见 [`ConsumedHandler`]
+    pub on_consumed: Option<ConsumedHandler>,
+    /// 消息发出之后调用，见 [`SentHandler`]
+    pub on_sent: Option<SentHandler>,
     /// 配置表的键（[`PluginConfig::NAME`]）；注册时核对它与模块标识符一致
     pub config_name: &'static str,
     /// 默认配置与校验都由注册时给的配置类型生成，见 [`PluginConfig`]
@@ -193,6 +223,9 @@ macro_rules! register_plugins {
                                 handler: $module::handle,
                                 on_init: None,
                                 on_connected: None,
+                                on_receive: None,
+                                on_consumed: None,
+                                on_sent: None,
                                 config_name: <$config as PluginConfig>::NAME,
                                 default_config: default_config_of::<$config>,
                                 validate_config: validate_config_of::<$config>,
@@ -226,14 +259,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
         let guard = ctx.config.read().unwrap();
         plugins
             .iter()
-            .filter(|p| {
-                guard
-                    .plugins
-                    .get(p.name)
-                    .and_then(|v| v.get("enabled"))
-                    .and_then(|x| x.as_bool())
-                    .unwrap_or(false)
-            })
+            .filter(|p| enabled_flag(&guard, p.name))
             .count()
     };
 
@@ -248,13 +274,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
         let cfg = ctx.config.read().unwrap();
         plugins
             .iter()
-            .filter(|p| {
-                cfg.plugins
-                    .get(p.name)
-                    .and_then(|v| v.get("enabled"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            })
+            .filter(|p| enabled_flag(&cfg, p.name))
             .map(|p| p.name.to_string())
             .collect()
     }));
@@ -299,19 +319,31 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// 配置里该插件的 `enabled` 开关；没有这张表、或没写开关都算关。
+fn enabled_flag(config: &crate::config::AppConfig, name: &str) -> bool {
+    config
+        .plugins
+        .get(name)
+        .and_then(|v| v.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// 插件此刻是否参与处理：开关打开，且（带初始化钩子的）初始化已经跑完。
+fn is_active(ctx: &Context, name: &str) -> bool {
+    enabled_flag(&ctx.config.read().unwrap(), name) && !pending_startup(name)
+}
+
 /// 在单次读锁下采集所有插件的 enabled 标记，避免每事件多次加锁
 fn collect_enabled_set(ctx: &Context) -> EnabledSet {
     let plugins = get_plugins();
     let guard = ctx.config.read().unwrap();
     let mut set = EnabledSet::with_capacity(plugins.len());
     for p in plugins {
-        let enabled = guard
-            .plugins
-            .get(p.name)
-            .and_then(|v| v.get("enabled"))
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-        set.insert(p.name, enabled && !pending_startup(p.name));
+        set.insert(
+            p.name,
+            enabled_flag(&guard, p.name) && !pending_startup(p.name),
+        );
     }
     set
 }
@@ -384,6 +416,50 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
         }
     }
     Ok(())
+}
+
+/// 收到事件：按注册顺序调用各启用插件的 `on_receive`（同步，可改写事件）。
+///
+/// 返回的 future 里是各插件要在流水线之前做的事，按同一顺序执行，出错只记日志。
+pub fn receive(ctx: &mut Context, writer: &LockedWriter) -> BoxFuture<'static, ()> {
+    let mut tasks = Vec::new();
+    for plugin in get_plugins() {
+        if let Some(hook) = plugin.on_receive
+            && is_active(ctx, plugin.name)
+            && let Some(task) = hook(ctx, writer)
+        {
+            tasks.push((plugin.name, task));
+        }
+    }
+    Box::pin(async move {
+        for (name, task) in tasks {
+            if let Err(error) = task.await {
+                error!(target: LOG_TARGET, "❌ [{}] 接收钩子失败: {}", name, error);
+            }
+        }
+    })
+}
+
+/// 这条消息被交互等待消费了、不会进入流水线：通知各启用插件的 `on_consumed`。
+pub fn consumed(ctx: &Context, writer: &LockedWriter) {
+    for plugin in get_plugins() {
+        if let Some(hook) = plugin.on_consumed
+            && is_active(ctx, plugin.name)
+        {
+            hook(ctx, writer);
+        }
+    }
+}
+
+/// 一次 `message.create` 发出之后：按注册顺序调用各启用插件的 `on_sent`。
+pub async fn delivered(ctx: &Context, writer: &LockedWriter, delivery: &Receipt<'_>) {
+    for plugin in get_plugins() {
+        if let Some(hook) = plugin.on_sent
+            && is_active(ctx, plugin.name)
+        {
+            hook(ctx, writer, delivery).await;
+        }
+    }
 }
 
 /// 运行插件流水线

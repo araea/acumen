@@ -65,6 +65,7 @@ register_plugins!(
     },
     recorder {
         config: recorder::RecorderConfig,
+        on_sent: Some(recorder::on_sent),
         display_name: "消息记录",
         section: "insight",
         summary: "把消息记录到数据库，为词云、统计等插件提供数据源",
@@ -103,6 +104,7 @@ register_plugins!(
     },
     recall {
         config: recall::Config,
+        on_sent: Some(recall::on_sent),
         display_name: "消息撤回",
         section: "message",
         summary: "引用后发送撤回指令；用户撤回触发消息时自动撤回对应回复（可关闭）",
@@ -129,6 +131,9 @@ register_plugins!(
     },
     repeater {
         config: repeater::RepeaterConfig,
+        on_receive: Some(repeater::on_receive),
+        on_consumed: Some(repeater::interrupt),
+        on_sent: Some(repeater::on_sent),
         display_name: "复读机",
         section: "play",
         summary: "同一句话接力到阈值就跟读一次，带冷却、概率与打断复读"

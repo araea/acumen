@@ -1,5 +1,5 @@
 use crate::config::{AppConfig, BotConfig};
-use crate::event::{BotStatus, Context, Event, EventType, LoginUser, SendPacket};
+use crate::event::{BotStatus, Context, Event, EventType, LoginUser, SendGuard, SendPacket};
 use crate::matcher::Matcher;
 use crate::scheduler::Scheduler;
 use crate::{debug, error, info, plugins, warn};
@@ -1299,16 +1299,14 @@ pub fn process_event(
         match ctx.matcher.dispatch(event.clone()) {
             Some(event) => ctx.event = EventType::Satori(event),
             None => {
-                plugins::repeater::interrupt(&ctx, &writer);
+                plugins::consumed(&ctx, &writer);
                 return Box::pin(async { Ok(()) });
             }
         }
     }
-    let pending = plugins::repeater::prepare(&mut ctx, &writer);
+    let before_pipeline = plugins::receive(&mut ctx, &writer);
     Box::pin(async move {
-        if let Err(err) = plugins::repeater::send_prepared(&ctx, writer.clone(), pending).await {
-            error!(target: "Plugin/Repeater", "复读发送失败: {}", err);
-        }
+        before_pipeline.await;
         plugins::run(ctx, writer).await?;
         Ok(())
     })
@@ -1373,14 +1371,15 @@ where
     )
 }
 
-/// A best-effort repeat may be dropped if the conversation advances while sending.
-pub async fn send_repeater_msg<M: Serialize>(
+/// 发送一条「时过境迁就不发」的消息：过完 `BeforeSend` 之后适配器还会再问一次 `guard`，
+/// 对话已经往前走了就丢弃（复读用它）。
+pub async fn send_guarded_msg<M: Serialize>(
     ctx: &Context,
     writer: LockedWriter,
     group_id: Option<&str>,
     user_id: Option<&str>,
     message: M,
-    guard: plugins::repeater::RepeatGuard,
+    guard: Arc<dyn SendGuard>,
 ) -> Result<(), BotError> {
     dispatch_send(ctx, writer, group_id, user_id, message, Some(guard))
         .await
@@ -1393,12 +1392,12 @@ async fn dispatch_send<M>(
     group_id: Option<&str>,
     user_id: Option<&str>,
     message: M,
-    repeat_guard: Option<plugins::repeater::RepeatGuard>,
+    guard: Option<Arc<dyn SendGuard>>,
 ) -> Result<Vec<String>, BotError>
 where
     M: Serialize,
 {
-    dispatch_send_with(ctx, writer, group_id, user_id, message, repeat_guard, None).await
+    dispatch_send_with(ctx, writer, group_id, user_id, message, guard, None).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1408,7 +1407,7 @@ async fn dispatch_send_with<M>(
     group_id: Option<&str>,
     user_id: Option<&str>,
     message: M,
-    repeat_guard: Option<plugins::repeater::RepeatGuard>,
+    guard: Option<Arc<dyn SendGuard>>,
     freshness: Option<Freshness>,
 ) -> Result<Vec<String>, BotError>
 where
@@ -1438,7 +1437,7 @@ where
     let receipt_message_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
     let packet = SendPacket {
         action: "message.create".to_string(),
-        repeat_guard,
+        guard,
         freshness,
         params,
         original_event,
@@ -1485,10 +1484,10 @@ pub async fn dispatch_packet(
         }
         (None, None) => unreachable!(),
     };
-    if let Some(guard) = &packet.repeat_guard
+    if let Some(guard) = &packet.guard
         && !guard.is_current()
     {
-        debug!(target: "Plugin/Repeater", "发送前丢弃过时复读");
+        debug!(target: LOG_TARGET, "发送前丢弃已过时的条件发送");
         return Ok(());
     }
     // 内联的 base64 / data: 媒体先 upload.create 换成 internal: 链接（资源指南的推荐做法）。
@@ -1501,14 +1500,11 @@ pub async fn dispatch_packet(
     if let Some(referrer) = referrer_for(packet.original_event.as_ref(), &bot) {
         params["referrer"] = referrer;
     }
-    // 复读的接力条件本身就是一份时效条件；其余调用方（搭话）自己带一份来。
+    // 条件发送（复读）的闸自带一份时效条件；其余调用方（搭话）自己带一份来。
     let freshness = packet
-        .repeat_guard
+        .guard
         .as_ref()
-        .map(|guard| Freshness {
-            message_id: guard.message_id.clone(),
-            expires_at: guard.expires_at,
-        })
+        .and_then(|guard| guard.freshness())
         .or_else(|| packet.freshness.clone());
     if let Some(freshness) = freshness
         && bot.adapter == "satori-qq"
@@ -1519,9 +1515,6 @@ pub async fn dispatch_packet(
         });
     }
     let created: Vec<Value> = client.post(&bot, "message.create", params).await?;
-    if !created.is_empty() {
-        plugins::repeater::confirm_send(ctx, packet);
-    }
     let ids: Vec<String> = created
         .iter()
         .map(|message| raw_id(message.get("id")))
@@ -1531,8 +1524,13 @@ pub async fn dispatch_packet(
         .receipt_message_ids
         .lock()
         .map_err(|_| "发送回执锁已损坏")? = ids.clone();
-    plugins::recorder::record_sent(ctx, &bot, packet, &channel_id, &ids).await;
-    plugins::recall::record_sent(ctx, writer, packet, &ids).await;
+    let receipt = plugins::Receipt {
+        packet,
+        bot: &bot,
+        channel_id: &channel_id,
+        message_ids: &ids,
+    };
+    plugins::delivered(ctx, &writer, &receipt).await;
     Ok(())
 }
 

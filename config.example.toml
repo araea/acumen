@@ -38,9 +38,8 @@ access_token = ""
 # 可以同时连几个实现端，各写一段 [[bots]]。下面是本机的 satori-wx（微信）：
 # token 在 /data/adb/modules/satori_wx/satori-wx.conf，这里要写明——环境变量
 # ACUMEN_SATORI_TOKEN 会盖掉每一段的 access_token，连两个实现端时别设它。
-# 微信的 wxid、群号在插件里是 16 位的数字替身（反查表在 data/satori/ids.json），
-# 群过滤、插件白名单要写替身；日志里「Group(…|替身)」就是它。
-# satori-wx 只发纯文本：发往微信的图片、引用会被省掉，只剩文字的部分。
+# 微信的 wxid、群号（…@chatroom）原样当字符串用：群过滤、插件白名单直接写它们。
+# satori-wx 的 send_allow 白名单之外的会话收得到、回不出去（502 target not in send_allow）。
 # [[bots]]
 # enabled = true
 # protocol = "satori"

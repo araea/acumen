@@ -233,13 +233,29 @@ pub enum EventType {
     Init,
 }
 
+/// 发送前的最后一道闸：发送包过完 `BeforeSend` 之后、真正交给实现端之前再问一次。
+///
+/// 「条件发送」的插件（复读：接力断了就不再跟读）给发送包挂一个，适配器只认这个接口，
+/// 不认具体是哪个插件。发出之后要补的记账由该插件的 `on_sent` 钩子做，用 [`as_any`]
+/// 取回自己的具体类型。
+///
+/// [`as_any`]: SendGuard::as_any
+pub trait SendGuard: std::fmt::Debug + Send + Sync + 'static {
+    /// 此刻这条消息还该不该发
+    fn is_current(&self) -> bool;
+    /// 交给实现端一并判断的时效条件：排队期间群里又说了话，同样不落地
+    fn freshness(&self) -> Option<crate::adapters::satori::Freshness>;
+    /// 取回具体类型
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
 /// 发送包结构，用于在 BeforeSend 中传递
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SendPacket {
     pub action: String,
-    /// Repeater cancellation, checked again after BeforeSend hooks.
+    /// 条件发送的闸，见 [`SendGuard`]
     #[serde(skip)]
-    pub repeat_guard: Option<crate::plugins::repeater::RepeatGuard>,
+    pub guard: Option<Arc<dyn SendGuard>>,
     /// 可选的消息时效条件：群聊已经往前走了就干脆不发。见
     /// [`crate::adapters::satori::Freshness`]。
     #[serde(skip)]

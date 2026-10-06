@@ -1,6 +1,6 @@
 use crate::adapters::satori::LockedWriter;
 use crate::event::{Context, EventType};
-use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, Receipt, get_config_or_default};
 
 /// 统一日志 target
 const LOG_TARGET: &str = "Plugin/Recorder";
@@ -290,9 +290,23 @@ pub fn handle(
     })
 }
 
-/// 记下自己发出的消息。由适配器在 `message.create` 成功之后调用：这时才知道消息 ID
-/// 和它真正落在哪个频道（私聊频道要先问实现端）。
-pub async fn record_sent(
+/// 发出之后的钩子：这时才知道消息 ID 和它真正落在哪个频道（私聊频道要先问实现端）。
+pub fn on_sent<'a>(
+    ctx: &'a Context,
+    _writer: &'a LockedWriter,
+    sent: &'a Receipt<'a>,
+) -> BoxFuture<'a, ()> {
+    Box::pin(record_sent(
+        ctx,
+        sent.bot,
+        sent.packet,
+        sent.channel_id,
+        sent.message_ids,
+    ))
+}
+
+/// 记下自己发出的消息。
+async fn record_sent(
     ctx: &Context,
     bot: &crate::event::BotStatus,
     packet: &crate::event::SendPacket,
