@@ -23,10 +23,9 @@
 
 use crate::adapters::satori::{LockedWriter, send_repeater_msg};
 use crate::command::get_prefixes;
-use crate::config::build_config;
 use crate::event::{Context, EventType, SendPacket};
 use crate::message::Message;
-use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
+use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
@@ -94,9 +93,10 @@ impl Default for RepeaterConfig {
     }
 }
 
-pub fn default_config() -> TomlValue {
-    build_config(RepeaterConfig::default())
+impl PluginConfig for RepeaterConfig {
+    const NAME: &'static str = "repeater";
 }
+
 
 impl RepeaterConfig {
     /// min_times = 0/1 等价于逢消息必复读，收敛到 2
@@ -592,7 +592,7 @@ pub fn confirm_send(ctx: &Context, packet: &SendPacket) {
     let Some(guard) = &packet.repeat_guard else {
         return;
     };
-    let config: RepeaterConfig = get_config_or_default(ctx, "repeater");
+    let config: RepeaterConfig = get_config_or_default(ctx);
     let content = packet.message().cloned().unwrap_or_default();
     let now = now_secs();
     let mut map = states();
@@ -620,7 +620,7 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
         return None;
     }
     event.as_object_mut()?.insert(OBSERVED.into(), true.into());
-    let config: RepeaterConfig = get_config_or_default(ctx, "repeater");
+    let config: RepeaterConfig = get_config_or_default(ctx);
     if !ctx
         .config
         .read()
@@ -742,7 +742,7 @@ pub fn handle(
             if packet.repeat_guard.is_some() {
                 return Ok(Some(ctx));
             }
-            let config: RepeaterConfig = get_config_or_default(&ctx, "repeater");
+            let config: RepeaterConfig = get_config_or_default(&ctx);
             let now = now_secs();
             let group_id = packet.group_id();
             let user_id = packet.user_id().unwrap_or("");
@@ -759,12 +759,5 @@ pub fn handle(
         }
         Ok(Some(ctx))
     })
-}
-
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <RepeaterConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
 }
 

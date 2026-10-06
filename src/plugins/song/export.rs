@@ -72,7 +72,7 @@ pub(super) async fn run(ctx: &Context, writer: &LockedWriter, matched: &CommandM
         .ok_or_else(|| anyhow!("引用的消息里没有视频"))?;
 
     // 体积上限沿用视频解析的口径：同一条片子的另一份用途，不该有两套尺度。
-    let take = get_config_or_default::<video_parse::Config>(ctx, "video_parse");
+    let take = get_config_or_default::<video_parse::Config>(ctx);
     let cap = take.max_size_mb.clamp(1, 2048) * 1_048_576;
 
     let dir = get_data_dir("song").await.map_err(|error| anyhow!("{error}"))?;

@@ -206,7 +206,7 @@ impl Console {
     /// 本次进程是不是还开着控制台。运行中被 `/ctl set console enabled 关` 关掉之后
     /// 这里就变成假，接口随即停止应答（端口要到重启才释放）。
     pub(crate) fn enabled(&self) -> bool {
-        crate::plugins::get_config_or_default::<Config>(&self.ctx, "console").enabled
+        crate::plugins::get_config_or_default::<Config>(&self.ctx).enabled
     }
 
     pub(crate) fn register_bot(&self, bot: Arc<BotStatus>) {

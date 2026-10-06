@@ -1,19 +1,17 @@
 use crate::adapters::satori::{LockedWriter, api};
 use crate::command::match_command;
-use crate::config::build_config;
 use crate::event::{Context, Event, EventType, SendPacket};
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::ValueObjectAccessAsScalar;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use toml::Value;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
     follow_recall: bool,
 }
@@ -27,9 +25,10 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "recall";
 }
+
 
 // Only keep recent trigger -> response relations. Nothing here survives a restart.
 const RETENTION: Duration = Duration::from_secs(30 * 60);
@@ -93,7 +92,7 @@ fn pending() -> &'static Mutex<Pending> {
 }
 
 fn enabled(ctx: &Context) -> bool {
-    let config: Config = get_config_or_default(ctx, "recall");
+    let config: Config = get_config_or_default(ctx);
     config.enabled && config.follow_recall
 }
 
@@ -236,9 +235,3 @@ pub fn handle(
     })
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

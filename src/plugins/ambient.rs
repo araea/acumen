@@ -21,10 +21,9 @@
 //! 窗口——人格看到的仍然只是群友聊了什么，而不是有人在按键。
 
 use crate::adapters::satori::{LockedWriter, freshness_for, send_fresh_msg_id};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_data_dir};
+use crate::plugins::{PluginConfig, PluginError, get_data_dir};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
@@ -32,7 +31,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
-use toml::Value;
 
 mod gate;
 mod habit;
@@ -949,7 +947,7 @@ pub(crate) async fn observe(
     mgr: &Arc<crate::plugins::oai::data::Manager>,
     base: &Path,
 ) {
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
     if !config.enabled || config.groups.is_empty() {
         return;
     }
@@ -1261,7 +1259,7 @@ async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
         if due.is_zero() {
             return;
         }
-        let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
         if !latest.enabled || !latest.groups.iter().any(|id| id == group) {
             return;
         }
@@ -1291,7 +1289,7 @@ async fn wait_for_owner(ctx: &Context, group: &str, config: &AmbientConfig) {
     let deadline = Instant::now() + grace;
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
         if !latest.enabled || !latest.groups.iter().any(|id| id == group) {
             return;
         }
@@ -1398,7 +1396,7 @@ async fn consider(
     };
     hydrate(ctx, writer, group).await;
     loop {
-        let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
         if config.focus_max_seconds == 0 {
             window::with_group(group, |state| state.focus = None);
         }
@@ -1420,7 +1418,7 @@ async fn consider(
             }
         }
         wait_for_look(ctx, group, &config).await;
-        let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+        let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
         if !config.enabled || !config.groups.iter().any(|id| id == group) {
             return Ok(());
         }
@@ -1516,7 +1514,7 @@ async fn gate_endpoint(
 ) -> anyhow::Result<(String, String, String)> {
     let (provider, model) = crate::plugins::oai::utils::split_provider(gate_model);
     let providers =
-        crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai")
+        crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx)
             .providers;
     let (base, key) = {
         let config = mgr.config.read().await;
@@ -1865,7 +1863,7 @@ fn asks_for_answer(text: &str) -> bool {
 
 /// 停用配置或群聊推进后，放弃尚未发送的内容，交回 worker 读取新上下文。
 fn current(ctx: &Context, group: &str, seq: u64) -> bool {
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
     config.enabled
         && config.groups.iter().any(|id| id == group)
         && window::with_group(group, |state| state.seq == seq)
@@ -1886,7 +1884,7 @@ enum Sendable {
 const DRIFT_SLACK: u64 = 2;
 
 fn sendable(ctx: &Context, group: &str, seq: u64) -> Sendable {
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx, "ambient");
+    let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
     if !config.enabled || !config.groups.iter().any(|id| id == group) {
         return Sendable::Stale;
     }
@@ -1947,7 +1945,7 @@ async fn speak_up(
     // 没被计价时段或答疑换过模型的原配置：被点名那一轮答不出来时退回它。
     original: &AmbientConfig,
 ) -> anyhow::Result<()> {
-    let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx, "oai");
+    let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx);
     // 与判定看到的是同一批图：已转码成模型收得下的格式，GIF 表情包也不例外。
     // 每张都带着出处（来自哪条消息），人格据此把「讲的那张」对回正确的消息号。
     let images = vision::usable_images(turns, config.context_images).await;
@@ -2260,16 +2258,10 @@ async fn deliver(
     Ok(sent)
 }
 
-pub fn default_config() -> Value {
-    build_config(AmbientConfig::default())
+impl PluginConfig for AmbientConfig {
+    const NAME: &'static str = "ambient";
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <AmbientConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}
 
 /// 启动：铺开人设与 skill，并确保模型接口那一份共享配置已就绪。
 pub fn init(_ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {

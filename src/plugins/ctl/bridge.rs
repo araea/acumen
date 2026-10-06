@@ -125,7 +125,7 @@ pub(crate) async fn lease(ctx: &Context) -> Option<Lease> {
 }
 
 fn enabled(ctx: &Context) -> bool {
-    crate::plugins::get_config_or_default::<super::Config>(ctx, "ctl").agent_control
+    crate::plugins::get_config_or_default::<super::Config>(ctx).agent_control
 }
 
 /// 把上下文换成维护者身份执行。

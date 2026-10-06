@@ -1,13 +1,11 @@
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{extract_text_arg, get_image_url, match_command};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::http::download_bytes;
 use crate::message::Message;
-use crate::plugins::{PluginError, PluginResult};
+use crate::plugins::{PluginConfig, PluginError, PluginResult};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use toml::Value;
 
 pub mod gif_ops;
 pub mod utils;
@@ -53,7 +51,7 @@ const COMMANDS: &[&str] = &[
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
 }
 
@@ -63,9 +61,10 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "gif";
 }
+
 
 pub fn handle(
     ctx: Context,
@@ -315,9 +314,3 @@ async fn send_forward_msg(ctx: &Context, writer: LockedWriter, base64_list: Vec<
     let _ = send_msg(ctx, writer, group_id, Some(user_id), forward_msg).await;
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

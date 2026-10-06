@@ -79,17 +79,15 @@ use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{
     extract_text_arg, get_prefixes, match_command, message_reply_id, spoken_bodies,
 };
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config, update_config};
+use crate::plugins::{PluginConfig, PluginError, get_config, get_config_or_default, update_config};
 use futures_util::future::BoxFuture;
 use chrono::{Local, TimeZone};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use toml::Value;
 
 pub mod api;
 mod card;
@@ -497,12 +495,13 @@ impl fmt::Display for PushTarget {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(AiNewsConfig::default())
+impl PluginConfig for AiNewsConfig {
+    const NAME: &'static str = "ai_news";
 }
 
+
 fn load_config(ctx: &Context) -> AiNewsConfig {
-    get_config::<AiNewsConfig>(ctx, "ai_news").unwrap_or_default()
+    get_config_or_default::<AiNewsConfig>(ctx)
 }
 
 // ================= 生命周期 =================
@@ -652,7 +651,7 @@ fn next_beijing_run(
 /// （主程序只补新字段、不动既有值）。撞车时给一条明确的提示，
 /// 说清是哪两档、改哪个键，而不是让人自己去比对两份配置。
 fn warn_on_schedule_conflicts(ctx: &Context, cfg: &AiNewsConfig) {
-    let Some(stats) = get_config::<crate::plugins::stats::StatsConfig>(ctx, "stats") else {
+    let Some(stats) = get_config::<crate::plugins::stats::StatsConfig>(ctx) else {
         return;
     };
     if !stats.enabled {
@@ -1237,7 +1236,7 @@ async fn handle_push_admin(
 
         let mode = normalized.to_string();
         let targets = config.targets();
-        let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+        let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
             cfg.realtime_mode = mode;
             cfg
         })
@@ -1279,7 +1278,7 @@ async fn handle_push_admin(
                 return format!("{} 已开启推送", target);
             }
             let changed = target.clone();
-            let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+            let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) if !cfg.groups.contains(&id) => cfg.groups.push(id),
                     PushTarget::Private(id) if !cfg.private_users.contains(&id) => {
@@ -1303,7 +1302,7 @@ async fn handle_push_admin(
                 return format!("{} 未开启推送", target);
             }
             let changed = target.clone();
-            let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+            let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) => {
                         cfg.groups.retain(|item| *item != id);
@@ -1344,7 +1343,7 @@ async fn handle_push_admin(
                 return format!("{} 已经在接收实时快报", target);
             }
             let changed = target.clone();
-            let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+            let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) => cfg.realtime_muted_groups.retain(|g| *g != id),
                     PushTarget::Private(id) => {
@@ -1367,7 +1366,7 @@ async fn handle_push_admin(
                 return format!("{} 当前只接收定时推送", target);
             }
             let changed = target.clone();
-            let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+            let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) if !cfg.realtime_muted_groups.contains(&id) => {
                         cfg.realtime_muted_groups.push(id)
@@ -1531,7 +1530,7 @@ async fn update_target_category(ctx: &Context, target: &PushTarget, raw: &str) -
         },
     };
     let stored = category.clone();
-    let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+    let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
         cfg.group_preferences
             .entry(target.preference_key())
             .or_default()
@@ -1599,7 +1598,7 @@ async fn update_target_quiet(ctx: &Context, target: &PushTarget, raw: &str) -> S
         (Some(start), Some(end), message)
     };
 
-    let result = update_config::<AiNewsConfig, _>(ctx, "ai_news", move |mut cfg| {
+    let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
         let preference = cfg
             .group_preferences
             .entry(target.preference_key())
@@ -1779,9 +1778,3 @@ fn quiet_label(config: &AiNewsConfig, target: Option<&PushTarget>) -> String {
     format!("{}—{}", start, end)
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <AiNewsConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

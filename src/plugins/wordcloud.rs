@@ -15,8 +15,7 @@ pub mod config;
 pub mod image;
 pub mod stopwords;
 
-use config::WordCloudConfig;
-pub use config::default_config;
+pub use config::WordCloudConfig;
 
 static COMMAND_REGEX: OnceLock<Regex> = OnceLock::new();
 
@@ -133,7 +132,7 @@ pub async fn generate_image(
     start_time: i64,
     end_time: i64,
 ) -> Result<String, GenError> {
-    let config: WordCloudConfig = get_config_or_default(ctx, "wordcloud");
+    let config: WordCloudConfig = get_config_or_default(ctx);
 
     if !config.enabled {
         return Err(GenError::Failed("词云插件已停用".to_string()));
@@ -173,8 +172,3 @@ pub async fn generate_image(
     }
 }
 
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <WordCloudConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "词云配置类型错误".to_string())
-}

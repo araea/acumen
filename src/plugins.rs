@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::adapters::satori::{LockedWriter, dispatch_packet};
+use crate::config::build_config;
 use crate::event::{BotStatus, Context, Event, EventType};
 use crate::matcher::Matcher;
 use futures_util::future::BoxFuture;
@@ -62,6 +63,9 @@ pub struct Plugin {
     pub on_init: Option<PluginInitHandler>,
     /// 当 Bot 连接成功且获取到自身信息后触发 (用于注册主动推送任务等)
     pub on_connected: Option<PluginHandler>,
+    /// 配置表的键（[`PluginConfig::NAME`]）；注册时核对它与模块标识符一致
+    pub config_name: &'static str,
+    /// 默认配置与校验都由注册时给的配置类型生成，见 [`PluginConfig`]
     pub default_config: fn() -> Value,
     pub validate_config: fn(&Value) -> Result<(), String>,
 
@@ -164,10 +168,12 @@ fn mark_connected(connection_key: String) -> bool {
 }
 
 /// 插件注册宏
+///
+/// 每条记录以 `config: <配置类型>` 开头，其余字段覆盖 [`Plugin`] 的缺省值。
 macro_rules! register_plugins {
     (
         $(
-            $module:ident $( { $($key:ident : $val:expr),* } )?
+            $module:ident { config: $config:ty $(, $key:ident : $val:expr)* $(,)? }
         ),* $(,)?
     ) => {
         // 1. 自动生成模块声明 (无需手动 pub mod)
@@ -187,16 +193,15 @@ macro_rules! register_plugins {
                                 handler: $module::handle,
                                 on_init: None,
                                 on_connected: None,
-                                default_config: $module::default_config,
-                                validate_config: $module::validate_config,
+                                config_name: <$config as PluginConfig>::NAME,
+                                default_config: default_config_of::<$config>,
+                                validate_config: validate_config_of::<$config>,
                                 section: "misc",
                                 summary: "",
                                 commands: &[],
                             };
                             // 应用自定义覆盖 (如果有)
-                            $(
-                                $( p.$key = $val; )*
-                            )?
+                            $( p.$key = $val; )*
                             p
                         }
                     ),*
@@ -503,33 +508,59 @@ pub async fn get_data_dir(plugin_name: &str) -> Result<PathBuf, PluginError> {
     Ok(path)
 }
 
-pub fn get_config<T>(ctx: &Context, plugin_name: &str) -> Option<T>
-where
-    T: DeserializeOwned,
-{
+// ================= 插件配置 =================
+
+/// 插件的配置类型。每个插件恰有一个，在 `registry.rs` 里以 `config:` 登记。
+///
+/// 默认值、类型校验、读取与写回都从这一个类型出发：调用点不必再重复插件名，
+/// 插件里也不必各抄一份 `default_config` / `validate_config`。
+/// 类型须带容器级 `#[serde(default)]`，缺省字段回落到 `Default`。
+pub trait PluginConfig: Serialize + DeserializeOwned + Default {
+    /// 顶层 `[插件名]` 表的键，与 `registry.rs` 里的模块标识符一致。
+    const NAME: &'static str;
+
+    /// 类型对不上时给管理员看的提示；配置里有专属字段的插件可以写得更具体。
+    const MISMATCH: &'static str = "配置类型不匹配（请检查数组元素、字段类型及整数范围）";
+
+    /// 类型读通之后的取值检查（范围、可选值之类），`/ctl` 与控制台保存前调用。
+    fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// 该类型的默认配置表；注册表用它生成 [`Plugin::default_config`]。
+pub fn default_config_of<T: PluginConfig>() -> Value {
+    build_config(T::default())
+}
+
+/// 按真实配置类型校验一张配置表；注册表用它生成 [`Plugin::validate_config`]。
+pub fn validate_config_of<T: PluginConfig>(value: &Value) -> Result<(), String> {
+    T::deserialize(value.clone())
+        .map_err(|_| T::MISMATCH.to_string())?
+        .check()
+}
+
+/// 读取插件配置；未配置或类型对不上时返回 `None`。
+pub fn get_config<T: PluginConfig>(ctx: &Context) -> Option<T> {
     let guard = ctx.config.read().unwrap();
     guard
         .plugins
-        .get(plugin_name)
+        .get(T::NAME)
         .and_then(|v| T::deserialize(v.clone()).ok())
 }
 
 /// 读取插件配置，未配置或反序列化失败时回落到 `T::default()`。
 ///
-/// 要求配置类型实现 `Default`（约定 `enabled` 默认为 `true`），
-/// 并对反序列化失败打告警，避免配置类型改坏后静默失效难以排查。
-pub fn get_config_or_default<T>(ctx: &Context, plugin_name: &str) -> T
-where
-    T: DeserializeOwned + Default,
-{
+/// 反序列化失败会打告警，避免配置类型改坏后静默失效难以排查。
+pub fn get_config_or_default<T: PluginConfig>(ctx: &Context) -> T {
     let guard = ctx.config.read().unwrap();
-    match guard.plugins.get(plugin_name) {
+    match guard.plugins.get(T::NAME) {
         None => T::default(),
         Some(v) => T::deserialize(v.clone()).unwrap_or_else(|e| {
             warn!(
                 target: LOG_TARGET,
                 "插件 [{}] 配置反序列化失败，已使用默认值: {}",
-                plugin_name, e
+                T::NAME, e
             );
             T::default()
         }),
@@ -537,18 +568,43 @@ where
 }
 
 /// 修改配置 (异步 & 自动持久化 & 线程安全)
-pub async fn update_config<T, F>(ctx: &Context, plugin_name: &str, f: F) -> Result<(), PluginError>
+pub async fn update_config<T, F>(ctx: &Context, f: F) -> Result<(), PluginError>
 where
-    T: Serialize + DeserializeOwned + Clone,
+    T: PluginConfig,
     F: FnOnce(T) -> T,
 {
     let _fs_guard = ctx.config_save_lock.lock().await;
     let mut snapshot = ctx.config.read().unwrap().clone();
-    let current = snapshot.plugins.get(plugin_name).ok_or("插件配置不存在")?;
+    let current = snapshot.plugins.get(T::NAME).ok_or("插件配置不存在")?;
     let next = Value::try_from(f(T::deserialize(current.clone())?))?;
-    snapshot.plugins.insert(plugin_name.to_string(), next);
+    snapshot.plugins.insert(T::NAME.to_string(), next);
     snapshot.save(&ctx.config_path).await?;
     *ctx.config.write().unwrap() = snapshot;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 注册表里每个插件的元数据与配置类型都得自洽：
+    /// 配置表的键就是模块名，默认配置能通过自己的校验且带 `enabled`，摘要写了。
+    #[test]
+    fn every_registered_plugin_is_self_consistent() {
+        let mut seen = HashSet::new();
+        for plugin in get_plugins() {
+            assert!(seen.insert(plugin.name), "插件名重复：{}", plugin.name);
+            assert_eq!(plugin.config_name, plugin.name, "配置键与模块名不一致");
+            assert!(!plugin.summary.is_empty(), "{} 缺一句话摘要", plugin.name);
+            let defaults = (plugin.default_config)();
+            assert!(
+                defaults.get("enabled").is_some_and(Value::is_bool),
+                "{} 的默认配置缺 enabled 开关",
+                plugin.name
+            );
+            (plugin.validate_config)(&defaults)
+                .unwrap_or_else(|e| panic!("{} 的默认配置通不过自己的校验：{e}", plugin.name));
+        }
+    }
 }

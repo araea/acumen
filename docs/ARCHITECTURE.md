@@ -42,21 +42,20 @@ tests/             前台运行、重启与渲染测试
 | 接口 | 要求 | 用途 |
 | --- | --- | --- |
 | `handle` | 必需 | 处理事件并返回是否继续传递 |
-| `default_config` | 必需 | 返回默认 TOML 配置 |
-| `validate_config` | 必需 | 按真实配置类型校验 |
+| `PluginConfig` | 必需 | 配置类型：键名、默认值、取值检查；注册表据此生成默认配置与校验 |
 | `init` | 可选 | 启动时初始化数据或资源 |
 | `on_connected` | 可选 | 适配器连接就绪后启动任务 |
 
 用户可见的名称、分区、摘要与指令在 `registry.rs` 声明；`/help`、`/ctl` 与 Web 控制台均读取该注册表。
 
-插件配置使用顶层 `[插件名]` 表与 `enabled` 开关。配置结构体使用一份 `Default` 实现，并在容器级设置 `serde(default)`。读取用 `get_config_or_default`；反序列化失败时记录告警并使用默认值。
+插件配置使用顶层 `[插件名]` 表与 `enabled` 开关。配置结构体带容器级 `serde(default)` 与一份 `Default` 实现，再实现 `PluginConfig`：`NAME` 是配置表的键（与模块名一致，测试会核对），范围、可选值之类的检查写在 `check`，类型对不上时的提示可用 `MISMATCH` 写得更具体。读取用 `get_config_or_default::<Config>(ctx)`，写回用 `update_config::<Config, _>(ctx, …)`：调用点不再重复插件名；反序列化失败时记录告警并使用默认值。
 
 消息匹配与发送复用 `crate::command`、`crate::message` 与 `crate::adapters::satori`。插件错误使用 `PluginError` / `PluginResult`；发送失败向上返回，不要用 `let _ =` 忽略。
 
 新增插件的步骤：
 
-1. 在 `src/plugins/` 新建模块，实现 `handle`、`default_config`、`validate_config`；需要启动钩子时再实现 `init` 或 `on_connected`。
-2. 在 `src/plugins/registry.rs` 添加元数据与钩子；注册表顺序决定事件处理顺序。
+1. 在 `src/plugins/` 新建模块，实现 `handle` 与配置类型的 `PluginConfig`；需要启动钩子时再实现 `init` 或 `on_connected`。
+2. 在 `src/plugins/registry.rs` 添加元数据与钩子（第一项写 `config:`）；注册表顺序决定事件处理顺序。
 3. 运行 `cargo test --locked`，检查摘要、分区、帮助清单与 Satori 兼容性。
 
 新增帮助分区时才需同时修改 `help::SECTIONS`。

@@ -9,17 +9,15 @@
 
 use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::command::{extract_text_arg, match_word_command};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use crate::render::markdown::{self, Settings};
 use crate::render::web::{self as web, Shot};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::base::ValueAsScalar;
 use std::time::Duration;
-use toml::Value;
 
 const LOG_TARGET: &str = "Plugin/Markdown";
 
@@ -33,7 +31,7 @@ const TOTAL_BUDGET: Duration = Duration::from_secs(150);
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
     /// 配色：light 或 dark。
     theme: String,
@@ -71,37 +69,35 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "markdown";
+
+    fn check(&self) -> Result<(), String> {
+        if !matches!(self.theme.as_str(), "light" | "dark") {
+            return Err("theme 只能是 light 或 dark".into());
+        }
+        if !(320..=1200).contains(&self.width) {
+            return Err("width 需在 320—1200 之间".into());
+        }
+        if !(14..=26).contains(&self.font_size) {
+            return Err("font_size 需在 14—26 之间".into());
+        }
+        if !(1.0..=4.0).contains(&self.image_scale) {
+            return Err("image_scale 需在 1—4 之间".into());
+        }
+        if !(600..=8000).contains(&self.page_height) {
+            return Err("page_height 需在 600—8000 之间".into());
+        }
+        if !(1..=10).contains(&self.max_pages) {
+            return Err("max_pages 需在 1—10 之间".into());
+        }
+        if !(100..=100_000).contains(&self.max_chars) {
+            return Err("max_chars 需在 100—100000 之间".into());
+        }
+        Ok(())
+    }
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    let config = <Config as serde::Deserialize>::deserialize(value.clone())
-        .map_err(|_| "配置类型不匹配（请检查字段类型及整数范围）".to_string())?;
-    if !matches!(config.theme.as_str(), "light" | "dark") {
-        return Err("theme 只能是 light 或 dark".into());
-    }
-    if !(320..=1200).contains(&config.width) {
-        return Err("width 需在 320—1200 之间".into());
-    }
-    if !(14..=26).contains(&config.font_size) {
-        return Err("font_size 需在 14—26 之间".into());
-    }
-    if !(1.0..=4.0).contains(&config.image_scale) {
-        return Err("image_scale 需在 1—4 之间".into());
-    }
-    if !(600..=8000).contains(&config.page_height) {
-        return Err("page_height 需在 600—8000 之间".into());
-    }
-    if !(1..=10).contains(&config.max_pages) {
-        return Err("max_pages 需在 1—10 之间".into());
-    }
-    if !(100..=100_000).contains(&config.max_chars) {
-        return Err("max_chars 需在 100—100000 之间".into());
-    }
-    Ok(())
-}
 
 // ================= 取文本 =================
 
@@ -137,7 +133,7 @@ pub fn handle(
         else {
             return Ok(Some(ctx));
         };
-        let config: Config = get_config_or_default(&ctx, "markdown");
+        let config: Config = get_config_or_default(&ctx);
 
         let base = || Message::new().reply(msg.message_id());
 

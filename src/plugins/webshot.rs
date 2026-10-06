@@ -2,10 +2,9 @@ use crate::adapters::satori::{LockedWriter, api, delivery_uncertain, send_msg};
 use crate::command::{
     CommandMatch, extract_text_arg, find_urls, first_command_match,
 };
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
+use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use crate::render::web::TabGuard;
 use anyhow::{Result, anyhow};
 use cdp_html_shot::{Browser, CaptureOptions, ClipRegion, ImageFormat, LaunchOptions, Viewport};
@@ -17,7 +16,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time;
-use toml::Value;
 use url::{Host, Url};
 
 // ================= Config =================
@@ -84,9 +82,10 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "webshot";
 }
+
 
 // ================= 链接准入 =================
 
@@ -1136,7 +1135,7 @@ pub fn handle(
         };
 
         // 读取配置
-        let config: Config = get_config_or_default(&ctx, "webshot");
+        let config: Config = get_config_or_default(&ctx);
 
         // 获取全局浏览器路径配置
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
@@ -1245,13 +1244,6 @@ pub fn handle(
 
         Ok(Some(ctx))
     })
-}
-
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
 }
 
 #[cfg(test)]

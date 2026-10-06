@@ -1,17 +1,15 @@
 use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::command::first_command_match;
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::base::ValueAsScalar;
-use toml::Value;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
 }
 
@@ -26,9 +24,10 @@ const COMMANDS: &[&str] = &["表情转图片", "收", "偷", "存表情"];
 // 保存成功后是否撤回触发指令（内置，默认关闭）
 const RECALL_AFTER_SAVE: bool = false;
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "sticker";
 }
+
 
 pub fn handle(
     ctx: Context,
@@ -40,7 +39,7 @@ pub fn handle(
             None => return Ok(Some(ctx)),
         };
 
-        let config: Config = get_config_or_default(&ctx, "sticker");
+        let config: Config = get_config_or_default(&ctx);
 
         if !config.enabled {
             return Ok(Some(ctx));
@@ -130,10 +129,4 @@ pub fn handle(
 
         Ok(Some(ctx))
     })
-}
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
 }

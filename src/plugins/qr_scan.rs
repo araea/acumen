@@ -16,11 +16,10 @@
 
 use crate::adapters::satori::{LockedWriter, api, delivery_uncertain, send_msg};
 use crate::command::{self, get_prefixes};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::http::download_bytes;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::future::BoxFuture;
 use image::{DynamicImage, ImageDecoder, RgbImage};
@@ -30,7 +29,6 @@ use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::io::Cursor;
 use std::time::{Duration, Instant};
-use toml::Value;
 
 pub mod annotate;
 pub mod content;
@@ -72,7 +70,7 @@ const MAX_IMAGE_BYTES: usize = 30 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
     /// 一次最多识别几张图（指令里附的，或被引用那条里的）。
     max_images: usize,
@@ -99,25 +97,23 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "qr_scan";
+
+    fn check(&self) -> Result<(), String> {
+        if !(1..=8).contains(&self.max_images) {
+            return Err("max_images 需在 1—8 之间".into());
+        }
+        if !(1..=50).contains(&self.max_codes) {
+            return Err("max_codes 需在 1—50 之间".into());
+        }
+        if !(5..=120).contains(&self.timeout_seconds) {
+            return Err("timeout_seconds 需在 5—120 之间".into());
+        }
+        Ok(())
+    }
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    let config = <Config as serde::Deserialize>::deserialize(value.clone())
-        .map_err(|_| "配置类型不匹配（请检查字段类型及整数范围）".to_string())?;
-    if !(1..=8).contains(&config.max_images) {
-        return Err("max_images 需在 1—8 之间".into());
-    }
-    if !(1..=50).contains(&config.max_codes) {
-        return Err("max_codes 需在 1—50 之间".into());
-    }
-    if !(5..=120).contains(&config.timeout_seconds) {
-        return Err("timeout_seconds 需在 5—120 之间".into());
-    }
-    Ok(())
-}
 
 // ================= 取指令与图片 =================
 
@@ -413,7 +409,7 @@ pub fn handle(
         let Some(segments) = event.0.get_array("message") else {
             return Ok(Some(ctx));
         };
-        let config: Config = get_config_or_default(&ctx, "qr_scan");
+        let config: Config = get_config_or_default(&ctx);
         let prefixes = get_prefixes(&ctx);
         let Some(request) = parse_request(segments, &prefixes, config.generate) else {
             return Ok(Some(ctx));
@@ -1128,7 +1124,7 @@ mod tests {
     #[test]
     fn config_edits_are_validated() {
         let ok = toml::Value::try_from(Config::default()).unwrap();
-        assert!(validate_config(&ok).is_ok());
+        assert!(crate::plugins::validate_config_of::<Config>(&ok).is_ok());
         for (key, bad) in [
             ("max_images", 0),
             ("max_images", 99),
@@ -1140,7 +1136,7 @@ mod tests {
                 .as_table_mut()
                 .unwrap()
                 .insert(key.into(), toml::Value::Integer(bad));
-            assert!(validate_config(&value).is_err(), "{key}={bad}");
+            assert!(crate::plugins::validate_config_of::<Config>(&value).is_err(), "{key}={bad}");
         }
     }
 

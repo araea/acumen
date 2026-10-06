@@ -52,7 +52,7 @@ async fn reply_card(
     sources: &[super::types::Source],
     footer: Option<super::render::Footer>,
 ) {
-    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     let re = Regex::new(r"!\[.*?\]\((data:image/[^\s\)]+)\)").unwrap();
     let mut accessible = re.replace_all(text, "[内嵌图片]").to_string();
     if !sources.is_empty() {
@@ -124,7 +124,7 @@ async fn reply_list(
     text_mode: bool,
     header: &str,
 ) {
-    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     if !text_mode && oai.image_enabled() {
         let browser_path = ctx.config.read().unwrap().browser_path.clone();
         match crate::render::web::capture(
@@ -387,7 +387,7 @@ async fn chat(
     };
 
     let use_agent = agent.uses_agent();
-    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     // 内置 agent 房间可以只写 `agent`（或干脆留空）表示「用默认模型」：先看
     // `[oai] agent_default_model`，再退到 oai config.json 里的 default_model。
     // 普通房间没有这层回退——模型是建房时就定下的。
@@ -1143,7 +1143,7 @@ pub async fn execute(
             drop(c);
             reply_text(ctx, writer, &msg_event, format!("✅ API 已配置：{}", url)).await;
             let filter =
-                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai").model_filter;
+                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx).model_filter;
             match mgr.fetch_models(&filter).await {
                 Ok(models) => {
                     reply_text(
@@ -1426,7 +1426,7 @@ pub async fn execute(
         // `房间?` 管这间房要不要联网：不带词就换一边，`开`/`关` 明确指定，
         // `默认` 交回 [oai.search].enabled。房间自己的选择优先于全局。
         Action::SetSearch => {
-            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai");
+            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
             let global = oai.search.enabled;
             let mut c = mgr.config.write().await;
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
@@ -1536,7 +1536,7 @@ pub async fn execute(
                     escape_markdown_special(&a.system_prompt)
                 };
                 let search_default =
-                    crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai")
+                    crate::plugins::get_config_or_default::<super::OaiConfig>(ctx)
                         .search
                         .enabled;
                 let content = format!(
@@ -1566,7 +1566,7 @@ pub async fn execute(
         }
         Action::List => {
             let search_default =
-                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai")
+                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx)
                     .search
                     .enabled;
             let c = mgr.config.read().await;
@@ -1624,7 +1624,7 @@ pub async fn execute(
             // 每次查看都强制刷新，确保能获取最新模型；刷新不慢，不先发提示
             // 尝试获取，如果失败则仅提示警告，后续继续尝试展示缓存
             let filter =
-                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx, "oai").model_filter;
+                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx).model_filter;
             if let Err(e) = mgr.fetch_models(&filter).await {
                 reply_text(
                     ctx,

@@ -1,12 +1,10 @@
 //! Unified plugin control. Registry-backed, typed, persisted before publication.
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{extract_text_arg, get_prefixes, match_word_command};
-use crate::config::{AppConfig, build_config};
+use crate::config::AppConfig;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{
-    Plugin, PluginError, get_config, get_plugins, needs_startup, pending_startup,
-};
+use crate::plugins::{Plugin, PluginConfig, PluginError, get_config_or_default, get_plugins, needs_startup, pending_startup};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use toml::Value;
@@ -16,7 +14,7 @@ pub mod card;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
     /// Global operators, not group administrators. Empty means console only.
     admins: Vec<String>,
@@ -39,14 +37,11 @@ impl Default for Config {
         }
     }
 }
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "ctl";
+    const MISMATCH: &'static str = "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、image_enabled 必须是布尔值，image_scale 必须是数字";
 }
-pub fn validate_config(value: &Value) -> Result<(), String> {
-    Config::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、image_enabled 必须是布尔值，image_scale 必须是数字".into())
-}
+
 pub fn is_manager(ctx: &Context) -> bool {
     if ctx.bot.adapter == "console" && ctx.bot.platform == "console" {
         return true;
@@ -723,7 +718,7 @@ pub fn handle(
             return Ok(Some(ctx));
         };
         let input = extract_text_arg(&matched.args);
-        let config = get_config::<Config>(&ctx, "ctl").unwrap_or_default();
+        let config = get_config_or_default::<Config>(&ctx);
         let response = execute(&ctx, &input)
             .await
             // 失败就是失败：不铺垫「操作未完成」，直接把事实与出路摆出来。

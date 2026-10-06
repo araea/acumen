@@ -23,12 +23,11 @@ mod state;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::message_links;
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
 use crate::plugins::oai::utils::safe_file_name;
 use crate::plugins::oai::video::SendMode;
-use crate::plugins::{ChannelConfig, PluginError, get_config_or_default, get_data_dir};
+use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default, get_data_dir};
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
 use futures_util::future::BoxFuture;
@@ -38,7 +37,6 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::time;
-use toml::Value;
 use url::Url;
 
 const LOG_TARGET: &str = "Plugin/VideoParse";
@@ -90,9 +88,10 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "video_parse";
 }
+
 
 // ================= 链接准入 =================
 
@@ -139,7 +138,7 @@ pub fn handle(
             return Ok(Some(ctx));
         };
 
-        let config: Config = get_config_or_default(&ctx, "video_parse");
+        let config: Config = get_config_or_default(&ctx);
         if !config.enabled {
             return Ok(Some(ctx));
         }
@@ -486,9 +485,3 @@ async fn discard_stale_parts(dir: &Path) {
     }
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

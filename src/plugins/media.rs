@@ -1,19 +1,17 @@
 use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::command::{find_url, match_command};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
 use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
-use toml::Value;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
 }
 
@@ -28,16 +26,17 @@ const CMD_TO_URL: &[&str] = &["转链接", "看链接", "提取地址", "url"];
 // 链接 → 媒体 指令（内置，无需配置）
 const CMD_TO_MEDIA: &[&str] = &["转图片", "转视频", "预览"];
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "media";
 }
+
 
 pub fn handle(
     ctx: Context,
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let config: Config = get_config_or_default(&ctx, "media");
+        let config: Config = get_config_or_default(&ctx);
 
         if !config.enabled {
             return Ok(Some(ctx));
@@ -214,9 +213,3 @@ fn deliver_message(request_id: &str, url: String, is_video: bool) -> Message {
     }
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

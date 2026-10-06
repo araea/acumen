@@ -1,6 +1,5 @@
-use crate::config::build_config;
+use crate::plugins::PluginConfig;
 use serde::{Deserialize, Serialize};
-use toml::Value;
 
 /// 词云配置：容器级 `#[serde(default)]` 让缺省字段全部回落到 `Default`，单一事实来源。
 #[derive(Serialize, Deserialize, Clone)]
@@ -38,6 +37,6 @@ impl Default for WordCloudConfig {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(WordCloudConfig::default())
+impl PluginConfig for WordCloudConfig {
+    const NAME: &'static str = "wordcloud";
 }

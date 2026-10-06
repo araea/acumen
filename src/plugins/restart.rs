@@ -6,21 +6,20 @@
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{get_prefixes, match_word_command};
-use crate::config::{AppConfig, build_config};
+use crate::config::AppConfig;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config};
+use crate::plugins::{PluginConfig, PluginError, get_config, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use toml::Value;
 
 // ================= 配置定义 =================
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
-struct RestartConfig {
+pub struct RestartConfig {
     enabled: bool,
     /// 每日自动重启时间 (HH:MM，24 小时制)，默认凌晨 4 点(群聊低峰期)
     time: String,
@@ -63,13 +62,14 @@ static RESTARTING: AtomicBool = AtomicBool::new(false);
 
 // ================= 插件生命周期 =================
 
-pub fn default_config() -> Value {
-    build_config(RestartConfig::default())
+impl PluginConfig for RestartConfig {
+    const NAME: &'static str = "restart";
 }
+
 
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
-        let cfg = get_config::<RestartConfig>(&ctx, "restart").unwrap_or_default();
+        let cfg = get_config_or_default::<RestartConfig>(&ctx);
         if !cfg.enabled {
             return Ok(());
         }
@@ -162,7 +162,7 @@ pub fn handle(
                 .await?;
                 return Ok(None);
             }
-            let cfg = get_config::<RestartConfig>(&ctx, "restart").unwrap_or_default();
+            let cfg = get_config_or_default::<RestartConfig>(&ctx);
 
             // 未开放手动重启时给出提示
             if !cfg.allow_manual_restart {
@@ -211,7 +211,7 @@ pub fn handle(
 
 /// 只提出请求，统一由主循环清理，避免定时任务中止自身或两个进程同时写配置。
 async fn do_restart(ctx: &Context, reason: String) {
-    if !get_config::<RestartConfig>(ctx, "restart").is_some_and(|cfg| cfg.enabled) {
+    if !get_config::<RestartConfig>(ctx).is_some_and(|cfg| cfg.enabled) {
         return;
     }
     if RESTARTING.swap(true, Ordering::SeqCst) {
@@ -327,9 +327,3 @@ fn current_rss_mb() -> Option<u64> {
     }
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <RestartConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

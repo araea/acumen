@@ -5,7 +5,7 @@ async fn qq_management_is_scoped_bounded_and_deduplicated() {
     let (ctx, writer, calls, server) = fixture(group).await;
     let dir =
         crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "qq-actions").unwrap();
-    let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+    let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx);
     let bridge = start(
         &ctx,
         &writer,
@@ -223,7 +223,7 @@ async fn live_qq_sandbox_actions_and_environment() {
             .any(|r| r["id"] == "owner")
     );
     let old_card = member["nick"].as_str().unwrap_or("").to_string();
-    let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+    let mut config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx);
     config.management_groups = vec![group.to_string()];
     config.send_freshness_seconds = 0;
     ctx.config
@@ -387,7 +387,7 @@ async fn qq_immediate_clear_reports_the_exact_compensated_scope() {
     let (ctx, writer, calls, server) = fixture(group).await;
     let dir = crate::plugins::oai::agent::ScratchDir::under(&std::env::temp_dir(), "qq-reactions")
         .unwrap();
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+    let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx);
     let bridge = start(
         &ctx,
         &writer,
@@ -454,7 +454,7 @@ async fn live_agent_uses_the_new_card_action() {
     // 就是那把锁——几样状态共用它。
     let _guard = memory::exclusive();
     crate::plugins::ambient::setup(dir.path()).await.unwrap();
-    let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx, "ambient");
+    let config = crate::plugins::get_config_or_default::<AmbientConfig>(&ctx);
     window::with_group(group, |s| {
         let mut t = s.recent(1)[0].clone();
         t.text = "@你 把你自己在本群的群名片改成「蹲群看热闹」，改好就行，不用再发文字".into();

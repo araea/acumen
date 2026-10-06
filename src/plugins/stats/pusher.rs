@@ -45,7 +45,7 @@ async fn send_chart(
         "",
         range.0,
         range.1,
-        super::ranking_limit(&get_config_or_default(c, "stats"), None),
+        super::ranking_limit(&get_config_or_default(c), None),
         title,
     )
     .await

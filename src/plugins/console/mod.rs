@@ -21,12 +21,11 @@ mod server;
 mod state;
 
 use crate::adapters::satori::LockedWriter;
-use crate::config::build_config;
+use crate::plugins::PluginConfig;
 use crate::event::Context;
 use crate::plugins::PluginError;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use toml::Value;
 
 const LOG_TARGET: &str = "Plugin/Console";
 
@@ -59,16 +58,11 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "console";
+    const MISMATCH: &'static str = "配置类型不匹配（bind 与 token 必须是字符串，port 与 log_lines 必须是整数）";
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &Value) -> Result<(), String> {
-    Config::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（bind 与 token 必须是字符串，port 与 log_lines 必须是整数）".to_string())
-}
 
 /// 启动控制台服务。
 ///
@@ -76,7 +70,7 @@ pub fn validate_config(value: &Value) -> Result<(), String> {
 /// 直接返回，不会起第二个监听。
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
-        let cfg: Config = crate::plugins::get_config_or_default(&ctx, "console");
+        let cfg: Config = crate::plugins::get_config_or_default(&ctx);
         if !cfg.enabled {
             info!(target: LOG_TARGET, "控制台已关闭；命令行与群里的指令不受影响。");
             return Ok(());

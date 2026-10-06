@@ -1,17 +1,15 @@
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::strip_prefix;
-use crate::config::build_config;
 use crate::db::utils::get_time_range;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{ChannelConfig, PluginError, get_config};
+use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use crate::scheduler::{Pace, PushFrequency};
 use chrono::Weekday;
 use futures_util::future::BoxFuture;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use toml::Value;
 
 mod chart;
 mod pusher;
@@ -130,9 +128,10 @@ impl Default for StatsConfig {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(StatsConfig::default())
+impl PluginConfig for StatsConfig {
+    const NAME: &'static str = "stats";
 }
+
 
 // ================= 正则匹配 =================
 
@@ -172,7 +171,7 @@ pub fn handle(
         };
 
         // 群名单外的群不响应查询，与主动推送保持同一套生效范围
-        let config: StatsConfig = get_config(&ctx, "stats").unwrap_or_default();
+        let config: StatsConfig = get_config_or_default(&ctx);
         if !config.channel.allows(msg.group_id()) {
             return Ok(Some(ctx));
         }
@@ -323,7 +322,7 @@ pub fn on_connected(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let config: StatsConfig = get_config(&ctx, "stats").unwrap_or_default();
+        let config: StatsConfig = get_config_or_default(&ctx);
 
         let scheduler = ctx.scheduler.clone();
 
@@ -388,7 +387,7 @@ pub fn on_connected(
                 pace,
                 move |c, w, gid| async move {
                     let current =
-                        crate::plugins::get_config::<StatsConfig>(&c, "stats").unwrap_or_default();
+                        crate::plugins::get_config_or_default::<StatsConfig>(&c);
                     let switches = [
                         current.morning_recap_enabled,
                         current.noon_brief_enabled,
@@ -422,9 +421,3 @@ type PushFn = fn(
     bool,
 ) -> futures_util::future::BoxFuture<'static, ()>;
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <StatsConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

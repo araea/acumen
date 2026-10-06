@@ -1,7 +1,7 @@
 use crate::adapters::satori::api;
+use crate::plugins::PluginConfig;
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::match_command;
-use crate::config::build_config;
 use crate::event::Context;
 use crate::plugins::PluginError;
 use futures_util::future::BoxFuture;
@@ -10,16 +10,23 @@ use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
-use toml::Value;
 
 #[derive(Serialize, Deserialize)]
-struct Config {
+#[serde(default)]
+pub struct Config {
     enabled: bool,
 }
 
-pub fn default_config() -> Value {
-    build_config(Config { enabled: true })
+impl Default for Config {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
+
+impl PluginConfig for Config {
+    const NAME: &'static str = "group_title";
+}
+
 
 /// 每个群上次「打开展示成员群头衔开关」的时间，给这个写操作单独限一道频。
 /// QQ 对群设置的写有过一天写太多就限流的先例（2026-09-19，code=1010），这个开关
@@ -203,9 +210,3 @@ pub fn handle(
     })
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

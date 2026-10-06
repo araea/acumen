@@ -17,13 +17,12 @@ mod search;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{extract_text_arg, first_command_match, match_command};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
 use crate::plugins::oai::llm;
 use crate::plugins::oai::{self};
 use crate::plugins::video_parse;
-use crate::plugins::{ChannelConfig, PluginError, get_config_or_default};
+use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use anyhow::Result;
 use futures_util::future::BoxFuture;
 use rig_core::completion::Message as LlmMessage;
@@ -31,7 +30,6 @@ use rig_core::completion::message::{Text, UserContent};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tokio::time;
-use toml::Value;
 
 const LOG_TARGET: &str = "Plugin/Song";
 
@@ -70,9 +68,10 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "song";
 }
+
 
 // ================= Main Handler =================
 
@@ -84,7 +83,7 @@ pub fn handle(
         let Some(msg) = ctx.as_message() else {
             return Ok(Some(ctx));
         };
-        let config: Config = get_config_or_default(&ctx, "song");
+        let config: Config = get_config_or_default(&ctx);
         if !config.enabled {
             return Ok(Some(ctx));
         }
@@ -178,7 +177,7 @@ async fn request(
         picked.play,
     );
 
-    let take = get_config_or_default::<video_parse::Config>(ctx, "video_parse");
+    let take = get_config_or_default::<video_parse::Config>(ctx);
     video_parse::take_by_bvid(ctx, writer, &take, &picked.bvid, group_id, user_id).await
 }
 
@@ -208,7 +207,7 @@ async fn pick<'a>(
 /// 模型写法 `供应商/模型` → 接口地址与密钥，口径与搭话那边一致。
 async fn model_endpoint(ctx: &Context, model: &str) -> Option<(String, String, String)> {
     let (provider, model_id) = oai::utils::split_provider(model);
-    let oai_config = get_config_or_default::<oai::OaiConfig>(ctx, "oai");
+    let oai_config = get_config_or_default::<oai::OaiConfig>(ctx);
     let manager = oai::data::MANAGER.get()?;
     let (default_base, default_key) = {
         let stored = manager.config.read().await;
@@ -267,9 +266,3 @@ fn parse_choice(reply: &str, len: usize) -> Option<usize> {
         .map(|chosen| chosen - 1)
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

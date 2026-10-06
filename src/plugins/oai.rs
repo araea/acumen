@@ -1,14 +1,12 @@
 use crate::adapters::satori::LockedWriter;
-use crate::config::build_config;
 use crate::event::Context;
-use crate::plugins::{PluginError, get_data_dir};
+use crate::plugins::{PluginConfig, PluginError, get_data_dir};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use toml::Value;
 
 pub mod data;
 pub mod images;
@@ -228,9 +226,10 @@ impl OaiConfig {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(OaiConfig::default())
+impl PluginConfig for OaiConfig {
+    const NAME: &'static str = "oai";
 }
+
 
 /// 确保模型接口配置（`data/oai/config.json`）已加载。
 ///
@@ -258,7 +257,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         }
 
         // 尝试预加载模型列表
-        let filter = crate::plugins::get_config_or_default::<OaiConfig>(&ctx, "oai").model_filter;
+        let filter = crate::plugins::get_config_or_default::<OaiConfig>(&ctx).model_filter;
         tokio::spawn(async move {
             if let Err(e) = mgr.fetch_models(&filter).await {
                 warn!(target: "Plugin/OAI", "初始化获取模型列表失败: {}", e);
@@ -392,9 +391,3 @@ pub fn handle(
     })
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <OaiConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

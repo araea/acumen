@@ -1,15 +1,13 @@
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{extract_text_arg, first_command_match, get_image_url};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::http::download_bytes;
 use crate::message::Message;
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
-use toml::Value;
 
 pub mod processing;
 
@@ -19,7 +17,7 @@ const LOG_TARGET: &str = "Plugin/ImageSplit";
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
     /// 单次最多切几行；越大越容易被一张图切出上百块，所以有上限。
     max_rows: u32,
@@ -37,9 +35,10 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "image_split";
 }
+
 
 // ================= 正则与工具 =================
 
@@ -62,7 +61,7 @@ pub fn handle(
             None => return Ok(Some(ctx)),
         };
 
-        let config: Config = get_config_or_default(&ctx, "image_split");
+        let config: Config = get_config_or_default(&ctx);
 
         // 支持的指令列表
         let commands = ["裁剪", "切图", "分割"];
@@ -225,9 +224,3 @@ pub fn handle(
     })
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

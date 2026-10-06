@@ -1,19 +1,26 @@
 use crate::adapters::satori::LockedWriter;
-use crate::config::build_config;
+use crate::plugins::PluginConfig;
 use crate::event::Context;
 use crate::plugins::PluginError;
 use futures_util::future::BoxFuture;
 use serde::Serialize;
-use toml::Value;
 
 #[derive(Serialize, serde::Deserialize)]
-struct FilterConfig {
+#[serde(default)]
+pub struct FilterConfig {
     enabled: bool,
 }
 
-pub fn default_config() -> Value {
-    build_config(FilterConfig { enabled: true })
+impl Default for FilterConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
+
+impl PluginConfig for FilterConfig {
+    const NAME: &'static str = "meta_filter";
+}
+
 
 pub fn handle(
     ctx: Context,
@@ -29,9 +36,3 @@ pub fn handle(
     })
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <FilterConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

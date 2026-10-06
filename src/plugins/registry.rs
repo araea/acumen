@@ -7,6 +7,8 @@
 //      不需要再去别处补一份清单。
 //
 // 字段说明：
+//   config        配置类型（必填、放第一位）：实现 `PluginConfig`，默认配置、类型校验与
+//                 读写都由它生成，模块里不再自写 default_config / validate_config
 //   display_name  中文显示名（面向用户）；配置键与代码引用用标识符（模块名）
 //   section       帮助总览的分区代号，取值见 `help::SECTIONS`；省略即「其他」
 //   summary       一句话说明；`cargo test` 会检查每个插件都写了
@@ -19,11 +21,13 @@
 
 register_plugins!(
     meta_filter {
+        config: meta_filter::FilterConfig,
         display_name: "元事件过滤",
         section: "system",
         summary: "过滤心跳与元事件，避免噪声进入流水线"
     },
     ctl {
+        config: ctl::Config,
         display_name: "插件控制",
         section: "system",
         summary: "统一管理全部插件开关与配置；仅 ctl.admins 可改，首次启用自动初始化，排期修改下次连接生效",
@@ -46,6 +50,7 @@ register_plugins!(
         ]
     },
     console {
+        config: console::Config,
         display_name: "本机控制台",
         section: "system",
         summary: "把运行状况、插件配置、搭话与日志摆到本机网页上；只绑回环地址并要口令",
@@ -53,17 +58,20 @@ register_plugins!(
         on_connected: Some(console::on_connected)
     },
     logger {
+        config: logger::LoggerConfig,
         display_name: "日志输出",
         section: "system",
         summary: "将收到的消息打印到控制台日志"
     },
     recorder {
+        config: recorder::RecorderConfig,
         display_name: "消息记录",
         section: "insight",
         summary: "把消息记录到数据库，为词云、统计等插件提供数据源",
         on_init: Some(recorder::init)
     },
     media {
+        config: media::Config,
         display_name: "媒体转换",
         section: "message",
         summary: "媒体与链接互转：图片或视频 ↔ 直链",
@@ -77,6 +85,7 @@ register_plugins!(
         ]
     },
     sticker {
+        config: sticker::Config,
         display_name: "表情收藏",
         section: "message",
         summary: "收藏对方发送的表情或图片（需引用原消息）",
@@ -86,24 +95,28 @@ register_plugins!(
         ]
     },
     group_title {
+        config: group_title::Config,
         display_name: "群头衔",
         section: "play",
         summary: "机器人为群主时，给申请者设置群专属头衔",
         commands: cmds![("我要头衔 <文字>", "给自己申请一个群专属头衔")]
     },
     recall {
+        config: recall::Config,
         display_name: "消息撤回",
         section: "message",
         summary: "引用后发送撤回指令；用户撤回触发消息时自动撤回对应回复（可关闭）",
         commands: cmds![("撤回", "引用要撤回的消息后发送")]
     },
     echo {
+        config: echo::Config,
         display_name: "消息回显",
         section: "message",
         summary: "回显参数内容（支持图片等富文本）",
         commands: cmds![("echo <内容>", "原样回显参数")]
     },
     markdown {
+        config: markdown::Config,
         display_name: "Markdown 转图",
         section: "message",
         summary: "把 Markdown 渲染成排版精致的图片：指令后直接写，或引用一条消息再发指令；长文自动分页",
@@ -115,11 +128,13 @@ register_plugins!(
         ]
     },
     repeater {
+        config: repeater::RepeaterConfig,
         display_name: "复读机",
         section: "play",
         summary: "同一句话接力到阈值就跟读一次，带冷却、概率与打断复读"
     },
     wordcloud {
+        config: wordcloud::WordCloudConfig,
         display_name: "词云",
         section: "insight",
         summary: "根据消息记录生成词云图",
@@ -133,6 +148,7 @@ register_plugins!(
         ]
     },
     stats {
+        config: stats::StatsConfig,
         display_name: "统计图表",
         section: "insight",
         summary: "群统计图表：发言、表情、消息类型排行榜与走势，支持早中晚与周月的错峰定时推送",
@@ -152,6 +168,7 @@ register_plugins!(
         on_connected: Some(stats::on_connected)
     },
     gif {
+        config: gif::Config,
         display_name: "GIF 工具箱",
         section: "message",
         summary: "GIF 合成、变速、倒放、缩放、拆分与拼图",
@@ -169,12 +186,14 @@ register_plugins!(
         ]
     },
     image_split {
+        config: image_split::Config,
         display_name: "图片切分",
         section: "message",
         summary: "将一张图按行列切片",
         commands: cmds![("裁剪 <行>x<列> / 切图 / 分割", "如：裁剪 3x3")]
     },
     qr_scan {
+        config: qr_scan::Config,
         display_name: "二维码",
         section: "message",
         summary: "二维码识别与生成：图里的码转成文字与链接（多个码在原图上标序号），文字转成好扫的二维码图，引用一条消息即可",
@@ -194,11 +213,13 @@ register_plugins!(
         ]
     },
     video_parse {
+        config: video_parse::Config,
         display_name: "视频解析",
         section: "message",
         summary: "视频站链接（正文、小程序卡、分享卡）就地取原片进群，成品默认只发视频气泡"
     },
     song {
+        config: song::Config,
         display_name: "点歌",
         section: "play",
         summary: "点歌 <关键词>：B 站搜歌并由模型挑选，只回成品视频一条消息，不报错不吭声",
@@ -207,6 +228,7 @@ register_plugins!(
         ]
     },
     webshot {
+        config: webshot::Config,
         display_name: "网页截图",
         section: "message",
         summary: "给消息里的网页链接自动截图（视频站链接交给「视频解析」）；manual_channels 名单内的群不自动截，可用指令手动触发",
@@ -215,6 +237,7 @@ register_plugins!(
         ]
     },
     oai {
+        config: oai::OaiConfig,
         display_name: "智能对话",
         section: "play",
         summary: "多智能体对话与模型、历史管理；内置智能体可自行调用工具，按配置开放本机指令",
@@ -244,12 +267,14 @@ register_plugins!(
         on_init: Some(oai::init)
     },
     ambient {
+        config: ambient::AmbientConfig,
         display_name: "群聊搭话",
         section: "play",
         summary: "内置智能体以固定人格参与群聊，只在 [ambient] groups 的群生效",
         on_init: Some(ambient::init)
     },
     ai_news {
+        config: ai_news::AiNewsConfig,
         display_name: "AI 资讯推送",
         section: "insight",
         summary: "AI 资讯、热点、日报与模型榜（数据源 AIHOT），引用卡片后回复序号取链接",
@@ -299,6 +324,7 @@ register_plugins!(
         on_connected: Some(ai_news::on_connected)
     },
     help {
+        config: help::Config,
         display_name: "帮助中心",
         section: "system",
         summary: "按当前注册表列出全部插件与开关状态，配置管理用 ctl",
@@ -308,6 +334,7 @@ register_plugins!(
         ]
     },
     restart {
+        config: restart::RestartConfig,
         display_name: "自动重启",
         section: "system",
         summary: "每日定时自动重启 + 内存阈值监控，防止长时间运行卡顿",

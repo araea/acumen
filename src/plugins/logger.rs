@@ -1,17 +1,15 @@
 use crate::adapters::satori::LockedWriter;
-use crate::config::build_config;
 use crate::event::{Context, EventType};
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
-use toml::Value;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct LoggerConfig {
+pub struct LoggerConfig {
     enabled: bool,
     /// 连调试级日志一起打。排查「这条消息到底进没进流水线」时开它。
     debug: bool,
@@ -26,9 +24,10 @@ impl Default for LoggerConfig {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(LoggerConfig::default())
+impl PluginConfig for LoggerConfig {
+    const NAME: &'static str = "logger";
 }
+
 
 pub fn handle(
     ctx: Context,
@@ -36,7 +35,7 @@ pub fn handle(
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
         // 获取配置
-        let config: LoggerConfig = get_config_or_default(&ctx, "logger");
+        let config: LoggerConfig = get_config_or_default(&ctx);
 
         match &ctx.event {
             EventType::Satori(ev) => {
@@ -222,9 +221,3 @@ fn format_message(msg_val: Option<&OwnedValue>) -> String {
     "[复杂消息]".to_string()
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <LoggerConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

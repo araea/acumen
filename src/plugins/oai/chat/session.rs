@@ -590,7 +590,7 @@ impl Session {
                 ensure!(budget > 0, "本群已关闭绘图（draw_budget = 0）");
                 ensure!(self.draws < budget, "本轮绘图额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
-                    &self.ctx, "oai",
+                    &self.ctx,
                 );
                 let (api_base, api_key, model) = media_endpoint(
                     crate::plugins::oai::images::is_images_model,
@@ -638,7 +638,7 @@ impl Session {
                 ensure!(budget > 0, "本群已关闭写歌（music_budget = 0）");
                 ensure!(self.music < budget, "本轮写歌额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
-                    &self.ctx, "oai",
+                    &self.ctx,
                 );
                 let (api_base, api_key, model) = media_endpoint(
                     crate::plugins::oai::music::is_music_model,
@@ -724,7 +724,7 @@ impl Session {
                 ensure!(budget > 0, "本群已关闭拍片（video_budget = 0）");
                 ensure!(self.videos < budget, "本轮拍片额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
-                    &self.ctx, "oai",
+                    &self.ctx,
                 );
                 let (api_base, api_key, model) = media_endpoint(
                     crate::plugins::oai::video::is_video_model,

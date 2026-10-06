@@ -17,19 +17,17 @@ mod card;
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{extract_text_arg, get_prefixes, match_command};
-use crate::config::build_config;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{Cmd, PluginError, get_config, get_plugins};
+use crate::plugins::{Cmd, PluginConfig, PluginError, get_config_or_default, get_plugins};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use toml::Value;
 
 const LOG_TARGET: &str = "Plugin/Help";
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(default)]
-struct Config {
+pub struct Config {
     enabled: bool,
     /// 仅在私聊应答。帮助属于「自己翻手册」，留在群里只会刷屏；
     /// 打开后群里的 help 原样放行，不消耗事件。
@@ -51,12 +49,13 @@ impl Default for Config {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(Config::default())
+impl PluginConfig for Config {
+    const NAME: &'static str = "help";
 }
 
+
 fn load_config(ctx: &Context) -> Config {
-    get_config::<Config>(ctx, "help").unwrap_or_default()
+    get_config_or_default::<Config>(ctx)
 }
 
 const TRIGGERS: &[&str] = &["help", "帮助", "插件列表"];
@@ -354,9 +353,3 @@ pub fn handle(
     })
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <Config as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

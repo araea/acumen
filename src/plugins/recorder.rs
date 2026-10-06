@@ -1,7 +1,6 @@
 use crate::adapters::satori::LockedWriter;
-use crate::config::build_config;
 use crate::event::{Context, EventType};
-use crate::plugins::{PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 
 /// 统一日志 target
 const LOG_TARGET: &str = "Plugin/Recorder";
@@ -102,7 +101,7 @@ fn get_jieba() -> &'static Jieba {
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
-struct RecorderConfig {
+pub struct RecorderConfig {
     enabled: bool,
     /// 是否连机器人自己发的消息一起记。搭话的风格分析要用到自己的发言，所以默认开。
     record_self: bool,
@@ -120,9 +119,10 @@ impl Default for RecorderConfig {
     }
 }
 
-pub fn default_config() -> Value {
-    build_config(RecorderConfig::default())
+impl PluginConfig for RecorderConfig {
+    const NAME: &'static str = "recorder";
 }
+
 
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
@@ -299,7 +299,7 @@ pub async fn record_sent(
     channel_id: &str,
     message_ids: &[String],
 ) {
-    let config: RecorderConfig = get_config_or_default(ctx, "recorder");
+    let config: RecorderConfig = get_config_or_default(ctx);
     if !config.enabled || !config.record_self {
         return;
     }
@@ -336,7 +336,7 @@ async fn insert(
     time: i64,
     message: Option<&OwnedValue>,
 ) {
-    let config: RecorderConfig = get_config_or_default(ctx, "recorder");
+    let config: RecorderConfig = get_config_or_default(ctx);
     if !config.enabled {
         return;
     }
@@ -567,9 +567,3 @@ fn parse_message_content(
     (text_char_count as i32, joined_text)
 }
 
-/// Validate control edits against the plugin's actual configuration type.
-pub fn validate_config(value: &toml::Value) -> Result<(), String> {
-    <RecorderConfig as serde::Deserialize>::deserialize(value.clone())
-        .map(|_| ())
-        .map_err(|_| "配置类型不匹配（请检查数组元素、字段类型及整数范围）".to_string())
-}

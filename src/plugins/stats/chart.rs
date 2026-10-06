@@ -79,7 +79,7 @@ pub async fn generate(
     title: &str,
 ) -> Result<String, ChartError> {
     let db = &ctx.db;
-    let config: StatsConfig = get_config_or_default(ctx, "stats");
+    let config: StatsConfig = get_config_or_default(ctx);
 
     let title = title.to_owned();
 
