@@ -972,6 +972,20 @@ pub(crate) async fn observe(
     window::with_group(group, |state| {
         window::resolve_quote(&mut turn, |id| state.quote_of(id));
     });
+    // 被引的那条已经滚出窗口时窗口认不得它：向平台要原话，才看得见「引的是什么」，
+    // 也才认得出「引的是我自己」。
+    if !turn.call.reply_to.is_empty() && turn.call.quote.is_empty() {
+        let found = window::quote_from_platform(ctx, writer, group, &turn.call.reply_to).await;
+        debug!(
+            target: LOG_TARGET,
+            "群 {group} 引用的消息已滚出窗口，向平台要回原话：{}",
+            if found.is_some() { "要到了" } else { "没要到" }
+        );
+        if let Some(found) = found {
+            turn.call.quoted_images = found.images;
+            window::resolve_quote(&mut turn, |_| Some((found.from_me, found.summary)));
+        }
+    }
     // 搭话指令是被剥掉的那两个词，不是群聊内容：它不进窗口，只让这一批跳过判定。
     let summoned = strip_summon(&mut turn.text, &config.summon_command);
     // 其余指令是说给机器人听的，不是群聊内容；记下来只会让人格模型学着复述指令。

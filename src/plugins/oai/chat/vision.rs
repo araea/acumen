@@ -122,6 +122,26 @@ pub(crate) async fn usable_images(turns: &[Turn], limit: usize) -> Vec<Usable> {
             break;
         }
     }
+    // 引的是一张已经滚出窗口的旧图：窗口里没有那条消息，上面的循环碰不到它，图是进来的
+    // 时候向平台要回来的。群里引用是连图一起显示的，被引的图理应一起递给模型；
+    // 同样只补最近几条里引用着的，且让位给窗口里本来就在聊的图。
+    for turn in turns[tail..].iter().rev() {
+        for (index, url) in turn.call.quoted_images.iter().enumerate() {
+            if out.len() >= limit {
+                break;
+            }
+            if let Some(data_url) = usable_image(url).await {
+                out.insert(
+                    0,
+                    Usable {
+                        message_id: turn.call.reply_to.clone(),
+                        index: index + 1,
+                        data_url,
+                    },
+                );
+            }
+        }
+    }
     out.reverse();
     out
 }

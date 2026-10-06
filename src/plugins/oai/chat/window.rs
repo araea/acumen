@@ -81,6 +81,9 @@ pub(crate) struct Call {
     pub reply_to: String,
     /// 被引用那条的摘要（`谁：说了什么`）；不在窗口里时为空。
     pub quote: String,
+    /// 被引用那条已经滚出窗口、向平台要回来的图片直链。窗口里的被引消息自己带着图，
+    /// 不走这一栏；这一栏只补「引的是一张旧图」那种场合——群里引用是连图一起显示的。
+    pub quoted_images: Vec<String>,
 }
 
 impl Call {
@@ -710,6 +713,57 @@ pub(crate) fn resolve_quote(turn: &mut Turn, lookup: impl FnOnce(&str) -> Option
         turn.call.replied_me = true;
     }
     turn.call.quote = quote;
+}
+
+/// 向平台要回来的被引消息。
+pub(crate) struct PlatformQuote {
+    /// 被引的是不是自己（含号主亲手打的）。
+    pub from_me: bool,
+    /// 一句摘要，格式与窗口里的引用一致；别人的话带作者名。
+    pub summary: String,
+    /// 它带的图片直链（最多两张）。
+    pub images: Vec<String>,
+}
+
+/// 窗口里找不到的引用，向平台要原话。
+///
+/// 窗口只留最近 80 条，忙的群几分钟就滚过去了；而群友引用的常常是半小时前的一句。
+/// 群里的引用是连着原话一起显示的，人看得见，模型也该看得见——否则它只能对着一个
+/// 光秃秃的消息号猜，更认不出「被引的是我自己那条」。查不到、超时都当没有：这一步
+/// 只是补充，不能拖慢消息进窗口。引用的不是自己的话时带上作者名，窗口里的引用省了
+/// 作者是因为上下文就在眼前，这里没有。
+pub(crate) async fn quote_from_platform(
+    ctx: &crate::event::Context,
+    writer: &crate::adapters::satori::LockedWriter,
+    group: &str,
+    id: &str,
+) -> Option<PlatformQuote> {
+    let raw: serde_json::Value = tokio::time::timeout(
+        Duration::from_secs(3),
+        writer.call(
+            ctx,
+            "message.get",
+            serde_json::json!({"channel_id": group, "message_id": id}),
+        ),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let turn = turn_from_platform(ctx, writer, &raw)?;
+    let body = summarize(&turn.text, QUOTE_PREVIEW_CHARS);
+    if body.is_empty() {
+        return None;
+    }
+    let summary = if turn.from_me || turn.name.is_empty() {
+        body
+    } else {
+        format!("{}：{body}", turn.name)
+    };
+    Some(PlatformQuote {
+        from_me: turn.from_me,
+        summary,
+        images: turn.images.into_iter().take(2).collect(),
+    })
 }
 
 /// 事件 → 窗口里的一条消息。

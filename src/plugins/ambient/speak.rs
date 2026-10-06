@@ -20,6 +20,13 @@ const MUSIC_RULES: &str = "\n这一轮你还能写歌：satori_music 给 prompt�
 /// 留着拍片额度时追加的一段话。
 const VIDEO_RULES: &str = "\n这一轮你还能拍片：satori_video 给 prompt（可加 seconds 秒数、size 横屏/竖屏），一两分钟出片，返回 video 的本地路径，再用 satori_action 的 send + type:video 发出去。一次约一美元多，是手边最贵的一件事，留给群友明确想看的时候。";
 
+/// 接通真实界面时追加：窗口之外的东西怎么够得着。
+///
+/// 窗口只有最近几十条，群友引用的旧消息、扔进群的日志与截图、「之前谁说过」这类问题
+/// 都在它外面。三件工具各管一头——取附件、看图、翻记录——但都只在**被问到**时才该伸手：
+/// 没人问就去翻旧账，正是「自说自话」的来路（见 `stray.rs`）。
+const REACH_RULES: &str = "\n窗口之外你也够得着：有人引用了一条旧消息、或在群里扔了日志、压缩包、截图问你，用 satori_read 的 save=true 把那条消息里的图和文件取回来（合并转发加 forward=true 一起取），图用 view_image 看，文本和日志用 read，其余用 bash 处理；有人问「之前谁说过」「上午聊了什么」，用 satori_history 按关键词或人翻本群记录。翻到的是原话，翻不到就说不记得，别凭印象编。这些只在有人问到、眼前真有这件事时才用，别主动去翻旧账。";
+
 /// 有记忆工具时追加的一段话。
 const MEMO_RULES: &str = "\n你还有 satori_memo：把以后还想记得的事写下来——对某个人的一句印象、你平时怎么称呼他、群里刚起的梗、谁在忙什么。挑那种会改变你以后怎么对待这个人或这个话题的一句写，一句话就够。记岔了随时改写或删掉。它不占发送额度，记了什么也是你自己的事。";
 
@@ -74,13 +81,14 @@ pub(super) fn system_prompt(
     let music = live && config.music_budget > 0;
     let video = live && config.video_budget > 0;
     format!(
-        "{}\n\n---\n\n{}{}{}{}{}{}",
+        "{}\n\n---\n\n{}{}{}{}{}{}{}",
         persona.trim(),
         house_rules(
             config.messages_budget.clamp(1, 5),
             config.focus_max_seconds.min(600)
         ),
         if live { TOOL_RULES } else { "" },
+        if live { REACH_RULES } else { "" },
         if memo { MEMO_RULES } else { "" },
         if web { SEARCH_RULES } else { "" },
         if music { MUSIC_RULES } else { "" },
@@ -261,8 +269,10 @@ pub(crate) async fn compose(
         let chat = super::chat_config(config);
         tools.push(',');
         tools.push_str(&crate::plugins::oai::chat::tool_names(&chat).join(","));
-        // 房间不挂这条额外探查；只给有常驻群聊窗口的搭话使用。
-        tools.push_str(",satori_observe");
+        // 探查与翻记录只给有常驻群聊窗口的搭话，房间不挂；view_image 是看图的眼睛，
+        // 取回的附件、画好的图都要靠它看（`[ambient].tools` 是手写白名单，默认值管不到
+        // 已部署的实例，所以由这里补）。
+        tools.push_str(",satori_observe,satori_history,view_image");
         let persona = std::sync::Arc::new(super::Ambient::new(
             config,
             Some(crate::plugins::oai::chat::Avatar {
