@@ -15,7 +15,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-const LOG_TARGET: &str = "Plugin/AiNews";
+use super::LOG_TARGET;
+
 const STATE_FILE: &str = "state.json";
 const EXTRACTION_RETAIN_DAYS: i64 = 30;
 // 引用驱动里由插件自己存对应关系的只剩这一处，30 天是它的口径。

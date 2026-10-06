@@ -112,7 +112,6 @@ pub fn builder() -> ClientBuilder {
             return builder.tls_certs_only(certs);
         }
         warn!(
-            target: "System",
             "未找到系统 CA 包（试过 {} 与 {:?}），HTTPS 请求可能失败",
             CA_BUNDLES.join("、"),
             CA_DIRS

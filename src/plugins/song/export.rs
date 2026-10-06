@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::time;
 
-const LOG_TARGET: &str = "Plugin/Song";
+use super::LOG_TARGET;
 
 /// 触发词。
 pub(super) const COMMANDS: &[&str] = &["导出音频", "提取音频"];

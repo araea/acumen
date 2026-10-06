@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use super::LOG_TARGET;
+
 /// 精力偏移的半衰期：熬一会儿、被逗一下，效果都是一小时内散掉。
 const DRIFT_HALF_LIFE: f32 = 2_400.0;
 /// 兴致的半衰期：比精力短得多，聊完一阵就凉。
@@ -296,6 +298,6 @@ pub(crate) async fn flush() {
         return;
     }
     if let Err(error) = crate::storage::write_atomic_async(path, json.into_bytes()).await {
-        warn!(target: "Plugin/Ambient", "写入搭话状态失败：{error}");
+        warn!(target: LOG_TARGET, "写入搭话状态失败：{error}");
     }
 }

@@ -2,10 +2,12 @@ use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::command::first_command_match;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
+use crate::plugins::{PluginConfig, PluginError};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::base::ValueAsScalar;
+
+const LOG_TARGET: &str = "Plugin/Sticker";
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -21,112 +23,59 @@ impl Default for Config {
 
 // 收藏指令（内置，无需配置）
 const COMMANDS: &[&str] = &["表情转图片", "收", "偷", "存表情"];
-// 保存成功后是否撤回触发指令（内置，默认关闭）
-const RECALL_AFTER_SAVE: bool = false;
 
 impl PluginConfig for Config {
     const NAME: &'static str = "sticker";
 }
-
 
 pub fn handle(
     ctx: Context,
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let msg = match ctx.as_message() {
-            Some(m) => m,
-            None => return Ok(Some(ctx)),
+        let Some(msg) = ctx.as_message() else {
+            return Ok(Some(ctx));
+        };
+        let Some(matched) = first_command_match(&ctx, COMMANDS) else {
+            return Ok(Some(ctx));
         };
 
-        let config: Config = get_config_or_default(&ctx);
+        // 回复都引用触发指令的那条消息
+        let reply = |text: &str| Message::new().reply(msg.message_id()).text(text);
+        let say = |message: Message| {
+            send_msg(&ctx, writer.clone(), msg.group_id(), Some(msg.user_id()), message)
+        };
 
-        if !config.enabled {
-            return Ok(Some(ctx));
-        }
+        // 必须通过引用回复
+        let Some(reply_id) = matched.reply_id else {
+            say(reply("❌ 请引用你要保存的表情或图片，然后重发这条指令")).await?;
+            return Ok(None);
+        };
 
-        if let Some(matched) = first_command_match(&ctx, COMMANDS) {
-                // 必须通过引用回复
-                let reply_id = match matched.reply_id {
-                    Some(id_str) => id_str,
-                    None => {
-                        let _ = send_msg(
-                            &ctx,
-                            writer,
-                            msg.group_id(),
-                            Some(msg.user_id()),
-                            Message::new()
-                                .reply(msg.message_id())
-                                .text("❌ 请引用你要保存的表情或图片，然后重发这条指令"),
-                        )
-                        .await;
-                        return Ok(None);
-                    }
-                };
-
-                match api::get_msg(&ctx, writer.clone(), &reply_id).await {
-                    Ok(res) => {
-                        let urls: Vec<String> = res
-                            .message
-                            .0
-                            .iter()
-                            .filter(|seg| seg.type_ == "image")
-                            .filter_map(|seg| {
-                                seg.data
-                                    .get("url")
-                                    .and_then(|v| v.as_str())
-                                    .map(String::from)
-                            })
-                            .collect();
-
-                        if urls.is_empty() {
-                            let _ = send_msg(
-                                &ctx,
-                                writer.clone(),
-                                msg.group_id(),
-                                Some(msg.user_id()),
-                                Message::new()
-                                    .reply(msg.message_id())
-                                    .text("❌ 检测不到图片或表情\n商城表情这类特殊格式暂时读不出来"),
-                            )
-                            .await;
-                        } else {
-                            let mut reply_msg = Message::new()
-                                .reply(msg.message_id())
-                                .text("✅ 图片提取成功：\n");
-
-                            for url in urls {
-                                reply_msg = reply_msg.image(url);
-                            }
-
-                            let _ = send_msg(
-                                &ctx,
-                                writer.clone(),
-                                msg.group_id(),
-                                Some(msg.user_id()),
-                                reply_msg,
-                            )
-                            .await;
-
-                            if RECALL_AFTER_SAVE && msg.is_group() {
-                                let _ = api::delete_msg(&ctx, writer, msg.message_id()).await;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        let _ = send_msg(
-                            &ctx,
-                            writer,
-                            msg.group_id(),
-                            Some(msg.user_id()),
-                            Message::new().text("❌ 获取原消息失败，消息可能已过期"),
-                        )
-                        .await;
-                    }
-                }
+        let original = match api::get_msg(&ctx, writer.clone(), &reply_id).await {
+            Ok(original) => original,
+            Err(error) => {
+                warn!(target: LOG_TARGET, "取被引用的消息 {reply_id} 失败: {error}");
+                say(reply("❌ 获取原消息失败，消息可能已过期")).await?;
                 return Ok(None);
-        }
+            }
+        };
+        let urls: Vec<&str> = original
+            .message
+            .0
+            .iter()
+            .filter(|seg| seg.type_ == "image")
+            .filter_map(|seg| seg.data.get("url").and_then(|v| v.as_str()))
+            .collect();
 
-        Ok(Some(ctx))
+        if urls.is_empty() {
+            say(reply("❌ 检测不到图片或表情\n商城表情这类特殊格式暂时读不出来")).await?;
+        } else {
+            let message = urls
+                .into_iter()
+                .fold(reply("✅ 图片提取成功：\n"), |message, url| message.image(url));
+            say(message).await?;
+        }
+        Ok(None)
     })
 }

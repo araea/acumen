@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+const LOG_TARGET: &str = "Plugin/Recall";
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -137,17 +139,8 @@ fn user_trigger(ctx: &Context, event: &Event) -> bool {
 
 async fn delete_replies(ctx: &Context, writer: LockedWriter, channel: &str, ids: Vec<String>) {
     for id in ids {
-        let result: Result<serde_json::Value, _> = writer
-            .call(
-                ctx,
-                "message.delete",
-                serde_json::json!({
-                    "channel_id": channel, "message_id": id
-                }),
-            )
-            .await;
-        if let Err(error) = result {
-            warn!(target: "Plugin/Recall", "跟随撤回消息 {id} 失败: {error}");
+        if let Err(error) = api::delete_msg_in(ctx, writer.clone(), channel, &id).await {
+            warn!(target: LOG_TARGET, "跟随撤回消息 {id} 失败: {error}");
         }
     }
 }
@@ -214,7 +207,7 @@ pub fn handle(
             {
                 let target_id = reply_id_str.as_str();
                 if let Err(error) = api::delete_msg(&ctx, writer.clone(), target_id).await {
-                    warn!(target: "Plugin/Recall", "撤回引用消息 {target_id} 失败: {error}");
+                    warn!(target: LOG_TARGET, "撤回引用消息 {target_id} 失败: {error}");
                     crate::adapters::satori::send_msg(
                         &ctx,
                         writer,
@@ -226,7 +219,7 @@ pub fn handle(
                     return Ok(None);
                 }
                 if let Err(error) = api::delete_msg(&ctx, writer, command_msg_id).await {
-                    warn!(target: "Plugin/Recall", "撤回指令消息 {command_msg_id} 失败: {error}");
+                    warn!(target: LOG_TARGET, "撤回指令消息 {command_msg_id} 失败: {error}");
                 }
                 return Ok(None);
             }

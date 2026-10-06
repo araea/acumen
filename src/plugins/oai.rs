@@ -27,6 +27,8 @@ pub mod video;
 
 use data::MANAGER;
 
+const LOG_TARGET: &str = "Plugin/OAI";
+
 /// 一个模型供应商的接入点与密钥。
 ///
 /// 房间模型、判定模型写成 `供应商/模型` 时，就按这里的名字取接口；
@@ -253,16 +255,16 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         if let Some(dir) = mgr.path.parent()
             && let Err(error) = chat::attach(dir).await
         {
-            warn!(target: "Plugin/OAI", "群聊能力层的数据目录初始化失败：{error}");
+            warn!(target: LOG_TARGET, "群聊能力层的数据目录初始化失败：{error}");
         }
 
         // 尝试预加载模型列表
         let filter = crate::plugins::get_config_or_default::<OaiConfig>(&ctx).model_filter;
         tokio::spawn(async move {
             if let Err(e) = mgr.fetch_models(&filter).await {
-                warn!(target: "Plugin/OAI", "初始化获取模型列表失败: {}", e);
+                warn!(target: LOG_TARGET, "初始化获取模型列表失败: {}", e);
             } else {
-                info!(target: "Plugin/OAI", "初始化获取模型列表成功");
+                info!(target: LOG_TARGET, "初始化获取模型列表成功");
             }
         });
 
@@ -330,7 +332,7 @@ pub fn handle(
         let mgr = match MANAGER.get() {
             Some(m) => m,
             None => {
-                error!(target: "Plugin/OAI", "插件尚未初始化");
+                error!(target: LOG_TARGET, "插件尚未初始化");
                 return Ok(Some(ctx));
             }
         };

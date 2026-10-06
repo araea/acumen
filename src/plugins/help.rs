@@ -319,7 +319,7 @@ pub fn handle(
                 let reply = build_reply(&ctx, &arg);
 
                 let mut out = Message::new().reply(msg.message_id());
-                let browser_path = ctx.config.read().unwrap().browser_path.clone();
+                let browser_path = ctx.browser_path();
                 let image = match (&reply.card, config.image_enabled) {
                     (Some(c), true) => {
                         match c.render(config.image_scale, browser_path.as_deref()).await {

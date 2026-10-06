@@ -17,6 +17,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+const LOG_TARGET: &str = "Plugin/OAI/Video";
+
 /// 默认走视频接口的模型关键字（不区分大小写、子串匹配）。
 ///
 /// 站点上新的视频模型时改 `[oai] video_models` 即可，不必改代码。刻意不写成
@@ -378,7 +380,7 @@ pub(crate) async fn generate(
         .map(str::to_string)
         .filter(|value| !value.trim().is_empty());
     info!(
-        target: "Plugin/OAI/Video",
+        target: LOG_TARGET,
         "视频任务 {} 已提交（{}，{}秒 {}）",
         task_id,
         model,

@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
 
+const LOG_TARGET: &str = "Plugin/OAI/Images";
+
 /// 默认走图像接口的模型关键字（不区分大小写、子串匹配）。
 /// 站点上新图像模型时改 `[oai] image_models` 即可，不必改代码。
 pub(super) const DEFAULT_IMAGE_MODELS: &[&str] = &["gpt-image-2.5"];
@@ -337,7 +339,7 @@ async fn edit_form(
                 attached += 1;
             }
             Err(error) => {
-                warn!(target: "Plugin/OAI/Images", "跳过无法读取的垫图 {url}: {error:#}");
+                warn!(target: LOG_TARGET, "跳过无法读取的垫图 {url}: {error:#}");
                 last_error = Some(error);
             }
         }

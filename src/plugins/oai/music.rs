@@ -16,6 +16,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::time::Duration;
 
+const LOG_TARGET: &str = "Plugin/OAI/Music";
+
 /// 默认走 Suno 的模型关键字（不区分大小写、子串匹配）。
 /// 站点上加别的音乐服务商时改 `[oai] music_models` 即可。
 pub(super) const DEFAULT_MUSIC_MODELS: &[&str] = &["suno"];
@@ -417,7 +419,7 @@ pub(crate) async fn generate(
 
     let task_id = submit(&base, api_key, &body).await?;
     info!(
-        target: "Plugin/OAI/Music",
+        target: LOG_TARGET,
         "Suno 任务 {} 已提交（{}，{}模式）",
         task_id,
         version,

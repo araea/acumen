@@ -27,6 +27,8 @@ use sea_orm::{ConnectionTrait, DatabaseConnection, DbErr, Statement};
 
 use crate::{info, warn};
 
+const LOG_TARGET: &str = "Database/Stats";
+
 /// 自愈重建的天数窗口
 pub const SELF_HEAL_DAYS: i64 = 7;
 
@@ -90,12 +92,12 @@ pub async fn self_heal_recent(db: &DatabaseConnection) -> Result<(), DbErr> {
     match rebuild_range(db, from, today).await {
         Ok(n) => {
             if n > 0 {
-                info!(target: "Database/Stats", "统计聚合自愈完成，重建 {} 天聚合行。", n);
+                info!(target: LOG_TARGET, "统计聚合自愈完成，重建 {} 天聚合行。", n);
             }
             Ok(())
         }
         Err(e) => {
-            warn!(target: "Database/Stats", "统计聚合自愈失败: {}", e);
+            warn!(target: LOG_TARGET, "统计聚合自愈失败: {}", e);
             Err(e)
         }
     }

@@ -100,6 +100,17 @@ impl Context {
         None
     }
 
+    /// 全局配置里的浏览器路径；`None` 表示自动查找。
+    pub fn browser_path(&self) -> Option<String> {
+        self.config.read().unwrap().browser_path.clone()
+    }
+
+    /// 这个群是否通过全局黑白名单。收到的事件、定时推送、资讯推送共用这一个口径
+    /// （见 [`GlobalFilterConfig::allows`](crate::config::GlobalFilterConfig::allows)）。
+    pub fn group_allowed(&self, group_id: &str) -> bool {
+        self.config.read().unwrap().global_filter.allows(group_id)
+    }
+
     /// 获取规范化事件的 post_type
     pub fn post_type(&self) -> Option<&str> {
         if let EventType::Satori(event) = &self.event {

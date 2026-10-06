@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+const LOG_TARGET: &str = "Plugin/GroupTitle";
+
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -87,7 +89,7 @@ pub fn handle(
                     Ok(info) => info,
                     Err(e) => {
                         error!(
-                            target: "Plugin/GroupTitle",
+                            target: LOG_TARGET,
                             "[Group({})] 获取 Bot 成员信息失败: {}",
                             group_id, e
                         );
@@ -106,7 +108,7 @@ pub fn handle(
             if bot_info.role != "owner" {
                 // 如果不是群主，忽略指令（或者可以回复提示）
                 warn!(
-                    target: "Plugin/GroupTitle",
+                    target: LOG_TARGET,
                     "[Group({})] Bot 不是群主，无法设置头衔",
                     group_id
                 );
@@ -150,7 +152,7 @@ pub fn handle(
             match api::get_group_title_display(&ctx, writer.clone(), group_id).await {
                 Ok(false) if !should_try_enable_switch(group_id) => {
                     warn!(
-                        target: "Plugin/GroupTitle",
+                        target: LOG_TARGET,
                         "[Group({})] 「展示成员群头衔」开关最近刚尝试打开过，冷却中，本次跳过",
                         group_id
                     );
@@ -160,7 +162,7 @@ pub fn handle(
                         api::set_group_title_display(&ctx, writer.clone(), group_id, true).await
                     {
                         error!(
-                            target: "Plugin/GroupTitle",
+                            target: LOG_TARGET,
                             "[Group({})] 打开「展示成员群头衔」开关失败: {}",
                             group_id, e
                         );
@@ -179,7 +181,7 @@ pub fn handle(
                 Ok(true) => {}
                 Err(qe) => {
                     warn!(
-                        target: "Plugin/GroupTitle",
+                        target: LOG_TARGET,
                         "[Group({})] 查询「展示成员群头衔」开关状态失败: {}",
                         group_id, qe
                     );
@@ -188,7 +190,7 @@ pub fn handle(
 
             if let Err(e) = result {
                 error!(
-                    target: "Plugin/GroupTitle",
+                    target: LOG_TARGET,
                     "[Group({})] 设置头衔失败: {}",
                     group_id, e
                 );

@@ -14,6 +14,8 @@ use std::sync::OnceLock;
 mod chart;
 mod pusher;
 
+const LOG_TARGET: &str = "Plugin/Stats";
+
 // ================= 配置定义 =================
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -225,7 +227,7 @@ pub fn handle(
         }
 
         info!(
-            target: "Plugin/Stats",
+            target: LOG_TARGET,
             "Req: Scope={}, Time={}, Data={}, Chart={}, Global={}, Limit={}",
             scope, time_str, data_type, chart_type, is_all_groups, limit
         );

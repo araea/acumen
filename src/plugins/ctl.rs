@@ -12,6 +12,8 @@ use toml::Value;
 pub mod bridge;
 pub mod card;
 
+const LOG_TARGET: &str = "Plugin/Ctl";
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -322,7 +324,7 @@ async fn activate_pending(ctx: &Context) -> Vec<&'static str> {
     let mut failed = Vec::new();
     for name in pending {
         if let Err(error) = crate::plugins::start(ctx, name).await {
-            warn!(target: "Plugin/Ctl", "插件 [{}] 运行时初始化失败，维持待重启：{}", name, error);
+            warn!(target: LOG_TARGET, "插件 [{}] 运行时初始化失败，维持待重启：{}", name, error);
             failed.push(name);
         }
     }
@@ -364,7 +366,7 @@ where
         }
     }
     next.save(&ctx.config_path).await.map_err(|e| {
-        error!(target: "Plugin/Ctl", "保存失败: {}", e);
+        error!(target: LOG_TARGET, "保存失败: {}", e);
         "保存失败，内存配置未改变；请检查磁盘权限及空间".to_string()
     })?;
     *ctx.config.write().unwrap() = next;
@@ -724,7 +726,7 @@ pub fn handle(
             // 失败就是失败：不铺垫「操作未完成」，直接把事实与出路摆出来。
             .unwrap_or_else(|e| Output::from(format!("❌ {e}")));
 
-        let browser_path = ctx.config.read().unwrap().browser_path.clone();
+        let browser_path = ctx.browser_path();
         if config.image_enabled
             && let Some(card) = &response.card
         {
@@ -744,7 +746,7 @@ pub fn handle(
                     .await?;
                     return Ok(None);
                 }
-                Err(e) => warn!(target: "Plugin/Ctl", "控制网页卡片出图失败，改发纯文本：{e}"),
+                Err(e) => warn!(target: LOG_TARGET, "控制网页卡片出图失败，改发纯文本：{e}"),
             }
         }
 

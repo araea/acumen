@@ -142,7 +142,6 @@ impl Scheduler {
                 // 接住之后记一笔，排期按原节奏继续，下一个时刻照常计算。
                 if let Err(panic) = AssertUnwindSafe(task_gen()).catch_unwind().await {
                     error!(
-                        target: "System",
                         "定时任务抛错（本次跳过，排期继续）: {}",
                         crate::plugins::panic_text(panic.as_ref())
                     );
@@ -268,14 +267,11 @@ impl Scheduler {
                 };
 
                 // 5. 过滤目标群（全局黑白名单，口径见 `GlobalFilterConfig::allows`）
-                let target_groups: Vec<String> = {
-                    let guard = ctx.config.read().unwrap();
-                    groups
-                        .into_iter()
-                        .map(|g| g.group_id)
-                        .filter(|gid| guard.global_filter.allows(gid))
-                        .collect()
-                };
+                let target_groups: Vec<String> = groups
+                    .into_iter()
+                    .map(|g| g.group_id)
+                    .filter(|gid| ctx.group_allowed(gid))
+                    .collect();
 
                 if target_groups.is_empty() {
                     info!(target: log_target.as_str(), "[{}] 没有符合条件的群组，跳过推送。", label);
@@ -286,7 +282,7 @@ impl Scheduler {
                 let total = target_groups.len();
                 for (idx, gid) in target_groups.into_iter().enumerate() {
                     // 推送途中名单可能被改过：每个群发之前再认一次。
-                    if !ctx.config.read().unwrap().global_filter.allows(&gid) {
+                    if !ctx.group_allowed(&gid) {
                         continue;
                     }
 

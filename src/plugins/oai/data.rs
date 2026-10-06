@@ -5,6 +5,8 @@ use std::sync::{Arc, OnceLock};
 
 use tokio::sync::RwLock;
 
+use super::LOG_TARGET;
+
 const DEFAULT_MODEL: &str = "gpt-5.6-luna";
 const LEGACY_DEFAULT_MODEL: &str = "gpt-4o";
 const CURRENT_DEFAULTS_VERSION: u32 = 4;
@@ -132,7 +134,7 @@ impl Manager {
         if created > 0 {
             config_dirty = true;
             info!(
-                target: "Plugin/OAI",
+                target: LOG_TARGET,
                 "已建好 {created} 间预设房间（/# 里的「{}」「{}」「{}」分区）",
                 super::presets::SECTION,
                 super::presets::MUSIC_SECTION,
@@ -141,7 +143,7 @@ impl Manager {
         }
 
         if config_dirty && let Err(error) = write_config(&path, &config) {
-            error!(target: "Plugin/OAI", "初始化配置写入失败：{error:#}");
+            error!(target: LOG_TARGET, "初始化配置写入失败：{error:#}");
         }
 
         let mj_cache = std::fs::read_to_string(&mj_cache_path)
@@ -181,7 +183,7 @@ impl Manager {
         if let Ok(s) = serde_json::to_string_pretty(cache)
             && let Err(error) = crate::storage::write_atomic(&self.mj_cache_path, s.as_bytes())
         {
-            warn!(target: "Plugin/OAI", "写入 MJ 缓存失败：{error}");
+            warn!(target: LOG_TARGET, "写入 MJ 缓存失败：{error}");
         }
     }
 
@@ -246,7 +248,7 @@ impl Manager {
         let mut final_models = super::utils::filter_models(&models, filter);
         if final_models.is_empty() && !models.is_empty() {
             warn!(
-                target: "Plugin/OAI",
+                target: LOG_TARGET,
                 "站点返回 {} 个模型，但 [oai] model_filter 过滤后为空，请检查 keep/drop 关键字",
                 models.len()
             );

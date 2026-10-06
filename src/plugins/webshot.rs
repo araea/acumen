@@ -18,6 +18,8 @@ use tokio::sync::Semaphore;
 use tokio::time;
 use url::{Host, Url};
 
+const LOG_TARGET: &str = "Plugin/WebShot";
+
 // ================= Config =================
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -460,7 +462,7 @@ async fn rehydrate_wechat_images(tab: &cdp_html_shot::Tab) -> u64 {
     match tab.evaluate(WECHAT_REHYDRATE_JS).await {
         Ok(value) => value.as_f64().unwrap_or(0.0) as u64,
         Err(e) => {
-            warn!(target: "Plugin/WebShot", "补微信页面的图失败：{}", e);
+            warn!(target: LOG_TARGET, "补微信页面的图失败：{}", e);
             0
         }
     }
@@ -562,7 +564,7 @@ async fn capture_page(
     if let Ok(landed) = tab.url().await
         && is_verification_page(&landed)
     {
-        info!(target: "Plugin/WebShot", "跳过截图：{} 被送到了验证页", url);
+        info!(target: LOG_TARGET, "跳过截图：{} 被送到了验证页", url);
         return Ok(None);
     }
 
@@ -573,7 +575,7 @@ async fn capture_page(
     // 免得图上来了布局却还是占位时的尺寸。
     if wechat {
         let restored = rehydrate_wechat_images(tab).await;
-        debug!(target: "Plugin/WebShot", "{} 补回 {restored} 处微信占位图", url);
+        debug!(target: LOG_TARGET, "{} 补回 {restored} 处微信占位图", url);
     }
 
     // 计算页面高度
@@ -613,7 +615,7 @@ async fn capture_page(
         images.push(shoot_slice(tab, width, *top, *bottom, config.quality, budget).await?);
     }
     debug!(
-        target: "Plugin/WebShot",
+        target: LOG_TARGET,
         "{} 页高 {page_height}，截 {final_height}，切成 {} 张{}",
         url,
         images.len(),
@@ -675,7 +677,7 @@ async fn page_gaps(tab: &cdp_html_shot::Tab) -> Vec<(f64, f64)> {
             })
             .unwrap_or_default(),
         Err(e) => {
-            warn!(target: "Plugin/WebShot", "量页面缝隙失败，按等分切：{}", e);
+            warn!(target: LOG_TARGET, "量页面缝隙失败，按等分切：{}", e);
             Vec::new()
         }
     }
@@ -795,7 +797,7 @@ async fn shoot_slice(
         match next_quality(png, quality) {
             Some(next) => {
                 debug!(
-                    target: "Plugin/WebShot",
+                    target: LOG_TARGET,
                     "{top}..{bottom} 一段 {} KB 超过预算 {} KB，画质降到 {next} 重截",
                     bytes / 1024,
                     budget / 1024
@@ -805,7 +807,7 @@ async fn shoot_slice(
             }
             None => {
                 warn!(
-                    target: "Plugin/WebShot",
+                    target: LOG_TARGET,
                     "{top}..{bottom} 一段降到最低画质仍有 {} KB，照发",
                     bytes / 1024
                 );
@@ -831,7 +833,7 @@ async fn capture_all(urls: &[Url], config: &Config, browser_path: Option<String>
                 // 页面没有可发的内容（验证页），原因上面已经记过日志。
                 Ok(None) => None,
                 Err(e) => {
-                    error!(target: "Plugin/WebShot", "Error capturing {}: {}", url, e);
+                    error!(target: LOG_TARGET, "Error capturing {}: {}", url, e);
                     None
                 }
             }
@@ -962,7 +964,7 @@ async fn deliver(
             send_msg(ctx, writer, group_id, Some(user_id), msg)
                 .await
                 .inspect_err(
-                    |e| error!(target: "Plugin/WebShot", "发送失败（{}）：{}", sizes(), e),
+                    |e| error!(target: LOG_TARGET, "发送失败（{}）：{}", sizes(), e),
                 )?;
         }
         Delivery::Forward(nodes) => {
@@ -978,16 +980,16 @@ async fn deliver(
             match send_msg(ctx, writer.clone(), group_id, Some(user_id), forward).await {
                 Ok(()) => {}
                 Err(e) if delivery_uncertain(&*e) => {
-                    error!(target: "Plugin/WebShot", "合并转发结果未知（{}）：{}", sizes(), e);
+                    error!(target: LOG_TARGET, "合并转发结果未知（{}）：{}", sizes(), e);
                     return Err(e);
                 }
                 Err(e) => {
-                    warn!(target: "Plugin/WebShot", "合并转发没发出去，改平铺发送（{}）：{}", sizes(), e);
+                    warn!(target: LOG_TARGET, "合并转发没发出去，改平铺发送（{}）：{}", sizes(), e);
                     let images: Vec<String> = nodes.iter().map(|node| node.image.clone()).collect();
                     let note = nodes.iter().rev().find_map(|node| node.note.clone());
                     let msg = plain_message(reply_to, &images, note.as_deref());
                     send_msg(ctx, writer, group_id, Some(user_id), msg).await.inspect_err(
-                        |e| error!(target: "Plugin/WebShot", "平铺发送也失败（{}）：{}", sizes(), e),
+                        |e| error!(target: LOG_TARGET, "平铺发送也失败（{}）：{}", sizes(), e),
                     )?;
                 }
             }
@@ -1048,14 +1050,14 @@ async fn admit_links(candidates: Vec<String>, config: &Config) -> Vec<Url> {
     for candidate in candidates {
         if urls.len() >= MAX_LINKS_PER_MESSAGE {
             info!(
-                target: "Plugin/WebShot",
+                target: LOG_TARGET,
                 "超过上限，本条消息只截前 {} 条链接", MAX_LINKS_PER_MESSAGE
             );
             break;
         }
         match check_url(&candidate, config).await {
             Ok(url) => urls.push(url),
-            Err(reason) => info!(target: "Plugin/WebShot", "跳过截图：{}", reason),
+            Err(reason) => info!(target: LOG_TARGET, "跳过截图：{}", reason),
         }
     }
     urls
@@ -1089,7 +1091,7 @@ async fn manual(
         match api::get_msg(&ctx, writer.clone(), &reply_id).await {
             Ok(quoted) => candidates = find_urls(&quoted_text(&quoted.message)),
             Err(e) => {
-                warn!(target: "Plugin/WebShot", "取引用消息失败：{}", e);
+                warn!(target: LOG_TARGET, "取引用消息失败：{}", e);
             }
         }
     }
@@ -1104,7 +1106,7 @@ async fn manual(
     }
 
     info!(
-        target: "Plugin/WebShot",
+        target: LOG_TARGET,
         "手动截图：{}",
         urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
     );
@@ -1138,7 +1140,7 @@ pub fn handle(
         let config: Config = get_config_or_default(&ctx);
 
         // 获取全局浏览器路径配置
-        let browser_path = ctx.config.read().unwrap().browser_path.clone();
+        let browser_path = ctx.browser_path();
 
         let user_id = msg_event.user_id().to_string();
         let group_id = msg_event.group_id().map(str::to_string);
@@ -1192,7 +1194,7 @@ pub fn handle(
         if let crate::event::EventType::Satori(event) = &ctx.event
             && is_forward_card(event)
         {
-            debug!(target: "Plugin/WebShot", "跳过截图：合并转发消息");
+            debug!(target: LOG_TARGET, "跳过截图：合并转发消息");
             return Ok(Some(ctx));
         }
 
@@ -1220,7 +1222,7 @@ pub fn handle(
         }
 
         info!(
-            target: "Plugin/WebShot",
+            target: LOG_TARGET,
             "Capturing: {}",
             urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
         );

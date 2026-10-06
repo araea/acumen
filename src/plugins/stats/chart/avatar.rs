@@ -20,6 +20,8 @@ use std::sync::{LazyLock, Mutex, Once};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::fs;
 
+use crate::plugins::stats::LOG_TARGET;
+
 const AVATAR_SIZE: u32 = 100;
 
 /// 缓存的新鲜期。过了这个年纪的头像仍会被用，只是会顺带在后台刷新。
@@ -65,7 +67,7 @@ pub async fn prepare_avatars(data: &mut [BarData]) {
             Some(avatar_dir)
         }
         Err(e) => {
-            warn!(target: "Plugin/Stats", "无法获取数据目录: {}", e);
+            warn!(target: LOG_TARGET, "无法获取数据目录: {}", e);
             None
         }
     };
@@ -276,6 +278,6 @@ fn sweep(dir: &Path) {
         }
     }
     if removed > 0 {
-        info!(target: "Plugin/Stats", "头像缓存：清掉 {} 个闲置或作废的文件", removed);
+        info!(target: LOG_TARGET, "头像缓存：清掉 {} 个闲置或作废的文件", removed);
     }
 }

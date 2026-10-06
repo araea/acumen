@@ -101,7 +101,7 @@ pub fn handle(
         if let Some(matched) = export::COMMANDS.iter().find_map(|cmd| match_command(&ctx, cmd)) {
             if let Err(error) = export::run(&ctx, &writer, &matched).await {
                 warn!(target: LOG_TARGET, "导出音频失败：{error}");
-                let _ = send_msg(
+                send_msg(
                     &ctx,
                     writer.clone(),
                     msg.group_id(),
@@ -110,7 +110,7 @@ pub fn handle(
                         .reply(msg.message_id())
                         .text(format!("音频没导出来：{error}")),
                 )
-                .await;
+                .await?;
             }
             return Ok(None);
         }

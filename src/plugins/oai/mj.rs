@@ -1,8 +1,8 @@
 use super::data::Manager;
-use super::logic::{reply_text, to_data_url};
+use super::logic::{mark_working, reply_text, to_data_url};
 use super::types::{Agent, MjMessageTask};
 use super::utils::normalize;
-use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
+use crate::adapters::satori::{LockedWriter, send_msg, send_msg_id};
 use crate::event::Context;
 use crate::message::Message;
 use anyhow::{Context as _, anyhow};
@@ -14,6 +14,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+
+const LOG_TARGET: &str = "Plugin/OAI/MJ";
 
 pub const MJ_MODELS: &[&str] = &["mj"];
 
@@ -124,10 +126,7 @@ pub async fn handle_agent(
         return;
     }
 
-    let annotate = !event.is_manual_self();
-    if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", true).await;
-    }
+    mark_working(ctx, writer, &event, true).await;
     let bases = api_bases(&configured_base);
     let result = async {
         let body = json!({
@@ -141,15 +140,13 @@ pub async fn handle_agent(
     }
     .await;
 
-    if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", false).await;
-    }
+    mark_working(ctx, writer, &event, false).await;
     match result {
         Ok((base, task)) => {
             deliver_task(ctx, writer, mgr, &base, &task, event.message_id()).await
         }
         Err(error) => {
-            warn!(target: "Plugin/OAI/MJ", "MJ {} 任务失败: {:#}", agent.model, error);
+            warn!(target: LOG_TARGET, "MJ {} 任务失败: {:#}", agent.model, error);
             reply_text(ctx, writer, &event, format!("❌ MJ 任务失败：{error}")).await;
         }
     }
@@ -217,7 +214,7 @@ async fn submit_with_fallback(
                 if !retryable || position + 1 == bases.len() {
                     return Err(error);
                 }
-                warn!(target: "Plugin/OAI/MJ", "MJ 接入点 {} 暂不可用，尝试备用模式: {}", base, error);
+                warn!(target: LOG_TARGET, "MJ 接入点 {} 暂不可用，尝试备用模式: {}", base, error);
                 last_error = Some(error);
             }
         }
@@ -302,8 +299,8 @@ async fn deliver_task(
         .await
         {
             Ok(Some(message_id)) => remember_grid(mgr, message_id, api_base, task).await,
-            Ok(None) => warn!(target: "Plugin/OAI/MJ", "绘图已发送，但实现端未返回消息 ID，无法关联后续放大"),
-            Err(error) => warn!(target: "Plugin/OAI/MJ", "发送 MJ 图片失败: {error}"),
+            Ok(None) => warn!(target: LOG_TARGET, "绘图已发送，但实现端未返回消息 ID，无法关联后续放大"),
+            Err(error) => warn!(target: LOG_TARGET, "发送 MJ 图片失败: {error}"),
         }
         return;
     }
@@ -408,10 +405,7 @@ pub async fn try_handle_upscale_reply(
     } else {
         vec![source.api_base.clone()]
     };
-    let annotate = !event.is_manual_self();
-    if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", true).await;
-    }
+    mark_working(ctx, writer, &event, true).await;
 
     for index in indices {
         let cache_key = format!("{}:{index}", source.task_id);
@@ -467,15 +461,13 @@ pub async fn try_handle_upscale_reply(
             }
             Ok(_) => reply_text(ctx, writer, &event, "❌ 放大完成，但接口未返回图片").await,
             Err(error) => {
-                warn!(target: "Plugin/OAI/MJ", "MJ U{} 放大失败: {:#}", index, error);
+                warn!(target: LOG_TARGET, "MJ U{} 放大失败: {:#}", index, error);
                 reply_text(ctx, writer, &event, format!("❌ 第 {index} 张放大失败：{error}"))
                     .await;
             }
         }
     }
-    if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", false).await;
-    }
+    mark_working(ctx, writer, &event, false).await;
     true
 }
 
@@ -536,13 +528,13 @@ async fn cache_upscale_image(mgr: &Arc<Manager>, key: &str, url: &str) -> String
             match tokio::fs::write(&path, bytes).await {
                 Ok(()) => path.to_string_lossy().into_owned(),
                 Err(error) => {
-                    warn!(target: "Plugin/OAI/MJ", "写入放大缓存失败: {error}");
+                    warn!(target: LOG_TARGET, "写入放大缓存失败: {error}");
                     url.to_string()
                 }
             }
         }
         Err(error) => {
-            warn!(target: "Plugin/OAI/MJ", "下载放大结果用于缓存失败: {error:#}");
+            warn!(target: LOG_TARGET, "下载放大结果用于缓存失败: {error:#}");
             url.to_string()
         }
     }
@@ -576,7 +568,7 @@ async fn image_payload(url: &str) -> String {
             base64::engine::general_purpose::STANDARD.encode(bytes)
         ),
         Err(error) => {
-            warn!(target: "Plugin/OAI/MJ", "内联 MJ 结果图片失败，回退远程地址: {error:#}");
+            warn!(target: LOG_TARGET, "内联 MJ 结果图片失败，回退远程地址: {error:#}");
             url.to_string()
         }
     }

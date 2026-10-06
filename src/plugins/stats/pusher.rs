@@ -4,7 +4,7 @@
 //! 每条消息都等 Satori HTTP 回执再发下一条：图片要先上传，即发即忘的话
 //! 后一张小图会抢在前一张大图前面落地，群里看到的顺序就乱了。
 
-use crate::adapters::satori::{LockedWriter, send_msg_ack};
+use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::db::queries;
 use crate::db::utils::get_time_range;
 use crate::event::Context;
@@ -14,16 +14,23 @@ use crate::plugins::stats::chart;
 use crate::plugins::wordcloud;
 use chrono::{Datelike, Duration, Local};
 
-const LOG_TARGET: &str = "Plugin/Stats";
+use super::LOG_TARGET;
 
 // ================= 通用工具 =================
+
+/// 推给一个群并等回执。发不出去只记一行，不拦着同一轮里别的群、别的图。
+async fn deliver(c: &Context, w: LockedWriter, gid: &str, message: Message) {
+    if let Err(error) = send_msg(c, w, Some(gid), None, message).await {
+        warn!(target: LOG_TARGET, "群 {gid} 推送发送失败: {error}");
+    }
+}
 
 /// 文字提示：仅当配置开启时发送。默认静默，只推结果图片，不刷任何文本。
 async fn send_text(c: &Context, w: LockedWriter, gid: &str, enabled: bool, text: String) {
     if !enabled {
         return;
     }
-    let _ = send_msg_ack(c, w, Some(gid), None, Message::new().text(text)).await;
+    deliver(c, w, gid, Message::new().text(text)).await;
 }
 
 async fn send_chart(
@@ -51,14 +58,7 @@ async fn send_chart(
     .await
     {
         Ok(b64) => {
-            let _ = send_msg_ack(
-                c,
-                w,
-                Some(gid),
-                None,
-                Message::new().image_described(b64, "统计图表"),
-            )
-            .await;
+            deliver(c, w, gid, Message::new().image_described(b64, "统计图表")).await;
         }
         // 没数据是常态（冷群），不该和真故障混在一个级别里。
         Err(chart::ChartError::NoData) => {
@@ -73,14 +73,7 @@ async fn send_chart(
 async fn send_wordcloud(c: &Context, w: LockedWriter, gid: &str, range: (i64, i64)) {
     match wordcloud::generate_image(c, Some(gid), None, range.0, range.1).await {
         Ok(b64) => {
-            let _ = send_msg_ack(
-                c,
-                w,
-                Some(gid),
-                None,
-                Message::new().image_described(b64, "词云图"),
-            )
-            .await;
+            deliver(c, w, gid, Message::new().image_described(b64, "词云图")).await;
         }
         // 消息过少属正常现象，只记日志不打扰群；真失败才值得 warn。
         Err(wordcloud::GenError::Empty) => {

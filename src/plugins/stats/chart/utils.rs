@@ -6,6 +6,8 @@ use plotters::style::{FontStyle, register_font};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::plugins::stats::LOG_TARGET;
+
 // ================= 字体加载 =================
 
 /// 注册到 plotters 的内部字体名。使用固定名称避免与系统字体族名冲突 —
@@ -54,21 +56,21 @@ fn register_bytes(bytes: Vec<u8>) -> bool {
 fn try_load_path(path: &str) -> bool {
     let p = Path::new(path);
     if !p.is_file() {
-        warn!(target: "Plugin/Stats", "字体路径不存在或不是文件: {}", path);
+        warn!(target: LOG_TARGET, "字体路径不存在或不是文件: {}", path);
         return false;
     }
     match std::fs::read(p) {
         Ok(bytes) => {
             if register_bytes(bytes) {
-                info!(target: "Plugin/Stats", "已加载字体文件: {}", path);
+                info!(target: LOG_TARGET, "已加载字体文件: {}", path);
                 true
             } else {
-                warn!(target: "Plugin/Stats", "字体文件无法被解析: {}", path);
+                warn!(target: LOG_TARGET, "字体文件无法被解析: {}", path);
                 false
             }
         }
         Err(e) => {
-            warn!(target: "Plugin/Stats", "字体文件读取失败 {}: {}", path, e);
+            warn!(target: LOG_TARGET, "字体文件读取失败 {}: {}", path, e);
             false
         }
     }
@@ -110,11 +112,11 @@ fn resolve_font(config: &StatsConfig) -> &str {
         // 2. 字体族
         if !family.is_empty() {
             if try_load_family(family) {
-                info!(target: "Plugin/Stats", "已加载字体族: {}", family);
+                info!(target: LOG_TARGET, "已加载字体族: {}", family);
                 return CHART_FONT_NAME.to_string();
             }
             warn!(
-                target: "Plugin/Stats",
+                target: LOG_TARGET,
                 "字体族 '{}' 在系统中不可用, 尝试 CJK 回退字体",
                 family
             );
@@ -127,7 +129,7 @@ fn resolve_font(config: &StatsConfig) -> &str {
                 continue;
             }
             if try_load_family(fb) {
-                warn!(target: "Plugin/Stats", "使用回退字体族: {}", fb);
+                warn!(target: LOG_TARGET, "使用回退字体族: {}", fb);
                 return CHART_FONT_NAME.to_string();
             }
         }
@@ -135,13 +137,13 @@ fn resolve_font(config: &StatsConfig) -> &str {
         // 4. 按文件路径兜底：Android 的系统字体没有可查询的 fontconfig 索引
         for &file in CJK_FALLBACK_FILES {
             if Path::new(file).is_file() && try_load_path(file) {
-                warn!(target: "Plugin/Stats", "使用回退字体文件: {}", file);
+                warn!(target: LOG_TARGET, "使用回退字体文件: {}", file);
                 return CHART_FONT_NAME.to_string();
             }
         }
 
         warn!(
-            target: "Plugin/Stats",
+            target: LOG_TARGET,
             "未找到任何可用 CJK 字体，图表中的中文可能无法渲染。请通过 font_path 指定字体文件，或安装对应字体族。"
         );
         "sans-serif".to_string()

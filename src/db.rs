@@ -11,6 +11,8 @@ pub mod queries;
 pub mod stats;
 pub mod utils;
 
+const LOG_TARGET: &str = "Database";
+
 /// 初始化数据库连接
 pub async fn init() -> Result<DatabaseConnection, DbErr> {
     if !Path::new("data").exists() {
@@ -62,7 +64,7 @@ pub async fn init() -> Result<DatabaseConnection, DbErr> {
     ))
     .await?;
 
-    info!(target: "Database", "连接成功: {} (WAL Mode)", db_url);
+    info!(target: LOG_TARGET, "连接成功: {} (WAL Mode)", db_url);
 
     Ok(db)
 }

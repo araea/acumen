@@ -19,6 +19,8 @@ use rig_core::completion::message::{
 };
 use rig_core::completion::{AssistantContent, CompletionModel, Message};
 
+use crate::plugins::oai::LOG_TARGET;
+
 /// 页脚保留的工具调用条数上限；再多只记次数。
 const TRACE_LIMIT: usize = 12;
 
@@ -75,7 +77,7 @@ pub(crate) async fn run_with_history(
 ) -> anyhow::Result<super::AgentReply> {
     match attempt(&run, history).await {
         Err(error) if error.stalled && run.retry_stalled && !error.used_tools => {
-            warn!(target: "Plugin/OAI", "{}，重试一次", error.message);
+            warn!(target: LOG_TARGET, "{}，重试一次", error.message);
             attempt(&run, history).await.map_err(|error| error.message)
         }
         Err(error) => Err(error.message),

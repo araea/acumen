@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+const LOG_TARGET: &str = "Plugin/Restart";
+
 // ================= 配置定义 =================
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -81,14 +83,14 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             let ctx = daily_ctx.clone();
             async move {
                 info!(
-                    target: "Plugin/Restart",
+                    target: LOG_TARGET,
                     "每日定时重启触发，开始执行重启流程..."
                 );
                 do_restart(&ctx, "每日定时".to_string()).await;
             }
         });
         info!(
-            target: "Plugin/Restart",
+            target: LOG_TARGET,
             "已计划每日 {:02}:{:02}:{:02} 自动重启（系统本地时区）",
             h,
             m,
@@ -107,7 +109,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                         match current_rss_mb() {
                             Some(mb) if mb >= threshold => {
                                 warn!(
-                                    target: "Plugin/Restart",
+                                    target: LOG_TARGET,
                                     "内存占用 {}MB 达到阈值 {}MB，提前重启",
                                     mb,
                                     threshold
@@ -117,7 +119,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                             }
                             Some(mb) => {
                                 debug!(
-                                    target: "Plugin/Restart",
+                                    target: LOG_TARGET,
                                     "内存巡检: {}/{}MB",
                                     mb,
                                     threshold
@@ -125,7 +127,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                             }
                             None => {
                                 debug!(
-                                    target: "Plugin/Restart",
+                                    target: LOG_TARGET,
                                     "当前平台不支持读取内存占用，跳过巡检"
                                 );
                             }
@@ -133,7 +135,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                     }
                 });
             info!(
-                target: "Plugin/Restart",
+                target: LOG_TARGET,
                 "已开启内存监控: 阈值 {}MB，每 {} 分钟巡检一次",
                 threshold,
                 cfg.memory_check_interval_minutes
@@ -171,7 +173,7 @@ pub fn handle(
                 let reply = Message::new().reply(msg.message_id()).text(format!(
                     "❌ 重启指令未开放\n可用 {prefix}ctl set restart allow_manual_restart true 开启"
                 ));
-                let _ = send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await;
+                send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
 
@@ -190,7 +192,7 @@ pub fn handle(
                 .reply(message_id)
                 .text(format!("⏳ {} 秒后重启", delay));
             if let Err(e) = send_msg(&ctx, writer.clone(), group_id, Some(user_id), reply).await {
-                error!(target: "Plugin/Restart", "重启通知发送失败: {}", e);
+                error!(target: LOG_TARGET, "重启通知发送失败: {}", e);
             }
 
             // 延迟执行重启，确保回复消息已刷新到 WebSocket
@@ -216,14 +218,14 @@ async fn do_restart(ctx: &Context, reason: String) {
     }
     if RESTARTING.swap(true, Ordering::SeqCst) {
         info!(
-            target: "Plugin/Restart",
+            target: LOG_TARGET,
             "重启流程已在进行中，忽略本次触发 ({})",
             reason
         );
         return;
     }
     info!(
-        target: "Plugin/Restart",
+        target: LOG_TARGET,
         "========== 开始重启 (原因: {}) ==========",
         reason
     );
@@ -252,7 +254,7 @@ pub fn relaunch(config: &AppConfig) -> Result<(), PluginError> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        info!(target: "Plugin/Restart", "配置已保存，正在原地重启（保留前台终端与 PID）...");
+        info!(target: LOG_TARGET, "配置已保存，正在原地重启（保留前台终端与 PID）...");
         // exec 只在失败时返回：正常路径下这个进程已经被新程序替掉了。
         Err(cmd.exec().into())
     }
@@ -260,7 +262,7 @@ pub fn relaunch(config: &AppConfig) -> Result<(), PluginError> {
     #[cfg(not(unix))]
     {
         let child = cmd.spawn()?;
-        info!(target: "Plugin/Restart", "已启动新进程，PID: {}", child.id());
+        info!(target: LOG_TARGET, "已启动新进程，PID: {}", child.id());
         Ok(())
     }
 }
@@ -276,7 +278,7 @@ fn spawn_external(command: &str) -> Result<(), PluginError> {
             .creation_flags(CREATE_NEW_PROCESS_GROUP)
             .spawn()?;
         info!(
-            target: "Plugin/Restart",
+            target: LOG_TARGET,
             "已执行外部重启命令: {} (pid: {:?})",
             command,
             child.id()
@@ -288,7 +290,7 @@ fn spawn_external(command: &str) -> Result<(), PluginError> {
             .args(["-c", command])
             .spawn()?;
         info!(
-            target: "Plugin/Restart",
+            target: LOG_TARGET,
             "已执行外部重启命令: {} (pid: {:?})",
             command,
             child.id()

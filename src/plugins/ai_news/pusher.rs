@@ -62,7 +62,7 @@ pub(super) fn is_allowed(ctx: &Context, target: &PushTarget) -> bool {
     let PushTarget::Group(group_id) = target else {
         return true;
     };
-    ctx.config.read().unwrap().global_filter.allows(group_id)
+    ctx.group_allowed(group_id)
 }
 
 /// 一次推送的成品：一张排版好的卡片图，以及仅在用户引用提取时发送的文本。

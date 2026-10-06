@@ -205,7 +205,7 @@ pub fn handle(
             page_height: config.page_height as f64,
             max_pages: config.max_pages,
         };
-        let browser_path = ctx.config.read().unwrap().browser_path.clone();
+        let browser_path = ctx.browser_path();
         let outcome = tokio::time::timeout(
             TOTAL_BUDGET,
             render_images(

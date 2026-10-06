@@ -12,6 +12,8 @@ use std::io::BufRead;
 use std::sync::{Arc, RwLock};
 use tokio::sync::Mutex as AsyncMutex;
 
+const LOG_TARGET: &str = "Console";
+
 #[derive(Serialize)]
 struct MockSender {
     user_id: String,
@@ -43,8 +45,8 @@ pub fn entry(
     config_path: Arc<str>,
 ) -> BoxFuture<'static, ()> {
     Box::pin(async move {
-        info!(target: "Console", "前台控制台已就绪。输入 /ctl 或 /ctl list；Ctrl+C 停止并保存配置。");
-        info!(target: "Console", "模拟环境: User ID: 1 | Group ID: None (Private)");
+        info!(target: LOG_TARGET, "前台控制台已就绪。输入 /ctl 或 /ctl list；Ctrl+C 停止并保存配置。");
+        info!(target: LOG_TARGET, "模拟环境: User ID: 1 | Group ID: None (Private)");
 
         // A detached OS thread can remain blocked on stdin without preventing the
         // Tokio runtime from shutting down after Ctrl+C or SIGTERM.
@@ -104,7 +106,7 @@ pub fn entry(
             let event = match simd_json::serde::to_owned_value(event) {
                 Ok(event) => event,
                 Err(err) => {
-                    warn!(target: "Console", "构造模拟消息失败: {}", err);
+                    warn!(target: LOG_TARGET, "构造模拟消息失败: {}", err);
                     continue;
                 }
             };
@@ -121,7 +123,7 @@ pub fn entry(
             )
             .await
             {
-                warn!(target: "Console", "处理消息时出错: {}", err);
+                warn!(target: LOG_TARGET, "处理消息时出错: {}", err);
             }
         }
     })

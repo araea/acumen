@@ -11,7 +11,8 @@
 use crate::storage::JsonState;
 use serde::{Deserialize, Serialize};
 
-const LOG_TARGET: &str = "Plugin/VideoParse";
+use super::LOG_TARGET;
+
 const STATE_FILE: &str = "state.json";
 /// 记录留多久。只有「刚刚是不是取过同一条」这一个用途，比判定窗口（十分钟）
 /// 宽出一大截就够，不必留成一份台账。

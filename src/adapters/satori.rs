@@ -25,6 +25,8 @@ pub mod message;
 #[allow(dead_code)]
 pub mod qq;
 
+const LOG_TARGET: &str = "Bot";
+
 pub type BotError = Box<dyn std::error::Error + Send + Sync>;
 pub type LockedWriter = Arc<SatoriClient>;
 
@@ -234,7 +236,7 @@ impl SatoriClient {
             {
                 // 让出一点余量：「还剩 1 秒」到点那一刻服务端可能还差几十毫秒。
                 let wait = wait + Duration::from_millis(300);
-                warn!(target: "Bot", "Satori {method} 暂不可用，{:.1} 秒后重试", wait.as_secs_f32());
+                warn!(target: LOG_TARGET, "Satori {method} 暂不可用，{:.1} 秒后重试", wait.as_secs_f32());
                 tokio::time::sleep(wait).await;
                 waited += wait;
                 continue;
@@ -448,7 +450,7 @@ async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
         let page: Value = match client.post(&bot, "guild.list", params).await {
             Ok(page) => page,
             Err(error) => {
-                debug!(target: "Bot", "guild.list 失败，目录只能靠入站事件补：{error}");
+                debug!(target: LOG_TARGET, "guild.list 失败，目录只能靠入站事件补：{error}");
                 return;
             }
         };
@@ -566,7 +568,7 @@ pub(crate) async fn list_roster(kind: Roster) -> (Vec<RosterEntry>, usize) {
             let page: Value = match route.client.post(&route.bot, kind.method(), params).await {
                 Ok(page) => page,
                 Err(error) => {
-                    debug!(target: "Bot", "控制台读 {} 失败（{platform}）：{error}", kind.method());
+                    debug!(target: LOG_TARGET, "控制台读 {} 失败（{platform}）：{error}", kind.method());
                     break;
                 }
             };
@@ -616,7 +618,7 @@ async fn learn_limits(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     {
         Ok(capabilities) => client.set_limits(limits_of(&capabilities)),
         Err(error) => {
-            debug!(target: "Bot", "internal/capabilities 失败，按没有声明限额处理：{error}")
+            debug!(target: LOG_TARGET, "internal/capabilities 失败，按没有声明限额处理：{error}")
         }
     }
 }
@@ -647,7 +649,7 @@ fn note_login_status(login: &Value, last: &mut Option<i64>) {
         4 => "重连中",
         _ => "未知",
     };
-    info!(target: "Bot", "Satori 登录状态：{label}（{status}）");
+    info!(target: LOG_TARGET, "Satori 登录状态：{label}（{status}）");
 }
 
 /// 用户自己的名字。协议里 `name` 是用户名、`nick` 是昵称，实现端各填各的：
@@ -861,10 +863,10 @@ pub async fn run_bot_loop(
         }
         match result {
             Ok(()) => {
-                warn!(target: "Bot", "Satori [{}] 连接断开，{:?} 后重连...", endpoint, backoff)
+                warn!(target: LOG_TARGET, "Satori [{}] 连接断开，{:?} 后重连...", endpoint, backoff)
             }
             Err(err) => {
-                error!(target: "Bot", "Satori [{}] 连接失败: {}。{:?} 后重试...", endpoint, err, backoff)
+                error!(target: LOG_TARGET, "Satori [{}] 连接失败: {}。{:?} 后重试...", endpoint, err, backoff)
             }
         }
         tokio::time::sleep(backoff).await;
@@ -917,7 +919,7 @@ async fn connect_and_listen(
     // 省略 sn 表示开新会话；带上 sn 则请求补推断线期间的事件。
     if let Some(sn) = session_sn.sn {
         identify_body["sn"] = json!(sn);
-        info!(target: "Bot", "Satori [{}] 尝试从 sn={} 恢复会话。", endpoint, sn);
+        info!(target: LOG_TARGET, "Satori [{}] 尝试从 sn={} 恢复会话。", endpoint, sn);
     }
     outbound.send(json!({"op": OP_IDENTIFY, "body": identify_body}).to_string())?;
 
@@ -942,7 +944,7 @@ async fn connect_and_listen(
             // 带着旧游标恢复被拒（对方在 IDENTIFY 后直接关连接）：这个游标再也用不上了，
             // 不丢掉的话每次重连都带着它被拒，永远连不上。丢掉后新会话只会漏掉断线期间的事件。
             if session_sn.sn.take().is_some() {
-                warn!(target: "Bot", "Satori [{}] 会话恢复没有成功（{error}），丢弃旧游标，下次重新开始。", endpoint);
+                warn!(target: LOG_TARGET, "Satori [{}] 会话恢复没有成功（{error}），丢弃旧游标，下次重新开始。", endpoint);
             }
             return Err(error);
         }
@@ -979,7 +981,7 @@ async fn connect_and_listen(
     let matcher = Arc::new(Matcher::new());
 
     info!(
-        target: "Bot",
+        target: LOG_TARGET,
         "Bot [{}] 连接成功！(Satori {}/{}, login={})",
         endpoint,
         bot_status.adapter,
@@ -1059,7 +1061,7 @@ async fn listen(
                 let packet: Value = match serde_json::from_str(&text) {
                     Ok(packet) => packet,
                     Err(err) => {
-                        warn!(target: "Bot", "忽略无效 Satori 帧: {}", err);
+                        warn!(target: LOG_TARGET, "忽略无效 Satori 帧: {}", err);
                         continue;
                     }
                 };
@@ -1101,7 +1103,7 @@ async fn listen(
                         let event = match normalize_event(body, bot_status, &writer.resources()) {
                             Ok(event) => event,
                             Err(err) => {
-                                warn!(target: "Bot", "Satori 事件转换失败: {}", err);
+                                warn!(target: LOG_TARGET, "Satori 事件转换失败: {}", err);
                                 continue;
                             }
                         };
@@ -1135,7 +1137,7 @@ async fn listen(
                         );
                         tokio::spawn(async move {
                             if let Err(err) = processing.await {
-                                error!(target: "Bot", "Satori event processing error: {}", err);
+                                error!(target: LOG_TARGET, "Satori event processing error: {}", err);
                             }
                         });
                     }
@@ -1180,7 +1182,7 @@ fn apply_login_update(body: &Value, bot: &BotStatus) {
         return;
     }
     info!(
-        target: "Bot",
+        target: LOG_TARGET,
         "Satori 登录账号更新：{} → {}",
         previous.id,
         updated.id
@@ -1325,21 +1327,6 @@ where
     dispatch_send(ctx, writer, group_id, user_id, message, None)
         .await
         .map(|_| ())
-}
-
-/// Satori 的 message.create 是同步 HTTP RPC，成功返回即视为已确认。
-pub async fn send_msg_ack<M>(
-    ctx: &Context,
-    writer: LockedWriter,
-    group_id: Option<&str>,
-    user_id: Option<&str>,
-    message: M,
-) -> Result<bool, BotError>
-where
-    M: Serialize,
-{
-    dispatch_send(ctx, writer, group_id, user_id, message, None).await?;
-    Ok(true)
 }
 
 /// 发送消息并返回实现端分配的第一条消息 ID。

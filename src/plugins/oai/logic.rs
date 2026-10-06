@@ -10,20 +10,70 @@ use rig_core::completion::message::{DocumentSourceKind, Image, Text, UserContent
 use rig_core::completion::{AssistantContent, Message as LlmMessage};
 use std::{fs::File, io::Write, sync::Arc};
 
+use super::LOG_TARGET;
+
+/// 「正在处理」的状态表情：贴在触发消息上，处理完再揭掉。
+const WORKING_EMOJI: &str = "124";
+
+/// 给触发消息贴上或揭掉「正在处理」表情。机器人自己手动发的指令不贴；
+/// 贴不上不影响处理，只记一行调试日志。
+pub(crate) async fn mark_working(
+    ctx: &Context,
+    writer: &LockedWriter,
+    event: &MessageEvent<'_>,
+    on: bool,
+) {
+    if event.is_manual_self() {
+        return;
+    }
+    if let Err(error) =
+        api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), WORKING_EMOJI, on).await
+    {
+        debug!(target: LOG_TARGET, "「正在处理」表情{}失败：{error}", if on { "贴上" } else { "揭掉" });
+    }
+}
+
 pub(crate) async fn reply_text(
     ctx: &Context,
     writer: &LockedWriter,
     event: &MessageEvent<'_>,
     text: impl Into<String>,
 ) {
-    let _ = crate::adapters::satori::send_text_chunks(
+    if let Err(error) = crate::adapters::satori::send_text_chunks(
         ctx,
         writer.clone(),
         event.group_id(),
         Some(event.user_id()),
         &text.into(),
     )
-    .await;
+    .await
+    {
+        warn!(target: LOG_TARGET, "回复发送失败：{error}");
+    }
+}
+
+/// 把一张卡片图作为对触发消息的引用回复发出。发不出去只记日志——调用方此时已无别的退路。
+async fn reply_image(
+    ctx: &Context,
+    writer: &LockedWriter,
+    event: &MessageEvent<'_>,
+    b64: &str,
+    header: &str,
+) {
+    let message = Message::new()
+        .reply(event.message_id())
+        .image_described(format!("base64://{b64}"), header);
+    if let Err(error) = send_msg(
+        ctx,
+        writer.clone(),
+        event.group_id(),
+        Some(event.user_id()),
+        message,
+    )
+    .await
+    {
+        warn!(target: LOG_TARGET, "回复卡片发送失败：{error}");
+    }
 }
 
 async fn reply(
@@ -91,18 +141,9 @@ async fn reply_card(
         match super::render::render_card(card, oai.image_scale()).await {
             Ok(b64) => {
                 illustrated = true;
-                let _ = send_msg(
-                    ctx,
-                    writer.clone(),
-                    event.group_id(),
-                    Some(event.user_id()),
-                    Message::new()
-                        .reply(event.message_id())
-                        .image_described(format!("base64://{b64}"), header),
-                )
-                .await;
+                reply_image(ctx, writer, event, &b64, header).await;
             }
-            Err(error) => warn!(target: "Plugin/OAI", "回复卡片渲染失败，退回文本：{error:#}"),
+            Err(error) => warn!(target: LOG_TARGET, "回复卡片渲染失败，退回文本：{error:#}"),
         }
     }
     // 出图成功后不再补发等价文本：卡片已经把正文、来源与页脚都画进去了，
@@ -126,7 +167,7 @@ async fn reply_list(
 ) {
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     if !text_mode && oai.image_enabled() {
-        let browser_path = ctx.config.read().unwrap().browser_path.clone();
+        let browser_path = ctx.browser_path();
         match crate::render::web::capture(
             &listing.doc(),
             oai.image_scale(),
@@ -135,19 +176,10 @@ async fn reply_list(
         .await
         {
             Ok(b64) => {
-                let _ = send_msg(
-                    ctx,
-                    writer.clone(),
-                    event.group_id(),
-                    Some(event.user_id()),
-                    Message::new()
-                        .reply(event.message_id())
-                        .image_described(format!("base64://{b64}"), header),
-                )
-                .await;
+                reply_image(ctx, writer, event, &b64, header).await;
                 return;
             }
-            Err(error) => warn!(target: "Plugin/OAI", "列表卡片渲染失败，退回文本：{error:#}"),
+            Err(error) => warn!(target: LOG_TARGET, "列表卡片渲染失败，退回文本：{error:#}"),
         }
     }
     reply_text(ctx, writer, event, listing.markdown()).await;
@@ -205,7 +237,7 @@ async fn send_images<'a>(
         )
         .await
         {
-            warn!(target: "Plugin/OAI", "图片发送失败 {}: {error}", super::utils::truncate_str(url, 80));
+            warn!(target: LOG_TARGET, "图片发送失败 {}: {error}", super::utils::truncate_str(url, 80));
             failed.push(url.as_str());
         }
     }
@@ -503,10 +535,7 @@ async fn chat(
 
     let base = super::utils::openai_api_base(&api_base);
 
-    let annotate = !event.is_manual_self();
-    if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", true).await;
-    }
+    mark_working(ctx, writer, &event, true).await;
 
     let started = std::time::Instant::now();
     // 这一轮内置智能体房间的对话可以用自然语言驱动 ctl；
@@ -719,14 +748,17 @@ async fn chat(
             }
 
             for url in extract_video_urls(&content) {
-                let _ = send_msg(
+                if let Err(error) = send_msg(
                     ctx,
                     writer.clone(),
                     event.group_id(),
                     Some(event.user_id()),
-                    Message::new().video(url),
+                    Message::new().video(&url),
                 )
-                .await;
+                .await
+                {
+                    warn!(target: LOG_TARGET, "视频 {url} 发送失败：{error}");
+                }
             }
 
             // 音乐、视频这类成品由插件附在正文外，按段发出去。一条媒体消息里的片段
@@ -755,15 +787,13 @@ async fn chat(
                 )
                 .await
                 {
-                    warn!(target: "Plugin/OAI", "媒体消息发送失败: {error}");
+                    warn!(target: LOG_TARGET, "媒体消息发送失败: {error}");
                 }
             }
         }
     }
 
-    if annotate {
-        let _ = api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), "124", false).await;
-    }
+    mark_working(ctx, writer, &event, false).await;
 }
 
 /// 回执里那句「会打到哪些后端」，优先的在前面。

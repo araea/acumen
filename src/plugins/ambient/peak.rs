@@ -28,6 +28,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+use super::LOG_TARGET;
+
 /// DeepSeek 在 `[oai.providers]` 里的供应商名。
 const DEEPSEEK: &str = "deepseek";
 
@@ -172,7 +174,7 @@ fn warn_if_stale(holidays: &[String], year: i32) {
         return;
     }
     warn!(
-        target: "Plugin/Ambient",
+        target: LOG_TARGET,
         "[ambient.peak].holidays 里没有 {year} 年的法定节假日：节假日会被当成高峰（国务院每年十一月公布下一年的安排，照抄进来）"
     );
 }

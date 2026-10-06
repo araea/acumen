@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-const LOG_TARGET: &str = "Plugin/Ctl";
+use super::LOG_TARGET;
 
 /// 凭据的兜底寿命。正常情况下随 [`Lease`] 释放，这里只防「进程没走 Drop」的极端情况。
 const MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);

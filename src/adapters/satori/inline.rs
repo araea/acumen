@@ -15,6 +15,8 @@ use futures_util::future::BoxFuture;
 use simd_json::OwnedValue;
 use simd_json::base::ValueAsScalar;
 
+use super::LOG_TARGET;
+
 /// 解出来的内联载荷。
 pub struct Inline {
     pub bytes: Vec<u8>,
@@ -154,12 +156,12 @@ async fn rewrite_segment(client: &SatoriClient, bot: &BotStatus, segment: &mut S
     {
         Ok(uploaded) => uploaded,
         Err(error) => {
-            crate::warn!(target: "Bot", "内联媒体上传失败，改按内联发送：{error}");
+            crate::warn!(target: LOG_TARGET, "内联媒体上传失败，改按内联发送：{error}");
             return false;
         }
     };
     let Some(resource) = uploaded.get("file").and_then(serde_json::Value::as_str) else {
-        crate::warn!(target: "Bot", "upload.create 没有返回 file 资源，改按内联发送");
+        crate::warn!(target: LOG_TARGET, "upload.create 没有返回 file 资源，改按内联发送");
         return false;
     };
     segment

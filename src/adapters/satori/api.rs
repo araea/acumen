@@ -35,16 +35,27 @@ where
     Ok(())
 }
 
+/// 撤回当前会话里的一条消息。
 pub async fn delete_msg(
     ctx: &Context,
     writer: LockedWriter,
+    message_id: &str,
+) -> Result<(), ApiError> {
+    delete_msg_in(ctx, writer, &channel_id(ctx)?, message_id).await
+}
+
+/// 撤回指定频道里的一条消息；频道与当前上下文无关时（跟随撤回回复）用它。
+pub async fn delete_msg_in(
+    ctx: &Context,
+    writer: LockedWriter,
+    channel_id: &str,
     message_id: &str,
 ) -> Result<(), ApiError> {
     let _: Value = writer
         .call(
             ctx,
             "message.delete",
-            json!({"channel_id": channel_id(ctx)?, "message_id": message_id}),
+            json!({"channel_id": channel_id, "message_id": message_id}),
         )
         .await?;
     Ok(())

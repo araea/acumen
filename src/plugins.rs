@@ -238,7 +238,6 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
     };
 
     info!(
-        target: "System",
         "正在加载插件系统 (已启用 {}/{})",
         enabled_count,
         plugins.len()
@@ -358,7 +357,6 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
     );
     if !mark_connected(connection_key) {
         info!(
-            target: "System",
             "Bot {}/{} ({}) 已完成 connected 生命周期，重连不重复注册任务。",
             ctx.bot.adapter,
             ctx.bot.platform,

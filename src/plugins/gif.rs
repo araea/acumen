@@ -95,7 +95,7 @@ pub fn handle(
                     for command in COMMANDS {
                         help = help.replace(command, &format!("{prefix}{command}"));
                     }
-                    let _ = send_msg(&ctx, writer, group_id, Some(user_id), help).await;
+                    send_msg(&ctx, writer, group_id, Some(user_id), help).await?;
                     return Ok(None);
                 }
 
@@ -110,14 +110,14 @@ pub fn handle(
                 {
                     Some(u) => u,
                     None => {
-                        let _ = send_msg(
+                        send_msg(
                             &ctx,
                             writer,
                             group_id,
                             Some(user_id),
                             "❌ 请附带图片或引用图片消息",
                         )
-                        .await;
+                        .await?;
                         return Ok(None);
                     }
                 };
@@ -125,14 +125,14 @@ pub fn handle(
                 let img_bytes = match download_bytes(&img_url).await {
                     Ok(b) => b,
                     Err(e) => {
-                        let _ = send_msg(
+                        send_msg(
                             &ctx,
                             writer,
                             group_id,
                             Some(msg.user_id()),
                             format!("❌ 图片下载失败：{}", e),
                         )
-                        .await;
+                        .await?;
                         return Ok(None);
                     }
                 };
@@ -166,7 +166,7 @@ pub fn handle(
                             .map_err(|e| Box::new(e) as PluginError)?
                         {
                             Ok(list) => {
-                                send_forward_msg(&ctx, writer.clone(), list).await;
+                                send_forward_msg(&ctx, writer.clone(), list).await?;
                                 Ok(None)
                             }
                             Err(e) => Err(e),
@@ -188,18 +188,18 @@ pub fn handle(
                 match res {
                     Ok(Some(b64)) => {
                         let reply = Message::new().image(format!("base64://{}", b64));
-                        let _ = send_msg(&ctx, writer, group_id, Some(user_id), reply).await;
+                        send_msg(&ctx, writer, group_id, Some(user_id), reply).await?;
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        let _ = send_msg(
+                        send_msg(
                             &ctx,
                             writer,
                             group_id,
                             Some(user_id),
                             format!("❌ 处理失败：{}", e),
                         )
-                        .await;
+                        .await?;
                     }
                 }
 
@@ -277,7 +277,11 @@ fn raster_op(cmd: &str, args: &[String], img_bytes: Vec<u8>) -> PluginResult<Opt
 }
 
 /// 发送合并转发消息
-async fn send_forward_msg(ctx: &Context, writer: LockedWriter, base64_list: Vec<String>) {
+async fn send_forward_msg(
+    ctx: &Context,
+    writer: LockedWriter,
+    base64_list: Vec<String>,
+) -> Result<(), PluginError> {
     let login = ctx.bot.login_user.get();
     let bot_id = &login.id;
 
@@ -293,14 +297,14 @@ async fn send_forward_msg(ctx: &Context, writer: LockedWriter, base64_list: Vec<
     let user_id = msg.user_id();
 
     if is_truncated {
-        let _ = send_msg(
+        send_msg(
             ctx,
             writer.clone(),
             group_id,
             Some(user_id),
             "⚠️ 切片数量过多，为防止风控，仅发送前 99 张",
         )
-        .await;
+        .await?;
     }
 
     // 构建节点消息
@@ -311,6 +315,6 @@ async fn send_forward_msg(ctx: &Context, writer: LockedWriter, base64_list: Vec<
     }
 
     // 调用通用 API
-    let _ = send_msg(ctx, writer, group_id, Some(user_id), forward_msg).await;
+    send_msg(ctx, writer, group_id, Some(user_id), forward_msg).await
 }
 

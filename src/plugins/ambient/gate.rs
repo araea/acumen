@@ -12,6 +12,8 @@ use crate::plugins::oai::llm;
 use rig_core::completion::message::{DocumentSourceKind, Image, Text, UserContent};
 use rig_core::completion::Message;
 
+use super::LOG_TARGET;
+
 /// 判定结果。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Verdict {
@@ -229,7 +231,7 @@ pub(crate) async fn judge(
         match result {
             Ok(raw) => return parse_verdict(&raw),
             Err(error) if attempt == 1 && transient(&error) => {
-                debug!(target: "Plugin/Ambient", "判定遇到网络抖动，重试一次：{error:#}");
+                debug!(target: LOG_TARGET, "判定遇到网络抖动，重试一次：{error:#}");
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             Err(error) => return Err(error),
