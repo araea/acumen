@@ -221,15 +221,6 @@ impl Cluster {
         }
     }
 
-    pub fn members(&self) -> impl Iterator<Item = &Item> {
-        std::iter::once(&self.lead).chain(self.also.iter())
-    }
-
-    /// 全部成员的去重键，代表报道在前
-    pub fn keys(&self) -> Vec<String> {
-        self.members().filter_map(Item::dedupe_key).collect()
-    }
-
     /// 其它报道来自哪几家信源：去掉技术后缀、去重、不含代表报道自己的信源。
     /// 同一家信源连发两条不算「另有一家」。
     pub fn other_reports(&self) -> Vec<(String, &Item)> {
@@ -246,11 +237,6 @@ impl Cluster {
             out.push((name, item));
         }
         out
-    }
-
-    /// 「另有 N 家信源报道」里的 N 与信源名
-    pub fn other_sources(&self) -> Vec<String> {
-        self.other_reports().into_iter().map(|(name, _)| name).collect()
     }
 
     /// 并入一条同事件的报道；代表报道始终是最早的那条

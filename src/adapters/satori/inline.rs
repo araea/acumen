@@ -29,7 +29,8 @@ pub struct Inline {
 pub fn decode_inline(src: &str) -> Option<Inline> {
     let payload = if let Some(rest) = src.strip_prefix("base64://") {
         rest
-    } else if let Some(rest) = src.strip_prefix("data:") {
+    } else {
+        let rest = src.strip_prefix("data:")?;
         let (head, body) = rest.split_once(',')?;
         if !head
             .split(';')
@@ -38,8 +39,6 @@ pub fn decode_inline(src: &str) -> Option<Inline> {
             return None;
         }
         body
-    } else {
-        return None;
     };
     let bytes = STANDARD.decode(payload.trim()).ok()?;
     if bytes.is_empty() {

@@ -919,14 +919,9 @@ fn plain(out: &mut String, text: &str) {
 }
 
 fn starts(chars: &[char], at: usize, pat: &str) -> bool {
-    let mut i = at;
-    for p in pat.chars() {
-        if chars.get(i) != Some(&p) {
-            return false;
-        }
-        i += 1;
-    }
-    true
+    (at..)
+        .zip(pat.chars())
+        .all(|(i, p)| chars.get(i) == Some(&p))
 }
 
 fn ident_start(c: char) -> bool {
@@ -1072,11 +1067,10 @@ fn scan(spec: &Spec, code: &str, keys: Option<()>) -> String {
         if spec.quotes.contains(&c) {
             // Rust 的 'a 生命周期：引号后紧跟标识符、且两三个字符内没有收尾引号。
             if spec.lifetime && c == '\'' {
-                let is_char = match (chars.get(i + 1), chars.get(i + 2), chars.get(i + 3)) {
-                    (Some('\\'), _, _) => true,
-                    (Some(_), Some('\''), _) => true,
-                    _ => false,
-                };
+                let is_char = matches!(
+                    (chars.get(i + 1), chars.get(i + 2)),
+                    (Some('\\'), _) | (Some(_), Some('\''))
+                );
                 if !is_char && chars.get(i + 1).is_some_and(|&d| ident_start(d)) {
                     flush!(i);
                     let mut end = i + 1;
@@ -1171,9 +1165,9 @@ fn scan(spec: &Spec, code: &str, keys: Option<()>) -> String {
                     Some("f")
                 } else if by_kw.is_some_and(|k| spec.type_kw.contains(&k)) {
                     Some("t")
-                } else if after == Some('(') {
-                    Some("f")
-                } else if spec.macros && after == Some('!') && chars.get(next + 1) != Some(&'=') {
+                } else if after == Some('(')
+                    || (spec.macros && after == Some('!') && chars.get(next + 1) != Some(&'='))
+                {
                     Some("f")
                 } else if word.chars().next().is_some_and(char::is_uppercase)
                     && word.chars().any(char::is_lowercase)

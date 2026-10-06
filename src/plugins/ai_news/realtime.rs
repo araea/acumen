@@ -233,7 +233,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
     let mut pushed_any = false;
 
     for target in &targets {
-        let Some(status) = statuses.get(&target).copied() else {
+        let Some(status) = statuses.get(target).copied() else {
             continue;
         };
 

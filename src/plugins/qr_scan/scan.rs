@@ -52,6 +52,7 @@ impl Decoded {
     }
 
     /// 外接矩形 `(左, 上, 右, 下)`。
+    #[cfg(test)]
     pub fn bounds(&self) -> (f32, f32, f32, f32) {
         self.corners
             .iter()

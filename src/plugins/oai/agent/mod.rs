@@ -32,14 +32,6 @@ use std::path::{Path, PathBuf};
 pub(crate) trait ChatBridge: Send + Sync {
     /// 工具调用：`op` + 参数，`call_id` 兼作回执去重键。
     fn call<'a>(&'a self, call_id: &'a str, op: &'a str, params: Value) -> BoxFuture<'a, Value>;
-    /// 这一轮是否真的动用过聊天界面（决定最终回执是否覆盖文本输出）。
-    fn used(&self) -> bool {
-        false
-    }
-    /// 界面状态版本号，用于判断群聊是否已经往前走。
-    fn revision(&self) -> u64 {
-        0
-    }
 }
 
 /// 解析房间的写法：`agent`、`agent 模型`、`agent/模型`、`agent:模型`（大小写与全角冒号皆可）。
@@ -181,8 +173,6 @@ impl<'a> AgentRun<'a> {
 #[derive(Debug)]
 pub(crate) struct AgentReply {
     pub text: String,
-    /// 实际应答的模型（`供应商/模型`），用于回复卡片页脚。
-    pub model: Option<String>,
     /// 工具调用轨迹。
     pub trace: Vec<TraceStep>,
     /// 超出保留上限、未进入 `trace` 的调用次数。

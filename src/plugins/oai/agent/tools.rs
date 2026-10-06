@@ -70,14 +70,6 @@ pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec
     names.into_iter().filter_map(spec).collect()
 }
 
-/// 白名单里点名的工具名，用于系统提示词里那句「你手边有什么」。
-pub(crate) fn names(whitelist: Option<&str>, chat: bool, web: bool) -> Vec<String> {
-    definitions(whitelist, chat, web)
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect()
-}
-
 /// 这个工具会不会改变房间里之外的东西。重放整轮之前要问一句。
 pub(crate) fn is_side_effecting(name: &str) -> bool {
     matches!(

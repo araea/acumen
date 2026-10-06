@@ -225,10 +225,6 @@ impl PeakConfig {
         }
     }
 
-    pub(crate) fn stance(&self) -> Stance {
-        self.stance_at(chrono::Local::now())
-    }
-
     /// 高峰时段这一轮实际用哪个模型：配了替补就用它，没配（空字符串）沿用主模型。
     pub(crate) fn model_or<'a>(&'a self, primary: &'a str) -> &'a str {
         let substitution = self.model.trim();

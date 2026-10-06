@@ -52,8 +52,6 @@ const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// 一次生成最多等多久；真正的总预算由 `[oai] media_timeout_seconds` 兜底。
 const TASK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-/// 默认时长与分辨率。短一点更便宜，长一点更好看，改 `[oai] video_seconds` 即可。
-const DEFAULT_SECONDS: &str = "5";
 pub(crate) const LANDSCAPE: &str = "1280x720";
 pub(crate) const PORTRAIT: &str = "720x1280";
 
@@ -406,8 +404,6 @@ struct TaskData {
     model: Option<String>,
     #[serde(default)]
     seconds: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

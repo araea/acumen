@@ -17,9 +17,6 @@ use super::types::{Agent, Config, ENGINE_CHAT};
 /// 这些房间在 `/#` 列表里单独成区。
 pub(crate) const SECTION: &str = "画图预设";
 
-/// 预设房间名的前缀。挡住误触发，也让它们在列表里排在一起。
-pub(crate) const PREFIX: &str = "画·";
-
 /// 预设房间优先选用的模型关键字；站点上有多个同系列 id 时取第一个。
 const MODEL_KEYWORD: &str = super::images::DEFAULT_IMAGE_MODELS[0];
 
@@ -31,10 +28,7 @@ const FALLBACK_MODEL: &str = super::images::FALLBACK_MODEL;
 /// 三串预设共用同一套机制（系统提示词当风格前缀），只是模型落到不同的专用接口上，
 /// 所以各自一个前缀与分区，翻 `/#` 时一眼能分出这是画图、写歌还是拍片。
 pub(crate) const MUSIC_SECTION: &str = "音乐房间";
-pub(crate) const MUSIC_PREFIX: &str = "歌·";
 pub(crate) const VIDEO_SECTION: &str = "视频房间";
-pub(crate) const VIDEO_PREFIX: &str = "影·";
-
 /// 接在音乐风格提示词后面的一句。用户写中文主题、Suno 出中文歌，所以让它跟着用户的
 /// 语言走；风格那半段用英文写（Suno 对英文风格描述更稳）。
 const MUSIC_BRIDGE: &str = "\nWrite one complete song in the style above. The user's line below is what the song is about; write the lyrics in the language the user wrote in, and keep any words the user gave verbatim.";

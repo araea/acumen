@@ -120,11 +120,6 @@ pub(crate) fn root() -> Option<PathBuf> {
     lock().root.clone()
 }
 
-/// 库里现有多少张。
-pub(crate) fn count() -> usize {
-    lock().library.entries.len()
-}
-
 /// 库里的全部条目，供控制台画廊展示：用过的排前面，同次数按收藏时间倒序。
 ///
 /// 与 [`brief`] 挑给提示词的那四张不同——那是「此刻这张图该不该用」，这是清点。

@@ -131,7 +131,3 @@ pub(crate) fn options() -> Options {
     })
 }
 
-/// 控制台正在用的地址（带口令），没在跑时是 None。
-pub(crate) fn url() -> Option<String> {
-    state::get().map(|console| console.url.clone())
-}

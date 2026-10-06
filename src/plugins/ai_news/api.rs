@@ -437,17 +437,12 @@ pub struct ItemsResponse {
 pub struct HotTopic {
     #[serde(default)]
     pub rank: Option<u32>,
-    #[serde(default, deserialize_with = "flex_string")]
-    pub id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     /// 旧版接口带的摘要；v1 1.3 起热点榜不再返回，改由 [`enrich_hot_topics`]
     /// 用事件详情的 AI 综述填上
     #[serde(default)]
     pub summary: Option<String>,
-    /// 代表报道的信源
-    #[serde(default)]
-    pub source: Option<Source>,
     /// 报道来源数
     #[serde(default)]
     pub source_count: Option<u32>,

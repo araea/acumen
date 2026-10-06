@@ -673,18 +673,6 @@ pub(crate) fn truncate_middle(value: &str, max_chars: usize) -> String {
     out
 }
 
-pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
-    let mut out = String::new();
-    for (index, ch) in value.chars().enumerate() {
-        if index >= max_chars {
-            out.push('…');
-            break;
-        }
-        out.push(ch);
-    }
-    out
-}
-
 // ================= 第三方接口响应的通用处理（图片、视频、音乐、MJ 共用） =================
 
 /// serde 的 `deserialize_with`：字段是 `null` 时按类型默认值取（接口常把空数组、空串写成 null）。

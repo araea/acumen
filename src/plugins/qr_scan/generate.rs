@@ -250,7 +250,7 @@ mod tests {
                 })
                 .collect();
             let rendered = render(&text).unwrap();
-            assert_eq!(decode(&rendered.png), [text.clone()], "长 {length}：{text}");
+            assert_eq!(decode(&rendered.png), std::slice::from_ref(&text), "长 {length}：{text}");
         }
     }
 
@@ -261,8 +261,8 @@ mod tests {
         let capitals = "HELLO WORLD 2026 ".repeat(5).trim_end().to_string();
         let bytes = "hello world 2026 ".repeat(5).trim_end().to_string();
         let (d, c, b) = (render(&digits).unwrap(), render(&capitals).unwrap(), render(&bytes).unwrap());
-        assert_eq!(decode(&d.png), [digits.clone()]);
-        assert_eq!(decode(&c.png), [capitals.clone()]);
+        assert_eq!(decode(&d.png), std::slice::from_ref(&digits));
+        assert_eq!(decode(&c.png), std::slice::from_ref(&capitals));
         assert!(d.modules < c.modules && c.modules < b.modules, "{} {} {}", d.modules, c.modules, b.modules);
     }
 

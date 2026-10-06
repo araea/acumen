@@ -181,14 +181,6 @@ impl crate::plugins::oai::agent::ChatBridge for Bridge {
     ) -> futures_util::future::BoxFuture<'a, Value> {
         Box::pin(Bridge::call(self, call_id, op, params))
     }
-
-    fn used(&self) -> bool {
-        Bridge::used(self)
-    }
-
-    fn revision(&self) -> u64 {
-        Bridge::revision(self)
-    }
 }
 
 struct Session {
@@ -553,7 +545,7 @@ impl Session {
                 // 只允许查本群窗口里真实出现过的人，不能把 QQ 号当成任意资料查询入口。
                 if matches!(kind, "member" | "member_card") {
                     ensure!(user_id.parse::<i64>().is_ok_and(|id| id > 0), "需要有效的群成员 QQ 号");
-                    let known = window::with_group(&self.group, |state| state.recent(80).iter().any(|t| t.user_id.to_string() == user_id));
+                    let known = window::with_group(&self.group, |state| state.recent(80).iter().any(|t| t.user_id == user_id));
                     ensure!(known || user_id == self.ctx.bot.login_user.get().id, "只可探查当前群聊中出现的成员或自己");
                 }
                 let (method, params) = observation(kind, &self.group, user_id)?;

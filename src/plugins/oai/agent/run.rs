@@ -159,7 +159,6 @@ async fn attempt(
             return Ok(super::AgentReply {
                 text,
                 // 实际应答的模型名由调用方补全（它才知道 `供应商/` 前缀）。
-                model: Some(run.model.to_string()),
                 trace: trace.steps,
                 trace_overflow: trace.overflow,
                 sources: run.web.map(|web| web.sources()).unwrap_or_default(),

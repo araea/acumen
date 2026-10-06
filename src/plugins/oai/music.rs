@@ -367,23 +367,6 @@ fn mmss(seconds: f64) -> String {
     format!("{}:{:02}", total / 60, total % 60)
 }
 
-/// 文件名里的路径分隔符与引号一律换掉，QQ 群文件列表才不会看着乱。
-fn safe_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' => '_',
-            c => c,
-        })
-        .collect();
-    let cleaned = cleaned.trim().trim_matches('.').to_string();
-    if cleaned.is_empty() {
-        "suno".to_string()
-    } else {
-        super::utils::truncate_str(&cleaned, 60)
-    }
-}
-
 /// 提交一次生成并等到出结果。
 ///
 /// 与房间的回复构造解耦，供普通房间（[`generate_reply`]）与群聊搭话的写歌工具共用；

@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use crate::adapters::satori::{LockedWriter, dispatch_packet};
 use crate::config::build_config;
-use crate::event::{BotStatus, Context, Event, EventType, SendPacket};
+use crate::event::{BotStatus, Context, EventType, SendPacket};
 use crate::matcher::Matcher;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -93,8 +91,6 @@ pub struct Plugin {
     pub on_consumed: Option<ConsumedHandler>,
     /// 消息发出之后调用，见 [`SentHandler`]
     pub on_sent: Option<SentHandler>,
-    /// 配置表的键（[`PluginConfig::NAME`]）；注册时核对它与模块标识符一致
-    pub config_name: &'static str,
     /// 默认配置与校验都由注册时给的配置类型生成，见 [`PluginConfig`]
     pub default_config: fn() -> Value,
     pub validate_config: fn(&Value) -> Result<(), String>,
@@ -197,6 +193,22 @@ fn mark_connected(connection_key: String) -> bool {
         .insert(connection_key)
 }
 
+/// 编译期的字符串相等（`==` 在 const 里还不能用于 `&str`）。
+const fn same_str(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// 插件注册宏
 ///
 /// 每条记录以 `config: <配置类型>` 开头，其余字段覆盖 [`Plugin`] 的缺省值。
@@ -208,6 +220,14 @@ macro_rules! register_plugins {
     ) => {
         // 1. 自动生成模块声明 (无需手动 pub mod)
         $( pub mod $module; )*
+
+        // 配置表的键必须与模块标识符一致：编译期核对，写错了过不了编译
+        $(
+            const _: () = assert!(
+                same_str(<$config as PluginConfig>::NAME, stringify!($module)),
+                concat!("`", stringify!($module), "` 的 PluginConfig::NAME 与模块名不一致")
+            );
+        )*
 
         // 2. 生成获取插件列表的函数
         pub fn get_plugins() -> &'static [Plugin] {
@@ -226,7 +246,6 @@ macro_rules! register_plugins {
                                 on_receive: None,
                                 on_consumed: None,
                                 on_sent: None,
-                                config_name: <$config as PluginConfig>::NAME,
                                 default_config: default_config_of::<$config>,
                                 validate_config: validate_config_of::<$config>,
                                 section: "misc",
@@ -246,10 +265,6 @@ macro_rules! register_plugins {
 
 // 引入单独的注册文件
 include!("./plugins/registry.rs");
-
-pub fn register_plugins() -> &'static [Plugin] {
-    get_plugins()
-}
 
 /// 执行所有插件的初始化逻辑
 pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
@@ -550,25 +565,6 @@ impl ChannelConfig {
 
 // ================= 工具函数 =================
 
-/// 将伪造/修改过的事件推送回流水线
-pub async fn send_fake_event(
-    ctx: &Context,
-    writer: LockedWriter,
-    event: Event,
-) -> Result<(), PluginError> {
-    let new_ctx = Context {
-        event: EventType::Satori(event),
-        config: ctx.config.clone(),
-        config_save_lock: ctx.config_save_lock.clone(),
-        db: ctx.db.clone(),
-        scheduler: ctx.scheduler.clone(),
-        matcher: ctx.matcher.clone(),
-        config_path: ctx.config_path.clone(),
-        bot: ctx.bot.clone(),
-    };
-    run(new_ctx, writer).await
-}
-
 /// 插件的数据目录（`data/<插件>`），不存在就建。目录怎么算见 [`crate::storage::data_path`]。
 pub async fn get_data_dir(plugin_name: &str) -> Result<PathBuf, PluginError> {
     let path = crate::storage::data_path(plugin_name)?;
@@ -656,14 +652,13 @@ where
 mod tests {
     use super::*;
 
-    /// 注册表里每个插件的元数据与配置类型都得自洽：
-    /// 配置表的键就是模块名，默认配置能通过自己的校验且带 `enabled`，摘要写了。
+    /// 注册表里每个插件的元数据与配置都得自洽：
+    /// 默认配置能通过自己的校验且带 `enabled`，摘要写了（配置键与模块名一致在编译期核对）。
     #[test]
     fn every_registered_plugin_is_self_consistent() {
         let mut seen = HashSet::new();
         for plugin in get_plugins() {
             assert!(seen.insert(plugin.name), "插件名重复：{}", plugin.name);
-            assert_eq!(plugin.config_name, plugin.name, "配置键与模块名不一致");
             assert!(!plugin.summary.is_empty(), "{} 缺一句话摘要", plugin.name);
             let defaults = (plugin.default_config)();
             assert!(

@@ -224,9 +224,6 @@ pub struct AiNewsConfig {
     pub hot_topics_time: String,
 }
 
-fn default_true() -> bool {
-    true
-}
 fn default_groups() -> Vec<String> {
     vec![DEFAULT_GROUP.to_string()]
 }
@@ -1433,7 +1430,7 @@ fn parse_push_target(
                     return Ok(target(kind_of(keyword) == Some(true), id));
                 }
             }
-            parse_id(word).map(|id| PushTarget::Group(id)).map_err(|_| usage())
+            parse_id(word).map(PushTarget::Group).map_err(|_| usage())
         }
         [word, id] => {
             let private = kind_of(word).ok_or_else(usage)?;
@@ -1630,7 +1627,7 @@ fn render_status(
         out.push_str(&format!(
             "目标：{} · {}\n",
             target,
-            if config.contains_target(&target) {
+            if config.contains_target(target) {
                 "已开启推送"
             } else {
                 "未开启推送"
@@ -1646,8 +1643,8 @@ fn render_status(
 
     out.push_str("\n实时快报\n");
     if config.realtime_enabled {
-        let target_enabled = target.is_none_or(|target| config.contains_target(&target));
-        let muted = target.is_some_and(|target| config.target_realtime_muted(&target));
+        let target_enabled = target.is_none_or(|target| config.contains_target(target));
+        let muted = target.is_some_and(|target| config.target_realtime_muted(target));
         // 一行只给一个状态词打头，后面接一句「所以会怎样」。
         // 从前是「字形 + 另一句话」，两半都在说状态，合起来读还会自相矛盾
         // （`⬜ 该目标未开启推送`）。
@@ -1722,7 +1719,7 @@ fn render_status(
     };
     out.push_str(&format!("阅读主题：{}\n", theme_mode));
     if let Some(target) = target {
-        let category = config.category_for_target(&target);
+        let category = config.category_for_target(target);
         out.push_str(&format!(
             "目标分类：{}\n",
             if category.is_empty() {

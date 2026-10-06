@@ -78,17 +78,6 @@ fn fits(sample: &Sample<'_>, register: Register) -> bool {
     }
 }
 
-/// 挑出这一轮要贴的样本。
-///
-/// 从前按贴题程度挑：聊华为就贴他说过的华为那几句。结果模型学走的不是口气，
-/// 是内容——「什么时候华为上双击熄屏 我就回归」被原样改写成一句立场，塞进一段
-/// 根本没人问它意见的聊天里（线上 2026-09-26 10:28）。样本只该教「怎么说」，所以
-/// 现在反过来：**跟眼前话题沾边的一律不挑**，在剩下的里随机取，长短搭配着摆。
-/// 已经出现在眼前这段记录里的（自己刚说过的）同样跳过。
-fn pick<'a>(turns: &[Turn], samples: &[Sample<'a>], register: Register) -> Vec<&'a str> {
-    pick_within(turns, samples, register, MAX_LINES, MAX_CHARS)
-}
-
 /// 同 [`pick`]，只是条数与字数上限由调用方给（近期原话先占了几个位置）。
 fn pick_within<'a>(
     turns: &[Turn],

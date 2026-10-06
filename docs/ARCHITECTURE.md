@@ -52,7 +52,7 @@ tests/             前台运行、重启与渲染测试
 
 用户可见的名称、分区、摘要与指令在 `registry.rs` 声明；`/help`、`/ctl` 与 Web 控制台均读取该注册表。
 
-插件配置使用顶层 `[插件名]` 表与 `enabled` 开关。配置结构体带容器级 `serde(default)` 与一份 `Default` 实现，再实现 `PluginConfig`：`NAME` 是配置表的键（与模块名一致，测试会核对），范围、可选值之类的检查写在 `check`，类型对不上时的提示可用 `MISMATCH` 写得更具体。读取用 `get_config_or_default::<Config>(ctx)`，写回用 `update_config::<Config, _>(ctx, …)`：调用点不再重复插件名；反序列化失败时记录告警并使用默认值。
+插件配置使用顶层 `[插件名]` 表与 `enabled` 开关。配置结构体带容器级 `serde(default)` 与一份 `Default` 实现，再实现 `PluginConfig`：`NAME` 是配置表的键（与模块名一致，编译期核对），范围、可选值之类的检查写在 `check`，类型对不上时的提示可用 `MISMATCH` 写得更具体。读取用 `get_config_or_default::<Config>(ctx)`，写回用 `update_config::<Config, _>(ctx, …)`：调用点不再重复插件名；反序列化失败时记录告警并使用默认值。
 
 消息匹配与发送复用 `crate::command`、`crate::message` 与 `crate::adapters::satori`。插件错误使用 `PluginError` / `PluginResult`；发送失败向上返回，不要用 `let _ =` 忽略。
 
@@ -87,11 +87,13 @@ HTML 卡片统一经 `render::web::shoot` 渲染。调用方提供内容与宽�
 ## 构建与测试
 
 ```sh
-cargo check
-cargo test --locked
+cargo clippy --all-targets --locked   # 保持零告警
 cargo fmt
+cargo test --locked
 cargo build --release --locked
 ```
+
+插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`matcher`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`。
 
 卡片版式改动还需用真实注册表生成图片并人工检查：
 

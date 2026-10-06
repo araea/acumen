@@ -46,9 +46,7 @@ fn candidate(turns: &[Turn], now: i64) -> Option<(String, String)> {
     let first = turns
         .iter()
         .rev()
-        .take(3)
-        .filter(|turn| !turn.message_id.is_empty() && now.saturating_sub(turn.at) <= 90)
-        .last()
+        .take(3).rfind(|turn| !turn.message_id.is_empty() && now.saturating_sub(turn.at) <= 90)
         .map_or_else(|| last.message_id.clone(), |turn| turn.message_id.clone());
     Some((first, last.message_id.clone()))
 }

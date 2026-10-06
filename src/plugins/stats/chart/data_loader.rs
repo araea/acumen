@@ -27,7 +27,6 @@ pub struct SeriesData {
 pub struct BarData {
     pub label: String,
     pub value: i64,
-    pub user_id: Option<String>, // 用于识别是否是发送者
     pub avatar_url: Option<String>,
     pub avatar_img: Option<image::RgbaImage>,
     pub theme_color: RGBColor, // 从头像提取的主题色
@@ -304,7 +303,6 @@ pub async fn fetch_bar_data(
                 BarData {
                     label: k,
                     value: v,
-                    user_id: None,
                     avatar_url: None,
                     avatar_img: None,
                     theme_color: color,
@@ -337,7 +335,6 @@ pub async fn fetch_bar_data(
             bar_data.push(BarData {
                 label: r.guild_name,
                 value: r.count,
-                user_id: None,
                 avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
@@ -357,7 +354,6 @@ pub async fn fetch_bar_data(
             bar_data.push(BarData {
                 label: r.guild_name,
                 value: r.count,
-                user_id: None,
                 avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
@@ -392,7 +388,6 @@ pub async fn fetch_bar_data(
         bar_data.push(BarData {
             label,
             value: r.count,
-            user_id: Some(r.user_id),
             avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
             avatar_img: None,
             theme_color: FALLBACK_THEME,
@@ -453,7 +448,6 @@ pub async fn fetch_bar_data(
             bar_data.push(BarData {
                 label: format!("★ {}", nick),
                 value: count,
-                user_id: Some(sender_id.to_string()),
                 avatar_url: Some(avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
