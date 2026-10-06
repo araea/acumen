@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 /// 一份身份资料活多久。名片和头衔是人改的，改完隔几个小时认出来就够；
 /// 而每轮都去问一遍平台，等于给每条群消息加四个网络来回。
-const TTL: Duration = Duration::from_secs(6 * 3_600);
+const TTL: Duration = Duration::from_hours(6);
 /// 取资料的整体预算。拿不到就这一轮不带身份，不能让它拖住发言。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 /// 看一眼头像的预算。
@@ -187,7 +187,7 @@ fn store() -> &'static Mutex<Store> {
 }
 
 fn lock() -> MutexGuard<'static, Store> {
-    store().lock().unwrap_or_else(|error| error.into_inner())
+    store().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 指定落盘位置；启动时调用一次。

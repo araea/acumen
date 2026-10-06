@@ -34,7 +34,7 @@ pub(super) const DEFAULT_VERSION: &str = "chirp-v5";
 const POLL_INTERVAL: Duration = Duration::from_secs(6);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 /// 一首歌最多等多久；真正的总预算由 `[oai] media_timeout_seconds` 兜底。
-const TASK_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+const TASK_TIMEOUT: Duration = Duration::from_mins(8);
 /// 一次提交最多发几首（Suno 一次给两个版本）。
 const MAX_CLIPS: usize = 2;
 /// 回复里最多带几行歌词当引子。
@@ -199,7 +199,7 @@ pub(super) async fn generate_reply(
 ) -> anyhow::Result<Reply> {
     let last = last_user(hist);
     let mut options = Options::parse(
-        &match (agent.system_prompt.trim(), last.map(|m| m.content.as_str()).unwrap_or("")) {
+        &match (agent.system_prompt.trim(), last.map_or("", |m| m.content.as_str())) {
             ("", user) => user.to_string(),
             (system, "") => system.to_string(),
             (system, user) => format!("{system}\n{user}"),
@@ -427,7 +427,7 @@ pub(crate) async fn generate(
         version: task
             .clips
             .first()
-            .map(|clip| clip.model_version())
+            .map(Clip::model_version)
             .filter(|version| !version.trim().is_empty())
             .unwrap_or_else(|| version.to_string()),
         cost: task.cost,

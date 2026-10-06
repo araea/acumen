@@ -54,12 +54,9 @@ fn get_args_regex() -> &'static Regex {
 pub fn handle(
     ctx: Context,
     writer: LockedWriter,
-) -> BoxFuture<'static, std::result::Result<Option<Context>, PluginError>> {
+) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let msg = match ctx.as_message() {
-            Some(m) => m,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
 
         let config: Config = get_config_or_default(&ctx);
 
@@ -124,26 +121,22 @@ pub fn handle(
             }
 
             // 3. 获取图片 URL (优先指令参数，其次引用消息)
-            let url = match get_image_url(
+            let Some(url) = get_image_url(
                 &ctx,
                 writer.clone(),
                 &matched.args,
                 matched.reply_id.as_ref(),
             )
-            .await
-            {
-                Some(u) => u,
-                None => {
-                    send_msg(
-                        &ctx,
-                        writer,
-                        msg.group_id(),
-                        Some(msg.user_id()),
-                        "❌ 请在发送指令时附带图片，或引用一张图片",
-                    )
-                    .await?;
-                    return Ok(None);
-                }
+            .await else {
+                send_msg(
+                    &ctx,
+                    writer,
+                    msg.group_id(),
+                    Some(msg.user_id()),
+                    "❌ 请在发送指令时附带图片，或引用一张图片",
+                )
+                .await?;
+                return Ok(None);
             };
 
             // 4. 下载与处理
@@ -156,7 +149,7 @@ pub fn handle(
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        format!("❌ 图片下载失败：{}", e),
+                        format!("❌ 图片下载失败：{e}"),
                     )
                     .await?;
                     return Ok(None);
@@ -174,7 +167,7 @@ pub fn handle(
                     let mut forward_node_msg = Message::new();
 
                     for (index, b64) in base64_list.into_iter().enumerate() {
-                        let image_content = Message::new().image(format!("base64://{}", b64));
+                        let image_content = Message::new().image(format!("base64://{b64}"));
                         forward_node_msg = forward_node_msg.node_custom(
                             bot_id,
                             format!("图 {}", index + 1),
@@ -208,7 +201,7 @@ pub fn handle(
                         writer,
                         msg.group_id(),
                         Some(msg.user_id()),
-                        format!("❌ 处理失败：{}", e),
+                        format!("❌ 处理失败：{e}"),
                     )
                     .await?;
                 }

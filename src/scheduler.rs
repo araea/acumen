@@ -91,9 +91,9 @@ impl PushFrequency {
                     Weekday::Sat => "周六",
                     Weekday::Sun => "周日",
                 };
-                format!("每{}", name)
+                format!("每{name}")
             }
-            PushFrequency::Monthly(d) => format!("每月{}日", d),
+            PushFrequency::Monthly(d) => format!("每月{d}日"),
         }
     }
 }
@@ -228,7 +228,7 @@ impl Scheduler {
             (23, 30, 0)
         };
 
-        let log_target = format!("Plugin/{}", plugin_name);
+        let log_target = format!("Plugin/{plugin_name}");
         let (pace_min, pace_max) = pace.bounds();
         info!(
             target: log_target.as_str(),
@@ -248,7 +248,7 @@ impl Scheduler {
             let freq = frequency;
 
             async move {
-                let log_target = format!("Plugin/{}", p_name);
+                let log_target = format!("Plugin/{p_name}");
 
                 // 3. 频率过滤：非目标日直接跳过
                 if !freq.matches(Local::now()) {

@@ -53,7 +53,7 @@ fn sounds_pressing(text: &str) -> bool {
 
 /// 「刚才说了几轮」的观察窗口。群聊的节奏以十分钟为单位看正合适：
 /// 再短看不出是不是一直在接话，再长又会把半小时前的事算到现在头上。
-pub(crate) const RECENT_SPEECH: std::time::Duration = std::time::Duration::from_secs(600);
+pub(crate) const RECENT_SPEECH: Duration = Duration::from_secs(600);
 
 /// 号主亲手插话时给 `seq` 加多少：比搭话能容忍的「打字期间新来几条」大，保证在途草稿作废。
 const OWNER_DRIFT: u64 = 4;
@@ -367,7 +367,7 @@ impl GroupState {
     }
 
     /// 最近这段时间里说了几轮。刚说过好几句的人本来就该消停一会儿。
-    pub(crate) fn spoken_within(&self, window: std::time::Duration) -> usize {
+    pub(crate) fn spoken_within(&self, window: Duration) -> usize {
         let now = Instant::now();
         self.spoken
             .iter()
@@ -655,13 +655,11 @@ fn summarize(text: &str, limit: usize) -> String {
 pub(crate) fn transcript(turns: &[Turn]) -> String {
     let mut out = String::new();
     for turn in turns {
-        let clock = chrono::DateTime::from_timestamp(turn.at, 0)
-            .map(|time| {
+        let clock = chrono::DateTime::from_timestamp(turn.at, 0).map_or_else(|| "--:--".to_string(), |time| {
                 time.with_timezone(&chrono::Local)
                     .format("%H:%M")
                     .to_string()
-            })
-            .unwrap_or_else(|| "--:--".to_string());
+            });
         let who = if turn.from_me && turn.user_id.is_empty() {
             "平台事件（操作者未知）".to_string()
         } else if turn.manual {
@@ -889,9 +887,7 @@ pub(crate) fn turn_from_platform(
         elements,
         message_id,
         at: item["created_at"]
-            .as_i64()
-            .map(|millis| millis / 1000)
-            .unwrap_or_else(|| chrono::Local::now().timestamp()),
+            .as_i64().map_or_else(|| chrono::Local::now().timestamp(), |millis| millis / 1000),
         ..Turn::default()
     })
 }
@@ -903,6 +899,6 @@ fn states() -> &'static Mutex<HashMap<String, GroupState>> {
 
 /// 取出锁访问某个群的状态。闭包里不要 await——锁是同步的。
 pub(crate) fn with_group<T>(group_id: &str, action: impl FnOnce(&mut GroupState) -> T) -> T {
-    let mut guard = states().lock().unwrap_or_else(|error| error.into_inner());
+    let mut guard = states().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     action(guard.entry(group_id.to_string()).or_default())
 }

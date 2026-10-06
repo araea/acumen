@@ -449,7 +449,7 @@ fn store() -> &'static Mutex<Store> {
 }
 
 fn lock() -> MutexGuard<'static, Store> {
-    store().lock().unwrap_or_else(|error| error.into_inner())
+    store().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 一个群一份文件，文件名就是群 ID。ID 由实现端给出，路径分隔符换掉，免得跑出目录。
@@ -523,12 +523,12 @@ pub(crate) fn edit<T>(group: &str, action: impl FnOnce(&mut GroupMemory) -> T) -
 
 /// 把待落盘的改动写出去，最多每 [`WRITE_INTERVAL`] 一次。没有改动时不碰磁盘。
 pub(crate) async fn flush(group: &str) {
-    write(group, false).await
+    write(group, false).await;
 }
 
 /// 立刻落盘，不受节流限制：人格刚写下的印象值得马上留住。
 pub(crate) async fn flush_now(group: &str) {
-    write(group, true).await
+    write(group, true).await;
 }
 
 async fn write(group: &str, force: bool) {

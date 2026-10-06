@@ -274,10 +274,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
 
 // 提取纯文本内容，自动忽略头部的 At 和 Reply 消息段
 fn extract_clean_text(ctx: &Context) -> Option<String> {
-    let event = match &ctx.event {
-        crate::event::EventType::Satori(e) => e,
-        _ => return None,
-    };
+    let crate::event::EventType::Satori(event) = &ctx.event else { return None };
 
     if event.get_str("post_type")? != "message" {
         return None;
@@ -329,12 +326,9 @@ pub fn handle(
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
         // 确保 Manager 已初始化
-        let mgr = match MANAGER.get() {
-            Some(m) => m,
-            None => {
-                error!(target: LOG_TARGET, "插件尚未初始化");
-                return Ok(Some(ctx));
-            }
+        let Some(mgr) = MANAGER.get() else {
+            error!(target: LOG_TARGET, "插件尚未初始化");
+            return Ok(Some(ctx));
         };
 
         // MJ 的放大交互只依赖被引用的机器人消息，不要求再次写房间名。
@@ -345,10 +339,7 @@ pub fn handle(
 
         // 获取纯文本内容。没有文字的消息（纯图片、纯表情）不可能是指令，
         // 要留给随后的群聊搭话插件观察，事件继续往后传。
-        let raw_text = match extract_clean_text(&ctx) {
-            Some(t) => t,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(raw_text) = extract_clean_text(&ctx) else { return Ok(Some(ctx)) };
 
         // 1. 全局指令解析
         if let Some(cmd) = parser::parse_global(&raw_text, &crate::command::get_prefixes(&ctx)) {

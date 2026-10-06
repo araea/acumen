@@ -62,15 +62,14 @@ pub fn category_label(slug: &str) -> &'static str {
     CATEGORIES
         .iter()
         .find(|(s, _, _)| *s == slug)
-        .map(|(_, label, _)| *label)
-        .unwrap_or("综合")
+        .map_or("综合", |(_, label, _)| *label)
 }
 
 /// 榜单页地址：综合榜是 `/leaderboard`，分类榜是 `/leaderboard/category/<slug>`
 pub fn page_url(category: &str) -> String {
     match category {
-        "" | "overall" => format!("{}/leaderboard", SITE),
-        slug => format!("{}/leaderboard/category/{}", SITE, slug),
+        "" | "overall" => format!("{SITE}/leaderboard"),
+        slug => format!("{SITE}/leaderboard/category/{slug}"),
     }
 }
 
@@ -104,7 +103,7 @@ pub struct ModelEntry {
 
 impl ModelEntry {
     pub fn display_name(&self) -> &str {
-        self.name.as_deref().map(str::trim).unwrap_or("（未知模型）")
+        self.name.as_deref().map_or("（未知模型）", str::trim)
     }
 
     pub fn provider_name(&self) -> Option<&str> {
@@ -113,12 +112,12 @@ impl ModelEntry {
 
     /// 共识指数保留一位小数
     pub fn score_text(&self) -> Option<String> {
-        self.score.map(|s| format!("{:.1}", s))
+        self.score.map(|s| format!("{s:.1}"))
     }
 
     /// 「8 项评测」
     pub fn evaluations_text(&self) -> Option<String> {
-        self.evaluations.map(|n| format!("{} 项评测", n))
+        self.evaluations.map(|n| format!("{n} 项评测"))
     }
 
     /// 证据状态的中文名：优先站点原文，缺失时按代码兜底
@@ -141,7 +140,7 @@ impl ModelEntry {
         Some(if label.starts_with("证据") {
             label.to_string()
         } else {
-            format!("证据{}", label)
+            format!("证据{label}")
         })
     }
 
@@ -154,7 +153,7 @@ impl ModelEntry {
         Some(if from == to {
             from.to_string()
         } else {
-            format!("{}—{}", from, to)
+            format!("{from}—{to}")
         })
     }
 
@@ -171,7 +170,7 @@ impl ModelEntry {
             ("缓存", &self.cache_price),
         ]
         .into_iter()
-        .filter_map(|(label, price)| price.as_deref().map(|p| format!("{} {}", label, p)))
+        .filter_map(|(label, price)| price.as_deref().map(|p| format!("{label} {p}")))
         .collect();
         (!parts.is_empty()).then(|| parts.join(" / "))
     }
@@ -179,7 +178,7 @@ impl ModelEntry {
     /// 模型详情页
     pub fn page_url(&self) -> Option<String> {
         let slug = self.slug.as_deref().map(str::trim).filter(|s| !s.is_empty())?;
-        Some(format!("{}/leaderboard/{}", SITE, slug))
+        Some(format!("{SITE}/leaderboard/{slug}"))
     }
 }
 
@@ -318,7 +317,7 @@ async fn fetch_with_browser(url: &str, timeout_secs: u64) -> Result<String, ApiE
     }
     match result {
         Ok(Ok(html)) => Ok(html),
-        Ok(Err(e)) => Err(format!("用浏览器打开 AIHOT 模型榜失败：{}", e).into()),
+        Ok(Err(e)) => Err(format!("用浏览器打开 AIHOT 模型榜失败：{e}").into()),
         Err(_) => Err("用浏览器打开 AIHOT 模型榜超时（站点校验页没有放行）".into()),
     }
 }

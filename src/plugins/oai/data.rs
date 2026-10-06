@@ -72,7 +72,7 @@ impl Manager {
             }
             // 不再默认填充「你是一个有帮助的助手」：清掉历史建房时被写入该默认值的房间。
             // 只匹配完全相同的那句，避免误伤管理员自定义的提示词。
-            for agent in config.agents.iter_mut() {
+            for agent in &mut config.agents {
                 if agent.system_prompt == LEGACY_DEFAULT_PROMPT {
                     agent.system_prompt = String::new();
                 }
@@ -82,7 +82,7 @@ impl Manager {
         }
 
         // 引擎关键字从 `pi` 改成 `agent`：老配置里写着旧值，改一次就好。
-        for agent in config.agents.iter_mut() {
+        for agent in &mut config.agents {
             if agent.engine.trim().eq_ignore_ascii_case("pi") {
                 agent.engine = super::types::ENGINE_AGENT.to_string();
                 config_dirty = true;
@@ -91,7 +91,7 @@ impl Manager {
 
         // `模型:强度` 的旧写法收进独立的 `thinking` 字段：行为等价，但让强度可单独
         // 修改而不必重写模型名。幂等——已经收好的房间再跑一次什么都不做。
-        for agent in config.agents.iter_mut() {
+        for agent in &mut config.agents {
             let (model, thinking) = super::utils::split_thinking(&agent.model);
             if let Some(level) = thinking {
                 agent.model = model;
@@ -236,7 +236,7 @@ impl Manager {
             .map(|arr| {
                 arr.iter()
                     .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
-                    .map(|s| s.to_string())
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();

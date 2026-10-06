@@ -102,14 +102,13 @@ impl Canvas {
     /// 单个字符的步进宽度（逻辑像素）。缺字时按首选字体的 `.notdef` 步进，
     /// 保证「画不出来」与「量出来的宽度」一致，版式不会错位。
     fn advance(&self, face: &Face, ch: char, px: f32) -> f32 {
-        match face.glyph(ch) {
-            Some((font, gid)) => font.as_scaled(self.font_scale(font, px)).h_advance(gid) / self.s,
-            None => {
-                let font = face.primary();
-                font.as_scaled(self.font_scale(font, px))
-                    .h_advance(font.glyph_id(ch))
-                    / self.s
-            }
+        if let Some((font, gid)) = face.glyph(ch) {
+            font.as_scaled(self.font_scale(font, px)).h_advance(gid) / self.s
+        } else {
+            let font = face.primary();
+            font.as_scaled(self.font_scale(font, px))
+                .h_advance(font.glyph_id(ch))
+                / self.s
         }
     }
 

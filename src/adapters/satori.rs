@@ -85,7 +85,7 @@ pub fn note_inbound(event: &Event) {
     };
     let mut guard = latest_inbound()
         .lock()
-        .unwrap_or_else(|error| error.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // 群数量本来就有限，但配置改动和退群都可能留下条目，给个上限兜底。
     if guard.len() > 512 {
         guard.clear();
@@ -100,7 +100,7 @@ pub fn freshness_for(group_id: &str, valid_for: Duration) -> Option<Freshness> {
     }
     let message_id = latest_inbound()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(group_id)
         .cloned()?;
     Some(Freshness {
@@ -618,7 +618,7 @@ async fn learn_limits(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     {
         Ok(capabilities) => client.set_limits(limits_of(&capabilities)),
         Err(error) => {
-            debug!(target: LOG_TARGET, "internal/capabilities 失败，按没有声明限额处理：{error}")
+            debug!(target: LOG_TARGET, "internal/capabilities 失败，按没有声明限额处理：{error}");
         }
     }
 }
@@ -827,7 +827,7 @@ pub fn entry(
             save_lock,
             config_path,
         )
-        .await
+        .await;
     })
 }
 
@@ -863,10 +863,10 @@ pub async fn run_bot_loop(
         }
         match result {
             Ok(()) => {
-                warn!(target: LOG_TARGET, "Satori [{}] 连接断开，{:?} 后重连...", endpoint, backoff)
+                warn!(target: LOG_TARGET, "Satori [{}] 连接断开，{:?} 后重连...", endpoint, backoff);
             }
             Err(err) => {
-                error!(target: LOG_TARGET, "Satori [{}] 连接失败: {}。{:?} 后重试...", endpoint, err, backoff)
+                error!(target: LOG_TARGET, "Satori [{}] 连接失败: {}。{:?} 后重试...", endpoint, err, backoff);
             }
         }
         tokio::time::sleep(backoff).await;
@@ -1296,12 +1296,11 @@ pub fn process_event(
     if let EventType::Satori(event) = &ctx.event
         && event.get_str("post_type") == Some("message")
     {
-        match ctx.matcher.dispatch(event.clone()) {
-            Some(event) => ctx.event = EventType::Satori(event),
-            None => {
-                plugins::consumed(&ctx, &writer);
-                return Box::pin(async { Ok(()) });
-            }
+        if let Some(event) = ctx.matcher.dispatch(event.clone()) {
+            ctx.event = EventType::Satori(event);
+        } else {
+            plugins::consumed(&ctx, &writer);
+            return Box::pin(async { Ok(()) });
         }
     }
     let before_pipeline = plugins::receive(&mut ctx, &writer);
@@ -1804,7 +1803,7 @@ fn value_id(value: &Value) -> Option<i64> {
 
 /// 图片没出成时的等价文本；分段限制单条长度，长内容不撞实现端的单条上限。
 pub async fn send_text_chunks(
-    ctx: &crate::event::Context,
+    ctx: &Context,
     writer: LockedWriter,
     group: Option<&str>,
     user: Option<&str>,

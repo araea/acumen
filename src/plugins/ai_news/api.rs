@@ -67,8 +67,7 @@ pub fn category_label(slug: &str) -> &str {
     CATEGORIES
         .iter()
         .find(|(s, _)| *s == slug)
-        .map(|(_, label)| *label)
-        .unwrap_or(slug)
+        .map_or(slug, |(_, label)| *label)
 }
 
 // ================= HTTP 客户端 =================
@@ -144,7 +143,7 @@ fn etags() -> &'static Mutex<HashMap<String, String>> {
 
 /// ETag 的存储键：同一个 URL 在不同分区下各记一份
 fn etag_key(scope: &str, url: &str) -> String {
-    format!("{}\u{1}{}", scope, url)
+    format!("{scope}\u{1}{url}")
 }
 
 /// 发起一次 GET 请求并解析 JSON。
@@ -159,10 +158,10 @@ async fn get_json(
     // 退避期内不再打扰服务端；用户指令（Fresh）照常放行
     let left = backoff_seconds_left();
     if left > 0 && poll.scope().is_some() {
-        return Err(format!("AIHOT 要求退避，还剩 {} 秒", left).into());
+        return Err(format!("AIHOT 要求退避，还剩 {left} 秒").into());
     }
 
-    let url = format!("{}{}", BASE_URL, path_and_query);
+    let url = format!("{BASE_URL}{path_and_query}");
     let mut req = client(timeout_secs)?.get(&url);
 
     if let Some(scope) = poll.scope()
@@ -179,7 +178,7 @@ async fn get_json(
         return Ok(None);
     }
     if status == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("AIHOT 接口 404：{}", path_and_query).into());
+        return Err(format!("AIHOT 接口 404：{path_and_query}").into());
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
@@ -237,7 +236,7 @@ fn problem_text(body: &str) -> String {
         }
     }
     if let Some(id) = value.get("requestId").and_then(JsonValue::as_str) {
-        parts.push(format!("requestId {}", id));
+        parts.push(format!("requestId {id}"));
     }
     if parts.is_empty() {
         String::new()
@@ -299,7 +298,7 @@ impl Links {
             return None;
         }
         Some(match url.strip_prefix("https://aihot.virxact.com") {
-            Some(rest) => format!("{}{}", BASE_URL, rest),
+            Some(rest) => format!("{BASE_URL}{rest}"),
             None => url.to_string(),
         })
     }
@@ -346,15 +345,15 @@ impl Item {
     /// 去重键：优先服务端 id，缺失时退回站内链接或标题
     pub fn dedupe_key(&self) -> Option<String> {
         if let Some(id) = self.id.as_deref().filter(|s| !s.is_empty()) {
-            return Some(format!("id:{}", id));
+            return Some(format!("id:{id}"));
         }
         if let Some(url) = self.links.primary() {
-            return Some(format!("url:{}", url));
+            return Some(format!("url:{url}"));
         }
         self.title
             .as_deref()
             .filter(|s| !s.is_empty())
-            .map(|t| format!("title:{}", t))
+            .map(|t| format!("title:{t}"))
     }
 
     /// 是否有足够信息可以展示
@@ -683,7 +682,7 @@ fn story_cache() -> &'static StoryCache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-const STORY_TTL: Duration = Duration::from_secs(10 * 60);
+const STORY_TTL: Duration = Duration::from_mins(10);
 
 async fn story_brief(public_id: &str, timeout_secs: u64) -> Option<StoryBrief> {
     if let Ok(guard) = story_cache().lock()
@@ -758,9 +757,9 @@ pub async fn fetch_daily_index(
 /// 按官方要求，日期只能来自日报索引实际返回的值，绝不本地拼「今天 / 昨天」。
 pub async fn fetch_daily_report(date: &str, timeout_secs: u64) -> Result<DailyReport, ApiError> {
     if !is_iso_date(date) {
-        return Err(format!("非法的日报日期：{}", date).into());
+        return Err(format!("非法的日报日期：{date}").into());
     }
-    let path = format!("/api/v1/dailies/{}", date);
+    let path = format!("/api/v1/dailies/{date}");
     let value = get_json(&path, timeout_secs, Poll::Fresh)
         .await?
         .ok_or("AIHOT 日报无响应体")?;
@@ -854,9 +853,9 @@ fn encode(input: &str) -> String {
     for byte in input.as_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
+                out.push(*byte as char);
             }
-            _ => out.push_str(&format!("%{:02X}", byte)),
+            _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
     out

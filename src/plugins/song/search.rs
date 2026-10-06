@@ -18,7 +18,7 @@ const SPI_API: &str = "https://api.bilibili.com/x/frontend/finger/spi";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// 领来的 Cookie 用一天；过期或被拦下再换新的。
-const BUVID_TTL: Duration = Duration::from_secs(24 * 3600);
+const BUVID_TTL: Duration = Duration::from_hours(24);
 
 static BUVID: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 

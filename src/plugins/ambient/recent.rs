@@ -40,9 +40,9 @@ const GROUP_KEEP: usize = 40;
 /// 打字习惯看最近多少天：句尾挂「（」这种习惯几周就能变（8 月底 0.3%，10 月初 8%）。
 const HABIT_DAYS: i64 = 30;
 /// 隔多久重捞一次。他刚说过的话二十分钟内就进得了样本，口头禅换得再快也跟得上。
-const REFRESH: Duration = Duration::from_secs(20 * 60);
+const REFRESH: Duration = Duration::from_mins(20);
 /// 失败后隔多久再试。
-const RETRY: Duration = Duration::from_secs(10 * 60);
+const RETRY: Duration = Duration::from_mins(10);
 /// 一条最多这么多字：再长的多半是转述或贴的文字，不是说话。
 const MAX_CHARS: usize = 36;
 /// 话题回忆里一句话至少这么多字：「？」「草」这种反应没有话题可言。
@@ -96,7 +96,7 @@ fn state() -> &'static Mutex<State> {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, State> {
-    state().lock().unwrap_or_else(|error| error.into_inner())
+    state().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 当前这批近期原话（最新的在前）。

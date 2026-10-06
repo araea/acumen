@@ -215,12 +215,9 @@ async fn send_images<'a>(
     let mut failed = Vec::new();
     for (index, url) in urls.iter().enumerate() {
         let file = match url.strip_prefix("data:") {
-            Some(data) => match data.split_once(',') {
-                Some((_, base64_data)) => format!("base64://{base64_data}"),
-                None => {
-                    failed.push(url.as_str());
-                    continue;
-                }
+            Some(data) => if let Some((_, base64_data)) = data.split_once(',') { format!("base64://{base64_data}") } else {
+                failed.push(url.as_str());
+                continue;
             },
             None => url.clone(),
         };
@@ -334,7 +331,7 @@ async fn download_image_to_data_url(url: &str) -> Option<String> {
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(ToString::to_string);
 
     let bytes = resp.bytes().await.ok()?;
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
@@ -347,7 +344,7 @@ async fn download_image_to_data_url(url: &str) -> Option<String> {
 
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Some(format!("data:{};base64,{}", mime, b64))
+    Some(format!("data:{mime};base64,{b64}"))
 }
 
 fn sniff_image_mime(bytes: &[u8]) -> &'static str {
@@ -400,22 +397,16 @@ async fn chat(
     writer: &LockedWriter,
     mgr: &Arc<Manager>,
 ) {
-    let event = match ctx.as_message() {
-        Some(e) => e,
-        None => return,
-    };
+    let Some(event) = ctx.as_message() else { return };
     let (agent, api) = {
         let c = mgr.config.read().await;
         let a = c.agents.iter().find(|a| a.name == name).cloned();
         (a, (c.api_base.clone(), c.api_key.clone()))
     };
 
-    let agent = match agent {
-        Some(a) => a,
-        None => {
-            reply_text(ctx, writer, &event, format!("❌ 智能体 {} 不存在", name)).await;
-            return;
-        }
+    let Some(agent) = agent else {
+        reply_text(ctx, writer, &event, format!("❌ 智能体 {name} 不存在")).await;
+        return;
     };
 
     let use_agent = agent.uses_agent();
@@ -450,22 +441,18 @@ async fn chat(
         super::mj::handle_agent(&agent, &cmd.args, imgs, ctx, writer, mgr).await;
         return;
     }
-    let (api_base, api_key) =
-        match super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) {
-            Some(endpoint) => endpoint,
-            None => {
-                reply_text(
-                    ctx,
-                    writer,
-                    &event,
-                    format!(
-                        "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
-                        provider.as_deref().unwrap_or_default()
-                    ),
-                )
-                .await;
-                return;
-            }
+    let Some((api_base, api_key)) = super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) else {
+            reply_text(
+                ctx,
+                writer,
+                &event,
+                format!(
+                    "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
+                    provider.as_deref().unwrap_or_default()
+                ),
+            )
+            .await;
+            return;
         };
 
     let is_priv_ctx = cmd.private_reply;
@@ -683,8 +670,7 @@ async fn chat(
                 c.agents
                     .iter()
                     .find(|a| a.name == name)
-                    .map(|a| a.history(is_priv_ctx, &uid).len())
-                    .unwrap_or(0)
+                    .map_or(0, |a| a.history(is_priv_ctx, &uid).len())
             };
 
             let image_urls = extract_image_urls(&content);
@@ -1113,10 +1099,7 @@ pub async fn execute(
     writer: &LockedWriter,
     mgr: &Arc<Manager>,
 ) {
-    let msg_event = match ctx.as_message() {
-        Some(e) => e,
-        None => return,
-    };
+    let Some(msg_event) = ctx.as_message() else { return };
     let name = &cmd.agent;
     let uid = msg_event.user_id().to_string();
 
@@ -1171,7 +1154,7 @@ pub async fn execute(
                 return;
             }
             drop(c);
-            reply_text(ctx, writer, &msg_event, format!("✅ API 已配置：{}", url)).await;
+            reply_text(ctx, writer, &msg_event, format!("✅ API 已配置：{url}")).await;
             let filter =
                 crate::plugins::get_config_or_default::<super::OaiConfig>(ctx).model_filter;
             match mgr.fetch_models(&filter).await {
@@ -1182,10 +1165,10 @@ pub async fn execute(
                         &msg_event,
                         format!("验证成功，已获取 {} 个模型", models.len()),
                     )
-                    .await
+                    .await;
                 }
                 Err(e) => {
-                    reply_text(ctx, writer, &msg_event, format!("❌ 获取模型失败：{}", e)).await
+                    reply_text(ctx, writer, &msg_event, format!("❌ 获取模型失败：{e}")).await;
                 }
             }
         }
@@ -1222,7 +1205,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1258,7 +1241,7 @@ pub async fn execute(
                     &cmd.args,
                     &src.model,
                     &src.system_prompt,
-                    &format!("复制自 {}", name),
+                    &format!("复制自 {name}"),
                 );
                 // 副本要连引擎一起带走：新名字不再能推断出「这是一间 Agent 房间」。
                 new_agent.set_engine(&src.engine, &src.model);
@@ -1286,7 +1269,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1343,7 +1326,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1366,13 +1349,13 @@ pub async fn execute(
                     .await;
                     return;
                 }
-                reply_text(ctx, writer, &msg_event, format!("{} 描述已更新", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("{name} 描述已更新")).await;
             } else {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1395,17 +1378,14 @@ pub async fn execute(
             // 模型串支持 `:强度` 后缀；先摘掉它，剩下的再判 Pi 写法 / 供应商前缀。
             let (spec, thinking) = super::utils::split_thinking(&cmd.args);
             let agent_model = super::agent::parse_agent_spec(&spec);
-            let resolved = match &agent_model {
-                Some(model) => Some((super::types::ENGINE_AGENT, model.clone())),
-                None => {
-                    let (provider, bare) = super::utils::split_provider(&spec);
-                    match provider {
-                        // 带供应商前缀时不做中转站模型匹配，原样保留前缀交给路由。
-                        Some(_) => Some((super::types::ENGINE_CHAT, spec.clone())),
-                        None => mgr
-                            .resolve_model(&bare, &models)
-                            .map(|model| (super::types::ENGINE_CHAT, model)),
-                    }
+            let resolved = if let Some(model) = &agent_model { Some((super::types::ENGINE_AGENT, model.clone())) } else {
+                let (provider, bare) = super::utils::split_provider(&spec);
+                match provider {
+                    // 带供应商前缀时不做中转站模型匹配，原样保留前缀交给路由。
+                    Some(_) => Some((super::types::ENGINE_CHAT, spec.clone())),
+                    None => mgr
+                        .resolve_model(&bare, &models)
+                        .map(|model| (super::types::ENGINE_CHAT, model)),
                 }
             };
             let Some((engine, model)) = resolved else {
@@ -1423,7 +1403,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
                 return;
@@ -1449,7 +1429,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("{} 模型：{} → {}", name, old, new),
+                format!("{name} 模型：{old} → {new}"),
             )
             .await;
         }
@@ -1464,7 +1444,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
                 return;
@@ -1475,8 +1455,7 @@ pub async fn execute(
                     writer,
                     &msg_event,
                     format!(
-                        "❌ {} 是普通房间，联网搜索只挂在内置智能体上；先 `{}%agent` 把它转过来",
-                        name, name
+                        "❌ {name} 是普通房间，联网搜索只挂在内置智能体上；先 `{name}%agent` 把它转过来"
                     ),
                 )
                 .await;
@@ -1520,7 +1499,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("{} 联网搜索：{}{}", name, state, backends),
+                format!("{name} 联网搜索：{state}{backends}"),
             )
             .await;
         }
@@ -1539,16 +1518,16 @@ pub async fn execute(
                     return;
                 }
                 if cmd.args.is_empty() {
-                    reply_text(ctx, writer, &msg_event, format!("{} 提示词已清空", name)).await;
+                    reply_text(ctx, writer, &msg_event, format!("{name} 提示词已清空")).await;
                 } else {
-                    reply_text(ctx, writer, &msg_event, format!("{} 提示词已更新", name)).await;
+                    reply_text(ctx, writer, &msg_event, format!("{name} 提示词已更新")).await;
                 }
             } else {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1589,7 +1568,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1639,13 +1618,13 @@ pub async fn execute(
                     .await;
                     return;
                 }
-                reply_text(ctx, writer, &msg_event, format!("已删除 {}", name)).await;
+                reply_text(ctx, writer, &msg_event, format!("已删除 {name}")).await;
             } else {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1660,7 +1639,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("⚠️ 刷新失败，将展示缓存列表：{}", e),
+                    format!("⚠️ 刷新失败，将展示缓存列表：{e}"),
                 )
                 .await;
             }
@@ -1704,7 +1683,7 @@ pub async fn execute(
                         ctx,
                         writer,
                         &msg_event,
-                        format!("📭 {} {}历史为空", name, s),
+                        format!("📭 {name} {s}历史为空"),
                     )
                     .await;
                     return;
@@ -1722,7 +1701,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1772,15 +1751,15 @@ pub async fn execute(
                                     if url.starts_with("data:") {
                                         content.push_str("\n- [Base64 Image]");
                                     } else {
-                                        content.push_str(&format!("\n- {}", url));
+                                        content.push_str(&format!("\n- {url}"));
                                     }
                                 } else {
-                                    content.push_str(&format!("\n![image]({})", url));
+                                    content.push_str(&format!("\n![image]({url})"));
                                 }
                             }
                         }
                         extra_images.extend(msg_imgs);
-                        results.push(format!("**#{} {}**\n{}", i, role_label, content));
+                        results.push(format!("**#{i} {role_label}**\n{content}"));
                     }
                 }
                 if results.is_empty() {
@@ -1792,7 +1771,7 @@ pub async fn execute(
                         &msg_event,
                         &results.join("\n\n---\n\n"),
                         cmd.text_mode,
-                        &format!("{} 历史记录", name),
+                        &format!("{name} 历史记录"),
                     )
                     .await;
                     send_images(ctx, writer, &msg_event, &extra_images, false).await;
@@ -1802,7 +1781,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1847,18 +1826,18 @@ pub async fn execute(
                                         ctx,
                                         writer,
                                         &msg_event,
-                                        format!("已导出：{}", fname),
+                                        format!("已导出：{fname}"),
                                     )
-                                    .await
+                                    .await;
                                 }
                                 Err(e) => {
                                     reply_text(
                                         ctx,
                                         writer,
                                         &msg_event,
-                                        format!("❌ 上传失败：{}", e),
+                                        format!("❌ 上传失败：{e}"),
                                     )
-                                    .await
+                                    .await;
                                 }
                             }
                         } else {
@@ -1866,7 +1845,7 @@ pub async fn execute(
                         }
                     }
                     Err(e) => {
-                        reply_text(ctx, writer, &msg_event, format!("❌ 创建文件失败：{}", e)).await
+                        reply_text(ctx, writer, &msg_event, format!("❌ 创建文件失败：{e}")).await;
                     }
                 }
             } else {
@@ -1874,7 +1853,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1909,16 +1888,16 @@ pub async fn execute(
                         .await;
                         return;
                     }
-                    reply_text(ctx, writer, &msg_event, format!("已编辑第 {} 条", idx)).await;
+                    reply_text(ctx, writer, &msg_event, format!("已编辑第 {idx} 条")).await;
                 } else {
-                    reply_text(ctx, writer, &msg_event, format!("❌ 索引 {} 无效", idx)).await;
+                    reply_text(ctx, writer, &msg_event, format!("❌ 索引 {idx} 无效")).await;
                 }
             } else {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -1961,7 +1940,7 @@ pub async fn execute(
                     }
                     let s = deleted
                         .iter()
-                        .map(|i| i.to_string())
+                        .map(ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(", ");
                     reply_text(
@@ -1977,7 +1956,7 @@ pub async fn execute(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -2006,13 +1985,13 @@ pub async fn execute(
                     .await;
                     return;
                 }
-                reply_text(ctx, writer, &msg_event, format!("{} {}历史已清空", name, s)).await;
+                reply_text(ctx, writer, &msg_event, format!("{name} {s}历史已清空")).await;
             } else {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    format!("❌ 智能体 {} 不存在", name),
+                    format!("❌ 智能体 {name} 不存在"),
                 )
                 .await;
             }
@@ -2023,7 +2002,7 @@ pub async fn execute(
             }
             let mut c = mgr.config.write().await;
             let cnt = c.agents.len();
-            for a in c.agents.iter_mut() {
+            for a in &mut c.agents {
                 a.public_history.clear();
                 a.generation_id += 1;
             }
@@ -2041,7 +2020,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("已清空 {} 个智能体的公有历史", cnt),
+                format!("已清空 {cnt} 个智能体的公有历史"),
             )
             .await;
         }
@@ -2053,7 +2032,7 @@ pub async fn execute(
             }
             let mut c = mgr.config.write().await;
             let cnt = c.agents.len();
-            for a in c.agents.iter_mut() {
+            for a in &mut c.agents {
                 a.public_history.clear();
                 a.private_histories.clear();
                 a.generation_id += 1;
@@ -2072,7 +2051,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("✅ 已清空 {} 个智能体的所有历史", cnt),
+                format!("✅ 已清空 {cnt} 个智能体的所有历史"),
             )
             .await;
         }
@@ -2262,8 +2241,7 @@ pub async fn execute(
 
             for (name, prompt) in target_agents {
                 let gen_prompt = format!(
-                    "请阅读以下角色的 System Prompt，为其生成一个极简短的中文功能描述（Role/Tag）。\n要求：\n1. 必须控制在 10 个字以内\n2. 不要包含任何标点符号\n3. 直接输出描述内容，不要解释\n\nSystem Prompt:\n{}",
-                    prompt
+                    "请阅读以下角色的 System Prompt，为其生成一个极简短的中文功能描述（Role/Tag）。\n要求：\n1. 必须控制在 10 个字以内\n2. 不要包含任何标点符号\n3. 直接输出描述内容，不要解释\n\nSystem Prompt:\n{prompt}"
                 );
                 let msgs = vec![LlmMessage::User {
                     content: vec![UserContent::Text(Text::new(gen_prompt))],
@@ -2289,7 +2267,7 @@ pub async fn execute(
                 ctx,
                 writer,
                 &msg_event,
-                format!("✅ 批量处理完成，已更新 {} 个智能体的描述", success_count),
+                format!("✅ 批量处理完成，已更新 {success_count} 个智能体的描述"),
             )
             .await;
         }
@@ -2306,10 +2284,7 @@ pub async fn handle_create(
     writer: &LockedWriter,
     mgr: &Arc<Manager>,
 ) {
-    let msg_event = match ctx.as_message() {
-        Some(e) => e,
-        None => return,
-    };
+    let Some(msg_event) = ctx.as_message() else { return };
     let mut c = mgr.config.write().await;
     let models = c.models.clone();
     // 建房时的模型位同样认 Pi 写法与供应商前缀：
@@ -2358,7 +2333,7 @@ pub async fn handle_create(
             ctx,
             writer,
             &msg_event,
-            format!("已更新 {}（模型：{}）", name, updated_model),
+            format!("已更新 {name}（模型：{updated_model}）"),
         )
         .await;
     } else {
@@ -2388,7 +2363,7 @@ pub async fn handle_create(
             ctx,
             writer,
             &msg_event,
-            format!("已创建 {}（模型：{}）", name, label),
+            format!("已创建 {name}（模型：{label}）"),
         )
         .await;
     }

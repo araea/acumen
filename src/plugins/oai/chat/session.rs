@@ -82,10 +82,10 @@ fn observation(kind: &str, group: &str, user_id: &str) -> Result<(&'static str, 
 /// 从前这份记账只活在一轮之内，于是每一轮都要再花掉一次动作额度，去按同一个
 /// 腾讯永远不会放行的按钮（资料卡点赞就是这样）。这类拒绝是账号级的、按天算的，
 /// 记上几个小时既能省下那次额度，又不会把「后来又放开了」永久锁死。
-const REFUSAL_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 3_600);
+const REFUSAL_TTL: std::time::Duration = std::time::Duration::from_hours(6);
 
 /// 跨轮的平台拒绝记录：能力键 → （原因，记下的时刻）。
-type RefusalLog = HashMap<(String, String), (String, std::time::Instant)>;
+type RefusalLog = HashMap<(String, String), (String, Instant)>;
 
 fn known_refusals() -> &'static std::sync::Mutex<RefusalLog> {
     static KNOWN: std::sync::OnceLock<std::sync::Mutex<RefusalLog>> = std::sync::OnceLock::new();
@@ -95,15 +95,15 @@ fn known_refusals() -> &'static std::sync::Mutex<RefusalLog> {
 fn remember_platform_refusal(scope: &str, capability: &'static str, reason: &str) {
     known_refusals()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .insert((scope.to_string(), capability.to_string()), (reason.to_string(), std::time::Instant::now()));
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert((scope.to_string(), capability.to_string()), (reason.to_string(), Instant::now()));
 }
 
 /// 测试之间要能互不影响：这份记账是进程级的，跑完一个用例得能抹掉。
 fn platform_refusal(scope: &str, capability: &str) -> Option<String> {
     let mut guard = known_refusals()
         .lock()
-        .unwrap_or_else(|error| error.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = (scope.to_string(), capability.to_string());
     let (reason, at) = guard.get(&key)?;
     if at.elapsed() > REFUSAL_TTL {
@@ -312,7 +312,7 @@ impl Session {
         let raw = self
             .rpc(
                 "message.get",
-                json!({"channel_id":self.group.to_string(),"message_id":id.to_string()}),
+                json!({"channel_id":self.group.clone(),"message_id":id.clone()}),
             )
             .await?;
         turn_from_platform(&self.ctx, &self.writer, &raw)
@@ -336,7 +336,7 @@ impl Session {
             let raw = self
                 .rpc(
                     "message.get",
-                    json!({"channel_id":self.group.to_string(),"message_id":id.to_string()}),
+                    json!({"channel_id":self.group.clone(),"message_id":id.clone()}),
                 )
                 .await?;
             if let Some(turn) = turn_from_platform(&self.ctx, &self.writer, &raw) {
@@ -360,7 +360,7 @@ impl Session {
         let page = self
             .rpc(
                 "message.list",
-                json!({"channel_id":self.group.to_string(),"limit":count.clamp(1,100)}),
+                json!({"channel_id":self.group.clone(),"limit":count.clamp(1,100)}),
             )
             .await?;
         let Some(items) = page["data"].as_array() else {
@@ -442,10 +442,9 @@ impl Session {
                 let persona = self
                     .persona
                     .as_ref()
-                    .map(|persona| persona.scene(&self.group, &turns, &rhythm))
-                    .unwrap_or(Value::Null);
+                    .map_or(Value::Null, |persona| persona.scene(&self.group, &turns, &rhythm));
                 let turns: Vec<Value> = turns.iter().map(|t| json!({
-                    "message_id":t.message_id.to_string(),"user_id":t.user_id.to_string(),"name":t.name,
+                    "message_id":t.message_id.clone(),"user_id":t.user_id.clone(),"name":t.name,
                     "text":t.text,"from_me":t.from_me,"time":t.at,"elements":t.elements,
                 })).collect();
                 let mut media = Vec::new();
@@ -470,7 +469,7 @@ impl Session {
                     "group_name": identity.group_name, "avatar": identity.avatar,
                 }));
                 Ok(
-                    json!({"revision":seq,"group_id":self.group.to_string(),"self_id":self.ctx.bot.login_user.get().id,
+                    json!({"revision":seq,"group_id":self.group.clone(),"self_id":self.ctx.bot.login_user.get().id,
                     "identity":identity,
                     "now":super::now_context(),
                     "register":persona.get("register").and_then(Value::as_str).unwrap_or(""),
@@ -493,11 +492,11 @@ impl Session {
                 let turn = self.turn_of(id).await?;
                 ensure!(!(request["reactions"].as_bool().unwrap_or(false) && request["forward"].as_bool().unwrap_or(false)), "回应查询与转发展开请分开调用");
                 if request["reactions"].as_bool().unwrap_or(false) {
-                    self.rpc("internal/reaction_summary", json!({"channel_id":self.group.to_string(),"message_id":id})).await
+                    self.rpc("internal/reaction_summary", json!({"channel_id":self.group.clone(),"message_id":id})).await
                 } else if request["forward"].as_bool().unwrap_or(false) {
                     let source = forward::source_of(&turn.elements, Some(turn.message_id.clone()))
                         .ok_or_else(|| anyhow::anyhow!("该消息不是合并转发"))?
-                        .in_channel(self.group.to_string());
+                        .in_channel(self.group.clone());
                     let view = forward::expand(&self.ctx, &self.writer, source).await;
                     ensure!(
                         !view.is_empty(),
@@ -529,7 +528,7 @@ impl Session {
                     let message = self
                         .rpc(
                             "message.get",
-                            json!({"channel_id":self.group.to_string(),"message_id":id}),
+                            json!({"channel_id":self.group.clone(),"message_id":id}),
                         )
                         .await?;
                     Ok(message)
@@ -871,7 +870,7 @@ impl Session {
                         let member = self
                             .rpc(
                                 "guild.member.get",
-                                json!({"guild_id":self.group.to_string(),"user_id":target}),
+                                json!({"guild_id":self.group.clone(),"user_id":target}),
                             )
                             .await?;
                         ensure!(
@@ -981,7 +980,7 @@ impl Session {
                 );
             }
         }
-        let own_member = self.rpc("guild.member.get", json!({"guild_id":self.group.to_string(),"user_id":self.ctx.bot.login_user.get().id})).await;
+        let own_member = self.rpc("guild.member.get", json!({"guild_id":self.group.clone(),"user_id":self.ctx.bot.login_user.get().id})).await;
         let environment = match own_member {
             Ok(member) => {
                 json!({"self_member":member,"observed_at":chrono::Utc::now().timestamp_millis()})
@@ -1162,7 +1161,7 @@ impl Session {
             .ok_or_else(|| anyhow::anyhow!("上传未返回资源"))
     }
     async fn perform(&mut self, action: &Action, turns: &[Turn]) -> Result<Value> {
-        let group = self.group.to_string();
+        let group = self.group.clone();
         let (method, params, summary) = match action {
             Action::Send { parts, reply_to } => {
                 // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
@@ -1437,7 +1436,7 @@ impl Session {
     /// QQ 的表态缓存可能晚于添加回执。仅对明确的“无已知表态”补偿，超时不重放。
     async fn clear_known_reactions(&mut self, message_id: &str) -> Result<Value> {
         ensure!(self.current(), "群聊已更新，请先读 satori_context");
-        let params = json!({"channel_id":self.group.to_string(),"message_id":message_id});
+        let params = json!({"channel_id":self.group.clone(),"message_id":message_id});
         match self.rpc("internal/reaction_clear", params.clone()).await {
             Ok(data) => {
                 self.own_reactions.remove(message_id);
@@ -1585,7 +1584,7 @@ impl Session {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 crate::adapters::satori::qq::mark_read(
-                    &self.ctx, &self.writer, &self.group.to_string(),
+                    &self.ctx, &self.writer, &self.group,
                 ),
             ).await;
         }
@@ -1595,7 +1594,7 @@ impl Session {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 crate::adapters::satori::qq::typing(
-                    &self.ctx, &self.writer, &self.group.to_string(),
+                    &self.ctx, &self.writer, &self.group,
                 ),
             ).await;
         }
@@ -1859,14 +1858,11 @@ fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Pa
     let mut spare = budget.saturating_sub(rows.len());
     let mut out: Vec<Vec<Part>> = Vec::new();
     for row in rows {
-        let text = match row.last() {
-            // 只有「文字收尾」的行切得动：后面还挂着 at/face 的行，切开之后
-            // 那几段归谁说不清。
-            Some(Part::Text { text }) => text,
-            _ => {
-                out.push(row);
-                continue;
-            }
+        // 只有「文字收尾」的行切得动：后面还挂着 at/face 的行，切开之后
+        // 那几段归谁说不清。
+        let Some(Part::Text { text }) = row.last() else {
+            out.push(row);
+            continue;
         };
         let prefix = &row[..row.len() - 1];
         let pieces = super::breath::split(text, spare + 1, target);

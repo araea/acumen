@@ -33,7 +33,7 @@ impl PluginConfig for Config {
 
 
 // Only keep recent trigger -> response relations. Nothing here survives a restart.
-const RETENTION: Duration = Duration::from_secs(30 * 60);
+const RETENTION: Duration = Duration::from_mins(30);
 const MAX_TRIGGERS: usize = 4096;
 
 type Key = (String, String, String); // bot identity, channel, trigger message ID
@@ -206,10 +206,7 @@ pub fn handle(
                 }
                 return Ok(None);
             };
-            let msg = match ctx.as_message() {
-                Some(m) => m,
-                None => return Ok(Some(ctx)),
-            };
+            let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
             let command_msg_id = msg.message_id();
 
             {

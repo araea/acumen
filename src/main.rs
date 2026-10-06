@@ -130,21 +130,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for plugin in registered_plugins {
         let default_config = (plugin.default_config)();
 
-        match app_config.plugins.get_mut(plugin.name) {
-            Some(existing_config) => {
-                // 配置已存在：把默认值里新增的字段补进来，嵌套表里的也补。
-                if let toml::Value::Table(existing_table) = existing_config {
-                    config_dirty |=
-                        crate::config::fill_missing(existing_table, default_config, plugin.name);
-                }
+        if let Some(existing_config) = app_config.plugins.get_mut(plugin.name) {
+            // 配置已存在：把默认值里新增的字段补进来，嵌套表里的也补。
+            if let toml::Value::Table(existing_table) = existing_config {
+                config_dirty |= config::fill_missing(existing_table, default_config, plugin.name);
             }
-            None => {
-                info!("检测到新插件 [{}]，写入默认配置...", plugin.name);
-                app_config
-                    .plugins
-                    .insert(plugin.name.to_string(), default_config);
-                config_dirty = true;
-            }
+        } else {
+            info!("检测到新插件 [{}]，写入默认配置...", plugin.name);
+            app_config
+                .plugins
+                .insert(plugin.name.to_string(), default_config);
+            config_dirty = true;
         }
     }
 
@@ -241,9 +237,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             };
         }
 
-        let adapter = if let Some(a) = adapters::find_adapter(&bot_conf.protocol) {
-            a
-        } else {
+        let Some(adapter) = adapters::find_adapter(&bot_conf.protocol) else {
             error!("Bot 配置了未知的协议 '{}'，跳过。", bot_conf.protocol);
             continue;
         };
@@ -311,7 +305,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // 先把控制台的监听松掉，让下一次启动立刻能抢到同一个端口。
         plugins::console::shutdown().await;
         let _ = db.close().await;
-        cdp_html_shot::Browser::shutdown_global().await;
+        Browser::shutdown_global().await;
     };
     if tokio::time::timeout(std::time::Duration::from_secs(25), cleanup)
         .await

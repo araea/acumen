@@ -19,7 +19,7 @@ const MAX_EDGE: u32 = 1024;
 /// 也够覆盖同一批消息被连续几轮反复带进上下文。
 const CACHE_ENTRIES: usize = 12;
 /// 成功的图片缓存半小时；下载失败可能只是短暂断网，不能跟坏图一样久。
-const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(30);
 const NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// 直链 → （转好的 data URL 或「这张用不了」，记下的时刻）。
@@ -37,7 +37,7 @@ fn cache() -> &'static Cache {
 
 /// 缓存里那份（`Some(None)` 表示这张图确认过不能用，不必再下一遍）。
 fn cached(url: &str) -> Option<Option<String>> {
-    let mut guard = cache().lock().unwrap_or_else(|error| error.into_inner());
+    let mut guard = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let (value, at) = guard.get(url)?;
     if at.elapsed() > if value.is_some() { CACHE_TTL } else { NEGATIVE_TTL } {
         guard.remove(url);
@@ -47,7 +47,7 @@ fn cached(url: &str) -> Option<Option<String>> {
 }
 
 fn remember(url: &str, value: Option<String>) {
-    let mut guard = cache().lock().unwrap_or_else(|error| error.into_inner());
+    let mut guard = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if guard.len() >= CACHE_ENTRIES {
         // 逐出最旧的一条；条数这么小，扫一遍比维护一个链表更省事也更好读。
         if let Some(oldest) = guard

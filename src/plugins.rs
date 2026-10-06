@@ -15,7 +15,7 @@ const LOG_TARGET: &str = "Plugin/Lifecycle";
 
 pub type PluginError = Box<dyn std::error::Error + Send + Sync>;
 
-pub type PluginResult<T> = std::result::Result<T, PluginError>;
+pub type PluginResult<T> = Result<T, PluginError>;
 
 /// 把 `catch_unwind` 接住的 panic 载荷转成一行能读的文字。
 ///

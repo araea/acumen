@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use super::LOG_TARGET;
 
 /// 凭据的兜底寿命。正常情况下随 [`Lease`] 释放，这里只防「进程没走 Drop」的极端情况。
-const MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
+const MAX_LIFETIME: Duration = Duration::from_mins(30);
 /// 单条请求的长度上限；命令是一行文字，不需要更多。
 const MAX_REQUEST: u64 = 64 * 1024;
 
@@ -49,7 +49,7 @@ fn grants() -> &'static Mutex<HashMap<String, Grant>> {
 }
 
 fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Grant>> {
-    grants().lock().unwrap_or_else(|error| error.into_inner())
+    grants().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 一轮对话的控制授权；drop 即作废。
@@ -176,9 +176,7 @@ async fn start_server() -> anyhow::Result<(PathBuf, PathBuf)> {
 
 /// 把 skill 写进数据目录，并把可执行文件的真实路径嵌进去。
 async fn write_skill(dir: &Path) -> anyhow::Result<PathBuf> {
-    let binary = std::env::current_exe()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "acumen".to_string());
+    let binary = std::env::current_exe().map_or_else(|_| "acumen".to_string(), |path| path.to_string_lossy().into_owned());
     let skill = dir.join("skills/acumen-control");
     tokio::fs::create_dir_all(&skill).await?;
     tokio::fs::write(skill.join("SKILL.md"), SKILL.replace("{{ACUMEN}}", &binary)).await?;

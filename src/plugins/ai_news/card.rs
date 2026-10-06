@@ -250,7 +250,7 @@ fn meta_html(item: &Item) -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(name) = item.source_label() {
-        parts.push(format!(r#"<span>{}</span>"#, esc(&name)));
+        parts.push(format!(r"<span>{}</span>", esc(&name)));
     }
     if let Some(cat) = item.category.as_deref().filter(|c| !c.trim().is_empty()) {
         parts.push(format!(r#"<span class="md-chip">{}</span>"#, esc(category_label(cat))));
@@ -264,14 +264,14 @@ fn meta_html(item: &Item) -> String {
             item.discovered_at
                 .as_deref()
                 .and_then(fmt_time)
-                .map(|t| format!("{} 收录", t))
+                .map(|t| format!("{t} 收录"))
         });
     if let Some(t) = time {
-        parts.push(format!(r#"<span>{}</span>"#, esc(&t)));
+        parts.push(format!(r"<span>{}</span>", esc(&t)));
     }
     // 官网卡片上的「AI 评分」
     if let Some(score) = item.score.filter(|s| *s > 0.0) {
-        parts.push(format!(r#"<span>评分 {:.0}</span>"#, score));
+        parts.push(format!(r"<span>评分 {score:.0}</span>"));
     }
 
     if parts.is_empty() {
@@ -356,8 +356,7 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
         let cls = if rank <= 3 { "rank top" } else { "rank" };
 
         body.push_str(&format!(
-            r#"<div class="row"><div class="idx"><div class="{}">{}</div></div><div>"#,
-            cls, rank
+            r#"<div class="row"><div class="idx"><div class="{cls}">{rank}</div></div><div>"#
         ));
         body.push_str(&format!(
             r#"<div class="h">{}</div>"#,
@@ -366,10 +365,10 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(count) = topic.source_count.filter(|c| *c > 0) {
-            meta.push(format!(r#"<span class="md-chip">{} 个报道来源</span>"#, count));
+            meta.push(format!(r#"<span class="md-chip">{count} 个报道来源</span>"#));
         }
         if let Some(count) = topic.participant_count.filter(|c| *c > 0) {
-            meta.push(format!(r#"<span>{} 人讨论</span>"#, count));
+            meta.push(format!(r"<span>{count} 人讨论</span>"));
         }
         meta.extend(
             topic
@@ -378,7 +377,7 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
                 .map(|s| format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(s))),
         );
         if let Some(t) = topic.latest_at.as_deref().and_then(fmt_time) {
-            meta.push(format!(r#"<span>最新 {}</span>"#, esc(&t)));
+            meta.push(format!(r"<span>最新 {}</span>", esc(&t)));
         }
         if !meta.is_empty() {
             body.push_str(&format!(r#"<div class="meta">{}</div>"#, meta.join("")));
@@ -424,8 +423,7 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
         let rank_cls = if rank <= 3 { "rank top" } else { "rank" };
 
         body.push_str(&format!(
-            r#"<div class="mrow"><div><div class="{}">{}</div></div><div>"#,
-            rank_cls, rank
+            r#"<div class="mrow"><div><div class="{rank_cls}">{rank}</div></div><div>"#
         ));
         body.push_str(&format!(
             r#"<div class="mname">{}</div>"#,
@@ -437,10 +435,10 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
             meta.push(format!(r#"<span class="md-chip">{}</span>"#, esc(provider)));
         }
         if let Some(date) = model.released_date() {
-            meta.push(format!(r#"<span>上线 {}</span>"#, esc(date)));
+            meta.push(format!(r"<span>上线 {}</span>", esc(date)));
         }
         if let Some(price) = model.price_text() {
-            meta.push(format!(r#"<span>{}</span>"#, esc(&price)));
+            meta.push(format!(r"<span>{}</span>", esc(&price)));
         }
         if !meta.is_empty() {
             body.push_str(&format!(r#"<div class="meta">{}</div>"#, meta.join("")));

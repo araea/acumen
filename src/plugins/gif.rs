@@ -15,7 +15,7 @@ pub mod utils;
 // =============================
 
 /// 帮助信息
-const HELP_TEXT: &str = r#"💡 指令列表（大小写均可）
+const HELP_TEXT: &str = r"💡 指令列表（大小写均可）
 
 · gif帮助 / gifhelp - 显示本帮助
 · 合成gif [行x列] [间隔秒] [边距]
@@ -32,7 +32,7 @@ const HELP_TEXT: &str = r#"💡 指令列表（大小写均可）
 · gif翻转 [水平|垂直] - 镜像翻转
 · gif信息 - 查看 GIF 详情
 
-使用时请附带图片或引用图片消息"#;
+使用时请附带图片或引用图片消息";
 
 /// 支持的指令
 const COMMANDS: &[&str] = &[
@@ -69,12 +69,9 @@ impl PluginConfig for Config {
 pub fn handle(
     ctx: Context,
     writer: LockedWriter,
-) -> BoxFuture<'static, std::result::Result<Option<Context>, PluginError>> {
+) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let msg = match ctx.as_message() {
-            Some(m) => m,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
 
         for &cmd in COMMANDS {
             if let Some(matched) = match_command(&ctx, cmd) {
@@ -100,26 +97,22 @@ pub fn handle(
                 }
 
                 // 4. 获取图片
-                let img_url = match get_image_url(
+                let Some(img_url) = get_image_url(
                     &ctx,
                     writer.clone(),
                     &matched.args,
                     matched.reply_id.as_ref(),
                 )
-                .await
-                {
-                    Some(u) => u,
-                    None => {
-                        send_msg(
-                            &ctx,
-                            writer,
-                            group_id,
-                            Some(user_id),
-                            "❌ 请附带图片或引用图片消息",
-                        )
-                        .await?;
-                        return Ok(None);
-                    }
+                .await else {
+                    send_msg(
+                        &ctx,
+                        writer,
+                        group_id,
+                        Some(user_id),
+                        "❌ 请附带图片或引用图片消息",
+                    )
+                    .await?;
+                    return Ok(None);
                 };
 
                 let img_bytes = match download_bytes(&img_url).await {
@@ -130,7 +123,7 @@ pub fn handle(
                             writer,
                             group_id,
                             Some(msg.user_id()),
-                            format!("❌ 图片下载失败：{}", e),
+                            format!("❌ 图片下载失败：{e}"),
                         )
                         .await?;
                         return Ok(None);
@@ -187,7 +180,7 @@ pub fn handle(
                 // 6. 发送结果
                 match res {
                     Ok(Some(b64)) => {
-                        let reply = Message::new().image(format!("base64://{}", b64));
+                        let reply = Message::new().image(format!("base64://{b64}"));
                         send_msg(&ctx, writer, group_id, Some(user_id), reply).await?;
                     }
                     Ok(None) => {}
@@ -197,7 +190,7 @@ pub fn handle(
                             writer,
                             group_id,
                             Some(user_id),
-                            format!("❌ 处理失败：{}", e),
+                            format!("❌ 处理失败：{e}"),
                         )
                         .await?;
                     }
@@ -310,7 +303,7 @@ async fn send_forward_msg(
     // 构建节点消息
     let mut forward_msg = Message::new();
     for (index, b64) in process_list.iter().enumerate() {
-        let content = Message::new().image(format!("base64://{}", b64));
+        let content = Message::new().image(format!("base64://{b64}"));
         forward_msg = forward_msg.node_custom(bot_id.clone(), format!("图 {}", index + 1), content);
     }
 

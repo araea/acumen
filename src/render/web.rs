@@ -599,7 +599,7 @@ pub async fn shoot(shot: Shot<'_>) -> Result<String> {
 
         let measured = tab
             .evaluate(&format!(
-                r#"(async () => {{
+                r"(async () => {{
                     const deadline = new Promise(resolve => setTimeout(resolve, {FONT_WAIT_MS}));
                     const assets = Promise.all([
                         document.fonts.ready,
@@ -617,12 +617,12 @@ pub async fn shoot(shot: Shot<'_>) -> Result<String> {
                         width: box.width,
                         height: box.height,
                     }};
-                }})()"#,
+                }})()",
                 selector = serde_json::to_string(selector)?
             ))
             .await?;
 
-        let number = |key: &str| measured.get(key).and_then(|value| value.as_f64());
+        let number = |key: &str| measured.get(key).and_then(sea_orm::JsonValue::as_f64);
         let box_width = number("width").ok_or_else(|| anyhow!("无法测量卡片宽度"))?;
         let height = number("height").ok_or_else(|| anyhow!("无法测量卡片高度"))?;
         ensure!(

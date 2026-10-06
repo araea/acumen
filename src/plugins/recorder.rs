@@ -200,7 +200,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                 let retention_days = {
                     let guard = cfg.read().unwrap();
                     if let Some(v) = guard.plugins.get("recorder") {
-                        v.get("retention_days").and_then(|x| x.as_integer()).unwrap_or(180)
+                        v.get("retention_days").and_then(Value::as_integer).unwrap_or(180)
                     } else {
                         180
                     }
@@ -219,7 +219,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                 // 注意：只删除原始消息记录，统计聚合表 (message_stats_daily /
                 // message_user_stats_daily) 中对应日期的聚合行保留——历史统计
                 // （如"去年消息数"）在原始数据过期后依然可查。
-                let delete_sql = format!("DELETE FROM message_records WHERE time < {}", timestamp);
+                let delete_sql = format!("DELETE FROM message_records WHERE time < {timestamp}");
                 let res = db.execute_raw(Statement::from_string(sea_orm::DatabaseBackend::Sqlite, delete_sql)).await;
 
                 match res {
@@ -413,21 +413,21 @@ async fn insert(
 /// 读取 ActiveModel 字段当前值（未设置时返回默认值），用于构建统计聚合增量
 fn active_i32(v: &ActiveValue<i32>) -> i32 {
     match v {
-        ActiveValue::Set(x) | ActiveValue::Unchanged(x) => *x,
+        Set(x) | ActiveValue::Unchanged(x) => *x,
         _ => 0,
     }
 }
 
 fn active_bool(v: &ActiveValue<bool>) -> bool {
     match v {
-        ActiveValue::Set(x) | ActiveValue::Unchanged(x) => *x,
+        Set(x) | ActiveValue::Unchanged(x) => *x,
         _ => false,
     }
 }
 
 fn active_str(v: &ActiveValue<String>) -> String {
     match v {
-        ActiveValue::Set(x) | ActiveValue::Unchanged(x) => x.clone(),
+        Set(x) | ActiveValue::Unchanged(x) => x.clone(),
         _ => String::new(),
     }
 }
@@ -487,12 +487,12 @@ fn parse_message_content(
                         let qq = data
                             .and_then(|d| {
                                 d.get_str("qq")
-                                    .map(|s| s.to_string())
+                                    .map(ToString::to_string)
                                     .or_else(|| d.get_i64("qq").map(|i| i.to_string()))
                                     .or_else(|| d.get_u64("qq").map(|i| i.to_string()))
                             })
                             .unwrap_or_default();
-                        rich_text.push_str(&format!("[@{}]", qq));
+                        rich_text.push_str(&format!("[@{qq}]"));
                     }
                     "face" => {
                         face_count += 1;
@@ -552,7 +552,7 @@ fn parse_message_content(
                     }
                     "json" => rich_text.push_str("[卡片]"),
                     "file" => rich_text.push_str("[文件]"),
-                    other => rich_text.push_str(&format!("[{}]", other)),
+                    other => rich_text.push_str(&format!("[{other}]")),
                 }
             }
         }

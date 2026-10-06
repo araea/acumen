@@ -970,7 +970,7 @@ pub(crate) async fn observe(
     // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
     // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。
     window::with_group(group, |state| {
-        window::resolve_quote(&mut turn, |id| state.quote_of(id))
+        window::resolve_quote(&mut turn, |id| state.quote_of(id));
     });
     // 搭话指令是被剥掉的那两个词，不是群聊内容：它不进窗口，只让这一批跳过判定。
     let summoned = strip_summon(&mut turn.text, &config.summon_command);
@@ -1147,9 +1147,7 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: &str) -> Option<(Turn, Option<St
                 let member = raw.get("_satori").and_then(|s| s.get("member"));
                 format!(
                     "[群成员 {user} 的资料更新：{}]",
-                    member
-                        .map(ToString::to_string)
-                        .unwrap_or_else(|| "具体变化未知".into())
+                    member.map_or_else(|| "具体变化未知".into(), ToString::to_string)
                 )
             }
         }
@@ -1636,7 +1634,7 @@ async fn consider_batch(
 
     // 上一次开口是被接住了还是掉在地上，只在这里结算一次。
     if config.mood_enabled
-        && let Some(gap) = window::with_group(group, |state| state.take_feedback())
+        && let Some(gap) = window::with_group(group, window::GroupState::take_feedback)
     {
         mood::nudge(|mood, now| match gap {
             ..=90 => mood.engaged(group, now),
@@ -1845,7 +1843,7 @@ async fn quick_word(
         first.reply = quote::keeps(&target, &turns, rand::random::<f32>() * 2.0);
     }
     info!(target: LOG_TARGET, "群 {group} 随口一句（{}/{}）：{}", verdict.score, threshold, verdict.reason);
-    window::with_group(group, |state| state.mark_quick());
+    window::with_group(group, window::GroupState::mark_quick);
     if let Err(error) = deliver(ctx, writer, group, config, &turns, utterances, seq, false, started).await {
         debug!(target: LOG_TARGET, "群 {group} 随口一句没发出去：{error:#}");
     }

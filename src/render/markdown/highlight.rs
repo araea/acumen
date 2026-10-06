@@ -974,12 +974,12 @@ fn number_end(chars: &[char], start: usize) -> usize {
             i += 1;
             if matches!(c, 'e' | 'E')
                 && !chars[start..i].iter().any(|d| matches!(d, 'x' | 'X'))
-                && matches!(chars.get(i), Some('+') | Some('-'))
-                && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit())
+                && matches!(chars.get(i), Some('+' | '-'))
+                && chars.get(i + 1).is_some_and(char::is_ascii_digit)
             {
                 i += 1;
             }
-        } else if c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) {
+        } else if c == '.' && chars.get(i + 1).is_some_and(char::is_ascii_digit) {
             i += 1;
         } else {
             break;
@@ -1408,7 +1408,7 @@ fn scan_css(code: &str) -> String {
             }
             put(&mut out, "k", &text_of(&chars, i, end));
             i = end;
-        } else if c == '#' && chars.get(i + 1).is_some_and(|d| d.is_ascii_hexdigit()) && depth > 0 {
+        } else if c == '#' && chars.get(i + 1).is_some_and(char::is_ascii_hexdigit) && depth > 0 {
             let mut end = i + 1;
             while end < n && chars[end].is_ascii_hexdigit() {
                 end += 1;
@@ -1416,7 +1416,7 @@ fn scan_css(code: &str) -> String {
             put(&mut out, "n", &text_of(&chars, i, end));
             i = end;
         } else if c.is_ascii_digit()
-            || (c == '.' && chars.get(i + 1).is_some_and(|d| d.is_ascii_digit()) && depth > 0)
+            || (c == '.' && chars.get(i + 1).is_some_and(char::is_ascii_digit) && depth > 0)
         {
             let mut end = i;
             while end < n && (chars[end].is_ascii_digit() || chars[end] == '.') {

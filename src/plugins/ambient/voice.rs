@@ -287,7 +287,7 @@ pub(crate) fn brief(turns: &[Turn], register: Register, group: &str) -> String {
         MAX_CHARS.saturating_sub(used),
     );
     // 两处来的原话混在一起摆：哪几条是新的，对模型没有意义。
-    let mut lines: Vec<String> = picked.iter().map(|text| text.to_string()).chain(recent).collect();
+    let mut lines: Vec<String> = picked.iter().map(ToString::to_string).chain(recent).collect();
     if lines.is_empty() {
         return String::new();
     }

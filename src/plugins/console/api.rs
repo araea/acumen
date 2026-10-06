@@ -171,8 +171,7 @@ async fn plugin_detail(
             let prefix = config
                 .command_prefix
                 .first()
-                .map(String::as_str)
-                .unwrap_or("");
+                .map_or("", String::as_str);
             let text = if crate::plugins::help::needs_prefix(first) {
                 format!("{prefix}{first}")
             } else {
@@ -313,7 +312,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
                 .iter()
                 .map(|(id, person)| {
                     json!({
-                        "id": id.to_string(),
+                        "id": id.clone(),
                         "name": person.name,
                         "note": person.note,
                         "address": person.address,
@@ -336,7 +335,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
                 .rev()
                 .map(|note| json!({ "text": note.text, "at": note.at }))
                 .collect();
-            json!({ "group": group.to_string(), "people": people, "notes": notes })
+            json!({ "group": group.clone(), "people": people, "notes": notes })
         })
         .collect();
 
@@ -347,7 +346,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
                 "id": entry.id,
                 "label": entry.label,
                 "from": entry.from,
-                "group": entry.group.to_string(),
+                "group": entry.group.clone(),
                 "uses": entry.uses,
                 "added_at": entry.added_at,
                 "image": crate::plugins::oai::chat::stickers::file_of(&entry).is_some(),
@@ -420,8 +419,8 @@ async fn sticker_image(
                 return match decoded {
                     Ok(Ok(bytes)) => (
                         [
-                            (axum::http::header::CONTENT_TYPE, "image/png"),
-                            (axum::http::header::CACHE_CONTROL, "private, max-age=86400"),
+                            (http::header::CONTENT_TYPE, "image/png"),
+                            (http::header::CACHE_CONTROL, "private, max-age=86400"),
                         ],
                         bytes,
                     )
@@ -445,9 +444,9 @@ async fn sticker_image(
             // 画廊一屏几十张，每次回访重下一遍纯属浪费。
             (
                 [
-                    (axum::http::header::CONTENT_TYPE, mime),
+                    (http::header::CONTENT_TYPE, mime),
                     (
-                        axum::http::header::CACHE_CONTROL,
+                        http::header::CACHE_CONTROL,
                         "public, max-age=31536000, immutable",
                     ),
                 ],
@@ -607,20 +606,17 @@ async fn save_bot(State(console): State<Arc<Console>>, Json(body): Json<BotEdit>
             },
         };
 
-        match body.index {
-            Some(index) => {
-                let previous = config.bots.get(index);
-                if previous.is_none() {
-                    return Err("这一条已经不在列表里了，刷新一次看看".into());
-                }
-                let entry = entry(previous);
-                config.bots[index] = entry;
-                Ok("已保存这条连接；改动在下次启动后生效。".to_string())
+        if let Some(index) = body.index {
+            let previous = config.bots.get(index);
+            if previous.is_none() {
+                return Err("这一条已经不在列表里了，刷新一次看看".into());
             }
-            None => {
-                config.bots.push(entry(None));
-                Ok("已加一条连接；改动在下次启动后生效。".to_string())
-            }
+            let entry = entry(previous);
+            config.bots[index] = entry;
+            Ok("已保存这条连接；改动在下次启动后生效。".to_string())
+        } else {
+            config.bots.push(entry(None));
+            Ok("已加一条连接；改动在下次启动后生效。".to_string())
         }
     })
     .await;
@@ -902,7 +898,7 @@ fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<Strin
                 if !options.is_empty() {
                     out.insert(
                         path.clone(),
-                        options.iter().map(|s| s.to_string()).collect(),
+                        options.iter().map(ToString::to_string).collect(),
                     );
                 }
                 visit(plugin, value, &path, out);

@@ -33,10 +33,7 @@ pub fn handle(
                 return Ok(Some(ctx));
             }
 
-            let msg = match ctx.as_message() {
-                Some(m) => m,
-                None => return Ok(Some(ctx)),
-            };
+            let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
 
             let group_id = msg.group_id();
             let user_id = msg.user_id();

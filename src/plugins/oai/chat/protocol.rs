@@ -126,34 +126,28 @@ pub(crate) fn strip(raw: &str) -> Cow<'_, str> {
         } else {
             json_end(tail, b'[')
         };
-        match end {
-            // 配平的 JSON：认出 `send` 就把正文接过来，其余动作丢掉。
-            Some(end) => {
-                let value = serde_json::from_str::<serde_json::Value>(&tail[..end]).ok();
-                let text = if marker == ACTION_MARKER {
-                    send_text(value.as_ref())
-                } else {
-                    value.as_ref().and_then(|value| parts_text(value.as_array()?))
-                };
-                if let Some(text) = text {
-                    out.push_str(&text);
-                }
-                cursor = at + marker.len() + end;
-                if marker == ACTION_MARKER {
-                    // JSON 与收尾的 `]` 之间允许夹空白（含换行）。
-                    let rest = &raw[cursor..];
-                    cursor += rest.len() - rest.trim_start().len();
-                    if raw[cursor..].starts_with(']') {
-                        cursor += 1;
-                    }
+        if let Some(end) = end {
+            let value = serde_json::from_str::<serde_json::Value>(&tail[..end]).ok();
+            let text = if marker == ACTION_MARKER {
+                send_text(value.as_ref())
+            } else {
+                value.as_ref().and_then(|value| parts_text(value.as_array()?))
+            };
+            if let Some(text) = text {
+                out.push_str(&text);
+            }
+            cursor = at + marker.len() + end;
+            if marker == ACTION_MARKER {
+                // JSON 与收尾的 `]` 之间允许夹空白（含换行）。
+                let rest = &raw[cursor..];
+                cursor += rest.len() - rest.trim_start().len();
+                if raw[cursor..].starts_with(']') {
+                    cursor += 1;
                 }
             }
-            // 读不到结尾的残片（模型写到一半被截断）：从标记起整段丢掉，
-            // 免得把半截 JSON 当正文发出去。
-            None => {
-                cursor = raw.len();
-                break;
-            }
+        } else {
+            cursor = raw.len();
+            break;
         }
         match next_marker(&raw[cursor..]) {
             Some((next, found)) => {

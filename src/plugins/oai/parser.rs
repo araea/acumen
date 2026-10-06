@@ -221,16 +221,16 @@ pub fn parse_agent_cmd(raw: &str, agents: &[String]) -> Option<Command> {
     let match_byte_len: usize = content
         .chars()
         .take(match_char_len)
-        .map(|c| c.len_utf8())
+        .map(char::len_utf8)
         .sum();
     let suffix = content[match_byte_len..].trim();
 
     let raw_suffix = {
-        let prefix_bytes: usize = raw.chars().take(char_idx).map(|c| c.len_utf8()).sum();
+        let prefix_bytes: usize = raw.chars().take(char_idx).map(char::len_utf8).sum();
         let agent_bytes: usize = raw[prefix_bytes..]
             .chars()
             .take(match_char_len)
-            .map(|c| c.len_utf8())
+            .map(char::len_utf8)
             .sum();
         raw[prefix_bytes + agent_bytes..].trim()
     };

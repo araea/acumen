@@ -163,14 +163,8 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let msg = match ctx.as_message() {
-            Some(m) => m,
-            None => return Ok(Some(ctx)),
-        };
-        let content = match strip_prefix(&ctx, msg.text()) {
-            Some(c) => c,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
+        let Some(content) = strip_prefix(&ctx, msg.text()) else { return Ok(Some(ctx)) };
 
         // 群名单外的群不响应查询，与主动推送保持同一套生效范围
         let config: StatsConfig = get_config_or_default(&ctx);
@@ -244,9 +238,9 @@ pub fn handle(
         // 中文标题不靠空格断词：连写成一句「本群今日发言排行榜」像一行标题，
         // 用空格隔开则像四个并排的关键词。范围、总量、时间都在图里的元信息行上。
         let title = if is_all_groups {
-            format!("所有群{}{}{}", time_str, data_type, chart_type)
+            format!("所有群{time_str}{data_type}{chart_type}")
         } else {
-            format!("{}{}{}{}", scope, time_str, data_type, chart_type)
+            format!("{scope}{time_str}{data_type}{chart_type}")
         };
 
         let result_img = chart::generate(
@@ -287,7 +281,7 @@ pub fn handle(
                     writer,
                     group_id,
                     Some(user_id),
-                    format!("❌ 生成失败：{}", e),
+                    format!("❌ 生成失败：{e}"),
                 )
                 .await?;
             }
@@ -389,7 +383,7 @@ pub fn on_connected(
                 pace,
                 move |c, w, gid| async move {
                     let current =
-                        crate::plugins::get_config_or_default::<StatsConfig>(&c);
+                        get_config_or_default::<StatsConfig>(&c);
                     let switches = [
                         current.morning_recap_enabled,
                         current.noon_brief_enabled,
@@ -421,5 +415,5 @@ type PushFn = fn(
     String,
     u64,
     bool,
-) -> futures_util::future::BoxFuture<'static, ()>;
+) -> BoxFuture<'static, ()>;
 

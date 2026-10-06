@@ -306,9 +306,9 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
             target,
             &cfg,
             pusher::Headline {
-                text: &format!("AI 资讯快报 · {}", clock),
+                text: &format!("AI 资讯快报 · {clock}"),
                 card_title: "AI 资讯快报",
-                card_subtitle: &format!("实时推送 · {}", clock),
+                card_subtitle: &format!("实时推送 · {clock}"),
             },
             &picked,
         )

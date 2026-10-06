@@ -131,7 +131,7 @@ pub(crate) async fn info(reference: &VideoRef, cookie: &str, timeout: Duration) 
     // 分 P 的 cid 在 `pages` 里；`data.cid` 只是第一 P 的。
     let page = reference.page.max(1);
     let chosen = data.pages.get(page as usize - 1);
-    let cid = chosen.map(|part| part.cid).unwrap_or(data.cid);
+    let cid = chosen.map_or(data.cid, |part| part.cid);
     if cid == 0 {
         return Err(anyhow!("这页没有可播放的分 P"));
     }

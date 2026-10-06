@@ -6,7 +6,6 @@ use crate::scheduler::Scheduler;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
-use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -214,7 +213,7 @@ impl<'a> MessageEvent<'a> {
                     .get("_satori")
                     .and_then(|value| value.get(extension))
                     .and_then(|value| value.get("manual_self"))
-                    .and_then(|value| value.as_bool())
+                    .and_then(simd_json::prelude::ValueAsScalar::as_bool)
                     .unwrap_or(false)
             })
     }

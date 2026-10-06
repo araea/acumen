@@ -137,7 +137,7 @@ impl Agent {
         if private {
             self.private_histories
                 .get(uid)
-                .map(|v| v.as_slice())
+                .map(Vec::as_slice)
                 .unwrap_or(&[])
         } else {
             &self.public_history

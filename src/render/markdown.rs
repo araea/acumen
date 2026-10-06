@@ -371,13 +371,13 @@ impl<'a> Doc<'a> {
                 }
             }
             Event::FootnoteReference(label) => {
-                let index = match self.notes.iter().position(|l| l.as_str() == &*label) {
-                    Some(index) => index,
-                    None => {
+                let index =
+                    if let Some(index) = self.notes.iter().position(|l| l.as_str() == &*label) {
+                        index
+                    } else {
                         self.notes.push(label.to_string());
                         self.notes.len() - 1
-                    }
-                };
+                    };
                 inl.notes.push(index);
                 inl.raw(&format!("<sup class=\"fn-ref\">{}</sup>", index + 1), 0.9);
             }
@@ -465,12 +465,11 @@ impl<'a> Doc<'a> {
             return;
         }
         let dest = dest.trim().to_string();
-        let index = match self.links.iter().position(|l| *l == dest) {
-            Some(index) => index,
-            None => {
-                self.links.push(dest);
-                self.links.len() - 1
-            }
+        let index = if let Some(index) = self.links.iter().position(|l| *l == dest) {
+            index
+        } else {
+            self.links.push(dest);
+            self.links.len() - 1
         };
         inl.links.push(index);
         inl.absorb(

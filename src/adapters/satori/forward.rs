@@ -196,9 +196,8 @@ fn walk<'a>(
             view.truncated = true;
             return;
         }
-        let raw = match resolve(ctx, writer, &source, view).await {
-            Some(raw) => raw,
-            None => return,
+        let Some(raw) = resolve(ctx, writer, &source, view).await else {
+            return;
         };
         for mut node in raw {
             if view.nodes.len() >= MAX_NODES {

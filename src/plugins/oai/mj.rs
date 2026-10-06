@@ -20,7 +20,7 @@ const LOG_TARGET: &str = "Plugin/OAI/MJ";
 pub const MJ_MODELS: &[&str] = &["mj"];
 
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
-const TASK_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const TASK_TIMEOUT: Duration = Duration::from_mins(10);
 const MAX_IMAGE_BYTES: usize = 30 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Default)]
@@ -100,10 +100,7 @@ pub async fn handle_agent(
     writer: &LockedWriter,
     mgr: &Arc<Manager>,
 ) {
-    let event = match ctx.as_message() {
-        Some(event) => event,
-        None => return,
-    };
+    let Some(event) = ctx.as_message() else { return };
     let (configured_base, key) = {
         let config = mgr.config.read().await;
         (config.api_base.clone(), config.api_key.clone())
@@ -136,7 +133,7 @@ pub async fn handle_agent(
     mark_working(ctx, writer, &event, false).await;
     match result {
         Ok((base, task)) => {
-            deliver_task(ctx, writer, mgr, &base, &task, event.message_id()).await
+            deliver_task(ctx, writer, mgr, &base, &task, event.message_id()).await;
         }
         Err(error) => {
             warn!(target: LOG_TARGET, "MJ {} 任务失败: {:#}", agent.model, error);
@@ -275,10 +272,7 @@ async fn deliver_task(
     task: &MjTask,
     reply_to: &str,
 ) {
-    let event = match ctx.as_message() {
-        Some(event) => event,
-        None => return,
-    };
+    let Some(event) = ctx.as_message() else { return };
     if !task.image_url.trim().is_empty() {
         let image = image_payload(task.image_url.trim()).await;
         let message = Message::new().reply(reply_to).image(image);
@@ -381,10 +375,7 @@ pub async fn try_handle_upscale_reply(
     let Some(source) = source else {
         return false;
     };
-    let event = match ctx.as_message() {
-        Some(event) => event,
-        None => return false,
-    };
+    let Some(event) = ctx.as_message() else { return false };
     let (configured_base, key) = {
         let config = mgr.config.read().await;
         (config.api_base.clone(), config.api_key.clone())
@@ -573,10 +564,7 @@ async fn send_cached_image(
     source: &str,
     reply_to: &str,
 ) -> bool {
-    let event = match ctx.as_message() {
-        Some(event) => event,
-        None => return false,
-    };
+    let Some(event) = ctx.as_message() else { return false };
     let image = if Path::new(source).is_file() {
         match tokio::fs::read(source).await {
             Ok(bytes) if !bytes.is_empty() => format!(

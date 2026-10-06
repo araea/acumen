@@ -266,7 +266,7 @@ fn rescue_gbk(text: &str, raw: &[u8]) -> Option<String> {
     }
     encoding_rs::GB18030
         .decode_without_bom_handling_and_without_replacement(raw)
-        .map(|gbk| gbk.into_owned())
+        .map(std::borrow::Cow::into_owned)
 }
 
 /// 同一个码在不同尺度下会被各找一次：文字一样、中心离得近就算同一个。
@@ -331,7 +331,7 @@ fn reading_order(codes: &mut Vec<Decoded>) {
     for code in codes.drain(..) {
         match rows.last_mut() {
             Some(row) if (code.center().1 - row[0].center().1).abs() < row[0].size() * 0.5 => {
-                row.push(code)
+                row.push(code);
             }
             _ => rows.push(vec![code]),
         }

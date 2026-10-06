@@ -114,7 +114,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                                     mb,
                                     threshold
                                 );
-                                do_restart(&ctx, format!("内存超限 ({}MB >= {}MB)", mb, threshold))
+                                do_restart(&ctx, format!("内存超限 ({mb}MB >= {threshold}MB)"))
                                     .await;
                             }
                             Some(mb) => {
@@ -190,7 +190,7 @@ pub fn handle(
 
             let reply = Message::new()
                 .reply(message_id)
-                .text(format!("⏳ {} 秒后重启", delay));
+                .text(format!("⏳ {delay} 秒后重启"));
             if let Err(e) = send_msg(&ctx, writer.clone(), group_id, Some(user_id), reply).await {
                 error!(target: LOG_TARGET, "重启通知发送失败: {}", e);
             }

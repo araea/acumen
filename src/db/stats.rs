@@ -46,7 +46,7 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
     let stmts = [
         // 群 × 日 聚合（含 6 类消息类型计数，口径与原实时查询完全一致：
         // image = SUM(image_count) - SUM(is_anim_emoji)，此处直接存净额）
-        r#"CREATE TABLE IF NOT EXISTS message_stats_daily (
+        r"CREATE TABLE IF NOT EXISTS message_stats_daily (
             guild_id      TEXT    NOT NULL,
             stat_date     TEXT    NOT NULL,
             guild_name    TEXT    NOT NULL DEFAULT '',
@@ -59,9 +59,9 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
             anim_emoji_count INTEGER NOT NULL DEFAULT 0,
             face_count    INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, stat_date)
-        )"#,
+        )",
         // 群 × 用户 × 日 聚合（服务发言榜/表情包榜/我的群排行等）
-        r#"CREATE TABLE IF NOT EXISTS message_user_stats_daily (
+        r"CREATE TABLE IF NOT EXISTS message_user_stats_daily (
             guild_id      TEXT    NOT NULL,
             stat_date     TEXT    NOT NULL,
             user_id       TEXT    NOT NULL,
@@ -71,7 +71,7 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
             msg_count     INTEGER NOT NULL DEFAULT 0,
             anim_emoji_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, stat_date, user_id)
-        )"#,
+        )",
         // 覆盖"按用户查日期范围"的查询（我的群组参与排行）
         "CREATE INDEX IF NOT EXISTS idx_user_stats_user_date \
          ON message_user_stats_daily (user_id, stat_date, guild_id)",
@@ -152,7 +152,7 @@ async fn rebuild_range(
     db.execute_raw(Statement::from_string(
         backend,
         format!(
-            r#"INSERT INTO message_stats_daily
+            r"INSERT INTO message_stats_daily
                (guild_id, stat_date, guild_name, guild_avatar, msg_count, text_count, image_count,
                 voice_count, video_count, anim_emoji_count, face_count)
                SELECT guild_id,
@@ -163,7 +163,7 @@ async fn rebuild_range(
                       SUM(is_voice), SUM(is_video), SUM(is_anim_emoji), SUM(face_count)
                FROM message_records
                WHERE time >= {t_from} AND time < {t_to}
-               GROUP BY guild_id, 2"#
+               GROUP BY guild_id, 2"
         ),
     ))
     .await?;
@@ -171,14 +171,14 @@ async fn rebuild_range(
     db.execute_raw(Statement::from_string(
         backend,
         format!(
-            r#"INSERT INTO message_user_stats_daily
+            r"INSERT INTO message_user_stats_daily
                (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count)
                SELECT guild_id,
                       strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime')),
                       user_id, MAX(member_nick), MAX(user_avatar), MAX(guild_name), COUNT(*), SUM(is_anim_emoji)
                FROM message_records
                WHERE time >= {t_from} AND time < {t_to}
-               GROUP BY guild_id, 2, user_id"#
+               GROUP BY guild_id, 2, user_id"
         ),
     ))
     .await?;
@@ -224,7 +224,7 @@ where
 
     let stmt = Statement::from_sql_and_values(
         backend,
-        r#"INSERT INTO message_stats_daily
+        r"INSERT INTO message_stats_daily
            (guild_id, stat_date, guild_name, guild_avatar, msg_count, text_count, image_count,
             voice_count, video_count, anim_emoji_count, face_count)
            VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
@@ -237,7 +237,7 @@ where
              voice_count = message_stats_daily.voice_count + excluded.voice_count,
              video_count = message_stats_daily.video_count + excluded.video_count,
              anim_emoji_count = message_stats_daily.anim_emoji_count + excluded.anim_emoji_count,
-             face_count = message_stats_daily.face_count + excluded.face_count"#,
+             face_count = message_stats_daily.face_count + excluded.face_count",
         vec![
             d.guild_id.clone().into(),
             date.clone().into(),
@@ -255,7 +255,7 @@ where
 
     let stmt = Statement::from_sql_and_values(
         backend,
-        r#"INSERT INTO message_user_stats_daily
+        r"INSERT INTO message_user_stats_daily
            (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count)
            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
            ON CONFLICT (guild_id, stat_date, user_id) DO UPDATE SET
@@ -263,7 +263,7 @@ where
              user_avatar = excluded.user_avatar,
              guild_name = excluded.guild_name,
              msg_count = message_user_stats_daily.msg_count + 1,
-             anim_emoji_count = message_user_stats_daily.anim_emoji_count + excluded.anim_emoji_count"#,
+             anim_emoji_count = message_user_stats_daily.anim_emoji_count + excluded.anim_emoji_count",
         vec![
             d.guild_id.clone().into(),
             date.into(),
@@ -370,8 +370,7 @@ fn date_of_ts(ts: i64) -> NaiveDate {
 fn midnight_of(d: NaiveDate) -> i64 {
     d.and_hms_opt(0, 0, 0)
         .and_then(|ndt| Local.from_local_datetime(&ndt).single())
-        .map(|dt| dt.timestamp())
-        .unwrap_or(0)
+        .map_or(0, |dt| dt.timestamp())
 }
 
 fn date_str_of(ts: i64) -> String {

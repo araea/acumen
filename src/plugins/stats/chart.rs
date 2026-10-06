@@ -53,7 +53,7 @@ where
         Err(e) => {
             let msg = e
                 .downcast_ref::<&str>()
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
                 .or_else(|| e.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown rendering error".to_string());
             Err(ChartError::Failed(format!(

@@ -133,7 +133,7 @@ pub fn gif_to_grid(img_bytes: Vec<u8>, cols_opt: Option<u32>) -> PluginResult<St
     for (i, frame) in frames.iter().enumerate() {
         let c = (i as u32) % cols;
         let r = (i as u32) / cols;
-        image::imageops::overlay(
+        imageops::overlay(
             &mut canvas,
             frame.buffer(),
             (c * frame_w) as i64,

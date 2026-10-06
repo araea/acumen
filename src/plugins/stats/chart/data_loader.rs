@@ -87,7 +87,7 @@ pub const MESSAGE_TYPE_STYLES: [MessageTypeStyle; 6] = [
 
 /// 按类型名查找视觉样式，未知类型回退到主色
 pub fn message_type_style(label: &str) -> (RGBColor, &'static str) {
-    for st in MESSAGE_TYPE_STYLES.iter() {
+    for st in &MESSAGE_TYPE_STYLES {
         if st.label == label {
             return (st.color, st.icon);
         }
@@ -381,7 +381,7 @@ pub async fn fetch_bar_data(
         let is_sender = r.user_id == sender_id;
 
         if is_sender && !sender_id.is_empty() {
-            label = format!("★ {}", label);
+            label = format!("★ {label}");
             sender_found = true;
         }
 
@@ -446,7 +446,7 @@ pub async fn fetch_bar_data(
 
             let (nick, avatar) = latest.unwrap_or_else(|| (sender_id.to_string(), String::new()));
             bar_data.push(BarData {
-                label: format!("★ {}", nick),
+                label: format!("★ {nick}"),
                 value: count,
                 avatar_url: Some(avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,

@@ -98,7 +98,7 @@ fn store() -> &'static Mutex<Store> {
 }
 
 fn lock() -> MutexGuard<'static, Store> {
-    store().lock().unwrap_or_else(|error| error.into_inner())
+    store().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 指定库的落盘位置；启动时调用一次。
@@ -365,8 +365,8 @@ fn same_kind(left: &Kind, right: &Kind) -> bool {
         (Kind::Shop { data: left }, Kind::Shop { data: right }) => {
             let key = |data: &Object| {
                 (
-                    data.get("emoji_id").map(|value| value.to_string()),
-                    data.get("emoji_package_id").map(|value| value.to_string()),
+                    data.get("emoji_id").map(ToString::to_string),
+                    data.get("emoji_package_id").map(ToString::to_string),
                 )
             };
             key(left) == key(right)

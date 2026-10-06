@@ -32,7 +32,7 @@ pub async fn init() -> Result<DatabaseConnection, DbErr> {
         .connect_timeout(Duration::from_secs(8))
         .acquire_timeout(Duration::from_secs(8))
         .idle_timeout(Duration::from_secs(8))
-        .max_lifetime(Duration::from_secs(8 * 60)); // 设置连接最大生命周期，防止长时间空闲后连接失效
+        .max_lifetime(Duration::from_mins(8)); // 设置连接最大生命周期，防止长时间空闲后连接失效
 
     // 设置日志级别（可选）
     // opt.sqlx_logging(true)

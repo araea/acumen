@@ -136,15 +136,12 @@ fn bigrams(run: &[char], out: &mut HashSet<String>) {
             run.get(i..i + len)
                 .is_some_and(|w| STOP_CJK.contains(&w.iter().collect::<String>().as_str()))
         });
-        match stop {
-            Some(len) => {
-                flush(&mut segment, out);
-                i += len;
-            }
-            None => {
-                segment.push(run[i]);
-                i += 1;
-            }
+        if let Some(len) = stop {
+            flush(&mut segment, out);
+            i += len;
+        } else {
+            segment.push(run[i]);
+            i += 1;
         }
     }
     flush(&mut segment, out);

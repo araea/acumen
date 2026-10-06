@@ -147,8 +147,10 @@ async fn rewrite_segment(client: &SatoriClient, bot: &BotStatus, segment: &mut S
         .get("name")
         .and_then(|value| value.as_str())
         .filter(|name| !name.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("{}.{}", segment.type_, inline.ext));
+        .map_or_else(
+            || format!("{}.{}", segment.type_, inline.ext),
+            str::to_owned,
+        );
     let uploaded = match client
         .upload_as(bot, inline.bytes, &name, inline.mime)
         .await

@@ -191,7 +191,7 @@ fn shape(default: &Value, before: Option<&Value>, value: &Value, path: &str) -> 
                     let child = under(path, key);
                     match d.get(key) {
                         Some(expected) => {
-                            shape(expected, old.and_then(|t| t.get(key)), val, &child)?
+                            shape(expected, old.and_then(|t| t.get(key)), val, &child)?;
                         }
                         // 注册表不认得的键，本来就躺在配置里的就放过：删不掉的东西拦人没道理。
                         None if known(key) => {}
@@ -448,8 +448,7 @@ ctl 保留管理入口；修改它的 admins 请在私聊或控制台执行。\n
 fn word(text: &str) -> (&str, &str) {
     let text = text.trim();
     text.find(char::is_whitespace)
-        .map(|i| (&text[..i], text[i..].trim_start()))
-        .unwrap_or((text, ""))
+        .map_or((text, ""), |i| (&text[..i], text[i..].trim_start()))
 }
 /// 一次控制操作的结果：纯文本必备，卡片图可选。
 ///

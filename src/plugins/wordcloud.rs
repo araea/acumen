@@ -33,16 +33,10 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let msg = match ctx.as_message() {
-            Some(m) => m,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
         let text = msg.text();
 
-        let content_to_match = match strip_prefix(&ctx, text) {
-            Some(c) => c,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(content_to_match) = strip_prefix(&ctx, text) else { return Ok(Some(ctx)) };
 
         let regex = get_regex();
         if let Some(caps) = regex.captures(content_to_match) {
@@ -73,7 +67,7 @@ pub fn handle(
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
-            let title = format!("{} 的 {} 词云", scope_str, time_str);
+            let title = format!("{scope_str} 的 {time_str} 词云");
             let reply_id = msg.message_id();
             let target_group = msg.group_id();
             let target_user = Some(msg.user_id());
@@ -92,7 +86,7 @@ pub fn handle(
                     send_msg(&ctx, writer, target_group, target_user, empty).await?;
                 }
                 Err(GenError::Failed(e)) => {
-                    let err_msg = Message::new().text(format!("❌ 生成失败：{}", e));
+                    let err_msg = Message::new().text(format!("❌ 生成失败：{e}"));
                     send_msg(&ctx, writer, target_group, target_user, err_msg).await?;
                     error!(target: LOG_TARGET, "Handler error: {}", e);
                 }
@@ -141,7 +135,7 @@ pub async fn generate_image(
     let db = &ctx.db;
     let mut corpus = get_text_corpus(db, query_group_id, query_user_id, start_time, end_time)
         .await
-        .map_err(|e| GenError::Failed(format!("读取聊天记录失败：{}", e)))?;
+        .map_err(|e| GenError::Failed(format!("读取聊天记录失败：{e}")))?;
 
     if corpus.is_empty() {
         return Err(GenError::Empty);
@@ -168,7 +162,7 @@ pub async fn generate_image(
 
     match task_result {
         Ok(res) => res.map_err(GenError::Failed),
-        Err(e) => Err(GenError::Failed(format!("任务中断：{}", e))),
+        Err(e) => Err(GenError::Failed(format!("任务中断：{e}"))),
     }
 }
 

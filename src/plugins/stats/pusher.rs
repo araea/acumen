@@ -119,10 +119,7 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u
     let range = get_time_range("今日");
     let label = "当日总结";
 
-    let count = match precheck(&c, gid, range, min, label).await {
-        Some(n) => n,
-        None => return,
-    };
+    let Some(count) = precheck(&c, gid, range, min, label).await else { return };
     let users = active_users(&c, gid, range).await;
     let date_str = Local::now().format("%Y-%m-%d").to_string();
 
@@ -134,8 +131,7 @@ pub async fn push_daily_summary(c: Context, w: LockedWriter, gid: String, min: u
         gid,
         text_enabled,
         format!(
-            "{} · 今日群聊小结\n全天共 {} 条消息，{} 位群友活跃",
-            date_str, count, users
+            "{date_str} · 今日群聊小结\n全天共 {count} 条消息，{users} 位群友活跃"
         ),
     )
     .await;
@@ -158,10 +154,7 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u
     let range = get_time_range("昨日");
     let label = "早安回顾";
 
-    let count = match precheck(&c, gid, range, min, label).await {
-        Some(n) => n,
-        None => return,
-    };
+    let Some(count) = precheck(&c, gid, range, min, label).await else { return };
     let users = active_users(&c, gid, range).await;
     let yest = (Local::now() - Duration::days(1))
         .format("%m月%d日")
@@ -175,8 +168,7 @@ pub async fn push_morning_recap(c: Context, w: LockedWriter, gid: String, min: u
         gid,
         text_enabled,
         format!(
-            "早安，昨日（{}）群活跃回顾\n共 {} 条消息，{} 位群友参与",
-            yest, count, users
+            "早安，昨日（{yest}）群活跃回顾\n共 {count} 条消息，{users} 位群友参与"
         ),
     )
     .await;
@@ -208,10 +200,7 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64,
     let range = get_time_range("今日");
     let label = "午间速览";
 
-    let count = match precheck(&c, gid, range, min, label).await {
-        Some(n) => n,
-        None => return,
-    };
+    let Some(count) = precheck(&c, gid, range, min, label).await else { return };
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
 
@@ -220,7 +209,7 @@ pub async fn push_noon_brief(c: Context, w: LockedWriter, gid: String, min: u64,
         w.clone(),
         gid,
         text_enabled,
-        format!("中午好，今日上半场战报\n截至现在共 {} 条发言", count),
+        format!("中午好，今日上半场战报\n截至现在共 {count} 条发言"),
     )
     .await;
     send_chart(
@@ -241,10 +230,7 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u6
     let range = get_time_range("上周");
     let label = "上周回顾";
 
-    let count = match precheck(&c, gid, range, min, label).await {
-        Some(n) => n,
-        None => return,
-    };
+    let Some(count) = precheck(&c, gid, range, min, label).await else { return };
     let users = active_users(&c, gid, range).await;
 
     info!(target: LOG_TARGET, "推送群 [{}] {}...", gid, label);
@@ -255,8 +241,7 @@ pub async fn push_weekly_recap(c: Context, w: LockedWriter, gid: String, min: u6
         gid,
         text_enabled,
         format!(
-            "新一周开工，上周群聊回顾\n全周 {} 条消息，{} 位群友活跃",
-            count, users
+            "新一周开工，上周群聊回顾\n全周 {count} 条消息，{users} 位群友活跃"
         ),
     )
     .await;
@@ -279,10 +264,7 @@ pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: String, min: u
     let range = get_time_range("上月");
     let label = "上月回顾";
 
-    let count = match precheck(&c, gid, range, min, label).await {
-        Some(n) => n,
-        None => return,
-    };
+    let Some(count) = precheck(&c, gid, range, min, label).await else { return };
     let users = active_users(&c, gid, range).await;
     let now = Local::now();
     let last_month = if now.month() == 1 {
@@ -299,8 +281,7 @@ pub async fn push_monthly_recap(c: Context, w: LockedWriter, gid: String, min: u
         gid,
         text_enabled,
         format!(
-            "月度回顾 · {}月\n上月共 {} 条消息，{} 位群友活跃",
-            last_month, count, users
+            "月度回顾 · {last_month}月\n上月共 {count} 条消息，{users} 位群友活跃"
         ),
     )
     .await;

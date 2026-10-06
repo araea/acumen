@@ -79,7 +79,7 @@ pub fn generate_word_cloud(
                 builder = builder.font(font_data);
             }
             Err(e) => {
-                return Err(format!("加载字体文件失败：{}（{}）", path, e));
+                return Err(format!("加载字体文件失败：{path}（{e}）"));
             }
         }
     } else if let Some(family) = font_family {
@@ -102,11 +102,11 @@ pub fn generate_word_cloud(
         .angles(angles)
         .vertical_writing(vertical)
         .build(&top_words)
-        .map_err(|e| format!("词云布局失败：{}", e))?;
+        .map_err(|e| format!("词云布局失败：{e}"))?;
 
     let png_data = wordcloud
         .to_png(2.0)
-        .map_err(|e| format!("PNG 编码失败：{}", e))?;
+        .map_err(|e| format!("PNG 编码失败：{e}"))?;
 
     let b64_str = general_purpose::STANDARD.encode(&png_data);
     info!(
@@ -116,7 +116,7 @@ pub fn generate_word_cloud(
         png_data.len()
     );
 
-    Ok(format!("base64://{}", b64_str))
+    Ok(format!("base64://{b64_str}"))
 }
 
 /// 查找并读取字体数据
@@ -131,7 +131,7 @@ fn load_font_by_family(family: &str) -> Result<Vec<u8>, String> {
 
     let id = db
         .query(&query)
-        .ok_or_else(|| format!("未找到匹配的字体族：{}", family))?;
+        .ok_or_else(|| format!("未找到匹配的字体族：{family}"))?;
 
     // with_face_data 会自动处理文件 IO 或内存引用，并返回闭包的结果
     db.with_face_data(id, |data, _face_index| data.to_vec())

@@ -25,11 +25,11 @@ use crate::plugins::stats::LOG_TARGET;
 const AVATAR_SIZE: u32 = 100;
 
 /// 缓存的新鲜期。过了这个年纪的头像仍会被用，只是会顺带在后台刷新。
-const CACHE_FRESH: Duration = Duration::from_secs(3 * 86400);
+const CACHE_FRESH: Duration = Duration::from_hours(72);
 
 /// 缓存文件的最长闲置期。文件只在换新时才会被改写，所以超过这个年纪就是
 /// 一个月没上过任何一张榜，没有再留的理由；不清的话目录只增不减。
-const CACHE_EVICT: Duration = Duration::from_secs(30 * 86400);
+const CACHE_EVICT: Duration = Duration::from_hours(720);
 
 /// 单张头像的请求超时（含读完正文）。本机经代理实测一张约 0.3 秒，六秒是留足余量。
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);

@@ -183,7 +183,7 @@ pub fn draw_bar_chart(
     let mut value_col_w = 0u32;
     let mut pct_col_w = 0u32;
 
-    for item in data.iter() {
+    for item in &data {
         let value_text = format_thousands(item.value);
         let pct_text = format_percent(item.value, total_val);
 
@@ -311,7 +311,7 @@ pub fn draw_bar_chart(
 
         // 第一趟：整条色带（淡色轨道）。先整条铺满再让实色条盖上去，四角的圆
         // 只需在这里做一次，实色条与轨道交界处自然是平切，不会露出豁口。
-        for row in rows.iter() {
+        for row in &rows {
             draw_rounded_rect(
                 &root,
                 track_start_x,
@@ -344,7 +344,7 @@ pub fn draw_bar_chart(
             grid.draw(&root, row_tops())?;
         }
         // 条收在把手左侧那道缝之前，右端平切；把手本身就是条尾的轮廓。
-        for row in rows.iter() {
+        for row in &rows {
             let fill_end = row.bar_end_x - handle_w - handle_gap;
             if fill_end > track_start_x {
                 draw_left_accent_bar(
@@ -365,7 +365,7 @@ pub fn draw_bar_chart(
 
         // 把手与它两侧的缝最后画，构图线不会从上面穿过去。榜首那一行的把手落在
         // 色带的尽头，右侧那道缝正好把轨道的圆角让出去，与滑块拖到最右时一个样子。
-        for row in rows.iter() {
+        for row in &rows {
             let right = row.bar_end_x;
             let left = right - handle_w;
             root.draw(&Rectangle::new(
@@ -824,8 +824,7 @@ fn allocate_strip_widths(
             .iter()
             .enumerate()
             .max_by_key(|(_, w)| **w)
-            .map(|(i, _)| i)
-            .unwrap_or(0)
+            .map_or(0, |(i, _)| i)
     };
 
     let mut sum: i32 = widths.iter().sum();
@@ -892,7 +891,7 @@ fn format_y_label(v: f64) -> String {
     if vi >= 10000 {
         let t = format!("{:.1}", vi as f64 / 10000.0);
         let t = t.strip_suffix(".0").unwrap_or(&t).to_string();
-        format!("{}万", t)
+        format!("{t}万")
     } else {
         vi.to_string()
     }

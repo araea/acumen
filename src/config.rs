@@ -171,7 +171,7 @@ mod tests {
         enable_black: bool,
         black: &[&str],
     ) -> GlobalFilterConfig {
-        let owned = |list: &[&str]| list.iter().map(|id| id.to_string()).collect();
+        let owned = |list: &[&str]| list.iter().map(ToString::to_string).collect();
         GlobalFilterConfig {
             enable_whitelist: enable_white,
             whitelist: owned(white),

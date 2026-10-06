@@ -162,9 +162,7 @@ async fn download(url: &str, path: &Path, cap: u64) -> Result<u64> {
 
 /// Termux 的 PATH 在 runit 服务环境里未必带 `bin`，从 `PREFIX` 直接定位。
 fn ffmpeg_program() -> String {
-    std::env::var("PREFIX")
-        .map(|prefix| format!("{prefix}/bin/ffmpeg"))
-        .unwrap_or_else(|_| "ffmpeg".to_string())
+    std::env::var("PREFIX").map_or_else(|_| "ffmpeg".to_string(), |prefix| format!("{prefix}/bin/ffmpeg"))
 }
 
 /// 抽音轨：先流拷贝（无损、秒级），音轨编码进不了 m4a 容器时再重编码一次。
@@ -197,8 +195,7 @@ async fn extract_audio(input: &Path, output: &Path) -> Result<()> {
 /// 成品至少要像样：空文件与几字节的残骸都不算数。
 fn usable_audio(path: &Path) -> bool {
     std::fs::metadata(path)
-        .map(|metadata| metadata.len() > 1024)
-        .unwrap_or(false)
+        .is_ok_and(|metadata| metadata.len() > 1024)
 }
 
 /// 音频文件的名字：引用元素带了原始文件名就接着用（换掉扩展名），没有就按

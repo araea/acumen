@@ -242,7 +242,7 @@ pub(crate) async fn conversation(
         }
         None => (None, None),
     };
-    let env = control.map(|lease| lease.env()).unwrap_or_default();
+    let env = control.map(super::super::ctl::bridge::Lease::env).unwrap_or_default();
     let skills: Vec<PathBuf> = control
         .map(|lease| vec![lease.skill().to_path_buf()])
         .unwrap_or_default();

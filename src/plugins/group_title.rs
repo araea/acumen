@@ -65,15 +65,9 @@ pub fn handle(
     Box::pin(async move {
         if let Some(cmd) = match_command(&ctx, "我要头衔") {
             // 1. 确认是群消息
-            let msg = match ctx.as_message() {
-                Some(m) => m,
-                None => return Ok(Some(ctx)),
-            };
+            let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
 
-            let group_id = match msg.group_id() {
-                Some(gid) => gid,
-                None => return Ok(Some(ctx)),
-            };
+            let Some(group_id) = msg.group_id() else { return Ok(Some(ctx)) };
 
             let user_id = msg.user_id();
 

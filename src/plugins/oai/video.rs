@@ -51,7 +51,7 @@ pub(super) const PREFERRED_MODEL_KEYWORD: &str = "veo3.1-fast";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// 一次生成最多等多久；真正的总预算由 `[oai] media_timeout_seconds` 兜底。
-const TASK_TIMEOUT: Duration = Duration::from_secs(20 * 60);
+const TASK_TIMEOUT: Duration = Duration::from_mins(20);
 pub(crate) const LANDSCAPE: &str = "1280x720";
 pub(crate) const PORTRAIT: &str = "720x1280";
 
@@ -221,7 +221,7 @@ pub(super) async fn generate_reply(
         .map(|message| message.content.trim().to_string())
         .unwrap_or_default();
     let options = parse_options(
-        &match (agent.system_prompt.trim(), last.map(|m| m.content.as_str()).unwrap_or("")) {
+        &match (agent.system_prompt.trim(), last.map_or("", |m| m.content.as_str())) {
             ("", user) => user.to_string(),
             (system, "") => system.to_string(),
             (system, user) => format!("{system}\n{user}"),

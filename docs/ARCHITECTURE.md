@@ -93,6 +93,8 @@ cargo test --locked
 cargo build --release --locked
 ```
 
+`Cargo.toml` 的 `[lints]` 在默认 clippy 之外强制了一组现代写法：`let … else`、格式串内联变量、`Duration::from_mins` 一类更大的时间单位、去掉多余的限定路径与原始字符串井号。它们都能由 `cargo clippy --fix` 机械改写。
+
 插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`db`、`scheduler`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`。
 
 改动框架、流水线或插件钩子之后，再跑一遍端到端冒烟（需要 `pip install aiohttp`，在隔离目录里拉起一个连假端口的实例，不碰线上数据）：

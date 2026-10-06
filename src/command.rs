@@ -56,7 +56,7 @@ pub fn strip_prefix<'a>(ctx: &Context, text: &'a str) -> Option<&'a str> {
     }
     prefixes
         .iter()
-        .find_map(|p| text.strip_prefix(p.as_str()).map(|rest| rest.trim_start()))
+        .find_map(|p| text.strip_prefix(p.as_str()).map(str::trim_start))
 }
 
 /// 正文里能拿去认的每一截：先是整段，正文以 @ 开头时再补上 @ 之后逐词往后的每一截。
@@ -86,7 +86,7 @@ pub fn spoken_bodies(text: &str) -> Vec<&str> {
 /// ID，实现端把它写成字符串还是数字都认。
 pub fn message_reply_id(ctx: &Context) -> Option<String> {
     let arr = ctx.as_message()?.0.get_array("message")?;
-    for segment in arr.iter() {
+    for segment in arr {
         if segment.get_str("type") != Some("reply") {
             continue;
         }
@@ -118,7 +118,7 @@ pub fn find_urls(text: &str) -> Vec<String> {
     for matched in re.find_iter(text) {
         let url = trim_tail(matched.as_str());
         // 剥完之后至少还得剩个主机名，`见 https://。` 这种不算链接。
-        let host = url.split_once("//").map(|(_, rest)| rest).unwrap_or("");
+        let host = url.split_once("//").map_or("", |(_, rest)| rest);
         if host.is_empty() {
             continue;
         }
@@ -240,7 +240,7 @@ pub fn message_links(ctx: &Context) -> Vec<String> {
         return links;
     };
     if let Some(segments) = message.0.get_array("message") {
-        for segment in segments.iter() {
+        for segment in segments {
             if segment.get_str("type") != Some("json") {
                 continue;
             }
@@ -396,7 +396,7 @@ fn match_segments(
                 }
                 for candidate in candidates {
                     for prefix in prefixes {
-                        let target = format!("{}{}", prefix, command_name);
+                        let target = format!("{prefix}{command_name}");
                         if candidate.starts_with(&target) {
                             // 匹配成功
                             let mut args = Vec::new();
@@ -454,7 +454,7 @@ mod tests {
             .unwrap()
             .as_array()
             .unwrap()
-            .to_vec()
+            .clone()
     }
 
     fn slash() -> Vec<String> {
@@ -490,7 +490,7 @@ mod tests {
             text("@汽修二班 阿洛 /md # 标题")
         ]));
         let matched = match_segments(&message, &slash(), "md", true).unwrap();
-        assert_eq!(crate::command::extract_text_arg(&matched.args), "# 标题");
+        assert_eq!(extract_text_arg(&matched.args), "# 标题");
         // 后面跟的图片等段落照常进参数。
         let with_image = segments(serde_json::json!([
             at("1"),
@@ -540,7 +540,7 @@ mod tests {
     fn plain_commands_match_as_before() {
         let message = segments(serde_json::json!([text("/echo 你好")]));
         let matched = match_segments(&message, &slash(), "echo", false).unwrap();
-        assert_eq!(crate::command::extract_text_arg(&matched.args), "你好");
+        assert_eq!(extract_text_arg(&matched.args), "你好");
         assert!(match_segments(&message, &slash(), "ech0", false).is_none());
         let leading_at = segments(serde_json::json!([at("1"), text(" /echo 你好")]));
         assert!(match_segments(&leading_at, &slash(), "echo", false).is_some());

@@ -29,9 +29,9 @@ use std::time::{Duration, Instant};
 /// 自上次复盘以来，群里至少新来这么多条别人的消息才值得再整理一遍。
 pub(super) const MIN_FRESH: usize = 24;
 /// 两次复盘至少隔这么久。
-pub(super) const MIN_GAP: Duration = Duration::from_secs(25 * 60);
+pub(super) const MIN_GAP: Duration = Duration::from_mins(25);
 /// 失败之后隔多久再试：接口抖一下，不必等满一整个间隔，也别每批都敲一次。
-const RETRY_GAP: Duration = Duration::from_secs(8 * 60);
+const RETRY_GAP: Duration = Duration::from_mins(8);
 /// 送进去的记录最多这么多条。
 const MAX_TURNS: usize = 60;
 /// 每次最多写入几项。
@@ -60,7 +60,7 @@ fn trackers() -> &'static Mutex<HashMap<String, Tracker>> {
 }
 
 fn with_tracker<T>(group: &str, action: impl FnOnce(&mut Tracker) -> T) -> T {
-    let mut all = trackers().lock().unwrap_or_else(|error| error.into_inner());
+    let mut all = trackers().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     action(all.entry(group.to_string()).or_default())
 }
 
@@ -111,9 +111,7 @@ fn compact(turns: &[Turn]) -> String {
         if text.is_empty() {
             continue;
         }
-        let clock = chrono::DateTime::from_timestamp(turn.at, 0)
-            .map(|time| time.with_timezone(&chrono::Local).format("%H:%M").to_string())
-            .unwrap_or_else(|| "--:--".into());
+        let clock = chrono::DateTime::from_timestamp(turn.at, 0).map_or_else(|| "--:--".into(), |time| time.with_timezone(&chrono::Local).format("%H:%M").to_string());
         let who = if turn.manual {
             "我（亲手打的）".to_string()
         } else if turn.from_me {

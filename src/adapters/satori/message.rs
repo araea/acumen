@@ -151,16 +151,16 @@ fn normalize_boolean_attrs(content: &str) -> String {
     static TAG: OnceLock<regex::Regex> = OnceLock::new();
     static ATTR: OnceLock<regex::Regex> = OnceLock::new();
     let tag = TAG.get_or_init(|| {
-        regex::Regex::new(r#"<([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)([^<>]*?)(/?)>"#)
+        regex::Regex::new(r"<([a-z][a-z0-9-]*(?::[a-z][a-z0-9-]*)?)([^<>]*?)(/?)>")
             .expect("valid tag regex")
     });
     let attr = ATTR.get_or_init(|| {
         regex::Regex::new(r#"([^\s=]+)(?:=(?:"[^"]*"|'[^']*'))?"#).expect("valid attr regex")
     });
     tag.replace_all(content, |caps: &regex::Captures<'_>| {
-        let name = caps.get(1).map(|value| value.as_str()).unwrap_or("");
-        let raw_attrs = caps.get(2).map(|value| value.as_str()).unwrap_or("");
-        let slash = caps.get(3).map(|value| value.as_str()).unwrap_or("");
+        let name = caps.get(1).map_or("", |value| value.as_str());
+        let raw_attrs = caps.get(2).map_or("", |value| value.as_str());
+        let slash = caps.get(3).map_or("", |value| value.as_str());
         let mut attrs = String::new();
         for found in attr.find_iter(raw_attrs) {
             let raw = found.as_str();
@@ -207,7 +207,7 @@ fn attrs(start: &quick_xml::events::BytesStart<'_>) -> Object {
         // 这些元素片段没有 XML 声明，按隐式 1.0 归一属性值（含实体解码）。
         let value = attr
             .normalized_value(quick_xml::XmlVersion::Implicit1_0)
-            .map(|v| v.into_owned())
+            .map(std::borrow::Cow::into_owned)
             .unwrap_or_default();
         out.insert(key, OwnedValue::from(value));
     }
@@ -591,8 +591,9 @@ fn escape_text(value: &str) -> String {
     };
     let end = value
         .rfind(|ch: char| !ch.is_whitespace())
-        .map(|idx| idx + value[idx..].chars().next().map_or(0, char::len_utf8))
-        .unwrap_or(value.len());
+        .map_or(value.len(), |idx| {
+            idx + value[idx..].chars().next().map_or(0, char::len_utf8)
+        });
     format!(
         "{}{}{}",
         boundary_whitespace(&value[..start]),

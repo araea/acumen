@@ -51,7 +51,7 @@ pub fn handle(
 
                     if let Some(gid) = msg.group_id() {
                         let group_str = if let Some(name) = group_name {
-                            format!("{}|{}", name, gid)
+                            format!("{name}|{gid}")
                         } else {
                             gid.to_string()
                         };
@@ -134,10 +134,7 @@ pub fn handle(
 fn format_message(msg_val: Option<&OwnedValue>) -> String {
     use std::fmt::Write as _;
 
-    let val = match msg_val {
-        Some(v) => v,
-        None => return String::new(),
-    };
+    let Some(val) = msg_val else { return String::new() };
 
     // 1. 纯字符串情况
     if let Some(s) = val.as_str() {
@@ -164,9 +161,9 @@ fn format_message(msg_val: Option<&OwnedValue>) -> String {
                         if let Some(s) = d.get_str("qq") {
                             result.push_str(s);
                         } else if let Some(i) = d.get_i64("qq") {
-                            let _ = write!(result, "{}", i);
+                            let _ = write!(result, "{i}");
                         } else if let Some(i) = d.get_u64("qq") {
-                            let _ = write!(result, "{}", i);
+                            let _ = write!(result, "{i}");
                         } else {
                             result.push_str("Unknown");
                         }
@@ -179,15 +176,14 @@ fn format_message(msg_val: Option<&OwnedValue>) -> String {
                 "mface" => result.push_str(" [动画表情] "),
                 "image" => {
                     let is_anim = data
-                        .map(|d| {
+                        .is_some_and(|d| {
                             let summary = d.get_str("summary").unwrap_or("");
                             let sub_type = d
                                 .get_i64("sub_type")
                                 .or_else(|| d.get_u64("sub_type").map(|v| v as i64))
                                 .unwrap_or(0);
                             summary == "[动画表情]" || sub_type == 1
-                        })
-                        .unwrap_or(false);
+                        });
 
                     if is_anim {
                         result.push_str(" [动画表情] ");

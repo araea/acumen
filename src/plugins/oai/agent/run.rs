@@ -161,7 +161,7 @@ async fn attempt(
                 // 实际应答的模型名由调用方补全（它才知道 `供应商/` 前缀）。
                 trace: trace.steps,
                 trace_overflow: trace.overflow,
-                sources: run.web.map(|web| web.sources()).unwrap_or_default(),
+                sources: run.web.map(super::super::search::Search::sources).unwrap_or_default(),
             });
         }
 
@@ -215,26 +215,23 @@ impl Context {
 
         let index = skills(run).map_err(bad)?;
         let cwd = run.cwd.unwrap_or(run.dir);
-        let mut system = match run.system_prompt {
-            Some(explicit) => explicit.trim().to_string(),
-            None => {
-                let mut base = ROOM_BASE.replace("{cwd}", &cwd.display().to_string());
-                if run.control {
-                    base.push_str("\n\n");
-                    base.push_str(CONTROL_HINT);
-                }
-                if run.bridge.is_some() {
-                    base.push_str("\n\n");
-                    base.push_str(CHAT_HINT);
-                }
-                if run.web.is_some() {
-                    base.push_str("\n\n");
-                    base.push_str(SEARCH_HINT);
-                }
-                match run.append_system_prompt.trim() {
-                    "" => base,
-                    persona => format!("{base}\n\n---\n\n{persona}"),
-                }
+        let mut system = if let Some(explicit) = run.system_prompt { explicit.trim().to_string() } else {
+            let mut base = ROOM_BASE.replace("{cwd}", &cwd.display().to_string());
+            if run.control {
+                base.push_str("\n\n");
+                base.push_str(CONTROL_HINT);
+            }
+            if run.bridge.is_some() {
+                base.push_str("\n\n");
+                base.push_str(CHAT_HINT);
+            }
+            if run.web.is_some() {
+                base.push_str("\n\n");
+                base.push_str(SEARCH_HINT);
+            }
+            match run.append_system_prompt.trim() {
+                "" => base,
+                persona => format!("{base}\n\n---\n\n{persona}"),
             }
         };
         if !index.is_empty() {

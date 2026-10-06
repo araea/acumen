@@ -68,7 +68,7 @@ pub(super) async fn try_reply(
     };
     if !window::with_group(group, |state| {
         state.allow_screenshot(config.screenshot_cooldown_seconds) && !state.screenshot_seen(&end)
-    }) || !super::current(ctx, group, seq)
+    }) || !current(ctx, group, seq)
     {
         return false;
     }
@@ -103,7 +103,7 @@ pub(super) async fn try_reply(
     }
     // While the kernel was rendering, a new chat message may have arrived. Anchor specifically
     // to the provoking ID, not simply the current latest inbound message.
-    if !super::current(ctx, group, seq) {
+    if !current(ctx, group, seq) {
         return false;
     }
     let Some(freshness) = freshness_for(
@@ -150,7 +150,7 @@ pub(super) async fn try_reply(
         });
     });
     // The caption is best effort. Never send it if somebody has already moved the conversation on.
-    if super::current(ctx, group, seq)
+    if current(ctx, group, seq)
         && freshness_for(group, Duration::from_secs(25))
             .is_some_and(|f| f.message_id == end)
     {

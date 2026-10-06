@@ -241,12 +241,12 @@ fn meta_line(item: &Item) -> Option<String> {
         .published_at
         .as_deref()
         .and_then(fmt_time)
-        .map(|t| format!("{} 发布", t))
+        .map(|t| format!("{t} 发布"))
         .or_else(|| {
             item.discovered_at
                 .as_deref()
                 .and_then(fmt_time)
-                .map(|t| format!("{} 收录", t))
+                .map(|t| format!("{t} 收录"))
         });
 
     let category = item.category.as_deref().map(category_label);
@@ -286,7 +286,7 @@ pub fn render_items(header: &str, clusters: &[Cluster], opts: &RenderOptions) ->
         out.push_str(&format!("{}. {}", idx + 1, title));
 
         if let Some(meta) = meta_line(item) {
-            out.push_str(&format!("\n   {}", meta));
+            out.push_str(&format!("\n   {meta}"));
         }
         if let Some(summary) = item.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             out.push_str(&format!("\n   {}", truncate(summary, opts.summary_max_chars)));
@@ -301,7 +301,7 @@ pub fn render_items(header: &str, clusters: &[Cluster], opts: &RenderOptions) ->
             out.push_str(&format!("\n   💡 {}", truncate(reason, opts.summary_max_chars)));
         }
         if let Some(link) = item.links.aihot.as_deref().filter(|s| !s.is_empty()) {
-            out.push_str(&format!("\n   🔗 {}", link));
+            out.push_str(&format!("\n   🔗 {link}"));
             entry_links.links.push(EntryLink {
                 label: "AIHOT".to_string(),
                 url: link.to_string(),
@@ -310,7 +310,7 @@ pub fn render_items(header: &str, clusters: &[Cluster], opts: &RenderOptions) ->
         if opts.show_original_link
             && let Some(orig) = item.links.original.as_deref().filter(|s| !s.is_empty())
         {
-            out.push_str(&format!("\n   📄 {}", orig));
+            out.push_str(&format!("\n   📄 {orig}"));
             entry_links.links.push(EntryLink {
                 label: "原文".to_string(),
                 url: orig.to_string(),
@@ -358,21 +358,21 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
             title: title.to_string(),
             links: Vec::new(),
         };
-        out.push_str(&format!("第 {} 名 {}", rank, title));
+        out.push_str(&format!("第 {rank} 名 {title}"));
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(count) = topic.source_count.filter(|c| *c > 0) {
-            meta.push(format!("{} 个报道来源", count));
+            meta.push(format!("{count} 个报道来源"));
         }
         if let Some(count) = topic.participant_count.filter(|c| *c > 0) {
-            meta.push(format!("{} 人讨论", count));
+            meta.push(format!("{count} 人讨论"));
         }
         let names = topic.display_sources(3);
         if !names.is_empty() {
             meta.push(names.join("、"));
         }
         if let Some(t) = topic.latest_at.as_deref().and_then(fmt_time) {
-            meta.push(format!("最新 {}", t));
+            meta.push(format!("最新 {t}"));
         }
         if !meta.is_empty() {
             out.push_str(&format!("\n   {}", meta.join(" · ")));
@@ -386,7 +386,7 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
         }
         // 事件页汇总了全部报道与时间线，比单篇报道更适合当热点的主链接
         if let Some(story) = topic.links.story_url() {
-            out.push_str(&format!("\n   🔗 {}", story));
+            out.push_str(&format!("\n   🔗 {story}"));
             entry_links.links.push(EntryLink {
                 label: "事件页".to_string(),
                 url: story,
@@ -394,7 +394,7 @@ pub fn render_hot_topics(topics: &[HotTopic]) -> Rendered {
         }
         if let Some(link) = topic.links.primary() {
             if entry_links.links.is_empty() {
-                out.push_str(&format!("\n   🔗 {}", link));
+                out.push_str(&format!("\n   🔗 {link}"));
             }
             entry_links.links.push(EntryLink {
                 label: "AIHOT".to_string(),
@@ -428,7 +428,7 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
 
         let mut score_line: Vec<String> = Vec::new();
         if let Some(score) = model.score_text() {
-            score_line.push(format!("共识指数 {}", score));
+            score_line.push(format!("共识指数 {score}"));
         }
         if let Some(count) = model.evaluations_text() {
             score_line.push(count);
@@ -437,7 +437,7 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
             score_line.push(evidence);
         }
         if let Some(range) = model.rank_range().filter(|r| r.contains('—')) {
-            score_line.push(format!("名次范围 {}", range));
+            score_line.push(format!("名次范围 {range}"));
         }
         if !score_line.is_empty() {
             out.push_str(&format!("\n   {}", score_line.join(" · ")));
@@ -445,7 +445,7 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
 
         let mut meta: Vec<String> = Vec::new();
         if let Some(date) = model.released_date() {
-            meta.push(format!("上线 {}", date));
+            meta.push(format!("上线 {date}"));
         }
         if let Some(price) = model.price_text() {
             meta.push(price);
@@ -459,7 +459,7 @@ pub fn render_models(board: &Board, max_items: usize) -> Rendered {
             links: Vec::new(),
         };
         if let Some(url) = model.page_url() {
-            out.push_str(&format!("\n   🔗 {}", url));
+            out.push_str(&format!("\n   🔗 {url}"));
             entry_links.links.push(EntryLink {
                 label: "模型详情".to_string(),
                 url,
@@ -498,13 +498,13 @@ pub(super) fn models_header(board: &Board) -> String {
 pub(super) fn models_meta(board: &Board) -> Vec<String> {
     let mut meta: Vec<String> = Vec::new();
     if let Some(count) = board.evaluation_count {
-        meta.push(format!("{} 项评测", count));
+        meta.push(format!("{count} 项评测"));
     }
     if let Some(count) = board.org_count {
-        meta.push(format!("{} 家机构", count));
+        meta.push(format!("{count} 家机构"));
     }
     if let Some(updated) = board.updated_at.as_deref().filter(|s| !s.is_empty()) {
-        meta.push(format!("{} 更新", updated));
+        meta.push(format!("{updated} 更新"));
     }
     meta
 }
@@ -517,14 +517,14 @@ fn render_block(out: &mut String, block: &DailyBlock, depth: usize, budget: &mut
 
     if let Some(title) = block.title.as_deref() {
         let marker = if depth == 0 { "▍" } else { "· " };
-        out.push_str(&format!("{}{}{}\n", indent, marker, title));
+        out.push_str(&format!("{indent}{marker}{title}\n"));
         *budget -= 1;
     }
     if let Some(text) = block.text.as_deref() {
         out.push_str(&format!("{}  {}\n", indent, truncate(text, 100)));
     }
     if let Some(url) = block.url.as_deref() {
-        out.push_str(&format!("{}  🔗 {}\n", indent, url));
+        out.push_str(&format!("{indent}  🔗 {url}\n"));
     }
 
     for child in &block.children {
@@ -535,9 +535,9 @@ fn render_block(out: &mut String, block: &DailyBlock, depth: usize, budget: &mut
 /// AI 日报：保留 lead / sections / flashes 的原有结构，不重排成普通列表
 pub fn render_daily(report: &DailyReport, max_blocks: usize) -> Rendered {
     let header = match (report.date.as_deref(), report.title.as_deref()) {
-        (Some(date), Some(title)) => format!("AI 日报 · {}\n{}", date, title),
-        (Some(date), None) => format!("AI 日报 · {}", date),
-        (None, Some(title)) => format!("AI 日报 · {}", title),
+        (Some(date), Some(title)) => format!("AI 日报 · {date}\n{title}"),
+        (Some(date), None) => format!("AI 日报 · {date}"),
+        (None, Some(title)) => format!("AI 日报 · {title}"),
         (None, None) => "AI 日报".to_string(),
     };
 
@@ -575,7 +575,7 @@ pub fn render_daily(report: &DailyReport, max_blocks: usize) -> Rendered {
     }
 
     if let Some(link) = report.links.primary() {
-        entries.push(format!("完整日报：{}", link));
+        entries.push(format!("完整日报：{link}"));
     }
 
     Rendered {

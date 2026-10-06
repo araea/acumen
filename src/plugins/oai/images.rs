@@ -159,7 +159,7 @@ pub(super) async fn generate_reply(
     hist: &[ChatMessage],
 ) -> anyhow::Result<Reply> {
     let last = last_user(hist);
-    let options = parse_options(last.map(|message| message.content.as_str()).unwrap_or(""));
+    let options = parse_options(last.map_or("", |message| message.content.as_str()));
     let images = last.map(|message| message.images.as_slice()).unwrap_or(&[]);
     let prompt = match (agent.system_prompt.trim(), options.prompt.trim()) {
         ("", user) => user.to_string(),

@@ -467,7 +467,7 @@ async fn discard_stale_parts(dir: &Path) {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return;
     };
-    let cutoff = std::time::SystemTime::now() - Duration::from_secs(6 * 3600);
+    let cutoff = std::time::SystemTime::now() - Duration::from_hours(6);
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
         if path.extension().and_then(|extension| extension.to_str()) != Some("part") {
@@ -477,8 +477,7 @@ async fn discard_stale_parts(dir: &Path) {
             .metadata()
             .await
             .and_then(|metadata| metadata.modified())
-            .map(|modified| modified < cutoff)
-            .unwrap_or(false);
+            .is_ok_and(|modified| modified < cutoff);
         if stale {
             let _ = tokio::fs::remove_file(&path).await;
         }

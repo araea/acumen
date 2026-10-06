@@ -486,8 +486,8 @@ impl PushTarget {
 impl fmt::Display for PushTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Group(id) => write!(f, "群聊 {}", id),
-            Self::Private(id) => write!(f, "私聊 {}", id),
+            Self::Group(id) => write!(f, "群聊 {id}"),
+            Self::Private(id) => write!(f, "私聊 {id}"),
         }
     }
 }
@@ -575,7 +575,7 @@ type PushFn = fn(
     LockedWriter,
     AiNewsConfig,
     Vec<PushTarget>,
-) -> futures_util::future::BoxFuture<'static, ()>;
+) -> BoxFuture<'static, ()>;
 type EnabledFn = fn(&AiNewsConfig) -> bool;
 
 /// 注册一个北京时间的每日任务；配置在每次触发时重新读取，改目标无需重启。
@@ -658,7 +658,7 @@ fn warn_on_schedule_conflicts(ctx: &Context, cfg: &AiNewsConfig) {
     // 只比到分钟：同分钟内两个插件一起发图，就是用户说的"撞车"
     fn hhmm(raw: &str) -> String {
         let (h, m, _) = parse_time(raw);
-        format!("{:02}:{:02}", h, m)
+        format!("{h:02}:{m:02}")
     }
 
     let occupied: Vec<(String, &str)> = [
@@ -964,11 +964,10 @@ fn link_extraction(rendered: &Rendered, indices: &[usize]) -> Rendered {
         .header
         .lines()
         .find(|line| !line.trim().is_empty())
-        .map(str::trim)
-        .unwrap_or("AI 资讯");
+        .map_or("AI 资讯", str::trim);
 
     Rendered {
-        header: format!("{} · 链接", header),
+        header: format!("{header} · 链接"),
         entries,
         footer: format!(
             "{} · 已提取 {} / {} 条",
@@ -995,7 +994,7 @@ fn parse_extraction_indices(input: &str, total: usize) -> Result<Vec<usize>, Str
             let start = parse_extraction_index(start, total)?;
             let end = parse_extraction_index(end, total)?;
             if start > end {
-                return Err(format!("序号范围 {} 无效：起始序号不能大于结束序号", token));
+                return Err(format!("序号范围 {token} 无效：起始序号不能大于结束序号"));
             }
             selected.extend(start..=end);
         } else {
@@ -1036,7 +1035,7 @@ async fn query_brief(config: &AiNewsConfig, target: Option<&PushTarget>) -> Payl
             let opts = pusher::render_options(config);
             let clusters = cluster::fold_if(config.fold_same_event, items);
             let rendered =
-                render::render_items(&format!("AI 资讯速递 · {}", window), &clusters, &opts);
+                render::render_items(&format!("AI 资讯速递 · {window}"), &clusters, &opts);
             let html = card::items_card(
                 "AI 资讯速递",
                 window,
@@ -1046,10 +1045,10 @@ async fn query_brief(config: &AiNewsConfig, target: Option<&PushTarget>) -> Payl
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice(format!("📭 {}内暂无 AI 资讯", window)),
+        Ok(_) => notice(format!("📭 {window}内暂无 AI 资讯")),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询精选失败: {}", e);
-            notice(format!("❌ 获取 AI 资讯失败：{}", e))
+            notice(format!("❌ 获取 AI 资讯失败：{e}"))
         }
     }
 }
@@ -1068,7 +1067,7 @@ async fn query_hot_topics(config: &AiNewsConfig) -> Payload {
         Ok(_) => notice("📭 当前没有热点条目"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询热点榜失败: {}", e);
-            notice(format!("❌ 获取 AI 热点榜失败：{}", e))
+            notice(format!("❌ 获取 AI 热点榜失败：{e}"))
         }
     }
 }
@@ -1087,7 +1086,7 @@ async fn query_daily(config: &AiNewsConfig) -> Payload {
         Ok(None) => notice("📭 当前没有可用的 AI 日报"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询日报失败: {}", e);
-            notice(format!("❌ 获取 AI 日报失败：{}", e))
+            notice(format!("❌ 获取 AI 日报失败：{e}"))
         }
     }
 }
@@ -1125,7 +1124,7 @@ async fn query_models(config: &AiNewsConfig, arg: &str, prefix: &str) -> Payload
         Ok(_) => notice("📭 AIHOT 模型榜当前没有可展示的条目"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询模型榜失败: {}", e);
-            notice(format!("❌ 获取 AI 模型排行榜失败：{}", e))
+            notice(format!("❌ 获取 AI 模型排行榜失败：{e}"))
         }
     }
 }
@@ -1144,13 +1143,13 @@ async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Pay
             let opts = pusher::render_options(config);
             let (header, subtitle) = if from_all_pool {
                 (
-                    format!("「{}」近 7 天相关动态（未进入精选）", keyword),
-                    format!("「{}」· 近 7 天 · 未进入精选", keyword),
+                    format!("「{keyword}」近 7 天相关动态（未进入精选）"),
+                    format!("「{keyword}」· 近 7 天 · 未进入精选"),
                 )
             } else {
                 (
-                    format!("「{}」近 7 天精选", keyword),
-                    format!("「{}」· 近 7 天精选", keyword),
+                    format!("「{keyword}」近 7 天精选"),
+                    format!("「{keyword}」· 近 7 天精选"),
                 )
             };
             let clusters = cluster::fold_if(config.fold_same_event, items);
@@ -1164,10 +1163,10 @@ async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Pay
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice(format!("📭 近 7 天没有找到与「{}」相关的 AI 资讯", keyword)),
+        Ok(_) => notice(format!("📭 近 7 天没有找到与「{keyword}」相关的 AI 资讯")),
         Err(e) => {
             warn!(target: LOG_TARGET, "搜索 [{}] 失败: {}", keyword, e);
-            notice(format!("❌ 搜索失败：{}", e))
+            notice(format!("❌ 搜索失败：{e}"))
         }
     }
 }
@@ -1242,7 +1241,7 @@ async fn handle_push_admin(
                     "✅ 实时快报已切换为精选资讯，并已清理旧待发队列；日报、精选速递与热点榜不受影响".to_string()
                 }
             }
-            Err(e) => format!("❌ 保存配置失败：{}", e),
+            Err(e) => format!("❌ 保存配置失败：{e}"),
         };
     }
 
@@ -1261,14 +1260,14 @@ async fn handle_push_admin(
     match trigger {
         "ai推送添加" | "ai推送开启" => {
             if config.contains_target(&target) {
-                return format!("{} 已开启推送", target);
+                return format!("{target} 已开启推送");
             }
             let changed = target.clone();
             let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) if !cfg.groups.contains(&id) => cfg.groups.push(id),
                     PushTarget::Private(id) if !cfg.private_users.contains(&id) => {
-                        cfg.private_users.push(id)
+                        cfg.private_users.push(id);
                     }
                     _ => {}
                 }
@@ -1278,14 +1277,14 @@ async fn handle_push_admin(
             match result {
                 Ok(_) => {
                     state::align_realtime_baseline(target.state_id()).await;
-                    format!("✅ 已添加 {} 的 AI 资讯推送权限", target)
+                    format!("✅ 已添加 {target} 的 AI 资讯推送权限")
                 }
-                Err(e) => format!("❌ 保存配置失败：{}", e),
+                Err(e) => format!("❌ 保存配置失败：{e}"),
             }
         }
         "ai推送删除" | "ai推送关闭" => {
             if !config.contains_target(&target) {
-                return format!("{} 未开启推送", target);
+                return format!("{target} 未开启推送");
             }
             let changed = target.clone();
             let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
@@ -1304,16 +1303,15 @@ async fn handle_push_admin(
             })
             .await;
             match result {
-                Ok(_) => format!("✅ 已删除 {} 的 AI 资讯推送权限", target),
-                Err(e) => format!("❌ 保存配置失败：{}", e),
+                Ok(_) => format!("✅ 已删除 {target} 的 AI 资讯推送权限"),
+                Err(e) => format!("❌ 保存配置失败：{e}"),
             }
         }
         "ai推送重置" => {
             state::reset_group(target.state_id()).await;
             format!(
-                "✅ 已清空 {} 的推送去重记录，下次推送会重新发送近期资讯。\
-                 实时快报会重新建立基线，只推此刻之后的新资讯",
-                target
+                "✅ 已清空 {target} 的推送去重记录，下次推送会重新发送近期资讯。\
+                 实时快报会重新建立基线，只推此刻之后的新资讯"
             )
         }
         "ai实时开启" => {
@@ -1326,14 +1324,14 @@ async fn handle_push_admin(
                 return format!("{target} 未开启推送，先添加这个目标");
             }
             if !config.target_realtime_muted(&target) {
-                return format!("{} 已经在接收实时快报", target);
+                return format!("{target} 已经在接收实时快报");
             }
             let changed = target.clone();
             let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) => cfg.realtime_muted_groups.retain(|g| *g != id),
                     PushTarget::Private(id) => {
-                        cfg.realtime_muted_private_users.retain(|user| *user != id)
+                        cfg.realtime_muted_private_users.retain(|user| *user != id);
                     }
                 }
                 cfg
@@ -1342,25 +1340,25 @@ async fn handle_push_admin(
             match result {
                 Ok(_) => {
                     state::align_realtime_baseline(target.state_id()).await;
-                    format!("已开启 {} 的实时快报，从现在起的新资讯将及时送达", target)
+                    format!("已开启 {target} 的实时快报，从现在起的新资讯将及时送达")
                 }
-                Err(e) => format!("❌ 保存配置失败：{}", e),
+                Err(e) => format!("❌ 保存配置失败：{e}"),
             }
         }
         "ai实时关闭" => {
             if config.target_realtime_muted(&target) {
-                return format!("{} 当前只接收定时推送", target);
+                return format!("{target} 当前只接收定时推送");
             }
             let changed = target.clone();
             let result = update_config::<AiNewsConfig, _>(ctx, move |mut cfg| {
                 match changed.clone() {
                     PushTarget::Group(id) if !cfg.realtime_muted_groups.contains(&id) => {
-                        cfg.realtime_muted_groups.push(id)
+                        cfg.realtime_muted_groups.push(id);
                     }
                     PushTarget::Private(id)
                         if !cfg.realtime_muted_private_users.contains(&id) =>
                     {
-                        cfg.realtime_muted_private_users.push(id)
+                        cfg.realtime_muted_private_users.push(id);
                     }
                     _ => {}
                 }
@@ -1368,8 +1366,8 @@ async fn handle_push_admin(
             })
             .await;
             match result {
-                Ok(_) => format!("✅ 已关闭 {} 的实时快报；日报、精选速递与热点榜照常推送", target),
-                Err(e) => format!("❌ 保存配置失败：{}", e),
+                Ok(_) => format!("✅ 已关闭 {target} 的实时快报；日报、精选速递与热点榜照常推送"),
+                Err(e) => format!("❌ 保存配置失败：{e}"),
             }
         }
         "ai分类" => update_target_category(ctx, &target, arg).await,
@@ -1537,9 +1535,9 @@ async fn update_target_category(ctx: &Context, target: &PushTarget, raw: &str) -
             } else {
                 api::category_label(current)
             };
-            format!("✅ {} 的资讯分类已设为：{}", target, label)
+            format!("✅ {target} 的资讯分类已设为：{label}")
         }
-        Err(e) => format!("❌ 保存配置失败：{}", e),
+        Err(e) => format!("❌ 保存配置失败：{e}"),
     }
 }
 
@@ -1580,7 +1578,7 @@ async fn update_target_quiet(ctx: &Context, target: &PushTarget, raw: &str) -> S
         }
         let start = start.format("%H:%M").to_string();
         let end = end.format("%H:%M").to_string();
-        let message = format!("实时静默时段已设为 {}—{}", start, end);
+        let message = format!("实时静默时段已设为 {start}—{end}");
         (Some(start), Some(end), message)
     };
 
@@ -1597,8 +1595,8 @@ async fn update_target_quiet(ctx: &Context, target: &PushTarget, raw: &str) -> S
     .await;
 
     match result {
-        Ok(_) => format!("✅ {} {}", target, message),
-        Err(e) => format!("❌ 保存配置失败：{}", e),
+        Ok(_) => format!("✅ {target} {message}"),
+        Err(e) => format!("❌ 保存配置失败：{e}"),
     }
 }
 
@@ -1672,7 +1670,7 @@ fn render_status(
             quiet_label(config, target)
         ));
         if let Some(pending_items) = pending_items {
-            out.push_str(&format!("   待发队列：{} 个事件\n", pending_items));
+            out.push_str(&format!("   待发队列：{pending_items} 个事件\n"));
         }
     } else {
         out.push_str("已停用　实时快报，只按下方排期推送\n");
@@ -1717,7 +1715,7 @@ fn render_status(
         "dark" | "night" | "夜晚" | "夜间" => "固定夜晚".to_string(),
         _ => format!("自动（当前{}）", theme.label()),
     };
-    out.push_str(&format!("阅读主题：{}\n", theme_mode));
+    out.push_str(&format!("阅读主题：{theme_mode}\n"));
     if let Some(target) = target {
         let category = config.category_for_target(target);
         out.push_str(&format!(
@@ -1733,8 +1731,7 @@ fn render_status(
     }
     out.push('\n');
     out.push_str(&format!(
-        "引用卡片回复 0全部/序号 提取\n   {p}ai资讯 · {p}ai热点 · {p}ai日报\n   {p}ai模型榜 [编程|推理|知识|专业办公] · {p}ai搜索 <关键词>\n   {p}ai推送添加/删除 <群|私聊> <ID>\n   {p}ai推送列表 · {p}ai实时开启/关闭 · {p}ai实时模式 精选|全部\n   {p}ai分类 · {p}ai静默\n",
-        p = prefix
+        "引用卡片回复 0全部/序号 提取\n   {prefix}ai资讯 · {prefix}ai热点 · {prefix}ai日报\n   {prefix}ai模型榜 [编程|推理|知识|专业办公] · {prefix}ai搜索 <关键词>\n   {prefix}ai推送添加/删除 <群|私聊> <ID>\n   {prefix}ai推送列表 · {prefix}ai实时开启/关闭 · {prefix}ai实时模式 精选|全部\n   {prefix}ai分类 · {prefix}ai静默\n"
     ));
     out.push_str(api::ATTRIBUTION);
     out
@@ -1745,7 +1742,7 @@ fn interval_label(seconds: u64) -> String {
     if seconds.is_multiple_of(60) {
         format!(" {} 分钟", seconds / 60)
     } else {
-        format!(" {} 秒", seconds)
+        format!(" {seconds} 秒")
     }
 }
 
@@ -1761,6 +1758,6 @@ fn quiet_label(config: &AiNewsConfig, target: Option<&PushTarget>) -> String {
     if start.is_empty() || end.is_empty() || start == end {
         return "不设（全天推送）".to_string();
     }
-    format!("{}—{}", start, end)
+    format!("{start}—{end}")
 }
 

@@ -264,7 +264,7 @@ pub async fn mark_brief_seen(group_id: String, sent: Vec<(String, Item)>) {
         let entry = state.groups.entry(group_id.clone()).or_default();
         remember(&mut entry.brief_seen, sent, now);
     })
-    .await
+    .await;
 }
 
 /// 把条目计入去重表（已在表内的不重复记），连标题摘要一起留着供事件比对
@@ -291,7 +291,7 @@ pub async fn backfill_text(group_id: String, items: Vec<Item>) {
         fill_missing_text(&mut entry.realtime_seen, &items, now);
         fill_missing_text(&mut entry.brief_seen, &items, now);
     })
-    .await
+    .await;
 }
 
 fn fill_missing_text(history: &mut [SeenEntry], items: &[Item], now: i64) -> usize {
@@ -379,7 +379,7 @@ pub async fn mark_realtime_sent(group_id: String, sent: Vec<Cluster>) {
         remember(&mut entry.realtime_seen, members, now);
         entry.realtime_pushes.push(now);
     })
-    .await
+    .await;
 }
 
 /// 入队的结果：新排进去几个事件，又有几条报道并进了已有事件或已推事件
@@ -542,7 +542,7 @@ pub async fn align_realtime_baseline(group_id: String) {
         entry.realtime_pushes.clear();
         entry.realtime_pending.clear();
     })
-    .await
+    .await;
 }
 
 /// 该群是否已经推送过这一期日报
@@ -565,7 +565,7 @@ pub async fn mark_daily(group_id: String, date: &str) {
         let entry = state.groups.entry(group_id.clone()).or_default();
         entry.last_daily_date = Some(date);
     })
-    .await
+    .await;
 }
 
 /// 清空某个群的去重记录（用于 `/ai推送重置`，便于重新推送一遍）
@@ -573,7 +573,7 @@ pub async fn reset_group(group_id: String) {
     STORE.with(move |state| {
         state.groups.remove(&group_id);
     })
-    .await
+    .await;
 }
 
 /// 保存图片消息与其文本/链接的映射，供用户稍后引用图片提取。
@@ -593,7 +593,7 @@ pub async fn remember_extraction(target_id: String, message_id: String, rendered
             extracted: Vec::new(),
         });
     })
-    .await
+    .await;
 }
 
 /// 读取被引用卡片的可提取内容。超过 30 天的映射会顺手清理。

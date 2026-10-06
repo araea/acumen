@@ -185,7 +185,7 @@ fn render_sources(sources: &[super::types::Source]) -> String {
 /// 稍大一号的小标题走 `label-medium`（14px）。这两处原先是 10 / 10.5 / 11 / 11.5 /
 /// 13 / 13.5 / 14 七个值——比整支字阶还密，等于在系统之外又养了一套字阶。
 /// 行内代码的 `0.86em` 是例外：它相对父级字号，不属于这支字阶。
-const CSS: &str = r#"
+const CSS: &str = r"
 /* `body` 只给版心宽度；相纸的底色与内边距由 `.shot` 给（见 m3e.css 的组件基元），
    出图范围也是 `.shot`——五张卡片的成图外围因此是同一种处理。 */
 body{width:560px}
@@ -341,4 +341,4 @@ img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md
   border-left:3px solid var(--md-sys-color-outline);font-size:var(--md-type-label-medium-size);font-weight:800;
   color:var(--md-sys-color-on-surface-variant)}
 .head,.agent-mini,.chip,.trace-name{min-width:0;overflow-wrap:anywhere}
-"#;
+";

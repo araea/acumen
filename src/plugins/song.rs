@@ -158,15 +158,12 @@ async fn request(
     };
 
     // 模型挑编号；挑不出就用相关度最高的那条，点歌不能没结果。
-    let picked = match pick(ctx, config, keyword, &pool).await {
-        Some((index, candidate)) => {
-            info!(target: LOG_TARGET, "模型选中第 {} 条", index + 1);
-            candidate
-        }
-        None => {
-            warn!(target: LOG_TARGET, "模型没挑出来，退回相关度最高的一条");
-            fallback
-        }
+    let picked = if let Some((index, candidate)) = pick(ctx, config, keyword, &pool).await {
+        info!(target: LOG_TARGET, "模型选中第 {} 条", index + 1);
+        candidate
+    } else {
+        warn!(target: LOG_TARGET, "模型没挑出来，退回相关度最高的一条");
+        fallback
     };
     info!(
         target: LOG_TARGET,

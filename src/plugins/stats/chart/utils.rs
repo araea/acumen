@@ -83,10 +83,7 @@ fn try_load_family(family: &str) -> bool {
         families: &[fontdb::Family::Name(family)],
         ..Default::default()
     };
-    let id = match db.query(&query) {
-        Some(id) => id,
-        None => return false,
-    };
+    let Some(id) = db.query(&query) else { return false };
     let bytes: Option<Vec<u8>> = db.with_face_data(id, |data, _idx| data.to_vec());
     match bytes {
         Some(b) => register_bytes(b),
@@ -261,7 +258,7 @@ pub fn format_percent(value: i64, total: i64) -> String {
     if rounded == 0 {
         "<1%".to_string()
     } else {
-        format!("{}%", rounded)
+        format!("{rounded}%")
     }
 }
 
@@ -632,13 +629,13 @@ pub fn save_rgba_to_base64(img: RgbaImage) -> Result<String, String> {
     let mut cursor = std::io::Cursor::new(Vec::new());
     dynamic_image
         .write_to(&mut cursor, ImageFormat::Png)
-        .map_err(|e| format!("图片编码失败：{}", e))?;
+        .map_err(|e| format!("图片编码失败：{e}"))?;
     let b64 = general_purpose::STANDARD.encode(cursor.into_inner());
-    Ok(format!("base64://{}", b64))
+    Ok(format!("base64://{b64}"))
 }
 
 pub fn truncate_text_to_fit(
-    font: &plotters::style::FontDesc,
+    font: &FontDesc,
     text: &str,
     max_width: u32,
 ) -> String {
@@ -650,7 +647,7 @@ pub fn truncate_text_to_fit(
     let mut s = text.to_string();
     while !s.is_empty() {
         s.pop();
-        let candidate = format!("{}…", s);
+        let candidate = format!("{s}…");
         let (w, _) = font.box_size(&candidate).unwrap_or((0, 0));
         if w <= max_width {
             return candidate;

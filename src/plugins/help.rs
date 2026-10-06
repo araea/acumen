@@ -99,7 +99,7 @@ fn is_enabled(ctx: &Context, name: &str) -> bool {
         .plugins
         .get(name)
         .and_then(|v| v.get("enabled"))
-        .and_then(|x| x.as_bool())
+        .and_then(toml::Value::as_bool)
         .unwrap_or(false)
 }
 
@@ -175,8 +175,7 @@ fn render_overview(ctx: &Context, groups: &[Group]) -> String {
     }
 
     out.push_str(&format!(
-        "\n💡 看全部指令：{p}help <插件名>\n管理开关与配置：{p}ctl（聊天）\n连接：Satori v1；状态为配置开关，首次启用自动初始化；排期修改下次连接生效。",
-        p = prefix
+        "\n💡 看全部指令：{prefix}help <插件名>\n管理开关与配置：{prefix}ctl（聊天）\n连接：Satori v1；状态为配置开关，首次启用自动初始化；排期修改下次连接生效。"
     ));
     out
 }
@@ -212,7 +211,7 @@ fn render_detail(ctx: &Context, entry: &Entry, cmds: &[Cmd]) -> String {
             c.cmd.to_string()
         };
         if c.note.is_empty() {
-            out.push_str(&format!("· {}\n", full));
+            out.push_str(&format!("· {full}\n"));
         } else {
             out.push_str(&format!("· {}\n   {}\n", full, c.note));
         }
@@ -299,10 +298,7 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let msg = match ctx.as_message() {
-            Some(m) => m,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
         let config: Config = get_config_or_default(&ctx);
         // 私聊专用时，群里的 help 当普通消息放行，交给后面的插件。
         if !answers(&config, msg.group_id()) {
@@ -329,7 +325,7 @@ pub fn handle(
                     _ => None,
                 };
                 out = match image {
-                    Some(b64) => out.image_described(format!("base64://{}", b64), "帮助卡片"),
+                    Some(b64) => out.image_described(format!("base64://{b64}"), "帮助卡片"),
                     None => out.text(&reply.text),
                 };
 

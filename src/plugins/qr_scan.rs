@@ -697,7 +697,7 @@ mod tests {
 
     fn segments(value: serde_json::Value) -> Vec<OwnedValue> {
         let owned = simd_json::serde::to_owned_value(value).unwrap();
-        owned.as_array().unwrap().to_vec()
+        owned.as_array().unwrap().clone()
     }
 
     fn slash() -> Vec<String> {
@@ -1003,13 +1003,13 @@ mod tests {
 
     fn quoted(images: &[&str], text: &str) -> Quoted {
         Quoted {
-            image_urls: images.iter().map(|url| url.to_string()).collect(),
+            image_urls: images.iter().map(ToString::to_string).collect(),
             text: text.to_string(),
         }
     }
 
     fn urls(list: &[&str]) -> Vec<String> {
-        list.iter().map(|url| url.to_string()).collect()
+        list.iter().map(ToString::to_string).collect()
     }
 
     /// 谁优先、缺什么说什么：这是用户每天会撞上的几十种组合，逐个钉住。

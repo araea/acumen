@@ -331,7 +331,7 @@ pub(crate) async fn compose(
             tools: Some(&tools),
             bridge: bridge
                 .clone()
-                .map(|bridge| bridge as std::sync::Arc<dyn crate::plugins::oai::agent::ChatBridge>),
+                .map(|bridge| bridge as std::sync::Arc<dyn agent::ChatBridge>),
             web: web.as_ref(),
             stall,
             prompt: &prompt,

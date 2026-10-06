@@ -121,7 +121,7 @@ fn overlap(a: &str, b: &str) -> f32 {
         chars
             .windows(2)
             .map(|pair| pair.iter().collect::<String>())
-            .collect::<std::collections::HashSet<String>>()
+            .collect::<HashSet<String>>()
     };
     let (left, right) = (grams(a), grams(b));
     if left.is_empty() || right.is_empty() {
@@ -193,8 +193,8 @@ pub(crate) fn affinity(sample: &str, topic: &HashSet<String>) -> f32 {
 const FUNCTION_CHARS: &str = "的了是不我你他她它们这那就还也都在有没么吗吧呢啊哈嘛呀哦个一二两上下来去说要会能可以到得着过把被给让很太真好对啥什怎样点些里时候看想又再才而且但就算然后";
 
 /// 一段话里的实词：中文按相邻两字取，两字都不是虚字才算；英文数字按整词取。
-pub(crate) fn content_words(text: &str) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
+pub(crate) fn content_words(text: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
     let chars: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
     let mut word = String::new();
     for (index, c) in chars.iter().enumerate() {

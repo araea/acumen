@@ -73,7 +73,7 @@ pub fn handle(
         } else {
             let message = urls
                 .into_iter()
-                .fold(reply("✅ 图片提取成功：\n"), |message, url| message.image(url));
+                .fold(reply("✅ 图片提取成功：\n"), Message::image);
             say(message).await?;
         }
         Ok(None)

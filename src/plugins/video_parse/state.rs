@@ -63,7 +63,7 @@ pub async fn claim(target_id: &str, requester: &str, bvid: &str, now: i64) -> Cl
 /// 取片没成功，把名额放回去。
 pub async fn release(target_id: &str, requester: &str, bvid: &str) {
     let bvid = bvid.to_string();
-    STORE.with(move |state| apply_release(state, target_id, requester, &bvid)).await
+    STORE.with(move |state| apply_release(state, target_id, requester, &bvid)).await;
 }
 
 /// `claim` 的纯逻辑部分，便于测试；不触碰全局状态与磁盘。

@@ -201,7 +201,7 @@ fn is_forward_card(event: &crate::event::Event) -> bool {
     event.get_array("message").is_some_and(|segments| {
         segments
             .iter()
-            .any(|segment| matches!(segment.get_str("type"), Some("forward") | Some("node")))
+            .any(|segment| matches!(segment.get_str("type"), Some("forward" | "node")))
     })
 }
 
@@ -262,12 +262,12 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
         if config.block_walled_sites
             && let Some(rule) = WALLED_DOMAINS.iter().find(|rule| domain_matches(&name, rule))
         {
-            return Err(format!("{} 截出来是登录墙或验证页，没有内容", rule));
+            return Err(format!("{rule} 截出来是登录墙或验证页，没有内容"));
         }
     }
 
     if !config.allow_private_hosts && host_is_internal(&host).await {
-        return Err(format!("{} 指向内网/本机地址", url));
+        return Err(format!("{url} 指向内网/本机地址"));
     }
 
     Ok(url)
@@ -556,7 +556,7 @@ async fn capture_page(
 
     match time::timeout(load_timeout, tab.goto(url)).await {
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => return Err(anyhow!("Navigate failed: {}", e)),
+        Ok(Err(e)) => return Err(anyhow!("Navigate failed: {e}")),
         Err(_) => return Err(anyhow!("Page load timeout")),
     };
 
@@ -634,7 +634,7 @@ async fn capture_page(
 /// 图片、视频、画布、表单控件的外框，排序后扫一遍，缝隙就是可以下刀的地方。
 /// 定位成 `fixed` / `sticky` 的不算：它们浮在整页上，会把每一处都「盖住」。
 /// 返回 `[[顶, 底], …]`，最多 2 万条；脚本出错就当没有缝隙，退回等分。
-const PAGE_GAPS_JS: &str = r#"(() => {
+const PAGE_GAPS_JS: &str = r"(() => {
   const rects = [];
   const floating = (el) => {
     const cs = getComputedStyle(el);
@@ -664,7 +664,7 @@ const PAGE_GAPS_JS: &str = r#"(() => {
     if (bottom > end) end = bottom;
   }
   return gaps.slice(0, 20000);
-})()"#;
+})()";
 
 async fn page_gaps(tab: &cdp_html_shot::Tab) -> Vec<(f64, f64)> {
     match tab.evaluate(PAGE_GAPS_JS).await {
@@ -789,30 +789,27 @@ async fn shoot_slice(
                     .with_clip(clip),
             )
             .await
-            .map_err(|e| anyhow!("Screenshot failed: {}", e))?;
+            .map_err(|e| anyhow!("Screenshot failed: {e}"))?;
         let bytes = decoded_len(&image);
         if bytes <= budget {
             return Ok(image);
         }
-        match next_quality(png, quality) {
-            Some(next) => {
-                debug!(
-                    target: LOG_TARGET,
-                    "{top}..{bottom} 一段 {} KB 超过预算 {} KB，画质降到 {next} 重截",
-                    bytes / 1024,
-                    budget / 1024
-                );
-                png = false;
-                quality = next;
-            }
-            None => {
-                warn!(
-                    target: LOG_TARGET,
-                    "{top}..{bottom} 一段降到最低画质仍有 {} KB，照发",
-                    bytes / 1024
-                );
-                return Ok(image);
-            }
+        if let Some(next) = next_quality(png, quality) {
+            debug!(
+                target: LOG_TARGET,
+                "{top}..{bottom} 一段 {} KB 超过预算 {} KB，画质降到 {next} 重截",
+                bytes / 1024,
+                budget / 1024
+            );
+            png = false;
+            quality = next;
+        } else {
+            warn!(
+                target: LOG_TARGET,
+                "{top}..{bottom} 一段降到最低画质仍有 {} KB，照发",
+                bytes / 1024
+            );
+            return Ok(image);
         }
     }
 }
@@ -1006,7 +1003,7 @@ fn links_in_segments(event: &crate::event::Event) -> Vec<String> {
     let Some(segments) = event.get_array("message") else {
         return links;
     };
-    for segment in segments.iter() {
+    for segment in segments {
         if segment.get_str("type") != Some("text") {
             continue;
         }
@@ -1108,7 +1105,7 @@ async fn manual(
     info!(
         target: LOG_TARGET,
         "手动截图：{}",
-        urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
+        urls.iter().map(Url::as_str).collect::<Vec<_>>().join(" ")
     );
 
     let shots = capture_all(&urls, config, browser_path).await;
@@ -1131,10 +1128,7 @@ pub fn handle(
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
         // 尝试解析为消息事件
-        let msg_event = match ctx.as_message() {
-            Some(e) => e,
-            None => return Ok(Some(ctx)),
-        };
+        let Some(msg_event) = ctx.as_message() else { return Ok(Some(ctx)) };
 
         // 读取配置
         let config: Config = get_config_or_default(&ctx);
@@ -1224,7 +1218,7 @@ pub fn handle(
         info!(
             target: LOG_TARGET,
             "Capturing: {}",
-            urls.iter().map(|url| url.as_str()).collect::<Vec<_>>().join(" ")
+            urls.iter().map(Url::as_str).collect::<Vec<_>>().join(" ")
         );
 
         let shots = capture_all(&urls, &config, browser_path).await;

@@ -78,8 +78,8 @@ pub struct ModelFilterConfig {
 impl Default for ModelFilterConfig {
     fn default() -> Self {
         Self {
-            keep: DEFAULT_MODEL_KEEP.iter().map(|s| s.to_string()).collect(),
-            drop: DEFAULT_MODEL_DROP.iter().map(|s| s.to_string()).collect(),
+            keep: DEFAULT_MODEL_KEEP.iter().map(ToString::to_string).collect(),
+            drop: DEFAULT_MODEL_DROP.iter().map(ToString::to_string).collect(),
         }
     }
 }
@@ -280,8 +280,7 @@ pub fn model_vendor(model: &str) -> &'static str {
     VENDORS
         .iter()
         .find(|(prefix, _)| lower.starts_with(prefix))
-        .map(|(_, name)| *name)
-        .unwrap_or("其他")
+        .map_or("其他", |(_, name)| *name)
 }
 
 pub fn escape_markdown_special(s: &str) -> String {
@@ -342,15 +341,9 @@ pub async fn get_full_content(
     let mut quote_text = String::new();
     let mut imgs = Vec::new();
 
-    let event = match &ctx.event {
-        crate::event::EventType::Satori(e) => e,
-        _ => return (quote_text, imgs),
-    };
+    let crate::event::EventType::Satori(event) = &ctx.event else { return (quote_text, imgs) };
 
-    let message_arr = match event.get_array("message") {
-        Some(arr) => arr,
-        None => return (quote_text, imgs),
-    };
+    let Some(message_arr) = event.get_array("message") else { return (quote_text, imgs) };
 
     // 1. 处理引用消息
     if let Some(reply) = message_arr
@@ -470,14 +463,14 @@ pub async fn get_full_content(
         {
             let qq = d
                 .get_str("qq")
-                .map(|s| s.to_string())
+                .map(ToString::to_string)
                 .or_else(|| d.get_i64("qq").map(|i| i.to_string()))
                 .or_else(|| d.get_u64("qq").map(|i| i.to_string()));
 
             if let Some(id) = qq
                 && id != "all"
             {
-                imgs.push(format!("https://q.qlogo.cn/g?b=qq&nk={}&s=640", id));
+                imgs.push(format!("https://q.qlogo.cn/g?b=qq&nk={id}&s=640"));
             }
         }
     }
@@ -528,7 +521,7 @@ pub fn format_history(
                             if u.starts_with("data:") {
                                 "- [Base64 Image]".to_string()
                             } else {
-                                format!("- [图片] {}", u)
+                                format!("- [图片] {u}")
                             }
                         })
                         .collect::<Vec<_>>()
@@ -538,7 +531,7 @@ pub fn format_history(
                     let imgs = m
                         .images
                         .iter()
-                        .map(|u| format!("![image]({})", u))
+                        .map(|u| format!("![image]({u})"))
                         .collect::<Vec<_>>()
                         .join("\n");
                     body.push_str(&imgs);
@@ -595,9 +588,9 @@ pub fn format_export_txt(
     let thin_sep = "┄".repeat(40);
 
     content.push_str(&format!("┏{}┓\n", "━".repeat(40)));
-    content.push_str(&format!("┃  智能体: {:<32}┃\n", agent_name));
-    content.push_str(&format!("┃  模  型: {:<32}┃\n", model));
-    content.push_str(&format!("┃  类  型: {:<32}┃\n", scope));
+    content.push_str(&format!("┃  智能体: {agent_name:<32}┃\n"));
+    content.push_str(&format!("┃  模  型: {model:<32}┃\n"));
+    content.push_str(&format!("┃  类  型: {scope:<32}┃\n"));
     content.push_str(&format!(
         "┃  导  出: {:<32}┃\n",
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
@@ -606,15 +599,13 @@ pub fn format_export_txt(
     content.push_str(&format!("┗{}┛\n\n", "━".repeat(40)));
 
     for (i, m) in hist.iter().enumerate() {
-        let time = chrono::DateTime::from_timestamp(m.timestamp, 0)
-            .map(|t| {
+        let time = chrono::DateTime::from_timestamp(m.timestamp, 0).map_or_else(|| "未知时间".to_string(), |t| {
                 use chrono::TimeZone;
                 chrono::Local
                     .from_utc_datetime(&t.naive_utc())
                     .format("%Y-%m-%d %H:%M:%S")
                     .to_string()
-            })
-            .unwrap_or_else(|| "未知时间".to_string());
+            });
 
         let role_name = match m.role.as_str() {
             "user" => "用户",
@@ -624,7 +615,7 @@ pub fn format_export_txt(
         };
 
         content.push_str(&format!("【#{} {} | {}】\n", i + 1, role_name, time));
-        content.push_str(&format!("{}\n", thin_sep));
+        content.push_str(&format!("{thin_sep}\n"));
 
         let clean_content = re.replace_all(&m.content, "[图片数据]");
         content.push_str(&clean_content);
@@ -640,7 +631,7 @@ pub fn format_export_txt(
                 }
             }
         }
-        content.push_str(&format!("\n{}\n\n", separator));
+        content.push_str(&format!("\n{separator}\n\n"));
     }
     content
 }

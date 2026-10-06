@@ -132,8 +132,7 @@ impl SearchConfig {
     fn base(&self, provider: &str) -> &str {
         self.backends
             .get(provider)
-            .map(|backend| backend.base_url.trim())
-            .unwrap_or("")
+            .map_or("", |backend| backend.base_url.trim())
     }
 
     /// 后端在当下配置里是否可用；不可用的直接从链上跳过，不留一次注定失败的请求。
@@ -377,7 +376,7 @@ impl Search {
         };
         let text = crate::plugins::oai::utils::truncate_middle(&text, MAX_FETCH_CHARS);
         if text.trim().is_empty() {
-            anyhow::bail!("{} 取回来是空的（可能整页由脚本渲染）", final_url);
+            anyhow::bail!("{final_url} 取回来是空的（可能整页由脚本渲染）");
         }
         self.remember(&[], Some((&title, final_url.as_str())));
         Ok(format!(
@@ -396,14 +395,14 @@ impl Search {
                 .header(reqwest::header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
                 .send()
                 .await
-                .map_err(|error| anyhow::anyhow!("请求 {} 失败：{error}", current))?;
+                .map_err(|error| anyhow::anyhow!("请求 {current} 失败：{error}"))?;
             let status = response.status();
             if status.is_redirection() {
                 let location = response
                     .headers()
                     .get(reqwest::header::LOCATION)
                     .and_then(|value| value.to_str().ok())
-                    .ok_or_else(|| anyhow::anyhow!("{} 的重定向缺少 Location", current))?;
+                    .ok_or_else(|| anyhow::anyhow!("{current} 的重定向缺少 Location"))?;
                 let next = current
                     .join(location)
                     .map_err(|_| anyhow::anyhow!("无法解析重定向地址 {location}"))?;
@@ -411,7 +410,7 @@ impl Search {
                 continue;
             }
             if !status.is_success() {
-                anyhow::bail!("{} 返回 HTTP {status}", current);
+                anyhow::bail!("{current} 返回 HTTP {status}");
             }
             let content_type = response
                 .headers()
@@ -601,7 +600,7 @@ fn bing_link(block: &str) -> Option<(String, String)> {
     if !url.starts_with("http") {
         return None;
     }
-    let title = strip_tags(caps.get(2).map(|m| m.as_str()).unwrap_or(""));
+    let title = strip_tags(caps.get(2).map_or("", |m| m.as_str()));
     Some((title, url))
 }
 
@@ -623,7 +622,7 @@ async fn duckduckgo(
     recency: Option<Recency>,
 ) -> anyhow::Result<Vec<Hit>> {
     let mut url = format!("https://html.duckduckgo.com/html/?q={}", encode(query));
-    if let Some(window) = recency.map(|value| value.key()) {
+    if let Some(window) = recency.map(Recency::key) {
         url.push_str(&format!("&df={}", encode(window)));
     }
     let html = get_text(client, &url).await?;
@@ -871,7 +870,7 @@ async fn bocha(
     let body = serde_json::json!({
         "query": query,
         "count": limit,
-        "freshness": recency.map(bocha_freshness).unwrap_or("noLimit"),
+        "freshness": recency.map_or("noLimit", bocha_freshness),
     });
     let value = json_request(
         client
@@ -882,7 +881,7 @@ async fn bocha(
     .await?;
     // 博查出错时 HTTP 常常仍是 200，真正的错误码在 body 里；当成「没有结果」
     // 会把密钥失效、额度用尽这类问题藏起来。
-    if let Some(code) = value.get("code").and_then(|code| code.as_i64())
+    if let Some(code) = value.get("code").and_then(sea_orm::JsonValue::as_i64)
         && code != 200
     {
         anyhow::bail!(
@@ -1011,15 +1010,12 @@ pub(crate) fn decode_entities(text: &str) -> String {
             .find(';')
             .filter(|end| *end <= 12)
             .and_then(|end| entity_char(&tail[1..end]));
-        match decoded {
-            Some(value) => {
-                out.push(value);
-                rest = &tail[tail.find(';').unwrap() + 1..];
-            }
-            None => {
-                out.push('&');
-                rest = &tail[1..];
-            }
+        if let Some(value) = decoded {
+            out.push(value);
+            rest = &tail[tail.find(';').unwrap() + 1..];
+        } else {
+            out.push('&');
+            rest = &tail[1..];
         }
     }
     out.push_str(rest);
