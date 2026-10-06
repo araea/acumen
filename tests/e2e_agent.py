@@ -3,7 +3,9 @@
 
 覆盖回复里的内嵌图片：模型用 bash 把图写进本轮临时目录、回复里写 `![说明](路径)`，
 图应当按位置画进同一张卡片（而不是另发一条）；写了不存在的路径时只被提醒一次；
-纯文字回复不受影响；`view_image` 读到的图要随下一条用户消息送回模型。假模型按提问里的关键词走脚本，不需要任何真实密钥。
+纯文字回复不受影响；`view_image` 读到的图要随下一条用户消息送回模型。另覆盖执行层的长任务能力：
+同一批里的 `delegate` 并行、子助手拿不到 delegate 与群聊工具、步数用尽时最后一步收回工具并催收尾、
+同一调用重复执行被驳回、空回复被催一次、系统提示词里有今天的日期。假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
 用法（需要 `pip install aiohttp` 与 Chromium；浏览器路径取 `CHROME_BIN`）：
     cargo build --release --locked
@@ -29,6 +31,7 @@ def tiny_png(w=64, h=40, rgb=(60, 120, 100)):
 PNG_B64 = base64.b64encode(tiny_png()).decode()
 
 posts, ws_clients, llm_requests = [], [], []
+child_tools = []
 sn, next_msg = [0], [1000]
 
 
@@ -102,11 +105,38 @@ async def chat(request):
     msgs = body["messages"]
     system = text_of(msgs[0]) if msgs and msgs[0]["role"] == "system" else ""
     scratch = (re.search(r"临时目录 (/\S+?)，", system) or [None, "/nonexistent"])[1]
-    # 房间历史会带着前几轮：只看最近那句真正的提问（跳过「改错提醒」与附图的那条）。
-    asked_at = max(i for i, m in enumerate(msgs) if m["role"] == "user" and "没能嵌进卡片" not in text_of(m) and "view_image 读到的图" not in text_of(m))
+    # 房间历史会带着前几轮：只看最近那句真正的提问（跳过「改错提醒」、系统提醒与附图的那条）。
+    asked_at = max(i for i, m in enumerate(msgs) if m["role"] == "user" and "没能嵌进卡片" not in text_of(m) and "view_image 读到的图" not in text_of(m) and "系统提醒，用户看不到" not in text_of(m))
     asked = text_of(msgs[asked_at])
     last = text_of([m for m in msgs if m["role"] == "user"][-1])
     tools_done = any(m["role"] == "tool" for m in msgs[asked_at:])
+    tool_results = [text_of(m) for m in msgs[asked_at:] if m["role"] == "tool"]
+
+    def call(name, **args):
+        return {"id": f"call_{len(tool_results)}_{name}", "type": "function", "function": {"name": name, "arguments": json.dumps(args)}}
+
+    if "被委派来完成一件子任务" in system:  # 子助手：慢一点，好看出并行
+        child_tools.append([t["function"]["name"] for t in body.get("tools", [])])
+        await asyncio.sleep(1.5)
+        return completion({"role": "assistant", "content": f"报告：{asked.strip()} 已查完"})
+    if "委派调研" in asked:
+        if not tools_done:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("delegate", task=f"查第{i}件事") for i in (1, 2)]})
+        return completion({"role": "assistant", "content": "汇总：" + "；".join(tool_results)})
+    if "无尽" in asked:
+        if body.get("tool_choice") == "none":
+            return completion({"role": "assistant", "content": f"收尾：只做了 {len(tool_results)} 步，剩下的没来得及。"})
+        return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command=f"echo step{len(tool_results)}")]})
+    if "重复" in asked:
+        if tool_results and "完全相同的参数" in tool_results[-1]:
+            return completion({"role": "assistant", "content": "不再重复了。"})
+        return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command="echo same")]})
+    if "空回复" in asked:
+        if "你刚才没有给出任何回复" in last:
+            return completion({"role": "assistant", "content": "补上了。"})
+        if "空消息" in asked:  # 连思考块都没有：接口层面的空回复
+            return completion({"role": "assistant", "content": ""})
+        return completion({"role": "assistant", "content": "", "reasoning_content": "想了想"})
 
     if "画图表" in asked:
         if not tools_done:
@@ -263,6 +293,62 @@ enabled = false
         tools = [t["function"]["name"] for t in llm_requests[n].get("tools", [])]
         check("工具表里有 view_image", "view_image" in tools, str(tools))
         check("提示词建议先看一眼", "view_image 自己看一眼" in text_of(llm_requests[n]["messages"][0]))
+
+        print("F. 委派：同一次回复里的两个 delegate 并行，子助手没有 delegate 与群聊工具")
+        mark, n = len(posts), len(llm_requests)
+        child_tools.clear()
+        started = time.time()
+        await inject("管家大人 委派调研")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复")
+        took = time.time() - started
+        sent = creates_since(mark)
+        check("汇总里带着两份子助手的报告", len(sent) == 1 and "报告：查第1件事 已查完" in sent[0] and "报告：查第2件事 已查完" in sent[0], str(sent))
+        check("两个子助手并行跑（各慢 1.5 秒，总共不到 2.9 秒）", took < 2.9, f"{took:.1f} 秒")
+        check("模型共被问了四次（主 2 + 子 2）", len(llm_requests) - n == 4, str(len(llm_requests) - n))
+        main_tools = [t["function"]["name"] for t in llm_requests[n].get("tools", [])]
+        check("主助手工具表里有 delegate", "delegate" in main_tools, str(main_tools))
+        check("提示词里有委派说明", "delegate 交给子助手" in text_of(llm_requests[n]["messages"][0]))
+        check("子助手没有 delegate 与 satori_*", len(child_tools) == 2 and all("delegate" not in t and not any(x.startswith("satori_") for x in t) and "bash" in t for t in child_tools), str(child_tools))
+
+        print("G. 步数用尽：倒数第二步提醒，最后一步收回工具，回复照样发出而不是整轮报错")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 无尽")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 90)
+        sent = creates_since(mark)
+        check("发出的是收尾回复", len(sent) == 1 and "收尾：只做了 23 步" in sent[0], str(sent))
+        check("模型共被问了 24 次", len(llm_requests) - n == 24, str(len(llm_requests) - n))
+        check("最后一次请求禁用了工具", llm_requests[-1].get("tool_choice") == "none" and all(r.get("tool_choice") != "none" for r in llm_requests[n:-1]))
+        users = lambda r: [text_of(m) for m in r["messages"] if m["role"] == "user"]
+        check("倒数第二次请求带着「次数快用完」", any("次数快用完" in t for t in users(llm_requests[-2])) and not any("次数快用完" in t for t in users(llm_requests[-3])))
+        check("最后一次请求带着「最后一次回复」", any("最后一次回复" in t for t in users(llm_requests[-1])))
+
+        print("H. 重复调用：同样的命令执行满 4 次后驳回")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 重复")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("最终回复", len(sent) == 1 and "不再重复了" in sent[0], str(sent))
+        check("模型共被问了 6 次（4 次执行 + 1 次被驳回 + 答）", len(llm_requests) - n == 6, str(len(llm_requests) - n))
+
+        print("I. 空回复：被催一次，而不是整轮报错")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 空回复")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("补上了回复", len(sent) == 1 and "补上了" in sent[0], str(sent))
+        check("模型被问了两次", len(llm_requests) - n == 2, str(len(llm_requests) - n))
+
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 空回复 空消息")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("连思考块都没有的空消息也被催了一次", len(sent) == 1 and "补上了" in sent[0] and len(llm_requests) - n == 2, f"{sent} / {len(llm_requests) - n}")
+
+        print("J. 系统提示词里有今天的日期")
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone(timedelta(hours=8)))
+        want = f"今天是 {now.year}年{now.month}月{now.day}日 星期{'一二三四五六日'[now.weekday()]}（北京时间）"
+        check("日期与星期对得上", want in text_of(llm_requests[n]["messages"][0]), want)
 
         print("D. 纯文字：不受影响")
         mark, n = len(posts), len(llm_requests)

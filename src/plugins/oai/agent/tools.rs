@@ -11,7 +11,16 @@ use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
 
 /// 本地工具：需要 shell 或文件系统就能完成的那些。
-const LOCAL: &[&str] = &["bash", "read", "write", "edit", "glob", "grep", "view_image"];
+const LOCAL: &[&str] = &[
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "view_image",
+    "delegate",
+];
 
 /// 聊天界面工具：只有接了 [`super::ChatBridge`] 时才存在。
 const CHAT: &[&str] = &[
@@ -77,11 +86,25 @@ pub(crate) fn is_side_effecting(name: &str) -> bool {
         "write"
             | "edit"
             | "bash"
+            // 子助手手里有 bash，委派出去的事无从担保没有副作用。
+            | "delegate"
             | "satori_action"
             | "satori_draw"
             // 写歌与拍片真花钱：卡死重放一次就是再付一遍，同样算副作用。
             | "satori_music"
             | "satori_video"
+    )
+}
+
+/// 同一批里连续出现的这些工具可以并行跑：只读、彼此不依赖、不碰聊天界面。
+///
+/// `bash` 不在内——命令常常前后相依（先建目录再写文件），顺序就是语义；`write` / `edit`
+/// 同理；`satori_*` 的回执与群里的先后有关，一律串行。`delegate` 在内：同一次回复里
+/// 写几个委派，就是要它们一起跑。
+pub(crate) fn parallel_safe(name: &str) -> bool {
+    matches!(
+        name,
+        "read" | "glob" | "grep" | "view_image" | "web_search" | "web_fetch" | "delegate"
     )
 }
 
@@ -111,8 +134,10 @@ pub(crate) async fn execute(
     run: &super::AgentRun<'_>,
     call_id: &str,
 ) -> ToolOutput {
-    if name == "view_image" {
-        return view_image(args, run).await;
+    match name {
+        "view_image" => return view_image(args, run).await,
+        "delegate" => return super::delegate::execute(args, run).await,
+        _ => {}
     }
     run_text(name, args, run, call_id).await.into()
 }
@@ -343,6 +368,12 @@ async fn edit(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
 /// 匹配结果条数上限。
 const MAX_MATCHES: usize = 200;
 
+/// 目录遍历的墙钟上限：从 `/` 起手的一次 `**` 能把这条线程占上很久。
+const WALK_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// grep 跳过大于这个体积的文件：几十 MB 的日志与数据库读进内存只为扫几行，不值。
+const MAX_GREP_FILE: u64 = 4 * 1024 * 1024;
+
 async fn glob(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String> {
     let pattern = args["pattern"].as_str().unwrap_or("");
     if pattern.trim().is_empty() {
@@ -353,24 +384,39 @@ async fn glob(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
         None => root(run).to_path_buf(),
     };
     let full = root.join(pattern).to_string_lossy().into_owned();
-    let mut hits = Vec::new();
-    for entry in glob::glob(&full).map_err(|error| anyhow::anyhow!("模式无效：{error}"))? {
-        let Ok(path) = entry else { continue };
-        if path.is_dir() {
-            continue;
+    // 文件系统遍历是同步的：放到阻塞线程池，别占着异步工作线程。
+    let (mut hits, timed_out) = tokio::task::spawn_blocking(move || {
+        let started = std::time::Instant::now();
+        let mut hits = Vec::new();
+        let entries = glob::glob(&full).map_err(|error| anyhow::anyhow!("模式无效：{error}"))?;
+        for entry in entries {
+            if started.elapsed() > WALK_BUDGET {
+                return Ok((hits, true));
+            }
+            let Ok(path) = entry else { continue };
+            if path.is_dir() {
+                continue;
+            }
+            hits.push(path.display().to_string());
+            if hits.len() >= MAX_MATCHES {
+                break;
+            }
         }
-        hits.push(path.display().to_string());
-        if hits.len() >= MAX_MATCHES {
-            break;
-        }
-    }
+        anyhow::Ok((hits, false))
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("查找中断：{error}"))??;
     if hits.is_empty() {
+        let note = if timed_out { "；查找超时，换个更小的目录再试" } else { "" };
         return Ok(format!(
-            "（{} 下没有匹配 {pattern} 的文件）",
+            "（{} 下没有匹配 {pattern} 的文件{note}）",
             root.display()
         ));
     }
     hits.sort();
+    if timed_out {
+        hits.push("…（查找超时，结果不全；换个更小的目录再试）".to_string());
+    }
     Ok(hits.join("\n"))
 }
 
@@ -392,27 +438,61 @@ async fn grep(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
         )
     };
 
+    let walk_root = root.clone();
+    let (mut hits, timed_out) = tokio::task::spawn_blocking(move || {
+        grep_walk(&re, &walk_root, filter.as_ref())
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("搜索中断：{error}"))?;
+    if hits.is_empty() {
+        let note = if timed_out { "；搜索超时，换个更小的目录再试" } else { "" };
+        return Ok(format!(
+            "（{} 下没有匹配 {pattern} 的内容{note}）",
+            root.display()
+        ));
+    }
+    if timed_out {
+        hits.push("…（搜索超时，结果不全；换个更小的目录再试）".to_string());
+    }
+    Ok(hits.join("\n"))
+}
+
+/// grep 的阻塞部分：遍历目录、逐文件逐行匹配；返回命中行与是否因超时提前收手。
+fn grep_walk(
+    re: &regex::Regex,
+    root: &std::path::Path,
+    filter: Option<&glob::Pattern>,
+) -> (Vec<String>, bool) {
+    let started = std::time::Instant::now();
     let mut hits = Vec::new();
-    let walk = walkdir::WalkDir::new(&root)
+    let walk = walkdir::WalkDir::new(root)
         .max_depth(12)
         .into_iter()
         .filter_entry(|entry| {
             // 版本库与构建产物的体积远大于信息量，且几乎不可能是要找的东西。
+            // 但根目录本身是用户点名的，哪怕它叫 `.claude` 也得进去。
             let name = entry.file_name().to_string_lossy();
-            !(entry.file_type().is_dir()
-                && (name.starts_with('.') || matches!(&*name, "target" | "node_modules")))
+            entry.depth() == 0
+                || !(entry.file_type().is_dir()
+                    && (name.starts_with('.') || matches!(&*name, "target" | "node_modules")))
         });
     for entry in walk {
+        if started.elapsed() > WALK_BUDGET {
+            return (hits, true);
+        }
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
-        if let Some(filter) = &filter {
+        if let Some(filter) = filter {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
             if !filter.matches(&name) {
                 continue;
             }
+        }
+        if entry.metadata().is_ok_and(|meta| meta.len() > MAX_GREP_FILE) {
+            continue;
         }
         // 二进制或读不了的文件直接跳过，不让一份 PDF 打断整次搜索。
         let Ok(content) = std::fs::read_to_string(path) else {
@@ -422,21 +502,12 @@ async fn grep(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
             if re.is_match(line) {
                 hits.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
                 if hits.len() >= MAX_MATCHES {
-                    break;
+                    return (hits, false);
                 }
             }
         }
-        if hits.len() >= MAX_MATCHES {
-            break;
-        }
     }
-    if hits.is_empty() {
-        return Ok(format!(
-            "（{} 下没有匹配 {pattern} 的内容）",
-            root.display()
-        ));
-    }
-    Ok(hits.join("\n"))
+    (hits, false)
 }
 
 /// 把一次 `satori_*` 调用转发给聊天界面那一侧。
@@ -536,6 +607,16 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                     "source": {"type": "string", "description": "图片文件路径（绝对路径或相对工作目录）或 http(s) 链接"}
                 },
                 "required": ["source"]
+            }),
+        ),
+        "delegate" => (
+            "把一件相对独立的子任务交给一个全新的助手去做：它自己搜、自己读文件、自己跑命令，做完把结论交回来。它看不到你们的对话，task 里要把背景、要查什么、要什么形式的结论都写清楚。适合要翻很多页面或文件才能回答的调研，以及几件互不相干、想同时做的事——在同一次回复里写几个 delegate 调用，它们会并行跑。一两步就能做完的事自己做更快，别委派。它不能发群消息、不能再委派，也没法回头问你；每轮最多委派 6 次，每次最多跑 150 秒。它交回的是转述，关键数字与出处有疑问时自己再核一次。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string", "description": "交给子助手的任务：背景、要查或要做什么、希望的结论形式，写成它不看别的也能做的完整一段"}
+                },
+                "required": ["task"]
             }),
         ),
         "satori_context" => (
@@ -751,4 +832,65 @@ pub(crate) fn satori_action_schema() -> Value {
         choices.push(json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}));
     }
     schema
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(whitelist: Option<&str>, chat: bool, web: bool) -> Vec<String> {
+        definitions(whitelist, chat, web)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect()
+    }
+
+    #[test]
+    fn rooms_get_delegate_by_default_but_whitelists_stay_in_charge() {
+        assert!(names(None, false, false).contains(&"delegate".to_string()));
+        // 搭话那样显式给白名单的调用方不会凭空多出委派。
+        let ambient = names(Some("read,bash,web_search"), false, true);
+        assert!(!ambient.contains(&"delegate".to_string()));
+    }
+
+    #[test]
+    fn only_read_only_tools_run_in_parallel() {
+        for name in ["read", "glob", "grep", "view_image", "web_search", "web_fetch", "delegate"] {
+            assert!(parallel_safe(name), "{name}");
+        }
+        for name in ["bash", "write", "edit", "satori_action", "satori_context", "satori_draw"] {
+            assert!(!parallel_safe(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn delegate_counts_as_side_effecting_so_a_stalled_turn_is_not_replayed() {
+        assert!(is_side_effecting("delegate"));
+    }
+
+    #[test]
+    fn grep_walk_scans_text_skips_big_and_hidden_and_honours_the_root() {
+        let dir = std::env::temp_dir().join(format!("acumen-grep-{:x}", rand::random::<u64>()));
+        std::fs::create_dir_all(dir.join(".hidden")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "alpha\nneedle here\n").unwrap();
+        std::fs::write(dir.join("sub/b.md"), "needle again").unwrap();
+        std::fs::write(dir.join(".hidden/c.txt"), "needle hidden").unwrap();
+        std::fs::write(dir.join("big.log"), "needle ".repeat(1_000_000)).unwrap();
+        let re = regex::Regex::new("needle").unwrap();
+
+        let (hits, timed_out) = grep_walk(&re, &dir, None);
+        assert!(!timed_out);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits.iter().any(|hit| hit.contains("a.txt:2:")));
+
+        let only_md = glob::Pattern::new("*.md").unwrap();
+        let (hits, _) = grep_walk(&re, &dir, Some(&only_md));
+        assert_eq!(hits.len(), 1);
+
+        // 根目录本身是隐藏目录时仍然要进去：那是用户点名的。
+        let (hits, _) = grep_walk(&re, &dir.join(".hidden"), None);
+        assert_eq!(hits.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

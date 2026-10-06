@@ -261,6 +261,11 @@ impl Search {
             .is_ok()
     }
 
+    /// 追加额度：委派出去的子助手各带一点，否则默认的几次头一个就花光了。
+    pub(crate) fn grant(&self, extra: usize) {
+        self.budget.fetch_add(extra, Ordering::SeqCst);
+    }
+
     fn exhausted(&self) -> anyhow::Error {
         anyhow::anyhow!(
             "本轮联网额度已用完（最多 {} 次，搜索与抓取合并计算）",
@@ -376,7 +381,9 @@ impl Search {
         };
         let text = crate::plugins::oai::utils::truncate_middle(&text, MAX_FETCH_CHARS);
         if text.trim().is_empty() {
-            anyhow::bail!("{final_url} 取回来是空的（可能整页由脚本渲染）");
+            anyhow::bail!("{final_url} 取回来是空的（可能整页由脚本渲染；\
+             有 bash 的话可以让本机的无头浏览器渲染后再读：\
+             `chromium-browser --headless=new --no-sandbox --disable-gpu --virtual-time-budget=10000 --dump-dom '网址' 2>/dev/null`）");
         }
         self.remember(&[], Some((&title, final_url.as_str())));
         Ok(format!(

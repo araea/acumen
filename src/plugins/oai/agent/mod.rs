@@ -5,17 +5,21 @@
 //! 手里。现在整条链路就在进程内：一轮对话 = 若干个 Chat Completions 请求，
 //! 模型要工具就调用本模块里的实现，把结果作为 tool 消息回填，直到它不再要工具。
 //!
-//! 四块内容分工：
+//! 六块内容分工：
 //! - [`tools`]：工具表（名字、说明、JSON Schema）与本地实现（bash / read / write /
 //!   edit / glob / grep），以及转发进 [`ChatBridge`] 的 `satori_*`；
 //! - [`run`]：消息组装、工具循环、轨迹整理、skill 索引；
 //! - [`bash`]：子进程与进程组终止——取消一轮对话必须连带杀掉工具派生出来的进程；
-//! - [`figures`]：回复里 `![说明](地址)` 的图片，在本轮临时目录被清掉之前取好。
+//! - [`figures`]：回复里 `![说明](地址)` 的图片，在本轮临时目录被清掉之前取好；
+//! - [`compact`]：循环里较早的工具回执与旧图压缩，长任务不被自己的上下文拖垮；
+//! - [`delegate`]：把独立的子任务交给一个干净上下文的子助手，可并行。
 //!
 //! 与从前那套外部 CLI 最大的行为差别是**没有会话文件**：房间历史始终由 acumen 侧持有，
 //! 每轮按需展开成消息，所以编辑/删除/清空/重新生成的行为与普通房间完全一致。
 
 pub(crate) mod bash;
+pub(crate) mod compact;
+pub(crate) mod delegate;
 pub(crate) mod figures;
 pub(crate) mod run;
 pub(crate) mod tools;
@@ -144,6 +148,16 @@ pub(crate) struct AgentRun<'a> {
     pub max_steps: usize,
     /// 回复会渲染成卡片：把正文里的 `![说明](地址)` 逐张取好，取不到的让模型改一次。
     pub figures: bool,
+    /// 收尾兜底：步数将尽时催模型把已有的整理成回复（最后一步不再给工具），
+    /// 模型给了空回复也补一句催它，而不是整轮报错、已经做的事一起作废。
+    ///
+    /// 只有房间开：群聊搭话有自己的「不说话」约定（`[silent]`），被催出来的总结
+    /// 会被当成一句要发进群里的话。
+    pub rescue: bool,
+    /// 这是被委派出来的子对话：不能再委派（见 [`delegate`]）。
+    pub nested: bool,
+    /// 这一轮已经委派了几次；并行的委派要原子地占名额。
+    pub delegated: std::sync::atomic::AtomicUsize,
 }
 
 impl<'a> AgentRun<'a> {
@@ -170,6 +184,9 @@ impl<'a> AgentRun<'a> {
             images: &[],
             max_steps: 24,
             figures: false,
+            rescue: false,
+            nested: false,
+            delegated: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
@@ -278,6 +295,7 @@ pub(crate) async fn conversation(
             prompt: &current.content,
             images: &current.images,
             figures: true,
+            rescue: true,
             ..AgentRun::new()
         },
         previous,

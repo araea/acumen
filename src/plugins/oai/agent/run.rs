@@ -12,13 +12,14 @@
 
 use super::super::types::TraceStep;
 use super::super::llm;
-use super::figures;
-use super::AgentRun;
+use super::{AgentRun, compact, figures};
 use rig_core::client::CompletionClient;
 use rig_core::completion::message::{
-    DocumentSourceKind, Image, Text, ToolResult, ToolResultContent, UserContent,
+    DocumentSourceKind, EMPTY_RESPONSE_ERROR, Image, Text, ToolCall, ToolChoice, ToolResult, ToolResultContent,
+    UserContent,
 };
 use rig_core::completion::{AssistantContent, CompletionModel, Message};
+use std::collections::HashMap;
 
 use crate::plugins::oai::LOG_TARGET;
 
@@ -28,6 +29,12 @@ const MAX_VIEWS: usize = 6;
 /// 页脚保留的工具调用条数上限；再多只记次数。
 const TRACE_LIMIT: usize = 12;
 
+/// 同一个工具、同样的参数最多执行几次；再来就直接驳回。
+///
+/// 模型卡进「同一条命令一遍遍重试」是最常见的空转：结果不会因为再跑一次而变，
+/// 步数与时间却实打实地烧掉。驳回时把话说明白，逼它换个做法或直接作答。
+const MAX_SAME_CALL: usize = 4;
+
 /// 房间系统提示词里与运行环境有关的那一段。
 ///
 /// 只写「这是哪儿、手边有什么」——人格与风格由房间提示词负责，工具细节由每个工具的
@@ -35,6 +42,7 @@ const TRACE_LIMIT: usize = 12;
 const ROOM_BASE: &str = "\
 你是运行在本机的中文助手，可以用工具读写文件、执行命令。
 工作目录：{cwd}
+今天是 {today}；要知道此刻几点，用 bash 跑 date。
 回复要简洁，但关键依据不能省：引用了哪个文件、跑了哪条命令、拿到什么结果，都要说清楚。
 工具报告的错误就是结果的一部分，照着它换个做法，别把它当成需要解释的现象。
 工作目录里的路径直接写相对路径即可。";
@@ -80,6 +88,18 @@ const CARD_HINT: &str = "\
 
 /// 手边有 `view_image` 时再补的一句：画完先自己看一眼。
 const VIEW_HINT: &str = "画好图之后可以先用 view_image 自己看一眼，确认没画坏（字没挤在一起、数据没错）再写进回复。";
+
+/// 「今天」的写法：模型不知道日期，问「最近」「今天」的事时只能按训练时的记忆猜。
+///
+/// 只给到日、不给钟点：系统提示词是请求的开头，开头一变整段前缀缓存就作废，
+/// 按分钟变等于每轮都白付一遍；要几点让它自己跑 `date`。
+pub(crate) fn today() -> String {
+    use chrono::Datelike;
+    let now = crate::clock::beijing_now();
+    let weekday = ["一", "二", "三", "四", "五", "六", "日"]
+        [now.weekday().num_days_from_monday() as usize];
+    format!("{}年{}月{}日 星期{weekday}（北京时间）", now.year(), now.month(), now.day())
+}
 
 /// 跑一轮对话。
 pub(crate) async fn run(run: AgentRun<'_>) -> anyhow::Result<super::AgentReply> {
@@ -129,18 +149,36 @@ async fn attempt(
     let mut used_tools = false;
     // 图没取到时只提醒模型改一次：再不行就让占位说话，别在这上面来回磨。
     let mut corrected = false;
+    // 空回复也只催一次。
+    let mut nudged = false;
     let steps = run.max_steps.max(1);
     // 本轮已经看过几张图（`view_image`），以及这一批工具回执之后要附上的图。
     let mut viewed = 0;
     let mut seen: Vec<String> = Vec::new();
+    let mut repeats = Repeats::default();
 
     for step in 0..steps {
-        let request = llm::request(
+        // 倒数第二次请求前打个招呼，最后一次请求不再给工具：把「用完步数就整轮报错」
+        // 变成「用手上的东西收尾」，已经查到的、做完的不会一起作废。
+        let last = run.rescue && steps >= 3 && step + 1 == steps;
+        if run.rescue && steps >= 3 && step + 2 == steps {
+            messages.push(user_note(RUNNING_OUT));
+        } else if last {
+            messages.push(user_note(LAST_REPLY));
+        }
+        let saved = compact::compact(&mut messages, compact::BUDGET);
+        if saved > 0 {
+            debug!(target: LOG_TARGET, "上下文偏长，压缩了较早的回执：省下 {saved} 字符");
+        }
+        let mut request = llm::request(
             messages.clone(),
             definitions.clone(),
             run.thinking,
             run.temperature,
         );
+        if last && !definitions.is_empty() {
+            request.tool_choice = Some(ToolChoice::None);
+        }
         let response = match run.stall {
             Some(limit) => match tokio::time::timeout(limit, model.completion(request)).await {
                 Ok(response) => response,
@@ -161,7 +199,22 @@ async fn attempt(
             message: anyhow::anyhow!("{error}"),
             stalled: false,
             used_tools,
-        })?;
+        });
+        let response = match response {
+            Ok(response) => response,
+            // 接口回了一条什么都没有的消息（连思考块都没有）：和「只想不说」同一种待遇，催一次。
+            Err(failure)
+                if run.rescue
+                    && !nudged
+                    && step + 1 < steps
+                    && failure.message.to_string().contains(EMPTY_RESPONSE_ERROR) =>
+            {
+                nudged = true;
+                messages.push(user_note(EMPTY_REPLY));
+                continue;
+            }
+            Err(failure) => return Err(failure),
+        };
 
         let calls: Vec<_> = response
             .choice
@@ -173,8 +226,15 @@ async fn attempt(
             .collect();
         let text = llm::text_of(&response.choice);
 
-        if calls.is_empty() {
+        // 最后一次请求里模型仍坚持调工具：只要它同时写了话，就当这是最终回复。
+        if calls.is_empty() || (last && !text.trim().is_empty()) {
             if text.trim().is_empty() {
+                // 思考完了却什么都没说：催一次，而不是整轮报错。
+                if run.rescue && !nudged && step + 1 < steps {
+                    nudged = true;
+                    messages.push(user_note(EMPTY_REPLY));
+                    continue;
+                }
                 return Err(Failure {
                     message: anyhow::anyhow!("模型未返回最终回复"),
                     stalled: false,
@@ -194,9 +254,7 @@ async fn attempt(
                     id: response.message_id.clone(),
                     content: response.choice.clone(),
                 });
-                messages.push(Message::User {
-                    content: vec![UserContent::Text(Text::new(complaint(&figures)))],
-                });
+                messages.push(user_note(&complaint(&figures)));
                 continue;
             }
             return Ok(super::AgentReply {
@@ -215,15 +273,15 @@ async fn attempt(
             content: response.choice.clone(),
         });
 
-        let mut results = Vec::with_capacity(calls.len());
         for call in &calls {
-            let name = call.function.name.clone();
-            trace.push(&name, super::tools::label(&call.function.arguments));
-            if super::tools::is_side_effecting(&name) {
+            trace.push(&call.function.name, super::tools::label(&call.function.arguments));
+            if super::tools::is_side_effecting(&call.function.name) {
                 used_tools = true;
             }
-            let mut output = super::tools::execute(&name, &call.function.arguments, run, call.id.as_str())
-                .await;
+        }
+        let outputs = execute_batch(run, &calls, &mut repeats).await;
+        let mut results = Vec::with_capacity(calls.len());
+        for (call, mut output) in calls.iter().zip(outputs) {
             if !output.images.is_empty() {
                 if viewed + output.images.len() > MAX_VIEWS {
                     output.images.clear();
@@ -236,14 +294,14 @@ async fn attempt(
             results.push(UserContent::ToolResult(ToolResult {
                 call: call.id.clone(),
                 provider: call.provider.clone(),
-                name,
+                name: call.function.name.clone(),
                 content: vec![ToolResultContent::text(output.text)],
             }));
         }
         messages.push(Message::User { content: results });
         // 工具读来的图附在这一批回执之后：tool 消息里放不了图，放在用户消息里模型照样看得见。
         if !seen.is_empty() {
-            let mut content = vec![UserContent::Text(Text::new("（上面 view_image 读到的图）"))];
+            let mut content = vec![UserContent::Text(Text::new(compact::VIEW_MARK))];
             content.extend(seen.drain(..).map(|data_url| {
                 UserContent::Image(Image {
                     data: DocumentSourceKind::Url(data_url),
@@ -261,6 +319,105 @@ async fn attempt(
         stalled: false,
         used_tools,
     })
+}
+
+/// 步数将尽时的提醒（倒数第二次请求前）。只对模型可见。
+const RUNNING_OUT: &str = "（系统提醒，用户看不到：工具调用的次数快用完了。接下来请把已经拿到的结果整理成最终回复；\
+还没做完的部分如实说明做到了哪一步。）";
+
+/// 最后一次请求前的说明：这一次不能再调工具。
+const LAST_REPLY: &str = "（系统提醒，用户看不到：这是最后一次回复，不能再调用工具。直接用已有的结果给出最终回复，\
+没做完的部分如实说明；回复里不要提这条提醒。）";
+
+/// 模型什么都没说时催它。
+const EMPTY_REPLY: &str = "（系统提醒，用户看不到：你刚才没有给出任何回复。请直接给出最终回复。）";
+
+fn user_note(text: &str) -> Message {
+    Message::User {
+        content: vec![UserContent::Text(Text::new(text))],
+    }
+}
+
+/// 同一个调用（工具名 + 参数）已经执行过几次。
+#[derive(Default)]
+struct Repeats(HashMap<String, usize>);
+
+impl Repeats {
+    /// 登记一次调用；超过 [`MAX_SAME_CALL`] 次时返回驳回的说明，调用不再执行。
+    ///
+    /// `satori_*` 不计：同样的参数（比如 `satori_context` 的空参数）在群聊往前走之后
+    /// 结果本来就不同。
+    fn check(&mut self, call: &ToolCall) -> Option<String> {
+        let name = &call.function.name;
+        if name.starts_with("satori_") {
+            return None;
+        }
+        let seen = self
+            .0
+            .entry(format!("{name}\u{0}{}", call.function.arguments))
+            .or_default();
+        *seen += 1;
+        (*seen > MAX_SAME_CALL).then(|| {
+            format!(
+                "你已经用完全相同的参数调用过 {name} {MAX_SAME_CALL} 次了，再调结果也不会变，这次没有执行。\
+                 换个做法（换参数、换工具），或者就用手上已有的信息作答。"
+            )
+        })
+    }
+}
+
+/// 执行一批工具调用，结果按调用顺序排列。
+///
+/// 连续的只读调用（见 [`super::tools::parallel_safe`]）一起并行：同一次回复里查三个网页、
+/// 读四个文件，没有理由排队。其余按顺序一件件来——`bash` 前后常相依。
+/// 并行靠 `join_all` 挂在这个 future 上，不 `spawn`：整轮被取消时一起干净地停掉。
+async fn execute_batch(
+    run: &AgentRun<'_>,
+    calls: &[ToolCall],
+    repeats: &mut Repeats,
+) -> Vec<super::tools::ToolOutput> {
+    let refused: Vec<Option<String>> = calls.iter().map(|call| repeats.check(call)).collect();
+    let mut outputs: Vec<super::tools::ToolOutput> =
+        (0..calls.len()).map(|_| Default::default()).collect();
+    let mut index = 0;
+    while index < calls.len() {
+        let mut end = index;
+        while end < calls.len()
+            && refused[end].is_none()
+            && super::tools::parallel_safe(&calls[end].function.name)
+        {
+            end += 1;
+        }
+        if end - index >= 2 {
+            let group = (index..end).map(|k| {
+                super::tools::execute(
+                    &calls[k].function.name,
+                    &calls[k].function.arguments,
+                    run,
+                    calls[k].id.as_str(),
+                )
+            });
+            for (k, output) in (index..end).zip(futures_util::future::join_all(group).await) {
+                outputs[k] = output;
+            }
+            index = end;
+        } else {
+            outputs[index] = if let Some(reason) = &refused[index] {
+                reason.clone().into()
+            } else {
+                let call = &calls[index];
+                super::tools::execute(
+                    &call.function.name,
+                    &call.function.arguments,
+                    run,
+                    call.id.as_str(),
+                )
+                .await
+            };
+            index += 1;
+        }
+    }
+    outputs
 }
 
 /// 回复里有图没取到：把原因告诉模型，让它改好再给最终回复。
@@ -303,7 +460,9 @@ impl Context {
         let index = skills(run).map_err(bad)?;
         let cwd = run.cwd.unwrap_or(run.dir);
         let mut system = if let Some(explicit) = run.system_prompt { explicit.trim().to_string() } else {
-            let mut base = ROOM_BASE.replace("{cwd}", &cwd.display().to_string());
+            let mut base = ROOM_BASE
+                .replace("{cwd}", &cwd.display().to_string())
+                .replace("{today}", &today());
             if run.control {
                 base.push_str("\n\n");
                 base.push_str(CONTROL_HINT);
@@ -316,13 +475,19 @@ impl Context {
                 base.push_str("\n\n");
                 base.push_str(SEARCH_HINT);
             }
+            let tool_names: Vec<String> =
+                super::tools::definitions(run.tools, run.bridge.is_some(), run.web.is_some())
+                    .into_iter()
+                    .map(|tool| tool.name)
+                    .collect();
+            if !run.nested && tool_names.iter().any(|name| name == "delegate") {
+                base.push_str("\n\n");
+                base.push_str(super::delegate::HINT);
+            }
             if run.figures {
                 base.push_str("\n\n");
                 base.push_str(&CARD_HINT.replace("{scratch}", &run.dir.display().to_string()));
-                let can_view = super::tools::definitions(run.tools, run.bridge.is_some(), run.web.is_some())
-                    .iter()
-                    .any(|tool| tool.name == "view_image");
-                if can_view {
+                if tool_names.iter().any(|name| name == "view_image") {
                     base.push('\n');
                     base.push_str(VIEW_HINT);
                 }
@@ -479,5 +644,46 @@ impl Trace {
         } else {
             self.overflow += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig_core::completion::message::{ToolCallId, ToolFunction};
+
+    fn call(name: &str, args: serde_json::Value) -> ToolCall {
+        ToolCall::new(ToolCallId::mint(), ToolFunction::new(name.into(), args))
+    }
+
+    #[test]
+    fn identical_calls_are_refused_after_the_limit() {
+        let mut repeats = Repeats::default();
+        let same = call("bash", serde_json::json!({"command": "ls"}));
+        for _ in 0..MAX_SAME_CALL {
+            assert!(repeats.check(&same).is_none());
+        }
+        let refused = repeats.check(&same).expect("第 5 次应当被驳回");
+        assert!(refused.contains("完全相同的参数") && refused.contains("bash"));
+        // 参数一变就是另一个调用。
+        assert!(repeats.check(&call("bash", serde_json::json!({"command": "ls -a"}))).is_none());
+        // 工具不同、参数相同也各算各的。
+        assert!(repeats.check(&call("read", serde_json::json!({"command": "ls"}))).is_none());
+    }
+
+    #[test]
+    fn chat_tools_are_never_refused_as_repeats() {
+        let mut repeats = Repeats::default();
+        let context = call("satori_context", serde_json::json!({}));
+        for _ in 0..MAX_SAME_CALL * 3 {
+            assert!(repeats.check(&context).is_none());
+        }
+    }
+
+    #[test]
+    fn today_reads_like_a_date_with_weekday() {
+        let today = today();
+        assert!(today.contains('年') && today.contains('月') && today.contains('日'));
+        assert!(today.contains("星期") && today.ends_with("（北京时间）"));
     }
 }
