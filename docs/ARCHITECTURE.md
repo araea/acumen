@@ -93,7 +93,7 @@ cargo test --locked
 cargo build --release --locked
 ```
 
-插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`matcher`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`。
+插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`db`、`scheduler`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`。
 
 卡片版式改动还需用真实注册表生成图片并人工检查：
 
