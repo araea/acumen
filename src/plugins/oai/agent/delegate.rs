@@ -16,6 +16,7 @@
 
 use super::tools::ToolOutput;
 use super::{AgentRun, run};
+use crate::plugins::oai::LOG_TARGET;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
@@ -26,6 +27,9 @@ pub(crate) const MAX_PER_TURN: usize = 6;
 
 /// 单次委派的墙钟上限。比整轮的默认预算（300 秒）短得多，是为了留出收尾的时间。
 const TIMEOUT: Duration = Duration::from_secs(150);
+
+/// 剩下的时间少于这个就不再委派。
+const MIN_TIME: Duration = Duration::from_secs(15);
 
 /// 子助手最多几步工具往来；用完会被催着交报告（见 `run.rs` 的收尾兜底）。
 const MAX_STEPS: usize = 12;
@@ -74,6 +78,15 @@ async fn delegate(args: &Value, parent: &AgentRun<'_>) -> anyhow::Result<String>
     if task.is_empty() {
         anyhow::bail!("参数错误：task 不能为空，要写清背景、要查什么、要什么形式的结论。");
     }
+    // 剩下的时间不够一个子助手干活就别开了：开了也只会被硬超时一起带走。
+    let cap = parent.deadline.map_or(TIMEOUT, |deadline| {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(TIMEOUT)
+    });
+    if cap < MIN_TIME {
+        anyhow::bail!("这一轮剩下的时间不够再委派了，用手上已有的结果作答。");
+    }
     // 先占名额再开工：并行的几次委派同时到这里，名额要原子地扣。
     if parent.delegated.fetch_add(1, Ordering::SeqCst) >= MAX_PER_TURN {
         parent.delegated.fetch_sub(1, Ordering::SeqCst);
@@ -111,18 +124,36 @@ async fn delegate(args: &Value, parent: &AgentRun<'_>) -> anyhow::Result<String>
         prompt: task,
         max_steps: MAX_STEPS,
         rescue: true,
+        // 比硬超时早一截交报告：被 `timeout` 砍掉的子助手什么都留不下。
+        deadline: Some(super::soft_deadline(cap)),
         nested: true,
         ..AgentRun::new()
     };
-    match tokio::time::timeout(TIMEOUT, run(child)).await {
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(cap, run(child)).await;
+    let label = super::super::utils::truncate_middle(&task.replace('\n', " "), 60);
+    match outcome {
         Ok(Ok(reply)) => {
             let text = reply.text.trim();
+            info!(
+                target: LOG_TARGET,
+                "委派子助手完成（{:.1} 秒，{} 次工具）：{label} → 报告 {} 字",
+                started.elapsed().as_secs_f32(),
+                reply.trace.iter().map(|step| step.repeats as usize).sum::<usize>() + reply.trace_overflow,
+                text.chars().count()
+            );
             Ok(super::super::utils::truncate_middle(text, MAX_REPORT))
         }
-        Ok(Err(error)) => Err(anyhow::anyhow!("子助手没能完成：{error:#}")),
-        Err(_) => Err(anyhow::anyhow!(
-            "子助手超过 {} 秒还没交报告，已终止；换个更小的问法，或自己做。",
-            TIMEOUT.as_secs()
-        )),
+        Ok(Err(error)) => {
+            warn!(target: LOG_TARGET, "委派子助手失败（{:.1} 秒）：{label}：{error:#}", started.elapsed().as_secs_f32());
+            Err(anyhow::anyhow!("子助手没能完成：{error:#}"))
+        }
+        Err(_) => {
+            warn!(target: LOG_TARGET, "委派子助手超时（{} 秒）：{label}", cap.as_secs());
+            Err(anyhow::anyhow!(
+                "子助手超过 {} 秒还没交报告，已终止；换个更小的问法，或自己做。",
+                cap.as_secs()
+            ))
+        }
     }
 }

@@ -1001,6 +1001,7 @@ async fn respond(
             control,
             &search,
             chat,
+            oai.request_timeout(),
         )
         .await?;
         return Ok(Reply {

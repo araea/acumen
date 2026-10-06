@@ -42,7 +42,7 @@ const MAX_SAME_CALL: usize = 4;
 const ROOM_BASE: &str = "\
 你是运行在本机的中文助手，可以用工具读写文件、执行命令。
 工作目录：{cwd}
-今天是 {today}；要知道此刻几点，用 bash 跑 date。
+今天是 {today}，问日期、星期直接答；要精确到几点才用 bash 跑 date。
 回复要简洁，但关键依据不能省：引用了哪个文件、跑了哪条命令、拿到什么结果，都要说清楚。
 工具报告的错误就是结果的一部分，照着它换个做法，别把它当成需要解释的现象。
 工作目录里的路径直接写相对路径即可。";
@@ -151,6 +151,8 @@ async fn attempt(
     let mut corrected = false;
     // 空回复也只催一次。
     let mut nudged = false;
+    // 「最后一次回复」的说明只写一次（时间到了之后可能不止一轮落在最后一步上）。
+    let mut closing = false;
     let steps = run.max_steps.max(1);
     // 本轮已经看过几张图（`view_image`），以及这一批工具回执之后要附上的图。
     let mut viewed = 0;
@@ -159,12 +161,19 @@ async fn attempt(
 
     for step in 0..steps {
         // 倒数第二次请求前打个招呼，最后一次请求不再给工具：把「用完步数就整轮报错」
-        // 变成「用手上的东西收尾」，已经查到的、做完的不会一起作废。
-        let last = run.rescue && steps >= 3 && step + 1 == steps;
-        if run.rescue && steps >= 3 && step + 2 == steps {
+        // 变成「用手上的东西收尾」，已经查到的、做完的不会一起作废。时间到了同理——
+        // 外层的硬超时是直接丢掉整轮，软期限（见 [`AgentRun::deadline`]）先一步让它收尾。
+        let out_of_time = run
+            .deadline
+            .is_some_and(|deadline| std::time::Instant::now() >= deadline);
+        let last = run.rescue && steps >= 3 && (step + 1 == steps || out_of_time);
+        if last {
+            if !closing {
+                closing = true;
+                messages.push(user_note(LAST_REPLY));
+            }
+        } else if run.rescue && steps >= 3 && step + 2 == steps {
             messages.push(user_note(RUNNING_OUT));
-        } else if last {
-            messages.push(user_note(LAST_REPLY));
         }
         let saved = compact::compact(&mut messages, compact::BUDGET);
         if saved > 0 {

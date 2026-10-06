@@ -154,6 +154,11 @@ pub(crate) struct AgentRun<'a> {
     /// 只有房间开：群聊搭话有自己的「不说话」约定（`[silent]`），被催出来的总结
     /// 会被当成一句要发进群里的话。
     pub rescue: bool,
+    /// 软期限：过了这个时刻就按「最后一步」收尾（只在 [`Self::rescue`] 开着时生效）。
+    ///
+    /// 外层还有一道硬的总预算，到点是直接丢掉整轮；软期限比它早一截，让长任务在被
+    /// 砍之前交出已有的东西。`None` 表示不看时间。
+    pub deadline: Option<std::time::Instant>,
     /// 这是被委派出来的子对话：不能再委派（见 [`delegate`]）。
     pub nested: bool,
     /// 这一轮已经委派了几次；并行的委派要原子地占名额。
@@ -185,6 +190,7 @@ impl<'a> AgentRun<'a> {
             max_steps: 24,
             figures: false,
             rescue: false,
+            deadline: None,
             nested: false,
             delegated: std::sync::atomic::AtomicUsize::new(0),
         }
@@ -219,6 +225,19 @@ pub(crate) struct ChatContext {
     pub tools: Option<String>,
 }
 
+/// 总预算 `budget` 之内留给收尾的那一截。
+///
+/// 要盖住两件事：正在飞的那一步（模型请求加工具，检查期限只能在步与步之间）还得跑完，
+/// 以及最后一次请求本身（带着思考、带着长上下文）也要几十秒。所以取预算的四分之一，
+/// 5 分钟的预算留 75 秒；预算很短时按比例缩。
+pub(crate) fn soft_deadline(budget: std::time::Duration) -> std::time::Instant {
+    let reserve = (budget / 4).clamp(
+        std::time::Duration::from_secs(8),
+        std::time::Duration::from_secs(75),
+    );
+    std::time::Instant::now() + budget.saturating_sub(reserve)
+}
+
 /// 房间对话：按历史展开消息，驱动一轮 agent。
 ///
 /// 房间历史仍是唯一事实来源；中途的工具调用不写回历史，下一轮按历史重新展开。
@@ -235,6 +254,7 @@ pub(crate) async fn conversation(
     control: Option<&crate::plugins::ctl::bridge::Lease>,
     search: &super::search::SearchConfig,
     chat: Option<ChatContext>,
+    budget: std::time::Duration,
 ) -> anyhow::Result<AgentReply> {
     let (current, previous) = hist
         .split_last()
@@ -296,6 +316,7 @@ pub(crate) async fn conversation(
             images: &current.images,
             figures: true,
             rescue: true,
+            deadline: Some(soft_deadline(budget)),
             ..AgentRun::new()
         },
         previous,

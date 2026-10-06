@@ -127,6 +127,15 @@ async def chat(request):
         if body.get("tool_choice") == "none":
             return completion({"role": "assistant", "content": f"收尾：只做了 {len(tool_results)} 步，剩下的没来得及。"})
         return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command=f"echo step{len(tool_results)}")]})
+    if "大回执" in asked:  # 每步一份 3 万字的回执：八份就超过压缩预算
+        if len(tool_results) >= 8:
+            return completion({"role": "assistant", "content": "读完了。"})
+        return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command=f"python3 -c \"print('字' * 30000)\" # {len(tool_results)}")]})
+    if "拖沓" in asked:  # 每一步都慢：软期限一到就该收尾，而不是等硬超时丢掉整轮
+        if body.get("tool_choice") == "none":
+            return completion({"role": "assistant", "content": f"时间到，先交这些：做了 {len(tool_results)} 步。"})
+        await asyncio.sleep(4)
+        return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command=f"echo slow{len(tool_results)}")]})
     if "重复" in asked:
         if tool_results and "完全相同的参数" in tool_results[-1]:
             return completion({"role": "assistant", "content": "不再重复了。"})
@@ -210,6 +219,7 @@ api_base = "http://127.0.0.1:{LLM_PORT}/v1"
 api_key = "k"
 agent_default_model = "fake/scripted"
 plain_text_max_chars = 120
+request_timeout_seconds = 30
 
 [oai.providers.fake]
 api_base = "http://127.0.0.1:{LLM_PORT}/v1"
@@ -321,6 +331,29 @@ enabled = false
         users = lambda r: [text_of(m) for m in r["messages"] if m["role"] == "user"]
         check("倒数第二次请求带着「次数快用完」", any("次数快用完" in t for t in users(llm_requests[-2])) and not any("次数快用完" in t for t in users(llm_requests[-3])))
         check("最后一次请求带着「最后一次回复」", any("最后一次回复" in t for t in users(llm_requests[-1])))
+
+        print("L. 上下文瘦身：较早的大回执被压成头尾，最近几份原样")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 大回执")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        tools_in = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        check("最后一次请求带着八份回执", len(tools_in) == 8, str(len(tools_in)))
+        check("最老的几份已压缩、写明原长", tools_in[0].count("已压缩：原") == 1 and len(tools_in[0]) < 1_400, tools_in[0][:60])
+        check("最近四份原样", all(len(t) >= 29_000 and "已压缩" not in t for t in tools_in[-4:]), str([len(t) for t in tools_in]))
+        total = sum(len(text_of(m)) for m in llm_requests[-1]["messages"])
+        check("整条请求落回预算附近（16 万字符上下）", total < 175_000, str(total))
+
+        print("K. 时间将尽：软期限一到就收尾，赶在硬超时（30 秒）之前交回已有的东西")
+        mark, n = len(posts), len(llm_requests)
+        started = time.time()
+        await inject("管家大人 拖沓")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        took = time.time() - started
+        sent = creates_since(mark)
+        check("发出的是收尾回复而不是「请求超时」", len(sent) == 1 and "时间到，先交这些" in sent[0], str(sent))
+        check("赶在硬超时之前", took < 28, f"{took:.1f} 秒")
+        check("远没到步数上限", len(llm_requests) - n < 12, str(len(llm_requests) - n))
+        check("最后一次请求禁用了工具", llm_requests[-1].get("tool_choice") == "none")
 
         print("H. 重复调用：同样的命令执行满 4 次后驳回")
         mark, n = len(posts), len(llm_requests)
