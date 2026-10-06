@@ -3,7 +3,7 @@
 
 覆盖回复里的内嵌图片：模型用 bash 把图写进本轮临时目录、回复里写 `![说明](路径)`，
 图应当按位置画进同一张卡片（而不是另发一条）；写了不存在的路径时只被提醒一次；
-纯文字回复不受影响。假模型按提问里的关键词走脚本，不需要任何真实密钥。
+纯文字回复不受影响；`view_image` 读到的图要随下一条用户消息送回模型。假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
 用法（需要 `pip install aiohttp` 与 Chromium；浏览器路径取 `CHROME_BIN`）：
     cargo build --release --locked
@@ -102,8 +102,8 @@ async def chat(request):
     msgs = body["messages"]
     system = text_of(msgs[0]) if msgs and msgs[0]["role"] == "system" else ""
     scratch = (re.search(r"临时目录 (/\S+?)，", system) or [None, "/nonexistent"])[1]
-    # 房间历史会带着前几轮：只看最近那句真正的提问（跳过「改错提醒」）。
-    asked_at = max(i for i, m in enumerate(msgs) if m["role"] == "user" and "没能嵌进卡片" not in text_of(m))
+    # 房间历史会带着前几轮：只看最近那句真正的提问（跳过「改错提醒」与附图的那条）。
+    asked_at = max(i for i, m in enumerate(msgs) if m["role"] == "user" and "没能嵌进卡片" not in text_of(m) and "view_image 读到的图" not in text_of(m))
     asked = text_of(msgs[asked_at])
     last = text_of([m for m in msgs if m["role"] == "user"][-1])
     tools_done = any(m["role"] == "tool" for m in msgs[asked_at:])
@@ -114,6 +114,21 @@ async def chat(request):
             return completion({"role": "assistant", "content": None, "tool_calls": [
                 {"id": "call_1", "type": "function", "function": {"name": "bash", "arguments": json.dumps({"command": cmd})}}]})
         return completion({"role": "assistant", "content": f"好的，图表如下：\n\n![本周走势]({scratch}/c.png)\n\n以上。"})
+    if "看图" in asked:
+        done = sum(1 for m in msgs[asked_at:] if m["role"] == "tool")
+        if done == 0:
+            cmd = f"printf '%s' {PNG_B64} | base64 -d > {scratch}/v.png"
+            return completion({"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_a", "type": "function", "function": {"name": "bash", "arguments": json.dumps({"command": cmd})}}]})
+        if done == 1:
+            return completion({"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_b", "type": "function", "function": {"name": "view_image", "arguments": json.dumps({"source": f"{scratch}/v.png"})}}]})
+        # 工具回执之后应当跟着一条带图的用户消息。
+        tail = msgs[-1]
+        parts = tail.get("content") if isinstance(tail.get("content"), list) else []
+        if tail["role"] == "user" and any(p.get("type") == "image_url" for p in parts if isinstance(p, dict)):
+            return completion({"role": "assistant", "content": "我看到了那张图。"})
+        return completion({"role": "assistant", "content": "没有收到图。"})
     if "坏图" in asked:
         if "没能嵌进卡片" in last:
             return completion({"role": "assistant", "content": "改好了，这回不放图。"})
@@ -237,6 +252,17 @@ enabled = false
         sent = creates_since(mark)
         check("模型被问了两次（只提醒一次）", len(llm_requests) - n == 2, str(len(llm_requests) - n))
         check("仍然发出了一张卡片", len(sent) == 1 and ("<img" in sent[0] or "<image" in sent[0] or "base64://" in sent[0]), str([s[:80] for s in sent]))
+
+        print("E. 看图：view_image 读到的图附在下一条用户消息里")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 看图")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复")
+        sent = creates_since(mark)
+        check("模型确实收到了图", len(sent) == 1 and "我看到了那张图" in sent[0], str(sent))
+        check("模型被问了三次（写图、看图、答）", len(llm_requests) - n == 3, str(len(llm_requests) - n))
+        tools = [t["function"]["name"] for t in llm_requests[n].get("tools", [])]
+        check("工具表里有 view_image", "view_image" in tools, str(tools))
+        check("提示词建议先看一眼", "view_image 自己看一眼" in text_of(llm_requests[n]["messages"][0]))
 
         print("D. 纯文字：不受影响")
         mark, n = len(posts), len(llm_requests)

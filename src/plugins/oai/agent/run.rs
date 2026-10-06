@@ -22,6 +22,9 @@ use rig_core::completion::{AssistantContent, CompletionModel, Message};
 
 use crate::plugins::oai::LOG_TARGET;
 
+/// 一轮里 `view_image` 最多看几张：每张图都是下一次请求里实打实的输入。
+const MAX_VIEWS: usize = 6;
+
 /// 页脚保留的工具调用条数上限；再多只记次数。
 const TRACE_LIMIT: usize = 12;
 
@@ -75,6 +78,9 @@ const CARD_HINT: &str = "\
 一条回复最多嵌 6 张；写之前先确认文件真的存在。图只放用户要看的东西，别拿来装饰。
 生成图表、截图这类中间产物写进临时目录 {scratch}，本轮结束会自动清理，别弄脏工作目录。";
 
+/// 手边有 `view_image` 时再补的一句：画完先自己看一眼。
+const VIEW_HINT: &str = "画好图之后可以先用 view_image 自己看一眼，确认没画坏（字没挤在一起、数据没错）再写进回复。";
+
 /// 跑一轮对话。
 pub(crate) async fn run(run: AgentRun<'_>) -> anyhow::Result<super::AgentReply> {
     run_with_history(run, &[]).await
@@ -124,6 +130,9 @@ async fn attempt(
     // 图没取到时只提醒模型改一次：再不行就让占位说话，别在这上面来回磨。
     let mut corrected = false;
     let steps = run.max_steps.max(1);
+    // 本轮已经看过几张图（`view_image`），以及这一批工具回执之后要附上的图。
+    let mut viewed = 0;
+    let mut seen: Vec<String> = Vec::new();
 
     for step in 0..steps {
         let request = llm::request(
@@ -213,16 +222,38 @@ async fn attempt(
             if super::tools::is_side_effecting(&name) {
                 used_tools = true;
             }
-            let output = super::tools::execute(&name, &call.function.arguments, run, call.id.as_str())
+            let mut output = super::tools::execute(&name, &call.function.arguments, run, call.id.as_str())
                 .await;
+            if !output.images.is_empty() {
+                if viewed + output.images.len() > MAX_VIEWS {
+                    output.images.clear();
+                    output.text = format!("这一轮看的图已经够多了（最多 {MAX_VIEWS} 张），不再附图。");
+                } else {
+                    viewed += output.images.len();
+                    seen.extend(std::mem::take(&mut output.images));
+                }
+            }
             results.push(UserContent::ToolResult(ToolResult {
                 call: call.id.clone(),
                 provider: call.provider.clone(),
                 name,
-                content: vec![ToolResultContent::text(output)],
+                content: vec![ToolResultContent::text(output.text)],
             }));
         }
         messages.push(Message::User { content: results });
+        // 工具读来的图附在这一批回执之后：tool 消息里放不了图，放在用户消息里模型照样看得见。
+        if !seen.is_empty() {
+            let mut content = vec![UserContent::Text(Text::new("（上面 view_image 读到的图）"))];
+            content.extend(seen.drain(..).map(|data_url| {
+                UserContent::Image(Image {
+                    data: DocumentSourceKind::Url(data_url),
+                    media_type: None,
+                    detail: None,
+                    additional_params: None,
+                })
+            }));
+            messages.push(Message::User { content });
+        }
     }
 
     Err(Failure {
@@ -288,6 +319,13 @@ impl Context {
             if run.figures {
                 base.push_str("\n\n");
                 base.push_str(&CARD_HINT.replace("{scratch}", &run.dir.display().to_string()));
+                let can_view = super::tools::definitions(run.tools, run.bridge.is_some(), run.web.is_some())
+                    .iter()
+                    .any(|tool| tool.name == "view_image");
+                if can_view {
+                    base.push('\n');
+                    base.push_str(VIEW_HINT);
+                }
             }
             match run.append_system_prompt.trim() {
                 "" => base,

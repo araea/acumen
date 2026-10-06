@@ -131,12 +131,10 @@ pub(crate) async fn gather(markdown: &str, roots: &[&Path]) -> Figures {
         return figures;
     }
     let (take, over) = wanted.split_at(wanted.len().min(MAX_FIGURES));
-    let results = futures_util::future::join_all(take.iter().map(|source| async move {
-        let loaded = tokio::time::timeout(LOAD_TIMEOUT, load(source, roots))
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("{} 秒内没取完", LOAD_TIMEOUT.as_secs())));
-        (source.clone(), loaded)
-    }))
+    let results = futures_util::future::join_all(
+        take.iter()
+            .map(|source| async move { (source.clone(), load_one(source, roots).await) }),
+    )
     .await;
 
     let mut total = 0;
@@ -161,6 +159,16 @@ pub(crate) async fn gather(markdown: &str, roots: &[&Path]) -> Figures {
             .push((source.clone(), format!("一条回复最多嵌 {MAX_FIGURES} 张")));
     }
     figures
+}
+
+/// 取一张图：本机文件、公网链接或 `data:` 都行，带总时限。
+///
+/// 回复里的嵌图与 agent 自己的 `view_image` 工具走同一道准入与转码，所以「能嵌进卡片的」
+/// 与「agent 能看见的」永远是同一批图。
+pub(crate) async fn load_one(source: &str, roots: &[&Path]) -> anyhow::Result<String> {
+    tokio::time::timeout(LOAD_TIMEOUT, load(source, roots))
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("{} 秒内没取完", LOAD_TIMEOUT.as_secs())))
 }
 
 /// 日志里的地址：data URL 可能有几 MB。

@@ -4,14 +4,14 @@
 //! 描述的能力、模型真正调得到的东西，一旦分家就会出现「提示词里有、工具却没有」
 //! 这种只有上手用才发现的空档。
 //!
-//! 参数 Schema 是手写的 JSON：引入 derive 只为六个工具多背一个宏依赖不划算，
+//! 参数 Schema 是手写的 JSON：引入 derive 只为七个工具多背一个宏依赖不划算，
 //! 而手写的 schema 反而更好按模型实际用得顺手的写法调。
 
 use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
 
 /// 本地工具：需要 shell 或文件系统就能完成的那些。
-const LOCAL: &[&str] = &["bash", "read", "write", "edit", "glob", "grep"];
+const LOCAL: &[&str] = &["bash", "read", "write", "edit", "glob", "grep", "view_image"];
 
 /// 聊天界面工具：只有接了 [`super::ChatBridge`] 时才存在。
 const CHAT: &[&str] = &[
@@ -85,8 +85,56 @@ pub(crate) fn is_side_effecting(name: &str) -> bool {
     )
 }
 
-/// 执行一次工具调用，返回交给模型的文本。
+/// 一次工具调用的产出：交给模型的文本，以及要随后附上的图片。
+///
+/// 图片不能塞进 tool 消息（兼容接口大多只收文本），由循环在这一批 tool 消息之后
+/// 另附一条用户消息带上——所以工具只管交出 data URL，不管怎么附。
+#[derive(Default)]
+pub(crate) struct ToolOutput {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
+impl From<String> for ToolOutput {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            images: Vec::new(),
+        }
+    }
+}
+
+/// 执行一次工具调用。
 pub(crate) async fn execute(
+    name: &str,
+    args: &Value,
+    run: &super::AgentRun<'_>,
+    call_id: &str,
+) -> ToolOutput {
+    if name == "view_image" {
+        return view_image(args, run).await;
+    }
+    run_text(name, args, run, call_id).await.into()
+}
+
+/// 看一张图：读成能交给模型的 data URL，由循环附在下一条消息里。
+async fn view_image(args: &Value, run: &super::AgentRun<'_>) -> ToolOutput {
+    let source = args["source"].as_str().unwrap_or("").trim();
+    if source.is_empty() {
+        return "参数错误：source 不能为空。".to_string().into();
+    }
+    let roots = [run.cwd.unwrap_or(run.dir), run.dir];
+    match super::figures::load_one(source, &roots).await {
+        Ok(data_url) => ToolOutput {
+            text: format!("已读取 {source}，图在下一条消息里，直接看。"),
+            images: vec![data_url],
+        },
+        Err(error) => format!("{error:#}").into(),
+    }
+}
+
+/// 文本类工具：返回交给模型的文本。
+async fn run_text(
     name: &str,
     args: &Value,
     run: &super::AgentRun<'_>,
@@ -155,7 +203,7 @@ pub(crate) fn label(args: &Value) -> String {
     let Some(args) = args.as_object() else {
         return String::new();
     };
-    for key in ["command", "query", "url", "pattern", "path", "file"] {
+    for key in ["command", "query", "url", "pattern", "path", "file", "source"] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
             return super::super::utils::truncate_middle(value.trim(), LABEL_LIMIT);
         }
@@ -190,15 +238,37 @@ async fn resolve(path: &str, run: &super::AgentRun<'_>) -> anyhow::Result<std::p
     }
 }
 
+/// 按扩展名认图片：只用来把「读不了」换成一句指路的话，不做任何放行判断。
+fn is_image_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+}
+
 /// 单次读入的字符上限。
 const MAX_READ: usize = 60_000;
 
 async fn read(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String> {
     let path = resolve(args["path"].as_str().unwrap_or(""), run).await?;
-    let content = tokio::fs::read_to_string(&path)
-        .await
-        .map_err(|error| anyhow::anyhow!("读取 {} 失败：{error}", path.display()))?;
+    let image_hint = || {
+        anyhow::anyhow!(
+            "{} 是图片，read 只读文本；想看图用 view_image",
+            path.display()
+        )
+    };
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => content,
+        Err(_) if is_image_path(&path) => return Err(image_hint()),
+        Err(error) => anyhow::bail!("读取 {} 失败：{error}", path.display()),
+    };
     if content.contains('\0') {
+        if is_image_path(&path) {
+            return Err(image_hint());
+        }
         anyhow::bail!("{} 像是一份二进制文件，读不了", path.display());
     }
     let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
@@ -456,6 +526,16 @@ fn spec(name: &str) -> Option<ToolDefinition> {
                     "glob": {"type": "string", "description": "只搜文件名匹配这个通配符的文件"}
                 },
                 "required": ["pattern"]
+            }),
+        ),
+        "view_image" => (
+            "看一张图：本机图片文件（你刚用 bash 画的图表、截图、下载的图）或公网图片链接，图会附在下一条消息里，你直接看就行。用来核对自己画的东西有没有画坏（字有没有挤在一起、数据对不对）、看用户给的链接里是什么。支持 PNG / JPEG / GIF / WebP / SVG；每一轮最多看 6 张，别拿它翻整个目录。read 读不了图片，看图用它。",
+            json!({
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "图片文件路径（绝对路径或相对工作目录）或 http(s) 链接"}
+                },
+                "required": ["source"]
             }),
         ),
         "satori_context" => (
