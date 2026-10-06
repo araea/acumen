@@ -12,6 +12,7 @@
 
 use super::super::types::TraceStep;
 use super::super::llm;
+use super::figures;
 use super::AgentRun;
 use rig_core::client::CompletionClient;
 use rig_core::completion::message::{
@@ -62,6 +63,18 @@ web_search 查训练知识之外的最新信息（赛程战况、版本、新闻
 web_fetch 读某个网址的正文。日常闲聊、能算能推的、你本来就知道的，直接答；
 真去查了就把来源链接带上，查不到就说查不到。";
 
+/// 回复排成卡片图时的写法说明；只有这一轮的回复真的会渲染成卡片（[`AgentRun::figures`]）才写。
+///
+/// 模型默认不知道自己的话会被排成图，更不知道能往里嵌图——不说它就只会贴一个链接。
+/// 路径里不许有空格是 Markdown 的限制：`![x](a b.png)` 根本不会被解析成图片。
+const CARD_HINT: &str = "\
+你的回复会排成一张图片卡发出：标题、列表、表格、代码块都排得好看，不必写成纯文本的样子。
+要让用户看见一张图，在回复里单独占一行写 `![一句说明](地址)`，它会嵌在这个位置，说明文字作图注。
+地址可以是公网图片链接，也可以是你刚用工具生成、保存在本机的图片文件路径（绝对路径，
+或相对工作目录；支持 PNG / JPEG / GIF / WebP / SVG，路径里不要有空格）。
+一条回复最多嵌 6 张；写之前先确认文件真的存在。图只放用户要看的东西，别拿来装饰。
+生成图表、截图这类中间产物写进临时目录 {scratch}，本轮结束会自动清理，别弄脏工作目录。";
+
 /// 跑一轮对话。
 pub(crate) async fn run(run: AgentRun<'_>) -> anyhow::Result<super::AgentReply> {
     run_with_history(run, &[]).await
@@ -108,8 +121,11 @@ async fn attempt(
     let mut messages = context.messages;
     let mut trace = Trace::default();
     let mut used_tools = false;
+    // 图没取到时只提醒模型改一次：再不行就让占位说话，别在这上面来回磨。
+    let mut corrected = false;
+    let steps = run.max_steps.max(1);
 
-    for _ in 0..run.max_steps.max(1) {
+    for step in 0..steps {
         let request = llm::request(
             messages.clone(),
             definitions.clone(),
@@ -156,12 +172,31 @@ async fn attempt(
                     used_tools,
                 });
             }
+            // 回复里的图在这里就取好：本轮的临时目录一会儿就被清掉，图多半放在那里。
+            let figures = if run.figures {
+                let roots = [run.cwd.unwrap_or(run.dir), run.dir];
+                figures::gather(&text, &roots).await
+            } else {
+                figures::Figures::default()
+            };
+            if !figures.failures().is_empty() && !corrected && step + 1 < steps {
+                corrected = true;
+                messages.push(Message::Assistant {
+                    id: response.message_id.clone(),
+                    content: response.choice.clone(),
+                });
+                messages.push(Message::User {
+                    content: vec![UserContent::Text(Text::new(complaint(&figures)))],
+                });
+                continue;
+            }
             return Ok(super::AgentReply {
                 text,
                 // 实际应答的模型名由调用方补全（它才知道 `供应商/` 前缀）。
                 trace: trace.steps,
                 trace_overflow: trace.overflow,
                 sources: run.web.map(super::super::search::Search::sources).unwrap_or_default(),
+                figures,
             });
         }
 
@@ -191,10 +226,31 @@ async fn attempt(
     }
 
     Err(Failure {
-        message: anyhow::anyhow!("工具调用超过 {} 步仍未收尾", run.max_steps.max(1)),
+        message: anyhow::anyhow!("工具调用超过 {steps} 步仍未收尾"),
         stalled: false,
         used_tools,
     })
+}
+
+/// 回复里有图没取到：把原因告诉模型，让它改好再给最终回复。
+///
+/// 这条消息只对模型可见；它不会进房间历史，用户也看不到。
+fn complaint(figures: &figures::Figures) -> String {
+    let mut out = format!(
+        "你刚才的回复里有 {} 张图没能嵌进卡片：",
+        figures.failures().len()
+    );
+    for (source, reason) in figures.failures() {
+        out.push_str(&format!(
+            "\n- {}：{reason}",
+            super::super::utils::truncate_middle(source, 120)
+        ));
+    }
+    out.push_str(
+        "\n请改成真实存在、能打开的路径或链接（需要的话先用工具生成或确认），\
+         或者把这些图去掉，然后重新给出完整的最终回复。这条提醒用户看不到，回复里不要提它。",
+    );
+    out
 }
 
 /// 这一轮要发的开头消息。
@@ -228,6 +284,10 @@ impl Context {
             if run.web.is_some() {
                 base.push_str("\n\n");
                 base.push_str(SEARCH_HINT);
+            }
+            if run.figures {
+                base.push_str("\n\n");
+                base.push_str(&CARD_HINT.replace("{scratch}", &run.dir.display().to_string()));
             }
             match run.append_system_prompt.trim() {
                 "" => base,

@@ -23,7 +23,7 @@ src/
   db/              SeaORM 实体与 SQLite 查询
 res/               词库、提示词、技能、卡片与控制台资源
 docs/              项目文档
-tests/             前台运行、重启、渲染与端到端冒烟（e2e.py 自起假 Satori 实现端）
+tests/             前台运行、重启、渲染与端到端冒烟（e2e.py 自起假 Satori 实现端；e2e_agent.py 再加一个脚本化的假模型）
 ```
 
 ## 事件流水线
@@ -102,6 +102,7 @@ cargo build --release --locked
 ```sh
 python3 tests/e2e.py target/release/acumen
 E2E_STARTUP=1 python3 tests/e2e.py target/release/acumen   # 全部插件启动自检
+python3 tests/e2e_agent.py target/release/acumen            # 内置 agent 房间：工具循环与回复内嵌图片（需要 Chromium）
 ```
 
 卡片版式改动还需用真实注册表生成图片并人工检查：

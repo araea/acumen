@@ -84,10 +84,12 @@ async fn reply(
     text_mode: bool,
     header: &str,
 ) {
-    reply_card(ctx, writer, event, text, text_mode, header, &[], None).await;
+    let figures = super::agent::figures::Figures::default();
+    reply_card(ctx, writer, event, text, text_mode, header, &[], &figures, None).await;
 }
 
 /// 把回复渲染成卡片图片发出；`text_mode`、关掉出图、或渲染失败时退回纯文本。
+/// 返回卡片有没有发出去——正文里内嵌的图跟着卡片走，没发出去的话调用方要把图另发。
 ///
 /// 关图开关在这里读一次就够——全部卡片输出都汇到这一个函数，
 /// 调用方不必各自判断。
@@ -100,11 +102,14 @@ async fn reply_card(
     text_mode: bool,
     header: &str,
     sources: &[super::types::Source],
+    figures: &super::agent::figures::Figures,
     footer: Option<super::render::Footer>,
-) {
+) -> bool {
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     let re = Regex::new(r"!\[.*?\]\((data:image/[^\s\)]+)\)").unwrap();
-    let mut accessible = re.replace_all(text, "[内嵌图片]").to_string();
+    // 文本回退里没有图的位置：有说明的留成〔图：说明〕，其余去掉。
+    let spoken = super::agent::figures::without_images(text);
+    let mut accessible = re.replace_all(&spoken, "[内嵌图片]").to_string();
     if !sources.is_empty() {
         accessible.push_str("\n\n参考来源：");
         for (index, source) in sources.iter().enumerate() {
@@ -136,6 +141,7 @@ async fn reply_card(
             title: header,
             markdown: text,
             sources,
+            figures,
             footer,
         };
         match super::render::render_card(card, oai.image_scale()).await {
@@ -151,6 +157,7 @@ async fn reply_card(
     if !illustrated {
         reply_text(ctx, writer, event, accessible).await;
     }
+    illustrated
 }
 
 /// 把一份列表渲染成卡片图发出；`text_mode`、关掉出图、或渲染失败时退回同一份数据的文本。
@@ -202,6 +209,24 @@ fn strip_markdown_images(content: &str) -> String {
     let stripped = re.replace_all(content, "");
     let blank_runs = Regex::new(r"\n{3,}").unwrap();
     blank_runs.replace_all(stripped.trim(), "\n\n").into_owned()
+}
+
+/// 卡片没发出去时，正文里的图改作真图另发：取好的用取好的那份，远程直链交给实现端自己拉；
+/// 本机文件取不到就没有办法了，那一张只能丢。
+fn loose_images(content: &str, figures: &super::agent::figures::Figures) -> Vec<String> {
+    super::agent::figures::sources(content)
+        .into_iter()
+        .filter_map(|source| match figures.get(&source) {
+            Some(data_url) => Some(data_url.to_string()),
+            None if source.starts_with("http://")
+                || source.starts_with("https://")
+                || source.starts_with("data:") =>
+            {
+                Some(source)
+            }
+            None => None,
+        })
+        .collect()
 }
 
 /// 把图片逐张作为真图发出，返回没发出去的那些。`quote` 为真时第一张引用用户那句话。
@@ -685,18 +710,30 @@ async fn chat(
                 )
             };
 
-            // 图片一律作为真图单独发出，正文里只留文字。卡片只放行 data: 图片，
-            // 远程直链在卡里是个空框；把图再塞进卡片或附一串链接只是重复。
+            // 图片的去向有两种。
             //
+            // **内嵌**（智能体房间、回复要渲染成卡片、且正文里确实写了图）：图按位置画进卡片，
+            // 取图已经在 agent 层做完（见 `agent::figures`）。卡片没发出去才把图另发。
+            //
+            // **另发**（其余所有情形）：正文里只留文字，图作为真图单独发出——卡片只放行
+            // `data:` 图片，远程直链在卡里是个空框；把图再塞进卡片或附一串链接只是重复。
             // 画图房间的正文是「加粗的提示词 + 图片链接」，那是留给历史记录与垫图回放
             // 的，不是给人看的：只发成品图，引用着用户那句话。
-            let prose = if draw && !image_urls.is_empty() {
+            let inline = agent.uses_agent()
+                && !draw
+                && !cmd.text_mode
+                && oai.image_enabled()
+                && !super::agent::figures::sources(&content).is_empty();
+            let prose = if inline {
+                content.clone()
+            } else if draw && !image_urls.is_empty() {
                 String::new()
             } else {
                 strip_markdown_images(&content)
             };
 
             let mut spoke = false;
+            let mut carded = false;
             if !prose.trim().is_empty() || !reply_data.sources.is_empty() {
                 // 一两句话没必要走一次浏览器截图：文本更快，也方便直接复制。
                 let plain = cmd.text_mode
@@ -713,7 +750,7 @@ async fn chat(
                     trace_overflow: reply_data.trace_overflow,
                 });
 
-                reply_card(
+                carded = reply_card(
                     ctx,
                     writer,
                     &event,
@@ -721,6 +758,7 @@ async fn chat(
                     plain,
                     &header,
                     &reply_data.sources,
+                    &reply_data.figures,
                     footer,
                 )
                 .await;
@@ -728,7 +766,12 @@ async fn chat(
             }
 
             // 正文没说话时由第一张图引住用户那句话，免得群里分不清是给谁画的。
-            let failed = send_images(ctx, writer, &event, &image_urls, !spoke).await;
+            let loose = match (inline, carded) {
+                (true, true) => Vec::new(),
+                (true, false) => loose_images(&content, &reply_data.figures),
+                (false, _) => image_urls,
+            };
+            let failed = send_images(ctx, writer, &event, &loose, !spoke).await;
             if !failed.is_empty() {
                 reply_text(ctx, writer, &event, undelivered_notice(&failed)).await;
             }
@@ -846,6 +889,8 @@ pub(super) struct Reply {
     /// `[download video](url)`，那两条是模型能自己写的；音乐这类「房间产出的成品」
     /// 模型根本碰不到，只能由插件在正文外附上，于是有了这个字段。
     pub(super) media: Vec<MediaMessage>,
+    /// 正文里内嵌的图（智能体房间才有），卡片按位置画进去。
+    pub(super) figures: super::agent::figures::Figures,
 }
 
 /// 房间在等一句补充时回的那条。
@@ -861,6 +906,7 @@ pub(super) fn guidance(text: impl Into<String>) -> Reply {
         model: None,
         plain: true,
         media: Vec::new(),
+        figures: super::agent::figures::Figures::default(),
     }
 }
 
@@ -970,6 +1016,7 @@ async fn respond(
             }),
             plain: false,
             media: Vec::new(),
+            figures: result.figures,
         });
     }
     let msgs = build_chat_messages(agent, hist).await;
@@ -982,6 +1029,7 @@ async fn respond(
         model: Some(chat_model.to_string()),
         plain: false,
         media: Vec::new(),
+        figures: super::agent::figures::Figures::default(),
     })
 }
 

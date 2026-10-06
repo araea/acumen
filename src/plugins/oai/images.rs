@@ -197,6 +197,7 @@ pub(super) async fn generate_reply(
         model: Some(generated.model.unwrap_or_else(|| agent.model.clone())),
         plain: false,
         media: Vec::new(),
+        figures: Default::default(),
     })
 }
 

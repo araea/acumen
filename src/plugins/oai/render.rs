@@ -11,7 +11,8 @@
 //! 与耗时页脚，让读者一眼看清结论出处与代价。
 
 use crate::render::web::{self as render, esc};
-use pulldown_cmark::{Options, Parser, html};
+use super::agent::figures;
+use pulldown_cmark::{Parser, html};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -31,6 +32,9 @@ pub(crate) struct Card<'a> {
     pub markdown: &'a str,
     /// 参考来源，渲染成正文后的编号列表。
     pub sources: &'a [super::types::Source],
+    /// 正文里 `![说明](地址)` 对应的图（已取好的 data URL）。卡片只放这里有的图，
+    /// 没有的写成说明占位——外部地址从不进卡片。
+    pub figures: &'a figures::Figures,
     /// 页脚：模型、耗时与工具轨迹。
     pub footer: Option<Footer>,
 }
@@ -63,19 +67,18 @@ pub(crate) async fn render_card(card: Card<'_>, scale: f64) -> anyhow::Result<St
 }
 
 fn build_html(card: &Card<'_>) -> String {
-    let mut options = Options::empty();
-    options.insert(Options::ENABLE_STRIKETHROUGH);
-    options.insert(Options::ENABLE_TABLES);
-    options.insert(Options::ENABLE_TASKLISTS);
-    options.insert(Options::ENABLE_FOOTNOTES);
-    let parser = Parser::new_ext(card.markdown, options).map(|event| match event {
-        pulldown_cmark::Event::Html(text) | pulldown_cmark::Event::InlineHtml(text) => {
-            pulldown_cmark::Event::Text(text)
-        }
-        other => other,
-    });
+    // 正文里写的 HTML 一律当文本；图片由 `figures::place` 在这之后按位置放进去，
+    // 所以那里生成的 HTML 是卡片自己的，不会被这一步误伤。
+    let events: Vec<_> = Parser::new_ext(card.markdown, figures::options())
+        .map(|event| match event {
+            pulldown_cmark::Event::Html(text) | pulldown_cmark::Event::InlineHtml(text) => {
+                pulldown_cmark::Event::Text(text)
+            }
+            other => other,
+        })
+        .collect();
     let mut body = String::new();
-    html::push_html(&mut body, parser);
+    html::push_html(&mut body, figures::place(events, card.figures).into_iter());
     let body = label_code_blocks(&body);
 
     let sources = render_sources(card.sources);
@@ -246,7 +249,19 @@ th{background:var(--md-sys-color-surface-container);font-weight:700;
   color:var(--md-sys-color-on-surface);white-space:normal}
 tr:nth-child(2n) td{background:var(--md-sys-color-surface-container-low)}
 hr{margin:var(--md-space-4) 0;border:0;border-top:1px solid var(--md-sys-color-outline-variant)}
-img{max-width:100%;height:auto;margin:var(--md-space-2) 0;border-radius:var(--md-shape-s)}
+/* 独占一段的图是带图注的 figure；行内的图（少见）只收一个圆角。
+   细边框不是装饰：浅底的截图与图表贴在卡面上边缘会化掉。 */
+.fig{margin:var(--md-space-4) 0}
+.fig img{display:block;max-width:100%;height:auto;margin:0 auto;border-radius:var(--md-shape-m);
+  border:1px solid var(--md-sys-color-outline-variant)}
+.fig figcaption{margin-top:var(--md-space-2);text-align:center;line-height:1.5;
+  font-size:var(--md-type-label-medium-size);color:var(--md-sys-color-on-surface-variant)}
+.fig-inline{max-width:100%;height:auto;vertical-align:middle;border-radius:var(--md-shape-xs)}
+/* 没能加载的图：留一块说明，读者至少知道这里本该有图 */
+.fig-miss{display:inline-block;max-width:100%;padding:2px 10px;border-radius:var(--md-shape-s);
+  background:var(--md-sys-color-surface-container);color:var(--md-sys-color-on-surface-variant);
+  font-size:var(--md-type-label-medium-size);overflow-wrap:anywhere}
+div.fig-miss{display:block;margin:var(--md-space-3) 0;padding:var(--md-space-3);text-align:center}
 .footnote-definition{margin:6px 0;font-size:var(--md-type-label-medium-size);
   color:var(--md-sys-color-on-surface-variant)}
 .footnote-definition p{display:inline;margin:0}

@@ -229,6 +229,7 @@ pub(super) async fn generate_reply(
         model: Some(agent.model.clone()),
         plain: true,
         media: media_messages(&generated.clips, &title, send),
+        figures: Default::default(),
     })
 }
 

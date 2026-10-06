@@ -385,44 +385,75 @@ impl Search {
         ))
     }
 
-    /// 自己走重定向：每一跳都重新过一遍内网判定，避免一个公网页面 302 到本机。
+    /// 取正文用：下载上限 [`MAX_FETCH_BYTES`]，按 UTF-8 宽容地转成文本。
     async fn get_following(&self, start: &url::Url) -> anyhow::Result<(url::Url, String, String)> {
-        let mut current = start.clone();
-        for _ in 0..MAX_REDIRECTS {
-            let response = self
-                .client
-                .get(current.as_str())
-                .header(reqwest::header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
-                .send()
-                .await
-                .map_err(|error| anyhow::anyhow!("请求 {current} 失败：{error}"))?;
-            let status = response.status();
-            if status.is_redirection() {
-                let location = response
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|value| value.to_str().ok())
-                    .ok_or_else(|| anyhow::anyhow!("{current} 的重定向缺少 Location"))?;
-                let next = current
-                    .join(location)
-                    .map_err(|_| anyhow::anyhow!("无法解析重定向地址 {location}"))?;
-                current = public_url(next.as_str()).await?;
-                continue;
-            }
-            if !status.is_success() {
-                anyhow::bail!("{current} 返回 HTTP {status}");
-            }
-            let content_type = response
-                .headers()
-                .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let bytes = read_capped(response, MAX_FETCH_BYTES).await?;
-            return Ok((current, String::from_utf8_lossy(&bytes).into_owned(), content_type));
-        }
-        anyhow::bail!("重定向次数超过 {MAX_REDIRECTS} 次")
+        let (url, bytes, content_type) = follow(&self.client, start, MAX_FETCH_BYTES).await?;
+        Ok((url, String::from_utf8_lossy(&bytes).into_owned(), content_type))
     }
+}
+
+/// 自己走重定向：每一跳重新过一遍内网判定，避免一个公网页面 302 到本机。
+///
+/// 客户端必须是 `redirect(Policy::none())` 的，否则重定向在这里之前就被自动跟掉了。
+async fn follow(
+    client: &reqwest::Client,
+    start: &url::Url,
+    limit: usize,
+) -> anyhow::Result<(url::Url, Vec<u8>, String)> {
+    let mut current = start.clone();
+    for _ in 0..MAX_REDIRECTS {
+        let response = client
+            .get(current.as_str())
+            .header(reqwest::header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
+            .send()
+            .await
+            .map_err(|error| anyhow::anyhow!("请求 {current} 失败：{error}"))?;
+        let status = response.status();
+        if status.is_redirection() {
+            let location = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| anyhow::anyhow!("{current} 的重定向缺少 Location"))?;
+            let next = current
+                .join(location)
+                .map_err(|_| anyhow::anyhow!("无法解析重定向地址 {location}"))?;
+            current = public_url(next.as_str()).await?;
+            continue;
+        }
+        if !status.is_success() {
+            anyhow::bail!("{current} 返回 HTTP {status}");
+        }
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let bytes = read_capped(response, limit).await?;
+        return Ok((current, bytes, content_type));
+    }
+    anyhow::bail!("重定向次数超过 {MAX_REDIRECTS} 次")
+}
+
+/// 取公网上的一份原始字节（回复里内嵌的图片）。
+///
+/// 与 `web_fetch` 是同一套准入：只放行指向公网的 http(s)，重定向逐跳复检；
+/// 区别是不占搜索额度、不记来源、也不转文本。
+pub(crate) async fn fetch_public_bytes(
+    raw: &str,
+    limit: usize,
+    timeout: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    let start = public_url(raw).await?;
+    let client = crate::http::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .build()
+        .map_err(|error| anyhow::anyhow!("无法创建 HTTP 客户端：{error}"))?;
+    let (_, bytes, _) = follow(&client, &start, limit).await?;
+    Ok(bytes)
 }
 
 /// 链接准入：只放行指向公网的 http(s) 地址。

@@ -5,16 +5,18 @@
 //! 手里。现在整条链路就在进程内：一轮对话 = 若干个 Chat Completions 请求，
 //! 模型要工具就调用本模块里的实现，把结果作为 tool 消息回填，直到它不再要工具。
 //!
-//! 三块内容分工：
+//! 四块内容分工：
 //! - [`tools`]：工具表（名字、说明、JSON Schema）与本地实现（bash / read / write /
 //!   edit / glob / grep），以及转发进 [`ChatBridge`] 的 `satori_*`；
 //! - [`run`]：消息组装、工具循环、轨迹整理、skill 索引；
-//! - [`bash`]：子进程与进程组终止——取消一轮对话必须连带杀掉工具派生出来的进程。
+//! - [`bash`]：子进程与进程组终止——取消一轮对话必须连带杀掉工具派生出来的进程；
+//! - [`figures`]：回复里 `![说明](地址)` 的图片，在本轮临时目录被清掉之前取好。
 //!
 //! 与从前那套外部 CLI 最大的行为差别是**没有会话文件**：房间历史始终由 acumen 侧持有，
 //! 每轮按需展开成消息，所以编辑/删除/清空/重新生成的行为与普通房间完全一致。
 
 pub(crate) mod bash;
+pub(crate) mod figures;
 pub(crate) mod run;
 pub(crate) mod tools;
 
@@ -140,6 +142,8 @@ pub(crate) struct AgentRun<'a> {
     pub images: &'a [String],
     /// 最多几轮工具调用。
     pub max_steps: usize,
+    /// 回复会渲染成卡片：把正文里的 `![说明](地址)` 逐张取好，取不到的让模型改一次。
+    pub figures: bool,
 }
 
 impl<'a> AgentRun<'a> {
@@ -165,6 +169,7 @@ impl<'a> AgentRun<'a> {
             prompt: "",
             images: &[],
             max_steps: 24,
+            figures: false,
         }
     }
 }
@@ -179,6 +184,8 @@ pub(crate) struct AgentReply {
     pub trace_overflow: usize,
     /// 这一轮联网检索引用过的网页来源，渲染在回复卡片下方。
     pub sources: Vec<super::types::Source>,
+    /// 正文里内嵌的图片（只有 [`AgentRun::figures`] 开着时才有）。
+    pub figures: figures::Figures,
 }
 
 /// 房间在群里说话时的那一份现场：接进能力层要用它开一轮。
@@ -270,6 +277,7 @@ pub(crate) async fn conversation(
             web: web.as_ref(),
             prompt: &current.content,
             images: &current.images,
+            figures: true,
             ..AgentRun::new()
         },
         previous,
