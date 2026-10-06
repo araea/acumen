@@ -495,16 +495,10 @@ pub async fn send_fake_event(
     run(new_ctx, writer).await
 }
 
+/// 插件的数据目录（`data/<插件>`），不存在就建。目录怎么算见 [`crate::storage::data_path`]。
 pub async fn get_data_dir(plugin_name: &str) -> Result<PathBuf, PluginError> {
-    let mut path = std::env::current_exe()?
-        .parent()
-        .ok_or("Cannot get parent dir")?
-        .to_path_buf();
-    path.push("data");
-    path.push(plugin_name);
-    if !path.exists() {
-        fs::create_dir_all(&path).await?;
-    }
+    let path = crate::storage::data_path(plugin_name)?;
+    fs::create_dir_all(&path).await?;
     Ok(path)
 }
 

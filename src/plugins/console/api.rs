@@ -8,6 +8,7 @@ use super::state::Console;
 
 use crate::adapters::satori::Roster;
 use crate::plugins::{get_plugins, pending_startup};
+use crate::storage::write_atomic_async;
 use axum::Json;
 use axum::Router;
 use axum::extract::{Path as AxumPath, Query, State};
@@ -497,11 +498,11 @@ async fn write_ambient_source(
     {
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M");
         let backup = dir.join(format!("{file}.backup-{stamp}"));
-        if let Err(error) = tokio::fs::write(&backup, previous).await {
+        if let Err(error) = write_atomic_async(backup, previous.into_bytes()).await {
             return bad(format!("备份失败，没有覆盖原文件：{error}"));
         }
     }
-    match tokio::fs::write(&path, body.text.as_bytes()).await {
+    match write_atomic_async(path, body.text.into_bytes()).await {
         Ok(()) => Json(json!({
             "message": format!("已保存 {file}；下一轮对话生效，旧的那份留在同目录的 backup 里。")
         }))

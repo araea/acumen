@@ -8,10 +8,8 @@
 //! 名额在取片**开始**时占：同一毫秒进来的两条（手滑连发、客户端重发）只有一条
 //! 真的去下。没取到由 [`release`] 撤掉，他重贴一次就能再来。
 
-use crate::plugins::get_data_dir;
+use crate::storage::JsonState;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
-use tokio::sync::Mutex as AsyncMutex;
 
 const LOG_TARGET: &str = "Plugin/VideoParse";
 const STATE_FILE: &str = "state.json";
@@ -52,70 +50,19 @@ pub enum Claim {
     Ready,
 }
 
-static STORE: OnceLock<AsyncMutex<Option<State>>> = OnceLock::new();
-
-fn store() -> &'static AsyncMutex<Option<State>> {
-    STORE.get_or_init(|| AsyncMutex::new(None))
-}
-
-async fn load_from_disk() -> State {
-    let Ok(dir) = get_data_dir("video_parse").await else {
-        warn!(target: LOG_TARGET, "无法创建数据目录，取片记录本次仅驻留内存。");
-        return State::default();
-    };
-    let Ok(content) = tokio::fs::read_to_string(dir.join(STATE_FILE)).await else {
-        return State::default();
-    };
-    match serde_json::from_str(&content) {
-        Ok(state) => state,
-        Err(e) => {
-            warn!(target: LOG_TARGET, "取片记录解析失败({})，将重新开始记录。", e);
-            State::default()
-        }
-    }
-}
-
-async fn save_to_disk(state: &State) {
-    let Ok(dir) = get_data_dir("video_parse").await else {
-        return;
-    };
-    let path = dir.join(STATE_FILE);
-    let temporary = dir.join(format!("{STATE_FILE}.tmp"));
-    match serde_json::to_string(state) {
-        Ok(json) => {
-            if let Err(e) = tokio::fs::write(&temporary, json).await {
-                warn!(target: LOG_TARGET, "取片记录写入失败: {}", e);
-            } else if let Err(e) = tokio::fs::rename(&temporary, &path).await {
-                warn!(target: LOG_TARGET, "取片记录原子替换失败: {}", e);
-            }
-        }
-        Err(e) => warn!(target: LOG_TARGET, "取片记录序列化失败: {}", e),
-    }
-}
-
-/// 在全局锁内读改写状态，并把结果落盘。
-async fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    let mut guard = store().lock().await;
-    if guard.is_none() {
-        *guard = Some(load_from_disk().await);
-    }
-    let state = guard.as_mut().expect("状态已在上一步初始化");
-    let result = f(state);
-    let snapshot = state.clone();
-    save_to_disk(&snapshot).await;
-    result
-}
+static STORE: JsonState<State> =
+    JsonState::new(LOG_TARGET, "video_parse", STATE_FILE, "取片记录");
 
 /// 占一次取片名额：原子地判断这条能不能取，能取就记下来。
 pub async fn claim(target_id: &str, requester: &str, bvid: &str, now: i64) -> Claim {
     let bvid = bvid.to_string();
-    with_state(move |state| apply_claim(state, target_id, requester, &bvid, now)).await
+    STORE.with(move |state| apply_claim(state, target_id, requester, &bvid, now)).await
 }
 
 /// 取片没成功，把名额放回去。
 pub async fn release(target_id: &str, requester: &str, bvid: &str) {
     let bvid = bvid.to_string();
-    with_state(move |state| apply_release(state, target_id, requester, &bvid)).await
+    STORE.with(move |state| apply_release(state, target_id, requester, &bvid)).await
 }
 
 /// `claim` 的纯逻辑部分，便于测试；不触碰全局状态与磁盘。

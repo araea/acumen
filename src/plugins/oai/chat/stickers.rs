@@ -445,8 +445,5 @@ fn persist(store: &Store) {
     let Ok(json) = serde_json::to_string(&store.library) else {
         return;
     };
-    if std::fs::create_dir_all(root).is_err() {
-        return;
-    }
-    let _ = std::fs::write(root.join("index.json"), json);
+    let _ = crate::storage::write_atomic(&root.join("index.json"), json.as_bytes());
 }

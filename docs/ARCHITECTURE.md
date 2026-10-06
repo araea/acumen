@@ -19,6 +19,7 @@ src/
   plugins/         插件实现；registry.rs 是唯一插件清单
   render/          卡片渲染、原生字体与画布；render/markdown 是 markdown 插件的排版
   scheduler.rs     定时任务与错峰推送
+  storage.rs       数据目录、原子写文件与常驻 JSON 状态
   db/              SeaORM 实体与 SQLite 查询
 res/               词库、提示词、技能、卡片与控制台资源
 docs/              项目文档
@@ -76,7 +77,7 @@ HTML 卡片统一经 `render::web::shoot` 渲染。调用方提供内容与宽�
 
 ## 配置与数据
 
-`config.toml` 不入库。启动时补齐缺失默认值，不覆盖已有值；解析失败时退出，不覆盖原文件。运行数据位于 `data/`：SQLite 数据库为 `data/bot.db`，插件数据位于 `data/<plugin>/`。
+`config.toml` 不入库。启动时补齐缺失默认值，不覆盖已有值；解析失败时退出，不覆盖原文件。运行数据位于 `data/`：SQLite 数据库为 `data/bot.db`，插件数据位于 `data/<plugin>/`。插件写自己的文件一律经 `storage`：`write_atomic*` 先写临时文件、落盘再改名，进程在写的中途被杀也只会留下旧版本；一份常驻内存的 JSON 状态用 `JsonState`（读不出的文件会改名留证据，不直接覆盖）。目录路径只由 `storage::data_path` 算一份。
 
 配置写入统一经过 `ctl::change`：按插件真实类型校验，写入同目录临时文件并原子替换，成功后再更新内存。Web 控制台的修改也走这条路径，接口默认绑定 `127.0.0.1` 并使用访问口令。敏感字段、权限、备份与部署限制见[插件控制](CONTROL.md)。
 

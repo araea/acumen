@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::fs;
 use toml::Value;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -52,31 +51,10 @@ impl GlobalFilterConfig {
 }
 
 impl AppConfig {
+    /// 原子写回配置文件，权限 0600（里面有口令与密钥）。
     pub async fn save(&self, path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let toml_string = toml::to_string_pretty(self)?;
-        // Write beside the destination and rename only after syncing a complete file.
-        use tokio::io::AsyncWriteExt;
-        let temporary = format!(
-            "{}.tmp-{}-{}",
-            path,
-            std::process::id(),
-            rand::random::<u64>()
-        );
-        let result = async {
-            let mut options = fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            options.mode(0o600);
-            let mut file = options.open(&temporary).await?;
-            file.write_all(toml_string.as_bytes()).await?;
-            file.sync_all().await?;
-            fs::rename(&temporary, path).await
-        }
-        .await;
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary).await;
-        }
-        result?;
+        crate::storage::write_atomic_private_async(path.into(), toml_string.into_bytes()).await?;
         Ok(())
     }
 }

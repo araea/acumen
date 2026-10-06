@@ -11,6 +11,7 @@ mod message;
 mod plugins;
 mod render;
 mod scheduler;
+mod storage;
 
 use crate::config::AppConfig;
 use crate::event::{BotStatus, Context, EventType};

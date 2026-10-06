@@ -16,7 +16,6 @@ use image::RgbaImage;
 use image::imageops::FilterType;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, Once};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::fs;
@@ -200,18 +199,13 @@ async fn fetch(url: &str, path: Option<&Path>) -> Option<RgbaImage> {
     .flatten()
 }
 
-static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
-
-/// 先写临时文件再改名：同一张头像可能被两张榜同时写，读的一方不该碰到写了一半的 PNG。
+/// 原子写：同一张头像可能被两张榜同时写，读的一方不该碰到写了一半的 PNG。
 fn store(path: &Path, img: &RgbaImage) {
     let mut png = std::io::Cursor::new(Vec::new());
     if img.write_to(&mut png, image::ImageFormat::Png).is_err() {
         return;
     }
-    let tmp = path.with_extension(format!("tmp{}", TMP_SEQ.fetch_add(1, Ordering::Relaxed)));
-    if std::fs::write(&tmp, png.into_inner()).is_err() || std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    let _ = crate::storage::write_atomic(path, png.get_ref());
 }
 
 /// 过期缓存的后台刷新：不等结果，失败了旧文件照旧留着。

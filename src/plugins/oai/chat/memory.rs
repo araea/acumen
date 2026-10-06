@@ -564,10 +564,7 @@ async fn write(group: &str, force: bool) {
     if json.is_empty() {
         return;
     }
-    if let Some(parent) = path.parent() {
-        let _ = tokio::fs::create_dir_all(parent).await;
-    }
-    if let Err(error) = tokio::fs::write(&path, json).await {
+    if let Err(error) = crate::storage::write_atomic_async(path, json.into_bytes()).await {
         warn!(target: super::LOG_TARGET, "写入群 {group} 的记忆失败：{error}");
     }
 }

@@ -7,6 +7,7 @@
 use super::{Config, LOG_TARGET};
 use crate::event::{BotStatus, Context};
 use crate::log;
+use crate::storage::write_atomic_private_async;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -109,15 +110,7 @@ async fn record_url(url: &str) {
     let Ok(dir) = crate::plugins::get_data_dir("console").await else {
         return;
     };
-    let path = dir.join("url");
-    use tokio::io::AsyncWriteExt;
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    if let Ok(mut file) = options.open(&path).await {
-        let _ = file.write_all(format!("{url}\n").as_bytes()).await;
-    }
+    let _ = write_atomic_private_async(dir.join("url"), format!("{url}\n").into_bytes()).await;
 }
 
 /// 口令：配置里写了就用它，没写就首启动生成一个落盘。
@@ -139,16 +132,7 @@ async fn resolve_token(configured: &str) -> Result<String, String> {
         }
     }
     let token = fresh_token();
-    use tokio::io::AsyncWriteExt;
-    let mut options = tokio::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options
-        .open(&path)
-        .await
-        .map_err(|e| format!("无法写入 {}：{e}", path.display()))?;
-    file.write_all(format!("{token}\n").as_bytes())
+    write_atomic_private_async(path.clone(), format!("{token}\n").into_bytes())
         .await
         .map_err(|e| format!("无法写入 {}：{e}", path.display()))?;
     Ok(token)

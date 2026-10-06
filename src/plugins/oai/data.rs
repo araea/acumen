@@ -178,8 +178,10 @@ impl Manager {
     }
 
     pub fn save_mj_cache(&self, cache: &MjCache) {
-        if let Ok(s) = serde_json::to_string_pretty(cache) {
-            let _ = std::fs::write(&self.mj_cache_path, s);
+        if let Ok(s) = serde_json::to_string_pretty(cache)
+            && let Err(error) = crate::storage::write_atomic(&self.mj_cache_path, s.as_bytes())
+        {
+            warn!(target: "Plugin/OAI", "写入 MJ 缓存失败：{error}");
         }
     }
 
@@ -297,27 +299,6 @@ impl Manager {
 }
 
 fn write_config(path: &std::path::Path, cfg: &Config) -> anyhow::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension("json.tmp");
-    let result = (|| -> anyhow::Result<()> {
-        let mut options = std::fs::OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(serde_json::to_string_pretty(cfg)?.as_bytes())?;
-        file.sync_all()?;
-        std::fs::rename(&temp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp);
-    }
-    result
+    crate::storage::write_atomic_private(path, serde_json::to_string_pretty(cfg)?.as_bytes())?;
+    Ok(())
 }

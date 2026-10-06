@@ -217,10 +217,9 @@ fn states() -> MutexGuard<'static, HashMap<String, ChannelState>> {
 static DIRTY: AtomicBool = AtomicBool::new(false);
 const MEMORY_FILE: &str = "recent.json";
 
-/// 与 `get_data_dir("repeater")` 同一个目录；状态表是同步锁，这里只能同步读写。
+/// 状态表是同步锁，这里只能同步读写，所以不走异步的 `get_data_dir`。
 fn memory_path() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(exe.parent()?.join("data").join("repeater").join(MEMORY_FILE))
+    Some(crate::storage::data_path("repeater").ok()?.join(MEMORY_FILE))
 }
 
 fn encode_memory(map: &HashMap<String, ChannelState>) -> serde_json::Result<String> {
@@ -266,16 +265,9 @@ fn persist(map: &HashMap<String, ChannelState>) {
     let Some(path) = memory_path() else {
         return;
     };
-    let temporary = path.with_extension("json.tmp");
     let result = encode_memory(map)
         .map_err(std::io::Error::other)
-        .and_then(|json| {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::write(&temporary, json)?;
-            std::fs::rename(&temporary, &path)
-        });
+        .and_then(|json| crate::storage::write_atomic(&path, json.as_bytes()));
     if let Err(e) = result {
         warn!(target: LOG_TARGET, "跟读记录写入失败: {e}");
     }

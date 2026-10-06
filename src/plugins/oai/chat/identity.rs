@@ -408,14 +408,10 @@ async fn avatar_note(avatar: Option<&AvatarAuth>, url: Option<&str>) -> String {
         store.path.clone()
     };
     if let Some(path) = path
-        && let Ok(json) = serde_json::to_string(&remembered)
+        && let Ok(json) = serde_json::to_vec(&remembered)
+        && let Err(error) = crate::storage::write_atomic_async(path, json).await
     {
-        if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        if let Err(error) = tokio::fs::write(&path, json).await {
-            warn!(target: super::LOG_TARGET, "写入头像描述失败：{error}");
-        }
+        warn!(target: super::LOG_TARGET, "写入头像描述失败：{error}");
     }
     info!(target: super::LOG_TARGET, "看了一眼自己的头像：{note}");
     note

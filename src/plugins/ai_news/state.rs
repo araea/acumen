@@ -10,12 +10,10 @@
 use super::api::Item;
 use super::cluster::{self, Cluster, Fingerprint};
 use super::render::Rendered;
-use crate::plugins::get_data_dir;
+use crate::storage::JsonState;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::OnceLock;
-use tokio::sync::Mutex as AsyncMutex;
 
 const LOG_TARGET: &str = "Plugin/AiNews";
 const STATE_FILE: &str = "state.json";
@@ -172,37 +170,8 @@ where
     }
 }
 
-static STORE: OnceLock<AsyncMutex<Option<State>>> = OnceLock::new();
-
-fn store() -> &'static AsyncMutex<Option<State>> {
-    STORE.get_or_init(|| AsyncMutex::new(None))
-}
-
-async fn load_from_disk() -> State {
-    let Ok(dir) = get_data_dir("ai_news").await else {
-        warn!(target: LOG_TARGET, "无法创建数据目录，去重状态本次仅驻留内存。");
-        return State::default();
-    };
-    let path = dir.join(STATE_FILE);
-    let Ok(content) = tokio::fs::read_to_string(&path).await else {
-        return State::default();
-    };
-    match parse_state(&content) {
-        Ok(state) => state,
-        Err(e) => {
-            // 连 JSON 都不是。别直接覆盖：挪到一旁留作证据，也方便手工抢救。
-            let aside = dir.join(format!("{}.broken-{}", STATE_FILE, Utc::now().timestamp()));
-            let moved = tokio::fs::rename(&path, &aside).await.is_ok();
-            warn!(
-                target: LOG_TARGET,
-                "去重状态文件无法解析（{}），{}，将重新开始记录。",
-                e,
-                if moved { format!("原文件已移到 {}", aside.display()) } else { "原文件保持原样".to_string() }
-            );
-            State::default()
-        }
-    }
-}
+static STORE: JsonState<State> =
+    JsonState::with_parser(LOG_TARGET, "ai_news", STATE_FILE, "去重状态", parse_state);
 
 /// 宽容地读状态：坏的只丢坏的那一条。
 ///
@@ -253,43 +222,9 @@ fn parse_state(content: &str) -> Result<State, serde_json::Error> {
     Ok(state)
 }
 
-async fn save_to_disk(state: &State) {
-    let Ok(dir) = get_data_dir("ai_news").await else {
-        return;
-    };
-    let path = dir.join(STATE_FILE);
-    let temp_path = dir.join(format!("{}.tmp", STATE_FILE));
-    match serde_json::to_string(state) {
-        Ok(json) => {
-            if let Err(e) = tokio::fs::write(&temp_path, json).await {
-                warn!(target: LOG_TARGET, "去重状态写入失败: {}", e);
-            } else if let Err(e) = tokio::fs::rename(&temp_path, &path).await {
-                warn!(target: LOG_TARGET, "去重状态原子替换失败: {}", e);
-            }
-        }
-        Err(e) => warn!(target: LOG_TARGET, "去重状态序列化失败: {}", e),
-    }
-}
-
-/// 在全局锁内读改写状态，并把结果落盘
-async fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
-    let mut guard = store().lock().await;
-    if guard.is_none() {
-        *guard = Some(load_from_disk().await);
-    }
-    let state = guard.as_mut().expect("状态已在上一步初始化");
-    let result = f(state);
-    let snapshot = state.clone();
-    save_to_disk(&snapshot).await;
-    result
-}
-
 /// 预加载状态文件（插件初始化时调用，避免首次推送时才读盘）
 pub async fn preload() {
-    let mut guard = store().lock().await;
-    if guard.is_none() {
-        *guard = Some(load_from_disk().await);
-    }
+    STORE.preload().await;
 }
 
 /// 挑出该群尚未在定时精选中推送过的条目（顺带清理过期记录）。
@@ -306,7 +241,7 @@ pub async fn unseen_brief(
     let now = Utc::now().timestamp();
     let cutoff = now - retain_days.max(1) * 86_400;
 
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         entry.brief_seen.retain(|s| s.ts >= cutoff);
         forget_old_text(&mut entry.brief_seen, now);
@@ -324,7 +259,7 @@ pub async fn unseen_brief(
 /// 记录这些条目已经通过定时精选推送给该群（折进事件里的报道也算送到了）。
 pub async fn mark_brief_seen(group_id: String, sent: Vec<(String, Item)>) {
     let now = Utc::now().timestamp();
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         remember(&mut entry.brief_seen, sent, now);
     })
@@ -348,7 +283,7 @@ fn remember(history: &mut Vec<SeenEntry>, sent: Vec<(String, Item)>, now: i64) {
 /// 按 id 对上就能补，补一次以后不再有这件事。
 pub async fn backfill_text(group_id: String, items: Vec<Item>) {
     let now = Utc::now().timestamp();
-    with_state(move |state| {
+    STORE.with(move |state| {
         let Some(entry) = state.groups.get_mut(&group_id) else {
             return;
         };
@@ -410,7 +345,7 @@ pub struct RealtimeStatus {
 /// 读取该群的实时推送状态；首次调用会以当前时刻建立基线
 pub async fn realtime_status(group_id: String) -> RealtimeStatus {
     let now = Utc::now().timestamp();
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         entry.realtime_pushes.retain(|ts| *ts > now - 3_600);
 
@@ -429,7 +364,7 @@ pub async fn realtime_status(group_id: String) -> RealtimeStatus {
 /// 记录一次实时推送：条目计入去重，同时留下一个时间戳供频次上限统计
 pub async fn mark_realtime_sent(group_id: String, sent: Vec<Cluster>) {
     let now = Utc::now().timestamp();
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         let members: Vec<(String, Item)> = sent
             .into_iter()
@@ -466,7 +401,7 @@ pub async fn enqueue_realtime(
 ) -> Enqueued {
     let now = Utc::now().timestamp();
     let cutoff = now - retain_days.max(1) * 86_400;
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         enqueue_pending(entry, items, cutoff, now, fold)
     })
@@ -553,7 +488,7 @@ pub async fn realtime_pending(
     max_age_minutes: i64,
 ) -> Vec<Cluster> {
     let cutoff = Utc::now().timestamp() - max_age_minutes.max(1) * 60;
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         next_pending(entry, max_items, cutoff)
     })
@@ -562,7 +497,7 @@ pub async fn realtime_pending(
 
 pub async fn realtime_pending_count(group_id: String, max_age_minutes: i64) -> usize {
     let cutoff = Utc::now().timestamp() - max_age_minutes.max(1) * 60;
-    with_state(move |state| {
+    STORE.with(move |state| {
         state
             .groups
             .get_mut(&group_id)
@@ -600,7 +535,7 @@ fn prune_pending(entry: &mut GroupState, freshness_cutoff: i64) {
 /// 群暂停实时快报后重新开启时调用，确保暂停期间积压的条目不会突然集中补发。
 pub async fn align_realtime_baseline(group_id: String) {
     let now = Utc::now().timestamp();
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         entry.realtime_since = Some(now);
         entry.realtime_pushes.clear();
@@ -612,7 +547,7 @@ pub async fn align_realtime_baseline(group_id: String) {
 /// 该群是否已经推送过这一期日报
 pub async fn has_pushed_daily(group_id: String, date: &str) -> bool {
     let date = date.to_string();
-    with_state(move |state| {
+    STORE.with(move |state| {
         state
             .groups
             .get(&group_id)
@@ -625,7 +560,7 @@ pub async fn has_pushed_daily(group_id: String, date: &str) -> bool {
 /// 记录该群已推送的日报期号
 pub async fn mark_daily(group_id: String, date: &str) {
     let date = date.to_string();
-    with_state(move |state| {
+    STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         entry.last_daily_date = Some(date);
     })
@@ -634,7 +569,7 @@ pub async fn mark_daily(group_id: String, date: &str) {
 
 /// 清空某个群的去重记录（用于 `/ai推送重置`，便于重新推送一遍）
 pub async fn reset_group(group_id: String) {
-    with_state(move |state| {
+    STORE.with(move |state| {
         state.groups.remove(&group_id);
     })
     .await
@@ -644,7 +579,7 @@ pub async fn reset_group(group_id: String) {
 pub async fn remember_extraction(target_id: String, message_id: String, rendered: Rendered) {
     let now = Utc::now().timestamp();
     let cutoff = now - EXTRACTION_RETAIN_DAYS * 86_400;
-    with_state(move |state| {
+    STORE.with(move |state| {
         state.extractions.retain(|record| {
             record.created_ts >= cutoff
                 && !(record.target_id == target_id && record.message_id == message_id)
@@ -664,7 +599,7 @@ pub async fn remember_extraction(target_id: String, message_id: String, rendered
 pub async fn extraction(target_id: String, message_id: &str) -> Option<Rendered> {
     let message_id = message_id.to_string();
     let cutoff = Utc::now().timestamp() - EXTRACTION_RETAIN_DAYS * 86_400;
-    with_state(move |state| {
+    STORE.with(move |state| {
         state
             .extractions
             .retain(|record| record.created_ts >= cutoff);
@@ -701,7 +636,7 @@ pub async fn extract_entries(
     let message_id = message_id.to_string();
     let wanted: BTreeSet<usize> = wanted.iter().copied().collect();
     let cutoff = Utc::now().timestamp() - EXTRACTION_RETAIN_DAYS * 86_400;
-    with_state(move |state| apply_extraction(state, target_id, &message_id, &wanted, cutoff))
+    STORE.with(move |state| apply_extraction(state, target_id, &message_id, &wanted, cutoff))
         .await
 }
 
