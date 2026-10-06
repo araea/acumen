@@ -615,7 +615,9 @@ async fn learn_limits(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
         .await
     {
         Ok(capabilities) => client.set_limits(limits_of(&capabilities)),
-        Err(error) => debug!(target: "Bot", "internal/capabilities 失败，按没有声明限额处理：{error}"),
+        Err(error) => {
+            debug!(target: "Bot", "internal/capabilities 失败，按没有声明限额处理：{error}")
+        }
     }
 }
 
@@ -1922,7 +1924,11 @@ mod contract_tests {
         let client = SatoriClient::new(endpoint, None);
         let started = std::time::Instant::now();
         let created: Vec<Value> = client
-            .post(&bot(), "message.create", json!({"channel_id": "1", "content": "x"}))
+            .post(
+                &bot(),
+                "message.create",
+                json!({"channel_id": "1", "content": "x"}),
+            )
             .await
             .unwrap();
         assert_eq!(created[0]["id"], "m1");
@@ -1932,7 +1938,11 @@ mod contract_tests {
     #[tokio::test]
     async fn unavailable_without_a_promise_or_beyond_patience_is_reported_as_is() {
         let endpoint = script(vec![
-            reply("503 Service Unavailable", "", r#"{"code":"login_offline","message":"登录离线"}"#),
+            reply(
+                "503 Service Unavailable",
+                "",
+                r#"{"code":"login_offline","message":"登录离线"}"#,
+            ),
             reply(
                 "503 Service Unavailable",
                 "Retry-After: 120\r\n",
@@ -1975,14 +1985,20 @@ mod contract_tests {
         client.set_limits(limits_of(&json!({"limits": {"upload_bytes": 67_108_864}})));
         assert_eq!(client.fit_upload_cap(80 << 20), 64 << 20);
         assert_eq!(client.fit_upload_cap(8 << 20), 8 << 20);
-        assert_eq!(limits_of(&json!({"limits": {"upload_bytes": 0}})), Limits::default());
+        assert_eq!(
+            limits_of(&json!({"limits": {"upload_bytes": 0}})),
+            Limits::default()
+        );
         assert_eq!(limits_of(&json!({})), Limits::default());
     }
 
     #[test]
     fn account_name_reads_name_or_nick() {
         // satori-qq：`name` 是 QQ 昵称；satori-wx：只有 `nick`。
-        assert_eq!(account_name(&json!({"name": "甲", "nick": "群名片"})).as_deref(), Some("甲"));
+        assert_eq!(
+            account_name(&json!({"name": "甲", "nick": "群名片"})).as_deref(),
+            Some("甲")
+        );
         assert_eq!(account_name(&json!({"nick": "mi"})).as_deref(), Some("mi"));
         assert_eq!(account_name(&json!({"id": "x"})), None);
     }

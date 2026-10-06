@@ -485,7 +485,10 @@ mod tests {
 
     #[test]
     fn the_mention_may_have_spaces_and_the_command_may_have_arguments() {
-        let message = segments(serde_json::json!([at("1"), text("@汽修二班 阿洛 /md # 标题")]));
+        let message = segments(serde_json::json!([
+            at("1"),
+            text("@汽修二班 阿洛 /md # 标题")
+        ]));
         let matched = match_segments(&message, &slash(), "md", true).unwrap();
         assert_eq!(crate::command::extract_text_arg(&matched.args), "# 标题");
         // 后面跟的图片等段落照常进参数。
