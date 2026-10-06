@@ -684,3 +684,37 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
     }
     out
 }
+
+// ================= 第三方接口响应的通用处理（图片、视频、音乐、MJ 共用） =================
+
+/// serde 的 `deserialize_with`：字段是 `null` 时按类型默认值取（接口常把空数组、空串写成 null）。
+pub(crate) fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de> + Default,
+{
+    use serde::Deserialize as _;
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
+/// 取 JSON 里的字符串或整数，统一成字符串（任务 ID 有的接口给数字、有的给字符串）。
+pub(crate) fn scalar_string(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    if let Some(text) = value.as_str() {
+        Some(text.to_string())
+    } else if let Some(number) = value.as_i64() {
+        Some(number.to_string())
+    } else {
+        value.as_u64().map(|number| number.to_string())
+    }
+}
+
+/// 响应体的开头一截（按字节截、容忍非 UTF-8），放进错误信息里让人看一眼对端说了什么。
+pub(crate) fn excerpt(bytes: &[u8], limit: usize) -> String {
+    String::from_utf8_lossy(&bytes[..bytes.len().min(limit)]).into_owned()
+}
+
+/// 空白折成单个空格，换行与连续空格不进卡片的单行说明。
+pub(crate) fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}

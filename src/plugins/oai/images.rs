@@ -6,6 +6,7 @@
 
 use super::logic::Reply;
 use super::types::{Agent, ChatMessage};
+use super::utils::{excerpt, one_line};
 use anyhow::{Context as _, anyhow};
 use serde::Deserialize;
 use serde_json::json;
@@ -264,7 +265,7 @@ pub(crate) async fn generate(
         let detail = error
             .map(|error| error.message)
             .filter(|message| !message.trim().is_empty())
-            .unwrap_or_else(|| excerpt(&bytes));
+            .unwrap_or_else(|| excerpt(&bytes, 300));
         return Err(anyhow!("图像接口返回 HTTP {}：{}", status.as_u16(), detail));
     }
 
@@ -300,9 +301,6 @@ pub(crate) async fn generate(
     })
 }
 
-fn excerpt(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(300)]).into_owned()
-}
 
 /// 组装 `/v1/images/edits` 的 multipart 表单。
 ///
@@ -381,7 +379,3 @@ fn extension_for(mime: &str) -> &'static str {
     }
 }
 
-/// 折叠空白成单行，用于把多行提示词放进加粗标题。
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}

@@ -703,23 +703,12 @@ fn warn_on_schedule_conflicts(ctx: &Context, cfg: &AiNewsConfig) {
 
 /// 解析 `HH:MM[:SS]`，非法输入退回 09:00:00
 fn parse_time(input: &str) -> (u32, u32, u32) {
-    let parts: Vec<&str> = input.trim().split(':').collect();
-    if parts.len() < 2 {
+    use chrono::Timelike;
+    let Some(time) = crate::clock::parse_clock(input) else {
         warn!(target: LOG_TARGET, "无法解析推送时间 [{}]，已退回 09:00:00。", input);
         return (9, 0, 0);
-    }
-    let hour = parts[0].trim().parse::<u32>().unwrap_or(9);
-    let minute = parts[1].trim().parse::<u32>().unwrap_or(0);
-    let second = parts
-        .get(2)
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0);
-
-    if hour > 23 || minute > 59 || second > 59 {
-        warn!(target: LOG_TARGET, "推送时间 [{}] 超出范围，已退回 09:00:00。", input);
-        return (9, 0, 0);
-    }
-    (hour, minute, second)
+    };
+    (time.hour(), time.minute(), time.second())
 }
 
 // ================= 指令 =================
@@ -1584,8 +1573,8 @@ async fn update_target_quiet(ctx: &Context, target: &PushTarget, raw: &str) -> S
             return "❌ 时间格式不正确\n写成 23:30-07:30 这样的区间".to_string();
         };
         let (Some(start), Some(end)) = (
-            realtime::parse_clock(start),
-            realtime::parse_clock(end),
+            crate::clock::parse_clock(start),
+            crate::clock::parse_clock(end),
         ) else {
             return "❌ 时间格式不正确\n起止时间都要在 00:00—23:59 之内".to_string();
         };

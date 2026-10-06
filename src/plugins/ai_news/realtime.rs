@@ -393,7 +393,7 @@ struct Stamped {
 ///
 /// 起止相同视为「不设静默」；`23:30`—`07:30` 这种跨午夜的区间按跨天处理。
 pub(super) fn in_quiet_hours(now: NaiveTime, start: &str, end: &str) -> bool {
-    let (Some(start), Some(end)) = (parse_clock(start), parse_clock(end)) else {
+    let (Some(start), Some(end)) = (crate::clock::parse_clock(start), crate::clock::parse_clock(end)) else {
         return false;
     };
     if start == end {
@@ -404,20 +404,4 @@ pub(super) fn in_quiet_hours(now: NaiveTime, start: &str, end: &str) -> bool {
     } else {
         now >= start || now < end
     }
-}
-
-/// `HH:MM[:SS]` → [`NaiveTime`]；留空表示不设静默时段
-pub(super) fn parse_clock(raw: &str) -> Option<NaiveTime> {
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = raw.split(':').collect();
-    if !(2..=3).contains(&parts.len()) {
-        return None;
-    }
-    let h = parts[0].trim().parse().ok()?;
-    let m = parts[1].trim().parse().ok()?;
-    let s = parts.get(2).map_or(Some(0), |v| v.trim().parse().ok())?;
-    NaiveTime::from_hms_opt(h, m, s)
 }

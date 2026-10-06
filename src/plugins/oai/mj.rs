@@ -1,13 +1,13 @@
 use super::data::Manager;
 use super::logic::{mark_working, reply_text, to_data_url};
 use super::types::{Agent, MjMessageTask};
-use super::utils::normalize;
+use super::utils::{excerpt, normalize, scalar_string};
 use crate::adapters::satori::{LockedWriter, send_msg, send_msg_id};
 use crate::event::Context;
 use crate::message::Message;
 use anyhow::{Context as _, anyhow};
 use base64::Engine as _;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::collections::{HashMap, HashSet};
@@ -26,45 +26,38 @@ const MAX_IMAGE_BYTES: usize = 30 * 1024 * 1024;
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct MjButton {
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     custom_id: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     label: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 struct MjTask {
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     id: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     action: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     status: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     progress: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     description: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     fail_reason: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     image_url: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     prompt: String,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     prompt_en: String,
     properties: Value,
-    #[serde(deserialize_with = "null_default")]
+    #[serde(deserialize_with = "super::utils::null_default")]
     buttons: Vec<MjButton>,
 }
 
-fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
-}
 
 pub fn is_mj_model(model: &str) -> bool {
     model.trim().eq_ignore_ascii_case("mj")
@@ -180,7 +173,7 @@ async fn submit(base: &str, key: &str, endpoint: &str, body: Value) -> anyhow::R
         return Err(anyhow!(
             "提交接口返回 HTTP {}：{}",
             status.as_u16(),
-            response_excerpt(&bytes)
+            excerpt(&bytes, 500)
         ));
     }
     let value: Value = serde_json::from_slice(&bytes).context("提交响应不是有效 JSON")?;
@@ -241,7 +234,7 @@ async fn poll(base: &str, key: &str, task_id: &str) -> anyhow::Result<MjTask> {
             return Err(anyhow!(
                 "查询接口返回 HTTP {}：{}",
                 status.as_u16(),
-                response_excerpt(&bytes)
+                excerpt(&bytes, 500)
             ));
         }
         let raw: Value = serde_json::from_slice(&bytes).context("任务响应不是有效 JSON")?;
@@ -606,17 +599,4 @@ async fn send_cached_image(
     .is_ok()
 }
 
-fn scalar_string(value: Option<&Value>) -> Option<String> {
-    let value = value?;
-    if let Some(value) = value.as_str() {
-        Some(value.to_string())
-    } else if let Some(value) = value.as_i64() {
-        Some(value.to_string())
-    } else {
-        value.as_u64().map(|value| value.to_string())
-    }
-}
 
-fn response_excerpt(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(500)]).into_owned()
-}

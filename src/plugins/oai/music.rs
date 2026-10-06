@@ -11,8 +11,9 @@
 
 use super::logic::{Media, MediaMessage, Reply};
 use super::types::{Agent, ChatMessage};
+use super::utils::{excerpt, scalar_string};
 use anyhow::{Context as _, anyhow};
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -485,25 +486,25 @@ async fn submit(base: &str, key: &str, body: &Value) -> anyhow::Result<String> {
     }
     if !status.is_success() || !code.is_empty() {
         let detail = if message.trim().is_empty() {
-            excerpt(&bytes)
+            excerpt(&bytes, 300)
         } else {
             message.to_string()
         };
         return Err(anyhow!("Suno 提交失败（{}）：{}", status.as_u16(), detail));
     }
-    Err(anyhow!("Suno 提交失败：{}", excerpt(&bytes)))
+    Err(anyhow!("Suno 提交失败：{}", excerpt(&bytes, 300)))
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct Task {
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     status: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     fail_reason: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     progress: String,
     /// 任务产物：`MUSIC` 是曲子数组，生成歌词时是单个对象；这里只取数组。
-    #[serde(default, rename = "data", deserialize_with = "null_default")]
+    #[serde(default, rename = "data", deserialize_with = "super::utils::null_default")]
     clips: Vec<Clip>,
     #[serde(default)]
     cost: f64,
@@ -527,23 +528,23 @@ impl Task {
 #[derive(Debug, Default, Deserialize)]
 pub(crate) struct Clip {
     /// 音频直链（`suno.day`，带签名）。
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     pub(crate) audio_url: String,
     /// 封面直链（`cdn2.suno.ai`）。
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     pub(crate) image_url: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     pub(crate) title: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     pub(crate) tags: String,
     /// 歌词。
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     pub(crate) prompt: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     major_model_version: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     model_name: String,
-    #[serde(default, deserialize_with = "null_default")]
+    #[serde(default, deserialize_with = "super::utils::null_default")]
     pub(crate) duration: f64,
 }
 
@@ -586,7 +587,7 @@ async fn poll(base: &str, key: &str, task_id: &str, deadline: Duration) -> anyho
                 "查询 Suno 任务失败（{}）：{}",
                 status.as_u16(),
                 if message.is_empty() {
-                    excerpt(&bytes)
+                    excerpt(&bytes, 300)
                 } else {
                     message.to_string()
                 }
@@ -607,25 +608,5 @@ async fn poll(base: &str, key: &str, task_id: &str, deadline: Duration) -> anyho
     }
 }
 
-fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de> + Default,
-{
-    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
-}
 
-fn scalar_string(value: Option<&Value>) -> Option<String> {
-    let value = value?;
-    if let Some(value) = value.as_str() {
-        Some(value.to_string())
-    } else if let Some(value) = value.as_i64() {
-        Some(value.to_string())
-    } else {
-        value.as_u64().map(|value| value.to_string())
-    }
-}
 
-fn excerpt(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.len().min(300)]).into_owned()
-}

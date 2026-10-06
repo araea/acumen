@@ -54,10 +54,6 @@ impl PluginConfig for Config {
 }
 
 
-fn load_config(ctx: &Context) -> Config {
-    get_config_or_default::<Config>(ctx)
-}
-
 const TRIGGERS: &[&str] = &["help", "帮助", "插件列表"];
 
 /// 总览里的一个插件条目
@@ -307,7 +303,7 @@ pub fn handle(
             Some(m) => m,
             None => return Ok(Some(ctx)),
         };
-        let config = load_config(&ctx);
+        let config: Config = get_config_or_default(&ctx);
         // 私聊专用时，群里的 help 当普通消息放行，交给后面的插件。
         if !answers(&config, msg.group_id()) {
             return Ok(Some(ctx));

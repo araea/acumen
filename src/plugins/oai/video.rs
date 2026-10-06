@@ -12,6 +12,7 @@
 
 use super::logic::{Media, MediaMessage, Reply};
 use super::types::{Agent, ChatMessage};
+use super::utils::one_line;
 use anyhow::{Context as _, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -513,7 +514,3 @@ fn api_error(value: &Value, bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(300)]).into_owned()
 }
 
-/// 折叠空白成单行，用于把多行提示词放进加粗标题。
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}

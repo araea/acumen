@@ -144,10 +144,9 @@ fn parse_window(window: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_clock(clock: &str) -> Option<u32> {
-    let (hour, minute) = clock.trim().split_once(':')?;
-    let hour: u32 = hour.trim().parse().ok()?;
-    let minute: u32 = minute.trim().parse().ok()?;
-    (hour < 24 && minute < 60).then_some(hour * 60 + minute)
+    use chrono::Timelike;
+    let time = crate::clock::parse_clock(clock)?;
+    Some(time.hour() * 60 + time.minute())
 }
 
 /// `YYYY-MM-DD` 或 `YYYY-MM-DD..YYYY-MM-DD` → 起止日期（含两端）。写坏的当作不存在。

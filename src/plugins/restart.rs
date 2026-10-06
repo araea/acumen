@@ -303,11 +303,12 @@ fn spawn_external(command: &str) -> Result<(), PluginError> {
 
 /// 解析 HH:MM 或 HH:MM:SS，非法输入回退默认 04:00。
 fn parse_time(s: &str) -> (u32, u32, u32) {
-    use chrono::{NaiveTime, Timelike};
-    NaiveTime::parse_from_str(s.trim(), "%H:%M:%S")
-        .or_else(|_| NaiveTime::parse_from_str(s.trim(), "%H:%M"))
-        .map(|t| (t.hour(), t.minute(), t.second()))
-        .unwrap_or((4, 0, 0))
+    use chrono::Timelike;
+    let Some(time) = crate::clock::parse_clock(s) else {
+        warn!(target: LOG_TARGET, "无法解析重启时间 [{s}]，已退回 04:00:00。");
+        return (4, 0, 0);
+    };
+    (time.hour(), time.minute(), time.second())
 }
 
 /// 读取当前进程 RSS 内存 (MB)。仅 Linux 提供 /proc/self/status，其余平台返回 None
