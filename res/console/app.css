@@ -40,6 +40,8 @@ body {
   touch-action: manipulation;
   text-rendering: optimizeLegibility;
   overflow-wrap: anywhere;
+  /* 中文与西文、数字相接处自动留出细空隙，不必在文案里手敲空格。 */
+  text-autospace: normal;
 }
 
 h1,
@@ -416,22 +418,45 @@ time {
 }
 
 @media (min-width: 600px) {
+  /* 导航轨从窗口顶端一直通到底，品牌住在轨顶；顶栏只剩右边那一栏（页名与操作）。
+     这样大屏上顶部不再有一条横贯整页、几乎空着的栏。 */
   .app {
-    grid-template-areas: "top top" "nav main";
+    grid-template-areas: "nav top" "nav main";
     grid-template-columns: var(--zw-rail-width) minmax(0, 1fr);
+  }
+
+  .topbar {
+    z-index: 21;
+    padding-inline: var(--zw-page-gutter) var(--zw-space-04);
+  }
+
+  .brand {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1;
+    justify-content: center;
+    width: var(--zw-rail-width);
+    height: calc(var(--zw-topbar-height) + var(--zw-safe-top));
+    padding: var(--zw-safe-top) 0 0 var(--zw-safe-left);
+    border-radius: 0;
+  }
+
+  .brand-name {
+    display: none;
   }
 
   .nav {
     grid-area: nav;
     position: sticky;
-    top: calc(var(--zw-topbar-height) + var(--zw-safe-top));
+    top: 0;
     inset-inline: auto;
     bottom: auto;
     flex-direction: column;
     justify-content: flex-start;
     gap: var(--zw-space-04);
-    height: calc(100dvh - var(--zw-topbar-height) - var(--zw-safe-top));
-    padding: var(--zw-space-04) 0 var(--zw-space-05) var(--zw-safe-left);
+    height: 100dvh;
+    padding: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-04)) 0 var(--zw-space-05) var(--zw-safe-left);
     background: var(--md-sys-color-surface-container-low);
   }
 
@@ -457,6 +482,16 @@ time {
 @media (min-width: 840px) {
   .app {
     grid-template-columns: var(--zw-rail-expanded-width) minmax(0, 1fr);
+  }
+
+  .brand {
+    justify-content: flex-start;
+    width: var(--zw-rail-expanded-width);
+    padding-inline-start: calc(var(--zw-safe-left) + var(--zw-space-04) + var(--zw-space-05));
+  }
+
+  .brand-name {
+    display: inline;
   }
 
   .nav {
@@ -545,6 +580,20 @@ body[data-state="locked"] .app {
 
 body[data-state="locked"] .main {
   padding-bottom: var(--zw-safe-bottom);
+}
+
+/* 解锁页没有导航轨：品牌回到顶栏里它原来的位置。 */
+body[data-state="locked"] .brand {
+  position: static;
+  justify-content: flex-start;
+  width: auto;
+  height: auto;
+  padding: 0 var(--zw-space-04) 0 var(--zw-space-02);
+  border-radius: var(--md-sys-shape-corner-full);
+}
+
+body[data-state="locked"] .brand-name {
+  display: inline;
 }
 
 /* ==================== §3 页面骨架 ==================== */
@@ -681,7 +730,7 @@ body[data-state="locked"] .main {
   min-width: 0;
   padding: var(--zw-space-05);
   border-radius: var(--md-sys-shape-corner-extra-large);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--md-sys-color-surface-container);
 }
 
 @media (min-width: 600px) {
@@ -1289,8 +1338,9 @@ button.item:active::after {
 
 .field-hint {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-body-small-size);
-  line-height: var(--md-sys-typescale-body-small-line-height);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+  text-wrap: pretty;
 }
 
 .field-error {
@@ -2030,6 +2080,17 @@ button.item:active::after {
   text-wrap: balance;
 }
 
+/* 「运行中」的点缓缓明灭：它是活的。减少动态时静止。 */
+.hero .status-success::before {
+  animation: breathe calc(var(--md-sys-motion-loop-duration) * 1.5) ease-in-out infinite;
+}
+
+@keyframes breathe {
+  50% {
+    opacity: 0.3;
+  }
+}
+
 .hero-note {
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--md-sys-typescale-body-medium-line-height);
@@ -2060,24 +2121,60 @@ button.item:active::after {
 .stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--zw-space-03);
+  gap: var(--zw-group-gap);
 }
 
+/* 四格读数合成一块：外沿四角大圆角、里侧小圆角，与分段列表同一套形状语言。 */
 .stat {
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-02);
+  gap: var(--zw-space-03);
   min-width: 0;
   padding: var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-large-increased);
+  border-radius: var(--md-sys-shape-corner-small);
   background: var(--md-sys-color-surface-container);
 }
 
+.stat:nth-child(1) {
+  border-top-left-radius: var(--md-sys-shape-corner-extra-large);
+}
+
+.stat:nth-child(2) {
+  border-top-right-radius: var(--md-sys-shape-corner-extra-large);
+}
+
+.stat:nth-child(3) {
+  border-bottom-left-radius: var(--md-sys-shape-corner-extra-large);
+}
+
+.stat:nth-child(4) {
+  border-bottom-right-radius: var(--md-sys-shape-corner-extra-large);
+}
+
 .stat-label {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-03);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.stat-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--zw-size-chip);
+  height: var(--zw-size-chip);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+}
+
+.stat-icon svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
 }
 
 .stat-value {
@@ -2091,24 +2188,10 @@ button.item:active::after {
   font-variant-numeric: tabular-nums;
 }
 
-.stat:nth-child(2) {
-  border-radius: var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-small)
-    var(--md-sys-shape-corner-extra-large) var(--md-sys-shape-corner-small);
-}
-
-.stat:nth-child(3) {
-  border-radius: var(--md-sys-shape-corner-small) var(--md-sys-shape-corner-extra-large)
-    var(--md-sys-shape-corner-small) var(--md-sys-shape-corner-extra-large);
-}
-
-.stat:last-child {
+/* 全页的强调只有运行卡一处；插件占比这一格靠图标底与占比条带一点第三色。 */
+.stat-plugins .stat-icon {
   background: var(--md-sys-color-tertiary-container);
   color: var(--md-sys-color-on-tertiary-container);
-}
-
-.stat:last-child .stat-label,
-.stat:last-child .stat-unit {
-  color: inherit;
 }
 
 .stat-unit {
@@ -2116,6 +2199,36 @@ button.item:active::after {
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--md-sys-typescale-body-medium-line-height);
   font-weight: var(--md-sys-typescale-weight-regular);
+}
+
+/* 占比条（<meter>）：启用了几个、一共几个。轨道与填充只取令牌色。 */
+.meter {
+  appearance: none;
+  width: 100%;
+  height: var(--zw-space-03);
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-lowest);
+  overflow: hidden;
+}
+
+.meter::-webkit-meter-bar {
+  height: var(--zw-space-03);
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-lowest);
+}
+
+.meter::-webkit-meter-optimum-value,
+.meter::-webkit-meter-suboptimum-value,
+.meter::-webkit-meter-even-less-good-value {
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-tertiary);
+}
+
+.meter::-moz-meter-bar {
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-tertiary);
 }
 
 @media (min-width: 840px) {
@@ -2152,7 +2265,8 @@ button.item:active::after {
   }
 
   .hero-value {
-    font-size: var(--md-sys-typescale-display-small-size);
+    font-size: var(--md-sys-typescale-display-medium-size);
+    line-height: var(--md-sys-typescale-display-medium-line-height);
   }
 }
 
@@ -2195,6 +2309,43 @@ button.item:active::after {
   }
 }
 
+/* 插件行：左边一块分类图标（同类同色），选中时统一换成实心主色，选中态不只靠行底色。 */
+.item-tile {
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.item-tile[data-tone="play"] {
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+
+.item-tile[data-tone="insight"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.item-tile[data-tone="system"],
+.item-tile[data-tone="misc"] {
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.item:has(.item-link[aria-current="page"]) .item-tile {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+/* 列表里的说明最多两行，完整的在详情里；一条长说明不该把整行撑成一篇短文。 */
+.split-list .item-sub {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
 .detail-status {
   display: inline-flex;
 }
@@ -2215,38 +2366,112 @@ button.item:active::after {
   font-weight: var(--md-sys-typescale-weight-emphasized);
 }
 
+/* —— 配置表单 ——
+   一组配置项 = 一块 M3E 分段列表：每项是一格色调底的「设置行」，行间 2px 缝，
+   块两端大圆角。名字（键）与说明各占一行；容器够宽时改成「左说明、右控件」，
+   窄处上下叠放。判断看表单自己的宽度（容器查询），不看视口：
+   宽屏上详情栏只有半边，手机上则占满，两者要的版式不同。 */
 .config {
+  container: config / inline-size;
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-05);
+  gap: var(--zw-space-07);
 }
 
 .config-group {
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-05);
-  padding: var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-large);
-  background: var(--md-sys-color-surface-container);
+  gap: var(--zw-group-gap);
+  min-width: 0;
 }
 
 .config-group .config-group {
-  background: var(--md-sys-color-surface-container-high);
+  margin-top: var(--zw-space-06);
 }
 
 .config-legend {
   float: left;
   width: 100%;
-  margin-bottom: var(--zw-space-02);
-  padding: 0;
+  margin-bottom: var(--zw-space-04);
+  padding: 0 var(--zw-space-05);
+  color: var(--md-sys-color-primary);
   font-family: var(--md-ref-typeface-mono);
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.config-group .config-group .config-legend {
+  color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-title-small-size);
   line-height: var(--md-sys-typescale-title-small-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
 }
 
 .config-legend + * {
   clear: both;
+}
+
+.setting {
+  --_setting-bg: var(--md-sys-color-surface-container);
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-04);
+  min-width: 0;
+  padding: var(--zw-space-04) var(--zw-space-05);
+  border-radius: var(--zw-group-inner);
+  background: var(--_setting-bg);
+  transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
+}
+
+.setting:first-of-type {
+  border-top-left-radius: var(--zw-group-outer);
+  border-top-right-radius: var(--zw-group-outer);
+}
+
+.setting:last-of-type {
+  border-bottom-left-radius: var(--zw-group-outer);
+  border-bottom-right-radius: var(--zw-group-outer);
+}
+
+.setting:focus-within {
+  --_setting-bg: var(--md-sys-color-surface-container-high);
+}
+
+/* 设置行里嵌的名单：行底色比设置行高一档，聚焦时设置行抬一档，名单行仍高出一档。 */
+.setting .item {
+  --_item-bg: var(--md-sys-color-surface-container-highest);
+}
+
+.field-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.config .field-label code {
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+  overflow-wrap: anywhere;
+}
+
+@container config (min-width: 38rem) {
+  .setting[data-row] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--_control, calc(var(--zw-space-10) * 3));
+    align-items: center;
+    gap: var(--zw-space-03) var(--zw-space-07);
+  }
+
+  /* 校验错误写在控件正下方，不挤到说明那一栏。 */
+  .setting[data-row] > .field-error,
+  .setting[data-row] > .select > .field-error {
+    grid-column: 2;
+  }
+
+  .setting[data-row] > .field-text {
+    grid-column: 1;
+  }
 }
 
 /* 布尔项一行：标签在左、开关在右（与系统设置同形）。 */
@@ -2260,6 +2485,16 @@ button.item:active::after {
 
 .toggle-row .field-label {
   min-width: 0;
+}
+
+.toggle-row.setting {
+  flex-direction: row;
+  align-items: center;
+  min-height: var(--zw-size-list-item);
+}
+
+.toggle-row .field-text {
+  flex: 1;
 }
 
 /* —— 搭话 —— */
@@ -2421,6 +2656,7 @@ button.item:active::after {
 /* 日志区的高度 = 视口减去外壳与页头、工具栏：一屏里既看得到工具栏也看得到最新一行。
    紧凑宽度下工具栏折成三行，所以扣得更多。 */
 .log {
+  container: log / inline-size;
   height: max(18rem, calc(100dvh - var(--zw-topbar-height) - var(--zw-navbar-height) - var(--zw-safe-top) - var(--zw-safe-bottom) - 25rem));
   overflow: auto;
   overscroll-behavior: contain;
@@ -2492,9 +2728,11 @@ button.item:active::after {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-@media (min-width: 840px) {
+/* 版式看日志框自己的宽度：总览里它只是半栏，手机上是整屏，不能按视口定。
+   够宽时一行四列（时间 / 级别 / 来源 / 正文）；窄时来源与正文各占一行。 */
+@container log (min-width: 44rem) {
   .log-row {
-    grid-template-columns: 8ch 4ch minmax(8ch, 20ch) minmax(0, 1fr);
+    grid-template-columns: 8ch 4ch minmax(8ch, 16ch) minmax(0, 1fr);
   }
 
   .log-text {
@@ -2540,8 +2778,18 @@ button.item:active::after {
   flex-direction: column;
   gap: var(--zw-space-05);
   padding: var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-large);
+  border-radius: var(--zw-group-inner);
   background: var(--md-sys-color-surface-container);
+}
+
+.bot:first-child {
+  border-top-left-radius: var(--zw-group-outer);
+  border-top-right-radius: var(--zw-group-outer);
+}
+
+.bot:last-child {
+  border-bottom-left-radius: var(--zw-group-outer);
+  border-bottom-right-radius: var(--zw-group-outer);
 }
 
 .bot-head {
@@ -2616,6 +2864,7 @@ button.item:active::after {
   .snackbar,
   .dialog[open],
   .skeleton-block,
+  .hero .status-success::before,
   .icon-btn[data-busy] svg {
     animation: none;
   }

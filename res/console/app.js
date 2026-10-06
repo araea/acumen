@@ -80,6 +80,9 @@
     groups: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9.5" r="2.4"/><path d="M16 14.2a4.6 4.6 0 0 1 4.5 4.3"/>',
     user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5a7 7 0 0 1 14 0"/>',
     info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.5h.01"/>',
+    chat: '<path d="M5 4.5h14A1.5 1.5 0 0 1 20.5 6v9.5A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V6A1.5 1.5 0 0 1 5 4.5z"/><path d="M8 9.5h8M8 12.5h5"/>',
+    spark: '<path d="M12 3.5c.6 4.6 3.9 7.9 8.5 8.5-4.6.6-7.9 3.9-8.5 8.5-.6-4.6-3.9-7.9-8.5-8.5 4.6-.6 7.9-3.9 8.5-8.5z"/>',
+    chart: '<path d="M5.5 19.5v-7M12 19.5v-14M18.5 19.5v-9"/>',
     inbox: '<path d="M4 13.5 6.5 5.5h11l2.5 8v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>',
   };
 
@@ -395,6 +398,7 @@
   };
 
   const MOUNT = {
+    ambient: () => paintGroupNames(),
     overview: () => overviewFeed.start(),
     logs: () => logs.mount(),
   };
@@ -623,13 +627,13 @@
 
   async function overviewPage() {
     const data = await api("/overview");
-    const stat = (label, value, unit) =>
-      h`<div class="stat"><dt class="stat-label">${label}</dt>
+    const stat = (glyph, label, value, unit) =>
+      h`<div class="stat"><dt class="stat-label"><span class="stat-icon">${icon(glyph)}</span>${label}</dt>
         <dd class="stat-value"><span class="num">${value}</span>${unit ? h`<span class="stat-unit">${unit}</span>` : ""}</dd></div>`;
     const bots = data.bots.length
       ? h`<ul class="group">${data.bots.map(
           (bot) => h`<li class="item">
-            <span class="item-leading" aria-hidden="true">${(bot.name || bot.nick || "?").slice(0, 1)}</span>
+            <span class="item-leading" aria-hidden="true">${icon("chat")}</span>
             <div class="item-content">
               <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag">${bot.adapter}/${bot.platform}</span></span>
               <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "已连接实现端，账号尚未识别"}</span>
@@ -669,10 +673,12 @@
             <span class="section-meta">更新于 <time>${clock()}</time></span>
           </div>
           <dl class="stats">
-            ${stat("今日消息", num(data.messages.today), "条")}
-            ${stat("今日发言", num(data.messages.people), "人")}
-            ${stat("近 7 天消息", num(data.messages.week), "条")}
-            ${stat("已启用插件", `${data.plugins.on} / ${data.plugins.total}`, pending.slice(1))}
+            ${stat("chat", "今日消息", num(data.messages.today), "条")}
+            ${stat("groups", "今日发言", num(data.messages.people), "人")}
+            ${stat("chart", "近 7 天消息", num(data.messages.week), "条")}
+            <div class="stat stat-plugins"><dt class="stat-label"><span class="stat-icon">${icon("plugins")}</span>已启用插件</dt>
+              <dd class="stat-value"><span class="num">${data.plugins.on} / ${data.plugins.total}</span>${pending ? h`<span class="stat-unit">${pending.slice(1)}</span>` : ""}</dd>
+              <meter class="meter" min="0" max="${data.plugins.total}" value="${data.plugins.on}" aria-label="已启用 ${data.plugins.on} 个，共 ${data.plugins.total} 个"></meter></div>
           </dl>
         </section>
 
@@ -688,6 +694,9 @@
   }
 
   /* ==================== §8 插件 ==================== */
+
+  /** 分类的图标。同一分类同一种底色（见 app.css 的 .item-tile），一眼分得出是哪一类。 */
+  const SECTION_ICONS = { message: "chat", play: "spark", insight: "chart", system: "settings", misc: "plugins" };
 
   const plugins = {
     data: null,
@@ -714,6 +723,7 @@
       const dual = wide.matches;
       return list.map(
         (plugin) => h`<li class="item" data-plugin="${plugin.name}">
+          <span class="item-leading item-tile" data-tone="${plugin.section}" aria-hidden="true">${icon(SECTION_ICONS[plugin.section] || "plugins")}</span>
           <div class="item-content">
             <a class="item-link item-title" href="#/plugins/${encodeURIComponent(plugin.name)}"${attr(plugin.name === this.selected, 'aria-current="page"')}>
               ${plugin.display}<span class="tag">${plugin.name}</span>${plugin.pending ? h`<span class="status status-warning">待重启</span>` : ""}
@@ -849,9 +859,7 @@
     const top = `h${level}`;
     const sub = `h${Math.min(level + 1, 6)}`;
     const heading = (tag, id, text, cls = "section-title") => raw(`<${tag} class="${cls}" id="${id}">${esc(text)}</${tag}>`);
-    const fields = Object.entries(plugin.config)
-      .filter(([key]) => key !== "enabled")
-      .map(([key, value]) => configField(key, key, value, plugin.field_help || {}, plugin.field_options || {}));
+    const form = configForm(plugin.config, plugin.field_help || {}, plugin.field_options || {});
     const commands = plugin.commands.length
       ? h`<ul class="group">${plugin.commands.map(
           (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
@@ -883,10 +891,10 @@
           ${heading(sub, "config-title", "配置")}
           <span class="section-meta">离开输入框保存；单行输入框也可按回车保存</span>
         </div>
-        ${fields.length
-          ? h`<form class="card config" data-config="${plugin.name}" autocomplete="off" novalidate>${fields}</form>`
+        ${form.count
+          ? h`<form class="config" data-config="${plugin.name}" autocomplete="off" novalidate>${form.html}</form>`
           : h`<p class="note">没有可以调整的配置项。</p>`}
-        ${fields.length
+        ${form.count
           ? h`<div class="actions"><button class="btn btn-outlined btn-danger" type="button" data-reset="${plugin.name}" data-display="${plugin.display}">恢复默认参数</button></div>`
           : ""}
       </section>
@@ -919,14 +927,36 @@
   const listKind = (path, value) =>
     !value.every((item) => typeof item === "string") ? "" : GROUP_LIST.test(path) ? "group" : USER_LIST.test(path) ? "user" : "";
 
-  /** 一个配置项。表与对象数组展开成 fieldset，叶子就地成为能改的控件。 */
+  const isTable = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+
+  /** 配置表单。叶子收成一组分段列表（顶层叫「常规」），每个子表另起一块：
+   *  同一层里叶子在前、子表在后，分段列表才不会被一张子表从中间隔开。 */
+  function configForm(config, help, options) {
+    const entries = Object.entries(config).filter(([key]) => key !== "enabled");
+    const field = ([key, value]) => configField(key, key, value, help, options);
+    const loose = entries.filter(([, value]) => !isTable(value));
+    const tables = entries.filter(([, value]) => isTable(value));
+    return {
+      count: entries.length,
+      html: [
+        loose.length
+          ? h`<fieldset class="config-group"><legend class="config-legend${tables.length ? "" : " visually-hidden"}">常规</legend>${loose.map(field)}</fieldset>`
+          : "",
+        ...tables.map(field),
+      ],
+    };
+  }
+
+  /** 一个配置项。子表展开成 fieldset，叶子就地成为能改的控件：
+   *  名字（键）与说明各占一行，说明挂在控件的 aria-describedby 上，不混进控件的名字。 */
   function configField(path, key, value, help = {}, options = {}) {
     const id = `f${++fieldSeq}`;
     const description = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || `${Array.isArray(value) ? "列表" : typeof value === "boolean" ? "开关" : typeof value === "number" ? "数值" : "文本"}配置；保存时由插件校验类型与范围。`;
-    const label = h`<code>${key}</code><span class="field-hint">${description}</span>`;
+    const text = (label) => h`<div class="field-text">${label}<span class="field-hint" id="${id}-desc">${description}</span></div>`;
+    const named = h`<label class="field-label" for="${id}"><code>${key}</code></label>`;
     if (options[path]?.length) {
-      return h`<div class="field"><label class="field-label" for="${id}">${label}</label>
-        <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}">
+      return h`<div class="field setting" data-row="short">${text(named)}
+        <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}" aria-describedby="${id}-desc">
         ${[...new Set([value, ...options[path]])].map(option => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
         </select>${icon("down")}</span></div>`;
     }
@@ -934,45 +964,40 @@
     if (kind) {
       const role = /(^|\.)channel\.white$/.test(path) ? "channel-white" : /(^|\.)channel\.black$/.test(path) ? "channel-black" : "";
       const fallback = { "channel-white": "非空时，只在名单里的群生效。", "channel-black": "名单里的群一律不生效，优先于白名单。" }[role];
-      const text = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || fallback || (kind === "user" ? "用户账号列表。" : "群号列表。");
+      const hint = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || fallback || (kind === "user" ? "用户账号列表。" : "群号列表。");
       const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role];
-      return picker({
+      return h`<div class="setting">${picker({
         id, kind, mode: "save", ids: value, path, role, title: title || key,
-        label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${text}</span>`,
-      });
+        label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${hint}</span>`,
+      })}</div>`;
     }
     if (Array.isArray(value)) {
-      return h`<div class="field">
-        <label class="field-label" for="${id}">${label}</label>
+      return h`<div class="field setting">${text(named)}
         <input class="input mono" id="${id}" data-path="${path}" data-kind="list" value="${JSON.stringify(value)}"
-          spellcheck="false" autocapitalize="off" aria-describedby="${id}-hint">
+          spellcheck="false" autocapitalize="off" aria-describedby="${id}-desc ${id}-hint">
         <span class="field-hint" id="${id}-hint">JSON 列表，空列表为 []；保留引号以区分文本和数字；对象列表可在此增删项目</span>
       </div>`;
     }
-    if (value !== null && typeof value === "object") {
-      const children = Array.isArray(value)
-        ? value.map((item, index) => configField(`${path}.${index}`, `[${index}]`, item, help, options))
-        : Object.entries(value).map(([child, item]) => configField(`${path}.${child}`, child, item, help, options));
+    if (isTable(value)) {
+      const children = Object.entries(value).sort(([, a], [, b]) => isTable(a) - isTable(b)).map(([child, item]) => configField(`${path}.${child}`, child, item, help, options));
       return h`<fieldset class="config-group"><legend class="config-legend">${key}</legend>${children}</fieldset>`;
     }
     if (typeof value === "boolean") {
-      return h`<div class="toggle-row">
-        <span class="field-label" id="${id}">${label}</span>
+      return h`<div class="toggle-row setting">
+        ${text(h`<span class="field-label" id="${id}"><code>${key}</code></span>`)}
         <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"
-          aria-checked="${bool(value)}" aria-labelledby="${id}"></button>
+          aria-checked="${bool(value)}" aria-labelledby="${id}" aria-describedby="${id}-desc"></button>
       </div>`;
     }
     if (typeof value === "string" && (value.includes("\n") || value.length > 80)) {
-      return h`<div class="field">
-        <label class="field-label" for="${id}">${label}</label>
-        <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false">${value}</textarea>
+      return h`<div class="field setting">${text(named)}
+        <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false" aria-describedby="${id}-desc">${value}</textarea>
       </div>`;
     }
     const numeric = typeof value === "number";
-    return h`<div class="field">
-      <label class="field-label" for="${id}">${label}</label>
+    return h`<div class="field setting"${attr(numeric, 'data-row="short"')}>${text(named)}
       <input class="input${numeric ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
-        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${attr(numeric, 'inputmode="decimal"')}>
+        value="${value ?? ""}" spellcheck="false" autocapitalize="off" aria-describedby="${id}-desc"${attr(numeric, 'inputmode="decimal"')}>
     </div>`;
   }
 
@@ -1200,10 +1225,10 @@
       const others = group.people.length - noted.length;
       return h`<details class="memory"${attr(index === 0, "open")}>
         <summary class="state">
-          <span class="item-leading" aria-hidden="true">群</span>
+          <span class="item-leading" aria-hidden="true">${icon("groups")}</span>
           <span class="item-content">
-            <span class="item-title">群 ${group.group}</span>
-            <span class="item-sub">${group.people.length} 人 · ${group.notes.length} 条旧事</span>
+            <span class="item-title" data-group-name="${group.group}">群 ${group.group}</span>
+            <span class="item-sub"><span data-group-id hidden>群号 ${group.group} · </span>${group.people.length} 人 · ${group.notes.length} 条旧事</span>
           </span>
           ${icon("chevron", "chevron")}
         </summary>
@@ -1229,6 +1254,20 @@
         </div>
       </details>`;
     })}</div>`;
+  }
+
+  /** 记忆按群号存，人要看的是群名：页面出来后向名册问一次，把标题换成群名、群号退到副标题。
+   *  问不到（实现端没连上）就保持「群 123456」，不影响阅读。 */
+  function paintGroupNames() {
+    void KINDS.group.roster.load().then((roster) => {
+      for (const title of $$("[data-group-name]")) {
+        const entry = roster.byId.get(title.dataset.groupName);
+        if (!entry?.name) continue;
+        title.textContent = entry.name;
+        const id = title.parentElement.querySelector("[data-group-id]");
+        if (id) id.hidden = false;
+      }
+    });
   }
 
   function stickerPanel() {
@@ -1592,7 +1631,7 @@
     return h`<div class="page">
       ${pageHead("设置", "连接、全局行为与维护命令。这些项目不属于任何插件。")}
 
-      <section class="card" aria-labelledby="bots-title">
+      <section class="section" aria-labelledby="bots-title">
         <div class="section-head">
           <h2 class="section-title" id="bots-title">连接</h2>
           <span class="section-meta">修改后重启生效</span>
@@ -1604,26 +1643,28 @@
         <div class="actions"><button class="btn btn-tonal" type="button" data-add-bot>${icon("plus")}添加连接</button></div>
       </section>
 
-      <section class="card" aria-labelledby="global-title">
+      <section class="section" aria-labelledby="global-title">
         <div class="section-head">
           <h2 class="section-title" id="global-title">全局</h2>
           <span class="section-meta">前缀与名单下一条消息生效</span>
         </div>
-        <form id="global-form" class="form-grid" autocomplete="off" novalidate>
-          ${textField("g-prefix", "指令前缀", "command_prefix", list(data.command_prefix), "多个用逗号分隔，例如 /, #")}
-          ${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；下次启动生效")}
-          <div class="field">
-            <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
-              <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${bool(filter.enable_blacklist)}" aria-labelledby="g-black-label"></button></div>
-            ${picker({ id: "g-black", label: "黑名单群号", title: "黑名单", ids: filter.blacklist, mode: "stage", name: "blacklist", role: "global-black", flags })}
+        <form id="global-form" class="section" autocomplete="off" novalidate>
+          <div class="config-group">
+            ${textField("g-prefix", "指令前缀", "command_prefix", list(data.command_prefix), "多个用逗号分隔，例如 /, #", "", true)}
+            ${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；下次启动生效", "", true)}
+            <div class="setting">
+              <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
+                <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${bool(filter.enable_blacklist)}" aria-labelledby="g-black-label"></button></div>
+              ${picker({ id: "g-black", label: "黑名单群号", title: "黑名单", ids: filter.blacklist, mode: "stage", name: "blacklist", role: "global-black", flags })}
+            </div>
+            <div class="setting">
+              <div class="toggle-row"><span class="field-label" id="g-white-label">启用群白名单</span>
+                <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${bool(filter.enable_whitelist)}" aria-labelledby="g-white-label"></button></div>
+              ${picker({ id: "g-white", label: "白名单群号", title: "白名单", ids: filter.whitelist, mode: "stage", name: "whitelist", role: "global-white", flags })}
+            </div>
           </div>
-          <div class="field">
-            <div class="toggle-row"><span class="field-label" id="g-white-label">启用群白名单</span>
-              <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${bool(filter.enable_whitelist)}" aria-labelledby="g-white-label"></button></div>
-            ${picker({ id: "g-white", label: "白名单群号", title: "白名单", ids: filter.whitelist, mode: "stage", name: "whitelist", role: "global-white", flags })}
-          </div>
-          <p class="note span-all">名单只认群号。启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单，关闭白名单后，启用的黑名单才生效。名单里的群，消息会被整个忽略。</p>
-          <div class="actions span-all"><button class="btn btn-filled" type="submit">保存全局设置</button></div>
+          <p class="note">名单只认群号。启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单，关闭白名单后，启用的黑名单才生效。名单里的群，消息会被整个忽略。</p>
+          <div class="actions"><button class="btn btn-filled" type="submit">保存全局设置</button></div>
         </form>
       </section>
 
@@ -1671,8 +1712,8 @@
     return "在浏览器地址栏右侧或菜单中选择「安装」。";
   }
 
-  const textField = (id, label, name, value, hint, extra = "") =>
-    h`<div class="field">
+  const textField = (id, label, name, value, hint, extra = "", tile = false) =>
+    h`<div class="field${tile ? " setting" : ""}">
       <label class="field-label" for="${id}">${label}</label>
       <input class="input mono" id="${id}" name="${name}" value="${value}" spellcheck="false" autocapitalize="off"
         autocomplete="off" aria-describedby="${id}-hint"${raw(extra)}>
