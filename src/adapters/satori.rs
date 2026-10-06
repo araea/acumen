@@ -842,7 +842,7 @@ pub async fn run_bot_loop(
     let mut session_sn = EventCursor::default();
     loop {
         let connected_at = std::time::Instant::now();
-        match connect_and_listen(
+        let result = connect_and_listen(
             &bot_config,
             global_config.clone(),
             db.clone(),
@@ -851,17 +851,19 @@ pub async fn run_bot_loop(
             config_path.clone(),
             &mut session_sn,
         )
-        .await
-        {
+        .await;
+        // 连上过一阵（≥60 秒）才断的，是网络或对端的一次抖动：带着 sn 马上恢复就行，不必按失败累计的
+        // 间隔等。先重置再打日志，日志里的间隔才是真正要等的那个。
+        if connected_at.elapsed() >= Duration::from_secs(60) {
+            backoff = Duration::from_secs(1);
+        }
+        match result {
             Ok(()) => {
                 warn!(target: "Bot", "Satori [{}] 连接断开，{:?} 后重连...", endpoint, backoff)
             }
             Err(err) => {
                 error!(target: "Bot", "Satori [{}] 连接失败: {}。{:?} 后重试...", endpoint, err, backoff)
             }
-        }
-        if connected_at.elapsed() >= Duration::from_secs(60) {
-            backoff = Duration::from_secs(3);
         }
         tokio::time::sleep(backoff).await;
         backoff = (backoff * 2).min(Duration::from_secs(60));

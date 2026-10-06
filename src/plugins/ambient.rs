@@ -1125,10 +1125,11 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: &str) -> Option<(Turn, Option<St
             )
         }
         "guild-member-added" => format!("[群成员 {user} 加入了群聊]"),
-        "guild-member-removed" => format!(
-            "[群成员 {user} 离开了群聊；操作者 {}]",
-            raw.get_str("operator_id").unwrap_or("")
-        ),
+        // 实现端不知道谁操作的（自己退群）就不带 operator，别印一个空的「操作者」。
+        "guild-member-removed" => match raw.get_str("operator_id").filter(|id| !id.is_empty()) {
+            Some(operator) => format!("[群成员 {user} 离开了群聊；操作者 {operator}]"),
+            None => format!("[群成员 {user} 离开了群聊]"),
+        },
         "guild-member-updated" => {
             // 管理动作的事件只更新现场，避免自己管理→自己评论的循环。
             from_me = true;
