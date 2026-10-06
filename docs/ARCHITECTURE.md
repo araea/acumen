@@ -23,7 +23,7 @@ src/
   db/              SeaORM 实体与 SQLite 查询
 res/               词库、提示词、技能、卡片与控制台资源
 docs/              项目文档
-tests/             前台运行、重启与渲染测试
+tests/             前台运行、重启、渲染与端到端冒烟（e2e.py 自起假 Satori 实现端）
 ```
 
 ## 事件流水线
@@ -94,6 +94,13 @@ cargo build --release --locked
 ```
 
 插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`db`、`scheduler`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`。
+
+改动框架、流水线或插件钩子之后，再跑一遍端到端冒烟（需要 `pip install aiohttp`，在隔离目录里拉起一个连假端口的实例，不碰线上数据）：
+
+```sh
+python3 tests/e2e.py target/release/acumen
+E2E_STARTUP=1 python3 tests/e2e.py target/release/acumen   # 全部插件启动自检
+```
 
 卡片版式改动还需用真实注册表生成图片并人工检查：
 
