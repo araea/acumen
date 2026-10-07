@@ -134,6 +134,9 @@ const WALLED_DOMAINS: &[&str] = &[
     "xueqiu.com",
     "nga.cn",
     "ngabbs.com",
+    // 酷安：帖子页（`/feed/…`）未登录只给一张「请用酷安手机APP扫码查看详情」的壳页，
+    // 2026-10-07 实测，换 UA 也一样。整站按 APP 优先设计，所以点名域名而不是路径。
+    "coolapk.com",
     // 风控墙：从本机（Termux，出口走代理）打开只有验证页或 block 页。
     // 跟登录无关，换出口 IP 后可能又能开，届时把这两条摘掉即可。
     "reddit.com",
@@ -1335,6 +1338,10 @@ mod tests {
             "https://www.zhihu.com/question/1",
             "https://xueqiu.com/S/SH600519",
             "https://bbs.nga.cn/thread.php?fid=-7",
+            // 酷安帖子：只有 APP 登录后才有正文，网页是扫码引导壳页。
+            "https://www.coolapk.com/feed/74196781?s=ZTVlNWFjYjIyMmFhOTU0ZzZhYzVkMWUwegh711",
+            "https://m.coolapk.com/feed/74196781",
+            "https://coolapk.com/t/摄影",
             "https://www.reddit.com/r/rust/",
             "https://www.quora.com/What-is-rust",
             // 1688 分享短链与它跳转的移动站落点，都停在滑块验证页。
@@ -1356,6 +1363,8 @@ mod tests {
             "https://www.pixiv.net/artworks/91475850",
             "https://tieba.baidu.com/f?kw=rust",
             "https://www.hupu.com/",
+            // 后缀匹配不误伤同前缀的别的域名。
+            "https://coolapk.com.example.net/feed/1",
             // 1688 的桌面站不在名单里：商品页未登录也有内容。
             "https://detail.1688.com/offer/1046051827096.html",
             "https://www.1688.com/",
