@@ -269,13 +269,13 @@ QQ 官方机器人及 AI 助手的 Markdown 卡片正文能进入窗口；内联
 由 `ctl.admins` 中的全局管理员发送，私聊、已接入群聊与本机控制台均可；发言模型影响所有已启用搭话的群：
 
 ```text
-/ctl set ambient reply_model deepseek/deepseek-flash
+/ctl set ambient reply_model apilio/gemini-3.8-flash
 /ctl show ambient reply_model
 /ctl set ambient gate_model deepseek/deepseek-flash
 /ctl show ambient gate_model
 ```
 
-供应商需在 `[oai.providers]` 配置。默认判定与发言模型为 `deepseek/deepseek-flash`，具体能力与价格以供应商为准。发言端思考强度默认 `low`。新消息到达后先前的判定分作废，配置变更下一批生效，无需重启。只有模型名带 `deepseek/` 前缀才按峰谷作息，换成别家全天一个价。
+供应商需在 `[oai.providers]` 配置（`apilio` 例外，始终回退 oai 默认接口）。默认判定模型为 `deepseek/deepseek-flash`，发言模型为 `apilio/gemini-3.8-flash`，具体能力与价格以供应商为准。发言端思考强度默认 `low`。新消息到达后先前的判定分作废，配置变更下一批生效，无需重启。只有模型名带 `deepseek/` 前缀才按峰谷作息，换成别家全天一个价。
 
 ## 配置
 
@@ -290,7 +290,7 @@ QQ 官方机器人及 AI 助手的 Markdown 卡片正文能进入窗口；内联
 | `management_groups` | `[]` | 开放人格群管理的群号，还须具有实际 QQ 权限；运行时移除立即阻止后续管理动作 |
 | `gate_model` | `deepseek/deepseek-flash` | 判定模型；`供应商/模型` 按 `[oai.providers]` 取接口，不带前缀走 oai 默认接口 |
 | `gate_persona` | 浓缩画像 | 判定读的兴趣画像，留空则回退完整人设 |
-| `reply_model` | `deepseek/deepseek-flash` | 发言模型 |
+| `reply_model` | `apilio/gemini-3.8-flash` | 发言模型；`apilio` 走 oai 默认接口 |
 | `help_thinking` | `high` | 答疑那一轮（`help` / `urgent`，或被 @ 问事）的思考强度；留空同 `thinking` |
 | `help_model` | `""` | 答疑那一轮换用的发言模型；留空沿用 `reply_model` |
 | `breakthrough_per_hour` | `3` | 每群每小时最多紧急突破几次；0 关闭 |

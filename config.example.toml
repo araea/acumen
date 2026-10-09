@@ -545,8 +545,8 @@ gate_model = "deepseek/deepseek-flash"
 # 想退回用完整写作人设（最贵，不推荐）就把它设为空字符串。
 # gate_persona = ""
 # 发言模型，同样写 `供应商/模型`；思考强度 off/minimal/low/medium/high。
-# 默认与判定同一个便宜档。试过更贵的 Claude / Gemini，真实群聊里并不更像人。
-reply_model = "deepseek/deepseek-flash"
+# 默认 `gemini-3.8-flash`，走 apilio 默认接口（不必在 [oai.providers] 里再配）。
+reply_model = "apilio/gemini-3.8-flash"
 thinking = "low"
 # 答疑那一轮（判定认出有人认真求助，或有人 @ 它问事）的思考强度与模型。
 # 平常接话 low 就够；答疑要先想清楚再开口。help_model 留空沿用 reply_model。

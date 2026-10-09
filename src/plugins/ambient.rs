@@ -117,9 +117,9 @@ pub(crate) struct AmbientConfig {
     /// 判定用的浓缩人设画像（见 [`GATE_PERSONA`]）。判定只需知道对什么感兴趣、
     /// 避开什么、怎么接话，不需要完整写作人设；留空则回退用完整人设（更贵）。
     pub gate_persona: String,
-    /// 发言模型，写成 `供应商/模型`；默认 DeepSeek 的 `deepseek-flash`。
-    /// 试过更贵的 Claude / Gemini，实测在真实群聊里并不比便宜档更像人，人机感
-    /// 另有来源（该长该短没控住），所以默认仍留在便宜这一档。
+    /// 发言模型，写成 `供应商/模型`。默认 `gemini-3.8-flash`，走 apilio 默认接口
+    /// （`apilio` 不在 `[oai.providers]` 里也回退默认接口，不必重复配置）。
+    /// 真实群里比 `deepseek-flash` 稳（2026-10-09 换回），判定模型不跟着动。
     pub reply_model: String,
     /// 发言模型的思考强度（off/minimal/low/medium/high）。
     pub thinking: String,
@@ -309,7 +309,7 @@ impl Default for AmbientConfig {
             management_groups: Vec::new(),
             gate_model: "deepseek/deepseek-flash".to_string(),
             gate_persona: GATE_PERSONA.to_string(),
-            reply_model: "deepseek/deepseek-flash".to_string(),
+            reply_model: "apilio/gemini-3.8-flash".to_string(),
             thinking: "low".to_string(),
             temperature: Some(1.0),
             help_thinking: "high".to_string(),
