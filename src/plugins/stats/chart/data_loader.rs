@@ -32,6 +32,8 @@ pub struct BarData {
     pub theme_color: RGBColor, // 从头像提取的主题色
     /// 非用户条目（如消息类型）的图标字符：不绘制头像，改为绘制彩色图标徽章
     pub icon_char: Option<String>,
+    /// 数值后面跟的一小段补充（比如累计禁言时长后面的「3 次」），与数值写在同一处。
+    pub detail: Option<String>,
 }
 
 /// 消息类型的视觉样式（颜色 + 图标字符）。
@@ -272,15 +274,30 @@ pub struct BanBoard {
 
 impl BanBoard {
     /// 指令里的数据类型 → 榜的种类；不是禁言榜返回 `None`。
+    ///
+    /// 时长榜是**累计**：一个人的每次禁言各算实际禁言了多久，加起来排。群友说的「累计」「总时长」
+    /// 与「时长」是同一张榜，都认。
     pub fn parse(data_type: &str) -> Option<Self> {
         let (by, by_duration) = match data_type {
             "禁言" => (bans::By::Member, false),
-            "禁言时长" => (bans::By::Member, true),
+            "禁言时长" | "累计禁言时长" | "禁言总时长" => (bans::By::Member, true),
             "管理员禁言" => (bans::By::Operator, false),
-            "管理员禁言时长" => (bans::By::Operator, true),
+            "管理员禁言时长" | "管理员累计禁言时长" | "管理员禁言总时长" => {
+                (bans::By::Operator, true)
+            }
             _ => return None,
         };
         Some(Self { by, by_duration })
+    }
+
+    /// 榜名里「禁言」那一段。时长榜点明是累计——光写「禁言时长」，读的人会当成单次最长。
+    pub fn name(&self) -> &'static str {
+        match (self.by, self.by_duration) {
+            (bans::By::Member, false) => "禁言",
+            (bans::By::Member, true) => "累计禁言时长",
+            (bans::By::Operator, false) => "管理员禁言",
+            (bans::By::Operator, true) => "管理员累计禁言时长",
+        }
     }
 }
 
@@ -304,12 +321,17 @@ pub async fn fetch_ban_bars(
     let bans::Board {
         rows: mut tallies,
         unattributed,
+        cut_short,
     } = bans::tally(&events, start_time, end_time, board.by);
     let unknown: i64 = tallies.iter().map(|t| t.unknown).sum();
 
     let mut notes = Vec::new();
     if board.by_duration && unknown > 0 {
         notes.push(format!("另有 {unknown} 次时长未记录"));
+    }
+    // 禁言 1 天、几秒后就被解除的，只累计那几秒；不说一声，榜上的数字对不上群里看到的灰条。
+    if board.by_duration && cut_short > 0 {
+        notes.push(format!("{cut_short} 次提前解除，按实际时长算"));
     }
     if unattributed > 0 {
         notes.push(format!("另有 {unattributed} 次未识别操作者"));
@@ -365,6 +387,8 @@ pub async fn fetch_ban_bars(
             } else {
                 tally.times
             },
+            // 累计时长后面带上次数：一眼看出是几次加起来的，不是一次的长度
+            detail: board.by_duration.then(|| format!("{} 次", tally.times)),
             avatar_url: Some(avatar),
             avatar_img: None,
             theme_color: FALLBACK_THEME,
@@ -417,6 +441,7 @@ pub async fn fetch_bar_data(
                     avatar_url: None,
                     avatar_img: None,
                     theme_color: color,
+                    detail: None,
                     icon_char: Some(icon.to_string()),
                 }
             })
@@ -449,6 +474,7 @@ pub async fn fetch_bar_data(
                 avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
+                detail: None,
                 icon_char: None,
             });
         }
@@ -468,6 +494,7 @@ pub async fn fetch_bar_data(
                 avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
+                detail: None,
                 icon_char: None,
             });
         }
@@ -502,6 +529,7 @@ pub async fn fetch_bar_data(
             avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
             avatar_img: None,
             theme_color: FALLBACK_THEME,
+            detail: None,
             icon_char: None,
         });
     }
@@ -562,6 +590,7 @@ pub async fn fetch_bar_data(
                 avatar_url: Some(avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
+                detail: None,
                 icon_char: None,
             });
         }

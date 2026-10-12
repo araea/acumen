@@ -215,7 +215,10 @@ pub fn draw_bar_chart(
     let mut pct_col_w = 0u32;
 
     for item in &data {
-        let value_text = unit.value(item.value);
+        let value_text = match &item.detail {
+            Some(detail) => format!("{} · {detail}", unit.value(item.value)),
+            None => unit.value(item.value),
+        };
         let pct_text = format_percent(item.value, total_val);
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));

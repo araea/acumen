@@ -73,6 +73,11 @@ pub fn is_ban_ranking(data_type: &str) -> bool {
     BanBoard::parse(data_type).is_some()
 }
 
+/// 榜名里数据类型那一段：禁言时长榜写明「累计」，别名（总时长）也统一成这个写法；其余原样。
+pub fn ranking_name(data_type: &str) -> &str {
+    BanBoard::parse(data_type).map_or(data_type, |board| board.name())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn generate(
     ctx: &Context,

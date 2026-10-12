@@ -151,7 +151,7 @@ fn get_regex_global() -> &'static Regex {
 
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|管理员禁言时长|管理员禁言|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
+        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
             .unwrap()
     })
 }
@@ -216,7 +216,7 @@ pub fn handle(
                 writer,
                 group_id,
                 Some(user_id),
-                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」（谁被禁言最多），或「本群本月管理员禁言排行榜」（谁禁言最多）；后面加「时长」就按时长排",
+                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」（谁被禁言次数最多），「本群本月禁言时长排行榜」（谁被禁言累计最久），或「本群本月管理员禁言排行榜」（谁禁言禁得最多）",
             )
             .await?;
             return Ok(None);
@@ -251,10 +251,11 @@ pub fn handle(
 
         // 中文标题不靠空格断词：连写成一句「本群今日发言排行榜」像一行标题，
         // 用空格隔开则像四个并排的关键词。范围、总量、时间都在图里的元信息行上。
+        let name = chart::ranking_name(data_type);
         let title = if is_all_groups {
-            format!("所有群{time_str}{data_type}{chart_type}")
+            format!("所有群{time_str}{name}{chart_type}")
         } else {
-            format!("{scope}{time_str}{data_type}{chart_type}")
+            format!("{scope}{time_str}{name}{chart_type}")
         };
 
         let result_img = chart::generate(
@@ -478,6 +479,32 @@ mod tests {
             Some("我的".into())
         );
         assert!(get_regex_normal().is_match("跨群今日禁言排行榜"));
+    }
+
+    #[test]
+    fn total_duration_wordings_are_the_same_board() {
+        // 「累计」「总时长」是群友顺口会写的说法，与「禁言时长」是同一张榜，榜名统一写「累计」
+        for (typed, shown) in [
+            ("禁言时长", "累计禁言时长"),
+            ("累计禁言时长", "累计禁言时长"),
+            ("禁言总时长", "累计禁言时长"),
+            ("管理员禁言时长", "管理员累计禁言时长"),
+            ("管理员累计禁言时长", "管理员累计禁言时长"),
+            ("管理员禁言总时长", "管理员累计禁言时长"),
+            ("禁言", "禁言"),
+            ("管理员禁言", "管理员禁言"),
+            ("发言", "发言"),
+        ] {
+            assert_eq!(chart::ranking_name(typed), shown, "{typed}");
+        }
+        for typed in ["累计禁言时长", "禁言总时长", "管理员累计禁言时长", "管理员禁言总时长"] {
+            let command = format!("本群本月{typed}排行榜 5");
+            let caps = get_regex_normal().captures(&command).expect(&command);
+            assert_eq!(&caps[3], typed);
+            assert!(chart::is_ban_ranking(&caps[3]));
+        }
+        // 次数榜不能被「累计」带偏：没有「累计禁言」这种半截说法
+        assert!(!get_regex_normal().is_match("本群本月累计禁言排行榜"));
     }
 
     #[test]

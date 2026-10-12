@@ -243,12 +243,18 @@ async def main():
         await inject_mute("10003", None, seconds_ago=300)
         await inject_mute("10003", 1000, seconds_ago=100)
         await inject_mute("10004", None, operator="10001", seconds_ago=200)  # 有操作者、时长没读出
+        # 累计 vs 单次：10005 被禁言三次、每次 2 小时（累计 6 小时），10006 只被禁言一次但是 5 小时。
+        # 累计榜该是 10005 在前（单次最长的写法会是 10006 在前）。
+        for ago in (40000, 30000, 20000):
+            await inject_mute("10005", 7200_000, operator="10001", seconds_ago=ago)
+        await inject_mute("10006", 5 * 3600_000, operator="10001", seconds_ago=50000)
         await asyncio.sleep(1.5)
         db = sqlite3.connect(f"file:{os.path.join(WORK, 'data', 'bot.db')}?mode=ro", uri=True)
         rows = db.execute("select user_id, operator_id, duration from member_bans order by time").fetchall()
         db.close()
         check("禁言通知入库且去重（操作者随通知存下）",
-              rows == [("10002", "10001", 2592000), ("10002", "10001", 0), ("10002", "10001", 600), ("10003", "", -1), ("10004", "10001", -1), ("10003", "", -1)], str(rows))
+              rows == [("10006", "10001", 18000), ("10005", "10001", 7200), ("10005", "10001", 7200), ("10005", "10001", 7200),
+                       ("10002", "10001", 2592000), ("10002", "10001", 0), ("10002", "10001", 600), ("10003", "", -1), ("10004", "10001", -1), ("10003", "", -1)], str(rows))
 
         mark = len(posts)
         await inject("message-created", "10002", "/我的本月禁言排行榜")
@@ -266,7 +272,7 @@ async def main():
         check("禁言没有走势：给出说明", True)
 
         if FONT:
-            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜"):
+            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜", "/本群近7天禁言总时长排行榜"):
                 mark = len(posts)
                 await inject("message-created", "10002", command)
                 await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)

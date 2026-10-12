@@ -154,6 +154,9 @@ pub struct Board {
     pub rows: Vec<Tally>,
     /// 按管理员排时，不知道是谁动的手的次数；按成员排恒为 0。
     pub unattributed: i64,
+    /// 榜上提前结束的禁言次数：被解除或改判，实际禁言的时间比通知里说的短。
+    /// 这些次数只按实际时长累计，榜上要交代一声，否则「禁言 1 天」的人只算了几秒看着像记错了。
+    pub cut_short: i64,
 }
 
 /// 区间内一次禁言的结果。
@@ -162,6 +165,8 @@ struct Term<'a> {
     operator: Option<&'a str>,
     /// 实际禁言的秒数；`None` 是时长没读出、事后也没能推出。
     served: Option<i64>,
+    /// 通知里说的时长比实际禁言的长：中途被解除，或被新的禁言顶替了。
+    cut_short: bool,
 }
 
 /// 区间内的每一次禁言实际生效了多久。`events` 必须按 (人, 时间) 排好，即 [`events_since`] 的顺序。
@@ -187,6 +192,7 @@ fn terms(events: &[BanEvent], start: i64, end: i64) -> Vec<Term<'_>> {
                 member: &event.user_id,
                 operator: event.operator(),
                 served,
+                cut_short: served.is_some_and(|served| event.duration > served),
             });
         }
     }
@@ -197,6 +203,7 @@ fn terms(events: &[BanEvent], start: i64, end: i64) -> Vec<Term<'_>> {
 pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
     let mut rows: BTreeMap<&str, Tally> = BTreeMap::new();
     let mut unattributed = 0;
+    let mut cut_short = 0;
     for term in terms(events, start, end) {
         let person = match by {
             By::Member => term.member,
@@ -215,6 +222,7 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
             unknown: 0,
         });
         row.times += 1;
+        cut_short += i64::from(term.cut_short);
         match term.served {
             Some(secs) => row.secs += secs,
             None => row.unknown += 1,
@@ -223,6 +231,7 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
     Board {
         rows: rows.into_values().collect(),
         unattributed,
+        cut_short,
     }
 }
 
@@ -275,6 +284,29 @@ mod tests {
         let events = [ev("a", 1_000, 30 * 86_400), ev("a", 1_060, 0)];
         let t = members(&events, 0, 10_000);
         assert_eq!((t[0].times, t[0].secs), (1, 60));
+    }
+
+    #[test]
+    fn counts_the_terms_that_ended_early() {
+        let events = [
+            ev("a", 1_000, 86_400), // 禁言 1 天，十秒后解除：提前结束
+            ev("a", 1_010, 0),
+            ev("a", 2_000, 600),   // 十分钟满额
+            ev("b", 3_000, 3_600), // 一小时，五分钟后被改判成十分钟：前一次提前结束
+            ev("b", 3_300, 600),
+            ev("c", 4_000, UNKNOWN), // 时长没读出，后面也没有解除：不算提前
+        ];
+        let board = tally(&events, 0, 10_000, By::Member);
+        assert_eq!(board.cut_short, 2);
+        let a = &board.rows[0];
+        assert_eq!(
+            (a.times, a.secs),
+            (2, 10 + 600),
+            "实际时长累计，不是声明的 1 天"
+        );
+
+        // 区间只含满额那次时，没有提前结束
+        assert_eq!(tally(&events, 1_500, 2_500, By::Member).cut_short, 0);
     }
 
     #[test]
