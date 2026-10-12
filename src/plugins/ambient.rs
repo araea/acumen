@@ -1151,11 +1151,14 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: &str) -> Option<(Turn, Option<St
                 } else {
                     user.to_string()
                 };
-                let duration = raw.get_i64("duration").unwrap_or(0);
-                if duration == 0 {
-                    format!("[{target} 已解除禁言]")
-                } else {
-                    format!("[{target} 被禁言 {duration} 秒]")
+                let duration = crate::db::bans::normalize_duration(
+                    raw.get_str("sub_type") == Some("lift_ban"),
+                    raw.get_i64("duration"),
+                );
+                match duration {
+                    0 => format!("[{target} 已解除禁言]"),
+                    crate::db::bans::UNKNOWN => format!("[{target} 被禁言（时长不明）]"),
+                    secs => format!("[{target} 被禁言 {secs} 秒]"),
                 }
             } else {
                 let member = raw.get("_satori").and_then(|s| s.get("member"));

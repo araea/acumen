@@ -181,7 +181,12 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             warn!(target: LOG_TARGET, "统计聚合表初始化失败: {}", e);
         }
 
-        // 4. 注册每日数据清理任务
+        // 4. 禁言记录表（排行榜的数据源，不随消息保留期清理）
+        if let Err(e) = crate::db::bans::init(db).await {
+            warn!(target: LOG_TARGET, "禁言记录表初始化失败: {}", e);
+        }
+
+        // 5. 注册每日数据清理任务
         let scheduler = ctx.scheduler.clone();
         let db_clone = ctx.db.clone();
         let config_clone = ctx.config.clone();
@@ -285,9 +290,32 @@ pub fn handle(
                 .or_else(|| ev.get_u64("time").map(|v| v as i64))
                 .unwrap_or(0);
             insert(&ctx, &ctx.bot, record, time, ev.get("message")).await;
+        } else if let EventType::Satori(ev) = &ctx.event
+            && ev.get_str("notice_type") == Some("group_ban")
+        {
+            record_ban(&ctx, ev).await;
         }
         Ok(Some(ctx))
     })
+}
+
+/// 记下一条禁言或解除通知，供统计里的禁言排行榜用。
+/// 没有具体对象的（全员禁言）不记。
+async fn record_ban(ctx: &Context, ev: &OwnedValue) {
+    let guild = ev.get_str("group_id").unwrap_or("");
+    let user = ev.get_str("user_id").unwrap_or("");
+    if guild.is_empty() || user.is_empty() || user == "0" {
+        return;
+    }
+    let duration = crate::db::bans::normalize_duration(
+        ev.get_str("sub_type") == Some("lift_ban"),
+        ev.get_i64("duration"),
+    );
+    let time = ev.get_i64("time").unwrap_or(0);
+    let operator = ev.get_str("operator_id").unwrap_or("");
+    if let Err(e) = crate::db::bans::record(&ctx.db, guild, user, operator, duration, time).await {
+        warn!(target: LOG_TARGET, "禁言记录写入失败: {}", e);
+    }
 }
 
 /// 发出之后的钩子：这时才知道消息 ID 和它真正落在哪个频道（私聊频道要先问实现端）。
