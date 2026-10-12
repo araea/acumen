@@ -263,10 +263,32 @@ pub async fn fetch_line_data(
     Ok(series_list)
 }
 
-/// 禁言榜的数据：返回条目，以及区间内「没记下时长」的禁言次数（全群合计，不只榜内）。
+/// 禁言榜的种类：排谁（被禁言的人，还是动手的管理员），按什么排（次数，还是实际禁言的时长）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BanBoard {
+    pub by: bans::By,
+    pub by_duration: bool,
+}
+
+impl BanBoard {
+    /// 指令里的数据类型 → 榜的种类；不是禁言榜返回 `None`。
+    pub fn parse(data_type: &str) -> Option<Self> {
+        let (by, by_duration) = match data_type {
+            "禁言" => (bans::By::Member, false),
+            "禁言时长" => (bans::By::Member, true),
+            "管理员禁言" => (bans::By::Operator, false),
+            "管理员禁言时长" => (bans::By::Operator, true),
+            _ => return None,
+        };
+        Some(Self { by, by_duration })
+    }
+}
+
+/// 禁言榜的数据：返回条目，以及要写在元信息行上的榜外说明（没记下时长的次数、没认出操作者的次数，
+/// 都是全群合计，不只榜内）。
 ///
-/// 按次数排还是按时长排由 `by_duration` 决定；按时长排时，一次时长都没记下的人不上榜。
-/// 榜上标 ★ 的是提问的人本人，但**不补位**——上不了这张榜不是缺憾。
+/// 按时长排时，一次时长都没记下的人不上榜。榜上标 ★ 的是提问的人本人，但**不补位**——
+/// 上不了这张榜不是缺憾。
 pub async fn fetch_ban_bars(
     db: &DatabaseConnection,
     guild_id: &str,
@@ -274,19 +296,32 @@ pub async fn fetch_ban_bars(
     end_time: i64,
     limit: usize,
     sender_id: &str,
-    by_duration: bool,
-) -> Result<(Vec<BarData>, i64), String> {
+    board: BanBoard,
+) -> Result<(Vec<BarData>, Vec<String>), String> {
     let events = bans::events_since(db, guild_id, start_time)
         .await
         .map_err(|e| e.to_string())?;
-    let mut tallies = bans::tally(&events, start_time, end_time);
-    let unknown = tallies.iter().map(|t| t.unknown).sum();
+    let bans::Board {
+        rows: mut tallies,
+        unattributed,
+    } = bans::tally(&events, start_time, end_time, board.by);
+    let unknown: i64 = tallies.iter().map(|t| t.unknown).sum();
 
-    if by_duration {
+    let mut notes = Vec::new();
+    if board.by_duration && unknown > 0 {
+        notes.push(format!("另有 {unknown} 次时长未记录"));
+    }
+    if unattributed > 0 {
+        notes.push(format!("另有 {unattributed} 次未识别操作者"));
+    }
+
+    if board.by_duration {
         tallies.retain(|t| t.secs > 0);
-        tallies.sort_by(|a, b| (b.secs, b.times, &a.user_id).cmp(&(a.secs, a.times, &b.user_id)));
+        tallies
+            .sort_by(|a, b| (b.secs, b.times, &a.person_id).cmp(&(a.secs, a.times, &b.person_id)));
     } else {
-        tallies.sort_by(|a, b| (b.times, b.secs, &a.user_id).cmp(&(a.times, a.secs, &b.user_id)));
+        tallies
+            .sort_by(|a, b| (b.times, b.secs, &a.person_id).cmp(&(a.times, a.secs, &b.person_id)));
     }
     tallies.truncate(limit);
 
@@ -298,7 +333,7 @@ pub async fn fetch_ban_bars(
             .column(entity::Column::MemberNick)
             .column(entity::Column::UserAvatar)
             .filter(entity::Column::GuildId.eq(guild_id))
-            .filter(entity::Column::UserId.eq(tally.user_id.as_str()))
+            .filter(entity::Column::UserId.eq(tally.person_id.as_str()))
             .order_by_desc(entity::Column::Time)
             .into_tuple::<(String, String)>()
             .one(db)
@@ -306,11 +341,11 @@ pub async fn fetch_ban_bars(
             .map_err(|e| e.to_string())?;
         let (nick, avatar) = latest.unwrap_or_default();
         let nick = if nick.is_empty() {
-            tally.user_id.clone()
+            tally.person_id.clone()
         } else {
             nick
         };
-        let label = if tally.user_id == sender_id {
+        let label = if tally.person_id == sender_id {
             format!("★ {nick}")
         } else {
             nick
@@ -318,21 +353,25 @@ pub async fn fetch_ban_bars(
         let avatar = if avatar.is_empty() {
             format!(
                 "https://q.qlogo.cn/headimg_dl?dst_uin={}&spec=640",
-                tally.user_id
+                tally.person_id
             )
         } else {
             avatar
         };
         bars.push(BarData {
             label,
-            value: if by_duration { tally.secs } else { tally.times },
+            value: if board.by_duration {
+                tally.secs
+            } else {
+                tally.times
+            },
             avatar_url: Some(avatar),
             avatar_img: None,
             theme_color: FALLBACK_THEME,
             icon_char: None,
         });
     }
-    Ok((bars, unknown))
+    Ok((bars, notes))
 }
 
 /// 获取柱状图数据

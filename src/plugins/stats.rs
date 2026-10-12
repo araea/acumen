@@ -151,7 +151,7 @@ fn get_regex_global() -> &'static Regex {
 
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
+        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|管理员禁言时长|管理员禁言|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
             .unwrap()
     })
 }
@@ -216,7 +216,7 @@ pub fn handle(
                 writer,
                 group_id,
                 Some(user_id),
-                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」，或按时长排的「本群总禁言时长排行榜」",
+                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」（谁被禁言最多），或「本群本月管理员禁言排行榜」（谁禁言最多）；后面加「时长」就按时长排",
             )
             .await?;
             return Ok(None);
@@ -458,6 +458,17 @@ mod tests {
             matches("本群总禁言时长排行榜"),
             Some(("本群".into(), "禁言时长".into(), "排行榜".into()))
         );
+        // 管理员榜：排动手禁言的人，同样有次数与时长两种
+        assert_eq!(
+            matches("本群本月管理员禁言排行榜"),
+            Some(("本群".into(), "管理员禁言".into(), "排行榜".into()))
+        );
+        assert_eq!(
+            matches("本群总管理员禁言时长排行榜"),
+            Some(("本群".into(), "管理员禁言时长".into(), "排行榜".into()))
+        );
+        assert!(get_regex_normal().is_match("本群近30天管理员禁言排行榜 5"));
+        assert!(!get_regex_normal().is_match("本群本月管理员排行榜"));
         // 范围可省，名次数照旧可跟
         assert!(matches("今日禁言排行榜").is_some());
         assert!(get_regex_normal().is_match("本群上月禁言时长排行榜 30"));

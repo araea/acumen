@@ -18,28 +18,27 @@ use plotters::style::text_anchor::{HPos, Pos, VPos};
 /// 条的数值是什么：次数，还是秒数（按「2天3小时」写）。
 pub enum BarUnit {
     Count,
-    /// `unknown`：榜外加榜内合计有多少次禁言没记下时长——写在元信息行，免得读者
-    /// 把「没记下」当成「没禁言」。
-    Duration { unknown: i64 },
+    Duration,
 }
 
 impl BarUnit {
     fn value(&self, value: i64) -> String {
         match self {
             Self::Count => format_thousands(value),
-            Self::Duration { .. } => format_duration(value),
+            Self::Duration => format_duration(value),
         }
     }
 
-    /// 元信息行里的「合计」：次数带个「次」字，时长自己带单位。
-    fn total(&self, total: i64) -> String {
-        match self {
+    /// 元信息行里的「合计」：次数带个「次」字，时长自己带单位；`notes` 是榜外要交代的事
+    /// （比如有几次没记下时长），接在合计后面，免得读者把「没记下」当成「没发生」。
+    fn total(&self, total: i64, notes: &[String]) -> String {
+        let total = match self {
             Self::Count => format!("{} 次", format_thousands(total)),
-            Self::Duration { unknown } if *unknown > 0 => {
-                format!("{} · 另有 {unknown} 次时长未记录", format_duration(total))
-            }
-            Self::Duration { .. } => format_duration(total),
-        }
+            Self::Duration => format_duration(total),
+        };
+        notes
+            .iter()
+            .fold(total, |line, note| format!("{line} · {note}"))
     }
 }
 
@@ -125,6 +124,7 @@ pub fn draw_bar_chart(
     title: &str,
     data: Vec<BarData>,
     unit: BarUnit,
+    notes: &[String],
 ) -> Result<String, ChartError> {
     if data.is_empty() {
         return Err(ChartError::NoData);
@@ -299,11 +299,11 @@ pub fn draw_bar_chart(
             format!(
                 "前 {} 名 · 合计 {} · {}",
                 data.len(),
-                unit.total(total_val),
+                unit.total(total_val, notes),
                 now_str
             )
         } else {
-            format!("合计 {} · {}", unit.total(total_val), now_str)
+            format!("合计 {} · {}", unit.total(total_val, notes), now_str)
         };
         let meta_style = get_font_with_color(config, meta_font_size, &ink_soft)
             .pos(Pos::new(HPos::Center, VPos::Top));

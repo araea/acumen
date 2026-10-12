@@ -244,9 +244,10 @@ async def main():
         await inject_mute("10003", 1000, seconds_ago=100)
         await asyncio.sleep(1.5)
         db = sqlite3.connect(f"file:{os.path.join(WORK, 'data', 'bot.db')}?mode=ro", uri=True)
-        rows = db.execute("select user_id, duration from member_bans order by time").fetchall()
+        rows = db.execute("select user_id, operator_id, duration from member_bans order by time").fetchall()
         db.close()
-        check("禁言通知入库且去重", rows == [("10002", 2592000), ("10002", 0), ("10002", 600), ("10003", -1), ("10003", -1)], str(rows))
+        check("禁言通知入库且去重（操作者随通知存下）",
+              rows == [("10002", "10001", 2592000), ("10002", "10001", 0), ("10002", "10001", 600), ("10003", "", -1), ("10003", "", -1)], str(rows))
 
         mark = len(posts)
         await inject("message-created", "10002", "/我的本月禁言排行榜")
@@ -254,12 +255,17 @@ async def main():
         check("禁言榜只支持本群：给出说明", True)
 
         mark = len(posts)
+        await inject("message-created", "10002", "/跨群今日管理员禁言排行榜")
+        await wait_for(lambda: any("管理员禁言排行榜" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "管理员榜的范围说明")
+        check("管理员禁言榜同样只支持本群：说明里点名了管理员榜", True)
+
+        mark = len(posts)
         await inject("message-created", "10002", "/本群近7天禁言走势")
         await wait_for(lambda: any("禁言只有本群" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "走势的说明")
         check("禁言没有走势：给出说明", True)
 
         if FONT:
-            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜"):
+            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜"):
                 mark = len(posts)
                 await inject("message-created", "10002", command)
                 await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)
