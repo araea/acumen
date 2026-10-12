@@ -67,7 +67,7 @@ where
     }
 }
 
-/// 禁言榜：排被禁言的人（`禁言` 按次数、`禁言时长` 按累计的实际时长、`单次最长禁言` 按最长的一次），
+/// 禁言榜：排被禁言的人（`禁言` 按次数、`禁言时长` 按累计的实际时长、`单次最长禁言` 按最长的一次、`灰条禁言时长` 按灰条所写时长相加），
 /// 或排动手的管理员（`管理员禁言`、`管理员禁言时长`、`管理员单次最长禁言`）。
 pub fn is_ban_ranking(data_type: &str) -> bool {
     BanBoard::parse(data_type).is_some()
@@ -126,7 +126,7 @@ pub async fn generate(
                 fetch_ban_bars(db, guild, start_time, end_time, limit, sender_id, board).await?;
             let unit = match board.rank {
                 Rank::Times => BarUnit::Count,
-                Rank::Total => BarUnit::Duration,
+                Rank::Total | Rank::Declared => BarUnit::Duration,
                 Rank::Longest => BarUnit::Record,
             };
             (bars, unit, notes)

@@ -146,6 +146,10 @@ pub struct Tally {
     pub secs: i64,
     /// 其中最长的一次（实际禁言的秒数），只看时长已知的那些次。
     pub longest: i64,
+    /// 灰条上写的时长之和：不管后来有没有提前解除，禁言 1 天就记 1 天。
+    pub declared: i64,
+    /// 灰条上没写时长的次数（与 `unknown` 不同：后面紧跟解除时，实际时长能推出来，写的是多少仍不知道）。
+    pub undeclared: i64,
     /// 时长没读出、事后也没能从解除时刻推出的次数。
     pub unknown: i64,
 }
@@ -169,6 +173,8 @@ struct Term<'a> {
     served: Option<i64>,
     /// 通知里说的时长比实际禁言的长：中途被解除，或被新的禁言顶替了。
     cut_short: bool,
+    /// 灰条上写的时长（秒）；`None` 是灰条没写。
+    declared: Option<i64>,
 }
 
 /// 区间内的每一次禁言实际生效了多久。`events` 必须按 (人, 时间) 排好，即 [`events_since`] 的顺序。
@@ -195,6 +201,7 @@ fn terms(events: &[BanEvent], start: i64, end: i64) -> Vec<Term<'_>> {
                 operator: event.operator(),
                 served,
                 cut_short: served.is_some_and(|served| event.duration > served),
+                declared: (event.duration > 0).then_some(event.duration),
             });
         }
     }
@@ -222,10 +229,16 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
             times: 0,
             secs: 0,
             longest: 0,
+            declared: 0,
+            undeclared: 0,
             unknown: 0,
         });
         row.times += 1;
         cut_short += i64::from(term.cut_short);
+        match term.declared {
+            Some(secs) => row.declared += secs,
+            None => row.undeclared += 1,
+        }
         match term.served {
             Some(secs) => {
                 row.secs += secs;
@@ -309,6 +322,25 @@ mod tests {
         );
         assert_eq!((t[1].times, t[1].longest, t[1].unknown), (1, 0, 1));
         assert_eq!(t[2].longest, 60);
+    }
+
+    #[test]
+    fn declared_time_ignores_early_lifts() {
+        let events = [
+            ev("a", 1_000, 86_400), // 灰条写禁言 1 天，十秒后解除
+            ev("a", 1_010, 0),
+            ev("a", 2_000, 600),     // 十分钟满额
+            ev("a", 3_000, UNKNOWN), // 灰条没写时长，一分钟后解除：实际算得出，写的是多少不知道
+            ev("a", 3_060, 0),
+            ev("b", 100, 3_600),
+        ];
+        let t = members(&events, 0, 100_000);
+        assert_eq!(
+            (t[0].times, t[0].declared, t[0].undeclared),
+            (3, 86_400 + 600, 1)
+        );
+        assert_eq!(t[0].secs, 10 + 600 + 60, "实际时长照旧：1 天只禁了 10 秒");
+        assert_eq!((t[1].declared, t[1].undeclared), (3_600, 0));
     }
 
     #[test]

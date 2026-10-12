@@ -272,7 +272,7 @@ async def main():
         check("禁言没有走势：给出说明", True)
 
         if FONT:
-            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜", "/本群近7天禁言总时长排行榜", "/本群近7天单次最长禁言排行榜", "/本群近7天管理员最长禁言排行榜"):
+            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜", "/本群近7天禁言总时长排行榜", "/本群近7天单次最长禁言排行榜", "/本群近7天管理员最长禁言排行榜", "/本群近7天灰条禁言时长排行榜", "/本群近7天管理员标称禁言时长排行榜"):
                 mark = len(posts)
                 await inject("message-created", "10002", command)
                 await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)

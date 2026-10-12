@@ -274,6 +274,8 @@ pub enum Rank {
     Total,
     /// 单次最长：每人名下实际禁言得最久的那一次。
     Longest,
+    /// 灰条所写：每次禁言按灰条上写的时长相加，后来有没有提前解除都照记。
+    Declared,
 }
 
 /// 禁言榜的种类：排谁（被禁言的人，还是动手的管理员），按什么排（见 [`Rank`]）。
@@ -288,16 +290,19 @@ impl BanBoard {
     ///
     /// 「禁言时长」是**累计**：一个人的每次禁言各算实际禁言了多久，加起来排；群友说的「累计」
     /// 「总时长」是同一张榜。「单次最长禁言」排的是每人最长的那一次，是另一张榜。
+    /// 「灰条禁言时长」按灰条上写的时长相加，不看后来有没有提前解除，同样是另一张榜。
     pub fn parse(data_type: &str) -> Option<Self> {
         let (by, rank) = match data_type {
             "禁言" => (bans::By::Member, Rank::Times),
             "禁言时长" | "累计禁言时长" | "禁言总时长" => (bans::By::Member, Rank::Total),
             "单次最长禁言" | "最长禁言" => (bans::By::Member, Rank::Longest),
+            "灰条禁言时长" | "标称禁言时长" => (bans::By::Member, Rank::Declared),
             "管理员禁言" => (bans::By::Operator, Rank::Times),
             "管理员禁言时长" | "管理员累计禁言时长" | "管理员禁言总时长" => {
                 (bans::By::Operator, Rank::Total)
             }
             "管理员单次最长禁言" | "管理员最长禁言" => (bans::By::Operator, Rank::Longest),
+            "管理员灰条禁言时长" | "管理员标称禁言时长" => (bans::By::Operator, Rank::Declared),
             _ => return None,
         };
         Some(Self { by, rank })
@@ -310,13 +315,15 @@ impl BanBoard {
             (bans::By::Member, Rank::Times) => "禁言",
             (bans::By::Member, Rank::Total) => "累计禁言时长",
             (bans::By::Member, Rank::Longest) => "单次最长禁言",
+            (bans::By::Member, Rank::Declared) => "灰条禁言时长",
             (bans::By::Operator, Rank::Times) => "管理员禁言",
             (bans::By::Operator, Rank::Total) => "管理员累计禁言时长",
             (bans::By::Operator, Rank::Longest) => "管理员单次最长禁言",
+            (bans::By::Operator, Rank::Declared) => "管理员灰条禁言时长",
         }
     }
 
-    /// 榜上的数值是不是时长（累计、单次最长都是）。
+    /// 榜上的数值是不是时长（除次数榜外都是）。
     fn is_duration(&self) -> bool {
         self.rank != Rank::Times
     }
@@ -344,15 +351,31 @@ pub async fn fetch_ban_bars(
         unattributed,
         cut_short,
     } = bans::tally(&events, start_time, end_time, board.by);
-    let unknown: i64 = tallies.iter().map(|t| t.unknown).sum();
+    // 灰条所写榜看的是灰条上有没有写时长；其余按时长排的榜看实际时长算没算出来
+    let unknown: i64 = match board.rank {
+        Rank::Declared => tallies.iter().map(|t| t.undeclared).sum(),
+        _ => tallies.iter().map(|t| t.unknown).sum(),
+    };
 
     let mut notes = Vec::new();
     if board.is_duration() && unknown > 0 {
         notes.push(format!("另有 {unknown} 次时长未记录"));
     }
-    // 禁言 1 天、几秒后就被解除的，只累计那几秒；不说一声，榜上的数字对不上群里看到的灰条。
-    if board.is_duration() && cut_short > 0 {
-        notes.push(format!("{cut_short} 次提前解除，按实际时长算"));
+    match board.rank {
+        // 实际时长的榜：禁言 1 天、几秒后就被解除的，只算那几秒；不说一声，
+        // 榜上的数字对不上群里看到的灰条。
+        Rank::Total | Rank::Longest if cut_short > 0 => {
+            notes.push(format!("{cut_short} 次提前解除，按实际时长算"));
+        }
+        // 灰条所写榜：数字就是灰条上的字，先把口径写明，再交代其中有几次后来提前解除了——
+        // 这些次数照记，读者才不会拿它去对实际禁言的时长。
+        Rank::Declared => {
+            notes.push("按灰条所写时长相加".to_owned());
+            if cut_short > 0 {
+                notes.push(format!("其中 {cut_short} 次后来提前解除"));
+            }
+        }
+        _ => {}
     }
     if unattributed > 0 {
         notes.push(format!("另有 {unattributed} 次未识别操作者"));
@@ -366,6 +389,12 @@ pub async fn fetch_ban_bars(
             tallies.retain(|t| t.secs > 0);
             tallies.sort_by(|a, b| {
                 (b.secs, b.times, &a.person_id).cmp(&(a.secs, a.times, &b.person_id))
+            });
+        }
+        Rank::Declared => {
+            tallies.retain(|t| t.declared > 0);
+            tallies.sort_by(|a, b| {
+                (b.declared, b.times, &a.person_id).cmp(&(a.declared, a.times, &b.person_id))
             });
         }
         Rank::Longest => {
@@ -416,11 +445,12 @@ pub async fn fetch_ban_bars(
                 Rank::Times => tally.times,
                 Rank::Total => tally.secs,
                 Rank::Longest => tally.longest,
+                Rank::Declared => tally.declared,
             },
             // 时长后面带上次数：累计榜里一眼看出是几次加起来的；纪录榜里看出这是几次里的最长
             detail: match board.rank {
                 Rank::Times => None,
-                Rank::Total => Some(format!("{} 次", tally.times)),
+                Rank::Total | Rank::Declared => Some(format!("{} 次", tally.times)),
                 Rank::Longest => Some(format!("共 {} 次", tally.times)),
             },
             avatar_url: Some(avatar),
