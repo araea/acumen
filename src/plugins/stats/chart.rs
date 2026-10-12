@@ -9,8 +9,8 @@ use crate::plugins::get_config_or_default;
 use crate::plugins::stats::StatsConfig;
 
 use self::avatar::prepare_avatars;
-use self::data_loader::{BarData, SeriesData, fetch_bar_data, fetch_line_data};
-use self::renderer::{draw_bar_chart, draw_line_chart, draw_message_type_ranking};
+use self::data_loader::{BarData, SeriesData, fetch_ban_bars, fetch_bar_data, fetch_line_data};
+use self::renderer::{BarUnit, draw_bar_chart, draw_line_chart, draw_message_type_ranking};
 
 /// 图表生成不出来的原因。分两类是因为对用户来说这是两件事：
 /// 「这段区间没数据」是空态（📭，谁也不怪），其余才是故障（❌）。
@@ -65,6 +65,11 @@ where
     }
 }
 
+/// 禁言榜：按次数（`禁言`）或按实际禁言的时长（`禁言时长`）排人。
+pub fn is_ban_ranking(data_type: &str) -> bool {
+    matches!(data_type, "禁言" | "禁言时长")
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn generate(
     ctx: &Context,
@@ -106,18 +111,32 @@ pub async fn generate(
     }
 
     // 2. 柱状图 / 排行榜
-    let mut bar_data: Vec<BarData> = fetch_bar_data(
-        db,
-        is_all_groups,
-        data_type,
-        query_group,
-        query_user,
-        sender_id,
-        start_time,
-        end_time,
-        limit,
-    )
-    .await?;
+    let (mut bar_data, unit): (Vec<BarData>, BarUnit) = if is_ban_ranking(data_type) {
+        let guild = query_group.ok_or("禁言榜只统计群里的")?;
+        let by_duration = data_type == "禁言时长";
+        let (bars, unknown) =
+            fetch_ban_bars(db, guild, start_time, end_time, limit, sender_id, by_duration).await?;
+        let unit = if by_duration {
+            BarUnit::Duration { unknown }
+        } else {
+            BarUnit::Count
+        };
+        (bars, unit)
+    } else {
+        let bars = fetch_bar_data(
+            db,
+            is_all_groups,
+            data_type,
+            query_group,
+            query_user,
+            sender_id,
+            start_time,
+            end_time,
+            limit,
+        )
+        .await?;
+        (bars, BarUnit::Count)
+    };
 
     // 3. 准备头像
     prepare_avatars(&mut bar_data).await;
@@ -129,7 +148,7 @@ pub async fn generate(
             if message_types {
                 draw_message_type_ranking(&config, &title, bar_data)
             } else {
-                draw_bar_chart(&config, &title, bar_data)
+                draw_bar_chart(&config, &title, bar_data, unit)
             }
         })
     })

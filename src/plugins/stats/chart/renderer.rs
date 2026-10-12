@@ -5,7 +5,7 @@ use super::data_loader::{BarData, SeriesData};
 use super::medal;
 use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
-    format_percent, format_thousands, get_font, get_font_family, get_font_with_color, handle_tone,
+    format_duration, format_percent, format_thousands, get_font, get_font_family, get_font_with_color, handle_tone,
     harmonize_theme, mix_with_color, mix_with_white, on_bar_ink, overlay_image, rank_ink,
     save_rgba_to_base64, track_tone, truncate_text_to_fit,
 };
@@ -14,6 +14,34 @@ use chrono::Local;
 use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
+
+/// 条的数值是什么：次数，还是秒数（按「2天3小时」写）。
+pub enum BarUnit {
+    Count,
+    /// `unknown`：榜外加榜内合计有多少次禁言没记下时长——写在元信息行，免得读者
+    /// 把「没记下」当成「没禁言」。
+    Duration { unknown: i64 },
+}
+
+impl BarUnit {
+    fn value(&self, value: i64) -> String {
+        match self {
+            Self::Count => format_thousands(value),
+            Self::Duration { .. } => format_duration(value),
+        }
+    }
+
+    /// 元信息行里的「合计」：次数带个「次」字，时长自己带单位。
+    fn total(&self, total: i64) -> String {
+        match self {
+            Self::Count => format!("{} 次", format_thousands(total)),
+            Self::Duration { unknown } if *unknown > 0 => {
+                format!("{} · 另有 {unknown} 次时长未记录", format_duration(total))
+            }
+            Self::Duration { .. } => format_duration(total),
+        }
+    }
+}
 
 /// 一行的几何与配色：位置、条尾、以及从同一支色相里分出来的几个调子。
 struct RowStyle {
@@ -96,6 +124,7 @@ pub fn draw_bar_chart(
     config: &StatsConfig,
     title: &str,
     data: Vec<BarData>,
+    unit: BarUnit,
 ) -> Result<String, ChartError> {
     if data.is_empty() {
         return Err(ChartError::NoData);
@@ -186,7 +215,7 @@ pub fn draw_bar_chart(
     let mut pct_col_w = 0u32;
 
     for item in &data {
-        let value_text = format_thousands(item.value);
+        let value_text = unit.value(item.value);
         let pct_text = format_percent(item.value, total_val);
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
@@ -268,13 +297,13 @@ pub fn draw_bar_chart(
         let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let meta = if data.len() > 1 {
             format!(
-                "前 {} 名 · 合计 {} 次 · {}",
+                "前 {} 名 · 合计 {} · {}",
                 data.len(),
-                format_thousands(total_val),
+                unit.total(total_val),
                 now_str
             )
         } else {
-            format!("合计 {} 次 · {}", format_thousands(total_val), now_str)
+            format!("合计 {} · {}", unit.total(total_val), now_str)
         };
         let meta_style = get_font_with_color(config, meta_font_size, &ink_soft)
             .pos(Pos::new(HPos::Center, VPos::Top));

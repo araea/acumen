@@ -248,6 +248,26 @@ pub fn format_thousands(value: i64) -> String {
 /// 统一的占比文案：一律四舍五入到整数，一列百分数里不夹小数点看着才干净；
 /// 不足半个百分点的写 "<1%"，免得非零的零头被舍成一个没意义的 "0%"。
 /// 排行榜与信息卡共用，避免同一批数据在两张图里写法不一致。
+/// 禁言时长：只写最大的两级，榜上要的是量级，不是精确到秒。
+/// 「2天3小时」「3小时20分钟」「45分钟」「30秒」；整的那一级不拖尾巴（「3小时」）。
+pub fn format_duration(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (days, hours, minutes) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
+    let tail = |value: i64, unit: &str| {
+        if value == 0 {
+            String::new()
+        } else {
+            format!("{value}{unit}")
+        }
+    };
+    match secs {
+        0..60 => format!("{secs}秒"),
+        60..3_600 => format!("{minutes}分钟"),
+        3_600..86_400 => format!("{hours}小时{}", tail(minutes, "分钟")),
+        _ => format!("{days}天{}", tail(hours, "小时")),
+    }
+}
+
 pub fn format_percent(value: i64, total: i64) -> String {
     if total <= 0 || value <= 0 {
         return "0%".to_string();
@@ -814,5 +834,23 @@ pub fn overlay_image(base: &mut RgbaImage, overlay: &RgbaImage, x: i32, y: i32) 
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durations_keep_the_two_largest_units() {
+        assert_eq!(format_duration(30), "30秒");
+        assert_eq!(format_duration(60), "1分钟");
+        assert_eq!(format_duration(45 * 60 + 59), "45分钟");
+        assert_eq!(format_duration(3_600), "1小时", "整的那一级不拖尾巴");
+        assert_eq!(format_duration(3 * 3_600 + 20 * 60), "3小时20分钟");
+        assert_eq!(format_duration(86_400), "1天");
+        assert_eq!(format_duration(2 * 86_400 + 3 * 3_600 + 59 * 60), "2天3小时");
+        assert_eq!(format_duration(30 * 86_400), "30天");
+        assert_eq!(format_duration(-5), "0秒");
     }
 }

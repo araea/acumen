@@ -151,7 +151,7 @@ fn get_regex_global() -> &'static Regex {
 
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
+        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
             .unwrap()
     })
 }
@@ -207,6 +207,20 @@ pub fn handle(
 
         let group_id = msg.group_id();
         let user_id = msg.user_id();
+
+        // 禁言只有「本群」的排行榜：禁言是某个群里的事，跨群合计或个人名下都没有意思；
+        // 走势没有（一个群一个月也没几次）。说清楚能用什么，别让人对着沉默猜。
+        if chart::is_ban_ranking(data_type) && (scope != "本群" || chart_type != "排行榜") {
+            send_msg(
+                &ctx,
+                writer,
+                group_id,
+                Some(user_id),
+                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」，或按时长排的「本群总禁言时长排行榜」",
+            )
+            .await?;
+            return Ok(None);
+        }
 
         if scope == "本群" && group_id.is_none() {
             send_msg(
@@ -266,12 +280,18 @@ pub fn handle(
             }
             Err(chart::ChartError::NoData) => {
                 // 空态不是错误：说清为什么空，再给一条能立刻做的事。
+                let hint = if chart::is_ban_ranking(data_type) {
+                    // 禁言只记机器人在线之后发生的；按时长排时，没读出时长的那些也上不了榜。
+                    "这段时间没有可统计的禁言（只记录机器人在线时发生的）\n换一个时间范围试试"
+                } else {
+                    "换一个时间范围，或先让群里聊几句"
+                };
                 send_msg(
                     &ctx,
                     writer,
                     group_id,
                     Some(user_id),
-                    format!("📭 {title}没有数据\n换一个时间范围，或先让群里聊几句"),
+                    format!("📭 {title}没有数据\n{hint}"),
                 )
                 .await?;
             }
@@ -417,3 +437,43 @@ type PushFn = fn(
     bool,
 ) -> BoxFuture<'static, ()>;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matches(text: &str) -> Option<(String, String, String)> {
+        get_regex_normal().captures(text).map(|caps| {
+            let get = |i| caps.get(i).map_or("", |m| m.as_str()).to_string();
+            (get(1), get(3), get(4))
+        })
+    }
+
+    #[test]
+    fn ban_rankings_parse_with_the_longer_name_first() {
+        assert_eq!(
+            matches("本群本月禁言排行榜"),
+            Some(("本群".into(), "禁言".into(), "排行榜".into()))
+        );
+        assert_eq!(
+            matches("本群总禁言时长排行榜"),
+            Some(("本群".into(), "禁言时长".into(), "排行榜".into()))
+        );
+        // 范围可省，名次数照旧可跟
+        assert!(matches("今日禁言排行榜").is_some());
+        assert!(get_regex_normal().is_match("本群上月禁言时长排行榜 30"));
+        // 个人与跨群的写法也认得出来，由 handle 给出「只有本群」的提示
+        assert_eq!(
+            matches("我的本月禁言排行榜").map(|(scope, ..)| scope),
+            Some("我的".into())
+        );
+        assert!(get_regex_normal().is_match("跨群今日禁言排行榜"));
+    }
+
+    #[test]
+    fn existing_rankings_still_parse() {
+        assert!(get_regex_normal().is_match("本群今日发言排行榜 30"));
+        assert!(get_regex_normal().is_match("我的本周消息类型走势"));
+        assert!(get_regex_global().is_match("所有群近7天发言排行榜"));
+        assert!(!get_regex_normal().is_match("本群今日禁言时间排行榜"));
+    }
+}

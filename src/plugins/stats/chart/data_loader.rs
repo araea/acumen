@@ -1,4 +1,4 @@
-use crate::db::queries;
+use crate::db::{bans, queries};
 use crate::plugins::recorder::entity::{self, Entity as MessageLogs};
 use plotters::style::RGBColor;
 use sea_orm::sea_query::{Func, SimpleExpr};
@@ -261,6 +261,78 @@ pub async fn fetch_line_data(
     });
 
     Ok(series_list)
+}
+
+/// 禁言榜的数据：返回条目，以及区间内「没记下时长」的禁言次数（全群合计，不只榜内）。
+///
+/// 按次数排还是按时长排由 `by_duration` 决定；按时长排时，一次时长都没记下的人不上榜。
+/// 榜上标 ★ 的是提问的人本人，但**不补位**——上不了这张榜不是缺憾。
+pub async fn fetch_ban_bars(
+    db: &DatabaseConnection,
+    guild_id: &str,
+    start_time: i64,
+    end_time: i64,
+    limit: usize,
+    sender_id: &str,
+    by_duration: bool,
+) -> Result<(Vec<BarData>, i64), String> {
+    let events = bans::events_since(db, guild_id, start_time)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut tallies = bans::tally(&events, start_time, end_time);
+    let unknown = tallies.iter().map(|t| t.unknown).sum();
+
+    if by_duration {
+        tallies.retain(|t| t.secs > 0);
+        tallies.sort_by(|a, b| (b.secs, b.times, &a.user_id).cmp(&(a.secs, a.times, &b.user_id)));
+    } else {
+        tallies.sort_by(|a, b| (b.times, b.secs, &a.user_id).cmp(&(a.times, a.secs, &b.user_id)));
+    }
+    tallies.truncate(limit);
+
+    let mut bars = Vec::with_capacity(tallies.len());
+    for tally in tallies {
+        // 昵称与头像取这个人在本群最近一条发言里的；从没发过言（或早已过保留期）就退回号码。
+        let latest = MessageLogs::find()
+            .select_only()
+            .column(entity::Column::MemberNick)
+            .column(entity::Column::UserAvatar)
+            .filter(entity::Column::GuildId.eq(guild_id))
+            .filter(entity::Column::UserId.eq(tally.user_id.as_str()))
+            .order_by_desc(entity::Column::Time)
+            .into_tuple::<(String, String)>()
+            .one(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (nick, avatar) = latest.unwrap_or_default();
+        let nick = if nick.is_empty() {
+            tally.user_id.clone()
+        } else {
+            nick
+        };
+        let label = if tally.user_id == sender_id {
+            format!("★ {nick}")
+        } else {
+            nick
+        };
+        let avatar = if avatar.is_empty() {
+            format!(
+                "https://q.qlogo.cn/headimg_dl?dst_uin={}&spec=640",
+                tally.user_id
+            )
+        } else {
+            avatar
+        };
+        bars.push(BarData {
+            label,
+            value: if by_duration { tally.secs } else { tally.times },
+            avatar_url: Some(avatar),
+            avatar_img: None,
+            theme_color: FALLBACK_THEME,
+            icon_char: None,
+        });
+    }
+    Ok((bars, unknown))
 }
 
 /// 获取柱状图数据
