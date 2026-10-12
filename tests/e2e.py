@@ -14,7 +14,7 @@ ERRO 与 panic（不碰真账号：被测实例连的是自己起的假端口）
 
 被测实例在独立目录里跑（拷一份二进制，数据库与 data/ 都落在那里），不会碰线上的 data/。
 """
-import asyncio, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
+import asyncio, base64, json, os, re, shutil, signal, sqlite3, subprocess, sys, tempfile, time
 from aiohttp import web
 
 BIN = os.path.abspath(sys.argv[1])
@@ -242,12 +242,13 @@ async def main():
         await inject_mute("10002", 600_000, operator="10001", seconds_ago=499)
         await inject_mute("10003", None, seconds_ago=300)
         await inject_mute("10003", 1000, seconds_ago=100)
+        await inject_mute("10004", None, operator="10001", seconds_ago=200)  # 有操作者、时长没读出
         await asyncio.sleep(1.5)
         db = sqlite3.connect(f"file:{os.path.join(WORK, 'data', 'bot.db')}?mode=ro", uri=True)
         rows = db.execute("select user_id, operator_id, duration from member_bans order by time").fetchall()
         db.close()
         check("禁言通知入库且去重（操作者随通知存下）",
-              rows == [("10002", "10001", 2592000), ("10002", "10001", 0), ("10002", "10001", 600), ("10003", "", -1), ("10003", "", -1)], str(rows))
+              rows == [("10002", "10001", 2592000), ("10002", "10001", 0), ("10002", "10001", 600), ("10003", "", -1), ("10004", "10001", -1), ("10003", "", -1)], str(rows))
 
         mark = len(posts)
         await inject("message-created", "10002", "/我的本月禁言排行榜")
@@ -270,6 +271,13 @@ async def main():
                 await inject("message-created", "10002", command)
                 await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)
                 check(f"{command} 出图", True)
+                if os.environ.get("E2E_IMAGES"):  # 存下来人眼看
+                    os.makedirs(os.environ["E2E_IMAGES"], exist_ok=True)
+                    shot = next(b["content"] for m, b in reversed(posts[mark:]) if m == "message.create" and "<img" in b.get("content", ""))
+                    blob = re.search(r"base64://([A-Za-z0-9+/=]+)", shot)
+                    if blob:
+                        with open(os.path.join(os.environ["E2E_IMAGES"], command.strip("/") + ".png"), "wb") as out:
+                            out.write(base64.b64decode(blob.group(1)))
         else:
             print("  跳过 禁言榜出图（没有可用字体，设 E2E_FONT）")
 
