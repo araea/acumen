@@ -265,39 +265,60 @@ pub async fn fetch_line_data(
     Ok(series_list)
 }
 
-/// 禁言榜的种类：排谁（被禁言的人，还是动手的管理员），按什么排（次数，还是实际禁言的时长）。
+/// 禁言榜按什么排。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rank {
+    /// 次数。
+    Times,
+    /// 累计：每次实际禁言的时长加总。
+    Total,
+    /// 单次最长：每人名下实际禁言得最久的那一次。
+    Longest,
+}
+
+/// 禁言榜的种类：排谁（被禁言的人，还是动手的管理员），按什么排（见 [`Rank`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BanBoard {
     pub by: bans::By,
-    pub by_duration: bool,
+    pub rank: Rank,
 }
 
 impl BanBoard {
     /// 指令里的数据类型 → 榜的种类；不是禁言榜返回 `None`。
     ///
-    /// 时长榜是**累计**：一个人的每次禁言各算实际禁言了多久，加起来排。群友说的「累计」「总时长」
-    /// 与「时长」是同一张榜，都认。
+    /// 「禁言时长」是**累计**：一个人的每次禁言各算实际禁言了多久，加起来排；群友说的「累计」
+    /// 「总时长」是同一张榜。「单次最长禁言」排的是每人最长的那一次，是另一张榜。
     pub fn parse(data_type: &str) -> Option<Self> {
-        let (by, by_duration) = match data_type {
-            "禁言" => (bans::By::Member, false),
-            "禁言时长" | "累计禁言时长" | "禁言总时长" => (bans::By::Member, true),
-            "管理员禁言" => (bans::By::Operator, false),
+        let (by, rank) = match data_type {
+            "禁言" => (bans::By::Member, Rank::Times),
+            "禁言时长" | "累计禁言时长" | "禁言总时长" => (bans::By::Member, Rank::Total),
+            "单次最长禁言" | "最长禁言" => (bans::By::Member, Rank::Longest),
+            "管理员禁言" => (bans::By::Operator, Rank::Times),
             "管理员禁言时长" | "管理员累计禁言时长" | "管理员禁言总时长" => {
-                (bans::By::Operator, true)
+                (bans::By::Operator, Rank::Total)
             }
+            "管理员单次最长禁言" | "管理员最长禁言" => (bans::By::Operator, Rank::Longest),
             _ => return None,
         };
-        Some(Self { by, by_duration })
+        Some(Self { by, rank })
     }
 
-    /// 榜名里「禁言」那一段。时长榜点明是累计——光写「禁言时长」，读的人会当成单次最长。
+    /// 榜名里「禁言」那一段。时长榜点明是累计、纪录榜点明是单次——光写「禁言时长」，
+    /// 读的人会当成单次最长。
     pub fn name(&self) -> &'static str {
-        match (self.by, self.by_duration) {
-            (bans::By::Member, false) => "禁言",
-            (bans::By::Member, true) => "累计禁言时长",
-            (bans::By::Operator, false) => "管理员禁言",
-            (bans::By::Operator, true) => "管理员累计禁言时长",
+        match (self.by, self.rank) {
+            (bans::By::Member, Rank::Times) => "禁言",
+            (bans::By::Member, Rank::Total) => "累计禁言时长",
+            (bans::By::Member, Rank::Longest) => "单次最长禁言",
+            (bans::By::Operator, Rank::Times) => "管理员禁言",
+            (bans::By::Operator, Rank::Total) => "管理员累计禁言时长",
+            (bans::By::Operator, Rank::Longest) => "管理员单次最长禁言",
         }
+    }
+
+    /// 榜上的数值是不是时长（累计、单次最长都是）。
+    fn is_duration(&self) -> bool {
+        self.rank != Rank::Times
     }
 }
 
@@ -326,24 +347,33 @@ pub async fn fetch_ban_bars(
     let unknown: i64 = tallies.iter().map(|t| t.unknown).sum();
 
     let mut notes = Vec::new();
-    if board.by_duration && unknown > 0 {
+    if board.is_duration() && unknown > 0 {
         notes.push(format!("另有 {unknown} 次时长未记录"));
     }
     // 禁言 1 天、几秒后就被解除的，只累计那几秒；不说一声，榜上的数字对不上群里看到的灰条。
-    if board.by_duration && cut_short > 0 {
+    if board.is_duration() && cut_short > 0 {
         notes.push(format!("{cut_short} 次提前解除，按实际时长算"));
     }
     if unattributed > 0 {
         notes.push(format!("另有 {unattributed} 次未识别操作者"));
     }
 
-    if board.by_duration {
-        tallies.retain(|t| t.secs > 0);
-        tallies
-            .sort_by(|a, b| (b.secs, b.times, &a.person_id).cmp(&(a.secs, a.times, &b.person_id)));
-    } else {
-        tallies
-            .sort_by(|a, b| (b.times, b.secs, &a.person_id).cmp(&(a.times, a.secs, &b.person_id)));
+    // 按时长排的榜，一次时长都没记下的人上不了榜
+    match board.rank {
+        Rank::Times => tallies
+            .sort_by(|a, b| (b.times, b.secs, &a.person_id).cmp(&(a.times, a.secs, &b.person_id))),
+        Rank::Total => {
+            tallies.retain(|t| t.secs > 0);
+            tallies.sort_by(|a, b| {
+                (b.secs, b.times, &a.person_id).cmp(&(a.secs, a.times, &b.person_id))
+            });
+        }
+        Rank::Longest => {
+            tallies.retain(|t| t.longest > 0);
+            tallies.sort_by(|a, b| {
+                (b.longest, b.secs, &a.person_id).cmp(&(a.longest, a.secs, &b.person_id))
+            });
+        }
     }
     tallies.truncate(limit);
 
@@ -382,13 +412,17 @@ pub async fn fetch_ban_bars(
         };
         bars.push(BarData {
             label,
-            value: if board.by_duration {
-                tally.secs
-            } else {
-                tally.times
+            value: match board.rank {
+                Rank::Times => tally.times,
+                Rank::Total => tally.secs,
+                Rank::Longest => tally.longest,
             },
-            // 累计时长后面带上次数：一眼看出是几次加起来的，不是一次的长度
-            detail: board.by_duration.then(|| format!("{} 次", tally.times)),
+            // 时长后面带上次数：累计榜里一眼看出是几次加起来的；纪录榜里看出这是几次里的最长
+            detail: match board.rank {
+                Rank::Times => None,
+                Rank::Total => Some(format!("{} 次", tally.times)),
+                Rank::Longest => Some(format!("共 {} 次", tally.times)),
+            },
             avatar_url: Some(avatar),
             avatar_img: None,
             theme_color: FALLBACK_THEME,

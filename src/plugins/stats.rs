@@ -151,7 +151,7 @@ fn get_regex_global() -> &'static Regex {
 
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
+        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|管理员单次最长禁言|管理员最长禁言|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|单次最长禁言|最长禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
             .unwrap()
     })
 }
@@ -216,7 +216,7 @@ pub fn handle(
                 writer,
                 group_id,
                 Some(user_id),
-                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」（谁被禁言次数最多），「本群本月禁言时长排行榜」（谁被禁言累计最久），或「本群本月管理员禁言排行榜」（谁禁言禁得最多）",
+                "❌ 禁言只有本群的排行榜\n试试「本群本月禁言排行榜」（谁被禁言次数最多），「本群本月禁言时长排行榜」（谁被禁言累计最久），「本群本月单次最长禁言排行榜」（谁被禁得最久的一次），或「本群本月管理员禁言排行榜」（谁禁言禁得最多）",
             )
             .await?;
             return Ok(None);
@@ -502,6 +502,18 @@ mod tests {
             let caps = get_regex_normal().captures(&command).expect(&command);
             assert_eq!(&caps[3], typed);
             assert!(chart::is_ban_ranking(&caps[3]));
+        }
+        // 单次最长是另一张榜，榜名点明「单次」，别名「最长禁言」也认
+        for (typed, shown) in [
+            ("单次最长禁言", "单次最长禁言"),
+            ("最长禁言", "单次最长禁言"),
+            ("管理员单次最长禁言", "管理员单次最长禁言"),
+            ("管理员最长禁言", "管理员单次最长禁言"),
+        ] {
+            let command = format!("本群本月{typed}排行榜");
+            let caps = get_regex_normal().captures(&command).expect(&command);
+            assert_eq!(&caps[3], typed);
+            assert_eq!(chart::ranking_name(typed), shown, "{typed}");
         }
         // 次数榜不能被「累计」带偏：没有「累计禁言」这种半截说法
         assert!(!get_regex_normal().is_match("本群本月累计禁言排行榜"));

@@ -10,7 +10,7 @@ use crate::plugins::stats::StatsConfig;
 
 use self::avatar::prepare_avatars;
 use self::data_loader::{
-    BanBoard, BarData, SeriesData, fetch_ban_bars, fetch_bar_data, fetch_line_data,
+    BanBoard, BarData, Rank, SeriesData, fetch_ban_bars, fetch_bar_data, fetch_line_data,
 };
 use self::renderer::{BarUnit, draw_bar_chart, draw_line_chart, draw_message_type_ranking};
 
@@ -67,8 +67,8 @@ where
     }
 }
 
-/// 禁言榜：排被禁言的人（`禁言` 按次数、`禁言时长` 按实际时长），
-/// 或排动手的管理员（`管理员禁言`、`管理员禁言时长`）。
+/// 禁言榜：排被禁言的人（`禁言` 按次数、`禁言时长` 按累计的实际时长、`单次最长禁言` 按最长的一次），
+/// 或排动手的管理员（`管理员禁言`、`管理员禁言时长`、`管理员单次最长禁言`）。
 pub fn is_ban_ranking(data_type: &str) -> bool {
     BanBoard::parse(data_type).is_some()
 }
@@ -124,10 +124,10 @@ pub async fn generate(
             let guild = query_group.ok_or("禁言榜只统计群里的")?;
             let (bars, notes) =
                 fetch_ban_bars(db, guild, start_time, end_time, limit, sender_id, board).await?;
-            let unit = if board.by_duration {
-                BarUnit::Duration
-            } else {
-                BarUnit::Count
+            let unit = match board.rank {
+                Rank::Times => BarUnit::Count,
+                Rank::Total => BarUnit::Duration,
+                Rank::Longest => BarUnit::Record,
             };
             (bars, unit, notes)
         } else {

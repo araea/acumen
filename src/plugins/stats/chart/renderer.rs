@@ -18,15 +18,24 @@ use plotters::style::text_anchor::{HPos, Pos, VPos};
 /// 条的数值是什么：次数，还是秒数（按「2天3小时」写）。
 pub enum BarUnit {
     Count,
+    /// 累计的秒数：各人的数加起来有意义，写合计与占比。
     Duration,
+    /// 每人名下最长的一次（秒）：这是纪录而不是份额，几个人的纪录相加没有意义，
+    /// 所以不写合计与占比。
+    Record,
 }
 
 impl BarUnit {
     fn value(&self, value: i64) -> String {
         match self {
             Self::Count => format_thousands(value),
-            Self::Duration => format_duration(value),
+            Self::Duration | Self::Record => format_duration(value),
         }
+    }
+
+    /// 数值能不能加总、算占比。
+    fn is_share(&self) -> bool {
+        !matches!(self, Self::Record)
     }
 
     /// 元信息行里的「合计」：次数带个「次」字，时长自己带单位；`notes` 是榜外要交代的事
@@ -34,7 +43,7 @@ impl BarUnit {
     fn total(&self, total: i64, notes: &[String]) -> String {
         let total = match self {
             Self::Count => format!("{} 次", format_thousands(total)),
-            Self::Duration => format_duration(total),
+            Self::Duration | Self::Record => format_duration(total),
         };
         notes
             .iter()
@@ -219,7 +228,12 @@ pub fn draw_bar_chart(
             Some(detail) => format!("{} · {detail}", unit.value(item.value)),
             None => unit.value(item.value),
         };
-        let pct_text = format_percent(item.value, total_val);
+        // 纪录榜没有占比：留空，下面量宽、落笔都跳过它
+        let pct_text = if unit.is_share() {
+            format_percent(item.value, total_val)
+        } else {
+            String::new()
+        };
 
         let (vw, _) = font_obj.box_size(&value_text).unwrap_or((0, 0));
         let (pw, _) = pct_font_obj.box_size(&pct_text).unwrap_or((0, 0));
@@ -298,16 +312,17 @@ pub fn draw_bar_chart(
         // 元信息行：榜单范围 + 合计（每行的百分比正是以它为基数）+ 出图时间。
         // 「·」在这套 CJK 字体里自带右侧空腔，两侧各补一个空格才等宽。
         let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-        let meta = if data.len() > 1 {
-            format!(
-                "前 {} 名 · 合计 {} · {}",
-                data.len(),
-                unit.total(total_val, notes),
-                now_str
-            )
+        let mut parts = Vec::new();
+        if data.len() > 1 {
+            parts.push(format!("前 {} 名", data.len()));
+        }
+        if unit.is_share() {
+            parts.push(format!("合计 {}", unit.total(total_val, notes)));
         } else {
-            format!("合计 {} · {}", unit.total(total_val, notes), now_str)
-        };
+            parts.extend(notes.iter().cloned());
+        }
+        parts.push(now_str);
+        let meta = parts.join(" · ");
         let meta_style = get_font_with_color(config, meta_font_size, &ink_soft)
             .pos(Pos::new(HPos::Center, VPos::Top));
         root.draw_text(&meta, &meta_style, (canvas_width as i32 / 2, meta_y as i32))
@@ -486,12 +501,14 @@ pub fn draw_bar_chart(
                 let (vw, _) = font_obj.box_size(value_text).unwrap_or((0, 0));
                 let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
                     .pos(Pos::new(HPos::Left, VPos::Center));
-                root.draw_text(
-                    pct_text,
-                    &pct_style,
-                    (count_x + vw as i32 + pct_gap as i32, text_mid_y),
-                )
-                .map_err(|e| e.to_string())?;
+                if !pct_text.is_empty() {
+                    root.draw_text(
+                        pct_text,
+                        &pct_style,
+                        (count_x + vw as i32 + pct_gap as i32, text_mid_y),
+                    )
+                    .map_err(|e| e.to_string())?;
+                }
             } else {
                 let count_style = get_font_with_color(config, font_size, &row.value_ink)
                     .pos(Pos::new(HPos::Right, VPos::Center));
@@ -500,8 +517,10 @@ pub fn draw_bar_chart(
 
                 let pct_style = get_font_with_color(config, pct_font_size, &row.pct_ink)
                     .pos(Pos::new(HPos::Right, VPos::Center));
-                root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
-                    .map_err(|e| e.to_string())?;
+                if !pct_text.is_empty() {
+                    root.draw_text(pct_text, &pct_style, (pct_right_x, text_mid_y))
+                        .map_err(|e| e.to_string())?;
+                }
             }
         }
 

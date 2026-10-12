@@ -244,7 +244,7 @@ async def main():
         await inject_mute("10003", 1000, seconds_ago=100)
         await inject_mute("10004", None, operator="10001", seconds_ago=200)  # 有操作者、时长没读出
         # 累计 vs 单次：10005 被禁言三次、每次 2 小时（累计 6 小时），10006 只被禁言一次但是 5 小时。
-        # 累计榜该是 10005 在前（单次最长的写法会是 10006 在前）。
+        # 累计榜该是 10005 在前；单次最长榜该是 10006 在前（5 小时 > 2 小时）。
         for ago in (40000, 30000, 20000):
             await inject_mute("10005", 7200_000, operator="10001", seconds_ago=ago)
         await inject_mute("10006", 5 * 3600_000, operator="10001", seconds_ago=50000)
@@ -272,7 +272,7 @@ async def main():
         check("禁言没有走势：给出说明", True)
 
         if FONT:
-            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜", "/本群近7天禁言总时长排行榜"):
+            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜", "/本群近7天管理员禁言排行榜", "/本群近7天管理员禁言时长排行榜", "/本群近7天禁言总时长排行榜", "/本群近7天单次最长禁言排行榜", "/本群近7天管理员最长禁言排行榜"):
                 mark = len(posts)
                 await inject("message-created", "10002", command)
                 await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)

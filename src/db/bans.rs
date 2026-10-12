@@ -144,6 +144,8 @@ pub struct Tally {
     pub times: i64,
     /// 实际禁言的秒数，只含时长已知的那些次。
     pub secs: i64,
+    /// 其中最长的一次（实际禁言的秒数），只看时长已知的那些次。
+    pub longest: i64,
     /// 时长没读出、事后也没能从解除时刻推出的次数。
     pub unknown: i64,
 }
@@ -219,12 +221,16 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
             person_id: person.to_owned(),
             times: 0,
             secs: 0,
+            longest: 0,
             unknown: 0,
         });
         row.times += 1;
         cut_short += i64::from(term.cut_short);
         match term.served {
-            Some(secs) => row.secs += secs,
+            Some(secs) => {
+                row.secs += secs;
+                row.longest = row.longest.max(secs);
+            }
             None => row.unknown += 1,
         }
     }
@@ -284,6 +290,25 @@ mod tests {
         let events = [ev("a", 1_000, 30 * 86_400), ev("a", 1_060, 0)];
         let t = members(&events, 0, 10_000);
         assert_eq!((t[0].times, t[0].secs), (1, 60));
+    }
+
+    #[test]
+    fn tracks_the_longest_single_term() {
+        let events = [
+            ev("a", 1_000, 600),    // 满额 10 分钟
+            ev("a", 5_000, 3_600),  // 满额 1 小时
+            ev("a", 20_000, 7_200), // 2 小时，十分钟后被解除：只算 10 分钟
+            ev("a", 20_600, 0),
+            ev("b", 100, UNKNOWN), // 没读出、也没有解除：不进最长
+            ev("c", 200, 60),
+        ];
+        let t = members(&events, 0, 100_000);
+        assert_eq!(
+            (t[0].times, t[0].secs, t[0].longest),
+            (3, 600 + 3_600 + 600, 3_600)
+        );
+        assert_eq!((t[1].times, t[1].longest, t[1].unknown), (1, 0, 1));
+        assert_eq!(t[2].longest, 60);
     }
 
     #[test]
