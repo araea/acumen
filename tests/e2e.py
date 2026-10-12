@@ -2,7 +2,9 @@
 """acumen 端到端冒烟：自起假 Satori 实现端，拉起隔离的 acumen 实例，走一遍主要链路。
 
 覆盖：指令（echo）、复读（接力 + satori-qq 时效参数 + 跟读记录落盘）、跟随撤回、
-引用类指令的报错回复（sticker）、/ctl 读写配置（原子写、0600）、自发消息入库。
+引用类指令的报错回复（sticker）、/ctl 读写配置（原子写、0600）、自发消息入库、
+禁言通知入库与禁言排行榜（出图需要字体：E2E_FONT 指一个字体文件，缺省用 Termux 的 MiSans，
+都没有就只验入库与文字提示）。
 `E2E_STARTUP=1` 改为「除 console / restart 外全部启用，连上后空等 25 秒」，只看启动有无
 ERRO 与 panic（不碰真账号：被测实例连的是自己起的假端口）。
 
@@ -21,7 +23,8 @@ PORT = 39117
 GROUP = "900001"
 BOT = "20001"
 ADMIN = "10001"
-ENABLED = {"meta_filter", "ctl", "recorder", "echo", "repeater", "recall", "sticker", "media"}
+ENABLED = {"meta_filter", "ctl", "recorder", "echo", "repeater", "recall", "sticker", "media", "stats"}
+FONT = next((f for f in (os.environ.get("E2E_FONT"), "/data/data/com.termux/files/usr/share/fonts/TTF/MiSans/MiSans-Medium.ttf") if f and os.path.exists(f)), None)
 STARTUP = os.environ.get("E2E_STARTUP") == "1"
 ALL_PLUGINS = re.findall(r"^    ([a-z_]+) \{", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/registry.rs")).read(), re.M)
 
@@ -87,6 +90,18 @@ async def inject(kind, user, content=None, message_id=None):
     return body.get("message", {}).get("id")
 
 
+async def inject_mute(user, duration_ms=None, operator=None, seconds_ago=0):
+    """satori-qq 的禁言通知：guild-member-updated + _type=satori-qq/mute；duration_ms=0 是解除，None 是没读出时长。"""
+    sn[0] += 1
+    body = {"sn": sn[0], "type": "guild-member-updated", "timestamp": int((time.time() - seconds_ago) * 1000), "login": LOGIN,
+            "channel": {"id": GROUP, "type": 0}, "guild": {"id": GROUP}, "user": {"id": user}, "member": {},
+            "_type": "satori-qq/mute", "_data": {"duration": duration_ms} if duration_ms is not None else {"duration_unknown": True}}
+    if operator:
+        body["operator"] = {"id": operator}
+    for ws in ws_clients:
+        await ws.send_json({"op": 0, "body": body})
+
+
 def sent_texts():
     return [b.get("content", "") for m, b in posts if m == "message.create"]
 
@@ -109,6 +124,11 @@ def write_config(directory):
         lines += [f"[{name}]", f"enabled = {'true' if on else 'false'}"]
         if name == "ctl":
             lines += [f'admins = ["{ADMIN}"]']
+        if name == "stats":
+            # 定时推送一律关掉：被测实例不该在某个整点往假端口发图
+            lines += [f"{k}_enabled = false" for k in ("daily_push", "morning_recap", "noon_brief", "weekly_recap", "monthly_recap")]
+            if FONT:
+                lines += [f'font_path = "{FONT}"', 'font_family = "MiSans"']
         if name == "repeater":
             lines += ["min_times = 2", "cooldown_seconds = 0", "max_delay_ms = 600000", "remember_hours = 0"]
         lines.append("")
@@ -212,6 +232,45 @@ async def main():
                 rows = db.execute(f"select count(*) from {t} where member_role='self'").fetchone()[0]
         check("机器人发言入库", rows >= 1, f"self 行数={rows}")
         db.close()
+
+        print("8. 禁言：通知入库（去重、解除、没读出时长），再查排行榜")
+        # 10002：禁言 30 天、一分钟后被解除（只该算 1 分钟），又被禁言 10 分钟；10003：时长没读出；
+        # 同一条灰条被推了两遍（只该记一次）；旧版 satori-qq 读不出时长时填的 1 秒（该当没读出）。
+        await inject_mute("10002", 30 * 86400 * 1000, operator="10001", seconds_ago=900)
+        await inject_mute("10002", 0, operator="10001", seconds_ago=840)
+        await inject_mute("10002", 600_000, operator="10001", seconds_ago=500)
+        await inject_mute("10002", 600_000, operator="10001", seconds_ago=499)
+        await inject_mute("10003", None, seconds_ago=300)
+        await inject_mute("10003", 1000, seconds_ago=100)
+        await asyncio.sleep(1.5)
+        db = sqlite3.connect(f"file:{os.path.join(WORK, 'data', 'bot.db')}?mode=ro", uri=True)
+        rows = db.execute("select user_id, duration from member_bans order by time").fetchall()
+        db.close()
+        check("禁言通知入库且去重", rows == [("10002", 2592000), ("10002", 0), ("10002", 600), ("10003", -1), ("10003", -1)], str(rows))
+
+        mark = len(posts)
+        await inject("message-created", "10002", "/我的本月禁言排行榜")
+        await wait_for(lambda: any("禁言只有本群" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "个人范围的说明")
+        check("禁言榜只支持本群：给出说明", True)
+
+        mark = len(posts)
+        await inject("message-created", "10002", "/本群近7天禁言走势")
+        await wait_for(lambda: any("禁言只有本群" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "走势的说明")
+        check("禁言没有走势：给出说明", True)
+
+        if FONT:
+            for command in ("/本群近7天禁言排行榜", "/本群近7天禁言时长排行榜"):
+                mark = len(posts)
+                await inject("message-created", "10002", command)
+                await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)
+                check(f"{command} 出图", True)
+        else:
+            print("  跳过 禁言榜出图（没有可用字体，设 E2E_FONT）")
+
+        mark = len(posts)
+        await inject("message-created", "10002", "/本群上月禁言排行榜")
+        await wait_for(lambda: any("没有数据" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "空榜提示")
+        check("没有禁言的区间：给出空态说明", True)
     except SystemExit_:
         pass
     except AssertionError as error:
