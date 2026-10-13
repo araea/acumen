@@ -5,7 +5,8 @@
 图应当按位置画进同一张卡片（而不是另发一条）；写了不存在的路径时只被提醒一次；
 纯文字回复不受影响；`view_image` 读到的图要随下一条用户消息送回模型。另覆盖执行层的长任务能力：
 同一批里的 `delegate` 并行、子助手拿不到 delegate 与群聊工具、步数用尽时最后一步收回工具并催收尾、
-同一调用重复执行被驳回、空回复被催一次、系统提示词里有今天的日期。假模型按提问里的关键词走脚本，不需要任何真实密钥。
+同一调用重复执行被驳回、空回复被催一次、系统提示词里有今天的日期。另覆盖房间翻群聊记录（`satori_history`）：
+预先写入记录库，模型先读 `satori_context` 认出提问的人与被 @ 的人，再按名字、按日期翻页、遇到重名拿到候选、问「我」时被指路。假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
 用法（需要 `pip install aiohttp` 与 Chromium；浏览器路径取 `CHROME_BIN`）：
     cargo build --release --locked
@@ -33,6 +34,35 @@ PNG_B64 = base64.b64encode(tiny_png()).decode()
 posts, ws_clients, llm_requests = [], [], []
 child_tools = []
 sn, next_msg = [0], [1000]
+
+
+def yesterday():
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def seed_records(path):
+    """把几段群聊直接写进记录库（这个隔离实例里 recorder 是关的）。"""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    day = datetime.now(timezone(timedelta(hours=8))).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    db = sqlite3.connect(path)
+    db.execute('''CREATE TABLE "message_records" ( "id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "platform" varchar NOT NULL, "self_id" varchar NOT NULL, "message_id" varchar NOT NULL, "channel_id" varchar NOT NULL, "channel_type" integer NOT NULL, "guild_id" varchar NOT NULL, "guild_name" varchar NOT NULL, "guild_avatar" varchar NOT NULL, "user_id" varchar NOT NULL, "user_name" varchar NOT NULL, "member_nick" varchar NOT NULL, "user_avatar" varchar NOT NULL, "member_role" varchar NOT NULL, "content_rich" varchar NOT NULL, "tokens" varchar NOT NULL, "is_reply" boolean NOT NULL, "length" integer NOT NULL, "time" integer NOT NULL, "time_hour" integer NOT NULL, "time_weekday" integer NOT NULL, "has_image" boolean NOT NULL, "image_count" integer NOT NULL, "is_anim_emoji" boolean NOT NULL, "has_at" boolean NOT NULL, "at_count" integer NOT NULL, "face_count" integer NOT NULL, "is_voice" boolean NOT NULL, "is_video" boolean NOT NULL, "is_music" boolean NOT NULL, "is_rps" boolean NOT NULL, "is_dice" boolean NOT NULL, "is_poke" boolean NOT NULL, "is_forward" boolean NOT NULL )''')
+    n = [0]
+
+    def put(group, user, nick, text, at, role="member"):
+        n[0] += 1
+        db.execute("insert into message_records values (null,'red',?,?,?,0,?,'','',?,?,?,'',?,?,'',0,0,?,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0)",
+                   (BOT, f"seed{n[0]}", group, group, user, nick, nick, role, text, int(at.timestamp())))
+
+    for i in range(5):
+        put(GROUP, "10002", "小明", f"小明昨天的第{i + 1}句", day + timedelta(hours=9, minutes=10 * i))
+    put(GROUP, "10003", "阿福大叔", "我是大叔", day + timedelta(hours=10))
+    put(GROUP, "10004", "阿福小姐", "我是小姐一", day + timedelta(hours=10, minutes=1))
+    put(GROUP, "10004", "阿福小姐", "我是小姐二", day + timedelta(hours=10, minutes=2))
+    put("900002", "10002", "小明", "这是别的群的小明", day + timedelta(hours=9, minutes=5))
+    db.commit()
+    db.close()
 
 
 def fresh_id():
@@ -147,6 +177,21 @@ async def chat(request):
             return completion({"role": "assistant", "content": ""})
         return completion({"role": "assistant", "content": "", "reasoning_content": "想了想"})
 
+    if "翻记录" in asked:
+        step = len(tool_results)
+        day = yesterday()
+        result = lambda i: json.loads(tool_results[i]).get("result", {})
+        if step == 0:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("satori_context")]})
+        if step == 1:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("satori_history", user="小明", since=day, until=day, limit=2)]})
+        if step == 2:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("satori_history", user="小明", since=day, until=day, limit=2, before=result(1).get("older", ""))]})
+        if step == 3:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("satori_history", user="阿福")]})
+        if step == 4:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("satori_history", user="我")]})
+        return completion({"role": "assistant", "content": "翻完了。"})
     if "画图表" in asked:
         if not tools_done:
             cmd = f"printf '%s' {PNG_B64} | base64 -d > {scratch}/c.png && ls -l {scratch}/c.png"
@@ -194,6 +239,7 @@ async def main():
     shutil.rmtree(WORK, ignore_errors=True)
     os.makedirs(os.path.join(WORK, "data", "oai"))
     shutil.copy(BIN, os.path.join(WORK, "acumen"))
+    seed_records(os.path.join(WORK, "data", "bot.db"))
     json.dump({"api_base": f"http://127.0.0.1:{LLM_PORT}/v1", "api_key": "k", "default_model": "scripted"},
               open(os.path.join(WORK, "data", "oai", "config.json"), "w"))
     browser = os.environ.get("CHROME_BIN", "/data/data/com.termux/files/usr/bin/chromium-browser")
@@ -382,6 +428,29 @@ enabled = false
         now = datetime.now(timezone(timedelta(hours=8)))
         want = f"今天是 {now.year}年{now.month}月{now.day}日 星期{'一二三四五六日'[now.weekday()]}（北京时间）"
         check("日期与星期对得上", want in text_of(llm_requests[n]["messages"][0]), want)
+
+        print("M. 翻记录：认出提问的人与被 @ 的人，按名字、按日期翻页，重名给候选，问「我」被指路")
+        mark, n = len(posts), len(llm_requests)
+        await inject('管家大人 翻记录 <at id="10002"/>')
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("最终回复", len(sent) == 1 and "翻完了" in sent[0], str(sent))
+        tools_seen = [t["function"]["name"] for t in llm_requests[n].get("tools", [])]
+        check("工具表里有 satori_history，没有只给搭话的 satori_observe", "satori_history" in tools_seen and "satori_observe" not in tools_seen, str(tools_seen))
+        check("提示词交代了什么时候该翻记录", "用 satori_history 翻本机的聊天记录库" in text_of(llm_requests[n]["messages"][0]))
+        replies = [json.loads(text_of(m)) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        check("一共五次工具调用", len(replies) == 5, str(len(replies)))
+        trigger = (replies[0].get("result") or {}).get("trigger") or {}
+        check("trigger 认出提问的人", trigger.get("asker", {}).get("user_id") == USER and trigger["asker"].get("name"), str(trigger))
+        check("trigger 认出被 @ 的人并带着名字", trigger.get("mentions") == [{"user_id": "10002", "name": "小明"}], str(trigger.get("mentions")))
+        page1, page2 = replies[1].get("result", {}), replies[2].get("result", {})
+        check("按名字找到小明，总数只算本群", page1.get("who", {}).get("user_id") == "10002" and page1.get("total") == 5 and page1.get("count") == 2, str(page1)[:300])
+        check("第一页是最新的两句，从旧到新排", [m["text"] for m in page1.get("messages", [])] == ["小明昨天的第4句", "小明昨天的第5句"], str(page1)[:300])
+        check("给了往前翻的游标", bool(page1.get("older")) and "before" in page1.get("paging", ""), str(page1)[:300])
+        check("第二页接着往前，不重复", [m["text"] for m in page2.get("messages", [])] == ["小明昨天的第2句", "小明昨天的第3句"], str(page2)[:300])
+        ambiguous = replies[3].get("result", {})
+        check("重名不替模型挑，摆出候选（说得多的在前）", [c["user_id"] for c in ambiguous.get("ambiguous", [])] == ["10004", "10003"], str(ambiguous)[:300])
+        check("问「我」被指路去 trigger", replies[4].get("ok") is False and "trigger" in replies[4].get("error", ""), str(replies[4]))
 
         print("D. 纯文字：不受影响")
         mark, n = len(posts), len(llm_requests)

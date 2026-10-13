@@ -177,7 +177,7 @@ async fn search_at(
     let found = if around.is_empty() {
         filtered(db, group, wanted, request, now).await?
     } else {
-        Found::around(db, group, around).await?
+        Found::around(db, group, &around).await?
     };
     let Found { rows, total, more, who, what } = match found {
         Outcome::Found(found) => found,
@@ -396,7 +396,8 @@ async fn filtered(
         .transpose()?
         .unwrap_or(0);
 
-    let cursor = match (text(request, "before"), text(request, "after")) {
+    let (before, after) = (text(request, "before"), text(request, "after"));
+    let cursor = match (before.as_str(), after.as_str()) {
         ("", "") => Cursor::Latest,
         (before, "") => {
             let (time, id) = anchor(db, group, before).await?;
@@ -508,13 +509,14 @@ async fn coverage(db: &DatabaseConnection, group: &str, now: i64) -> Result<Valu
 async fn resolve_user(db: &DatabaseConnection, group: &str, request: &Value) -> Result<Who> {
     let id = text(request, "user_id");
     if !id.is_empty() {
-        ensure!(is_qq(id), "user_id 要写 QQ 号；只知道名字就用 user");
+        ensure!(is_qq(&id), "user_id 要写 QQ 号；只知道名字就用 user");
         return Ok(Who::One {
             id: id.to_string(),
             name: None,
         });
     }
-    let asked = text(request, "user").trim_start_matches(['@', '＠']).trim();
+    let asked = text(request, "user");
+    let asked = asked.trim_start_matches(['@', '＠']).trim();
     if asked.is_empty() {
         return Ok(Who::Anyone);
     }
@@ -657,8 +659,13 @@ pub(crate) async fn names_of(
     names
 }
 
-fn text<'a>(request: &'a Value, key: &str) -> &'a str {
-    request[key].as_str().unwrap_or("").trim()
+/// 取一个文本参数。模型常把 QQ 号当数字传，不该因此被当成没给。
+fn text(request: &Value, key: &str) -> String {
+    match &request[key] {
+        Value::String(text) => text.trim().to_string(),
+        Value::Number(number) => number.to_string(),
+        _ => String::new(),
+    }
 }
 
 fn is_qq(raw: &str) -> bool {
@@ -667,11 +674,11 @@ fn is_qq(raw: &str) -> bool {
 
 /// `since` / `until` / `hours` → [起, 止) 两个时刻（秒）。
 fn time_range(request: &Value, now: i64) -> Result<(Option<i64>, Option<i64>)> {
-    let mut since = match text(request, "since") {
+    let mut since = match text(request, "since").as_str() {
         "" => None,
         raw => Some(moment(raw, now, false)?),
     };
-    let until = match text(request, "until") {
+    let until = match text(request, "until").as_str() {
         "" => None,
         raw => Some(moment(raw, now, true)?),
     };
@@ -921,6 +928,9 @@ mod tests {
         // 「我」「他」不是名字，指路去认人。
         let error = ask(&db, json!({"user": "我"})).await.unwrap_err().to_string();
         assert!(error.contains("trigger"), "{error}");
+        // 模型常把 QQ 号当数字传：照样认。
+        let found = ask(&db, json!({"user_id": 10003, "hours": 100000})).await.unwrap();
+        assert_eq!(found["messages"][0]["user_id"], "10003", "{found}");
         // QQ 号直接用，不需要在库里出现过；别的群的人在本群查不到东西。
         let found = ask(&db, json!({"user_id": "10009"})).await.unwrap();
         assert_eq!(found["count"], 0);
