@@ -362,9 +362,9 @@ reflect_enabled = false
         results = [text_of(m) for m in reqs[-1]["messages"] if m["role"] == "tool"]
         check("按关键词翻到了原话与发言人", len(results) >= 1 and "Magisk 升到 27.0" in results[0] and "群友丁" in results[0], str(results[:1])[:300])
         check("围着那条看前后文，带出了相邻的话", len(results) >= 2 and "Delta 面板" in results[1], str(results[1:2])[:300])
-        check("什么条件都不给被拒绝", len(results) >= 3 and "给个关键词或发言人" in results[2], str(results[2:3])[:300])
+        check("什么条件都不给被拒绝", len(results) >= 3 and "给个发言人、关键词或时间段" in results[2], str(results[2:3])[:300])
         check("提示翻不到就是不知道", len(results) >= 1 and "别凭印象补" in results[0])
-        check("每条原话都带着「是不是你自己说的」标记", all('"self"' in r for r in results[:2]))
+        check("自己说的才带 self 标记，别人的不带空字段，并交代了它的含义", all('"self":""' not in r and "self 为 bot 或 owner" in r for r in results[:2]))
     except Exception as error:
         failures.append(str(error))
         print("  异常：", error)
