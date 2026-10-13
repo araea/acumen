@@ -591,6 +591,7 @@ async fn chat(
                     group: group.to_string(),
                     config: oai.chat.clone(),
                     tools: Some(room_tools(&oai.chat)),
+                    trigger: Some(super::chat::trigger::Trigger::from_event(&event)),
                 });
                 respond(
                     &api_base,

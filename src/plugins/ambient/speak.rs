@@ -269,10 +269,10 @@ pub(crate) async fn compose(
         let chat = super::chat_config(config);
         tools.push(',');
         tools.push_str(&crate::plugins::oai::chat::tool_names(&chat).join(","));
-        // 探查与翻记录只给有常驻群聊窗口的搭话，房间不挂；view_image 是看图的眼睛，
+        // 环境探查只给有常驻群聊窗口的搭话，房间不挂；view_image 是看图的眼睛，
         // 取回的附件、画好的图都要靠它看（`[ambient].tools` 是手写白名单，默认值管不到
-        // 已部署的实例，所以由这里补）。
-        tools.push_str(",satori_observe,satori_history,view_image");
+        // 已部署的实例，所以由这里补）。翻记录两边都有，已在上面那串群聊工具里。
+        tools.push_str(",satori_observe,view_image");
         let persona = std::sync::Arc::new(super::Ambient::new(
             config,
             Some(crate::plugins::oai::chat::Avatar {
@@ -292,6 +292,7 @@ pub(crate) async fn compose(
                 scratch: dir.path(),
                 media: &base.join("media"),
                 persona: Some(persona),
+                trigger: None,
                 // 搭话的现场是它自己听着的那段窗口（群聊自动环境感知）。
                 scene: crate::plugins::oai::chat::session::Scene::Window,
             })

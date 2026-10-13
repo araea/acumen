@@ -16,6 +16,8 @@
 //!
 //! - [`window`]：群聊现场——一条消息长什么样、按群滚动的窗口、递给模型读的记录；
 //! - [`session`]：一轮对话的工具出口（`satori_*` 的十个 op）与动作执行；
+//! - [`history`]：翻本机记录库——窗口之外的旧话，按人、按词、按时间段；
+//! - [`trigger`]：房间这一轮是谁在问、引用了谁、@了谁；
 //! - [`actions`]：`satori_action` 能做的事的解析与校验；
 //! - [`memory`] 长期记忆、[`stickers`] 表情包库、[`identity`] 我在这个群里是谁；
 //! - [`pace`] / [`breath`] / [`tone`]：怎么说出来——换气、断句、别复读；
@@ -25,6 +27,7 @@
 pub(crate) mod actions;
 pub(crate) mod attention;
 pub(crate) mod breath;
+pub(crate) mod history;
 pub(crate) mod identity;
 pub(crate) mod memory;
 pub(crate) mod pace;
@@ -32,6 +35,7 @@ pub(crate) mod protocol;
 pub(crate) mod session;
 pub(crate) mod stickers;
 pub(crate) mod tone;
+pub(crate) mod trigger;
 pub(crate) mod vision;
 pub(crate) mod window;
 
@@ -140,6 +144,8 @@ pub(crate) struct ChatEnv<'a> {
     pub media: &'a Path,
     /// 人格那一层。房间没有，`None`。
     pub persona: Option<Arc<dyn Persona>>,
+    /// 房间这一轮是谁在问（搭话没有，`None`）。
+    pub trigger: Option<trigger::Trigger>,
     /// 这一轮的群聊现场从哪儿来：搭话读自己的常驻窗口，房间向平台要。
     pub scene: session::Scene,
 }
@@ -197,7 +203,7 @@ pub(crate) struct Avatar {
 /// 画图、写歌、拍片额度为 0 连工具都不挂。调用方（房间与搭话）照它拼白名单，
 /// 于是「模型看得到的工具」和「它真按得动的按钮」永远对得上。
 pub(crate) fn tool_names(config: &ChatConfig) -> Vec<&'static str> {
-    let mut names = vec!["satori_context", "satori_read", "satori_action"];
+    let mut names = vec!["satori_context", "satori_read", "satori_history", "satori_action"];
     if config.draw_budget > 0 {
         names.push("satori_draw");
     }

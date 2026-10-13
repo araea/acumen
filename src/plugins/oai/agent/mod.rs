@@ -223,6 +223,8 @@ pub(crate) struct ChatContext {
     pub config: crate::plugins::oai::chat::ChatConfig,
     /// 工具白名单；`None` 表示有什么挂什么。
     pub tools: Option<String>,
+    /// 这一轮是谁在问：翻记录时「我」「他」「引用的那位」要靠它认人。
+    pub trigger: Option<crate::plugins::oai::chat::trigger::Trigger>,
 }
 
 /// 总预算 `budget` 之内留给收尾的那一截。
@@ -276,6 +278,7 @@ pub(crate) async fn conversation(
                 // 房间里生成的东西放在本轮工作目录里，随后就发出去；一轮结束即清理。
                 media: dir.path(),
                 persona: None,
+                trigger: chat.trigger.clone(),
                 scene: crate::plugins::oai::chat::session::Scene::Channel,
             })
             .await?;

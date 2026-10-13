@@ -63,6 +63,16 @@ const CHAT_HINT: &str = "\
 你的回复本身会发进这个群，它就是你对用户那句话的回答；只有确实要单独发一条
 （发媒体、引用某条消息、@某人）时才用 satori_action 的 send，别把同一句话发两遍。";
 
+/// 翻记录的用法说明；只有这一轮真挂了 `satori_history` 才写。
+///
+/// 工具说明讲参数怎么填，这里讲**什么时候该伸手**：模型被问到「之前」「昨天」「他说过」
+/// 时最常见的错，是凭眼前这一页的印象作答，或者干脆回一句「看不到更早的记录」。
+const HISTORY_HINT: &str = "\
+群里更早的话（昨天、上午、某个人说过什么、之前谁提过某件事）不要凭印象答，也不要说看不到：
+用 satori_history 翻本机的聊天记录库。按人、按关键词、按日期时间段都能找；问「我」「他」
+「引用的那位」「@的那位」，QQ 号在 satori_context 的 trigger 里。查到了就引原话说清是谁、什么时候说的；
+结果很多时看 total 与翻页游标，别拿一页冒充全部；翻不到就如实说翻不到。";
+
 /// 联网搜索的用法说明；只有这一轮真挂了出网工具时才写进提示词。
 ///
 /// 工具本身各有 description，这里只交代那件工具描述不了的事：什么时候该伸手去搜
@@ -489,6 +499,10 @@ impl Context {
                     .into_iter()
                     .map(|tool| tool.name)
                     .collect();
+            if tool_names.iter().any(|name| name == "satori_history") {
+                base.push_str("\n\n");
+                base.push_str(HISTORY_HINT);
+            }
             if !run.nested && tool_names.iter().any(|name| name == "delegate") {
                 base.push_str("\n\n");
                 base.push_str(super::delegate::HINT);
