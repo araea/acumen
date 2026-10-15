@@ -177,21 +177,44 @@ impl ColorScheme {
     }
 }
 
+// 统计图的「纸」：一族暖白中性色，只有统计图（三张）与 message-counter、monetary-rank 的榜单图用。
+//
+// **选它是为了读着舒服，不是为了好看**，所以每一档都过了量：
+//
+// - 纸面 L*98，不比从前更亮（纯白是 100，整屏两千像素的高亮白在手机上看久了刺眼）；
+//   色温 ≈ 6250 K，比日光（6504 K）略暖，不像从前那张偏紫的纸（≈ 6640 K）带一点冷光。
+//   彩度压在 C* 2.4：是「纸」，不是「米色」或「护眼黄」。
+// - 纸与淡色轨道（色调 94）得分得开，条的长短才读得出来：各色相的轨道对纸的色差 ΔE 5.3—7.4
+//   （从前那张纸 4.2—10.5，message-counter 一侧的 `#f6f6fd` 只有 3.1）。纸不能再往暗里走，
+//   所以它停在 L*98。
+// - 墨 L*20，对纸 12.5∶1：够深，又比纯黑软（halation 小）；次级墨 6.2∶1、描边 3.7∶1。
+// - 这一族都出自同一支色相（88°）：纸 → 容器 → 相纸（dim）明度一路往下走，层次自己就出来了。
+//
+// 与 message-counter、monetary-rank 里的 `paper.ts` 逐档相同；改了这里，那边两份要一起改。
+pub const PAPER: RGBColor = RGBColor(0xfc, 0xf9, 0xf5); // L*98
+const PAPER_DIM: RGBColor = RGBColor(0xdd, 0xda, 0xd4); // L*87：卡片之下的相纸
+const CONTAINER: RGBColor = RGBColor(0xf0, 0xed, 0xe8); // L*94
+const CONTAINER_HIGH: RGBColor = RGBColor(0xeb, 0xe8, 0xe2); // L*92：轨道
+pub const INK: RGBColor = RGBColor(0x32, 0x30, 0x2d); // L*20
+pub const INK_SOFT: RGBColor = RGBColor(0x60, 0x5e, 0x5a); // L*40
+const OUTLINE: RGBColor = RGBColor(0x83, 0x81, 0x7d); // L*54：图形的描边，3∶1，不写字
+const OUTLINE_VARIANT: RGBColor = RGBColor(0xb3, 0xb0, 0xac); // L*72：装饰线、头像的发丝边
+
 impl Default for ColorScheme {
-    /// 位图直接使用共享生成器的 Rust 令牌，不再维护手抄色表。
+    /// 纸与墨用上面那族暖白；主色仍取设计系统的 primary（只在没有头像色时兜底）。
     fn default() -> Self {
         use crate::render::tokens as t;
         Self {
-            background: t::SURFACE_DIM,
-            card_background: t::SURFACE,
-            container: t::SURFACE_CONTAINER,
-            container_high: t::SURFACE_CONTAINER_HIGH,
+            background: PAPER_DIM,
+            card_background: PAPER,
+            container: CONTAINER,
+            container_high: CONTAINER_HIGH,
             primary: t::PRIMARY,
-            text_primary: t::ON_SURFACE,
-            text_secondary: t::ON_SURFACE_VARIANT,
-            text_faint: t::ON_SURFACE_VARIANT,
-            outline: t::OUTLINE,
-            grid_line: t::OUTLINE_VARIANT,
+            text_primary: INK,
+            text_secondary: INK_SOFT,
+            text_faint: INK_SOFT,
+            outline: OUTLINE,
+            grid_line: OUTLINE_VARIANT,
         }
     }
 }
@@ -840,6 +863,22 @@ pub fn overlay_image(base: &mut RgbaImage, overlay: &RgbaImage, x: i32, y: i32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_paper_family_stays_readable() {
+        let colors = ColorScheme::default();
+        let on_paper = |ink| contrast_ratio(ink, colors.card_background);
+        assert!(on_paper(colors.text_primary) >= 7.0, "正文墨 {:.2}", on_paper(colors.text_primary));
+        assert!(on_paper(colors.text_secondary) >= 4.5, "次级墨 {:.2}", on_paper(colors.text_secondary));
+        assert_eq!(colors.readable_faint(), colors.text_secondary, "名次这类参照数字不需要再调");
+        assert!(on_paper(colors.outline) >= 3.0, "图形描边 {:.2}", on_paper(colors.outline));
+        // 墨也别太硬：高于 14∶1 的黑白对比在大片白底上会晕
+        assert!(on_paper(colors.text_primary) <= 14.0);
+        // 轨道在纸之上、纸在相纸之上：明度一路往下，层次靠它
+        let l = |c: RGBColor| contrast_ratio(c, RGBColor(0, 0, 0));
+        assert!(l(colors.card_background) > l(colors.container) && l(colors.container) > l(colors.container_high));
+        assert!(l(colors.container_high) > l(colors.background));
+    }
 
     #[test]
     fn durations_keep_the_two_largest_units() {

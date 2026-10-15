@@ -146,10 +146,10 @@ pub fn draw_bar_chart(
 
     let colors = ColorScheme::default();
     // 纸面不用纯白：整屏 2000 px 的高亮白在手机上看久了刺眼，退半档到暖白，
-    // 淡色轨道与横条反而更浮得出来。取设计系统的卡面（`scheme-manual` 的
-    // surface），不另写一个色——图表与卡片得是同一张纸。与走势图同一张纸。
+    // 淡色轨道与横条反而更浮得出来。取 `utils` 里那一族暖白（每一档为什么是这个值见
+    // 那里）；三张统计图同一张纸，message-counter、monetary-rank 的榜单也是。
     let page_bg = colors.card_background;
-    let ink = colors.text_primary; // 正文墨色：不写纯黑，与卡片同一个墨色
+    let ink = colors.text_primary; // 正文墨色：不写纯黑，对纸 12.5∶1
     let ink_soft = colors.text_secondary;
     let ink_faint = colors.readable_faint();
 
@@ -1020,7 +1020,7 @@ pub fn draw_line_chart(
     let height = config.height * s;
 
     let colors = ColorScheme::default();
-    // 与排行榜、与卡片同一张纸（见 ColorScheme::default 的说明）
+    // 与排行榜同一张纸（见 `utils` 里那一族暖白的说明）
     let page_bg = colors.card_background;
     let multi = series_list.len() > 1;
 

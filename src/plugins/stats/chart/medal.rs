@@ -245,16 +245,15 @@ fn mix(back: RGBColor, front: RGBColor, alpha: f32) -> RGBColor {
 
 #[cfg(test)]
 mod tests {
-    use super::super::utils::contrast_ratio;
+    use super::super::utils::{PAPER, contrast_ratio};
     use super::*;
-    use crate::render::tokens::SURFACE;
 
     #[test]
     fn both_ends_of_every_ring_stay_readable_against_the_paper() {
         for rank in 1..=3 {
             let medal = medal(rank).unwrap();
             for color in [medal.highlight, medal.shade] {
-                let ratio = contrast_ratio(color, SURFACE);
+                let ratio = contrast_ratio(color, PAPER);
                 assert!(ratio >= 3.0, "第 {rank} 名的圈只有 {ratio:.2}∶1");
             }
         }
@@ -262,7 +261,7 @@ mod tests {
 
     #[test]
     fn ring_sits_outside_the_avatar_with_a_paper_gap() {
-        let paper = Rgba([251, 248, 254, 255]);
+        let paper = Rgba([PAPER.0, PAPER.1, PAPER.2, 255]);
         let mut img = RgbaImage::from_pixel(240, 240, paper);
         let (cx, cy, avatar, s) = (120.0, 120.0, 50.0, 2.0);
         let medal = medal(2).unwrap();
@@ -278,7 +277,7 @@ mod tests {
 
     #[test]
     fn glow_and_crown_belong_to_the_champion_alone() {
-        let paper = RGBColor(251, 248, 254);
+        let paper = PAPER;
         assert!(medal(1).unwrap().glow(120.0, 120.0, 50.0, 2.0, paper).len() > 100);
         for rank in [2, 3] {
             assert!(medal(rank).unwrap().glow(120.0, 120.0, 50.0, 2.0, paper).is_empty());
