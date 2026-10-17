@@ -6,7 +6,9 @@
 纯文字回复不受影响；`view_image` 读到的图要随下一条用户消息送回模型。另覆盖执行层的长任务能力：
 同一批里的 `delegate` 并行、子助手拿不到 delegate 与群聊工具、步数用尽时最后一步收回工具并催收尾、
 同一调用重复执行被驳回、空回复被催一次、系统提示词里有今天的日期。另覆盖房间翻群聊记录（`satori_history`）：
-预先写入记录库，模型先读 `satori_context` 认出提问的人与被 @ 的人，再按名字、按日期翻页、遇到重名拿到候选、问「我」时被指路。假模型按提问里的关键词走脚本，不需要任何真实密钥。
+预先写入记录库，模型先读 `satori_context` 认出提问的人与被 @ 的人，再按名字、按日期翻页、遇到重名拿到候选、问「我」时被指路。
+另覆盖联网：假 DeepSeek 搜索/抓取接口记下请求，核对 `web_search` 的站点/时间/语种/正文参数被编成官方搜索语法，
+长页面用 `offset` 翻页时读缓存、不再联网。假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
 用法（需要 `pip install aiohttp` 与 Chromium；浏览器路径取 `CHROME_BIN`）：
     cargo build --release --locked
@@ -177,6 +179,18 @@ async def chat(request):
             return completion({"role": "assistant", "content": ""})
         return completion({"role": "assistant", "content": "", "reasoning_content": "想了想"})
 
+    if "联网" in asked and "管家大人?" not in asked:
+        step = len(tool_results)
+        if step == 0:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call(
+                "web_search", query="苹果 发布会", site="apple.com, https://www.163.com/news", recency="week",
+                lang="zh", content=True, question="苹果什么时候开发布会")]})
+        if step == 1:
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("web_fetch", url="http://93.184.216.34/long")]})
+        if step == 2:
+            offset = int(re.search(r"offset=(\d+)", tool_results[1]).group(1))
+            return completion({"role": "assistant", "content": None, "tool_calls": [call("web_fetch", url="http://93.184.216.34/long", offset=offset)]})
+        return completion({"role": "assistant", "content": "联网完毕。"})
     if "翻记录" in asked:
         step = len(tool_results)
         day = yesterday()
@@ -220,6 +234,28 @@ async def chat(request):
     if "死图" in asked:  # 改了也不好：第二次还是坏的
         return completion({"role": "assistant", "content": "看这张：\n\n![依旧错](/nope/none.png)\n\n完。"})
     return completion({"role": "assistant", "content": "你好，这是一句话。"})
+
+
+# 假 DeepSeek 搜索/抓取接口：记下收到的请求体，回一份固定的结果。
+ds_searches, ds_fetches = [], []
+LONG_PAGE = "".join(f"\\#\\# 第{n:04d}节\\.\n这一节讲的是第{n}件事\\，写得很长很长很长很长很长很长很长很长很长。\n\n\n" for n in range(1, 900))
+
+
+async def ds_search(request):
+    body = await request.json()
+    ds_searches.append((request.headers.get("Authorization", ""), body))
+    return web.json_response({"results": [
+        {"title": "苹果发布会定档", "site_name": "网易", "authority": 4, "rerank_score": 2.1, "date": "2026-10-10T16:00:00+00:00",
+         "url": "https://www.163.com/news/a1#1", "summary": "摘要一", "snippet": "短", "content": "第一篇的正文：发布会定在十月二十八日。"},
+        {"title": "Apple Events", "site_name": "Apple", "authority": 3, "rerank_score": 1.9, "date": None,
+         "url": "https://www.apple.com/apple-events/", "summary": "摘要二", "snippet": "", "content": ""},
+    ]})
+
+
+async def ds_fetch(request):
+    body = await request.json()
+    ds_fetches.append(body)
+    return web.json_response({"title": "长文档", "content": LONG_PAGE})
 
 
 def creates_since(mark):
@@ -273,6 +309,12 @@ api_key = "k"
 
 [oai.search]
 enabled = false
+providers = ["deepseek"]
+max_uses = 4
+
+[oai.search.backends.deepseek]
+api_key = "sk-e2e"
+base_url = "http://127.0.0.1:{LLM_PORT}"
 
 ''' + off)
 
@@ -281,6 +323,8 @@ enabled = false
     app.router.add_post("/v1/{method:.*}", api)
     llm = web.Application(client_max_size=64 * 1024 * 1024)
     llm.router.add_post("/v1/chat/completions", chat)
+    llm.router.add_post("/v1/tools/search", ds_search)
+    llm.router.add_post("/v1/tools/fetch", ds_fetch)
     runners = []
     for application, port in ((app, SATORI_PORT), (llm, LLM_PORT)):
         runner = web.AppRunner(application)
@@ -451,6 +495,42 @@ enabled = false
         ambiguous = replies[3].get("result", {})
         check("重名不替模型挑，摆出候选（说得多的在前）", [c["user_id"] for c in ambiguous.get("ambiguous", [])] == ["10004", "10003"], str(ambiguous)[:300])
         check("问「我」被指路去 trigger", replies[4].get("ok") is False and "trigger" in replies[4].get("error", ""), str(replies[4]))
+
+        print("N. 联网：搜索参数编成官方搜索语法；带正文；长页翻页读缓存")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人?开")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到开关回执")
+        check("回执写明后端是 deepseek", "后端 deepseek" in creates_since(mark)[0], str(creates_since(mark)))
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 联网")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        # 引用了网页来源的回复一律排成卡片（页脚有「参考来源」），所以是一条图片而不是文本。
+        check("最终回复是一张卡片", len(sent) == 1 and "base64://" in sent[0], str([s[:80] for s in sent]))
+        card = re.search(r"base64://([A-Za-z0-9+/=]+)", sent[0]) if sent else None
+        if card:
+            open(os.path.join(WORK, "cardN.jpg"), "wb").write(base64.b64decode(card.group(1)))
+            print("     卡片已存到", os.path.join(WORK, "cardN.jpg"))
+        defs = {t["function"]["name"]: t["function"] for t in llm_requests[n].get("tools", [])}
+        props = defs.get("web_search", {}).get("parameters", {}).get("properties", {})
+        check("工具表里有 web_search 的站点/日期/语种/正文参数", all(k in props for k in ("site", "after", "before", "lang", "content", "recency", "question")), str(list(props)))
+        check("web_fetch 有 offset", "offset" in defs.get("web_fetch", {}).get("parameters", {}).get("properties", {}))
+        check("提示词交代了 site 与 offset 的用法", "site 限定" in text_of(llm_requests[n]["messages"][0]) and "offset" in text_of(llm_requests[n]["messages"][0]))
+        check("搜索只打了一次，带官方密钥", len(ds_searches) == 1 and ds_searches[0][0] == "Bearer sk-e2e", str(ds_searches)[:200])
+        if ds_searches:
+            from datetime import datetime, timedelta, timezone
+            after = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=7)).date().isoformat()
+            body = ds_searches[0][1]
+            want = f"苹果 发布会 site:apple.com OR site:163.com after:{after} lang:zh"
+            check("参数编成官方搜索语法", body["query"] == want, f"{body['query']!r} ≠ {want!r}")
+            check("要了正文并带上原始问题", body["need_content"] is True and body["ori_question"] == "苹果什么时候开发布会", str(body))
+        found = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        check("搜索结果带站点、日期（北京时间）、权威度与正文节选", len(found) == 3 and "网易 · 2026-10-11 · 权威 4/4" in found[0] and "正文节选：第一篇的正文" in found[0], found[0][:300] if found else "")
+        check("链接里的占位片段被去掉", "https://www.163.com/news/a1\n" in found[0] if found else False)
+        check("第一次读长页给了页码与 offset", "全文共" in found[1] and re.search(r"offset=\d+", found[1]) is not None and "\\#" not in found[1] and "## 第0001节." in found[1], found[1][:200])
+        check("翻页接着上一页，且没有再联网抓取", len(ds_fetches) == 1 and "第0001节" not in found[2] and "全文共" in found[2], f"{len(ds_fetches)} / {found[2][:200]}")
+        await inject("管家大人?默认")
+        await asyncio.sleep(1.0)
 
         print("D. 纯文字：不受影响")
         mark, n = len(posts), len(llm_requests)

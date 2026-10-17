@@ -1961,6 +1961,7 @@ async fn speak_up(
     original: &AmbientConfig,
 ) -> anyhow::Result<()> {
     let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx);
+    let search = oai.search_config();
     // 与判定看到的是同一批图：已转码成模型收得下的格式，GIF 表情包也不例外。
     // 每张都带着出处（来自哪条消息），人格据此把「讲的那张」对回正确的消息号。
     let images = vision::usable_images(turns, config.context_images).await;
@@ -1976,7 +1977,7 @@ async fn speak_up(
         &skill_dirs(base),
         persona,
         config,
-        &oai.search,
+        &search,
         speak_stall(oai.request_stall(), scene.careful),
         turns,
         &images,
@@ -2003,7 +2004,7 @@ async fn speak_up(
                 &skill_dirs(base),
                 persona,
                 &retry,
-                &oai.search,
+                &search,
                 speak_stall(oai.request_stall(), false),
                 turns,
                 &images,

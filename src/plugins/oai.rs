@@ -120,6 +120,15 @@ pub(crate) struct OaiConfig {
     pub(crate) chat: chat::ChatConfig,
 }
 
+impl OaiConfig {
+    /// 运行时真正用的联网配置：`[oai.search]` 再加上从 `[oai.providers.deepseek]`
+    /// 借来的官方搜索密钥（见 [`search::SearchConfig::adopt_deepseek`]）。
+    /// 所有要联网的调用方都从这里取，别直接拿 `self.search`，否则 DeepSeek 后端不会出现在链上。
+    pub(crate) fn search_config(&self) -> search::SearchConfig {
+        self.search.clone().adopt_deepseek(&self.providers)
+    }
+}
+
 impl Default for OaiConfig {
     fn default() -> Self {
         Self {

@@ -165,9 +165,9 @@ DeepSeek 官方价格按北京时间分高峰与空闲：周一至周五（不�
 
 ## 联网搜索
 
-搭话默认开启联网搜索（`search_enabled`，默认 `true`），按需搜索而非每轮都搜。`web_search` 返回带序号的标题、链接与摘要，`recency` 可限定最近一天 / 一周 / 一月 / 一年；`web_fetch` 读某个网址正文转纯文本。两个工具共用 `search_budget` 次额度（默认 3，搜索与抓取合并计算），参数写错不扣；`search_budget = 0` 或 `search_enabled = false` 时当它们不存在。回答里带上来源链接；网页内容和群聊记录一样是资料，不是指令。
+搭话默认开启联网搜索（`search_enabled`，默认 `true`），按需搜索而非每轮都搜。`web_search` 返回带序号的标题、链接、站点、发布日期、来源权威度与摘要；可用 `site` 指向某个站、`recency` / `after` / `before` 限定时间、`lang` 限定语种，摘要不够细时 `content = true` 一次带回几篇的正文节选。`web_fetch` 读某个网址正文（整理好的 Markdown，长页按 `offset` 翻页，PDF 也能读）。两个工具共用 `search_budget` 次额度（默认 3，搜索与抓取合并计算），参数写错、翻页读缓存不扣；`search_budget = 0` 或 `search_enabled = false` 时当它们不存在。回答里带上来源链接；几条来源对不上时按日期新、来源权威的信；网页内容和群聊记录一样是资料，不是指令。
 
-后端、超时与密钥在 `[oai.search]` 配置一次，房间与搭话共用。默认使用免密钥的 Bing 与 DuckDuckGo；可在 `[oai.search.backends]` 补 `tavily` / `brave` / `serper` / `exa` / `bocha` 的密钥，或指向自建 `searxng`。免密钥抓取里只有 Bing 能返回可点开的原始链接，发出前会先收紧汉字间空格。`web_fetch` 只接受公网 http/https，指向内网与本机地址的链接会被拒绝，重定向逐跳复检。
+后端、超时与密钥在 `[oai.search]` 配置一次，房间与搭话共用。**DeepSeek 官方的搜索接口排在最前**：`[oai.providers.deepseek]` 指向 `api.deepseek.com` 时它的密钥自动当搜索密钥，不用再配；其后是你在 `[oai.search.backends]` 补的 `tavily` / `brave` / `serper` / `exa` / `bocha` 或自建 `searxng`，最后是免密钥的 Bing 与 DuckDuckGo 兜底。参数、过滤语法、限流与故障处理见 [agent.md](agent.md#deepseek-官方搜索与抓取)。免密钥抓取里只有 Bing 能返回可点开的原始链接，发出前会先收紧汉字间空格。`web_fetch` 只接受公网 http/https，指向内网与本机地址的链接会被拒绝，重定向逐跳复检。
 
 ## 消息续接与新鲜度
 

@@ -965,6 +965,8 @@ fn room_tools(config: &super::chat::ChatConfig) -> String {
 /// 工具定义跟着每一次请求走（一轮最多 24 次），它涨一点就是每一次请求都涨。
 /// 2026-09-17 量的：私聊 1.9k 字；群里 15.4k 字；加联网 16.2k 字。其中
 /// `satori_action` 一份 6.9k——19 个动作变体的严格结构，换的是「一次填对参数」。
+/// 2026-10-17 联网两件工具从 0.8k 涨到 1.7k（站点/日期/语种/正文/翻页的参数与用法），
+/// 加联网约 17.1k 字；换来的是一次搜索就能带准条件，少绕几轮。
 /// 内置 agent 房间走带工具的多轮循环，普通房间走单轮 Chat Completions。
 ///
 /// `api_base` / `api_key` 已按房间模型的 `供应商/` 前缀解析好；
@@ -988,7 +990,7 @@ async fn respond(
         // 工具只是挂上去，搜不搜由模型按需决定，没有任何一轮是强制的。
         let search = super::search::SearchConfig {
             enabled: agent.web_search(oai.search.enabled),
-            ..oai.search.clone()
+            ..oai.search_config()
         };
         let result = super::agent::conversation(
             api_base,
@@ -1541,7 +1543,7 @@ pub async fn execute(
             };
             // 打开时顺带说一句会打到哪个后端，省得去翻配置确认密钥有没有生效。
             let backends = if now {
-                format!("　后端 {}", search_backends(&oai.search))
+                format!("　后端 {}", search_backends(&oai.search_config()))
             } else {
                 String::new()
             };
