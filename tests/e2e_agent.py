@@ -562,6 +562,11 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
     if "panicked" in logtext:
         failures.append("panic")
     print("\n结果：" + ("全部通过" if not failures else f"{len(failures)} 项失败：{failures}"))
+    # 跑完不留工作目录：通过则整个删掉；失败只删约 50MB 的二进制副本，日志和配置留着排查。
+    if failures:
+        os.remove(os.path.join(WORK, "acumen"))
+    else:
+        shutil.rmtree(WORK, ignore_errors=True)
     sys.exit(1 if failures else 0)
 
 

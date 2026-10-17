@@ -376,6 +376,11 @@ reflect_enabled = false
             child.kill()
         for runner in runners:
             await runner.cleanup()
+    # 跑完不留工作目录：通过则整个删掉；失败只删约 50MB 的二进制副本，日志和配置留着排查。
+    if failures:
+        os.remove(os.path.join(WORK, "acumen"))
+    else:
+        shutil.rmtree(WORK, ignore_errors=True)
     if failures:
         print(f"\n失败 {len(failures)} 项；日志在 {os.path.join(WORK, 'run.log')}")
         sys.exit(1)
