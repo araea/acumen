@@ -38,6 +38,9 @@ const CHAT: &[&str] = &[
 /// 够得着机器人本体的工具：只有这一轮有办事台（[`super::Seat`]）才存在。
 const SEAT: &[&str] = &[super::control::NAME, super::schedule::NAME];
 
+/// 私聊里的房间没有群聊那一套工具，发不出文件：补上这一件。群里有 `satori_action`，不重复挂。
+const PRIVATE_ONLY: &[&str] = &[super::share::NAME];
+
 /// 只给号主的工具：手记是写进提示词的可信内容，客人的轮次里不挂。
 const OWNER: &[&str] = &[super::notes::NAME];
 
@@ -79,6 +82,9 @@ pub(crate) fn definitions(whitelist: Option<&str>, kit: Kit) -> Vec<ToolDefiniti
             }
             if seat {
                 all.extend_from_slice(SEAT);
+                if !chat {
+                    all.extend_from_slice(PRIVATE_ONLY);
+                }
                 if owner {
                     all.extend_from_slice(OWNER);
                 }
@@ -94,6 +100,7 @@ pub(crate) fn definitions(whitelist: Option<&str>, kit: Kit) -> Vec<ToolDefiniti
                     || (chat && CHAT.contains(name))
                     || (web && WEB.contains(name))
                     || (seat && SEAT.contains(name))
+                    || (seat && !chat && PRIVATE_ONLY.contains(name))
                     || (seat && owner && OWNER.contains(name))
             })
             .collect(),
@@ -119,6 +126,7 @@ pub(crate) fn is_side_effecting(name: &str) -> bool {
             // 改机器人设置、排一条提醒，重放一遍就是再改、再排一遍。
             | "acumen_plugins"
             | "schedule"
+            | "send_file"
             // 写歌与拍片真花钱：卡死重放一次就是再付一遍，同样算副作用。
             | "satori_music"
             | "satori_video"
@@ -173,6 +181,7 @@ pub(crate) async fn execute(
         super::control::NAME => Some(super::control::execute(args, run).await),
         super::schedule::NAME => Some(super::schedule::execute(args, run).await),
         super::notes::NAME => Some(super::notes::execute(args, run).await),
+        super::share::NAME => Some(super::share::execute(args, run).await),
         _ => None,
     };
     if let Some(result) = seat_tool {
@@ -633,6 +642,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
         super::control::NAME => return Some(super::control::spec()),
         super::schedule::NAME => return Some(super::schedule::spec()),
         super::notes::NAME => return Some(super::notes::spec()),
+        super::share::NAME => return Some(super::share::spec()),
         _ => {}
     }
     let (description, parameters) = match name {

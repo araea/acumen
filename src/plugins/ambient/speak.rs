@@ -272,7 +272,7 @@ pub(crate) async fn compose(
     // 于是白名单、提示词里那句「手边有什么」与真正按得动的按钮始终是同一份开关。
     let mut tools = config.tools.clone();
     // 有人点名叫它办事时，办事台才接通；谁在叫、是不是号主，由平台上报的发送者核出。
-    let seat = live.as_ref().and_then(|(ctx, _, group, _)| {
+    let seat = live.as_ref().and_then(|(ctx, writer, group, _)| {
         let caller = turns.iter().rev().find(|turn| match called {
             Called::Mention => !turn.from_me && turn.call.mine(),
             // 搭话指令：最近亲手敲的那一句，号主自己在群里敲的也算。
@@ -287,6 +287,7 @@ pub(crate) async fn compose(
                 owner: caller.manual || crate::plugins::ctl::is_owner(ctx, &caller.user_id),
             },
             ctx: (*ctx).clone(),
+            writer: (*writer).clone(),
             group: Some(group.to_string()),
             private: false,
             origin: agent::Origin::Summoned,

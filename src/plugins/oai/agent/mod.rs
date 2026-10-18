@@ -28,6 +28,7 @@ pub(crate) mod figures;
 pub(crate) mod notes;
 pub(crate) mod run;
 pub(crate) mod schedule;
+pub(crate) mod share;
 pub(crate) mod tools;
 
 pub(crate) use run::run;
@@ -94,6 +95,7 @@ pub(crate) struct Seat {
     pub room: String,
     pub asker: Asker,
     pub ctx: crate::event::Context,
+    pub writer: crate::adapters::satori::LockedWriter,
     /// 在哪个群里；私聊为 `None`。
     pub group: Option<String>,
     /// 房间历史走私有那一份。

@@ -91,6 +91,7 @@ const SELF_PLUGINS: &str = "想知道它有哪些插件、开没开、怎么配�
 调用之后立刻写最终回复。";
 const SELF_SCHEDULE: &str = "用户说「到点叫我」「每天早上……」「半小时后……」，用 schedule 排下来，别只口头答应——\
 你下一轮不一定还记得；排完把回执里的确切时刻告诉他。";
+const SELF_SEND: &str = "做好了用户要拿的东西（报告、导出的日志、压缩包），用 send_file 直接发到这个聊天里；图表和截图则嵌进回复卡片。";
 const SELF_NOTE: &str = "号主交代你长期记住的事（称呼、习惯、规矩、设备的叫法），用 note 记下；一次性的事不记。";
 const SELF_SKILLS: &str = "学到了值得反复用的做法，可以写成 skill：在 {skills} 下建 <名字>/SKILL.md，\
 开头用 frontmatter 写 name 与 description 两行，之后每一轮都会列在提示词里，需要时再读正文。";
@@ -602,6 +603,9 @@ impl Context {
                 }
                 if has(super::schedule::NAME) {
                     lines.push(SELF_SCHEDULE.to_string());
+                }
+                if has(super::share::NAME) {
+                    lines.push(SELF_SEND.to_string());
                 }
                 if has(super::notes::NAME) {
                     lines.push(SELF_NOTE.to_string());

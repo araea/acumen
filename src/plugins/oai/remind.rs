@@ -420,6 +420,7 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
             owner: job.owner,
         },
         ctx: bot.ctx.clone(),
+        writer: bot.writer.clone(),
         group: job.group.clone(),
         private: job.private,
         origin: super::agent::Origin::Scheduled,

@@ -572,6 +572,7 @@ async fn chat(
         room: name.to_string(),
         asker: super::agent::Asker::from_event(ctx, &event),
         ctx: ctx.clone(),
+        writer: writer.clone(),
         group: event.group_id().map(str::to_string),
         private: is_priv_ctx,
         origin: super::agent::Origin::Asked,
@@ -1006,7 +1007,13 @@ pub(super) fn room_tools(config: &super::chat::ChatConfig) -> String {
     names.extend(["web_search", "web_fetch"].map(str::to_string));
     // 办事台的三件（插件管控、提醒、手记）同理：这一轮有没有办事台、是不是号主，由 `definitions` 滤。
     names.extend(
-        [super::agent::control::NAME, super::agent::schedule::NAME, super::agent::notes::NAME].map(str::to_string),
+        [
+            super::agent::control::NAME,
+            super::agent::schedule::NAME,
+            super::agent::notes::NAME,
+            super::agent::share::NAME,
+        ]
+        .map(str::to_string),
     );
     names.join(",")
 }
