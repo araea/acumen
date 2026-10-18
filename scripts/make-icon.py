@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """生成知微的应用图标：一处几何，六份产物。
 
-标记：一枚七瓣「曲奇」形（Material 3 Expressive 形状库里的 Cookie 7），
-右上方挖出一个焦点圆——知微，见微知著：整体是被观察的事物，那一点是看见的细处。
-挖空而不是叠色，所以单色版与彩色版是同一个轮廓。
+标记：一枚七瓣「曲奇」形（Material 3 Expressive 形状库里的 Cookie 7）落在左下，
+右上方悬着一粒小小的暖色光点——知微，见微知著：曲奇是被观察的事物，那一点光是
+「掌灯人」递过去的灯：看见的细处。光点与曲奇分开画（旧版是在曲奇上挖一个孔，
+看上去像煎蛋），单色版两块都是白色，轮廓同源。
 
-网格沿用自适应图标的 108 单位：可见区 72，安全圆半径 33。曲奇外缘半径 32.6，
-全部落在安全圆里；16px 下焦点圆直径约 2.4px，仍可辨认。
+网格沿用自适应图标的 108 单位：可见区 72，安全圆半径 33。曲奇缩到 0.82 倍后移向左下，
+光点在右上，两者到中心的最远处都落在安全圆内；16px 下光点直径约 2px，仍可辨认。
 
 底板是连续曲率的超椭圆（n=5），不是圆角矩形：Miuix 与 Apple 的图标都用这种
 没有曲率突变的边。只有 `any` 那一份自带底板轮廓；maskable 与 Apple 180 铺满
@@ -38,10 +39,16 @@ C = GRID / 2
 LOBES = 7
 RADIUS = 30.0
 AMPLITUDE = 2.6
-FOCUS = (C + 8.5, C - 8.5, 7.5)
 SAFE = 33.0
 
-assert RADIUS + AMPLITUDE <= SAFE, "标记超出了安全圆"
+# 曲奇缩放并移到左下；光点在右上。
+SCALE = 0.82
+CENTER = (50.0, 58.0)
+LAMP = (74.0, 34.0, 5.2)
+LAMP_COLOR = "#ffd36b"
+
+assert math.hypot(C - CENTER[0], C - CENTER[1]) + (RADIUS + AMPLITUDE) * SCALE <= SAFE + 0.5, "曲奇超出了安全圆"
+assert math.hypot(LAMP[0] - C, LAMP[1] - C) + LAMP[2] <= SAFE + 0.5, "光点超出了安全圆"
 
 
 def palette():
@@ -68,9 +75,7 @@ def cookie() -> str:
         c1 = (p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6)
         c2 = (p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6)
         out.append(f"C{f(c1[0])} {f(c1[1])} {f(c2[0])} {f(c2[1])} {f(p2[0])} {f(p2[1])}")
-    x, y, r = FOCUS
-    # 焦点圆反向画一圈，配合 evenodd 挖空。
-    out.append(f"ZM{f(x + r)} {f(y)}A{f(r)} {f(r)} 0 1 0 {f(x - r)} {f(y)}A{f(r)} {f(r)} 0 1 0 {f(x + r)} {f(y)}Z")
+    out.append("Z")
     return "".join(out)
 
 
@@ -88,7 +93,7 @@ def squircle(n: float = 5.0, inset: float = 0.0) -> str:
     return "M" + "L".join(pts) + "Z"
 
 
-def svg(background: str, *, tile: str | None, mark: str, gradient: tuple[str, str] | None) -> str:
+def svg(background: str, *, tile: str | None, mark: str, lamp: str, gradient: tuple[str, str] | None) -> str:
     defs, fill = "", background
     if gradient:
         defs = (
@@ -105,7 +110,9 @@ def svg(background: str, *, tile: str | None, mark: str, gradient: tuple[str, st
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="知微">'
         f"<title>知微</title>{defs}{base}"
-        f'<path d="{cookie()}" fill="{mark}" fill-rule="evenodd"/></svg>\n'
+        f'<g transform="translate({CENTER[0]:g} {CENTER[1]:g}) scale({SCALE:g}) translate(-{C:g} -{C:g})">'
+        f'<path d="{cookie()}" fill="{mark}"/></g>'
+        f'<circle cx="{LAMP[0]:g}" cy="{LAMP[1]:g}" r="{LAMP[2]:g}" fill="{lamp}"/></svg>\n'
     )
 
 
@@ -137,9 +144,9 @@ def main() -> None:
     if not browser:
         raise SystemExit("找不到 Chromium：pkg install chromium")
 
-    any_icon = svg(dark, tile="squircle", mark=on, gradient=(light, dark))
-    full = svg(dark, tile="square", mark=on, gradient=(light, dark))
-    mono = svg("none", tile=None, mark="#ffffff", gradient=None)
+    any_icon = svg(dark, tile="squircle", mark=on, lamp=LAMP_COLOR, gradient=(light, dark))
+    full = svg(dark, tile="square", mark=on, lamp=LAMP_COLOR, gradient=(light, dark))
+    mono = svg("none", tile=None, mark="#ffffff", lamp="#ffffff", gradient=None)
     (OUT / "icon.svg").write_text(any_icon)
     (OUT / "icon-monochrome.svg").write_text(mono)
 
