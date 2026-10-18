@@ -605,6 +605,15 @@ impl ReportKind {
         }
     }
 
+    /// 用户眼里「那一期」叫什么：日报按日期，周报按期号，月报按月份
+    pub fn key_label(self) -> &'static str {
+        match self {
+            ReportKind::Daily => "日期",
+            ReportKind::Weekly => "期号",
+            ReportKind::Monthly => "月份",
+        }
+    }
+
     /// 期号的写法示例，用在用法提示里
     pub fn key_example(self) -> &'static str {
         match self {
@@ -1080,7 +1089,7 @@ pub async fn fetch_report(
         Some(raw) => {
             let key = kind
                 .normalize_key(raw)
-                .ok_or_else(|| format!("期号写法不对：{raw}（应形如 {}）", kind.key_example()))?;
+                .ok_or_else(|| format!("{}写法不对：{raw}（比如 {}）", kind.key_label(), kind.key_example()))?;
             (format!("/api/v1/{}/{}", kind.collection(), encode(&key)), key)
         }
         None => (format!("/api/v1/{}/latest", kind.collection()), String::new()),

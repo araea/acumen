@@ -1270,18 +1270,24 @@ async fn query_report(
     prefix: &str,
 ) -> Payload {
     let arg = arg.trim();
-    let key = (!arg.is_empty()).then_some(arg);
-    if let Some(raw) = key
-        && kind.normalize_key(raw).is_none()
-    {
-        return notice(format!(
-            "❌ 期号「{raw}」写法不对\n用法：{prefix}ai{} [期号]，期号形如 {}",
-            kind.noun(),
-            kind.key_example()
-        ));
-    }
+    let key = if arg.is_empty() {
+        None
+    } else {
+        match kind.normalize_key(arg) {
+            Some(key) => Some(key),
+            None => {
+                return notice(format!(
+                    "❌ {}「{arg}」写法不对\n用法：{prefix}ai{} [{}]，比如 {}",
+                    kind.key_label(),
+                    kind.noun(),
+                    kind.key_label(),
+                    kind.key_example()
+                ));
+            }
+        }
+    };
 
-    match api::fetch_report(kind, key, config.request_timeout_seconds).await {
+    match api::fetch_report(kind, key.as_deref(), config.request_timeout_seconds).await {
         Ok(Some(report)) => {
             let budget = config.report_budget(kind);
             let rendered =
@@ -1292,7 +1298,7 @@ async fn query_report(
         Ok(None) => notice(format!("📭 当前没有可用的 {}", kind.title())),
         Err(e) if api::is_not_found(&e) => notice(format!(
             "📭 没有 {} 这一期{}\n日报逐日都有；周报每周一出，月报每月 1 日出，更早的可能没有",
-            arg,
+            key.as_deref().unwrap_or_default(),
             kind.noun()
         )),
         Err(e) => {
