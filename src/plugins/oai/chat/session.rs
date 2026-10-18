@@ -1955,7 +1955,7 @@ impl Session {
 }
 
 /// 取回一份附件，超过 `cap` 字节就放弃：先看声明的长度，再数实际读到的。
-async fn fetch_capped(url: &str, cap: u64) -> Result<Vec<u8>> {
+pub(in crate::plugins::oai) async fn fetch_capped(url: &str, cap: u64) -> Result<Vec<u8>> {
     let mut response = crate::http::client()
         .get(url)
         .timeout(std::time::Duration::from_secs(90))
@@ -1981,7 +1981,7 @@ async fn fetch_capped(url: &str, cap: u64) -> Result<Vec<u8>> {
 }
 
 /// 别人起的文件名 → 本地能放心落盘的名字：去掉路径分隔与控制字符，不以点开头，不超长。
-fn safe_file_name(name: &str) -> String {
+pub(in crate::plugins::oai) fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c })

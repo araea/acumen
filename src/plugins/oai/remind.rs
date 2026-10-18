@@ -422,7 +422,8 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
         ctx: bot.ctx.clone(),
         group: job.group.clone(),
         private: job.private,
-        scheduled: true,
+        origin: super::agent::Origin::Scheduled,
+        public: false,
     };
     let chat = job.group.as_ref().map(|group| super::agent::ChatContext {
         ctx: bot.ctx.clone(),

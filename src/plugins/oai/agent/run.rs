@@ -691,7 +691,7 @@ impl Context {
 
         // 谁在说话：单独一条注记放在用户这句话之前。正文是客人也能写的东西，身份不能放在里面。
         if let Some(seat) = run.seat {
-            messages.push(user_note(&seat.asker.note(&seat.place(), seat.scheduled)));
+            messages.push(user_note(&seat.asker.note(&seat.place(), seat.origin)));
         }
         let content = user_content(run.prompt, run.images).await;
         let content = if content.is_empty() {
@@ -757,6 +757,7 @@ fn skills(run: &AgentRun<'_>) -> anyhow::Result<String> {
     }
     // 管家自己攒下的 skill：就地列出绝对路径，让它读了就能原地改，不必先复制一份。
     if run.seat.is_some()
+        && run.system_prompt.is_none()
         && let Some(root) = skills_dir()
         && let Ok(entries) = std::fs::read_dir(&root)
     {

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub mod data;
 pub mod images;
+pub mod inbox;
 pub mod remind;
 pub(crate) mod lists;
 pub(crate) mod llm;
@@ -384,10 +385,10 @@ pub fn handle(
 
         // 4. 智能体指令/对话解析
         if let Some(cmd) = parser::parse_agent_cmd(&raw_text, &agents) {
-            let (quote, imgs) = utils::get_full_content(&ctx, &writer, Some(&cmd.agent)).await;
+            let (quote, imgs, files) = utils::get_full_content(&ctx, &writer, Some(&cmd.agent)).await;
 
             // 拼接提示词：引用 + 用户输入参数
-            let prompt = if matches!(
+            let mut prompt = if matches!(
                 cmd.action,
                 parser::Action::Chat | parser::Action::Regenerate
             ) {
@@ -395,6 +396,13 @@ pub fn handle(
             } else {
                 cmd.args.clone()
             };
+            // 发给智能体房间的文件先取回本机，路径写进提示词，管家自己读（见 [`inbox`]）。
+            if !files.is_empty()
+                && matches!(cmd.action, parser::Action::Chat)
+                && mgr.config.read().await.agents.iter().any(|a| a.name == cmd.agent && a.uses_agent())
+            {
+                prompt.push_str(&inbox::receive(&files).await);
+            }
 
             logic::execute(cmd, prompt, imgs, &ctx, &writer, mgr).await;
             return Ok(None);

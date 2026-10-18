@@ -574,7 +574,8 @@ async fn chat(
         ctx: ctx.clone(),
         group: event.group_id().map(str::to_string),
         private: is_priv_ctx,
-        scheduled: false,
+        origin: super::agent::Origin::Asked,
+        public: false,
     });
     // 这一轮进行当中，发起人又发来的话排在这个信箱里（临时对话不占会话，不开）。
     let steering = (use_agent && !temp_mode).then(|| mgr.open_steering(name, is_priv_ctx, &uid));

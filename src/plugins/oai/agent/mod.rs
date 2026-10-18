@@ -60,16 +60,31 @@ impl Asker {
     /// 写给模型的一行系统注记：谁在说话、是不是号主、在哪儿说。
     ///
     /// 单独成一条消息放在用户这句话之前，而不是拼进正文：正文是客人也能写的东西。
-    pub(crate) fn note(&self, place: &str, scheduled: bool) -> String {
+    pub(crate) fn note(&self, place: &str, origin: Origin) -> String {
         let who = if self.owner {
-            "他是号主本人".to_string()
+            "他是号主本人"
         } else {
-            "他不是号主，按客人对待".to_string()
+            "他不是号主，按客人对待"
         };
         let name = if self.name.trim().is_empty() { "（没有名字）" } else { self.name.trim() };
-        let source = if scheduled { "这是此前替他安排的定时任务到点了，不是他此刻在说话" } else { "这一轮是他在说话" };
+        let source = match origin {
+            Origin::Asked => "这一轮是他在说话",
+            Origin::Scheduled => "这是此前替他安排的定时任务到点了，不是他此刻在说话",
+            Origin::Summoned => "这一轮是他在群里点名叫你",
+        };
         format!("（系统注记，用户看不到：{source}——{name}（{}），{who}；{place}。）", self.id)
     }
+}
+
+/// 这一轮是怎么开始的。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Origin {
+    /// 有人在房间里提问。
+    Asked,
+    /// 定时任务到点。
+    Scheduled,
+    /// 群聊搭话里被人点名叫去办事。
+    Summoned,
 }
 
 /// 管家的办事台：这一轮发生在哪个房间、哪个聊天、谁在问，以及够得着机器人本体的那只手。
@@ -83,8 +98,9 @@ pub(crate) struct Seat {
     pub group: Option<String>,
     /// 房间历史走私有那一份。
     pub private: bool,
-    /// 这一轮是定时任务触发的，不是即时提问。
-    pub scheduled: bool,
+    pub origin: Origin,
+    /// 公开场合（群聊搭话）：房间外的人也能叫到它，客人一律不能让它改机器人的设置。
+    pub public: bool,
 }
 
 impl Seat {

@@ -333,17 +333,19 @@ pub async fn get_full_content(
     ctx: &Context,
     writer: &LockedWriter,
     trigger_name: Option<&str>,
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, Vec<super::inbox::Attachment>) {
     use simd_json::derived::{
         ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar,
     };
 
     let mut quote_text = String::new();
     let mut imgs = Vec::new();
+    // 当前消息与被引用的消息里带的文件：智能体房间会把它们取回本机（见 [`super::inbox`]）。
+    let mut files: Vec<super::inbox::Attachment> = Vec::new();
 
-    let crate::event::EventType::Satori(event) = &ctx.event else { return (quote_text, imgs) };
+    let crate::event::EventType::Satori(event) = &ctx.event else { return (quote_text, imgs, files) };
 
-    let Some(message_arr) = event.get_array("message") else { return (quote_text, imgs) };
+    let Some(message_arr) = event.get_array("message") else { return (quote_text, imgs, files) };
 
     // 1. 处理引用消息
     if let Some(reply) = message_arr
@@ -385,6 +387,18 @@ pub async fn get_full_content(
                             .and_then(|v| v.as_str());
                         if let Some(u) = url {
                             imgs.push(u.to_string());
+                        }
+                    }
+                    "file" => {
+                        if let Some(url) = seg.data.get("url").and_then(|v| v.as_str()) {
+                            files.push(super::inbox::Attachment {
+                                name: seg.data.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                url: url.to_string(),
+                                size: seg
+                                    .data
+                                    .get("file_size")
+                                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok())),
+                            });
                         }
                     }
                     _ => {}
@@ -446,6 +460,18 @@ pub async fn get_full_content(
                     imgs.push(u.to_string());
                 }
             }
+        } else if type_ == "file" {
+            if let Some(d) = data
+                && let Some(url) = d.get_str("url")
+            {
+                files.push(super::inbox::Attachment {
+                    name: d.get_str("name").unwrap_or("").to_string(),
+                    url: url.to_string(),
+                    size: d
+                        .get_u64("file_size")
+                        .or_else(|| d.get_str("file_size").and_then(|v| v.parse().ok())),
+                });
+            }
         } else if type_ == "text" {
             if let Some(name) = trigger_name
                 && !found_trigger
@@ -475,7 +501,7 @@ pub async fn get_full_content(
         }
     }
 
-    (quote_text, imgs)
+    (quote_text, imgs, files)
 }
 
 pub fn format_history(

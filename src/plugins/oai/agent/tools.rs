@@ -443,19 +443,26 @@ async fn edit(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|error| anyhow::anyhow!("读取 {} 失败：{error}", path.display()))?;
-    // 只做精确替换：命中多处时宁可让模型把上下文写长一点，也不要它猜错了地方。
+    // 只做精确替换：命中多处时宁可让模型把上下文写长一点，也不要它猜错了地方；
+    // 确实要全改（改名、换一个常量）时由 replace_all 明说。
     let hits = content.matches(old).count();
+    let all = args["replace_all"].as_bool().unwrap_or(false);
     match hits {
-        0 => anyhow::bail!("{} 里没有找到要替换的原文", path.display()),
+        0 => anyhow::bail!("{} 里没有找到要替换的原文（空白、缩进、换行都要逐字一致，先 read 看一眼原样）", path.display()),
         1 => {}
+        _ if all => {}
         _ => anyhow::bail!(
-            "要替换的原文在 {} 里出现了 {hits} 次，请连同上下文写得更具体一些",
+            "要替换的原文在 {} 里出现了 {hits} 次，请连同上下文写得更具体一些；要全部替换就加 replace_all=true",
             path.display()
         ),
     }
     let new = args["new"].as_str().unwrap_or("");
-    tokio::fs::write(&path, content.replacen(old, new, 1)).await?;
-    Ok(format!("已修改 {}", path.display()))
+    tokio::fs::write(&path, content.replace(old, new)).await?;
+    Ok(if hits > 1 {
+        format!("已修改 {}（替换了 {hits} 处）", path.display())
+    } else {
+        format!("已修改 {}", path.display())
+    })
 }
 
 /// 匹配结果条数上限。
@@ -664,13 +671,14 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             }),
         ),
         "edit" => (
-            "把文件里的一段原文精确替换成新内容。old 必须在文件里只出现一次，否则会报错——连同上下文一起写清楚再改，比猜位置可靠。",
+            "把文件里的一段原文精确替换成新内容。old 必须在文件里只出现一次，否则会报错——连同上下文一起写清楚再改，比猜位置可靠；确实要把每一处都换掉（改名、换常量）就加 replace_all=true。",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "文件路径"},
                     "old": {"type": "string", "description": "要被替换的原文，必须唯一"},
-                    "new": {"type": "string", "description": "替换成什么"}
+                    "new": {"type": "string", "description": "替换成什么"},
+                    "replace_all": {"type": "boolean", "description": "old 出现多次时全部替换，默认只允许唯一命中"}
                 },
                 "required": ["path", "old", "new"]
             }),

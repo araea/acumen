@@ -87,7 +87,9 @@ pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<
     }
 
     // —— 以下都是改动 ——
-    if !ctl::agent_may_change(&seat.ctx, seat.asker.owner) {
+    // 公开场合（群聊搭话）里客人一律不行，不看 guest_control：叫得到它的人太多了。
+    let allowed = ctl::agent_may_change(&seat.ctx, seat.asker.owner) && (seat.asker.owner || !seat.public);
+    if !allowed {
         anyhow::bail!(
             "这里不让我改机器人的设置（{}）。可以看，要改请号主本人来说，或在本机控制台操作。",
             if seat.asker.owner { "号主关了智能体改设置的开关" } else { "只有号主能让我改" }

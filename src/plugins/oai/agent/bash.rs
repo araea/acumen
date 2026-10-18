@@ -67,23 +67,34 @@ pub(crate) async fn run(
         .take()
         .ok_or_else(|| anyhow::anyhow!("bash stderr 不可用"))?;
 
-    let collect = async {
-        // 两路一起排空：只读一路会在另一路写满管道时互相卡死。
-        let (out, err) = tokio::join!(
-            read_capped(stdout, MAX_COLLECT),
-            read_capped(stderr, MAX_COLLECT)
-        );
-        let status = child.wait().await?;
-        Ok::<_, anyhow::Error>((out, err, status))
+    // 输出收进外面的缓冲：超时被丢掉的是读取的 future，已经读到的不该跟着丢——
+    // 一条跑了两分钟的命令，超时前打出来的进度和报错往往正是要看的。
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let finished = {
+        let collect = async {
+            // 两路一起排空：只读一路会在另一路写满管道时互相卡死。
+            tokio::join!(
+                read_capped(stdout, &mut out, MAX_COLLECT),
+                read_capped(stderr, &mut err, MAX_COLLECT)
+            );
+            child.wait().await
+        };
+        tokio::time::timeout(timeout, collect).await
     };
-
-    let (out, err, status) = match tokio::time::timeout(timeout, collect).await {
-        Ok(result) => result?,
+    let status = match finished {
+        Ok(status) => status?,
         Err(_) => {
-            // 超时即放弃这一轮：进程组连同 bash 派生的独立进程一起收掉。
+            // 超时即放弃这一轮：进程组连同 bash 派生的独立进程一起收掉（`group` 在返回时 drop）。
+            let partial = merged(&out, &err);
             return Err(anyhow::anyhow!(
-                "命令超过 {} 秒未结束，已终止",
-                timeout.as_secs()
+                "命令超过 {} 秒未结束，已终止{}",
+                timeout.as_secs(),
+                if partial.is_empty() {
+                    String::new()
+                } else {
+                    format!("；终止前的输出：\n{partial}")
+                }
             ));
         }
     };
@@ -92,15 +103,7 @@ pub(crate) async fn run(
         group.armed = false;
     }
 
-    let mut text = String::from_utf8_lossy(&out).into_owned();
-    let err = String::from_utf8_lossy(&err);
-    if !err.trim().is_empty() {
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&err);
-    }
-    let text = super::super::utils::truncate_middle(text.trim_end(), MAX_OUTPUT);
+    let text = merged(&out, &err);
     if !status.success() {
         // 非零退出把状态写清楚再交回去：命令失败本身也是有用的结果，模型据此改做法。
         anyhow::bail!(
@@ -177,8 +180,20 @@ fn kill_descendants(pid: i32) {
     }
 }
 
-async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, max_bytes: usize) -> Vec<u8> {
-    let mut kept = Vec::new();
+/// 把 stdout 与 stderr 合成交给模型的文本：stderr 另起一行接在后面，整体超限时从中间省略。
+fn merged(out: &[u8], err: &[u8]) -> String {
+    let mut text = String::from_utf8_lossy(out).into_owned();
+    let err = String::from_utf8_lossy(err);
+    if !err.trim().is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&err);
+    }
+    super::super::utils::truncate_middle(text.trim_end(), MAX_OUTPUT)
+}
+
+async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, kept: &mut Vec<u8>, max_bytes: usize) {
     let mut chunk = [0_u8; 4 * 1024];
     loop {
         let read = match reader.read(&mut chunk).await {
@@ -188,5 +203,4 @@ async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, max_bytes: u
         let remaining = max_bytes.saturating_sub(kept.len());
         kept.extend_from_slice(&chunk[..read.min(remaining)]);
     }
-    kept
 }
