@@ -108,9 +108,17 @@
   /* —— 外壳几何 ——
      M3 窗口尺寸类：compact <600、medium 600–839、expanded ≥840、large ≥1200。
      导航：compact 底部导航栏，medium 收起的导航轨，expanded 展开的导航轨。 */
+  /* —— 阅读口径（只给控制台用）——
+     M3 字阶是为拉丁字母定的；中文长段在 1.5 倍行高下偏挤，所以控制台的正文（16px）与说明（14px）
+     另给 26px / 23px 的行高，标题与强调取 600（系统字体只有 400 / 700 两档时 600 落到粗体，再往上
+     只是又黑又钝）。聊天卡片与控制台共用上面那段字阶，卡片的版面不随这里变。 */
+  --zw-body-line: 1.625rem;
+  --zw-body-medium-line: 1.4375rem;
+  --zw-weight-heading: 600;
+
   --zw-page-gutter: var(--zw-space-05);
   --zw-topbar-height: 64px;
-  --zw-navbar-height: 64px;
+  --zw-navbar-height: 80px;
   --zw-rail-width: 96px;
   --zw-rail-expanded-width: 248px;
   --zw-content-max: 1240px;
@@ -129,7 +137,7 @@
   --zw-size-control: 48px;
   --zw-size-target: 48px;
   --zw-size-icon: 24px;
-  --zw-size-icon-small: 18px;
+  --zw-size-icon-small: 20px;
   --zw-size-avatar: 40px;
   --zw-size-chip: 32px;
   --zw-size-search: 56px;
@@ -141,10 +149,11 @@
   --zw-size-switch-thumb-pressed: 28px;
   --zw-size-progress: 4px;
   --zw-size-sticker: 132px;
-  --zw-size-mark: 32px;
+  --zw-size-mark: 36px;
+  --zw-size-tile: 44px;
+  --zw-size-tile-large: 56px;
   --zw-border-width: 1px;
   --zw-border-width-strong: 2px;
-  --zw-icon-stroke: 2;
 
   /* 焦点环（M3：3dp，secondary，外扩 2dp）。 */
   --zw-focus-width: 3px;

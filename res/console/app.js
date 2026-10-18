@@ -54,43 +54,30 @@
   const bool = (value) => (value ? "true" : "false");
 
   /* ==================== §2 图标 ==================== */
-  /* 24 网格、圆头圆角描边，笔画粗细取 --zw-icon-stroke。装饰性，对辅助技术隐藏。 */
-
-  const PATHS = {
-    overview: '<rect x="3.5" y="3.5" width="7" height="9" rx="2"/><rect x="13.5" y="3.5" width="7" height="5" rx="2"/><rect x="13.5" y="11.5" width="7" height="9" rx="2"/><rect x="3.5" y="15.5" width="7" height="5" rx="2"/>',
-    plugins: '<rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/><path d="M17 2.9 20.1 6 17 9.1 13.9 6z"/>',
-    ambient: '<path d="M20 11.5a7.5 7.5 0 0 1-10.9 6.7L4 19.5l1.3-4.4A7.5 7.5 0 1 1 20 11.5z"/><path d="M8.8 11.5h.01M12.3 11.5h.01M15.8 11.5h.01"/>',
-    logs: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10z"/><path d="M14 3.5v5h5M8.5 13h7M8.5 16.5h5"/>',
-    settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
-    refresh: '<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/>',
-    search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>',
-    chevron: '<path d="m9.5 6 6 6-6 6"/>',
-    back: '<path d="m14.5 6-6 6 6 6"/>',
-    down: '<path d="m6 9.5 6 6 6-6"/>',
-    check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
-    close: '<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>',
-    copy: '<rect x="8.5" y="8.5" width="11" height="11" rx="2.5"/><path d="M15.5 5.5A2 2 0 0 0 13.5 4H6a2 2 0 0 0-2 2v7.5a2 2 0 0 0 1.5 1.94"/>',
-    plus: '<path d="M12 5v14M5 12h14"/>',
-    trash: '<path d="M4.5 7h15M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2M6.5 7l.8 11.6a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9L17.5 7"/>',
-    download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/>',
-    latest: '<path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/>',
-    play: '<path d="M8 5.5v13l10-6.5z"/>',
-    alert: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5M12 16.5h.01"/>',
-    logout: '<path d="M14 4.5h3.5a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H14M10 16.5 5.5 12 10 7.5M5.5 12h9"/>',
-    groups: '<circle cx="9" cy="8.5" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><circle cx="17" cy="9.5" r="2.4"/><path d="M16 14.2a4.6 4.6 0 0 1 4.5 4.3"/>',
-    user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 19.5a7 7 0 0 1 14 0"/>',
-    info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.5h.01"/>',
-    chat: '<path d="M5 4.5h14A1.5 1.5 0 0 1 20.5 6v9.5A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V6A1.5 1.5 0 0 1 5 4.5z"/><path d="M8 9.5h8M8 12.5h5"/>',
-    spark: '<path d="M12 3.5c.6 4.6 3.9 7.9 8.5 8.5-4.6.6-7.9 3.9-8.5 8.5-.6-4.6-3.9-7.9-8.5-8.5 4.6-.6 7.9-3.9 8.5-8.5z"/>',
-    chart: '<path d="M5.5 19.5v-7M12 19.5v-14M18.5 19.5v-9"/>',
-    inbox: '<path d="M4 13.5 6.5 5.5h11l2.5 8v5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>',
-  };
+  /* Material Symbols Rounded，随页面内联在 index.html 的精灵图里（scripts/make-icons.py 生成）。
+     图标只是装饰，一律对辅助技术隐藏，名字由旁边的文字或 aria-label 负责。
+     `名字-fill` 是实心版：导航与状态符号成对出现，由 CSS 按选中态切换。 */
 
   const icon = (name, extra = "") =>
-    raw(
-      `<svg class="i${extra ? ` ${extra}` : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" ` +
-        `stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${PATHS[name]}</svg>`
-    );
+    raw(`<svg class="i${extra ? ` ${extra}` : ""}" aria-hidden="true" focusable="false"><use href="#${name}"/></svg>`);
+
+  /** 一空一实两枚：选中时 CSS 只显示实心那枚。 */
+  const duoIcon = (name) => h`${icon(name, "i-off")}${icon(`${name}-fill`, "i-on")}`;
+
+  /** 每个插件一个自己的字形（一个概念一个图标：导航的「搭话」「日志」与插件同名者是同一枚）；
+   *  没登记的新插件按分类给个兜底，色调（见 .tile）本来就跟着分类走。 */
+  const PLUGIN_ICONS = {
+    meta_filter: "filter_alt", ctl: "admin_panel_settings", console: "web", logger: "receipt_long",
+    recorder: "database", media: "perm_media", sticker: "add_reaction", group_title: "workspace_premium",
+    recall: "undo", echo: "campaign", markdown: "markdown", repeater: "repeat", wordcloud: "cloud",
+    stats: "leaderboard", gif: "gif_box", image_split: "grid_view", qr_scan: "qr_code_scanner",
+    video_parse: "smart_display", song: "music_note", webshot: "screenshot_monitor", oai: "smart_toy",
+    ambient: "forum", ai_news: "newspaper", help: "help", restart: "restart_alt",
+  };
+  const SECTION_ICONS = { message: "chat", play: "extension", insight: "leaderboard", system: "tune", misc: "extension" };
+  const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
+  const pluginTile = (plugin, extra = "") =>
+    h`<span class="tile${extra}" data-tone="${plugin.section}" aria-hidden="true">${icon(pluginGlyph(plugin))}</span>`;
 
   /* ==================== §3 格式 ==================== */
 
@@ -250,7 +237,7 @@
     const opener = document.activeElement;
     put(
       dialog,
-      h`<h2 class="dialog-title" id="dialog-title">${title}</h2>
+      h`${danger ? h`<span class="dialog-icon danger">${icon("warning-fill")}</span>` : ""}<h2 class="dialog-title" id="dialog-title">${title}</h2>
         <p class="dialog-body" id="dialog-body">${body}</p>
         <div class="actions actions-end">
           <button class="btn btn-text" type="button" value="cancel" autofocus>${cancel}</button>
@@ -286,12 +273,15 @@
         <div class="skeleton-block"></div><div class="skeleton-block"></div>
       </div></div>`;
 
-  function pageHead(title, sub = "", { back = null, actions = "" } = {}) {
+  function pageHead(title, sub = "", { back = null, actions = "", lead = "", meta = "" } = {}) {
     return h`<header class="page-head">
       <div class="page-head-text">
-        ${back ? h`<a class="btn btn-text back" href="${back.href}">${icon("back")}${back.label}</a>` : ""}
-        <h1 class="page-title" tabindex="-1">${title}</h1>
+        ${back ? h`<a class="btn btn-text back" href="${back.href}">${icon("arrow_back")}${back.label}</a>` : ""}
+        ${lead
+          ? h`<div class="page-lead">${lead}<h1 class="page-title" tabindex="-1">${title}</h1></div>`
+          : h`<h1 class="page-title" tabindex="-1">${title}</h1>`}
         ${sub ? h`<p class="page-sub">${sub}</p>` : ""}
+        ${meta ? h`<div class="page-meta">${meta}</div>` : ""}
       </div>
       ${actions ? h`<div class="page-actions">${actions}</div>` : ""}
     </header>`;
@@ -310,11 +300,11 @@
   /* ==================== §6 外壳与路由 ==================== */
 
   const PAGES = [
-    { id: "overview", label: "总览" },
-    { id: "plugins", label: "插件" },
-    { id: "ambient", label: "搭话" },
-    { id: "logs", label: "日志" },
-    { id: "settings", label: "设置" },
+    { id: "overview", label: "总览", glyph: "dashboard" },
+    { id: "plugins", label: "插件", glyph: "extension" },
+    { id: "ambient", label: "搭话", glyph: "forum" },
+    { id: "logs", label: "日志", glyph: "receipt_long" },
+    { id: "settings", label: "设置", glyph: "settings" },
   ];
 
   const wide = matchMedia("(min-width: 840px)");
@@ -324,7 +314,7 @@
       $("#nav"),
       PAGES.map(
         (page) => h`<a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
-          <span class="nav-icon state">${icon(page.id)}</span>
+          <span class="nav-icon state">${duoIcon(page.glyph)}</span>
           <span class="nav-label">${page.label}</span>
         </a>`
       )
@@ -543,7 +533,7 @@
         $("#view"),
         h`<div class="page">${pageHead("没能打开这一页")}
           <div class="card"><div class="empty" role="alert">
-            <span class="empty-mark">${icon("alert")}</span><p>${error?.message || "原因不明"}</p>
+            <span class="empty-mark">${icon("error")}</span><p>${error?.message || "原因不明"}</p>
             <button class="btn btn-tonal" type="button" data-retry>${icon("refresh")}重试</button>
           </div></div></div>`
       );
@@ -633,7 +623,7 @@
     const bots = data.bots.length
       ? h`<ul class="group">${data.bots.map(
           (bot) => h`<li class="item">
-            <span class="item-leading" aria-hidden="true">${icon("chat")}</span>
+            <span class="tile" aria-hidden="true">${icon("smart_toy")}</span>
             <div class="item-content">
               <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag">${bot.adapter}/${bot.platform}</span></span>
               <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "已连接实现端，账号尚未识别"}</span>
@@ -654,8 +644,8 @@
           <p class="hero-value" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</p>
           <p class="hero-note">启动于 <time>${data.app.started}</time></p>
           <div class="actions">
-            <a class="btn btn-filled" href="#/logs">${icon("logs")}查看日志</a>
-            <a class="btn btn-outlined" href="#/plugins">${icon("plugins")}管理插件</a>
+            <a class="btn btn-filled" href="#/logs">${icon("receipt_long")}查看日志</a>
+            <a class="btn btn-outlined" href="#/plugins">${icon("extension")}管理插件</a>
           </div>
         </section>
 
@@ -675,8 +665,8 @@
           <dl class="stats">
             ${stat("chat", "今日消息", num(data.messages.today), "条")}
             ${stat("groups", "今日发言", num(data.messages.people), "人")}
-            ${stat("chart", "近 7 天消息", num(data.messages.week), "条")}
-            <div class="stat stat-plugins"><dt class="stat-label"><span class="stat-icon">${icon("plugins")}</span>已启用插件</dt>
+            ${stat("date_range", "近 7 天消息", num(data.messages.week), "条")}
+            <div class="stat stat-plugins"><dt class="stat-label"><span class="stat-icon">${icon("extension")}</span>已启用插件</dt>
               <dd class="stat-value"><span class="num">${data.plugins.on} / ${data.plugins.total}</span>${pending ? h`<span class="stat-unit">${pending.slice(1)}</span>` : ""}</dd>
               <meter class="meter" min="0" max="${data.plugins.total}" value="${data.plugins.on}" aria-label="已启用 ${data.plugins.on} 个，共 ${data.plugins.total} 个"></meter></div>
           </dl>
@@ -685,7 +675,7 @@
         <section class="section section-wide" aria-labelledby="recent-title">
           <div class="section-head">
             <h2 class="section-title" id="recent-title">最近日志</h2>
-            <a class="btn btn-text" href="#/logs">全部日志${icon("chevron", "i-end")}</a>
+            <a class="btn btn-text" href="#/logs">全部日志${icon("chevron_right", "i-end")}</a>
           </div>
           <div class="log log-short" id="overview-log"></div>
         </section>
@@ -694,9 +684,6 @@
   }
 
   /* ==================== §8 插件 ==================== */
-
-  /** 分类的图标。同一分类同一种底色（见 app.css 的 .item-tile），一眼分得出是哪一类。 */
-  const SECTION_ICONS = { message: "chat", play: "spark", insight: "chart", system: "settings", misc: "plugins" };
 
   const plugins = {
     data: null,
@@ -719,23 +706,30 @@
 
     rows() {
       const list = this.visible();
-      if (!list.length) return h`<li>${emptyState("没有符合条件的插件。换个关键词或筛选试试。", "search")}</li>`;
-      const dual = wide.matches;
-      return list.map(
-        (plugin) => h`<li class="item" data-plugin="${plugin.name}">
-          <span class="item-leading item-tile" data-tone="${plugin.section}" aria-hidden="true">${icon(SECTION_ICONS[plugin.section] || "plugins")}</span>
-          <div class="item-content">
-            <a class="item-link item-title" href="#/plugins/${encodeURIComponent(plugin.name)}"${attr(plugin.name === this.selected, 'aria-current="page"')}>
-              ${plugin.display}<span class="tag">${plugin.name}</span>${plugin.pending ? h`<span class="status status-warning">待重启</span>` : ""}
-            </a>
-            <span class="item-sub">${plugin.summary}</span>
-          </div>
-          <div class="item-trailing">
-            ${switchButton(plugin, { label: `启用 ${plugin.display}` })}
-            ${dual ? "" : icon("chevron", "chevron")}
-          </div>
-        </li>`
-      );
+      if (!list.length) return emptyState("没有符合条件的插件。换个关键词或筛选试试。", "search");
+      const known = this.data.sections.map((section) => section.code);
+      const order = [...known, ...new Set(list.map((plugin) => plugin.section).filter((code) => !known.includes(code)))];
+      const nameOf = (code) => this.data.sections.find((section) => section.code === code)?.name || "其他";
+      return order
+        .map((code) => [code, list.filter((plugin) => plugin.section === code)])
+        .filter(([, members]) => members.length)
+        .map(
+          ([code, members]) => h`<section class="plugin-block" aria-labelledby="block-${code}">
+            <h2 class="list-title" id="block-${code}">${nameOf(code)}<span class="num">${members.length}</span></h2>
+            <ul class="group">${members.map(
+              (plugin) => h`<li class="item" data-plugin="${plugin.name}">
+                ${pluginTile(plugin)}
+                <div class="item-content">
+                  <a class="item-link item-title" href="#/plugins/${encodeURIComponent(plugin.name)}"${attr(plugin.name === this.selected, 'aria-current="page"')}>
+                    ${plugin.display}<span class="tag">${plugin.name}</span>${plugin.pending ? h`<span class="status status-warning">待重启</span>` : ""}
+                  </a>
+                  <span class="item-sub">${plugin.summary}</span>
+                </div>
+                <div class="item-trailing">${switchButton(plugin, { label: `启用 ${plugin.display}` })}</div>
+              </li>`
+            )}</ul>
+          </section>`
+        );
     },
 
     chips() {
@@ -789,7 +783,7 @@
         setTitle(plugin.display);
       } catch (error) {
         if (seq !== this.detailSeq || !pane.isConnected) return;
-        put(pane, h`<div class="card">${emptyState(error.message, "alert")}</div>`);
+        put(pane, h`<div class="card">${emptyState(error.message, "error")}</div>`);
       } finally {
         if (seq === this.detailSeq) pane.removeAttribute("aria-busy");
       }
@@ -803,7 +797,7 @@
         ${attr(plugin.name === "ctl", 'disabled title="控制插件不能停用"')}></button>`;
 
   const detailPlaceholder = () =>
-    h`<div class="card">${emptyState("在左侧选择一个插件，这里会显示它的开关、配置与指令。", "plugins")}</div>`;
+    h`<div class="card">${emptyState("在左侧选择一个插件，这里会显示它的开关、配置与指令。", "extension")}</div>`;
 
   async function pluginsPage(route) {
     const [list, detail] = await Promise.all([
@@ -819,7 +813,8 @@
     if (route.arg && !dual) {
       if (detail instanceof Error) throw detail;
       return h`<div class="page">
-        ${pageHead(detail.display, detail.summary, { back: { href: "#/plugins", label: "插件" } })}
+        ${pageHead(detail.display, detail.summary, { back: { href: "#/plugins", label: "插件" }, lead: pluginTile(detail, " tile-large"),
+          meta: h`<span class="tag">${detail.name}</span>${statusTag(detail)}` })}
         ${detailBody(detail, 1)}
       </div>`;
     }
@@ -830,7 +825,7 @@
           !detail
             ? detailPlaceholder()
             : detail instanceof Error
-              ? h`<div class="card">${emptyState(detail.message, "alert")}</div>`
+              ? h`<div class="card">${emptyState(detail.message, "error")}</div>`
               : detailBody(detail, 2)
         }</section>`;
 
@@ -845,9 +840,9 @@
                 aria-label="搜索插件" autocomplete="off" value="${plugins.query}">
             </div>
           </div>
-          <div class="chips" id="plugin-chips" role="group" aria-label="按分类筛选">${plugins.chips()}</div>
+          <div class="chips chips-scroll" id="plugin-chips" role="group" aria-label="按分类筛选">${plugins.chips()}</div>
           <p class="section-meta" id="plugin-count" role="status">${plugins.summary()}</p>
-          <ul class="group" id="plugin-list">${plugins.rows()}</ul>
+          <div class="plugin-list" id="plugin-list">${plugins.rows()}</div>
         </div>
         ${pane}
       </div>
@@ -865,17 +860,20 @@
           (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
             <span class="item-content"><span class="item-title"><code class="tag">${command.cmd}</code></span>
             <span class="item-sub">${command.note}</span></span>
-            <span class="item-trailing">${icon("copy")}</span></button></li>`
+            <span class="item-trailing">${icon("content_copy")}</span></button></li>`
         )}</ul>`
       : h`<p class="note">这个插件没有指令，它在后台按计划工作。</p>`;
 
     return h`
       ${level === 2
         ? h`<div class="detail-head">
-            ${raw(`<${top} class="detail-title" id="detail-title">`)}${plugin.display}<span class="tag">${plugin.name}</span>${statusTag(plugin)}${raw(`</${top}>`)}
+            <div class="detail-lead">
+              ${pluginTile(plugin, " tile-large")}
+              ${raw(`<${top} class="detail-title" id="detail-title">`)}${plugin.display}<span class="tag">${plugin.name}</span>${statusTag(plugin)}${raw(`</${top}>`)}
+            </div>
             <p class="note">${plugin.summary}</p>
           </div>`
-        : h`<div>${statusTag(plugin)}</div>`}
+        : ""}
       <div class="card">
         <div class="toggle-row">
           <div class="field">
@@ -958,7 +956,7 @@
       return h`<div class="field setting" data-row="short">${text(named)}
         <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}" aria-describedby="${id}-desc">
         ${[...new Set([value, ...options[path]])].map(option => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
-        </select>${icon("down")}</span></div>`;
+        </select>${icon("keyboard_arrow_down")}</span></div>`;
     }
     const kind = Array.isArray(value) ? listKind(path, value) : "";
     if (kind) {
@@ -1027,7 +1025,7 @@
     note.className = "field-error";
     note.id = `${control.id}-error`;
     note.setAttribute("role", "alert");
-    note.innerHTML = part(h`${icon("alert")}<span>${message}</span>`);
+    note.innerHTML = part(h`${icon("error-fill")}<span>${message}</span>`);
     control.after(note);
     const described = (control.getAttribute("aria-describedby") || "").split(" ").filter(Boolean);
     control.setAttribute("aria-describedby", [...described, note.id].join(" "));
@@ -1230,7 +1228,7 @@
             <span class="item-title" data-group-name="${group.group}">群 ${group.group}</span>
             <span class="item-sub"><span data-group-id hidden>群号 ${group.group} · </span>${group.people.length} 人 · ${group.notes.length} 条旧事</span>
           </span>
-          ${icon("chevron", "chevron")}
+          ${icon("chevron_right", "chevron")}
         </summary>
         <div class="memory-body">
           <p class="note">${noted.length ? `对 ${noted.length} 位有印象${others > 0 ? `，另有 ${others} 位只记得来过` : ""}。` : "还没有对这个群里的任何人写下印象。"}</p>
@@ -1603,15 +1601,15 @@
             )}
           </fieldset>
           <div class="actions">
-            <button class="btn ${logs.follow ? "btn-tonal" : "btn-outlined"}" type="button" id="log-follow" aria-pressed="${bool(logs.follow)}">${icon("latest")}跟随最新</button>
+            <button class="btn ${logs.follow ? "btn-tonal" : "btn-outlined"}" type="button" id="log-follow" aria-pressed="${bool(logs.follow)}">${icon("vertical_align_bottom")}跟随最新</button>
             <button class="icon-btn state" type="button" id="log-export" aria-label="导出当前筛选的日志" title="导出当前筛选的日志">${icon("download")}</button>
-            <button class="icon-btn state" type="button" id="log-clear" aria-label="清空屏幕上的日志" title="清空屏幕上的日志">${icon("trash")}</button>
+            <button class="icon-btn state" type="button" id="log-clear" aria-label="清空屏幕上的日志" title="清空屏幕上的日志">${icon("delete")}</button>
           </div>
         </div>
         <div class="log-meta"><span id="log-status" role="status">${logs.status}</span><span id="log-count"></span></div>
         <div class="log-frame">
           <div class="log" id="log-box" tabindex="0" role="region" aria-label="运行日志，最近 ${DOM_LINES} 条"></div>
-          <button class="btn btn-filled jump" type="button" id="log-jump"${attr(logs.follow, "hidden")}>${icon("latest")}<span>回到最新</span></button>
+          <button class="btn btn-filled jump" type="button" id="log-jump"${attr(logs.follow, "hidden")}>${icon("vertical_align_bottom")}<span>回到最新</span></button>
         </div>
       </section>
       <p class="note">页面切到后台时暂停接收，回来后自动补齐。完整日志请在本机运行 <code>./bot logs</code>。</p>
@@ -1640,7 +1638,7 @@
         <div class="group" id="bot-list">
           ${data.bots.length ? data.bots.map((bot, index) => botForm(bot, String(index))) : h`<p class="note" id="bot-empty">还没有连接。</p>`}
         </div>
-        <div class="actions"><button class="btn btn-tonal" type="button" data-add-bot>${icon("plus")}添加连接</button></div>
+        <div class="actions"><button class="btn btn-tonal" type="button" data-add-bot>${icon("add")}添加连接</button></div>
       </section>
 
       <section class="section" aria-labelledby="global-title">
@@ -1677,7 +1675,7 @@
           <label class="visually-hidden" for="command-input">控制命令</label>
           <input class="input mono" id="command-input" autocomplete="off" spellcheck="false" autocapitalize="off"
             enterkeyhint="go" placeholder="list · show ambient · set oai …">
-          <button class="btn btn-filled" type="submit">${icon("play")}执行</button>
+          <button class="btn btn-filled" type="submit">${icon("play_arrow")}执行</button>
         </form>
         <div class="chips" role="group" aria-label="常用命令">
           ${[...new Set([...command.history, ...COMMANDS])].slice(0, 6).map(
@@ -1727,7 +1725,10 @@
     const title = index === "" ? "新连接" : `连接 ${Number(index) + 1}`;
     return h`<form class="bot" data-bot="${index}" aria-labelledby="${id}-title" autocomplete="off" novalidate>
       <div class="bot-head">
-        <h3 class="bot-title" id="${id}-title">${title}${bot.has_token ? h`<span class="status">已设令牌</span>` : ""}</h3>
+        <div class="bot-lead">
+          <span class="tile" aria-hidden="true">${icon("hub")}</span>
+          <h3 class="bot-title" id="${id}-title">${title}${bot.has_token ? h`<span class="status">已设令牌</span>` : ""}</h3>
+        </div>
         <div class="toggle-row">
           <span class="field-label" id="${id}-on">启用</span>
           <button class="switch" type="button" role="switch" data-form-switch name="enabled" aria-checked="${bool(bot.enabled)}" aria-labelledby="${id}-on"></button>
@@ -1738,7 +1739,7 @@
           <label class="field-label" for="${id}-protocol">协议</label>
           <span class="select"><select id="${id}-protocol" name="protocol">
             ${protocols.map((p) => h`<option value="${p}"${attr(p === bot.protocol, "selected")}>${p === "satori" ? "Satori" : p === "console" ? "本地终端（测试用）" : p}</option>`)}
-          </select>${icon("down")}</span>
+          </select>${icon("keyboard_arrow_down")}</span>
         </div>
         ${textField(`${id}-url`, "实现端地址", "url", bot.url, "Satori 必填，例如 http://127.0.0.1:3001", ' inputmode="url"')}
         <div class="field span-all">
@@ -1758,7 +1759,7 @@
       </div>
       <div class="actions">
         <button class="btn btn-filled" type="submit">保存</button>
-        <button class="btn btn-text btn-danger" type="button" data-drop-bot="${index}">${icon("trash")}${index === "" ? "放弃" : "删除"}</button>
+        <button class="btn btn-text btn-danger" type="button" data-drop-bot="${index}">${icon("delete")}${index === "" ? "放弃" : "删除"}</button>
       </div>
     </form>`;
   }
@@ -1932,7 +1933,7 @@
     },
     user: {
       roster: makeRoster("/friends"),
-      icon: "user",
+      icon: "person",
       idNoun: "账号",
       placeholder: "输入或粘贴 QQ 号或微信号，回车添加",
       pick: "从好友里选",
@@ -1987,7 +1988,7 @@
 
   const statusLine = (role, n, on) => {
     const [tone, text] = STATUS[role](n, on);
-    return { tone, html: h`${icon(tone === "warn" ? "alert" : tone === "ok" ? "check" : "info")}<span>${text}</span>` };
+    return { tone, html: h`${icon(tone === "warn" ? "warning-fill" : tone === "ok" ? "check_circle-fill" : "info-fill")}<span>${text}</span>` };
   };
 
   /** 一行：名字为主，ID（与别名）为辅；名册读到了却没有这一项就标出来。 */
@@ -2259,12 +2260,12 @@
       const waiting = !roster.loaded && roster.pending;
       put(
         body,
-        h`${roster.error ? h`<p class="note sheet-note" role="alert">${icon("alert")}<span>${text.stale_read}${roster.list.length ? "下面是上次读到的。" : `可以直接回去输入${text.idNoun}。`}</span></p>` : ""}
-        ${roster.failed ? h`<p class="note sheet-note">${icon("info")}<span>有 ${roster.failed} 条连接没读到，这张表可能不全。</span></p>` : ""}
+        h`${roster.error ? h`<p class="note sheet-note" role="alert">${icon("error-fill")}<span>${text.stale_read}${roster.list.length ? "下面是上次读到的。" : `可以直接回去输入${text.idNoun}。`}</span></p>` : ""}
+        ${roster.failed ? h`<p class="note sheet-note">${icon("info-fill")}<span>有 ${roster.failed} 条连接没读到，这张表可能不全。</span></p>` : ""}
         ${rows.length || offer
           ? h`<div class="group" role="group" aria-label="${text.listAria}">
               ${offer ? h`<button class="item option option-add" type="button" data-sheet-add="${typedId}">
-                <span class="item-leading" aria-hidden="true">${icon("plus")}</span>
+                <span class="item-leading" aria-hidden="true">${icon("add")}</span>
                 <span class="item-content"><span class="item-title">添加 <span class="mono">${typedId}</span></span>
                 <span class="item-sub">${text.offer}</span></span></button>` : ""}
               ${rows.map(option)}
@@ -2385,15 +2386,18 @@
     put(
       $("#view"),
       h`<div class="lock"><form class="lock-card" id="lock-form">
-        <img class="lock-mark" src="/icon.svg" alt="" width="64" height="64">
+        <span class="lock-mark" aria-hidden="true"></span>
         <h1 class="lock-title page-title" tabindex="-1">解锁知微控制台</h1>
         <p class="note">${reason || "需要访问口令才能查看这台设备的数据。"}
           启动日志里带 <code>?t=</code> 的地址可以直接打开；口令也保存在 <code>data/console/token</code>。</p>
         <input type="text" name="username" autocomplete="username" value="acumen" hidden>
         <div class="field">
           <label class="field-label" for="lock-input">访问口令</label>
-          <input class="input mono" id="lock-input" name="password" type="password" autocomplete="current-password"
-            required spellcheck="false" autocapitalize="off">
+          <div class="reveal">
+            <input class="input mono" id="lock-input" name="password" type="password" autocomplete="current-password"
+              required spellcheck="false" autocapitalize="off">
+            <button class="icon-btn state" type="button" data-reveal="#lock-input" aria-pressed="false" aria-label="显示口令">${icon("visibility")}</button>
+          </div>
         </div>
         <button class="btn btn-filled" type="submit">解锁</button>
       </form></div>`
@@ -2427,6 +2431,16 @@
       if (on("[data-snack-close]")) {
         clearTimeout(snack.timer);
         put($("#snackbar"), "");
+        return;
+      }
+      if ((hit = on("[data-reveal]"))) {
+        const field = $(hit.dataset.reveal);
+        const show = field.type === "password";
+        field.type = show ? "text" : "password";
+        hit.setAttribute("aria-pressed", bool(show));
+        hit.setAttribute("aria-label", show ? "隐藏口令" : "显示口令");
+        put(hit, icon(show ? "visibility_off" : "visibility"));
+        field.focus();
         return;
       }
       if ((hit = on("[data-picker-remove]"))) return pickerRemove(hit);

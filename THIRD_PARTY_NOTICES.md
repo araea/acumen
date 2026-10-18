@@ -4,6 +4,15 @@ OAI harness 的设计改编自 MIT 许可的 [oh-my-pi](https://github.com/can13
 工具循环约定，以及免密钥 public web 搜索的多后端顺序回退，其中包含它的 DuckDuckGo
 结果解析器。
 
+控制台的图标是 Apache-2.0 许可的 [Material Symbols](https://github.com/marella/material-symbols)
+（Google，Rounded 字形、字重 400）：`scripts/make-icons.py` 从 `@material-symbols/svg-400` 取出用到的
+几十个字形，内联在 `res/console/index.html` 的精灵图里，字形本身没有改动。
+
+## Material Symbols
+
+Copyright Google LLC. Licensed under the Apache License, Version 2.0
+（<https://www.apache.org/licenses/LICENSE-2.0>）；按该许可，本软件按「原样」提供，不附带任何明示或暗示的担保。
+
 ## oh-my-pi
 
 MIT License
