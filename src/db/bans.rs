@@ -216,13 +216,13 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
     for term in terms(events, start, end) {
         let person = match by {
             By::Member => term.member,
-            By::Operator => match term.operator {
-                Some(operator) => operator,
-                None => {
+            By::Operator => {
+                let Some(operator) = term.operator else {
                     unattributed += 1;
                     continue;
-                }
-            },
+                };
+                operator
+            }
         };
         let row = rows.entry(person).or_insert_with(|| Tally {
             person_id: person.to_owned(),

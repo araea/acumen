@@ -82,22 +82,20 @@ pub(crate) async fn run(
         };
         tokio::time::timeout(timeout, collect).await
     };
-    let status = match finished {
-        Ok(status) => status?,
-        Err(_) => {
-            // 超时即放弃这一轮：进程组连同 bash 派生的独立进程一起收掉（`group` 在返回时 drop）。
-            let partial = merged(&out, &err);
-            return Err(anyhow::anyhow!(
-                "命令超过 {} 秒未结束，已终止{}",
-                timeout.as_secs(),
-                if partial.is_empty() {
-                    String::new()
-                } else {
-                    format!("；终止前的输出：\n{partial}")
-                }
-            ));
-        }
+    let Ok(status) = finished else {
+        // 超时即放弃这一轮：进程组连同 bash 派生的独立进程一起收掉（`group` 在返回时 drop）。
+        let partial = merged(&out, &err);
+        return Err(anyhow::anyhow!(
+            "命令超过 {} 秒未结束，已终止{}",
+            timeout.as_secs(),
+            if partial.is_empty() {
+                String::new()
+            } else {
+                format!("；终止前的输出：\n{partial}")
+            }
+        ));
     };
+    let status = status?;
     #[cfg(unix)]
     {
         group.armed = false;

@@ -20,7 +20,7 @@ pub(crate) struct Attachment {
 const ONE: u64 = 20 * 1024 * 1024;
 const TOTAL: u64 = 40 * 1024 * 1024;
 const MAX_FILES: usize = 4;
-const KEEP: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+const KEEP: std::time::Duration = std::time::Duration::from_hours(7 * 24);
 
 /// 取回这些文件，返回要接在提示词后面的说明（取不到的也写明原因，让管家如实告诉用户）。
 pub(crate) async fn receive(files: &[Attachment]) -> String {

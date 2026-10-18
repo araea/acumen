@@ -510,10 +510,7 @@ async fn resolve_user(db: &DatabaseConnection, group: &str, request: &Value) -> 
     let id = text(request, "user_id");
     if !id.is_empty() {
         ensure!(is_qq(&id), "user_id 要写 QQ 号；只知道名字就用 user");
-        return Ok(Who::One {
-            id: id.to_string(),
-            name: None,
-        });
+        return Ok(Who::One { id: id.clone(), name: None });
     }
     let asked = text(request, "user");
     let asked = asked.trim_start_matches(['@', '＠']).trim();

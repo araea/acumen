@@ -100,7 +100,8 @@ pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<
         "管家改机器人设置（{}{}）：{}",
         seat.asker.id,
         if seat.asker.owner { "，号主" } else { "" },
-        args
+        // 只记动作与对象，不记 value：被拒的那些尝试里，值可能正是人家想写进去的密钥。
+        super::tools::label(args)
     );
     match action {
         "enable" | "disable" => {

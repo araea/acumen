@@ -249,25 +249,21 @@ pub(crate) fn parse_when(raw: &str, now: DateTime<chrono::FixedOffset>) -> Resul
         None => (None, raw),
     };
     let time = crate::clock::parse_clock(time_part).ok_or_else(bad)?;
-    match date_part {
-        Some(date) => {
-            let parts: Vec<u32> = date
-                .split(['-', '/', '.'])
-                .map(|part| part.trim().parse::<u32>().map_err(|_| bad()))
-                .collect::<Result<_, _>>()?;
-            let (year, month, day) = match parts[..] {
-                [year, month, day] => (year as i32, month, day),
-                [month, day] => (now.year(), month, day),
-                _ => return Err(bad()),
-            };
-            let date = chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or_else(bad)?;
-            localize(date, time)
-        }
-        None => {
-            let today = localize(now.date_naive(), time)?;
-            Ok(if today > now.timestamp() { today } else { today + 86_400 })
-        }
+    if let Some(date) = date_part {
+        let parts: Vec<u32> = date
+            .split(['-', '/', '.'])
+            .map(|part| part.trim().parse::<u32>().map_err(|_| bad()))
+            .collect::<Result<_, _>>()?;
+        let (year, month, day) = match parts[..] {
+            [year, month, day] => (year as i32, month, day),
+            [month, day] => (now.year(), month, day),
+            _ => return Err(bad()),
+        };
+        let date = chrono::NaiveDate::from_ymd_opt(year, month, day).ok_or_else(bad)?;
+        return localize(date, time);
     }
+    let today = localize(now.date_naive(), time)?;
+    Ok(if today > now.timestamp() { today } else { today + 86_400 })
 }
 
 // ================= 后台循环 =================
@@ -399,10 +395,12 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
         )
     };
     let agent = agent
-        .filter(|agent| agent.uses_agent())
+        .filter(super::types::Agent::uses_agent)
         .ok_or_else(|| anyhow::anyhow!("房间「{}」已经不在或不是智能体房间", job.room))?;
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(&bot.ctx);
-    let (api_base, api_key, model) = super::logic::room_endpoint(&agent, &oai, &mgr, &api).await.map_err(anyhow::Error::msg)?;
+    let (api_base, api_key, model) = super::logic::room_endpoint(&agent, &oai, &mgr, &api)
+        .await
+        .map_err(anyhow::Error::msg)?;
     let base = super::utils::openai_api_base(&api_base);
 
     let prompt = format!(
