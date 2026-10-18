@@ -151,7 +151,7 @@ fn get_regex_global() -> &'static Regex {
 
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言|表情包|消息类型|管理员灰条禁言时长|管理员标称禁言时长|管理员单次最长禁言|管理员最长禁言|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|灰条禁言时长|标称禁言时长|单次最长禁言|最长禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
+        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(发言字数|文本字数|文本消息|纯文本|文本|字数|发言|表情包|消息类型|管理员灰条禁言时长|管理员标称禁言时长|管理员单次最长禁言|管理员最长禁言|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|灰条禁言时长|标称禁言时长|单次最长禁言|最长禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
             .unwrap()
     })
 }
@@ -222,6 +222,23 @@ pub fn handle(
             return Ok(None);
         }
 
+        // 文字类榜只有排行榜：一天一天的字数/条数折线还没做，与其画一张「发言条数」
+        // 走势冒充，不如直说，再给两条能用的指令。
+        if chart::is_text_ranking(data_type) && chart_type != "排行榜" {
+            send_msg(
+                &ctx,
+                writer,
+                group_id,
+                Some(user_id),
+                "❌ 发言字数、文本消息只有排行榜
+想看趋势，用「本群本月发言走势」看发言条数的变化
+「本群本月发言字数排行榜」谁写的字最多
+「本群本月文本消息排行榜」谁发的纯文字消息最多（图片、表情包、语音、视频都不算）",
+            )
+            .await?;
+            return Ok(None);
+        }
+
         if scope == "本群" && group_id.is_none() {
             send_msg(
                 &ctx,
@@ -284,6 +301,9 @@ pub fn handle(
                 let hint = if chart::is_ban_ranking(data_type) {
                     // 禁言只记机器人在线之后发生的；按时长排时，没读出时长的那些也上不了榜。
                     "这段时间没有可统计的禁言（只记录机器人在线时发生的）\n换一个时间范围试试"
+                } else if chart::is_text_ranking(data_type) {
+                    // 只有图片、表情包的那段日子，在这里确实是一片空白。
+                    "这段时间没有文字发言（图片、表情包、语音、视频都不算）\n换一个时间范围试试"
                 } else {
                     "换一个时间范围，或先让群里聊几句"
                 };
@@ -537,5 +557,38 @@ mod tests {
         assert!(get_regex_normal().is_match("我的本周消息类型走势"));
         assert!(get_regex_global().is_match("所有群近7天发言排行榜"));
         assert!(!get_regex_normal().is_match("本群今日禁言时间排行榜"));
+    }
+
+    #[test]
+    fn text_rankings_parse_with_aliases() {
+        // 顺口的写法都认，榜名统一成「发言字数」「文本消息」
+        for (typed, shown) in [
+            ("发言字数", "发言字数"),
+            ("文本字数", "发言字数"),
+            ("字数", "发言字数"),
+            ("文本消息", "文本消息"),
+            ("文本", "文本消息"),
+            ("纯文本", "文本消息"),
+        ] {
+            let command = format!("本群今日{typed}排行榜 30");
+            let caps = get_regex_normal().captures(&command).expect(&command);
+            assert_eq!(&caps[3], typed);
+            assert_eq!(caps.get(5).map(|m| m.as_str()), Some("30"));
+            assert_eq!(chart::ranking_name(typed), shown);
+            assert!(chart::is_text_ranking(typed));
+        }
+        // 「发言字数」不能被拆成「发言」+ 剩下的「字数排行榜」
+        assert_eq!(
+            matches("本群今日发言字数排行榜"),
+            Some(("本群".into(), "发言字数".into(), "排行榜".into()))
+        );
+        assert_eq!(
+            matches("本群今日文本消息排行榜"),
+            Some(("本群".into(), "文本消息".into(), "排行榜".into()))
+        );
+        // 其它范围与走势也认（走势由 handle 给出「只有排行榜」的提示）
+        assert!(get_regex_normal().is_match("我的本月发言字数走势"));
+        assert!(get_regex_normal().is_match("跨群近7天文本消息排行榜 10"));
+        assert!(!get_regex_normal().is_match("本群今日字数时间排行榜"));
     }
 }

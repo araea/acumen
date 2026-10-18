@@ -18,6 +18,8 @@ use plotters::style::text_anchor::{HPos, Pos, VPos};
 /// 条的数值是什么：次数，还是秒数（按「2天3小时」写）。
 pub enum BarUnit {
     Count,
+    /// 文本字数：各人的字加起来有意义，写合计与占比。
+    Chars,
     /// 累计的秒数：各人的数加起来有意义，写合计与占比。
     Duration,
     /// 每人名下最长的一次（秒）：这是纪录而不是份额，几个人的纪录相加没有意义，
@@ -29,6 +31,7 @@ impl BarUnit {
     fn value(&self, value: i64) -> String {
         match self {
             Self::Count => format_thousands(value),
+            Self::Chars => format!("{} 字", format_thousands(value)),
             Self::Duration | Self::Record => format_duration(value),
         }
     }
@@ -43,6 +46,7 @@ impl BarUnit {
     fn total(&self, total: i64, notes: &[String]) -> String {
         let total = match self {
             Self::Count => format!("{} 次", format_thousands(total)),
+            Self::Chars => format!("{} 字", format_thousands(total)),
             Self::Duration | Self::Record => format_duration(total),
         };
         notes

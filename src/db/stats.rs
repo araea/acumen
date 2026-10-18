@@ -32,16 +32,36 @@ const LOG_TARGET: &str = "Database/Stats";
 /// 自愈重建的天数窗口
 pub const SELF_HEAL_DAYS: i64 = 7;
 
+/// 纯文本消息的口径：有文字，且不含图片、动画表情、语音、视频、音乐与合并转发。
+///
+/// 与 [`MessageStatsDelta::is_text_message`] 必须一致：这里算历史聚合，那里算实时增量，
+/// 两处口径一分岔，同一张榜在「今天」和「昨天」就会对不上。
+/// 小表情（face）与 @ 是文字消息的一部分，不妨碍它算一条文字消息。
+const PURE_TEXT_PREDICATE: &str = "length > 0 AND image_count = 0 AND is_anim_emoji = 0 \
+     AND is_voice = 0 AND is_video = 0 AND is_music = 0 AND is_forward = 0";
+
 // ================= 初始化与维护 =================
 
 /// 初始化聚合表：建表 + 启动自愈。
 /// 依赖 message_records 表已存在（由 recorder::init 先行创建）。
 pub async fn init(db: &DatabaseConnection) -> Result<(), DbErr> {
-    create_tables(db).await?;
+    let migrated = create_tables(db).await?;
+    if migrated {
+        // 刚给老库补上文字两列，历史聚合行里这两列还是 0：趁原始消息还在，
+        // 把仍被完整覆盖的那些日子一次性重算，免得字数榜一上来就缺一段。
+        match backfill_text_columns(db).await {
+            Ok(()) => {
+                info!(target: LOG_TARGET, "文字统计补列完成，已回填历史聚合行。");
+                return Ok(());
+            }
+            Err(e) => warn!(target: LOG_TARGET, "文字统计回填失败，改为只自愈近 7 天: {}", e),
+        }
+    }
     self_heal_recent(db).await
 }
 
-async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
+/// 建表并补列；返回是否给已有的表补过列。
+async fn create_tables(db: &DatabaseConnection) -> Result<bool, DbErr> {
     let backend = db.get_database_backend();
     let stmts = [
         // 群 × 日 聚合（含 6 类消息类型计数，口径与原实时查询完全一致：
@@ -70,6 +90,8 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
             guild_name    TEXT    NOT NULL DEFAULT '',
             msg_count     INTEGER NOT NULL DEFAULT 0,
             anim_emoji_count INTEGER NOT NULL DEFAULT 0,
+            text_chars    INTEGER NOT NULL DEFAULT 0,
+            text_msg_count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (guild_id, stat_date, user_id)
         )",
         // 覆盖"按用户查日期范围"的查询（我的群组参与排行）
@@ -81,6 +103,49 @@ async fn create_tables(db: &DatabaseConnection) -> Result<(), DbErr> {
         db.execute_raw(Statement::from_string(backend, sql.to_owned()))
             .await?;
     }
+
+    // CREATE TABLE IF NOT EXISTS 不会给已有的表加列：老库要逐列补。
+    // 两列都是「有就跳过」，多跑几次也无害。
+    let existing = table_columns(db, "message_user_stats_daily").await?;
+    let mut migrated = false;
+    for (name, ddl) in [
+        ("text_chars", "INTEGER NOT NULL DEFAULT 0"),
+        ("text_msg_count", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !existing.iter().any(|c| c == name) {
+            db.execute_raw(Statement::from_string(
+                backend,
+                format!("ALTER TABLE message_user_stats_daily ADD COLUMN {name} {ddl}"),
+            ))
+            .await?;
+            migrated = true;
+        }
+    }
+    Ok(migrated)
+}
+
+/// 表的列名。用 PRAGMA 而不是硬猜：补列前先看它在不在。
+async fn table_columns(db: &DatabaseConnection, table: &str) -> Result<Vec<String>, DbErr> {
+    let rows = db
+        .query_all_raw(Statement::from_string(
+            db.get_database_backend(),
+            format!("PRAGMA table_info({table})"),
+        ))
+        .await?;
+    rows.iter()
+        .map(|row| row.try_get::<String>("", "name"))
+        .collect()
+}
+
+/// 补列后的回填：重建原始消息仍完整覆盖的所有日期。
+/// 保留期之外的聚合行是冻结的历史，`rebuild_range` 自己会避开。
+async fn backfill_text_columns(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let raw_rows = scalar_i64(db, "SELECT COUNT(*) AS c FROM message_records").await?;
+    if raw_rows == 0 {
+        return Ok(());
+    }
+    let min_time = scalar_i64(db, "SELECT MIN(time) AS c FROM message_records").await?;
+    rebuild_range(db, date_of_ts(min_time), Local::now().date_naive()).await?;
     Ok(())
 }
 
@@ -106,11 +171,10 @@ pub async fn self_heal_recent(db: &DatabaseConnection) -> Result<(), DbErr> {
 /// 重建 [from, to] 闭区间内的聚合行（返回重建的天数）。
 /// 只重建原始数据仍完整覆盖的日期：保留期之外的聚合行是"冻结的历史"，
 /// 原始消息已删除，不能被重建，也不能被误删。
-async fn rebuild_range(
-    db: &DatabaseConnection,
-    from: NaiveDate,
-    to: NaiveDate,
-) -> Result<i64, DbErr> {
+async fn rebuild_range<C>(db: &C, from: NaiveDate, to: NaiveDate) -> Result<i64, DbErr>
+where
+    C: ConnectionTrait,
+{
     let raw_rows = scalar_i64(db, "SELECT COUNT(*) AS c FROM message_records").await?;
     if raw_rows == 0 {
         return Ok(0);
@@ -172,10 +236,12 @@ async fn rebuild_range(
         backend,
         format!(
             r"INSERT INTO message_user_stats_daily
-               (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count)
+               (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count,
+                text_chars, text_msg_count)
                SELECT guild_id,
                       strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime')),
-                      user_id, MAX(member_nick), MAX(user_avatar), MAX(guild_name), COUNT(*), SUM(is_anim_emoji)
+                      user_id, MAX(member_nick), MAX(user_avatar), MAX(guild_name), COUNT(*), SUM(is_anim_emoji),
+                      SUM(length), SUM(CASE WHEN {PURE_TEXT_PREDICATE} THEN 1 ELSE 0 END)
                FROM message_records
                WHERE time >= {t_from} AND time < {t_to}
                GROUP BY guild_id, 2, user_id"
@@ -202,7 +268,22 @@ pub struct MessageStatsDelta {
     pub is_anim_emoji: bool,
     pub is_voice: bool,
     pub is_video: bool,
+    pub is_music: bool,
+    pub is_forward: bool,
     pub face_count: i32,
+}
+
+impl MessageStatsDelta {
+    /// 这一条算不算纯文本消息（口径见 [`PURE_TEXT_PREDICATE`]）。
+    pub fn is_text_message(&self) -> bool {
+        self.length > 0
+            && self.image_count == 0
+            && !self.is_anim_emoji
+            && !self.is_voice
+            && !self.is_video
+            && !self.is_music
+            && !self.is_forward
+    }
 }
 
 /// 消息入库后在**同一事务内**调用：将计数累加到当日聚合行。
@@ -253,17 +334,23 @@ where
     );
     db.execute_raw(stmt).await?;
 
+    let chars = i64::from(d.length.max(0));
+    let text_msg = i64::from(d.is_text_message());
+
     let stmt = Statement::from_sql_and_values(
         backend,
         r"INSERT INTO message_user_stats_daily
-           (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count)
-           VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+           (guild_id, stat_date, user_id, member_nick, user_avatar, guild_name, msg_count, anim_emoji_count,
+            text_chars, text_msg_count)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
            ON CONFLICT (guild_id, stat_date, user_id) DO UPDATE SET
              member_nick = excluded.member_nick,
              user_avatar = excluded.user_avatar,
              guild_name = excluded.guild_name,
              msg_count = message_user_stats_daily.msg_count + 1,
-             anim_emoji_count = message_user_stats_daily.anim_emoji_count + excluded.anim_emoji_count",
+             anim_emoji_count = message_user_stats_daily.anim_emoji_count + excluded.anim_emoji_count,
+             text_chars = message_user_stats_daily.text_chars + excluded.text_chars,
+             text_msg_count = message_user_stats_daily.text_msg_count + excluded.text_msg_count",
         vec![
             d.guild_id.clone().into(),
             date.into(),
@@ -272,6 +359,8 @@ where
             d.user_avatar.clone().into(),
             d.guild_name.clone().into(),
             anim.into(),
+            chars.into(),
+            text_msg.into(),
         ],
     );
     db.execute_raw(stmt).await?;
@@ -375,4 +464,70 @@ fn midnight_of(d: NaiveDate) -> i64 {
 
 fn date_str_of(ts: i64) -> String {
     date_of_ts(ts).format("%Y-%m-%d").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delta(length: i32, image_count: i32, anim: bool, media: Media) -> MessageStatsDelta {
+        MessageStatsDelta {
+            guild_id: String::new(),
+            guild_name: String::new(),
+            guild_avatar: String::new(),
+            user_id: String::new(),
+            member_nick: String::new(),
+            user_avatar: String::new(),
+            time: 0,
+            length,
+            image_count,
+            is_anim_emoji: anim,
+            is_voice: media.voice,
+            is_video: media.video,
+            is_music: media.music,
+            is_forward: media.forward,
+            face_count: 0,
+        }
+    }
+
+    #[derive(Default)]
+    struct Media {
+        voice: bool,
+        video: bool,
+        music: bool,
+        forward: bool,
+    }
+
+    #[test]
+    fn text_message_excludes_media() {
+        let plain = |length| delta(length, 0, false, Media::default());
+        assert!(plain(5).is_text_message());
+        // 空白消息（长度 0）不算
+        assert!(!plain(0).is_text_message());
+        // 只有图片、表情包、语音、视频、音乐、合并转发，都不算
+        assert!(!delta(0, 1, false, Media::default()).is_text_message());
+        assert!(!delta(0, 1, true, Media::default()).is_text_message());
+        for media in [
+            Media {
+                voice: true,
+                ..Media::default()
+            },
+            Media {
+                video: true,
+                ..Media::default()
+            },
+            Media {
+                music: true,
+                ..Media::default()
+            },
+            Media {
+                forward: true,
+                ..Media::default()
+            },
+        ] {
+            assert!(!delta(0, 0, false, media).is_text_message());
+        }
+        // 文字带图：算字数，但不算一条纯文本消息
+        assert!(!delta(3, 1, false, Media::default()).is_text_message());
+    }
 }

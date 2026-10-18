@@ -1,10 +1,10 @@
-use crate::db::{bans, queries};
+use super::utils::format_thousands;
+use crate::db::bans;
+use crate::db::queries::{self, UserMetric};
 use crate::plugins::recorder::entity::{self, Entity as MessageLogs};
 use plotters::style::RGBColor;
-use sea_orm::sea_query::{Func, SimpleExpr};
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, QueryTrait,
+    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
 };
 use std::collections::HashMap;
 
@@ -265,6 +265,63 @@ pub async fn fetch_line_data(
     Ok(series_list)
 }
 
+/// 文字类榜：按纯文本消息条数，还是按文本字数。
+///
+/// 这两张榜是一对：发言条数会被「分几段发」和「甩表情包」带偏，要么一条长文被拆成十行
+/// 记十次，要么一张图顶一条发言。看字数知道谁写得长，看纯文本条数知道谁真的在说话；
+/// 各自再顺带写另一面的数，读者才看得出差别在哪。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextBoard {
+    /// 纯文本消息条数（图片、表情包、语音、视频、音乐、合并转发都不算）。
+    Messages,
+    /// 文本字数（每条消息里文字段的字符数相加）。
+    Chars,
+}
+
+impl TextBoard {
+    /// 指令里的数据类型 → 榜的种类；不是文字榜返回 `None`。
+    pub fn parse(data_type: &str) -> Option<Self> {
+        match data_type {
+            "文本消息" | "文本" | "纯文本" => Some(Self::Messages),
+            "发言字数" | "文本字数" | "字数" => Some(Self::Chars),
+            _ => None,
+        }
+    }
+
+    /// 榜名里数据类型那一段，别名统一成这两个写法。
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Messages => "文本消息",
+            Self::Chars => "发言字数",
+        }
+    }
+
+    fn metric(self) -> UserMetric {
+        match self {
+            Self::Messages => UserMetric::TextMessages,
+            Self::Chars => UserMetric::TextChars,
+        }
+    }
+}
+
+/// 榜上数值后面跟的另一面：字数榜写条数，条数榜写字数。其余榜不带。
+fn side_detail(metric: UserMetric, side: i64) -> Option<String> {
+    match metric {
+        UserMetric::TextChars => Some(format!("{} 条", format_thousands(side))),
+        UserMetric::TextMessages => Some(format!("{} 字", format_thousands(side))),
+        _ => None,
+    }
+}
+
+/// 某个数据类型按什么数排。
+fn user_metric(data_type: &str) -> UserMetric {
+    match TextBoard::parse(data_type) {
+        Some(board) => board.metric(),
+        None if data_type == "表情包" => UserMetric::AnimEmoji,
+        None => UserMetric::Messages,
+    }
+}
+
 /// 禁言榜按什么排。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rank {
@@ -476,6 +533,7 @@ pub async fn fetch_bar_data(
     limit: usize,
 ) -> Result<Vec<BarData>, String> {
     let mut bar_data: Vec<BarData> = Vec::new();
+    let metric = user_metric(data_type);
 
     // 1. 消息类型统计
     if data_type == "消息类型" {
@@ -516,7 +574,7 @@ pub async fn fetch_bar_data(
         return Ok(bar_data);
     }
 
-    // 2. 我的群组发言排行
+    // 2. 我的群组排行
     if let Some(uid) = query_user
         && query_group.is_none()
         && !is_all_groups
@@ -527,6 +585,7 @@ pub async fn fetch_bar_data(
             start_time,
             end_time,
             limit as u64,
+            metric,
         )
         .await
         .map_err(|e| e.to_string())?;
@@ -538,9 +597,13 @@ pub async fn fetch_bar_data(
                 avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
-                detail: None,
+                detail: side_detail(metric, r.side),
                 icon_char: None,
             });
+        }
+        // 文字榜只排「写了字的」：只发表情包的日子不该占满一整页 0 字。
+        if TextBoard::parse(data_type).is_some() {
+            bar_data.retain(|b| b.value > 0);
         }
         return Ok(bar_data);
     }
@@ -565,16 +628,17 @@ pub async fn fetch_bar_data(
         return Ok(bar_data);
     }
 
-    // 4. 用户排行 (发言 或 表情包)
-    let ranking = if data_type == "表情包" {
-        queries::get_user_emoji_ranking(db, query_group, start_time, end_time, limit as u64)
-            .await
-            .map_err(|e| e.to_string())?
-    } else {
-        queries::get_user_ranking(db, query_group, start_time, end_time, limit as u64)
-            .await
-            .map_err(|e| e.to_string())?
-    };
+    // 4. 用户排行 (发言 / 表情包 / 文本消息 / 字数)
+    let ranking = queries::get_user_ranking(
+        db,
+        query_group,
+        start_time,
+        end_time,
+        limit as u64,
+        metric,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let mut sender_found = false;
 
@@ -593,46 +657,23 @@ pub async fn fetch_bar_data(
             avatar_url: Some(r.avatar).filter(|url| !url.is_empty()),
             avatar_img: None,
             theme_color: FALLBACK_THEME,
-            detail: None,
+            detail: side_detail(metric, r.side),
             icon_char: None,
         });
     }
 
     // 补位逻辑
     if !sender_found && !sender_id.is_empty() {
-        let count_query = MessageLogs::find()
-            .filter(entity::Column::Time.gte(start_time))
-            .filter(entity::Column::Time.lt(end_time))
-            .filter(entity::Column::UserId.eq(sender_id));
-
-        let count_query = if let Some(gid) = query_group {
-            count_query.filter(entity::Column::GuildId.eq(gid))
-        } else {
-            count_query
-        };
-
-        let count = if data_type == "表情包" {
-            use sea_orm::prelude::Expr;
-            use sea_orm::sea_query::Alias;
-
-            let count_expr = Func::cast_as(
-                Expr::col(entity::Column::IsAnimEmoji),
-                Alias::new("integer"),
-            );
-            let sum_expr = SimpleExpr::from(Func::sum(count_expr));
-
-            let res: Option<i64> = count_query
-                .select_only()
-                .column_as(sum_expr, "count")
-                .into_tuple()
-                .one(db)
-                .await
-                .map_err(|e| e.to_string())?
-                .unwrap_or(Some(0));
-            res.unwrap_or(0)
-        } else {
-            count_query.count(db).await.map_err(|e| e.to_string())? as i64
-        };
+        let count = queries::get_user_metric_total(
+            db,
+            query_group,
+            sender_id,
+            start_time,
+            end_time,
+            metric,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         if count > 0 {
             let latest = MessageLogs::find()
@@ -647,6 +688,20 @@ pub async fn fetch_bar_data(
                 .await
                 .unwrap_or(None);
 
+            // 榜外补位也要带上另一面，不然「★」那一行会比榜上的少一小截
+            let side = match metric.companion() {
+                Some(other) => queries::get_user_metric_total(
+                    db,
+                    query_group,
+                    sender_id,
+                    start_time,
+                    end_time,
+                    other,
+                )
+                .await
+                .unwrap_or(0),
+                None => 0,
+            };
             let (nick, avatar) = latest.unwrap_or_else(|| (sender_id.to_string(), String::new()));
             bar_data.push(BarData {
                 label: format!("★ {nick}"),
@@ -654,10 +709,15 @@ pub async fn fetch_bar_data(
                 avatar_url: Some(avatar).filter(|url| !url.is_empty()),
                 avatar_img: None,
                 theme_color: FALLBACK_THEME,
-                detail: None,
+                detail: side_detail(metric, side),
                 icon_char: None,
             });
         }
+    }
+
+    // 同上：文字榜里一个数都没有的人不占行（榜外补位的人也只补正数）。
+    if TextBoard::parse(data_type).is_some() {
+        bar_data.retain(|b| b.value > 0);
     }
 
     Ok(bar_data)

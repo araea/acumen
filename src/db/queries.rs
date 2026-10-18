@@ -1,6 +1,6 @@
 use crate::db::stats;
 use crate::plugins::recorder::entity::{self, Entity as MessageLogs};
-use sea_orm::sea_query::{Alias, Expr, Func, SimpleExpr};
+use sea_orm::sea_query::{Alias, Expr, Func};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, FromQueryResult,
     PaginatorTrait, QueryFilter, QueryOrder, QuerySelect, Statement,
@@ -12,6 +12,66 @@ const MAX_TEXT_CORPUS_LIMIT: u64 = 20000;
 const MAX_RANKING_LIMIT: u64 = 50;
 const MAX_TREND_LIMIT: u64 = 2000;
 const MAX_GROUP_TREND_LIMIT: u64 = 10000;
+
+// ================= 榜的口径 =================
+
+/// 用户榜按什么数。每加一种，聚合表列名与原始表表达式两处要一起补：
+/// 整日走聚合表、边界片段走原始表，两边口径必须一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserMetric {
+    /// 发言条数。
+    Messages,
+    /// 动画表情（表情包）的条数。
+    AnimEmoji,
+    /// 纯文本消息条数：有文字，不含图片、表情包、语音、视频等。
+    TextMessages,
+    /// 文本字数：每条消息里文字段的字符数相加。
+    TextChars,
+}
+
+impl UserMetric {
+    /// 聚合表里的列名。
+    fn agg_column(self) -> &'static str {
+        match self {
+            Self::Messages => "msg_count",
+            Self::AnimEmoji => "anim_emoji_count",
+            Self::TextMessages => "text_msg_count",
+            Self::TextChars => "text_chars",
+        }
+    }
+
+    /// 原始表上的取值表达式。
+    fn raw_expr(self) -> &'static str {
+        match self {
+            Self::Messages => "COUNT(*)",
+            Self::AnimEmoji => "SUM(CAST(is_anim_emoji AS integer))",
+            // 与 db::stats::PURE_TEXT_PREDICATE 同一口径
+            Self::TextMessages => {
+                "SUM(CASE WHEN length > 0 AND image_count = 0 AND is_anim_emoji = 0 \
+                 AND is_voice = 0 AND is_video = 0 AND is_music = 0 AND is_forward = 0 THEN 1 ELSE 0 END)"
+            }
+            Self::TextChars => "SUM(length)",
+        }
+    }
+
+    /// 与主口径成对出现的另一面：字数榜上顺带写条数，文本消息榜上顺带写字数。
+    /// 一张榜只回答「谁的数大」，两张摆在一起才看得出「一条顶几条」和「分几段发」。
+    pub fn companion(self) -> Option<Self> {
+        match self {
+            Self::TextChars => Some(Self::TextMessages),
+            Self::TextMessages => Some(Self::TextChars),
+            _ => None,
+        }
+    }
+
+    fn agg_companion(self) -> &'static str {
+        self.companion().map_or("0", Self::agg_column)
+    }
+
+    fn raw_companion(self) -> &'static str {
+        self.companion().map_or("0", Self::raw_expr)
+    }
+}
 
 // ================= 数据结构 =================
 
@@ -29,6 +89,8 @@ pub struct UserRanking {
     /// `user.avatar`，实现端没给时为空
     pub avatar: String,
     pub count: i64,
+    /// 成对口径的另一面（字数↔条数）；不适用时为 0。
+    pub side: i64,
 }
 
 /// 群组活跃排行
@@ -39,6 +101,16 @@ pub struct GuildRanking {
     /// `guild.avatar`，实现端没给时为空
     pub avatar: String,
     pub count: i64,
+}
+
+/// 「我的」榜的一行：某个群里我的那个数，外加成对口径的另一面。
+#[derive(Debug, FromQueryResult)]
+pub struct GuildMetricRanking {
+    pub guild_id: String,
+    pub guild_name: String,
+    pub avatar: String,
+    pub count: i64,
+    pub side: i64,
 }
 
 /// 每日消息量走势
@@ -192,25 +264,30 @@ pub async fn get_user_ranking(
     start_time: i64,
     end_time: i64,
     limit: u64,
+    metric: UserMetric,
 ) -> Result<Vec<UserRanking>, DbErr> {
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_user_ranking(db, guild_id, start_time, end_time, limit).await;
+        return raw_user_ranking(db, guild_id, start_time, end_time, limit, metric).await;
     };
 
     let n = limit.min(MAX_RANKING_LIMIT);
     let mut params = Params::default();
     let g = params.guild(guild_id);
+    let (raw_count, raw_side) = (metric.raw_expr(), metric.raw_companion());
     let partials = partial_union_subqueries(&sr.partials, |s, e| {
         let g = params.guild(guild_id);
         format!(
-            "UNION ALL SELECT user_id, MAX(member_nick) AS nickname, MAX(user_avatar) AS avatar, COUNT(*) AS cnt \
+            "UNION ALL SELECT user_id, MAX(member_nick) AS nickname, MAX(user_avatar) AS avatar, \
+             {raw_count} AS cnt, {raw_side} AS side \
              FROM message_records WHERE time >= {s} AND time < {e}{g} GROUP BY user_id"
         )
     });
+    let (col, side) = (metric.agg_column(), metric.agg_companion());
     let sql = format!(
-        "SELECT user_id, MAX(nickname) AS nickname, MAX(avatar) AS avatar, SUM(cnt) AS count FROM (\
-           SELECT user_id, member_nick AS nickname, user_avatar AS avatar, msg_count AS cnt \
+        "SELECT user_id, MAX(nickname) AS nickname, MAX(avatar) AS avatar, SUM(cnt) AS count, \
+           SUM(side) AS side FROM (\
+           SELECT user_id, member_nick AS nickname, user_avatar AS avatar, {col} AS cnt, {side} AS side \
            FROM message_user_stats_daily \
            WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g} \
            {partials} \
@@ -219,6 +296,35 @@ pub async fn get_user_ranking(
     UserRanking::find_by_statement(params.statement(db, sql))
         .all(db)
         .await
+}
+
+/// 某个人在区间内某一口径的合计。
+///
+/// 榜外补位用：没进前 N 名也要给个数，不然「★」那一行只能写个零。
+pub async fn get_user_metric_total(
+    db: &DatabaseConnection,
+    guild_id: Option<&str>,
+    user_id: &str,
+    start_time: i64,
+    end_time: i64,
+    metric: UserMetric,
+) -> Result<i64, DbErr> {
+    let mut query = MessageLogs::find()
+        .select_only()
+        .column_as(
+            Expr::cust(format!("COALESCE({}, 0)", metric.raw_expr())),
+            "count",
+        )
+        .filter(entity::Column::Time.gte(start_time))
+        .filter(entity::Column::Time.lt(end_time))
+        .filter(entity::Column::UserId.eq(user_id));
+
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
+    }
+
+    let row: Option<i64> = query.into_tuple().one(db).await?;
+    Ok(row.unwrap_or(0))
 }
 
 /// 获取群组活跃排行
@@ -267,76 +373,41 @@ pub async fn get_user_guild_participation_ranking(
     start_time: i64,
     end_time: i64,
     limit: u64,
-) -> Result<Vec<GuildRanking>, DbErr> {
+    metric: UserMetric,
+) -> Result<Vec<GuildMetricRanking>, DbErr> {
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_user_guild_participation_ranking(db, user_id, start_time, end_time, limit)
-            .await;
+        return raw_user_guild_participation_ranking(
+            db, user_id, start_time, end_time, limit, metric,
+        )
+        .await;
     };
 
     let n = limit.min(MAX_RANKING_LIMIT);
     let mut params = Params::default();
     let user = params.bind(user_id);
+    let (raw_count, raw_side) = (metric.raw_expr(), metric.raw_companion());
     let partials = partial_union_subqueries(&sr.partials, |s, e| {
         let user = params.bind(user_id);
         format!(
-            "UNION ALL SELECT guild_id, MAX(guild_name) AS guild_name, COUNT(*) AS cnt \
+            "UNION ALL SELECT guild_id, MAX(guild_name) AS guild_name, {raw_count} AS cnt, {raw_side} AS side \
              FROM message_records WHERE time >= {s} AND time < {e} \
              AND user_id = {user} AND guild_id != '' GROUP BY guild_id"
         )
     });
+    let (col, side) = (metric.agg_column(), metric.agg_companion());
     let sql = format!(
         "SELECT guild_id, MAX(guild_name) AS guild_name, \
            (SELECT MAX(guild_avatar) FROM message_stats_daily a WHERE a.guild_id = t.guild_id) AS avatar, \
-           SUM(cnt) AS count FROM (\
-           SELECT guild_id, guild_name, msg_count AS cnt \
+           SUM(cnt) AS count, SUM(side) AS side FROM (\
+           SELECT guild_id, guild_name, {col} AS cnt, {side} AS side \
            FROM message_user_stats_daily \
            WHERE user_id = {user} AND guild_id != '' \
              AND stat_date >= '{from}' AND stat_date <= '{to}' \
            {partials} \
          ) t GROUP BY guild_id ORDER BY count DESC LIMIT {n}"
     );
-    GuildRanking::find_by_statement(params.statement(db, sql))
-        .all(db)
-        .await
-}
-
-/// 获取用户表情包使用量排行
-///
-/// 整日部分走 message_user_stats_daily（anim_emoji_count 聚合），
-/// 非整日边界回退原始表。
-pub async fn get_user_emoji_ranking(
-    db: &DatabaseConnection,
-    guild_id: Option<&str>,
-    start_time: i64,
-    end_time: i64,
-    limit: u64,
-) -> Result<Vec<UserRanking>, DbErr> {
-    let sr = stats::split_range(start_time, end_time);
-    let Some((from, to)) = sr.full_days else {
-        return raw_user_emoji_ranking(db, guild_id, start_time, end_time, limit).await;
-    };
-
-    let n = limit.min(MAX_RANKING_LIMIT);
-    let mut params = Params::default();
-    let g = params.guild(guild_id);
-    let partials = partial_union_subqueries(&sr.partials, |s, e| {
-        let g = params.guild(guild_id);
-        format!(
-            "UNION ALL SELECT user_id, MAX(member_nick) AS nickname, MAX(user_avatar) AS avatar, \
-             SUM(CAST(is_anim_emoji AS integer)) AS cnt \
-             FROM message_records WHERE time >= {s} AND time < {e}{g} GROUP BY user_id"
-        )
-    });
-    let sql = format!(
-        "SELECT user_id, MAX(nickname) AS nickname, MAX(avatar) AS avatar, SUM(cnt) AS count FROM (\
-           SELECT user_id, member_nick AS nickname, user_avatar AS avatar, anim_emoji_count AS cnt \
-           FROM message_user_stats_daily \
-           WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g} \
-           {partials} \
-         ) GROUP BY user_id ORDER BY count DESC LIMIT {n}"
-    );
-    UserRanking::find_by_statement(params.statement(db, sql))
+    GuildMetricRanking::find_by_statement(params.statement(db, sql))
         .all(db)
         .await
 }
@@ -711,6 +782,7 @@ async fn raw_user_ranking(
     start_time: i64,
     end_time: i64,
     limit: u64,
+    metric: UserMetric,
 ) -> Result<Vec<UserRanking>, DbErr> {
     let mut query = MessageLogs::find()
         .select_only()
@@ -723,10 +795,8 @@ async fn raw_user_ranking(
             Expr::from(Func::max(Expr::col(entity::Column::UserAvatar))),
             "avatar",
         )
-        .column_as(
-            Expr::from(Func::count(Expr::col(entity::Column::Id))),
-            "count",
-        )
+        .column_as(Expr::cust(metric.raw_expr()), "count")
+        .column_as(Expr::cust(metric.raw_companion()), "side")
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time));
 
@@ -781,7 +851,8 @@ async fn raw_user_guild_participation_ranking(
     start_time: i64,
     end_time: i64,
     limit: u64,
-) -> Result<Vec<GuildRanking>, DbErr> {
+    metric: UserMetric,
+) -> Result<Vec<GuildMetricRanking>, DbErr> {
     MessageLogs::find()
         .select_only()
         .column(entity::Column::GuildId)
@@ -793,10 +864,8 @@ async fn raw_user_guild_participation_ranking(
             Expr::from(Func::max(Expr::col(entity::Column::GuildAvatar))),
             "avatar",
         )
-        .column_as(
-            Expr::from(Func::count(Expr::col(entity::Column::Id))),
-            "count",
-        )
+        .column_as(Expr::cust(metric.raw_expr()), "count")
+        .column_as(Expr::cust(metric.raw_companion()), "side")
         .filter(entity::Column::Time.gte(start_time))
         .filter(entity::Column::Time.lt(end_time))
         .filter(entity::Column::UserId.eq(user_id))
@@ -804,48 +873,7 @@ async fn raw_user_guild_participation_ranking(
         .group_by(entity::Column::GuildId)
         .order_by_desc(Expr::custom_keyword(Alias::new("count")))
         .limit(limit.min(MAX_RANKING_LIMIT))
-        .into_model::<GuildRanking>()
-        .all(db)
-        .await
-}
-
-async fn raw_user_emoji_ranking(
-    db: &DatabaseConnection,
-    guild_id: Option<&str>,
-    start_time: i64,
-    end_time: i64,
-    limit: u64,
-) -> Result<Vec<UserRanking>, DbErr> {
-    let count_expr = Func::cast_as(
-        Expr::col(entity::Column::IsAnimEmoji),
-        Alias::new("integer"),
-    );
-    let sum_expr = SimpleExpr::from(Func::sum(count_expr));
-
-    let mut query = MessageLogs::find()
-        .select_only()
-        .column(entity::Column::UserId)
-        .column_as(
-            Expr::from(Func::max(Expr::col(entity::Column::MemberNick))),
-            "nickname",
-        )
-        .column_as(
-            Expr::from(Func::max(Expr::col(entity::Column::UserAvatar))),
-            "avatar",
-        )
-        .column_as(sum_expr, "count")
-        .filter(entity::Column::Time.gte(start_time))
-        .filter(entity::Column::Time.lt(end_time));
-
-    if let Some(gid) = guild_id {
-        query = query.filter(entity::Column::GuildId.eq(gid));
-    }
-
-    query
-        .group_by(entity::Column::UserId)
-        .order_by_desc(Expr::custom_keyword(Alias::new("count")))
-        .limit(limit.min(MAX_RANKING_LIMIT))
-        .into_model::<UserRanking>()
+        .into_model::<GuildMetricRanking>()
         .all(db)
         .await
 }

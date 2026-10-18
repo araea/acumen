@@ -10,7 +10,7 @@ use crate::plugins::stats::StatsConfig;
 
 use self::avatar::prepare_avatars;
 use self::data_loader::{
-    BanBoard, BarData, Rank, SeriesData, fetch_ban_bars, fetch_bar_data, fetch_line_data,
+    BanBoard, BarData, Rank, SeriesData, TextBoard, fetch_ban_bars, fetch_bar_data, fetch_line_data,
 };
 use self::renderer::{BarUnit, draw_bar_chart, draw_line_chart, draw_message_type_ranking};
 
@@ -73,8 +73,17 @@ pub fn is_ban_ranking(data_type: &str) -> bool {
     BanBoard::parse(data_type).is_some()
 }
 
-/// 榜名里数据类型那一段：禁言时长榜写明「累计」，别名（总时长）也统一成这个写法；其余原样。
+/// 文字类榜：按纯文本消息条数或文本字数排。
+pub fn is_text_ranking(data_type: &str) -> bool {
+    TextBoard::parse(data_type).is_some()
+}
+
+/// 榜名里数据类型那一段：禁言时长榜写明「累计」，别名（总时长）也统一成这个写法；
+/// 文字类榜把「字数」「纯文本」这类顺口说法统一成「发言字数」「文本消息」；其余原样。
 pub fn ranking_name(data_type: &str) -> &str {
+    if let Some(board) = TextBoard::parse(data_type) {
+        return board.name();
+    }
     BanBoard::parse(data_type).map_or(data_type, |board| board.name())
 }
 
@@ -131,6 +140,10 @@ pub async fn generate(
             };
             (bars, unit, notes)
         } else {
+            let unit = match TextBoard::parse(data_type) {
+                Some(TextBoard::Chars) => BarUnit::Chars,
+                _ => BarUnit::Count,
+            };
             let bars = fetch_bar_data(
                 db,
                 is_all_groups,
@@ -143,7 +156,7 @@ pub async fn generate(
                 limit,
             )
             .await?;
-            (bars, BarUnit::Count, Vec::new())
+            (bars, unit, Vec::new())
         };
 
     // 3. 准备头像

@@ -420,6 +420,8 @@ async fn insert(
         is_anim_emoji: active_bool(&record.is_anim_emoji),
         is_voice: active_bool(&record.is_voice),
         is_video: active_bool(&record.is_video),
+        is_music: active_bool(&record.is_music),
+        is_forward: active_bool(&record.is_forward),
         face_count: active_i32(&record.face_count),
     };
     // 消息插入 + 聚合 UPSERT 在同一事务内：要么同时生效，要么同时回滚

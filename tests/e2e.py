@@ -3,8 +3,8 @@
 
 覆盖：指令（echo）、复读（接力 + satori-qq 时效参数 + 跟读记录落盘）、跟随撤回、
 引用类指令的报错回复（sticker）、/ctl 读写配置（原子写、0600）、自发消息入库、
-禁言通知入库与禁言排行榜（出图需要字体：E2E_FONT 指一个字体文件，缺省用 Termux 的 MiSans，
-都没有就只验入库与文字提示）。
+禁言通知入库与禁言排行榜、文字榜（字数与纯文本消息条数）的入库与出图（出图需要字体：
+E2E_FONT 指一个字体文件，缺省用 Termux 的 MiSans，都没有就只验入库与文字提示）。
 `E2E_STARTUP=1` 改为「除 console / restart 外全部启用，连上后空等 25 秒」，只看启动有无
 ERRO 与 panic（不碰真账号：被测实例连的是自己起的假端口）。
 
@@ -291,6 +291,45 @@ async def main():
         await inject("message-created", "10002", "/本群上月禁言排行榜")
         await wait_for(lambda: any("没有数据" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "空榜提示")
         check("没有禁言的区间：给出空态说明", True)
+
+        print("9. 文字榜：字数、纯文本消息（图片、表情包、语音不算）")
+        # 10011：一条 20 字；10012：三段各 4 字；10013：只有表情包；
+        # 10014：50 字配一张图——算字数，但不算一条纯文本消息。
+        await inject("message-created", "10011", "一" * 20)
+        for text in ("甲乙丙丁", "戊己庚辛", "壬癸子丑"):
+            await inject("message-created", "10012", text)
+        await inject("message-created", "10013", "<mface/>")
+        await inject("message-created", "10014", "三" * 50 + '<img src="x.png"/>')
+        await asyncio.sleep(1.5)
+        db = sqlite3.connect(f"file:{os.path.join(WORK, 'data', 'bot.db')}?mode=ro", uri=True)
+        rows = {uid: (chars, msgs) for uid, chars, msgs in db.execute(
+            "select user_id, sum(text_chars), sum(text_msg_count) from message_user_stats_daily group by user_id")}
+        db.close()
+        check("字数与纯文本条数落库：分段三条胜过一条",
+              rows.get("10014") == (50, 0) and rows.get("10011") == (20, 1) and rows.get("10012") == (12, 3), str(rows))
+        check("只有表情包：既不算字也不算纯文本消息", rows.get("10013", (0, 0)) == (0, 0), str(rows.get("10013")))
+
+        mark = len(posts)
+        await inject("message-created", "10002", "/本群今日发言字数走势")
+        await wait_for(lambda: any("只有排行榜" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "字数走势的说明")
+        check("文字榜没有走势：给出说明", True)
+
+        if FONT:
+            for command in ("/本群今日发言字数排行榜", "/本群今日文本消息排行榜",
+                            "/本群今日字数排行榜 5", "/本群今日文本排行榜", "/我的总发言字数排行榜"):
+                mark = len(posts)
+                await inject("message-created", "10002", command)
+                await wait_for(lambda: any("<img" in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), f"{command} 出图", 60)
+                check(f"{command} 出图", True)
+                if os.environ.get("E2E_IMAGES"):
+                    os.makedirs(os.environ["E2E_IMAGES"], exist_ok=True)
+                    shot = next(b["content"] for m, b in reversed(posts[mark:]) if m == "message.create" and "<img" in b.get("content", ""))
+                    blob = re.search(r"base64://([A-Za-z0-9+/=]+)", shot)
+                    if blob:
+                        with open(os.path.join(os.environ["E2E_IMAGES"], command.strip("/") + ".png"), "wb") as out:
+                            out.write(base64.b64decode(blob.group(1)))
+        else:
+            print("  跳过 文字榜出图（没有可用字体，设 E2E_FONT）")
     except SystemExit_:
         pass
     except AssertionError as error:
