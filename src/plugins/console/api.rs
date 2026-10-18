@@ -38,7 +38,8 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/friends", get(friends))
         .route("/logs", get(log_history))
         .route("/logs/stream", get(log_stream))
-        .route("/command", post(command));
+        .route("/command", post(command))
+        .route("/restart", post(restart));
     router.layer(axum::middleware::from_fn_with_state(
         console,
         super::server::guard,
@@ -820,6 +821,25 @@ async fn command(State(console): State<Arc<Console>>, Json(body): Json<Command>)
     }
     match crate::plugins::ctl::execute(&console.local(), &input).await {
         Ok(output) => Json(json!({ "message": output.text })).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+// ==================== 重启 ====================
+
+/// 总览页那颗「重启」按钮。
+///
+/// 与 `/restart` 指令、每日定时重启共用同一条请求：防抖标记在这里只读，
+/// 真正的置位与清理仍由 `restart::do_restart` 与主循环负责。延一小会儿
+/// 再喊，好让这条回执先写回浏览器；页面随后会自己轮询到新进程。
+async fn restart(State(console): State<Arc<Console>>) -> Response {
+    let delay = std::time::Duration::from_millis(1200);
+    match crate::plugins::restart::request_now(&console.local(), "控制台", delay) {
+        Ok(()) => Json(json!({
+            "message": "正在重启，本页会在就绪后自动恢复",
+            "delay": delay.as_secs_f64(),
+        }))
+        .into_response(),
         Err(message) => bad(message),
     }
 }

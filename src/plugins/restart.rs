@@ -216,20 +216,33 @@ pub fn handle(
 /// 要等当前这一轮回复发出去——房间的卡片渲染加发送要好几秒，所以延迟不低于 8 秒。
 /// 插件没开或已经在重启中时返回原因，工具把它如实转告。
 pub(crate) fn schedule(ctx: &Context, reason: &str, delay: Duration) -> Result<Duration, String> {
+    let delay = delay.max(Duration::from_secs(8));
+    arm(ctx, reason, delay)?;
+    Ok(delay)
+}
+
+/// 控制台上的那颗「重启」按钮用：回执写完就可以走，不必等群消息那 8 秒。
+///
+/// 与 `schedule` 共用同一道防抖与同一条请求，区别只在延迟；延迟是用来让这份
+/// HTTP 回执先落到浏览器的，不能被压到零。
+pub(crate) fn request_now(ctx: &Context, reason: &str, delay: Duration) -> Result<(), String> {
+    arm(ctx, reason, delay)
+}
+
+fn arm(ctx: &Context, reason: &str, delay: Duration) -> Result<(), String> {
     if !get_config::<RestartConfig>(ctx).is_some_and(|cfg| cfg.enabled) {
         return Err("restart 插件没有开启，先用 enable 开启它".into());
     }
     if RESTARTING.load(Ordering::SeqCst) {
         return Err("已经有一次重启在进行中".into());
     }
-    let delay = delay.max(Duration::from_secs(8));
     let ctx = ctx.clone();
     let reason = reason.to_string();
     tokio::spawn(async move {
         tokio::time::sleep(delay).await;
         do_restart(&ctx, reason).await;
     });
-    Ok(delay)
+    Ok(())
 }
 
 /// 只提出请求，统一由主循环清理，避免定时任务中止自身或两个进程同时写配置。

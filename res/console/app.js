@@ -637,7 +637,7 @@
     return h`<div class="page">
       ${pageHead("总览", "这台设备上知微的运行情况。")}
       <div class="overview">
-        <section class="hero" aria-labelledby="hero-label">
+        <section class="hero" aria-labelledby="hero-label" data-started="${data.app.started}">
           <span class="hero-art" aria-hidden="true"></span>
           <div class="hero-top"><span>${NAME} v${data.app.version}</span><span class="status status-success">运行中</span></div>
           <h2 class="hero-label" id="hero-label">已连续运行</h2>
@@ -646,6 +646,7 @@
           <div class="actions">
             <a class="btn btn-filled" href="#/logs">${icon("receipt_long")}查看日志</a>
             <a class="btn btn-outlined" href="#/plugins">${icon("extension")}管理插件</a>
+            <button class="btn btn-outlined" type="button" data-restart>${icon("restart_alt")}重启</button>
           </div>
         </section>
 
@@ -681,6 +682,56 @@
         </section>
       </div>
     </div>`;
+  }
+
+  /**
+   * 重启。回执只说明「已经排上」：真正的就绪以新进程的启动时间为准，
+   * 所以轮询到 `app.started` 变了才刷新，而不是看到端口能连上就当成功——
+   * 旧进程在收尾的那一小段里还答得出来。
+   */
+  async function restartBot(button) {
+    const started = $(".hero")?.dataset.started ?? "";
+    const ok = await confirmAction({
+      title: "重启知微？",
+      body: "会重新载入配置与插件；正在进行的对话、截图与排期随之中断，几秒后本页自动恢复。",
+      confirm: "重启",
+    });
+    if (!ok) return;
+
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    busy(true);
+    try {
+      const reply = await api("/restart", { method: "POST" });
+      snackbar(reply.message);
+      holdSnack(true);
+    } catch (error) {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      busy(false);
+      report(error);
+      return;
+    }
+
+    // 先把回执那一小段等过去，再开始探活。
+    await new Promise((done) => setTimeout(done, 1800));
+    for (let i = 0; i < 90; i++) {
+      try {
+        const data = await api("/overview");
+        if (data.app.started !== started) {
+          location.reload();
+          return;
+        }
+      } catch {
+        /* 端口关着就是还在重启 */
+      }
+      await new Promise((done) => setTimeout(done, 1200));
+    }
+    holdSnack(false);
+    busy(false);
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    snackbar("重启还没有回来，稍后刷新页面看看。", "error");
   }
 
   /* ==================== §8 插件 ==================== */
@@ -2561,6 +2612,7 @@
         }
         return;
       }
+      if ((hit = on("[data-restart]"))) return restartBot(hit);
       if ((hit = on("[data-run]"))) {
         const input = $("#command-input");
         if (input) input.value = hit.dataset.run;
