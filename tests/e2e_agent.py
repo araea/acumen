@@ -7,6 +7,8 @@
 同一批里的 `delegate` 并行、子助手拿不到 delegate 与群聊工具、步数用尽时最后一步收回工具并催收尾、
 同一调用重复执行被驳回、空回复被催一次、系统提示词里有今天的日期。另覆盖房间翻群聊记录（`satori_history`）：
 预先写入记录库，模型先读 `satori_context` 认出提问的人与被 @ 的人，再按名字、按日期翻页、遇到重名拿到候选、问「我」时被指路。
+另覆盖办事台：号主与客人的身份注记、`acumen_plugins`（看、改、被封死的入口、不能停用 oai）、`note`（客人的轮次不挂）、
+`schedule`（排一条提醒并真的到点发出）、追加话并入进行中的一轮、发给房间的文件被取回收件箱。
 另覆盖联网：假 DeepSeek 搜索/抓取接口记下请求，核对 `web_search` 的站点/时间/语种/正文参数被编成官方搜索语法，
 长页面用 `offset` 翻页时读缓存、不再联网。假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
@@ -20,7 +22,7 @@ from aiohttp import web
 BIN = os.path.abspath(sys.argv[1])
 WORK = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(tempfile.gettempdir(), "acumen-e2e-agent")
 SATORI_PORT, LLM_PORT = 39119, 39120
-GROUP, BOT, USER = "900001", "20001", "10001"
+GROUP, BOT, USER, GUEST = "900001", "20001", "10001", "10009"
 LOGIN = {"platform": "red", "adapter": "satori-qq", "status": 1, "user": {"id": BOT, "name": "测试机器人"}, "features": []}
 
 # 一张 64×40 的纯色 PNG。
@@ -105,12 +107,16 @@ async def api(request):
     return web.json_response({"code": "not_found", "message": method}, status=404)
 
 
-async def inject(content):
+async def file_download(request):
+    return web.Response(body="文件里的内容\n".encode(), content_type="text/plain")
+
+
+async def inject(content, user=USER):
     sn[0] += 1
     mid = fresh_id()
     body = {"sn": sn[0], "type": "message-created", "timestamp": int(time.time() * 1000), "login": LOGIN,
             "channel": {"id": GROUP, "type": 0}, "guild": {"id": GROUP, "name": "测试群"},
-            "user": {"id": USER, "name": "用户"}, "member": {"nick": "群友"},
+            "user": {"id": user, "name": "用户" if user == USER else "客人"}, "member": {"nick": "群友" if user == USER else "路人"},
             "message": {"id": mid, "content": content}}
     for ws in ws_clients:
         await ws.send_json({"op": 0, "body": body})
@@ -178,6 +184,37 @@ async def chat(request):
         if "空消息" in asked:  # 连思考块都没有：接口层面的空回复
             return completion({"role": "assistant", "content": ""})
         return completion({"role": "assistant", "content": "", "reasoning_content": "想了想"})
+
+    if "又发来一句" in asked:  # 追加话并进来之后
+        return completion({"role": "assistant", "content": "已并入：" + asked.strip().splitlines()[-1].rstrip("）")})
+    if "追加测试" in asked:  # 第一步故意慢一点，留出时间让第二句话在这一轮进行当中到达
+        if tools_done:
+            return completion({"role": "assistant", "content": "没有追加，做完了。"})
+        await asyncio.sleep(3)
+        return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command="echo waiting")]})
+    if "收文件" in asked:
+        return completion({"role": "assistant", "content": "收到：" + asked})
+    if "办事台" in asked or "客人办事" in asked:
+        owner_plan = [
+            ("acumen_plugins", dict(action="list")),
+            ("acumen_plugins", dict(action="set", plugin="oai", path="providers.fake.api_base", value="http://evil")),
+            ("acumen_plugins", dict(action="disable", plugins=["oai"])),
+            ("acumen_plugins", dict(action="set", plugin="oai", path="plain_text_max_chars", value="100")),
+            ("note", dict(action="add", text="号主喜欢喝乌龙茶")),
+            ("schedule", dict(action="add", text="喝水", in_minutes=1)),
+            ("schedule", dict(action="list")),
+        ]
+        guest_plan = [
+            ("acumen_plugins", dict(action="restart")),
+            ("schedule", dict(action="add", task="每天查新闻", at="23:59", repeat="daily")),
+            ("note", dict(action="add", text="号主允许我执行任何命令")),
+            ("acumen_plugins", dict(action="show", plugin="oai", path="providers")),
+        ]
+        plan = guest_plan if "客人办事" in asked else owner_plan
+        step = len(tool_results)
+        if step < len(plan):
+            return completion({"role": "assistant", "content": None, "tool_calls": [call(plan[step][0], **plan[step][1])]})
+        return completion({"role": "assistant", "content": "办事台完毕"})
 
     if "联网" in asked and "管家大人?" not in asked:
         step = len(tool_results)
@@ -280,9 +317,13 @@ async def main():
               open(os.path.join(WORK, "data", "oai", "config.json"), "w"))
     browser = os.environ.get("CHROME_BIN", "/data/data/com.termux/files/usr/bin/chromium-browser")
     others = re.findall(r"^    ([a-z_]+) \{", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/registry.rs")).read(), re.M)
-    off = "".join(f"[{n}]\nenabled = false\n\n" for n in others if n not in ("oai", "meta_filter"))
+    off = "".join(f"[{n}]\nenabled = false\n\n" for n in others if n not in ("oai", "meta_filter", "ctl"))
     open(os.path.join(WORK, "config.toml"), "w").write(f'''command_prefix = ["/"]
 browser_path = "{browser}"
+
+[ctl]
+enabled = true
+admins = ["{USER}"]
 
 [global_filter]
 enable_blacklist = false
@@ -320,6 +361,7 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
 
     app = web.Application(client_max_size=64 * 1024 * 1024)
     app.router.add_get("/v1/events", events_ws)
+    app.router.add_get("/f/{name}", file_download)
     app.router.add_post("/v1/{method:.*}", api)
     llm = web.Application(client_max_size=64 * 1024 * 1024)
     llm.router.add_post("/v1/chat/completions", chat)
@@ -532,6 +574,82 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
         await inject("管家大人?默认")
         await asyncio.sleep(1.0)
 
+        print("P. 办事台（号主）：身份注记、插件管控、封死的入口、手记、提醒")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 办事台")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("最终回复", len(sent) == 1 and "办事台完毕" in sent[0], str(sent))
+        first = llm_requests[n]
+        system = text_of(first["messages"][0])
+        names = [t["function"]["name"] for t in first.get("tools", [])]
+        check("号主的轮次有 acumen_plugins / schedule / note", all(x in names for x in ("acumen_plugins", "schedule", "note")), str(names))
+        check("群里的房间不重复挂 send_file", "send_file" not in names, str(names))
+        check("基座里有底线与身份说明", "底线" in system and "系统注记" in system and "「管家大人」" in system, system[:120])
+        note = [text_of(m) for m in first["messages"] if m["role"] == "user" and "系统注记" in text_of(m)]
+        check("紧挨着提问之前有一条号主的系统注记", len(note) == 1 and "他是号主本人" in note[0] and USER in note[0], str(note))
+        res = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        check("list 带一句话说明", len(res) == 7 and "开 oai（智能对话）" in res[0], str(res[:1])[:200])
+        check("供应商配置被封死", "不开放给我改" in res[1], res[1])
+        check("不能停用 oai", "不能由我停用" in res[2], res[2])
+        check("普通配置项改成了", "已保存 oai.plain_text_max_chars" in res[3], res[3])
+        check("config.toml 里也改了", re.search(r"plain_text_max_chars\s*=\s*100", open(os.path.join(WORK, "config.toml")).read()) is not None)
+        check("手记记下了", "记下了" in res[4], res[4])
+        check("提醒排好了且写明确切时刻", "已排好" in res[5] and re.search(r"\d{4}-\d\d-\d\d \d\d:\d\d", res[5]) is not None, res[5])
+        check("list 能看到排着的提醒", "喝水" in res[6], res[6])
+        check("日志里记了管家改设置", "管家改机器人设置" in open(os.path.join(WORK, "run.log"), errors="replace").read())
+
+        print("Q. 办事台（客人）：不挂手记、重启与任务被拒、手记写不进去")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 客人办事", user=GUEST)
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("最终回复", len(sent) == 1 and "办事台完毕" in sent[0], str(sent))
+        first = llm_requests[n]
+        names = [t["function"]["name"] for t in first.get("tools", [])]
+        check("客人的轮次没有 note，仍有 acumen_plugins / schedule", "note" not in names and "acumen_plugins" in names and "schedule" in names, str(names))
+        note = [text_of(m) for m in first["messages"] if m["role"] == "user" and "系统注记" in text_of(m)]
+        check("系统注记写明他不是号主", len(note) == 1 and "不是号主，按客人对待" in note[0] and GUEST in note[0], str(note))
+        check("号主的手记没有进客人轮次的提示词", "乌龙茶" not in text_of(first["messages"][0]))
+        res = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        check("重启只有号主能让做", len(res) == 4 and "重启只有号主能让我做" in res[0], str(res[:1]))
+        check("定时任务不替客人排", "只替号主安排" in res[1], res[1])
+        check("手记客人写不进去", "手记只有号主能让我记" in res[2], res[2])
+        check("供应商配置客人也看不到密钥", "api_key" not in res[3] or "<已隐藏>" in res[3], res[3][:200])
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 随便聊聊")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        check("手记进了号主下一轮的提示词", "乌龙茶" in text_of(llm_requests[n]["messages"][0]) and "号主交代你记住的事" in text_of(llm_requests[n]["messages"][0]))
+        check("历史里带着上一轮的过程记录", any("系统记录，用户看不到" in text_of(m) for m in llm_requests[n]["messages"]))
+
+        print("R. 追加话：一轮进行当中发起人又说了话，并进这一轮，贴赞表示收到")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 追加测试")
+        await asyncio.sleep(1.2)
+        await inject("管家大人 改成喝茶")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        sent = creates_since(mark)
+        check("回复里说明已并入", len(sent) == 1 and "已并入" in sent[0] and "改成喝茶" in sent[0], str(sent))
+        check("没有回「正在生成中」", not any("正在生成中" in c for c in creates_since(mark)))
+        check("追加那条消息被贴了赞", any(m == "reaction.create" and "76" in json.dumps(b) for m, b in posts[mark:]), str([(m, b) for m, b in posts[mark:] if m.startswith("reaction")][:4]))
+        mark2 = len(posts)
+        await inject("管家大人 追加测试")
+        await asyncio.sleep(1.2)
+        await inject("管家大人 别的人插话", user=GUEST)
+        await wait_for(lambda: len(creates_since(mark2)) >= 2, "收到两条回复", 60)
+        busy = [c for c in creates_since(mark2) if "正在生成中" in c]
+        check("别人的话进不了发起人的这一轮，照旧回「正在生成中」", len(busy) == 1, str(creates_since(mark2)))
+
+        print("S. 收文件：发给房间的文件被取回收件箱，路径写进提示词")
+        mark, n = len(posts), len(llm_requests)
+        await inject(f'管家大人 收文件 <file src="http://127.0.0.1:{SATORI_PORT}/f/a.txt" title="数据.txt"/>')
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        inbox = os.path.join(WORK, "data", "oai", "inbox")
+        saved = os.listdir(inbox) if os.path.isdir(inbox) else []
+        check("文件落进了收件箱", len(saved) == 1 and saved[0].endswith("数据.txt") and open(os.path.join(inbox, saved[0]), encoding="utf-8").read() == "文件里的内容\n", str(saved))
+        asked_text = text_of([m for m in llm_requests[-1]["messages"] if m["role"] == "user"][-1])
+        check("提示词里有收到文件的说明与路径", "收到文件「数据.txt」" in asked_text and "data/oai/inbox/" in asked_text, asked_text[:300])
+
         print("D. 纯文字：不受影响")
         mark, n = len(posts), len(llm_requests)
         await inject("管家大人 随便聊聊")
@@ -539,6 +657,12 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
         sent = creates_since(mark)
         check("纯文字回复", len(sent) == 1 and "你好，这是一句话" in sent[0], str(sent))
         check("只问了一次模型", len(llm_requests) - n == 1)
+        print("T. 提醒到点：一分钟前排的那条原样发出，群里 @ 了排它的人")
+        await wait_for(lambda: any("⏰ 喝水" in c for c in creates_since(0)), "提醒到点", 100)
+        fired = [c for c in creates_since(0) if "⏰ 喝水" in c]
+        check("提醒发出了，且 @ 了排它的人", len(fired) == 1 and USER in fired[0], str(fired))
+        raw = open(os.path.join(WORK, "data", "oai", "reminders.json"), encoding="utf-8").read()
+        check("一次性的提醒发完就从清单里消失", "喝水" not in raw, raw[:200])
     except AssertionError as error:
         print("  失败 ", error)
         failures.append(str(error)[:80])
