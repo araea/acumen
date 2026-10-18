@@ -9,7 +9,6 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use toml::Value;
 
-pub mod bridge;
 pub mod card;
 
 const LOG_TARGET: &str = "Plugin/Ctl";
@@ -20,8 +19,11 @@ pub struct Config {
     enabled: bool,
     /// Global operators, not group administrators. Empty means console only.
     admins: Vec<String>,
-    /// 允许在内置智能体房间里用自然语言驱动 ctl（见 bridge）。关闭后那些房间拿不到凭据。
+    /// 允许内置智能体用 `acumen_plugins` 工具改插件开关与配置。关闭后它只能看，不能改。
     agent_control: bool,
+    /// 号主以外的人（房间里的客人）提出时，智能体是否也可以动手改。默认开：这是部署者
+    /// 的选择（「我相信大家」）；凭据、接口地址、管理员这几类入口无论谁问都不开放。
+    guest_control: bool,
     /// 是否把用法、状态、配置与差异排版成卡片图；关掉或没有可用字体时退回纯文本。
     /// 短反馈（开关、设置、重置、报错）任何时候都走纯文本。
     image_enabled: bool,
@@ -34,6 +36,7 @@ impl Default for Config {
             enabled: true,
             admins: vec![],
             agent_control: true,
+            guest_control: true,
             image_enabled: true,
             image_scale: 3.0,
         }
@@ -41,7 +44,7 @@ impl Default for Config {
 }
 impl PluginConfig for Config {
     const NAME: &'static str = "ctl";
-    const MISMATCH: &'static str = "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、image_enabled 必须是布尔值，image_scale 必须是数字";
+    const MISMATCH: &'static str = "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、guest_control、image_enabled 必须是布尔值，image_scale 必须是数字";
 }
 
 pub fn is_manager(ctx: &Context) -> bool {
@@ -58,6 +61,43 @@ pub fn is_manager(ctx: &Context) -> bool {
         admins.is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(msg.user_id())))
     })
 }
+
+/// `[ctl].admins`：号主（以及他信任的其他全局管理员）。
+pub(crate) fn admin_ids(ctx: &Context) -> Vec<String> {
+    let cfg = ctx.config.read().unwrap();
+    cfg.plugins
+        .get("ctl")
+        .and_then(|v| v.get("admins"))
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+/// 这个用户是不是号主：`ctl.admins` 里的人，或账号自己（号主就在这个账号上亲手打字）。
+pub(crate) fn is_owner(ctx: &Context, user_id: &str) -> bool {
+    !user_id.is_empty()
+        && (ctx.bot.self_id() == user_id || admin_ids(ctx).iter().any(|id| id == user_id))
+}
+
+/// 把上下文换成维护者身份：本机控制台一向等同维护者，智能体的 `acumen_plugins` 工具走同一条
+/// 身份，免得同一份命令在两处得到两种结果。谁能让智能体动手由工具自己把关（见
+/// [`agent_may_change`]）；ctl 自己的保命规则（不能关掉 ctl、不能锁死管理入口）照旧生效。
+pub(crate) fn maintainer(ctx: &Context) -> Context {
+    let mut ctx = ctx.clone();
+    ctx.bot = std::sync::Arc::new(crate::event::BotStatus {
+        adapter: "console".to_string(),
+        platform: "console".to_string(),
+        login_user: ctx.bot.login_user.clone(),
+    });
+    ctx
+}
+
+/// 智能体能不能改配置：总开关，以及（对号主以外的人）客人开关。
+pub(crate) fn agent_may_change(ctx: &Context, owner: bool) -> bool {
+    let config = get_config_or_default::<Config>(ctx);
+    config.agent_control && (owner || config.guest_control)
+}
+
 pub const DENIED: &str = "此操作仅限 ctl.admins 中的全局管理员；请由本机维护者在 config.toml 的 [ctl] 中配置 admins = [\"用户 ID\"]";
 
 pub(crate) fn resolve(name: &str) -> Result<&'static Plugin, String> {

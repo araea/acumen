@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub mod data;
 pub mod images;
+pub mod remind;
 pub(crate) mod lists;
 pub(crate) mod llm;
 pub mod logic;
@@ -278,6 +279,17 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         });
 
         Ok(())
+    })
+}
+
+/// 机器人连上时：登记这个连接，提醒与定时任务的循环靠它发消息（见 [`remind`]）。
+pub fn on_connected(
+    ctx: Context,
+    writer: LockedWriter,
+) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
+    Box::pin(async move {
+        remind::connected(&ctx, &writer);
+        Ok(Some(ctx))
     })
 }
 

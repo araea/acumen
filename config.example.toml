@@ -55,14 +55,16 @@ access_token = ""
 enabled = true
 
 # 插件控制：全局开关与配置的统一入口，也是唯一一条写配置的路径。
-# 聊天里走 /ctl，agent 房间里走 `acumen --ctl`（一次性凭据）。两者都按这份 admins 判权。
+# 聊天里走 /ctl，内置 agent 走 `acumen_plugins` 工具（见 docs/CONTROL.md）。两者都按这份 admins 认号主。
 [ctl]
 enabled = true
 # 维护者的用户 ID（QQ 号、wxid……）。空列表表示只允许本机控制台管理，聊天里谁也不许改。
 # 例如 ["123456789"]（ID 一律写成字符串，同 Satori 协议）。改这一项要在私聊或控制台里做——群里的 ctl 动不了 admins。
 admins = []
-# 允许管理员在 agent 房间里用自然语言驱动 ctl（凭据仅本轮有效，见 docs/CONTROL.md）。
+# 允许内置 agent 用 acumen_plugins 工具改插件开关与配置；关掉后它只能看、不能改。
 agent_control = true
+# 号主以外的人（房间里的客人）提出时，agent 是否也可以动手改。凭据、管理员、控制台、模型供应商这几类入口无论谁问都不开放。
+guest_control = true
 # 用法、状态、配置与差异是否排版成卡片图；短反馈（开关、设置、重置、报错）始终走纯文本。
 # 网页卡片需要 Chrome/Chromium 与系统中日韩字体；出图失败时自动回退纯文本。
 image_enabled = true

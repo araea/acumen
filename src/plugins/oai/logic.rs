@@ -15,6 +15,9 @@ use super::LOG_TARGET;
 /// 「正在处理」的状态表情：贴在触发消息上，处理完再揭掉。
 const WORKING_EMOJI: &str = "124";
 
+/// 「已并入正在进行的这一轮」的回执表情（赞）：贴上就不揭，让人知道这句话没被丢掉。
+const STEERED_EMOJI: &str = "76";
+
 /// 给触发消息贴上或揭掉「正在处理」表情。机器人自己手动发的指令不贴；
 /// 贴不上不影响处理，只记一行调试日志。
 pub(crate) async fn mark_working(
@@ -411,6 +414,40 @@ fn prepare_history(
     hist
 }
 
+/// 房间的模型落到哪个接口：返回（接口基址、密钥、发给接口的模型 id）；失败时是一句可以直接回给用户的话。
+///
+/// 内置 agent 房间可以只写 `agent`（或干脆留空）表示「用默认模型」：先看 `[oai] agent_default_model`，
+/// 再退到 oai config.json 里的 default_model；普通房间没有这层回退——模型是建房时就定下的。
+/// 房间模型可以写成 `供应商/模型`，前缀决定打哪个接口，剥掉前缀的部分才是发给接口的模型 id。
+/// 定时任务到点开一轮时走的是同一条路，所以收在这里一处。
+pub(super) async fn room_endpoint(
+    agent: &Agent,
+    oai: &super::OaiConfig,
+    mgr: &Manager,
+    api: &(String, String),
+) -> Result<(String, String, String), String> {
+    let spec = if agent.uses_agent() && super::agent::uses_default_model(&agent.model) {
+        let fallback = mgr.config.read().await.default_model.clone();
+        oai.agent_default_model().unwrap_or(fallback.as_str()).to_string()
+    } else {
+        agent.model.clone()
+    };
+    if spec.trim().is_empty() {
+        return Err("❌ 这间内置房间还没指定模型：用 `房间%供应商/模型` 设一个，或配置 [oai] agent_default_model".to_string());
+    }
+    let (provider, chat_model) = super::utils::split_provider(&spec);
+    let Some((api_base, api_key)) = super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) else {
+        return Err(format!(
+            "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
+            provider.as_deref().unwrap_or_default()
+        ));
+    };
+    if api_base.is_empty() || api_key.is_empty() {
+        return Err("❌ API 未配置".to_string());
+    }
+    Ok((api_base, api_key, chat_model))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn chat(
     name: &str,
@@ -436,57 +473,42 @@ async fn chat(
 
     let use_agent = agent.uses_agent();
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-    // 内置 agent 房间可以只写 `agent`（或干脆留空）表示「用默认模型」：先看
-    // `[oai] agent_default_model`，再退到 oai config.json 里的 default_model。
-    // 普通房间没有这层回退——模型是建房时就定下的。
-    let spec = if use_agent && super::agent::uses_default_model(&agent.model) {
-        let fallback = mgr.config.read().await.default_model.clone();
-        oai.agent_default_model()
-            .unwrap_or(fallback.as_str())
-            .to_string()
-    } else {
-        agent.model.clone()
+    let (api_base, api_key, chat_model) = match room_endpoint(&agent, &oai, mgr, &api).await {
+        Ok(endpoint) => endpoint,
+        Err(message) => {
+            reply_text(ctx, writer, &event, message).await;
+            return;
+        }
     };
-    if spec.trim().is_empty() {
-        reply_text(
-            ctx,
-            writer,
-            &event,
-            "❌ 这间内置房间还没指定模型：用 `房间%供应商/模型` 设一个，或配置 [oai] agent_default_model",
-        )
-        .await;
-        return;
-    }
-    // 房间模型可以写成 `供应商/模型`；前缀决定打哪个接口，剥掉前缀的部分才是发给
-    // 接口的模型 id。内置 agent 房间同样按前缀选接口（见 `resolve_endpoint`）。
-    let (provider, chat_model) = super::utils::split_provider(&spec);
     // 按剥掉供应商前缀后的名字判家族，与后面的图像模型判断保持一致。
     if !use_agent && super::mj::is_mj_model(&chat_model) {
         // MJ 房间天生是无历史任务流；引用文字也不应混入绘图提示词。
         super::mj::handle_agent(&agent, &cmd.args, imgs, ctx, writer, mgr).await;
         return;
     }
-    let Some((api_base, api_key)) = super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) else {
-            reply_text(
-                ctx,
-                writer,
-                &event,
-                format!(
-                    "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
-                    provider.as_deref().unwrap_or_default()
-                ),
-            )
-            .await;
-            return;
-        };
 
     let is_priv_ctx = cmd.private_reply;
     let uid = event.user_id().to_string();
     let temp_mode = cmd.temp_mode;
 
     if !temp_mode {
-        let generating = mgr.generating.read().await;
-        if generating.is_generating(name, is_priv_ctx, &uid) {
+        let busy = mgr.generating.read().await.is_generating(name, is_priv_ctx, &uid);
+        if busy {
+            // 智能体房间里，发起这一轮的人又发了话：并进正在跑的这一轮（贴个赞表示收到），
+            // 而不是让他等完再重发。带图的补充带不进去，仍按「正在生成」回。
+            if use_agent
+                && !regen
+                && imgs.is_empty()
+                && !prompt.is_empty()
+                && mgr.steer(name, is_priv_ctx, &uid, prompt.to_string())
+            {
+                if let Err(error) =
+                    api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), STEERED_EMOJI, true).await
+                {
+                    debug!(target: LOG_TARGET, "「已追加」表情贴不上：{error}");
+                }
+                return;
+            }
             reply_text(
                 ctx,
                 writer,
@@ -496,11 +518,6 @@ async fn chat(
             .await;
             return;
         }
-    }
-
-    if api_base.is_empty() || api_key.is_empty() {
-        reply_text(ctx, writer, &event, "❌ API 未配置").await;
-        return;
     }
 
     if !regen && prompt.is_empty() && imgs.is_empty() {
@@ -550,13 +567,17 @@ async fn chat(
     mark_working(ctx, writer, &event, true).await;
 
     let started = std::time::Instant::now();
-    // 这一轮内置智能体房间的对话可以用自然语言驱动 ctl；
-    // 凭据随 `control` 一起活到本轮结束。其余情况下拿到 None，行为与从前一致。
-    let control = if use_agent {
-        crate::plugins::ctl::bridge::lease(ctx).await
-    } else {
-        None
-    };
+    // 内置智能体房间这一轮的办事台：谁在问、在哪儿、够不够得着机器人本体（见 `agent::Seat`）。
+    let seat = use_agent.then(|| super::agent::Seat {
+        room: name.to_string(),
+        asker: super::agent::Asker::from_event(ctx, &event),
+        ctx: ctx.clone(),
+        group: event.group_id().map(str::to_string),
+        private: is_priv_ctx,
+        scheduled: false,
+    });
+    // 这一轮进行当中，发起人又发来的话排在这个信箱里（临时对话不占会话，不开）。
+    let steering = (use_agent && !temp_mode).then(|| mgr.open_steering(name, is_priv_ctx, &uid));
 
     // 出结果与到总预算在同一个任务里赛跑。用 select 而不是另起任务，是因为发消息
     // 要用借来的 ctx/event，搬进 spawn 就得整套克隆一遍。把工作 Future 放进独立
@@ -601,7 +622,8 @@ async fn chat(
                     &hist,
                     &oai,
                     mgr.path.parent().unwrap_or(&mgr.path),
-                    control.as_ref(),
+                    seat,
+                    steering.as_deref(),
                     chat,
                 )
                 .await
@@ -630,6 +652,9 @@ async fn chat(
         }
     };
 
+    // 撤掉追加信箱：此后的话照常回「正在生成中」；没来得及处理的话在下面记进历史或告诉用户。
+    let leftover = mgr.close_steering(name, is_priv_ctx, &uid);
+
     // 在保存历史前再次验证请求身份；旧请求不能清掉新请求的占用状态。
     if !temp_mode {
         let mut config = mgr.config.write().await;
@@ -638,11 +663,19 @@ async fn chat(
             generating.set_generating(name, is_priv_ctx, &uid, false);
             if let Some(Ok(Some(reply))) = &outcome {
                 if let Some(agent) = config.agents.iter_mut().find(|a| a.name == name) {
-                    agent.history_mut(is_priv_ctx, &uid).push(ChatMessage::new(
-                        "assistant",
-                        &reply.text,
-                        vec![],
-                    ));
+                    let history = agent.history_mut(is_priv_ctx, &uid);
+                    // 并进这一轮的追加话先记，再是回复：历史里的先后就是对话实际的先后。
+                    for extra in &reply.steered {
+                        history.push(ChatMessage::new("user", extra, vec![]));
+                    }
+                    history.push(
+                        ChatMessage::new("assistant", &reply.text, vec![])
+                            .with_work(super::agent::run::work_digest(&reply.trace, reply.trace_overflow)),
+                    );
+                    // 赶在收口前后脚到的话没人回应，记成用户消息，下一轮自然接上。
+                    for extra in &leftover {
+                        history.push(ChatMessage::new("user", extra, vec![]));
+                    }
                     if let Err(error) = mgr.save(&mut config) {
                         reply_text(
                             ctx,
@@ -662,6 +695,16 @@ async fn chat(
         } else {
             outcome = Some(Ok(None));
         }
+    }
+
+    if !leftover.is_empty() && !matches!(outcome, Some(Ok(Some(_)))) {
+        reply_text(
+            ctx,
+            writer,
+            &event,
+            format!("这一轮没能做完，你中途追加的 {} 句话也没处理上，请重新说一遍", leftover.len()),
+        )
+        .await;
     }
 
     match outcome {
@@ -892,6 +935,8 @@ pub(super) struct Reply {
     pub(super) media: Vec<MediaMessage>,
     /// 正文里内嵌的图（智能体房间才有），卡片按位置画进去。
     pub(super) figures: super::agent::figures::Figures,
+    /// 这一轮进行当中并进来的追加话（智能体房间才有），历史里要记在回复之前。
+    pub(super) steered: Vec<String>,
 }
 
 /// 房间在等一句补充时回的那条。
@@ -908,6 +953,7 @@ pub(super) fn guidance(text: impl Into<String>) -> Reply {
         plain: true,
         media: Vec::new(),
         figures: super::agent::figures::Figures::default(),
+        steered: Vec::new(),
     }
 }
 
@@ -933,7 +979,7 @@ pub(super) struct MediaMessage {
 /// 本机那几件按 `[oai.chat] tools` 来（留空就是全给）；群聊那一套按额度收敛，
 /// 与搭话用同一份清单（[`chat::tool_names`]），于是「模型看得到的工具」与
 /// 「它真按得动的按钮」在两边都永远对得上。
-fn room_tools(config: &super::chat::ChatConfig) -> String {
+pub(super) fn room_tools(config: &super::chat::ChatConfig) -> String {
     let mut names: Vec<String> = if config.tools.trim().is_empty() {
         super::agent::tools::local_names()
             .into_iter()
@@ -956,7 +1002,11 @@ fn room_tools(config: &super::chat::ChatConfig) -> String {
     );
     // 出网工具写不写都行：这一轮没开联网时 `definitions` 会把它们滤掉（白名单是
     // 过滤器）。写上是因为房间确实该有它们——漏写就等于把联网从房间里摘掉了。
-    names.extend(["web_search".to_string(), "web_fetch".to_string()]);
+    names.extend(["web_search", "web_fetch"].map(str::to_string));
+    // 办事台的三件（插件管控、提醒、手记）同理：这一轮有没有办事台、是不是号主，由 `definitions` 滤。
+    names.extend(
+        [super::agent::control::NAME, super::agent::schedule::NAME, super::agent::notes::NAME].map(str::to_string),
+    );
     names.join(",")
 }
 
@@ -972,7 +1022,7 @@ fn room_tools(config: &super::chat::ChatConfig) -> String {
 /// `api_base` / `api_key` 已按房间模型的 `供应商/` 前缀解析好；
 /// `chat_model` 是真正要发给接口的模型 id（已剥掉前缀）。
 #[allow(clippy::too_many_arguments)]
-async fn respond(
+pub(super) async fn respond(
     api_base: &str,
     api_key: &str,
     agent: &Agent,
@@ -980,7 +1030,8 @@ async fn respond(
     hist: &[ChatMessage],
     oai: &super::OaiConfig,
     data_dir: &std::path::Path,
-    control: Option<&crate::plugins::ctl::bridge::Lease>,
+    seat: Option<super::agent::Seat>,
+    steering: Option<&super::agent::Steering>,
     // 群聊那一路的接口与额度；私聊里的房间没有这一份（没有群也就没有群动作）。
     chat: Option<super::agent::ChatContext>,
 ) -> anyhow::Result<Reply> {
@@ -1001,7 +1052,8 @@ async fn respond(
             thinking.as_deref(),
             oai.request_stall(),
             hist,
-            control,
+            seat,
+            steering,
             &search,
             chat,
             oai.request_timeout(),
@@ -1021,6 +1073,7 @@ async fn respond(
             plain: false,
             media: Vec::new(),
             figures: result.figures,
+            steered: result.steered,
         });
     }
     let msgs = build_chat_messages(agent, hist).await;
@@ -1034,6 +1087,7 @@ async fn respond(
         plain: false,
         media: Vec::new(),
         figures: super::agent::figures::Figures::default(),
+        steered: Vec::new(),
     })
 }
 
@@ -1124,7 +1178,7 @@ async fn resolve_images(urls: &[String]) -> Vec<String> {
 /// 短回复能否直接以纯文本发送。
 ///
 /// 只要出现标题、列表、表格、代码块或链接，排版就有信息量，仍旧渲染卡片。
-fn is_plain_enough(text: &str, max_chars: usize) -> bool {
+pub(super) fn is_plain_enough(text: &str, max_chars: usize) -> bool {
     if max_chars == 0 || text.chars().count() > max_chars {
         return false;
     }

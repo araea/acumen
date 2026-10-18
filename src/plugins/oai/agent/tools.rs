@@ -35,6 +35,21 @@ const CHAT: &[&str] = &[
     "satori_memo",
 ];
 
+/// 够得着机器人本体的工具：只有这一轮有办事台（[`super::Seat`]）才存在。
+const SEAT: &[&str] = &[super::control::NAME, super::schedule::NAME];
+
+/// 只给号主的工具：手记是写进提示词的可信内容，客人的轮次里不挂。
+const OWNER: &[&str] = &[super::notes::NAME];
+
+/// 这一轮有哪几类可选工具在场。白名单里写了也不会凭空冒出没有的那一类。
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Kit {
+    pub chat: bool,
+    pub web: bool,
+    pub seat: bool,
+    pub owner: bool,
+}
+
 /// 房间里不给白名单时挂上的本地工具。写了 `[oai.chat] tools` 就从这份抄一份改。
 pub(crate) fn local_names() -> Vec<&'static str> {
     LOCAL.to_vec()
@@ -47,11 +62,11 @@ const WEB: &[&str] = &super::super::search::TOOL_NAMES;
 
 /// 按白名单筛出这一轮真正挂上去的工具。
 ///
-/// `whitelist` 为 `None` 表示「有什么挂什么」——本机工具，加上这一轮在場的群聊工具
-/// 与联网工具（房间里的默认形态）；写空串则是「一个工具都不给」，模型仍然能正常
-/// 回复，只是没法动手。`chat` / `web` 决定那两类可选工具这一轮在不在场，
-/// 写进白名单也不会凭空冒出来。
-pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec<ToolDefinition> {
+/// `whitelist` 为 `None` 表示「有什么挂什么」——本机工具，加上这一轮在場的群聊工具、
+/// 联网工具与办事台工具（房间里的默认形态）；写空串则是「一个工具都不给」，模型仍然能正常
+/// 回复，只是没法动手。[`Kit`] 决定那几类可选工具这一轮在不在场，写进白名单也不会凭空冒出来。
+pub(crate) fn definitions(whitelist: Option<&str>, kit: Kit) -> Vec<ToolDefinition> {
+    let Kit { chat, web, seat, owner } = kit;
     let mut names: Vec<&str> = match whitelist {
         None => {
             let mut all = LOCAL.to_vec();
@@ -62,6 +77,12 @@ pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec
             if web {
                 all.extend_from_slice(WEB);
             }
+            if seat {
+                all.extend_from_slice(SEAT);
+                if owner {
+                    all.extend_from_slice(OWNER);
+                }
+            }
             all
         }
         Some(list) => list
@@ -69,7 +90,11 @@ pub(crate) fn definitions(whitelist: Option<&str>, chat: bool, web: bool) -> Vec
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .filter(|name| {
-                LOCAL.contains(name) || (chat && CHAT.contains(name)) || (web && WEB.contains(name))
+                LOCAL.contains(name)
+                    || (chat && CHAT.contains(name))
+                    || (web && WEB.contains(name))
+                    || (seat && SEAT.contains(name))
+                    || (seat && owner && OWNER.contains(name))
             })
             .collect(),
     };
@@ -91,6 +116,9 @@ pub(crate) fn is_side_effecting(name: &str) -> bool {
             | "delegate"
             | "satori_action"
             | "satori_draw"
+            // 改机器人设置、排一条提醒，重放一遍就是再改、再排一遍。
+            | "acumen_plugins"
+            | "schedule"
             // 写歌与拍片真花钱：卡死重放一次就是再付一遍，同样算副作用。
             | "satori_music"
             | "satori_video"
@@ -139,6 +167,16 @@ pub(crate) async fn execute(
         "view_image" => return view_image(args, run).await,
         "delegate" => return super::delegate::execute(args, run).await,
         _ => {}
+    }
+    // 办事台的三件工具：失败只是一句话回执，不让整轮出错。
+    let seat_tool = match name {
+        super::control::NAME => Some(super::control::execute(args, run).await),
+        super::schedule::NAME => Some(super::schedule::execute(args, run).await),
+        super::notes::NAME => Some(super::notes::execute(args, run).await),
+        _ => None,
+    };
+    if let Some(result) = seat_tool {
+        return result.unwrap_or_else(|error| format!("{error:#}")).into();
     }
     run_text(name, args, run, call_id).await.into()
 }
@@ -227,6 +265,26 @@ pub(crate) fn label(args: &Value) -> String {
     let Some(args) = args.as_object() else {
         return String::new();
     };
+    // 「动作 + 对象」型的工具（acumen_plugins / schedule / note）：页脚里写 `set oai 配置项` 比光秃秃的路径好认。
+    if let Some(action) = args.get("action").and_then(Value::as_str) {
+        let object = ["plugin", "plugins", "text", "task", "id"]
+            .iter()
+            .find_map(|key| match args.get(*key)? {
+                Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
+                Value::Array(items) => Some(items.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" ")),
+                Value::Number(number) => Some(number.to_string()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let path = args.get("path").and_then(Value::as_str).unwrap_or("").trim();
+        let label = [action, object.as_str(), path]
+            .iter()
+            .filter(|part| !part.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        return super::super::utils::truncate_middle(&label, LABEL_LIMIT);
+    }
     for key in ["command", "query", "url", "pattern", "path", "file", "source"] {
         if let Some(value) = args.get(key).and_then(Value::as_str) {
             let mut label = value.trim().to_string();
@@ -564,6 +622,12 @@ async fn chat(
 }
 
 fn spec(name: &str) -> Option<ToolDefinition> {
+    match name {
+        super::control::NAME => return Some(super::control::spec()),
+        super::schedule::NAME => return Some(super::schedule::spec()),
+        super::notes::NAME => return Some(super::notes::spec()),
+        _ => {}
+    }
     let (description, parameters) = match name {
         "bash" => (
             "在本机执行一条 bash 命令，返回合并后的 stdout 与 stderr。命令在你当前的工作目录里运行，环境变量已带好。有超时（默认 120 秒，可用 timeout_seconds 指定，最多 600 秒），输出过长会从中间省略。非零退出会把状态码和输出一起告诉你。",
@@ -898,10 +962,26 @@ mod tests {
     use super::*;
 
     fn names(whitelist: Option<&str>, chat: bool, web: bool) -> Vec<String> {
-        definitions(whitelist, chat, web)
-            .into_iter()
-            .map(|tool| tool.name)
-            .collect()
+        kit_names(whitelist, Kit { chat, web, ..Kit::default() })
+    }
+
+    fn kit_names(whitelist: Option<&str>, kit: Kit) -> Vec<String> {
+        definitions(whitelist, kit).into_iter().map(|tool| tool.name).collect()
+    }
+
+    #[test]
+    fn seat_tools_follow_the_seat_and_notes_follow_the_owner() {
+        let guest = Kit { seat: true, ..Kit::default() };
+        let owner = Kit { seat: true, owner: true, ..Kit::default() };
+        let guest_tools = kit_names(None, guest);
+        assert!(guest_tools.contains(&"acumen_plugins".to_string()));
+        assert!(guest_tools.contains(&"schedule".to_string()));
+        // 手记是写进提示词的可信内容，客人的轮次里不挂，白名单点名也不行。
+        assert!(!guest_tools.contains(&"note".to_string()));
+        assert!(!kit_names(Some("note"), guest).contains(&"note".to_string()));
+        assert!(kit_names(None, owner).contains(&"note".to_string()));
+        // 没有办事台（搭话、子助手）就没有这几件，白名单点名也冒不出来。
+        assert!(kit_names(Some("acumen_plugins,schedule,note"), Kit::default()).is_empty());
     }
 
     #[test]
@@ -929,7 +1009,7 @@ mod tests {
 
     #[test]
     fn satori_read_advertises_saving_attachments_and_history_has_its_own_spec() {
-        let defs = definitions(Some("satori_read,satori_history"), true, false);
+        let defs = definitions(Some("satori_read,satori_history"), Kit { chat: true, ..Kit::default() });
         let read = defs.iter().find(|tool| tool.name == "satori_read").unwrap();
         assert!(read.parameters["properties"]["save"].is_object());
         let history = defs.iter().find(|tool| tool.name == "satori_history").unwrap();

@@ -211,6 +211,27 @@ pub fn handle(
 
 // ================= 重启核心逻辑 =================
 
+/// 智能体的 `acumen_plugins` 工具用：过一会儿重启。
+///
+/// 要等当前这一轮回复发出去——房间的卡片渲染加发送要好几秒，所以延迟不低于 8 秒。
+/// 插件没开或已经在重启中时返回原因，工具把它如实转告。
+pub(crate) fn schedule(ctx: &Context, reason: &str, delay: Duration) -> Result<Duration, String> {
+    if !get_config::<RestartConfig>(ctx).is_some_and(|cfg| cfg.enabled) {
+        return Err("restart 插件没有开启，先用 enable 开启它".into());
+    }
+    if RESTARTING.load(Ordering::SeqCst) {
+        return Err("已经有一次重启在进行中".into());
+    }
+    let delay = delay.max(Duration::from_secs(8));
+    let ctx = ctx.clone();
+    let reason = reason.to_string();
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        do_restart(&ctx, reason).await;
+    });
+    Ok(delay)
+}
+
 /// 只提出请求，统一由主循环清理，避免定时任务中止自身或两个进程同时写配置。
 async fn do_restart(ctx: &Context, reason: String) {
     if !get_config::<RestartConfig>(ctx).is_some_and(|cfg| cfg.enabled) {
@@ -312,7 +333,7 @@ fn parse_time(s: &str) -> (u32, u32, u32) {
 }
 
 /// 读取当前进程 RSS 内存 (MB)。仅 Linux 提供 /proc/self/status，其余平台返回 None
-fn current_rss_mb() -> Option<u64> {
+pub(crate) fn current_rss_mb() -> Option<u64> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let status = std::fs::read_to_string("/proc/self/status").ok()?;

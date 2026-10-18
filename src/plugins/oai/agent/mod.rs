@@ -5,23 +5,29 @@
 //! 手里。现在整条链路就在进程内：一轮对话 = 若干个 Chat Completions 请求，
 //! 模型要工具就调用本模块里的实现，把结果作为 tool 消息回填，直到它不再要工具。
 //!
-//! 六块内容分工：
+//! 九块内容分工：
 //! - [`tools`]：工具表（名字、说明、JSON Schema）与本地实现（bash / read / write /
 //!   edit / glob / grep），以及转发进 [`ChatBridge`] 的 `satori_*`；
 //! - [`run`]：消息组装、工具循环、轨迹整理、skill 索引；
 //! - [`bash`]：子进程与进程组终止——取消一轮对话必须连带杀掉工具派生出来的进程；
 //! - [`figures`]：回复里 `![说明](地址)` 的图片，在本轮临时目录被清掉之前取好；
 //! - [`compact`]：循环里较早的工具回执与旧图压缩，长任务不被自己的上下文拖垮；
-//! - [`delegate`]：把独立的子任务交给一个干净上下文的子助手，可并行。
+//! - [`delegate`]：把独立的子任务交给一个干净上下文的子助手，可并行；
+//! - [`control`]：`acumen_plugins`，管机器人自己的插件开关、配置与重启；
+//! - [`notes`]：`note`，号主的手记，跨房间、跨清空历史；
+//! - [`schedule`]：`schedule`，提醒与定时任务的工具面（存储与到点执行在 [`super::remind`]）。
 //!
 //! 与从前那套外部 CLI 最大的行为差别是**没有会话文件**：房间历史始终由 acumen 侧持有，
 //! 每轮按需展开成消息，所以编辑/删除/清空/重新生成的行为与普通房间完全一致。
 
 pub(crate) mod bash;
 pub(crate) mod compact;
+pub(crate) mod control;
 pub(crate) mod delegate;
 pub(crate) mod figures;
+pub(crate) mod notes;
 pub(crate) mod run;
+pub(crate) mod schedule;
 pub(crate) mod tools;
 
 pub(crate) use run::run;
@@ -30,6 +36,130 @@ use super::types::{ChatMessage, TraceStep};
 use futures_util::future::BoxFuture;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+
+/// 这一轮是谁在问。
+///
+/// `owner` 由平台上报的 `user_id` 核出（`[ctl].admins` 或账号自己），不看消息正文怎么说；
+/// 模型只通过一条独立的系统注记得知它（见 [`Asker::note`]），用户消息里自称号主不算数。
+#[derive(Clone, Debug)]
+pub(crate) struct Asker {
+    pub id: String,
+    pub name: String,
+    pub owner: bool,
+}
+
+impl Asker {
+    pub(crate) fn from_event(ctx: &crate::event::Context, event: &crate::event::MessageEvent<'_>) -> Self {
+        Self {
+            id: event.user_id().to_string(),
+            name: event.sender_name().to_string(),
+            owner: crate::plugins::ctl::is_owner(ctx, event.user_id()),
+        }
+    }
+
+    /// 写给模型的一行系统注记：谁在说话、是不是号主、在哪儿说。
+    ///
+    /// 单独成一条消息放在用户这句话之前，而不是拼进正文：正文是客人也能写的东西。
+    pub(crate) fn note(&self, place: &str, scheduled: bool) -> String {
+        let who = if self.owner {
+            "他是号主本人".to_string()
+        } else {
+            "他不是号主，按客人对待".to_string()
+        };
+        let name = if self.name.trim().is_empty() { "（没有名字）" } else { self.name.trim() };
+        let source = if scheduled { "这是此前替他安排的定时任务到点了，不是他此刻在说话" } else { "这一轮是他在说话" };
+        format!("（系统注记，用户看不到：{source}——{name}（{}），{who}；{place}。）", self.id)
+    }
+}
+
+/// 管家的办事台：这一轮发生在哪个房间、哪个聊天、谁在问，以及够得着机器人本体的那只手。
+///
+/// 插件管控、提醒、手记这几件工具都要它；私聊里的房间也有（只是没有群）。
+pub(crate) struct Seat {
+    pub room: String,
+    pub asker: Asker,
+    pub ctx: crate::event::Context,
+    /// 在哪个群里；私聊为 `None`。
+    pub group: Option<String>,
+    /// 房间历史走私有那一份。
+    pub private: bool,
+    /// 这一轮是定时任务触发的，不是即时提问。
+    pub scheduled: bool,
+}
+
+impl Seat {
+    pub(crate) fn place(&self) -> String {
+        match &self.group {
+            Some(group) => format!("地点：QQ 群 {group}，房间「{}」", self.room),
+            None => format!("地点：私聊，房间「{}」", self.room),
+        }
+    }
+}
+
+/// 一轮进行当中的「追加」：用户在管家还在忙的时候又发来的话。
+///
+/// 管家一轮要跑几十秒到几分钟，用户常在这期间想起补一句、改个主意。从前这时只能回一句
+/// 「正在生成中」，要么干等、要么先停止再重发。现在这些话排进这里，执行循环在步与步之间
+/// 取走、作为用户的补充交给模型，一轮之内就改了方向。
+///
+/// 只收**发起这一轮的那个人**的话：公共房间里别人的话若能插进号主的这一轮，就是现成的
+/// 注入通道。
+pub(crate) struct Steering {
+    owner: String,
+    state: std::sync::Mutex<SteerState>,
+}
+
+#[derive(Default)]
+struct SteerState {
+    closed: bool,
+    pending: Vec<String>,
+}
+
+impl Steering {
+    pub(crate) fn new(owner: &str) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            owner: owner.to_string(),
+            state: std::sync::Mutex::new(SteerState::default()),
+        })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, SteerState> {
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 排进一句；不是发起人的话、或这一轮已经收口时返回 `false`。
+    pub(crate) fn push(&self, uid: &str, text: String) -> bool {
+        let mut state = self.state();
+        if state.closed || uid != self.owner || state.pending.len() >= 8 {
+            return false;
+        }
+        state.pending.push(text);
+        true
+    }
+
+    /// 取走已经到的。
+    pub(crate) fn take(&self) -> Vec<String> {
+        std::mem::take(&mut self.state().pending)
+    }
+
+    /// 模型要收尾了：这一刻有新到的就交出来（继续干），没有就收口——此后的话不再排进来，
+    /// 照常回「正在生成中」。判断与收口在同一把锁里，所以不会有话落在缝里。
+    pub(crate) fn settle(&self) -> Vec<String> {
+        let mut state = self.state();
+        if state.pending.is_empty() {
+            state.closed = true;
+            return Vec::new();
+        }
+        std::mem::take(&mut state.pending)
+    }
+
+    /// 这一轮结束（成败都算）：收口，交出没来得及处理的。
+    pub(crate) fn close(&self) -> Vec<String> {
+        let mut state = self.state();
+        state.closed = true;
+        std::mem::take(&mut state.pending)
+    }
+}
 
 /// 聊天界面出口：执行层只负责把 `satori_*` 工具转发出去，具体语义由接入方定义。
 ///
@@ -126,8 +256,12 @@ pub(crate) struct AgentRun<'a> {
     pub temperature: Option<f64>,
     /// 额外载入的 skill 文件或目录。
     pub skills: &'a [PathBuf],
-    /// 这一轮持有控制通道凭据：系统提示词里会多一句用法说明。
-    pub control: bool,
+    /// 房间名（系统提示词里用得到）；搭话与子助手不用。
+    pub room: &'a str,
+    /// 办事台：谁在问、在哪、能不能够到机器人本体。`None` 的轮次没有插件管控、提醒与手记。
+    pub seat: Option<&'a Seat>,
+    /// 用户在这一轮进行当中追加的话。
+    pub steer: Option<&'a Steering>,
     /// 工具白名单（逗号分隔）；`None` 用全部本地工具。
     pub tools: Option<&'a str>,
     /// 追加给工具子进程的环境变量，例如本轮对话的控制凭据。
@@ -166,6 +300,16 @@ pub(crate) struct AgentRun<'a> {
 }
 
 impl<'a> AgentRun<'a> {
+    /// 这一轮在场的可选工具类别。
+    pub(crate) fn kit(&self) -> tools::Kit {
+        tools::Kit {
+            chat: self.bridge.is_some(),
+            web: self.web.is_some(),
+            seat: self.seat.is_some(),
+            owner: self.seat.is_some_and(|seat| seat.asker.owner),
+        }
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             api_base: "",
@@ -178,7 +322,9 @@ impl<'a> AgentRun<'a> {
             thinking: None,
             temperature: None,
             skills: &[],
-            control: false,
+            room: "",
+            seat: None,
+            steer: None,
             tools: None,
             env: &[],
             stall: None,
@@ -209,6 +355,8 @@ pub(crate) struct AgentReply {
     pub sources: Vec<super::types::Source>,
     /// 正文里内嵌的图片（只有 [`AgentRun::figures`] 开着时才有）。
     pub figures: figures::Figures,
+    /// 这一轮里并入的追加话（按到达顺序），房间历史要把它们记在回复之前。
+    pub steered: Vec<String>,
 }
 
 /// 房间在群里说话时的那一份现场：接进能力层要用它开一轮。
@@ -253,7 +401,8 @@ pub(crate) async fn conversation(
     thinking: Option<&str>,
     stall: Option<std::time::Duration>,
     hist: &[ChatMessage],
-    control: Option<&crate::plugins::ctl::bridge::Lease>,
+    seat: Option<Seat>,
+    steer: Option<&Steering>,
     search: &super::search::SearchConfig,
     chat: Option<ChatContext>,
     budget: std::time::Duration,
@@ -289,10 +438,6 @@ pub(crate) async fn conversation(
         }
         None => (None, None),
     };
-    let env = control.map(super::super::ctl::bridge::Lease::env).unwrap_or_default();
-    let skills: Vec<PathBuf> = control
-        .map(|lease| vec![lease.skill().to_path_buf()])
-        .unwrap_or_default();
     // 搜索状态一轮一份：预算、客户端与引用来源都随这一轮生灭。
     let web = search
         .enabled
@@ -308,11 +453,11 @@ pub(crate) async fn conversation(
             append_system_prompt: persona,
             model,
             thinking: thinking.filter(|value| !value.trim().is_empty()),
-            skills: &skills,
-            control: control.is_some(),
+            room: seat.as_ref().map_or("", |seat| seat.room.as_str()),
+            seat: seat.as_ref(),
+            steer,
             tools,
             bridge,
-            env: &env,
             stall,
             web: web.as_ref(),
             prompt: &current.content,

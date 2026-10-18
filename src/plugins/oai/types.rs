@@ -9,6 +9,9 @@ pub struct ChatMessage {
     pub images: Vec<String>,
     #[serde(default)]
     pub timestamp: i64,
+    /// 这条回复之前用过哪些工具（给下一轮当线索，用户看不到）。只有智能体房间的回复才有。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub work: String,
 }
 
 impl ChatMessage {
@@ -18,7 +21,13 @@ impl ChatMessage {
             content: content.to_string(),
             images,
             timestamp: chrono::Local::now().timestamp(),
+            work: String::new(),
         }
+    }
+
+    pub(crate) fn with_work(mut self, work: String) -> Self {
+        self.work = work;
+        self
     }
 }
 

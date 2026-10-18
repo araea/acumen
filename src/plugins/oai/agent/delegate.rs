@@ -97,7 +97,10 @@ async fn delegate(args: &Value, parent: &AgentRun<'_>) -> anyhow::Result<String>
     }
 
     // 子助手的工具：主助手这一轮实际有的，去掉 delegate 与群聊那一套。
-    let tools = super::tools::definitions(parent.tools, false, parent.web.is_some())
+    let tools = super::tools::definitions(
+        parent.tools,
+        super::tools::Kit { web: parent.web.is_some(), ..Default::default() },
+    )
         .into_iter()
         .map(|tool| tool.name)
         .filter(|name| name != "delegate" && !name.starts_with("satori_"))

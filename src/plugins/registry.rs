@@ -293,7 +293,8 @@ register_plugins!(
             ("-*", "清空所有智能体的公开历史（保留智能体）"),
             ("-*!", "清空所有智能体的公开与私有历史（保留智能体）"),
         ],
-        on_init: Some(oai::init)
+        on_init: Some(oai::init),
+        on_connected: Some(oai::on_connected)
     },
     ambient {
         config: ambient::AmbientConfig,

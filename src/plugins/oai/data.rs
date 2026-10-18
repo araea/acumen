@@ -1,5 +1,5 @@
 use super::types::{Config, GeneratingState, MjCache};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -24,7 +24,7 @@ const BUILTIN_ROOM: &str = "管家大人";
 ///
 /// 只写「是谁、什么风格」；运行环境、工具策略与排版要求由内置 agent 自己生成——
 /// 那些内容写死在人设里会随时间过期，也没法随工具集变化。
-const BUILTIN_PERSONA: &str = "你是管家大人，一个务实、直接的通用助手，回答简洁但不省略关键依据。";
+const BUILTIN_PERSONA: &str = "你是管家大人：务实、可靠、有分寸，不卖萌也不谄媚。号主问什么先给结论，再给依据；该提醒他注意的风险直说，不绕弯。";
 
 // 全局单例管理器
 pub static MANAGER: OnceLock<Arc<Manager>> = OnceLock::new();
@@ -33,6 +33,8 @@ pub struct Manager {
     pub config: RwLock<Config>,
     persisted: std::sync::Mutex<Config>,
     pub generating: RwLock<GeneratingState>,
+    /// 正在进行的智能体轮次接收「追加话」的信箱，键同 `GeneratingState` 的会话（见 [`Manager::steer_key`]）。
+    steering: std::sync::Mutex<HashMap<String, Arc<super::agent::Steering>>>,
     pub mj_cache: RwLock<MjCache>,
     pub mj_inflight: RwLock<HashSet<String>>,
     pub path: PathBuf,
@@ -156,12 +158,48 @@ impl Manager {
             persisted: std::sync::Mutex::new(config.clone()),
             config: RwLock::new(config),
             generating: RwLock::new(GeneratingState::default()),
+            steering: std::sync::Mutex::new(HashMap::new()),
             mj_cache: RwLock::new(mj_cache),
             mj_inflight: RwLock::new(HashSet::new()),
             path,
             mj_cache_path,
             mj_images_dir,
         }
+    }
+
+    /// 同一个会话的键：公共房间一间一个，私有历史每人一个。
+    fn steer_key(agent: &str, private: bool, uid: &str) -> String {
+        if private {
+            format!("{agent}\u{0}{uid}")
+        } else {
+            agent.to_string()
+        }
+    }
+
+    fn steering(&self) -> std::sync::MutexGuard<'_, HashMap<String, Arc<super::agent::Steering>>> {
+        self.steering.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// 开一个信箱：这一轮进行当中，发起人的话可以排进来。
+    pub(crate) fn open_steering(&self, agent: &str, private: bool, uid: &str) -> Arc<super::agent::Steering> {
+        let steering = super::agent::Steering::new(uid);
+        self.steering().insert(Self::steer_key(agent, private, uid), steering.clone());
+        steering
+    }
+
+    /// 这一轮结束：撤掉信箱，交出没来得及处理的话。
+    pub(crate) fn close_steering(&self, agent: &str, private: bool, uid: &str) -> Vec<String> {
+        match self.steering().remove(&Self::steer_key(agent, private, uid)) {
+            Some(steering) => steering.close(),
+            None => Vec::new(),
+        }
+    }
+
+    /// 往进行中的轮次追加一句；这间房此刻没有开着的信箱、或话不该排进去时返回 `false`。
+    pub(crate) fn steer(&self, agent: &str, private: bool, uid: &str, text: String) -> bool {
+        self.steering()
+            .get(&Self::steer_key(agent, private, uid))
+            .is_some_and(|steering| steering.push(uid, text))
     }
 
     /// 原子保存；失败恢复最后一次持久化状态，调用者必须报告失败。

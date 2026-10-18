@@ -59,13 +59,25 @@ admins = [123456789]
 /ctl set oai model_filter.drop ["-lite", "-2026-"]
 ```
 
-## Agent 控制通道
+## Agent 管控（`acumen_plugins` 工具）
 
-`[ctl].agent_control` 默认开启时，Agent 房间可以运行 `acumen --ctl` 修改插件配置。Acumen 为每轮对话提供一次性凭据，最长有效 30 分钟，不写入磁盘或命令行；操作会记录在日志中。
+内置 Agent（如「管家大人」）有一件原生工具 `acumen_plugins`，等价于手打 `/ctl`：看插件清单（带一句话说明）、看配置（密钥自动隐藏）、开关插件、改配置、恢复默认、看版本与待重启的插件，以及让机器人过几秒重启。改动走同一条 ctl 事务（校验、先落盘再生效、`ctl` 保命规则），操作记在日志「管家改机器人设置」里。
 
-Agent 房间中的任何成员都可能借此修改机器人配置。该功能不提供成员级权限隔离；Agent 的本机 `bash` 工具也不是沙箱。共享房间不应开放这项能力。可用 `/ctl set ctl agent_control false` 关闭通道；要限制整个房间的工具权限，需修改 Agent 工具白名单。
+谁能动手：
 
-该通道只修改 `config.toml` 中的插件配置，不管理连接凭据、群名单、数据库业务数据或 OAI 独立配置。不要通过通道传递 Cookie 或其他未脱敏凭据。
+| 动作 | 谁 |
+| --- | --- |
+| `list` `show` `defaults` `diff` `status` | 任何人 |
+| `enable` `disable` `set` `reset` | 号主；号主以外的人取决于 `[ctl].guest_control`（默认开）。`[ctl].agent_control` 关掉则所有人都只能看 |
+| `restart` | 只有号主 |
+
+「号主」指 `[ctl].admins` 里的人，或账号自己（号主在这个账号上亲手打字）；身份由平台上报的发送者核出，Agent 每轮都会收到一条系统注记，用户消息里自称号主不算数。
+
+无论谁问都不开放的位置：任何名字带 `token` / `api_key` / `secret` / `password` / `cookie` 的配置键，整个 `ctl` 与 `console` 配置，`oai` 里的 `providers` 与 `search.backends`；也不能停用 `oai` / `ctl` / `console`（停掉它们等于让管家或管理入口自己失联）。这些要改，请到本机控制台或用 `/ctl`。
+
+群聊搭话（ambient）里同一件工具只在号主叫它办事的那一轮开放写入，其余时候只读。
+
+Agent 的本机 `bash` 工具不是沙箱；这件工具不是能力的边界，而是让常见操作有一条带权限判断、可审计的正路。可用 `/ctl set ctl agent_control false` 一键收回；要限制整间房的工具，改 `[oai.chat].tools` 白名单。
 
 ## 本机 Web 控制台
 
