@@ -71,7 +71,7 @@ admins = [123456789]
 | `enable` `disable` `set` `reset` | 号主；号主以外的人取决于 `[ctl].guest_control`（默认开）。`[ctl].agent_control` 关掉则所有人都只能看 |
 | `restart` | 只有号主 |
 
-「号主」指 `[ctl].admins` 里的人，或账号自己（号主在这个账号上亲手打字）；身份由平台上报的发送者核出，Agent 每轮都会收到一条系统注记，用户消息里自称号主不算数。
+「号主」指 `[ctl].admins` 里的人，或账号自己亲手打的字（号主就在这个账号上打字；机器人自己发出去、作为回声回来的话不算，否则任何能让机器人开口的人都成了号主）；身份由平台上报的发送者核出，Agent 每轮都会收到一条系统注记，用户消息里自称号主不算数。
 
 无论谁问都不开放的位置：任何名字带 `token` / `api_key` / `secret` / `password` / `cookie` 的配置键，整个 `ctl` 与 `console` 配置，`oai` 里的 `providers` 与 `search.backends`；也不能停用 `oai` / `ctl` / `console`（停掉它们等于让管家或管理入口自己失联）。这些要改，请到本机控制台或用 `/ctl`。
 

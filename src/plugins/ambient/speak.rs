@@ -284,7 +284,7 @@ pub(crate) async fn compose(
             asker: agent::Asker {
                 id: caller.user_id.clone(),
                 name: caller.name.clone(),
-                owner: caller.manual || crate::plugins::ctl::is_owner(ctx, &caller.user_id),
+                owner: crate::plugins::ctl::is_owner(ctx, &caller.user_id, caller.manual),
             },
             ctx: (*ctx).clone(),
             writer: (*writer).clone(),

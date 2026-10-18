@@ -12,6 +12,10 @@ pub struct ChatMessage {
     /// 这条回复之前用过哪些工具（给下一轮当线索，用户看不到）。只有智能体房间的回复才有。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub work: String,
+    /// 这句话是谁说的（`号主` 或 `名字（QQ 号）·客人`）。只有智能体房间的**公共历史**里的用户消息才有：
+    /// 一间房的公共历史是大家共用的，下一轮展开时不标出说话人，模型就会把别人说过的话算到眼前这个人头上。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub from: String,
 }
 
 impl ChatMessage {
@@ -22,7 +26,13 @@ impl ChatMessage {
             images,
             timestamp: chrono::Local::now().timestamp(),
             work: String::new(),
+            from: String::new(),
         }
+    }
+
+    pub(crate) fn with_from(mut self, from: &str) -> Self {
+        self.from = from.to_string();
+        self
     }
 
     pub(crate) fn with_work(mut self, work: String) -> Self {

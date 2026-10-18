@@ -396,6 +396,7 @@ fn prepare_history(
     prompt: &str,
     imgs: &[String],
     regen: bool,
+    from: &str,
 ) -> Vec<ChatMessage> {
     let mut hist = history.to_vec();
     if regen {
@@ -406,10 +407,10 @@ fn prepare_history(
             if hist.last().is_some_and(|m| m.role == "user") {
                 hist.pop();
             }
-            hist.push(ChatMessage::new("user", prompt, imgs.to_vec()));
+            hist.push(ChatMessage::new("user", prompt, imgs.to_vec()).with_from(from));
         }
     } else {
-        hist.push(ChatMessage::new("user", prompt, imgs.to_vec()));
+        hist.push(ChatMessage::new("user", prompt, imgs.to_vec()).with_from(from));
     }
     hist
 }
@@ -490,13 +491,19 @@ async fn chat(
     let is_priv_ctx = cmd.private_reply;
     let uid = event.user_id().to_string();
     let temp_mode = cmd.temp_mode;
+    let asker = super::agent::Asker::from_event(ctx, &event);
+    // 公共历史是大家共用的：智能体房间里把说话人记在每句话上，下一轮展开时才不会张冠李戴。
+    let from = if use_agent && !is_priv_ctx { asker.tag() } else { String::new() };
 
     if !temp_mode {
         let busy = mgr.generating.read().await.is_generating(name, is_priv_ctx, &uid);
         if busy {
             // 智能体房间里，发起这一轮的人又发了话：并进正在跑的这一轮（贴个赞表示收到），
             // 而不是让他等完再重发。带图的补充带不进去，仍按「正在生成」回。
+            // 机器人自己发出去的话作为回声回来时，发送者也是账号自己：那不是号主在补充。
+            let echo = uid == ctx.bot.self_id() && !event.is_manual_self();
             if use_agent
+                && !echo
                 && !regen
                 && imgs.is_empty()
                 && !prompt.is_empty()
@@ -525,7 +532,7 @@ async fn chat(
         return;
     }
     let (hist, gen_id) = if temp_mode {
-        (prepare_history(&[], prompt, &imgs, regen), 0)
+        (prepare_history(&[], prompt, &imgs, regen, ""), 0)
     } else {
         let mut config = mgr.config.write().await;
         let Some(current) = config.agents.iter_mut().find(|a| a.name == name) else {
@@ -543,7 +550,7 @@ async fn chat(
             .await;
             return;
         };
-        let hist = prepare_history(current.history(is_priv_ctx, &uid), prompt, &imgs, regen);
+        let hist = prepare_history(current.history(is_priv_ctx, &uid), prompt, &imgs, regen, &from);
         *current.history_mut(is_priv_ctx, &uid) = hist.clone();
         if let Err(error) = mgr.save(&mut config) {
             mgr.generating
@@ -570,7 +577,7 @@ async fn chat(
     // 内置智能体房间这一轮的办事台：谁在问、在哪儿、够不够得着机器人本体（见 `agent::Seat`）。
     let seat = use_agent.then(|| super::agent::Seat {
         room: name.to_string(),
-        asker: super::agent::Asker::from_event(ctx, &event),
+        asker: asker.clone(),
         ctx: ctx.clone(),
         writer: writer.clone(),
         group: event.group_id().map(str::to_string),
@@ -668,7 +675,7 @@ async fn chat(
                     let history = agent.history_mut(is_priv_ctx, &uid);
                     // 并进这一轮的追加话先记，再是回复：历史里的先后就是对话实际的先后。
                     for extra in &reply.steered {
-                        history.push(ChatMessage::new("user", extra, vec![]));
+                        history.push(ChatMessage::new("user", extra, vec![]).with_from(&from));
                     }
                     history.push(
                         ChatMessage::new("assistant", &reply.text, vec![])
@@ -676,7 +683,7 @@ async fn chat(
                     );
                     // 赶在收口前后脚到的话没人回应，记成用户消息，下一轮自然接上。
                     for extra in &leftover {
-                        history.push(ChatMessage::new("user", extra, vec![]));
+                        history.push(ChatMessage::new("user", extra, vec![]).with_from(&from));
                     }
                     if let Err(error) = mgr.save(&mut config) {
                         reply_text(

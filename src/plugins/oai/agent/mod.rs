@@ -54,7 +54,16 @@ impl Asker {
         Self {
             id: event.user_id().to_string(),
             name: event.sender_name().to_string(),
-            owner: crate::plugins::ctl::is_owner(ctx, event.user_id()),
+            owner: crate::plugins::ctl::is_owner(ctx, event.user_id(), event.is_manual_self()),
+        }
+    }
+
+    /// 记在公共历史每句话上的说话人标签。
+    pub(crate) fn tag(&self) -> String {
+        if self.owner {
+            "号主".to_string()
+        } else {
+            format!("{}（{}）·客人", self.name.trim(), self.id)
         }
     }
 

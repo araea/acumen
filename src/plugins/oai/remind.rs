@@ -458,13 +458,19 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
     let mut config = mgr.config.write().await;
     if let Some(room) = config.agents.iter_mut().find(|agent| agent.name == job.room) {
         let history = room.history_mut(job.private, &job.user);
-        history.push(super::types::ChatMessage::new("user", &format!("〔定时任务〕{}", job.body), vec![]));
+        let from = if job.private { String::new() } else { seat_tag(job) };
+        history.push(super::types::ChatMessage::new("user", &format!("〔定时任务〕{}", job.body), vec![]).with_from(&from));
         history.push(super::types::ChatMessage::new("assistant", &reply.text, vec![]));
         if let Err(error) = mgr.save(&mut config) {
             warn!(target: LOG_TARGET, "定时任务的结果没能写进房间历史：{error}");
         }
     }
     Ok(())
+}
+
+/// 创建这条待办的人在公共历史里的说话人标签。
+fn seat_tag(job: &Job) -> String {
+    super::agent::Asker { id: job.user.clone(), name: job.name.clone(), owner: job.owner }.tag()
 }
 
 /// 把任务的结果发出去：短的发文本，长的排成卡片，卡片发不出就退回文本。

@@ -73,10 +73,20 @@ pub(crate) fn admin_ids(ctx: &Context) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// 这个用户是不是号主：`ctl.admins` 里的人，或账号自己（号主就在这个账号上亲手打字）。
-pub(crate) fn is_owner(ctx: &Context, user_id: &str) -> bool {
-    !user_id.is_empty()
-        && (ctx.bot.self_id() == user_id || admin_ids(ctx).iter().any(|id| id == user_id))
+/// 这个用户是不是号主：`ctl.admins` 里的人，或账号自己**亲手**打的字（`manual`）。
+///
+/// 号主与机器人共用同一个 QQ 号，机器人发出去的话也会作为「自己发的消息」回声进来——
+/// 那一份不是号主说的，而是任何能让机器人开口的人（`echo` 之类）借机器人的嘴说的，
+/// 所以账号自己只有在 `manual_self` 标着「亲手打的」时才算号主；管理员名单里恰好写着
+/// 登录号（线上就是这样）也一样。
+pub(crate) fn is_owner(ctx: &Context, user_id: &str, manual: bool) -> bool {
+    if user_id.is_empty() {
+        return false;
+    }
+    if ctx.bot.self_id() == user_id {
+        return manual;
+    }
+    admin_ids(ctx).iter().any(|id| id == user_id)
 }
 
 /// 把上下文换成维护者身份：本机控制台一向等同维护者，智能体的 `acumen_plugins` 工具走同一条
