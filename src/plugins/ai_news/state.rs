@@ -7,7 +7,7 @@
 //! （同一件事的另一家报道不会再推，见 [`super::cluster`]）。后一层要拿新条目跟
 //! 已经推过的比，所以已推条目会连标题带摘要留 36 小时，过了窗口只剩 id。
 
-use super::api::Item;
+use super::api::{Item, ReportKind};
 use super::cluster::{self, Cluster, Fingerprint};
 use super::render::Rendered;
 use crate::storage::JsonState;
@@ -119,9 +119,10 @@ pub struct GroupState {
     /// 定时精选去重记录；与实时线分离，确保精选内容仍能按时形成回顾。
     #[serde(default)]
     pub brief_seen: Vec<SeenEntry>,
-    /// 已推送过的最新日报日期，防止同一期日报重复推送
+    /// 各刊期已推送过的最新一期的期号（`daily` → `2026-10-18`，`weekly` → `2026-W41`……），
+    /// 防止同一期重复推送
     #[serde(default)]
-    pub last_daily_date: Option<String>,
+    pub last_reports: HashMap<String, String>,
     /// 实时推送的基线时间（Unix 秒）：只有收录时间晚于它的资讯才会被实时推送。
     ///
     /// 第一次轮询到本群时建立，之后不再变动——没有它，新装机器或刚开启推送的群
@@ -545,25 +546,25 @@ pub async fn align_realtime_baseline(group_id: String) {
     .await;
 }
 
-/// 该群是否已经推送过这一期日报
-pub async fn has_pushed_daily(group_id: String, date: &str) -> bool {
-    let date = date.to_string();
+/// 该群是否已经推送过这一期日报、周报或月报
+pub async fn has_pushed_report(group_id: String, kind: ReportKind, key: &str) -> bool {
+    let key = key.to_string();
     STORE.with(move |state| {
         state
             .groups
             .get(&group_id)
-            .and_then(|g| g.last_daily_date.as_deref())
-            == Some(date.as_str())
+            .and_then(|g| g.last_reports.get(kind.state_key()))
+            .is_some_and(|last| *last == key)
     })
     .await
 }
 
-/// 记录该群已推送的日报期号
-pub async fn mark_daily(group_id: String, date: &str) {
-    let date = date.to_string();
+/// 记录该群已推送的期号
+pub async fn mark_report(group_id: String, kind: ReportKind, key: &str) {
+    let key = key.to_string();
     STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
-        entry.last_daily_date = Some(date);
+        entry.last_reports.insert(kind.state_key().to_string(), key);
     })
     .await;
 }

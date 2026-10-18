@@ -721,8 +721,8 @@ private_users = []
 mode = "selected"
 # 时间窗。AIHOT v1 只支持 24h 与 7d。
 window = "24h"
-# 分类过滤：ai-models / ai-products / industry / paper / tip；留空表示不限。
-# 官网的「教程」与「观点」是两类，接口合成了一个 tip。
+# 分类过滤：ai-models / ai-products / industry / paper / tip（教程）/ opinion（观点）；
+# 留空表示不限。与官网六个分类一一对应。
 category = ""
 # 单次推送最多几条（1—100）。
 limit = 30
@@ -743,8 +743,10 @@ summary_max_chars = 90
 show_reason = true
 # 是否附带第三方原文链接（AIHOT 站内阅读页始终保留）。
 show_original_link = true
-# 日报最多展示几条。
+# 日报卡片最多展示几条。
 daily_max_blocks = 12
+# 周报、月报卡片最多展示几条。各栏目轮流取，不会被头两栏占满。
+period_max_items = 18
 # 是否把资讯排版成卡片图。开启时一级推送只发图片，链接由引用卡片后回序号提取；
 # 关掉则发纯文本与可点链接。
 image_enabled = true
@@ -796,6 +798,13 @@ brief_times = ["12:50:00", "20:10:00"]
 # 日报：每天一条汇总。
 daily_enabled = true
 daily_time = "08:20:00"
+# 周报：官方每周一 10:00 出刊；任务每天都来看一眼，只有出刊三天内的新刊才推，
+# 同一期只推一次。所以这里是「几点来看」，不是「周几推」。
+weekly_enabled = true
+weekly_time = "10:40:00"
+# 月报：官方每月 1 日 10:30 出刊，规则同周报。
+monthly_enabled = true
+monthly_time = "10:50:00"
 # 热点榜：每天一条 Top 10。
 hot_topics_enabled = true
 hot_topics_time = "21:40:00"

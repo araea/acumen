@@ -3,7 +3,7 @@
 //! 数据源选型：AIHOT（`aihot.news`，2026-09 由 `aihot.virxact.com` 迁来）同时提供
 //! RSS 与 v1 REST API，这里选用 **API**——返回结构化 JSON，无需引入 XML 解析依赖；
 //! 支持服务端按 `window` / `category` / `q` 筛选；每条带稳定 `id` 便于跨次推送去重；
-//! 另有 RSS 没有的热点榜、事件详情与日报端点。模型榜没有 API，读的是榜单页。
+//! 另有 RSS 没有的热点榜、事件详情与日报、周报、月报端点。模型榜没有 API，读的是榜单页。
 //! 详见 `api.rs` 与 `leaderboard.rs` 顶部说明。
 //!
 //! ## 两条推送线并行
@@ -36,6 +36,8 @@
 //! | 09:00 | stats | 早安回顾（昨日） |
 //! | 10:00 周一 | stats | 上周回顾 |
 //! | 10:20 每月 1 日 | stats | 上月回顾 |
+//! | 10:40 | ai_news | AI 周报（官方周一 10:00 出刊；每天来看一眼，刚出的新刊才推） |
+//! | 10:50 | ai_news | AI 月报（官方每月 1 日 10:30 出刊；同上） |
 //! | 12:30 | stats | 午间速览 |
 //! | 12:50 | ai_news | 精选速递（过去 24 小时精选，按群去重，只推新条目） |
 //! | 20:10 | ai_news | 精选速递 |
@@ -55,10 +57,12 @@
 //! 失败时自动退回纯文本，不影响阅读。
 //!
 //! 指令：
-//!   /ai资讯 · /ai新闻   立刻查看最近精选
-//!   /ai热点             当前热点榜
-//!   /ai日报             最新一期 AI 日报
-//!   /ai模型榜 [编程|推理|知识|专业办公]   AIHOT 大模型排行榜（共识指数 Top N）
+//!   /ai资讯 · /ai新闻 [分类] [时间窗]   立刻查看最近精选；可只看某一类（论文、观点……）、改看 24 小时或 7 天
+//!   /ai热点 [名次]       当前热点榜；带名次展开那个事件的完整综述与报道时间线
+//!   /ai日报 [日期]       最新一期 AI 日报；写明日期（2026-10-17）取那一天的
+//!   /ai周报 [期号]       最新一期 AI 周报；写明期号（2026-W41）取那一周的
+//!   /ai月报 [月份]       最新一期 AI 月报；写明月份（2026-09）取那个月的
+//!   /ai模型榜 [编程|科研|专业办公|知识问答]   AIHOT 大模型排行榜（AIHOT 评分 Top N）
 //!   /ai搜索 <关键词>     按关键词检索
 //!   （提取无需指令：引用资讯图片后直接回复 `0` 全部 / `2` / `1,3-5` 即可）
 //!   /ai推送添加 <群|私聊> <ID> · /ai推送删除 <群|私聊> <ID>
@@ -66,7 +70,7 @@
 //!   /ai推送列表 · /ai推送状态 · /ai推送重置
 //!   /ai实时开启 · /ai实时关闭   当前或指定目标只收定时档还是也收实时快报
 //!   /ai实时模式 <精选|全部>      控制实时快报读取精选池还是全量池
-//!   /ai分类 <模型|产品|行业|论文|教程观点|全部|默认>   设置当前目标（官网的「教程」「观点」接口合成一类）
+//!   /ai分类 <模型|产品|行业|论文|教程|观点|全部|默认>   设置当前目标
 //!   /ai静默 <HH:MM-HH:MM|关闭|默认>              设置当前目标
 //!   /ctl set ai_news card_theme auto|light|dark   自动 / 白天 / 夜晚阅读主题
 //!
@@ -133,7 +137,7 @@ pub struct AiNewsConfig {
     pub mode: String,
     /// 时间窗，AIHOT v1 只支持 `24h` 与 `7d`
     pub window: String,
-    /// 分类过滤：ai-models / ai-products / industry / paper / tip；留空表示不限
+    /// 分类过滤：ai-models / ai-products / industry / paper / tip（教程）/ opinion（观点）；留空表示不限
     pub category: String,
     /// 单次推送最多条数（1—100）
     pub limit: u32,
@@ -154,8 +158,10 @@ pub struct AiNewsConfig {
     pub show_reason: bool,
     /// 是否附带第三方原文链接（默认开启，同时保留 AIHOT 站内阅读页）
     pub show_original_link: bool,
-    /// 日报最多展示的条目数
+    /// 日报卡片最多展示的条目数
     pub daily_max_blocks: usize,
+    /// 周报、月报卡片最多展示的条目数；各栏目轮流取，不会被头两栏占满
+    pub period_max_items: usize,
     /// 是否把资讯排版成卡片图；开启时一级推送只发图片，链接由引用提取
     pub image_enabled: bool,
     /// 卡片图最多展示几条；其余条目可通过“提取全部”一并获取
@@ -217,6 +223,17 @@ pub struct AiNewsConfig {
     pub daily_enabled: bool,
     /// 日报时间（HH:MM:SS）。
     pub daily_time: String,
+
+    /// 是否推送每周周报。
+    pub weekly_enabled: bool,
+    /// 周报检查时间（HH:MM:SS）。官方周一 10:00 出刊，任务每天都来看一眼，
+    /// 只有刚出的新刊才会推（见 [`api::ReportKind::fresh_for`]）。
+    pub weekly_time: String,
+
+    /// 是否推送每月月报。
+    pub monthly_enabled: bool,
+    /// 月报检查时间（HH:MM:SS）。官方每月 1 日 10:30 出刊，规则同周报。
+    pub monthly_time: String,
 
     /// 是否推送每日热点榜。
     pub hot_topics_enabled: bool,
@@ -306,6 +323,15 @@ fn default_brief_times() -> Vec<String> {
 fn default_daily_time() -> String {
     "08:20:00".to_string()
 }
+fn default_weekly_time() -> String {
+    "10:40:00".to_string()
+}
+fn default_monthly_time() -> String {
+    "10:50:00".to_string()
+}
+fn default_period_items() -> usize {
+    18
+}
 fn default_hot_topics_time() -> String {
     "21:40:00".to_string()
 }
@@ -328,6 +354,7 @@ impl Default for AiNewsConfig {
             show_reason: true,
             show_original_link: true,
             daily_max_blocks: default_daily_blocks(),
+            period_max_items: default_period_items(),
             image_enabled: true,
             image_max_items: default_image_max_items(),
             forward_threshold_chars: default_forward_threshold(),
@@ -353,6 +380,10 @@ impl Default for AiNewsConfig {
             brief_times: default_brief_times(),
             daily_enabled: true,
             daily_time: default_daily_time(),
+            weekly_enabled: true,
+            weekly_time: default_weekly_time(),
+            monthly_enabled: true,
+            monthly_time: default_monthly_time(),
             hot_topics_enabled: true,
             hot_topics_time: default_hot_topics_time(),
         }
@@ -360,6 +391,15 @@ impl Default for AiNewsConfig {
 }
 
 impl AiNewsConfig {
+    /// 一期报告的卡片最多放几条
+    pub(super) fn report_budget(&self, kind: api::ReportKind) -> usize {
+        match kind {
+            api::ReportKind::Daily => self.daily_max_blocks,
+            api::ReportKind::Weekly | api::ReportKind::Monthly => self.period_max_items,
+        }
+        .max(1)
+    }
+
     fn target_preference(&self, target: &PushTarget) -> Option<&GroupPreference> {
         self.group_preferences.get(&target.preference_key())
     }
@@ -542,6 +582,25 @@ pub fn on_connected(
             |c, w, cfg, groups| Box::pin(pusher::push_daily(c, w, cfg, groups)),
         );
 
+        // 周报、月报每天都排一个检查点，由推送函数判断是不是刚出的新刊；
+        // 官方出刊时间不保证到分钟，固定在某一天某一刻去推反而会错过晚到的一期
+        schedule(
+            &ctx,
+            &writer,
+            &config.weekly_time,
+            "AI 周报",
+            |cfg| cfg.weekly_enabled,
+            |c, w, cfg, groups| Box::pin(pusher::push_weekly(c, w, cfg, groups)),
+        );
+        schedule(
+            &ctx,
+            &writer,
+            &config.monthly_time,
+            "AI 月报",
+            |cfg| cfg.monthly_enabled,
+            |c, w, cfg, groups| Box::pin(pusher::push_monthly(c, w, cfg, groups)),
+        );
+
         for time in &config.brief_times {
             schedule(
                 &ctx,
@@ -677,6 +736,12 @@ fn warn_on_schedule_conflicts(ctx: &Context, cfg: &AiNewsConfig) {
     if cfg.daily_enabled {
         mine.push((hhmm(&cfg.daily_time), "AI 日报", "daily_time"));
     }
+    if cfg.weekly_enabled {
+        mine.push((hhmm(&cfg.weekly_time), "AI 周报", "weekly_time"));
+    }
+    if cfg.monthly_enabled {
+        mine.push((hhmm(&cfg.monthly_time), "AI 月报", "monthly_time"));
+    }
     if cfg.brief_enabled {
         for time in &cfg.brief_times {
             mine.push((hhmm(time), "精选速递", "brief_times"));
@@ -804,6 +869,8 @@ pub fn handle(
             "ai新闻",
             "ai热点",
             "ai日报",
+            "ai周报",
+            "ai月报",
         ] {
             let Some(matched) = match_command(&ctx, trigger) else {
                 continue;
@@ -814,12 +881,14 @@ pub fn handle(
 
             let payload = match trigger {
                 "ai搜索" => query_search(&config, &arg, &prefix).await,
-                "ai热点" => query_hot_topics(&config).await,
-                "ai日报" => query_daily(&config).await,
+                "ai热点" => query_hot_topics(&config, &arg, &prefix).await,
+                "ai日报" => query_report(&config, api::ReportKind::Daily, &arg, &prefix).await,
+                "ai周报" => query_report(&config, api::ReportKind::Weekly, &arg, &prefix).await,
+                "ai月报" => query_report(&config, api::ReportKind::Monthly, &arg, &prefix).await,
                 "ai模型排行榜" | "ai模型榜" | "ai大模型排行榜" | "模型排行榜" | "模型榜" => {
                     query_models(&config, &arg, &prefix).await
                 }
-                _ => query_brief(&config, current_target.as_ref()).await,
+                _ => query_brief(&config, current_target.as_ref(), &arg, &prefix).await,
             };
 
             // 卡片成功时只发图片；正文和链接由用户引用图片后按需提取
@@ -1024,28 +1093,108 @@ fn notice(text: impl Into<String>) -> Payload {
     Payload::text_only(Rendered::plain(text))
 }
 
-async fn query_brief(config: &AiNewsConfig, target: Option<&PushTarget>) -> Payload {
+/// 用于提示文案：`模型、产品、行业、论文、教程、观点`
+fn category_names() -> String {
+    api::CATEGORIES
+        .iter()
+        .map(|(_, label)| *label)
+        .collect::<Vec<_>>()
+        .join("、")
+}
+
+/// `/ai资讯` 的参数：分类（`论文`）、时间窗（`24小时`、`7天`）可以任意组合，空格隔开
+struct BriefArgs {
+    /// `Some("")` 表示明确要「全部分类」，`None` 表示没说
+    category: Option<String>,
+    window: Option<&'static str>,
+}
+
+fn parse_brief_args(arg: &str) -> Result<BriefArgs, String> {
+    let mut parsed = BriefArgs {
+        category: None,
+        window: None,
+    };
+    for word in arg.split_whitespace() {
+        let lower = word.to_ascii_lowercase();
+        if matches!(lower.as_str(), "全部" | "不限" | "all") {
+            parsed.category = Some(String::new());
+        } else if let Some(slug) = api::parse_category(word) {
+            parsed.category = Some(slug.to_string());
+        } else if matches!(lower.as_str(), "24h" | "24小时" | "一天" | "今天" | "日") {
+            parsed.window = Some("24h");
+        } else if matches!(lower.as_str(), "7d" | "7天" | "一周" | "本周" | "周") {
+            parsed.window = Some("7d");
+        } else {
+            return Err(word.to_string());
+        }
+    }
+    Ok(parsed)
+}
+
+/// 最近精选。参数可以挑分类与时间窗（`/ai资讯 论文`、`/ai资讯 观点 7天`），
+/// 不带则沿用当前目标设好的分类与配置里的时间窗。
+async fn query_brief(
+    config: &AiNewsConfig,
+    target: Option<&PushTarget>,
+    arg: &str,
+    prefix: &str,
+) -> Payload {
+    let parsed = match parse_brief_args(arg) {
+        Ok(parsed) => parsed,
+        Err(word) => {
+            return notice(format!(
+                "❌ 认不出「{word}」\n分类：{}\n时间窗：24小时、7天\n用法：{prefix}ai资讯 [分类] [时间窗]",
+                category_names()
+            ));
+        }
+    };
+
     let mut scoped_config = config.clone();
     if let Some(target) = target {
         scoped_config.category = config.category_for_target(target).to_string();
     }
-    let window = pusher::window_label(&config.window);
+    if let Some(category) = parsed.category {
+        scoped_config.category = category;
+    }
+    if let Some(window) = parsed.window {
+        scoped_config.window = window.to_string();
+    }
+
+    let window = pusher::window_label(&scoped_config.window);
+    let scope = match scoped_config.category.as_str() {
+        "" => String::new(),
+        slug => format!("{} · ", api::category_label(slug)),
+    };
     match pusher::fetch_brief(&scoped_config, api::Poll::Fresh).await {
         Ok(Some(items)) if !items.is_empty() => {
             let opts = pusher::render_options(config);
             let clusters = cluster::fold_if(config.fold_same_event, items);
-            let rendered =
-                render::render_items(&format!("AI 资讯速递 · {window}"), &clusters, &opts);
+            let rendered = render::render_items(
+                &format!("AI 资讯速递 · {scope}{window}"),
+                &clusters,
+                &opts,
+            );
             let html = card::items_card(
                 "AI 资讯速递",
-                window,
+                &format!("{scope}{window}"),
                 pusher::card_slice(&clusters, config),
                 &opts,
                 card::resolve_theme(&config.card_theme),
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice(format!("📭 {window}内暂无 AI 资讯")),
+        Ok(_) => {
+            let category = match scoped_config.category.as_str() {
+                "" => String::new(),
+                slug => format!("「{}」类的 ", api::category_label(slug)),
+            };
+            let hint = if scoped_config.window == "24h" {
+                format!("\n时间放宽些试试：{prefix}ai资讯 {}7天", scope.replace(" · ", " "))
+            } else {
+                String::new()
+            };
+            notice(format!("📭 {window}内暂无{category}AI 资讯{hint}"))
+        }
         Err(e) => {
             warn!(target: LOG_TARGET, "查询精选失败: {}", e);
             notice(format!("❌ 获取 AI 资讯失败：{e}"))
@@ -1053,45 +1202,107 @@ async fn query_brief(config: &AiNewsConfig, target: Option<&PushTarget>) -> Payl
     }
 }
 
-async fn query_hot_topics(config: &AiNewsConfig) -> Payload {
-    match api::fetch_hot_topics(config.request_timeout_seconds, api::Poll::Fresh).await {
-        Ok(Some(mut topics)) if !topics.is_empty() => {
-            api::enrich_hot_topics(&mut topics, config.request_timeout_seconds).await;
-            let rendered = render::render_hot_topics(&topics);
-            let html = card::hot_topics_card(
-                pusher::card_slice(&topics, config),
-                card::resolve_theme(&config.card_theme),
-            );
-            Payload::build(config, rendered, Some(html)).await
+async fn query_hot_topics(config: &AiNewsConfig, arg: &str, prefix: &str) -> Payload {
+    let arg = arg.trim().trim_start_matches('第').trim_end_matches('名').trim();
+    let wanted = if arg.is_empty() {
+        None
+    } else {
+        match arg.parse::<usize>() {
+            Ok(n) if n >= 1 => Some(n),
+            _ => {
+                return notice(format!(
+                    "❌ 认不出「{arg}」\n用法：{prefix}ai热点 看榜单，{prefix}ai热点 <名次> 看那个事件的来龙去脉"
+                ));
+            }
         }
-        Ok(_) => notice("📭 当前没有热点条目"),
+    };
+
+    let topics = match api::fetch_hot_topics(config.request_timeout_seconds, api::Poll::Fresh).await {
+        Ok(Some(topics)) if !topics.is_empty() => topics,
+        Ok(_) => return notice("📭 当前没有热点条目"),
         Err(e) => {
             warn!(target: LOG_TARGET, "查询热点榜失败: {}", e);
-            notice(format!("❌ 获取 AI 热点榜失败：{e}"))
+            return notice(format!("❌ 获取 AI 热点榜失败：{e}"));
         }
+    };
+
+    if let Some(n) = wanted {
+        return query_story(config, &topics, n).await;
     }
+
+    let mut topics = topics;
+    api::enrich_hot_topics(&mut topics, config.request_timeout_seconds).await;
+    let rendered = render::render_hot_topics(&topics);
+    let html = card::hot_topics_card(
+        pusher::card_slice(&topics, config),
+        card::resolve_theme(&config.card_theme),
+    );
+    Payload::build(config, rendered, Some(html)).await
 }
 
-async fn query_daily(config: &AiNewsConfig) -> Payload {
-    match api::fetch_latest_daily(config.request_timeout_seconds).await {
-        Ok(Some(report)) => {
-            let rendered = render::render_daily(&report, config.daily_max_blocks);
-            let html = card::daily_card(
-                &report,
-                config.daily_max_blocks,
-                card::resolve_theme(&config.card_theme),
-            );
+/// 展开榜上第 `n` 名的事件
+async fn query_story(config: &AiNewsConfig, topics: &[api::HotTopic], n: usize) -> Payload {
+    let Some(topic) = topics.get(n - 1) else {
+        return notice(format!("❌ 榜上没有第 {n} 名，当前只有 {} 个热点", topics.len()));
+    };
+    let Some(id) = topic.links.story_id() else {
+        return notice(format!("📭 第 {n} 名没有事件页，没有更多资料可看"));
+    };
+    match api::fetch_story(id, config.request_timeout_seconds).await {
+        Ok(story) => {
+            let rank = topic.rank.or(Some(n as u32));
+            let rendered = render::render_story(&story, rank, &pusher::render_options(config));
+            let html = card::story_card(&story, rank, card::resolve_theme(&config.card_theme));
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(None) => notice("📭 当前没有可用的 AI 日报"),
         Err(e) => {
-            warn!(target: LOG_TARGET, "查询日报失败: {}", e);
-            notice(format!("❌ 获取 AI 日报失败：{e}"))
+            warn!(target: LOG_TARGET, "查询事件 {} 失败: {}", id, e);
+            notice(format!("❌ 获取事件详情失败：{e}"))
         }
     }
 }
 
-/// 模型榜：AIHOT 汇总多项公开评测后的共识指数排名；参数选能力分类，缺省是综合榜
+/// 日报、周报、月报：不带参数取最新一期，写明期号取那一期
+async fn query_report(
+    config: &AiNewsConfig,
+    kind: api::ReportKind,
+    arg: &str,
+    prefix: &str,
+) -> Payload {
+    let arg = arg.trim();
+    let key = (!arg.is_empty()).then_some(arg);
+    if let Some(raw) = key
+        && kind.normalize_key(raw).is_none()
+    {
+        return notice(format!(
+            "❌ 期号「{raw}」写法不对\n用法：{prefix}ai{} [期号]，期号形如 {}",
+            kind.noun(),
+            kind.key_example()
+        ));
+    }
+
+    match api::fetch_report(kind, key, config.request_timeout_seconds).await {
+        Ok(Some(report)) => {
+            let budget = config.report_budget(kind);
+            let rendered =
+                render::render_report(&report, budget, &pusher::render_options(config));
+            let html = card::report_card(&report, budget, card::resolve_theme(&config.card_theme));
+            Payload::build(config, rendered, Some(html)).await
+        }
+        Ok(None) => notice(format!("📭 当前没有可用的 {}", kind.title())),
+        Err(e) if api::is_not_found(&e) => notice(format!(
+            "📭 没有 {} 这一期{}\n日报逐日都有；周报每周一出，月报每月 1 日出，更早的可能没有",
+            arg,
+            kind.noun()
+        )),
+        Err(e) => {
+            warn!(target: LOG_TARGET, "查询{}失败: {}", kind.noun(), e);
+            notice(format!("❌ 获取 {} 失败：{e}", kind.title()))
+        }
+    }
+}
+
+/// 模型榜：AIHOT 汇总多项第三方评测后的评分排名；参数选能力分类，缺省是综合榜
 async fn query_models(config: &AiNewsConfig, arg: &str, prefix: &str) -> Payload {
     let Some(category) = leaderboard::parse_category(arg) else {
         let names: Vec<&str> = leaderboard::CATEGORIES
@@ -1499,7 +1710,8 @@ async fn update_target_category(ctx: &Context, target: &PushTarget, raw: &str) -
             api::category_label(current)
         };
         return format!(
-            "{target} 当前接收：{label}\n用法：{prefix}ai分类 <模型|产品|行业|论文|教程观点|全部|默认>"
+            "{target} 当前接收：{label}\n用法：{prefix}ai分类 <{}|全部|默认>",
+            category_names().replace('、', "|")
         );
     }
 
@@ -1509,7 +1721,7 @@ async fn update_target_category(ctx: &Context, target: &PushTarget, raw: &str) -
         other => match api::parse_category(other) {
             Some(slug) => Some(slug.to_string()),
             None => {
-                return "❌ 未识别该分类\n可选：模型、产品、行业、论文、教程观点、全部或默认".to_string();
+                return format!("❌ 未识别该分类\n可选：{}、全部或默认", category_names());
             }
         },
     };
@@ -1683,6 +1895,16 @@ fn render_status(
         config.daily_time
     ));
     out.push_str(&format!(
+        "{}　AI 周报　{}（周一出刊，刚出的新刊才推）\n",
+        switch(config.weekly_enabled),
+        config.weekly_time
+    ));
+    out.push_str(&format!(
+        "{}　AI 月报　{}（每月 1 日出刊，刚出的新刊才推）\n",
+        switch(config.monthly_enabled),
+        config.monthly_time
+    ));
+    out.push_str(&format!(
         "{}　精选速递　{}\n   {} · 每次至多 {} 条\n",
         switch(config.brief_enabled),
         config.brief_times.join(" / "),
@@ -1731,7 +1953,7 @@ fn render_status(
     }
     out.push('\n');
     out.push_str(&format!(
-        "引用卡片回复 0全部/序号 提取\n   {prefix}ai资讯 · {prefix}ai热点 · {prefix}ai日报\n   {prefix}ai模型榜 [编程|推理|知识|专业办公] · {prefix}ai搜索 <关键词>\n   {prefix}ai推送添加/删除 <群|私聊> <ID>\n   {prefix}ai推送列表 · {prefix}ai实时开启/关闭 · {prefix}ai实时模式 精选|全部\n   {prefix}ai分类 · {prefix}ai静默\n"
+        "引用卡片回复 0全部/序号 提取\n   {prefix}ai资讯 [分类] [时间窗] · {prefix}ai热点 [名次] · {prefix}ai日报 · {prefix}ai周报 · {prefix}ai月报（可带期号）\n   {prefix}ai模型榜 [编程|科研|专业办公|知识问答] · {prefix}ai搜索 <关键词>\n   {prefix}ai推送添加/删除 <群|私聊> <ID>\n   {prefix}ai推送列表 · {prefix}ai实时开启/关闭 · {prefix}ai实时模式 精选|全部\n   {prefix}ai分类 · {prefix}ai静默\n"
     ));
     out.push_str(api::ATTRIBUTION);
     out

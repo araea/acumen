@@ -15,11 +15,14 @@
 //! 图片只承载「读」的部分：链接一概不画进图里。需要查看全文时，用户引用
 //! 卡片后直接回复序号，再按需取得正文与链接。
 
-use super::api::{DailyBlock, DailyReport, HotTopic, Item, category_label};
+use super::api::{HotTopic, Item, Report, ReportItem, Story, category_label};
 use super::cluster::Cluster;
 use super::leaderboard::Board;
 use super::render::models_meta;
-use super::render::{RenderOptions, fmt_time, truncate};
+use super::render::{
+    Digest, RenderOptions, STORY_TIMELINE, clip, digest, fmt_time, report_item_meta, story_meta,
+    story_report_meta,
+};
 use crate::render::web::esc;
 use anyhow::Result;
 use chrono::{DateTime, Timelike, Utc};
@@ -146,18 +149,26 @@ body{width:720px}
   border:1px solid var(--md-sys-color-outline-variant);
   font-size:var(--md-type-body-large-size);line-height:1.78;
   color:var(--md-sys-color-on-surface-variant)}
-.sec{padding:27px 0 7px;border-bottom:1px solid var(--md-sys-color-outline-variant)}
-.sec:last-of-type{border-bottom:none}
+.sec{padding:27px 0 23px;border-bottom:1px solid var(--md-sys-color-outline-variant)}
+.sec:has(+ .foot){border-bottom:none}
 .sec-h{display:flex;align-items:center;gap:var(--md-space-3);
   font-size:var(--md-type-title-large-size);font-weight:800;
   color:var(--md-sys-color-on-surface)}
 .bar{width:5px;height:22px;border-radius:var(--md-shape-xs);background:var(--md-sys-color-primary)}
-.li{margin-top:17px;padding-left:var(--md-space-5);position:relative;
+/* 栏目导语（周报、月报每栏有一两句）：压在栏目名下面，比条目更轻 */
+.lead p{margin:0}
+.lead p+p{margin-top:var(--md-space-3)}
+.sec-s{margin-top:var(--md-space-3);font-size:var(--md-type-body-small-size);line-height:1.72;
+  color:var(--md-sys-color-on-surface-faint);text-wrap:pretty}
+/* 条目前面是序号，不是圆点：引用本图回复序号就能取这一条的链接，序号得看得见 */
+.li{margin-top:17px;padding-left:36px;position:relative;
   font-size:var(--md-type-body-medium-size);line-height:1.68;
   color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
-.li::before{content:"";position:absolute;left:2px;top:12px;width:7px;height:7px;
-  border-radius:var(--md-shape-full);background:var(--md-sys-color-primary)}
+.li .n{position:absolute;left:0;top:0;width:26px;text-align:right;font-weight:800;
+  color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums}
 .li b{color:var(--md-sys-color-on-surface);font-weight:700}
+.li .m{margin-top:3px;font-size:var(--md-type-body-small-size);line-height:1.6;
+  color:var(--md-sys-color-on-surface-faint)}
 .li .t{margin-top:6px;font-size:var(--md-type-body-small-size);line-height:1.72;
   color:var(--md-sys-color-on-surface-faint)}
 
@@ -177,7 +188,7 @@ body{width:720px}
 .meter i{display:block;height:100%;border-radius:var(--md-shape-full);
   background:linear-gradient(90deg,var(--md-sys-color-primary-line),var(--md-sys-color-primary))}
 .mscore{text-align:right}
-/* 共识指数是这张图唯一要「一眼看到」的数字，给到 headline-medium，其余都压在灰阶里 */
+/* AIHOT 评分是这张图唯一要「一眼看到」的数字，给到 headline-medium，其余都压在灰阶里 */
 .mscore strong{display:block;font-size:var(--md-type-headline-medium-size);line-height:1;
   font-weight:800;letter-spacing:-.02em;color:var(--md-sys-color-primary);
   font-variant-numeric:tabular-nums}
@@ -309,7 +320,7 @@ pub fn items_card(
         if let Some(summary) = item.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             body.push_str(&format!(
                 r#"<div class="sum">{}</div>"#,
-                esc(&truncate(summary, 100))
+                esc(&clip(summary, 120))
             ));
         }
         let others = cluster.other_reports();
@@ -334,7 +345,7 @@ pub fn items_card(
             // 给「推荐理由」一个主色小标签：这是全卡最该被先看见的一句
             body.push_str(&format!(
                 r#"<div class="why"><b>推荐理由</b> {}</div>"#,
-                esc(&truncate(reason, 80))
+                esc(&clip(reason, 90))
             ));
         }
         body.push_str("</div></div>");
@@ -370,12 +381,11 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
         if let Some(count) = topic.participant_count.filter(|c| *c > 0) {
             meta.push(format!(r"<span>{count} 人讨论</span>"));
         }
-        meta.extend(
-            topic
-                .display_sources(3)
-                .iter()
-                .map(|s| format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(s))),
-        );
+        // 芯片要短：只列两家，括号里的身份说明（「（Anthropic，Claude Code）」）不进芯片。
+        // 总共多少家报道上一枚芯片已经写了
+        meta.extend(topic.display_sources(2).iter().map(|s| {
+            format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(&chip_name(s)))
+        }));
         if let Some(t) = topic.latest_at.as_deref().and_then(fmt_time) {
             meta.push(format!(r"<span>最新 {}</span>", esc(&t)));
         }
@@ -383,16 +393,16 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
             body.push_str(&format!(r#"<div class="meta">{}</div>"#, meta.join("")));
         }
 
-        if let Some(summary) = topic.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(summary) = topic.digest_lead() {
             body.push_str(&format!(
                 r#"<div class="sum">{}</div>"#,
-                esc(&truncate(summary, 100))
+                esc(&clip(summary, 120))
             ));
         }
         if let Some(latest) = topic.latest.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             body.push_str(&format!(
                 r#"<div class="sum">最新进展：{}</div>"#,
-                esc(&truncate(latest, 90))
+                esc(&clip(latest, 90))
             ));
         }
         body.push_str("</div></div>");
@@ -410,10 +420,10 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
     )
 }
 
-/// 模型榜卡片：一行一个模型，左名次、中模型与价格、右共识指数。
+/// 模型榜卡片：一行一个模型，左名次、中模型与价格、右 AIHOT 评分。
 ///
-/// 共识指数是这张图唯一需要「一眼看到」的数字，所以给到 34px 主色 + 一条同色进度条；
-/// 其余信息（厂商、上线日期、价格、评测证据）压到 15px 的灰阶里，不与之争。
+/// 评分是这张图唯一需要「一眼看到」的数字，所以给到 34px 主色 + 一条同色进度条；
+/// 其余信息（厂商、上线日期、价格、评测覆盖）压到 15px 的灰阶里，不与之争。
 pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String {
     let shown = &board.entries[..board.entries.len().min(max_items.max(1))];
     let mut body = String::new();
@@ -453,13 +463,13 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
         }
         body.push_str("</div>");
 
-        // 评测项数与证据状态各占一行：右栏窄，挤在一行会折得七零八落
+        // 评测项数与覆盖度各占一行：右栏窄，挤在一行会折得七零八落
         let mut note = String::new();
         if let Some(count) = model.evaluations_text() {
             note.push_str(&format!("<small>{}</small>", esc(&count)));
         }
-        if let Some(evidence) = model.evidence_text() {
-            note.push_str(&format!("<small>{}</small>", esc(&evidence)));
+        if let Some(coverage) = model.coverage_text() {
+            note.push_str(&format!("<small>{}</small>", esc(&coverage)));
         }
         body.push_str(&format!(
             r#"<div class="mscore"><strong>{}</strong>{}</div></div>"#,
@@ -468,9 +478,14 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
         ));
     }
 
-    body.push_str(
-        r#"<div class="note">共识指数按多项公开评测的共同证据排名，只反映公开评测的汇总结果；证据状态说明名次在删源、换权重后是否稳定。价格为厂商官网参考价，人民币／百万 Token。</div>"#,
-    );
+    let pending = match board.pending.filter(|n| *n > 0) {
+        Some(n) => format!("另有 {n} 个模型评测还不够宽，暂不排名，补齐后自动给名次。"),
+        None => String::new(),
+    };
+    body.push_str(&format!(
+        r#"<div class="note">只用第三方评测机构统一实测的成绩，厂商自报的分数不计。评分 50 分是参照模型的平均水平，每 15 分约一个标准差，不是正确率；名次按分数排。价格为厂商官网参考价，人民币／百万 Token。{}</div>"#,
+        esc(&pending)
+    ));
 
     let mut subtitle = models_meta(board);
     subtitle.push(format!("TOP {}", shown.len()));
@@ -478,7 +493,7 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
     shell(
         MODELS,
         theme,
-        ("模型榜", "AI MODEL CONSENSUS"),
+        ("模型榜", "AI LEADERBOARD"),
         &format!("AIHOT {}", board.title()),
         &subtitle.join(" · "),
         &body,
@@ -486,92 +501,157 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
     )
 }
 
-/// 日报里的一个条目（含其子条目），扁平成带圆点的列表行
-fn daily_items(out: &mut String, block: &DailyBlock, budget: &mut usize) {
-    if *budget == 0 {
-        return;
-    }
-    let title = block.title.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let text = block.text.as_deref().map(str::trim).filter(|s| !s.is_empty());
-
-    if title.is_some() || text.is_some() {
-        out.push_str(r#"<div class="li">"#);
-        if let Some(t) = title {
-            out.push_str(&format!("<b>{}</b>", esc(t)));
-        }
-        if let Some(t) = text {
-            let cls = if title.is_some() { r#" class="t""# } else { "" };
-            out.push_str(&format!("<div{}>{}</div>", cls, esc(&truncate(t, 150))));
-        }
-        out.push_str("</div>");
-        *budget -= 1;
-    }
-
-    for child in &block.children {
-        daily_items(out, child, budget);
-    }
+/// 芯片上的信源名：去掉括号里的补充说明
+fn chip_name(name: &str) -> String {
+    let cut = name.find(['（', '(']).unwrap_or(name.len());
+    name[..cut].trim_end().to_string()
 }
 
-/// AI 日报卡片：保留 lead / sections / flashes 的分栏结构
-pub fn daily_card(report: &DailyReport, max_blocks: usize, theme: CardTheme) -> String {
+/// 报告里的一条：序号、标题，其后是「信源 · 发布时间」与摘要
+fn report_li(out: &mut String, number: usize, item: &ReportItem) {
+    out.push_str(&format!(
+        r#"<div class="li"><span class="n">{number}</span><b>{}</b>"#,
+        esc(item.title.trim())
+    ));
+    if let Some(meta) = report_item_meta(item) {
+        out.push_str(&format!(r#"<div class="m">{}</div>"#, esc(&meta)));
+    }
+    if let Some(summary) = item.summary.as_deref() {
+        out.push_str(&format!(r#"<div class="t">{}</div>"#, esc(&clip(summary, 150))));
+    }
+    out.push_str("</div>");
+}
+
+/// 事件详情卡：完整的 AI 综述、最新进展，再是按时间排好的报道。
+/// 序号与 [`super::render::render_story`] 的条目一一对应，最后一个序号是事件页。
+pub fn story_card(story: &Story, rank: Option<u32>, theme: CardTheme) -> String {
     let mut body = String::new();
 
-    if let Some(lead) = report.lead.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let paragraphs = story.digest_paragraphs();
+    if !paragraphs.is_empty() {
+        body.push_str(r#"<div class="lead">"#);
+        for paragraph in paragraphs {
+            body.push_str(&format!("<p>{}</p>", esc(&clip(paragraph, 420))));
+        }
+        body.push_str("</div>");
+    }
+    if let Some(latest) = story.latest.as_deref() {
+        let when = story.latest_at.as_deref().and_then(fmt_time);
+        let tail = when.map(|t| format!(" · {t}")).unwrap_or_default();
         body.push_str(&format!(
-            r#"<div class="lead">{}</div>"#,
-            esc(&truncate(lead, 260))
+            r#"<div class="why"><b>最新进展</b> {}{}</div>"#,
+            esc(latest),
+            esc(&tail)
         ));
     }
 
-    let mut budget = max_blocks.max(1);
-    for section in &report.sections {
-        if budget == 0 {
-            break;
+    let timeline = story.timeline(STORY_TIMELINE);
+    body.push_str(r#"<div class="sec"><div class="sec-h"><span class="bar"></span>报道时间线</div>"#);
+    if timeline.len() < story.reports.len() {
+        body.push_str(&format!(
+            r#"<div class="sec-s">共 {} 篇，这里取最早的一篇与最近的几篇</div>"#,
+            story.reports.len()
+        ));
+    }
+    let mut number = 0usize;
+    for report in &timeline {
+        number += 1;
+        let item = &report.item;
+        body.push_str(&format!(
+            r#"<div class="li"><span class="n">{number}</span><b>{}</b>"#,
+            esc(item.title.trim())
+        ));
+        if let Some(meta) = story_report_meta(report) {
+            body.push_str(&format!(r#"<div class="m">{}</div>"#, esc(&meta)));
         }
-        let mut items = String::new();
-        for child in &section.children {
-            daily_items(&mut items, child, &mut budget);
-        }
-        // 没有子条目的段落，把自身正文当作内容
-        if items.is_empty() {
-            daily_items(&mut items, section, &mut budget);
-        }
-        if items.is_empty() {
-            continue;
-        }
+        body.push_str("</div>");
+    }
+    body.push_str("</div>");
 
+    if story.link.is_some() {
+        number += 1;
+        body.push_str(&format!(
+            r#"<div class="sec"><div class="li"><span class="n">{number}</span><b>阅读事件页</b><div class="m">报道全貌、热度变化与 AI 综述</div></div></div>"#
+        ));
+    }
+
+    let meta = story_meta(story);
+    let subtitle = match rank {
+        Some(rank) => format!("第 {rank} 名 · {meta}"),
+        None => meta,
+    };
+    shell(HOT, theme, ("热点事件", "AI STORY"), &story.title, &subtitle, &body, FOOT_LINKS)
+}
+
+/// 日报、周报、月报共用的卡片：导语、按栏目分好的条目、日报的快讯，最后一个序号是整期的阅读页。
+/// 序号与 [`super::render::render_report`] 的条目一一对应，引用本图回复序号即可取链接。
+pub fn report_card(report: &Report, budget: usize, theme: CardTheme) -> String {
+    let digest: Digest = digest(report, budget);
+    let mut body = String::new();
+
+    if let Some(lead) = report.lead.as_deref() {
+        body.push_str(&format!(r#"<div class="lead">{}</div>"#, esc(&clip(lead, 320))));
+    }
+
+    let mut number = 0usize;
+    for (section, items) in &digest.sections {
         body.push_str(r#"<div class="sec">"#);
-        if let Some(t) = section.title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(label) = section.label.as_deref() {
             body.push_str(&format!(
                 r#"<div class="sec-h"><span class="bar"></span>{}</div>"#,
-                esc(t)
+                esc(label)
             ));
         }
-        body.push_str(&items);
+        if let Some(summary) = section.summary.as_deref() {
+            body.push_str(&format!(r#"<div class="sec-s">{}</div>"#, esc(&clip(summary, 160))));
+        }
+        for item in items {
+            number += 1;
+            report_li(&mut body, number, item);
+        }
         body.push_str("</div>");
     }
 
-    if budget > 0 && !report.flashes.is_empty() {
-        let mut items = String::new();
-        for flash in &report.flashes {
-            daily_items(&mut items, flash, &mut budget);
+    if !digest.flashes.is_empty() {
+        body.push_str(
+            r#"<div class="sec"><div class="sec-h"><span class="bar"></span>快讯</div>"#,
+        );
+        for item in &digest.flashes {
+            number += 1;
+            report_li(&mut body, number, item);
         }
-        if !items.is_empty() {
-            body.push_str(
-                r#"<div class="sec"><div class="sec-h"><span class="bar"></span>快讯</div>"#,
-            );
-            body.push_str(&items);
-            body.push_str("</div>");
-        }
+        body.push_str("</div>");
     }
 
-    let title = match report.title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        Some(t) => t.to_string(),
-        None => "AI 日报".to_string(),
-    };
-    let subtitle = report.date.as_deref().unwrap_or_default();
+    if report.link.is_some() {
+        number += 1;
+        body.push_str(&format!(
+            r#"<div class="sec"><div class="li"><span class="n">{number}</span><b>阅读完整{}</b><div class="m">{}</div></div></div>"#,
+            report.kind.noun(),
+            esc(&report.edition())
+        ));
+    }
 
-    shell(DAILY, theme, ("AI 日报", "AI DAILY"), &title, subtitle, &body, FOOT_LINKS)
+    let title = report.headline.as_deref().unwrap_or(report.kind.title());
+    let count = if digest.shown() < digest.total {
+        format!("摘选 {} / {} 条", digest.shown(), digest.total)
+    } else {
+        format!("共 {} 条", digest.total)
+    };
+    let subtitle = match digest.total {
+        0 => report.subtitle(),
+        _ => format!("{} · {count}", report.subtitle()),
+    };
+
+    shell(
+        DAILY,
+        theme,
+        (report.kind.title(), report.kind.kicker_en()),
+        title,
+        &subtitle,
+        &body,
+        FOOT_LINKS,
+    )
 }
 
 /// 把卡片 HTML 截成图，返回 base64（JPEG）。

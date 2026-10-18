@@ -3,7 +3,7 @@
 //! 每个定时任务只向 AIHOT 发起一次请求，再把结果分发到各目标会话，
 //! 既满足官方「同一端点定时任务至少间隔 60 秒」的要求，也避免目标数增长时放大请求量。
 
-use super::api::{self, Item};
+use super::api::{self, Item, ReportKind};
 use super::card;
 use super::cluster::{self, Cluster};
 use super::render::{self, RenderOptions, Rendered};
@@ -529,36 +529,46 @@ pub async fn push_brief(
     }
 }
 
-/// AI 日报：先查索引拿到实际日期，再取当期正文；同一期只推一次
-pub async fn push_daily(
+/// 日报、周报、月报：取最新一期，该目标没收过这一期才推。
+///
+/// 三种刊期共用这一条路。日报每天一期，推没推过看期号；周报、月报的任务每天也会
+/// 来看一眼（出刊时间官方没法保证到分钟），所以多一道「刚出的才推」的门槛——
+/// 见 [`ReportKind::fresh_for`]。
+pub async fn push_report(
+    kind: ReportKind,
     ctx: Context,
     writer: LockedWriter,
     cfg: AiNewsConfig,
     targets: Vec<PushTarget>,
 ) {
-    let report = match api::fetch_latest_daily(cfg.request_timeout_seconds).await {
+    let name = kind.title();
+    let report = match api::fetch_report(kind, None, cfg.request_timeout_seconds).await {
         Ok(Some(report)) => report,
         Ok(None) => {
-            info!(target: LOG_TARGET, "AI 日报：当前没有可用日报，跳过。");
+            info!(target: LOG_TARGET, "{}：当前没有可用的一期，跳过。", name);
             return;
         }
         Err(e) => {
-            error!(target: LOG_TARGET, "AI 日报抓取失败: {}", e);
+            error!(target: LOG_TARGET, "{}抓取失败: {}", name, e);
             return;
         }
     };
 
-    let Some(date) = report.date.clone() else {
-        warn!(target: LOG_TARGET, "AI 日报缺少日期字段，跳过推送。");
-        return;
-    };
-    // 各群内容一致，卡片只截一次
-    let rendered = render::render_daily(&report, cfg.daily_max_blocks);
-    let card_html = Some(card::daily_card(
-        &report,
-        cfg.daily_max_blocks,
-        card_theme(&cfg),
-    ));
+    if let (Some(window), Some(generated)) = (kind.fresh_for(), report.generated_at) {
+        let age = chrono::Utc::now().timestamp() - generated;
+        if age > window {
+            info!(
+                target: LOG_TARGET,
+                "{}：最新一期（{}）出刊已 {} 小时，不是新刊，跳过。", name, report.key, age / 3600
+            );
+            return;
+        }
+    }
+
+    // 各目标内容一致，卡片只截一次
+    let budget = cfg.report_budget(kind);
+    let rendered = render::render_report(&report, budget, &render_options(&cfg));
+    let card_html = Some(card::report_card(&report, budget, card_theme(&cfg)));
     let payload = Payload::build(&cfg, rendered, card_html).await;
 
     let mut attempted_any = false;
@@ -566,8 +576,8 @@ pub async fn push_daily(
         if !is_allowed(&ctx, target) {
             continue;
         }
-        if state::has_pushed_daily(target.state_id(), &date).await {
-            info!(target: LOG_TARGET, "{} 已推送过 {} 的日报，跳过。", target, date);
+        if state::has_pushed_report(target.state_id(), kind, &report.key).await {
+            info!(target: LOG_TARGET, "{} 已推送过 {} 的{}，跳过。", target, report.key, kind.noun());
             continue;
         }
 
@@ -576,19 +586,22 @@ pub async fn push_daily(
         }
         attempted_any = true;
 
-        if deliver(
-            &ctx,
-            writer.clone(),
-            target,
-            &cfg,
-            &payload,
-            None,
-        )
-        .await
-        {
-            state::mark_daily(target.state_id(), &date).await;
+        if deliver(&ctx, writer.clone(), target, &cfg, &payload, None).await {
+            state::mark_report(target.state_id(), kind, &report.key).await;
         }
     }
+}
+
+pub async fn push_daily(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig, targets: Vec<PushTarget>) {
+    push_report(ReportKind::Daily, ctx, writer, cfg, targets).await;
+}
+
+pub async fn push_weekly(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig, targets: Vec<PushTarget>) {
+    push_report(ReportKind::Weekly, ctx, writer, cfg, targets).await;
+}
+
+pub async fn push_monthly(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig, targets: Vec<PushTarget>) {
+    push_report(ReportKind::Monthly, ctx, writer, cfg, targets).await;
 }
 
 /// 当前热点榜：快照式内容，不做条目去重

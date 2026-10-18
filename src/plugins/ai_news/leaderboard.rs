@@ -1,8 +1,7 @@
 //! AIHOT 模型榜（`/leaderboard`）抓取与解析。
 //!
-//! AIHOT 的公开 API v1 只覆盖资讯、热点、事件、日报与精选同步，模型榜没有对应端点
-//! （`openapi-v1.json` 里没有 leaderboard，`/api/v1/leaderboard` 回 404），
-//! 所以这里退而求其次读页面。取数方式仍尽量克制：
+//! AIHOT 的公开 API v1 只覆盖资讯、热点、事件、日报周报月报与精选同步，模型榜没有对应端点
+//! （`openapi-v1.json` 里没有 leaderboard），所以这里退而求其次读页面。取数方式仍尽量克制：
 //!
 //!   1. 页面在 `robots.txt` 的 `User-agent: *` 组里未被 Disallow，`llms.txt` 也把
 //!      模型榜列为给 Agent 的页面；
@@ -11,24 +10,18 @@
 //!      榜单每天只更新几次，指令再密也不会变成对站点的轮询；
 //!   4. 沿用 `api` 模块的客户端与 UA，保持可识别、可追溯。
 //!
-//! 站点迁到 `aihot.news` 后，网页（不含 `/api/v1`）前面多了一层 EdgeOne 的
-//! JS 校验页：先回一段设 cookie 再刷新的脚本，真正的页面要执行完才拿得到。
-//! 这里不去复刻那段脚本，而是先照常请求一次（校验层撤掉时就是最省的路），
-//! 拿到校验页就交给本机已经在跑的无头 Chromium 按普通访客的方式打开页面，
-//! 再读它最终的 HTML——和群友点开链接是同一条路。
+//! 页面 2026-10 改版后是服务端直出的普通 HTML 表格（此前是 Next.js 的 RSC 数据流，
+//! 要拆引用、拼分片），也不再有 EdgeOne 的 JS 校验页。所以解析简单了：按表头文字认列
+//! （列的顺序变了也认得出），再逐行取格。校验页若哪天回来，`fetch` 仍会退到本机已经在跑
+//! 的无头 Chromium，按普通访客的方式打开再读最终的 HTML。
 //!
-//! 解析取的是页面里 Next.js 的 RSC 数据段而非渲染后的 DOM：数据段是结构化 JSON，
-//! 比起追着 class 名解析 HTML 更不容易被样式调整打断。2026-09 改版后榜单不再
-//! 附带一份 `entries` 数组，而是直接下发表格元素树（行还可能拆成 `$L` 懒引用
-//! 散落在别的数据行里），所以这里先把数据行解析成 JSON、解开引用，再按表头文字
-//! 认列——列的顺序变了也认得出。站点改版仍可能让解析失效——所有字段一律按可空
-//! 处理，取不到就如实报错，不猜不编。
+//! 站点改版仍可能让解析失效——所有字段一律按可空处理，取不到就如实报错，不猜不编。
 
 use super::api::{ApiError, client};
 use crate::render::web::TabGuard;
 use cdp_html_shot::Browser;
 use regex::Regex;
-use serde_json::{Map, Value as JsonValue};
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -37,12 +30,13 @@ pub const SITE: &str = "https://aihot.news";
 pub const ATTRIBUTION: &str = "数据来源：AIHOT 模型榜 (aihot.news/leaderboard)";
 
 /// 榜单分类：`(slug, 站点上的名字, 指令里还认的别名)`。综合榜的 slug 为 `overall`。
+/// `reasoning` 在站点上叫「科研」（旧名「推理」仍可用），`knowledge` 叫「知识问答」。
 pub const CATEGORIES: &[(&str, &str, &[&str])] = &[
     ("overall", "综合", &["综合", "总榜", "全部", "overall"]),
     ("coding", "编程", &["编程", "代码", "coding", "code"]),
-    ("reasoning", "推理", &["推理", "reasoning"]),
-    ("knowledge", "知识", &["知识", "knowledge"]),
+    ("reasoning", "科研", &["科研", "推理", "reasoning"]),
     ("professional", "专业办公", &["专业办公", "专业", "办公", "professional"]),
+    ("knowledge", "知识问答", &["知识问答", "知识", "问答", "knowledge"]),
 ];
 
 /// 把指令参数认成分类 slug；空参数是综合榜，认不出返回 None
@@ -87,17 +81,13 @@ pub struct ModelEntry {
     pub released_at: Option<String>,
     /// 参与计分的评测项数
     pub evaluations: Option<u32>,
-    /// 证据状态代码：HIGH / MEDIUM / LOW
-    pub confidence: Option<String>,
-    /// 站点给证据状态的名字，如「较充分」「持续积累」「证据敏感」
-    pub confidence_text: Option<String>,
-    /// 证据状态的说明（站点悬停提示），含名次的情景范围
-    pub confidence_note: Option<String>,
+    /// 评测覆盖度（百分数）：这个模型被各领域的评测覆盖到多少
+    pub coverage: Option<u32>,
     /// 官网参考价，人民币／百万 Token，保留站点原样文字（如 `¥26.83`）
     pub cache_price: Option<String>,
     pub input_price: Option<String>,
     pub output_price: Option<String>,
-    /// AIHOT 共识指数（0—100）
+    /// AIHOT 评分：50 分是参照模型的平均水平，每 15 分约一个标准差；不是正确率
     pub score: Option<f64>,
 }
 
@@ -110,51 +100,19 @@ impl ModelEntry {
         self.provider.as_deref().map(str::trim).filter(|s| !s.is_empty())
     }
 
-    /// 共识指数保留一位小数
+    /// 评分保留一位小数
     pub fn score_text(&self) -> Option<String> {
         self.score.map(|s| format!("{s:.1}"))
     }
 
-    /// 「8 项评测」
+    /// 「34 项评测」
     pub fn evaluations_text(&self) -> Option<String> {
         self.evaluations.map(|n| format!("{n} 项评测"))
     }
 
-    /// 证据状态的中文名：优先站点原文，缺失时按代码兜底
-    pub fn confidence_label(&self) -> Option<&str> {
-        if let Some(text) = self.confidence_text.as_deref().map(str::trim).filter(|s| !s.is_empty())
-        {
-            return Some(text);
-        }
-        match self.confidence.as_deref()?.trim().to_ascii_uppercase().as_str() {
-            "HIGH" => Some("较充分"),
-            "MEDIUM" => Some("持续积累"),
-            "LOW" => Some("证据敏感"),
-            _ => None,
-        }
-    }
-
-    /// 「证据较充分」「证据持续积累」「证据敏感」：站点的名字本身带「证据」时不再重复
-    pub fn evidence_text(&self) -> Option<String> {
-        let label = self.confidence_label()?;
-        Some(if label.starts_with("证据") {
-            label.to_string()
-        } else {
-            format!("证据{label}")
-        })
-    }
-
-    /// 名次的情景范围，如「1—3」；从证据说明里摘出来
-    pub fn rank_range(&self) -> Option<String> {
-        let note = self.confidence_note.as_deref()?;
-        let caps = rank_range_re().captures(note)?;
-        let from = caps.get(1)?.as_str();
-        let to = caps.get(2).map_or(from, |m| m.as_str());
-        Some(if from == to {
-            from.to_string()
-        } else {
-            format!("{from}—{to}")
-        })
+    /// 「覆盖 96%」
+    pub fn coverage_text(&self) -> Option<String> {
+        self.coverage.map(|n| format!("覆盖 {n}%"))
     }
 
     pub fn released_date(&self) -> Option<&str> {
@@ -195,6 +153,8 @@ pub struct Board {
     pub org_count: Option<u32>,
     /// 站点标注的更新时间，如「09/24 15:26」
     pub updated_at: Option<String>,
+    /// 「暂不排名」的模型数：已有评分，但评测还不够宽，补齐后自动给名次
+    pub pending: Option<u32>,
     pub entries: Vec<ModelEntry>,
 }
 
@@ -298,7 +258,7 @@ async fn fetch_with_browser(url: &str, timeout_secs: u64) -> Result<String, ApiE
         let tab = page.as_ref().expect("刚放进去").tab();
         tab.goto_no_wait(url).await?;
 
-        const READY: &str = "!!document.querySelector('table.lb-ranking-table tbody tr') \
+        const READY: &str = "!!document.querySelector('table tbody tr[data-slug]') \
             && document.readyState === 'complete'";
         loop {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -323,360 +283,13 @@ async fn fetch_with_browser(url: &str, timeout_secs: u64) -> Result<String, ApiE
 }
 // ================= 解析 =================
 
-pub fn parse_board(html: &str) -> Result<Board, ApiError> {
-    let payload = flight_payload(html);
-    let rows = flight_rows(&payload);
-    let tree = Tree { rows: &rows };
-
-    let table = rows
-        .values()
-        .find_map(|root| tree.find(root, &|el| el.kind == "table" && el.has_class("lb-ranking-table")))
-        .ok_or("未能从 AIHOT 模型榜页面解析出榜单数据（站点结构可能已调整）")?;
-
-    let entries = tree.parse_table(table);
-    if entries.is_empty() {
-        return Err("AIHOT 模型榜当前没有条目".into());
-    }
-
-    let mut board = Board {
-        entries,
-        ..Default::default()
-    };
-
-    // 榜名：「综合榜 TOP 30」里 TOP 之前那截
-    if let Some(heading) = rows
-        .values()
-        .find_map(|root| tree.find(root, &|el| el.has_class("lb-ranking-heading")))
-        .and_then(|el| tree.find_all(&el, &|h| h.kind == "h2").into_iter().next())
-    {
-        let text = tree.text(heading);
-        let name = text.split("TOP").next().unwrap_or("").trim();
-        if !name.is_empty() {
-            board.title = Some(name.to_string());
-        }
-    }
-
-    // 「20 项评测 · 9 家机构 · 09/24 15:26 更新」
-    if let Some(intro) = rows
-        .values()
-        .find_map(|root| tree.find(root, &|el| el.has_class("lb-board-intro")))
-    {
-        let text = tree.text(intro);
-        board.evaluation_count = capture(eval_count_re(), &text).and_then(|s| s.parse().ok());
-        board.org_count = capture(org_count_re(), &text).and_then(|s| s.parse().ok());
-        board.updated_at = capture(updated_at_re(), &text);
-    }
-
-    Ok(board)
-}
-
-/// 把页面里 `self.__next_f.push([1,"..."])` 的分片拼回一整段 RSC 数据。
-///
-/// 分片是 JSON 字符串字面量，内容本身又是 JSON——数组可能横跨两个分片，
-/// 所以先整体解码拼接，再在完整文本里找数据。
-fn flight_payload(html: &str) -> String {
-    const MARKER: &str = "self.__next_f.push([1,";
-    let mut out = String::new();
-    let mut rest = html;
-
-    while let Some(pos) = rest.find(MARKER) {
-        rest = &rest[pos + MARKER.len()..];
-        let Some(quote) = rest.find('"') else { break };
-        let chunk = &rest[quote..];
-        let Some(end) = string_literal_end(chunk) else {
-            break;
-        };
-        if let Ok(decoded) = serde_json::from_str::<String>(&chunk[..=end]) {
-            out.push_str(&decoded);
-        }
-        rest = &chunk[end + 1..];
-    }
-    out
-}
-
-/// 给定以 `"` 开头的切片，返回该 JSON 字符串字面量结束引号的下标
-fn string_literal_end(slice: &str) -> Option<usize> {
-    let bytes = slice.as_bytes();
-    let mut escaped = false;
-    for (idx, byte) in bytes.iter().enumerate().skip(1) {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match byte {
-            b'\\' => escaped = true,
-            b'"' => return Some(idx),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// 把 RSC 数据段拆成 `行号 → JSON`。
-///
-/// 每行形如 `1a:["$","div",...]`；`I[...]`（模块）与 `T<长度>,`（长文本，可能跨行）
-/// 这类行不以 JSON 开头，直接跳过。一行的 JSON 解析完就停，不依赖换行切分。
-fn flight_rows(payload: &str) -> HashMap<String, JsonValue> {
-    let mut rows = HashMap::new();
-    for caps in row_start_re().captures_iter(payload) {
-        let (Some(id), Some(body)) = (caps.get(1), caps.get(2)) else {
-            continue;
-        };
-        let mut stream =
-            serde_json::Deserializer::from_str(&payload[body.start()..]).into_iter::<JsonValue>();
-        if let Some(Ok(value)) = stream.next() {
-            rows.insert(id.as_str().to_string(), value);
-        }
-    }
-    rows
-}
-
-/// RSC 元素 `["$", 类型, key, props]` 的视图
-struct Element<'a> {
-    kind: &'a str,
-    key: Option<&'a str>,
-    props: &'a Map<String, JsonValue>,
-}
-
-impl<'a> Element<'a> {
-    fn of(value: &'a JsonValue) -> Option<Self> {
-        let arr = value.as_array()?;
-        if arr.len() < 4 || arr[0].as_str() != Some("$") {
-            return None;
-        }
-        Some(Self {
-            kind: arr[1].as_str()?,
-            key: arr[2].as_str(),
-            props: arr[3].as_object()?,
-        })
-    }
-
-    fn prop(&self, name: &str) -> Option<&'a str> {
-        self.props.get(name).and_then(JsonValue::as_str)
-    }
-
-    fn has_class(&self, class: &str) -> bool {
-        self.prop("className")
-            .is_some_and(|c| c.split_whitespace().any(|c| c == class))
-    }
-
-    fn children(&self) -> Option<&'a JsonValue> {
-        self.props.get("children")
-    }
-}
-
-/// 带引用解析的元素树遍历
-struct Tree<'a> {
-    rows: &'a HashMap<String, JsonValue>,
-}
-
-impl<'a> Tree<'a> {
-    /// `"$L27"` / `"$27"` / `"$@27"` 这类引用指向别的数据行；其余 `$` 开头的
-    /// （`$undefined`、`$Sreact.fragment` 等）不是内容
-    fn deref(&self, value: &'a JsonValue) -> Option<&'a JsonValue> {
-        let JsonValue::String(s) = value else {
-            return Some(value);
-        };
-        let Some(rest) = s.strip_prefix('$') else {
-            return Some(value);
-        };
-        let id = rest
-            .strip_prefix('L')
-            .or_else(|| rest.strip_prefix('@'))
-            .unwrap_or(rest);
-        if !id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return self.rows.get(id);
-        }
-        None
-    }
-
-    /// 深度优先找第一个满足条件的元素
-    fn find(
-        &self,
-        value: &'a JsonValue,
-        pred: &dyn Fn(&Element<'a>) -> bool,
-    ) -> Option<Element<'a>> {
-        self.find_depth(value, pred, 0)
-    }
-
-    fn find_depth(
-        &self,
-        value: &'a JsonValue,
-        pred: &dyn Fn(&Element<'a>) -> bool,
-        depth: usize,
-    ) -> Option<Element<'a>> {
-        if depth > 200 {
-            return None;
-        }
-        let value = self.deref(value)?;
-        if let Some(el) = Element::of(value) {
-            if pred(&el) {
-                return Some(el);
-            }
-            return el
-                .children()
-                .and_then(|c| self.find_depth(c, pred, depth + 1));
-        }
-        value
-            .as_array()?
-            .iter()
-            .find_map(|child| self.find_depth(child, pred, depth + 1))
-    }
-
-    /// 某元素下所有满足条件的元素（不再深入命中的元素内部）
-    fn find_all(&self, el: &Element<'a>, pred: &dyn Fn(&Element<'a>) -> bool) -> Vec<Element<'a>> {
-        let mut out = Vec::new();
-        if let Some(children) = el.children() {
-            self.collect(children, pred, &mut out, 0);
-        }
-        out
-    }
-
-    fn collect(
-        &self,
-        value: &'a JsonValue,
-        pred: &dyn Fn(&Element<'a>) -> bool,
-        out: &mut Vec<Element<'a>>,
-        depth: usize,
-    ) {
-        if depth > 200 {
-            return;
-        }
-        let Some(value) = self.deref(value) else {
-            return;
-        };
-        if let Some(el) = Element::of(value) {
-            if pred(&el) {
-                out.push(el);
-            } else if let Some(children) = el.children() {
-                self.collect(children, pred, out, depth + 1);
-            }
-            return;
-        }
-        if let Some(arr) = value.as_array() {
-            for child in arr {
-                self.collect(child, pred, out, depth + 1);
-            }
-        }
-    }
-
-    /// 元素里的全部文字，按出现顺序直接拼接（站点自己在文字里带了空格）
-    fn text(&self, el: Element<'a>) -> String {
-        let mut out = String::new();
-        if let Some(children) = el.children() {
-            self.text_into(children, &mut out, 0);
-        }
-        out.split_whitespace().collect::<Vec<_>>().join(" ")
-    }
-
-    fn text_into(&self, value: &'a JsonValue, out: &mut String, depth: usize) {
-        if depth > 200 {
-            return;
-        }
-        match value {
-            JsonValue::String(s) if s.starts_with('$') => {
-                if let Some(target) = self.deref(value).filter(|t| !t.is_string()) {
-                    self.text_into(target, out, depth + 1);
-                }
-            }
-            JsonValue::String(s) => out.push_str(s),
-            JsonValue::Number(n) => out.push_str(&n.to_string()),
-            JsonValue::Array(arr) => match Element::of(value) {
-                Some(el) => {
-                    if let Some(children) = el.children() {
-                        self.text_into(children, out, depth + 1);
-                    }
-                }
-                None => arr.iter().for_each(|v| self.text_into(v, out, depth + 1)),
-            },
-            _ => {}
-        }
-    }
-
-    /// 按表头认列，逐行取数
-    fn parse_table(&self, table: Element<'a>) -> Vec<ModelEntry> {
-        let headers: Vec<Column> = self
-            .find_all(&table, &|el| el.kind == "th")
-            .into_iter()
-            .map(|th| Column::from_header(&self.text(th)))
-            .collect();
-
-        let Some(tbody) = self.find_all(&table, &|el| el.kind == "tbody").into_iter().next() else {
-            return Vec::new();
-        };
-
-        self.find_all(&tbody, &|el| el.kind == "tr")
-            .into_iter()
-            .filter_map(|tr| {
-                let cells = self.find_all(&tr, &|el| el.kind == "td");
-                let mut entry = ModelEntry {
-                    slug: tr.key.map(str::to_string),
-                    ..Default::default()
-                };
-                for (idx, cell) in cells.into_iter().enumerate() {
-                    let column = headers.get(idx).copied().unwrap_or(Column::Other);
-                    self.fill(&mut entry, column, cell);
-                }
-                entry.name.is_some().then_some(entry)
-            })
-            .collect()
-    }
-
-    fn fill(&self, entry: &mut ModelEntry, column: Column, cell: Element<'a>) {
-        let first = |kind: &'static str| self.find_all(&cell, &move |el| el.kind == kind).into_iter().next();
-        match column {
-            Column::Rank => entry.rank = digits(&self.text(cell)),
-            Column::Model => {
-                entry.name = first("strong").map(|el| self.text(el)).filter(|s| !s.is_empty());
-                entry.provider = first("small").map(|el| self.text(el)).filter(|s| !s.is_empty());
-                // 详情页链接里的 slug 比行 key 更可靠（可能带 `?from=coding`）
-                if let Some(slug) = self
-                    .find_all(&cell, &|el| el.prop("href").is_some())
-                    .into_iter()
-                    .next()
-                    .and_then(|el| el.prop("href"))
-                    .and_then(|href| href.strip_prefix("/leaderboard/"))
-                    .map(|rest| rest.split(['?', '#', '/']).next().unwrap_or(""))
-                    .filter(|s| !s.is_empty())
-                {
-                    entry.slug = Some(slug.to_string());
-                }
-            }
-            Column::Release => {
-                entry.released_at = first("time")
-                    .and_then(|el| el.prop("dateTime").map(str::to_string))
-                    .or_else(|| Some(self.text(cell)))
-                    .filter(|s| s.chars().any(|c| c.is_ascii_digit()));
-            }
-            Column::Evidence => {
-                entry.evaluations = first("span").and_then(|el| digits(&self.text(el)));
-                if let Some(small) = first("small") {
-                    entry.confidence = small.prop("data-confidence").map(str::to_string);
-                    entry.confidence_note = small.prop("title").map(str::to_string);
-                    entry.confidence_text = Some(self.text(small)).filter(|s| !s.is_empty());
-                }
-            }
-            Column::CachePrice => entry.cache_price = price(&self.text(cell)),
-            Column::InputPrice => entry.input_price = price(&self.text(cell)),
-            Column::OutputPrice => entry.output_price = price(&self.text(cell)),
-            Column::Score => {
-                entry.score = first("strong")
-                    .and_then(|el| self.text(el).trim().parse().ok())
-                    .or_else(|| {
-                        first("meter").and_then(|el| el.props.get("value").and_then(JsonValue::as_f64))
-                    });
-            }
-            Column::Other => {}
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 表格的一列是什么，按表头文字认
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Column {
     Rank,
     Model,
     Release,
-    Evidence,
+    Coverage,
     CachePrice,
     InputPrice,
     OutputPrice,
@@ -687,26 +300,116 @@ enum Column {
 impl Column {
     fn from_header(text: &str) -> Self {
         let has = |needle: &str| text.contains(needle);
-        if has("缓存") {
+        if has("名次") {
+            Self::Rank
+        } else if has("上线") {
+            Self::Release
+        } else if has("覆盖") {
+            Self::Coverage
+        } else if has("缓存") {
             Self::CachePrice
         } else if has("输入") {
             Self::InputPrice
         } else if has("输出") {
             Self::OutputPrice
-        } else if has("排名") || has("名次") {
-            Self::Rank
+        } else if has("评分") {
+            Self::Score
         } else if has("模型") {
             Self::Model
-        } else if has("上线") || has("发布") {
-            Self::Release
-        } else if has("证据") || has("评测") {
-            Self::Evidence
-        } else if has("共识") || has("分") || has("指数") {
-            Self::Score
         } else {
             Self::Other
         }
     }
+}
+
+pub fn parse_board(html: &str) -> Result<Board, ApiError> {
+    let table = table_re()
+        .find(html)
+        .map(|m| m.as_str())
+        .ok_or("未能从 AIHOT 模型榜页面解析出榜单数据（站点结构可能已调整）")?;
+
+    let columns: Vec<Column> = th_re()
+        .captures_iter(table)
+        .map(|c| Column::from_header(&text_of(&c[1])))
+        .collect();
+
+    let entries: Vec<ModelEntry> = row_re()
+        .captures_iter(table)
+        .map(|row| parse_row(&row[1], &row[2], &columns))
+        .collect();
+    if entries.is_empty() {
+        return Err("AIHOT 模型榜当前没有条目".into());
+    }
+
+    let mut board = Board {
+        entries,
+        ..Default::default()
+    };
+
+    // 榜名：「综合榜 30 个模型」里「个模型」前面的那截——标题 h2 的第一段文字
+    board.title = capture(title_re(), html);
+
+    // 「35 项评测 · 7 家机构 · 10/18 20:06 更新」
+    if let Some(intro) = intro_re()
+        .captures_iter(html)
+        .map(|c| text_of(&c[1]))
+        .find(|text| text.contains("项评测"))
+    {
+        board.evaluation_count = capture(eval_count_re(), &intro).and_then(|s| s.parse().ok());
+        board.org_count = capture(org_count_re(), &intro).and_then(|s| s.parse().ok());
+        board.updated_at = capture(updated_at_re(), &intro);
+    }
+    board.pending = capture(pending_re(), html).and_then(|s| s.parse().ok());
+
+    Ok(board)
+}
+
+fn parse_row(slug: &str, row: &str, columns: &[Column]) -> ModelEntry {
+    let mut entry = ModelEntry {
+        slug: Some(slug.to_string()).filter(|s| !s.is_empty()),
+        ..Default::default()
+    };
+    for (cell, column) in cell_re().captures_iter(row).zip(columns.iter().copied()) {
+        let html = &cell[1];
+        let text = text_of(html);
+        match column {
+            Column::Rank => entry.rank = digits(&text),
+            Column::Model => {
+                entry.name = capture(strong_re(), html).map(|s| text_of(&s));
+                entry.provider = capture(small_re(), html).map(|s| text_of(&s));
+            }
+            Column::Release => {
+                entry.released_at = capture(datetime_re(), html).or(Some(text).filter(|t| !t.is_empty()));
+            }
+            Column::Coverage => {
+                entry.evaluations = capture(eval_count_re(), &text).and_then(|s| s.parse().ok());
+                entry.coverage = capture(coverage_re(), &text).and_then(|s| s.parse().ok());
+            }
+            Column::CachePrice => entry.cache_price = price(&text),
+            Column::InputPrice => entry.input_price = price(&text),
+            Column::OutputPrice => entry.output_price = price(&text),
+            // 评分格里还有一行「覆盖 96%」，只认大号数字那个 <strong>
+            Column::Score => {
+                entry.score = capture(strong_re(), html).and_then(|s| text_of(&s).parse().ok());
+            }
+            Column::Other => {}
+        }
+    }
+    entry
+}
+
+/// 去标签、还原实体、折叠空白。`<!-- -->`（React 拼文本时插的分隔）一并去掉
+fn text_of(html: &str) -> String {
+    let stripped = tag_re().replace_all(html, "");
+    let decoded = stripped
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&");
+    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// 文字里的第一个整数（「01」→ 1，「8 项评测」→ 8）
@@ -723,34 +426,73 @@ fn price(text: &str) -> Option<String> {
     text.chars().any(|c| c.is_ascii_digit()).then(|| text.to_string())
 }
 
-fn row_start_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?m)^([0-9a-f]{1,8}):([\[{])").expect("正则字面量合法"))
+fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
+    cell.get_or_init(|| Regex::new(pattern).expect("正则字面量合法"))
 }
 
-fn eval_count_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(\d{1,4})\s*项评测").expect("正则字面量合法"))
+macro_rules! lazy_re {
+    ($name:ident, $pattern:expr) => {
+        fn $name() -> &'static Regex {
+            static RE: OnceLock<Regex> = OnceLock::new();
+            regex(&RE, $pattern)
+        }
+    };
 }
 
-fn org_count_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(\d{1,4})\s*家机构").expect("正则字面量合法"))
-}
-
-fn updated_at_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"([0-9/\-: 年月日]{4,20}?)\s*更新").expect("正则字面量合法"))
-}
-
-fn rank_range_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"名次为\s*(\d{1,3})\s*(?:[—–\-~～至到]\s*(\d{1,3}))?").expect("正则字面量合法"))
-}
+lazy_re!(table_re, r"(?s)<table\b.*?</table>");
+lazy_re!(th_re, r"(?s)<th\b[^>]*>(.*?)</th>");
+lazy_re!(row_re, r#"(?s)<tr data-slug="([^"]*)"[^>]*>(.*?)</tr>"#);
+lazy_re!(cell_re, r"(?s)<td\b[^>]*>(.*?)</td>");
+lazy_re!(tag_re, r"(?s)<[^>]*>");
+lazy_re!(strong_re, r"(?s)<strong\b[^>]*>(.*?)</strong>");
+lazy_re!(small_re, r"(?s)<small\b[^>]*>(.*?)</small>");
+lazy_re!(datetime_re, r#"dateTime="([0-9]{4}-[0-9]{2}-[0-9]{2})""#);
+lazy_re!(title_re, r#"id="lb-board-title"[^>]*>([^<]+)<"#);
+lazy_re!(intro_re, r#"(?s)<p class="num\b[^"]*"[^>]*>(.*?)</p>"#);
+lazy_re!(pending_re, r#"(?s)id="lb-pending-title"[^>]*>[^<]*<span[^>]*>\s*(\d+)"#);
+lazy_re!(eval_count_re, r"(\d{1,4})\s*项评测");
+lazy_re!(org_count_re, r"(\d{1,4})\s*家机构");
+lazy_re!(coverage_re, r"覆盖\s*(\d{1,3})\s*%");
+lazy_re!(updated_at_re, r"([0-9/\-: 年月日]{4,20}?)\s*更新");
 
 fn capture(re: &Regex, source: &str) -> Option<String> {
     re.captures(source)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_server_rendered_table() {
+        let html = r#"
+<p class="num x">35<!-- --> 项评测<span class="mx-2">·</span>7<!-- --> 家机构<span class="mx-2">·</span>10/18 20:06<!-- --> 更新</p>
+<h2 id="lb-board-title" class="t">综合榜<span class="mono">30 个模型</span></h2>
+<table class="w-full"><thead><tr>
+<th><span>名次</span><button>名次</button></th><th>模型</th><th><button><span>上线日期</span></button></th>
+<th><button><span>评测覆盖</span></button></th><th><span>缓存价格<span>人民币 / 百万 Token</span></span></th>
+<th><span>输入价格</span></th><th><span>输出价格</span></th><th><button>AIHOT 评分</button></th></tr></thead>
+<tbody><tr data-slug="claude-opus-5-5" class="g"><td><span class="mono">01</span></td>
+<td><a href="/leaderboard/claude-opus-5-5"><strong class="x">Claude Opus 5.5</strong></a><small class="hidden">Anthropic</small><small>Anthropic<!-- --> · 9月22日上线</small></td>
+<td><time dateTime="2026-09-22">2026-09-22</time></td>
+<td><span>34<!-- --> 项评测</span><span>覆盖 <!-- -->96<!-- -->%</span></td>
+<td>¥1.34</td><td>¥26.74</td><td>—</td>
+<td><span><strong class="mono" aria-label="a">73.7</strong><small>覆盖 <!-- -->96<!-- -->%</small></span></td></tr></tbody></table>
+<h2 id="lb-pending-title">暂不排名<span class="mono">5 个模型</span></h2>"#;
+        let board = parse_board(html).expect("能解析");
+        assert_eq!(board.title(), "综合榜");
+        assert_eq!((board.evaluation_count, board.org_count), (Some(35), Some(7)));
+        assert_eq!(board.updated_at.as_deref(), Some("10/18 20:06"));
+        assert_eq!(board.pending, Some(5));
+        let model = &board.entries[0];
+        assert_eq!((model.rank, model.slug.as_deref()), (Some(1), Some("claude-opus-5-5")));
+        assert_eq!((model.display_name(), model.provider_name()), ("Claude Opus 5.5", Some("Anthropic")));
+        assert_eq!(model.released_date(), Some("2026-09-22"));
+        assert_eq!((model.evaluations, model.coverage), (Some(34), Some(96)));
+        assert_eq!(model.price_text().as_deref(), Some("输入 ¥26.74 / 缓存 ¥1.34"), "「—」不算价格");
+        assert_eq!(model.score_text().as_deref(), Some("73.7"));
+    }
 }
