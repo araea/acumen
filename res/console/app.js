@@ -524,7 +524,9 @@
     // Android 的长按菜单与 iOS 的链接预览都从 touchstart 的默认动作开始；
     // 这里一并关掉，tap 由上面的 pointerup 自己落格。
     nav.addEventListener("touchstart", (event) => {
-      if (compactNav.matches && event.cancelable) event.preventDefault();
+      // pointerdown 先到（drag 已建立）才接管；不支持 Pointer Events 的浏览器
+      // 不会进这里，链接的原生 click 仍然可用。
+      if (drag && compactNav.matches && event.cancelable) event.preventDefault();
     }, { passive: false });
 
     nav.addEventListener("pointerdown", (event) => {
