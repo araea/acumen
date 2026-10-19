@@ -356,25 +356,51 @@ time {
   border-radius: calc(var(--zw-dock-height) / 2);
   background: var(--md-sys-color-surface-container-high);
   box-shadow: var(--md-sys-elevation-level2);
+  isolation: isolate;
+}
+
+/* 滑动的胶囊。位置与尺寸由 app.js 的 paintNavPill 跟着当前格量出来；
+   它不是哪一格的背景，所以换页时能从旧格滑到新格。 */
+.nav-pill {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 0;
+  width: 0;
+  height: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-secondary-container);
+  box-shadow: var(--md-sys-elevation-level2);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+  will-change: transform, width, height;
+  transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
+}
+
+/* 首帧、解锁与断点重排时先落位再开动画，免得量到过渡中间的一格宽。 */
+.nav.nav-snap .nav-item,
+.nav.nav-snap .nav-label {
+  transition: none;
 }
 
 .nav-item {
+  position: relative;
+  z-index: 1;
   flex: 1 1 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--zw-space-01);
+  gap: 0;
   min-width: 0;
   height: calc(var(--zw-dock-height) - var(--zw-space-05));
   border-radius: calc((var(--zw-dock-height) - var(--zw-space-05)) / 2);
   color: var(--md-sys-color-on-surface-variant);
   text-decoration: none;
   transition:
-    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
     color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
-    flex-grow var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
-    padding var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+    flex-grow var(--zw-nav-duration) var(--md-sys-motion-spatial-default-easing),
+    flex-basis var(--zw-nav-duration) var(--md-sys-motion-spatial-default-easing),
+    padding var(--zw-nav-duration) var(--md-sys-motion-spatial-default-easing);
 }
 
 .nav-icon {
@@ -398,26 +424,40 @@ time {
   display: block;
 }
 
+/* 窄屏只让当前格的字露出来；其余格的字宽高归零，但仍然留在 DOM 里，
+   读屏器照常读到每个入口的名字。 */
 .nav-label {
-  display: none;
+  display: block;
+  max-width: 0;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
   font-size: var(--md-sys-typescale-label-medium-size);
   line-height: 1;
   font-weight: var(--md-sys-typescale-weight-emphasized);
   white-space: nowrap;
+  transition:
+    max-width var(--zw-nav-duration) var(--md-sys-motion-spatial-default-easing),
+    max-height var(--zw-nav-duration) var(--md-sys-motion-spatial-default-easing),
+    opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
 }
 
 .nav-item[aria-current="page"] {
-  flex: 0 0 auto;
+  flex-grow: 0;
+  flex-basis: clamp(90px, 26vw, 150px);
   flex-direction: row;
   gap: var(--zw-space-03);
   padding-inline: var(--zw-space-05);
-  background: var(--md-sys-color-primary);
-  color: var(--md-sys-color-on-primary);
-  box-shadow: var(--md-sys-elevation-level2);
+  color: var(--md-sys-color-on-secondary-container);
 }
 
 .nav-item[aria-current="page"] .nav-label {
-  display: block;
+  max-width: 6em;
+  max-height: 1.2em;
+  opacity: 1;
+  /* 等胶囊先滑到位，字再出现：中途不会出现白字压在浮坞灰底上的那一瞬。
+     离开当前格时用的是基础规则（没有延迟），字立刻收起。 */
+  transition-delay: 180ms;
 }
 
 .nav-item:focus-visible {
@@ -430,7 +470,7 @@ time {
 }
 
 .nav-item[aria-current="page"]:focus-visible .nav-icon {
-  outline-color: var(--md-sys-color-on-primary);
+  outline-color: var(--md-sys-color-on-secondary-container);
 }
 
 .main {
@@ -508,20 +548,28 @@ time {
     border-radius: var(--md-sys-shape-corner-large-increased);
   }
 
+  .nav-pill {
+    background: var(--md-sys-color-secondary-container);
+    box-shadow: none;
+    border-radius: var(--md-sys-shape-corner-large-increased);
+  }
+
   .nav-item .nav-label,
   .nav-item[aria-current="page"] .nav-label {
     display: block;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+    opacity: 1;
     font-size: var(--zw-type-rail-label);
   }
 
   .nav-item[aria-current="page"] {
-    background: var(--md-sys-color-secondary-container);
     color: var(--md-sys-color-on-secondary-container);
-    box-shadow: none;
   }
 
   .nav-item[aria-current="page"]:focus-visible .nav-icon {
-    outline-color: var(--zw-focus-color);
+    outline-color: var(--md-sys-color-on-secondary-container);
   }
 
   .main {
@@ -569,19 +617,28 @@ time {
     border-radius: var(--md-sys-shape-corner-full);
   }
 
+  .nav-pill {
+    background: var(--md-sys-color-secondary-container);
+    border-radius: var(--md-sys-shape-corner-full);
+    box-shadow: none;
+  }
+
   .nav-item .nav-label,
   .nav-item[aria-current="page"] .nav-label {
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+    opacity: 1;
     font-size: var(--md-sys-typescale-label-large-size);
     line-height: var(--md-sys-typescale-label-large-line-height);
   }
 
   .nav-item[aria-current="page"] {
-    background: var(--md-sys-color-primary);
-    color: var(--md-sys-color-on-primary);
+    color: var(--md-sys-color-on-secondary-container);
   }
 
   .nav-item[aria-current="page"]:focus-visible .nav-icon {
-    outline-color: var(--md-sys-color-on-primary);
+    outline-color: var(--md-sys-color-on-secondary-container);
   }
 
   .nav-item:focus-visible {

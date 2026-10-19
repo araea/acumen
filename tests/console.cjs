@@ -799,7 +799,7 @@ const posted = where => posts.filter(p => p.path === where);
     for (const theme of ['light', 'dark']) {
       await media([{ name: 'prefers-color-scheme', value: theme }]);
       for (const page of pages) {
-        await route(page); await js('scrollTo(0,0)'); await sleep(250);
+        await route(page); await js('scrollTo(0,0)'); await sleep(450);
         assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `横向溢出：${label}/${theme}/${page}`);
         await shot(`${label}-${theme}-${page.replace('/', '-')}`);
         await audit(`${label}/${theme}/${page}`);

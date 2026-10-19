@@ -402,6 +402,8 @@
   --zw-type-hero: clamp(2.5rem, 10vw, 3.5rem);
   --zw-type-hero-wide: 3.5rem;
   --zw-type-rail-label: 0.6875rem;
+  /* 导航胶囊滑动与选中格展开的时长（JS 也读这一支）。 */
+  --zw-nav-duration: 380ms;
 
   --zw-code-size: var(--md-sys-typescale-body-medium-size);
   --zw-code-line-height: var(--md-sys-typescale-body-medium-line-height);
@@ -420,6 +422,13 @@
   }
 }
 
+/* 320px 上把浮坞的边上留白收窄，五个入口仍能保证 48px 的触控宽度。 */
+@media (max-width: 359px) {
+  :root {
+    --zw-dock-inset: 8px;
+  }
+}
+
 @media (pointer: fine) {
   :root {
     --zw-size-search: 52px;
@@ -435,6 +444,7 @@
     --md-sys-motion-effects-default-duration: 100ms;
     --md-sys-motion-effects-slow-duration: 100ms;
     --md-sys-motion-loop-duration: 0ms;
+    --zw-nav-duration: 0ms;
   }
 }
 

@@ -18,7 +18,7 @@
 - **卡片的令牌已冻结**：`res/cards/tokens.css` 自 2026-10-19 起不再由这个脚本覆盖（卡片要按群聊缩略图的 20px 根字号与旧字阶出图）；脚本只继续生成控制台令牌与 `src/render/tokens.rs`。要改卡片直接改那一份。
 - `--md-sys-typescale-*`、`--md-sys-shape-*`、`--md-sys-motion-*`、`--md-sys-state-*`、`--md-sys-elevation-*` 是视觉令牌；`--zw-*` 只放产品几何映射（4dp 间距基线、尺寸、安全区、焦点环）。组件层不另造全局令牌，不硬编码颜色 / 形状 / 字号。
 - 同一脚本仍生成 `src/render/tokens.rs`（原生统计图与词云不得手抄配色）；`res/cards/tokens.css` 已冻结（见上）。卡片根字号 20px，用同一 rem 字阶适配群聊缩略图，空间间距按 4px 基线映射；卡片的语义角色与控制台一致。
-- 颜色配对成套使用：`primary/on-primary` 主操作与导航选中；`primary-container/on-primary-container` 用于选中行（文字取 `--zw-selected-fg`，见下）；`secondary-container/on-secondary-container` 次级块；`tertiary-container/on-tertiary-container` 插件总数强调；`surface-container-*` 其余表面。运行卡、日志台与琥珀色点缀是界面专属的 `--zw-*` 颜色（`--zw-hero-*`、`--zw-log-*`、`--zw-accent`），不随方案反转。`outline` 用于需要 3:1 的控件边界，`outline-variant` 仅用于装饰线；文字不使用 `outline`。
+- 颜色配对成套使用：`primary/on-primary` 主操作；`secondary-container/on-secondary-container` 导航选中与次级块；`primary-container/on-primary-container` 用于选中行（文字取 `--zw-selected-fg`，见下）；`tertiary-container/on-tertiary-container` 插件总数强调；`surface-container-*` 其余表面。运行卡、日志台与琥珀色点缀是界面专属的 `--zw-*` 颜色（`--zw-hero-*`、`--zw-log-*`、`--zw-accent`），不随方案反转。`outline` 用于需要 3:1 的控件边界，`outline-variant` 仅用于装饰线；文字不使用 `outline`。
 - 字体使用系统无衬线，日志 / 代码使用系统等宽，数据用 `tabular-nums`。字号用 rem，输入框不得小于 16px。圆角使用 M3E shape scale（卡片 28、运行卡 32、列表行 20），不启用 squircle 或其它形状体系。**读起来舒服是第一位的**：正文 15px / 25px（行高 1.5625，中文长段不挤）、说明 13.5px / 23px；标题与强调取 700（`--zw-weight-heading`），display 取 800，字距收紧到 `-0.02em`——这是 M3E 的 expressive 档。
 - **聊天卡片的字体与控制台不同**：卡片在服务端出图，读者的平台字体用不上，而 `system-ui` 在出图机上会落到 DejaVu Sans（拉丁字母又宽又散，汉字另走只有 Regular 一档的思源黑体，500 / 600 字重出不来）。所以 `scripts/make-tokens.py` 在卡片令牌里把 MiSans 排在最前——汉字拉丁一体、字重 Thin–Heavy 齐全；没装它的机器照旧走控制台那一串。装在 `$PREFIX/share/fonts/TTF/MiSans`，属设备本地状态。
 - 颜色反馈使用状态层（hover 8%，focus / pressed 10%）；位置与尺寸用 spatial fast / default（350 / 500ms），透明度 / 颜色用 effects（150 / 200 / 300ms）。减少动态时空间动画归零、循环动画停用。阴影仅用于浮层，内容卡片以容器色分层。
@@ -51,7 +51,7 @@
 
 ## 组件与交互契约
 
-- **导航**：五个真实链接；当前页 `aria-current="page"`。路由更新文档标题，切页焦点进入 h1，前进 / 后退有效。
+- **导航**：五个真实链接；当前页 `aria-current="page"`。路由更新文档标题，切页焦点进入 h1，前进 / 后退有效。胶囊是独立的绝对定位层（`.nav-pill`），由 `app.js` 的 `paintNavPill` 逐帧跟随当前格：换页时旧胶囊滑到新格，当前格的宽度由 flex 过渡伸展；用 `secondary-container` 而不是主色，滑过其他图标时它们仍是深色，不会出现「白图标压在浅底上」的一瞬。首帧、断点与减少动态直接落位。
 - **按钮 / 开关 / 筛选**：filled > tonal > outlined > text；开关为 52×32 M3 轨道、`role="switch"` 与 `aria-checked`，名字不随状态变，打开时滑块变大并镂出一枚对勾（蒙版相减，颜色就是轨道色）；筛选芯片使用 `aria-pressed`，选中有形状 / 勾选标记而非只变颜色。`aria-checked`、`aria-pressed`、`aria-selected` 一律写成 `"true"` / `"false"`，不留空串（`h``` 会把 `false` 渲染成空，空串等于没写，读屏读不出「关」）。触屏目标 ≥48px，精确指针 ≥40px。
 - **列表 / 编辑**：每一行是独立小卡（20px 圆角、行间 4px），整行链接与尾部开关是两个独立命中目标；输入框是填充式（`surface-container-high`，圆角 20，聚焦换成主色描边），标签保持可见，错误在本字段下说明并以 `aria-invalid`、`aria-describedby` 关联。
 - **插件列表**：按分类分块，每块一个小标题（名字 + 个数），块内是一摞独立小卡（每行 20px 圆角、行间 4px 缝）；每行左侧一块 46px 的图标方块（见「图标」），右侧只有开关——整行是进入详情的链接，不再加一枚箭头去占说明的宽度。筛选条在窄屏上一行横向滑动，不折成两三行吃掉首屏。选中行换 primary-container、文字取 `--zw-selected-fg`（近白，高对比度下反转），方块换实心主色；说明在列表里最多两行，完整内容在详情里。详情页头是 56px 的图标方块 + 名字 + 代号 + 状态。

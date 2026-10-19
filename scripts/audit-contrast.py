@@ -77,6 +77,12 @@ return (function () {
   function opaque(c) { return c && c.a >= 0.999; }
   // 从元素往上找第一层真正不透明的底，半透明的层按顺序叠上去。
   function backdrop(el) {
+    // 导航胶囊是独立的兄弟层，不在这条祖先链上；当前格里的文字实际上压在它上面。
+    if (el.closest && el.closest('.nav-item[aria-current="page"]')) {
+      var pill = document.querySelector('#nav .nav-pill');
+      var pc = pill ? parseColor(getComputedStyle(pill).backgroundColor) : null;
+      if (pc && pc.a > 0) return pc;
+    }
     var node = el, acc = null;
     while (node && node.nodeType === 1) {
       var c = parseColor(getComputedStyle(node).backgroundColor);

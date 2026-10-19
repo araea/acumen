@@ -312,12 +312,12 @@
   function buildShell() {
     put(
       $("#nav"),
-      PAGES.map(
+      h`<span class="nav-pill" aria-hidden="true"></span>${PAGES.map(
         (page) => h`<a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
           <span class="nav-icon state">${duoIcon(page.glyph)}</span>
           <span class="nav-label">${page.label}</span>
         </a>`
-      )
+      )}`
     );
     put(
       $("#topbar-actions"),
@@ -325,11 +325,88 @@
     );
   }
 
+  /* 胶囊跟着当前格走。切换页面时先记住它现在的位置，再在 ~380ms 内
+     逐帧追到新格（新格自己也在随 flex 过渡伸展），所以胶囊像被「带」过去，
+     不是凭空跳过去。首帧、缩放、断点切换与减少动态都直接落位。 */
+  let navPillFrame = 0;
+  function paintNavPill(animate = true) {
+    const nav = $("#nav");
+    const pill = nav?.querySelector(".nav-pill");
+    const item = nav?.querySelector('.nav-item[aria-current="page"]');
+    if (!nav || !pill || !item) return;
+
+    cancelAnimationFrame(navPillFrame);
+    const navRect = nav.getBoundingClientRect();
+    const pillRect = pill.getBoundingClientRect();
+    const from = {
+      x: pillRect.left - navRect.left - nav.clientLeft,
+      y: pillRect.top - navRect.top - nav.clientTop,
+      w: pillRect.width,
+      h: pillRect.height,
+    };
+    const first = !pill.dataset.painted;
+    const duration = animate && !first && !matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? parseFloat(getComputedStyle(nav).getPropertyValue("--zw-nav-duration")) || 0
+      : 0;
+    const start = performance.now();
+
+    const place = (x, y, w, h) => {
+      pill.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
+      pill.style.width = `${Math.max(0, w).toFixed(2)}px`;
+      pill.style.height = `${Math.max(0, h).toFixed(2)}px`;
+    };
+
+    const step = (now) => {
+      const progress = duration > 0 ? Math.min(1, (now - start) / duration) : 1;
+      const ease = 1 - Math.pow(1 - progress, 4);
+      const rect = item.getBoundingClientRect();
+      const to = {
+        x: rect.left - navRect.left - nav.clientLeft,
+        y: rect.top - navRect.top - nav.clientTop,
+        w: rect.width,
+        h: rect.height,
+      };
+      place(
+        from.x + (to.x - from.x) * ease,
+        from.y + (to.y - from.y) * ease,
+        from.w + (to.w - from.w) * ease,
+        from.h + (to.h - from.h) * ease
+      );
+      if (progress < 1) navPillFrame = requestAnimationFrame(step);
+    };
+
+    pill.dataset.painted = "1";
+    if (duration > 0) navPillFrame = requestAnimationFrame(step);
+    else step(start);
+  }
+
+  /* 尺寸/断点变了才重新落位；换页动画进行中的偶发 observer 回调不打断它。 */
+  function syncNavPill() {
+    const nav = $("#nav");
+    const pill = nav?.querySelector(".nav-pill");
+    if (!nav || !pill) return;
+    const rect = nav.getBoundingClientRect();
+    const key = `${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`;
+    if (pill.dataset.navSize === key && pill.dataset.painted) return;
+    pill.dataset.navSize = key;
+    cancelAnimationFrame(navPillFrame);
+    nav.classList.add("nav-snap");
+    paintNavPill(false);
+    requestAnimationFrame(() => nav.classList.remove("nav-snap"));
+  }
+
   function markNav(active) {
-    for (const item of $$("#nav [data-nav]")) {
-      if (item.dataset.nav === active) item.setAttribute("aria-current", "page");
+    const nav = $("#nav");
+    if (!nav) return;
+    const previous = nav.querySelector('.nav-item[aria-current="page"]');
+    const next = nav.querySelector(`[data-nav="${active}"]`);
+    const animate = Boolean(previous && previous !== next);
+    for (const item of $$("#nav [data-nav]", nav)) {
+      if (item === next) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
     }
+    if (animate) paintNavPill(true);
+    else syncNavPill();
   }
 
   function parseRoute() {
@@ -2466,6 +2543,16 @@
   /* ==================== §13 事件 ==================== */
 
   function bindEvents() {
+    /* 导航尺寸变了（断点、旋转、字体）就重新量一次胶囊；不参与换页动画。 */
+    let navResize = 0;
+    const repaintNav = () => {
+      cancelAnimationFrame(navResize);
+      navResize = requestAnimationFrame(syncNavPill);
+    };
+    addEventListener("resize", repaintNav, { passive: true });
+    if ("ResizeObserver" in window) new ResizeObserver(repaintNav).observe($("#nav"));
+    document.fonts?.ready.then(repaintNav);
+
     document.addEventListener("click", async (event) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
