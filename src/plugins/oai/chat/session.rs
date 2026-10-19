@@ -1334,6 +1334,34 @@ impl Session {
                 {
                     return Ok(json!({"status":"skipped","note":"没有可发送的内容"}));
                 }
+                // 一整段长文字不拆、也不原样贴进群：排成一页图，一条消息说完（见
+                // [`super::long_text`]）。带图、文件、@ 的消息不转——那些段的落点只有
+                // 原样发才在，转成图就把人弄丢了。
+                if parts.iter().all(|part| matches!(part, Part::Text { .. })) {
+                    let mut whole = Message::new();
+                    if let Some(id) = reply_to {
+                        whole = whole.reply(id);
+                    }
+                    for part in &parts {
+                        if let Part::Text { text } = part {
+                            // 模型把话分成几段是它自己的换气，排进同一页时留成两段。
+                            if whole.0.last().is_some_and(|segment| segment.type_ == "text") {
+                                whole = whole.text("\n\n");
+                            }
+                            whole = whole.text(text.clone());
+                        }
+                    }
+                    if let Some(text) = super::long_text::source(&whole, self.config.long_text_chars)
+                        && let Some(card) = super::long_text::as_card(
+                            &whole,
+                            &text,
+                            self.ctx.browser_path().as_deref(),
+                        )
+                        .await
+                    {
+                        return self.send_card(card, text).await;
+                    }
+                }
                 // 一整段话按换气处分成几条发出去。模型写得越顺，越容易把两三个意思
                 // 塞进一条；群里没人这么说话。切法见 [`super::breath`]，切几条受本轮
                 // 剩下的消息额度约束——真正发出去的条数才是额度算的东西。
@@ -1683,14 +1711,29 @@ impl Session {
         };
         Ok(json!({"status":"confirmed","message_id":first,"message_ids":ids,"note":note}))
     }
+    /// 长文卡：正文已经排成图，记录的仍是那段文字。`typing` 按一句长话给，
+    /// 不按整篇的字数算——排版成图那几秒才是真正在等的事。
+    async fn send_card(&mut self, message: Message, spoken: String) -> Result<Value> {
+        self.send_spoken(message, spoken, super::long_text::typing_chars())
+            .await
+    }
     async fn send(&mut self, message: Message) -> Result<Value> {
         let spoken = super::plain_text(&message);
+        let chars = spoken.chars().count();
+        self.send_spoken(message, spoken, chars).await
+    }
+    async fn send_spoken(
+        &mut self,
+        message: Message,
+        spoken: String,
+        typing_chars: usize,
+    ) -> Result<Value> {
         let pace = self
             .persona
             .as_ref()
             .map(|persona| persona.pace(&self.group))
             .unwrap_or_default();
-        let typing = pace.typing_delay(spoken.chars().count());
+        let typing = pace.typing_delay(typing_chars);
         // 模型耗时算在「读和想」里，字还得一个个敲：首条不再从打字时间里扣掉它。
         let delay = if self.spoke {
             pace.gap() + typing

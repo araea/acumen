@@ -776,7 +776,7 @@ fn spec(name: &str) -> Option<ToolDefinition> {
             },"additionalProperties":false}),
         ),
         "satori_action" => (
-            "立即执行一次真实 QQ 动作并返回回执。先看一眼上下文；send.parts 的 text 原样保留空格与换行，想怎么排都行。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，群里会看到两次）。做完最终输出 [silent] 即可，群友已经看见了。",
+            "立即执行一次真实 QQ 动作并返回回执。先看一眼上下文；send.parts 的 text 原样保留空格与换行，想怎么排都行。要讲的是一整篇（步骤、清单、长说明）就写进一条 text：超过两百多字会自动排成一页 Markdown 图，不必自己拆成几条，也别发完长文再补一句「在上面」。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，群里会看到两次）。做完最终输出 [silent] 即可，群友已经看见了。",
             json!({
                 "type": "object",
                 "properties": {"request": satori_action_schema()},

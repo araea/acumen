@@ -48,8 +48,8 @@ mod voice;
 
 // 群聊能力层（看现场、查资料、动手）归内置智能体插件，搭话是它的一个人格外壳。
 use crate::plugins::oai::chat::{
-    ChatConfig, Persona, attention, identity, memory, now_context, pace, plain_text, stickers,
-    tone, vision,
+    ChatConfig, Persona, attention, identity, long_text, memory, now_context, pace, plain_text,
+    stickers, tone, vision,
     window::{self, Turn},
 };
 use speak::Called;
@@ -274,6 +274,11 @@ pub(crate) struct AmbientConfig {
     /// 模型写出来的是一整段，群友写出来的是三条——差别只在换气。见 [`breath`]。
     /// 默认给得宽：群里的长句多半是「语音输入一条说完」，只有真成了一坨才该拆。
     pub split_chars: usize,
+    /// 一条发言里的文字超过多少字就排成图片再发；0 关闭。
+    ///
+    /// 认真答疑时该讲的步骤照讲，只是不再把几百字直接贴进群：排成一页纸，一条消息
+    /// 说完。整批话如果都是字、又合起来够长，会并成一张图，不在中间多插几条。
+    pub long_text_chars: usize,
     /// 每轮平台写动作总数（含消息、点赞、撤回）。
     pub actions_budget: usize,
     /// 每轮最多生成图片的张数；0 关闭绘图。绘图走 `[oai]` 配置的图像模型。
@@ -354,6 +359,7 @@ impl Default for AmbientConfig {
             screenshot_cooldown_seconds: 21_600,
             messages_budget: 2,
             split_chars: 60,
+            long_text_chars: 240,
             actions_budget: 6,
             draw_budget: 2,
             music_budget: 1,
@@ -656,6 +662,7 @@ pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
         sticker_max: config.sticker_max,
         context_turns: config.context_turns,
         split_chars: config.split_chars,
+        long_text_chars: config.long_text_chars,
         freshness_seconds: config.freshness_window().as_secs(),
         qq_typing: config.qq_typing,
         qq_mark_read: config.qq_mark_read,
@@ -2136,6 +2143,34 @@ async fn deliver(
         return Ok(false);
     }
 
+    // 长文不发原样：整批话都是字、合起来又够长，就并成一段排成一页图，一条消息说完。
+    // 零散的两三句照旧一条条说——那是聊天，不是一篇稿子。不并的话，人格把一篇答疑
+    // 写成三行，群里就是三张字墙。
+    if config.long_text_chars > 0
+        && utterances.len() > 1
+        && utterances
+            .iter()
+            .all(|utterance| long_text::body(&utterance.message).is_some())
+    {
+        let joined = utterances
+            .iter()
+            .filter_map(|utterance| long_text::body(&utterance.message))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if joined.chars().count() >= config.long_text_chars {
+            let first = &utterances[0];
+            let (reply, reply_to, wait) = (first.reply, first.reply_to.clone(), first.wait);
+            utterances = vec![pace::Utterance {
+                message: Message::new().text(joined.clone()),
+                chars: joined.chars().count(),
+                reply,
+                reply_to,
+                wait,
+                nudge: None,
+            }];
+        }
+    }
+
     // 兼容文字路径要引谁：模型用 `[reply:消息号]` 点名了就引那条（须在本批记录里，
     // 免得它凭记忆写一个引不到或引错的消息号）；没点名才退回本批默认目标——优先
     // 「叫到我的那条」，没人叫就引最新那条群友消息。两张图片消息挨着来时，默认目标
@@ -2154,9 +2189,16 @@ async fn deliver(
         if utterance.wait > 0.0 {
             tokio::time::sleep(Duration::from_secs_f32(utterance.wait)).await;
         }
+        // 这一句要不要排成图（见 [`long_text`]）。排版本身要几秒，但不必再按整篇
+        // 字数等一遍打字时间——那是「敲一篇稿子」的时长，不是「发一张图」的。
+        let card_source = long_text::source(&utterance.message, config.long_text_chars);
         // 模型那几秒是在读和想，不是在打字：字还得一个个敲出来。从前首条把模型耗时
         // 从打字时间里扣掉，四十个字的答疑八秒就到，群友一眼看出「不到 5 秒回消息」。
-        tokio::time::sleep(pace.typing_delay(utterance.chars)).await;
+        let typing_chars = match &card_source {
+            Some(_) => long_text::typing_chars(),
+            None => utterance.chars,
+        };
+        tokio::time::sleep(pace.typing_delay(typing_chars)).await;
         let drifted = match sendable(ctx, group, *seq) {
             Sendable::Stale => break,
             Sendable::Fresh => false,
@@ -2206,6 +2248,15 @@ async fn deliver(
             message = message.reply(id);
         }
         message.0.extend(utterance.message.0.iter().cloned());
+        // 长文排成图再发；渲染失败就照原文发——宁可多一段字，也不能把话丢掉。
+        let message = match &card_source {
+            Some(text) => {
+                long_text::as_card(&message, text, ctx.browser_path().as_deref())
+                    .await
+                    .unwrap_or(message)
+            }
+            None => message,
+        };
         let spoken = plain_text(&utterance.message);
         let id = match send_fresh_msg_id(
             ctx,

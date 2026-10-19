@@ -29,6 +29,7 @@ pub(crate) mod attention;
 pub(crate) mod breath;
 pub(crate) mod history;
 pub(crate) mod identity;
+pub(crate) mod long_text;
 pub(crate) mod memory;
 pub(crate) mod pace;
 pub(crate) mod protocol;
@@ -84,6 +85,11 @@ pub(crate) struct ChatConfig {
     pub context_turns: usize,
     /// 一段话切成几条的字数阈值；0 表示不切。
     pub split_chars: usize,
+    /// 一条消息里的文字超过多少字就排成图片再发；0 关闭。
+    ///
+    /// 群里一堵字墙会把别人的话顶走。长文排成一页纸只占一条消息，读起来也体面。
+    /// 只对「除了引用之外全是文字」的消息生效——带图、文件、@ 的那些各有各的落点。
+    pub long_text_chars: usize,
     /// 发出前的时效窗口（秒）：群里又有人说话就整条不发。0 表示不带时效条件。
     pub freshness_seconds: u64,
     /// QQ 原生输入状态（实验性：内核回调尚未实机确认）。只在即将发送时短暂展示；
@@ -115,6 +121,7 @@ impl Default for ChatConfig {
             sticker_max: 120,
             context_turns: 20,
             split_chars: 60,
+            long_text_chars: 240,
             freshness_seconds: 0,
             qq_typing: false,
             qq_mark_read: false,
