@@ -6,9 +6,11 @@
 //! 主色只出现在序号、分类、顶部微光与引用左界这几处。
 //!
 //! 排版参数是按「手机上读」这个真实场景定的，缩略图与点开全屏各一条要求：
-//!   - 版心 560 CSS px（卡面 520，与手册卡同宽）配合 `image_scale`（默认 3 倍）出图。
-//!     从前用 720，全屏时整张图缩到 0.57 倍，正文只剩 10dp；560 是 0.73 倍，
-//!     正文 12.8dp、标题 20dp，群聊里被缩成缩略图时标题仍然读得出来；
+//!   - 版心 600 CSS px 配合 `image_scale`（默认 3 倍）出图，左右留白收到 12 + 20。
+//!     从前用 720，全屏时整张图缩到 0.57 倍，正文只剩 10dp；600 是 0.69 倍，
+//!     正文 12dp、标题 19dp，群聊里被缩成缩略图时标题仍然读得出来。
+//!     一行的字数是留白收窄后的取舍：摘要每行 28—29 字，与 720 时相当——
+//!     一眼看到的信息量不比从前少，字却大了一档；
 //!   - 一条一格，自上而下是「眉行（序号 · 分类 · 信源 · 时间）→ 标题 → 摘要」。
 //!     标题是全格最大最重的字，眉行与摘要依次退后，扫读只需看标题；
 //!   - **同一件事只说一遍**：分类是眉行里的字、不再另做一枚芯片；推荐理由、
@@ -83,9 +85,9 @@ fn resolve_theme_at(mode: &str, now: DateTime<chrono::FixedOffset>) -> CardTheme
     }
 }
 
-/// 卡片渲染宽度（CSS 像素）：卡面 520 加相纸两侧各 20。
-/// 实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 1680px）
-const WIDTH: u32 = 560;
+/// 卡片渲染宽度（CSS 像素）：相纸两侧各 12，卡面 576，正文宽 534。
+/// 实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 1800px）
+const WIDTH: u32 = 600;
 
 /// 一段补充说明（推荐理由、最新进展、导语）与已写出的正文词元重合到这个比例，就算复述。
 /// 拿 2026-10-19 热点榜十条的「最新进展」量过：照抄标题或综述的都在 0.65 以上，
@@ -108,9 +110,11 @@ fn stamp() -> String {
 /// 这里只写这张卡自己的位置，**不写色值与字号字面量**。四类内容的主色由页面的
 /// `seed-*` 类名换，这个文件不参与——所以「换分类」与「换版式」是两件互不牵连的事。
 const CSS: &str = r#"
-body{width:560px}
-/* `.shot`（相纸的底色与内边距）由 m3e.css 的组件基元给，这里不再写一遍 */
-.card{padding:var(--md-space-7) var(--md-space-6) var(--md-space-6)}
+body{width:600px}
+/* 相纸的底色由 m3e.css 的 `.shot` 给；内边距这张卡收到 12px、卡面左右收到 20px：
+   资讯卡要的是「一行多放字」，边上的留白比手册卡让出一档 */
+.shot{padding:var(--md-space-3)}
+.card{padding:var(--md-space-7) var(--md-space-5) var(--md-space-6)}
 .card .md-eyebrow{margin-bottom:var(--md-space-4)}
 
 /* —— 标题块 —— */
@@ -177,9 +181,9 @@ body{width:560px}
   color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
 /* 条目前面是序号，不是圆点：引用本图回复序号就能取这一条的链接，序号得看得见。
    标题单独成行、是条目里最大最重的字；信源时间次之；摘要最后。 */
-.li{margin-top:var(--md-space-4);padding-left:38px;position:relative}
+.li{margin-top:var(--md-space-4);padding-left:34px;position:relative}
 .li:first-child,.sec-h+.li,.sec-s+.li{margin-top:var(--md-space-3)}
-.li .n{position:absolute;left:0;top:1px;width:28px;text-align:right;white-space:nowrap;
+.li .n{position:absolute;left:0;top:1px;width:26px;text-align:right;white-space:nowrap;
   font-size:var(--md-type-title-medium-size);line-height:1.45;font-weight:800;
   color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums}
 .li .lt{font-size:var(--md-type-title-medium-size);line-height:1.45;font-weight:800;
@@ -346,7 +350,7 @@ fn eyebrow(index: usize, item: &Item) -> String {
     }
     // 官网卡片上的「AI 评分」
     if let Some(score) = item.score.filter(|s| *s > 0.0) {
-        parts.push(format!(r#"<span class="sc">{score:.0} 分</span>"#));
+        parts.push(format!(r#"<span class="sc">评分 {score:.0}</span>"#));
     }
     format!(r#"<div class="ey">{}</div>"#, parts.concat())
 }
