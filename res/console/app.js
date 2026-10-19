@@ -308,6 +308,7 @@
   ];
 
   const wide = matchMedia("(min-width: 840px)");
+  const compactNav = matchMedia("(max-width: 599.98px)");
 
   function buildShell() {
     put(
@@ -384,7 +385,7 @@
   function syncNavPill() {
     const nav = $("#nav");
     const pill = nav?.querySelector(".nav-pill");
-    if (!nav || !pill) return;
+    if (!nav || !pill || nav.classList.contains("nav-dragging")) return;
     const rect = nav.getBoundingClientRect();
     const key = `${rect.width.toFixed(1)}x${rect.height.toFixed(1)}`;
     if (pill.dataset.navSize === key && pill.dataset.painted) return;
@@ -393,6 +394,161 @@
     nav.classList.add("nav-snap");
     paintNavPill(false);
     requestAnimationFrame(() => nav.classList.remove("nav-snap"));
+  }
+
+  /* —— 长按拖选（compact） ——
+     按住底栏不松手，五格先摊成等宽，胶囊跟着手指走；松手落在最近的一格并
+     展开。短按、键盘与桌面导航轨都不受影响。 */
+  function bindNavDrag() {
+    const nav = $("#nav");
+    if (!nav) return;
+    let drag = null;
+    let suppressClickUntil = 0;
+
+    const items = () => $$(".nav-item", nav);
+    const activeId = () => nav.querySelector('.nav-item[aria-current="page"]')?.dataset.nav || "";
+    const setCurrent = (id) => {
+      for (const item of items()) {
+        if (item.dataset.nav === id) item.setAttribute("aria-current", "page");
+        else item.removeAttribute("aria-current");
+      }
+    };
+
+    /* 摊平之后的几何：五格等宽，胶囊宽高与一格一致。 */
+    const metrics = () => {
+      const cs = getComputedStyle(nav);
+      const padL = parseFloat(cs.paddingLeft) || 0;
+      const padR = parseFloat(cs.paddingRight) || 0;
+      const gap = parseFloat(cs.columnGap) || 0;
+      const list = items();
+      const content = nav.clientWidth - padL - padR;
+      const cell = Math.max(1, (content - gap * (list.length - 1)) / list.length);
+      const rect = nav.getBoundingClientRect();
+      const first = rect.left + nav.clientLeft + padL + cell / 2;
+      const centers = list.map((_, i) => first + i * (cell + gap));
+      return {
+        cell, gap, centers, rect,
+        top: list[0].getBoundingClientRect().top - rect.top - nav.clientTop,
+        height: list[0].getBoundingClientRect().height,
+      };
+    };
+
+    const paintFree = (x) => {
+      if (!drag) return;
+      const m = metrics();
+      const cx = Math.min(m.centers[m.centers.length - 1], Math.max(m.centers[0], x));
+      const nearest = m.centers.reduce((best, c, i) =>
+        Math.abs(c - cx) < Math.abs(m.centers[best] - cx) ? i : best, 0);
+      const id = items()[nearest].dataset.nav;
+      if (id !== drag.target) {
+        drag.target = id;
+        setCurrent(id);
+        if (navigator.vibrate) navigator.vibrate(5);
+      }
+      const pill = nav.querySelector(".nav-pill");
+      const localX = cx - (m.rect.left + nav.clientLeft) - m.cell / 2;
+      pill.style.transform = `translate3d(${localX.toFixed(2)}px, ${m.top.toFixed(2)}px, 0)`;
+      pill.style.width = `${m.cell.toFixed(2)}px`;
+      pill.style.height = `${m.height.toFixed(2)}px`;
+    };
+
+    const cleanup = () => {
+      if (drag?.timer) clearTimeout(drag.timer);
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      removeEventListener("pointercancel", cancel);
+      removeEventListener("blur", cancel);
+      drag = null;
+    };
+
+    const activate = (x) => {
+      if (!drag || drag.active || !compactNav.matches) return;
+      drag.active = true;
+      clearTimeout(drag.timer);
+      cancelAnimationFrame(navPillFrame);
+      nav.classList.add("nav-dragging");
+      paintFree(x);
+      if (navigator.vibrate) navigator.vibrate(8);
+    };
+
+    const move = (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const dx = event.clientX - drag.x0;
+      const dy = event.clientY - drag.y0;
+      if (!drag.active) {
+        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) return cleanup();
+        if (Math.abs(dx) < 8) return;
+        activate(event.clientX);
+      }
+      if (!drag?.active) return;
+      if (event.cancelable) event.preventDefault();
+      paintFree(event.clientX);
+    };
+
+    const up = (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const state = drag;
+      cleanup();
+      if (!state.active) return;
+      // 拖完松手时浏览器还会补一个 click：吃掉它，只走这里的落格。
+      suppressClickUntil = performance.now() + 150;
+      nav.classList.remove("nav-dragging");
+      const rect = nav.getBoundingClientRect();
+      if (event.clientY < rect.top - 48 || event.clientY > rect.bottom + 48) {
+        setCurrent(state.original);
+        paintNavPill(true);
+        return;
+      }
+      paintNavPill(true);
+      if (state.target !== state.original) location.hash = "#/" + state.target;
+    };
+
+    const cancel = () => {
+      if (!drag) return;
+      const state = drag;
+      cleanup();
+      if (!state.active) return;
+      nav.classList.remove("nav-dragging");
+      setCurrent(state.original);
+      paintNavPill(true);
+    };
+
+    nav.addEventListener("pointerdown", (event) => {
+      if (!compactNav.matches || drag) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      const item = event.target.closest(".nav-item");
+      if (!item) return;
+      drag = {
+        id: event.pointerId,
+        x0: event.clientX,
+        y0: event.clientY,
+        active: false,
+        original: activeId(),
+        target: item.dataset.nav,
+        timer: 0,
+      };
+      drag.timer = setTimeout(() => activate(drag.x0), 200);
+      addEventListener("pointermove", move, { passive: false });
+      addEventListener("pointerup", up);
+      addEventListener("pointercancel", cancel);
+      addEventListener("blur", cancel);
+    });
+
+    nav.addEventListener("click", (event) => {
+      if (performance.now() < suppressClickUntil) {
+        event.preventDefault();
+        event.stopPropagation();
+        suppressClickUntil = 0;
+      }
+    }, true);
+
+    nav.addEventListener("contextmenu", (event) => {
+      if (drag) event.preventDefault();
+    });
+
+    compactNav.addEventListener("change", () => {
+      if (!compactNav.matches && drag) cancel();
+    });
   }
 
   function markNav(active) {
@@ -2889,6 +3045,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     buildShell();
     bindEvents();
+    bindNavDrag();
     token = readToken();
     if (!token) {
       lock();

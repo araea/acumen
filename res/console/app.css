@@ -357,6 +357,10 @@ time {
   background: var(--md-sys-color-surface-container-high);
   box-shadow: var(--md-sys-elevation-level2);
   isolation: isolate;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 /* 滑动的胶囊。位置与尺寸由 app.js 的 paintNavPill 跟着当前格量出来；
@@ -409,6 +413,7 @@ time {
   place-items: center;
   width: var(--zw-size-icon);
   height: var(--zw-size-icon);
+  transition: transform var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
 .nav-icon .i {
@@ -489,6 +494,40 @@ time {
   margin-inline: auto;
   padding: var(--zw-space-02) calc(var(--zw-page-gutter) + var(--zw-safe-right))
     var(--zw-space-08) calc(var(--zw-page-gutter) + var(--zw-safe-left));
+}
+
+/* —— 长按拖选（compact） ——
+   按住底栏不松手，底栏先摊成五格等宽，胶囊跟着手指走；松手落格并展开。
+   只在窄屏启用：桌面上的导航轨仍然是普通点击。 */
+@media (max-width: 599.98px) {
+  .nav-dragging {
+    cursor: grabbing;
+  }
+
+  .nav-dragging .nav-item,
+  .nav-dragging .nav-item[aria-current="page"] {
+    flex: 1 1 0;
+    flex-direction: column;
+    gap: 0;
+    padding-inline: 0;
+    transition-duration: 200ms;
+  }
+
+  .nav-dragging .nav-label,
+  .nav-dragging .nav-item[aria-current="page"] .nav-label {
+    max-width: 0;
+    max-height: 0;
+    opacity: 0;
+    transition-delay: 0ms;
+  }
+
+  .nav-dragging .nav-item[aria-current="page"] .nav-icon {
+    transform: scale(1.08);
+  }
+
+  .nav-dragging .nav-pill {
+    transition: none;
+  }
 }
 
 /* —— 导航轨（medium） —— */

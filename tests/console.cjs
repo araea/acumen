@@ -232,6 +232,28 @@ const posted = where => posts.filter(p => p.path === where);
   }
   assert.equal(await js('return document.querySelectorAll("#nav a[href]").length'), 5);
 
+  // —— 长按底栏拖到「日志」：不逐个点击，松手直接落格 ——
+  await js(`(() => {
+    const items = [...document.querySelectorAll("#nav .nav-item")];
+    const from = items[1].getBoundingClientRect();
+    const to = items[3].getBoundingClientRect();
+    const ev = (type, r, buttons) => new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 77, pointerType: "touch", isPrimary: true,
+      button: 0, buttons, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    });
+    items[1].dispatchEvent(ev("pointerdown", from, 1));
+    window.__dropDrag = () => {
+      window.dispatchEvent(ev("pointermove", to, 1));
+      window.dispatchEvent(ev("pointerup", to, 0));
+    };
+  })()`);
+  await sleep(260);
+  await js("window.__dropDrag()");
+  await until(() => js('return location.hash === "#/logs"'), "长按拖选到日志");
+  assert.equal(await js('return document.querySelector("[aria-current=page]").dataset.nav'), "logs");
+  await until(ready, "拖选后打开日志");
+  await route("overview");
+
   // —— 窄屏插件：搜索只重画列表；详情独立成页，带返回 ——
   await route('plugins');
   await js('window.searchNode = document.querySelector("#plugin-search")');
