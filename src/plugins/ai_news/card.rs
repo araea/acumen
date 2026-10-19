@@ -3,20 +3,24 @@
 //! 设计取向：随北京时间自动切换「日读 / 夜读」，也可在配置中固定主题。
 //! 两套主题共用字号、间距与信息层级，只替换明度和主色，避免切换后像两套产品。
 //! 四类内容各有一个主色——速递靛蓝、热点橙、日报薄荷绿、模型榜琥珀金，
-//! 主色只出现在序号、标签、顶部微光与引用左界这几处。
+//! 主色只出现在序号、分类、顶部微光与引用左界这几处。
 //!
-//! 排版参数是按「群聊里被缩略图裹一层再点开看」这个真实场景定的：
-//!   - 版心 720 CSS px 配合 `image_scale`（默认 3 倍）出图，2160px 宽，放大不糊；
-//!   - 标题 26px、正文 18.5px——相对版心足够大，缩略图状态下也能读出标题；
-//!   - 夜间文字采用偏暖的中性灰，标题、正文、元信息保持稳定的三级明度，
-//!     一眼扫过先看到标题与数字，细节再往下沉；
-//!   - 一条一格，格与格之间用 26px 上下留白而非重分割线。
+//! 排版参数是按「手机上读」这个真实场景定的，缩略图与点开全屏各一条要求：
+//!   - 版心 560 CSS px（卡面 520，与手册卡同宽）配合 `image_scale`（默认 3 倍）出图。
+//!     从前用 720，全屏时整张图缩到 0.57 倍，正文只剩 10dp；560 是 0.73 倍，
+//!     正文 12.8dp、标题 20dp，群聊里被缩成缩略图时标题仍然读得出来；
+//!   - 一条一格，自上而下是「眉行（序号 · 分类 · 信源 · 时间）→ 标题 → 摘要」。
+//!     标题是全格最大最重的字，眉行与摘要依次退后，扫读只需看标题；
+//!   - **同一件事只说一遍**：分类是眉行里的字、不再另做一枚芯片；推荐理由、
+//!     最新进展与导语若只是在复述摘要就不画（见 [`restates`]）；推荐理由默认不画；热点榜不再重列信源名，
+//!     「N 个报道来源」已经说了；
+//!   - 格与格之间只留 20px 上下留白加一条细线，不用背景块。
 //!
 //! 图片只承载「读」的部分：链接一概不画进图里。需要查看全文时，用户引用
 //! 卡片后直接回复序号，再按需取得正文与链接。
 
 use super::api::{HotTopic, Item, Report, ReportItem, Story, category_label};
-use super::cluster::Cluster;
+use super::cluster::{Cluster, overlap};
 use super::leaderboard::Board;
 use super::render::models_meta;
 use super::render::{
@@ -79,8 +83,19 @@ fn resolve_theme_at(mode: &str, now: DateTime<chrono::FixedOffset>) -> CardTheme
     }
 }
 
-/// 卡片渲染宽度（CSS 像素）。实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 2160px）
-const WIDTH: u32 = 720;
+/// 卡片渲染宽度（CSS 像素）：卡面 520 加相纸两侧各 20。
+/// 实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 1680px）
+const WIDTH: u32 = 560;
+
+/// 一段补充说明（推荐理由、最新进展、导语）与已写出的正文词元重合到这个比例，就算复述。
+/// 拿 2026-10-19 热点榜十条的「最新进展」量过：照抄标题或综述的都在 0.65 以上，
+/// 补了新信息的最高 0.60——这条线宁可放过，不可错杀。
+const RESTATES: f64 = 0.65;
+
+/// 补充说明是不是在复述已经写出来的正文（标题、摘要等，可有多段）
+fn restates(note: &str, shown: &[&str]) -> bool {
+    overlap(note, &shown.join(" ")) >= RESTATES
+}
 
 /// 出图时刻（北京时间），放在页眉右上角
 fn stamp() -> String {
@@ -93,95 +108,109 @@ fn stamp() -> String {
 /// 这里只写这张卡自己的位置，**不写色值与字号字面量**。四类内容的主色由页面的
 /// `seed-*` 类名换，这个文件不参与——所以「换分类」与「换版式」是两件互不牵连的事。
 const CSS: &str = r#"
-body{width:720px}
+body{width:560px}
 /* `.shot`（相纸的底色与内边距）由 m3e.css 的组件基元给，这里不再写一遍 */
-.card{padding:var(--md-space-9) 40px var(--md-space-8)}
+.card{padding:var(--md-space-7) var(--md-space-6) var(--md-space-6)}
+.card .md-eyebrow{margin-bottom:var(--md-space-4)}
 
 /* —— 标题块 —— */
 .title{margin-top:0}
-.rule{margin:var(--md-space-7) 0 2px}
+.rule{margin:var(--md-space-5) 0 0}
 
 /* —— 条目 —— */
-/* 一条一格，格与格之间靠留白与一条细线分开，不靠背景块——资讯卡是一条条
-   读下去的，每格都上底色会把整页切成一片瓦。 */
-.row{display:grid;grid-template-columns:50px minmax(0,1fr);gap:17px;
-  padding:27px 0;border-bottom:1px solid var(--md-sys-color-outline-variant)}
-.row:last-child{border-bottom:none;padding-bottom:var(--md-space-2)}
-/* 序号：比标题还大一档，只上主色不加底——它是一条的入口，不是内容 */
-.idx{font-size:var(--md-type-headline-small-size);line-height:1.4;font-weight:800;
-  color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums;
-  text-align:right;letter-spacing:-.02em}
+/* 一条一格：眉行 → 标题 → 摘要，自上而下一级比一级退后。格与格之间靠 20px 留白
+   与一条细线分开，不靠背景块——资讯卡是一条条读下去的，每格都上底色会把整页切成瓦。 */
+.row{padding:var(--md-space-5) 0;border-bottom:1px solid var(--md-sys-color-outline-variant)}
+.row:has(+ .foot){border-bottom:none;padding-bottom:var(--md-space-1)}
+/* 眉行：序号牌 + 一串元信息。分隔点由 CSS 补，前后缺哪一项都不会留下孤点。
+   序号牌是一条的入口（引用图片回复序号取链接），所以是牌，不是灰字。 */
+.ey{display:flex;flex-wrap:wrap;align-items:center;gap:var(--md-space-1) 10px;
+  font-size:var(--md-type-label-medium-size);line-height:1.5;font-weight:500;
+  color:var(--md-sys-color-on-surface-variant)}
+.ey>span+span:not(.sc)::before{content:"·";margin-right:10px;color:var(--md-sys-color-outline)}
+.ey>.no+span:not(.sc)::before{content:none}
+.ey .cat{font-weight:700;color:var(--md-sys-color-primary)}
+.ey .sc{margin-left:auto;font-weight:700;font-variant-numeric:tabular-nums}
+/* 序号牌：前三名填实，其余只用容器色。靠「有没有实底」分梯队，不靠换颜色 */
+.no{min-width:34px;padding:1px 9px;border-radius:var(--md-shape-full);text-align:center;
+  font-size:var(--md-type-label-large-size);font-weight:800;letter-spacing:.02em;
+  font-variant-numeric:tabular-nums;
+  color:var(--md-sys-color-on-primary-container);background:var(--md-sys-color-primary-container)}
+.no.top{color:var(--md-sys-color-on-primary);background:var(--md-sys-color-primary)}
+/* 标题：全格最大最重的字。缩略图里别的字都糊了，这一行还要读得出来 */
+.h{margin-top:var(--md-space-2);font-size:var(--md-type-title-large-size);line-height:1.38;
+  font-weight:800;color:var(--md-sys-color-on-surface);text-wrap:balance}
+/* 标题只在词界换行：词与词之间由 [`phrase`] 放了 wbr，keep-all 去掉汉字之间的默认断点 */
+.h,.lt,.title{word-break:keep-all}
+.sum{margin-top:var(--md-space-2);font-size:var(--md-type-body-medium-size);
+  line-height:1.62;color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+/* 「另有 N 家信源报道」：官网卡片上同一位置的折叠行，这里直接展开成名字 */
+.also{margin-top:var(--md-space-2);display:flex;flex-wrap:wrap;align-items:baseline;
+  gap:2px 10px;font-size:var(--md-type-label-medium-size);line-height:1.6;
+  color:var(--md-sys-color-on-surface-faint)}
+.also b{font-weight:700;color:var(--md-sys-color-on-surface-variant)}
+.also span+span::before{content:"·";margin-right:10px;color:var(--md-sys-color-outline)}
+/* 补充一句（推荐理由 / 最新进展）：只剩一道主色左界，不再用底色块。
+   前缀是主色小标，说明这句从哪来；正文与摘要同字号，不比它小一档。 */
+.why{margin-top:var(--md-space-3);padding-left:var(--md-space-3);
+  border-left:3px solid var(--md-sys-color-primary-line);
+  font-size:var(--md-type-body-medium-size);line-height:1.6;
+  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+.why b{color:var(--md-sys-color-primary);font-weight:800;letter-spacing:.02em;margin-right:.4em}
+
+/* —— 日报、周报、月报与事件详情 —— */
+.lead{margin:var(--md-space-5) 0 0;padding:var(--md-space-4) var(--md-space-5);
+  border-radius:var(--md-shape-l);background:var(--md-sys-color-surface-container-low);
+  border:1px solid var(--md-sys-color-outline-variant);
+  font-size:var(--md-type-body-medium-size);line-height:1.68;
+  color:var(--md-sys-color-on-surface-variant)}
+.lead p{margin:0}
+.lead p+p{margin-top:var(--md-space-3)}
+.sec{padding:var(--md-space-5) 0 var(--md-space-4);border-bottom:1px solid var(--md-sys-color-outline-variant)}
+.sec:has(+ .foot){border-bottom:none}
+.sec-h{display:flex;align-items:center;gap:var(--md-space-3);
+  font-size:var(--md-type-title-large-size);line-height:1.3;font-weight:800;
+  color:var(--md-sys-color-on-surface)}
+.bar{width:5px;height:22px;border-radius:var(--md-shape-xs);background:var(--md-sys-color-primary)}
+/* 栏目导语（周报、月报每栏有一两句）：压在栏目名下面，比条目更轻 */
+.sec-s{margin-top:var(--md-space-2);font-size:var(--md-type-label-medium-size);line-height:1.62;
+  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+/* 条目前面是序号，不是圆点：引用本图回复序号就能取这一条的链接，序号得看得见。
+   标题单独成行、是条目里最大最重的字；信源时间次之；摘要最后。 */
+.li{margin-top:var(--md-space-4);padding-left:38px;position:relative}
+.li:first-child,.sec-h+.li,.sec-s+.li{margin-top:var(--md-space-3)}
+.li .n{position:absolute;left:0;top:1px;width:28px;text-align:right;white-space:nowrap;
+  font-size:var(--md-type-title-medium-size);line-height:1.45;font-weight:800;
+  color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums}
+.li .lt{font-size:var(--md-type-title-medium-size);line-height:1.45;font-weight:800;
+  color:var(--md-sys-color-on-surface);text-wrap:balance}
+.li .m{margin-top:2px;font-size:var(--md-type-label-medium-size);line-height:1.5;
+  color:var(--md-sys-color-on-surface-variant)}
+.li .t{margin-top:var(--md-space-1);font-size:var(--md-type-body-medium-size);line-height:1.6;
+  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
+
+/* —— 模型榜 —— */
+/* 行内三列都从顶端对齐：名次方块与分数跟标题的第一行齐平，而不是各自在行高里
+   垂直居中——居中会让名次掉到来源那一行去，读起来像标错了对象。 */
+.mrow{display:grid;grid-template-columns:40px minmax(0,1fr) 104px;gap:var(--md-space-3);
+  align-items:start;padding:var(--md-space-5) 0;
+  border-bottom:1px solid var(--md-sys-color-outline-variant)}
+.mrow:has(+ .note){border-bottom:none}
 /* 名次牌：前三名填实，其余仅描边。靠「有没有底」分梯队，不靠换个颜色 */
-.rank{display:flex;align-items:center;justify-content:center;width:42px;height:42px;
-  margin-left:auto;border-radius:var(--md-shape-m);font-size:var(--md-type-title-small-size);
+.rank{display:flex;align-items:center;justify-content:center;width:40px;height:40px;
+  border-radius:var(--md-shape-m);font-size:var(--md-type-title-medium-size);
   font-weight:800;font-variant-numeric:tabular-nums;
   color:var(--md-sys-color-on-primary-container);
   background:var(--md-sys-color-primary-container);
   border:1px solid var(--md-sys-color-primary-line)}
 .rank.top{color:var(--md-sys-color-on-primary);background:var(--md-sys-color-primary);
   border-color:transparent}
-
-.h{font-size:var(--md-type-headline-small-size);line-height:1.5;font-weight:700;
-  color:var(--md-sys-color-on-surface);text-wrap:pretty}
-.meta{margin-top:var(--md-space-3);display:flex;flex-wrap:wrap;align-items:center;
-  gap:10px;font-size:var(--md-type-body-small-size);font-weight:500;
-  color:var(--md-sys-color-on-surface-variant)}
-.sum{margin-top:var(--md-space-3);font-size:var(--md-type-body-medium-size);
-  line-height:1.76;color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
-/* 「另有 N 家信源报道」：官网卡片上同一位置的折叠行，这里直接展开成名字 */
-.also{margin-top:var(--md-space-3);display:flex;flex-wrap:wrap;align-items:baseline;
-  gap:4px 12px;font-size:var(--md-type-body-small-size);line-height:1.6;
-  color:var(--md-sys-color-on-surface-faint)}
-.also b{font-weight:700;color:var(--md-sys-color-on-surface-variant)}
-.also span+span::before{content:"·";margin-right:12px;color:var(--md-sys-color-outline)}
-/* 推荐理由用引语块：主色淡底 + 左界 + 收一个角（M3 的角形处理） */
-.why{margin-top:var(--md-space-3);padding:var(--md-space-3) var(--md-space-4);
-  border-left:4px solid var(--md-sys-color-primary);
-  border-radius:0 var(--md-shape-m) var(--md-shape-m) 0;
-  background:var(--md-sys-color-primary-tint);
-  font-size:var(--md-type-body-medium-size);line-height:1.7;
-  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
-.why b{color:var(--md-sys-color-primary);font-weight:800;letter-spacing:.02em}
-
-/* —— 日报 —— */
-.lead{margin:var(--md-space-7) 0 var(--md-space-1);padding:var(--md-space-5) 22px;
-  border-radius:var(--md-shape-l);background:var(--md-sys-color-surface-container-low);
-  border:1px solid var(--md-sys-color-outline-variant);
-  font-size:var(--md-type-body-large-size);line-height:1.78;
-  color:var(--md-sys-color-on-surface-variant)}
-.sec{padding:27px 0 23px;border-bottom:1px solid var(--md-sys-color-outline-variant)}
-.sec:has(+ .foot){border-bottom:none}
-.sec-h{display:flex;align-items:center;gap:var(--md-space-3);
-  font-size:var(--md-type-title-large-size);font-weight:800;
-  color:var(--md-sys-color-on-surface)}
-.bar{width:5px;height:22px;border-radius:var(--md-shape-xs);background:var(--md-sys-color-primary)}
-/* 栏目导语（周报、月报每栏有一两句）：压在栏目名下面，比条目更轻 */
-.lead p{margin:0}
-.lead p+p{margin-top:var(--md-space-3)}
-.sec-s{margin-top:var(--md-space-3);font-size:var(--md-type-body-small-size);line-height:1.72;
-  color:var(--md-sys-color-on-surface-faint);text-wrap:pretty}
-/* 条目前面是序号，不是圆点：引用本图回复序号就能取这一条的链接，序号得看得见 */
-.li{margin-top:17px;padding-left:36px;position:relative;
-  font-size:var(--md-type-body-medium-size);line-height:1.68;
-  color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
-.li .n{position:absolute;left:0;top:0;width:26px;text-align:right;font-weight:800;
-  color:var(--md-sys-color-primary);font-variant-numeric:tabular-nums}
-.li b{color:var(--md-sys-color-on-surface);font-weight:700}
-.li .m{margin-top:3px;font-size:var(--md-type-body-small-size);line-height:1.6;
-  color:var(--md-sys-color-on-surface-faint)}
-.li .t{margin-top:6px;font-size:var(--md-type-body-small-size);line-height:1.72;
-  color:var(--md-sys-color-on-surface-faint)}
-
-/* —— 模型榜 —— */
-/* 行内三列都从顶端对齐：名次方块与分数跟标题的第一行齐平，而不是各自在行高里
-   垂直居中——居中会让名次掉到来源那一行去，读起来像标错了对象。 */
-.mrow{display:grid;grid-template-columns:50px minmax(0,1fr) 142px;gap:17px;
-  align-items:start;padding:23px 0;
-  border-bottom:1px solid var(--md-sys-color-outline-variant)}
-.mrow:last-of-type{border-bottom:none}
 .mname{display:flex;align-items:baseline;flex-wrap:wrap;gap:10px;
-  font-size:var(--md-type-headline-small-size);line-height:1.4;font-weight:700;
+  font-size:var(--md-type-title-large-size);line-height:1.3;font-weight:800;
   color:var(--md-sys-color-on-surface)}
+.mmeta{margin-top:var(--md-space-2);display:flex;flex-wrap:wrap;align-items:center;gap:var(--md-space-1) 10px;
+  font-size:var(--md-type-label-medium-size);line-height:1.5;font-weight:500;
+  color:var(--md-sys-color-on-surface-variant)}
 .meter{margin-top:var(--md-space-3);height:7px;border-radius:var(--md-shape-full);
   background:var(--md-sys-color-surface-container-high);overflow:hidden}
 /* 分数条：浅头深尾的一条主色渐变。长度即分数，不做二次拉伸。 */
@@ -189,15 +218,16 @@ body{width:720px}
   background:linear-gradient(90deg,var(--md-sys-color-primary-line),var(--md-sys-color-primary))}
 .mscore{text-align:right}
 /* AIHOT 评分是这张图唯一要「一眼看到」的数字，给到 headline-medium，其余都压在灰阶里 */
-.mscore strong{display:block;font-size:var(--md-type-headline-medium-size);line-height:1;
+.mscore strong{display:block;font-size:var(--md-type-headline-medium-size);line-height:1.1;
   font-weight:800;letter-spacing:-.02em;color:var(--md-sys-color-primary);
   font-variant-numeric:tabular-nums}
-.mscore small{display:block;margin-top:6px;font-size:var(--md-type-label-medium-size);
-  line-height:1.4;color:var(--md-sys-color-on-surface-faint);white-space:nowrap}
-.note{margin-top:22px;font-size:var(--md-type-body-small-size);line-height:1.72;
+.mscore small{display:block;margin-top:4px;font-size:var(--md-type-label-medium-size);
+  line-height:1.4;color:var(--md-sys-color-on-surface-variant);white-space:nowrap}
+.note{margin-top:var(--md-space-4);font-size:var(--md-type-label-medium-size);line-height:1.7;
   color:var(--md-sys-color-on-surface-variant)}
 
 /* —— 页脚 —— */
+.foot{margin-top:var(--md-space-5);padding-top:var(--md-space-4)}
 .foot>div:last-child{text-align:right}
 .foot .src{display:flex;align-items:center;gap:10px;white-space:nowrap}
 /* 出处前的一串三级点：主色一颗，往后两档渐弱，是「这张图有出处」的记认 */
@@ -221,6 +251,9 @@ fn shell(
     foot_note: &str,
 ) -> String {
     let css = format!("{}{}", crate::render::web::DESIGN_SYSTEM, CSS);
+    // 日报、事件的标题是一整句话：卡面 520 里 display 档一行只放得下十来个字，
+    // 超过这个长度降到 headline 档，三行以内放得下
+    let title_size = if title.chars().count() > 12 { "headline-medium" } else { "display-small" };
     let subtitle = if subtitle.is_empty() {
         String::new()
     } else {
@@ -235,7 +268,7 @@ fn shell(
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{css}</style></head>
 <body class="scheme-news md-text {seed}{theme_class}"><div class="shot"><div class="card md-card">
 <div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>{kicker}<span class="md-kicker-en">{kicker_en}</span></div><span class="md-stamp">{stamp}</span></div>
-<div class="title md-title md-type-display-small md-balance">{title}</div>{subtitle}
+<div class="title md-title md-type-{title_size} md-balance">{title}</div>{subtitle}
 <hr class="rule md-rule">
 {body}
 <div class="foot md-foot md-foot-row"><div class="src"><span class="mark"></span>AIHOT · aihot.news</div><div>{foot_note}</div></div>
@@ -246,7 +279,8 @@ fn shell(
         kicker = esc(kicker.0),
         kicker_en = esc(kicker.1),
         stamp = stamp(),
-        title = esc(title),
+        title = phrase(title),
+        title_size = title_size,
         subtitle = subtitle,
         body = body,
         foot_note = esc(foot_note),
@@ -256,15 +290,45 @@ fn shell(
 /// 一级推送只发图；用户引用图片后直接回复序号提取链接（0 表示全部）。
 const FOOT_LINKS: &str = "引用本图回复 0全部｜序号 取链接";
 
-/// 一条资讯的元信息行：来源 · 分类 · 时间
-fn meta_html(item: &Item) -> String {
-    let mut parts: Vec<String> = Vec::new();
+/// 序号牌。`podium` 为真时前三名填实（榜单的名次），否则一律用容器色（只是个序号）
+fn badge(index: u32, label: &str, podium: bool) -> String {
+    let top = if podium && index <= 3 { " top" } else { "" };
+    format!(r#"<span class="no{top}">{}</span>"#, esc(label))
+}
 
-    if let Some(name) = item.source_label() {
-        parts.push(format!(r"<span>{}</span>", esc(&name)));
+/// 标题的断行：把中文按词切开，词与词之间放一个 `<wbr>`，再配合 CSS 的
+/// `word-break: keep-all`，换行只落在词界，不会把「发布」「内部」拆在两行。
+/// 返回的已经是转义过的 HTML。
+fn phrase(text: &str) -> String {
+    let word_like = |ch: Option<char>| ch.is_some_and(char::is_alphanumeric);
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut prev_last: Option<char> = None;
+    for token in crate::plugins::recorder::get_jieba().cut(text, true) {
+        let word = token.word;
+        let first = word.chars().next();
+        let han = |ch: Option<char>| ch.is_some_and(|c| !c.is_ascii() && c.is_alphanumeric());
+        // 两边都是「词」、且至少一边是汉字时才给断点：英文之间本来就有空格与连字符
+        if word_like(prev_last) && word_like(first) && (han(prev_last) || han(first)) {
+            out.push_str("<wbr>");
+        }
+        out.push_str(&esc(word));
+        prev_last = word.chars().next_back();
     }
+    out
+}
+
+/// 一条资讯的眉行：序号 · 分类 · 信源 · 时间 · 评分。
+///
+/// 分类是眉行里的一个主色字，不另做芯片——芯片的底色会把它抬得比信源与时间都重，
+/// 而它与标题说的是同一件事，不该比标题还抢眼。
+fn eyebrow(index: usize, item: &Item) -> String {
+    let mut parts = vec![badge(index as u32, &format!("{index:02}"), false)];
+
     if let Some(cat) = item.category.as_deref().filter(|c| !c.trim().is_empty()) {
-        parts.push(format!(r#"<span class="md-chip">{}</span>"#, esc(category_label(cat))));
+        parts.push(format!(r#"<span class="cat">{}</span>"#, esc(category_label(cat))));
+    }
+    if let Some(name) = item.source_label() {
+        parts.push(format!("<span>{}</span>", esc(&name)));
     }
     // 拿不到原文发布时间时退回收录时间，并如实标注，不冒充发布时间
     let time = item
@@ -278,20 +342,13 @@ fn meta_html(item: &Item) -> String {
                 .map(|t| format!("{t} 收录"))
         });
     if let Some(t) = time {
-        parts.push(format!(r"<span>{}</span>", esc(&t)));
+        parts.push(format!("<span>{}</span>", esc(&t)));
     }
     // 官网卡片上的「AI 评分」
     if let Some(score) = item.score.filter(|s| *s > 0.0) {
-        parts.push(format!(r"<span>评分 {score:.0}</span>"));
+        parts.push(format!(r#"<span class="sc">{score:.0} 分</span>"#));
     }
-
-    if parts.is_empty() {
-        return String::new();
-    }
-    format!(
-        r#"<div class="meta">{}</div>"#,
-        parts.join(r#"<span class="md-sep">·</span>"#)
-    )
+    format!(r#"<div class="ey">{}</div>"#, parts.concat())
 }
 
 /// 资讯列表卡片（速递 / 搜索结果共用）。一行一个事件，与官网首页的卡片一一对应：
@@ -307,21 +364,16 @@ pub fn items_card(
 
     for (idx, cluster) in clusters.iter().enumerate() {
         let item = &cluster.lead;
-        body.push_str(&format!(
-            r#"<div class="row"><div class="idx">{:02}</div><div>"#,
-            idx + 1
-        ));
-        body.push_str(&format!(
-            r#"<div class="h">{}</div>"#,
-            esc(item.title.as_deref().unwrap_or("(无标题)").trim())
-        ));
-        body.push_str(&meta_html(item));
+        let title = item.title.as_deref().unwrap_or("(无标题)").trim();
+        let summary = item.summary.as_deref().map(str::trim).filter(|s| !s.is_empty());
 
-        if let Some(summary) = item.summary.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            body.push_str(&format!(
-                r#"<div class="sum">{}</div>"#,
-                esc(&clip(summary, 120))
-            ));
+        body.push_str(&format!(
+            r#"<div class="row">{}<div class="h">{}</div>"#,
+            eyebrow(idx + 1, item),
+            phrase(title)
+        ));
+        if let Some(summary) = summary {
+            body.push_str(&format!(r#"<div class="sum">{}</div>"#, esc(&clip(summary, 110))));
         }
         let others = cluster.other_reports();
         if !others.is_empty() {
@@ -339,16 +391,17 @@ pub fn items_card(
                 etc
             ));
         }
+        // 推荐理由常常只是把摘要换个说法再讲一遍；真补充了东西才画
         if opts.show_reason
             && let Some(reason) = item.reason.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && !restates(reason, &[title, summary.unwrap_or_default()])
         {
-            // 给「推荐理由」一个主色小标签：这是全卡最该被先看见的一句
             body.push_str(&format!(
-                r#"<div class="why"><b>推荐理由</b> {}</div>"#,
+                r#"<div class="why"><b>推荐理由</b>{}</div>"#,
                 esc(&clip(reason, 90))
             ));
         }
-        body.push_str("</div></div>");
+        body.push_str("</div>");
     }
 
     let subtitle = match subtitle.is_empty() {
@@ -364,48 +417,39 @@ pub fn hot_topics_card(topics: &[HotTopic], theme: CardTheme) -> String {
 
     for (idx, topic) in topics.iter().enumerate() {
         let rank = topic.rank.unwrap_or((idx + 1) as u32);
-        let cls = if rank <= 3 { "rank top" } else { "rank" };
+        let title = topic.title.as_deref().unwrap_or("(无标题)").trim();
+        let summary = topic.digest_lead();
 
-        body.push_str(&format!(
-            r#"<div class="row"><div class="idx"><div class="{cls}">{rank}</div></div><div>"#
-        ));
-        body.push_str(&format!(
-            r#"<div class="h">{}</div>"#,
-            esc(topic.title.as_deref().unwrap_or("(无标题)").trim())
-        ));
-
-        let mut meta: Vec<String> = Vec::new();
+        // 眉行：名次 · 热度 · 最新时间。信源名不再重列——「N 个报道来源」已经说了
+        let mut ey = vec![badge(rank, &rank.to_string(), true)];
         if let Some(count) = topic.source_count.filter(|c| *c > 0) {
-            meta.push(format!(r#"<span class="md-chip">{count} 个报道来源</span>"#));
+            ey.push(format!(r#"<span class="cat">{count} 个报道来源</span>"#));
         }
         if let Some(count) = topic.participant_count.filter(|c| *c > 0) {
-            meta.push(format!(r"<span>{count} 人讨论</span>"));
+            ey.push(format!("<span>{count} 人讨论</span>"));
         }
-        // 芯片要短：只列两家，括号里的身份说明（「（Anthropic，Claude Code）」）不进芯片。
-        // 总共多少家报道上一枚芯片已经写了
-        meta.extend(topic.display_sources(2).iter().map(|s| {
-            format!(r#"<span class="md-chip md-chip-plain">{}</span>"#, esc(&chip_name(s)))
-        }));
         if let Some(t) = topic.latest_at.as_deref().and_then(fmt_time) {
-            meta.push(format!(r"<span>最新 {}</span>", esc(&t)));
+            ey.push(format!("<span>最新 {}</span>", esc(&t)));
         }
-        if !meta.is_empty() {
-            body.push_str(&format!(r#"<div class="meta">{}</div>"#, meta.join("")));
-        }
+        body.push_str(&format!(
+            r#"<div class="row"><div class="ey">{}</div><div class="h">{}</div>"#,
+            ey.concat(),
+            phrase(title)
+        ));
 
-        if let Some(summary) = topic.digest_lead() {
-            body.push_str(&format!(
-                r#"<div class="sum">{}</div>"#,
-                esc(&clip(summary, 120))
-            ));
+        if let Some(summary) = summary {
+            body.push_str(&format!(r#"<div class="sum">{}</div>"#, esc(&clip(summary, 110))));
         }
-        if let Some(latest) = topic.latest.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        // 最新进展与标题、综述说的是同一句话时不再重复一遍
+        if let Some(latest) = topic.latest.as_deref().map(str::trim).filter(|s| !s.is_empty())
+            && !restates(latest, &[title, summary.unwrap_or_default()])
+        {
             body.push_str(&format!(
-                r#"<div class="sum">最新进展：{}</div>"#,
+                r#"<div class="why"><b>最新进展</b>{}</div>"#,
                 esc(&clip(latest, 90))
             ));
         }
-        body.push_str("</div></div>");
+        body.push_str("</div>");
     }
 
     let subtitle = format!("过去 48 小时 · 跨信源聚合 · TOP {}", topics.len());
@@ -451,7 +495,7 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
             meta.push(format!(r"<span>{}</span>", esc(&price)));
         }
         if !meta.is_empty() {
-            body.push_str(&format!(r#"<div class="meta">{}</div>"#, meta.join("")));
+            body.push_str(&format!(r#"<div class="mmeta">{}</div>"#, meta.join("")));
         }
 
         // 分数条按 0—100 直接映射，长度即分数，不做二次拉伸
@@ -501,23 +545,20 @@ pub fn models_card(board: &Board, max_items: usize, theme: CardTheme) -> String 
     )
 }
 
-/// 芯片上的信源名：去掉括号里的补充说明
-fn chip_name(name: &str) -> String {
-    let cut = name.find(['（', '(']).unwrap_or(name.len());
-    name[..cut].trim_end().to_string()
-}
-
-/// 报告里的一条：序号、标题，其后是「信源 · 发布时间」与摘要
-fn report_li(out: &mut String, number: usize, item: &ReportItem) {
+/// 报告里的一条：序号、标题，其后是「信源 · 发布时间」与摘要。
+/// 摘要若只是把导语复述了一遍（日报头条常这样）就不再画。
+fn report_li(out: &mut String, number: usize, item: &ReportItem, lead: Option<&str>) {
     out.push_str(&format!(
-        r#"<div class="li"><span class="n">{number}</span><b>{}</b>"#,
-        esc(item.title.trim())
+        r#"<div class="li"><span class="n">{number}</span><div class="lt">{}</div>"#,
+        phrase(item.title.trim())
     ));
     if let Some(meta) = report_item_meta(item) {
         out.push_str(&format!(r#"<div class="m">{}</div>"#, esc(&meta)));
     }
-    if let Some(summary) = item.summary.as_deref() {
-        out.push_str(&format!(r#"<div class="t">{}</div>"#, esc(&clip(summary, 150))));
+    if let Some(summary) = item.summary.as_deref()
+        && !lead.is_some_and(|lead| restates(summary, &[lead]))
+    {
+        out.push_str(&format!(r#"<div class="t">{}</div>"#, esc(&clip(summary, 110))));
     }
     out.push_str("</div>");
 }
@@ -539,7 +580,7 @@ pub fn story_card(story: &Story, rank: Option<u32>, theme: CardTheme) -> String 
         let when = story.latest_at.as_deref().and_then(fmt_time);
         let tail = when.map(|t| format!(" · {t}")).unwrap_or_default();
         body.push_str(&format!(
-            r#"<div class="why"><b>最新进展</b> {}{}</div>"#,
+            r#"<div class="why"><b>最新进展</b>{}{}</div>"#,
             esc(latest),
             esc(&tail)
         ));
@@ -558,8 +599,8 @@ pub fn story_card(story: &Story, rank: Option<u32>, theme: CardTheme) -> String 
         number += 1;
         let item = &report.item;
         body.push_str(&format!(
-            r#"<div class="li"><span class="n">{number}</span><b>{}</b>"#,
-            esc(item.title.trim())
+            r#"<div class="li"><span class="n">{number}</span><div class="lt">{}</div>"#,
+            phrase(item.title.trim())
         ));
         if let Some(meta) = story_report_meta(report) {
             body.push_str(&format!(r#"<div class="m">{}</div>"#, esc(&meta)));
@@ -571,7 +612,7 @@ pub fn story_card(story: &Story, rank: Option<u32>, theme: CardTheme) -> String 
     if story.link.is_some() {
         number += 1;
         body.push_str(&format!(
-            r#"<div class="sec"><div class="li"><span class="n">{number}</span><b>阅读事件页</b><div class="m">报道全貌、热度变化与 AI 综述</div></div></div>"#
+            r#"<div class="sec"><div class="li"><span class="n">{number}</span><div class="lt">阅读事件页</div><div class="m">报道全貌、热度变化与 AI 综述</div></div></div>"#
         ));
     }
 
@@ -607,7 +648,7 @@ pub fn report_card(report: &Report, budget: usize, theme: CardTheme) -> String {
         }
         for item in items {
             number += 1;
-            report_li(&mut body, number, item);
+            report_li(&mut body, number, item, report.lead.as_deref());
         }
         body.push_str("</div>");
     }
@@ -618,7 +659,7 @@ pub fn report_card(report: &Report, budget: usize, theme: CardTheme) -> String {
         );
         for item in &digest.flashes {
             number += 1;
-            report_li(&mut body, number, item);
+            report_li(&mut body, number, item, report.lead.as_deref());
         }
         body.push_str("</div>");
     }
@@ -626,7 +667,7 @@ pub fn report_card(report: &Report, budget: usize, theme: CardTheme) -> String {
     if report.link.is_some() {
         number += 1;
         body.push_str(&format!(
-            r#"<div class="sec"><div class="li"><span class="n">{number}</span><b>阅读完整{}</b><div class="m">{}</div></div></div>"#,
+            r#"<div class="sec"><div class="li"><span class="n">{number}</span><div class="lt">阅读完整{}</div><div class="m">{}</div></div></div>"#,
             report.kind.noun(),
             esc(&report.edition())
         ));
@@ -670,4 +711,27 @@ pub async fn capture(html: &str, scale: f64) -> Result<String> {
             .max_height(12_000.0),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phrase_breaks_only_between_chinese_words() {
+        let html = phrase("微软终止与 Nscale 数据中心合作");
+        assert!(html.contains("<wbr>"), "中文词之间要有断点：{html}");
+        assert!(!html.contains("Ns<wbr>"), "英文词内不能拆：{html}");
+        assert_eq!(html.replace("<wbr>", ""), "微软终止与 Nscale 数据中心合作");
+        // 标点不会被断点推到行首
+        assert!(!phrase("发布，上线").contains("<wbr>，"));
+    }
+
+    #[test]
+    fn restated_notes_are_dropped_but_new_facts_stay() {
+        let title = "Anthropic设公益基金 承诺投入5%股份";
+        let summary = "Anthropic 宣布设立 Anthropic Public Benefit Fund，并承诺向该基金投入公司 5% 股份";
+        assert!(restates("Anthropic 承诺将 5% 股份投入新设的公益基金", &[title, summary]));
+        assert!(!restates("该基金需经股东批准后才能生效，董事会尚未表决", &[title, summary]));
+    }
 }

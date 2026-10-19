@@ -184,6 +184,20 @@ impl Fingerprint {
     }
 }
 
+/// 两段话的词元重合度（0—1）：较短的那段里，有多少词元另一段已经说过。
+///
+/// 用来判断「推荐理由 / 最新进展 / 导语」是不是在复述摘要——复述的就不再占一块版面。
+/// 与 [`Fingerprint::similarity`] 不同，这里不要求两边一样长：一句话完全包在另一段里
+/// 也算复述。词元太少（不足 3 个）时没有判断依据，按不重合算。
+pub fn overlap(a: &str, b: &str) -> f64 {
+    let (a, b) = (tokens(a), tokens(b));
+    let shorter = a.len().min(b.len());
+    if shorter < 3 {
+        return 0.0;
+    }
+    a.intersection(&b).count() as f64 / shorter as f64
+}
+
 /// Ochiai 系数与共有词元数
 fn ochiai(a: &HashSet<String>, b: &HashSet<String>) -> (f64, usize) {
     if a.is_empty() || b.is_empty() {

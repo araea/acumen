@@ -154,7 +154,8 @@ pub struct AiNewsConfig {
     // —— 展示参数 ——
     /// 摘要截断长度（按字符计）
     pub summary_max_chars: usize,
-    /// 是否展示 AIHOT 的「推荐理由」
+    /// 是否展示 AIHOT 的「推荐理由」。它与摘要大多是同一件事换个说法再讲一遍，
+    /// 默认不展示；打开后卡片里复述摘要的仍会略去
     pub show_reason: bool,
     /// 是否附带第三方原文链接（默认开启，同时保留 AIHOT 站内阅读页）
     pub show_original_link: bool,
@@ -351,7 +352,7 @@ impl Default for AiNewsConfig {
             fold_same_event: true,
             request_timeout_seconds: default_timeout(),
             summary_max_chars: default_summary_chars(),
-            show_reason: true,
+            show_reason: false,
             show_original_link: true,
             daily_max_blocks: default_daily_blocks(),
             period_max_items: default_period_items(),

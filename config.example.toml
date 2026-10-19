@@ -741,8 +741,8 @@ request_timeout_seconds = 15
 # —— 展示 ——
 # 摘要截断长度（按字符计）。
 summary_max_chars = 90
-# 是否展示 AIHOT 的「推荐理由」。
-show_reason = true
+# 是否展示 AIHOT 的「推荐理由」。它与摘要大多是同一件事换个说法再讲一遍，默认不展示。
+show_reason = false
 # 是否附带第三方原文链接（AIHOT 站内阅读页始终保留）。
 show_original_link = true
 # 日报卡片最多展示几条。

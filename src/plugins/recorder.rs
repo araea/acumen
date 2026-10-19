@@ -95,7 +95,7 @@ use entity::Entity as RecordEntity;
 // 全局 Jieba 实例
 static JIEBA: OnceLock<Jieba> = OnceLock::new();
 
-fn get_jieba() -> &'static Jieba {
+pub(crate) fn get_jieba() -> &'static Jieba {
     JIEBA.get_or_init(Jieba::new)
 }
 
