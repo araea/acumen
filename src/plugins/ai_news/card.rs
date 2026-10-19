@@ -6,11 +6,12 @@
 //! 主色只出现在序号、分类、顶部微光与引用左界这几处。
 //!
 //! 排版参数是按「手机上读」这个真实场景定的，缩略图与点开全屏各一条要求：
-//!   - 版心 600 CSS px 配合 `image_scale`（默认 3 倍）出图，左右留白收到 12 + 20。
-//!     从前用 720，全屏时整张图缩到 0.57 倍，正文只剩 10dp；600 是 0.69 倍，
-//!     正文 12dp、标题 19dp，群聊里被缩成缩略图时标题仍然读得出来。
-//!     一行的字数是留白收窄后的取舍：摘要每行 28—29 字，与 720 时相当——
-//!     一眼看到的信息量不比从前少，字却大了一档；
+//!   - 版心 608 CSS px 配合 `image_scale`（默认 3 倍）出图：相纸边距 12、卡面四周一律 24，
+//!     正文宽 534。从前用 720，全屏时整张图缩到 0.57 倍，正文只剩 10dp；608 是 0.68 倍，
+//!     正文 11.8dp、标题 18.6dp，群聊里被缩成缩略图时标题仍然读得出来。
+//!     摘要每行 29 字，与 720 时相当——一眼看到的信息量不比从前少，字却大了一档；
+//!   - **同一条正文列**：眉行、标题、摘要、补充说明的容器、分隔线共用同一条左缘与右缘，
+//!     四周的内边距也只有一个值（24）。边距不必大，但各处必须对齐、成一个数；
 //!   - 一条一格，自上而下是「眉行（序号 · 分类 · 信源 · 时间）→ 标题 → 摘要」。
 //!     标题是全格最大最重的字，眉行与摘要依次退后，扫读只需看标题；
 //!   - **同一件事只说一遍**：分类是眉行里的字、不再另做一枚芯片；推荐理由、
@@ -85,9 +86,9 @@ fn resolve_theme_at(mode: &str, now: DateTime<chrono::FixedOffset>) -> CardTheme
     }
 }
 
-/// 卡片渲染宽度（CSS 像素）：相纸两侧各 12，卡面 576，正文宽 534。
-/// 实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 1800px）
-const WIDTH: u32 = 600;
+/// 卡片渲染宽度（CSS 像素）：相纸两侧各 12，卡面四周 24，正文宽 534。
+/// 实际出图宽度 = WIDTH × `image_scale`（默认 3 倍 → 1824px）
+const WIDTH: u32 = 608;
 
 /// 一段补充说明（推荐理由、最新进展、导语）与已写出的正文词元重合到这个比例，就算复述。
 /// 拿 2026-10-19 热点榜十条的「最新进展」量过：照抄标题或综述的都在 0.65 以上，
@@ -110,11 +111,12 @@ fn stamp() -> String {
 /// 这里只写这张卡自己的位置，**不写色值与字号字面量**。四类内容的主色由页面的
 /// `seed-*` 类名换，这个文件不参与——所以「换分类」与「换版式」是两件互不牵连的事。
 const CSS: &str = r#"
-body{width:600px}
-/* 相纸的底色由 m3e.css 的 `.shot` 给；内边距这张卡收到 12px、卡面左右收到 20px：
-   资讯卡要的是「一行多放字」，边上的留白比手册卡让出一档 */
+body{width:608px}
+/* 相纸的底色由 m3e.css 的 `.shot` 给；内边距这张卡收到 12px——资讯卡要的是「一行多放字」。
+   卡面四周只用一个值：上下与左右不一样，页眉贴着圆角的那一角就显得偏，
+   各处也没法拿同一条边去对齐 */
 .shot{padding:var(--md-space-3)}
-.card{padding:var(--md-space-7) var(--md-space-5) var(--md-space-6)}
+.card{padding:var(--md-space-6)}
 .card .md-eyebrow{margin-bottom:var(--md-space-4)}
 
 /* —— 标题块 —— */
@@ -154,16 +156,21 @@ body{width:600px}
   color:var(--md-sys-color-on-surface-faint)}
 .also b{font-weight:700;color:var(--md-sys-color-on-surface-variant)}
 .also span+span::before{content:"·";margin-right:10px;color:var(--md-sys-color-outline)}
-/* 补充一句（推荐理由 / 最新进展）：只剩一道主色左界，不再用底色块。
-   前缀是主色小标，说明这句从哪来；正文与摘要同字号，不比它小一档。 */
-.why{margin-top:var(--md-space-3);padding-left:var(--md-space-3);
-  border-left:3px solid var(--md-sys-color-primary-line);
+/* 补充一句（推荐理由 / 最新进展）：一块主色淡底的圆角容器，容器的左右缘就是正文列的
+   左右缘（与标题、摘要、分隔线对齐），字在容器里再缩进一档。
+   从前是一道左界加缩进的字：字比上面的摘要缩进了 15px，两段对不齐，
+   那道细线又贴着正文左缘，读起来像是正文挤出了框。
+   这里不用 balance：它会把两三行的短块匀成三分之二宽，容器右侧空出一大块。 */
+.why{margin-top:var(--md-space-3);padding:10px var(--md-space-4) 11px;
+  border-radius:var(--md-shape-l);background:var(--md-sys-color-primary-tint);
   font-size:var(--md-type-body-medium-size);line-height:1.6;
   color:var(--md-sys-color-on-surface-variant);text-wrap:pretty}
-.why b{color:var(--md-sys-color-primary);font-weight:800;letter-spacing:.02em;margin-right:.4em}
+/* 夜间的黑底上 7% 的主色淡底几乎看不出边界，换强一档（文字对比度 6.3:1） */
+.dark .why{background:var(--md-sys-color-primary-tint-strong)}
+.why b{color:var(--md-sys-color-primary);font-weight:800;letter-spacing:.02em;margin-right:.5em}
 
 /* —— 日报、周报、月报与事件详情 —— */
-.lead{margin:var(--md-space-5) 0 0;padding:var(--md-space-4) var(--md-space-5);
+.lead{margin:var(--md-space-5) 0 0;padding:var(--md-space-4);
   border-radius:var(--md-shape-l);background:var(--md-sys-color-surface-container-low);
   border:1px solid var(--md-sys-color-outline-variant);
   font-size:var(--md-type-body-medium-size);line-height:1.68;
