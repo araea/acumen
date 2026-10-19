@@ -314,7 +314,7 @@
     put(
       $("#nav"),
       h`<span class="nav-pill" aria-hidden="true"></span>${PAGES.map(
-        (page) => h`<a class="nav-item" href="#/${page.id}" data-nav="${page.id}">
+        (page) => h`<a class="nav-item" href="#/${page.id}" data-nav="${page.id}" draggable="false">
           <span class="nav-icon state">${duoIcon(page.glyph)}</span>
           <span class="nav-label">${page.label}</span>
         </a>`
@@ -476,7 +476,8 @@
       const dx = event.clientX - drag.x0;
       const dy = event.clientY - drag.y0;
       if (!drag.active) {
-        if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) return cleanup();
+        // 只把「明显竖直」的移动当滚动让开；手指的轻微抖动不取消拖选。
+        if (Math.abs(dy) > 24 && Math.abs(dy) > Math.abs(dx) * 2) return cleanup();
         if (Math.abs(dx) < 8) return;
         activate(event.clientX);
       }
@@ -489,7 +490,14 @@
       if (!drag || event.pointerId !== drag.id) return;
       const state = drag;
       cleanup();
-      if (!state.active) return;
+      if (!state.active) {
+        // 触摸短按：click 可能已被 preventDefault 吃掉，这里自己导航一次。
+        if (state.pointerType !== "mouse") {
+          suppressClickUntil = performance.now() + 150;
+          if (state.target !== state.original) location.hash = "#/" + state.target;
+        }
+        return;
+      }
       // 拖完松手时浏览器还会补一个 click：吃掉它，只走这里的落格。
       suppressClickUntil = performance.now() + 150;
       nav.classList.remove("nav-dragging");
@@ -513,6 +521,12 @@
       paintNavPill(true);
     };
 
+    // Android 的长按菜单与 iOS 的链接预览都从 touchstart 的默认动作开始；
+    // 这里一并关掉，tap 由上面的 pointerup 自己落格。
+    nav.addEventListener("touchstart", (event) => {
+      if (compactNav.matches && event.cancelable) event.preventDefault();
+    }, { passive: false });
+
     nav.addEventListener("pointerdown", (event) => {
       if (!compactNav.matches || drag) return;
       if (event.pointerType === "mouse" && event.button !== 0) return;
@@ -520,6 +534,7 @@
       if (!item) return;
       drag = {
         id: event.pointerId,
+        pointerType: event.pointerType,
         x0: event.clientX,
         y0: event.clientY,
         active: false,
@@ -527,7 +542,10 @@
         target: item.dataset.nav,
         timer: 0,
       };
-      drag.timer = setTimeout(() => activate(drag.x0), 200);
+      // 触摸 / 手写笔：从按下这一刻就接管，别让浏览器把长按解释成
+      // 文本选择、链接拖拽或系统菜单。短按由 up 里自己落格。
+      if (event.pointerType !== "mouse") event.preventDefault();
+      drag.timer = setTimeout(() => activate(drag.x0), 180);
       addEventListener("pointermove", move, { passive: false });
       addEventListener("pointerup", up);
       addEventListener("pointercancel", cancel);

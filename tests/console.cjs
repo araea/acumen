@@ -252,6 +252,20 @@ const posted = where => posts.filter(p => p.path === where);
   await until(() => js('return location.hash === "#/logs"'), "长按拖选到日志");
   assert.equal(await js('return document.querySelector("[aria-current=page]").dataset.nav'), "logs");
   await until(ready, "拖选后打开日志");
+
+  // —— 触摸短按：click 可能被 pointerdown 的 preventDefault 吃掉，必须自己落格 ——
+  await js(`(() => {
+    const a = document.querySelector('[data-nav="settings"]');
+    const r = a.getBoundingClientRect();
+    const ev = (type, buttons) => new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 78, pointerType: "touch", isPrimary: true,
+      button: 0, buttons, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2,
+    });
+    a.dispatchEvent(ev("pointerdown", 1));
+    window.dispatchEvent(ev("pointerup", 0));
+  })()`);
+  await until(() => js('return location.hash === "#/settings"'), "触摸短按到设置");
+  assert.equal(await js('return document.querySelector("[aria-current=page]").dataset.nav'), "settings");
   await route("overview");
 
   // —— 窄屏插件：搜索只重画列表；详情独立成页，带返回 ——

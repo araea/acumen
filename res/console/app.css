@@ -357,10 +357,22 @@ time {
   background: var(--md-sys-color-surface-container-high);
   box-shadow: var(--md-sys-elevation-level2);
   isolation: isolate;
-  touch-action: pan-y;
+  /* 底栏不承担滚动：按住时浏览器不要把它当成 pan-y 手势而发 pointercancel。 */
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+}
+
+/* 长按链接触发系统菜单 / 链接拖拽，是网页端最常见的两个拦截点。 */
+.nav *,
+.nav *::before,
+.nav *::after {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
 }
 
 /* 滑动的胶囊。位置与尺寸由 app.js 的 paintNavPill 跟着当前格量出来；
