@@ -321,7 +321,7 @@
     );
     put(
       $("#topbar-actions"),
-      h`<button class="icon-btn state" id="refresh" type="button" aria-label="刷新当前页面" title="刷新当前页面">${icon("refresh")}</button>`
+      h`<button class="icon-btn state" id="refresh-page" type="button" aria-label="刷新当前页面" title="刷新当前页面">${icon("refresh")}</button>`
     );
   }
 
@@ -2497,8 +2497,8 @@
       if ((hit = on("[data-picker-remove]"))) return pickerRemove(hit);
       if ((hit = on("[data-picker-add]"))) return void pickerSubmitText(hit.closest(".picker"), { explicit: true });
       if ((hit = on("[data-picker-open]"))) return pickerChoose(hit.closest(".picker"));
-      if (on("#refresh")) {
-        const button = $("#refresh");
+      if (on("#refresh-page")) {
+        const button = $("#refresh-page");
         if (button.dataset.busy !== undefined) return;
         button.dataset.busy = "";
         await render({ quiet: true }).finally(() => delete button.dataset.busy);

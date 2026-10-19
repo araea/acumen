@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """生成知微的应用图标：一处几何，六份产物。
 
-标记：一枚七瓣「曲奇」形（Material 3 Expressive 形状库里的 Cookie 7）落在左下，
-右上方悬着一粒小小的暖色光点——知微，见微知著：曲奇是被观察的事物，那一点光是
-「掌灯人」递过去的灯：看见的细处。光点与曲奇分开画（旧版是在曲奇上挖一个孔，
-看上去像煎蛋），单色版两块都是白色，轮廓同源。
+标记是一枚「缺了一角的印」：一个圆角方环（超椭圆外缘、圆形内孔）在右上角
+留出一道缺口，缺口里嵌着一粒暖色光点。环是「看见的整体」，光点是「被看见的
+细处」——知微，见微知著。缺口与光点都朝右上，静态里带一点方向感。
 
-网格沿用自适应图标的 108 单位：可见区 72，安全圆半径 33。曲奇缩到 0.82 倍后移向左下，
-光点在右上，两者到中心的最远处都落在安全圆内；16px 下光点直径约 2px，仍可辨认。
+几何全部落在自适应图标的安全圆内（108 画布，半径 33）：环的外缘最远处
+32.8，光点中心到画布中心 22.3、半径 6.2。16px 下环宽约 1.7 个设备像素，
+光点约 1.8 像素，两者都还分得开。
 
-底板是连续曲率的超椭圆（n=5），不是圆角矩形：Miuix 与 Apple 的图标都用这种
-没有曲率突变的边。只有 `any` 那一份自带底板轮廓；maskable 与 Apple 180 铺满
-不透明方底，由系统自己裁形（HIG：不要自己画圆角）；monochrome 透明底纯白。
+底板是连续曲率的超椭圆（n=5），不是圆角矩形。只有 any 那一份自带底板；
+maskable 与 Apple 180 铺满不透明方底，由系统自己裁形；monochrome 透明底纯白。
 
 颜色取自 scripts/make-tokens.py 同一个种子的 HCT 色调板，图标不跟随明暗。
 
-位图由无头 Chromium 直接渲染同一份 SVG，保证矢量与位图逐像素同源。
+位图由无头 Chromium 直接渲染同一份 SVG，保证矢量与位图同源。
 运行：python3 scripts/make-icon.py（需要 chromium-browser、materialyoucolor 与 Pillow）
 """
 
@@ -36,53 +35,36 @@ SEED = 0xFF3F51B5
 GRID = 108.0
 C = GRID / 2
 
-LOBES = 7
-RADIUS = 30.0
-AMPLITUDE = 2.6
+# 环与缺口。
+OUTER = 27.6          # 超椭圆外缘的轴半径
+INNER = 16.2          # 圆形内孔
+SQUIRCLE_N = 4.0      # 外缘的方度（2 是正圆，越大越方）
+GAP_DEG = 46.0        # 缺口张角
+GAP_ROT = -45.0       # 缺口朝向：右上
+DOT_R = 6.2
+DOT_RADIUS = 22.2     # 光点在缺口里的半径位置
 SAFE = 33.0
+LAMP_COLOR = "#ffc65c"
 
-# 曲奇缩放并移到左下；光点在右上。
-SCALE = 0.82
-CENTER = (50.0, 58.0)
-LAMP = (74.0, 34.0, 5.2)
-LAMP_COLOR = "#ffd36b"
-
-assert math.hypot(C - CENTER[0], C - CENTER[1]) + (RADIUS + AMPLITUDE) * SCALE <= SAFE + 0.5, "曲奇超出了安全圆"
-assert math.hypot(LAMP[0] - C, LAMP[1] - C) + LAMP[2] <= SAFE + 0.5, "光点超出了安全圆"
+assert (OUTER * 2 ** (0.5 - 1 / SQUIRCLE_N)) <= SAFE, "环的外缘超出了安全圆"
+assert DOT_RADIUS + DOT_R <= SAFE, "光点超出了安全圆"
+# 缺口在光点所在半径上的弧长，必须容得下光点再留一点缝。
+_arc = math.radians(GAP_DEG) * DOT_RADIUS
+assert _arc > DOT_R * 2 + 2.0, "缺口太窄，光点会碰到环"
+# 16px 下的环宽至少 1 个设备像素。
+assert (OUTER - INNER) / GRID * 16 >= 1.0, "16px 下环会细到看不见"
 
 
 def palette():
-    # 图标是品牌的脸，用种子自己的彩度（界面里的 primary 被 Tonal Spot 收过彩度）；
-    # 标记取同一支色相的 97 调，几乎是白但不刺眼。
+    # 图标是品牌的脸，用种子自己的彩度；标记取 97 调，几乎是白但不刺眼。
     seed = TonalPalette.from_hct(Hct.from_int(SEED))
     tone = lambda t: "#%06x" % (seed.tone(t) & 0xFFFFFF)
-    return tone(50), tone(28), tone(97)
+    return tone(57), tone(16), tone(97)
 
 
-def cookie() -> str:
-    """七瓣形的闭合路径：极坐标正弦起伏取点，再用 Catmull-Rom 转三次贝塞尔。"""
-    count = LOBES * 12
-    points = []
-    for i in range(count):
-        theta = 2 * math.pi * i / count - math.pi / 2
-        r = RADIUS + AMPLITUDE * math.cos(LOBES * (theta + math.pi / 2))
-        points.append((C + r * math.cos(theta), C + r * math.sin(theta)))
-    f = lambda v: f"{v:.2f}".rstrip("0").rstrip(".")
-    out = [f"M{f(points[0][0])} {f(points[0][1])}"]
-    for i in range(count):
-        p0, p1 = points[i - 1], points[i]
-        p2, p3 = points[(i + 1) % count], points[(i + 2) % count]
-        c1 = (p1[0] + (p2[0] - p0[0]) / 6, p1[1] + (p2[1] - p0[1]) / 6)
-        c2 = (p2[0] - (p3[0] - p1[0]) / 6, p2[1] - (p3[1] - p1[1]) / 6)
-        out.append(f"C{f(c1[0])} {f(c1[1])} {f(c2[0])} {f(c2[1])} {f(p2[0])} {f(p2[1])}")
-    out.append("Z")
-    return "".join(out)
-
-
-def squircle(n: float = 5.0, inset: float = 0.0) -> str:
-    """|x|^n + |y|^n = 1 的超椭圆底板。"""
-    half = GRID / 2 - inset
-    steps = 144
+def squircle(n: float = 5.0, half: float = GRID / 2) -> str:
+    """|x|^n + |y|^n = 1 的超椭圆；作为底板或环的外缘。"""
+    steps = 240
     pts = []
     for i in range(steps):
         t = 2 * math.pi * i / steps
@@ -91,6 +73,31 @@ def squircle(n: float = 5.0, inset: float = 0.0) -> str:
         y = half * math.copysign(abs(st) ** (2 / n), st)
         pts.append(f"{C + x:.2f} {C + y:.2f}")
     return "M" + "L".join(pts) + "Z"
+
+
+def circle(cx: float, cy: float, r: float) -> str:
+    return f"M{cx - r:.2f} {cy:.2f}a{r:.2f} {r:.2f} 0 1 0 {2 * r:.2f} 0a{r:.2f} {r:.2f} 0 1 0 {-2 * r:.2f} 0Z"
+
+
+def ring() -> str:
+    """外缘超椭圆 + 内孔圆形，合在一个路径里用 evenodd 挖空。"""
+    return squircle(SQUIRCLE_N, OUTER) + " " + circle(C, C, INNER)
+
+
+def gap_wedge() -> str:
+    """从画布中心向外的一大块扇形，用作遮罩把缺口切掉。"""
+    a = math.radians(GAP_ROT + GAP_DEG / 2)
+    b = math.radians(GAP_ROT - GAP_DEG / 2)
+    far = GRID
+    return (
+        f"M{C} {C} L{C + far * math.cos(a):.2f} {C + far * math.sin(a):.2f} "
+        f"A{far} {far} 0 0 0 {C + far * math.cos(b):.2f} {C + far * math.sin(b):.2f} Z"
+    )
+
+
+def dot() -> tuple[float, float]:
+    rad = math.radians(GAP_ROT)
+    return C + DOT_RADIUS * math.cos(rad), C + DOT_RADIUS * math.sin(rad)
 
 
 def svg(background: str, *, tile: str | None, mark: str, lamp: str, gradient: tuple[str, str] | None) -> str:
@@ -107,12 +114,14 @@ def svg(background: str, *, tile: str | None, mark: str, lamp: str, gradient: tu
         base = f'<path d="{squircle()}" fill="{fill}"/>'
     elif tile == "square":
         base = f'<rect width="108" height="108" fill="{fill}"/>'
+    dx, dy = dot()
     return (
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="知微">'
         f"<title>知微</title>{defs}{base}"
-        f'<g transform="translate({CENTER[0]:g} {CENTER[1]:g}) scale({SCALE:g}) translate(-{C:g} -{C:g})">'
-        f'<path d="{cookie()}" fill="{mark}"/></g>'
-        f'<circle cx="{LAMP[0]:g}" cy="{LAMP[1]:g}" r="{LAMP[2]:g}" fill="{lamp}"/></svg>\n'
+        '<mask id="gap"><rect width="108" height="108" fill="#fff"/>'
+        f'<path d="{gap_wedge()}" fill="#000"/></mask>'
+        f'<g mask="url(#gap)"><path d="{ring()}" fill="{mark}" fill-rule="evenodd"/></g>'
+        f'<circle cx="{dx:.2f}" cy="{dy:.2f}" r="{DOT_R}" fill="{lamp}"/></svg>\n'
     )
 
 
@@ -131,7 +140,6 @@ def rasterize(markup: str, size: int, target: Path, browser: str, work: Path, op
         check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
     )
     # 截图是未压缩级别的 PNG；重新编码一次，内容不变、体积小一半以上。
-    # 铺满的那两份（maskable 与 Apple）必须不透明，存成 RGB。
     image = Image.open(target)
     if opaque:
         image = image.convert("RGB")

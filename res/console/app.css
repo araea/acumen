@@ -1,9 +1,8 @@
 /* ============================================================================
    知微 · 组件与版式
    ----------------------------------------------------------------------------
-   这一层只写「摆在哪儿、按下去会怎样」。所有视觉值来自 tokens.css：
-   不出现颜色字面量，font-size / border-radius / box-shadow 一律取 var()；
-   组件内部的私有变量以 --_ 开头，只能指向令牌。
+   视觉语言：Material 3 Expressive。取值全部来自 tokens.css，这一层只写
+   「摆在哪儿、按下去会怎样」，不出现颜色、字号、圆角与阴影的字面量。
 
    §1 基础 · §2 外壳与导航 · §3 页面骨架 · §4 表面与列表 · §5 控件 ·
    §6 反馈 · §7 各页 · §8 偏好（减少动态 / 强制色 / 打印）
@@ -20,9 +19,8 @@
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
-  /* 键盘聚焦与锚点跳转时，不让目标藏到顶栏 / 底栏下面（WCAG 2.4.11）。 */
-  scroll-padding-top: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-05));
-  scroll-padding-bottom: calc(var(--zw-navbar-height) + var(--zw-safe-bottom) + var(--zw-space-05));
+  scroll-padding-top: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-04));
+  scroll-padding-bottom: calc(var(--zw-navbar-height) + var(--zw-safe-bottom) + var(--zw-space-04));
   background: var(--md-sys-color-surface);
   scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 }
@@ -30,7 +28,9 @@ html {
 body {
   margin: 0;
   min-height: 100dvh;
-  background: var(--md-sys-color-surface);
+  background-color: var(--md-sys-color-surface);
+  background-image: radial-gradient(120rem 60rem at 50% -24rem, var(--zw-glow), transparent 70%);
+  background-repeat: no-repeat;
   color: var(--md-sys-color-on-surface);
   font-family: var(--md-ref-typeface-plain);
   font-size: var(--md-sys-typescale-body-large-size);
@@ -41,7 +41,6 @@ body {
   touch-action: manipulation;
   text-rendering: optimizeLegibility;
   overflow-wrap: anywhere;
-  /* 中文与西文、数字相接处自动留出细空隙，不必在文案里手敲空格。 */
   text-autospace: normal;
 }
 
@@ -62,6 +61,8 @@ h1,
 h2,
 h3 {
   text-wrap: balance;
+  font-weight: var(--zw-weight-heading);
+  letter-spacing: -0.012em;
 }
 
 ol,
@@ -88,7 +89,7 @@ svg {
   height: var(--zw-size-icon);
 }
 
-/* 图标：Material Symbols Rounded，实心 / 空心成对出现在 index.html 的精灵图里。 */
+/* Material Symbols Rounded；图标是装饰，语义由旁边的文字承担。 */
 .i {
   fill: currentColor;
 }
@@ -164,14 +165,12 @@ pre,
   border: 0;
 }
 
-/* 数据读数使用等宽数字，避免更新时跳动。 */
 .num,
 time {
   font-variant-numeric: tabular-nums;
 }
 
-/* 状态层（M3）：宿主的内容色以 8% / 10% 覆盖在自身之上。
-   用伪元素而不是改背景色，于是任何容器色上都成立、深浅两档不用各写一份。 */
+/* 状态层（M3）：8% / 10% 的内容色罩在宿主上。 */
 .state {
   position: relative;
   isolation: isolate;
@@ -231,8 +230,8 @@ time {
 }
 
 /* —— 顶栏 ——
-   HIG 的大标题收拢：页头 h1 在正文里；它滚出去以后，顶栏把页名接过来。
-   M3 的「滚动后换容器色」同时发生，两套规范在这里是同一个动作。 */
+   页头的大标题在正文里；它滚出去以后，顶栏把页名接过来。
+   紧凑宽度下浮起的导航坞是主要动作区，顶栏只留品牌与刷新。 */
 .topbar {
   grid-area: top;
   position: sticky;
@@ -243,13 +242,14 @@ time {
   gap: var(--zw-space-03);
   min-height: calc(var(--zw-topbar-height) + var(--zw-safe-top));
   padding: var(--zw-safe-top) calc(var(--zw-safe-right) + var(--zw-space-03))
-    0 calc(var(--zw-safe-left) + var(--zw-space-04));
-  background: var(--md-sys-color-surface);
+    0 calc(var(--zw-safe-left) + var(--zw-space-05));
+  background: transparent;
   transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
 .topbar[data-scrolled] {
-  background: var(--md-sys-color-surface-container);
+  background: var(--md-sys-color-surface);
+  box-shadow: 0 1px 0 var(--zw-hairline);
 }
 
 .brand {
@@ -257,26 +257,26 @@ time {
   align-items: center;
   gap: var(--zw-space-03);
   min-height: var(--zw-size-target);
-  padding-inline: var(--zw-space-02) var(--zw-space-04);
+  padding-inline: 0 var(--zw-space-03);
   border-radius: var(--md-sys-shape-corner-full);
   color: var(--md-sys-color-on-surface);
   text-decoration: none;
 }
 
-/* 品牌标记：同一枚七瓣曲奇，用蒙版着色，所以随主色、明暗与对比度一起变。 */
+/* 品牌标记：同一枚新图标（缺一角的环 + 一点光），用蒙版着色。 */
 .brand-mark {
   flex: none;
   width: var(--zw-size-mark);
   height: var(--zw-size-mark);
   background: var(--md-sys-color-primary);
-  mask: url("/icon-monochrome.svg") center / 150% no-repeat;
+  mask: url("/icon-monochrome.svg") center / 136% no-repeat;
 }
 
 .brand-name {
-  font-size: var(--md-sys-typescale-title-large-size);
-  line-height: var(--md-sys-typescale-title-large-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
-  letter-spacing: 0.04em;
+  font-size: var(--zw-type-brand);
+  line-height: 1;
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: 0.01em;
 }
 
 .topbar-title {
@@ -300,7 +300,6 @@ time {
   transform: none;
 }
 
-/* 紧凑宽度下页名接过来时，品牌字收起来，只留标记。 */
 @media (max-width: 599px) {
   .topbar[data-scrolled] .brand-name {
     display: none;
@@ -310,7 +309,7 @@ time {
 .topbar-actions {
   display: flex;
   align-items: center;
-  gap: var(--zw-space-01);
+  gap: var(--zw-space-02);
   margin-inline-start: auto;
 }
 
@@ -318,8 +317,11 @@ time {
   margin-inline-start: 0;
 }
 
-/* 不确定进度（M3E 波浪线性进度），贴在顶栏底边：整条波形，横向缓缓流动。
-   形状用蒙版，所以颜色仍来自令牌。 */
+.topbar .icon-btn {
+  background: var(--md-sys-color-surface-container);
+}
+
+/* 不确定进度：一条贴着顶栏底边的流动波形。 */
 .progress {
   position: absolute;
   inset: auto 0 0;
@@ -336,18 +338,24 @@ time {
   }
 }
 
-/* —— 导航 ——
-   compact：底部导航栏（80px）；medium：收起的导航轨（96px，图标上字下）；
-   expanded：展开的导航轨（图标与字同一行，指示条包住两者）。
-   三种形态是同一组链接，只换排列。选中的图标换实心版，不只靠指示条的颜色。 */
+/* —— 导航坞（compact） ——
+   一块浮起的胶囊，选中的一格撑开成实心药丸，图标与文字同时出现。
+   其余格只留图标，五个入口在 390px 上也放得下。 */
 .nav {
   position: fixed;
-  inset: auto 0 0;
-  z-index: 20;
+  inset: auto calc(var(--zw-safe-right) + var(--zw-dock-inset))
+    calc(var(--zw-safe-bottom) + var(--zw-dock-inset))
+    calc(var(--zw-safe-left) + var(--zw-dock-inset));
+  z-index: 30;
   display: flex;
-  justify-content: space-around;
-  padding: 0 var(--zw-safe-right) var(--zw-safe-bottom) var(--zw-safe-left);
-  background: var(--md-sys-color-surface-container);
+  align-items: center;
+  gap: var(--zw-space-01);
+  height: var(--zw-dock-height);
+  padding: var(--zw-space-03);
+  border: var(--zw-border-width) solid var(--zw-hairline);
+  border-radius: calc(var(--zw-dock-height) / 2);
+  background: var(--md-sys-color-surface-container-high);
+  box-shadow: var(--md-sys-elevation-level2);
 }
 
 .nav-item {
@@ -356,24 +364,25 @@ time {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--zw-space-02);
+  gap: var(--zw-space-01);
   min-width: 0;
-  min-height: var(--zw-navbar-height);
-  padding-block: var(--zw-space-03) var(--zw-space-04);
+  height: calc(var(--zw-dock-height) - var(--zw-space-05));
+  border-radius: calc((var(--zw-dock-height) - var(--zw-space-05)) / 2);
   color: var(--md-sys-color-on-surface-variant);
   text-decoration: none;
+  transition:
+    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
+    color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
+    flex-grow var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    padding var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
 .nav-icon {
   position: relative;
   display: grid;
   place-items: center;
-  width: var(--zw-nav-indicator-width);
-  height: var(--zw-nav-indicator-height);
-  border-radius: var(--md-sys-shape-corner-full);
-  transition:
-    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
-    width var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+  width: var(--zw-size-icon);
+  height: var(--zw-size-icon);
 }
 
 .nav-icon .i {
@@ -390,26 +399,27 @@ time {
 }
 
 .nav-label {
+  display: none;
   font-size: var(--md-sys-typescale-label-medium-size);
-  line-height: var(--md-sys-typescale-label-medium-line-height);
-  font-weight: var(--md-sys-typescale-weight-medium);
+  line-height: 1;
+  font-weight: var(--md-sys-typescale-weight-emphasized);
   white-space: nowrap;
 }
 
 .nav-item[aria-current="page"] {
-  color: var(--md-sys-color-on-surface);
-}
-
-.nav-item[aria-current="page"] .nav-icon {
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  flex: 0 0 auto;
+  flex-direction: row;
+  gap: var(--zw-space-03);
+  padding-inline: var(--zw-space-05);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  box-shadow: var(--md-sys-elevation-level2);
 }
 
 .nav-item[aria-current="page"] .nav-label {
-  font-weight: var(--md-sys-typescale-weight-emphasized);
+  display: block;
 }
 
-/* 状态层落在指示条上，而不是整格（M3 导航栏的做法）。 */
 .nav-item:focus-visible {
   outline: none;
 }
@@ -419,14 +429,8 @@ time {
   outline-offset: var(--zw-focus-offset);
 }
 
-@media (hover: hover) {
-  .nav-item:hover .nav-icon::after {
-    opacity: var(--md-sys-state-hover-opacity);
-  }
-}
-
-.nav-item:active .nav-icon::after {
-  opacity: var(--md-sys-state-pressed-opacity);
+.nav-item[aria-current="page"]:focus-visible .nav-icon {
+  outline-color: var(--md-sys-color-on-primary);
 }
 
 .main {
@@ -443,13 +447,12 @@ time {
   width: 100%;
   max-width: var(--zw-content-max);
   margin-inline: auto;
-  padding: var(--zw-space-03) calc(var(--zw-page-gutter) + var(--zw-safe-right))
+  padding: var(--zw-space-02) calc(var(--zw-page-gutter) + var(--zw-safe-right))
     var(--zw-space-08) calc(var(--zw-page-gutter) + var(--zw-safe-left));
 }
 
+/* —— 导航轨（medium） —— */
 @media (min-width: 600px) {
-  /* 导航轨从窗口顶端一直通到底，品牌住在轨顶；顶栏只剩右边那一栏（页名与操作）。
-     这样大屏上顶部不再有一条横贯整页、几乎空着的栏。 */
   .app {
     grid-template-areas: "nav top" "nav main";
     grid-template-columns: var(--zw-rail-width) minmax(0, 1fr);
@@ -457,7 +460,7 @@ time {
 
   .topbar {
     z-index: 21;
-    padding-inline: var(--zw-page-gutter) var(--zw-space-04);
+    padding-inline: var(--zw-page-gutter) var(--zw-space-05);
   }
 
   .brand {
@@ -479,21 +482,46 @@ time {
   .nav {
     grid-area: nav;
     position: sticky;
+    inset: auto;
     top: 0;
-    inset-inline: auto;
-    bottom: auto;
     flex-direction: column;
     justify-content: flex-start;
-    gap: var(--zw-space-04);
+    gap: var(--zw-space-03);
+    width: auto;
     height: 100dvh;
-    padding: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-04)) 0 var(--zw-space-05) var(--zw-safe-left);
-    background: var(--md-sys-color-surface-container-low);
+    padding: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-04))
+      var(--zw-space-04) var(--zw-space-05) calc(var(--zw-safe-left) + var(--zw-space-04));
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
   }
 
-  .nav-item {
+  .nav-item,
+  .nav-item[aria-current="page"] {
     flex: none;
-    min-height: auto;
-    padding-block: var(--zw-space-02);
+    flex-direction: column;
+    gap: var(--zw-space-01);
+    width: 100%;
+    height: 62px;
+    padding: 0;
+    border-radius: var(--md-sys-shape-corner-large-increased);
+  }
+
+  .nav-item .nav-label,
+  .nav-item[aria-current="page"] .nav-label {
+    display: block;
+    font-size: var(--zw-type-rail-label);
+  }
+
+  .nav-item[aria-current="page"] {
+    background: var(--md-sys-color-secondary-container);
+    color: var(--md-sys-color-on-secondary-container);
+    box-shadow: none;
+  }
+
+  .nav-item[aria-current="page"]:focus-visible .nav-icon {
+    outline-color: var(--zw-focus-color);
   }
 
   .main {
@@ -503,12 +531,9 @@ time {
   html {
     scroll-padding-bottom: var(--zw-space-05);
   }
-
-  .view {
-    padding-left: var(--zw-page-gutter);
-  }
 }
 
+/* —— 抽屉（expanded） —— */
 @media (min-width: 840px) {
   .app {
     grid-template-columns: var(--zw-rail-expanded-width) minmax(0, 1fr);
@@ -517,11 +542,16 @@ time {
   .brand {
     justify-content: flex-start;
     width: var(--zw-rail-expanded-width);
-    padding-inline-start: calc(var(--zw-safe-left) + var(--zw-space-04) + var(--zw-space-05));
+    padding-inline-start: calc(var(--zw-safe-left) + var(--zw-space-06));
   }
 
   .brand-name {
     display: inline;
+  }
+
+  .brand-mark {
+    width: calc(var(--zw-size-mark) + var(--zw-space-01));
+    height: calc(var(--zw-size-mark) + var(--zw-space-01));
   }
 
   .nav {
@@ -529,29 +559,29 @@ time {
     padding-inline: calc(var(--zw-safe-left) + var(--zw-space-04)) var(--zw-space-04);
   }
 
-  .nav-item {
+  .nav-item,
+  .nav-item[aria-current="page"] {
     flex-direction: row;
     justify-content: flex-start;
     gap: var(--zw-space-04);
-    min-height: var(--zw-size-list-item);
-    padding: 0 var(--zw-space-05);
+    height: 54px;
+    padding: 0 var(--zw-space-04);
     border-radius: var(--md-sys-shape-corner-full);
   }
 
-  .nav-icon {
-    width: auto;
-    height: auto;
-    background: none !important;
-  }
-
-  .nav-label {
+  .nav-item .nav-label,
+  .nav-item[aria-current="page"] .nav-label {
     font-size: var(--md-sys-typescale-label-large-size);
     line-height: var(--md-sys-typescale-label-large-line-height);
   }
 
   .nav-item[aria-current="page"] {
-    background: var(--md-sys-color-secondary-container);
-    color: var(--md-sys-color-on-secondary-container);
+    background: var(--md-sys-color-primary);
+    color: var(--md-sys-color-on-primary);
+  }
+
+  .nav-item[aria-current="page"]:focus-visible .nav-icon {
+    outline-color: var(--md-sys-color-on-primary);
   }
 
   .nav-item:focus-visible {
@@ -561,40 +591,6 @@ time {
 
   .nav-item:focus-visible .nav-icon {
     outline: none;
-  }
-
-  /* 展开轨上状态层罩住整条指示条，而不是只罩图标。 */
-  .nav-item {
-    position: relative;
-    isolation: isolate;
-  }
-
-  .nav-icon::after {
-    display: none;
-  }
-
-  .nav-item::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    border-radius: inherit;
-    background: currentColor;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
-  }
-}
-
-@media (min-width: 840px) and (hover: hover) {
-  .nav-item:hover::after {
-    opacity: var(--md-sys-state-hover-opacity);
-  }
-}
-
-@media (min-width: 840px) {
-  .nav-item:active::after {
-    opacity: var(--md-sys-state-pressed-opacity);
   }
 }
 
@@ -612,13 +608,12 @@ body[data-state="locked"] .main {
   padding-bottom: var(--zw-safe-bottom);
 }
 
-/* 解锁页没有导航轨：品牌回到顶栏里它原来的位置。 */
 body[data-state="locked"] .brand {
   position: static;
   justify-content: flex-start;
   width: auto;
   height: auto;
-  padding: 0 var(--zw-space-04) 0 var(--zw-space-02);
+  padding: 0;
   border-radius: var(--md-sys-shape-corner-full);
 }
 
@@ -631,17 +626,17 @@ body[data-state="locked"] .brand-name {
 .page {
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-06);
+  gap: var(--zw-space-07);
 }
 
 .page[data-enter] {
-  animation: page-enter var(--md-sys-motion-effects-slow-duration) var(--md-sys-motion-effects-slow-easing) both;
+  animation: page-enter var(--md-sys-motion-effects-slow-duration) var(--md-sys-motion-spatial-default-easing) both;
 }
 
 @keyframes page-enter {
   from {
     opacity: 0;
-    transform: translateY(var(--zw-space-03));
+    transform: translateY(var(--zw-space-04));
   }
 }
 
@@ -651,13 +646,13 @@ body[data-state="locked"] .brand-name {
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--zw-space-04) var(--zw-space-06);
-  padding-top: var(--zw-space-03);
+  padding-top: var(--zw-space-04);
 }
 
 .page-head-text {
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-03);
+  gap: var(--zw-space-02);
   min-width: 0;
 }
 
@@ -669,10 +664,10 @@ body[data-state="locked"] .brand-name {
 }
 
 .page-title {
-  font-size: var(--md-sys-typescale-headline-medium-size);
-  line-height: var(--md-sys-typescale-headline-medium-line-height);
-  font-weight: var(--zw-weight-heading);
-  letter-spacing: 0.01em;
+  font-size: var(--zw-type-page-title);
+  line-height: 1.1;
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: var(--md-sys-typescale-tracking-display);
 }
 
 .page-title:focus {
@@ -702,12 +697,11 @@ body[data-state="locked"] .brand-name {
 
 @media (min-width: 840px) {
   .page-title {
-    font-size: var(--md-sys-typescale-headline-large-size);
-    line-height: var(--md-sys-typescale-headline-large-line-height);
+    font-size: var(--zw-type-page-title-wide);
   }
 
   .page-head {
-    padding-block: var(--zw-space-05) var(--zw-space-03);
+    padding-block: var(--zw-space-05) var(--zw-space-02);
   }
 }
 
@@ -724,32 +718,41 @@ body[data-state="locked"] .brand-name {
   align-items: center;
   justify-content: space-between;
   gap: var(--zw-space-02) var(--zw-space-04);
-  min-height: var(--zw-size-control);
-  padding-inline: var(--zw-space-02);
+  min-height: var(--zw-space-08);
 }
 
 .section-title {
   display: flex;
   align-items: center;
   gap: var(--zw-space-03);
-  font-size: var(--md-sys-typescale-title-large-size);
-  line-height: var(--md-sys-typescale-title-large-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
+  font-size: 1.3125rem;
+  line-height: 1.5rem;
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: -0.01em;
+}
+
+/* 小节标题前的一小段色条：扫读时的落点，不占导航语义。 */
+.section-title::before {
+  content: "";
+  flex: none;
+  width: var(--zw-space-01);
+  height: 1.125rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-primary);
 }
 
 .section-meta {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-body-medium-size);
-  line-height: var(--zw-body-medium-line);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
 .subhead {
-  padding-inline: var(--zw-space-02);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-title-small-size);
   line-height: var(--md-sys-typescale-title-small-line-height);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-  letter-spacing: 0.04em;
+  letter-spacing: var(--md-sys-typescale-tracking-label);
 }
 
 .note {
@@ -758,10 +761,6 @@ body[data-state="locked"] .brand-name {
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
   text-wrap: pretty;
-}
-
-.section > .note {
-  padding-inline: var(--zw-space-02);
 }
 
 .actions {
@@ -783,8 +782,8 @@ body[data-state="locked"] .brand-name {
   gap: var(--zw-space-05);
   min-width: 0;
   padding: var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-extra-large);
-  background: var(--md-sys-color-surface-container);
+  border-radius: var(--zw-radius-card);
+  background: var(--md-sys-color-surface-container-low);
 }
 
 @media (min-width: 600px) {
@@ -793,8 +792,9 @@ body[data-state="locked"] .brand-name {
   }
 }
 
-/* —— 分组列表（M3E segmented list） ——
-   一组行之间留 2px 缝，组两端大圆角、组内小圆角：看得出是一组，又每行可点。 */
+/* —— 列表 ——
+   每一行是一块独立的小卡片：6px 的缝、20 的圆角，扫读时不必在一整面
+   灰底上找边界。 */
 .group {
   display: flex;
   flex-direction: column;
@@ -803,32 +803,24 @@ body[data-state="locked"] .brand-name {
 }
 
 .item {
-  --_item-bg: var(--md-sys-color-surface-container);
+  --_item-bg: var(--md-sys-color-surface-container-low);
   position: relative;
   display: flex;
   align-items: center;
   gap: var(--zw-space-04);
   min-height: var(--zw-size-list-item);
-  padding: var(--zw-space-04) var(--zw-space-05);
-  border-radius: var(--zw-group-inner);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--zw-radius-row);
   background: var(--_item-bg);
   color: var(--md-sys-color-on-surface);
   text-align: start;
   isolation: isolate;
+  transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
-.item:first-child {
-  border-top-left-radius: var(--zw-group-outer);
-  border-top-right-radius: var(--zw-group-outer);
-}
-
-.item:last-child {
-  border-bottom-left-radius: var(--zw-group-outer);
-  border-bottom-right-radius: var(--zw-group-outer);
-}
-
-/* 放在 card 里的组换一档底色，免得与卡片融成一片。 */
-.card .item {
+.card .item,
+.setting .item,
+.memory .item {
   --_item-bg: var(--md-sys-color-surface-container-high);
 }
 
@@ -838,8 +830,8 @@ button.item {
 
 .item[aria-current="true"],
 .item:has(.item-link[aria-current="page"]) {
-  --_item-bg: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  --_item-bg: var(--md-sys-color-primary-container);
+  color: var(--zw-selected-fg);
 }
 
 .item-leading {
@@ -869,7 +861,7 @@ button.item {
   gap: var(--zw-space-01) var(--zw-space-03);
   font-size: var(--md-sys-typescale-body-large-size);
   line-height: var(--zw-body-line);
-  font-weight: var(--md-sys-typescale-weight-medium);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
 }
 
 .item-sub {
@@ -881,7 +873,7 @@ button.item {
 
 .item[aria-current="true"] .item-sub,
 .item:has(.item-link[aria-current="page"]) .item-sub {
-  color: var(--md-sys-color-on-secondary-container);
+  color: var(--zw-selected-fg);
 }
 
 .item-trailing {
@@ -899,8 +891,7 @@ button.item {
   text-align: end;
 }
 
-/* 整行可点、尾部开关独立：链接用伪元素铺满整行，开关抬到它上面。
-   链接与按钮互不嵌套（HTML 规定交互元素不能套交互元素）。 */
+/* 整行可点、尾部开关独立：链接用伪元素铺满整行，开关抬到它上面。 */
 .item-link {
   color: inherit;
   text-decoration: none;
@@ -958,24 +949,27 @@ button.item:active::after {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-/* 等宽的小标签：插件名、协议、指令。 */
 .tag {
   display: inline-flex;
   align-items: center;
   padding: 0 var(--zw-space-03);
-  border-radius: var(--md-sys-shape-corner-small);
-  background: var(--md-sys-color-surface-container-highest);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface-variant);
   font-family: var(--md-ref-typeface-mono);
   font-size: var(--md-sys-typescale-label-medium-size);
-  line-height: var(--md-sys-typescale-label-medium-line-height);
+  line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-regular);
   overflow-wrap: anywhere;
 }
 
-/* 图标方块：同一类插件同一种色调，字形各是各的。色调只是底，字形才是名字。
-   底色由色调角色按 20% 调进容器色里：浅色是淡淡的一抹，深色是暗暗的一抹，
-   不会像整块容器色那样在深色里亮成一片。 */
+.item[aria-current="true"] .tag,
+.item:has(.item-link[aria-current="page"]) .tag {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+/* 图标方块：同一类插件同一种色调，字形各是各的。 */
 .tile {
   --_tone: var(--md-sys-color-primary);
   display: grid;
@@ -984,7 +978,7 @@ button.item:active::after {
   width: var(--zw-size-tile);
   height: var(--zw-size-tile);
   border-radius: var(--md-sys-shape-corner-large);
-  background: color-mix(in srgb, var(--_tone) 20%, var(--md-sys-color-surface-container-high));
+  background: color-mix(in srgb, var(--_tone) 16%, var(--md-sys-color-surface-container-high));
   color: var(--_tone);
 }
 
@@ -1017,7 +1011,6 @@ button.item:active::after {
   color: var(--md-sys-color-on-primary);
 }
 
-/* M3E 信息行：键值在窄屏上下排列。 */
 .facts {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1049,9 +1042,9 @@ button.item:active::after {
 
 /* ==================== §5 控件 ==================== */
 
-/* —— 按钮（M3E） ——
+/* —— 按钮 ——
    四种强调：filled > tonal > outlined > text，danger 只给不可撤销的动作。
-   按下时从全圆角收成中圆角：M3E 的形状变形，按压反馈不只靠颜色。 */
+   按下时从全圆角收成中圆角并轻微内缩：反馈不只靠颜色。 */
 .btn {
   --_btn-bg: transparent;
   --_btn-fg: var(--md-sys-color-primary);
@@ -1071,11 +1064,13 @@ button.item:active::after {
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-  letter-spacing: 0.02em;
+  letter-spacing: var(--md-sys-typescale-tracking-label);
   text-decoration: none;
   white-space: nowrap;
   user-select: none;
-  transition: border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+  transition:
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
 .btn svg {
@@ -1090,6 +1085,7 @@ button.item:active::after {
 
 .btn:active:not(:disabled) {
   border-radius: var(--md-sys-shape-corner-medium);
+  scale: 0.97;
 }
 
 .btn.back {
@@ -1122,6 +1118,7 @@ button.item:active::after {
 .btn-filled {
   --_btn-bg: var(--md-sys-color-primary);
   --_btn-fg: var(--md-sys-color-on-primary);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 22%, transparent);
 }
 
 .btn-tonal {
@@ -1131,7 +1128,7 @@ button.item:active::after {
 
 .btn-outlined {
   border-color: var(--md-sys-color-outline);
-  --_btn-fg: var(--md-sys-color-on-surface-variant);
+  --_btn-fg: var(--md-sys-color-on-surface);
 }
 
 .btn-text {
@@ -1156,6 +1153,7 @@ button.item:active::after {
   --_btn-bg: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-disabled-container-opacity), transparent);
   --_btn-fg: color-mix(in srgb, var(--md-sys-color-on-surface) var(--md-sys-state-disabled-content-opacity), transparent);
   border-color: transparent;
+  box-shadow: none;
 }
 
 .btn-text:disabled,
@@ -1178,11 +1176,14 @@ button.item:active::after {
   height: var(--zw-size-target);
   border-radius: var(--md-sys-shape-corner-full);
   color: var(--md-sys-color-on-surface-variant);
-  transition: border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+  transition:
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
 .icon-btn:active:not(:disabled) {
   border-radius: var(--md-sys-shape-corner-medium);
+  scale: 0.94;
 }
 
 .icon-btn:disabled {
@@ -1199,11 +1200,7 @@ button.item:active::after {
   }
 }
 
-/* —— 开关（M3） ——
-   原生 button + role="switch" + aria-checked；视觉 52×32，命中区向上下各扩 8px。
-   开：轨道 primary、滑块变大并露出一枚对勾；关：描边轨道、小滑块。
-   位置、大小与对勾都在变，状态不只靠颜色表达（WCAG 1.4.1）。
-   对勾是从滑块上镂空出来的（蒙版相减），所以颜色就是轨道色，不必另配一色。 */
+/* —— 开关（M3） —— */
 .switch {
   position: relative;
   flex: none;
@@ -1212,7 +1209,8 @@ button.item:active::after {
   border: var(--zw-border-width-strong) solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-corner-full);
   background: var(--md-sys-color-surface-container-highest);
-  transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
+  transition:
+    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
     border-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
@@ -1233,7 +1231,6 @@ button.item:active::after {
     background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
-/* 扩大的命中区，同时承载状态层（圆形，罩住滑块）。 */
 .switch::after {
   content: "";
   position: absolute;
@@ -1254,21 +1251,32 @@ button.item:active::after {
   opacity: var(--md-sys-state-pressed-opacity);
 }
 
-/* 选中的列表行底色是 secondary-container：关着的开关若仍用 outline 描边，深色下只剩 2.4:1，
-   不到 WCAG 1.4.11 的 3:1。这种行里改用该容器的前景色。 */
 .item[aria-current="true"] .switch:not([aria-checked="true"]),
 .item:has(.item-link[aria-current="page"]) .switch:not([aria-checked="true"]) {
-  border-color: var(--md-sys-color-on-secondary-container);
+  border-color: var(--zw-selected-fg);
 }
 
 .item[aria-current="true"] .switch:not([aria-checked="true"])::before,
 .item:has(.item-link[aria-current="page"]) .switch:not([aria-checked="true"])::before {
-  background: var(--md-sys-color-on-secondary-container);
+  background: var(--zw-selected-fg);
 }
 
 .switch[aria-checked="true"] {
   border-color: var(--md-sys-color-primary);
   background: var(--md-sys-color-primary);
+}
+
+/* 选中行本身是 primary-container：开着的开关改用这一行的前景色，
+   轨道与页面底色之间仍要有 3:1 的边界。 */
+.item[aria-current="true"] .switch[aria-checked="true"],
+.item:has(.item-link[aria-current="page"]) .switch[aria-checked="true"] {
+  border-color: var(--zw-selected-fg);
+  background: var(--zw-selected-fg);
+}
+
+.item[aria-current="true"] .switch[aria-checked="true"]::before,
+.item:has(.item-link[aria-current="page"]) .switch[aria-checked="true"]::before {
+  background: var(--md-sys-color-primary-container);
 }
 
 .switch[aria-checked="true"]::before {
@@ -1296,8 +1304,7 @@ button.item:active::after {
   cursor: progress;
 }
 
-/* —— 筛选条（M3 filter chip） ——
-   窄屏上一行排不下就横向滑动，不折成两三行吃掉首屏。 */
+/* —— 筛选芯片 —— */
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -1338,19 +1345,22 @@ button.item:active::after {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: var(--zw-space-03);
+  gap: var(--zw-space-02);
   min-height: var(--zw-size-chip);
   padding: 0 var(--zw-space-04);
-  border: var(--zw-border-width) solid var(--md-sys-color-outline);
-  border-radius: var(--md-sys-shape-corner-small);
+  border: var(--zw-border-width) solid transparent;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
-  font-weight: var(--md-sys-typescale-weight-medium);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
   white-space: nowrap;
+  transition:
+    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
+    color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
 }
 
-/* 触屏上把 32px 的芯片命中区补到 48px。 */
 .chip::before {
   content: "";
   position: absolute;
@@ -1365,9 +1375,8 @@ button.item:active::after {
 }
 
 .chip[aria-pressed="true"] {
-  border-color: transparent;
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
 }
 
 .chip[aria-pressed="true"] svg {
@@ -1378,13 +1387,20 @@ button.item:active::after {
   font-variant-numeric: tabular-nums;
 }
 
-/* —— 连接按钮组（M3E connected button group，单选） ——
-   原生单选框承担语义与方向键；选中项从内侧小圆角变成全圆角。 */
+.chip[aria-pressed="true"] .chip-count {
+  color: inherit;
+  opacity: 0.8;
+}
+
+/* —— 连接按钮组 —— */
 .segmented {
   display: inline-flex;
   flex-wrap: wrap;
   gap: var(--zw-space-01);
   min-width: 0;
+  padding: var(--zw-space-01);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
 }
 
 .segment {
@@ -1394,26 +1410,14 @@ button.item:active::after {
   align-items: center;
   justify-content: center;
   gap: var(--zw-space-02);
-  min-height: var(--zw-size-control);
+  min-height: calc(var(--zw-size-control) - var(--zw-space-02));
   padding: 0 var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-small);
-  background: var(--md-sys-color-surface-container-highest);
+  border-radius: var(--md-sys-shape-corner-full);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-medium);
   cursor: pointer;
-  transition: border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
-}
-
-.segment:first-child {
-  border-top-left-radius: var(--md-sys-shape-corner-full);
-  border-bottom-left-radius: var(--md-sys-shape-corner-full);
-}
-
-.segment:last-child {
-  border-top-right-radius: var(--md-sys-shape-corner-full);
-  border-bottom-right-radius: var(--md-sys-shape-corner-full);
 }
 
 .segment input {
@@ -1425,10 +1429,10 @@ button.item:active::after {
 }
 
 .segment:has(input:checked) {
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
   font-weight: var(--md-sys-typescale-weight-emphasized);
+  box-shadow: var(--md-sys-elevation-level2);
 }
 
 .segment:has(input:focus-visible) {
@@ -1453,9 +1457,7 @@ button.item:active::after {
   }
 }
 
-/* —— 文本框 ——
-   常驻标签保障放大和自动填充时可读（可用性优先）；
-   描边取 outline，满足非文本 3:1；聚焦时描边加粗并换成 primary。 */
+/* —— 文本框：填充式 —— */
 .field {
   display: flex;
   flex-direction: column;
@@ -1467,10 +1469,6 @@ button.item:active::after {
   color: var(--md-sys-color-on-surface);
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
-}
-
-.field-label code {
   font-weight: var(--md-sys-typescale-weight-emphasized);
 }
 
@@ -1502,15 +1500,16 @@ button.item:active::after {
   width: 100%;
   min-height: var(--zw-size-control);
   padding: var(--zw-space-03) var(--zw-space-04);
-  border: var(--zw-border-width) solid var(--md-sys-color-outline);
-  border-radius: var(--md-sys-shape-corner-medium);
-  /* M3 描边文本框不填色，透出所在容器；深色下不会出现一块纯黑。 */
-  background: transparent;
+  border: var(--zw-border-width) solid transparent;
+  border-radius: var(--zw-radius-field);
+  background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
-  /* 16px 起：iOS Safari 聚焦小于 16px 的输入框会整页放大。 */
   font-size: var(--md-sys-typescale-body-large-size);
   line-height: var(--zw-body-line);
-  transition: border-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+  transition:
+    background-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
+    border-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
+    outline-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
 }
 
 .input.mono,
@@ -1528,7 +1527,7 @@ button.item:active::after {
   .input:hover:not(:focus, :disabled),
   .textarea:hover:not(:focus, :disabled),
   .select select:hover:not(:focus, :disabled) {
-    border-color: var(--md-sys-color-on-surface);
+    background: var(--md-sys-color-surface-container-highest);
   }
 }
 
@@ -1538,6 +1537,7 @@ button.item:active::after {
   border-color: var(--md-sys-color-primary);
   outline: var(--zw-border-width-strong) solid var(--md-sys-color-primary);
   outline-offset: calc(var(--zw-border-width) * -1);
+  background: var(--md-sys-color-surface-container-lowest);
 }
 
 .input[aria-invalid="true"],
@@ -1589,7 +1589,6 @@ button.item:active::after {
   translate: 0 -50%;
 }
 
-/* 口令框右侧的「显示 / 隐藏」。 */
 .reveal {
   position: relative;
 }
@@ -1605,7 +1604,7 @@ button.item:active::after {
   translate: 0 -50%;
 }
 
-/* —— 搜索框（M3 search bar） —— */
+/* —— 搜索框 —— */
 .search {
   position: relative;
   display: flex;
@@ -1638,6 +1637,7 @@ button.item:active::after {
 
 .search .input:focus {
   border-color: var(--md-sys-color-primary);
+  background: var(--md-sys-color-surface-container-lowest);
 }
 
 .search .input::-webkit-search-cancel-button {
@@ -1651,12 +1651,19 @@ button.item:active::after {
   gap: var(--zw-space-04);
 }
 
-/* —— 选项卡（M3 secondary tabs） —— */
+/* —— 选项卡：药丸分段 —— */
 .tabs {
   display: flex;
+  gap: var(--zw-space-01);
+  padding: var(--zw-space-01);
   overflow-x: auto;
-  border-bottom: var(--zw-border-width) solid var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-high);
   scrollbar-width: none;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
@@ -1666,9 +1673,10 @@ button.item:active::after {
   flex: 1 0 auto;
   align-items: center;
   justify-content: center;
-  gap: var(--zw-space-03);
-  min-height: var(--zw-size-target);
+  gap: var(--zw-space-02);
+  min-height: calc(var(--zw-size-target) - var(--zw-space-02));
   padding: 0 var(--zw-space-05);
+  border-radius: var(--md-sys-shape-corner-full);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-title-small-size);
   line-height: var(--md-sys-typescale-title-small-line-height);
@@ -1676,24 +1684,11 @@ button.item:active::after {
   white-space: nowrap;
 }
 
-.tab::before {
-  content: "";
-  position: absolute;
-  inset: auto var(--zw-space-04) calc(var(--zw-border-width) * -1);
-  height: calc(var(--zw-border-width-strong) + var(--zw-border-width));
-  border-radius: var(--md-sys-shape-corner-full) var(--md-sys-shape-corner-full) 0 0;
-  background: var(--md-sys-color-primary);
-  transform: scaleX(0);
-  transition: transform var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
-}
-
 .tab[aria-selected="true"] {
+  background: var(--md-sys-color-surface-container-lowest);
   color: var(--md-sys-color-on-surface);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-}
-
-.tab[aria-selected="true"]::before {
-  transform: none;
+  box-shadow: var(--md-sys-elevation-level2);
 }
 
 .tab:focus-visible {
@@ -1712,20 +1707,23 @@ button.item:active::after {
   text-align: center;
 }
 
+.tab[aria-selected="true"] .tab-count {
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
 .tabpanel {
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-06);
-  padding-top: var(--zw-space-06);
+  padding-top: var(--zw-space-05);
 }
 
 .tabpanel:focus-visible {
   outline-offset: var(--zw-space-02);
 }
 
-/* —— 群名单编辑器 ——
-   一张名单 = 已选的群（M3E 分段列表）+ 输入框 + 选群入口 + 一句「现在的效果」。
-   群名是主、群号是辅；移除键是 48px 的独立命中区，行本身不可点，避免误删。 */
+/* —— 名单编辑器 —— */
 .picker {
   gap: var(--zw-space-04);
 }
@@ -1765,15 +1763,12 @@ button.item:active::after {
   margin-inline-end: calc(var(--zw-space-03) * -1);
 }
 
-/* 说明文字另起一行：配置项的名字（code）是第一行，这句话是它的注解，不能和计数挤在一起。 */
 .picker .field-label .field-hint {
   display: block;
   margin-top: var(--zw-space-01);
   font-weight: var(--md-sys-typescale-weight-regular);
 }
 
-/* 控件区：输入框与「添加」并排，选群按钮在宽处跟在后面、窄处换到下一行。
-   校验错误写在输入框正下方（所以按钮顶对齐）。 */
 .picker-controls {
   display: flex;
   flex-wrap: wrap;
@@ -1800,7 +1795,6 @@ button.item:active::after {
   flex: none;
 }
 
-/* 名单现在的效果：图标 + 文字，三种语气不只靠颜色区分（对勾 / 信息 / 警示）。 */
 .picker-status {
   display: flex;
   align-items: flex-start;
@@ -1832,12 +1826,11 @@ button.item:active::after {
 
 /* ==================== §6 反馈 ==================== */
 
-/* 状态标签：点 + 字，永远带文字（颜色不是唯一线索）。 */
 .status {
   display: inline-flex;
   align-items: center;
   gap: var(--zw-space-02);
-  min-height: calc(var(--zw-size-chip) - var(--zw-space-03));
+  min-height: calc(var(--zw-size-chip) - var(--zw-space-02));
   padding: 0 var(--zw-space-03);
   border-radius: var(--md-sys-shape-corner-full);
   background: var(--md-sys-color-surface-container-highest);
@@ -1871,10 +1864,10 @@ button.item:active::after {
   color: var(--md-sys-color-on-error-container);
 }
 
-/* —— 提示条（M3 snackbar） —— */
+/* —— 提示条 —— */
 .snackbar-host {
   position: fixed;
-  inset: auto 0 calc(var(--zw-navbar-height) + var(--zw-safe-bottom) + var(--zw-space-04));
+  inset: auto 0 calc(var(--zw-navbar-height) + var(--zw-safe-bottom) + var(--zw-space-03));
   z-index: 40;
   display: flex;
   justify-content: center;
@@ -1895,13 +1888,14 @@ button.item:active::after {
   width: min(100%, 36rem);
   min-height: var(--zw-size-control);
   padding: var(--zw-space-02) var(--zw-space-02) var(--zw-space-02) var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-large);
+  border-radius: var(--md-sys-shape-corner-large-increased);
   background: var(--md-sys-color-inverse-surface);
   color: var(--md-sys-color-inverse-on-surface);
   box-shadow: var(--md-sys-elevation-level3);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
-  pointer-events: auto;
+  /* 提示条不接住它下面的点击：它是过场，不该让页面短暂「点不动」。 */
+  pointer-events: none;
   animation: snackbar-in var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
@@ -1911,11 +1905,15 @@ button.item:active::after {
   padding-block: var(--zw-space-03);
 }
 
+.snackbar .btn,
+.snackbar .icon-btn {
+  pointer-events: auto;
+}
+
 .snackbar .icon-btn {
   color: var(--md-sys-color-inverse-on-surface);
 }
 
-/* 提示条上的动作（撤销）：M3 用 inverse-primary，在 inverse-surface 上自带足够对比度。 */
 .snackbar .snackbar-action {
   --_btn-fg: var(--md-sys-color-inverse-primary);
   padding-inline: var(--zw-space-04);
@@ -1928,14 +1926,13 @@ button.item:active::after {
   }
 }
 
-/* —— 对话框（原生 dialog：焦点陷阱、Esc、返回键由浏览器负责） ——
-   带图标的（危险操作）图标与标题居中，M3 基础对话框的做法；正文与按钮的位置不变。 */
+/* —— 对话框 —— */
 .dialog {
   width: min(calc(100vw - var(--zw-space-07)), 35rem);
   max-height: calc(100dvh - var(--zw-space-09));
   padding: var(--zw-space-06);
   border: 0;
-  border-radius: var(--md-sys-shape-corner-extra-large);
+  border-radius: var(--zw-radius-hero);
   background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
   box-shadow: var(--md-sys-elevation-level3);
@@ -1949,12 +1946,12 @@ button.item:active::after {
 }
 
 .dialog::backdrop {
-  background: color-mix(in srgb, var(--md-sys-color-scrim) 32%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 42%, transparent);
 }
 
 .dialog-icon {
   align-self: center;
-  color: var(--md-sys-color-secondary);
+  color: var(--md-sys-color-primary);
 }
 
 .dialog-icon.danger {
@@ -1974,7 +1971,7 @@ button.item:active::after {
 .dialog-title {
   font-size: var(--md-sys-typescale-headline-small-size);
   line-height: var(--md-sys-typescale-headline-small-line-height);
-  font-weight: var(--md-sys-typescale-weight-medium);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
 }
 
 .dialog-body {
@@ -1991,9 +1988,7 @@ button.item:active::after {
   }
 }
 
-/* —— 选群面板 ——
-   窄屏是全屏对话框（M3 full-screen dialog：搜索与列表都有整屏的地方，底部是拇指够得着的动作条），
-   宽屏收成居中的基础对话框。列表自己滚，头部与动作条不动。 */
+/* —— 选群面板 —— */
 .sheet {
   width: min(calc(100vw - var(--zw-space-07)), 36rem);
   height: min(calc(100dvh - var(--zw-space-09)), 46rem);
@@ -2028,7 +2023,6 @@ button.item:active::after {
   flex: none;
 }
 
-/* 对话框底色已是 surface-container-high，搜索框要再亮一档才分得出来。 */
 .dialog .search .input {
   background: var(--md-sys-color-surface-container-highest);
 }
@@ -2065,7 +2059,7 @@ button.item:active::after {
 
 .sheet-foot {
   padding: var(--zw-space-04) var(--zw-space-06) var(--zw-space-05);
-  border-top: var(--zw-border-width) solid var(--md-sys-color-outline-variant);
+  border-top: var(--zw-border-width) solid var(--zw-hairline);
 }
 
 .sheet-note {
@@ -2110,18 +2104,17 @@ button.item:active::after {
   }
 }
 
-/* 一行一个群，整行是勾选框的命中区；选中的行换 secondary-container，勾选框本身也在变——不只靠颜色。 */
 .option {
   cursor: pointer;
 }
 
 .option:has(.check:checked) {
-  --_item-bg: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  --_item-bg: var(--md-sys-color-primary-container);
+  color: var(--zw-selected-fg);
 }
 
 .option:has(.check:checked) .item-sub {
-  color: var(--md-sys-color-on-secondary-container);
+  color: var(--zw-selected-fg);
 }
 
 .option:has(.check:focus-visible),
@@ -2160,7 +2153,7 @@ button.item:active::after {
   opacity: var(--md-sys-state-pressed-opacity);
 }
 
-/* —— 加载占位（M3E 表面层级） —— */
+/* —— 加载占位 —— */
 .skeleton {
   display: flex;
   flex-direction: column;
@@ -2169,7 +2162,7 @@ button.item:active::after {
 
 .skeleton-block {
   height: var(--zw-size-list-item);
-  border-radius: var(--md-sys-shape-corner-large-increased);
+  border-radius: var(--zw-radius-card);
   background: linear-gradient(
     90deg,
     var(--md-sys-color-surface-container) 30%,
@@ -2216,7 +2209,6 @@ button.item:active::after {
   text-wrap: balance;
 }
 
-/* 一枚七瓣曲奇托着图标：与品牌标记同一个形状。 */
 .empty-mark {
   display: grid;
   place-items: center;
@@ -2233,7 +2225,7 @@ button.item:active::after {
   justify-self: stretch;
   z-index: -1;
   background: var(--md-sys-color-primary-container);
-  mask: url("/icon-monochrome.svg") center / 150% no-repeat;
+  mask: url("/icon-monochrome.svg") center / 132% no-repeat;
 }
 
 .empty-mark .i {
@@ -2260,27 +2252,54 @@ button.item:active::after {
 
 /* ==================== §7 各页 ==================== */
 
-/* —— 总览 ——
-   运行卡是全页唯一的强调表面（M3E：一个英雄、其余安静）；
-   交错的大/超大圆角让它一眼可辨，而不是靠更多颜色。 */
+/* —— 总览 —— */
 .overview {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--zw-space-07) var(--zw-space-06);
 }
 
+/* 全页唯一的深色块：运行卡。深底浅字是刻意的，它在浅色界面里像一张
+   被放上桌的黑色卡片，也是整个界面的视觉锚点。 */
 .hero {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-03);
+  gap: var(--zw-space-02);
   overflow: hidden;
   padding: var(--zw-space-06);
-  border-radius: var(--md-sys-shape-corner-extra-extra-large) var(--md-sys-shape-corner-large-increased)
-    var(--md-sys-shape-corner-extra-extra-large) var(--md-sys-shape-corner-large-increased);
-  background: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
+  border-radius: var(--zw-radius-hero);
+  background-color: var(--zw-hero-a);
+  background-image: linear-gradient(145deg, var(--zw-hero-a), var(--zw-hero-b));
+  color: var(--zw-hero-fg);
   isolation: isolate;
+}
+
+/* 两圈装饰：不承载信息，只是让深色块不是一块死板的矩形。 */
+.hero::before,
+.hero::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  border-radius: var(--md-sys-shape-corner-full);
+  border: var(--zw-border-width) solid color-mix(in srgb, var(--zw-hero-fg) 16%, transparent);
+  pointer-events: none;
+}
+
+.hero::before {
+  top: calc(var(--zw-space-10) * -2);
+  right: calc(var(--zw-space-10) * -1.4);
+  width: calc(var(--zw-space-10) * 4.5);
+  height: calc(var(--zw-space-10) * 4.5);
+}
+
+.hero::after {
+  right: calc(var(--zw-space-10) * 0.4);
+  bottom: calc(var(--zw-space-10) * -2.2);
+  width: calc(var(--zw-space-10) * 3.2);
+  height: calc(var(--zw-space-10) * 3.2);
+  background: color-mix(in srgb, var(--zw-hero-fg) 5%, transparent);
+  border-color: transparent;
 }
 
 .hero-top {
@@ -2289,28 +2308,21 @@ button.item:active::after {
   align-items: center;
   justify-content: space-between;
   gap: var(--zw-space-03);
-  font-size: var(--md-sys-typescale-label-large-size);
-  line-height: var(--md-sys-typescale-label-large-line-height);
-  font-weight: var(--md-sys-typescale-weight-medium);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  letter-spacing: 0.06em;
+  color: var(--zw-hero-dim);
 }
 
-.hero-label {
-  margin-top: var(--zw-space-04);
-  font-size: var(--md-sys-typescale-title-medium-size);
-  line-height: var(--md-sys-typescale-title-medium-line-height);
-  font-weight: var(--md-sys-typescale-weight-medium);
+.hero .status-success {
+  background: color-mix(in srgb, var(--zw-hero-fg) 16%, transparent);
+  color: var(--zw-hero-fg);
+  letter-spacing: var(--md-sys-typescale-tracking-label);
 }
 
-.hero-value {
-  font-size: var(--md-sys-typescale-display-small-size);
-  line-height: var(--md-sys-typescale-display-small-line-height);
-  font-weight: var(--zw-weight-heading);
-  font-variant-numeric: tabular-nums;
-  text-wrap: balance;
-}
-
-/* 「运行中」的点缓缓明灭：它是活的。减少动态时静止。 */
 .hero .status-success::before {
+  background: var(--zw-accent);
   animation: breathe calc(var(--md-sys-motion-loop-duration) * 1.5) ease-in-out infinite;
 }
 
@@ -2320,30 +2332,59 @@ button.item:active::after {
   }
 }
 
+.hero-label {
+  margin-top: var(--zw-space-05);
+  color: var(--zw-hero-dim);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-regular);
+  letter-spacing: 0.02em;
+}
+
+.hero-value {
+  font-size: var(--zw-type-hero);
+  line-height: 1.04;
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  text-wrap: balance;
+}
+
 .hero-note {
-  font-size: var(--md-sys-typescale-body-medium-size);
-  line-height: var(--zw-body-medium-line);
+  color: var(--zw-hero-dim);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
 .hero .actions {
-  padding-top: var(--zw-space-04);
+  padding-top: var(--zw-space-05);
+}
+
+.hero .btn-filled {
+  --_btn-bg: var(--zw-on-hero-fill);
+  --_btn-fg: var(--zw-on-hero-ink);
+  box-shadow: none;
 }
 
 .hero .btn-outlined {
-  border-color: var(--md-sys-color-on-primary-container);
-  --_btn-fg: var(--md-sys-color-on-primary-container);
+  border-color: color-mix(in srgb, var(--zw-hero-fg) 58%, transparent);
+  --_btn-fg: var(--zw-hero-fg);
 }
 
-/* 背景里那枚放大的标记：装饰，辅助技术看不到。 */
+.hero .btn:focus-visible {
+  outline-color: var(--zw-hero-fg);
+}
+
+/* 背景里那枚放大的环：装饰，辅助技术看不到。 */
 .hero-art {
   position: absolute;
-  right: calc(var(--zw-space-09) * -1);
-  bottom: calc(var(--zw-space-09) * -1);
+  right: calc(var(--zw-space-09) * -0.6);
+  bottom: calc(var(--zw-space-09) * -0.8);
   z-index: -1;
-  width: calc(var(--zw-space-10) * 4);
-  height: calc(var(--zw-space-10) * 4);
-  background: var(--md-sys-color-on-primary-container);
-  opacity: 0.08;
+  width: calc(var(--zw-space-10) * 3.6);
+  height: calc(var(--zw-space-10) * 3.6);
+  background: var(--zw-hero-fg);
+  opacity: 0.07;
   mask: url("/icon-monochrome.svg") center / contain no-repeat;
 }
 
@@ -2353,31 +2394,14 @@ button.item:active::after {
   gap: var(--zw-group-gap);
 }
 
-/* 四格读数合成一块：外沿四角大圆角、里侧小圆角，与分段列表同一套形状语言。 */
 .stat {
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-04);
   min-width: 0;
   padding: var(--zw-space-05);
-  border-radius: var(--md-sys-shape-corner-small);
-  background: var(--md-sys-color-surface-container);
-}
-
-.stat:nth-child(1) {
-  border-top-left-radius: var(--md-sys-shape-corner-extra-large);
-}
-
-.stat:nth-child(2) {
-  border-top-right-radius: var(--md-sys-shape-corner-extra-large);
-}
-
-.stat:nth-child(3) {
-  border-bottom-left-radius: var(--md-sys-shape-corner-extra-large);
-}
-
-.stat:nth-child(4) {
-  border-bottom-right-radius: var(--md-sys-shape-corner-extra-large);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--md-sys-color-surface-container-low);
 }
 
 .stat-label {
@@ -2397,8 +2421,8 @@ button.item:active::after {
   width: var(--zw-size-chip);
   height: var(--zw-size-chip);
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
 }
 
 .stat-icon svg {
@@ -2411,13 +2435,13 @@ button.item:active::after {
   flex-wrap: wrap;
   align-items: baseline;
   gap: var(--zw-space-02);
-  font-size: var(--md-sys-typescale-headline-medium-size);
-  line-height: var(--md-sys-typescale-headline-medium-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
+  font-size: var(--zw-type-stat);
+  line-height: 2.25rem;
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 
-/* 全页的强调只有运行卡一处；插件占比这一格靠图标底与占比条带一点第三色。 */
 .stat-plugins .stat-icon {
   background: var(--md-sys-color-tertiary-container);
   color: var(--md-sys-color-on-tertiary-container);
@@ -2428,16 +2452,16 @@ button.item:active::after {
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
   font-weight: var(--md-sys-typescale-weight-regular);
+  letter-spacing: 0;
 }
 
-/* 占比条（<meter>）：启用了几个、一共几个。轨道与填充只取令牌色。 */
 .meter {
   appearance: none;
   width: 100%;
   height: var(--zw-space-03);
   border: 0;
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--md-sys-color-surface-container-high);
   overflow: hidden;
 }
 
@@ -2445,66 +2469,43 @@ button.item:active::after {
   height: var(--zw-space-03);
   border: 0;
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--md-sys-color-surface-container-high);
 }
 
 .meter::-webkit-meter-optimum-value,
 .meter::-webkit-meter-suboptimum-value,
 .meter::-webkit-meter-even-less-good-value {
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-tertiary);
+  background: var(--md-sys-color-primary);
 }
 
 .meter::-moz-meter-bar {
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-tertiary);
+  background: var(--md-sys-color-primary);
 }
 
 @media (min-width: 840px) {
-  .overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .overview > .section-wide {
-    grid-column: auto;
-  }
-
-  .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .overview > .section:nth-child(2) {
-    grid-column: 1;
-    grid-row: 2;
-  }
-
-  .overview > .section:nth-child(3) {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .overview > .section:nth-child(4) {
-    grid-column: 2;
-    grid-row: 2;
-  }
-
   .hero {
     padding: var(--zw-space-07);
   }
 
   .hero-value {
-    font-size: var(--md-sys-typescale-display-medium-size);
-    line-height: var(--md-sys-typescale-display-medium-line-height);
+    font-size: var(--zw-type-hero-wide);
+  }
+
+  .stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@media (min-width: 1200px) {
-  .overview {
-    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+/* 读数够宽时排成一行四格：总览在桌面上是「一条运行带 + 一条读数带」。 */
+@media (min-width: 1000px) {
+  .stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
-/* —— 插件：M3E 列表-详情 canonical layout —— */
+/* —— 插件：列表-详情 —— */
 .split {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2525,7 +2526,6 @@ button.item:active::after {
     grid-template-columns: var(--zw-list-pane) minmax(0, 1fr);
   }
 
-  /* 详情栏钉在视口内自己滚：点列表底部那一项，不必再翻回页首看详情。 */
   .split[data-dual] .split-detail {
     position: sticky;
     top: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-03));
@@ -2537,7 +2537,6 @@ button.item:active::after {
   }
 }
 
-/* 列表按分类分块，每块一个小标题；分块之间留出呼吸，块内仍是 2px 缝的分段列表。 */
 .plugin-list {
   display: flex;
   flex-direction: column;
@@ -2559,14 +2558,13 @@ button.item:active::after {
   font-size: var(--md-sys-typescale-title-small-size);
   line-height: var(--md-sys-typescale-title-small-line-height);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-  letter-spacing: 0.04em;
+  letter-spacing: var(--md-sys-typescale-tracking-label);
 }
 
 .list-title .num {
   font-weight: var(--md-sys-typescale-weight-regular);
 }
 
-/* 列表里的说明最多两行，完整的在详情里；一条长说明不该把整行撑成一篇短文。 */
 .split-list .item-sub {
   display: -webkit-box;
   overflow: hidden;
@@ -2576,7 +2574,7 @@ button.item:active::after {
 }
 
 .split-list .item {
-  padding-block: var(--zw-space-04);
+  padding-block: var(--zw-space-03);
 }
 
 .detail-status {
@@ -2603,7 +2601,8 @@ button.item:active::after {
   gap: var(--zw-space-02) var(--zw-space-03);
   font-size: var(--md-sys-typescale-headline-small-size);
   line-height: var(--md-sys-typescale-headline-small-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: -0.02em;
 }
 
 .detail-meta {
@@ -2613,16 +2612,11 @@ button.item:active::after {
   gap: var(--zw-space-02) var(--zw-space-03);
 }
 
-/* 「启用」这一行：卡片里只有一个开关，行高给足，整行读成一句话。 */
 .card-switch {
   padding-block: var(--zw-space-04);
 }
 
-/* —— 配置表单 ——
-   一组配置项 = 一块 M3E 分段列表：每项是一格色调底的「设置行」，行间 2px 缝，
-   块两端大圆角。名字（键）与说明各占一行；容器够宽时改成「左说明、右控件」，
-   窄处上下叠放。判断看表单自己的宽度（容器查询），不看视口：
-   宽屏上详情栏只有半边，手机上则占满，两者要的版式不同。 */
+/* —— 配置表单 —— */
 .config {
   container: config / inline-size;
   display: flex;
@@ -2659,34 +2653,23 @@ button.item:active::after {
 }
 
 .setting {
-  --_setting-bg: var(--md-sys-color-surface-container);
+  --_setting-bg: var(--md-sys-color-surface-container-low);
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-04);
   min-width: 0;
   padding: var(--zw-space-04) var(--zw-space-05);
-  border-radius: var(--zw-group-inner);
+  border-radius: var(--zw-radius-row);
   background: var(--_setting-bg);
   transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
-.setting:first-of-type {
-  border-top-left-radius: var(--zw-group-outer);
-  border-top-right-radius: var(--zw-group-outer);
-}
-
-.setting:last-of-type {
-  border-bottom-left-radius: var(--zw-group-outer);
-  border-bottom-right-radius: var(--zw-group-outer);
-}
-
 .setting:focus-within {
-  --_setting-bg: var(--md-sys-color-surface-container-high);
+  --_setting-bg: var(--md-sys-color-surface-container);
 }
 
-/* 设置行里嵌的名单：行底色比设置行高一档，聚焦时设置行抬一档，名单行仍高出一档。 */
 .setting .item {
-  --_item-bg: var(--md-sys-color-surface-container-highest);
+  --_item-bg: var(--md-sys-color-surface-container-high);
 }
 
 .field-text {
@@ -2710,7 +2693,6 @@ button.item:active::after {
     gap: var(--zw-space-03) var(--zw-space-07);
   }
 
-  /* 校验错误写在控件正下方，不挤到说明那一栏。 */
   .setting[data-row] > .field-error,
   .setting[data-row] > .select > .field-error {
     grid-column: 2;
@@ -2721,7 +2703,6 @@ button.item:active::after {
   }
 }
 
-/* 布尔项一行：标签在左、开关在右（与系统设置同形）。 */
 .toggle-row {
   display: flex;
   align-items: center;
@@ -2772,18 +2753,8 @@ button.item:active::after {
 }
 
 .memory {
-  border-radius: var(--zw-group-inner);
-  background: var(--md-sys-color-surface-container);
-}
-
-.memory:first-child {
-  border-top-left-radius: var(--zw-group-outer);
-  border-top-right-radius: var(--zw-group-outer);
-}
-
-.memory:last-child {
-  border-bottom-left-radius: var(--zw-group-outer);
-  border-bottom-right-radius: var(--zw-group-outer);
+  border-radius: var(--zw-radius-row);
+  background: var(--md-sys-color-surface-container-low);
 }
 
 .memory > summary {
@@ -2818,10 +2789,6 @@ button.item:active::after {
   padding: 0 var(--zw-space-05) var(--zw-space-05);
 }
 
-.memory .item {
-  --_item-bg: var(--md-sys-color-surface-container-high);
-}
-
 .stickers {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--zw-size-sticker), 1fr));
@@ -2839,7 +2806,7 @@ button.item:active::after {
   min-width: 0;
   padding: var(--zw-space-03);
   border-radius: var(--md-sys-shape-corner-large-increased);
-  background: var(--md-sys-color-surface-container);
+  background: var(--md-sys-color-surface-container-low);
 }
 
 .sticker-img {
@@ -2849,7 +2816,7 @@ button.item:active::after {
   aspect-ratio: 1;
   object-fit: contain;
   border-radius: var(--md-sys-shape-corner-medium);
-  background: var(--md-sys-color-surface-container-highest);
+  background: var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-small-size);
   line-height: var(--md-sys-typescale-body-small-line-height);
@@ -2878,9 +2845,9 @@ button.item:active::after {
   line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
-/* —— 日志：M3E 容器上的等宽数据行；级别始终带文字。 ——
-   每行先说「几点、什么级别、谁说的」，再说正文：窄屏两行，宽屏一行四列。
-   警告与错误除了级别字牌，行首还有一道色条——扫读时一眼能跳到它们。 */
+/* —— 日志：深色终端台 ——
+   明暗两档都是深底浅字：日志是「机器说话」的地方，和纸面正文分开。
+   级别始终带文字；警告与错误另有一道行首色条。 */
 .logs {
   display: flex;
   flex-direction: column;
@@ -2892,7 +2859,6 @@ button.item:active::after {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: var(--zw-space-02) var(--zw-space-05);
-  padding-inline: var(--zw-space-02);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-small-size);
   line-height: var(--md-sys-typescale-body-small-line-height);
@@ -2903,19 +2869,19 @@ button.item:active::after {
   position: relative;
 }
 
-/* 日志区的高度 = 视口减去外壳与页头、工具栏：一屏里既看得到工具栏也看得到最新一行。
-   紧凑宽度下工具栏折成三行，所以扣得更多。 */
 .log {
   container: log / inline-size;
   height: max(18rem, calc(100dvh - var(--zw-topbar-height) - var(--zw-navbar-height) - var(--zw-safe-top) - var(--zw-safe-bottom) - 25rem));
   overflow: auto;
   overscroll-behavior: contain;
-  padding: var(--zw-space-03) 0;
-  border-radius: var(--md-sys-shape-corner-extra-large);
-  background: var(--md-sys-color-surface-container-low);
+  padding: var(--zw-space-02) 0;
+  border-radius: var(--zw-radius-card);
+  background: var(--zw-log-bg);
+  color: var(--zw-log-fg);
   font-family: var(--md-ref-typeface-mono);
   font-size: var(--zw-code-size);
   line-height: var(--zw-code-line-height);
+  scrollbar-color: var(--zw-log-line) transparent;
   scrollbar-width: thin;
 }
 
@@ -2942,15 +2908,15 @@ button.item:active::after {
 
 .log-time,
 .log-target {
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--zw-log-dim);
 }
 
 .log-level {
   min-width: 4.5ch;
   padding: 0 var(--zw-space-02);
   border-radius: var(--md-sys-shape-corner-extra-small);
-  background: var(--md-sys-color-surface-container-highest);
-  color: var(--md-sys-color-on-surface-variant);
+  background: var(--zw-log-line);
+  color: var(--zw-log-fg);
   font-size: var(--md-sys-typescale-label-medium-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-emphasized);
@@ -2979,7 +2945,7 @@ button.item:active::after {
 
 .log-row[data-level="erro"] {
   border-inline-start-color: var(--md-sys-color-error);
-  background: color-mix(in srgb, var(--md-sys-color-error) 7%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-error) 14%, transparent);
 }
 
 .log-row[data-level="erro"] .log-level {
@@ -2988,12 +2954,10 @@ button.item:active::after {
 }
 
 .log-row[data-level="info"] .log-level {
-  background: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 40%, var(--zw-log-bg));
+  color: var(--zw-log-fg);
 }
 
-/* 版式看日志框自己的宽度：总览里它只是半栏，手机上是整屏，不能按视口定。
-   够宽时一行四列（时间 / 级别 / 来源 / 正文）；窄时来源与正文各占一行。 */
 @container log (min-width: 44rem) {
   .log-row {
     grid-template-columns: 8ch 6ch minmax(8ch, 16ch) minmax(0, 1fr);
@@ -3007,12 +2971,11 @@ button.item:active::after {
 
 .log-empty {
   padding: var(--zw-space-06) var(--zw-space-05);
-  color: var(--md-sys-color-on-surface-variant);
+  color: var(--zw-log-dim);
   font-family: var(--md-ref-typeface-plain);
   text-align: center;
 }
 
-/* 「回到最新」：暂停时浮在日志区底部（M3E 扩展 FAB 的形状）。 */
 .jump {
   position: absolute;
   bottom: var(--zw-space-05);
@@ -3043,18 +3006,8 @@ button.item:active::after {
   flex-direction: column;
   gap: var(--zw-space-05);
   padding: var(--zw-space-05);
-  border-radius: var(--zw-group-inner);
-  background: var(--md-sys-color-surface-container);
-}
-
-.bot:first-child {
-  border-top-left-radius: var(--zw-group-outer);
-  border-top-right-radius: var(--zw-group-outer);
-}
-
-.bot:last-child {
-  border-bottom-left-radius: var(--zw-group-outer);
-  border-bottom-right-radius: var(--zw-group-outer);
+  border-radius: var(--zw-radius-row);
+  background: var(--md-sys-color-surface-container-low);
 }
 
 .bot-head {
@@ -3110,7 +3063,7 @@ button.item:active::after {
   gap: var(--zw-space-05);
   width: min(100%, 26rem);
   padding: var(--zw-space-07) var(--zw-space-06);
-  border-radius: var(--md-sys-shape-corner-extra-large-increased);
+  border-radius: var(--zw-radius-hero);
   background: var(--md-sys-color-surface-container-low);
 }
 
@@ -3118,13 +3071,14 @@ button.item:active::after {
   width: var(--zw-size-tile-large);
   height: var(--zw-size-tile-large);
   background: var(--md-sys-color-primary);
-  mask: url("/icon-monochrome.svg") center / 150% no-repeat;
+  mask: url("/icon-monochrome.svg") center / 136% no-repeat;
 }
 
 .lock-title {
   font-size: var(--md-sys-typescale-headline-small-size);
   line-height: var(--md-sys-typescale-headline-small-line-height);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: -0.02em;
 }
 
 .lock-card .btn {
@@ -3137,7 +3091,6 @@ button.item:active::after {
 
 /* ==================== §8 偏好 ==================== */
 
-/* 减少动态效果：令牌里已把位移时长归零；这里再停掉循环动画与入场。 */
 @media (prefers-reduced-motion: reduce) {
   .page[data-enter],
   .snackbar,
@@ -3154,7 +3107,7 @@ button.item:active::after {
   }
 }
 
-/* 强制色（Windows 高对比度）：交给系统色，只补回被背景色表达的状态。 */
+/* 强制色：交给系统色，只补回被背景色表达的状态。 */
 @media (forced-colors: active) {
   .switch,
   .chip,
@@ -3176,7 +3129,7 @@ button.item:active::after {
   .segment:has(input:checked),
   .option:has(.check:checked),
   .nav-item[aria-current="page"],
-  .tab[aria-selected="true"]::before {
+  .tab[aria-selected="true"] {
     background: Highlight;
     color: HighlightText;
     forced-color-adjust: none;
