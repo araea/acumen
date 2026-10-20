@@ -431,6 +431,8 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
         config: oai.chat.clone(),
         tools: Some(super::logic::room_tools(&oai.chat)),
         trigger: None,
+        // 定时任务只替号主排（见 `agent::schedule`），客人排的提醒不走这里。
+        authority: super::chat::Authority::of(job.owner, ""),
     });
     let started = std::time::Instant::now();
     let reply = tokio::time::timeout(

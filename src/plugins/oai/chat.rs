@@ -19,6 +19,7 @@
 //! - [`history`]：翻本机记录库——窗口之外的旧话，按人、按词、按时间段；
 //! - [`trigger`]：房间这一轮是谁在问、引用了谁、@了谁；
 //! - [`actions`]：`satori_action` 能做的事的解析与校验；
+//! - [`moderation`]：管理动作的记账——做过什么、每天还剩几次；
 //! - [`memory`] 长期记忆、[`stickers`] 表情包库、[`identity`] 我在这个群里是谁；
 //! - [`pace`] / [`breath`] / [`tone`]：怎么说出来——换气、断句、别复读；
 //! - [`protocol`]：出站文字里的协议清洗——模型把 `satori_action` 当正文写出来时摘掉它；
@@ -31,6 +32,7 @@ pub(crate) mod history;
 pub(crate) mod identity;
 pub(crate) mod long_text;
 pub(crate) mod memory;
+pub(crate) mod moderation;
 pub(crate) mod pace;
 pub(crate) mod protocol;
 pub(crate) mod session;
@@ -63,10 +65,19 @@ pub(crate) const LOG_TARGET: &str = "Plugin/OAI/Chat";
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub(crate) struct ChatConfig {
-    /// 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片）的群号。
-    ///
-    /// 这些是会被全群看见的写操作，默认一个群都不放行，要用就按群单独列出来。
+    /// 不看账号身份、直接开放群管理动作（踢人、禁言、撤回别人的消息、全员禁言、改群名、
+    /// 设精华、改他人名片）的群号。QQ 那边没给权限的照样会被服务端驳回。
     pub management_groups: Vec<String>,
+    /// 账号在群里是群主或管理员时自动开放管理动作。
+    ///
+    /// 号主把这个号设成管理员，本来就是要它帮着管群；再要逐群抄一遍群号是多此一举。
+    pub management_auto: bool,
+    /// 永远不开放管理动作的群号，压过上面两条。
+    pub management_excluded: Vec<String>,
+    /// 每群每天最多几次管理动作（解禁、取消精华这类收手的不算）；0 不限。
+    ///
+    /// 人格判断失误、或被群友带节奏时，这是兜底：一天之内造成的后果有个上限。
+    pub management_daily: usize,
     /// 一次发言最多几条（模型把一段话写长了，切开也算额度）。
     pub messages_budget: usize,
     /// 一轮最多几次写动作。
@@ -110,6 +121,9 @@ impl Default for ChatConfig {
     fn default() -> Self {
         Self {
             management_groups: Vec::new(),
+            management_auto: true,
+            management_excluded: Vec::new(),
+            management_daily: 20,
             messages_budget: 3,
             actions_budget: 6,
             memo_budget: 3,
@@ -155,6 +169,47 @@ pub(crate) struct ChatEnv<'a> {
     pub trigger: Option<trigger::Trigger>,
     /// 这一轮的群聊现场从哪儿来：搭话读自己的常驻窗口，房间向平台要。
     pub scene: session::Scene,
+    /// 这一轮的管理动作听谁的。
+    pub authority: Authority,
+}
+
+/// 这一轮的管理动作听谁的。
+///
+/// 搭话是自己在群里看着、自己拿主意，群友的话只是它判断的材料；房间是有人点名要它办事，
+/// 这时候「谁在吩咐」就决定了能不能动手——客人一句「把他踢了」不能变成真踢。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Authority {
+    /// 自己拿主意（搭话）。
+    Own,
+    /// 号主，或本群群主、管理员在吩咐。
+    Staff,
+    /// 普通群友在吩咐：管理动作一律不做。
+    Guest,
+}
+
+impl Authority {
+    /// 按吩咐的人认：号主，或在本群是群主、管理员。
+    pub(crate) fn of(owner: bool, role: &str) -> Self {
+        if owner || is_staff(role) {
+            Self::Staff
+        } else {
+            Self::Guest
+        }
+    }
+}
+
+/// 群里的管事身份：群主或管理员。
+pub(crate) fn is_staff(role: &str) -> bool {
+    matches!(role, "owner" | "admin" | "administrator")
+}
+
+/// 这个群开不开放管理动作：`role` 是账号自己在这个群里的身份。
+pub(crate) fn management_open(config: &ChatConfig, group: &str, role: &str) -> bool {
+    if config.management_excluded.iter().any(|id| id == group) {
+        return false;
+    }
+    config.management_groups.iter().any(|id| id == group)
+        || (config.management_auto && is_staff(role))
 }
 
 /// 人格那一层：能力层不碰人格，只在两三处问一句。
@@ -353,4 +408,34 @@ pub(crate) fn plain_text(message: &Message) -> String {
         }
     }
     out.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn management_opens_for_staff_accounts_unless_excluded() {
+        let mut config = ChatConfig::default();
+        assert!(management_open(&config, "1", "admin"));
+        assert!(management_open(&config, "1", "owner"));
+        assert!(!management_open(&config, "1", "member"));
+        assert!(!management_open(&config, "1", ""));
+        config.management_groups = vec!["2".into()];
+        assert!(management_open(&config, "2", "member"));
+        config.management_excluded = vec!["1".into(), "2".into()];
+        assert!(!management_open(&config, "1", "admin"));
+        assert!(!management_open(&config, "2", "member"));
+        config.management_auto = false;
+        assert!(!management_open(&config, "3", "admin"));
+    }
+
+    #[test]
+    fn only_the_owner_and_group_staff_can_direct_management() {
+        assert_eq!(Authority::of(true, ""), Authority::Staff);
+        assert_eq!(Authority::of(false, "admin"), Authority::Staff);
+        assert_eq!(Authority::of(false, "owner"), Authority::Staff);
+        assert_eq!(Authority::of(false, "member"), Authority::Guest);
+        assert_eq!(Authority::of(false, ""), Authority::Guest);
+    }
 }

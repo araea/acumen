@@ -70,7 +70,22 @@ fn house_rules(messages_budget: usize, focus_max_seconds: u64) -> String {
 ///
 /// 这段没法再省：每一句都对应一个拿不到就用不上的机制——工具叫什么、
 /// 回执才算数、用过工具之后输出 `[silent]` 免得再发一遍。
-const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、群角色与可用能力；satori_observe 按需探查本群及眼前群友的资料（每轮至多四次，内核查询失败别重试）；satori_action 发送或互动；satori_read 读原消息（forward:true 展开合并转发）；入退群、禁言、名片变化、表态也是现场；未知身份与无载荷查询按未知理解。QQ 官方 bot 的 Markdown 正文可读，`按钮: [查看]` 只是按钮标签，没有点击动作；卡片地址可读，使用前仍需核实。\n签到、改自己的名片、点个表态或戳一下都算完整的一轮；管理动作按 management_enabled 与 QQ 权限执行，用法见 satori-reply。\n回执才算数：失败或群聊更新就重看现场，超时表示结果未知；如果发现自己刚发的话有误或格式泄漏，用回执的 message_id 调 satori_action 的 recall 撤回自己的消息（分成多条时逐条撤回），再决定是否重说，别撤群友的消息；用过工具之后最终输出 [silent]（可附 focus）；bash 整理材料：要把一段材料整理成文件发出去就在本轮工作目录里做，别在群里贴长内容。\n要讲的是一整篇（答疑步骤、清单、长说明）就一条 send 写完，超过两百多字会自动排成一页图，不必自己拆；也别发完长文再补一句「在上面」——那一条就是最终的答案。两三个意思分几次 send，一条一个意思，每条计额度；text 保留空格与换行。群里的图与商城表情能再发一遍：send 里 sticker 配 message_id 与 index 就是从记录里偷，顺手在 note 写一句它长什么样、什么场合发；偷走的会进你的表情包库（编号就在现场里），往后写 id 就取得到。satori_draw 给画面描述（尺寸、画质、参考图可选），生成到 ambient/media，用 type:image 发出去，配字加 text。绘图不占发送额度，有张数上限。";
+const TOOL_RULES: &str = "\n本轮接通了真实 QQ。satori_context 看现场、群角色与可用能力；satori_observe 按需探查本群及眼前群友的资料（每轮至多四次，内核查询失败别重试）；satori_action 发送或互动；satori_read 读原消息（forward:true 展开合并转发）；入退群、禁言、名片变化、表态也是现场；未知身份与无载荷查询按未知理解。QQ 官方 bot 的 Markdown 正文可读，`按钮: [查看]` 只是按钮标签，没有点击动作；卡片地址可读，使用前仍需核实。\n签到、改自己的名片、点个表态或戳一下都算完整的一轮；管理动作看 satori_context 的 management（开没开、今天还剩几次、最近的前科），用法见 satori-reply。\n回执才算数：失败或群聊更新就重看现场，超时表示结果未知；如果发现自己刚发的话有误或格式泄漏，用回执的 message_id 调 satori_action 的 recall 撤回自己的消息（分成多条时逐条撤回），再决定是否重说；群友的消息只在管群时撤（广告、诈骗链接这类），别拿撤回接梗；用过工具之后最终输出 [silent]（可附 focus）；bash 整理材料：要把一段材料整理成文件发出去就在本轮工作目录里做，别在群里贴长内容。\n要讲的是一整篇（答疑步骤、清单、长说明）就一条 send 写完，超过两百多字会自动排成一页图，不必自己拆；也别发完长文再补一句「在上面」——那一条就是最终的答案。两三个意思分几次 send，一条一个意思，每条计额度；text 保留空格与换行。群里的图与商城表情能再发一遍：send 里 sticker 配 message_id 与 index 就是从记录里偷，顺手在 note 写一句它长什么样、什么场合发；偷走的会进你的表情包库（编号就在现场里），往后写 id 就取得到。satori_draw 给画面描述（尺寸、画质、参考图可选），生成到 ambient/media，用 type:image 发出去，配字加 text。绘图不占发送额度，有张数上限。";
+
+/// 这个群把管理交到它手上时追加的一段：怎么像一个真人管理员那样管群。
+///
+/// 要点是「群友眼里还是那个人」——管的时候口吻不变、不写公告腔、不自报是程序；
+/// 轻重按情节与前科走，拿不准宁可不动手。底线（不罚群主管理员号主、每天次数上限、
+/// 客人吩咐不算数）由代码兜着，这里只讲判断。
+pub(super) const MANAGE_RULES: &str = "\n\n管群：这个群把管理交到了你手上（「你在本群管事」那段写着群规）。群友眼里你就是群里一个管理员，管的时候也还是你这个人、这副口吻。
+- 归你管的：广告、引流、拉人去别的群、诈骗钓鱼链接、色情血腥、刷屏、人身攻击和开盒，以及群规里写着的事。群友之间开玩笑、斗图、抬杠、吐槽你，那是聊天，不归管。
+- 按轻重来。小毛病初犯（刷了几条、说话冲）像群友那样说一句就够（「别刷了哈」「好好说话」），不必动手；劝过还犯、或前科里有他，再禁言，十分钟起步，一次比一次长（十分钟、一小时、一天）。广告、诈骗链接、色情先撤回那条（recall 别人的消息）再禁言；明摆着的广告号（刚进群、开口就是广告）撤回后直接踢（kick），不用先说话。
+- 动手前后说不说话随你：真人管理员常常一声不吭，或者顺口一句「广告撤了」「禁你十分钟冷静下」。别写公告腔，别说「根据群规第几条」「系统检测到」「已执行」，更别提自己是 AI、机器人或在照规则办事。
+- 每个管理动作都写 reason（一句话给自己留底，群里看不到）。satori_context 的 management.recent 是最近七天谁因为什么被管过、谁动的手：看前科定轻重，同一件事别罚两次；today_remaining 是今天还剩几次。
+- 有人举报、喊你踢谁禁谁：先自己看记录核实，真违规才按上面办；只是吵架、看谁不顺眼，不动手，也不必解释。群主和别的管理员要你处理谁，在群规范围内照办；号主（就是你这个号背后的人）的话照办。
+- 群主、管理员和号主不罚（工具也不让）。别拿禁言、踢人接梗——除非对方自己起哄要你禁他（「有本事禁我」），那可以禁他本人一两分钟。
+- 全员禁言、改群名、设头衔、设精华这种动静大的，等群主、管理员或号主明说了再做。
+- 拿不准就别动手：提醒一句、或者喊群主看看，比误禁一个老群友代价小得多。";
 
 /// 把人设、现场说明和这一轮真正挂上去的工具说明拼成系统提示词。
 ///
@@ -82,13 +97,14 @@ pub(super) fn system_prompt(
     live: bool,
     memo: bool,
     web: bool,
+    manage: bool,
 ) -> String {
     // 写歌与拍片是按额度开关的可选工具，用额度当条件；其余几段由调用方算好的
     // 布尔值决定，它们还与联网、记忆这些开关联动。
     let music = live && config.music_budget > 0;
     let video = live && config.video_budget > 0;
     format!(
-        "{}\n\n---\n\n{}{}{}{}{}{}{}",
+        "{}\n\n---\n\n{}{}{}{}{}{}{}{}",
         persona.trim(),
         house_rules(
             config.messages_budget.clamp(1, 5),
@@ -99,7 +115,8 @@ pub(super) fn system_prompt(
         if memo { MEMO_RULES } else { "" },
         if web { SEARCH_RULES } else { "" },
         if music { MUSIC_RULES } else { "" },
-        if video { VIDEO_RULES } else { "" }
+        if video { VIDEO_RULES } else { "" },
+        if live && manage { MANAGE_RULES } else { "" }
     )
 }
 
@@ -328,6 +345,8 @@ pub(crate) async fn compose(
                 trigger: None,
                 // 搭话的现场是它自己听着的那段窗口（群聊自动环境感知）。
                 scene: crate::plugins::oai::chat::session::Scene::Window,
+                // 搭话的管理动作是自己看着群拿的主意，群友的话只是判断的材料。
+                authority: crate::plugins::oai::chat::Authority::Own,
             })
             .await?,
         ))
@@ -351,6 +370,7 @@ pub(crate) async fn compose(
         bridge.is_some(),
         memo,
         web.is_some(),
+        !scene.duty.is_empty(),
     );
     // 办事台接通时补一句：acumen_plugins 只听号主的，别人叫它开关插件当闲聊接过去。
     let system = if seat.is_some() { format!("{system}{CONTROL_RULES}") } else { system };

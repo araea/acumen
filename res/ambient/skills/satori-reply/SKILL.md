@@ -63,7 +63,7 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 | poke | user_id | 点头像戳当前群成员，对方那边弹「戳了你」（不是发表情） |
 | like | user_id，times=1..10 | QQ 资料卡点赞；先检查 `capabilities.unavailable`，结果以 QQ 回执为准 |
 | react | message_id，emoji_id，可选 remove=true | 给一条消息表态，或取消自己的表态；只有群聊能表态 |
-| recall | message_id | 撤回自己发出的消息；能否撤回仍取决于 QQ 时限 |
+| recall | message_id，可选 reason | 撤回自己发出的消息；本群开放管理时也能撤回群友的（写 reason）；能否撤回仍取决于 QQ 时限与权限 |
 | forward | message_ids 和/或 texts 数组 | 合并转发；前者保留真实作者，后者是你自己整理的内容，合计 1–12 节点 |
 
 `send.parts` 的元素：
@@ -190,7 +190,10 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 
 ## 群内新动作
 
-`context.capabilities.environment.self_member` 是 QQ 给的自己在本群的角色、名片等信息；取不到就是未知。`management_enabled` 表示这个群是否开放人格管理动作。管理员角色不等于配置开放，配置开放也不等于 QQ 服务端授权。
+`context.capabilities.environment.self_member` 是 QQ 给的自己在本群的角色、名片等信息；取不到就是未知。
+`context.management` 是管理这一栏：`open` 表示这个群开没开放管理动作（账号是群主或管理员时默认自动开放，配置也能单独开关）；
+开放时还有 `role`（你在本群的身份）、`listens_to`（这一轮听谁的）、`today_remaining`（今天还剩几次，`null` 是不限）和
+`recent`（最近七天的管理记录：时间、动作、对象、时长、理由、谁动的手）。配置开放也不等于 QQ 服务端授权，以回执为准。
 
 这些动作同样放进 `satori_action.request`，所有群目标由工具固定为当前群：
 
@@ -200,13 +203,16 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 | `card` | `card` 修改自己的群名片，空字符串清除；`user_id` 改别人需开放管理 |
 | `title` | `user_id`、`title` 设置头衔，空字符串清除；需管理且 QQ 群主权限 |
 | `essence` | `message_id` 设置精华，`remove:true` 取消；需管理 |
-| `mute` | `user_id`、`duration_seconds` 禁言，0 解禁，上限 30 天；需管理 |
-| `kick` | `user_id` 移出成员，默认允许再次入群；`permanent:true` 拒绝再次加入；需管理 |
-| `mute_all` | `duration_seconds` 全员禁言，0 解除，上限 30 天；需管理 |
+| `mute` | `user_id`、`duration_seconds`、`reason` 禁言，0 解禁，上限 30 天；需管理 |
+| `kick` | `user_id`、`reason` 移出成员，默认允许再次入群；`permanent:true` 拒绝再次加入；需管理 |
+| `recall` | 撤回群友的 `message_id`，写 `reason`；需管理 |
+| `mute_all` | `duration_seconds`、`reason` 全员禁言，0 解除，上限 30 天；需管理 |
 | `rename_group` | `name` 修改群名；需管理 |
 | `react_clear` | `message_id` 清掉自己给这条消息的表态；可给 `emoji_id` 只清一种 |
 
 管理动作留给具体的管理请求和明确的群规则。拿踢人、禁言或修改别人名片接梗，会把一次聊天变成真实的管理后果。工具的 HTTP 成功也可能是内核失败；只认工具最终回执，不自行重试结果未知的写操作。
+工具自己还守着几条：群主、管理员和号主不能被禁言、踢出或撤回消息；每群每天的管理次数有上限（解禁、取消精华不算）；
+房间里只有号主和本群群主、管理员吩咐时才动手。管理动作不受「群聊已更新」限制——刷屏时群一直在动，广告照样该撤。
 
 
 表情回应可以轻轻接话而不再发一句正文。先看 `satori_context` 的能力清单；

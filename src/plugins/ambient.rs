@@ -71,6 +71,8 @@ pub(crate) const PERSONA: &str = include_str!("../../res/ambient/persona.md");
 /// 设备、平时在哪、作息、表过态的看法）由管理员写在数据目录那一份里，
 /// 每一轮发言带着它，为的是前后说法不打架。见 [`self_facts`]。
 const SELF: &str = include_str!("../../res/ambient/self.md");
+/// 群规的模板：首次启动写进数据目录（`rules.md`），之后以磁盘上那份为准。
+const RULES: &str = include_str!("../../res/ambient/rules.md");
 /// 随代码走的 skill：每次启动按目录名覆盖写入。
 ///
 /// 分成两份是照那套外部 CLI 的渐进披露来的——常在提示词里的只有 skill 的一行描述，
@@ -109,8 +111,14 @@ pub(crate) struct AmbientConfig {
     pub enabled: bool,
     /// 开启搭话的群号；空列表等于不开启。
     pub groups: Vec<String>,
-    /// 允许人格执行群管理的群；还须具备 QQ 对应权限。
+    /// 不看账号身份、直接开放人格群管理的群；还须具备 QQ 对应权限。
     pub management_groups: Vec<String>,
+    /// 账号在群里是群主或管理员时，人格自动以管理员身份管群（照 `rules.md` 与各群群规）。
+    pub management_auto: bool,
+    /// 永远不让人格管的群，压过上面两条。
+    pub management_excluded: Vec<String>,
+    /// 每群每天最多几次管理动作（解禁这类收手的不算）；0 不限。
+    pub management_daily: usize,
     /// 判定模型：便宜、快、能看图。写 `供应商/模型` 时按 `[oai.providers]` 取接口，
     /// 默认走 DeepSeek 官方的 V4.1 Flash（API 模型名为 deepseek-flash）。
     pub gate_model: String,
@@ -312,6 +320,9 @@ impl Default for AmbientConfig {
             enabled: false,
             groups: Vec::new(),
             management_groups: Vec::new(),
+            management_auto: true,
+            management_excluded: Vec::new(),
+            management_daily: 20,
             gate_model: "deepseek/deepseek-flash".to_string(),
             gate_persona: GATE_PERSONA.to_string(),
             reply_model: "apilio/gemini-3.8-flash".to_string(),
@@ -652,6 +663,9 @@ impl Ambient {
 pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
     ChatConfig {
         management_groups: config.management_groups.clone(),
+        management_auto: config.management_auto,
+        management_excluded: config.management_excluded.clone(),
+        management_daily: config.management_daily,
         messages_budget: config.messages_budget,
         actions_budget: config.actions_budget,
         memo_budget: config.memo_budget,
@@ -742,6 +756,11 @@ pub(crate) struct Scene {
     /// 同一个词在不同群里是两回事：②群里「投不了屏」说的是电脑管家的多屏协同，
     /// 人格当成了投电视，被群友说「乱回答」（2026-09-26 12:12）。判定与发言都带着它。
     pub group_about: String,
+    /// 管群那一段：这个群把管理交给它时写着群规；没开放时为空。
+    ///
+    /// 判定与发言都带着：判定要知道广告、刷屏在这里是「得出手」的事，发言要知道
+    /// 照哪份群规管。怎么管的那套做法只给发言（[`speak::MANAGE_RULES`]）。
+    pub duty: String,
     /// 这一轮是在答疑：有人认真问事。人格收到一段「先弄清再答」的交代。
     pub careful: bool,
     /// 判定那一眼注意到的是什么（它给的那句理由）；没经过判定时为空。
@@ -798,6 +817,7 @@ impl Scene {
             ),
             noticed: String::new(),
             group_about: group_about(group),
+            duty: duty(group, config),
             careful: false,
         }
     }
@@ -805,10 +825,11 @@ impl Scene {
     /// 现场 → 注入提示词的一段话。
     pub(crate) fn brief(&self) -> String {
         let mut out = format!(
-            "{}\n{}{}{}\n",
+            "{}\n{}{}{}{}\n",
             now_context(),
             self.identity,
             self.group_about,
+            self.duty,
             self.register
         );
         if !self.state.is_empty() {
@@ -871,6 +892,38 @@ fn group_about(group: &str) -> String {
     )
 }
 
+/// 这个群开放了管理时的那一段：一句身份加上群规；没开放就是空串。
+///
+/// 账号身份取群身份缓存（几小时一刷）；真动手时能力层会再问一遍平台，缓存过时
+/// 顶多让这一段多写或少写一轮。
+fn duty(group: &str, config: &AmbientConfig) -> String {
+    let role = identity::of(group).map(|me| me.role).unwrap_or_default();
+    if !crate::plugins::oai::chat::management_open(&chat_config(config), group, &role) {
+        return String::new();
+    }
+    let Some(dir) = DATA_DIR.get() else {
+        return String::new();
+    };
+    let mut lines = Vec::new();
+    for path in [rules_path(dir), rules_dir(dir).join(format!("{group}.md"))] {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            lines.extend(
+                raw.lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                    .map(|line| format!("- {}", line.trim_start_matches("- "))),
+            );
+        }
+    }
+    let mut out = String::from("你在本群管事：禁言、撤回群友的消息、踢人这些管理动作对你开放。");
+    if lines.is_empty() {
+        out.push('\n');
+    } else {
+        out.push_str(&format!("群规：\n{}\n", lines.join("\n")));
+    }
+    out
+}
+
 /// 档案正文 → 提示词里那一段。单独拎出来，好在测试里钉住注释与空行的处理。
 fn facts_from(raw: &str) -> String {
     let facts: Vec<String> = raw
@@ -897,6 +950,16 @@ fn persona_path(base: &Path) -> PathBuf {
 /// 本体档案的位置。
 fn self_path(base: &Path) -> PathBuf {
     base.join("self.md")
+}
+
+/// 群规（所有开放管理的群通用）：管理员写，每轮现读。
+fn rules_path(base: &Path) -> PathBuf {
+    base.join("rules.md")
+}
+
+/// 各群另有的群规：`rules/<群号>.md`，与 [`rules_path`] 那份一起生效。
+fn rules_dir(base: &Path) -> PathBuf {
+    base.join("rules")
 }
 
 /// 各群背景资料的目录：`groups/<群号>.md`，管理员写，每轮现读。
@@ -932,6 +995,12 @@ pub(crate) async fn setup(base: &Path) -> std::io::Result<()> {
     if !facts.exists() {
         tokio::fs::write(&facts, SELF).await?;
     }
+    // 群规同理：管理员改过的不覆盖。
+    let rules = rules_path(base);
+    if !rules.exists() {
+        tokio::fs::write(&rules, RULES).await?;
+    }
+    tokio::fs::create_dir_all(rules_dir(base)).await?;
     for (name, body) in SKILLS {
         let dir = skills_root(base).join(name);
         tokio::fs::create_dir_all(&dir).await?;

@@ -4,9 +4,9 @@
 //! [`Bridge::call`] 直接进 [`Session`]：额度、去重、平台拒绝记账都在这一层。
 //! 人格只在这一层之外——需要问一句的地方走 [`super::Persona`]。
 use super::{
-    ChatConfig, ChatEnv, Persona,
+    Authority, ChatConfig, ChatEnv, Persona,
     actions::{self, Action, Part},
-    history, identity, memory, stickers,
+    history, identity, memory, moderation, stickers,
     trigger::Trigger,
     window::{self, Turn, turn_from_platform},
 };
@@ -244,6 +244,15 @@ struct Session {
     page: Option<Vec<Turn>>,
     /// 房间这一轮是谁在问（搭话没有）。
     trigger: Option<Trigger>,
+    /// 这一轮的管理动作听谁的。
+    authority: Authority,
+}
+
+/// 管理动作落到的那个人：管理记录里要写他当时叫什么。
+#[derive(Default)]
+struct Target {
+    user_id: String,
+    name: String,
 }
 
 /// 开一轮：把这一轮的现场、额度与产物目录打包成一个工具出口。
@@ -262,6 +271,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         persona,
         trigger,
         scene,
+        authority,
     } = env;
     // 起点记下群聊现场走到哪一步：模型读完 `satori_context` 之后，这里就是它看过
     // 的那一版；期间群里又有人说话，动手之前就会被拦下。
@@ -302,6 +312,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         scene,
         page: None,
         trigger,
+        authority,
     };
     Ok(Bridge {
         session: Arc::new(tokio::sync::Mutex::new(session)),
@@ -511,6 +522,7 @@ impl Session {
                 };
                 self.seq.store(seq, Ordering::SeqCst);
                 let trigger = self.trigger_block().await;
+                let management = self.management_block().await;
                 // 人格那一份现场由调用方给（房间没有），缺的键留空串，形状一样。
                 let persona = self
                     .persona
@@ -549,7 +561,7 @@ impl Session {
                     "state":persona.get("state").and_then(Value::as_str).unwrap_or(""),
                     "remember":persona.get("remember").and_then(Value::as_str).unwrap_or(""),
                     "trigger":trigger,
-                    "capabilities":capabilities,"rhythm":rhythm,"messages":turns,"media":media,
+                    "capabilities":capabilities,"management":management,"rhythm":rhythm,"messages":turns,"media":media,
                     "observations_remaining":if self.scene == Scene::Window {4usize.saturating_sub(self.observations)} else {0},
                     "environment_lookups":if self.scene == Scene::Window {json!(["group","member","member_card","group_card","essence","title_display","honor_display"])} else {json!([])},
                     "writes_remaining":self.config.actions_budget.clamp(1,12).saturating_sub(self.writes),
@@ -961,41 +973,23 @@ impl Session {
                 // 一旦选择工具动作，就不再把最终解释当作第二份消息发送。
                 self.attempted.store(true, Ordering::SeqCst);
                 let action: Action = serde_json::from_value(request["request"].clone())?;
-                // 撤回已发出的自己的消息是补救，不是对旧话题继续发言。
-                // 新消息进群也应允许补救；停用的群仍然不许动作。
-                ensure!(
-                    self.enabled() && (matches!(action, Action::Recall { .. }) || self.current()),
-                    "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
-                );
+                ensure!(self.enabled(), "本群的群聊功能已停用");
                 let mut turns = self.scene_turns(80).await;
                 self.hydrate(&action, &mut turns).await?;
+                let me = self.ctx.bot.login_user.get().id.clone();
+                let managing = action.requires_management(&me, &turns);
+                // 撤回自己刚发的是补救；管理动作管的是已经发生的事（广告、刷屏），群里接着
+                // 聊不改变它该不该管——刷屏的时候群聊本来就一刻不停。其余动作只对模型看过
+                // 的那一版负责。
                 ensure!(
-                    !action.requires_management(&self.ctx.bot.login_user.get().id)
-                        || self.management_enabled(),
-                    "本群未启用管理动作（management_groups 里没有这个群）"
+                    managing || matches!(action, Action::Recall { .. }) || self.current(),
+                    "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
                 );
-                // 管理对象可能很久没说话。按 QQ 的当前群名册核实，不往聊天窗口伪造发言。
-                if let Some(target) = action.management_target() {
-                    let uid = actions::id(target)?;
-                    if !turns.iter().any(|t| t.user_id == uid) {
-                        // 先做纯参数校验，格式错误不消耗查询额度。
-                        turns.push(Turn {
-                            user_id: uid,
-                            ..Default::default()
-                        });
-                        action.validate(&turns)?;
-                        let member = self
-                            .rpc(
-                                "guild.member.get",
-                                json!({"guild_id":self.group.clone(),"user_id":target}),
-                            )
-                            .await?;
-                        ensure!(
-                            member.pointer("/user/id").and_then(Value::as_str) == Some(target),
-                            "QQ 未确认该用户是本群成员"
-                        );
-                    }
-                }
+                let target = if managing {
+                    self.check_management(&action, &mut turns, &me).await?
+                } else {
+                    Target::default()
+                };
                 action.validate(&turns)?;
                 if let Action::Send { parts, .. } = &action
                     && let Some(persona) = &self.persona
@@ -1041,6 +1035,9 @@ impl Session {
                     self.messages += 1;
                 }
                 let result = self.perform(&action, &turns).await;
+                if managing && result.is_ok() {
+                    self.log_management(&action, target).await;
+                }
                 if let Err(ref error) = result {
                     if self.remember_refusal(&action, error) {
                         // 服务端直接判定不允许，动作没有到达聊天：退回额度，别让它算作用掉一次。
@@ -1179,9 +1176,181 @@ impl Session {
     fn enabled(&self) -> bool {
         self.enabled
     }
-    /// 这个群允许执行群管理动作吗（见 [`ChatConfig::management_groups`]）。
+    /// 账号自己在这个群里的身份：本轮问过平台就用那一份，否则用群身份缓存。
+    fn own_role(&self) -> String {
+        self.capabilities
+            .pointer("/environment/self_member/roles/0/id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| identity::of(&self.group).map(|identity| identity.role))
+            .unwrap_or_default()
+    }
+    /// 这个群允许执行群管理动作吗（见 [`super::management_open`]）。
     fn management_enabled(&self) -> bool {
-        self.config.management_groups.contains(&self.group)
+        super::management_open(&self.config, &self.group, &self.own_role())
+    }
+    /// 递给模型的管理那一栏：开没开、听谁的、今天还剩几次、最近的前科。
+    async fn management_block(&self) -> Value {
+        if !self.management_enabled() {
+            return json!({"open": false});
+        }
+        let daily = self.config.management_daily;
+        let remaining = if daily == 0 {
+            Value::Null
+        } else {
+            json!(daily.saturating_sub(
+                moderation::used_since(&self.group, moderation::today_start()).await
+            ))
+        };
+        let recent: Vec<Value> = moderation::recent(&self.group, chrono::Utc::now().timestamp())
+            .await
+            .into_iter()
+            .map(|entry| {
+                let time = chrono::DateTime::from_timestamp(entry.at, 0)
+                    .map(|at| at.with_timezone(&crate::clock::beijing()).format("%m-%d %H:%M").to_string())
+                    .unwrap_or_default();
+                json!({
+                    "time": time, "action": entry.action, "user_id": entry.user_id,
+                    "name": entry.name, "seconds": entry.seconds, "reason": entry.reason, "by": entry.by,
+                })
+            })
+            .collect();
+        json!({
+            "open": true,
+            "role": self.own_role(),
+            "listens_to": match self.authority {
+                Authority::Own => "自己拿主意",
+                Authority::Staff => "这一轮吩咐的人是号主或本群群主、管理员",
+                Authority::Guest => "这一轮是普通群友在吩咐，管理动作不做",
+            },
+            "today_remaining": remaining,
+            "recent": recent,
+        })
+    }
+    /// 管理动作动手之前的几道闸；过了就返回落到的那个人。
+    ///
+    /// 群主、管理员与号主不罚：管理员之间互相禁言是内斗，QQ 自己也大多不让；号主是
+    /// 这个号背后的人。对象不在眼前（很久没说话）时按 QQ 的当前群名册核实，不往聊天
+    /// 窗口伪造发言。
+    async fn check_management(
+        &mut self,
+        action: &Action,
+        turns: &mut Vec<Turn>,
+        me: &str,
+    ) -> Result<Target> {
+        if self.capabilities.is_null() {
+            self.capabilities = self.describe_capabilities().await;
+        }
+        ensure!(
+            self.management_enabled(),
+            "本群没有开放管理动作：账号不是群主或管理员，或配置没放行（management_auto / management_groups / management_excluded）"
+        );
+        ensure!(
+            self.authority != Authority::Guest,
+            "这一轮是普通群友在吩咐：群管理只听号主和本群群主、管理员的。跟他说一句这事你做不了就行"
+        );
+        let daily = self.config.management_daily;
+        if daily > 0 && !action.lifts() {
+            let used = moderation::used_since(&self.group, moderation::today_start()).await;
+            ensure!(
+                used < daily,
+                "本群今天的管理动作已到上限（{daily} 次）。真要紧就在群里喊号主或别的管理员"
+            );
+        }
+        let uid = match action {
+            Action::Recall { message_id, .. } => actions::message(turns, message_id)?.user_id.clone(),
+            _ => match action.management_target() {
+                Some(raw) => actions::id(raw)?,
+                None => return Ok(Target::default()),
+            },
+        };
+        let mut target = Target {
+            name: turns
+                .iter()
+                .find(|turn| turn.user_id == uid && !turn.name.is_empty())
+                .map(|turn| turn.name.clone())
+                .unwrap_or_default(),
+            user_id: uid.clone(),
+        };
+        if action.punishes() {
+            ensure!(uid != me, "这是你自己");
+            ensure!(
+                !crate::plugins::ctl::admin_ids(&self.ctx).contains(&uid),
+                "对象是号主，不罚他"
+            );
+        }
+        let seen = turns.iter().any(|turn| turn.user_id == uid);
+        if seen && !action.punishes() {
+            return Ok(target);
+        }
+        if !seen {
+            // 先做纯参数校验，格式错误不消耗查询。
+            turns.push(Turn {
+                user_id: uid.clone(),
+                ..Default::default()
+            });
+            action.validate(turns)?;
+        }
+        let member = self
+            .rpc(
+                "guild.member.get",
+                json!({"guild_id":self.group.clone(),"user_id":uid.clone()}),
+            )
+            .await;
+        let member = match member {
+            Ok(member) if member.pointer("/user/id").and_then(Value::as_str) == Some(uid.as_str()) => member,
+            // 撤回的是已经发出去的话：发广告的人刚被踢出去、名册里查不到了，那条广告照样该撤。
+            _ if matches!(action, Action::Recall { .. }) => return Ok(target),
+            Ok(_) => anyhow::bail!("QQ 未确认该用户是本群成员"),
+            Err(error) => return Err(error),
+        };
+        let role = member.pointer("/roles/0/id").and_then(Value::as_str).unwrap_or("");
+        ensure!(
+            !(action.punishes() && super::is_staff(role)),
+            "对象是本群群主或管理员：管理员之间不互相处罚，有矛盾私下找群主或号主"
+        );
+        if target.name.is_empty() {
+            target.name = ["/nick", "/user/nick", "/user/name"]
+                .iter()
+                .find_map(|path| member.pointer(path).and_then(Value::as_str).filter(|name| !name.is_empty()))
+                .unwrap_or("")
+                .to_string();
+        }
+        Ok(target)
+    }
+    /// 管理动作成了：记进管理记录（下次看前科、算每天的次数），日志里也留一行给号主查。
+    async fn log_management(&self, action: &Action, target: Target) {
+        let by = match (&self.trigger, self.authority) {
+            (_, Authority::Own) => "搭话".to_string(),
+            (Some(trigger), _) => format!("{}（{}）", trigger.name, trigger.user_id),
+            (None, _) => "定时任务".to_string(),
+        };
+        let kind = capability(action);
+        let seconds = match action {
+            Action::Mute { duration_seconds, .. } | Action::MuteAll { duration_seconds, .. } => {
+                *duration_seconds
+            }
+            _ => 0,
+        };
+        info!(
+            target: super::LOG_TARGET,
+            "群 {} 管理动作 {kind} {}（{}）{}秒，经手：{by}，理由：{}",
+            self.group, target.name, target.user_id, seconds, action.reason()
+        );
+        moderation::record(
+            &self.group,
+            moderation::Entry {
+                at: chrono::Utc::now().timestamp(),
+                action: kind.to_string(),
+                user_id: target.user_id,
+                name: target.name,
+                seconds,
+                reason: action.reason().to_string(),
+                by,
+                counted: !action.lifts(),
+            },
+        )
+        .await;
     }
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         ensure!(
@@ -1495,17 +1664,22 @@ impl Session {
             Action::Mute {
                 user_id,
                 duration_seconds,
+                ..
             } => (
                 "guild.member.mute",
                 json!({"guild_id":group,"user_id":user_id,"duration":u64::from(*duration_seconds)*1000}),
                 format!("[禁言 {user_id} {duration_seconds} 秒；0 为解除]"),
             ),
-            Action::Kick { user_id, permanent } => (
+            Action::Kick {
+                user_id, permanent, ..
+            } => (
                 "guild.member.kick",
                 json!({"guild_id":group,"user_id":user_id,"permanent":permanent}),
                 format!("[移出群成员 {user_id}]"),
             ),
-            Action::MuteAll { duration_seconds } => (
+            Action::MuteAll {
+                duration_seconds, ..
+            } => (
                 "channel.mute",
                 json!({"channel_id":group,"duration":u64::from(*duration_seconds)*1000}),
                 format!("[全员禁言 {duration_seconds} 秒；0 为解除]"),
@@ -1537,23 +1711,27 @@ impl Session {
                     format!("[清除自己在消息 {message_id} 上的表态]"),
                 )
             }
-            Action::Recall { message_id } => (
+            Action::Recall { message_id, .. } => (
                 "message.delete",
                 json!({"channel_id":group,"message_id":message_id}),
-                format!("[撤回自己的消息 {message_id}]"),
+                match actions::message(turns, message_id) {
+                    Ok(turn) if !turn.from_me => format!("[撤回 {} 的消息 {message_id}]", turn.name),
+                    _ => format!("[撤回自己的消息 {message_id}]"),
+                },
             ),
         };
         ensure!(
             !method.starts_with("internal/") || self.ctx.bot.adapter == "satori-qq",
             "当前适配器未声明 QQ 扩展"
         );
+        let managing = action.requires_management(&self.ctx.bot.login_user.get().id, turns);
         ensure!(
-            self.enabled() && (matches!(action, Action::Recall { .. }) || self.current()),
+            self.enabled()
+                && (managing || matches!(action, Action::Recall { .. }) || self.current()),
             "群聊已更新，动作未执行；请读 satori_context"
         );
         ensure!(
-            !action.requires_management(&self.ctx.bot.login_user.get().id)
-                || self.management_enabled(),
+            !managing || (self.management_enabled() && self.authority != Authority::Guest),
             "本群管理动作已停用"
         );
         let result = self.rpc(method, params).await?;
@@ -1583,7 +1761,7 @@ impl Session {
             }
             _ => {}
         }
-        if let Action::Recall { message_id } = action {
+        if let Action::Recall { message_id, .. } = action {
             window::with_group(&self.group, |s| s.recall(message_id.trim()));
         }
         self.record(summary, String::new(), Message::new(), true);

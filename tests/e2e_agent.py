@@ -9,6 +9,7 @@
 预先写入记录库，模型先读 `satori_context` 认出提问的人与被 @ 的人，再按名字、按日期翻页、遇到重名拿到候选、问「我」时被指路。
 另覆盖办事台：号主与客人的身份注记、`acumen_plugins`（看、改、被封死的入口、不能停用 oai）、`note`（客人的轮次不挂）、
 `schedule`（排一条提醒并真的到点发出）、追加话并入进行中的一轮、发给房间的文件被取回收件箱。
+另覆盖群管理：账号是管理员时自动开放；号主吩咐能禁言、撤回群友的消息，记进管理记录；群管理员与号主罚不动；客人吩咐一律不做。
 另覆盖联网：假 DeepSeek 搜索/抓取接口记下请求，核对 `web_search` 的站点/时间/语种/正文参数被编成官方搜索语法，
 长页面用 `offset` 翻页时读缓存、不再联网。假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
@@ -23,6 +24,8 @@ BIN = os.path.abspath(sys.argv[1])
 WORK = os.path.abspath(sys.argv[2]) if len(sys.argv) > 2 else os.path.join(tempfile.gettempdir(), "acumen-e2e-agent")
 SATORI_PORT, LLM_PORT = 39119, 39120
 GROUP, BOT, USER, GUEST = "900001", "20001", "10001", "10009"
+SPAMMER, ADMIN = "10007", "10005"  # 群里发广告的人、另一位群管理员
+ROLES = {BOT: "admin", ADMIN: "admin"}
 LOGIN = {"platform": "red", "adapter": "satori-qq", "status": 1, "user": {"id": BOT, "name": "测试机器人"}, "features": []}
 
 # 一张 64×40 的纯色 PNG。
@@ -104,6 +107,13 @@ async def api(request):
         return web.json_response({"data": []})
     if method == "login.get":
         return web.json_response(LOGIN)
+    if method == "guild.member.get":
+        uid = body.get("user_id", "")
+        return web.json_response({"user": {"id": uid, "name": f"成员{uid}"}, "nick": f"成员{uid}", "roles": [{"id": ROLES.get(uid, "member")}]})
+    if method == "message.get":
+        return web.json_response({"id": body.get("message_id"), "content": "加群领福利 http://spam", "user": {"id": SPAMMER, "name": "广告哥"}})
+    if method in ("guild.member.mute", "guild.member.kick"):
+        return web.json_response({})
     return web.json_response({"code": "not_found", "message": method}, status=404)
 
 
@@ -192,6 +202,20 @@ async def chat(request):
             return completion({"role": "assistant", "content": "没有追加，做完了。"})
         await asyncio.sleep(3)
         return completion({"role": "assistant", "content": None, "tool_calls": [call("bash", command="echo waiting")]})
+    if "群管理" in asked:
+        plan = [
+            ("satori_context", {}),
+            ("satori_action", dict(request=dict(action="mute", user_id=SPAMMER, duration_seconds=600, reason="发广告"))),
+            ("satori_action", dict(request=dict(action="recall", message_id="88001", reason="广告"))),
+            ("satori_action", dict(request=dict(action="mute", user_id=ADMIN, duration_seconds=60))),
+            ("satori_action", dict(request=dict(action="mute", user_id=USER, duration_seconds=60))),
+        ]
+        if "客人" in asked:
+            plan = [("satori_action", dict(request=dict(action="mute", user_id=SPAMMER, duration_seconds=60)))]
+        step = len(tool_results)
+        if step < len(plan):
+            return completion({"role": "assistant", "content": None, "tool_calls": [call(plan[step][0], **plan[step][1])]})
+        return completion({"role": "assistant", "content": "管理完毕"})
     if "收文件" in asked:
         return completion({"role": "assistant", "content": "收到：" + asked})
     if "办事台" in asked or "客人办事" in asked:
@@ -649,6 +673,37 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
         check("文件落进了收件箱", len(saved) == 1 and saved[0].endswith("数据.txt") and open(os.path.join(inbox, saved[0]), encoding="utf-8").read() == "文件里的内容\n", str(saved))
         asked_text = text_of([m for m in llm_requests[-1]["messages"] if m["role"] == "user"][-1])
         check("提示词里有收到文件的说明与路径", "收到文件「数据.txt」" in asked_text and "data/oai/inbox/" in asked_text, asked_text[:300])
+
+        print("U. 群管理：账号是管理员就开放；号主吩咐能禁言、撤回，群管理员与号主罚不动；客人吩咐不做")
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 群管理")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        res = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        context = json.loads(res[0]).get("result", {}) if res else {}
+        check("现场里写着管理已开放、身份是管理员、今天还剩 20 次", context.get("management", {}).get("open") is True and context["management"].get("role") == "admin" and context["management"].get("today_remaining") == 20, str(context.get("management")))
+        check("号主吩咐的禁言成了", len(res) == 5 and json.loads(res[1]).get("ok") is True, res[1][:200] if len(res) > 1 else "")
+        check("撤回群友的消息成了", len(res) == 5 and json.loads(res[2]).get("ok") is True, res[2][:200] if len(res) > 2 else "")
+        check("另一位管理员罚不动", len(res) == 5 and "群主或管理员" in res[3], res[3][:200] if len(res) > 3 else "")
+        check("号主罚不动", len(res) == 5 and "号主" in res[4] and json.loads(res[4]).get("ok") is False, res[4][:200] if len(res) > 4 else "")
+        mutes = [b for m, b in posts[mark:] if m == "guild.member.mute"]
+        check("平台只收到一次禁言，对象是发广告的人", len(mutes) == 1 and mutes[0].get("user_id") == SPAMMER and mutes[0].get("duration") == 600000, str(mutes))
+        check("平台收到了撤回", any(m == "message.delete" and b.get("message_id") == "88001" for m, b in posts[mark:]))
+        ledger = json.load(open(os.path.join(WORK, "data", "oai", "chat", "moderation.json"), encoding="utf-8"))
+        entries = ledger.get("groups", {}).get(GROUP, [])
+        check("管理记录记了两笔，带理由与经手人", [e["action"] for e in entries] == ["mute", "recall"] and entries[0]["reason"] == "发广告" and entries[1]["user_id"] == SPAMMER and USER in entries[0]["by"], str(entries))
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 群管理 客人", user=GUEST)
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        res = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        check("客人吩咐的禁言被拒", len(res) == 1 and "普通群友" in res[0], str(res))
+        check("客人那一轮平台没收到禁言", not any(m == "guild.member.mute" for m, b in posts[mark:]))
+        mark, n = len(posts), len(llm_requests)
+        await inject("管家大人 群管理")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复", 60)
+        res = [text_of(m) for m in llm_requests[-1]["messages"] if m["role"] == "tool"]
+        context = json.loads(res[0]).get("result", {}) if res else {}
+        recent = context.get("management", {}).get("recent", [])
+        check("下一轮看得见前科、次数少了两次", len(recent) >= 2 and recent[0]["reason"] == "发广告" and context["management"].get("today_remaining") == 18, str(context.get("management"))[:300])
 
         print("D. 纯文字：不受影响")
         mark, n = len(posts), len(llm_requests)

@@ -71,8 +71,11 @@ pub(crate) enum Action {
         #[serde(default)]
         remove: bool,
     },
+    /// 撤回自己的消息；本群开放管理时也能撤回别人的（清广告、刷屏）。
     Recall {
         message_id: String,
+        #[serde(default)]
+        reason: String,
     },
     Sign,
     Card {
@@ -92,14 +95,21 @@ pub(crate) enum Action {
     Mute {
         user_id: String,
         duration_seconds: u32,
+        /// 为什么动手：记进管理记录，下次看前科用；群里看不到。
+        #[serde(default)]
+        reason: String,
     },
     Kick {
         user_id: String,
         #[serde(default)]
         permanent: bool,
+        #[serde(default)]
+        reason: String,
     },
     MuteAll {
         duration_seconds: u32,
+        #[serde(default)]
+        reason: String,
     },
     RenameGroup {
         name: String,
@@ -306,11 +316,9 @@ impl Action {
                 message(turns, message_id)?;
                 ensure!(emoji_id.parse::<u32>().is_ok(), "表态 ID 用数字");
             }
-            Self::Recall { message_id } => {
-                ensure!(
-                    message(turns, message_id)?.from_me,
-                    "撤回作用于自己发出的消息"
-                );
+            // 撤回别人的消息算管理动作，开没开放由调用方按 [`Self::requires_management`] 把关。
+            Self::Recall { message_id, .. } => {
+                message(turns, message_id)?;
             }
             Self::Sign => {}
             Self::Card { user_id, card } => {
@@ -335,6 +343,7 @@ impl Action {
             Self::Mute {
                 user_id,
                 duration_seconds,
+                ..
             } => {
                 user(turns, user_id)?;
                 ensure!(*duration_seconds <= 30 * 86400, "禁言最多 30 天；0 解除");
@@ -342,7 +351,9 @@ impl Action {
             Self::Kick { user_id, .. } => {
                 user(turns, user_id)?;
             }
-            Self::MuteAll { duration_seconds } => {
+            Self::MuteAll {
+                duration_seconds, ..
+            } => {
                 ensure!(
                     *duration_seconds <= 30 * 86400,
                     "全员禁言最多 30 天；0 解除"
@@ -398,9 +409,13 @@ impl Action {
             _ => None,
         }
     }
-    pub(crate) fn requires_management(&self, me: &str) -> bool {
+    /// 这一下算不算群管理：会被全群看见、落在别人头上的写操作。
+    ///
+    /// 撤回要看是谁的消息：撤自己的是补救，撤别人的是管理（`turns` 里认作者）。
+    pub(crate) fn requires_management(&self, me: &str, turns: &[Turn]) -> bool {
         match self {
             Self::Card { user_id, .. } => user_id.as_deref().is_some_and(|id| id != me),
+            Self::Recall { message_id, .. } => message(turns, message_id).is_ok_and(|t| !t.from_me),
             Self::Title { .. }
             | Self::Essence { .. }
             | Self::Mute { .. }
@@ -408,6 +423,40 @@ impl Action {
             | Self::MuteAll { .. }
             | Self::RenameGroup { .. } => true,
             _ => false,
+        }
+    }
+    /// 收手的管理动作：解禁、解除全员禁言、取消精华。不算进每天的次数。
+    pub(crate) fn lifts(&self) -> bool {
+        matches!(
+            self,
+            Self::Mute {
+                duration_seconds: 0,
+                ..
+            } | Self::MuteAll {
+                duration_seconds: 0,
+                ..
+            } | Self::Essence { remove: true, .. }
+        )
+    }
+    /// 会罚到某个人头上的：禁言、踢出、撤回他的消息。对象是群主、管理员或号主时不做。
+    pub(crate) fn punishes(&self) -> bool {
+        matches!(
+            self,
+            Self::Mute {
+                duration_seconds: 1..,
+                ..
+            } | Self::Kick { .. }
+                | Self::Recall { .. }
+        )
+    }
+    /// 动手时写的理由（没有理由字段的动作给空串）。
+    pub(crate) fn reason(&self) -> &str {
+        match self {
+            Self::Mute { reason, .. }
+            | Self::Kick { reason, .. }
+            | Self::MuteAll { reason, .. }
+            | Self::Recall { reason, .. } => reason.trim(),
+            _ => "",
         }
     }
     pub(crate) fn is_message(&self) -> bool {

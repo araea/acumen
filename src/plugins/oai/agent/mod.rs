@@ -400,6 +400,8 @@ pub(crate) struct ChatContext {
     pub tools: Option<String>,
     /// 这一轮是谁在问：翻记录时「我」「他」「引用的那位」要靠它认人。
     pub trigger: Option<crate::plugins::oai::chat::trigger::Trigger>,
+    /// 群管理听不听这一轮吩咐的人：号主与本群群主、管理员听，客人不听。
+    pub authority: crate::plugins::oai::chat::Authority,
 }
 
 /// 总预算 `budget` 之内留给收尾的那一截。
@@ -456,6 +458,7 @@ pub(crate) async fn conversation(
                 persona: None,
                 trigger: chat.trigger.clone(),
                 scene: crate::plugins::oai::chat::session::Scene::Channel,
+                authority: chat.authority,
             })
             .await?;
             (

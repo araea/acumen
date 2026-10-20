@@ -615,13 +615,17 @@ async fn chat(
             } else {
                 // 在群里说话的房间接上群聊能力层：群资料、翻旧账、发消息、画图写歌
                 // 那一套从此也在房间里可用。私聊里的房间没有这一份。
-                let chat = event.group_id().map(|group| super::agent::ChatContext {
-                    ctx: ctx.clone(),
-                    writer: writer.clone(),
-                    group: group.to_string(),
-                    config: oai.chat.clone(),
-                    tools: Some(room_tools(&oai.chat)),
-                    trigger: Some(super::chat::trigger::Trigger::from_event(&event)),
+                let chat = event.group_id().map(|group| {
+                    let trigger = super::chat::trigger::Trigger::from_event(&event);
+                    super::agent::ChatContext {
+                        ctx: ctx.clone(),
+                        writer: writer.clone(),
+                        group: group.to_string(),
+                        config: oai.chat.clone(),
+                        tools: Some(room_tools(&oai.chat)),
+                        authority: super::chat::Authority::of(asker.owner, &trigger.role),
+                        trigger: Some(trigger),
+                    }
                 });
                 respond(
                     &api_base,
