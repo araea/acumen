@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """acumen 端到端冒烟：自起假 Satori 实现端，拉起隔离的 acumen 实例，走一遍主要链路。
 
-覆盖：指令（echo）、复读（接力 + satori-qq 时效参数 + 跟读记录落盘）、跟随撤回、
+覆盖：入群欢迎（验证、倒计时提醒、通过、超时移出）、防撤回（转存到私聊）、指令（echo）、复读（接力 + satori-qq 时效参数 + 跟读记录落盘）、跟随撤回、
 引用类指令的报错回复（sticker）、/ctl 读写配置（原子写、0600）、自发消息入库、
 禁言通知入库与禁言排行榜、文字榜（字数与纯文本消息条数）的入库与出图（出图需要字体：
 E2E_FONT 指一个字体文件，缺省用 Termux 的 MiSans，都没有就只验入库与文字提示）。
@@ -23,7 +23,7 @@ PORT = 39117
 GROUP = "900001"
 BOT = "20001"
 ADMIN = "10001"
-ENABLED = {"meta_filter", "ctl", "recorder", "echo", "repeater", "recall", "sticker", "media", "stats"}
+ENABLED = {"meta_filter", "ctl", "recorder", "echo", "repeater", "recall", "sticker", "media", "stats", "welcome", "anti_recall"}
 FONT = next((f for f in (os.environ.get("E2E_FONT"), "/data/data/com.termux/files/usr/share/fonts/TTF/MiSans/MiSans-Medium.ttf") if f and os.path.exists(f)), None)
 STARTUP = os.environ.get("E2E_STARTUP") == "1"
 ALL_PLUGINS = re.findall(r"^    ([a-z_]+) \{", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/registry.rs")).read(), re.M)
@@ -63,8 +63,14 @@ async def api(request):
     posts.append((method, body))
     if method == "message.create":
         return web.json_response([{"id": fresh_id()}])
-    if method in ("message.delete", "reaction.create", "reaction.delete"):
+    if method in ("message.delete", "reaction.create", "reaction.delete", "guild.member.kick", "guild.member.mute", "guild.member.approve"):
         return web.json_response({})
+    if method == "user.channel.create":
+        return web.json_response({"id": f"private:{body.get('user_id', '')}", "type": 1})
+    if method == "guild.member.get":
+        uid = body.get("user_id", "")
+        return web.json_response({"user": {"id": uid, "name": f"用户{uid}"}, "nick": f"群友{uid}",
+                                  "roles": [{"id": "admin" if uid == BOT else "member"}]})
     if method == "message.get":
         return web.json_response({"id": body.get("message_id", "0"), "content": "原消息", "created_at": int(time.time() * 1000),
                                   "channel": {"id": GROUP, "type": 0}, "user": {"id": ADMIN}})
@@ -75,7 +81,7 @@ async def api(request):
     return web.json_response({"code": "not_found", "message": method}, status=404)
 
 
-async def inject(kind, user, content=None, message_id=None):
+async def inject(kind, user, content=None, message_id=None, extra=None):
     sn[0] += 1
     body = {"sn": sn[0], "type": kind, "timestamp": int(time.time() * 1000), "login": LOGIN,
             "channel": {"id": GROUP, "type": 0}, "guild": {"id": GROUP, "name": "测试群"},
@@ -85,6 +91,7 @@ async def inject(kind, user, content=None, message_id=None):
         body["message"] = {"id": mid, "content": content}
     elif message_id:
         body["message"] = {"id": message_id}
+    body.update(extra or {})
     for ws in ws_clients:
         await ws.send_json({"op": 0, "body": body})
     return body.get("message", {}).get("id")
@@ -129,6 +136,12 @@ def write_config(directory):
             lines += [f"{k}_enabled = false" for k in ("daily_push", "morning_recap", "noon_brief", "weekly_recap", "monthly_recap")]
             if FONT:
                 lines += [f'font_path = "{FONT}"', 'font_family = "MiSans"']
+        if name == "welcome":
+            lines += ["[welcome.verify]", "enabled = true", "timeout_seconds = 30", 'answers = ["我已阅读群规"]',
+                      "remind_seconds = [25]", 'action = "kick"', "", "[welcome.approve]", "enabled = true",
+                      'keywords = ["芝麻开门"]', "reject = true"]
+        if name == "anti_recall":
+            lines += ['target = "private:10001"']
         if name == "repeater":
             lines += ["min_times = 2", "cooldown_seconds = 0", "max_delay_ms = 600000", "remember_hours = 0"]
         lines.append("")
@@ -175,6 +188,34 @@ async def main():
         await inject("message-created", ADMIN, "/echo 你好重构")
         await wait_for(lambda: any("你好重构" in t for t in sent_texts()), "echo 回显")
         check("echo 回显", True)
+
+        print("1b. 入群欢迎：验证提示、倒计时、答对放行、超时移出、申请按附言审批")
+        mark = len(posts)
+        await inject("guild-member-added", "10009")
+        await inject("guild-member-added", "10010")
+        hello = lambda uid: any(m == "message.create" and f'id="{uid}"' in b.get("content", "") and "验证" in b.get("content", "") for m, b in posts[mark:])
+        await wait_for(lambda: hello("10009") and hello("10010"), "两人的欢迎带 @ 与验证说明")
+        check("欢迎 @ 新人并给出验证说明", True)
+        await inject("message-created", "10009", "好的，我已阅读群规")
+        await wait_for(lambda: any("验证通过" in b.get("content", "") and 'id="10009"' in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "10009 验证通过")
+        check("答对验证即放行", True)
+        await wait_for(lambda: any("验证还剩" in b.get("content", "") and 'id="10010"' in b.get("content", "") for m, b in posts[mark:] if m == "message.create"), "10010 倒计时提醒", 15)
+        check("剩余时间点 @ 提醒", True)
+        await inject("guild-member-request", "10020", extra={"message": {"id": "flag-1", "content": "问题：暗号\n答案：芝麻开门"}})
+        await inject("guild-member-request", "10021", extra={"message": {"id": "flag-2", "content": "广告位招租"}})
+        await wait_for(lambda: sum(1 for m, b in posts[mark:] if m == "guild.member.approve") >= 2, "两条申请都被处理")
+        verdicts = {b.get("message_id"): b.get("approve") for m, b in posts[mark:] if m == "guild.member.approve"}
+        check("附言对上的同意、对不上的拒绝", verdicts == {"flag-1": True, "flag-2": False}, str(verdicts))
+        await wait_for(lambda: any(m == "guild.member.kick" and b.get("user_id") == "10010" for m, b in posts[mark:]), "10010 超时被移出", 40)
+        check("超时移出", not any(m == "guild.member.kick" and b.get("user_id") == "10009" for m, b in posts[mark:]))
+
+        print("1c. 防撤回：撤回的消息转存到 private:10001")
+        mark = len(posts)
+        secret = await inject("message-created", "10002", "这句话我马上撤回")
+        await asyncio.sleep(0.5)
+        await inject("message-deleted", "10002", message_id=secret)
+        await wait_for(lambda: any(m == "message.create" and b.get("channel_id") == "private:10001" and "这句话我马上撤回" in b.get("content", "") for m, b in posts[mark:]), "转存到私聊")
+        check("撤回的原文转存到私聊", True)
 
         print("2. 复读：两个不同的人接力同一句")
         before = len(sent_texts())
