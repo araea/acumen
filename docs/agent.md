@@ -33,7 +33,7 @@ Agent 逐步调用工具并读取回执，直到模型给出最终回复。工�
 
 群里发长文时会自动排成一页 Markdown 图再发（`[oai.chat].long_text_chars`，默认 240 字）：只对「除引用外全是文字」的消息生效，带图、文件、@ 的照原样发，渲染失败退回原文。模型不必自己拆成几条，也不必发完长文再补一句「在上面」。
 
-群聊中的 Agent 还可使用 Satori 工具查看现场、读取消息、发送消息或执行平台动作；私聊没有群管理能力。群管理动作默认关闭，需在 `[oai.chat].management_groups` 中逐群授权，且 QQ 账号还必须拥有对应平台权限。每轮发送、写动作、记忆与媒体生成均受独立预算限制；设置为 `0` 时相应工具不会提供给模型。
+群聊中的 Agent 还可使用 Satori 工具查看现场、读取消息、发送消息或执行平台动作；私聊没有群管理能力。账号在群里是群主或管理员时，群管理动作（禁言、踢人、撤回群友的消息、全员禁言、改群名、设精华、改他人名片）自动开放（`[oai.chat].management_auto`），`management_groups` 可不看身份直接开放、`management_excluded` 可单群关掉。**房间只替号主和本群群主、管理员动手**：客人吩咐的管理动作由工具直接拒绝。群主、管理员与号主罚不动，每群每天有次数上限，每次动手记进管理记录（与群聊搭话共用，见 [ambient.md](ambient.md#管群)）。每轮发送、写动作、记忆与媒体生成均受独立预算限制；设置为 `0` 时相应工具不会提供给模型。
 
 群里的 Agent 还能翻本机的聊天记录库，见[翻群聊记录](#翻群聊记录)。
 
@@ -217,7 +217,10 @@ Acumen 会创建绘图、音乐与视频预设房间，位于 `/#` 的对应分�
 | `video_seconds` | `5` | 视频默认时长；上游可能限制实际时长 |
 | `video_send` | `both` | 视频成品的默认发送方式：`file`、`video` 或 `both` |
 | `media_timeout_seconds` | `900` | 音乐与视频任务等待上限 |
-| `oai.chat.management_groups` | `[]` | 可执行群管理动作的群号 |
+| `oai.chat.management_auto` | `true` | 账号是群主或管理员时自动开放群管理动作 |
+| `oai.chat.management_groups` | `[]` | 不看账号身份、直接开放群管理动作的群号 |
+| `oai.chat.management_excluded` | `[]` | 永远不开放群管理动作的群号 |
+| `oai.chat.management_daily` | `20` | 每群每天最多几次管理动作（解禁、取消精华不算）；0 不限 |
 | `oai.chat.actions_budget` | `6` | 每轮平台写动作上限 |
 | `oai.chat.messages_budget` | `3` | 每轮消息发送上限 |
 | `oai.chat.long_text_chars` | `240` | 一条消息里的文字超过多少字就排成图再发；0 关闭 |

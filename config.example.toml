@@ -426,10 +426,15 @@ media_timeout_seconds = 900
 # 群聊那一层：房间开在群里时能做的事。搭话（[ambient]）走同一份能力，
 # 节奏与额度是它自己那一套（见下面的 [ambient]），这张表只管房间。
 [oai.chat]
-# 允许执行群管理动作（踢人、禁言、全员禁言、改群名、设精华、改他人名片，
-# 以及群文件的改名、移动、删除）的群号；留空表示哪个群都不放行。这些写操作全群
-# 可见，默认要按群单独授权。
+# 账号在群里是群主或管理员时自动开放群管理动作（踢人、禁言、撤回群友的消息、全员禁言、
+# 改群名、设精华、改他人名片）。房间只替号主和本群群主、管理员动手，客人吩咐的一律不做。
+management_auto = true
+# 不看账号身份、直接开放群管理动作的群号（QQ 没给权限的照样被驳回）。
 management_groups = []
+# 永远不开放群管理动作的群号，压过上面两项。
+management_excluded = []
+# 每群每天最多几次管理动作（解禁、取消精华不算）；0 不限。
+management_daily = 20
 # 一次发言最多几条（模型把一段话写长了，切开也算额度）。
 messages_budget = 2
 # 一轮最多几次写动作（发言、戳、点赞、撤回、转发……都算）。
@@ -557,8 +562,15 @@ results = 8
 enabled = false
 # 开启搭话的群号；空列表等于不开启。
 groups = []
-# 允许人格进行群管理的群号（禁言、踢人、改群名/他人名片、精华、群文件修改）。还须 QQ 权限。
+# 账号在群里是群主或管理员时，人格自动以管理员身份管群，照 data/ambient/rules.md 与
+# rules/<群号>.md 的群规（见 docs/ambient.md「管群」）。
+management_auto = true
+# 不看账号身份、直接开放人格群管理的群号。还须 QQ 权限。
 management_groups = []
+# 永远不让人格管的群号，压过上面两项。
+management_excluded = []
+# 每群每天最多几次管理动作（解禁、取消精华不算）；0 不限。
+management_daily = 20
 # 判定模型（便宜、能看图）。写 `供应商/模型` 时按 [oai.providers] 取接口；
 # 默认走 DeepSeek 官方的 V4.1 Flash（API 模型名 deepseek-flash）。
 gate_model = "deepseek/deepseek-flash"

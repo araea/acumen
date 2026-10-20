@@ -8,6 +8,8 @@
      `read` 读得到文本，`view_image` 看得到图；翻不到地址或超过体积的只记在 skipped 里。
   3. 「之前谁说过」：`satori_history` 翻本机记录库（需要 recorder 在记），按关键词、发言人、
      围着某条看前后文；翻到的原文也算眼前，不被翻旧账守卫拦下。
+另覆盖管群：账号是本群管理员时，群规（rules.md 与 rules/<群号>.md）进现场、发言带上管群的做法；
+人格自己拿主意撤回广告、禁言发广告的人，记进管理记录；另一位管理员罚不动。
 假模型按提问里的关键词走脚本，不需要任何真实密钥。
 
 用法（需要 `pip install aiohttp`）：
@@ -93,6 +95,12 @@ async def api(request):
         return web.json_response({"data": []})
     if method == "login.get":
         return web.json_response(LOGIN)
+    if method == "guild.member.get":  # 账号与 10005 是本群管理员
+        uid = str(body.get("user_id", ""))
+        role = "admin" if uid in (BOT, "10005") else "member"
+        return web.json_response({"user": {"id": uid, "name": f"成员{uid}"}, "nick": f"成员{uid}", "roles": [{"id": role}]})
+    if method == "guild.member.mute":
+        return web.json_response({})
     return web.json_response({"code": "not_found", "message": method}, status=404)
 
 
@@ -139,7 +147,8 @@ async def chat(request):
     msgs = body["messages"]
     if not is_speak(body):  # 复盘、判定之类：这个夹具里不该有，给个沉默的答复
         return completion({"role": "assistant", "content": '{"score":0,"reason":"测试"}'})
-    first_user = text_of([m for m in msgs if m["role"] == "user"][0])
+    # 被点名那一轮，提问之前另有一条「系统注记」（谁在叫它、是不是号主），正文在它后面。
+    first_user = text_of([m for m in msgs if m["role"] == "user" and "系统注记" not in text_of(m)][0])
     tool_results = [text_of(m) for m in msgs if m["role"] == "tool"]
     tail = msgs[-1]
 
@@ -153,7 +162,7 @@ async def chat(request):
         return completion({"role": "assistant", "content": text})
 
     # 提示词里带着前几轮的记录：按最后出现的那个暗号走脚本。
-    scene = max(("翻记录", "看日志", "看图片", "太大了"), key=first_user.rfind)
+    scene = max(("翻记录", "看日志", "看图片", "太大了", "有广告"), key=first_user.rfind)
     if first_user.rfind(scene) < 0:
         scene = ""
     if scene == "翻记录":
@@ -165,6 +174,16 @@ async def chat(request):
         if len(tool_results) == 2:
             return tools(call("satori_history"))  # 什么条件都没给：该被拒绝
         return say("上次有人提过 Magisk 27.0")  # 带「上次」字眼：翻过记录，守卫不该拦
+    if scene == "有广告":
+        plan = [
+            call("satori_context"),
+            call("satori_action", request=dict(action="recall", message_id=AD_MESSAGE[0], reason="广告")),
+            call("satori_action", request=dict(action="mute", user_id="10008", duration_seconds=600, reason="发广告")),
+            call("satori_action", request=dict(action="mute", user_id="10005", duration_seconds=60, reason="试试")),
+        ]
+        if len(tool_results) < len(plan):
+            return tools(plan[len(tool_results)])
+        return say("[silent]")
     if scene == "看日志":
         target = LOG_MESSAGE[0]
         if len(tool_results) == 0:
@@ -192,7 +211,7 @@ async def chat(request):
     return say("好")
 
 
-LOG_MESSAGE, PIC_MESSAGE, HUGE_MESSAGE = [""], [""], [""]
+LOG_MESSAGE, PIC_MESSAGE, HUGE_MESSAGE, AD_MESSAGE = [""], [""], [""], [""]
 
 
 def creates_since(mark):
@@ -216,6 +235,8 @@ async def main():
     shutil.rmtree(WORK, ignore_errors=True)
     os.makedirs(os.path.join(WORK, "data", "oai"))
     shutil.copy(BIN, os.path.join(WORK, "acumen"))
+    os.makedirs(os.path.join(WORK, "data", "ambient", "rules"))
+    open(os.path.join(WORK, "data", "ambient", "rules", f"{GROUP}.md"), "w").write("# 本群另有的规矩\n不许剧透新番\n")
     json.dump({"api_base": f"http://127.0.0.1:{LLM_PORT}/v1", "api_key": "k", "default_model": "scripted"},
               open(os.path.join(WORK, "data", "oai", "config.json"), "w"))
     others = re.findall(r"^    ([a-z_]+) \{", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/registry.rs")).read(), re.M)
@@ -298,7 +319,7 @@ reflect_enabled = false
         mark, n = len(posts), len(llm_requests)
         await inject('<quote id="5001"/>这个咋整', mid="5101")
         await wait_for(lambda: len(speak_requests(n)) >= 1, "引用机器人旧消息后被叫醒")
-        prompt = text_of([m for m in speak_requests(n)[0]["messages"] if m["role"] == "user"][0])
+        prompt = text_of([m for m in speak_requests(n)[0]["messages"] if m["role"] == "user" and "系统注记" not in text_of(m)][0])
         check("记录里带着被引原话", "〔引用 把 Magisk 降到 26.4 再试试〕" in prompt, prompt[-300:])
         check("标出了「引用了你的消息」", "〔引用了你的消息〕" in prompt, prompt[-300:])
         await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复")
@@ -309,7 +330,7 @@ reflect_enabled = false
         mark, n = len(posts), len(llm_requests)
         await inject(f'<at id="{BOT}"/>接着上面那句，说说看', user="10003", name="群友乙", mid="5103")
         await wait_for(lambda: len(speak_requests(n)) >= 1, "@ 之后被叫醒")
-        prompt = text_of([m for m in speak_requests(n)[0]["messages"] if m["role"] == "user"][0])
+        prompt = text_of([m for m in speak_requests(n)[0]["messages"] if m["role"] == "user" and "系统注记" not in text_of(m)][0])
         check("引别人旧消息的那条，摆出了作者与原话", "〔引用 老群友：这个周末聚餐去哪家〕" in prompt, prompt[-500:])
         await wait_for(lambda: len(creates_since(mark)) >= 1, "收到回复")
 
@@ -318,7 +339,7 @@ reflect_enabled = false
         mark, n = len(posts), len(llm_requests)
         await inject(f'<quote id="5003"/><at id="{BOT}"/> 这图是啥', user="10003", name="群友乙", mid="5104")
         await wait_for(lambda: len(speak_requests(n)) >= 1, "引用旧图 @ 之后被叫醒")
-        first = [m for m in speak_requests(n)[0]["messages"] if m["role"] == "user"][0]
+        first = [m for m in speak_requests(n)[0]["messages"] if m["role"] == "user" and "系统注记" not in text_of(m)][0]
         parts = first["content"] if isinstance(first.get("content"), list) else []
         check("被引的旧图随提示词附上了", any(p.get("type") == "image_url" for p in parts if isinstance(p, dict)), str(parts)[:200])
         check("出处写着被引那条的编号", "id=5003 的第 1 张" in text_of(first), text_of(first)[-300:])
@@ -365,6 +386,32 @@ reflect_enabled = false
         check("什么条件都不给被拒绝", len(results) >= 3 and "给个发言人、关键词或时间段" in results[2], str(results[2:3])[:300])
         check("提示翻不到就是不知道", len(results) >= 1 and "别凭印象补" in results[0])
         check("自己说的才带 self 标记，别人的不带空字段，并交代了它的含义", all('"self":""' not in r and "self 为 bot 或 owner" in r for r in results[:2]))
+
+        print("D. 管群：账号是管理员 → 群规进现场；人格自己撤回广告、禁言发广告的人；另一位管理员罚不动")
+        await asyncio.sleep(2.0)
+        AD_MESSAGE[0] = await inject("加群领福利 http://spam.example", user="10008", name="广告哥")
+        mark, n = len(posts), len(llm_requests)
+        await inject(f'<at id="{BOT}"/> 有广告，管一下', user="10007", name="群友己")
+        await wait_for(lambda: any(m == "guild.member.mute" for m, b in posts[mark:]), "管群那一轮动手", 90)
+        await asyncio.sleep(3.0)
+        reqs = speak_requests(n)
+        system = text_of(reqs[-1]["messages"][0]) if reqs else ""
+        prompt = text_of([m for m in reqs[-1]["messages"] if m["role"] == "user" and "系统注记" not in text_of(m)][0]) if reqs else ""
+        check("发言的系统提示词里有管群的做法", "管群：这个群把管理交到了你手上" in system, system[-300:])
+        check("现场里写着管事与群规（通用的与本群的）", "你在本群管事" in prompt and "不发广告" in prompt and "不许剧透新番" in prompt, prompt[:600])
+        results = [text_of(m) for m in reqs[-1]["messages"] if m["role"] == "tool"] if reqs else []
+        context = json.loads(results[0]).get("result", {}) if results else {}
+        check("现场的 management 写着开放、自己拿主意", context.get("management", {}).get("open") is True and context["management"].get("listens_to") == "自己拿主意", str(context.get("management")))
+        check("撤回广告成了", len(results) >= 2 and json.loads(results[1]).get("ok") is True, results[1:2])
+        check("禁言发广告的人成了", len(results) >= 3 and json.loads(results[2]).get("ok") is True, results[2:3])
+        check("另一位管理员罚不动", len(results) >= 4 and "群主或管理员" in results[3], results[3:4])
+        mutes = [b for m, b in posts[mark:] if m == "guild.member.mute"]
+        check("平台只收到对发广告的人的禁言", len(mutes) == 1 and mutes[0].get("user_id") == "10008", str(mutes))
+        check("平台收到了撤回广告", any(m == "message.delete" and b.get("message_id") == AD_MESSAGE[0] for m, b in posts[mark:]))
+        ledger = json.load(open(os.path.join(WORK, "data", "oai", "chat", "moderation.json"), encoding="utf-8"))
+        entries = ledger.get("groups", {}).get(GROUP, [])
+        check("管理记录经手人是搭话", [e["action"] for e in entries] == ["recall", "mute"] and all(e["by"] == "搭话" for e in entries) and entries[0]["name"] == "广告哥", str(entries))
+        check("没有往群里多发一句", not creates_since(mark), str(creates_since(mark)))
     except Exception as error:
         failures.append(str(error))
         print("  异常：", error)
