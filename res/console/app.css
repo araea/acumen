@@ -392,6 +392,75 @@ time {
   transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
+/* —— 液态玻璃（只在动的时候） ——
+   静止时胶囊是 M3E 的实心药丸；被拖动、或点了别的格正滑过去时，它化成一枚浮起的玻璃
+   透镜：升到图标之上、半透明、边缘把底下的图标折一折（index.html 的 #zw-glass），
+   随速度拉长、落格时回弹一下再凝回实心。形变走独立的 `scale` 属性，不和 app.js
+   写进 transform 的位移打架。减少动态时没有这一层；减少透明度时只留形变，不透明。 */
+.nav-pill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  /* 高光跟着手指走（--zw-glass-x 由 app.js 写），静止时看不见。 */
+  background:
+    radial-gradient(120% 90% at var(--zw-glass-x, 50%) 0%, color-mix(in srgb, white 42%, transparent), transparent 55%),
+    linear-gradient(to top, color-mix(in srgb, white 16%, transparent), transparent 40%);
+  box-shadow:
+    inset 0 0 0 var(--zw-border-width) color-mix(in srgb, white 50%, transparent),
+    inset 0 -1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 18%, transparent);
+  opacity: 0;
+  transition: opacity var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
+  pointer-events: none;
+}
+
+.nav[data-glass] .nav-pill {
+  z-index: 2;
+  background: color-mix(in srgb, var(--md-sys-color-secondary-container) 34%, transparent);
+  box-shadow:
+    0 10px 24px -8px color-mix(in srgb, var(--md-sys-color-shadow) 42%, transparent),
+    0 2px 6px -2px color-mix(in srgb, var(--md-sys-color-shadow) 25%, transparent);
+  -webkit-backdrop-filter: saturate(1.8) blur(1.5px);
+  backdrop-filter: saturate(1.8) blur(1.5px);
+  transition:
+    background-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
+    box-shadow var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+@supports (backdrop-filter: url("#zw-glass")) {
+  .nav[data-glass] .nav-pill {
+    backdrop-filter: url("#zw-glass") saturate(1.8) brightness(1.06);
+  }
+}
+
+.nav[data-glass] .nav-pill::after {
+  opacity: 1;
+}
+
+/* 透镜底下的格不再画选中色：字和图标由玻璃折出来，凝回实心时再换色。 */
+.nav[data-glass] .nav-item[aria-current="page"] {
+  color: var(--md-sys-color-on-surface);
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .nav[data-glass] .nav-pill {
+    z-index: 0;
+    background: var(--md-sys-color-secondary-container);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .nav[data-glass] .nav-item[aria-current="page"] {
+    color: var(--md-sys-color-on-secondary-container);
+  }
+}
+
+@media (prefers-reduced-motion: reduce), (forced-colors: active) {
+  .nav-pill::after {
+    display: none;
+  }
+}
+
 /* 首帧、解锁与断点重排时先落位再开动画，免得量到过渡中间的一格宽。 */
 .nav.nav-snap .nav-item,
 .nav.nav-snap .nav-label {
@@ -3265,4 +3334,158 @@ button.item:active::after {
   .main {
     padding: 0;
   }
+}
+
+/* —— 新版本 ——
+   顶栏右侧的一枚小药丸，只在有新版本时出现：tonal 容器色、图标加短字，窄屏只留图标。 */
+.update-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-02);
+  min-height: var(--zw-size-control);
+  padding: 0 var(--zw-space-05) 0 var(--zw-space-04);
+  border: 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+  font: inherit;
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  cursor: pointer;
+  animation: update-in var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing);
+}
+
+.update-chip:focus-visible {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.update-chip[aria-busy="true"] {
+  cursor: progress;
+  opacity: 0.72;
+}
+
+@keyframes update-in {
+  from {
+    opacity: 0;
+    scale: 0.6;
+  }
+}
+
+@media (max-width: 359.98px) {
+  .update-chip .update-chip-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .update-chip {
+    padding-inline: var(--zw-space-03);
+  }
+}
+
+/* 更新说明：对话框里一块可以滚动的纸面，保留原文的换行。 */
+.dialog-notes {
+  max-height: min(40dvh, 18rem);
+  overflow: auto;
+  padding: var(--zw-space-04) var(--zw-space-05);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* —— 停机页（管理面板） ——
+   知微没在运行时的总览：运行卡换成中性色调的「已停止」，下面是启动、更新与终端日志。 */
+.hero[data-offline] {
+  background-image: linear-gradient(145deg, var(--md-sys-color-surface-container-highest), var(--md-sys-color-surface-container-high));
+  background-color: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+}
+
+.hero[data-offline] .hero-top,
+.hero[data-offline] .hero-label,
+.hero[data-offline] .hero-note {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.hero[data-offline]::before,
+.hero[data-offline]::after {
+  border-color: color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent);
+}
+
+.hero[data-offline]::after {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
+}
+
+.hero[data-offline] .hero-art {
+  background: var(--md-sys-color-on-surface);
+  opacity: 0.05;
+}
+
+.hero[data-offline] .btn-filled {
+  --_btn-bg: var(--md-sys-color-primary);
+  --_btn-fg: var(--md-sys-color-on-primary);
+}
+
+.hero[data-offline] .btn-outlined {
+  border-color: var(--md-sys-color-outline);
+  --_btn-fg: var(--md-sys-color-primary);
+}
+
+.hero[data-offline] .btn:focus-visible {
+  outline-color: var(--zw-focus-color);
+}
+
+.status-idle {
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.hero .btn-stop {
+  border-color: color-mix(in srgb, var(--zw-hero-fg) 58%, transparent);
+  --_btn-fg: var(--zw-hero-fg);
+}
+
+/* 正在执行的起停 / 更新：一条波浪进度 + 管理命令最后几行输出。 */
+.job {
+  display: grid;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-05);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--md-sys-color-surface-container);
+}
+
+.job-title {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-03);
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  font-weight: var(--zw-weight-heading);
+}
+
+.job .progress {
+  position: static;
+  width: 100%;
+}
+
+.job-output {
+  margin: 0;
+  padding: var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--zw-log-bg);
+  color: var(--zw-log-fg);
+  font-family: var(--md-ref-typeface-mono);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

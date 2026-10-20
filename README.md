@@ -20,13 +20,15 @@ curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh |
 
 | 命令 | 用途 |
 | --- | --- |
-| `acumen` | 启动并打开控制台；已在运行就只打开控制台 |
+| `acumen` | 启动并打开管理页；已在运行就只打开管理页 |
 | `acumen stop` | 停止；开机与守护都不会再拉起，直到下次启动 |
 | `acumen restart` | 重启 |
 | `acumen status` | 运行状态、QQ 连接与保活情况 |
 | `acumen log` | 实时日志，`Ctrl+C` 退出 |
 | `acumen update` | 立即检查并更新 |
 | `acumen help` | 全部命令 |
+
+管理页（`acumen ui`，默认 `http://127.0.0.1:7800`）在知微停着时也打得开：可以直接在网页上启动、停止、重启和更新，不必回到 Termux 敲命令。添加到主屏幕后就像一个应用。
 
 在 QQ 里发送 `/help` 查看指令，`/ctl` 查看插件状态、开关和配置。在群里改配置要先成为管理员：在控制台的插件页打开「插件控制」，把自己的 QQ 号加进 `admins`。
 

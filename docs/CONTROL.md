@@ -88,6 +88,7 @@ Agent 的本机 `bash` 工具不是沙箱；这件工具不是能力的边界，
 enabled = true
 bind = "127.0.0.1"
 port = 7801
+panel_port = 7800
 token = ""
 log_lines = 400
 ```
@@ -95,13 +96,25 @@ log_lines = 400
 `token` 留空时首次启动自动生成，保存到 `data/console/token`（权限 `0600`）；启动日志会输出含口令的 URL。不要把 `bind` 改为 `0.0.0.0`，除非已确认网络隔离与口令保护足够。`--no-ui` 只关闭本次运行的 Web 界面，不影响机器人指令、定时任务与推送。
 
 ```sh
-acumen ui       # 打开控制台
+acumen ui       # 打开管理页（面板在就开面板，否则直接开控制台）
 acumen ui url   # 只打印地址
 ```
 
 名单（设置页的全局黑白名单、插件配置里的 `channel.white / black`、各类「开启的群」，以及资讯推送的私聊目标、管理员 `ctl.admins` 这类私聊用户名单）在控制台里不用手打引号：从已加入的群 / 好友里点选（带名字与搜索，好友还能按昵称、备注找），或整段粘贴 ID；移除可撤销，群名单底下说明它现在的实际效果。名册来自实现端的 `guild.list` 与 `friend.list`，只有连着的账号读得到，读不到时仍可直接输入群号或账号。
 
 控制台可安装到手机或桌面浏览器。日志仅在日志页可见时接收，页面离开或进入后台会暂停订阅，返回时读取最近记录。控制台操作不会直接发送群消息。
+
+有新版本时顶栏右侧出现「更新」（只在有新版本时出现），点开看更新说明，确认后下载、校验、换上并原地重启，等价于 `acumen update`；从源码构建的实例不显示。
+
+### 管理面板
+
+控制台长在机器人进程里，机器人停了页面也跟着没了。管理面板是同一个可执行文件的另一种跑法（`acumen --panel`），由 runit 单独托管（`$PREFIX/var/service/acumen-panel`），默认监听 `127.0.0.1:7800`、口令与控制台相同：
+
+- 知微在跑时，面板把 `/api/*` 原样转给控制台（日志流边收边转），看到的就是控制台，运行卡上多一颗「停止」。
+- 知微停着时，同一张页面换成「已停止」：运行卡给出原因（主动停止 / 进程不在 / 进程在但不应答），一颗「启动」（或「重启」），下面是 runit 收的终端日志；有新版本时顶栏照样出现「更新」。
+- 起停与更新调的是管理命令 `acumen start / stop / restart / update`，在自己的进程组里跑，页面显示进度与最后几行输出；跑完、知微回来后自动换回控制台。
+- 可执行文件被更新换掉后，面板在空闲时自行退出，由 runit 用新版本拉起。
+- `acumen stop` 只停知微、不停面板；root 守护在知微停着而面板开着时也会拉起 runit 监督树，所以重启手机后管理页照样打得开。`panel_port = 0` 关掉面板。
 
 总览页运行卡底部有一颗「重启」按钮，等价于 `acumen restart`：先确认，进程随后原地重启，页面轮询到新进程的启动时间后自动刷新。`[restart]` 关闭时按钮会直接说明原因。
 
@@ -115,11 +128,12 @@ acumen ui url   # 只打印地址
 | `~/acumen/config.toml`、`~/acumen/data/` | 配置与数据 |
 | `$PREFIX/bin/acumen` | 管理命令，随可执行文件一起更新 |
 | `$PREFIX/var/service/acumen/` | runit 服务；日志在 `$PREFIX/var/log/sv/acumen/`，每份 1 MB、留 5 份 |
+| `$PREFIX/var/service/acumen-panel/` | 管理面板（`acumen --panel`）；日志在 `$PREFIX/var/log/sv/acumen-panel/` |
 | `/data/adb/service.d/acumen.sh` | root 守护，开机由 KernelSU / Magisk 执行；日志 `/data/local/tmp/acumen-keeper.log` |
 
 | 命令 | 用途 |
 | --- | --- |
-| `acumen` / `acumen start` | 启动并打开控制台；`-q` 不打开 |
+| `acumen` / `acumen start` | 启动并打开管理页；`-q` 不打开 |
 | `acumen stop` | 停止，并留下停止标记：开机与守护都不会再拉起 |
 | `acumen restart` | 重启 |
 | `acumen status` | 运行状态、连接、保活与新版本 |

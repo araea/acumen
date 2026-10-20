@@ -50,7 +50,9 @@ groups person chat inbox hub smart_toy date_range tune terminal devices schedule
 
 filter_alt admin_panel_settings web database perm_media add_reaction workspace_premium undo
 campaign markdown repeat cloud leaderboard gif_box grid_view qr_code_scanner smart_display
-music_note screenshot_monitor newspaper help restart_alt
+music_note screenshot_monitor newspaper help restart_alt waving_hand restore_page
+
+system_update_alt power_settings_new stop_circle
 """
 
 # 失败比悄悄缺一个图标好：缺了就在这里报出来。

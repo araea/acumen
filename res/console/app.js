@@ -73,6 +73,7 @@
     stats: "leaderboard", gif: "gif_box", image_split: "grid_view", qr_scan: "qr_code_scanner",
     video_parse: "smart_display", song: "music_note", webshot: "screenshot_monitor", oai: "smart_toy",
     ambient: "forum", ai_news: "newspaper", help: "help", restart: "restart_alt",
+    welcome: "waving_hand", anti_recall: "restore_page",
   };
   const SECTION_ICONS = { message: "chat", play: "extension", insight: "leaderboard", system: "tune", misc: "extension" };
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
@@ -179,7 +180,26 @@
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       if (response.status === 401) lock("口令不正确，或者已经更换。请重新输入。");
-      throw failure(payload.error || `服务返回了 ${response.status}`, response.status);
+      const error = failure(payload.error || `服务返回了 ${response.status}`, response.status);
+      // 经管理面板打开、而知微没在运行：页面换成停机页，不当成一次失败。
+      if (response.status === 503 && payload.offline) error.offline = true;
+      throw error;
+    }
+    return payload;
+  }
+
+  /** 管理面板的接口（/panel/*）。只有经面板打开时才有；直接打开控制台时是 404。 */
+  async function panelApi(path, { method = "GET" } = {}) {
+    let response;
+    try {
+      response = await fetch(`/panel${path}`, { method, headers: { "x-acumen-token": token }, cache: "no-store" });
+    } catch {
+      throw failure("连不上管理面板。");
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      if (response.status === 401) lock("口令不正确，或者已经更换。请重新输入。");
+      throw failure(payload.error || `面板返回了 ${response.status}`, response.status);
     }
     return payload;
   }
@@ -232,13 +252,14 @@
   }
 
   /** 确认对话框：原生 dialog 负责焦点陷阱、Esc 与返回键；初始焦点落在「取消」。 */
-  function confirmAction({ title, body, confirm, cancel = "取消", danger = false }) {
+  function confirmAction({ title, body, detail = "", confirm, cancel = "取消", danger = false }) {
     const dialog = $("#dialog");
     const opener = document.activeElement;
     put(
       dialog,
       h`${danger ? h`<span class="dialog-icon danger">${icon("warning-fill")}</span>` : ""}<h2 class="dialog-title" id="dialog-title">${title}</h2>
         <p class="dialog-body" id="dialog-body">${body}</p>
+        ${detail ? h`<div class="dialog-notes" tabindex="0" role="region" aria-label="更新说明">${detail}</div>` : ""}
         <div class="actions actions-end">
           <button class="btn btn-text" type="button" value="cancel" autofocus>${cancel}</button>
           <button class="btn btn-filled${danger ? " btn-danger" : ""}" type="button" value="confirm">${confirm}</button>
@@ -322,14 +343,35 @@
     );
     put(
       $("#topbar-actions"),
-      h`<button class="icon-btn state" id="refresh-page" type="button" aria-label="刷新当前页面" title="刷新当前页面">${icon("refresh")}</button>`
+      h`<span id="update-slot"></span><button class="icon-btn state" id="refresh-page" type="button" aria-label="刷新当前页面" title="刷新当前页面">${icon("refresh")}</button>`
     );
   }
 
   /* 胶囊跟着当前格走。切换页面时先记住它现在的位置，再在 ~380ms 内
      逐帧追到新格（新格自己也在随 flex 过渡伸展），所以胶囊像被「带」过去，
-     不是凭空跳过去。首帧、缩放、断点切换与减少动态都直接落位。 */
+     不是凭空跳过去。首帧、缩放、断点切换与减少动态都直接落位。
+     滑动途中它是一枚液态玻璃透镜（见 app.css 的 .nav[data-glass]）：按速度拉长，
+     落格时回弹一下再凝回实心。 */
   let navPillFrame = 0;
+  const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /** 玻璃按速度变形：快了横向拉长、纵向收一点，体积大致守恒。v 是每毫秒像素。 */
+  function stretchPill(pill, velocity) {
+    const stretch = Math.min(1.32, 1 + Math.abs(velocity) * 0.22);
+    pill.style.scale = `${(1.06 * stretch).toFixed(3)} ${(1.06 / Math.sqrt(stretch)).toFixed(3)}`;
+  }
+
+  /** 落格：玻璃凝回实心，形变回弹一下。 */
+  function settlePill(nav, pill) {
+    delete nav.dataset.glass;
+    const from = pill.style.scale || "1.06 1.06";
+    pill.style.scale = "";
+    if (calm() || !pill.animate) return;
+    pill.animate(
+      [{ scale: from }, { scale: "0.94 1.06", offset: 0.45 }, { scale: "1.02 0.98", offset: 0.75 }, { scale: "1 1" }],
+      { duration: 460, easing: "cubic-bezier(0.3, 0.7, 0.4, 1)" }
+    );
+  }
   function paintNavPill(animate = true) {
     const nav = $("#nav");
     const pill = nav?.querySelector(".nav-pill");
@@ -350,6 +392,15 @@
       ? parseFloat(getComputedStyle(nav).getPropertyValue("--zw-nav-duration")) || 0
       : 0;
     const start = performance.now();
+    // 只有横向挪了格（手机底栏）才化成玻璃；导航轨上下换格照旧是实心滑块。
+    const glide = duration > 0 && compactNav.matches;
+    let lastX = from.x;
+    let lastT = start;
+    if (!glide) {
+      // 被打断的那一次（缩放、断点切换）留下的玻璃一并收起。
+      delete nav.dataset.glass;
+      pill.style.scale = "";
+    }
 
     const place = (x, y, w, h) => {
       pill.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
@@ -367,16 +418,20 @@
         w: rect.width,
         h: rect.height,
       };
-      place(
-        from.x + (to.x - from.x) * ease,
-        from.y + (to.y - from.y) * ease,
-        from.w + (to.w - from.w) * ease,
-        from.h + (to.h - from.h) * ease
-      );
+      const x = from.x + (to.x - from.x) * ease;
+      place(x, from.y + (to.y - from.y) * ease, from.w + (to.w - from.w) * ease, from.h + (to.h - from.h) * ease);
+      if (glide) {
+        stretchPill(pill, (x - lastX) / Math.max(1, now - lastT));
+        pill.style.setProperty("--zw-glass-x", `${Math.round(50 + Math.sign(to.x - from.x) * 18)}%`);
+        lastX = x;
+        lastT = now;
+      }
       if (progress < 1) navPillFrame = requestAnimationFrame(step);
+      else if (glide) settlePill(nav, pill);
     };
 
     pill.dataset.painted = "1";
+    if (glide) nav.dataset.glass = "glide";
     if (duration > 0) navPillFrame = requestAnimationFrame(step);
     else step(start);
   }
@@ -450,6 +505,17 @@
       pill.style.transform = `translate3d(${localX.toFixed(2)}px, ${m.top.toFixed(2)}px, 0)`;
       pill.style.width = `${m.cell.toFixed(2)}px`;
       pill.style.height = `${m.height.toFixed(2)}px`;
+      if (!calm()) {
+        const now = performance.now();
+        // 速度取短时平均，手指一顿玻璃就慢慢缩回圆润，不会一抖一抖。
+        const instant = drag.lastX === undefined ? 0 : (x - drag.lastX) / Math.max(1, now - drag.lastT);
+        drag.velocity = (drag.velocity ?? 0) * 0.6 + instant * 0.4;
+        drag.lastX = x;
+        drag.lastT = now;
+        stretchPill(pill, drag.velocity);
+        const within = Math.min(1, Math.max(0, (x - (m.rect.left + nav.clientLeft + localX)) / m.cell));
+        pill.style.setProperty("--zw-glass-x", `${Math.round(within * 100)}%`);
+      }
     };
 
     const cleanup = () => {
@@ -467,6 +533,7 @@
       clearTimeout(drag.timer);
       cancelAnimationFrame(navPillFrame);
       nav.classList.add("nav-dragging");
+      if (!calm()) nav.dataset.glass = "drag";
       paintFree(x);
       if (navigator.vibrate) navigator.vibrate(8);
     };
@@ -646,6 +713,7 @@
     logs: () => logs.mount(),
   };
 
+
   /** 用户亲手输入过的文本框。真实输入（键入、粘贴、输入法、拖放、撤销）会发 `beforeinput`，
    *  随后的 `input` 也带非空的 `inputType`；浏览器与密码管理器的自动填充、扩展写值、表单恢复
    *  两样都没有——这些值再不同于基线，也不是「用户没保存的编辑」，更不该拿来拦人换页。 */
@@ -777,8 +845,21 @@
     let fragment;
     try {
       fragment = await PAINT[route.page](route);
+      lifecycle.online();
     } catch (error) {
       if (seq !== renderSeq || error?.status === 401) return;
+      if (error?.offline && lifecycle.panel) {
+        busy(false);
+        shown = route;
+        claimEntry(route);
+        put($("#view"), await lifecycle.page());
+        $("#view > .page")?.toggleAttribute("data-enter", changed);
+        setTitle("已停止");
+        watchTitle();
+        lifecycle.watch();
+        if (changed && previous && !quiet) $(".page-title")?.focus({ preventScroll: true });
+        return;
+      }
       busy(false);
       shown = route;
       claimEntry(route);
@@ -900,6 +981,7 @@
             <a class="btn btn-filled" href="#/logs">${icon("receipt_long")}查看日志</a>
             <a class="btn btn-outlined" href="#/plugins">${icon("extension")}管理插件</a>
             <button class="btn btn-outlined" type="button" data-restart>${icon("restart_alt")}重启</button>
+            ${lifecycle.panel ? h`<button class="btn btn-outlined btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
           </div>
         </section>
 
@@ -966,26 +1048,289 @@
       return;
     }
 
-    // 先把回执那一小段等过去，再开始探活。
-    await new Promise((done) => setTimeout(done, 1800));
-    for (let i = 0; i < 90; i++) {
-      try {
-        const data = await api("/overview");
-        if (data.app.started !== started) {
-          location.reload();
-          return;
-        }
-      } catch {
-        /* 端口关着就是还在重启 */
-      }
-      await new Promise((done) => setTimeout(done, 1200));
-    }
+    if (await waitBack(started)) return;
     holdSnack(false);
     busy(false);
     button.disabled = false;
     button.removeAttribute("aria-busy");
     snackbar("重启还没有回来，稍后刷新页面看看。", "error");
   }
+
+  /** 等新进程回来：启动时间变了才算（旧进程收尾的那一小段里还答得出来）。回来了就整页刷新。 */
+  async function waitBack(started, rounds = 90) {
+    // 先把回执那一小段等过去，再开始探活。
+    await new Promise((done) => setTimeout(done, 1800));
+    for (let i = 0; i < rounds; i++) {
+      try {
+        const data = await api("/overview");
+        if (data.app.started !== started) {
+          location.reload();
+          return true;
+        }
+      } catch {
+        /* 端口关着就是还在重启 */
+      }
+      await new Promise((done) => setTimeout(done, 1200));
+    }
+    return false;
+  }
+
+  /* ==================== §7b 新版本 ==================== */
+
+  /**
+   * 有新版本时顶栏出现一枚「更新」药丸（每一页都看得见，所以只放这一处）；没有就什么都不显示。
+   * 知微在跑时由它自己下载、换上、重启（/api/update）；停着时交给管理面板（/panel/update）。
+   */
+  const updates = {
+    info: null,
+    checked: 0,
+    async check(force = false) {
+      if (!force && Date.now() - this.checked < 30 * 60 * 1000) return this.paint();
+      try {
+        if (lifecycle.offline) {
+          const status = await lifecycle.refresh();
+          this.info = { current: status.version, managed: status.managed, latest: status.latest };
+        } else {
+          this.info = await api(`/update${force ? "?force=true" : ""}`);
+        }
+        this.checked = Date.now();
+      } catch {
+        /* 查不到就当没有，不打扰 */
+      }
+      this.paint();
+    },
+    latest() {
+      return this.info?.managed ? this.info.latest : null;
+    },
+    paint() {
+      const slot = $("#update-slot");
+      if (!slot) return;
+      const latest = this.latest();
+      const html = latest
+        ? h`<button class="update-chip state" type="button" data-update aria-label="更新到 ${latest.version}" title="有新版本 ${latest.version}">
+            ${icon("system_update_alt")}<span class="update-chip-label">更新</span></button>`
+        : "";
+      const digest = latest?.version ?? "";
+      if (slot.dataset.digest === digest) return;
+      slot.dataset.digest = digest;
+      put(slot, html);
+    },
+    async apply(button) {
+      const latest = this.latest();
+      if (!latest) return;
+      const notes = String(latest.notes || "").replace(/^#.*\n+/, "").trim();
+      const ok = await confirmAction({
+        title: `更新到 ${latest.version}？`,
+        body: lifecycle.offline
+          ? "下载、校验后换上新版本；知微现在停着，换好之后照旧停着，点「启动」即可用上。"
+          : "下载、校验后换上新版本并自动重启；正在进行的对话与截图会中断，本页随后自动恢复。",
+        detail: notes.length > 1200 ? `${notes.slice(0, 1200)}…` : notes,
+        confirm: "更新",
+      });
+      if (!ok) return;
+      const buttons = $$("[data-update]");
+      for (const item of buttons) {
+        item.disabled = true;
+        item.setAttribute("aria-busy", "true");
+      }
+      if (lifecycle.offline) return lifecycle.run("update", button);
+      const started = $(".hero")?.dataset.started ?? "";
+      busy(true);
+      snackbar(`正在下载 ${latest.version} …`);
+      holdSnack(true);
+      try {
+        const reply = await api("/update", { method: "POST" });
+        snackbar(reply.message);
+        holdSnack(true);
+      } catch (error) {
+        holdSnack(false);
+        busy(false);
+        for (const item of buttons) {
+          item.disabled = false;
+          item.removeAttribute("aria-busy");
+        }
+        report(error);
+        return;
+      }
+      if (await waitBack(started, 120)) return;
+      holdSnack(false);
+      busy(false);
+      snackbar("新版本已换上，但还没等到重启回来；稍后刷新页面看看。", "error");
+    },
+  };
+
+  /* ==================== §7c 管理面板 ==================== */
+
+  /** 终端日志一行 → 与控制台日志同一种行（`[时:分:秒] [级别] [来源] 正文`）。 */
+  function terminalRow(line) {
+    const match = /^\[(\d\d:\d\d:\d\d)\]\s*\[(\w+)\]\s*\[([^\]]*)\]\s?(.*)$/.exec(line);
+    return match
+      ? logRow({ at: match[1], level: match[2], target: match[3], text: match[4] })
+      : logRow({ at: "", level: "INFO", target: "", text: line });
+  }
+
+  const JOB_NAMES = { start: "启动", stop: "停止", restart: "重启", update: "更新" };
+
+  /**
+   * 经管理面板（acumen --panel）打开时才有的一层：知微停着时的「已停止」页、启动 / 停止、
+   * 停机状态下的更新。直接打开控制台时 `panel` 为假，这一层整个不出现。
+   */
+  const lifecycle = {
+    panel: false,
+    offline: false,
+    status: null,
+    timer: 0,
+    async probe() {
+      try {
+        this.status = await panelApi("/status");
+        this.panel = true;
+      } catch {
+        this.panel = false;
+      }
+    },
+    async refresh() {
+      this.status = await panelApi("/status");
+      return this.status;
+    },
+    online() {
+      if (!this.offline) return;
+      this.offline = false;
+      this.stop();
+      updates.check(true);
+    },
+    stop() {
+      clearTimeout(this.timer);
+      this.timer = 0;
+    },
+    /** 停机页上每几秒看一眼：命令跑完了、知微起来了，就换回正常页面。 */
+    watch() {
+      this.offline = true;
+      this.stop();
+      const tick = async () => {
+        if (!this.offline || document.hidden) return;
+        let status;
+        try {
+          status = await this.refresh();
+        } catch {
+          this.timer = setTimeout(tick, 4000);
+          return;
+        }
+        const box = $("#job-box");
+        if (box) put(box, this.jobBlock(status.job));
+        updates.info = { current: status.version, managed: status.managed, latest: status.latest };
+        updates.paint();
+        if (status.running && !status.job?.running) {
+          try {
+            await api("/overview");
+            this.online();
+            render({ quiet: true });
+            return;
+          } catch {
+            /* 进程在、控制台还没起来 */
+          }
+        }
+        this.timer = setTimeout(tick, status.job?.running ? 1500 : 4000);
+      };
+      this.timer = setTimeout(tick, 1500);
+    },
+    jobBlock(job) {
+      if (!job) return "";
+      const name = JOB_NAMES[job.command] || job.command;
+      if (job.running) {
+        return h`<div class="job" role="status">
+          <span class="job-title">正在${name}…</span>
+          <div class="progress" aria-hidden="true"></div>
+          ${job.output ? h`<pre class="job-output">${job.output}</pre>` : ""}
+        </div>`;
+      }
+      if (job.code && Date.now() / 1000 - job.started < 600) {
+        return h`<div class="job" role="alert">
+          <span class="job-title">${icon("error-fill")}${name}没有成功</span>
+          ${job.output ? h`<pre class="job-output">${job.output}</pre>` : ""}
+        </div>`;
+      }
+      return "";
+    },
+    async page() {
+      const status = this.status ?? (await this.refresh());
+      updates.info = { current: status.version, managed: status.managed, latest: status.latest };
+      updates.paint();
+      const log = await panelApi("/log?lines=40").catch(() => ({ lines: [] }));
+      const busyJob = status.job?.running;
+      const reason = status.stopped
+        ? "你上次让它停下了；开机与守护都不会自己拉起它，点「启动」就好。"
+        : status.running
+          ? "进程在，但控制台还没有回应：可能正在启动，或者卡住了。看看下面的终端日志。"
+          : "进程没在跑：可能刚崩溃，runit 会自己再拉起；一直起不来就看看下面的终端日志。";
+      return h`<div class="page" data-title="已停止">
+        ${pageHead("总览", "这台设备上知微的运行情况。")}
+        <div class="overview">
+          <section class="hero" data-offline aria-labelledby="hero-label">
+            <span class="hero-art" aria-hidden="true"></span>
+            <div class="hero-top"><span>${NAME} v${status.version}</span><span class="status status-idle">${status.running ? "无响应" : "已停止"}</span></div>
+            <h2 class="hero-label" id="hero-label">知微现在</h2>
+            <p class="hero-value">${status.running ? "没有回应" : "没在运行"}</p>
+            <p class="hero-note">${reason}</p>
+            <div class="actions">
+              <button class="btn btn-filled" type="button" data-lifecycle="${status.running ? "restart" : "start"}"${attr(busyJob, "disabled")}>
+                ${icon(status.running ? "restart_alt" : "power_settings_new")}${status.running ? "重启" : "启动"}</button>
+            </div>
+          </section>
+          <div id="job-box">${this.jobBlock(status.job)}</div>
+          <section class="section section-wide" aria-labelledby="terminal-title">
+            <div class="section-head">
+              <h2 class="section-title" id="terminal-title">终端日志</h2>
+              <span class="section-meta">最后 ${log.lines?.length || 0} 行</span>
+            </div>
+            <div class="log log-short">${log.lines?.length ? (log.lines || []).map(terminalRow) : h`<p class="log-empty">还没有日志</p>`}</div>
+          </section>
+        </div>
+      </div>`;
+    },
+    /** 交给管理面板执行一个管理命令；停机页随后轮询它的进度。 */
+    async run(command, button) {
+      if (command === "stop") {
+        const ok = await confirmAction({
+          title: "停止知微？",
+          body: "所有插件、对话与定时推送都会停下；开机与守护不会再自动拉起它。之后在这一页点「启动」即可恢复。",
+          confirm: "停止",
+          danger: true,
+        });
+        if (!ok) return;
+      }
+      if (button) {
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+      }
+      try {
+        const reply = await panelApi(`/${command}`, { method: "POST" });
+        snackbar(reply.message);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }
+        report(error);
+        return;
+      }
+      this.status = null;
+      if (command === "stop") {
+        // 等它真的停下（控制台不再应答）再换成停机页；runit 收尾要几秒。
+        busy(true);
+        for (let i = 0; i < 40; i++) {
+          await new Promise((done) => setTimeout(done, 1000));
+          try {
+            await api("/overview");
+          } catch (error) {
+            if (error?.offline) break;
+          }
+        }
+        busy(false);
+      }
+      this.offline = true;
+      if (shown) render({ quiet: true });
+    },
+  };
 
   /* ==================== §8 插件 ==================== */
 
@@ -2715,7 +3060,10 @@
     token = value;
     store.set(value);
     document.body.dataset.state = "ready";
-    render();
+    lifecycle.probe().finally(() => {
+      render();
+      updates.check();
+    });
   }
 
   /* ==================== §13 事件 ==================== */
@@ -2878,6 +3226,8 @@
         return;
       }
       if ((hit = on("[data-restart]"))) return restartBot(hit);
+      if ((hit = on("[data-update]"))) return updates.apply(hit);
+      if ((hit = on("[data-lifecycle]"))) return lifecycle.run(hit.dataset.lifecycle, hit);
       if ((hit = on("[data-run]"))) {
         const input = $("#command-input");
         if (input) input.value = hit.dataset.run;
@@ -3060,6 +3410,8 @@
   function resume() {
     if ($("#log-box")) logs.mount();
     if ($("#overview-log") && !overviewFeed.timer) overviewFeed.start();
+    if (lifecycle.offline && !lifecycle.timer) lifecycle.watch();
+    updates.check();
   }
 
   /* ==================== §14 启动 ==================== */
@@ -3074,6 +3426,10 @@
       return;
     }
     document.body.dataset.state = "ready";
-    render();
+    // 先问一句是不是经管理面板打开的（本机一来一回，很快），停机页要靠它。
+    lifecycle.probe().finally(() => {
+      render();
+      updates.check();
+    });
   });
 })();
