@@ -34,4 +34,10 @@ ls -la dist
 
 if [[ ${1:-} == --dry-run ]]; then exit 0; fi
 git push origin HEAD
-gh release create "$tag" dist/* --target "$(git rev-parse HEAD)" --title "$tag" --notes "$notes"
+# 经代理连 api.github.com 偶尔会断（unexpected EOF），断了就清掉半截的再来。
+for attempt in 1 2 3; do
+    gh release create "$tag" dist/* --target "$(git rev-parse HEAD)" --title "$tag" --notes "$notes" && exit 0
+    gh release delete "$tag" --yes >/dev/null 2>&1
+    sleep 5
+done
+exit 1
