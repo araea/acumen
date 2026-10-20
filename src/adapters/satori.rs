@@ -22,6 +22,7 @@ pub mod api;
 pub mod forward;
 pub mod inline;
 pub mod message;
+mod module;
 #[allow(dead_code)]
 pub mod qq;
 
@@ -871,14 +872,22 @@ pub async fn run_bot_loop(
     save_lock: Arc<AsyncMutex<()>>,
     config_path: Arc<str>,
 ) {
-    let endpoint = bot_config.url.clone().unwrap_or_default();
     let mut backoff = Duration::from_secs(3);
     // 最后一个收到的事件序列号。重连时带上它，实现端会补推断线期间的事件。
     let mut session_sn = EventCursor::default();
     loop {
+        // 跟随模块的连接每轮现读端口与令牌：模块管理页里改了，下次重连就换过来。
+        let config = match module::resolve(&bot_config).await {
+            Ok(config) => config,
+            Err(reason) => {
+                info!(target: LOG_TARGET, "{reason}。");
+                return;
+            }
+        };
+        let endpoint = config.url.clone().unwrap_or_default();
         let connected_at = std::time::Instant::now();
         let result = connect_and_listen(
-            &bot_config,
+            &config,
             global_config.clone(),
             db.clone(),
             scheduler.clone(),
@@ -1167,6 +1176,7 @@ async fn listen(
                             bot,
                         );
                         tokio::spawn(async move {
+                            let _busy = plugins::restart::busy();
                             if let Err(err) = processing.await {
                                 error!(target: LOG_TARGET, "Satori event processing error: {}", err);
                             }

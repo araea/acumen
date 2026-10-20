@@ -33,7 +33,7 @@ pub(crate) struct Console {
     ctx: Context,
     started: Instant,
     started_at: String,
-    /// 带口令的完整地址，启动日志与 `./bot ui` 都打印它。
+    /// 带口令的完整地址，启动日志与 `acumen ui` 都打印它。
     pub(crate) url: String,
     /// 口令。回环之外的请求全靠它。
     token: String,
@@ -105,7 +105,7 @@ pub(super) async fn install(ctx: Context, cfg: Config) -> Result<(), String> {
 /// 把带口令的地址写一份在 `data/console/url`（0600）。
 ///
 /// 启动日志里有同一行，但日志会被群里刷走（`tail -F` 那个窗口尤其，
-/// 见 docs/CONTROL.md 末尾那条），落一个文件之后 `./bot ui` 随时能把它捞出来。
+/// 见 docs/CONTROL.md 末尾那条），落一个文件之后 `acumen ui` 随时能把它捞出来。
 async fn record_url(url: &str) {
     let Ok(dir) = crate::plugins::get_data_dir("console").await else {
         return;
@@ -116,7 +116,7 @@ async fn record_url(url: &str) {
 /// 口令：配置里写了就用它，没写就首启动生成一个落盘。
 ///
 /// 落在 `data/console/token`（0600）。放在数据目录而不是配置里，是因为它要能被
-/// 「已经在跑的那个进程」自己换掉，也让 `./bot ui` 不必去解析 config.toml。
+/// 「已经在跑的那个进程」自己换掉，也让 `acumen ui` 不必去解析 config.toml。
 async fn resolve_token(configured: &str) -> Result<String, String> {
     if !configured.trim().is_empty() {
         return Ok(configured.trim().to_string());

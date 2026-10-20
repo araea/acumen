@@ -528,6 +528,7 @@ async fn settings(State(console): State<Arc<Console>>) -> Response {
                 "enabled": bot.enabled,
                 "protocol": bot.protocol,
                 "url": bot.url.clone().unwrap_or_default(),
+                "module": bot.module,
                 "has_token": bot
                     .access_token
                     .as_deref()
@@ -584,7 +585,12 @@ async fn save_bot(State(console): State<Arc<Console>>, Json(body): Json<BotEdit>
             ));
         }
         let url = body.url.trim();
-        if protocol == "satori" && url.is_empty() {
+        // 跟随模块的那几条可以不写地址（端口与令牌从模块设置里现读）。
+        let module = body
+            .index
+            .and_then(|index| config.bots.get(index))
+            .and_then(|bot| bot.module.clone());
+        if protocol == "satori" && url.is_empty() && module.is_none() {
             return Err("Satori 要填实现端地址，例如 http://127.0.0.1:3001".into());
         }
 
@@ -596,6 +602,7 @@ async fn save_bot(State(console): State<Arc<Console>>, Json(body): Json<BotEdit>
         let entry = |previous: Option<&crate::config::BotConfig>| crate::config::BotConfig {
             enabled: body.enabled,
             protocol: protocol.to_string(),
+            module: module.clone(),
             url: (!url.is_empty()).then(|| url.to_string()),
             // 页面读不到原来的令牌，所以「没写字」当「别动它」处理；清掉要明说。
             access_token: if body.clear_token {

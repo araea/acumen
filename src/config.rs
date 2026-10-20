@@ -51,6 +51,22 @@ impl GlobalFilterConfig {
 }
 
 impl AppConfig {
+    /// 卡片与截图用的浏览器：配置里写了就用它；没写时认 Termux 的 chromium-browser
+    /// （安装时装的就是它），再没有才交给截图库自己去找。
+    pub fn browser(&self) -> Option<String> {
+        if let Some(path) = self
+            .browser_path
+            .as_deref()
+            .filter(|p| !p.trim().is_empty())
+        {
+            return Some(path.to_string());
+        }
+        let prefix =
+            std::env::var("PREFIX").unwrap_or_else(|_| "/data/data/com.termux/files/usr".into());
+        let termux = format!("{prefix}/bin/chromium-browser");
+        std::path::Path::new(&termux).exists().then_some(termux)
+    }
+
     /// 原子写回配置文件，权限 0600（里面有口令与密钥）。
     pub async fn save(&self, path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let toml_string = toml::to_string_pretty(self)?;
@@ -63,23 +79,15 @@ fn default_prefix() -> Vec<String> {
     vec!["/".to_string()]
 }
 
+/// 默认连本机的两个 Satori 模块：端口与令牌跟着模块自己的设置走，没装的那个自动跳过。
 fn default_bots() -> Vec<BotConfig> {
-    vec![
-        // 控制台适配器：保持简洁，仅需启用
-        BotConfig {
-            enabled: false,
-            protocol: "console".to_string(),
-            url: None,
-            access_token: None,
-        },
-        // Satori 适配器：默认连接本机 satori-qq
-        BotConfig {
-            enabled: true,
-            protocol: "satori".to_string(),
-            url: Some("http://127.0.0.1:3001".to_string()),
-            access_token: None,
-        },
-    ]
+    ["satori_qq", "satori_wx"]
+        .into_iter()
+        .map(|module| BotConfig {
+            module: Some(module.to_string()),
+            ..BotConfig::default()
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -90,6 +98,11 @@ pub struct BotConfig {
 
     /// 协议类型 (例如 "satori")
     pub protocol: String,
+
+    /// 跟随本机的 Satori 模块（`satori_qq` / `satori_wx`）：没写 `url`、`access_token` 时
+    /// 用模块设置里的端口与令牌，每次连接前现读，模块里改了令牌这边不用跟着改。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
@@ -103,6 +116,7 @@ impl Default for BotConfig {
         Self {
             enabled: true,
             protocol: "satori".to_string(),
+            module: None,
             url: None,
             access_token: None,
         }

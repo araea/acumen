@@ -1,17 +1,18 @@
 # Acumen（知微）配置示例。
 #
-# 复制成 config.toml 后即可启动：首次启动会把缺的字段按默认值补进去，不会覆盖已有取值，
-# 解析失败也不会覆盖原文件。每一项的完整说明在源码里该字段的 /// 注释，这份文件解释的是
+# 安装后不用改任何一项就能用：首次启动会按默认值生成 ~/acumen/config.toml，之后升级带来的
+# 新字段也会自动补进去，不会覆盖已有取值，解析失败也不会覆盖原文件。日常修改用控制台或
+# 群里的 /ctl。每一项的完整说明在源码里该字段的 /// 注释，这份文件解释的是
 # 「这一项做什么、取什么值、为什么是这个默认值」。
 #
 # 段落按注册表顺序排（也就是 /help 与 /ctl list 的顺序）。写法约定：
 #   - 键名与 [oai]/[ambient] 这类配置键一律照原样写，不翻译、不改写；
 #   - 指令写在正文里时带当前前缀（默认 /），能整条抄走。
-# 改配置前先 ./bot stop：运行中的实例退出时会用内存里那份配置覆盖文件。
+# 直接编辑文件前先 acumen stop：运行中的实例退出时会用内存里那份配置覆盖文件。
 
 # 指令前缀，可配多个。改掉之后所有指令与提示里的前缀跟着变。
 command_prefix = ["/"]
-# 网页截图与卡片出图的 Chrome/Chromium 路径；留空即自动查找。
+# 网页截图与卡片出图的 Chrome/Chromium 路径；留空即用安装时装好的 Termux chromium-browser。
 # browser_path = "/data/data/com.termux/files/usr/bin/chromium-browser"
 
 # 全局群过滤与各插件的 channel 是独立规则。
@@ -23,28 +24,32 @@ blacklist = []
 enable_whitelist = false
 whitelist = []
 
-# Satori 连接实现端。console 是本地测试用的假适配器，不连 QQ。
+# 连接哪些 Satori 实现端，一段 [[bots]] 一个。
+# 默认两段跟随本机的模块：module 写模块 ID，端口与令牌每次连接前从模块自己的设置里现读
+# （经 su），在模块管理页改了令牌这边不用跟着改；没装的那个模块自动跳过。
 [[bots]]
-enabled = false
-protocol = "console"
+enabled = true
+protocol = "satori"
+module = "satori_qq"   # 知弦：QQ
 
 [[bots]]
 enabled = true
 protocol = "satori"
-url = "http://127.0.0.1:3001"
-# 留空表示不鉴权；也可设置环境变量 ACUMEN_SATORI_TOKEN（优先级更高）。
-access_token = ""
+module = "satori_wx"   # 知言：微信；send_allow 白名单之外的会话收得到、回不出去
 
-# 可以同时连几个实现端，各写一段 [[bots]]。下面是本机的 satori-wx（微信）：
-# token 在 /data/adb/modules/satori_wx/satori-wx.conf，这里要写明——环境变量
-# ACUMEN_SATORI_TOKEN 会盖掉每一段的 access_token，连两个实现端时别设它。
+# 也可以写明地址与令牌连别处的实现端；写了 url / access_token 就以写的为准。
+# 环境变量 ACUMEN_SATORI_TOKEN 会盖掉每一段的令牌，连两个实现端时别设它。
 # 微信的 wxid、群号（…@chatroom）原样当字符串用：群过滤、插件白名单直接写它们。
-# satori-wx 的 send_allow 白名单之外的会话收得到、回不出去（502 target not in send_allow）。
 # [[bots]]
 # enabled = true
 # protocol = "satori"
-# url = "http://127.0.0.1:5601"
-# access_token = "<satori-wx.conf 里的 token>"
+# url = "http://127.0.0.1:5500"
+# access_token = ""
+
+# 本地测试用的假适配器，不连任何平台；acumen run 前台运行时自动启用。
+# [[bots]]
+# enabled = true
+# protocol = "console"
 
 # ============================================================================
 # 系统 · 运维
@@ -100,21 +105,27 @@ record_self = true
 # 原始消息保留多少天，超期清理；0 表示不清理。清理不影响已算出的统计结果。
 retention_days = 180
 
-# 自动重启：每日定时重启 + 内存阈值监控。长时间运行后卡顿时用得上。
+# 例行维护：每天按时检查更新、平滑重启，另有内存阈值兜底。
 [restart]
 enabled = true
-# 每日自动重启时间（HH:MM，24 小时制）。默认凌晨 4 点，是群聊低峰期。
-time = "04:00"
-# 手动 /restart 指令是否开放。默认关闭，免得群友误触发一次整机重启。
-allow_manual_restart = false
-# 进程 RSS 内存阈值（MB），超过就提前重启；0 表示不做内存监控。
-memory_threshold_mb = 0
+# 每天在这些时刻做一次维护（HH:MM，24 小时制，可写多个，系统本地时区）。默认是群聊低峰期。
+times = ["04:30"]
+# 维护时先查新版本：有就下载、校验、换上，再重启生效。只对安装的发布版生效，源码构建的不动。
+auto_update = true
+# 没有新版本时也重启一次，放掉长时间运行积下的内存。
+daily_restart = true
+# 平滑重启：等到这么多秒没有新消息、手头的消息也都处理完了再动手，免得话说一半。
+quiet_seconds = 120
+# 最多等多少分钟；过了仍不安静也照常重启。
+max_wait_minutes = 30
+# 进程 RSS 内存阈值（MB），超过就平滑重启；0 表示不做内存监控。
+memory_threshold_mb = 1024
 # 内存巡检间隔（分钟）。
 memory_check_interval_minutes = 5
-# 重启前等待多少秒，让「即将重启」那句通知先刷到 WebSocket。
+# 手动 /restart 指令是否开放。默认关闭，免得群友误触发重启。
+allow_manual_restart = false
+# 手动重启前等待多少秒，让「即将重启」那句通知先发出去。
 restart_delay_seconds = 3
-# 外部重启命令（如 "systemctl restart acumen"）。配了就优先用它，代替进程自我拉起。
-restart_command = ""
 
 # 帮助中心：按当前注册表列出全部插件与开关状态，配置管理交给 ctl。
 [help]

@@ -101,7 +101,7 @@ impl Context {
 
     /// 全局配置里的浏览器路径；`None` 表示自动查找。
     pub fn browser_path(&self) -> Option<String> {
-        self.config.read().unwrap().browser_path.clone()
+        self.config.read().unwrap().browser()
     }
 
     /// 这个群是否通过全局黑白名单。收到的事件、定时推送、资讯推送共用这一个口径

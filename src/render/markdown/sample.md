@@ -77,7 +77,7 @@ def greet(name: str = "世界") -> str:
 
 ```bash
 # 构建并重启
-cargo build --release --locked && ./bot restart
+cargo build --release --locked && acumen restart
 ```
 
 ## 表格

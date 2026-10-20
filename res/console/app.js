@@ -1916,7 +1916,7 @@
           <button class="btn btn-filled jump" type="button" id="log-jump"${attr(logs.follow, "hidden")}>${icon("vertical_align_bottom")}<span>回到最新</span></button>
         </div>
       </section>
-      <p class="note">页面切到后台时暂停接收，回来后自动补齐。完整日志请在本机运行 <code>./bot logs</code>。</p>
+      <p class="note">页面切到后台时暂停接收，回来后自动补齐。完整日志请在本机运行 <code>acumen log</code>。</p>
     </div>`;
   }
 
@@ -2026,7 +2026,8 @@
     const id = `bot-${index === "" ? "new" : index}`;
     const known = ["satori", "console"];
     const protocols = known.includes(bot.protocol) ? known : [...known, bot.protocol];
-    const title = index === "" ? "新连接" : `连接 ${Number(index) + 1}`;
+    const follows = { satori_qq: "知弦（QQ）", satori_wx: "知言（微信）" }[bot.module] || bot.module;
+    const title = index === "" ? "新连接" : bot.module ? follows : `连接 ${Number(index) + 1}`;
     return h`<form class="bot" data-bot="${index}" aria-labelledby="${id}-title" autocomplete="off" novalidate>
       <div class="bot-head">
         <div class="bot-lead">
@@ -2045,12 +2046,13 @@
             ${protocols.map((p) => h`<option value="${p}"${attr(p === bot.protocol, "selected")}>${p === "satori" ? "Satori" : p === "console" ? "本地终端（测试用）" : p}</option>`)}
           </select>${icon("keyboard_arrow_down")}</span>
         </div>
-        ${textField(`${id}-url`, "实现端地址", "url", bot.url, "Satori 必填，例如 http://127.0.0.1:3001", ' inputmode="url"')}
+        ${textField(`${id}-url`, "实现端地址", "url", bot.url,
+          bot.module ? `留空即跟随${follows}模块里设的端口与令牌` : "Satori 必填，例如 http://127.0.0.1:3001", ' inputmode="url"')}
         <div class="field span-all">
           <label class="field-label" for="${id}-token">访问令牌</label>
           <input class="input mono" id="${id}-token" name="access_token" type="password" autocomplete="off" spellcheck="false"
             data-1p-ignore data-lpignore="true" data-bwignore="true"
-            placeholder="${bot.has_token ? "已设置；留空保持不变" : "留空表示不鉴权"}">
+            placeholder="${bot.has_token ? "已设置；留空保持不变" : bot.module ? "留空即用模块里的令牌" : "留空表示不鉴权"}">
         </div>
         ${bot.has_token
           ? h`<div class="field span-all">

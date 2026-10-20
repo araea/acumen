@@ -1,0 +1,453 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# 知微（acumen）的管理命令。随可执行文件一起发布、一起更新，装在 $PREFIX/bin/acumen，不要手改。
+#
+# 装好的东西在哪：
+#   ~/acumen/acumen         可执行文件（ACUMEN_HOME 可以换目录）
+#   ~/acumen/config.toml    配置；~/acumen/data/ 数据
+#   $PREFIX/var/service/acumen        runit 服务：进程崩了自动拉起
+#   /data/adb/service.d/acumen.sh     root 守护：开机拉起、Termux 被清掉后拉回来
+set -uo pipefail
+
+PREFIX=${PREFIX:-/data/data/com.termux/files/usr}
+HOME=${HOME:-/data/data/com.termux/files/home}
+APP=${ACUMEN_HOME:-$HOME/acumen}
+EXE=$APP/acumen
+export SVDIR=$PREFIX/var/service
+SV=$SVDIR/acumen
+LOGDIR=$PREFIX/var/log/sv/acumen
+URL_FILE=$APP/data/console/url
+KEEPER=/data/adb/service.d/acumen.sh
+KEEPER_STATUS=/data/local/tmp/acumen-keeper.status
+KEEPER_PID=/data/local/tmp/acumen-keeper.pid
+PATH=$PREFIX/bin:$PATH
+
+if [[ -t 1 ]]; then
+    B=$'\e[1m' D=$'\e[2m' G=$'\e[32m' Y=$'\e[33m' R=$'\e[31m' N=$'\e[0m'
+else
+    B='' D='' G='' Y='' R='' N=''
+fi
+say() { printf '%s\n' "$*"; }
+ok() { printf '  %s✓%s %s\n' "$G" "$N" "$*"; }
+warn() { printf '  %s!%s %s\n' "$Y" "$N" "$*"; }
+die() { printf '%s%s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+
+installed() { [[ -x $EXE ]] || die "还没装好：$EXE 不存在。重新运行安装命令即可。"; }
+version() { "$EXE" --version 2>/dev/null || echo '?'; }
+has_root() { su -c true </dev/null >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- 进程 ---
+
+bot_pid() {
+    local pid exe
+    for pid in $(pgrep -f "$EXE" 2>/dev/null); do
+        exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
+        [[ ${exe% (deleted)} == "$EXE" ]] && { echo "$pid"; return 0; }
+    done
+    return 1
+}
+
+runsvdir_alive() {
+    local p
+    p=$(cat "$PREFIX/var/run/service-daemon.pid" 2>/dev/null) || return 1
+    grep -q runsvdir "/proc/$p/cmdline" 2>/dev/null
+}
+
+# runit 的监督树。Termux 新开的会话会自己起它；从别处（守护、小组件）进来时要手动起。
+ensure_runsvdir() {
+    runsvdir_alive || service-daemon start >/dev/null 2>&1
+    local i
+    for ((i = 0; i < 30; i++)); do
+        [[ -e $SV/supervise/ok ]] && sv status acumen >/dev/null 2>&1 && return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+# 截图库只在正常退出时关浏览器；被杀掉留下的孤儿 Chromium 白占内存，启动前收掉。
+reap_browsers() {
+    local pid parent
+    for pid in $(pgrep -f 'cdp-shot_' 2>/dev/null); do
+        grep -qa -- '--user-data-dir=.*cdp-shot_' "/proc/$pid/cmdline" 2>/dev/null || continue
+        parent=$pid
+        while parent=$(awk '{print $4}' "/proc/$parent/stat" 2>/dev/null) && [[ -n $parent && $parent -gt 1 ]]; do
+            [[ $(readlink "/proc/$parent/exe" 2>/dev/null) == "$EXE"* ]] && continue 2
+        done
+        kill -KILL "$pid" 2>/dev/null
+    done
+}
+
+# ---------------------------------------------------------------- 服务 ---
+
+write_if_changed() { # 路径 内容 权限
+    [[ -f $1 && $(cat "$1") == "$2" ]] && return
+    mkdir -p "$(dirname "$1")"
+    printf '%s\n' "$2" > "$1.new" && chmod "$3" "$1.new" && mv -f "$1.new" "$1"
+}
+
+ensure_service() {
+    write_if_changed "$SV/run" "#!$PREFIX/bin/sh
+exec $PREFIX/bin/acumen serve 2>&1" 755
+    # runsv 自己没有退避：一起来就退的情况（配置写坏了）会每秒重试一次，这里秒退就歇 20 秒。
+    # 正常退出与被信号停下的不歇。
+    write_if_changed "$SV/finish" "#!$PREFIX/bin/sh
+[ \"\$1\" = 0 ] && exit 0
+[ \"\$1\" = -1 ] && exit 0
+started=\$(cat $PREFIX/var/run/acumen.started 2>/dev/null || echo 0)
+[ \$((\$(date +%s) - started)) -lt 20 ] && echo \"acumen 一起来就退了（退出码 \$1），20 秒后再试\" && sleep 20
+exit 0" 755
+    write_if_changed "$SV/log/run" "#!$PREFIX/bin/sh
+mkdir -p $LOGDIR
+exec svlogd $LOGDIR" 755
+    # 日志滚动：每份 1 MB，留 5 份。
+    mkdir -p "$LOGDIR"
+    write_if_changed "$LOGDIR/config" "s1048576
+n5" 644
+}
+
+open_url() {
+    if command -v termux-open-url >/dev/null; then
+        termux-open-url "$1" >/dev/null 2>&1 && return
+    fi
+    say "  打开：$1"
+}
+
+console_url() { head -n 1 "$URL_FILE" 2>/dev/null; }
+
+# 等控制台写下新地址并能打开。$1 是启动前的时刻。
+wait_ready() {
+    local since=$1 i url
+    for ((i = 0; i < 90; i++)); do
+        if [[ -s $URL_FILE ]] && (( $(stat -c %Y "$URL_FILE") >= since )); then
+            url=$(console_url)
+            curl -s -o /dev/null -m 2 --noproxy '*' "${url%%\?*}" && return 0
+        fi
+        bot_pid >/dev/null || { (( i > 10 )) && return 1; }
+        sleep 1
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------- 动作 ---
+
+cmd_start() {
+    installed
+    local quiet=0
+    [[ ${1:-} == -q || ${ACUMEN_NO_UI:-0} == 1 ]] && quiet=1
+    ensure_service
+    rm -f "$SV/down"
+    if bot_pid >/dev/null; then
+        say "知微已在运行。"
+        (( quiet )) || { url=$(console_url); [[ -n $url ]] && open_url "$url"; }
+        return 0
+    fi
+    ensure_runsvdir || die "runit 没起来。先运行 acumen setup。"
+    ensure_keeper
+    local since
+    since=$(date +%s)
+    sv up acumen >/dev/null
+    printf '正在启动知微 %s …' "$(version)"
+    if wait_ready "$since"; then
+        printf ' %s好了%s\n' "$G" "$N"
+        (( quiet )) || open_url "$(console_url)"
+        say "${D}acumen status 看状态，acumen log 看日志。${N}"
+    else
+        printf ' %s没起来%s\n' "$R" "$N"
+        say "最近的日志："
+        tail -n 15 "$LOGDIR/current" 2>/dev/null | sed 's/^/  /'
+        exit 1
+    fi
+}
+
+cmd_stop() {
+    installed
+    touch "$SV/down" 2>/dev/null
+    local pid i
+    if [[ -e $SV/supervise/ok ]] && runsvdir_alive; then
+        sv down acumen >/dev/null 2>&1
+    elif pid=$(bot_pid); then
+        kill -TERM "$pid" 2>/dev/null
+    fi
+    for ((i = 0; i < 35; i++)); do
+        bot_pid >/dev/null || break
+        sleep 1
+    done
+    if bot_pid >/dev/null; then die "30 秒还没停下，看看 acumen log。"; fi
+    termux-wake-unlock >/dev/null 2>&1
+    say "知微已停止。开机与守护都不会再拉起它，直到下次 acumen start。"
+}
+
+cmd_restart() {
+    installed
+    if ! bot_pid >/dev/null; then cmd_start -q; return; fi
+    local since
+    since=$(date +%s)
+    sv restart acumen >/dev/null 2>&1 || { cmd_stop >/dev/null; cmd_start -q; return; }
+    printf '正在重启 …'
+    if wait_ready "$since"; then printf ' %s好了%s\n' "$G" "$N"; else printf ' %s没起来%s，看看 acumen log\n' "$R" "$N"; exit 1; fi
+}
+
+# runit 的入口（服务目录里的 run 调它）：备好环境再换成机器人本体。
+cmd_serve() {
+    cd "$APP" || exit 1
+    date +%s > "$PREFIX/var/run/acumen.started"
+    export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost,::1"
+    export no_proxy=$NO_PROXY
+    # 机器人要能运行 #!/usr/bin/env 开头的脚本；从守护或小组件进来时环境里没有它。
+    if [[ -z ${LD_PRELOAD:-} && -f $PREFIX/lib/libtermux-exec-ld-preload.so ]]; then
+        export LD_PRELOAD=$PREFIX/lib/libtermux-exec-ld-preload.so
+    elif [[ -z ${LD_PRELOAD:-} && -f $PREFIX/lib/libtermux-exec.so ]]; then
+        export LD_PRELOAD=$PREFIX/lib/libtermux-exec.so
+    fi
+    termux-wake-lock >/dev/null 2>&1
+    reap_browsers
+    exec "$EXE"
+}
+
+# root 守护在 Termux 里执行的那一下：起监督树、拿唤醒锁。
+cmd_wake() {
+    [[ -e $SV/down ]] && exit 0
+    runsvdir_alive || service-daemon start >/dev/null 2>&1
+    termux-wake-lock >/dev/null 2>&1
+}
+
+# 守护以 root 运行，普通用户 kill -0 它会得到「不允许」——那也说明它在。
+keeper_alive() {
+    local p
+    p=$(cat "$KEEPER_PID" 2>/dev/null) || return 1
+    [[ -n $p ]] || return 1
+    kill -0 "$p" 2>/dev/null && return 0
+    [[ $(kill -0 "$p" 2>&1) == *ermitted* ]]
+}
+
+ensure_keeper() {
+    keeper_alive || su -c "[ -f $KEEPER ] && sh $KEEPER" </dev/null >/dev/null 2>&1
+}
+
+uptime_text() {
+    local s=$1
+    if (( s >= 86400 )); then echo "$((s / 86400)) 天 $((s % 86400 / 3600)) 小时"
+    elif (( s >= 3600 )); then echo "$((s / 3600)) 小时 $((s % 3600 / 60)) 分"
+    else echo "$((s / 60)) 分 $((s % 60)) 秒"; fi
+}
+
+cmd_status() {
+    installed
+    local pid url token overview up
+    say "${B}知微 $(version)${N}"
+    if pid=$(bot_pid); then
+        url=$(console_url)
+        token=${url##*t=}
+        overview=$(curl -s -m 3 --noproxy '*' -H "Authorization: Bearer $token" "${url%%\?*}api/overview" 2>/dev/null)
+        up=$(jq -r '.app.uptime // empty' <<< "$overview" 2>/dev/null)
+        ok "运行中（PID $pid${up:+，已运行 $(uptime_text "${up%.*}")}）"
+        if [[ -n $overview ]]; then
+            local bots
+            bots=$(jq -r '.bots[] | "\(.platform)：\(.name // .nick // .id)（\(.id)）"' <<< "$overview" 2>/dev/null)
+            if [[ -n $bots ]]; then
+                while read -r line; do ok "已连上 $line"; done <<< "$bots"
+            else
+                warn "还没连上 QQ：确认知弦模块已启用、QQ 已登录（acumen log 看连接日志）"
+            fi
+        fi
+        ok "控制台 ${url%%\?*}（acumen ui 打开）"
+    elif [[ -e $SV/down ]]; then
+        warn "已停止（acumen start 启动）"
+    else
+        warn "没在运行（acumen start 启动）"
+    fi
+    if keeper_alive; then
+        local st
+        st=$(cat "$KEEPER_STATUS" 2>/dev/null)
+        ok "root 守护在岗：开机自启、被清理后自动拉回"
+        [[ $st == *wakelock=1* ]] && ok "唤醒锁已持有：熄屏也照常运行" || warn "唤醒锁没拿到：在 Termux 通知里点 Acquire wakelock"
+        [[ $st == *exempt=1* ]] && ok "已加入省电白名单" || warn "还不在省电白名单里"
+    else
+        warn "root 守护没在跑：运行 acumen setup（需要给 Termux 授予 root）"
+    fi
+    local latest
+    if latest=$("$EXE" --check-update 2>/dev/null); then
+        say "  ${Y}有新版本 $latest${N}：acumen update 立即更新，或等每天例行维护自动更新"
+    fi
+}
+
+cmd_log() {
+    [[ -f $LOGDIR/current ]] || die "还没有日志。"
+    say "${D}Ctrl+C 退出${N}"
+    exec tail -n "${1:-80}" -F "$LOGDIR/current"
+}
+
+cmd_ui() {
+    local url
+    url=$(console_url)
+    [[ -n $url ]] || die "还没有控制台地址：先 acumen start。"
+    if [[ ${1:-} == url ]]; then say "$url"; return; fi
+    bot_pid >/dev/null || warn "知微没在运行，页面会打不开；先 acumen start。"
+    open_url "$url"
+}
+
+cmd_update() {
+    installed
+    say "当前 $(version)，正在检查 …"
+    local new code
+    new=$("$EXE" --update)
+    code=$?
+    case $code in
+        0)
+            "$EXE" --install-cli >/dev/null 2>&1
+            ok "已更新到 $new"
+            if bot_pid >/dev/null; then cmd_restart; fi
+            ;;
+        1) ok "已是最新版本" ;;
+        *) exit 1 ;;
+    esac
+}
+
+cmd_run() {
+    installed
+    bot_pid >/dev/null && die "知微正在后台运行，先 acumen stop。"
+    cd "$APP" || exit 1
+    say "${D}前台运行，可以直接输入 /help 这类指令测试；Ctrl+C 停止。${N}"
+    exec "$EXE" --console
+}
+
+# ---------------------------------------------------------------- 安装 ---
+
+pkg_missing() { ! dpkg -s "$1" 2>/dev/null | grep -q '^Status: install ok installed'; }
+
+install_packages() {
+    local want=(termux-services termux-tools curl jq ffmpeg poppler fontconfig-utils chromium) missing=() p
+    for p in "${want[@]}"; do pkg_missing "$p" && missing+=("$p"); done
+    if ((${#missing[@]} == 0)); then ok "依赖齐全"; return; fi
+    say "  安装依赖：${missing[*]}（浏览器较大，第一次要几分钟）"
+    # chromium 在 x11 仓库里。
+    if [[ " ${missing[*]} " == *" chromium "* ]] && pkg_missing x11-repo; then
+        yes | pkg install -y x11-repo >/dev/null 2>&1
+    fi
+    yes | pkg install -y -o Dpkg::Options::=--force-confnew "${missing[@]}" 2>&1 | grep -E '^(E:|Err)' >&2
+    for p in "${missing[@]}"; do pkg_missing "$p" && warn "$p 没装上，稍后再运行一次 acumen setup"; done
+}
+
+# 卡片与截图里的中文。Android 自带的中日韩字体只有常规一档，粗体会被浏览器硬描粗，
+# 所以补上思源黑体与宋体的几档真字重。
+install_fonts() {
+    local dir=$PREFIX/share/fonts/acumen base f name got=0
+    local files=(
+        Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+        Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
+        Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf
+        Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Bold.otf
+        Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Black.otf
+    )
+    mkdir -p "$dir"
+    for f in "${files[@]}"; do
+        name=${f##*/}
+        [[ -s $dir/$name || -s $HOME/.fonts/$name ]] && continue
+        for base in https://github.com/notofonts/noto-cjk/raw/main https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main; do
+            if curl -fsSL --retry 2 -m 600 -o "$dir/$name.part" "$base/$f" && [[ $(stat -c %s "$dir/$name.part") -gt 1000000 ]]; then
+                mv -f "$dir/$name.part" "$dir/$name"
+                got=$((got + 1))
+                break
+            fi
+            rm -f "$dir/$name.part"
+        done
+        [[ -s $dir/$name ]] || warn "字体 $name 没下载下来，稍后再运行一次 acumen setup"
+    done
+    ((got)) && fc-cache -f >/dev/null 2>&1
+    ok "中文字体就绪"
+}
+
+termux_properties() {
+    local file=$HOME/.termux/termux.properties
+    mkdir -p "$HOME/.termux"
+    if ! grep -qE '^[[:space:]]*allow-external-apps[[:space:]]*=[[:space:]]*true' "$file" 2>/dev/null; then
+        sed -i '/^[[:space:]]*allow-external-apps/d' "$file" 2>/dev/null
+        echo 'allow-external-apps = true' >> "$file"
+        termux-reload-settings >/dev/null 2>&1
+    fi
+}
+
+setup_root() {
+    if ! has_root; then
+        warn "没有 root：开机自启与被清理后的自动拉回用不了，知弦的令牌也读不到。"
+        warn "在 KernelSU 管理器的「超级用户」里给 Termux 授权，再运行 acumen setup。"
+        return
+    fi
+    su -c "dumpsys deviceidle whitelist +com.termux; cmd appops set com.termux RUN_ANY_IN_BACKGROUND allow; am set-standby-bucket com.termux active" </dev/null >/dev/null 2>&1
+    ok "Termux 已加入省电白名单"
+    if "$EXE" --install-keeper </dev/null; then ok "root 守护已装好：开机自启、被清理后自动拉回"; else warn "root 守护没装上"; fi
+    local mods
+    mods=$(su -c 'for m in satori_qq satori_wx; do [ -d /data/adb/modules/$m ] && echo $m$([ -f /data/adb/modules/$m/disable ] && echo :off); done' </dev/null 2>/dev/null)
+    case $mods in
+        *satori_qq:off*) warn "知弦（satori-qq）模块被关掉了：在 KernelSU 里打开它并重启手机" ;;
+        *satori_qq*) ok "找到知弦（satori-qq）：端口与令牌自动跟随模块设置" ;;
+        *) warn "没找到知弦（satori-qq）模块：在 KernelSU 里装上它、重启手机，再登录 QQ" ;;
+    esac
+    [[ $mods == *satori_wx* ]] && ok "找到知言（satori-wx）：同时接入微信"
+}
+
+cmd_setup() {
+    installed
+    [[ -d /data/data/com.termux ]] || die "只支持安卓上的 Termux。"
+    say "${B}检查运行环境${N}"
+    install_packages
+    install_fonts
+    termux_properties
+    "$EXE" --install-cli >/dev/null 2>&1
+    ensure_service
+    ok "runit 服务就绪：进程崩了自动拉起"
+    setup_root
+}
+
+cmd_uninstall() {
+    say "卸载知微 …"
+    bot_pid >/dev/null && cmd_stop >/dev/null
+    if [[ -e $SV/supervise/ok ]]; then sv down acumen >/dev/null 2>&1; fi
+    rm -rf "$SV" "$LOGDIR"
+    if has_root; then su -c "[ -f $KEEPER ] && sh $KEEPER stop; rm -f $KEEPER" </dev/null >/dev/null 2>&1; fi
+    if [[ ${1:-} == --purge ]]; then
+        rm -rf "$APP"
+        ok "程序、配置与数据都已删除"
+    else
+        rm -f "$EXE"
+        ok "程序已删除；配置与数据留在 $APP（acumen uninstall --purge 一起删）"
+    fi
+    rm -f "$PREFIX/bin/acumen"
+}
+
+cmd_help() {
+    cat <<EOF
+${B}知微（acumen）$(version)${N}
+
+  acumen            启动并打开控制台（已在运行就只打开控制台）
+  acumen stop       停止；开机与守护都不会再拉起，直到下次启动
+  acumen restart    重启
+  acumen status     运行状态、QQ 连接与保活情况
+  acumen log        实时日志（Ctrl+C 退出）
+  acumen ui         打开控制台；acumen ui url 只打印地址
+  acumen update     立即检查并更新（每天 04:30 也会自动做）
+
+  acumen setup      重新检查依赖、字体、root 守护
+  acumen run        前台运行，调试用
+  acumen uninstall  卸载（保留配置与数据；--purge 一起删）
+
+配置与数据在 $APP；改配置用控制台，或在 QQ 里发 /ctl。
+EOF
+}
+
+case "${1:-start}" in
+    start | up) shift || true; cmd_start "$@" ;;
+    stop | down) cmd_stop ;;
+    restart) cmd_restart ;;
+    status | s) cmd_status ;;
+    log | logs) shift; cmd_log "$@" ;;
+    ui | web | open) shift; cmd_ui "$@" ;;
+    update | upgrade) cmd_update ;;
+    setup) cmd_setup ;;
+    run) cmd_run ;;
+    uninstall) shift; cmd_uninstall "$@" ;;
+    serve) cmd_serve ;;
+    wake) cmd_wake ;;
+    help | -h | --help) cmd_help ;;
+    -q) cmd_start -q ;;
+    *) printf '不认识「%s」。\n\n' "$1" >&2; cmd_help; exit 2 ;;
+esac

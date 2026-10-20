@@ -20,7 +20,7 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "acumen"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -30,9 +30,11 @@ dependencies = [
  "cdp-html-shot",
  "chrono",
  "encoding_rs",
+ "flate2",
  "fontdb",
  "futures-util",
  "glob",
+ "hex",
  "http",
  "image 0.25.10",
  "jieba-rs",
@@ -50,6 +52,7 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "simd-json",
  "tokio",
  "tokio-tungstenite 0.30.0",

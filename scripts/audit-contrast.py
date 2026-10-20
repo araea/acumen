@@ -207,7 +207,7 @@ def main():
     if not base:
         url_file = os.path.join(REPO, "target/release/data/console/url")
         if not os.path.isfile(url_file) or os.path.getsize(url_file) == 0:
-            print("没有控制台地址：先 ./bot start，或者把地址当第一个参数传进来。", file=sys.stderr)
+            print("没有控制台地址：先 acumen start，或者把地址当第一个参数传进来。", file=sys.stderr)
             return 1
         with open(url_file) as fh:
             base = fh.readline().strip()

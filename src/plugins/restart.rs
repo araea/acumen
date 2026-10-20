@@ -1,18 +1,17 @@
-//! restart 插件:每日定时自动重启 + 内存阈值监控 + 手动重启指令
+//! restart 插件：例行维护（按时更新与重启）、内存阈值监控、手动重启指令。
 //!
-//! 解决长时间运行导致缓存累积、云服务器内存被撑爆的问题。
-//! 重启请求交给主循环：停止适配器和任务、关闭数据库与浏览器、保存配置，
-//! Unix 下使用 exec 替换当前进程，保持前台终端及 PID。
+//! 例行维护按配置的时刻进行：先查新版本，有就下载校验换上；再等群里安静下来、手头的
+//! 活儿做完，才请求主循环重启。重启由主循环收尾：停适配器与任务、关数据库与浏览器、
+//! 保存配置，Unix 下 exec 替换当前进程，PID 不变，托管它的 runit 不会当成崩溃。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{get_prefixes, match_word_command};
-use crate::config::AppConfig;
 use crate::event::Context;
 use crate::message::Message;
 use crate::plugins::{PluginConfig, PluginError, get_config, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 const LOG_TARGET: &str = "Plugin/Restart";
@@ -23,30 +22,39 @@ const LOG_TARGET: &str = "Plugin/Restart";
 #[serde(default)]
 pub struct RestartConfig {
     enabled: bool,
-    /// 每日自动重启时间 (HH:MM，24 小时制)，默认凌晨 4 点(群聊低峰期)
-    time: String,
-    /// 进程自身 RSS 内存阈值 (MB)，超过则提前重启；0 表示关闭内存监控(仅 Linux 支持读取)
+    /// 每天在这些时刻做一次例行维护（HH:MM，24 小时制，可写多个）
+    times: Vec<String>,
+    /// 例行维护时先查新版本，有就下载、校验、换上（仅发布版）
+    auto_update: bool,
+    /// 例行维护时没有新版本也重启一次，放掉长时间运行积下的内存
+    daily_restart: bool,
+    /// 平滑重启：等到这么多秒没有新消息、手头也没有在处理的消息再动手
+    quiet_seconds: u64,
+    /// 最多等多少分钟；过了仍不安静也照常重启
+    max_wait_minutes: u64,
+    /// 进程自身 RSS 内存阈值 (MB)，超过就平滑重启；0 表示关闭内存监控
     memory_threshold_mb: u64,
     /// 内存巡检间隔(分钟)
     memory_check_interval_minutes: u64,
-    /// 是否开放 /restart 手动指令(默认关闭，防止群内成员误触发整机重启)
+    /// 是否开放 /restart 手动指令(默认关闭，防止群内成员误触发重启)
     allow_manual_restart: bool,
-    /// 重启前等待秒数(等待通知消息刷新到 WebSocket)
+    /// 手动重启前等待秒数(等待通知消息刷新到 WebSocket)
     restart_delay_seconds: u64,
-    /// 外部重启命令(如 "systemctl restart acumen")；配置后优先使用，代替进程自我拉起
-    restart_command: String,
 }
 
 impl Default for RestartConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            time: "04:00".to_string(),
-            memory_threshold_mb: 0,
+            times: vec!["04:30".to_string()],
+            auto_update: true,
+            daily_restart: true,
+            quiet_seconds: 120,
+            max_wait_minutes: 30,
+            memory_threshold_mb: 1024,
             memory_check_interval_minutes: 5,
             allow_manual_restart: false,
             restart_delay_seconds: 3,
-            restart_command: String::new(),
         }
     }
 }
@@ -61,13 +69,65 @@ pub async fn wait_request() {
 
 /// 重启防抖标记:防止定时任务与内存监控同时触发导致双重重启
 static RESTARTING: AtomicBool = AtomicBool::new(false);
+/// 例行维护进行中（在等安静或在下载），同一时刻只跑一份。
+static MAINTAINING: AtomicBool = AtomicBool::new(false);
+
+/// 正在处理的事件数与最近一次收到事件的时刻，平滑重启靠它们判断「现在安静」。
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+static LAST_ACTIVITY: AtomicI64 = AtomicI64::new(0);
+
+/// 处理一条事件期间持有它；放下时记下时刻。
+pub struct Busy(());
+
+pub fn busy() -> Busy {
+    IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+    LAST_ACTIVITY.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+    Busy(())
+}
+
+impl Drop for Busy {
+    fn drop(&mut self) {
+        LAST_ACTIVITY.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn quiet_for(seconds: u64) -> bool {
+    let idle = chrono::Utc::now().timestamp() - LAST_ACTIVITY.load(Ordering::Relaxed);
+    IN_FLIGHT.load(Ordering::SeqCst) == 0 && idle >= i64::try_from(seconds).unwrap_or(i64::MAX)
+}
+
+/// 等到安静下来，或等满 `max_wait_minutes`。
+async fn wait_quiet(cfg: &RestartConfig) {
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(cfg.max_wait_minutes);
+    let mut logged = false;
+    while !quiet_for(cfg.quiet_seconds) {
+        if tokio::time::Instant::now() >= deadline {
+            info!(target: LOG_TARGET, "等了 {} 分钟仍不安静，照常重启", cfg.max_wait_minutes);
+            return;
+        }
+        if !logged {
+            info!(target: LOG_TARGET, "等群里安静 {} 秒再重启…", cfg.quiet_seconds);
+            logged = true;
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
 
 // ================= 插件生命周期 =================
 
 impl PluginConfig for RestartConfig {
     const NAME: &'static str = "restart";
-}
 
+    fn check(&self) -> Result<(), String> {
+        for time in &self.times {
+            if crate::clock::parse_clock(time).is_none() {
+                return Err(format!("times 里的「{time}」不是 HH:MM"));
+            }
+        }
+        Ok(())
+    }
+}
 
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
@@ -76,26 +136,28 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             return Ok(());
         }
 
-        // 1. 每日定时重启
-        let (h, m, s) = parse_time(&cfg.time);
-        let daily_ctx = ctx.clone();
-        ctx.scheduler.add_daily_at(h, m, s, move || {
-            let ctx = daily_ctx.clone();
-            async move {
-                info!(
-                    target: LOG_TARGET,
-                    "每日定时重启触发，开始执行重启流程..."
-                );
-                do_restart(&ctx, "每日定时".to_string()).await;
-            }
-        });
-        info!(
-            target: LOG_TARGET,
-            "已计划每日 {:02}:{:02}:{:02} 自动重启（系统本地时区）",
-            h,
-            m,
-            s
-        );
+        // 1. 例行维护
+        for time in &cfg.times {
+            let Some(clock) = crate::clock::parse_clock(time) else {
+                warn!(target: LOG_TARGET, "无法解析维护时刻 [{time}]，跳过");
+                continue;
+            };
+            use chrono::Timelike;
+            let daily_ctx = ctx.clone();
+            ctx.scheduler.add_daily_at(clock.hour(), clock.minute(), clock.second(), move || {
+                let ctx = daily_ctx.clone();
+                async move { maintain(ctx).await }
+            });
+        }
+        if !cfg.times.is_empty() {
+            let what = match (cfg.auto_update && crate::release::managed(), cfg.daily_restart) {
+                (true, true) => "检查更新并重启",
+                (true, false) => "检查更新（有新版本才重启）",
+                (false, true) => "重启",
+                (false, false) => "什么也不做",
+            };
+            info!(target: LOG_TARGET, "每天 {} {what}（系统本地时区）", cfg.times.join("、"));
+        }
 
         // 2. 内存阈值监控(仅 Linux 支持读取自身 RSS)
         if cfg.memory_threshold_mb > 0 {
@@ -108,14 +170,19 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                     async move {
                         match current_rss_mb() {
                             Some(mb) if mb >= threshold => {
+                                if MAINTAINING.swap(true, Ordering::SeqCst) {
+                                    return;
+                                }
                                 warn!(
                                     target: LOG_TARGET,
-                                    "内存占用 {}MB 达到阈值 {}MB，提前重启",
+                                    "内存占用 {}MB 达到阈值 {}MB，安静下来就重启",
                                     mb,
                                     threshold
                                 );
+                                wait_quiet(&get_config_or_default::<RestartConfig>(&ctx)).await;
                                 do_restart(&ctx, format!("内存超限 ({mb}MB >= {threshold}MB)"))
                                     .await;
+                                MAINTAINING.store(false, Ordering::SeqCst);
                             }
                             Some(mb) => {
                                 debug!(
@@ -144,6 +211,40 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
 
         Ok(())
     })
+}
+
+/// 例行维护：先把新版本换上（换文件不影响正在跑的进程），再等安静、重启。
+async fn maintain(ctx: Context) {
+    if MAINTAINING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let cfg = get_config_or_default::<RestartConfig>(&ctx);
+    let mut reason = cfg.daily_restart.then(|| "每日定时".to_string());
+    if cfg.auto_update && crate::release::managed() {
+        match crate::release::check().await {
+            Ok(Some(release)) => {
+                info!(target: LOG_TARGET, "发现新版本 {}，正在下载…", release.version);
+                match crate::release::install(&release).await {
+                    Ok(()) => {
+                        info!(target: LOG_TARGET, "新版本 {} 已换上，重启后生效", release.version);
+                        reason = Some(format!(
+                            "更新 {} → {}",
+                            crate::release::VERSION,
+                            release.version
+                        ));
+                    }
+                    Err(error) => warn!(target: LOG_TARGET, "更新没装上：{error:#}"),
+                }
+            }
+            Ok(None) => info!(target: LOG_TARGET, "已是最新版本 {}", crate::release::VERSION),
+            Err(error) => warn!(target: LOG_TARGET, "查不到新版本：{error:#}"),
+        }
+    }
+    if let Some(reason) = reason {
+        wait_quiet(&cfg).await;
+        do_restart(&ctx, reason).await;
+    }
+    MAINTAINING.store(false, Ordering::SeqCst);
 }
 
 pub fn handle(
@@ -267,19 +368,10 @@ async fn do_restart(ctx: &Context, reason: String) {
     RESTART_REQUEST.notify_one();
 }
 
-/// 资源清理并保存成功后调用。exec 保留终端、PID、环境和单实例锁。
-pub fn relaunch(config: &AppConfig) -> Result<(), PluginError> {
-    let cfg = config
-        .plugins
-        .get("restart")
-        .map(|v| RestartConfig::deserialize(v.clone()))
-        .transpose()?
-        .unwrap_or_default();
-    if !cfg.restart_command.trim().is_empty() {
-        return spawn_external(cfg.restart_command.trim());
-    }
+/// 资源清理并保存成功后调用。exec 保留终端、PID、环境与 runit 的托管关系。
+pub fn relaunch() -> Result<(), PluginError> {
     let exe = std::env::current_exe()?;
-    // A release build may have replaced the executable while this process ran.
+    // 自动更新会在运行期间换掉可执行文件，路径后面因此带上 " (deleted)"。
     let executable = exe.to_string_lossy();
     let executable = executable.strip_suffix(" (deleted)").unwrap_or(&executable);
     let mut cmd = std::process::Command::new(executable);
@@ -288,7 +380,7 @@ pub fn relaunch(config: &AppConfig) -> Result<(), PluginError> {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        info!(target: LOG_TARGET, "配置已保存，正在原地重启（保留前台终端与 PID）...");
+        info!(target: LOG_TARGET, "配置已保存，正在原地重启（保留 PID）...");
         // exec 只在失败时返回：正常路径下这个进程已经被新程序替掉了。
         Err(cmd.exec().into())
     }
@@ -301,49 +393,7 @@ pub fn relaunch(config: &AppConfig) -> Result<(), PluginError> {
     }
 }
 
-/// 通过外部命令重启(如 systemctl / supervisor / nssm 等进程管理器)
-fn spawn_external(command: &str) -> Result<(), PluginError> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        let child = std::process::Command::new("cmd")
-            .args(["/C", command])
-            .creation_flags(CREATE_NEW_PROCESS_GROUP)
-            .spawn()?;
-        info!(
-            target: LOG_TARGET,
-            "已执行外部重启命令: {} (pid: {:?})",
-            command,
-            child.id()
-        );
-    }
-    #[cfg(not(windows))]
-    {
-        let child = std::process::Command::new("sh")
-            .args(["-c", command])
-            .spawn()?;
-        info!(
-            target: LOG_TARGET,
-            "已执行外部重启命令: {} (pid: {:?})",
-            command,
-            child.id()
-        );
-    }
-    Ok(())
-}
-
 // ================= 工具函数 =================
-
-/// 解析 HH:MM 或 HH:MM:SS，非法输入回退默认 04:00。
-fn parse_time(s: &str) -> (u32, u32, u32) {
-    use chrono::Timelike;
-    let Some(time) = crate::clock::parse_clock(s) else {
-        warn!(target: LOG_TARGET, "无法解析重启时间 [{s}]，已退回 04:00:00。");
-        return (4, 0, 0);
-    };
-    (time.hour(), time.minute(), time.second())
-}
 
 /// 读取当前进程 RSS 内存 (MB)。仅 Linux 提供 /proc/self/status，其余平台返回 None
 pub(crate) fn current_rss_mb() -> Option<u64> {

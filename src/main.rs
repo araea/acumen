@@ -10,6 +10,7 @@ mod http;
 mod matcher;
 mod message;
 mod plugins;
+mod release;
 mod render;
 mod scheduler;
 mod storage;
@@ -35,6 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         ui: true,
         port: None,
     };
+    if let Some(arg) = std::env::args().nth(1)
+        && let Some(code) = release::command(&arg).await
+    {
+        std::process::exit(code);
+    }
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -62,6 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     plugins::console::set_options(options);
     let config_path = "config.toml";
+    release::refresh().await;
 
     let db = db::init().await.expect("数据库初始化失败");
 
@@ -138,9 +145,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The screenshot dependency panics when Chromium is absent. Browser availability
     // must not prevent text commands, recording and control from starting.
     let browser_init = async {
-        match app_config.browser_path.as_deref().filter(|p| !p.is_empty()) {
+        match app_config.browser() {
             Some(path) => {
-                let _ = Browser::instance_with_path(path).await;
+                let _ = Browser::instance_with_path(&path).await;
             }
             None => {
                 let _ = Browser::instance().await;
@@ -193,10 +200,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             bot.enabled = true;
         } else {
             bot_configs.push(config::BotConfig {
-                enabled: true,
                 protocol: "console".into(),
-                url: None,
-                access_token: None,
+                ..Default::default()
             });
         }
     }
@@ -210,15 +215,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             continue;
         }
 
-        // Satori 实现端地址为必填；token 可留空（取决于实现端配置）
-        if bot_conf.protocol == "satori" {
-            match &bot_conf.url {
-                Some(u) if !u.is_empty() => u,
-                _ => {
-                    error!("Bot 配置错误: Satori 协议必须指定 url");
-                    continue;
-                }
-            };
+        // Satori 要么写明实现端地址，要么跟随本机模块；token 可留空（取决于实现端配置）
+        if bot_conf.protocol == "satori"
+            && bot_conf.url.as_deref().is_none_or(str::is_empty)
+            && bot_conf.module.is_none()
+        {
+            error!("Bot 配置错误: Satori 连接要写 url，或用 module 跟随本机模块");
+            continue;
         }
 
         let Some(adapter) = adapters::find_adapter(&bot_conf.protocol) else {
@@ -238,6 +241,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let bot_url = bot_conf
             .url
             .clone()
+            .filter(|url| !url.is_empty())
+            .or_else(|| bot_conf.module.as_ref().map(|m| format!("模块 {m}")))
             .unwrap_or_else(|| "Internal".to_string());
 
         adapter_tasks.push(tokio::spawn(async move {
@@ -321,8 +326,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     drop(_save_guard);
     if restarting {
-        let cfg = config_snapshot.ok_or("无法读取配置，重启已取消")?;
-        plugins::restart::relaunch(&cfg)?;
+        config_snapshot.ok_or("无法读取配置，重启已取消")?;
+        plugins::restart::relaunch()?;
     }
 
     info!("Bye!");
