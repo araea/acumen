@@ -5,6 +5,7 @@
 #   ~/acumen/acumen         可执行文件（ACUMEN_HOME 可以换目录）
 #   ~/acumen/config.toml    配置；~/acumen/data/ 数据
 #   $PREFIX/var/service/acumen        runit 服务：进程崩了自动拉起
+#   $PREFIX/var/service/acumen-panel  管理面板：知微停着也能在网页上启动、更新
 #   /data/adb/service.d/acumen.sh     root 守护：开机拉起、Termux 被清掉后拉回来
 set -uo pipefail
 
@@ -16,6 +17,9 @@ export SVDIR=$PREFIX/var/service
 SV=$SVDIR/acumen
 LOGDIR=$PREFIX/var/log/sv/acumen
 URL_FILE=$APP/data/console/url
+PANEL=$SVDIR/acumen-panel
+PANEL_LOGDIR=$PREFIX/var/log/sv/acumen-panel
+PANEL_URL_FILE=$APP/data/console/panel-url
 KEEPER=/data/adb/service.d/acumen.sh
 KEEPER_STATUS=/data/local/tmp/acumen-keeper.status
 KEEPER_PID=/data/local/tmp/acumen-keeper.pid
@@ -108,6 +112,18 @@ exec svlogd $LOGDIR" 755
     mkdir -p "$LOGDIR"
     write_if_changed "$LOGDIR/config" "s1048576
 n5" 644
+    # 管理面板：同一个可执行文件的 --panel，很轻，常开；知微停了它还在。
+    write_if_changed "$PANEL/run" "#!$PREFIX/bin/sh
+exec $PREFIX/bin/acumen panel 2>&1" 755
+    write_if_changed "$PANEL/finish" "#!$PREFIX/bin/sh
+[ \"\$1\" = 0 ] || sleep 10
+exit 0" 755
+    write_if_changed "$PANEL/log/run" "#!$PREFIX/bin/sh
+mkdir -p $PANEL_LOGDIR
+exec svlogd $PANEL_LOGDIR" 755
+    mkdir -p "$PANEL_LOGDIR"
+    write_if_changed "$PANEL_LOGDIR/config" "s262144
+n2" 644
 }
 
 open_url() {
@@ -117,14 +133,23 @@ open_url() {
     say "  打开：$1"
 }
 
-console_url() { head -n 1 "$URL_FILE" 2>/dev/null; }
+bot_url() { head -n 1 "$URL_FILE" 2>/dev/null; }
+
+# 打开哪个地址：管理面板在就用它（知微停着也打得开），否则直接开控制台。
+panel_url() {
+    local url
+    url=$(head -n 1 "$PANEL_URL_FILE" 2>/dev/null)
+    [[ -n $url ]] && curl -s -o /dev/null -m 2 --noproxy '*' "${url%%\?*}" && echo "$url"
+}
+
+console_url() { panel_url || bot_url; }
 
 # 等控制台写下新地址并能打开。$1 是启动前的时刻。
 wait_ready() {
     local since=$1 i url
     for ((i = 0; i < 90; i++)); do
         if [[ -s $URL_FILE ]] && (( $(stat -c %Y "$URL_FILE") >= since )); then
-            url=$(console_url)
+            url=$(bot_url)
             curl -s -o /dev/null -m 2 --noproxy '*' "${url%%\?*}" && return 0
         fi
         bot_pid >/dev/null || { (( i > 10 )) && return 1; }
@@ -140,7 +165,7 @@ cmd_start() {
     local quiet=0
     [[ ${1:-} == -q || ${ACUMEN_NO_UI:-0} == 1 ]] && quiet=1
     ensure_service
-    rm -f "$SV/down"
+    rm -f "$SV/down" "$PANEL/down"
     if bot_pid >/dev/null; then
         say "知微已在运行。"
         (( quiet )) || { url=$(console_url); [[ -n $url ]] && open_url "$url"; }
@@ -179,7 +204,7 @@ cmd_stop() {
     done
     if bot_pid >/dev/null; then die "30 秒还没停下，看看 acumen log。"; fi
     termux-wake-unlock >/dev/null 2>&1
-    say "知微已停止。开机与守护都不会再拉起它，直到下次 acumen start。"
+    say "知微已停止。开机与守护都不会再拉起它，直到下次 acumen start（或在管理页上点启动）。"
 }
 
 cmd_restart() {
@@ -209,11 +234,28 @@ cmd_serve() {
     exec "$EXE"
 }
 
-# root 守护在 Termux 里执行的那一下：起监督树、拿唤醒锁。
+# 管理面板的入口（面板的服务目录里的 run 调它）。
+cmd_panel() {
+    cd "$APP" || exit 1
+    export NO_PROXY="${NO_PROXY:+$NO_PROXY,}127.0.0.1,localhost,::1"
+    export no_proxy=$NO_PROXY
+    if [[ -z ${LD_PRELOAD:-} && -f $PREFIX/lib/libtermux-exec-ld-preload.so ]]; then
+        export LD_PRELOAD=$PREFIX/lib/libtermux-exec-ld-preload.so
+    elif [[ -z ${LD_PRELOAD:-} && -f $PREFIX/lib/libtermux-exec.so ]]; then
+        export LD_PRELOAD=$PREFIX/lib/libtermux-exec.so
+    fi
+    exec "$EXE" --panel
+}
+
+# root 守护在 Termux 里执行的那一下：起监督树、拿唤醒锁。知微停着、但管理面板开着时
+# 也起监督树（面板要在），只是不拿唤醒锁。
 cmd_wake() {
-    [[ -e $SV/down ]] && exit 0
+    local bot=1
+    [[ -e $SV/down ]] && bot=0
+    [[ $bot == 0 && ( ! -d $PANEL || -e $PANEL/down ) ]] && exit 0
     runsvdir_alive || service-daemon start >/dev/null 2>&1
-    termux-wake-lock >/dev/null 2>&1
+    (( bot )) && termux-wake-lock >/dev/null 2>&1
+    return 0
 }
 
 # 守护以 root 运行，普通用户 kill -0 它会得到「不允许」——那也说明它在。
@@ -241,7 +283,7 @@ cmd_status() {
     local pid url token overview up
     say "${B}知微 $(version)${N}"
     if pid=$(bot_pid); then
-        url=$(console_url)
+        url=$(bot_url)
         token=${url##*t=}
         overview=$(curl -s -m 3 --noproxy '*' -H "Authorization: Bearer $token" "${url%%\?*}api/overview" 2>/dev/null)
         up=$(jq -r '.app.uptime // 0' <<< "$overview" 2>/dev/null)
@@ -263,6 +305,10 @@ cmd_status() {
         warn "已停止（acumen start 启动）"
     else
         warn "没在运行（acumen start 启动）"
+    fi
+    local panel
+    if panel=$(panel_url); then
+        ok "管理面板 ${panel%%\?*}：知微停着也能在网页上启动、更新"
     fi
     if keeper_alive; then
         local st
@@ -290,7 +336,9 @@ cmd_ui() {
     url=$(console_url)
     [[ -n $url ]] || die "还没有控制台地址：先 acumen start。"
     if [[ ${1:-} == url ]]; then say "$url"; return; fi
-    bot_pid >/dev/null || warn "知微没在运行，页面会打不开；先 acumen start。"
+    if ! bot_pid >/dev/null && ! panel_url >/dev/null; then
+        warn "知微没在运行，页面会打不开；先 acumen start。"
+    fi
     open_url "$url"
 }
 
@@ -304,6 +352,7 @@ cmd_update() {
         0)
             "$EXE" --install-cli >/dev/null 2>&1
             ok "已更新到 $new"
+            [[ -d $PANEL/supervise ]] && sv restart acumen-panel >/dev/null 2>&1
             if bot_pid >/dev/null; then cmd_restart; fi
             ;;
         1) ok "已是最新版本" ;;
@@ -413,7 +462,8 @@ cmd_uninstall() {
     say "卸载知微 …"
     bot_pid >/dev/null && cmd_stop >/dev/null
     if [[ -e $SV/supervise/ok ]]; then sv down acumen >/dev/null 2>&1; fi
-    rm -rf "$SV" "$LOGDIR"
+    [[ -e $PANEL/supervise/ok ]] && sv down acumen-panel >/dev/null 2>&1
+    rm -rf "$SV" "$LOGDIR" "$PANEL" "$PANEL_LOGDIR"
     if has_root; then su -c "[ -f $KEEPER ] && sh $KEEPER stop; rm -f $KEEPER" </dev/null >/dev/null 2>&1; fi
     if [[ ${1:-} == --purge ]]; then
         rm -rf "$APP"
@@ -434,7 +484,7 @@ ${B}知微（acumen）$(version)${N}
   acumen restart    重启
   acumen status     运行状态、QQ 连接与保活情况
   acumen log        实时日志（Ctrl+C 退出）
-  acumen ui         打开控制台；acumen ui url 只打印地址
+  acumen ui         打开管理页（知微停着也能打开，在页面上启动、更新）；acumen ui url 只打印地址
   acumen update     立即检查并更新（启动时与每天 04:30 也会自动做）
 
   acumen setup      重新检查依赖、字体、root 守护
@@ -457,6 +507,7 @@ case "${1:-start}" in
     run) cmd_run ;;
     uninstall) shift; cmd_uninstall "$@" ;;
     serve) cmd_serve ;;
+    panel) cmd_panel ;;
     wake) cmd_wake ;;
     help | -h | --help) cmd_help ;;
     -q) cmd_start -q ;;

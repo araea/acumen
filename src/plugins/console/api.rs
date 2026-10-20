@@ -39,7 +39,8 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/logs", get(log_history))
         .route("/logs/stream", get(log_stream))
         .route("/command", post(command))
-        .route("/restart", post(restart));
+        .route("/restart", post(restart))
+        .route("/update", get(update_info).post(update_apply));
     router.layer(axum::middleware::from_fn_with_state(
         console,
         super::server::guard,
@@ -847,6 +848,48 @@ async fn restart(State(console): State<Arc<Console>>) -> Response {
             "delay": delay.as_secs_f64(),
         }))
         .into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateQuery {
+    #[serde(default)]
+    force: bool,
+}
+
+/// 有没有新版本。查询结果缓存半小时（`?force=true` 立即再查），页面打开时问一下就够。
+async fn update_info(Query(query): Query<UpdateQuery>) -> Response {
+    let current = crate::release::VERSION;
+    if !crate::release::managed() {
+        return Json(json!({ "current": current, "managed": false, "latest": null })).into_response();
+    }
+    let age = if query.force {
+        std::time::Duration::ZERO
+    } else {
+        std::time::Duration::from_mins(30)
+    };
+    match crate::release::check_cached(age).await {
+        Ok(latest) => Json(json!({
+            "current": current,
+            "managed": true,
+            "latest": latest.map(|release| json!({ "version": release.version, "notes": release.notes })),
+        }))
+        .into_response(),
+        Err(error) => Json(json!({
+            "current": current,
+            "managed": true,
+            "latest": null,
+            "error": format!("{error:#}"),
+        }))
+        .into_response(),
+    }
+}
+
+/// 立即更新：下载、校验、换上，随后重启（页面按启动时间变了来判断回来了没有）。
+async fn update_apply(State(console): State<Arc<Console>>) -> Response {
+    match crate::plugins::restart::update_now(&console.local()).await {
+        Ok(message) => Json(json!({ "message": message, "delay": 1.5 })).into_response(),
         Err(message) => bad(message),
     }
 }

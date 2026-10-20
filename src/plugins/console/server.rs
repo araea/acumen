@@ -38,7 +38,14 @@ pub(super) async fn start(console: Arc<Console>, bind: &str, port: u16) -> Resul
 }
 
 fn router(console: Arc<Console>) -> Router {
-    Router::new()
+    assets(Router::new())
+        .nest("/api", super::api::routes(console.clone()))
+        .with_state(console)
+}
+
+/// 页面本身的那一套静态资源：控制台与管理面板（[`super::panel`]）共用。
+pub(super) fn assets<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Router<S> {
+    router
         .route("/", get(super::assets::index))
         .route("/favicon.ico", get(super::assets::favicon))
         .route("/icon.svg", get(super::assets::icon))
@@ -50,8 +57,6 @@ fn router(console: Arc<Console>) -> Router {
         .route("/app.css", get(super::assets::css))
         .route("/app.js", get(super::assets::js))
         .route("/manifest.webmanifest", get(super::assets::manifest))
-        .nest("/api", super::api::routes(console.clone()))
-        .with_state(console)
 }
 
 /// 口令闸门。挂在 `/api` 这一棵上，静态资源不受它管。
@@ -75,7 +80,7 @@ pub(super) async fn guard(State(console): State<Arc<Console>>, request: Request,
 /// 查询串 `?t=`（地址栏与 EventSource 用，浏览器不给后者设请求头的机会）。
 ///
 /// 收的是口令本身而不是 `Console`，好让这条判据能单独测——它是整个服务的门。
-fn authorized(token: &str, request: &Request) -> bool {
+pub(super) fn authorized(token: &str, request: &Request) -> bool {
     if let Some(value) = request
         .headers()
         .get("x-acumen-token")

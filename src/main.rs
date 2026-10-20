@@ -42,6 +42,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     {
         std::process::exit(code);
     }
+    // 管理面板：同一个可执行文件的另一种跑法，不连 QQ、不载插件（见 console::panel）。
+    if std::env::args().nth(1).as_deref() == Some("--panel") {
+        std::process::exit(plugins::console::panel::run().await);
+    }
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {

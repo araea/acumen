@@ -367,6 +367,39 @@ fn arm(ctx: &Context, reason: &str, delay: Duration) -> Result<(), String> {
     Ok(())
 }
 
+/// 控制台的「立即更新」：查、下载、换上，然后重启。和例行维护共用一把锁，不会同时换两次。
+///
+/// 是用户亲手点的，所以不等群里安静：回执先落到浏览器（1.5 秒），随即重启。
+/// restart 插件没开时只换文件，回一句「重启后生效」。
+pub(crate) async fn update_now(ctx: &Context) -> Result<String, String> {
+    if !crate::release::managed() {
+        return Err("这是从源码构建的版本，不走自动更新：拉取代码后重新编译".into());
+    }
+    if MAINTAINING.swap(true, Ordering::SeqCst) {
+        return Err("已经有一次更新或例行维护在进行中，稍后再看".into());
+    }
+    let installed = async {
+        crate::release::mark_checked();
+        let release = crate::release::check()
+            .await
+            .map_err(|error| format!("查不到新版本：{error:#}"))?
+            .ok_or_else(|| "已经是最新版本".to_string())?;
+        crate::release::install(&release)
+            .await
+            .map_err(|error| format!("更新没装上：{error:#}"))?;
+        info!(target: LOG_TARGET, "新版本 {} 已换上（控制台）", release.version);
+        Ok::<_, String>(release.version)
+    }
+    .await;
+    MAINTAINING.store(false, Ordering::SeqCst);
+    let version = installed?;
+    let reason = format!("更新 {} → {version}", crate::release::VERSION);
+    Ok(match arm(ctx, &reason, Duration::from_millis(1500)) {
+        Ok(()) => format!("已换上 {version}，正在重启"),
+        Err(_) => format!("已换上 {version}，重启后生效"),
+    })
+}
+
 /// 只提出请求，统一由主循环清理，避免定时任务中止自身或两个进程同时写配置。
 async fn do_restart(ctx: &Context, reason: String) {
     if !get_config::<RestartConfig>(ctx).is_some_and(|cfg| cfg.enabled) {

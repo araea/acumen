@@ -17,6 +17,7 @@
 
 mod api;
 mod assets;
+pub(crate) mod panel;
 mod server;
 mod state;
 
@@ -40,6 +41,9 @@ pub(crate) struct Config {
     bind: String,
     /// 监听的端口。
     port: u16,
+    /// 管理面板（`acumen --panel`，知微没在运行时也打得开、能起停与更新）的端口；0 = 不开。
+    /// 面板是另一个进程，读的是 config.toml 里这一项，改了要 `acumen restart` 才换端口。
+    panel_port: u16,
     /// 访问口令。留空表示首次启动自动生成一个，保存在 data/console/token，权限 0600。
     token: String,
     /// 日志面板往回保留的行数。上限是 2000（`state::HISTORY_LIMIT`），写更大也只按 2000 收。
@@ -52,6 +56,7 @@ impl Default for Config {
             enabled: true,
             bind: "127.0.0.1".to_string(),
             port: 7801,
+            panel_port: 7800,
             token: String::new(),
             log_lines: 400,
         }

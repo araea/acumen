@@ -117,7 +117,7 @@ async fn record_url(url: &str) {
 ///
 /// 落在 `data/console/token`（0600）。放在数据目录而不是配置里，是因为它要能被
 /// 「已经在跑的那个进程」自己换掉，也让 `acumen ui` 不必去解析 config.toml。
-async fn resolve_token(configured: &str) -> Result<String, String> {
+pub(super) async fn resolve_token(configured: &str) -> Result<String, String> {
     if !configured.trim().is_empty() {
         return Ok(configured.trim().to_string());
     }
@@ -148,7 +148,7 @@ fn fresh_token() -> String {
 }
 
 /// 地址栏里给人看的主机名：绑的是通配地址时换成回环，否则照写。
-fn display_host(bind: &str) -> String {
+pub(super) fn display_host(bind: &str) -> String {
     match bind {
         "0.0.0.0" | "::" | "[::]" | "*" => "127.0.0.1".to_string(),
         other => other.to_string(),

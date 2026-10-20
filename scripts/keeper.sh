@@ -15,6 +15,7 @@
 PKG=com.termux
 P=/data/data/com.termux/files/usr
 SV=$P/var/service/acumen
+PANEL=$P/var/service/acumen-panel
 BASE=/data/local/tmp/acumen-keeper
 LOG=$BASE.log
 PID=$BASE.pid
@@ -38,6 +39,9 @@ running() {
 unlocked() { [ -x "$P/bin/sh" ]; }
 
 wants_bot() { [ -d "$SV" ] && [ ! -e "$SV/down" ]; }
+
+# 知微停着、管理面板开着时也要监督树在：面板是在网页上把它再启动起来的那扇门。
+wants_runit() { wants_bot || { [ -d "$PANEL" ] && [ ! -e "$PANEL/down" ]; }; }
 
 runsvdir_alive() {
     p=$(cat "$P/var/run/service-daemon.pid" 2>/dev/null)
@@ -102,7 +106,7 @@ loop() {
     while true; do
         tick=$((tick + 1))
         [ $((tick % 10)) = 1 ] && exempt
-        if wants_bot && ! runsvdir_alive; then
+        if wants_runit && ! runsvdir_alive; then
             if force_stopped; then
                 [ "$noted" = 1 ] || log "Termux 被强行停止，当作你主动停的，不去拉"
                 noted=1

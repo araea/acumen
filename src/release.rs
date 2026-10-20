@@ -117,6 +117,32 @@ pub async fn check() -> Result<Option<Release>> {
     Ok(newer(&release.version, VERSION).then_some(release))
 }
 
+/// 最近一次查询的结果与时刻：控制台每次打开都要问一句「有没有新版」，不必每次都去 GitHub。
+type Cached = (std::time::Instant, Option<Release>);
+
+fn last_seen() -> &'static std::sync::Mutex<Option<Cached>> {
+    static LAST: std::sync::Mutex<Option<Cached>> = std::sync::Mutex::new(None);
+    &LAST
+}
+
+/// 和 [`check`] 一样，但 `max_age` 以内查过就用上次的结果。
+pub async fn check_cached(max_age: Duration) -> Result<Option<Release>> {
+    if let Some((at, release)) = last_seen()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        && at.elapsed() < max_age
+    {
+        return Ok(release.clone());
+    }
+    let release = check().await?;
+    *last_seen()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((std::time::Instant::now(), release.clone()));
+    Ok(release)
+}
+
 /// 下载、校验、换上新的可执行文件。正在跑的进程不受影响，重启后才是新版本。
 pub async fn install(release: &Release) -> Result<()> {
     let target = exe().ok_or_else(|| anyhow!("找不到自己的可执行文件"))?;
