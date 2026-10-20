@@ -238,13 +238,16 @@ cmd_status() {
         url=$(console_url)
         token=${url##*t=}
         overview=$(curl -s -m 3 --noproxy '*' -H "Authorization: Bearer $token" "${url%%\?*}api/overview" 2>/dev/null)
-        up=$(jq -r '.app.uptime // empty' <<< "$overview" 2>/dev/null)
+        up=$(jq -r '.app.uptime // 0' <<< "$overview" 2>/dev/null)
+        up=${up:-0}
         ok "运行中（PID $pid${up:+，已运行 $(uptime_text "${up%.*}")}）"
         if [[ -n $overview ]]; then
             local bots
             bots=$(jq -r '.bots[] | "\(.platform)：\(.name // .nick // .id)（\(.id)）"' <<< "$overview" 2>/dev/null)
             if [[ -n $bots ]]; then
                 while read -r line; do ok "已连上 $line"; done <<< "$bots"
+            elif (( ${up%.*} < 20 )); then
+                ok "正在连接 QQ …"
             else
                 warn "还没连上 QQ：确认知弦模块已启用、QQ 已登录（acumen log 看连接日志）"
             fi
@@ -384,7 +387,7 @@ setup_root() {
         *satori_qq*) ok "找到知弦（satori-qq）：端口与令牌自动跟随模块设置" ;;
         *) warn "没找到知弦（satori-qq）模块：在 KernelSU 里装上它、重启手机，再登录 QQ" ;;
     esac
-    [[ $mods == *satori_wx* ]] && ok "找到知言（satori-wx）：同时接入微信"
+    [[ $mods == *satori_wx* ]] && ok "找到知言（satori-wx）：默认同时接入微信"
 }
 
 cmd_setup() {
