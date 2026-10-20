@@ -71,6 +71,20 @@ register_plugins!(
         summary: "把消息记录到数据库，为词云、统计等插件提供数据源",
         on_init: Some(recorder::init)
     },
+    welcome {
+        config: welcome::Config,
+        display_name: "入群欢迎",
+        section: "system",
+        summary: "进群 @ 欢迎（可配图）、退群送别；可选入群验证（限时回复，超时移出或禁言、倒计时提醒）与加群申请自动审批",
+        on_connected: Some(welcome::on_connected)
+    },
+    anti_recall {
+        config: anti_recall::Config,
+        on_receive: Some(anti_recall::on_receive),
+        display_name: "防撤回",
+        section: "message",
+        summary: "有人撤回消息时把原文转存到指定私聊或群；群黑白名单可收窄范围，连撤多条合并成一条转发"
+    },
     media {
         config: media::Config,
         display_name: "媒体转换",

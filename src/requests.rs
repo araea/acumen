@@ -32,7 +32,9 @@ fn book() -> &'static Mutex<Vec<JoinRequest>> {
 }
 
 fn with<R>(f: impl FnOnce(&mut Vec<JoinRequest>) -> R) -> R {
-    let mut book = book().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut book = book()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let now = chrono::Utc::now().timestamp();
     book.retain(|request| now - request.at < TTL_SECONDS);
     f(&mut book)
@@ -67,7 +69,8 @@ pub fn observe(ctx: &Context) {
             with(|book| {
                 // 同一个人对同一个群再申请一次，以新的为准。
                 book.retain(|old| {
-                    old.flag != request.flag && !(old.group == request.group && old.user_id == request.user_id)
+                    old.flag != request.flag
+                        && !(old.group == request.group && old.user_id == request.user_id)
                 });
                 if book.len() >= LIMIT {
                     book.remove(0);
@@ -75,14 +78,21 @@ pub fn observe(ctx: &Context) {
                 book.push(request);
             });
         }
-        "guild-member-added" => with(|book| book.retain(|old| !(old.group == group && old.user_id == user))),
+        "guild-member-added" => {
+            with(|book| book.retain(|old| !(old.group == group && old.user_id == user)));
+        }
         _ => {}
     }
 }
 
 /// 这个群还没处理的申请，旧的在前。
 pub fn pending(group: &str) -> Vec<JoinRequest> {
-    with(|book| book.iter().filter(|request| request.group == group).cloned().collect())
+    with(|book| {
+        book.iter()
+            .filter(|request| request.group == group)
+            .cloned()
+            .collect()
+    })
 }
 
 /// 按申请号（或申请人的 QQ 号）找这个群的一条申请。
@@ -91,7 +101,9 @@ pub fn find(group: &str, key: &str) -> Option<JoinRequest> {
     with(|book| {
         book.iter()
             .rev()
-            .find(|request| request.group == group && (request.flag == key || request.user_id == key))
+            .find(|request| {
+                request.group == group && (request.flag == key || request.user_id == key)
+            })
             .cloned()
     })
 }

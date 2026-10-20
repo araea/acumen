@@ -11,8 +11,8 @@ mod matcher;
 mod message;
 mod plugins;
 mod release;
-mod requests;
 mod render;
+mod requests;
 mod scheduler;
 mod storage;
 
