@@ -166,6 +166,14 @@ impl<'a> MessageEvent<'a> {
         self.0.get_str("raw_message").unwrap_or("")
     }
 
+    /// 这条消息 @ 了谁，以及有没有 @全体成员。
+    pub fn mentions(&self) -> crate::message::Mentions {
+        self.0
+            .get("message")
+            .map(crate::message::Mentions::of)
+            .unwrap_or_default()
+    }
+
     /// 是否为群消息
     pub fn is_group(&self) -> bool {
         self.0.get_str("message_type") == Some("group")

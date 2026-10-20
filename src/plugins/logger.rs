@@ -28,7 +28,6 @@ impl PluginConfig for LoggerConfig {
     const NAME: &'static str = "logger";
 }
 
-
 pub fn handle(
     ctx: Context,
     _writer: LockedWriter,
@@ -134,7 +133,9 @@ pub fn handle(
 fn format_message(msg_val: Option<&OwnedValue>) -> String {
     use std::fmt::Write as _;
 
-    let Some(val) = msg_val else { return String::new() };
+    let Some(val) = msg_val else {
+        return String::new();
+    };
 
     // 1. 纯字符串情况
     if let Some(s) = val.as_str() {
@@ -158,7 +159,9 @@ fn format_message(msg_val: Option<&OwnedValue>) -> String {
                 "at" => {
                     result.push_str(" [@");
                     if let Some(d) = data {
-                        if let Some(s) = d.get_str("qq") {
+                        if d.get_str("qq") == Some(crate::message::AT_ALL) {
+                            result.push_str("全体成员");
+                        } else if let Some(s) = d.get_str("qq") {
                             result.push_str(s);
                         } else if let Some(i) = d.get_i64("qq") {
                             let _ = write!(result, "{i}");
@@ -175,15 +178,14 @@ fn format_message(msg_val: Option<&OwnedValue>) -> String {
                 "face" => result.push_str(" [表情] "),
                 "mface" => result.push_str(" [动画表情] "),
                 "image" => {
-                    let is_anim = data
-                        .is_some_and(|d| {
-                            let summary = d.get_str("summary").unwrap_or("");
-                            let sub_type = d
-                                .get_i64("sub_type")
-                                .or_else(|| d.get_u64("sub_type").map(|v| v as i64))
-                                .unwrap_or(0);
-                            summary == "[动画表情]" || sub_type == 1
-                        });
+                    let is_anim = data.is_some_and(|d| {
+                        let summary = d.get_str("summary").unwrap_or("");
+                        let sub_type = d
+                            .get_i64("sub_type")
+                            .or_else(|| d.get_u64("sub_type").map(|v| v as i64))
+                            .unwrap_or(0);
+                        summary == "[动画表情]" || sub_type == 1
+                    });
 
                     if is_anim {
                         result.push_str(" [动画表情] ");
@@ -216,4 +218,3 @@ fn format_message(msg_val: Option<&OwnedValue>) -> String {
 
     "[复杂消息]".to_string()
 }
-

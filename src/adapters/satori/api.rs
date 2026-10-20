@@ -472,6 +472,95 @@ pub async fn set_msg_emoji_like(
     Ok(())
 }
 
+/// 本号此刻能不能在这个群 @全体成员。satori-qq 与 satori-wx 的 `internal/at_all_quota` 同名同形：
+/// QQ 只让群主、管理员发并按天限次；微信只看身份、不限次（两个次数是 `None`）。
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AtAllQuota {
+    pub allowed: bool,
+    /// 本号今天还剩几次；`None` 是平台不限次或没说。
+    #[serde(default)]
+    pub remaining: Option<u32>,
+    /// 全群今天还剩几次。
+    #[serde(default)]
+    pub group_remaining: Option<u32>,
+    /// 不能发时平台给的说法。
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl AtAllQuota {
+    /// 现在发得出去：有权限，次数（如果有）也没用完。
+    pub fn usable(&self) -> bool {
+        self.allowed && self.remaining != Some(0) && self.group_remaining != Some(0)
+    }
+
+    /// 发不出去时给人看的一句话。
+    pub fn why_not(&self) -> String {
+        if !self.allowed {
+            return if self.reason.is_empty() {
+                "没有 @全体成员 的权限".into()
+            } else {
+                self.reason.clone()
+            };
+        }
+        "今天的 @全体成员 次数用完了".into()
+    }
+}
+
+/// 问实现端这个群里能不能 @全体成员。只在真要发之前问：QQ 那边每问一次都是一次真请求。
+/// 实现端没有这个方法（旧版本）时报 `unsupported_method`。
+pub async fn at_all_quota(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: &str,
+) -> Result<AtAllQuota, ApiError> {
+    writer
+        .call(
+            ctx,
+            "internal/at_all_quota",
+            json!({"channel_id": group_id}),
+        )
+        .await
+}
+
+/// [`send_at_all`] 的结果。
+#[derive(Debug, Clone)]
+pub struct AtAllSent {
+    /// 实现端分配的第一条消息 ID。
+    pub message_id: Option<String>,
+    /// 为什么没带上 @全体成员（`None` = 带上了）。
+    pub skipped: Option<String>,
+}
+
+/// 发一条想 @全体成员 的群消息：先问额度，能用就在开头加上 @全体成员 再发；不能用（没权限、
+/// 次数用完、实现端问不出来）就照常发、不带它，并在 `skipped` 里说明原因。
+///
+/// 问不出来时宁可不带：@全体成员 会打扰整个群，没有确认过能用就不冒这个险。
+pub async fn send_at_all(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: &str,
+    message: Message,
+) -> Result<AtAllSent, ApiError> {
+    let skipped = match at_all_quota(ctx, writer.clone(), group_id).await {
+        Ok(quota) if quota.usable() => None,
+        Ok(quota) => Some(quota.why_not()),
+        Err(error) => Some(format!("问不到 @全体成员 的额度：{error}")),
+    };
+    let message = if skipped.is_none() {
+        let mut head = Message::new().at_all().text("\n");
+        head.0.extend(message.0);
+        head
+    } else {
+        message
+    };
+    let message_id = super::send_msg_id(ctx, writer, Some(group_id), None, message).await?;
+    Ok(AtAllSent {
+        message_id,
+        skipped,
+    })
+}
+
 pub(crate) fn channel_id(ctx: &Context) -> Result<String, ApiError> {
     let event = match &ctx.event {
         EventType::Satori(event) => Some(event),

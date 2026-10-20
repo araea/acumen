@@ -137,9 +137,22 @@ impl Message {
         self.add("at", data)
     }
 
-    /// @全体成员
+    /// @全体成员。实现端把它发成 Satori 的 `<at type="all"/>`；没有权限或今天的次数用完，
+    /// 平台会把它当成普通文字或干脆拒发——先问 [`at_all_quota`](crate::adapters::satori::api::at_all_quota)，
+    /// 或者直接用 [`send_at_all`](crate::adapters::satori::api::send_at_all)。
     pub fn at_all(self) -> Self {
-        self.at("all")
+        self.at(AT_ALL)
+    }
+
+    /// 这条消息里 @ 了谁。
+    pub fn mentions(&self) -> Mentions {
+        let mut mentions = Mentions::default();
+        for segment in self.0.iter().filter(|segment| segment.type_ == "at") {
+            if let Some(id) = segment.data.get("qq").and_then(id_text) {
+                mentions.note(id);
+            }
+        }
+        mentions
     }
 
     /// 回复消息
@@ -269,6 +282,69 @@ impl Message {
     }
 }
 
+/// 消息段里「@全体成员」的写法：`{"type":"at","data":{"qq":"all"}}`，收发同一种。
+/// 与 Satori 的 `<at type="all"/>` 互换在适配器里做（两个实现端都这样认）。
+pub const AT_ALL: &str = "all";
+
+/// 一条消息提到了谁：被 @ 的账号与有没有 @全体成员。插件别各自去翻 `at` 段，
+/// 也别把 [`AT_ALL`] 当成一个账号 ID 去查资料、拼头像。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mentions {
+    /// 被 @ 的账号，按出现顺序去重；不含 [`AT_ALL`]。
+    pub users: Vec<String>,
+    /// 有没有 @全体成员。
+    pub all: bool,
+}
+
+impl Mentions {
+    /// 从入站消息段（事件里的 `message` 数组）读出提及。
+    pub fn of(segments: &simd_json::OwnedValue) -> Self {
+        use simd_json::base::ValueAsArray;
+        use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
+        let mut mentions = Self::default();
+        for segment in segments.as_array().into_iter().flatten() {
+            if segment.get_str("type") != Some("at") {
+                continue;
+            }
+            if let Some(id) = segment
+                .get("data")
+                .and_then(|data| data.get("qq"))
+                .and_then(id_text)
+            {
+                mentions.note(id);
+            }
+        }
+        mentions
+    }
+
+    /// 某个账号是否被点名 @ 了（@全体成员 不算点名）。
+    pub fn names(&self, user_id: &str) -> bool {
+        self.users.iter().any(|user| user == user_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.users.is_empty() && !self.all
+    }
+
+    fn note(&mut self, id: String) {
+        if id.eq_ignore_ascii_case(AT_ALL) {
+            self.all = true;
+        } else if !id.is_empty() && !self.names(&id) {
+            self.users.push(id);
+        }
+    }
+}
+
+/// `qq` 字段可能是字符串，也可能是数字。
+fn id_text(value: &Value) -> Option<String> {
+    use simd_json::base::ValueAsScalar;
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_u64().map(|id| id.to_string()))
+        .or_else(|| value.as_i64().map(|id| id.to_string()))
+}
+
 // 允许直接从字符串字面量转换为纯文本消息
 impl From<&str> for Message {
     fn from(s: &str) -> Self {
@@ -279,5 +355,24 @@ impl From<&str> for Message {
 impl From<String> for Message {
     fn from(s: String) -> Self {
         Message::new().text(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mentions_split_all_from_users() {
+        let segments = simd_json::json!([
+            {"type": "at", "data": {"qq": "all"}},
+            {"type": "at", "data": {"qq": 10001}},
+            {"type": "text", "data": {"text": " 开会"}},
+            {"type": "at", "data": {"qq": "10001"}},
+        ]);
+        let mentions = Mentions::of(&segments);
+        assert!(mentions.all);
+        assert_eq!(mentions.users, ["10001"]);
+        assert_eq!(Message::new().at_all().at(7).mentions().users, ["7"]);
     }
 }

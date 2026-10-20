@@ -33,7 +33,14 @@ const ENGAGED_LOOK: f32 = 0.3;
 /// （统计图、视频解析），不算人格开过口。
 fn speech_like(text: &str) -> bool {
     let mut rest = text.to_string();
-    for tag in ["[图片]", "[表情包]", "[视频]", "[语音]", "[合并转发]", "[文件]"] {
+    for tag in [
+        "[图片]",
+        "[表情包]",
+        "[视频]",
+        "[语音]",
+        "[合并转发]",
+        "[文件]",
+    ] {
         rest = rest.replace(tag, "");
     }
     let rest = rest.trim();
@@ -42,8 +49,20 @@ fn speech_like(text: &str) -> bool {
 
 /// 看着就急的说法。刻意收得窄：「急了」「你急什么」这种玩笑满群都是，不算。
 const PRESSING: [&str; 14] = [
-    "救命", "求救", "求助", "在线等", "急急急", "很急", "挺急", "紧急", "帮帮我",
-    "被骗", "报警", "出事了", "有没有人", "有人在吗",
+    "救命",
+    "求救",
+    "求助",
+    "在线等",
+    "急急急",
+    "很急",
+    "挺急",
+    "紧急",
+    "帮帮我",
+    "被骗",
+    "报警",
+    "出事了",
+    "有没有人",
+    "有人在吗",
 ];
 
 fn sounds_pressing(text: &str) -> bool {
@@ -596,8 +615,8 @@ impl GroupState {
                 && last_round.is_none_or(|round| turn.at - round > ROUND_GAP_SECONDS)
             {
                 last_round = Some(turn.at);
-                if let Some(at) = Instant::now()
-                    .checked_sub(Duration::from_secs((now - turn.at).max(0) as u64))
+                if let Some(at) =
+                    Instant::now().checked_sub(Duration::from_secs((now - turn.at).max(0) as u64))
                 {
                     self.spoken.push_back(at);
                     self.last_spoke = self.last_spoke.max(Some(at));
@@ -658,11 +677,14 @@ fn summarize(text: &str, limit: usize) -> String {
 pub(crate) fn transcript(turns: &[Turn]) -> String {
     let mut out = String::new();
     for turn in turns {
-        let clock = chrono::DateTime::from_timestamp(turn.at, 0).map_or_else(|| "--:--".to_string(), |time| {
+        let clock = chrono::DateTime::from_timestamp(turn.at, 0).map_or_else(
+            || "--:--".to_string(),
+            |time| {
                 time.with_timezone(&chrono::Local)
                     .format("%H:%M")
                     .to_string()
-            });
+            },
+        );
         let who = if turn.from_me && turn.user_id.is_empty() {
             "平台事件（操作者未知）".to_string()
         } else if turn.manual {
@@ -803,6 +825,9 @@ pub(crate) fn turn_from(event: &MessageEvent<'_>, me: &str) -> Turn {
                         mentions_me = true;
                         call.at_me = true;
                         text.push_str("@我 ");
+                    } else if target.eq_ignore_ascii_case(crate::message::AT_ALL) {
+                        // 不写成 `[at:all]`：那是发言标记的样子，人格会以为自己也能这么 @ 全群。
+                        text.push_str("@全体成员 ");
                     } else {
                         // 用与发言同一种写法渲染：人格照着眼前的记录写话，记录里写成
                         // `@QQ号`，它就会把这串号码原样抄进正文（记录 id 105888）。
@@ -941,7 +966,8 @@ pub(crate) fn turn_from_platform(
         elements,
         message_id,
         at: item["created_at"]
-            .as_i64().map_or_else(|| chrono::Local::now().timestamp(), |millis| millis / 1000),
+            .as_i64()
+            .map_or_else(|| chrono::Local::now().timestamp(), |millis| millis / 1000),
         ..Turn::default()
     })
 }
@@ -953,6 +979,8 @@ fn states() -> &'static Mutex<HashMap<String, GroupState>> {
 
 /// 取出锁访问某个群的状态。闭包里不要 await——锁是同步的。
 pub(crate) fn with_group<T>(group_id: &str, action: impl FnOnce(&mut GroupState) -> T) -> T {
-    let mut guard = states().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut guard = states()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     action(guard.entry(group_id.to_string()).or_default())
 }

@@ -126,6 +126,9 @@ pub struct SatoriClient {
     features: RwLock<Arc<std::collections::HashSet<String>>>,
     /// 实现端经 `internal/capabilities` 声明的收发限额；没声明的项为 `None`。
     limits: RwLock<Limits>,
+    /// 实现端经 `internal/capabilities` 的 `actions` 声明的扩展方法（`internal/` 之后那段）。
+    /// 与 `features` 一样，空表示「不知道」，不拦。
+    actions: RwLock<Arc<std::collections::HashSet<String>>>,
 }
 
 /// 实现端声明的限额。取不到就是「不设防」，调用方照旧自己兜底。
@@ -145,6 +148,7 @@ impl SatoriClient {
             proxy_urls: RwLock::new(Arc::new(Vec::new())),
             features: RwLock::default(),
             limits: RwLock::default(),
+            actions: RwLock::default(),
         }
     }
 
@@ -157,6 +161,7 @@ impl SatoriClient {
             proxy_urls: RwLock::new(Arc::new(Vec::new())),
             features: RwLock::default(),
             limits: RwLock::default(),
+            actions: RwLock::default(),
         }
     }
 
@@ -185,6 +190,24 @@ impl SatoriClient {
         features.is_empty() || features.contains(method)
     }
 
+    /// 实现端是否提供这个扩展方法（`at_all_quota`，不带 `internal/`）。没声明过就说「提供」。
+    pub fn supports_internal(&self, action: &str) -> bool {
+        let actions = self.actions.read().unwrap();
+        actions.is_empty() || actions.contains(action)
+    }
+
+    pub fn set_actions(&self, capabilities: &Value) {
+        let Some(list) = capabilities.get("actions").and_then(Value::as_array) else {
+            return;
+        };
+        let set = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        *self.actions.write().unwrap() = Arc::new(set);
+    }
+
     pub fn limits(&self) -> Limits {
         *self.limits.read().unwrap()
     }
@@ -201,7 +224,12 @@ impl SatoriClient {
     }
 
     fn check_declared(&self, method: &str) -> Result<(), BotError> {
-        if method.starts_with("internal/") || self.supports(method) {
+        let declared = match method.strip_prefix("internal/") {
+            // capabilities 本身是用来问清单的，永远放行。
+            Some(action) => action == "capabilities" || self.supports_internal(action),
+            None => self.supports(method),
+        };
+        if declared {
             return Ok(());
         }
         Err(Box::new(SatoriApiError {
@@ -609,14 +637,17 @@ pub(crate) async fn list_roster(kind: Roster) -> (Vec<RosterEntry>, usize) {
     (out, failed)
 }
 
-/// 向实现端问一次它声明的限额。两个实现端的 `internal/capabilities` 用同一份 `limits` 口径；
-/// 问不到不要紧，没有声明就没有限额，调用方照旧自己兜底。
-async fn learn_limits(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
+/// 向实现端问一次它声明的限额与扩展方法。两个实现端的 `internal/capabilities` 用同一份
+/// `limits` / `actions` 口径；问不到不要紧，没有声明就不设防，调用方照旧自己兜底。
+async fn learn_capabilities(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     match client
         .post::<Value>(&bot, "internal/capabilities", json!({}))
         .await
     {
-        Ok(capabilities) => client.set_limits(limits_of(&capabilities)),
+        Ok(capabilities) => {
+            client.set_limits(limits_of(&capabilities));
+            client.set_actions(&capabilities);
+        }
         Err(error) => {
             debug!(target: LOG_TARGET, "internal/capabilities 失败，按没有声明限额处理：{error}");
         }
@@ -977,7 +1008,7 @@ async fn connect_and_listen(
     writer.set_features(login);
     register_route(writer.clone(), bot_status.clone());
     tokio::spawn(learn_guilds(writer.clone(), bot_status.clone()));
-    tokio::spawn(learn_limits(writer.clone(), bot_status.clone()));
+    tokio::spawn(learn_capabilities(writer.clone(), bot_status.clone()));
     let matcher = Arc::new(Matcher::new());
 
     info!(

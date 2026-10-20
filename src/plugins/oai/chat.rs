@@ -43,8 +43,8 @@ pub(crate) mod window;
 pub(crate) use session::start;
 
 use crate::event::Context;
-use simd_json::base::ValueAsScalar;
 use crate::message::Message;
+use simd_json::base::ValueAsScalar;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -210,7 +210,12 @@ pub(crate) struct Avatar {
 /// 画图、写歌、拍片额度为 0 连工具都不挂。调用方（房间与搭话）照它拼白名单，
 /// 于是「模型看得到的工具」和「它真按得动的按钮」永远对得上。
 pub(crate) fn tool_names(config: &ChatConfig) -> Vec<&'static str> {
-    let mut names = vec!["satori_context", "satori_read", "satori_history", "satori_action"];
+    let mut names = vec![
+        "satori_context",
+        "satori_read",
+        "satori_history",
+        "satori_action",
+    ];
     if config.draw_budget > 0 {
         names.push("satori_draw");
     }
@@ -314,14 +319,11 @@ pub(crate) fn plain_text(message: &Message) -> String {
             ),
             // 与入站记录、发言标记同一个写法：自己过去那句里的 @ 也读成 `[at:QQ号]`，
             // 人格在自己说过的话里学到的就是能用的那一种。
-            "at" => out.push_str(&format!(
-                "[at:{}] ",
-                segment
-                    .data
-                    .get("qq")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-            )),
+            "at" => match segment.data.get("qq").and_then(|v| v.as_str()) {
+                // 插件发的 @全体成员 不是人格能用的写法，别让它从自己的记录里学去。
+                Some(crate::message::AT_ALL) => out.push_str("@全体成员 "),
+                id => out.push_str(&format!("[at:{}] ", id.unwrap_or(""))),
+            },
             "face" => out.push_str("[表情]"),
             "poke" => out.push_str("[戳一戳]"),
             "dice" => out.push_str("[骰子]"),
@@ -332,13 +334,16 @@ pub(crate) fn plain_text(message: &Message) -> String {
             "video" => out.push_str("[视频]"),
             "node" | "forward" => out.push_str("[合并转发]"),
             "json" => {
-                let payload = segment.data.get("data").or_else(|| segment.data.get("content"))
-                    .and_then(|value| value.as_str()).unwrap_or("");
+                let payload = segment
+                    .data
+                    .get("data")
+                    .or_else(|| segment.data.get("content"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
                 out.push_str("[卡片");
-                if let Some(url) = crate::command::card_target_url(payload)
-                    .filter(|url| (url.starts_with("http://") || url.starts_with("https://"))
-                        && url.len() <= 2048)
-                {
+                if let Some(url) = crate::command::card_target_url(payload).filter(|url| {
+                    (url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 2048
+                }) {
                     out.push_str(": ");
                     out.push_str(&url);
                 }

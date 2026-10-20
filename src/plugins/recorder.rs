@@ -123,7 +123,6 @@ impl PluginConfig for RecorderConfig {
     const NAME: &'static str = "recorder";
 }
 
-
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
         let db = &ctx.db;
@@ -522,7 +521,11 @@ fn parse_message_content(
                                     .or_else(|| d.get_u64("qq").map(|i| i.to_string()))
                             })
                             .unwrap_or_default();
-                        rich_text.push_str(&format!("[@{qq}]"));
+                        if qq == crate::message::AT_ALL {
+                            rich_text.push_str("[@全体成员]");
+                        } else {
+                            rich_text.push_str(&format!("[@{qq}]"));
+                        }
                     }
                     "face" => {
                         face_count += 1;
@@ -610,4 +613,3 @@ fn parse_message_content(
 
     (text_char_count as i32, joined_text)
 }
-
