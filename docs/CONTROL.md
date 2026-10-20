@@ -14,7 +14,7 @@ admins = [123456789]
 
 `admins` 填维护者 QQ 号。名单为空时只有本机 Web 控制台可以管理；群管理员身份不会自动获得全局权限。帮助、`/ctl` 用法与插件状态对所有人开放；关闭 `ctl` 不会绕过其他指令的权限检查。
 
-修改配置前先运行 `./bot stop`。运行中的实例退出时会把内存配置写回文件，在线编辑可能被覆盖；解析失败时不会覆盖原文件。
+直接编辑文件前先运行 `acumen stop`。运行中的实例退出时会把内存配置写回文件，在线编辑可能被覆盖；解析失败时不会覆盖原文件。
 
 ## 指令
 
@@ -95,43 +95,58 @@ log_lines = 400
 `token` 留空时首次启动自动生成，保存到 `data/console/token`（权限 `0600`）；启动日志会输出含口令的 URL。不要把 `bind` 改为 `0.0.0.0`，除非已确认网络隔离与口令保护足够。`--no-ui` 只关闭本次运行的 Web 界面，不影响机器人指令、定时任务与推送。
 
 ```sh
-./bot ui       # 打开控制台
-./bot ui url   # 只打印地址
+acumen ui       # 打开控制台
+acumen ui url   # 只打印地址
 ```
 
 名单（设置页的全局黑白名单、插件配置里的 `channel.white / black`、各类「开启的群」，以及资讯推送的私聊目标、管理员 `ctl.admins` 这类私聊用户名单）在控制台里不用手打引号：从已加入的群 / 好友里点选（带名字与搜索，好友还能按昵称、备注找），或整段粘贴 ID；移除可撤销，群名单底下说明它现在的实际效果。名册来自实现端的 `guild.list` 与 `friend.list`，只有连着的账号读得到，读不到时仍可直接输入群号或账号。
 
 控制台可安装到手机或桌面浏览器。日志仅在日志页可见时接收，页面离开或进入后台会暂停订阅，返回时读取最近记录。控制台操作不会直接发送群消息。
 
-总览页运行卡底部有一颗「重启」按钮，等价于 `./bot restart`：先确认，进程随后原地重启，页面轮询到新进程的启动时间后自动刷新。`[restart]` 关闭时按钮会直接说明原因。
+总览页运行卡底部有一颗「重启」按钮，等价于 `acumen restart`：先确认，进程随后原地重启，页面轮询到新进程的启动时间后自动刷新。`[restart]` 关闭时按钮会直接说明原因。
 
 ## 运行与更新
 
-按以下顺序部署：
+安装后的布局：
 
-1. 运行 `cargo test --locked` 与 `cargo build --release --locked`。
-2. 运行 `./bot stop` 并等待进程退出。
-3. 备份配置与数据，再修改 `config.toml`。
-4. 从仓库目录运行 `./bot start`。
-5. 查看连接日志，再用 `/ctl list` 检查插件状态。
-
-Linux / Termux 下 `./bot start` 前台运行并显示日志，按 `Ctrl+C` 优雅停止。
+| 位置 | 内容 |
+| --- | --- |
+| `~/acumen/acumen` | 可执行文件；`ACUMEN_HOME` 可换目录 |
+| `~/acumen/config.toml`、`~/acumen/data/` | 配置与数据 |
+| `$PREFIX/bin/acumen` | 管理命令，随可执行文件一起更新 |
+| `$PREFIX/var/service/acumen/` | runit 服务；日志在 `$PREFIX/var/log/sv/acumen/`，每份 1 MB、留 5 份 |
+| `/data/adb/service.d/acumen.sh` | root 守护，开机由 KernelSU / Magisk 执行；日志 `/data/local/tmp/acumen-keeper.log` |
 
 | 命令 | 用途 |
 | --- | --- |
-| `./bot status` | 查看运行状态与 PID |
-| `./bot start` | 启动；受 runit 管理时等同 `sv up` |
-| `./bot stop` | 优雅停止；受 runit 管理时等同 `sv down` |
-| `./bot restart` | 重启 |
-| `./bot logs` | 查看实时日志 |
-| `./bot attach` | 进入日志窗口 |
+| `acumen` / `acumen start` | 启动并打开控制台；`-q` 不打开 |
+| `acumen stop` | 停止，并留下停止标记：开机与守护都不会再拉起 |
+| `acumen restart` | 重启 |
+| `acumen status` | 运行状态、连接、保活与新版本 |
+| `acumen log [行数]` | 实时日志 |
+| `acumen update` | 立即检查并更新，运行中的会随即重启 |
+| `acumen setup` | 重新检查依赖、字体、省电白名单与 root 守护，可重复运行 |
+| `acumen run` | 前台运行并启用本地终端适配器，可直接输入指令测试 |
+| `acumen uninstall [--purge]` | 卸载 |
 
-Termux 可通过 `termux-services`（runit）托管。服务脚本位于 `scripts/service/acumen/`，复制到 `$PREFIX/var/service/acumen/` 并把 `run` 中的仓库路径改为绝对路径。托管后可用 `./bot enable` / `./bot disable` 控制随 Termux 启动。
+保活分三层：
 
-Android 厂商可能直接结束 Termux，runit 无法恢复被结束的宿主应用。`scripts/97-termux-revive.sh` 与 `scripts/termux-revive.sh` 提供 root 侧恢复方案，安装步骤与状态检查见脚本注释。
+1. runit 托管机器人进程，崩溃立即拉起；一起来就退的（如配置写坏）每次歇 20 秒，不空转。
+2. 启动时持有 Termux 唤醒锁；setup 把 Termux 加入省电白名单、放开后台限制。
+3. root 守护每分钟看一次 runit 监督树：Termux 被系统清理后经 `RUN_COMMAND` 在 Termux 里重新拉起，必要时打开一次 Termux 界面；唤醒锁或省电白名单被系统收回时补上。
 
-开机自启链路：解锁后系统广播 `BOOT_COMPLETED`，Termux 被拉起并启动 runsvdir，runit 拉起已 `enable` 的 acumen，root 侧看守由 `service.d/97-termux-revive.sh` 在开机后启动，只在链条断开时补位。验证看 `./bot status`、`sv status acumen` 与 `/data/local/tmp/termux-revive.log`。设有锁屏凭据时，重启后须先解锁一次：解锁前 Termux 目录处于加密状态不可读。
+`acumen stop` 与系统设置里的「强行停止」都算主动停止，守护不干预。设有锁屏密码时，重启后要先解锁一次：解锁前 Termux 的目录处于加密状态，谁也起不来。
 
-浏览器卡片需要 Chrome/Chromium 与系统中日韩字体。出图失败时帮助与控制回退到文本；运行浏览器类插件时可通过全局 `browser_path` 指定浏览器。
+例行维护由 `[restart]` 控制：在 `times` 的每个时刻先查新版本（`auto_update`），有就下载、校验、替换可执行文件；再等到 `quiet_seconds` 秒内没有新消息、手头的消息都处理完（最多等 `max_wait_minutes` 分钟）后重启。没有新版本时，`daily_restart` 决定是否照常重启。内存超过 `memory_threshold_mb` 时同样平滑重启。重启在进程内原地完成，PID 不变。
+
+从源码构建的（可执行文件在 `target/` 下）不参与自动更新。开发时把构建产物换进去：
+
+```sh
+cargo build --release --locked && cp target/release/acumen ~/acumen/acumen && acumen restart
+```
+
+发布新版本用 `scripts/release.sh`：按 `Cargo.toml` 的版本构建、打包，并把 `CHANGELOG.md` 对应一节作为说明发到 GitHub Releases。
+
+卡片与截图用安装时装好的 Termux Chromium 与思源黑体 / 宋体；`browser_path` 可指定别的浏览器。出图失败时帮助与控制回退到文本。
 
 信息卡出图成功后只发卡片图，出图失败时改发可复制、可读屏的等价文本。OAI 删除或清空会先显示影响范围，60 秒内重发同一条指令才执行；不重发即取消。

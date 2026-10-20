@@ -4,17 +4,18 @@ Acumen 通过 [Satori v1](https://satori.js.org/zh-CN/) 连接实现端；实现
 
 ## 连接与鉴权
 
-在 `config.toml` 的 `[[bots]]` 中配置实现端：
+默认配置连本机的两个模块，不用填地址与令牌：
 
 ```toml
 [[bots]]
 enabled = true
 protocol = "satori"
-url = "http://127.0.0.1:3001"
-access_token = ""
+module = "satori_qq"   # 知弦；satori_wx 是知言
 ```
 
-- `ACUMEN_SATORI_TOKEN` 环境变量优先于 `access_token`；两者都为空时不发送令牌。
+- `module` 让这条连接跟随模块自己的设置：每次连接前经 `su` 读 `/data/adb/modules/satori_qq/config.json`（知言读 `satori-wx.conf`）里的端口与令牌，模块管理页里改了令牌，下次重连就换过来。模块没装就跳过这条连接；没有 root 时知弦按默认端口 3001、不带令牌去连。
+- 连别处的实现端写 `url` 与 `access_token`；与 `module` 同时写时，写明的值优先。
+- `ACUMEN_SATORI_TOKEN` 环境变量优先于以上所有令牌；都为空时不发送令牌。
 - `url` 可使用 `http(s)://`、`ws(s)://` 或完整的 `/v1/events` 地址，启动时规范化为 API 根地址与 WebSocket 事件地址。
 - 连接 `/v1/events`，10 秒内发送 `IDENTIFY`；收到 `READY` 后建立登录状态并通知插件。
 - 每 10 秒发送一次 `PING`；收到反向 `PING` 也回复 `PONG`。

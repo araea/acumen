@@ -6,46 +6,63 @@
 
 ## 安装
 
-需要 Rust 1.94 或更高版本。
+需要一台已 root（KernelSU）的安卓手机，装好 [知弦（satori-qq）](https://github.com/araea/satori-qq) 模块并登录 QQ。在 Termux 里运行：
 
 ```sh
-cp config.example.toml config.toml
-cargo build --release --locked
-./bot start
+curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh | bash
 ```
 
-首次启动会补齐缺失的默认配置；配置解析失败时不会覆盖原文件。不要将 `config.toml` 或 `data/` 提交到 Git。
+它会下载最新版本到 `~/acumen`，装好浏览器、中文字体与其余依赖，配好保活，然后启动并打开控制台。第一次要下载几百 MB，耗时几分钟。Termux 请从 F-Droid 或 GitHub 安装，并在 KernelSU 管理器的「超级用户」里给 Termux 授权。
 
-网页截图与部分图片插件需要本机安装 Chrome 或 Chromium，可在配置中指定 `browser_path`；浏览器不可用时回退到文本输出。中文图片需要系统中日韩字体。
+连接不用配置：端口与令牌跟随知弦模块里的设置。装了知言（satori-wx）模块的，会同时接入微信。
 
-## 快速使用
+## 使用
 
-默认连接 `http://127.0.0.1:3001`。在 `[ctl]` 中设置 `admins` 后，才能从群聊管理插件。
+| 命令 | 用途 |
+| --- | --- |
+| `acumen` | 启动并打开控制台；已在运行就只打开控制台 |
+| `acumen stop` | 停止；开机与守护都不会再拉起，直到下次启动 |
+| `acumen restart` | 重启 |
+| `acumen status` | 运行状态、QQ 连接与保活情况 |
+| `acumen log` | 实时日志，`Ctrl+C` 退出 |
+| `acumen update` | 立即检查并更新 |
+| `acumen help` | 全部命令 |
 
-```sh
-./bot status
-./bot stop
-./bot restart
-./bot ui       # 打开控制台
-./bot ui url   # 只打印地址
-```
+在 QQ 里发送 `/help` 查看指令，`/ctl` 查看插件状态、开关和配置。在群里改配置要先成为管理员：在控制台的插件页打开「插件控制」，把自己的 QQ 号加进 `admins`。
 
-发送 `/help` 查看指令，发送 `/ctl` 查看插件状态、开关和配置。控制台地址、`--no-ui` 与 runit 托管见[插件控制与部署](docs/CONTROL.md)。
+## 保活与更新
+
+- 进程崩溃由 Termux 里的 runit 立即拉起。
+- 熄屏时持有 Termux 唤醒锁；Termux 加入系统省电白名单。
+- root 守护在开机后拉起 Termux 与机器人，Termux 被系统清理后再拉回来。设有锁屏密码时，重启后要先解锁一次。
+- 每天 04:30 例行维护：有新版本就下载、校验、换上，等群里安静两分钟后重启。时刻与开关在 `[restart]`。
+
+`acumen stop` 与在系统设置里强行停止 Termux 都算主动停止，守护不会再拉起。
 
 ## 配置
 
-连接实现端在 `config.toml` 的 `[[bots]]` 中配置，每段一个 `protocol`、`url` 与 `access_token`。`ACUMEN_SATORI_TOKEN` 环境变量优先于 `access_token`。默认地址 `http://127.0.0.1:3001`。
+配置在 `~/acumen/config.toml`，数据在 `~/acumen/data/`。日常修改用控制台或 `/ctl`；直接编辑文件前先 `acumen stop`，运行中的实例退出时会写回内存里的配置。完整配置项见 [`config.example.toml`](config.example.toml)。
 
-完整配置项见 [`config.example.toml`](config.example.toml)。
+AI 对话、搭话等功能需要自备模型服务的 API 密钥，在控制台的插件页填写。
+
+## 卸载
+
+```sh
+acumen uninstall          # 保留配置与数据
+acumen uninstall --purge  # 一起删除
+```
 
 ## 限制 / 风险
 
+只提供安卓 Termux（arm64）的发布版。
+
 部分能力（视频解析的 1080P、AI 生图 / 生歌 / 生视频）依赖外部服务并可能产生费用，启用前确认账号与价格。
 
-Agent 房间的 `bash` 等本机工具不是安全沙箱，具有当前系统账户权限；共享房间不应开放 Agent 控制通道。
+Agent 房间的 `bash` 等本机工具不是安全沙箱，具有 Termux 账户权限；共享房间不应开放 Agent 控制通道。
 
 ## 必要链接
 
+- [插件控制与部署](docs/CONTROL.md)
 - [Satori 接入](docs/SATORI.md)
 - [群聊搭话](docs/ambient.md)
 - [内置 Agent 房间](docs/agent.md)
@@ -53,6 +70,6 @@ Agent 房间的 `bash` 等本机工具不是安全沙箱，具有当前系统账
 - [点歌](docs/song.md)
 - [Markdown 转图](docs/markdown.md)
 - [二维码识别与生成](docs/qr_scan.md)
-- [插件控制与部署](docs/CONTROL.md)
 - [架构与插件开发](docs/ARCHITECTURE.md)
 - [WebUI 设计系统](docs/DESIGN_SYSTEM.md)
+- [更新记录](CHANGELOG.md)
