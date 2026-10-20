@@ -39,6 +39,12 @@ has_root() { su -c true </dev/null >/dev/null 2>&1; }
 
 bot_pid() {
     local pid exe
+    # runit 托管时以它记下的 PID 为准（可执行文件被替换过，路径会对不上）。
+    pid=$(cat "$SV/supervise/pid" 2>/dev/null)
+    if [[ -n $pid && $(readlink "/proc/$pid/exe" 2>/dev/null) == "$APP"/acumen* ]]; then
+        echo "$pid"
+        return 0
+    fi
     for pid in $(pgrep -f "$EXE" 2>/dev/null); do
         exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
         [[ ${exe% (deleted)} == "$EXE" ]] && { echo "$pid"; return 0; }

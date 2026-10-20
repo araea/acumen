@@ -129,6 +129,16 @@ loop() {
     done
 }
 
+# 守护的 shell 正等着 sleep 时会把 TERM 攒到 sleep 结束才处理，所以直接连同整个进程组
+# （setsid 起的，组号就是它自己）一起结束。
+halt() {
+    if running; then
+        p=$(cat "$PID")
+        kill -9 -- "-$p" 2>/dev/null || kill -9 "$p" 2>/dev/null
+    fi
+    rm -f "$PID"
+}
+
 case "${1:-start}" in
     start)
         running && exit 0
@@ -139,14 +149,10 @@ case "${1:-start}" in
         fi
         ;;
     restart)
-        running && kill "$(cat "$PID")" 2>/dev/null
-        sleep 1
+        halt
         sh "$0" start
         ;;
-    stop)
-        running && kill "$(cat "$PID")" 2>/dev/null
-        rm -f "$PID"
-        ;;
+    stop) halt ;;
     status)
         running && echo "守护：在跑（pid $(cat "$PID")）" || echo "守护：没在跑"
         cat "$STATUS" 2>/dev/null
