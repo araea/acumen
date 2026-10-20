@@ -867,7 +867,9 @@ const posted = where => posts.filter(p => p.path === where);
       await audit(`picker/${label}/${theme}/settings`);
       await click('.picker:has(#g-white) [data-picker-open]');
       await until(() => js('return document.querySelector("#sheet").open'), '面板');
-      await sleep(300);
+      // 等进场动画（scale 0.96 → 1）走完再量：动画中途 24px 的勾选框只有 23 点几。
+      await until(() => js('return !document.querySelector("#sheet").getAnimations().length'), '面板进场动画');
+      await sleep(100);
       await shot(`sheet-${label}-${theme}`);
       await audit(`sheet/${label}/${theme}`);
       assert(await js('return document.documentElement.scrollWidth <= innerWidth'), `面板横向溢出：${label}/${theme}`);
@@ -888,7 +890,7 @@ const posted = where => posts.filter(p => p.path === where);
 
   // 所有注册插件使用真实的默认配置与说明，不复用通用假字段。
   realMode = true;
-  assert.equal(realPlugins.length, 25);
+  assert.equal(realPlugins.length, 27);
   for (const width of [320, 1400]) {
     await viewport(width, 900);
     for (const plugin of realPlugins) {

@@ -442,7 +442,7 @@ time {
   color: var(--md-sys-color-on-surface);
 }
 
-@media (prefers-reduced-transparency: reduce) {
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   .nav[data-glass] .nav-pill {
     z-index: 0;
     background: var(--md-sys-color-secondary-container);
