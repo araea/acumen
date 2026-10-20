@@ -315,7 +315,7 @@ cmd_run() {
 pkg_missing() { ! dpkg -s "$1" 2>/dev/null | grep -q '^Status: install ok installed'; }
 
 install_packages() {
-    local want=(termux-services termux-tools curl jq ffmpeg poppler fontconfig-utils chromium) missing=() p
+    local want=(termux-services termux-tools procps curl jq ffmpeg poppler fontconfig-utils chromium) missing=() p
     for p in "${want[@]}"; do pkg_missing "$p" && missing+=("$p"); done
     if ((${#missing[@]} == 0)); then ok "依赖齐全"; return; fi
     say "  安装依赖：${missing[*]}（浏览器较大，第一次要几分钟）"
@@ -331,17 +331,19 @@ install_packages() {
 # 所以补上思源黑体与宋体的几档真字重。
 install_fonts() {
     local dir=$PREFIX/share/fonts/acumen base f name got=0
+    # 每项是「文件:家族:字重」；fontconfig 里已经有这一档（系统自带或别处装过）就不下载。
     local files=(
-        Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
-        Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf
-        Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf
-        Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Bold.otf
-        Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Black.otf
+        "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf:Noto Sans CJK SC:style=Regular"
+        "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf:Noto Sans CJK SC:style=Bold"
+        "Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Regular.otf:Noto Serif CJK SC:style=Regular"
+        "Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Bold.otf:Noto Serif CJK SC:style=Bold"
+        "Serif/OTF/SimplifiedChinese/NotoSerifCJKsc-Black.otf:Noto Serif CJK SC:style=Black"
     )
     mkdir -p "$dir"
     for f in "${files[@]}"; do
+        [[ -n $(fc-list ":family=${f#*:}" 2>/dev/null) ]] && continue
+        f=${f%%:*}
         name=${f##*/}
-        [[ -s $dir/$name || -s $HOME/.fonts/$name ]] && continue
         for base in https://github.com/notofonts/noto-cjk/raw/main https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@main; do
             if curl -fsSL --retry 2 -m 600 -o "$dir/$name.part" "$base/$f" && [[ $(stat -c %s "$dir/$name.part") -gt 1000000 ]]; then
                 mv -f "$dir/$name.part" "$dir/$name"
