@@ -35,7 +35,7 @@ curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh |
 - 进程崩溃由 Termux 里的 runit 立即拉起。
 - 熄屏时持有 Termux 唤醒锁；Termux 加入系统省电白名单。
 - root 守护在开机后拉起 Termux 与机器人，Termux 被系统清理后再拉回来。设有锁屏密码时，重启后要先解锁一次。
-- 每天 04:30 例行维护：有新版本就下载、校验、换上，等群里安静两分钟后重启。时刻与开关在 `[restart]`。
+- 每天 04:30 例行维护：有新版本就下载、校验、换上，等群里安静两分钟后重启。每次启动或重启后也会查一次，有新版本同样换上。时刻与开关在 `[restart]`。
 
 `acumen stop` 与在系统设置里强行停止 Termux 都算主动停止，守护不会再拉起。
 

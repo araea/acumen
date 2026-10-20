@@ -63,6 +63,31 @@ fn client() -> Result<reqwest::Client> {
         .build()?)
 }
 
+/// 机器人自己最近一次去查新版本的时刻（文件的修改时间）。管理命令的查询不记，
+/// 免得 `acumen status` 看到有新版之后的那次重启反倒不去换。
+fn stamp() -> Option<PathBuf> {
+    crate::storage::data_path("release")
+        .ok()
+        .map(|dir| dir.join("last-check"))
+}
+
+pub fn mark_checked() {
+    if let Some(path) = stamp()
+        && let Err(error) = crate::storage::write_atomic(&path, b"")
+    {
+        warn!(target: LOG_TARGET, "记不下查更新的时刻：{error}");
+    }
+}
+
+/// 这么久以内查过新版本。
+pub fn checked_within(window: Duration) -> bool {
+    stamp()
+        .and_then(|path| std::fs::metadata(path).ok())
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|time| time.elapsed().ok())
+        .is_some_and(|age| age < window)
+}
+
 /// 查一次最新发布；比当前新才返回。
 pub async fn check() -> Result<Option<Release>> {
     let manifest: serde_json::Value = client()?

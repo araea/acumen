@@ -1,7 +1,7 @@
-//! restart 插件：例行维护（按时更新与重启）、内存阈值监控、手动重启指令。
+//! restart 插件：例行维护（按时更新与重启）、启动时查更新、内存阈值监控、手动重启指令。
 //!
 //! 例行维护按配置的时刻进行：先查新版本，有就下载校验换上；再等群里安静下来、手头的
-//! 活儿做完，才请求主循环重启。重启由主循环收尾：停适配器与任务、关数据库与浏览器、
+//! 活儿做完，才请求主循环重启。每次启动（重启也是）稍后也查一次新版本，有才重启。重启由主循环收尾：停适配器与任务、关数据库与浏览器、
 //! 保存配置，Unix 下 exec 替换当前进程，PID 不变，托管它的 runit 不会当成崩溃。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
@@ -24,7 +24,7 @@ pub struct RestartConfig {
     enabled: bool,
     /// 每天在这些时刻做一次例行维护（HH:MM，24 小时制，可写多个）
     times: Vec<String>,
-    /// 例行维护时先查新版本，有就下载、校验、换上（仅发布版）
+    /// 启动时与例行维护时查新版本，有就下载、校验、换上（仅发布版）
     auto_update: bool,
     /// 例行维护时没有新版本也重启一次，放掉长时间运行积下的内存
     daily_restart: bool,
@@ -58,6 +58,12 @@ impl Default for RestartConfig {
         }
     }
 }
+
+/// 启动后过这么久再查新版本：先让连接建好，开机时也给网络留点时间。
+const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(30);
+/// 这么久以内查过，启动时就不再查：例行维护刚查完紧跟着的那次重启、崩溃后被反复拉起，
+/// 都不必再去敲 GitHub。
+const STARTUP_CHECK_INTERVAL: Duration = Duration::from_mins(10);
 
 // ================= 全局状态 =================
 
@@ -146,7 +152,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             let daily_ctx = ctx.clone();
             ctx.scheduler.add_daily_at(clock.hour(), clock.minute(), clock.second(), move || {
                 let ctx = daily_ctx.clone();
-                async move { maintain(ctx).await }
+                async move { maintain(ctx, true).await }
             });
         }
         if !cfg.times.is_empty() {
@@ -159,7 +165,20 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             info!(target: LOG_TARGET, "每天 {} {what}（系统本地时区）", cfg.times.join("、"));
         }
 
-        // 2. 内存阈值监控(仅 Linux 支持读取自身 RSS)
+        // 2. 启动时查一次新版本：有就换上、等安静了重启，没有就什么也不做
+        if cfg.auto_update && crate::release::managed() {
+            let startup_ctx = ctx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(STARTUP_CHECK_DELAY).await;
+                if crate::release::checked_within(STARTUP_CHECK_INTERVAL) {
+                    debug!(target: LOG_TARGET, "刚查过新版本，这次启动不再查");
+                    return;
+                }
+                maintain(startup_ctx, false).await;
+            });
+        }
+
+        // 3. 内存阈值监控(仅 Linux 支持读取自身 RSS)
         if cfg.memory_threshold_mb > 0 {
             let threshold = cfg.memory_threshold_mb;
             let interval_secs = cfg.memory_check_interval_minutes.max(1) * 60;
@@ -213,14 +232,16 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     })
 }
 
-/// 例行维护：先把新版本换上（换文件不影响正在跑的进程），再等安静、重启。
-async fn maintain(ctx: Context) {
+/// 维护：先把新版本换上（换文件不影响正在跑的进程），再等安静、重启。
+/// 每日例行维护（`daily`）在没有新版本时按 `daily_restart` 决定是否照常重启；启动时那次只为更新。
+async fn maintain(ctx: Context, daily: bool) {
     if MAINTAINING.swap(true, Ordering::SeqCst) {
         return;
     }
     let cfg = get_config_or_default::<RestartConfig>(&ctx);
-    let mut reason = cfg.daily_restart.then(|| "每日定时".to_string());
+    let mut reason = (daily && cfg.daily_restart).then(|| "每日定时".to_string());
     if cfg.auto_update && crate::release::managed() {
+        crate::release::mark_checked();
         match crate::release::check().await {
             Ok(Some(release)) => {
                 info!(target: LOG_TARGET, "发现新版本 {}，正在下载…", release.version);
