@@ -32,7 +32,7 @@ use std::{
 ///
 /// 人格对「自己能做什么」的认知不该只靠 skill 里那张手写的表——文档会过期，
 /// 这份清单和代码一起走，`satori_context` 每次都照它报告。
-pub(crate) const ACTION_KINDS: [&str; 15] = [
+pub(crate) const ACTION_KINDS: [&str; 17] = [
     "send",
     "poke",
     "like",
@@ -48,6 +48,8 @@ pub(crate) const ACTION_KINDS: [&str; 15] = [
     "mute_all",
     "rename_group",
     "react_clear",
+    "approve",
+    "announce",
 ];
 
 /// 一轮最多取回几份附件、单份与合计多大。附件落在本轮的工作目录里，轮末随目录清掉。
@@ -148,6 +150,8 @@ fn capability(action: &Action) -> &'static str {
         Action::MuteAll { .. } => "mute_all",
         Action::RenameGroup { .. } => "rename_group",
         Action::ReactClear { .. } => "react_clear",
+        Action::Approve { .. } => "approve",
+        Action::Announce { .. } => "announce",
     }
 }
 
@@ -1225,6 +1229,15 @@ impl Session {
             },
             "today_remaining": remaining,
             "recent": recent,
+            "requests": crate::requests::pending(&self.group)
+                .into_iter()
+                .map(|request| {
+                    let time = chrono::DateTime::from_timestamp(request.at, 0)
+                        .map(|at| at.with_timezone(&crate::clock::beijing()).format("%m-%d %H:%M").to_string())
+                        .unwrap_or_default();
+                    json!({"request_id": request.flag, "user_id": request.user_id, "comment": request.comment, "time": time})
+                })
+                .collect::<Vec<_>>(),
         })
     }
     /// 管理动作动手之前的几道闸；过了就返回落到的那个人。
@@ -1259,6 +1272,13 @@ impl Session {
         }
         let uid = match action {
             Action::Recall { message_id, .. } => actions::message(turns, message_id)?.user_id.clone(),
+            // 申请人还不是群成员，名册里查不到；账上有这条申请就够了。
+            Action::Approve { request_id, .. } => {
+                let request = crate::requests::find(&self.group, request_id).ok_or_else(|| {
+                    anyhow::anyhow!("本群没有这条待处理的加群申请（可能已被别的管理员处理）；看 satori_context 的 management.requests")
+                })?;
+                return Ok(Target { user_id: request.user_id, name: String::new() });
+            }
             _ => match action.management_target() {
                 Some(raw) => actions::id(raw)?,
                 None => return Ok(Target::default()),
@@ -1684,6 +1704,41 @@ impl Session {
                 json!({"channel_id":group,"duration":u64::from(*duration_seconds)*1000}),
                 format!("[全员禁言 {duration_seconds} 秒；0 为解除]"),
             ),
+            Action::Approve {
+                request_id,
+                approve,
+                message,
+                ..
+            } => {
+                let request = crate::requests::find(&group, request_id)
+                    .ok_or_else(|| anyhow::anyhow!("这条加群申请已经不在了"))?;
+                let params = json!({"message_id":request.flag,"approve":approve,"comment":message});
+                let verdict = if *approve { "同意" } else { "拒绝" };
+                let result = self.rpc("guild.member.approve", params).await?;
+                crate::requests::resolve(&request.flag);
+                self.record(
+                    format!("[{verdict}了 {} 的加群申请]", request.user_id),
+                    String::new(),
+                    Message::new(),
+                    true,
+                );
+                return Ok(json!({"status":"confirmed","data":result}));
+            }
+            Action::Announce {
+                text,
+                pinned,
+                image,
+            } => {
+                let mut params = json!({"guild_id":group,"text":text.trim(),"pinned":pinned});
+                if let Some(image) = image {
+                    params["image"] = json!(self.source(image.trim(), "announce.png").await?);
+                }
+                (
+                    "internal/group_bulletin_publish",
+                    params,
+                    format!("[发布群公告{}：{}]", if *pinned { "（置顶）" } else { "" }, crate::plugins::oai::utils::one_line(text).chars().take(60).collect::<String>()),
+                )
+            }
             Action::RenameGroup { name } => (
                 "channel.update",
                 json!({"channel_id":group,"data":{"name":name}}),

@@ -119,6 +119,26 @@ pub(crate) enum Action {
         #[serde(default)]
         emoji_id: Option<String>,
     },
+    /// 处理一条加群申请（`request_id` 是管理栏里列出的申请号，也认申请人 QQ 号）。
+    Approve {
+        request_id: String,
+        #[serde(default = "yes")]
+        approve: bool,
+        /// 拒绝时告诉申请人的话（QQ 会显示给他）；同意时不用。
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        reason: String,
+    },
+    /// 发一条群公告。
+    Announce {
+        text: String,
+        #[serde(default)]
+        pinned: bool,
+        /// 配图：已核实的图片直链或本轮工作目录里的文件。
+        #[serde(default)]
+        image: Option<String>,
+    },
     /// 转发已有消息保持真实作者；整理新内容时统一署机器人自己。
     Forward {
         #[serde(default)]
@@ -140,6 +160,10 @@ fn label(value: &str, max: usize) -> Result<()> {
 
 fn one() -> u8 {
     1
+}
+
+fn yes() -> bool {
+    true
 }
 
 pub(crate) fn id(raw: &str) -> Result<String> {
@@ -360,6 +384,24 @@ impl Action {
                 );
             }
             Self::RenameGroup { name } => label(name, 60)?,
+            Self::Approve { request_id, message, .. } => {
+                id(request_id)?;
+                ensure!(
+                    message.chars().count() <= 60 && !message.chars().any(char::is_control),
+                    "拒绝理由最多 60 字且不能含控制字符"
+                );
+            }
+            Self::Announce { text, image, .. } => {
+                let count = text.trim().chars().count();
+                ensure!((1..=1000).contains(&count), "公告正文 1–1000 字");
+                ensure!(
+                    !text.lines().any(super::attention::is_control),
+                    "关注指令写在最终输出里，不进公告"
+                );
+                if let Some(image) = image {
+                    ensure!(!image.trim().is_empty(), "配图来源是空的；不配图就省略 image");
+                }
+            }
             Self::ReactClear {
                 message_id,
                 emoji_id,
@@ -421,7 +463,9 @@ impl Action {
             | Self::Mute { .. }
             | Self::Kick { .. }
             | Self::MuteAll { .. }
-            | Self::RenameGroup { .. } => true,
+            | Self::RenameGroup { .. }
+            | Self::Approve { .. }
+            | Self::Announce { .. } => true,
             _ => false,
         }
     }
@@ -455,7 +499,8 @@ impl Action {
             Self::Mute { reason, .. }
             | Self::Kick { reason, .. }
             | Self::MuteAll { reason, .. }
-            | Self::Recall { reason, .. } => reason.trim(),
+            | Self::Recall { reason, .. }
+            | Self::Approve { reason, .. } => reason.trim(),
             _ => "",
         }
     }

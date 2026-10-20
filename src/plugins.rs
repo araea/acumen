@@ -482,6 +482,8 @@ pub async fn delivered(ctx: &Context, writer: &LockedWriter, delivery: &Receipt<
 /// 优化点：单次拿读锁完成所有插件 enabled 检查，避免 N 次锁竞争。
 pub async fn run(mut ctx: Context, writer: LockedWriter) -> Result<(), PluginError> {
     let plugins = get_plugins();
+    // 加群申请由框架记账，任何插件都能查；放在流水线之前，插件消费与否都不影响。
+    crate::requests::observe(&ctx);
 
     // 一次性快照所有插件的 enabled 标记，避免每个插件单独锁
     let enabled_set = collect_enabled_set(&ctx);

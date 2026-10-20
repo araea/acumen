@@ -961,6 +961,16 @@ pub(crate) fn satori_action_schema() -> Value {
         ),
         ("rename_group", json!({"name":id("新群名")}), vec!["name"]),
         (
+            "approve",
+            json!({"request_id":id("management.requests 里的申请号，也认申请人 QQ 号"),"approve":{"type":"boolean","description":"true 同意（默认），false 拒绝"},"message":id("拒绝时给申请人看的一句话，可空"),"reason":id("为什么这么处理，一句话；记进管理记录")}),
+            vec!["request_id"],
+        ),
+        (
+            "announce",
+            json!({"text":id("公告正文，1–1000 字，换行照写"),"pinned":{"type":"boolean","description":"置顶，默认 false"},"image":id("可选配图：已核实的图片直链或本轮工作目录里的文件")}),
+            vec!["text"],
+        ),
+        (
             "react_clear",
             json!({"message_id":id("清除自己在本群这条消息上的表态"),"emoji_id":id("留空清除自己的全部表态")}),
             vec!["message_id"],

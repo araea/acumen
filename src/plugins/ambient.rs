@@ -1213,6 +1213,15 @@ fn notice_turn(raw: &simd_json::OwnedValue, me: &str) -> Option<(Turn, Option<St
             )
         }
         "guild-member-added" => format!("[群成员 {user} 加入了群聊]"),
+        // 申请人还不在群里，这一行是给管事的人看的：开放管理时能用 approve 处理。
+        "guild-member-request" => {
+            let comment = raw.get_str("comment").unwrap_or("").trim();
+            format!(
+                "[加群申请：{user} 申请入群，附言「{}」；申请号 {}]",
+                if comment.is_empty() { "（无）" } else { comment },
+                raw.get_str("flag").unwrap_or("")
+            )
+        }
         // 实现端不知道谁操作的（自己退群）就不带 operator，别印一个空的「操作者」。
         "guild-member-removed" => match raw.get_str("operator_id").filter(|id| !id.is_empty()) {
             Some(operator) => format!("[群成员 {user} 离开了群聊；操作者 {operator}]"),
