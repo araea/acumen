@@ -420,7 +420,7 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
                 "key": "name",
                 "noun": "供应商",
                 "add": "添加供应商",
-                "empty": "还没有供应商。房间模型写成「供应商/模型」时按这里的名字找接口与密钥。",
+                "empty": "还没有供应商。填一把 DeepSeek 密钥管家大人就能用：点下面的 deepseek 加上，只填 api_key（地址留空用官方）；也可以由号主发「oai deepseek 密钥」。房间模型写成「供应商/模型」时按这里的名字找接口与密钥。",
                 "suggest": crate::plugins::oai::catalog::KNOWN.iter().map(|known| known.id).collect::<Vec<_>>(),
                 "optional": false,
                 "template": { "api_base": "", "api_key": "" },

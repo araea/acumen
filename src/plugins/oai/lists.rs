@@ -72,7 +72,8 @@ pub(crate) struct Rooms {
 
 impl Rooms {
     /// `search_default` 是全局联网开关：没单独设过的房间跟着它走。
-    pub(crate) fn new(agents: &[Agent], search_default: bool) -> Self {
+    /// `default_model` 是内置智能体房间没写模型时实际用的那个（`[oai] agent_default_model`）。
+    pub(crate) fn new(agents: &[Agent], search_default: bool, default_model: Option<&str>) -> Self {
         // 分区优先于模型：手写了分区的房间按分区成组，排在前面（false < true）。
         let mut grouped: BTreeMap<(bool, String, String), Vec<&Agent>> = BTreeMap::new();
         for agent in agents {
@@ -81,7 +82,7 @@ impl Rooms {
                 .entry((
                     section.is_empty(),
                     section,
-                    super::logic::room_model_label(agent),
+                    super::logic::room_model_label_with(agent, default_model),
                 ))
                 .or_default()
                 .push(agent);
@@ -452,7 +453,7 @@ mod tests {
             agent("乙", "m1", ""),
             agent("丙", "m2", ""),
         ];
-        let rooms = Rooms::new(&agents, false);
+        let rooms = Rooms::new(&agents, false, None);
         let shape: Vec<_> = rooms
             .groups
             .iter()
@@ -473,7 +474,7 @@ mod tests {
     #[test]
     fn text_fallback_numbers_rooms_in_display_order() {
         let agents = [agent("b", "m", "区"), agent("a", "m", "区")];
-        let text = Rooms::new(&agents, false).markdown();
+        let text = Rooms::new(&agents, false, None).markdown();
         let first = text.find("1. **a**").expect("按名字排序后 a 在前");
         assert!(first < text.find("2. **b**").unwrap());
     }

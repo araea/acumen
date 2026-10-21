@@ -302,6 +302,13 @@ ds_searches, ds_fetches = [], []
 LONG_PAGE = "".join(f"\\#\\# 第{n:04d}节\\.\n这一节讲的是第{n}件事\\，写得很长很长很长很长很长很长很长很长很长。\n\n\n" for n in range(1, 900))
 
 
+async def list_models(request):
+    """假供应商的模型列表：坏密钥回 401，好密钥给两个聊天模型和一个语音模型。"""
+    if "bad" in request.headers.get("Authorization", ""):
+        return web.json_response({"error": "invalid key"}, status=401)
+    return web.json_response({"object": "list", "data": [{"id": "scripted"}, {"id": "other-model"}, {"id": "tts-voice"}]})
+
+
 async def ds_search(request):
     body = await request.json()
     ds_searches.append((request.headers.get("Authorization", ""), body))
@@ -389,6 +396,7 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
     app.router.add_post("/v1/{method:.*}", api)
     llm = web.Application(client_max_size=64 * 1024 * 1024)
     llm.router.add_post("/v1/chat/completions", chat)
+    llm.router.add_get("/v1/models", list_models)
     llm.router.add_post("/v1/tools/search", ds_search)
     llm.router.add_post("/v1/tools/fetch", ds_fetch)
     runners = []
@@ -712,6 +720,40 @@ base_url = "http://127.0.0.1:{LLM_PORT}"
         sent = creates_since(mark)
         check("纯文字回复", len(sent) == 1 and "你好，这是一句话" in sent[0], str(sent))
         check("只问了一次模型", len(llm_requests) - n == 1)
+        print("U. 接入：oai 名字 地址 密钥 先验再存、撤回那条消息；客人不能改；% 换模型不丢引擎")
+        relay = f"http://127.0.0.1:{LLM_PORT}/v1"
+        mark = len(posts)
+        await inject(f"/oai relay2 {relay} sk-badkey12345")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "坏密钥回执")
+        sent = creates_since(mark)
+        check("坏密钥被拒、不保存", "拒绝" in sent[0] and "relay2" not in open(os.path.join(WORK, "config.toml")).read(), sent[0][:200])
+        mark = len(posts)
+        await inject(f"/oai relay2 {relay} sk-goodkey1234")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "接入回执")
+        sent = creates_since(mark)
+        check("好密钥接上", "已接上" in sent[0], sent[0][:200])
+        check("回执说了管家大人用哪个模型", "fake/scripted" in sent[0], sent[0][:300])
+        check("带密钥的消息被撤回", any(m == "message.delete" for m, b in posts[mark:]))
+        check("写进了 config.toml", "[oai.providers.relay2]" in open(os.path.join(WORK, "config.toml")).read())
+        await asyncio.sleep(1.5)
+        state = json.load(open(os.path.join(WORK, "data", "oai", "config.json")))
+        check("拉回了它的模型列表、语音模型不列", state.get("provider_models", {}).get("relay2") == ["other-model", "scripted"], str(state.get("provider_models")))
+        mark = len(posts)
+        await inject(f"/oai relay3 {relay} sk-goodkey1234", user=GUEST)
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "客人回执")
+        check("客人改不了接口", "只有号主" in creates_since(mark)[0], creates_since(mark)[0][:120])
+        mark = len(posts)
+        await inject("管家大人%other-model")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "换模型回执")
+        sent = creates_since(mark)
+        room = next(a for a in json.load(open(os.path.join(WORK, "data", "oai", "config.json")))["agents"] if a["name"] == "管家大人")
+        check("只写模型名也找得到是哪家的，房间仍是内置智能体", room["engine"] == "agent" and room["model"] in ("fake/other-model", "relay2/other-model"), f"{room['engine']} {room['model']} {sent}")
+        mark = len(posts)
+        await inject("管家大人%agent")
+        await wait_for(lambda: len(creates_since(mark)) >= 1, "换回默认回执")
+        sent = creates_since(mark)
+        check("换回默认模型，回执写出默认是哪个", "fake/scripted（默认）" in sent[0], sent[0][:200])
+
         print("T. 提醒到点：一分钟前排的那条原样发出，群里 @ 了排它的人")
         await wait_for(lambda: any("⏰ 喝水" in c for c in creates_since(0)), "提醒到点", 100)
         fired = [c for c in creates_since(0) if "⏰ 喝水" in c]

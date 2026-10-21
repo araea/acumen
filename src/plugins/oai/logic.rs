@@ -443,15 +443,15 @@ pub(super) async fn room_endpoint(
     let Some((api_base, api_key)) = super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) else {
         let name = provider.as_deref().unwrap_or_default();
         return Err(format!(
-            "❌ {} 用的是 {spec}，但不认得供应商「{name}」。\n自己的中转站发：oai {name} 地址 密钥\n认得的供应商发 `oai` 查看。",
+            "❌ {}用的是 {spec}，但不认得供应商「{name}」。\n自己的中转站发：oai {name} 地址 密钥\n认得的供应商发 `oai` 查看。",
             agent.name
         ));
     };
     if api_base.is_empty() || api_key.is_empty() {
         let mut text = match provider.as_deref().filter(|name| !name.eq_ignore_ascii_case("apilio")) {
-            Some(name) => format!("❌ {} 用的是 {spec}，但{}", agent.name, super::catalog::missing_key_hint(name)),
+            Some(name) => format!("❌ {}用的是 {spec}，但 {}", agent.name, super::catalog::missing_key_hint(name)),
             None => format!(
-                "❌ {} 用的是 {spec}，它走默认接口，而默认接口还没配。\n· 接中转站：oai 地址 密钥\n· 或换成官方供应商的模型：{}%deepseek/deepseek-flash",
+                "❌ {}用的是 {spec}，它走默认接口，而默认接口还没配。\n· 接中转站：oai 地址 密钥\n· 或换成官方供应商的模型：{}%deepseek/deepseek-flash",
                 agent.name, agent.name
             ),
         };
@@ -996,11 +996,17 @@ fn search_state(agent: &Agent, global: bool) -> String {
 
 /// 房间列表和回执里显示的模型：内置 agent 房间前面挂上引擎，一眼能看出这间屋子
 /// 谁在跑；设了思考强度就一并标出。
-pub(super) fn room_model_label(agent: &Agent) -> String {
+///
+/// 内置智能体房间没写模型时，把实际用的默认模型（`default`）写出来，
+/// 不然「内置 · 默认模型」说了等于没说。
+pub(super) fn room_model_label_with(agent: &Agent, default: Option<&str>) -> String {
     let base = if !agent.uses_agent() {
         agent.model.clone()
     } else if super::agent::uses_default_model(&agent.model) {
-        "内置 · 默认模型".to_string()
+        match default {
+            Some(model) => format!("内置 · {model}（默认）"),
+            None => "内置 · 默认模型".to_string(),
+        }
     } else {
         format!("内置 · {}", agent.model)
     };
@@ -1579,13 +1585,13 @@ pub async fn execute(
                 reply_text(ctx, writer, &msg_event, "❌ 普通对话房间要写明模型：`房间%chat 供应商/模型`").await;
                 return;
             }
-            let old = room_model_label(a);
+            let old = room_model_label_with(a, oai.agent_default_model());
             a.set_engine(engine, &model);
             // 没写 `:强度` 就保留房间原来的档位，只换模型时不必重报思考强度。
             if let Some(level) = thinking {
                 a.thinking = level;
             }
-            let new = room_model_label(a);
+            let new = room_model_label_with(a, oai.agent_default_model());
             let now_agent = a.uses_agent();
             if let Err(error) = mgr.save(&mut c) {
                 reply_text(
@@ -1719,13 +1725,11 @@ pub async fn execute(
                 } else {
                     escape_markdown_special(&a.system_prompt)
                 };
-                let search_default =
-                    crate::plugins::get_config_or_default::<super::OaiConfig>(ctx)
-                        .search
-                        .enabled;
+                let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+                let search_default = oai.search.enabled;
                 let content = format!(
                     "**模型**: `{}`\n\n**联网搜索**: {}\n\n**提示词**:\n```\n{}\n```",
-                    room_model_label(a),
+                    room_model_label_with(a, oai.agent_default_model()),
                     search_state(a, search_default),
                     prompt_display
                 );
@@ -1749,10 +1753,8 @@ pub async fn execute(
             }
         }
         Action::List => {
-            let search_default =
-                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx)
-                    .search
-                    .enabled;
+            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+            let search_default = oai.search.enabled;
             let c = mgr.config.read().await;
             if c.agents.is_empty() {
                 reply_text(
@@ -1767,6 +1769,7 @@ pub async fn execute(
             let listing = super::lists::Listing::Rooms(super::lists::Rooms::new(
                 &c.agents,
                 search_default,
+                oai.agent_default_model(),
             ));
             reply_list(
                 ctx,
@@ -2409,7 +2412,7 @@ pub async fn handle_create(
         if !desc.is_empty() {
             a.description = desc.to_string();
         }
-        let updated_model = room_model_label(a);
+        let updated_model = room_model_label_with(a, oai.agent_default_model());
         if let Err(error) = mgr.save(&mut c) {
             reply_text(
                 ctx,
@@ -2438,7 +2441,7 @@ pub async fn handle_create(
         if let Some(level) = thinking {
             agent.thinking = level;
         }
-        let label = room_model_label(&agent);
+        let label = room_model_label_with(&agent, oai.agent_default_model());
         c.agents.push(agent);
         if let Err(error) = mgr.save(&mut c) {
             reply_text(

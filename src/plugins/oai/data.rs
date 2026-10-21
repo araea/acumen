@@ -434,3 +434,39 @@ fn write_config(path: &std::path::Path, cfg: &Config) -> anyhow::Result<()> {
     crate::storage::write_atomic_private(path, serde_json::to_string_pretty(cfg)?.as_bytes())?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 老配置升级：预设房间整批收走、自建的留着；管家大人抄来的中转站默认模型改回「跟随默认」。
+    #[test]
+    fn upgrade_drops_presets_and_lets_the_butler_follow_the_default_model() {
+        let dir = std::env::temp_dir().join(format!("acumen-oai-upgrade-{:x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let room = |name: &str, engine: &str, model: &str, section: &str| {
+            serde_json::json!({"name": name, "engine": engine, "model": model, "section": section, "system_prompt": ""})
+        };
+        let old = serde_json::json!({
+            "api_base": "", "api_key": "", "default_model": DEFAULT_MODEL, "defaults_version": 4,
+            "seeded_presets": ["画·手办", "歌·随写", "影·通用", BUILTIN_ROOM],
+            "agents": [
+                room(BUILTIN_ROOM, "agent", DEFAULT_MODEL, ""),
+                room("画·手办", "chat", "gpt-image-2.5", "画图预设"),
+                room("歌·随写", "chat", "suno_music", "音乐房间"),
+                room("影·通用", "chat", "veo3.1-fast", "视频房间"),
+                room("自建", "chat", "gpt-image-2.5", ""),
+            ],
+        });
+        std::fs::write(dir.join("config.json"), old.to_string()).unwrap();
+        let manager = Manager::new(dir.clone());
+        let config = manager.config.try_read().unwrap();
+        let names: Vec<_> = config.agents.iter().map(|agent| agent.name.as_str()).collect();
+        assert_eq!(names, [BUILTIN_ROOM, "自建"]);
+        assert_eq!(config.agents[0].model, "");
+        assert!(config.agents[0].uses_agent());
+        assert_eq!(config.seeded_presets, [BUILTIN_ROOM]);
+        drop(config);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

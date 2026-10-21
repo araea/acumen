@@ -283,7 +283,7 @@ pub async fn status(oai: &super::OaiConfig, mgr: &Manager) -> String {
     let default = if base.is_empty() {
         "未配置（不带供应商前缀的模型走它）".to_string()
     } else if has_key {
-        format!("{base} ✅")
+        format!("{base}（已接上）")
     } else {
         format!("{base}（缺密钥）")
     };
@@ -296,20 +296,20 @@ pub async fn status(oai: &super::OaiConfig, mgr: &Manager) -> String {
             continue;
         };
         let state = match found.key_from {
-            KeyFrom::Config => "✅".to_string(),
-            KeyFrom::Env(var) => format!("✅ 环境变量 {var}"),
-            KeyFrom::Keyless if configured.is_some() => "✅ 本机".to_string(),
+            KeyFrom::Config => "已接上".to_string(),
+            KeyFrom::Env(var) => format!("已接上，密钥取自 {var}"),
+            KeyFrom::Keyless if configured.is_some() => "本机".to_string(),
             _ if configured.is_some() => "缺密钥".to_string(),
             _ => continue,
         };
-        rows.push(format!("{} {state}", known.name));
+        rows.push(format!("{}（{state}）", known.name));
     }
     for (name, entry) in &oai.providers {
         if catalog::find(name).is_some() || name.eq_ignore_ascii_case("apilio") {
             continue;
         }
-        let state = if entry.api_key.trim().is_empty() { "缺密钥" } else { "✅" };
-        rows.push(format!("{name} {state}"));
+        let state = if entry.api_key.trim().is_empty() { "缺密钥" } else { "已接上" };
+        rows.push(format!("{name}（{state}）"));
     }
     out.push_str(&format!(
         "- 供应商：{}\n",

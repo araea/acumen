@@ -179,14 +179,10 @@ impl Default for OaiConfig {
             video_seconds: 5,
             video_send: "both".to_string(),
             media_timeout_seconds: 900,
-            // 默认就摆着 DeepSeek 这一格：控制台里一眼看到「填密钥」的地方，填完管家大人就能用。
-            providers: HashMap::from([(
-                "deepseek".to_string(),
-                ProviderConfig {
-                    api_base: "https://api.deepseek.com/v1".to_string(),
-                    api_key: String::new(),
-                },
-            )]),
+            // 映射表在默认配置里必须是空表：ctl 的形状校验把非空的默认表当成固定字段，
+            // 摆一格 deepseek 进去，往后谁都加不了别的供应商。新用户靠控制台的建议名与
+            // `oai deepseek 密钥` 一句话接入（见 `setup`）。
+            providers: HashMap::new(),
             search: search::SearchConfig::default(),
             chat: chat::ChatConfig::default(),
         }
@@ -298,6 +294,11 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         let oai = get_config_or_default::<OaiConfig>(&ctx);
         tokio::spawn(async move {
             if let Err(e) = mgr.fetch_models(&oai.model_filter, &oai.providers).await {
+                // 新装好、一家都没接的时候本来就拉不到，不算故障。
+                if e.to_string().starts_with("还没配") {
+                    info!(target: LOG_TARGET, "还没接模型供应商：发 `oai deepseek 密钥` 接上");
+                    return;
+                }
                 warn!(target: LOG_TARGET, "初始化获取模型列表失败: {}", e);
             } else {
                 info!(target: LOG_TARGET, "初始化获取模型列表成功");
