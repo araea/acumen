@@ -1,4 +1,7 @@
-//! 奶龙拦截：群里有人发奶龙、奶蛙图，撤回并按次数加码禁言；认错了，管理员一句话纠正。
+//! 奶龙提醒：群里有人发奶龙、奶蛙图，只把这张图与来龙去脉发给管理员，由人判断后手动处理。
+//!
+//! **不再自动撤回，也不再自动禁言。** 认错一张图的代价比漏掉一张高得多，刚上线时尤其如此：
+//! 插件只负责认图与提醒，动不动手由群里的人决定。
 //!
 //! - **认图**见 [`model`]：图像向量 + 分类头，教过的样本优先。动图按帧抽查，哪一帧像就算。
 //!   每张图下载一次、算一次，同一张图（按内容摘要）再出现直接用上次的结论。
@@ -6,21 +9,18 @@
 //!   （`judge`）。本地觉得像的才问，很低的直接放，大模型只看一小部分；出错、超时、名额用完都退回本地。
 //! - **商城表情**（QQ 表情商店里的动画表情，`mface`）消息里没有图片地址，只有编号：按编号到
 //!   QQ 的表情资源站取动图来看，同一个编号只看一次。表情名里写着奶龙、奶蛙的不必等模型。
-//! - **处理**按「近 `window_hours` 小时第几次」走 `mute_seconds` 阶梯：默认第一次只撤回提醒，
-//!   之后 10 分钟、1 小时、1 天。账号不是群主或管理员时罚不了人，只引用那张图提醒一句
-//!   （`remind_without_admin` 可关）。群主、管理员与机器人管理员发的不管（`exempt_staff`）。
-//! - **纠正**：图被撤回后就引用不到了，所以纠错的锚点是机器人那条提醒——管理员引用它发
-//!   「奶龙 不是」：记住这张图不算、解除这次禁言、这次不计入次数。漏掉的图引用后发
-//!   「奶龙 是」，往后同类图就拦。任何人都能引用一张图发「奶龙 测」看分数。
+//! - **提醒**发到 `notify_targets`（群号或 `private:QQ号`，留空即号主自己的私聊）：原图、
+//!   群与发图的人、凭什么认的、今天第几张。同一群同一个人 `repeat_minutes` 内只提醒一次，
+//!   期间再发只记次数；全部群每小时最多提醒 `max_per_hour` 条，免得刷屏。
+//!   群主、管理员与机器人管理员发的不管（`exempt_staff`）。
+//! - **纠正**：管理员引用那张图（或私聊里引用提醒）发「奶龙 不是」：记住这类图不算。
+//!   漏掉的图引用后发「奶龙 是」，往后同类图就提醒。任何人都能引用一张图发「奶龙 测」看分数。
+//! - **事后核对**：发现的图另存一份、编上号，留 `keep_days` 天；「奶龙 记录」翻近几天的，
+//!   「奶龙 不是 12」按编号改判，私聊里「奶龙 看 12」再看一遍那张图。
 //!
-//! - **事后核对**：拦下的图另存一份、编上号，抄给号主（默认他自己的私聊）。当时没看群也能
-//!   在那里看到撤了什么，引用那条回「不是」就改判；「奶龙 记录」翻近几天的，「奶龙 不是 12」
-//!   按编号改判。被拦的本人引用提醒说「不是」，转给号主看，不能自己给自己改判。
-//!
-//! 不发「正在识别」之类的过程话；没认出来就什么都不说。
+//! 不在群里说话，也不发「正在识别」之类的过程话；没认出来就什么都不做。
 
 use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
-use crate::clock::duration_text;
 use crate::command::{self, CommandMatch};
 use crate::event::Context;
 use crate::http::download_bytes;
@@ -31,7 +31,6 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use futures_util::future::BoxFuture;
 use image::{AnimationDecoder, ImageDecoder, RgbaImage};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use simd_json::OwnedValue;
 use simd_json::base::{ValueAsObject, ValueAsScalar};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
@@ -68,7 +67,7 @@ pub struct Config {
     judge: String,
     /// 复核用的多模态模型，写法同 oai：`供应商/模型`。
     ai_model: String,
-    /// 本地分数到这个就直接拦，不问大模型；1 = 本地觉得像的一律请大模型确认（默认，误判最少）。
+    /// 本地分数到这个就直接提醒，不问大模型；1 = 本地觉得像的一律请大模型确认（默认，误判最少）。
     sure: f32,
     /// 本地分数到这个才问大模型；更低的直接放过。
     ask_floor: f32,
@@ -76,36 +75,28 @@ pub struct Config {
     ai_daily_limit: u32,
     /// 问一张最多等几秒。
     ai_timeout_seconds: u64,
-    /// 撤回认出来的图。
-    recall: bool,
-    /// 近 window_hours 小时内第 1、2、3…次各禁言多少秒；0 = 只撤回不禁言，超出取最后一档。
-    mute_seconds: Vec<u64>,
-    /// 次数的统计窗口（小时）。
-    window_hours: u64,
+    /// 提醒发到哪：群号，或 `private:QQ号`；可以写多个。留空 = 号主自己的私聊。
+    notify_targets: Vec<String>,
+    /// 提醒里带不带原图（关掉只发文字）。
+    notify_image: bool,
+    /// 同一群同一个人多久内只提醒一次（分钟，0–1440）；期间再发只记次数。
+    repeat_minutes: u64,
+    /// 全部群每小时最多提醒几条（0 = 不限）；超出只记录、不再提醒。
+    max_per_hour: u32,
+    /// 提醒文案；留空只发原图。占位符：{no} {kind} {group} {name} {user} {basis} {count} {prefix}
+    notify_text: String,
     /// 群主、管理员与机器人管理员发的不管。
     exempt_staff: bool,
     /// 这些人发的不管。
     ignore_users: Vec<String>,
-    /// 账号不是管理员（罚不了人）时，仍引用那张图提醒一句。
-    remind_without_admin: bool,
     /// 也看商城表情（QQ 表情商店的动画表情）。
     check_mface: bool,
-    /// 撤下的图另抄一份给号主核对：没看群也知道拦了什么，认错了引用那条回「不是」。
-    report: bool,
-    /// 抄到哪：群号；或 `private:QQ号`；留空 = 号主自己的私聊。
-    report_target: String,
-    /// 拦下的图（连同记录）留几天，期间能翻记录、按编号改判。
+    /// 发现的图（连同记录）留几天，期间能翻记录、按编号改判。
     keep_days: u64,
     /// 一条消息最多看几张图。
     max_images: usize,
     /// 动图最多抽查几帧。
     max_frames: usize,
-    /// 撤回后说的话；留空不说。占位符：{at} {name} {kind} {count}
-    recall_text: String,
-    /// 撤回并禁言后说的话。再多一个 {duration}
-    mute_text: String,
-    /// 罚不了人时说的话（引用那张图）。
-    remind_text: String,
 }
 
 impl Default for Config {
@@ -121,21 +112,17 @@ impl Default for Config {
             ask_floor: 0.2,
             ai_daily_limit: 300,
             ai_timeout_seconds: 20,
-            recall: true,
-            mute_seconds: vec![0, 600, 3600, 86400],
-            window_hours: 24,
+            notify_targets: Vec::new(),
+            notify_image: true,
+            repeat_minutes: 30,
+            max_per_hour: 30,
+            notify_text: "🐉 #{no} 可能是{kind}图\n{group} · {name}（{user}）\n{basis}\n本群今天第 {count} 张；没有自动撤回或禁言，请在群里确认后手动处理。\n认错了引用这条回「{prefix}奶龙 不是」".into(),
             exempt_staff: true,
             ignore_users: Vec::new(),
-            remind_without_admin: true,
             check_mface: true,
-            report: true,
-            report_target: String::new(),
             keep_days: 7,
             max_images: 4,
             max_frames: 4,
-            recall_text: "{at} 本群不收{kind}图，这张先撤了。".into(),
-            mute_text: "{at} 本群不收{kind}图，这是第 {count} 次，禁言 {duration}。".into(),
-            remind_text: "本群不收{kind}图，麻烦撤回一下。".into(),
         }
     }
 }
@@ -162,19 +149,18 @@ impl PluginConfig for Config {
         if !(5..=120).contains(&self.ai_timeout_seconds) {
             return Err("ai_timeout_seconds 须在 5–120 之间".into());
         }
-        if self.mute_seconds.is_empty() {
-            return Err("mute_seconds 至少要有一档（0 表示只撤回）".into());
+        for target in &self.notify_targets {
+            let target = target.trim();
+            let id = target.strip_prefix("private:").unwrap_or(target);
+            if target.is_empty() || id.parse::<u64>().is_err() {
+                return Err("notify_targets 每项写群号或 private:QQ号；留空（不写）就发到号主自己的私聊".into());
+            }
         }
-        if self.mute_seconds.iter().any(|s| *s != 0 && !(60..=30 * 86400).contains(s)) {
-            return Err("mute_seconds 每档须为 0，或 60 秒到 30 天之间".into());
+        if self.repeat_minutes > 1440 {
+            return Err("repeat_minutes 须在 0–1440 之间（0 表示每次都提醒）".into());
         }
-        if !(1..=24 * 30).contains(&self.window_hours) {
-            return Err("window_hours 须在 1–720 之间".into());
-        }
-        let target = self.report_target.trim();
-        let id = target.strip_prefix("private:").unwrap_or(target);
-        if !target.is_empty() && id.parse::<u64>().is_err() {
-            return Err("report_target 写群号、private:QQ号，或留空（发到号主自己的私聊）".into());
+        if self.max_per_hour > 1000 {
+            return Err("max_per_hour 须在 0–1000 之间（0 表示不限）".into());
         }
         if !(1..=30).contains(&self.keep_days) {
             return Err("keep_days 须在 1–30 之间".into());
@@ -763,49 +749,9 @@ fn sample_indices(count: usize, max: usize) -> Vec<usize> {
     indices
 }
 
-// ==================== 次数与处理记录 ====================
+// ==================== 发现的图 ====================
 
-#[derive(Serialize, Deserialize, Clone)]
-struct Offense {
-    self_id: String,
-    group: String,
-    user: String,
-    /// 那张图的消息 ID：「不是」按它把这次划掉。
-    message_id: String,
-    kind: Kind,
-    at: i64,
-}
-
-#[derive(Serialize, Deserialize, Clone, Default)]
-struct Ledger {
-    offenses: Vec<Offense>,
-}
-
-static LEDGER: JsonState<Ledger> = JsonState::new(LOG_TARGET, "nailong", "offenses.json", "奶龙处理记录");
-/// 账本留多久（秒）：够窗口用、也够状态里说「今天拦了几张」。
-const LEDGER_KEEP: i64 = 31 * 86400;
-
-/// 记一次，返回近 `window` 秒内这是第几次。
-async fn record(offense: Offense, window: i64) -> usize {
-    LEDGER
-        .with(|ledger| {
-            let now = offense.at;
-            ledger.offenses.retain(|o| now - o.at < LEDGER_KEEP);
-            let count = 1 + ledger
-                .offenses
-                .iter()
-                .filter(|o| o.group == offense.group && o.user == offense.user && o.self_id == offense.self_id)
-                .filter(|o| now - o.at < window)
-                .count();
-            ledger.offenses.push(offense);
-            count
-        })
-        .await
-}
-
-// ==================== 拦下的图 ====================
-
-/// 拦下（或提醒过）的一次。图在群里撤了就再也看不到，所以原图另存一份、编上号：
+/// 发现（并提醒过）的一次。图以后可能被删、被刷走，所以原图另存一份、编上号：
 /// 当时没看群，事后也能翻出来、按编号纠正，重启也不丢。
 #[derive(Serialize, Deserialize, Clone)]
 struct Caught {
@@ -817,24 +763,27 @@ struct Caught {
     group_name: String,
     user: String,
     name: String,
-    /// 原图那条消息（多半已撤回）。
+    /// 原图那条消息（图还在群里，可引用它改判）。
     message_id: String,
-    /// 群里那条提醒；文案留空时没有。
-    tip: Option<String>,
-    /// 抄给号主核对的那条。
-    report: Option<String>,
-    /// 当事人喊冤时转给号主的那条。
-    appeal: Option<String>,
+    /// 发出去的提醒；一条提醒可能有多个去处。
+    #[serde(default)]
+    reports: Vec<String>,
     kind: Kind,
     /// 凭什么认的：「模型 87%」「像教过的一张（95%）」「表情名写着奶龙」。
     basis: String,
-    /// 做了什么：「撤回、禁言 10 分钟（第 2 次）」「只提醒（账号不是管理员）」。
-    action: String,
-    /// 禁言到什么时候；0 = 没禁言。
-    muted_until: i64,
+    /// 至少发出去一条提醒。
+    #[serde(default)]
+    notified: bool,
+    /// 同一串里又发了几次（只在第一次提醒，之后只记次数）。
+    #[serde(default = "one")]
+    hits: u32,
     at: i64,
     /// 已改判「不是」。
     cleared: bool,
+}
+
+fn one() -> u32 {
+    1
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -843,7 +792,7 @@ struct CaughtLog {
     items: Vec<Caught>,
 }
 
-static CAUGHT: JsonState<CaughtLog> = JsonState::new(LOG_TARGET, "nailong", "caught.json", "奶龙拦截记录");
+static CAUGHT: JsonState<CaughtLog> = JsonState::new(LOG_TARGET, "nailong", "caught.json", "奶龙提醒记录");
 const MAX_CAUGHT: usize = 500;
 
 fn caught_dir() -> Option<std::path::PathBuf> {
@@ -879,7 +828,7 @@ async fn save_caught(mut caught: Caught, image: &[u8], keep_days: u64) -> u64 {
     if let Some(path) = caught_file(no)
         && let Err(error) = crate::storage::write_atomic_async(path, image.to_vec()).await
     {
-        warn!(target: LOG_TARGET, "拦下的图 #{no} 没存上：{error}");
+        warn!(target: LOG_TARGET, "发现的图 #{no} 没存上：{error}");
     }
     for old in expired {
         if let Some(path) = caught_file(old) {
@@ -899,20 +848,20 @@ async fn update_caught(no: u64, change: impl FnOnce(&mut Caught)) {
         .await;
 }
 
-/// 按编号，或按引用的那条（提醒、抄送、喊冤、原图）找那一次。`group` 给了就只在这个群里找。
+/// 按编号，或按引用的那条（提醒、原图）找那一次。
+///
+/// 群里的编号与原图只在本群找；提醒可能发在别的群，引用它时不受群限制——
+/// 否则把提醒发到管理员群后，在那儿回「不是」会找不到。
 async fn find_caught(group: Option<&str>, no: Option<u64>, quoted: Option<&str>) -> Option<Caught> {
     CAUGHT
         .with(|log| {
             log.items
                 .iter()
                 .rev()
-                .filter(|c| group.is_none_or(|g| c.group == g))
                 .find(|c| match (no, quoted) {
-                    (Some(no), _) => c.no == no,
-                    (None, Some(id)) => {
-                        c.message_id == id
-                            || [&c.tip, &c.report, &c.appeal].iter().any(|m| m.as_deref() == Some(id))
-                    }
+                    (Some(no), _) => c.no == no && group.is_none_or(|g| c.group == g),
+                    (None, Some(id)) if c.reports.iter().any(|m| m == id) => true,
+                    (None, Some(id)) => c.message_id == id && group.is_none_or(|g| c.group == g),
                     (None, None) => false,
                 })
                 .cloned()
@@ -924,17 +873,44 @@ async fn caught_image(no: u64) -> Option<Vec<u8>> {
     tokio::fs::read(caught_file(no)?).await.ok()
 }
 
-/// 抄送、喊冤发到哪：(群号, 私聊对象)。留空就是号主自己的私聊（登录账号）。
-fn report_place(ctx: &Context, config: &Config) -> Option<(Option<String>, Option<String>)> {
-    let target = config.report_target.trim();
-    if let Some(user) = target.strip_prefix("private:") {
-        return Some((None, Some(user.to_string())));
+/// 提醒发到哪：(群号, 私聊对象)。`notify_targets` 里写群号或 `private:QQ号`；
+/// 一个都没写就发到号主自己的私聊（登录账号）。
+fn notify_places(ctx: &Context, config: &Config) -> Vec<(Option<String>, Option<String>)> {
+    let mut places: Vec<(Option<String>, Option<String>)> = Vec::new();
+    for target in &config.notify_targets {
+        let target = target.trim();
+        let place = match target.strip_prefix("private:") {
+            Some(user) => (None, Some(user.to_string())),
+            None => (Some(target.to_string()), None),
+        };
+        if !places.contains(&place) {
+            places.push(place);
+        }
     }
-    if !target.is_empty() {
-        return Some((Some(target.to_string()), None));
+    if places.is_empty() {
+        let me = ctx.bot.self_id();
+        if !me.is_empty() {
+            places.push((None, Some(me)));
+        }
     }
-    let me = ctx.bot.self_id();
-    (!me.is_empty()).then_some((None, Some(me)))
+    places
+}
+
+/// 提醒去哪的一句话说法，给状态指令用。
+fn places_text(ctx: &Context, config: &Config) -> String {
+    let places = notify_places(ctx, config);
+    if places.is_empty() {
+        return "没有可用的去处".into();
+    }
+    places
+        .iter()
+        .map(|(group, user)| match (group, user) {
+            (Some(group), _) => format!("群 {group}"),
+            (None, Some(user)) => format!("私聊 {user}"),
+            _ => String::new(),
+        })
+        .collect::<Vec<_>>()
+        .join("、")
 }
 
 /// 指令怎么写：带上第一个指令前缀，照着就能发。
@@ -955,35 +931,106 @@ fn when(at: i64) -> String {
     }
 }
 
-fn group_label(caught: &Caught) -> String {
-    if caught.group_name.is_empty() {
-        format!("群 {}", caught.group)
+fn place_label(group_name: &str, group: &str) -> String {
+    if group_name.is_empty() {
+        format!("群 {group}")
     } else {
-        format!("{}（{}）", caught.group_name, caught.group)
+        format!("{group_name}（{group}）")
     }
 }
 
-/// 抄给号主：原图 + 这次的情形 + 认错了怎么纠正。
-async fn report(ctx: &Context, writer: &LockedWriter, config: &Config, caught: &Caught, image: &[u8]) {
-    let Some((group, user)) = report_place(ctx, config) else {
+fn group_label(caught: &Caught) -> String {
+    place_label(&caught.group_name, &caught.group)
+}
+
+/// 提醒文案里的变量。
+struct NotifyVars<'a> {
+    no: u64,
+    kind: Kind,
+    group: &'a str,
+    group_name: &'a str,
+    name: &'a str,
+    user: &'a str,
+    basis: &'a str,
+    count: usize,
+}
+
+fn notify_text(ctx: &Context, template: &str, vars: &NotifyVars<'_>) -> String {
+    let prefix = command::get_prefixes(ctx).into_iter().next().unwrap_or_default();
+    template
+        .replace("{no}", &vars.no.to_string())
+        .replace("{kind}", vars.kind.name())
+        .replace("{group}", &place_label(vars.group_name, vars.group))
+        .replace("{name}", vars.name)
+        .replace("{user}", vars.user)
+        .replace("{basis}", vars.basis)
+        .replace("{count}", &vars.count.to_string())
+        .replace("{prefix}", &prefix)
+}
+
+/// 一次命中的来龙去脉，凑在一起交给 notify，免得参数排成一长串。
+struct Hit<'a> {
+    no: u64,
+    verdict: &'a Verdict,
+    basis: &'a str,
+    image: &'a [u8],
+    count: usize,
+}
+
+/// 把原图与来龙去脉发到配置的去处。**到这里就结束**：不撤回、不禁言、不在群里说话。
+async fn notify(ctx: &Context, writer: &LockedWriter, config: &Config, target: &Target, hit: &Hit<'_>) {
+    let places = notify_places(ctx, config);
+    if places.is_empty() {
+        warn!(target: LOG_TARGET, "#{} 没有可发提醒的去处，这次只记下", hit.no);
         return;
-    };
-    let text = format!(
-        "\n🐉 #{} 拦下一张{}图\n{} · {}（{}）\n{} · {}\n认错了引用这条回{}",
-        caught.no,
-        caught.kind.name(),
-        group_label(caught),
-        caught.name,
-        caught.user,
-        caught.basis,
-        caught.action,
-        spelled(ctx, "不是"),
+    }
+    let text = notify_text(
+        ctx,
+        &config.notify_text,
+        &NotifyVars {
+            no: hit.no,
+            kind: hit.verdict.kind,
+            group: &target.group,
+            group_name: &target.group_name,
+            name: &target.name,
+            user: &target.user,
+            basis: hit.basis,
+            count: hit.count,
+        },
     );
-    let message = Message::new().image(format!("base64://{}", STANDARD.encode(image))).text(text);
-    match send_msg_id(ctx, writer.clone(), group.as_deref(), user.as_deref(), message).await {
-        Ok(Some(id)) => update_caught(caught.no, |c| c.report = Some(id)).await,
-        Ok(None) => {}
-        Err(error) => warn!(target: LOG_TARGET, "#{} 没抄送出去：{error}", caught.no),
+    if text.trim().is_empty() && !config.notify_image {
+        warn!(target: LOG_TARGET, "#{} 的提醒文案为空且关掉了原图，这次只记下", hit.no);
+        return;
+    }
+    let mut ids = Vec::new();
+    let mut delivered = 0usize;
+    for (group, user) in places {
+        let mut message = Message::new();
+        if config.notify_image && !hit.image.is_empty() {
+            message = message.image(format!("base64://{}", STANDARD.encode(hit.image)));
+        }
+        if !text.trim().is_empty() {
+            message = message.text(text.clone());
+        }
+        match send_msg_id(ctx, writer.clone(), group.as_deref(), user.as_deref(), message).await {
+            Ok(id) => {
+                delivered += 1;
+                if let Some(id) = id {
+                    ids.push(id);
+                }
+            }
+            Err(error) => {
+                let place = group.as_ref().map_or_else(|| format!("私聊 {}", user.as_deref().unwrap_or("")), |g| format!("群 {g}"));
+                warn!(target: LOG_TARGET, "#{} 的提醒没发到{place}：{error}", hit.no);
+            }
+        }
+    }
+    if delivered > 0 {
+        update_caught(hit.no, |c| {
+            c.reports = ids;
+            c.notified = true;
+        })
+        .await;
     }
 }
 
@@ -1046,9 +1093,9 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
             let found = scan(&task_ctx, &pictures, &config).await;
             drop(queued);
             if let Some(found) = found
-                && let Err(error) = punish(&task_ctx, &task_writer, &config, &target, found).await
+                && let Err(error) = notify_hit(&task_ctx, &task_writer, &config, &target, found).await
             {
-                warn!(target: LOG_TARGET, "群 {} 处理奶龙图失败：{error}", target.group);
+                warn!(target: LOG_TARGET, "群 {} 的奶龙提醒失败：{error}", target.group);
             }
         });
         Ok(Some(ctx))
@@ -1105,7 +1152,69 @@ fn basis(verdict: &Verdict) -> String {
     }
 }
 
-async fn punish(
+/// 今天零点（北京时间）的时间戳。
+fn day_start() -> i64 {
+    crate::clock::beijing_now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|t| t.and_local_timezone(crate::clock::beijing()).single())
+        .map_or(0, |t| t.timestamp())
+}
+
+/// 同一群同一个人 `window` 秒内又发了同类的图：只把次数加一、时间挪到现在，不再提醒。
+async fn bump_recent(self_id: &str, group: &str, user: &str, kind: Kind, window: i64, now: i64) -> Option<(u64, u32)> {
+    if window <= 0 {
+        return None;
+    }
+    CAUGHT
+        .with(|log| {
+            log.items
+                .iter_mut()
+                .rev()
+                .find(|c| {
+                    c.self_id == self_id
+                        && c.group == group
+                        && c.user == user
+                        && c.kind == kind
+                        && !c.cleared
+                        && now - c.at < window
+                })
+                .map(|c| {
+                    c.hits += 1;
+                    c.at = now;
+                    (c.no, c.hits)
+                })
+        })
+        .await
+}
+
+/// 本群今天发现了几张（含已经在同一个人那里去重过的）。
+async fn today_count(self_id: &str, group: &str, now: i64) -> usize {
+    let start = day_start();
+    CAUGHT
+        .with(|log| {
+            log.items
+                .iter()
+                .filter(|c| c.self_id == self_id && c.group == group && c.at >= start && c.at <= now)
+                .count()
+        })
+        .await
+}
+
+/// 这个小时已经发出去几条提醒（去重后的那一串算一条）。
+async fn notified_last_hour(self_id: &str, now: i64) -> usize {
+    CAUGHT
+        .with(|log| {
+            log.items
+                .iter()
+                .filter(|c| c.self_id == self_id && c.notified && now - c.at < 3600)
+                .count()
+        })
+        .await
+}
+
+/// 认出来之后：去重、计数、存档、提醒。**不撤回、不禁言，也不在群里说话。**
+async fn notify_hit(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
@@ -1114,126 +1223,49 @@ async fn punish(
 ) -> Result<(), PluginError> {
     let Target { group, user, name, message_id, .. } = target;
     let kind = verdict.kind;
-    let basis = basis(&verdict);
-    let able = api::is_staff(&api::own_role(ctx, writer.clone(), group).await);
-    info!(target: LOG_TARGET, "群 {group} 的 {name}（{user}）发了{}图（{basis}）", kind.name());
-    let vars = |count: usize, duration: u64| Vars { name, kind: kind.name(), count, duration: duration_text(duration) };
+    let why = basis(&verdict);
+    let self_id = ctx.bot.self_id();
+    info!(target: LOG_TARGET, "群 {group} 的 {name}（{user}）发了{}图（{why}），本次只提醒", kind.name());
     let now = chrono::Utc::now().timestamp();
-    let (tip, action, muted_until) = if able {
-        let recalled = config.recall
-            && match api::delete_msg_in(ctx, writer.clone(), group, message_id).await {
-                Ok(()) => true,
-                Err(error) => {
-                    warn!(target: LOG_TARGET, "群 {group} 撤回 {message_id} 失败：{error}");
-                    false
-                }
-            };
-        let window = i64::try_from(config.window_hours * 3600).unwrap_or(86400);
-        let offense = Offense {
-            self_id: ctx.bot.self_id(),
-            group: group.clone(),
-            user: user.clone(),
-            message_id: message_id.clone(),
-            kind,
-            at: now,
-        };
-        let count = record(offense, window).await;
-        let duration = config.mute_seconds[(count - 1).min(config.mute_seconds.len() - 1)];
-        let mut muted = false;
-        if duration > 0 {
-            match writer
-                .call::<_, serde_json::Value>(
-                    ctx,
-                    "guild.member.mute",
-                    json!({"guild_id": group, "user_id": user, "duration": duration * 1000}),
-                )
-                .await
-            {
-                Ok(_) => muted = true,
-                Err(error) => warn!(target: LOG_TARGET, "群 {group} 禁言 {user} 失败：{error}"),
-            }
-        }
-        let mut done = Vec::new();
-        if recalled {
-            done.push("撤回".to_string());
-        }
-        if muted {
-            done.push(format!("禁言 {}", duration_text(duration)));
-        }
-        if done.is_empty() {
-            done.push("只提醒".to_string());
-        }
-        let action = format!("{}（{} 小时内第 {count} 次）", done.join("、"), config.window_hours);
-        let template = if muted { &config.mute_text } else { &config.recall_text };
-        let tip = if template.trim().is_empty() {
-            None
-        } else {
-            let message = render_into(Message::new(), template, user, &vars(count, duration));
-            send_msg_id(ctx, writer.clone(), Some(group), None, message).await?
-        };
-        let muted_until = if muted { now + i64::try_from(duration).unwrap_or(0) } else { 0 };
-        (tip, action, muted_until)
-    } else {
-        let tip = if config.remind_without_admin && !config.remind_text.trim().is_empty() {
-            let message = render_into(Message::new().reply(message_id), &config.remind_text, user, &vars(0, 0));
-            send_msg_id(ctx, writer.clone(), Some(group), None, message).await?
-        } else {
-            None
-        };
-        (tip, "只提醒（账号不是管理员）".to_string(), 0)
-    };
+    let window = i64::try_from(config.repeat_minutes * 60).unwrap_or(0);
+    if let Some((no, hits)) = bump_recent(&self_id, group, user, kind, window, now).await {
+        info!(
+            target: LOG_TARGET,
+            "#{no} 已在 {} 分钟内提醒过，这次只记次数（第 {hits} 次）",
+            config.repeat_minutes
+        );
+        return Ok(());
+    }
+    let count = today_count(&self_id, group, now).await + 1;
     let caught = Caught {
         no: 0,
-        self_id: ctx.bot.self_id(),
+        self_id: self_id.clone(),
         group: group.clone(),
         group_name: target.group_name.clone(),
         user: user.clone(),
         name: name.clone(),
         message_id: message_id.clone(),
-        tip,
-        report: None,
-        appeal: None,
+        reports: Vec::new(),
         kind,
-        basis,
-        action,
-        muted_until,
+        basis: why.clone(),
+        notified: false,
+        hits: 1,
         at: now,
         cleared: false,
     };
-    let no = save_caught(caught.clone(), &image, config.keep_days).await;
-    // 只提醒的那种，图还在群里，看得见；撤了的才需要抄一份。
-    if config.report && able && !image.is_empty() {
-        report(ctx, writer, config, &Caught { no, ..caught }, &image).await;
+    let no = save_caught(caught, &image, config.keep_days).await;
+    let over = config.max_per_hour > 0
+        && notified_last_hour(&self_id, now).await >= usize::try_from(config.max_per_hour).unwrap_or(0);
+    if over {
+        warn!(
+            target: LOG_TARGET,
+            "#{no} 这个小时的提醒已达上限 {}，只记录不提醒",
+            config.max_per_hour
+        );
+        return Ok(());
     }
+    notify(ctx, writer, config, target, &Hit { no, verdict: &verdict, basis: &why, image: &image, count }).await;
     Ok(())
-}
-
-struct Vars<'a> {
-    name: &'a str,
-    kind: &'a str,
-    count: usize,
-    duration: String,
-}
-
-/// 模板接到消息后面：`{at}` 处换成对这个人的 @。
-fn render_into(mut message: Message, template: &str, user: &str, vars: &Vars) -> Message {
-    let fill = |text: &str| {
-        text.replace("{name}", vars.name)
-            .replace("{kind}", vars.kind)
-            .replace("{count}", &vars.count.to_string())
-            .replace("{duration}", &vars.duration)
-    };
-    let mut pieces = template.split("{at}").peekable();
-    while let Some(piece) = pieces.next() {
-        let text = fill(piece);
-        if !text.is_empty() {
-            message = message.text(text);
-        }
-        if pieces.peek().is_some() {
-            message = message.at(user);
-        }
-    }
-    message
 }
 
 // ==================== 指令 ====================
@@ -1275,7 +1307,7 @@ async fn run_command(
         "" | "测" | "测试" | "看看" if wants_image || number.is_some() => test(ctx, writer, config, ask, &say).await?,
         "记录" | "最近" => say(history(ctx, place).await).await?,
         "" | "状态" | "帮助" => match &place.group {
-            Some(group) => say(status(ctx, writer, config, group).await).await?,
+            Some(group) => say(status(ctx, config, group).await).await?,
             None => say(history(ctx, place).await).await?,
         },
         "看" | "图" if place.group.is_none() => show(ctx, writer, place, number, &say).await?,
@@ -1302,47 +1334,56 @@ struct Ask<'a> {
 
 fn usage() -> String {
     "引用一张图或表情发「奶龙 测」看分数\n\
-     管理员引用图或机器人的提醒发「奶龙 是」「奶龙 不是」纠正，「奶龙 忘了」撤销\n\
-     没看群也不怕：「奶龙 记录」翻近几天拦下的，「奶龙 不是 编号」改判"
+     管理员引用图或私聊里的提醒发「奶龙 是」「奶龙 不是」纠正，「奶龙 忘了」撤销\n\
+     没看群也不怕：「奶龙 记录」翻近几天发现的，「奶龙 不是 编号」改判\n\
+     本插件只提醒，不撤回、不禁言；确认后请在群里手动处理"
         .into()
 }
 
-async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str) -> String {
-    let able = api::is_staff(&api::own_role(ctx, writer.clone(), group).await);
-    let today = crate::clock::beijing_now()
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
-        .and_then(|t| t.and_local_timezone(crate::clock::beijing()).single())
-        .map_or(0, |t| t.timestamp());
+async fn status(ctx: &Context, config: &Config, group: &str) -> String {
     let me = ctx.bot.self_id();
-    let (blocked, people) = LEDGER
-        .with(|ledger| {
-            let today: Vec<&Offense> =
-                ledger.offenses.iter().filter(|o| o.group == group && o.self_id == me && o.at >= today).collect();
-            let mut people: Vec<&str> = today.iter().map(|o| o.user.as_str()).collect();
+    let (found, people) = CAUGHT
+        .with(|log| {
+            let start = day_start();
+            let today: Vec<&Caught> = log
+                .items
+                .iter()
+                .filter(|c| c.self_id == me && c.group == group && c.at >= start)
+                .collect();
+            let mut people: Vec<&str> = today.iter().map(|c| c.user.as_str()).collect();
             people.sort_unstable();
             people.dedup();
             (today.len(), people.len())
         })
         .await;
     let taught = SAMPLES.with(|s| s.samples.len()).await;
-    let ladder = config
-        .mute_seconds
-        .iter()
-        .map(|s| if *s == 0 { "只撤回".to_string() } else { format!("禁言 {}", duration_text(*s)) })
-        .collect::<Vec<_>>()
-        .join(" → ");
+    let scope = if !config.channel.white.is_empty() {
+        format!("{} 个群（白名单）", config.channel.white.len())
+    } else if !config.channel.black.is_empty() {
+        format!("全部群，排除 {} 个", config.channel.black.len())
+    } else {
+        "全部群".to_string()
+    };
+    let repeat = if config.repeat_minutes == 0 {
+        "同一人每次都提醒".to_string()
+    } else {
+        format!("同一人 {} 分钟内只提醒一次", config.repeat_minutes)
+    };
+    let cap = if config.max_per_hour == 0 {
+        "不设上限".to_string()
+    } else {
+        format!("每小时最多 {} 条", config.max_per_hour)
+    };
     let mut lines = vec![
-        format!("🐉 奶龙拦截 · 拦{}", config.kinds_text()),
-        if able {
-            format!("处理：{ladder}（{} 小时内累计）", config.window_hours)
+        format!("🐉 奶龙提醒 · 认{}", config.kinds_text()),
+        format!("范围：{scope}"),
+        format!("提醒发到：{}", places_text(ctx, config)),
+        "只提醒，不撤回、不禁言；确认后请在群里手动处理".to_string(),
+        format!("{repeat} · {cap}"),
+        if found == 0 {
+            format!("今天还没发现 · 教过 {taught} 张 · 阈值 {:.0}%", config.threshold * 100.0)
         } else {
-            "⚠️ 账号不是管理员，只能提醒、撤不了也禁不了".to_string()
-        },
-        if blocked == 0 {
-            format!("今天还没拦过 · 教过 {taught} 张 · 阈值 {:.0}%", config.threshold * 100.0)
-        } else {
-            format!("今天拦下 {blocked} 张、{people} 人 · 教过 {taught} 张 · 阈值 {:.0}%", config.threshold * 100.0)
+            format!("今天发现 {found} 张、{people} 人 · 教过 {taught} 张 · 阈值 {:.0}%", config.threshold * 100.0)
         },
         format!("模型：{}", model::status()),
     ];
@@ -1352,15 +1393,28 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         Mode::Local => "认图：本地模型".to_string(),
         _ => format!("认图：{} · 今天复核 {}/{} 张", mode.text(config), ai::used_today().await, config.ai_daily_limit),
     });
-    if config.report {
-        lines.push("撤下的图另抄一份给号主核对".to_string());
-    }
     lines.push(String::new());
     lines.push(usage());
     lines.join("\n")
 }
 
-/// 近几天拦下的：群里只列本群，私聊列全部。最新的在前，最多十条。
+/// 这次最后怎么了：只提醒、只记录，还是已改判。
+fn outcome(caught: &Caught) -> String {
+    let mut parts = Vec::new();
+    if caught.cleared {
+        parts.push("已改判不是".to_string());
+    } else if caught.notified {
+        parts.push("已提醒".to_string());
+    } else {
+        parts.push("只记录，未提醒".to_string());
+    }
+    if caught.hits > 1 {
+        parts.push(format!("后又发 {} 次", caught.hits - 1));
+    }
+    parts.join("，")
+}
+
+/// 近几天发现的：群里只列本群，私聊列全部。最新的在前，最多十条。
 async fn history(ctx: &Context, place: &Place) -> String {
     let me = ctx.bot.self_id();
     let items: Vec<Caught> = CAUGHT
@@ -1373,21 +1427,20 @@ async fn history(ctx: &Context, place: &Place) -> String {
         })
         .await;
     if items.is_empty() {
-        return "📭 近几天没拦过".into();
+        return "📭 近几天没发现过".into();
     }
-    let mut lines = vec![format!("🐉 近几天拦下 {} 次{}", items.len(), if items.len() > 10 { "，列最近 10 次" } else { "" })];
+    let mut lines = vec![format!("🐉 近几天发现 {} 次{}", items.len(), if items.len() > 10 { "，列最近 10 次" } else { "" })];
     for c in items.iter().rev().take(10) {
         let place_text = if place.group.is_none() { format!(" · {}", group_label(c)) } else { String::new() };
-        let cleared = if c.cleared { " · 已改判不是" } else { "" };
         lines.push(format!(
-            "#{} {}{place_text}\n   {}（{}）· {} · {} · {}{cleared}",
+            "#{} {}{place_text}\n   {}（{}）· {} · {} · {}",
             c.no,
             when(c.at),
             c.name,
             c.user,
             c.kind.name(),
             c.basis,
-            c.action
+            outcome(c)
         ));
     }
     lines.push(String::new());
@@ -1423,7 +1476,7 @@ where
         caught.name,
         caught.user,
         caught.basis,
-        caught.action
+        outcome(&caught)
     );
     let message = Message::new().image(format!("base64://{}", STANDARD.encode(&image))).text(text);
     send_msg(ctx, writer.clone(), None, place.user.as_deref(), message).await?;
@@ -1502,13 +1555,13 @@ where
             let result = match (verdict.taught, verdict.hits(config)) {
                 (Some((kind, s)), _) => format!("像教过的一张{}图（{:.0}%），按{}算", kind.name(), s * 100.0, kind.name()),
                 (None, hits) if verdict.by_name => {
-                    let tail = if hits { "会拦" } else { "但本群没拦这类" };
+                    let tail = if hits { "会提醒" } else { "但本群没提醒这类" };
                     format!("表情名写着{}，{tail}", verdict.kind.name())
                 }
-                (None, true) => format!("会拦：{}", verdict.kind.name()),
-                (None, false) if verdict.kind != Kind::Other => format!("像{}，但本群没拦这类", verdict.kind.name()),
-                (None, false) if verdict.ai.is_some() => "不拦（大模型看过，不是）".to_string(),
-                (None, false) => format!("不拦（阈值 {:.0}%）", config.threshold * 100.0),
+                (None, true) => format!("会提醒：{}", verdict.kind.name()),
+                (None, false) if verdict.kind != Kind::Other => format!("像{}，但本群没提醒这类", verdict.kind.name()),
+                (None, false) if verdict.ai.is_some() => "不提醒（大模型看过，不是）".to_string(),
+                (None, false) => format!("不提醒（阈值 {:.0}%）", config.threshold * 100.0),
             };
             format!("{head}{scores}\n{result}")
         })
@@ -1517,7 +1570,7 @@ where
 }
 
 enum Correction {
-    /// 是：拦这类；可指明奶龙或奶蛙，不指明按模型更像的那类。
+    /// 是：提醒这类；可指明奶龙或奶蛙，不指明按模型更像的那类。
     Is(Option<Kind>),
     IsNot,
     Forget,
@@ -1539,7 +1592,7 @@ where
     };
     if ask.matched.reply_id.is_none() && ask.attached.is_empty() && ask.number.is_none() {
         return say(format!(
-            "❌ 先引用那张图或机器人的那条提醒再发这句；图撤了找不到，发{}看编号",
+            "❌ 先引用那张图或私聊里的提醒再发这句；图过期了找不到，发{}看编号",
             spelled(ctx, "记录")
         ))
         .await;
@@ -1550,14 +1603,6 @@ where
         || crate::access::is_manager(ctx)
         || message.sender_role().is_some_and(api::is_staff);
     if !allowed {
-        // 被拦的本人说「不是」：转给号主看，不让他自己给自己改判。
-        if matches!(correction, Correction::IsNot)
-            && let Some(caught) =
-                find_caught(ask.place.group.as_deref(), ask.number, ask.matched.reply_id.as_deref()).await
-            && caught.user == by
-        {
-            return say(appeal(ctx, writer, config, &caught).await).await;
-        }
         return say("❌ 只有群主、管理员能纠正\n想看分数可以发「奶龙 测」".into()).await;
     }
     let (caught, verdicts) = match subject(ctx, writer, config, &ask, Review::Never).await {
@@ -1573,14 +1618,18 @@ where
                 if scores.naiwa > scores.nailong { Kind::Naiwa } else { Kind::Nailong }
             });
             let total = teach(kind, &vectors, by, group).await;
-            let note = if config.targets().contains(&kind) { "" } else { "（本群目前没拦这类，见 targets）" };
+            let note = if config.targets().contains(&kind) { "" } else { "（本群目前没提醒这类，见 targets）" };
             format!("✅ 记住了：这类图算{}{note}\n已教 {total} 张；记错了发「奶龙 忘了」", kind.name())
         }
         Correction::IsNot => {
             let total = teach(Kind::Other, &vectors, by, group).await;
-            let mut text = format!("✅ 记住了：这类图不拦\n已教 {total} 张；记错了发「奶龙 忘了」");
+            let mut text = format!("✅ 记住了：这类图不提醒\n已教 {total} 张；记错了发「奶龙 忘了」");
             if let Some(caught) = caught.filter(|c| !c.cleared) {
-                text.push_str(&undo(ctx, writer, &caught, ask.place.group.is_none()).await);
+                update_caught(caught.no, |c| c.cleared = true).await;
+                text.push_str(&format!(
+                    "\n#{} 已标记不是；群里那张图如果还在，请自行处理",
+                    caught.no
+                ));
             }
             text
         }
@@ -1590,92 +1639,6 @@ where
         },
     };
     say(text).await
-}
-
-/// 被拦的本人喊冤：把这次连同原图转给号主（引用当初那条抄送），每次只转一回。
-async fn appeal(ctx: &Context, writer: &LockedWriter, config: &Config, caught: &Caught) -> String {
-    if caught.cleared {
-        return "这次已经改判过了，不算你的".into();
-    }
-    if caught.appeal.is_some() {
-        return "已经转给号主了，认错了会解除禁言、不计次数".into();
-    }
-    let Some((group, user)) = report_place(ctx, config).filter(|_| config.report) else {
-        return "❌ 只有群主、管理员能纠正，找他们说一声".into();
-    };
-    let mut message = Message::new();
-    if let Some(report) = &caught.report {
-        message = message.reply(report);
-    } else if let Some(image) = caught_image(caught.no).await {
-        message = message.image(format!("base64://{}", STANDARD.encode(&image)));
-    }
-    let message = message.text(format!(
-        "\n🙋 #{} {}（{}）说这张不是{}图\n{} · {} · {}\n认错了引用这条回{}",
-        caught.no,
-        caught.name,
-        caught.user,
-        caught.kind.name(),
-        group_label(caught),
-        caught.basis,
-        caught.action,
-        spelled(ctx, "不是"),
-    ));
-    match send_msg_id(ctx, writer.clone(), group.as_deref(), user.as_deref(), message).await {
-        Ok(id) => {
-            update_caught(caught.no, |c| c.appeal = Some(id.unwrap_or_default())).await;
-            "已转给号主核对，认错了会解除禁言、不计次数".into()
-        }
-        Err(error) => {
-            warn!(target: LOG_TARGET, "#{} 喊冤没转出去：{error}", caught.no);
-            "❌ 没转出去，找群主、管理员说一声吧".into()
-        }
-    }
-}
-
-/// 「不是」的善后：解除这次禁言、这次不计入次数、撤回那条提醒。
-/// 在私聊里改判的，群里没人看见，补一句给当事人。
-async fn undo(ctx: &Context, writer: &LockedWriter, caught: &Caught, from_private: bool) -> String {
-    let group = caught.group.as_str();
-    let mut done = Vec::new();
-    LEDGER
-        .with(|ledger| {
-            ledger.offenses.retain(|o| !(o.group == caught.group && o.message_id == caught.message_id));
-        })
-        .await;
-    let mut unmuted = false;
-    if caught.muted_until > chrono::Utc::now().timestamp() {
-        match writer
-            .call::<_, serde_json::Value>(ctx, "guild.member.mute", json!({"guild_id": group, "user_id": caught.user, "duration": 0}))
-            .await
-        {
-            Ok(_) => {
-                unmuted = true;
-                done.push("解除了禁言".to_string());
-            }
-            Err(error) => {
-                warn!(target: LOG_TARGET, "群 {group} 解除 {} 的禁言失败：{error}", caught.user);
-                done.push("禁言没能解除，请手动解一下".to_string());
-            }
-        }
-    }
-    if let Some(tip) = &caught.tip
-        && api::delete_msg_in(ctx, writer.clone(), group, tip).await.is_ok()
-    {
-        done.push("撤回了那条提醒".to_string());
-    }
-    update_caught(caught.no, |c| c.cleared = true).await;
-    done.push("这次不计入次数".to_string());
-    if from_private && (caught.tip.is_some() || unmuted) {
-        let tail = if unmuted { "，禁言已解除" } else { "" };
-        let message = Message::new()
-            .at(&caught.user)
-            .text(format!(" 刚才撤的那张认错了，不是{}图{tail}，不计次数。", caught.kind.name()));
-        if let Err(error) = send_msg(ctx, writer.clone(), Some(group), None, message).await {
-            warn!(target: LOG_TARGET, "群 {group} 改判通知没发出去：{error}");
-        }
-        done.push("在群里说了一声".to_string());
-    }
-    format!("\n#{} {}", caught.no, done.join("、"))
 }
 
 /// 启动（或刚被打开）时：样本读进内存，识图模型在后台先下好、载好，第一张图不必等。

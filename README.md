@@ -73,7 +73,7 @@ Agent 房间的 `bash` 等本机工具不是安全沙箱，具有 Termux 账户�
 - [点歌](docs/song.md)
 - [Markdown 转图](docs/markdown.md)
 - [二维码识别与生成](docs/qr_scan.md)
-- [奶龙拦截](docs/nailong.md)
+- [奶龙提醒](docs/nailong.md)
 - [架构与插件开发](docs/ARCHITECTURE.md)
 - [WebUI 设计系统](docs/DESIGN_SYSTEM.md)
 - [更新记录](CHANGELOG.md)

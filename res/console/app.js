@@ -1572,14 +1572,21 @@
     const sub = `h${Math.min(level + 1, 6)}`;
     const heading = (tag, id, text, cls = "section-title") => raw(`<${tag} class="${cls}" id="${id}">${esc(text)}</${tag}>`);
     const form = configForm(plugin);
+    // 指令放在配置之前：配置一多，末尾的指令要滚很久才看得到。
     const commands = plugin.commands.length
-      ? h`<ul class="group">${plugin.commands.map(
-          (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
-            <span class="item-content"><span class="item-title"><code class="tag">${command.cmd}</code></span>
-            <span class="item-sub">${command.note}</span></span>
-            <span class="item-trailing">${icon("content_copy")}</span></button></li>`
-        )}</ul>`
-      : h`<p class="note">这个插件没有指令，它在后台按计划工作。</p>`;
+      ? h`<section class="section" aria-labelledby="commands-title">
+          <div class="section-head">
+            ${heading(sub, "commands-title", "指令")}
+            <span class="section-meta">${plugin.commands.length} 条 · 点按复制</span>
+          </div>
+          <ul class="group">${plugin.commands.map(
+            (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
+              <span class="item-content"><span class="item-title"><code class="tag">${command.cmd}</code></span>
+              <span class="item-sub">${command.note}</span></span>
+              <span class="item-trailing">${icon("content_copy")}</span></button></li>`
+          )}</ul>
+        </section>`
+      : "";
 
     return h`
       ${level === 2
@@ -1600,6 +1607,7 @@
           ${switchButton(plugin, { labelledby: "enable-label", describedby: "enable-hint" })}
         </div>
       </div>
+      ${commands}
       ${liveCard(plugin)}
 
       <section class="section" aria-labelledby="config-title">
@@ -1627,14 +1635,6 @@
       <section class="section" aria-labelledby="diff-title">
         <div class="section-head">${heading(sub, "diff-title", "与默认值的差异")}</div>
         <div id="plugin-diff">${diffBlock(plugin.diff)}</div>
-      </section>
-
-      <section class="section" aria-labelledby="commands-title">
-        <div class="section-head">
-          ${heading(sub, "commands-title", "指令")}
-          <span class="section-meta">${plugin.commands.length ? `${plugin.commands.length} 条，点按复制` : ""}</span>
-        </div>
-        ${commands}
       </section>`;
   }
 
