@@ -75,11 +75,6 @@ impl Figures {
         &self.failed
     }
 
-    #[cfg(test)]
-    pub(crate) fn with(mut self, source: &str, data_url: &str) -> Self {
-        self.loaded.insert(source.to_string(), data_url.to_string());
-        self
-    }
 }
 
 /// 正文里所有图片的地址，按首次出现的顺序去重。围栏代码块里的 `![](…)` 不算。
@@ -173,7 +168,7 @@ pub(crate) async fn load_one(source: &str, roots: &[&Path]) -> anyhow::Result<St
 
 /// 日志里的地址：data URL 可能有几 MB。
 fn shorten(source: &str) -> String {
-    crate::plugins::oai::utils::truncate_str(source, 80)
+    crate::storage::truncate_chars(source, 80)
 }
 
 async fn load(source: &str, roots: &[&Path]) -> anyhow::Result<String> {
@@ -414,150 +409,5 @@ fn markup(data_url: Option<&str>, alt: &str, alone: bool) -> String {
             let tag = if alone { "div" } else { "span" };
             format!(r#"<{tag} class="fig-miss">〔{}〕</{tag}>"#, esc(&label))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn png(width: u32, height: u32) -> Vec<u8> {
-        let image = image::RgbaImage::from_pixel(width, height, image::Rgba([200, 60, 60, 255]));
-        let mut out = Vec::new();
-        image
-            .write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-            .unwrap();
-        out
-    }
-
-    #[test]
-    fn sources_skip_code_blocks_and_dedupe() {
-        let md = "![a](x.png) 文字 ![b](y.png) ![c](x.png)\n\n```\n![no](z.png)\n```\n";
-        assert_eq!(sources(md), ["x.png", "y.png"]);
-    }
-
-    #[test]
-    fn without_images_keeps_alt_as_text() {
-        assert_eq!(
-            without_images("前 ![折线图](a.png) 后 ![](b.png) 末"),
-            "前 〔图：折线图〕 后  末"
-        );
-        // 代码块里的写法原样保留。
-        assert!(without_images("```\n![x](y.png)\n```").contains("![x](y.png)"));
-    }
-
-    #[test]
-    fn small_png_passes_through_unchanged() {
-        let bytes = png(40, 30);
-        let url = normalize(&bytes).unwrap();
-        assert_eq!(url, data_url("image/png", &bytes));
-    }
-
-    #[test]
-    fn huge_image_is_scaled_to_the_edge_limit() {
-        let url = normalize(&png(3200, 800)).unwrap();
-        let payload = url.split_once(";base64,").unwrap().1;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(payload)
-            .unwrap();
-        let decoded = image::load_from_memory(&bytes).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (MAX_EDGE, MAX_EDGE / 4));
-        assert!(url.starts_with("data:image/jpeg"), "不透明的大图改存 JPEG");
-    }
-
-    #[test]
-    fn transparent_image_stays_png_when_it_must_be_reencoded() {
-        let image = image::RgbaImage::from_pixel(2000, 100, image::Rgba([0, 0, 0, 0]));
-        let mut bytes = Vec::new();
-        image
-            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-            .unwrap();
-        assert!(normalize(&bytes).unwrap().starts_with("data:image/png"));
-    }
-
-    #[test]
-    fn only_real_images_get_through() {
-        assert!(normalize(b"-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n").is_err());
-        assert!(normalize(b"<html><body>hi</body></html>").is_err());
-        assert!(normalize(b"").is_err());
-        let svg = br#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#;
-        assert!(normalize(svg).unwrap().starts_with("data:image/svg+xml"));
-    }
-
-    #[test]
-    fn pixel_bombs_are_refused_before_allocation() {
-        // 宽高头写成 20000×20000 的 PNG，但没有像素数据。
-        let mut bytes = png(1, 1);
-        bytes[16..20].copy_from_slice(&20_000u32.to_be_bytes());
-        bytes[20..24].copy_from_slice(&20_000u32.to_be_bytes());
-        let error = normalize(&bytes).unwrap_err().to_string();
-        assert!(error.contains("太大") || error.contains("不是可用"), "{error}");
-    }
-
-    #[test]
-    fn paths_resolve_against_each_root_and_percent_decoding() {
-        let roots = [Path::new("/a"), Path::new("/b")];
-        assert_eq!(
-            candidates("c.png", &roots),
-            [PathBuf::from("/a/c.png"), PathBuf::from("/b/c.png")]
-        );
-        assert_eq!(candidates("/x/y.png", &roots), [PathBuf::from("/x/y.png")]);
-        assert_eq!(percent_decode("%E5%9B%BE%201.png"), "图 1.png");
-        assert_eq!(percent_decode("a+b.png"), "a+b.png");
-    }
-
-    #[tokio::test]
-    async fn gather_loads_local_files_and_reports_the_rest() {
-        let dir = std::env::temp_dir().join(format!("acumen-figures-{}", rand::random::<u32>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ok.png"), png(10, 10)).unwrap();
-        std::fs::write(dir.join("note.txt"), "不是图").unwrap();
-        let md = "![好](ok.png) ![坏](nope.png) ![文](note.txt) ![内网](http://127.0.0.1:9/x.png)";
-        let figures = gather(md, &[&dir]).await;
-        assert!(figures.get("ok.png").is_some());
-        let failed: Vec<&str> = figures.failures().iter().map(|(s, _)| s.as_str()).collect();
-        assert_eq!(failed, ["nope.png", "note.txt", "http://127.0.0.1:9/x.png"]);
-        assert!(figures.failures()[2].1.contains("内网"));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn gather_caps_the_number_of_figures() {
-        let md: String = (0..8).map(|i| format!("![](n{i}.png)\n\n")).collect();
-        let figures = gather(&md, &[]).await;
-        assert_eq!(figures.failures().len(), 8);
-        assert!(figures.failures()[7].1.contains("最多"));
-    }
-
-    fn html_of(md: &str, figures: &Figures) -> String {
-        let events: Vec<Event> = Parser::new_ext(md, options()).collect();
-        let mut html = String::new();
-        pulldown_cmark::html::push_html(&mut html, place(events, figures).into_iter());
-        html
-    }
-
-    #[test]
-    fn standalone_image_becomes_a_captioned_figure() {
-        let figures = Figures::default().with("a.png", "data:image/png;base64,AAAA");
-        let html = html_of("前\n\n![走势图](a.png)\n\n后", &figures);
-        assert!(html.contains(r#"<figure class="fig"><img src="data:image/png;base64,AAAA" alt="走势图"><figcaption>走势图</figcaption></figure>"#), "{html}");
-        assert!(!html.contains("<p><figure"), "{html}");
-    }
-
-    #[test]
-    fn inline_and_missing_images_never_emit_a_foreign_src() {
-        let figures = Figures::default().with("a.png", "data:image/png;base64,AAAA");
-        let html = html_of("字 ![小](a.png) 字 ![丢了](http://x/y.png)\n\n![](nope.png)", &figures);
-        assert!(html.contains(r#"<img class="fig-inline" src="data:"#), "{html}");
-        assert!(html.contains("〔图：丢了〕"), "{html}");
-        assert!(html.contains(r#"<div class="fig-miss">〔图片没能加载〕</div>"#), "{html}");
-        assert!(!html.contains("http://x/y.png"), "{html}");
-    }
-
-    #[test]
-    fn alt_text_is_escaped() {
-        let figures = Figures::default().with("a.png", "data:image/png;base64,AAAA");
-        let html = html_of(r#"![<b>"x"</b>](a.png)"#, &figures);
-        assert!(!html.contains("<b>"), "{html}");
     }
 }

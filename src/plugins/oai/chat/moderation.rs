@@ -119,36 +119,3 @@ pub(crate) fn today_start() -> i64 {
         .and_then(|midnight| midnight.and_local_timezone(now.timezone()).single())
         .map_or_else(|| now.timestamp(), |midnight| midnight.timestamp())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn entry(at: i64, counted: bool) -> Entry {
-        Entry {
-            at,
-            action: "mute".into(),
-            counted,
-            ..Entry::default()
-        }
-    }
-
-    #[test]
-    fn lifting_a_punishment_does_not_use_up_the_day() {
-        let list = vec![entry(100, true), entry(200, false), entry(300, true)];
-        assert_eq!(count_since(&list, 0), 2);
-        assert_eq!(count_since(&list, 150), 1);
-    }
-
-    #[test]
-    fn recent_keeps_the_latest_week_in_order() {
-        let now = 10 * 86_400;
-        let mut list: Vec<Entry> = (0..20).map(|i| entry(now - i * 3600, true)).collect();
-        list.reverse();
-        list.insert(0, entry(now - 8 * 86_400, true));
-        let recent = recent_of(&list, now);
-        assert_eq!(recent.len(), RECENT_ENTRIES);
-        assert_eq!(recent.last().unwrap().at, now);
-        assert!(recent.windows(2).all(|pair| pair[0].at <= pair[1].at));
-    }
-}

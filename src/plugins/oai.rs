@@ -252,8 +252,8 @@ impl OaiConfig {
         }
     }
 
-    pub(crate) fn video_send(&self) -> video::SendMode {
-        video::SendMode::parse(&self.video_send)
+    pub(crate) fn video_send(&self) -> crate::message::SendMode {
+        crate::message::SendMode::parse(&self.video_send)
     }
 
     pub(crate) fn show_trace_footer(&self) -> bool {

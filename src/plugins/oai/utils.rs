@@ -555,34 +555,6 @@ pub fn format_history(
         .join("\n\n---\n\n")
 }
 
-pub fn truncate_str(s: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max_chars {
-        s.to_string()
-    } else {
-        chars[..max_chars].iter().collect::<String>() + "…"
-    }
-}
-
-/// 发进群的成品文件叫什么名字：路径分隔符、引号与换行一律换成下划线，再截到 60 字。
-///
-/// 音乐房间拿歌名、视频房间拿用户自己那句话来命名，两处过的是同一个函数。名字里的
-/// 分隔符与引号会让 QQ 的群文件列表看着乱，空名下坠到一个中性名字。
-pub fn safe_file_name(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' => '_',
-            c => c,
-        })
-        .collect();
-    let cleaned = cleaned.trim().trim_matches('.').to_string();
-    if cleaned.is_empty() {
-        "media".to_string()
-    } else {
-        truncate_str(&cleaned, 60)
-    }
-}
 
 pub fn format_export_txt(
     agent_name: &str,

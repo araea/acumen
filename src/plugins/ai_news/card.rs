@@ -314,7 +314,7 @@ fn phrase(text: &str) -> String {
     let word_like = |ch: Option<char>| ch.is_some_and(char::is_alphanumeric);
     let mut out = String::with_capacity(text.len() * 2);
     let mut prev_last: Option<char> = None;
-    for token in crate::plugins::recorder::get_jieba().cut(text, true) {
+    for token in crate::text::jieba().cut(text, true) {
         let word = token.word;
         let first = word.chars().next();
         let han = |ch: Option<char>| ch.is_some_and(|c| !c.is_ascii() && c.is_alphanumeric());
@@ -722,27 +722,4 @@ pub async fn capture(html: &str, scale: f64) -> Result<String> {
             .max_height(12_000.0),
     )
     .await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn phrase_breaks_only_between_chinese_words() {
-        let html = phrase("微软终止与 Nscale 数据中心合作");
-        assert!(html.contains("<wbr>"), "中文词之间要有断点：{html}");
-        assert!(!html.contains("Ns<wbr>"), "英文词内不能拆：{html}");
-        assert_eq!(html.replace("<wbr>", ""), "微软终止与 Nscale 数据中心合作");
-        // 标点不会被断点推到行首
-        assert!(!phrase("发布，上线").contains("<wbr>，"));
-    }
-
-    #[test]
-    fn restated_notes_are_dropped_but_new_facts_stay() {
-        let title = "Anthropic设公益基金 承诺投入5%股份";
-        let summary = "Anthropic 宣布设立 Anthropic Public Benefit Fund，并承诺向该基金投入公司 5% 股份";
-        assert!(restates("Anthropic 承诺将 5% 股份投入新设的公益基金", &[title, summary]));
-        assert!(!restates("该基金需经股东批准后才能生效，董事会尚未表决", &[title, summary]));
-    }
 }

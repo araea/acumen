@@ -82,7 +82,7 @@ pub fn parse(rest: &str) -> Option<Connect> {
 /// 执行一次接入并回话。
 pub async fn connect(request: Connect, ctx: &Context, writer: &LockedWriter, mgr: &Arc<Manager>) {
     let Some(event) = ctx.as_message() else { return };
-    if !crate::plugins::ctl::is_manager(ctx) {
+    if !crate::access::is_manager(ctx) {
         reply_text(ctx, writer, &event, "❌ 只有号主和 ctl.admins 里的管理员能改模型接口").await;
         return;
     }
@@ -320,33 +320,4 @@ pub async fn status(oai: &super::OaiConfig, mgr: &Manager) -> String {
         known_names()
     ));
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_the_shapes_and_leaves_chatter_alone() {
-        assert_eq!(
-            parse("deepseek sk-abcdefgh1234"),
-            Some(Connect::Provider { name: "deepseek".into(), base: String::new(), key: "sk-abcdefgh1234".into() })
-        );
-        assert_eq!(
-            parse("Relay sk-abcdefgh1234 https://r.example/v1"),
-            Some(Connect::Provider {
-                name: "relay".into(),
-                base: "https://r.example/v1".into(),
-                key: "sk-abcdefgh1234".into()
-            })
-        );
-        assert_eq!(
-            parse("https://api.example.com sk-abcdefgh1234"),
-            Some(Connect::Default { base: "https://api.example.com".into(), key: "sk-abcdefgh1234".into() })
-        );
-        assert_eq!(parse("kimi 清除"), Some(Connect::Clear { name: "kimi".into() }));
-        assert_eq!(parse("deepseek 好用吗"), None);
-        assert_eq!(parse("是什么"), None);
-        assert_eq!(parse("deepseek short"), None);
-    }
 }

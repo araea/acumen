@@ -182,7 +182,7 @@ pub(super) async fn generate_reply(
     .await?;
 
     // 提示词里带换行（系统风格前缀 + 用户输入），压成一行后加粗标题才不会被拆开。
-    let caption = super::utils::truncate_str(&one_line(&generated.caption), 160);
+    let caption = crate::storage::truncate_chars(&one_line(&generated.caption), 160);
     let links: Vec<String> = generated
         .urls
         .iter()

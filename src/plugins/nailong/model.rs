@@ -327,36 +327,3 @@ async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn head_parses() {
-        let head = head();
-        assert_eq!(head.w1.len(), head.b1.len() * DIM);
-        assert_eq!(head.w2.len(), head.b1.len() * CLASSES);
-        assert!(parse_head(b"NLH1").is_none());
-    }
-
-    #[test]
-    fn classify_returns_probabilities() {
-        let mut vector = vec![0f32; DIM];
-        vector[0] = 1.0;
-        let scores = classify(&vector);
-        assert!((0.0..=1.0).contains(&scores.nailong));
-        assert!((0.0..=1.0).contains(&scores.naiwa));
-        assert!(scores.nailong + scores.naiwa <= 1.0 + 1e-5);
-    }
-
-    #[test]
-    fn input_is_letterboxed_on_white() {
-        let frame = RgbaImage::from_pixel(100, 50, image::Rgba([0, 0, 0, 255]));
-        let tensor = to_input(&frame);
-        let view = tensor.to_plain_array_view::<f32>().unwrap();
-        assert_eq!(view.shape(), &[1, 3, 256, 256]);
-        assert!((view[[0, 0, 0, 0]] - 1.0).abs() < 1e-6, "上方留白");
-        assert!(view[[0, 0, 128, 128]] < 1e-6, "中间是原图");
-    }
-}

@@ -6,7 +6,6 @@ use crate::plugins::{PluginConfig, PluginError, Receipt, get_config_or_default};
 const LOG_TARGET: &str = "Plugin/Recorder";
 use chrono::{Datelike, Duration, Local, TimeZone, Timelike};
 use futures_util::future::BoxFuture;
-use jieba_rs::Jieba;
 use sea_orm::{
     ActiveModelTrait, ActiveValue, ConnectionTrait, Schema, Set, Statement, TransactionTrait,
 };
@@ -14,90 +13,10 @@ use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
 use simd_json::base::{ValueAsArray, ValueAsScalar};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
-use std::sync::OnceLock;
 use toml::Value;
 
-pub mod entity {
-    use sea_orm::entity::prelude::*;
-
-    /// 一条消息记录。资源字段照 Satori 协议取名取型：所有 ID 都是字符串，
-    /// 同一个 ID 只在它的 `platform` 里唯一；`self_id` 是收到（或发出）这条消息的登录账号。
-    #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
-    #[sea_orm(table_name = "message_records")]
-    pub struct Model {
-        #[sea_orm(primary_key)]
-        pub id: i64,
-        /// `login.platform`
-        pub platform: String,
-        /// `login.user.id`
-        pub self_id: String,
-        /// `message.id`
-        pub message_id: String,
-        /// `channel.id`
-        pub channel_id: String,
-        /// `channel.type`：0 群聊（TEXT），1 私聊（DIRECT）
-        pub channel_type: i32,
-        /// `guild.id`；私聊为空串
-        pub guild_id: String,
-        /// `guild.name`
-        pub guild_name: String,
-        /// `guild.avatar`
-        pub guild_avatar: String,
-        /// `user.id`
-        pub user_id: String,
-        /// `user.name`
-        pub user_name: String,
-        /// `member.nick`（群名片），没有时同 `user.name`
-        pub member_nick: String,
-        /// `member.avatar`，没有时同 `user.avatar`
-        pub user_avatar: String,
-        /// 成员角色（owner / admin / member / self）
-        pub member_role: String,
-
-        pub content_rich: String, // 富文本摘要
-        pub tokens: String,       // 分词结果（空格分隔）
-
-        pub is_reply: bool,
-        pub length: i32,
-        pub time: i64,
-        pub time_hour: i32,
-        pub time_weekday: i32,
-
-        pub has_image: bool,     // 是否包含图片
-        pub image_count: i32,    // 图片数量
-        pub is_anim_emoji: bool, // 是否包含动画表情/表情包
-
-        pub has_at: bool,  // 是否包含At
-        pub at_count: i32, // At数量
-
-        pub face_count: i32, // 小表情(face)数量
-
-        pub is_voice: bool, // 是否是语音
-        pub is_video: bool, // 是否是视频
-        pub is_music: bool, // 是否是音乐分享
-
-        pub is_rps: bool,  // 是否是猜拳
-        pub is_dice: bool, // 是否是骰子
-        pub is_poke: bool, // 是否是戳一戳
-
-        pub is_forward: bool, // 是否是合并转发
-    }
-
-    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
-    pub enum Relation {}
-
-    impl ActiveModelBehavior for ActiveModel {}
-}
-
-use entity::ActiveModel as RecordActiveModel;
-use entity::Entity as RecordEntity;
-
-// 全局 Jieba 实例
-static JIEBA: OnceLock<Jieba> = OnceLock::new();
-
-pub(crate) fn get_jieba() -> &'static Jieba {
-    JIEBA.get_or_init(Jieba::new)
-}
+use crate::db::entity;
+use crate::db::entity::{ActiveModel as RecordActiveModel, Entity as RecordEntity};
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -394,12 +313,7 @@ async fn insert(
         String::new()
     } else {
         tokio::task::spawn_blocking(move || {
-            get_jieba()
-                .cut(&raw_text, false)
-                .into_iter()
-                .map(|t| t.word)
-                .collect::<Vec<_>>()
-                .join(" ")
+            crate::text::words(&raw_text)
         })
         .await
         .unwrap_or_default()

@@ -3,6 +3,50 @@
 use serde::{Deserialize, Serialize};
 use simd_json::owned::{Object, Value};
 
+/// 视频成品怎么发进群。
+///
+/// 「视频解析」与 oai 的视频房间共用这一套写法：配置里的 `video_send`、提示词里的
+/// `--视频` / `--文件` / `--都发` 指的是同一件事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendMode {
+    /// 只发群文件：能存能下载，QQ 里是个文件卡片。
+    File,
+    /// 只发视频气泡：点开就播。
+    Bubble,
+    /// 先发视频气泡（点开就播），再补一条群文件（能存能转）。
+    Both,
+}
+
+impl SendMode {
+    /// 与 `[oai] video_send` 同一套写法。
+    pub fn parse(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "file" | "文件" | "群文件" => Self::File,
+            "video" | "bubble" | "气泡" | "视频" => Self::Bubble,
+            _ => Self::Both,
+        }
+    }
+
+    /// 提示词里的开关。`None` 表示这句没说怎么发，照配置走。
+    pub fn flag(token: &str) -> Option<Self> {
+        match token.to_ascii_lowercase().as_str() {
+            "--文件" | "--群文件" | "--file" => Some(Self::File),
+            "--视频" | "--气泡" | "--video" | "--bubble" => Some(Self::Bubble),
+            "--都发" | "--both" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    /// 卡片上标一句这一单是怎么发的。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "群文件",
+            Self::Bubble => "视频",
+            Self::Both => "群文件 + 视频",
+        }
+    }
+}
+
 /// 消息段 (Segment)
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Segment {

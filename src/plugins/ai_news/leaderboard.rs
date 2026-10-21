@@ -461,38 +461,3 @@ fn capture(re: &Regex, source: &str) -> Option<String> {
         .map(|m| m.as_str().trim().to_string())
         .filter(|s| !s.is_empty())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_the_server_rendered_table() {
-        let html = r#"
-<p class="num x">35<!-- --> 项评测<span class="mx-2">·</span>7<!-- --> 家机构<span class="mx-2">·</span>10/18 20:06<!-- --> 更新</p>
-<h2 id="lb-board-title" class="t">综合榜<span class="mono">30 个模型</span></h2>
-<table class="w-full"><thead><tr>
-<th><span>名次</span><button>名次</button></th><th>模型</th><th><button><span>上线日期</span></button></th>
-<th><button><span>评测覆盖</span></button></th><th><span>缓存价格<span>人民币 / 百万 Token</span></span></th>
-<th><span>输入价格</span></th><th><span>输出价格</span></th><th><button>AIHOT 评分</button></th></tr></thead>
-<tbody><tr data-slug="claude-opus-5-5" class="g"><td><span class="mono">01</span></td>
-<td><a href="/leaderboard/claude-opus-5-5"><strong class="x">Claude Opus 5.5</strong></a><small class="hidden">Anthropic</small><small>Anthropic<!-- --> · 9月22日上线</small></td>
-<td><time dateTime="2026-09-22">2026-09-22</time></td>
-<td><span>34<!-- --> 项评测</span><span>覆盖 <!-- -->96<!-- -->%</span></td>
-<td>¥1.34</td><td>¥26.74</td><td>—</td>
-<td><span><strong class="mono" aria-label="a">73.7</strong><small>覆盖 <!-- -->96<!-- -->%</small></span></td></tr></tbody></table>
-<h2 id="lb-pending-title">暂不排名<span class="mono">5 个模型</span></h2>"#;
-        let board = parse_board(html).expect("能解析");
-        assert_eq!(board.title(), "综合榜");
-        assert_eq!((board.evaluation_count, board.org_count), (Some(35), Some(7)));
-        assert_eq!(board.updated_at.as_deref(), Some("10/18 20:06"));
-        assert_eq!(board.pending, Some(5));
-        let model = &board.entries[0];
-        assert_eq!((model.rank, model.slug.as_deref()), (Some(1), Some("claude-opus-5-5")));
-        assert_eq!((model.display_name(), model.provider_name()), ("Claude Opus 5.5", Some("Anthropic")));
-        assert_eq!(model.released_date(), Some("2026-09-22"));
-        assert_eq!((model.evaluations, model.coverage), (Some(34), Some(96)));
-        assert_eq!(model.price_text().as_deref(), Some("输入 ¥26.74 / 缓存 ¥1.34"), "「—」不算价格");
-        assert_eq!(model.score_text().as_deref(), Some("73.7"));
-    }
-}

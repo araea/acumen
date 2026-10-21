@@ -1,7 +1,7 @@
 use super::utils::format_thousands;
 use crate::db::bans;
 use crate::db::queries::{self, UserMetric};
-use crate::plugins::recorder::entity::{self, Entity as MessageLogs};
+use crate::db::entity::{self, Entity as MessageLogs};
 use plotters::style::RGBColor;
 use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,

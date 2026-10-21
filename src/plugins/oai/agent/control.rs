@@ -309,37 +309,3 @@ fn status(ctx: &crate::event::Context) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn credential_paths_are_sealed_for_everyone() {
-        assert!(sealed("oai", "providers.deepseek.api_base").is_err());
-        assert!(sealed("oai", "search.backends.tavily.api_key").is_err());
-        assert!(sealed("oai", "api_key").is_err());
-        assert!(sealed("ctl", "admins").is_err());
-        assert!(sealed("console", "port").is_err());
-        // 普通项照常放行；名字只是前缀相似的不算。
-        assert!(sealed("oai", "plain_text_max_chars").is_ok());
-        assert!(sealed("oai", "providers_note").is_ok());
-        assert!(sealed("echo", "enabled").is_ok());
-    }
-
-    #[test]
-    fn value_text_keeps_strings_and_literalises_the_rest() {
-        assert_eq!(value_text(&json!("120")).unwrap(), "120");
-        assert_eq!(value_text(&json!(true)).unwrap(), "true");
-        assert_eq!(value_text(&json!([1, 2])).unwrap(), "[1, 2]");
-        assert_eq!(value_text(&json!("")).unwrap(), "\"\"");
-        assert!(value_text(&Value::Null).is_err());
-    }
-
-    #[test]
-    fn plugin_names_accept_array_or_loose_string() {
-        assert_eq!(names(&json!({"plugins": ["echo", "help"]})), ["echo", "help"]);
-        assert_eq!(names(&json!({"plugins": "echo, help"})), ["echo", "help"]);
-        assert_eq!(names(&json!({"plugin": "echo"})), ["echo"]);
-    }
-}

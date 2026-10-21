@@ -46,10 +46,4 @@ Cookie 是哔哩哔哩账号凭据，仅在必要时配置，并视为密码。�
 cargo test --bin acumen
 ```
 
-以下测试会访问真实服务并向指定群发送视频；只使用测试群，测试后自行撤回消息。
-
-```sh
-cargo test --bin acumen live_reads_the_metadata -- --ignored --nocapture
-ACUMEN_VIDEO_PARSE_LIVE_GROUP=<群号> \
-  cargo test --bin acumen live_takes_ -- --ignored --nocapture
-```
+真机取片是一次性验证：需要时在测试群直接触发一次，确认画面、体积与发法即可；不保留联网测试。

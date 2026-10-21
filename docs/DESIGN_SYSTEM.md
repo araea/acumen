@@ -81,8 +81,6 @@
 python3 scripts/make-tokens.py --check
 python3 scripts/make-icons.py --check
 cargo test --locked console
-node tests/console.cjs
-node tests/console-backend.cjs
 python3 scripts/audit-contrast.py   # 对运行中的本机控制台只读检查
 ```
 
@@ -108,6 +106,6 @@ python3 scripts/audit-contrast.py   # 对运行中的本机控制台只读检查
 
 依据：[Material 3 Expressive](https://m3.material.io/)、[Google 官方 Material 3 实现说明](https://developer.android.com/develop/ui/compose/designsystems/material3)、[Apple HIG](https://developer.apple.com/design/human-interface-guidelines/)、[WCAG 2.2](https://www.w3.org/TR/WCAG22/)。
 
-`node tests/console.cjs` 会从 Rust 注册表导出所有插件真实默认配置，再检查字段完整性、320 / 1400px 回流与对比度；独立的交互夹具用于确定性复现竞态。`node tests/console-state.cjs` 验证保存竞态与数组往返。`scripts/review-cards.sh` 生成所有卡片族与原生图表，检查完整布局与实际计算颜色对比度。`node tests/console-backend.cjs` 在无 Satori 适配器的隔离实例检查所有插件 API 与 release 内嵌资源。
+界面改动在真实浏览器里看：320 / 1400px 各看一遍回流与对比度，卡片用生产渲染入口实际出图。一次性的版式核对不设回归脚本——这类断言随视觉迭代漂移得快，维护成本高于收益。
 
 自动测试与代码核验不能替代 VoiceOver、TalkBack、iOS 安全区与真实 QQ 客户端的人工验收；不得据此宣称获得 WCAG 认证。

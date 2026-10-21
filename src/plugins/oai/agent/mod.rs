@@ -54,7 +54,7 @@ impl Asker {
         Self {
             id: event.user_id().to_string(),
             name: event.sender_name().to_string(),
-            owner: crate::plugins::ctl::is_owner(ctx, event.user_id(), event.is_manual_self()),
+            owner: crate::access::is_owner(ctx, event.user_id(), event.is_manual_self()),
         }
     }
 

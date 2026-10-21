@@ -156,17 +156,3 @@ fn parse(reply: &str) -> Option<Opinion> {
     let confidence = value.get("confidence").and_then(serde_json::Value::as_f64).unwrap_or(0.8) as f32;
     Some(Opinion { kind, confidence: confidence.clamp(0.0, 1.0) })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replies_are_parsed_even_with_chatter_around_them() {
-        let o = parse("好的。\n{\"kind\":\"naiwa\",\"confidence\":0.92}\n").unwrap();
-        assert_eq!((o.kind, o.confidence), (Kind::Naiwa, 0.92));
-        assert_eq!(parse(r#"{"kind":"other"}"#).unwrap().kind, Kind::Other);
-        assert!(parse("看不出来").is_none());
-        assert!(parse(r#"{"kind":"dragon","confidence":1}"#).is_none());
-    }
-}

@@ -11,7 +11,7 @@ use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::command::CommandMatch;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::oai::utils::safe_file_name;
+use crate::storage::media_file_name;
 use crate::plugins::video_parse;
 use crate::plugins::{get_config_or_default, get_data_dir};
 use anyhow::{Result, anyhow};
@@ -209,7 +209,7 @@ fn output_name(title: &str) -> String {
         Some(stem) => stem.to_string(),
         None => chrono::Utc::now().format("audio-%Y%m%d-%H%M%S").to_string(),
     };
-    format!("{}.m4a", safe_file_name(&stem))
+    format!("{}.m4a", media_file_name(&stem))
 }
 
 // ================= 清理 =================

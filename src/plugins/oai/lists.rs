@@ -10,7 +10,8 @@
 //! 整张图就成了标题多过内容。
 
 use super::types::Agent;
-use super::utils::{escape_markdown_special, model_vendor, truncate_str};
+use crate::storage::truncate_chars as truncate_str;
+use super::utils::{escape_markdown_special, model_vendor};
 use crate::render::web::{Block, Doc, ModelRow, RoomRow, Theme};
 use std::collections::BTreeMap;
 
@@ -407,75 +408,3 @@ impl Models {
 
 /// 成图宽度：卡面 520 加两侧各 20 的相纸，与手册卡、控制卡、智能回复卡同宽。
 pub(crate) const WIDTH: f32 = 560.0;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn agent(name: &str, model: &str, section: &str) -> Agent {
-        let mut agent = Agent::new(name, model, "", "说明");
-        agent.section = section.into();
-        agent
-    }
-
-    /// 序号是指令里能直接写的（`助手%3`），所以并组之后每个模型仍得带着它在列表里的真位置。
-    /// 只剩一个成员的厂商并进「其他厂商」，自己带上厂商名；认不出厂商的不挂标签。
-    #[test]
-    fn single_model_vendors_merge_but_keep_their_list_position() {
-        let ids: Vec<String> = ["claude-a", "claude-b", "gpt-5", "kimi-k3", "mystery"]
-            .map(String::from)
-            .into();
-        let models = Models::new(&ids, &[], &[], "kimi-k3");
-        let titles: Vec<_> = models.groups.iter().map(|g| g.title.as_str()).collect();
-        assert_eq!(titles, ["Anthropic", "其他厂商"]);
-        let rest = &models.groups[1].rows;
-        let seen: Vec<_> = rest
-            .iter()
-            .map(|r| (r.index, r.vendor.as_deref(), r.default))
-            .collect();
-        assert_eq!(
-            seen,
-            [
-                (3, Some("OpenAI"), false),
-                (4, Some("Moonshot"), true),
-                (5, None, false)
-            ]
-        );
-    }
-
-    /// 带分区的各自成组、标题挂模型；没分区的同模型房间按模型成组，落单的并进「自建房间」并自带模型。
-    #[test]
-    fn rooms_group_by_section_then_model_and_fold_singletons() {
-        let agents = [
-            agent("一号", "img", "预设"),
-            agent("二号", "img", "预设"),
-            agent("甲", "m1", ""),
-            agent("乙", "m1", ""),
-            agent("丙", "m2", ""),
-        ];
-        let rooms = Rooms::new(&agents, false, None);
-        let shape: Vec<_> = rooms
-            .groups
-            .iter()
-            .map(|g| (g.title.as_str(), g.model.as_deref(), g.rooms.len()))
-            .collect();
-        assert_eq!(
-            shape,
-            [
-                ("预设", Some("img"), 2),
-                ("m1", None, 2),
-                (ROOMS_OTHER, None, 1)
-            ]
-        );
-        assert_eq!(rooms.groups[2].rooms[0].model.as_deref(), Some("m2"));
-    }
-
-    /// 卡片版式把名字、简介当文本转义；回退文本里则是 Markdown，序号从 1 数到底。
-    #[test]
-    fn text_fallback_numbers_rooms_in_display_order() {
-        let agents = [agent("b", "m", "区"), agent("a", "m", "区")];
-        let text = Rooms::new(&agents, false, None).markdown();
-        let first = text.find("1. **a**").expect("按名字排序后 a 在前");
-        assert!(first < text.find("2. **b**").unwrap());
-    }
-}

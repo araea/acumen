@@ -11,7 +11,6 @@
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::time::Duration;
-use url::Url;
 
 /// 请求头。这三样都有讲究：
 ///
@@ -22,89 +21,12 @@ use url::Url;
 pub(crate) const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 pub(crate) const REFERER: &str = "https://www.bilibili.com";
 
-/// 分享短链的域名，两个都见过——手机端分享出来的是这些。
-const SHORT_HOSTS: &[&str] = &["b23.tv", "bili2233.cn"];
-
 const VIEW_API: &str = "https://api.bilibili.com/x/web-interface/view";
 const PLAYURL_API: &str = "https://api.bilibili.com/x/player/playurl";
 
-/// 主机是不是分享短链。短链要真正跟随一次跳转才知道落到哪个页面。
-pub(crate) fn is_short_host(host: &str) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    SHORT_HOSTS
-        .iter()
-        .any(|rule| host == *rule || host.ends_with(&format!(".{rule}")))
-}
+// 链接解析在框架层的 `links` 里：webshot 也要判断一条链接该不该让给视频解析。
+pub(crate) use crate::links::{VideoRef, is_short_host, reference};
 
-/// 链接指向哪一个稿件、哪一分 P。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct VideoRef {
-    /// 稿件号。`BV…` 与 `av…` 两种写法各存各的，接口两样都收。
-    pub(crate) bvid: Option<String>,
-    pub(crate) aid: Option<u64>,
-    pub(crate) page: u32,
-}
-
-impl VideoRef {
-    fn query(&self) -> String {
-        match (&self.bvid, self.aid) {
-            (Some(bvid), _) => format!("bvid={bvid}"),
-            (None, Some(aid)) => format!("aid={aid}"),
-            _ => String::new(),
-        }
-    }
-}
-
-/// 从这个地址里认出稿件页；不是稿件页就返回 `None`。
-///
-/// 只认稿件：番剧（`/bangumi/play/ep…`）、直播、空间、专栏、动态都不算——
-/// 那些页面截个图比取片有用，留给 `webshot`。
-pub(crate) fn reference(url: &Url) -> Option<VideoRef> {
-    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
-    if host != "bilibili.com" && !host.ends_with(".bilibili.com") {
-        return None;
-    }
-    let page = page_of(url);
-    // 分享出来的地址形态不止一种：`/video/BV…`、`/s/video/BV…`、`/video/av123`。
-    // 统一按段找 `video`，它后面那一段就是稿件号。
-    let mut segments = url.path_segments()?;
-    while let Some(segment) = segments.next() {
-        if !segment.eq_ignore_ascii_case("video") {
-            continue;
-        }
-        let id = segments.next()?;
-        return video_id(id).map(|(bvid, aid)| VideoRef { bvid, aid, page });
-    }
-    None
-}
-
-/// 稿件号的两种写法。`BV` 后面的字符**区分大小写**（那是编码过的数字），
-/// 只把前缀本身折成大写，其余原样留着。
-///
-/// `BV` 号定长 12 位，长度也要卡：`/video/BV1GJ/other` 那种路径片段不该被当成稿件。
-fn video_id(id: &str) -> Option<(Option<String>, Option<u64>)> {
-    if !id.is_ascii() || id.len() < 3 {
-        return None;
-    }
-    let (prefix, rest) = id.split_at(2);
-    if prefix.eq_ignore_ascii_case("bv") {
-        let valid = rest.len() == 10 && rest.chars().all(|c| c.is_ascii_alphanumeric());
-        return valid.then(|| (Some(format!("BV{rest}")), None));
-    }
-    if prefix.eq_ignore_ascii_case("av") {
-        return rest.parse::<u64>().ok().map(|aid| (None, Some(aid)));
-    }
-    None
-}
-
-/// 分 P 号，地址里写作 `?p=3`；缺省是第一 P。
-fn page_of(url: &Url) -> u32 {
-    url.query_pairs()
-        .find(|(key, _)| key == "p")
-        .and_then(|(_, value)| value.parse::<u32>().ok())
-        .filter(|page| *page > 0)
-        .unwrap_or(1)
-}
 
 /// 取片要用的那几样。成品本身就是要发出去的东西，不另外给它写一段说明，
 /// 所以这里只留「取哪一 P 的哪条流」与一个能当文件名用的标题。

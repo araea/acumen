@@ -262,7 +262,7 @@ async fn send_images<'a>(
         )
         .await
         {
-            warn!(target: LOG_TARGET, "图片发送失败 {}: {error}", super::utils::truncate_str(url, 80));
+            warn!(target: LOG_TARGET, "图片发送失败 {}: {error}", crate::storage::truncate_chars(url, 80));
             failed.push(url.as_str());
         }
     }

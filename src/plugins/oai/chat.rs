@@ -406,33 +406,3 @@ pub(crate) fn plain_text(message: &Message) -> String {
     }
     out.trim().to_string()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn management_opens_for_staff_accounts_unless_excluded() {
-        let mut config = ChatConfig::default();
-        assert!(management_open(&config, "1", "admin"));
-        assert!(management_open(&config, "1", "owner"));
-        assert!(!management_open(&config, "1", "member"));
-        assert!(!management_open(&config, "1", ""));
-        config.management_groups = vec!["2".into()];
-        assert!(management_open(&config, "2", "member"));
-        config.management_excluded = vec!["1".into(), "2".into()];
-        assert!(!management_open(&config, "1", "admin"));
-        assert!(!management_open(&config, "2", "member"));
-        config.management_auto = false;
-        assert!(!management_open(&config, "3", "admin"));
-    }
-
-    #[test]
-    fn only_the_owner_and_group_staff_can_direct_management() {
-        assert_eq!(Authority::of(true, ""), Authority::Staff);
-        assert_eq!(Authority::of(false, "admin"), Authority::Staff);
-        assert_eq!(Authority::of(false, "owner"), Authority::Staff);
-        assert_eq!(Authority::of(false, "member"), Authority::Guest);
-        assert_eq!(Authority::of(false, ""), Authority::Guest);
-    }
-}

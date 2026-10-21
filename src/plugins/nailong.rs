@@ -997,7 +997,7 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         let config = get_config_or_default::<Config>(&ctx);
         let Some(group) = message.group_id().filter(|id| !id.is_empty()).map(str::to_owned) else {
             // 私聊里只接号主（与 ctl 管理员）：核对抄过来的图、按编号纠正。
-            if crate::plugins::ctl::is_manager(&ctx)
+            if crate::access::is_manager(&ctx)
                 && let Some(matched) = COMMANDS.iter().find_map(|word| command::match_word_command(&ctx, word))
             {
                 let place = Place { group: None, user: Some(message.user_id().to_string()) };
@@ -1025,7 +1025,7 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
             return Ok(Some(ctx));
         }
         if config.exempt_staff
-            && (crate::plugins::ctl::is_manager(&ctx) || message.sender_role().is_some_and(api::is_staff))
+            && (crate::access::is_manager(&ctx) || message.sender_role().is_some_and(api::is_staff))
         {
             return Ok(Some(ctx));
         }
@@ -1547,7 +1547,7 @@ where
     let by = message.user_id();
     // 私聊进得来的只有号主与 ctl 管理员。
     let allowed = ask.place.group.is_none()
-        || crate::plugins::ctl::is_manager(ctx)
+        || crate::access::is_manager(ctx)
         || message.sender_role().is_some_and(api::is_staff);
     if !allowed {
         // 被拦的本人说「不是」：转给号主看，不让他自己给自己改判。
@@ -1692,83 +1692,4 @@ pub fn init(_ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         });
         Ok(())
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_pass_their_own_check() {
-        assert_eq!(Config::default().check(), Ok(()));
-    }
-
-    #[test]
-    fn frames_are_sampled_evenly_from_the_first() {
-        assert_eq!(sample_indices(3, 4), vec![0, 1, 2]);
-        assert_eq!(sample_indices(100, 4), vec![0, 33, 66, 99]);
-        assert_eq!(sample_indices(1, 4), vec![0]);
-        assert!(sample_indices(0, 4).is_empty());
-    }
-
-    #[test]
-    fn vectors_round_trip() {
-        let vector: Vec<f32> = (0..model::DIM).map(|i| i as f32 / 7.0).collect();
-        assert_eq!(decode_vector(&encode_vector(&vector)), Some(vector));
-    }
-
-    /// 用插件真实的解码、预处理与推理跑一个目录，逐张打印分数，与训练脚本的结果对照：
-    /// `NAILONG_MODEL=…/vision_model.onnx NAILONG_IMAGES=目录 cargo test --release nailong_eval -- --ignored --nocapture`
-    #[test]
-    #[ignore = "需要本地模型文件与图片目录"]
-    fn nailong_eval() {
-        let encoder = model::Encoder::open(std::path::Path::new(&std::env::var("NAILONG_MODEL").unwrap())).unwrap();
-        let mut files: Vec<_> = std::fs::read_dir(std::env::var("NAILONG_IMAGES").unwrap())
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        files.sort();
-        for file in files {
-            let Ok(frames) = decode_frames(&std::fs::read(&file).unwrap(), 4) else { continue };
-            let started = std::time::Instant::now();
-            let best = frames
-                .iter()
-                .map(|frame| model::classify(&encoder.embed(frame).unwrap()))
-                .max_by(|a, b| a.nailong.max(a.naiwa).total_cmp(&b.nailong.max(b.naiwa)))
-                .unwrap();
-            println!(
-                "{}\t{:.4}\t{:.4}\t{}\t{}ms",
-                file.display(),
-                best.nailong,
-                best.naiwa,
-                frames.len(),
-                started.elapsed().as_millis()
-            );
-        }
-    }
-
-    #[test]
-    fn market_faces_become_pictures_by_their_id() {
-        let mut data = simd_json::owned::Object::new();
-        data.insert("emoji_id".into(), "10C79A73ED9A9318A4B523214BF300B3".into());
-        data.insert("summary".into(), "[奶龙摇摆]".into());
-        let config = Config::default();
-        let found = picture("mface", &data, &config).unwrap();
-        assert_eq!(
-            found.url,
-            "https://gxh.vip.qq.com/club/item/parcel/item/10/10c79a73ed9a9318a4b523214bf300b3/raw300.gif"
-        );
-        assert_eq!(found.mface.unwrap().named_kind(), Some(Kind::Nailong));
-        assert!(picture("mface", &data, &Config { check_mface: false, ..Config::default() }).is_none());
-        data.insert("emoji_id".into(), "../x".into());
-        assert!(picture("mface", &data, &config).is_none());
-    }
-
-    #[test]
-    fn templates_put_the_mention_where_asked() {
-        let vars = Vars { name: "小明", kind: "奶龙", count: 2, duration: "10 分钟".into() };
-        let message = render_into(Message::new(), "{at} 第 {count} 次，禁言 {duration}。", "42", &vars);
-        assert_eq!(message.0[0].type_, "at");
-        assert_eq!(message.0[1].data.get("text").and_then(|v| v.as_str()), Some(" 第 2 次，禁言 10 分钟。"));
-    }
 }

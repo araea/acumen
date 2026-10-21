@@ -13,6 +13,7 @@
 use super::logic::{Media, MediaMessage, Reply};
 use super::types::{Agent, ChatMessage};
 use super::utils::one_line;
+use crate::message::SendMode;
 use anyhow::{Context as _, anyhow};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -60,47 +61,6 @@ pub(crate) fn is_video_model(model: &str, keywords: &[String]) -> bool {
         .any(|keyword| lower.contains(&keyword.trim().to_lowercase()))
 }
 
-/// 拍好的片子怎么发进群。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SendMode {
-    /// 只发群文件：能存能下载，QQ 里是个文件卡片。
-    File,
-    /// 只发视频气泡：点开就播。
-    Bubble,
-    /// 先发视频气泡（点开就播），再补一条群文件（能存能转）。
-    Both,
-}
-
-impl SendMode {
-    /// 与 `[oai] video_send` 同一套写法；视频解析插件也读这里，两处的
-    /// 「文件 / 气泡 / 都发」是同一个意思。
-    pub(crate) fn parse(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "file" | "文件" | "群文件" => Self::File,
-            "video" | "bubble" | "气泡" | "视频" => Self::Bubble,
-            _ => Self::Both,
-        }
-    }
-
-    /// 提示词里的开关。`None` 表示这句没说怎么发，照 `[oai] video_send` 走。
-    fn flag(token: &str) -> Option<Self> {
-        match token.to_ascii_lowercase().as_str() {
-            "--文件" | "--群文件" | "--file" => Some(Self::File),
-            "--视频" | "--气泡" | "--video" | "--bubble" => Some(Self::Bubble),
-            "--都发" | "--both" => Some(Self::Both),
-            _ => None,
-        }
-    }
-
-    /// 卡片上标一句这一单是怎么发的。
-    fn label(self) -> &'static str {
-        match self {
-            Self::File => "群文件",
-            Self::Bubble => "视频",
-            Self::Both => "群文件 + 视频",
-        }
-    }
-}
 
 /// 去掉参数后剩下的正文，以及可选的时长与画面比例。
 #[derive(Debug, Default, PartialEq)]
@@ -245,7 +205,7 @@ pub(super) async fn generate_reply(
     )
     .await?;
 
-    let caption = super::utils::truncate_str(
+    let caption = crate::storage::truncate_chars(
         &one_line(if user_text.is_empty() { &prompt } else { &user_text }),
         80,
     );
@@ -308,7 +268,7 @@ fn media_messages(url: &str, caption: &str, mode: SendMode) -> Vec<MediaMessage>
         messages.push(MediaMessage {
             segments: vec![Media::File {
                 url: url.to_string(),
-                name: format!("{}.mp4", super::utils::safe_file_name(caption)),
+                name: format!("{}.mp4", crate::storage::media_file_name(caption)),
             }],
         });
     }

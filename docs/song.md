@@ -31,7 +31,4 @@
 
 ## 自检
 
-```sh
-# 真搜 B 站与真问一次模型，只打印候选与选择，不发群消息
-cargo test --bin acumen song::live -- --ignored --nocapture
-```
+真搜与模型挑选不进自动化测试：在测试群点一首，看候选与成品即可。

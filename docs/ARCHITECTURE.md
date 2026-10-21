@@ -7,23 +7,27 @@
 ```text
 src/
   main.rs          配置加载、数据库、适配器连接与退出
+  access.rs        号主 / 全局管理员 / 本机控制台的判定
   adapters/        Satori 与本地测试用 console 适配器
   command.rs       指令解析、消息内容与链接提取
   config.rs        全局与插件配置
   event.rs         Context、事件类型与消息事件
   http.rs          HTTP 客户端与资源下载
+  links.rs         链接归类：视频站稿件与短链
   log.rs           日志输出
   matcher.rs       交互消息等待与分发
-  message.rs       消息构造
+  message.rs       消息构造与成品发送方式
+  net.rs           出网前的内网 / 本机地址准入
   plugins.rs       插件接口、注册表、事件流水线与配置读写
   plugins/         插件实现；registry.rs 是唯一插件清单
   render/          卡片渲染、原生字体与画布；render/markdown 是 markdown 插件的排版
   scheduler.rs     定时任务与错峰推送
-  storage.rs       数据目录、原子写文件与常驻 JSON 状态
-  db/              SeaORM 实体与 SQLite 查询
+  storage.rs       数据目录、原子写文件、文件名清理与常驻 JSON 状态
+  text.rs          共用的中文分词
+  db/              SeaORM 实体、SQLite 查询与统计
 res/               词库、提示词、技能、卡片与控制台资源
 docs/              项目文档
-tests/             前台运行、重启、渲染与端到端冒烟（e2e.py 自起假 Satori 实现端；e2e_agent.py 再加一个脚本化的假模型）
+tests/             一条端到端冒烟（控制台适配器，不连真平台）
 ```
 
 ## 事件流水线
@@ -64,6 +68,17 @@ tests/             前台运行、重启、渲染与端到端冒烟（e2e.py 自
 
 新增帮助分区时才需同时修改 `help::SECTIONS`。
 
+## 依赖方向
+
+框架层（`command`、`event`、`message`、`links`、`storage`、`text`、`db`）不认识任何插件。通用能力放在这一层，插件之间不为了一两个函数互相 `use`：
+
+- 链接归类在 `links`：`webshot` 与 `video_parse` 读同一个「这条链接归视频解析」判据；
+- 成品文件名与截断在 `storage`；视频/音频的发送方式在 `message`；
+- 消息记录表的实体在 `db::entity`，查询与统计不再从 recorder 插件借类型；
+- 分词器在 `text`，记录与 AI 资讯共用一份。
+
+插件之间只剩**服务调用**，并各自在一个入口上写明：`ambient` 用 `oai` 的对话与工具层，`song` 用 `video_parse` 取片，`console` 用 `ctl` 的配置服务。新增这类调用时先问：这是通用能力（下沉到框架）还是一项服务（保留在提供方，调用方只碰它的公开入口）。
+
 ## 图片渲染与资源限制
 
 `markdown` 插件的解析、排版、分页与代码着色在 `render::markdown`；`oai` 回复卡有独立渲染，两边不共用代码。
@@ -95,21 +110,11 @@ cargo build --release --locked
 
 `Cargo.toml` 的 `[lints]` 在默认 clippy 之外强制了一组现代写法：`let … else`、格式串内联变量、`Duration::from_mins` 一类更大的时间单位、去掉多余的限定路径与原始字符串井号。它们都能由 `cargo clippy --fix` 机械改写。
 
-插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`db`、`scheduler`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`。
+插件层不留死代码：`plugins.rs` 不再带 `allow(dead_code)`，没人用的函数、常量、字段由编译器报出来、直接删。框架层的工具箱模块（`message`、`event`、`command`、`db`、`scheduler`、`adapters/satori/api`、`render`）成套提供接口、不按调用数裁剪，各自在文件头声明了 `allow(dead_code)`；`access`、`links`、`net`、`text` 是拆出来的窄接口，只放当前用得到的判据，保持零死代码。
 
-改动框架、流水线或插件钩子之后，再跑一遍端到端冒烟（需要 `pip install aiohttp`，在隔离目录里拉起一个连假端口的实例，不碰线上数据）：
+测试只留两层，够用就好：
 
-```sh
-python3 tests/e2e.py target/release/acumen
-E2E_STARTUP=1 python3 tests/e2e.py target/release/acumen   # 全部插件启动自检
-python3 tests/e2e_agent.py target/release/acumen            # 内置 agent 房间：工具循环与回复内嵌图片（需要 Chromium）
-```
+- **单元测试**：纯函数里容易悄悄错的地方——指令与链接解析、时间与禁言统计、配置过滤、上下文压缩。改到哪跑到哪，不铺开覆盖每个分支。
+- **一条冒烟**：`python3 tests/smoke.py target/release/acumen`。在隔离目录里用控制台适配器拉起实例，走一遍控制台就绪、`/echo` 回执、`/ctl list`、配置写回、数据库建立与干净退出。不连真平台、不需要第三方库。
 
-卡片版式改动还需用真实注册表生成图片并人工检查：
-
-```sh
-HELP_CARD_DUMP=/tmp/cards cargo test help::card -- --ignored
-CTL_CARD_DUMP=/tmp/cards cargo test ctl::card -- --ignored
-```
-
-自动测试能检查图片格式、布局边界与文字溢出，不能代替视觉检查。
+一次性验证（真机取片、真模型、卡片版式、真 QQ 沙箱）不进仓库：做过就够，留在测试里只会随外部接口漂移。版式改动直接跑生产渲染入口看实际图片，不再维护专用的 fixture 测试。

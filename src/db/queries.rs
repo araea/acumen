@@ -1,5 +1,5 @@
+use crate::db::entity::{self, Entity as MessageLogs};
 use crate::db::stats;
-use crate::plugins::recorder::entity::{self, Entity as MessageLogs};
 use sea_orm::sea_query::{Alias, Expr, Func};
 use sea_orm::{
     ColumnTrait, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, FromQueryResult,

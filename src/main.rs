@@ -1,3 +1,4 @@
+mod access;
 mod adapters;
 mod clock;
 mod command;
@@ -7,14 +8,17 @@ mod event;
 #[macro_use]
 mod log;
 mod http;
+mod links;
 mod matcher;
 mod message;
+mod net;
 mod plugins;
 mod release;
 mod render;
 mod requests;
 mod scheduler;
 mod storage;
+mod text;
 
 use crate::config::AppConfig;
 use crate::event::{BotStatus, Context, EventType};

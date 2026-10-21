@@ -12,7 +12,7 @@ use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use crate::net::host_is_internal;
 use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time;
@@ -114,7 +114,7 @@ const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
 /// `v.douyin.com`，但覆盖不到 `iesdouyin.com`，同名的那条要单独列。
 ///
 /// B 站的**稿件页**（`/video/BV…`）本来也能渲染，但它现在不问这里了：链接准入先经
-/// [`crate::plugins::video_parse::is_video_link`]，那类链接直接跳过截图，改由视频解析
+/// [`crate::links::is_video_link`]，那类链接直接跳过截图，改由视频解析
 /// 插件就地取原片。
 const WALLED_DOMAINS: &[&str] = &[
     // 登录墙：没有登录态只能看到登录表单或「打开App」引导
@@ -242,7 +242,7 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
     // 视频站的链接交给 video_parse：那边就地取原片发进群。
     // 这里跳过不截——稿件页要等播放器起画面，截出来又慢又没什么有效信息。
     // 判据与那边共用一份，两处不会各截一次又取一次。
-    if crate::plugins::video_parse::is_video_link(raw) {
+    if crate::links::is_video_link(raw) {
         return Err("视频站链接由视频解析插件接".to_string());
     }
 
@@ -290,65 +290,6 @@ fn domain_matches(host: &str, rule: &str) -> bool {
 ///
 /// `web_fetch` 也用这套判定：搜索结果是不可信输入，模型可能被网页里的一句话
 /// 指使去读本机面板，两处必须用同一份规则，不能各写一套。
-pub(crate) async fn host_is_internal(host: &Host<&str>) -> bool {
-    match host {
-        Host::Ipv4(ip) => ip_is_internal(IpAddr::V4(*ip)),
-        Host::Ipv6(ip) => ip_is_internal(IpAddr::V6(*ip)),
-        Host::Domain(name) => {
-            let name = name.trim_end_matches('.').to_ascii_lowercase();
-            if name == "localhost"
-                || name.ends_with(".localhost")
-                || name.ends_with(".local")
-                || name.ends_with(".internal")
-                || name.ends_with(".lan")
-                || name.ends_with(".home.arpa")
-            {
-                return true;
-            }
-            // `ToSocketAddrs` 会阻塞，挪到阻塞线程；解析失败时放行，
-            // 让浏览器自己失败，免得一次 DNS 抖动就误伤正常链接。
-            let resolved = tokio::task::spawn_blocking(move || {
-                (name.as_str(), 0u16)
-                    .to_socket_addrs()
-                    .map(|addrs| addrs.map(|addr| addr.ip()).collect::<Vec<_>>())
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-            resolved.iter().any(|ip| ip_is_internal(*ip))
-        }
-    }
-}
-
-fn ip_is_internal(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4_is_internal(v4),
-        IpAddr::V6(v6) => v6_is_internal(v6),
-    }
-}
-
-fn v4_is_internal(ip: Ipv4Addr) -> bool {
-    let first = ip.octets()[0];
-    ip.is_loopback()          // 127.0.0.0/8
-        || ip.is_private()    // 10/8、172.16/12、192.168/16
-        || ip.is_link_local() // 169.254.0.0/16，含云元数据 169.254.169.254
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || first == 0         // 0.0.0.0/8
-        || first >= 240       // 240.0.0.0/4 保留段
-}
-
-fn v6_is_internal(ip: Ipv6Addr) -> bool {
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return v4_is_internal(v4);
-    }
-    ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || (ip.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 唯一本地
-        || (ip.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 链路本地
-}
-
 /// 缩放因子落在合理区间，非有限值回落到默认的 1.0。
 fn scale_factor(scale: f64) -> f64 {
     if scale.is_finite() {
@@ -1248,6 +1189,8 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::ip_is_internal;
+    use std::net::IpAddr;
 
     fn config() -> Config {
         Config::default()
@@ -1545,266 +1488,5 @@ mod tests {
         .unwrap();
         assert_eq!(quoted_text(&message), "看看这个 https://a.com/1");
         assert_eq!(quoted_text(&Message::new()), "");
-    }
-
-    #[test]
-    fn scale_factor_is_bounded_even_for_non_finite_values() {
-        assert_eq!(scale_factor(f64::NAN), 1.0);
-        assert_eq!(scale_factor(f64::INFINITY), 1.0);
-        assert_eq!(scale_factor(0.1), 0.5);
-        assert_eq!(scale_factor(9.0), 4.0);
-    }
-
-    /// 长页切开：每段都不超长也不太短，首尾相接、正好盖满全高。
-    #[test]
-    fn slices_cover_the_page_without_gaps_or_overlaps() {
-        for total in [
-            1, 999, 6000, 6001, 7000, 12_001, 29_999, 30_000, 45_485, 60_000,
-        ] {
-            for target in [1000, 4000, 6000, 12_000] {
-                let spans = plan_slices(total, target, &[]);
-                assert_eq!(spans.first().unwrap().0, 0);
-                assert_eq!(spans.last().unwrap().1, total);
-                for pair in spans.windows(2) {
-                    assert_eq!(pair[0].1, pair[1].0, "相邻两段要首尾相接");
-                }
-                let limit = (f64::from(target) * 1.25).ceil() as u32;
-                for (top, bottom) in &spans {
-                    assert!(bottom > top, "{total}/{target} 出现空段 {top}..{bottom}");
-                    if total > target {
-                        assert!(
-                            bottom - top <= limit,
-                            "{total}/{target} 有一段超长：{}",
-                            bottom - top
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// 不长的页面不切，也不必量缝隙。
-    #[test]
-    fn a_short_page_is_one_slice() {
-        assert_eq!(plan_slices(4800, 6000, &[]), vec![(0, 4800)]);
-        assert_eq!(plan_slices(6000, 6000, &[]), vec![(0, 6000)]);
-    }
-
-    /// 没有缝隙可用时按总高等分：7000 切成两张 3500，而不是 6000 加 1000 的尾巴。
-    #[test]
-    fn without_gaps_the_page_is_split_evenly() {
-        assert_eq!(plan_slices(7000, 6000, &[]), vec![(0, 3500), (3500, 7000)]);
-        assert_eq!(
-            plan_slices(30_000, 6000, &[]),
-            vec![
-                (0, 6000),
-                (6000, 12_000),
-                (12_000, 18_000),
-                (18_000, 24_000),
-                (24_000, 30_000)
-            ]
-        );
-    }
-
-    /// 切点落在文字之间的缝里，而不是理想位置上的某一行字中间。
-    #[test]
-    fn cuts_land_in_gaps_between_lines() {
-        // 理想切点 3500 正压在一块 3400..3600 的内容上；缝隙在 3380..3400 与 3600..3640。
-        let gaps = [(3380.0, 3400.0), (3600.0, 3640.0)];
-        let spans = plan_slices(7000, 6000, &gaps);
-        assert_eq!(spans.len(), 2);
-        let cut = spans[0].1;
-        assert!(
-            (3380..=3400).contains(&cut) || (3600..=3640).contains(&cut),
-            "切点 {cut} 不在缝里"
-        );
-        // 离理想位置近的缝里，3600 一侧更宽（40 对 20），分差抵过 100 像素的距离差？
-        // 3400 距 100、宽 20 → 80；3600 距 100、宽 40 → 60，所以选 3600 一侧。
-        assert_eq!(cut, 3600);
-    }
-
-    /// 缝隙在允许的范围之外（会切出过长或过短的段）就不能用。
-    #[test]
-    fn gaps_outside_the_allowed_window_are_ignored() {
-        // 7000 分两段，第一段只能在 [3000×0.6.., 7500] 的窗口里：1800 之前的缝隙不算。
-        let gaps = [(100.0, 140.0), (6900.0, 6950.0)];
-        let spans = plan_slices(7000, 6000, &gaps);
-        assert_eq!(spans, vec![(0, 3500), (3500, 7000)]);
-    }
-
-    /// 缝隙越宽越好：同样的距离下，段落间距比行距更体面。
-    #[test]
-    fn a_wider_gap_beats_a_narrower_one_at_equal_distance() {
-        let gaps = [(3490.0, 3496.0), (3504.0, 3534.0)];
-        assert_eq!(best_cut(&gaps, 2000.0, 5000.0, 3500.0), 3504.0);
-    }
-
-    #[test]
-    fn base64_length_is_measured_without_decoding() {
-        assert_eq!(decoded_len(""), 0);
-        assert_eq!(decoded_len("AAAA"), 3);
-        assert_eq!(decoded_len("AAA="), 2);
-        assert_eq!(decoded_len("AA=="), 1);
-        assert_eq!(decoded_len("AAAAAAAA"), 6);
-    }
-
-    /// 超预算后画质一档一档往下降，降到 35 为止；PNG 先落回 JPEG。
-    #[test]
-    fn quality_steps_down_to_a_floor() {
-        assert_eq!(next_quality(true, 100), Some(85));
-        let mut ladder = vec![80];
-        while let Some(next) = next_quality(false, *ladder.last().unwrap()) {
-            ladder.push(next);
-        }
-        assert_eq!(ladder, vec![80, 65, 50, 35]);
-        assert_eq!(next_quality(false, 20), None);
-    }
-
-    fn shot(host: &str, images: usize, truncated: bool) -> Shot {
-        Shot {
-            host: host.to_string(),
-            captured: Captured {
-                images: (0..images).map(|i| format!("{host}-{i}")).collect(),
-                height: 30_000,
-                truncated,
-            },
-        }
-    }
-
-    /// 张数不多：回在原消息下面，图按顺序平铺，不折叠。
-    #[test]
-    fn a_few_images_are_sent_plainly() {
-        let delivery = plan_delivery(&[shot("a.com", 1, false), shot("b.com", 2, false)], 3);
-        assert_eq!(
-            delivery,
-            Delivery::Plain {
-                images: vec!["a.com-0".into(), "b.com-0".into(), "b.com-1".into()],
-                note: None
-            }
-        );
-    }
-
-    /// 超过阈值折成合并转发：每段一个节点，多段的链接带 `n/m` 序号。
-    #[test]
-    fn many_images_fold_into_a_forward() {
-        let Delivery::Forward(nodes) =
-            plan_delivery(&[shot("a.com", 1, false), shot("b.com", 4, true)], 3)
-        else {
-            panic!("5 张图应当折叠");
-        };
-        let names: Vec<_> = nodes.iter().map(|node| node.name.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "a.com",
-                "b.com · 1/4",
-                "b.com · 2/4",
-                "b.com · 3/4",
-                "b.com · 4/4"
-            ]
-        );
-        // 截断的说明只挂在那条链接的最后一段，并点明是哪个站。
-        let notes: Vec<_> = nodes.iter().map(|node| node.note.clone()).collect();
-        assert_eq!(notes[..4], [None, None, None, None]);
-        assert_eq!(
-            notes[4].as_deref(),
-            Some("b.com 页面很长，只截了上面 30000 像素")
-        );
-    }
-
-    /// 只有一条链接时说明不必点名；阈值为 0 也按 1 处理，不会一张图都发不出去。
-    #[test]
-    fn truncation_is_mentioned_once_and_zero_threshold_is_safe() {
-        let delivery = plan_delivery(&[shot("a.com", 2, true)], 3);
-        assert_eq!(
-            delivery,
-            Delivery::Plain {
-                images: vec!["a.com-0".into(), "a.com-1".into()],
-                note: Some("页面很长，只截了上面 30000 像素".into())
-            }
-        );
-        assert!(matches!(
-            plan_delivery(&[shot("a.com", 1, false)], 0),
-            Delivery::Plain { .. }
-        ));
-        assert!(matches!(
-            plan_delivery(&[shot("a.com", 2, false)], 0),
-            Delivery::Forward(_)
-        ));
-    }
-
-    /// 平铺消息：先引用，再按顺序放图，说明放最后。
-    #[test]
-    fn the_plain_message_quotes_then_shows_images_then_the_note() {
-        let msg = plain_message("42", &["x".into(), "y".into()], Some("注"));
-        let kinds: Vec<_> = msg.0.iter().map(|segment| segment.type_.as_str()).collect();
-        assert_eq!(kinds, ["reply", "image", "image", "text"]);
-    }
-
-    /// QQ 实测：1280 宽、高度 2.8 万以内的图发得出去，3.2 万就不行。默认值必须离这条线足够远。
-    #[test]
-    fn defaults_keep_every_image_far_below_the_qq_height_limit() {
-        let config = Config::default();
-        let hard_max = f64::from(config.slice_height) * 1.25;
-        assert!(
-            hard_max <= 10_000.0,
-            "单张图最高 {hard_max} 像素，离 QQ 的上限（约 3 万）不够远"
-        );
-        assert!(
-            config.max_height >= config.slice_height,
-            "总高上限不该比单张还矮"
-        );
-    }
-
-    /// 合并转发整条不截：卡片段与解码后的内嵌记录都算，普通文本不受影响。
-    #[test]
-    fn forward_cards_are_skipped_wholesale() {
-        let event = |message: serde_json::Value| {
-            simd_json::serde::to_owned_value(serde_json::json!({
-                "post_type": "message",
-                "message": message,
-            }))
-            .unwrap()
-        };
-        // 卡片本体：`<message forward id="resId"/>`。
-        let card = event(serde_json::json!([{"type": "forward", "data": {"id": "res-1"}}]));
-        assert!(is_forward_card(&card));
-        // satori-wx 解码后的聊天记录：一行行 node。
-        let nodes = event(serde_json::json!([
-            {"type": "node", "data": {"content": [{"type": "text", "data": {"text": "https://a.com/1"}}]}}
-        ]));
-        assert!(is_forward_card(&nodes));
-        // 普通消息：链接照截。
-        let text = event(serde_json::json!([
-            {"type": "text", "data": {"text": "看看这个 https://a.com/1"}},
-            {"type": "quote", "data": {"id": "1"}},
-        ]));
-        assert!(!is_forward_card(&text));
-        // 引用段不是转发：引用里的原文不算卡片。
-        assert!(!is_forward_card(&event(serde_json::json!([]))));
-    }
-
-    /// 一条消息里的多条链接都要按顺序收下来；只有 `text` 段算正文，
-    /// 图片段里的地址（封面、头像）不算。
-    #[test]
-    fn every_body_link_is_collected_in_order() {
-        let event = simd_json::serde::to_owned_value(serde_json::json!({
-            "post_type": "message",
-            "message": [
-                {"type": "text", "data": {"text": "前言\nA：https://a.com/1\nB：https://b.com/2\nC：https://c.com/3"}},
-                {"type": "image", "data": {"url": "https://cover.example.com/x.png"}},
-                {"type": "text", "data": {"text": "收尾 https://a.com/1 与 https://e.com/4"}}
-            ]
-        }))
-        .unwrap();
-        assert_eq!(
-            links_in_segments(&event),
-            vec![
-                "https://a.com/1",
-                "https://b.com/2",
-                "https://c.com/3",
-                "https://e.com/4",
-            ]
-        );
     }
 }

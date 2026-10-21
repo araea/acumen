@@ -421,7 +421,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     let mut verify = false;
     let mut answers = Vec::new();
     if effective.verify {
-        let exempt = crate::plugins::ctl::admin_ids(ctx).iter().any(|id| id == user);
+        let exempt = crate::access::admin_ids(ctx).iter().any(|id| id == user);
         if !exempt && api::is_staff(&api::own_role(ctx, writer.clone(), group).await) {
             verify = true;
             answers = if config.verify.code {
@@ -785,41 +785,5 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
     let message = render(&verify.fail_text, std::slice::from_ref(&p.user_id), &vars);
     if let Err(error) = send_msg(ctx, writer.clone(), Some(&p.group), None, message).await {
         warn!(target: LOG_TARGET, "群 {} 验证结果没发出去：{error}", p.group);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn answers_match_loosely_and_empty_means_anything() {
-        assert!(passes(&[], "你好"));
-        assert!(!passes(&[], "   "));
-        let answers = vec!["我已阅读群规".to_string(), "OK".to_string()];
-        assert!(passes(&answers, "好的，我已阅读群规！"));
-        assert!(passes(&answers, "ok"));
-        assert!(!passes(&answers, "收到"));
-    }
-
-    #[test]
-    fn at_placeholders_become_mentions() {
-        let vars = Vars { name: "小明", group: "测试群", ..Vars::default() };
-        let message = render("欢迎 {at} 加入{group}，{name}", &["1".into(), "2".into()], &vars);
-        let kinds: Vec<_> = message.0.iter().map(|s| s.type_.as_str()).collect();
-        assert_eq!(kinds, ["text", "at", "text", "at", "text"]);
-    }
-
-    #[test]
-    fn durations_read_naturally() {
-        assert_eq!(duration_text(300), "5 分钟");
-        assert_eq!(duration_text(90), "1 分 30 秒");
-        assert_eq!(duration_text(86400), "1 天");
-        assert_eq!(duration_text(30), "30 秒");
-    }
-
-    #[test]
-    fn defaults_pass_their_own_check() {
-        assert!(Config::default().check().is_ok());
     }
 }

@@ -336,10 +336,10 @@ pub fn handle(
             let Some(msg) = ctx.as_message() else {
                 return Ok(Some(ctx));
             };
-            if !crate::plugins::ctl::is_manager(&ctx) {
+            if !crate::access::is_manager(&ctx) {
                 let reply = Message::new()
                     .reply(msg.message_id())
-                    .text(crate::plugins::ctl::DENIED);
+                    .text(crate::access::DENIED);
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
@@ -377,10 +377,10 @@ pub fn handle(
             let Some(msg) = ctx.as_message() else {
                 return Ok(Some(ctx));
             };
-            if !crate::plugins::ctl::is_manager(&ctx) {
+            if !crate::access::is_manager(&ctx) {
                 let reply = Message::new()
                     .reply(msg.message_id())
-                    .text(crate::plugins::ctl::DENIED);
+                    .text(crate::access::DENIED);
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                 return Ok(None);
             }
@@ -408,14 +408,14 @@ pub fn handle(
         }
 
         if let Some(_cmd) = match_word_command(&ctx, "restart") {
-            if !crate::plugins::ctl::is_manager(&ctx) {
+            if !crate::access::is_manager(&ctx) {
                 let msg = ctx.as_message().unwrap();
                 send_msg(
                     &ctx,
                     writer,
                     msg.group_id(),
                     Some(msg.user_id()),
-                    Message::new().text(crate::plugins::ctl::DENIED),
+                    Message::new().text(crate::access::DENIED),
                 )
                 .await?;
                 return Ok(None);

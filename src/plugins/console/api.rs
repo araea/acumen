@@ -84,7 +84,7 @@ async fn overview(State(console): State<Arc<Console>>) -> Response {
         let mut on = 0;
         let mut pending = 0;
         for plugin in get_plugins() {
-            let running = crate::plugins::ctl::enabled(&config, plugin.name);
+            let running = crate::plugins::enabled(&config, plugin.name);
             if running {
                 on += 1;
                 if pending_startup(plugin.name) {
@@ -152,7 +152,7 @@ async fn plugins(State(console): State<Arc<Console>>) -> Response {
     let list: Vec<Value> = get_plugins()
         .iter()
         .map(|plugin| {
-            let on = crate::plugins::ctl::enabled(&config, plugin.name);
+            let on = crate::plugins::enabled(&config, plugin.name);
             json!({
                 "name": plugin.name,
                 "display": plugin.display_name,
@@ -182,7 +182,7 @@ async fn plugin_detail(
     let defaults = (plugin.default_config)();
     let mut diff = Vec::new();
     crate::plugins::ctl::differences(&defaults, current, "", &mut diff);
-    let on = crate::plugins::ctl::enabled(&config, plugin.name);
+    let on = crate::plugins::enabled(&config, plugin.name);
     let commands: Vec<Value> = plugin
         .commands
         .iter()
@@ -1167,25 +1167,6 @@ fn example_line(line: &str) -> bool {
         || line
             .split_once(" = ")
             .is_some_and(|(key, _)| !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-}
-
-#[test]
-#[ignore = "exports isolated browser fixtures"]
-fn dump_console_fixture() {
-    let plugins: Vec<_> = get_plugins().iter().map(|plugin| json!({
-        "name": plugin.name, "display": plugin.display_name, "section": plugin.section,
-        "summary": plugin.summary, "on": true, "pending": false,
-        "effect": crate::plugins::ctl::effect(plugin.name),
-        "commands": plugin.commands.iter().map(|cmd| json!({"cmd": cmd.cmd, "note":cmd.note})).collect::<Vec<_>>(),
-        "config": crate::plugins::ctl::redacted(&(plugin.default_config)()),
-        "field_help": field_help(plugin.name), "field_options": field_options(plugin.name, &(plugin.default_config)()),
-        "maps": maps(plugin.name, &(plugin.default_config)()), "defaults": crate::plugins::ctl::redacted(&(plugin.default_config)()), "diff": []
-    })).collect();
-    std::fs::write(
-        std::env::var("ACUMEN_CONSOLE_FIXTURE").expect("fixture path"),
-        serde_json::to_vec_pretty(&plugins).unwrap(),
-    )
-    .unwrap();
 }
 
 fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<String, Vec<String>> {

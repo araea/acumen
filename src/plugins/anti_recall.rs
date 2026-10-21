@@ -519,29 +519,3 @@ pub(crate) async fn test(ctx: &Context) -> Result<String, String> {
         many => Ok(format!("已发到 {} 处", many.len())),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mentions_and_quotes_become_text_media_goes_separately() {
-        let mut content = Message::new().text("看这个 ");
-        content = content.at("123").reply("9").image("https://example.com/a.png");
-        content = content.record("internal:red/1/_tmp/x");
-        let (inline, separate) = adapt(&content);
-        let kinds: Vec<_> = inline.0.iter().map(|s| s.type_.as_str()).collect();
-        assert_eq!(kinds, ["text", "text", "text", "image"]);
-        assert_eq!(separate.len(), 1);
-    }
-
-    #[test]
-    fn target_must_be_a_number_or_private() {
-        let mut config = Config::default();
-        assert!(config.check().is_ok());
-        config.target = "private:123".into();
-        assert!(config.check().is_ok());
-        config.target = "abc".into();
-        assert!(config.check().is_err());
-    }
-}

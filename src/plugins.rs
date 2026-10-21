@@ -272,10 +272,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
 
     let enabled_count = {
         let guard = ctx.config.read().unwrap();
-        plugins
-            .iter()
-            .filter(|p| enabled_flag(&guard, p.name))
-            .count()
+        plugins.iter().filter(|p| enabled(&guard, p.name)).count()
     };
 
     info!(
@@ -284,16 +281,11 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
         plugins.len()
     );
 
-    // 一次性快照所有插件的 enabled 标记，避免每个插件单独锁
-    let _ = STARTUP_ENABLED.set(Mutex::new({
-        let cfg = ctx.config.read().unwrap();
-        plugins
-            .iter()
-            .filter(|p| enabled_flag(&cfg, p.name))
-            .map(|p| p.name.to_string())
-            .collect()
-    }));
-    let enabled_set = collect_enabled_set(&ctx);
+    // 已启动集合从空开始，初始化成功才记入。初始化失败的插件会停在「待启动」，
+    // 消息指令先不接（`pending_startup`），由 ctl 下次打开或重启时重试。
+    if STARTUP_ENABLED.set(Mutex::new(HashSet::new())).is_err() {
+        error!(target: LOG_TARGET, "插件初始化只能执行一次");
+    }
 
     let system_bot: Arc<BotStatus> = Arc::new(BotStatus {
         adapter: "system".to_string(),
@@ -302,7 +294,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
     });
 
     for plugin in plugins {
-        if !enabled_set[plugin.name] {
+        if !enabled(&ctx.config.read().unwrap(), plugin.name) {
             continue;
         }
 
@@ -321,10 +313,15 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
             // 执行初始化
             match init_fn(init_ctx).await {
                 Ok(_) => {
+                    started().lock().unwrap().insert(plugin.name.to_string());
                     info!(target: LOG_TARGET, "✅ [{}] 就绪 (Init Success)", plugin.name);
                 }
                 Err(e) => {
-                    error!(target: LOG_TARGET, "❌ [{}] 初始化失败: {}", plugin.name, e);
+                    error!(
+                        target: LOG_TARGET,
+                        "❌ [{}] 初始化失败，消息指令暂不接入: {}",
+                        plugin.name, e
+                    );
                 }
             }
         } else {
@@ -335,7 +332,9 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
 }
 
 /// 配置里该插件的 `enabled` 开关；没有这张表、或没写开关都算关。
-fn enabled_flag(config: &crate::config::AppConfig, name: &str) -> bool {
+///
+/// 全项目只此一处口径：流水线、生命周期钩子、ctl 与 Web 控制台都读它。
+pub fn enabled(config: &crate::config::AppConfig, name: &str) -> bool {
     config
         .plugins
         .get(name)
@@ -344,50 +343,32 @@ fn enabled_flag(config: &crate::config::AppConfig, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 插件此刻是否参与处理：开关打开，且（带初始化钩子的）初始化已经跑完。
-fn is_active(ctx: &Context, name: &str) -> bool {
-    enabled_flag(&ctx.config.read().unwrap(), name) && !pending_startup(name)
-}
+/// 与注册表同序的开关快照：一次读锁 + 一次启动集合锁，之后按序号 O(1) 判断。
+///
+/// 流水线与生命周期钩子在一个事件里反复问「这个插件参不参与」；逐个按名字查配置
+/// 会在每个插件上各加一次锁。快照把这件事降到一次，也顺手统一了各处的判定。
+struct Activation(Vec<bool>);
 
-/// 在单次读锁下采集所有插件的 enabled 标记，避免每事件多次加锁
-fn collect_enabled_set(ctx: &Context) -> EnabledSet {
-    let plugins = get_plugins();
-    let guard = ctx.config.read().unwrap();
-    let mut set = EnabledSet::with_capacity(plugins.len());
-    for p in plugins {
-        set.insert(
-            p.name,
-            enabled_flag(&guard, p.name) && !pending_startup(p.name),
-        );
+impl Activation {
+    fn capture(ctx: &Context) -> Self {
+        let config = ctx.config.read().unwrap();
+        let started = STARTUP_ENABLED.get().map(|set| set.lock().unwrap());
+        Self(
+            get_plugins()
+                .iter()
+                .map(|plugin| {
+                    enabled(&config, plugin.name)
+                        && !(plugin.on_init.is_some()
+                            && started
+                                .as_ref()
+                                .is_some_and(|set| !set.contains(plugin.name)))
+                })
+                .collect(),
+        )
     }
-    set
-}
 
-/// 轻量级 enabled 标记表：保持插件名指针稳定，按 &str 索引
-struct EnabledSet {
-    entries: Vec<(&'static str, bool)>,
-}
-
-impl EnabledSet {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            entries: Vec::with_capacity(cap),
-        }
-    }
-    fn insert(&mut self, name: &'static str, enabled: bool) {
-        self.entries.push((name, enabled));
-    }
-}
-
-impl std::ops::Index<&str> for EnabledSet {
-    type Output = bool;
-    fn index(&self, name: &str) -> &bool {
-        for (n, v) in &self.entries {
-            if *n == name {
-                return v;
-            }
-        }
-        &false
+    fn on(&self, index: usize) -> bool {
+        self.0.get(index).copied().unwrap_or(false)
     }
 }
 
@@ -413,12 +394,10 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
     }
 
     let plugins = get_plugins();
+    let active = Activation::capture(&ctx);
 
-    // 一次性快照启用集合
-    let enabled_set = collect_enabled_set(&ctx);
-
-    for plugin in plugins {
-        if !enabled_set[plugin.name] {
+    for (index, plugin) in plugins.iter().enumerate() {
+        if !active.on(index) {
             continue;
         }
 
@@ -438,9 +417,12 @@ pub async fn do_connected(ctx: Context, writer: LockedWriter) -> Result<(), Plug
 /// 返回的 future 里是各插件要在流水线之前做的事，按同一顺序执行，出错只记日志。
 pub fn receive(ctx: &mut Context, writer: &LockedWriter) -> BoxFuture<'static, ()> {
     let mut tasks = Vec::new();
-    for plugin in get_plugins() {
+    let active = Activation::capture(ctx);
+    for (index, plugin) in get_plugins().iter().enumerate() {
+        if !active.on(index) {
+            continue;
+        }
         if let Some(hook) = plugin.on_receive
-            && is_active(ctx, plugin.name)
             && let Some(task) = hook(ctx, writer)
         {
             tasks.push((plugin.name, task));
@@ -457,9 +439,10 @@ pub fn receive(ctx: &mut Context, writer: &LockedWriter) -> BoxFuture<'static, (
 
 /// 这条消息被交互等待消费了、不会进入流水线：通知各启用插件的 `on_consumed`。
 pub fn consumed(ctx: &Context, writer: &LockedWriter) {
-    for plugin in get_plugins() {
-        if let Some(hook) = plugin.on_consumed
-            && is_active(ctx, plugin.name)
+    let active = Activation::capture(ctx);
+    for (index, plugin) in get_plugins().iter().enumerate() {
+        if active.on(index)
+            && let Some(hook) = plugin.on_consumed
         {
             hook(ctx, writer);
         }
@@ -468,9 +451,10 @@ pub fn consumed(ctx: &Context, writer: &LockedWriter) {
 
 /// 一次 `message.create` 发出之后：按注册顺序调用各启用插件的 `on_sent`。
 pub async fn delivered(ctx: &Context, writer: &LockedWriter, delivery: &Receipt<'_>) {
-    for plugin in get_plugins() {
-        if let Some(hook) = plugin.on_sent
-            && is_active(ctx, plugin.name)
+    let active = Activation::capture(ctx);
+    for (index, plugin) in get_plugins().iter().enumerate() {
+        if active.on(index)
+            && let Some(hook) = plugin.on_sent
         {
             hook(ctx, writer, delivery).await;
         }
@@ -485,11 +469,10 @@ pub async fn run(mut ctx: Context, writer: LockedWriter) -> Result<(), PluginErr
     // 加群申请由框架记账，任何插件都能查；放在流水线之前，插件消费与否都不影响。
     crate::requests::observe(&ctx);
 
-    // 一次性快照所有插件的 enabled 标记，避免每个插件单独锁
-    let enabled_set = collect_enabled_set(&ctx);
+    let active = Activation::capture(&ctx);
 
-    for plugin in plugins {
-        if !enabled_set[plugin.name] {
+    for (index, plugin) in plugins.iter().enumerate() {
+        if !active.on(index) {
             continue;
         }
 

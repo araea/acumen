@@ -296,7 +296,7 @@ fn summary(generated: &Generated, title: &str, send: SendMode, show_send: bool) 
 /// 两个版本的文件名带上序号——Suno 给同一单两首曲子的是同一个标题，照原样发出去
 /// 群里会出现两个同名文件，谁是谁分不出来。
 fn media_messages(clips: &[Clip], title: &str, mode: SendMode) -> Vec<MediaMessage> {
-    let base = super::utils::safe_file_name(title);
+    let base = crate::storage::media_file_name(title);
     let mut messages = Vec::new();
     for (index, clip) in clips.iter().enumerate() {
         let audio = clip.audio_url.trim();

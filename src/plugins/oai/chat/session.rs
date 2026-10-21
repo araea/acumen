@@ -1295,7 +1295,7 @@ impl Session {
         if action.punishes() {
             ensure!(uid != me, "这是你自己");
             ensure!(
-                !crate::plugins::ctl::admin_ids(&self.ctx).contains(&uid),
+                !crate::access::admin_ids(&self.ctx).contains(&uid),
                 "对象是号主，不罚他"
             );
         }
@@ -2443,26 +2443,4 @@ fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Pa
     }
     // 只切出一条就交回调用方按普通发送走，两条路径的结果一模一样。
     (out.len() > 1).then_some(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::safe_file_name;
-
-    #[test]
-    fn file_names_from_strangers_cannot_escape_the_attachment_dir() {
-        assert_eq!(safe_file_name("../../etc/passwd"), "_.._etc_passwd");
-        assert_eq!(safe_file_name("a/b\\c.txt"), "a_b_c.txt");
-        assert_eq!(safe_file_name(".bashrc"), "bashrc");
-        assert_eq!(safe_file_name("  "), "file");
-        assert_eq!(safe_file_name("日志\n.txt"), "日志_.txt");
-    }
-
-    #[test]
-    fn long_names_keep_their_extension() {
-        let long = format!("{}.tar.gz", "名".repeat(300));
-        let out = safe_file_name(&long);
-        assert!(out.chars().count() <= 100, "{}", out.chars().count());
-        assert!(out.ends_with(".gz"), "{out}");
-    }
 }

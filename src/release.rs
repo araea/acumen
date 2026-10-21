@@ -319,37 +319,6 @@ pub async fn command(arg: &str) -> Option<i32> {
 mod tests {
     use super::*;
 
-    /// 真去 GitHub 拉一次最新发布，解压校验后写到临时目录（不碰自己的可执行文件）：
-    /// `cargo test --release live_install -- --ignored`
-    #[tokio::test]
-    #[ignore = "需要网络与已发布的版本"]
-    async fn live_install() {
-        let manifest: serde_json::Value = client()
-            .unwrap()
-            .get(MANIFEST)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let release = Release {
-            version: manifest["version"].as_str().unwrap().into(),
-            url: manifest["url"].as_str().unwrap().into(),
-            sha256: manifest["sha256"].as_str().unwrap().into(),
-            notes: String::new(),
-        };
-        let dir = std::env::temp_dir().join(format!("acumen-live-install-{}", std::process::id()));
-        let target = dir.join("acumen");
-        install_to(&release, target.clone()).await.unwrap();
-        let out = std::process::Command::new(&target)
-            .arg("--version")
-            .output()
-            .unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), release.version);
-        std::fs::remove_dir_all(dir).unwrap();
-    }
-
     #[test]
     fn compares_versions_numerically() {
         assert!(newer("1.10.0", "1.9.3"));

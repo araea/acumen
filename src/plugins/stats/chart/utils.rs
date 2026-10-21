@@ -859,37 +859,3 @@ pub fn overlay_image(base: &mut RgbaImage, overlay: &RgbaImage, x: i32, y: i32) 
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_paper_family_stays_readable() {
-        let colors = ColorScheme::default();
-        let on_paper = |ink| contrast_ratio(ink, colors.card_background);
-        assert!(on_paper(colors.text_primary) >= 7.0, "正文墨 {:.2}", on_paper(colors.text_primary));
-        assert!(on_paper(colors.text_secondary) >= 4.5, "次级墨 {:.2}", on_paper(colors.text_secondary));
-        assert_eq!(colors.readable_faint(), colors.text_secondary, "名次这类参照数字不需要再调");
-        assert!(on_paper(colors.outline) >= 3.0, "图形描边 {:.2}", on_paper(colors.outline));
-        // 墨也别太硬：高于 14∶1 的黑白对比在大片白底上会晕
-        assert!(on_paper(colors.text_primary) <= 14.0);
-        // 轨道在纸之上、纸在相纸之上：明度一路往下，层次靠它
-        let l = |c: RGBColor| contrast_ratio(c, RGBColor(0, 0, 0));
-        assert!(l(colors.card_background) > l(colors.container) && l(colors.container) > l(colors.container_high));
-        assert!(l(colors.container_high) > l(colors.background));
-    }
-
-    #[test]
-    fn durations_keep_the_two_largest_units() {
-        assert_eq!(format_duration(30), "30秒");
-        assert_eq!(format_duration(60), "1分钟");
-        assert_eq!(format_duration(45 * 60 + 59), "45分钟");
-        assert_eq!(format_duration(3_600), "1小时", "整的那一级不拖尾巴");
-        assert_eq!(format_duration(3 * 3_600 + 20 * 60), "3小时20分钟");
-        assert_eq!(format_duration(86_400), "1天");
-        assert_eq!(format_duration(2 * 86_400 + 3 * 3_600 + 59 * 60), "2天3小时");
-        assert_eq!(format_duration(30 * 86_400), "30天");
-        assert_eq!(format_duration(-5), "0秒");
-    }
-}

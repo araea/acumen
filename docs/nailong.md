@@ -171,9 +171,4 @@ python3 scripts/nailong-head.py vision_model.onnx 数据目录 --eval
 
 ### 复核
 
-```sh
-NAILONG_MODEL=data/nailong/mobileclip_s0_vision.onnx NAILONG_IMAGES=图片目录 \
-  cargo test --release nailong_eval -- --ignored --nocapture
-```
-
-用插件真实的解码、抽帧、预处理与推理逐张打印两类分数与耗时。
+一次性核对做过即止，不保留专用测试：需要重训时直接跑训练脚本的留出集打分。

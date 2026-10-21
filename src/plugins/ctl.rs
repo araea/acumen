@@ -1,10 +1,16 @@
 //! Unified plugin control. Registry-backed, typed, persisted before publication.
+use crate::access::{DENIED, is_manager};
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::{extract_text_arg, get_prefixes, match_word_command};
 use crate::config::AppConfig;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::{Plugin, PluginConfig, PluginError, get_config_or_default, get_plugins, needs_startup, pending_startup};
+use crate::plugins::{
+    Plugin, PluginConfig, PluginError, get_config_or_default, get_plugins, needs_startup,
+    pending_startup,
+};
+
+pub(crate) use crate::plugins::enabled;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use toml::Value;
@@ -47,44 +53,6 @@ impl PluginConfig for Config {
     const MISMATCH: &'static str = "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、guest_control、image_enabled 必须是布尔值，image_scale 必须是数字";
 }
 
-/// 能不能管：本机控制台、号主（登录账号在 QQ 客户端里亲手发的消息，不必写进 `admins`），
-/// 以及 `ctl.admins` 里的人。判据与 [`is_owner`] 是同一条——机器人自己发出去又回声进来的
-/// 那一份不算，哪怕 `admins` 里恰好写着登录号。
-pub fn is_manager(ctx: &Context) -> bool {
-    if ctx.bot.adapter == "console" && ctx.bot.platform == "console" {
-        return true;
-    }
-    ctx.as_message()
-        .is_some_and(|msg| is_owner(ctx, msg.user_id(), msg.is_manual_self()))
-}
-
-/// `[ctl].admins`：号主（以及他信任的其他全局管理员）。
-pub(crate) fn admin_ids(ctx: &Context) -> Vec<String> {
-    let cfg = ctx.config.read().unwrap();
-    cfg.plugins
-        .get("ctl")
-        .and_then(|v| v.get("admins"))
-        .and_then(Value::as_array)
-        .map(|ids| ids.iter().filter_map(|id| id.as_str().map(str::to_string)).collect())
-        .unwrap_or_default()
-}
-
-/// 这个用户是不是号主：`ctl.admins` 里的人，或账号自己**亲手**打的字（`manual`）。
-///
-/// 号主与机器人共用同一个 QQ 号，机器人发出去的话也会作为「自己发的消息」回声进来——
-/// 那一份不是号主说的，而是任何能让机器人开口的人（`echo` 之类）借机器人的嘴说的，
-/// 所以账号自己只有在 `manual_self` 标着「亲手打的」时才算号主；管理员名单里恰好写着
-/// 登录号（线上就是这样）也一样。
-pub(crate) fn is_owner(ctx: &Context, user_id: &str, manual: bool) -> bool {
-    if user_id.is_empty() {
-        return false;
-    }
-    if ctx.bot.self_id() == user_id {
-        return manual;
-    }
-    admin_ids(ctx).iter().any(|id| id == user_id)
-}
-
 /// 把上下文换成维护者身份：本机控制台一向等同维护者，智能体的 `acumen_plugins` 工具走同一条
 /// 身份，免得同一份命令在两处得到两种结果。谁能让智能体动手由工具自己把关（见
 /// [`agent_may_change`]）；ctl 自己的保命规则（不能关掉 ctl、不能锁死管理入口）照旧生效。
@@ -104,20 +72,11 @@ pub(crate) fn agent_may_change(ctx: &Context, owner: bool) -> bool {
     config.agent_control && (owner || config.guest_control)
 }
 
-pub const DENIED: &str = "此操作仅限号主（登录账号本人在 QQ 里亲手发）与 ctl.admins 中的全局管理员；其他人要由号主在控制台或 /ctl 里加进 admins";
-
 pub(crate) fn resolve(name: &str) -> Result<&'static Plugin, String> {
     get_plugins()
         .iter()
         .find(|p| p.name.eq_ignore_ascii_case(name) || p.display_name == name)
         .ok_or_else(|| format!("未找到插件「{name}」，请用 ctl list 查看名称"))
-}
-pub(crate) fn enabled(cfg: &AppConfig, name: &str) -> bool {
-    cfg.plugins
-        .get(name)
-        .and_then(|v| v.get("enabled"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
 }
 pub(crate) fn at<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     if path.is_empty() {

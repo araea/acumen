@@ -25,8 +25,8 @@ use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::message_links;
 use crate::event::Context;
 use crate::message::Message;
-use crate::plugins::oai::utils::safe_file_name;
-use crate::plugins::oai::video::SendMode;
+use crate::storage::media_file_name;
+use crate::message::SendMode;
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default, get_data_dir};
 use anyhow::{Result, anyhow};
 use futures_util::StreamExt;
@@ -99,16 +99,7 @@ impl PluginConfig for Config {
 ///
 /// `webshot` 也用这个判据：两边必须认同一份名单，否则同一条链接会被截一次图、
 /// 又取一遍片。
-pub(crate) fn is_video_link(raw: &str) -> bool {
-    let Ok(url) = Url::parse(raw) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    // 短链只有跟过去才知道落到哪个页面；分享出来基本都是稿件，先认下。
-    bilibili::is_short_host(host) || bilibili::reference(&url).is_some()
-}
+use crate::links::is_video_link;
 
 /// 短链先跟着跳一次拿到真正的地址，长链原样返回。
 async fn resolve_link(raw: &str) -> Result<Url> {
@@ -320,7 +311,7 @@ impl Scratch {
         Self {
             path: dir.join(format!(
                 "{}-{:032x}.part",
-                safe_file_name(bvid),
+                media_file_name(bvid),
                 rand::random::<u128>()
             )),
         }
@@ -399,7 +390,7 @@ async fn send(
     group_id: Option<&str>,
     user_id: &str,
 ) -> Result<()> {
-    let name = format!("{}.mp4", safe_file_name(&video.title));
+    let name = format!("{}.mp4", media_file_name(&video.title));
     let bytes = tokio::fs::read(path).await?;
     let uploaded = writer
         .upload(ctx, bytes, &name, "video/mp4")
