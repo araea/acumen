@@ -34,7 +34,8 @@
 //!   3. **单次条数**：一次最多 `realtime_max_items` 条，多出来的留到下一轮；
 //!   4. **来源闸门**：默认只读精选池；`/ai实时模式 全部` 才会启用全量池；
 //!   5. **容量护栏**：每个目标每小时最多 `realtime_max_per_hour` 次；默认值 60
-//!      在正常数据量下等同不限制。静默时段默认关闭，可按目标主动设置。
+//!      在正常数据量下等同不限制。静默时段默认关闭，可按目标主动设置；静默期内
+//!      既不抓取也不投递，结束后也不补发夜里攒下的资讯（见 `quiet_end_floor`）。
 //!   6. **持久待发队列**：超过单次条数、撞上频次上限或发送失败的内容先落盘；
 //!      后续即使接口一直返回 304 或进程重启，也会继续按节奏投递，过期内容自动淘汰。
 //!   7. **失败退避**：投递失败的目标按 2/4/8/16 分钟递增跳过，封顶 16 分钟，成功即归零。
@@ -43,7 +44,9 @@
 //!
 //! 实时与定时各自去重：实时线保证每个事件及时送达，定时线仍可把其中的
 //! 精选内容整理成回顾；同一条内容、同一件事都不会在同一条推送线上重复出现。
-//! 静默时段积压下来的资讯会保留在实时待发队列，恢复后继续投递。
+//! 静默时段是一道彻底的静默：消息不发，队列里夜里攒下的条目也会在静默结束
+//! 后的第一轮按结束时刻淘汰，不会在早上变成一串迟到的「快报」。真正值得回顾的
+//! 内容仍由日报与精选速递覆盖。
 //! 分类和静默时段可按目标覆盖，全局配置仍作为没有覆盖时的默认值。
 
 use super::api::{self, Item};
@@ -52,7 +55,7 @@ use super::state;
 use super::{AiNewsConfig, LOG_TARGET, PushTarget, load_config};
 use crate::adapters::satori::LockedWriter;
 use crate::event::Context;
-use chrono::{NaiveTime, Utc};
+use chrono::{DateTime, FixedOffset, NaiveTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -156,18 +159,22 @@ async fn tick(ctx: Context, writer: LockedWriter) {
 
 /// 抓一次配置的数据源，把够新的条目发给还没看过它们的目标
 async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
-    let clock_now = Utc::now().with_timezone(&crate::clock::beijing()).time();
-    let targets: Vec<PushTarget> = cfg
-        .targets()
-        .into_iter()
-        .filter(|target| {
-            if cfg.target_realtime_muted(target) {
-                return false;
-            }
-            let (start, end) = cfg.quiet_for_target(target);
-            !in_quiet_hours(clock_now, start, end)
-        })
-        .collect();
+    let now_bj = Utc::now().with_timezone(&crate::clock::beijing());
+    let clock_now = now_bj.time();
+    // 刚结束的那段静默，结束时刻就是本轮的下限：夜里攒下的资讯不补发。
+    let mut floors: HashMap<PushTarget, i64> = HashMap::new();
+    let mut targets: Vec<PushTarget> = Vec::new();
+    for target in cfg.targets() {
+        if cfg.target_realtime_muted(&target) {
+            continue;
+        }
+        let (start, end) = cfg.quiet_for_target(&target);
+        if in_quiet_hours(clock_now, start, end) {
+            continue;
+        }
+        floors.insert(target.clone(), quiet_end_floor(now_bj, start, end).unwrap_or(0));
+        targets.push(target);
+    }
     if targets.is_empty() {
         return;
     }
@@ -237,10 +244,12 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
             continue;
         };
 
+        let floor = floors.get(target).copied().unwrap_or(0);
+        let since = status.since.max(floor);
         let candidates: Vec<(String, Item, i64)> = stamped
             .iter()
             .filter(|stamped| {
-                stamped.ts > status.since
+                stamped.ts > since
                     && pusher::item_matches_target(&cfg, target, &stamped.item)
             })
             .map(|stamped| (stamped.key.clone(), stamped.item.clone(), stamped.ts))
@@ -284,6 +293,7 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
             target.state_id(),
             max_items,
             cfg.realtime_max_age_minutes,
+            floor,
         )
         .await;
         if picked.is_empty() {
@@ -389,6 +399,25 @@ struct Stamped {
     item: Item,
 }
 
+/// 最近一次静默结束的时刻（Unix 秒）。
+///
+/// 静默结束后的第一轮用它当下限：夜里没推的资讯在这里直接过期，不再攒到早上
+/// 一次性倒出来。没设静默（起止相同或读不懂）时返回 `None`。
+pub(super) fn quiet_end_floor(now: DateTime<FixedOffset>, start: &str, end: &str) -> Option<i64> {
+    let (start, end) = (crate::clock::parse_clock(start)?, crate::clock::parse_clock(end)?);
+    if start == end {
+        return None;
+    }
+    let mut day = now.date_naive();
+    if now.time() < end {
+        day = day.pred_opt()?;
+    }
+    now.timezone()
+        .from_local_datetime(&day.and_time(end))
+        .single()
+        .map(|at| at.timestamp())
+}
+
 /// 当前是否处于静默时段。
 ///
 /// 起止相同视为「不设静默」；`23:30`—`07:30` 这种跨午夜的区间按跨天处理。
@@ -403,5 +432,62 @@ pub(super) fn in_quiet_hours(now: NaiveTime, start: &str, end: &str) -> bool {
         now >= start && now < end
     } else {
         now >= start || now < end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(day: u32, hour: u32, minute: u32) -> DateTime<FixedOffset> {
+        crate::clock::beijing()
+            .with_ymd_and_hms(2026, 10, day, hour, minute, 0)
+            .unwrap()
+    }
+
+    fn stamp(day: u32, hour: u32, minute: u32) -> i64 {
+        at(day, hour, minute).timestamp()
+    }
+
+    #[test]
+    fn quiet_floor_is_the_last_time_the_window_closed() {
+        // 跨午夜：早上七点结束，十点看到的就是今天七点。
+        assert_eq!(
+            quiet_end_floor(at(21, 10, 0), "23:00", "07:00"),
+            Some(stamp(21, 7, 0))
+        );
+        // 还在静默里时（这里只是把函数本身的取值钉住），最近一次结束是昨天七点。
+        assert_eq!(
+            quiet_end_floor(at(21, 3, 0), "23:00", "07:00"),
+            Some(stamp(20, 7, 0))
+        );
+        // 同一天的窗口：还没到今天的终点，就还是昨天的。
+        assert_eq!(
+            quiet_end_floor(at(21, 0, 30), "01:00", "06:00"),
+            Some(stamp(20, 6, 0))
+        );
+        assert_eq!(
+            quiet_end_floor(at(21, 12, 0), "01:00", "06:00"),
+            Some(stamp(21, 6, 0))
+        );
+        // 没设静默、读不懂：不设下限。
+        assert_eq!(quiet_end_floor(at(21, 12, 0), "", ""), None);
+        assert_eq!(quiet_end_floor(at(21, 12, 0), "25:00", "07:00"), None);
+    }
+
+    #[test]
+    fn quiet_hours_cover_both_sides_of_midnight() {
+        let quiet = |hour: u32, minute: u32| {
+            in_quiet_hours(
+                NaiveTime::from_hms_opt(hour, minute, 0).unwrap(),
+                "23:00",
+                "07:00",
+            )
+        };
+        assert!(quiet(23, 30));
+        assert!(quiet(3, 0));
+        assert!(!quiet(12, 0));
+        assert!(!quiet(7, 0));
     }
 }

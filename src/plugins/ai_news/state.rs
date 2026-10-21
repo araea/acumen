@@ -484,12 +484,16 @@ fn enqueue_pending(
 }
 
 /// 查看下一批待发事件。过期条目以及已被定时档送达的条目会在这里淘汰。
+///
+/// `since_floor` 是调用方给的额外下限（通常是一段静默时段的结束时刻）：
+/// 夜里没送出去的条目已经在静默里过期，不跟着早晨那一轮补发。
 pub async fn realtime_pending(
     group_id: String,
     max_items: usize,
     max_age_minutes: i64,
+    since_floor: i64,
 ) -> Vec<Cluster> {
-    let cutoff = Utc::now().timestamp() - max_age_minutes.max(1) * 60;
+    let cutoff = (Utc::now().timestamp() - max_age_minutes.max(1) * 60).max(since_floor);
     STORE.with(move |state| {
         let entry = state.groups.entry(group_id.clone()).or_default();
         next_pending(entry, max_items, cutoff)

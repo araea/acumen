@@ -203,9 +203,9 @@ pub struct AiNewsConfig {
     pub realtime_max_items: usize,
     /// 每个群每小时最多实时推送几次，防止爆发日刷屏
     pub realtime_max_per_hour: u32,
-    /// 静默时段起点（HH:MM）；与终点相同或留空表示不设静默
+    /// 夜间免打扰的起点（HH:MM）；与终点相同或留空表示全天推送（默认）
     pub realtime_quiet_start: String,
-    /// 静默时段终点（HH:MM）。跨午夜按跨天处理
+    /// 夜间免打扰的终点（HH:MM）。跨午夜按跨天处理；静默结束后不补发夜里攒下的资讯
     pub realtime_quiet_end: String,
     /// 只收定时档、不收实时快报的群；可用 `/ai实时关闭` 在群内增删
     pub realtime_muted_groups: Vec<String>,
