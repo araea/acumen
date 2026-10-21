@@ -31,6 +31,14 @@ FONT = next((f for f in (os.environ.get("E2E_FONT"), "/data/data/com.termux/file
 STARTUP = os.environ.get("E2E_STARTUP") == "1"
 NAILONG = {k: os.environ.get(f"E2E_NAILONG_{k.upper()}") for k in ("model", "pos", "neg")}
 NAILONG = NAILONG if all(v and os.path.exists(v) for v in NAILONG.values()) else None
+# E2E_NAILONG_AI=1：真连 DeepSeek 复核（密钥借线上实例 ~/acumen/config.toml 的 [oai.providers.deepseek]）；
+# E2E_NAILONG_FP 指一张本地模型会误报的图（比如截图），复核后应当不撤。
+NAILONG_AI = None
+if NAILONG and os.environ.get("E2E_NAILONG_AI") == "1":
+    import tomllib
+    NAILONG_AI = tomllib.load(open(os.path.expanduser("~/acumen/config.toml"), "rb"))["oai"]["providers"]["deepseek"]
+    if os.environ.get("E2E_NAILONG_FP"):
+        NAILONG["fp"] = os.environ["E2E_NAILONG_FP"]
 if NAILONG:
     ENABLED = ENABLED | {"nailong"}
 ALL_PLUGINS = re.findall(r"^    ([a-z_]+) \{", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/registry.rs")).read(), re.M)
@@ -153,7 +161,9 @@ def write_config(directory):
                       "remind_seconds = [25]", 'action = "kick"', "", "[welcome.approve]", "enabled = true",
                       'keywords = ["芝麻开门"]', "reject = true"]
         if name == "nailong":
-            lines += ["mute_seconds = [0, 600]"]
+            lines += ["mute_seconds = [0, 600]", f'judge = "{"hybrid" if NAILONG_AI else "local"}"']
+        if name == "oai" and NAILONG_AI:
+            lines += ["[oai.providers.deepseek]", f'api_base = "{NAILONG_AI["api_base"]}"', f'api_key = "{NAILONG_AI["api_key"]}"']
         if name == "repeater":
             lines += ["min_times = 2", "cooldown_seconds = 0", "max_delay_ms = 600000", "remember_hours = 0"]
         lines.append("")
@@ -247,6 +257,12 @@ async def main():
             check("认出、撤回并 @ 提醒", 'id="10030"' in tips()[0]["content"], tips()[0]["content"])
             await wait_for(lambda: len(reports()) >= 1, "抄给号主")
             check("原图连同 #1 抄到号主私聊", "#1" in reports()[0]["content"] and "<img" in reports()[0]["content"], reports()[0]["content"][-200:])
+            if NAILONG_AI:
+                check("大模型复核确认后才拦", "大模型复核" in reports()[0]["content"], reports()[0]["content"][-200:])
+                if "fp" in NAILONG:
+                    fp = await inject("message-created", "10034", img("fp"))
+                    await asyncio.sleep(30)
+                    check("本地误报的图经复核不撤", not any(m == "message.delete" and b.get("message_id") == fp for m, b in posts[mark:]))
             second = await inject("message-created", "10030", img("pos"))
             await wait_for(lambda: any(m == "guild.member.mute" and b.get("duration") == 600000 for m, b in posts[mark:]), "第二次禁言 10 分钟")
             check("第二次按阶梯禁言", any(m == "message.delete" and b.get("message_id") == second for m, b in posts[mark:]))

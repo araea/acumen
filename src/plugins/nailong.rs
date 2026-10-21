@@ -2,6 +2,8 @@
 //!
 //! - **认图**见 [`model`]：图像向量 + 分类头，教过的样本优先。动图按帧抽查，哪一帧像就算。
 //!   每张图下载一次、算一次，同一张图（按内容摘要）再出现直接用上次的结论。
+//! - **大模型复核**见 [`ai`]：oai 里配好了多模态模型时，本地分数夹在中间、拿不准的图交给它看
+//!   （`judge`）。本地觉得像的才问，很低的直接放，大模型只看一小部分；出错、超时、名额用完都退回本地。
 //! - **商城表情**（QQ 表情商店里的动画表情，`mface`）消息里没有图片地址，只有编号：按编号到
 //!   QQ 的表情资源站取动图来看，同一个编号只看一次。表情名里写着奶龙、奶蛙的不必等模型。
 //! - **处理**按「近 `window_hours` 小时第几次」走 `mute_seconds` 阶梯：默认第一次只撤回提醒，
@@ -39,6 +41,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+pub mod ai;
 pub mod model;
 
 use model::{Kind, Scores};
@@ -58,8 +61,21 @@ pub struct Config {
     channel: ChannelConfig,
     /// 拦哪几类：nailong（奶龙）、naiwa（奶蛙）。
     targets: Vec<String>,
-    /// 判定阈值（0.3–0.95）：越高越不容易误判、也越容易漏。
+    /// 判定阈值（0.3–0.95）：越高越不容易误判、也越容易漏。只在只用本地模型时起作用。
     threshold: f32,
+    /// 认图方式：auto（oai 配了复核模型就用本地初筛 + 大模型复核，否则只用本地）、local（只用本地）、
+    /// hybrid（本地初筛 + 大模型复核）、ai（每张图都问大模型，用量大）。
+    judge: String,
+    /// 复核用的多模态模型，写法同 oai：`供应商/模型`。
+    ai_model: String,
+    /// 本地分数到这个就直接拦，不问大模型；1 = 本地觉得像的一律请大模型确认（默认，误判最少）。
+    sure: f32,
+    /// 本地分数到这个才问大模型；更低的直接放过。
+    ask_floor: f32,
+    /// 每天最多问大模型几张（所有群合计）；用完了当天本地觉得像的也先放过（宁漏勿错）。
+    ai_daily_limit: u32,
+    /// 问一张最多等几秒。
+    ai_timeout_seconds: u64,
     /// 撤回认出来的图。
     recall: bool,
     /// 近 window_hours 小时内第 1、2、3…次各禁言多少秒；0 = 只撤回不禁言，超出取最后一档。
@@ -99,6 +115,12 @@ impl Default for Config {
             channel: ChannelConfig::default(),
             targets: vec!["nailong".into(), "naiwa".into()],
             threshold: 0.8,
+            judge: "auto".into(),
+            ai_model: "deepseek/deepseek-flash".into(),
+            sure: 1.0,
+            ask_floor: 0.3,
+            ai_daily_limit: 300,
+            ai_timeout_seconds: 20,
             recall: true,
             mute_seconds: vec![0, 600, 3600, 86400],
             window_hours: 24,
@@ -130,6 +152,15 @@ impl PluginConfig for Config {
         }
         if !(0.3..=0.95).contains(&self.threshold) {
             return Err("threshold 须在 0.3–0.95 之间".into());
+        }
+        if !matches!(self.judge.as_str(), "auto" | "local" | "hybrid" | "ai") {
+            return Err("judge 只能是 auto、local、hybrid 或 ai".into());
+        }
+        if !(0.05..=0.95).contains(&self.ask_floor) || !(self.ask_floor..=1.0).contains(&self.sure) {
+            return Err("须 0.05 ≤ ask_floor ≤ sure ≤ 1".into());
+        }
+        if !(5..=120).contains(&self.ai_timeout_seconds) {
+            return Err("ai_timeout_seconds 须在 5–120 之间".into());
         }
         if self.mute_seconds.is_empty() {
             return Err("mute_seconds 至少要有一档（0 表示只撤回）".into());
@@ -165,6 +196,34 @@ impl Config {
 
     fn kinds_text(&self) -> String {
         self.targets().iter().map(|k| k.name()).collect::<Vec<_>>().join("、")
+    }
+}
+
+/// 实际用哪种认图方式。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Local,
+    Hybrid,
+    Ai,
+}
+
+impl Mode {
+    async fn of(ctx: &Context, config: &Config) -> Mode {
+        let wanted = match config.judge.as_str() {
+            "local" => return Mode::Local,
+            "ai" => Mode::Ai,
+            _ => Mode::Hybrid,
+        };
+        if ai::available(ctx, &config.ai_model).await { wanted } else { Mode::Local }
+    }
+
+    fn text(self, config: &Config) -> String {
+        let model = config.ai_model.rsplit('/').next().unwrap_or(&config.ai_model);
+        match self {
+            Mode::Local => "本地模型".into(),
+            Mode::Hybrid => format!("本地模型初筛 + {model} 复核拿不准的"),
+            Mode::Ai => format!("每张都问 {model}"),
+        }
     }
 }
 
@@ -298,6 +357,10 @@ struct Verdict {
     taught: Option<(Kind, f32)>,
     /// 模型没认出来，但商城表情的名字里写着这类。
     by_name: bool,
+    /// 大模型复核的结论（问过才有）。
+    ai: Option<ai::Opinion>,
+    /// 最像的是第几帧（大模型看的就是这帧）。
+    frame: usize,
     /// 抽查过的帧的向量，教学用。
     vectors: Vec<Vec<f32>>,
 }
@@ -459,11 +522,22 @@ async fn fetch(picture: &Picture) -> Result<Vec<u8>, String> {
 }
 
 /// 看一张图。认出来要存档时用得着原图，顺带交回（商城表情按编号命中缓存时没下图，是 `None`）。
-async fn inspect(picture: &Picture, config: &Config) -> Result<(Verdict, Option<Vec<u8>>), String> {
+/// 问不问大模型。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Review {
+    /// 按 `judge` 与分数区间来。
+    Auto,
+    /// 配了模型就问（「奶龙 测」要看它怎么说）。
+    Always,
+    /// 不问（纠正时只要向量）。
+    Never,
+}
+
+async fn inspect(ctx: &Context, picture: &Picture, config: &Config, review: Review) -> Result<(Verdict, Option<Vec<u8>>), String> {
     // 模型还没就绪（下载失败在冷却）就不必下图了。
     let encoder = model::encoder().await?;
     // 商城表情按编号记结论，再出现连图都不用下。
-    let mface_key = picture.mface.as_ref().map(|m| format!("mface:{}", m.id));
+    let mface_key = picture.mface.as_ref().filter(|_| review == Review::Auto).map(|m| format!("mface:{}", m.id));
     if let Some(verdict) = mface_key.as_deref().and_then(cached) {
         return Ok((verdict, None));
     }
@@ -479,10 +553,77 @@ async fn inspect(picture: &Picture, config: &Config) -> Result<(Verdict, Option<
             verdict.by_name = true;
         }
     }
+    consult(ctx, config, &bytes, &mut verdict, review).await;
     if let Some(key) = mface_key {
         cache(key, &verdict);
     }
     Ok((verdict, Some(bytes)))
+}
+
+/// 该问大模型就问，按它的结论改判；问不成就放过（设了 `sure` 且本地够高的除外）。教过的样本与表情名优先，不问。
+async fn consult(ctx: &Context, config: &Config, bytes: &[u8], verdict: &mut Verdict, review: Review) {
+    if review == Review::Never || verdict.taught.is_some() || (verdict.by_name && review == Review::Auto) {
+        return;
+    }
+    let mode = Mode::of(ctx, config).await;
+    let strength = verdict.scores.nailong.max(verdict.scores.naiwa);
+    let ask = match (review, mode) {
+        (Review::Always, _) => ai::available(ctx, &config.ai_model).await,
+        (_, Mode::Local) => false,
+        (_, Mode::Ai) => true,
+        (_, Mode::Hybrid) => strength >= config.ask_floor && (config.sure >= 1.0 || strength < config.sure),
+    };
+    if !ask {
+        // 复核模式下本地分数到了 `sure`：不问，直接按本地更像的那类拦。
+        if review == Review::Auto && mode != Mode::Local && config.sure < 1.0 && strength >= config.sure {
+            verdict.kind = if verdict.scores.naiwa > verdict.scores.nailong { Kind::Naiwa } else { Kind::Nailong };
+        }
+        return;
+    }
+    let digest = format!("{:x}", md5::compute(bytes));
+    let png = match frame_png(bytes.to_vec(), config.max_frames, verdict.frame).await {
+        Ok(png) => png,
+        Err(error) => return debug!(target: LOG_TARGET, "复核取帧失败：{error}"),
+    };
+    let timeout = Duration::from_secs(config.ai_timeout_seconds);
+    match ai::ask(ctx, &config.ai_model, &png, &digest, config.ai_daily_limit, timeout).await {
+        Ok(opinion) => {
+            verdict.ai = Some(opinion);
+            // 说不是就放；说是但自己都没把握的，仍按本地的来。
+            if opinion.kind == Kind::Other || opinion.confidence >= 0.5 {
+                verdict.kind = opinion.kind;
+            }
+        }
+        Err(error) => {
+            // 本地模型单独认错的多（截图都能打高分）：复核不成宁可漏，不拿本地的分数去撤别人的图。
+            // 只有设了 `sure` 且本地分数到了的，照样按本地拦。
+            if review == Review::Auto && !(config.sure < 1.0 && strength >= config.sure) {
+                verdict.kind = Kind::Other;
+            }
+            debug!(target: LOG_TARGET, "没复核成，这张先放过：{error}");
+        }
+    }
+}
+
+/// 第 `index` 帧转成 PNG（垫白、边长不过 512），给大模型看。
+async fn frame_png(bytes: Vec<u8>, max_frames: usize, index: usize) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        let frames = decode_frames(&bytes, max_frames)?;
+        let frame = frames.get(index).or(frames.first()).ok_or("没有可看的帧")?;
+        let mut canvas = image::RgbImage::from_pixel(frame.width(), frame.height(), image::Rgb([255, 255, 255]));
+        for (x, y, pixel) in frame.enumerate_pixels() {
+            let alpha = u16::from(pixel[3]);
+            let blend = |c: u8| ((u16::from(c) * alpha + 255 * (255 - alpha)) / 255) as u8;
+            canvas.put_pixel(x, y, image::Rgb([blend(pixel[0]), blend(pixel[1]), blend(pixel[2])]));
+        }
+        let mut png = Vec::new();
+        canvas
+            .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+            .map_err(|e| e.to_string())?;
+        Ok(png)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 按内容摘要记结论：同一张图换了地址、换人转发，都不必再算。
@@ -503,12 +644,12 @@ async fn embed_and_judge(encoder: std::sync::Arc<model::Encoder>, bytes: Vec<u8>
         let frames = decode_frames(&bytes, max_frames)?;
         let mut best: Option<Verdict> = None;
         let mut vectors = Vec::new();
-        for frame in &frames {
+        for (index, frame) in frames.iter().enumerate() {
             let vector = encoder.embed(frame)?;
             let (kind, scores, taught) = judge(&vector, threshold);
             vectors.push(vector);
             let strength = |v: &Verdict| v.scores.nailong.max(v.scores.naiwa);
-            let candidate = Verdict { kind, scores, taught, by_name: false, vectors: Vec::new() };
+            let candidate = Verdict { kind, scores, taught, by_name: false, ai: None, frame: index, vectors: Vec::new() };
             let better = match &best {
                 None => true,
                 Some(b) => {
@@ -902,7 +1043,7 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         let (task_ctx, task_writer) = (ctx.clone(), writer.clone());
         let queued = Queued::enter();
         tokio::spawn(async move {
-            let found = scan(&pictures, &config).await;
+            let found = scan(&task_ctx, &pictures, &config).await;
             drop(queued);
             if let Some(found) = found
                 && let Err(error) = punish(&task_ctx, &task_writer, &config, &target, found).await
@@ -923,9 +1064,9 @@ fn pictures(segments: &[OwnedValue], config: &Config) -> Vec<Picture> {
 }
 
 /// 一条消息里的图挨个看，认出一张就停。交回结论与原图。
-async fn scan(pictures: &[Picture], config: &Config) -> Option<(Verdict, Vec<u8>)> {
+async fn scan(ctx: &Context, pictures: &[Picture], config: &Config) -> Option<(Verdict, Vec<u8>)> {
     for picture in pictures {
-        match inspect(picture, config).await {
+        match inspect(ctx, picture, config, Review::Auto).await {
             Ok((verdict, bytes)) if verdict.hits(config) => {
                 let bytes = match bytes {
                     Some(bytes) => bytes,
@@ -950,10 +1091,17 @@ struct Target {
 }
 
 fn basis(verdict: &Verdict) -> String {
-    match verdict.taught {
-        Some((_, similarity)) => format!("像教过的一张（{:.0}%）", similarity * 100.0),
-        None if verdict.by_name => format!("表情名写着{}", verdict.kind.name()),
-        None => format!("模型 {:.0}%", verdict.scores.of(verdict.kind) * 100.0),
+    let local = verdict.scores.nailong.max(verdict.scores.naiwa);
+    match (verdict.taught, verdict.ai) {
+        (Some((_, similarity)), _) => format!("像教过的一张（{:.0}%）", similarity * 100.0),
+        _ if verdict.by_name => format!("表情名写着{}", verdict.kind.name()),
+        (None, Some(opinion)) => format!(
+            "本地 {:.0}%，大模型复核认作{}（{:.0}%）",
+            local * 100.0,
+            opinion.kind.name(),
+            opinion.confidence * 100.0
+        ),
+        (None, None) => format!("模型 {:.0}%", verdict.scores.of(verdict.kind) * 100.0),
     }
 }
 
@@ -1198,6 +1346,12 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         },
         format!("模型：{}", model::status()),
     ];
+    let mode = Mode::of(ctx, config).await;
+    lines.push(match mode {
+        Mode::Local if config.judge != "local" => format!("认图：本地模型（{} 不可用：oai 没开或没配这个供应商）", config.ai_model),
+        Mode::Local => "认图：本地模型".to_string(),
+        _ => format!("认图：{} · 今天复核 {}/{} 张", mode.text(config), ai::used_today().await, config.ai_daily_limit),
+    });
     if config.report {
         lines.push("撤下的图另抄一份给号主核对".to_string());
     }
@@ -1283,12 +1437,14 @@ async fn subject(
     writer: &LockedWriter,
     config: &Config,
     ask: &Ask<'_>,
+    review: Review,
 ) -> Result<(Option<Caught>, Vec<Verdict>), String> {
     let scope = ask.place.group.as_deref();
     if ask.number.is_some() || ask.matched.reply_id.is_some() {
         if let Some(caught) = find_caught(scope, ask.number, ask.matched.reply_id.as_deref()).await {
             let image = caught_image(caught.no).await.ok_or("那张图没存下来，或者过了保留期")?;
-            let verdict = judge_bytes(model::encoder().await?, &image, config).await?;
+            let mut verdict = judge_bytes(model::encoder().await?, &image, config).await?;
+            consult(ctx, config, &image, &mut verdict, review).await;
             return Ok((Some(caught), vec![verdict]));
         }
         if let Some(no) = ask.number {
@@ -1315,7 +1471,7 @@ async fn subject(
     }
     let mut verdicts = Vec::new();
     for picture in &pictures {
-        verdicts.push(inspect(picture, config).await?.0);
+        verdicts.push(inspect(ctx, picture, config, review).await?.0);
     }
     Ok((None, verdicts))
 }
@@ -1330,7 +1486,7 @@ async fn test<F>(
 where
     F: Future<Output = Result<(), crate::adapters::satori::BotError>>,
 {
-    let verdicts = match subject(ctx, writer, config, &ask).await {
+    let verdicts = match subject(ctx, writer, config, &ask, Review::Always).await {
         Ok((_, verdicts)) => verdicts,
         Err(error) => return say(format!("❌ {error}")).await,
     };
@@ -1339,7 +1495,10 @@ where
         .enumerate()
         .map(|(index, verdict)| {
             let head = if verdicts.len() > 1 { format!("第 {} 张：", index + 1) } else { String::new() };
-            let scores = format!("奶龙 {:.0}% · 奶蛙 {:.0}%", verdict.scores.nailong * 100.0, verdict.scores.naiwa * 100.0);
+            let mut scores = format!("本地：奶龙 {:.0}% · 奶蛙 {:.0}%", verdict.scores.nailong * 100.0, verdict.scores.naiwa * 100.0);
+            if let Some(opinion) = verdict.ai {
+                scores.push_str(&format!("\n大模型：{}（{:.0}%）", opinion.kind.name(), opinion.confidence * 100.0));
+            }
             let result = match (verdict.taught, verdict.hits(config)) {
                 (Some((kind, s)), _) => format!("像教过的一张{}图（{:.0}%），按{}算", kind.name(), s * 100.0, kind.name()),
                 (None, hits) if verdict.by_name => {
@@ -1348,6 +1507,7 @@ where
                 }
                 (None, true) => format!("会拦：{}", verdict.kind.name()),
                 (None, false) if verdict.kind != Kind::Other => format!("像{}，但本群没拦这类", verdict.kind.name()),
+                (None, false) if verdict.ai.is_some() => "不拦（大模型看过，不是）".to_string(),
                 (None, false) => format!("不拦（阈值 {:.0}%）", config.threshold * 100.0),
             };
             format!("{head}{scores}\n{result}")
@@ -1400,7 +1560,7 @@ where
         }
         return say("❌ 只有群主、管理员能纠正\n想看分数可以发「奶龙 测」".into()).await;
     }
-    let (caught, verdicts) = match subject(ctx, writer, config, &ask).await {
+    let (caught, verdicts) = match subject(ctx, writer, config, &ask, Review::Never).await {
         Ok(found) => found,
         Err(error) => return say(format!("❌ {error}")).await,
     };

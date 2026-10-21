@@ -1,6 +1,6 @@
 use crate::adapters::satori::LockedWriter;
 use crate::event::Context;
-use crate::plugins::{PluginConfig, PluginError, get_data_dir};
+use crate::plugins::{PluginConfig, PluginError, get_config_or_default, get_data_dir};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
@@ -67,6 +67,20 @@ pub(crate) fn resolve_endpoint(
                 .then(|| (default_base.to_string(), default_key.to_string()))
         }
     }
+}
+
+/// 模型写法 `供应商/模型` → (接口地址, 密钥, 模型 id)。别的插件借 oai 的模型配置时用：
+/// 供应商没配（`[oai.providers]` 里没有，也不是默认接口），返回 `None`；oai 插件本身不必开着。
+pub(crate) async fn model_endpoint(ctx: &Context, model: &str) -> Option<(String, String, String)> {
+    let (provider, model_id) = utils::split_provider(model);
+    let oai_config = get_config_or_default::<OaiConfig>(ctx);
+    let manager = ensure_manager().await.ok()?;
+    let (default_base, default_key) = {
+        let stored = manager.config.read().await;
+        (stored.api_base.clone(), stored.api_key.clone())
+    };
+    let (base, key) = resolve_endpoint(&oai_config.providers, &default_base, &default_key, provider.as_deref())?;
+    Some((base, key, model_id))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -243,7 +257,6 @@ impl PluginConfig for OaiConfig {
     const NAME: &'static str = "oai";
 }
 
-
 /// 确保模型接口配置（`data/oai/config.json`）已加载。
 ///
 /// 房间插件与群聊搭话插件共用这一份配置，任一插件启动时都可以先把管理器建好；
@@ -270,7 +283,7 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         }
 
         // 尝试预加载模型列表
-        let filter = crate::plugins::get_config_or_default::<OaiConfig>(&ctx).model_filter;
+        let filter = get_config_or_default::<OaiConfig>(&ctx).model_filter;
         tokio::spawn(async move {
             if let Err(e) = mgr.fetch_models(&filter).await {
                 warn!(target: LOG_TARGET, "初始化获取模型列表失败: {}", e);

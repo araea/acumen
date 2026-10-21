@@ -188,7 +188,7 @@ async fn pick<'a>(
     keyword: &str,
     pool: &'a [search::Candidate],
 ) -> Option<(usize, &'a search::Candidate)> {
-    let (base, key, model) = model_endpoint(ctx, &config.model).await?;
+    let (base, key, model) = oai::model_endpoint(ctx, &config.model).await?;
     let history = vec![LlmMessage::User {
         content: vec![UserContent::Text(Text::new(prompt_for(keyword, pool)))],
     }];
@@ -199,24 +199,6 @@ async fn pick<'a>(
         .ok()?;
     let index = parse_choice(&reply, pool.len())?;
     Some((index, &pool[index]))
-}
-
-/// 模型写法 `供应商/模型` → 接口地址与密钥，口径与搭话那边一致。
-async fn model_endpoint(ctx: &Context, model: &str) -> Option<(String, String, String)> {
-    let (provider, model_id) = oai::utils::split_provider(model);
-    let oai_config = get_config_or_default::<oai::OaiConfig>(ctx);
-    let manager = oai::data::MANAGER.get()?;
-    let (default_base, default_key) = {
-        let stored = manager.config.read().await;
-        (stored.api_base.clone(), stored.api_key.clone())
-    };
-    let (base, key) = oai::resolve_endpoint(
-        &oai_config.providers,
-        &default_base,
-        &default_key,
-        provider.as_deref(),
-    )?;
-    Some((base, key, model_id))
 }
 
 /// 给模型的判断题：候选编号、标题、UP 主、时长、播放量，一段话说完。
