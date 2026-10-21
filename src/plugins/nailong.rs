@@ -1188,7 +1188,7 @@ async fn bump_recent(self_id: &str, group: &str, user: &str, kind: Kind, window:
         .await
 }
 
-/// 本群今天发现了几张（含已经在同一个人那里去重过的）。
+/// 本群今天发现了几张（同一串里的重复也算，去重只省提醒、不省计数）。
 async fn today_count(self_id: &str, group: &str, now: i64) -> usize {
     let start = day_start();
     CAUGHT
@@ -1196,7 +1196,8 @@ async fn today_count(self_id: &str, group: &str, now: i64) -> usize {
             log.items
                 .iter()
                 .filter(|c| c.self_id == self_id && c.group == group && c.at >= start && c.at <= now)
-                .count()
+                .map(|c| c.hits as usize)
+                .sum()
         })
         .await
 }
@@ -1353,7 +1354,7 @@ async fn status(ctx: &Context, config: &Config, group: &str) -> String {
             let mut people: Vec<&str> = today.iter().map(|c| c.user.as_str()).collect();
             people.sort_unstable();
             people.dedup();
-            (today.len(), people.len())
+            (today.iter().map(|c| c.hits as usize).sum::<usize>(), people.len())
         })
         .await;
     let taught = SAMPLES.with(|s| s.samples.len()).await;
@@ -1429,7 +1430,8 @@ async fn history(ctx: &Context, place: &Place) -> String {
     if items.is_empty() {
         return "📭 近几天没发现过".into();
     }
-    let mut lines = vec![format!("🐉 近几天发现 {} 次{}", items.len(), if items.len() > 10 { "，列最近 10 次" } else { "" })];
+    let total: usize = items.iter().map(|c| c.hits as usize).sum();
+    let mut lines = vec![format!("🐉 近几天发现 {total} 次{}", if items.len() > 10 { "，列最近 10 次" } else { "" })];
     for c in items.iter().rev().take(10) {
         let place_text = if place.group.is_none() { format!(" · {}", group_label(c)) } else { String::new() };
         lines.push(format!(
