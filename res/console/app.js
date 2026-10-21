@@ -1338,6 +1338,7 @@
     data: null,
     query: "",
     section: "",
+    status: "",
     selected: null,
     detailSeq: 0,
 
@@ -1346,6 +1347,7 @@
       return this.data.plugins.filter(
         (plugin) =>
           (!this.section || plugin.section === this.section) &&
+          (!this.status || (this.status === "on") === !!plugin.on) &&
           (!text ||
             plugin.name.toLowerCase().includes(text) ||
             plugin.display.toLowerCase().includes(text) ||
@@ -1393,6 +1395,15 @@
       ];
     },
 
+    /** 按启用状态筛：全部 / 已启用 / 已停用，带个数，一眼看清。 */
+    statusChips() {
+      const on = this.data.plugins.filter((p) => p.on).length;
+      const chip = (code, label, total) =>
+        h`<button class="chip state" type="button" data-status-filter="${code}" aria-pressed="${bool(this.status === code)}">
+          ${icon("check")}${label}<span class="chip-count">${total}</span></button>`;
+      return [chip("", "全部", this.data.plugins.length), chip("on", "已启用", on), chip("off", "已停用", this.data.plugins.length - on)];
+    },
+
     summary() {
       const on = this.data.plugins.filter((p) => p.on).length;
       const shownCount = this.visible().length;
@@ -1405,6 +1416,7 @@
     repaint() {
       put($("#plugin-list"), this.rows());
       put($("#plugin-chips"), this.chips());
+      put($("#plugin-status"), this.statusChips());
       const status = $("#plugin-count");
       if (status) status.textContent = this.summary();
     },
@@ -1489,7 +1501,8 @@
                 aria-label="搜索插件" autocomplete="off" value="${plugins.query}">
             </div>
           </div>
-          <div class="chips chips-scroll" id="plugin-chips" role="group" aria-label="按分类筛选">${plugins.chips()}</div>
+          <div class="chips" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
+          <div class="chips" id="plugin-chips" role="group" aria-label="按分类筛选">${plugins.chips()}</div>
           <p class="section-meta" id="plugin-count" role="status">${plugins.summary()}</p>
           <div class="plugin-list" id="plugin-list">${plugins.rows()}</div>
         </div>
@@ -2244,6 +2257,7 @@
       for (const badge of $$(`[data-status-for="${CSS.escape(name)}"]`)) put(badge, statusBadge(plugin));
       const counter = $("#plugin-count");
       if (counter && plugins.data) counter.textContent = plugins.summary();
+      if (plugins.data) put($("#plugin-status"), plugins.statusChips());
     } catch (error) {
       report(error);
     } finally {
@@ -4001,6 +4015,12 @@
             field.placeholder = checked ? "保存后改为不鉴权" : "已设置；留空保持不变";
           }
         }
+        return;
+      }
+      if ((hit = on("[data-status-filter]"))) {
+        plugins.status = hit.dataset.statusFilter;
+        plugins.repaint();
+        $(`[data-status-filter="${CSS.escape(plugins.status)}"]`)?.focus();
         return;
       }
       if ((hit = on("[data-section]"))) {
