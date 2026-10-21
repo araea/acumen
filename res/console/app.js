@@ -3994,7 +3994,7 @@
   ];
   const VARIANTS = [
     ["fidelity", "原色", "主色就是你选的那一个，彩度不打折"],
-    ["tonal", "柔和", "Material You 的默认：主色收一点，整体更安静"],
+    ["tonal", "柔和", "安卓自带的那种：主色收一点，整体更安静"],
     ["vibrant", "鲜明", "彩度拉满，按钮与选中更醒目"],
     ["expressive", "跳色", "主色与第三色拉开色相，更有个性"],
     ["neutral", "素雅", "几乎只剩灰，颜色只留给要紧的地方"],
@@ -4008,6 +4008,8 @@
     engine: null,
     picked: [],
     syncTimer: 0,
+    /** 改动排成一队：连着点两项时，后一项要在前一项写完之后再读，不然会把前一项盖掉。 */
+    queue: Promise.resolve(),
 
     stored() {
       try {
@@ -4039,7 +4041,13 @@
     isDefault: (prefs) => Object.keys(THEME_DEFAULT).every((key) => prefs[key] === THEME_DEFAULT[key]),
 
     /** 算好、记下、贴上。`sync` 为真时顺手排一次同步。 */
-    async set(change, { sync = true } = {}) {
+    set(change, options) {
+      const run = this.queue.then(() => this.commit(change, options));
+      this.queue = run.catch(() => {});
+      return run;
+    },
+
+    async commit(change, { sync = true } = {}) {
       const stored = this.stored();
       const prefs = { ...THEME_DEFAULT, ...(stored.prefs || {}), ...change };
       let css = "";
@@ -4057,9 +4065,12 @@
     },
 
     setScale(scale) {
-      const next = { ...this.stored(), scale };
-      this.write(next);
-      this.apply(next);
+      this.queue = this.queue.then(() => {
+        const next = { ...this.stored(), scale };
+        this.write(next);
+        this.apply(next);
+      });
+      return this.queue;
     },
 
     write(value) {
@@ -4157,7 +4168,7 @@
         else if (target.name === "variant") await this.set({ variant: target.value });
         else if (target.name === "mode") await this.set({ mode: target.value });
         else if (target.name === "contrast") await this.set({ contrast: target.value });
-        else if (target.name === "scale") this.setScale(Number(target.value));
+        else if (target.name === "scale") await this.setScale(Number(target.value));
         else if (target.name === "seed-image") await this.fromImage(target);
         else return;
       } catch (error) {
@@ -4186,7 +4197,8 @@
       const known = $$('#appearance input[name="seed"]').some((radio) => radio.value === seed);
       for (const radio of $$('#appearance input[name="seed"]')) radio.checked = radio.value === seed;
       $("#seed-custom-swatch")?.toggleAttribute("data-on", !known);
-      $("#seed-custom-hex") && ($("#seed-custom-hex").textContent = seed.toUpperCase());
+      const hex = $("#seed-custom-hex");
+      if (hex) hex.textContent = known ? "" : seed.toUpperCase();
       this.paintVariants(seed);
     },
 
@@ -4262,7 +4274,7 @@
         </div>
         <div class="look-row" aria-hidden="true">
           <span class="tile">${icon("palette")}</span>
-          <span class="look-lines"><b>主色与容器</b><span>说明文字用 on-surface-variant</span></span>
+          <span class="look-lines"><b>预览</b><span>按钮、开关与状态都跟着变</span></span>
           <span class="switch look-switch" role="presentation" aria-checked="true"></span>
         </div>
         <div class="look-actions" aria-hidden="true">
@@ -4275,7 +4287,7 @@
       <section class="section" aria-labelledby="seed-title">
         <div class="section-head">
           <h2 class="section-title" id="seed-title">主题色</h2>
-          <span class="section-meta">按 HCT 推出整套配色，对比度由算法保证</span>
+          <span class="section-meta">整套配色由它推出，文字对比度自动达标</span>
         </div>
         <fieldset class="swatches" aria-labelledby="seed-title">
           ${SEEDS.map(([hex, label]) => swatch(hex, label, hex === prefs.seed, engine))}
