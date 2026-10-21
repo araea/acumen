@@ -234,23 +234,37 @@ async def main():
         check("撤回的原文转存到私聊", True)
 
         if NAILONG:
-            print("1d. 奶龙拦截：撤回、第二次禁言、引用提醒说「不是」即解禁并记住、普通图不动")
+            print("1d. 奶龙拦截：撤回、抄给号主私聊、第二次禁言、本人喊冤转号主、号主在私聊改判、记录与按编号改判")
             mark = len(posts)
             img = lambda name: f'<img src="http://127.0.0.1:{PORT}/img/{name}"/>'
-            tips = lambda: [b.get("content", "") for m, b in posts[mark:] if m == "message.create" and "奶龙" in b.get("content", "")]
+            group_says = lambda: [b for m, b in posts[mark:] if m == "message.create" and b.get("channel_id") == GROUP]
+            owner_gets = lambda: [b for m, b in posts[mark:] if m == "message.create" and b.get("channel_id") == f"private:{BOT}"]
+            tips = lambda: [b for b in group_says() if "本群不收" in b.get("content", "")]
+            reports = lambda: [b for b in owner_gets() if "拦下一张" in b.get("content", "")]
             first = await inject("message-created", "10030", img("pos"))
             await wait_for(lambda: any(m == "message.delete" and b.get("message_id") == first for m, b in posts[mark:]), "奶龙图被撤回", 600 if os.environ.get("E2E_NAILONG_DOWNLOAD") == "1" else 90)
             await wait_for(lambda: len(tips()) >= 1, "撤回后的提醒")
-            check("认出奶龙图、撤回并 @ 提醒", 'id="10030"' in tips()[0], tips()[0])
+            check("认出、撤回并 @ 提醒", 'id="10030"' in tips()[0]["content"], tips()[0]["content"])
+            await wait_for(lambda: len(reports()) >= 1, "抄给号主")
+            check("原图连同 #1 抄到号主私聊", "#1" in reports()[0]["content"] and "<img" in reports()[0]["content"], reports()[0]["content"][-200:])
             second = await inject("message-created", "10030", img("pos"))
             await wait_for(lambda: any(m == "guild.member.mute" and b.get("duration") == 600000 for m, b in posts[mark:]), "第二次禁言 10 分钟")
             check("第二次按阶梯禁言", any(m == "message.delete" and b.get("message_id") == second for m, b in posts[mark:]))
-            await wait_for(lambda: len(tips()) >= 2, "禁言提醒")
-            tip_id = [b["_id"] for m, b in posts[mark:] if m == "message.create" and "奶龙" in b.get("content", "")][-1]
-            await inject("message-created", ADMIN, f'<quote id="{tip_id}"/>/奶龙 不是')
+            await wait_for(lambda: len(tips()) >= 2 and len(reports()) >= 2, "禁言提醒与第二份抄送")
+            tip_id = tips()[-1]["_id"]
+            # 被拦的本人引用提醒喊冤：转给号主，不能自己给自己改判。
+            await inject("message-created", "10030", f'<quote id="{tip_id}"/>/奶龙 不是')
+            appeals = lambda: [b for b in owner_gets() if "🙋" in b.get("content", "")]
+            await wait_for(lambda: appeals() and any("转给号主" in b.get("content", "") for b in group_says()), "喊冤转给号主")
+            check("喊冤：转号主、没解禁", not any(m == "guild.member.mute" and b.get("duration") == 0 for m, b in posts[mark:]))
+            # 号主在自己的私聊里引用那条喊冤（QQ 客户端手发，satori-qq 标 manual_self）。
+            owner_chat = {"channel": {"id": f"private:{BOT}", "type": 1}, "guild": None, "satori_qq": {"manual_self": True}}
+            await inject("message-created", BOT, f'<quote id="{appeals()[0]["_id"]}"/>/奶龙 不是', extra=owner_chat)
             await wait_for(lambda: any(m == "guild.member.mute" and b.get("duration") == 0 for m, b in posts[mark:]), "解除禁言")
-            await wait_for(lambda: any("记住了" in t for t in tips()), "纠正回执")
-            check("引用提醒说「不是」：解禁并回执", True)
+            await wait_for(lambda: any("记住了" in b.get("content", "") for b in owner_gets()), "私聊回执")
+            check("私聊改判：撤掉提醒", any(m == "message.delete" and b.get("message_id") == tip_id for m, b in posts[mark:]))
+            await wait_for(lambda: any("认错了" in b.get("content", "") and 'id="10030"' in b.get("content", "") for b in group_says()), "群里告诉当事人")
+            check("私聊改判后群里说一声", True)
             later = len(posts)
             third = await inject("message-created", "10031", img("pos"))
             neg = await inject("message-created", "10032", img("neg"))
@@ -260,8 +274,17 @@ async def main():
             await wait_for(lambda: any("拦下" in t or "还没拦过" in t for t in sent_texts()[-3:]), "状态")
             status = next(t for t in reversed(sent_texts()) if "拦下" in t or "还没拦过" in t)
             check("/奶龙 状态：纠正掉的那次不计，另一次还在", "今天拦下 1 张" in status, status)
-            for text in [b.get("content", "") for m, b in posts[mark:] if m == "message.create"]:
-                print("     机器人：" + re.sub(r"\s+", " ", re.sub(r"<[^>]+>", lambda t: "@" if t.group(0).startswith("<at") else "", text))[:120])
+            await inject("message-created", ADMIN, "/奶龙 记录")
+            await wait_for(lambda: any("🐉 近几天拦下" in b.get("content", "") for b in group_says()), "记录")
+            history = next(b["content"] for b in reversed(group_says()) if "🐉 近几天拦下" in b.get("content", ""))
+            check("记录：两次都在，#2 标着已改判", "#1" in history and "#2" in history and "已改判" in history, history)
+            await inject("message-created", ADMIN, "/奶龙 不是 1")
+            await wait_for(lambda: any("#1 " in b.get("content", "") and "不计入次数" in b.get("content", "") for b in group_says()), "按编号改判")
+            check("不引用、按编号改判", True)
+            for b in [b for m, b in posts[mark:] if m == "message.create"]:
+                where = "私聊" if b.get("channel_id", "").startswith("private:") else "群里"
+                text = re.sub(r"<img[^>]*>", "[图]", b.get("content", ""))
+                print(f"     机器人（{where}）：" + re.sub(r"\s+", " ", re.sub(r"<[^>]+>", lambda t: "@" if t.group(0).startswith("<at") else "", text))[:140])
 
         print("2. 复读：两个不同的人接力同一句")
         before = len(sent_texts())

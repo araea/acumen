@@ -11,6 +11,10 @@
 //!   「奶龙 不是」：记住这张图不算、解除这次禁言、这次不计入次数。漏掉的图引用后发
 //!   「奶龙 是」，往后同类图就拦。任何人都能引用一张图发「奶龙 测」看分数。
 //!
+//! - **事后核对**：拦下的图另存一份、编上号，抄给号主（默认他自己的私聊）。当时没看群也能
+//!   在那里看到撤了什么，引用那条回「不是」就改判；「奶龙 记录」翻近几天的，「奶龙 不是 12」
+//!   按编号改判。被拦的本人引用提醒说「不是」，转给号主看，不能自己给自己改判。
+//!
 //! 不发「正在识别」之类的过程话；没认出来就什么都不说。
 
 use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
@@ -70,6 +74,12 @@ pub struct Config {
     remind_without_admin: bool,
     /// 也看商城表情（QQ 表情商店的动画表情）。
     check_mface: bool,
+    /// 撤下的图另抄一份给号主核对：没看群也知道拦了什么，认错了引用那条回「不是」。
+    report: bool,
+    /// 抄到哪：群号；或 `private:QQ号`；留空 = 号主自己的私聊。
+    report_target: String,
+    /// 拦下的图（连同记录）留几天，期间能翻记录、按编号改判。
+    keep_days: u64,
     /// 一条消息最多看几张图。
     max_images: usize,
     /// 动图最多抽查几帧。
@@ -96,6 +106,9 @@ impl Default for Config {
             ignore_users: Vec::new(),
             remind_without_admin: true,
             check_mface: true,
+            report: true,
+            report_target: String::new(),
+            keep_days: 7,
             max_images: 4,
             max_frames: 4,
             recall_text: "{at} 本群不收{kind}图，这张先撤了。".into(),
@@ -126,6 +139,14 @@ impl PluginConfig for Config {
         }
         if !(1..=24 * 30).contains(&self.window_hours) {
             return Err("window_hours 须在 1–720 之间".into());
+        }
+        let target = self.report_target.trim();
+        let id = target.strip_prefix("private:").unwrap_or(target);
+        if !target.is_empty() && id.parse::<u64>().is_err() {
+            return Err("report_target 写群号、private:QQ号，或留空（发到号主自己的私聊）".into());
+        }
+        if !(1..=30).contains(&self.keep_days) {
+            return Err("keep_days 须在 1–30 之间".into());
         }
         if !(1..=10).contains(&self.max_images) {
             return Err("max_images 须在 1–10 之间".into());
@@ -424,33 +445,30 @@ fn cache(key: String, verdict: &Verdict) {
     }
 }
 
-async fn inspect(picture: &Picture, config: &Config) -> Result<Verdict, String> {
+async fn fetch(picture: &Picture) -> Result<Vec<u8>, String> {
+    match &picture.mface {
+        None => download(&picture.url).await,
+        Some(mface) => {
+            let [gif, png] = mface.urls();
+            match download(&gif).await {
+                Ok(bytes) => Ok(bytes),
+                Err(_) => download(&png).await,
+            }
+        }
+    }
+}
+
+/// 看一张图。认出来要存档时用得着原图，顺带交回（商城表情按编号命中缓存时没下图，是 `None`）。
+async fn inspect(picture: &Picture, config: &Config) -> Result<(Verdict, Option<Vec<u8>>), String> {
     // 模型还没就绪（下载失败在冷却）就不必下图了。
     let encoder = model::encoder().await?;
     // 商城表情按编号记结论，再出现连图都不用下。
     let mface_key = picture.mface.as_ref().map(|m| format!("mface:{}", m.id));
     if let Some(verdict) = mface_key.as_deref().and_then(cached) {
-        return Ok(verdict);
+        return Ok((verdict, None));
     }
-    let bytes = match &picture.mface {
-        None => download(&picture.url).await?,
-        Some(mface) => {
-            let [gif, png] = mface.urls();
-            match download(&gif).await {
-                Ok(bytes) => bytes,
-                Err(_) => download(&png).await?,
-            }
-        }
-    };
-    let digest = format!("{:x}", md5::compute(&bytes));
-    let mut verdict = match cached(&digest) {
-        Some(verdict) => verdict,
-        None => {
-            let verdict = embed_and_judge(encoder, bytes, config).await?;
-            cache(digest, &verdict);
-            verdict
-        }
-    };
+    let bytes = fetch(picture).await?;
+    let mut verdict = judge_bytes(encoder, &bytes, config).await?;
     if let Some(mface) = &picture.mface {
         // 名字只补模型的漏：教过「不是」的照样放过。
         if verdict.kind == Kind::Other
@@ -464,6 +482,17 @@ async fn inspect(picture: &Picture, config: &Config) -> Result<Verdict, String> 
     if let Some(key) = mface_key {
         cache(key, &verdict);
     }
+    Ok((verdict, Some(bytes)))
+}
+
+/// 按内容摘要记结论：同一张图换了地址、换人转发，都不必再算。
+async fn judge_bytes(encoder: std::sync::Arc<model::Encoder>, bytes: &[u8], config: &Config) -> Result<Verdict, String> {
+    let digest = format!("{:x}", md5::compute(bytes));
+    if let Some(verdict) = cached(&digest) {
+        return Ok(verdict);
+    }
+    let verdict = embed_and_judge(encoder, bytes.to_vec(), config).await?;
+    cache(digest, &verdict);
     Ok(verdict)
 }
 
@@ -633,37 +662,188 @@ async fn record(offense: Offense, window: i64) -> usize {
         .await
 }
 
-/// 机器人提醒过的那几次：提醒消息 ID → 当时的情形。纠错时管理员引用的就是提醒。
-#[derive(Clone)]
-struct Incident {
+// ==================== 拦下的图 ====================
+
+/// 拦下（或提醒过）的一次。图在群里撤了就再也看不到，所以原图另存一份、编上号：
+/// 当时没看群，事后也能翻出来、按编号纠正，重启也不丢。
+#[derive(Serialize, Deserialize, Clone)]
+struct Caught {
+    /// 编号，指令里用（「奶龙 不是 12」）。
+    no: u64,
+    self_id: String,
     group: String,
+    #[serde(default)]
+    group_name: String,
     user: String,
-    /// 原图那条消息的 ID（多半已撤回）。
+    name: String,
+    /// 原图那条消息（多半已撤回）。
     message_id: String,
-    muted: bool,
-    verdict: Verdict,
+    /// 群里那条提醒；文案留空时没有。
+    tip: Option<String>,
+    /// 抄给号主核对的那条。
+    report: Option<String>,
+    /// 当事人喊冤时转给号主的那条。
+    appeal: Option<String>,
+    kind: Kind,
+    /// 凭什么认的：「模型 87%」「像教过的一张（95%）」「表情名写着奶龙」。
+    basis: String,
+    /// 做了什么：「撤回、禁言 10 分钟（第 2 次）」「只提醒（账号不是管理员）」。
+    action: String,
+    /// 禁言到什么时候；0 = 没禁言。
+    muted_until: i64,
+    at: i64,
+    /// 已改判「不是」。
+    cleared: bool,
 }
 
-static INCIDENTS: LazyLock<Mutex<VecDeque<(String, Incident)>>> = LazyLock::new(Default::default);
-const MAX_INCIDENTS: usize = 200;
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct CaughtLog {
+    next: u64,
+    items: Vec<Caught>,
+}
 
-fn remember_incident(tip_id: String, incident: Incident) {
-    let mut incidents = INCIDENTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    incidents.push_back((tip_id, incident));
-    while incidents.len() > MAX_INCIDENTS {
-        incidents.pop_front();
+static CAUGHT: JsonState<CaughtLog> = JsonState::new(LOG_TARGET, "nailong", "caught.json", "奶龙拦截记录");
+const MAX_CAUGHT: usize = 500;
+
+fn caught_dir() -> Option<std::path::PathBuf> {
+    crate::storage::data_path(<Config as PluginConfig>::NAME).ok().map(|dir| dir.join("caught"))
+}
+
+fn caught_file(no: u64) -> Option<std::path::PathBuf> {
+    caught_dir().map(|dir| dir.join(no.to_string()))
+}
+
+/// 记下这一次、存好原图，返回编号。过了保留期的连图一起清掉。
+async fn save_caught(mut caught: Caught, image: &[u8], keep_days: u64) -> u64 {
+    let keep = i64::try_from(keep_days * 86400).unwrap_or(7 * 86400);
+    let (no, expired) = CAUGHT
+        .with(|log| {
+            log.next = log.next.max(log.items.iter().map(|c| c.no).max().unwrap_or(0)) + 1;
+            caught.no = log.next;
+            let mut expired = Vec::new();
+            log.items.retain(|c| {
+                let keep = caught.at - c.at < keep;
+                if !keep {
+                    expired.push(c.no);
+                }
+                keep
+            });
+            log.items.push(caught);
+            while log.items.len() > MAX_CAUGHT {
+                expired.push(log.items.remove(0).no);
+            }
+            (log.next, expired)
+        })
+        .await;
+    if let Some(path) = caught_file(no)
+        && let Err(error) = crate::storage::write_atomic_async(path, image.to_vec()).await
+    {
+        warn!(target: LOG_TARGET, "拦下的图 #{no} 没存上：{error}");
+    }
+    for old in expired {
+        if let Some(path) = caught_file(old) {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    no
+}
+
+async fn update_caught(no: u64, change: impl FnOnce(&mut Caught)) {
+    CAUGHT
+        .with(|log| {
+            if let Some(caught) = log.items.iter_mut().find(|c| c.no == no) {
+                change(caught);
+            }
+        })
+        .await;
+}
+
+/// 按编号，或按引用的那条（提醒、抄送、喊冤、原图）找那一次。`group` 给了就只在这个群里找。
+async fn find_caught(group: Option<&str>, no: Option<u64>, quoted: Option<&str>) -> Option<Caught> {
+    CAUGHT
+        .with(|log| {
+            log.items
+                .iter()
+                .rev()
+                .filter(|c| group.is_none_or(|g| c.group == g))
+                .find(|c| match (no, quoted) {
+                    (Some(no), _) => c.no == no,
+                    (None, Some(id)) => {
+                        c.message_id == id
+                            || [&c.tip, &c.report, &c.appeal].iter().any(|m| m.as_deref() == Some(id))
+                    }
+                    (None, None) => false,
+                })
+                .cloned()
+        })
+        .await
+}
+
+async fn caught_image(no: u64) -> Option<Vec<u8>> {
+    tokio::fs::read(caught_file(no)?).await.ok()
+}
+
+/// 抄送、喊冤发到哪：(群号, 私聊对象)。留空就是号主自己的私聊（登录账号）。
+fn report_place(ctx: &Context, config: &Config) -> Option<(Option<String>, Option<String>)> {
+    let target = config.report_target.trim();
+    if let Some(user) = target.strip_prefix("private:") {
+        return Some((None, Some(user.to_string())));
+    }
+    if !target.is_empty() {
+        return Some((Some(target.to_string()), None));
+    }
+    let me = ctx.bot.self_id();
+    (!me.is_empty()).then_some((None, Some(me)))
+}
+
+/// 指令怎么写：带上第一个指令前缀，照着就能发。
+fn spelled(ctx: &Context, rest: &str) -> String {
+    let prefix = command::get_prefixes(ctx).into_iter().next().unwrap_or_default();
+    format!("「{prefix}奶龙 {rest}」")
+}
+
+fn when(at: i64) -> String {
+    let Some(time) = chrono::DateTime::from_timestamp(at, 0).map(|t| t.with_timezone(&crate::clock::beijing())) else {
+        return String::new();
+    };
+    let today = crate::clock::beijing_now().date_naive();
+    match (today - time.date_naive()).num_days() {
+        0 => time.format("今天 %H:%M").to_string(),
+        1 => time.format("昨天 %H:%M").to_string(),
+        _ => time.format("%m-%d %H:%M").to_string(),
     }
 }
 
-/// 按提醒或原图的消息 ID 找那一次。
-fn find_incident(group: &str, message_id: &str) -> Option<(String, Incident)> {
-    INCIDENTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .rev()
-        .find(|(tip, incident)| incident.group == group && (tip == message_id || incident.message_id == message_id))
-        .cloned()
+fn group_label(caught: &Caught) -> String {
+    if caught.group_name.is_empty() {
+        format!("群 {}", caught.group)
+    } else {
+        format!("{}（{}）", caught.group_name, caught.group)
+    }
+}
+
+/// 抄给号主：原图 + 这次的情形 + 认错了怎么纠正。
+async fn report(ctx: &Context, writer: &LockedWriter, config: &Config, caught: &Caught, image: &[u8]) {
+    let Some((group, user)) = report_place(ctx, config) else {
+        return;
+    };
+    let text = format!(
+        "\n🐉 #{} 拦下一张{}图\n{} · {}（{}）\n{} · {}\n认错了引用这条回{}",
+        caught.no,
+        caught.kind.name(),
+        group_label(caught),
+        caught.name,
+        caught.user,
+        caught.basis,
+        caught.action,
+        spelled(ctx, "不是"),
+    );
+    let message = Message::new().image(format!("base64://{}", STANDARD.encode(image))).text(text);
+    match send_msg_id(ctx, writer.clone(), group.as_deref(), user.as_deref(), message).await {
+        Ok(Some(id)) => update_caught(caught.no, |c| c.report = Some(id)).await,
+        Ok(None) => {}
+        Err(error) => warn!(target: LOG_TARGET, "#{} 没抄送出去：{error}", caught.no),
+    }
 }
 
 // ==================== 事件 ====================
@@ -673,17 +853,27 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         let Some(message) = ctx.as_message() else {
             return Ok(Some(ctx));
         };
+        let config = get_config_or_default::<Config>(&ctx);
         let Some(group) = message.group_id().filter(|id| !id.is_empty()).map(str::to_owned) else {
+            // 私聊里只接号主（与 ctl 管理员）：核对抄过来的图、按编号纠正。
+            if crate::plugins::ctl::is_manager(&ctx)
+                && let Some(matched) = COMMANDS.iter().find_map(|word| command::match_word_command(&ctx, word))
+            {
+                let place = Place { group: None, user: Some(message.user_id().to_string()) };
+                if run_command(&ctx, &writer, &config, &place, matched).await? {
+                    return Ok(None);
+                }
+            }
             return Ok(Some(ctx));
         };
-        let config = get_config_or_default::<Config>(&ctx);
         if !config.channel.allows_group(&group) {
             return Ok(Some(ctx));
         }
-        if let Some(matched) = COMMANDS.iter().find_map(|word| command::match_word_command(&ctx, word))
-            && run_command(&ctx, &writer, &config, &group, matched).await?
-        {
-            return Ok(None);
+        if let Some(matched) = COMMANDS.iter().find_map(|word| command::match_word_command(&ctx, word)) {
+            let place = Place { group: Some(group.clone()), user: None };
+            if run_command(&ctx, &writer, &config, &place, matched).await? {
+                return Ok(None);
+            }
         }
         let user = message.user_id().to_string();
         if user.is_empty() || user == ctx.bot.self_id() || config.ignore_users.contains(&user) {
@@ -702,18 +892,22 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
             debug!(target: LOG_TARGET, "排队的图太多，群 {group} 这条先不看");
             return Ok(Some(ctx));
         }
-        let message_id = message.message_id().to_string();
-        let name = message.sender_name().to_string();
+        let target = Target {
+            group,
+            group_name: message.0.get_str("group_name").unwrap_or_default().to_string(),
+            user,
+            name: message.sender_name().to_string(),
+            message_id: message.message_id().to_string(),
+        };
         let (task_ctx, task_writer) = (ctx.clone(), writer.clone());
         let queued = Queued::enter();
         tokio::spawn(async move {
             let found = scan(&pictures, &config).await;
             drop(queued);
-            if let Some(verdict) = found {
-                let target = Target { group, user, name, message_id };
-                if let Err(error) = punish(&task_ctx, &task_writer, &config, &target, verdict).await {
-                    warn!(target: LOG_TARGET, "群 {} 处理奶龙图失败：{error}", target.group);
-                }
+            if let Some(found) = found
+                && let Err(error) = punish(&task_ctx, &task_writer, &config, &target, found).await
+            {
+                warn!(target: LOG_TARGET, "群 {} 处理奶龙图失败：{error}", target.group);
             }
         });
         Ok(Some(ctx))
@@ -728,11 +922,18 @@ fn pictures(segments: &[OwnedValue], config: &Config) -> Vec<Picture> {
         .collect()
 }
 
-/// 一条消息里的图挨个看，认出一张就停。
-async fn scan(pictures: &[Picture], config: &Config) -> Option<Verdict> {
+/// 一条消息里的图挨个看，认出一张就停。交回结论与原图。
+async fn scan(pictures: &[Picture], config: &Config) -> Option<(Verdict, Vec<u8>)> {
     for picture in pictures {
         match inspect(picture, config).await {
-            Ok(verdict) if verdict.hits(config) => return Some(verdict),
+            Ok((verdict, bytes)) if verdict.hits(config) => {
+                let bytes = match bytes {
+                    Some(bytes) => bytes,
+                    // 按编号命中缓存时没下图；存档要用，补下一次。
+                    None => fetch(picture).await.unwrap_or_default(),
+                };
+                return Some((verdict, bytes));
+            }
             Ok(_) => {}
             Err(error) => debug!(target: LOG_TARGET, "这张图没看成：{error}"),
         }
@@ -742,89 +943,121 @@ async fn scan(pictures: &[Picture], config: &Config) -> Option<Verdict> {
 
 struct Target {
     group: String,
+    group_name: String,
     user: String,
     name: String,
     message_id: String,
 }
 
-async fn punish(ctx: &Context, writer: &LockedWriter, config: &Config, target: &Target, verdict: Verdict) -> Result<(), PluginError> {
-    let Target { group, user, name, message_id } = target;
-    let kind = verdict.kind;
-    let score = verdict.taught.map_or_else(|| verdict.scores.of(kind), |(_, s)| s);
-    let how = match verdict.taught {
-        Some(_) => "，像教过的样本",
-        None if verdict.by_name => "，表情名写着",
-        None => "",
-    };
-    let able = api::is_staff(&api::own_role(ctx, writer.clone(), group).await);
-    info!(
-        target: LOG_TARGET,
-        "群 {group} 的 {name}（{user}）发了{}图（{:.0}%{how}）",
-        kind.name(),
-        score * 100.0,
-    );
-    let vars = |count: usize, duration: u64| Vars { name, kind: kind.name(), count, duration: duration_text(duration) };
-    if !able {
-        if !config.remind_without_admin || config.remind_text.trim().is_empty() {
-            return Ok(());
-        }
-        let message = Message::new().reply(message_id);
-        let message = render_into(message, &config.remind_text, user, &vars(0, 0));
-        if let Some(tip) = send_msg_id(ctx, writer.clone(), Some(group), None, message).await? {
-            remember_incident(tip, incident(target, false, verdict));
-        }
-        return Ok(());
+fn basis(verdict: &Verdict) -> String {
+    match verdict.taught {
+        Some((_, similarity)) => format!("像教过的一张（{:.0}%）", similarity * 100.0),
+        None if verdict.by_name => format!("表情名写着{}", verdict.kind.name()),
+        None => format!("模型 {:.0}%", verdict.scores.of(verdict.kind) * 100.0),
     }
-    if config.recall
-        && let Err(error) = api::delete_msg_in(ctx, writer.clone(), group, message_id).await
-    {
-        warn!(target: LOG_TARGET, "群 {group} 撤回 {message_id} 失败：{error}");
-    }
-    let now = chrono::Utc::now().timestamp();
-    let window = i64::try_from(config.window_hours * 3600).unwrap_or(86400);
-    let offense = Offense {
-        self_id: ctx.bot.self_id(),
-        group: group.clone(),
-        user: user.clone(),
-        message_id: message_id.clone(),
-        kind,
-        at: now,
-    };
-    let count = record(offense, window).await;
-    let duration = config.mute_seconds[(count - 1).min(config.mute_seconds.len() - 1)];
-    let mut muted = false;
-    if duration > 0 {
-        match writer
-            .call::<_, serde_json::Value>(
-                ctx,
-                "guild.member.mute",
-                json!({"guild_id": group, "user_id": user, "duration": duration * 1000}),
-            )
-            .await
-        {
-            Ok(_) => muted = true,
-            Err(error) => warn!(target: LOG_TARGET, "群 {group} 禁言 {user} 失败：{error}"),
-        }
-    }
-    let template = if muted { &config.mute_text } else { &config.recall_text };
-    if template.trim().is_empty() {
-        return Ok(());
-    }
-    let message = render_into(Message::new(), template, user, &vars(count, duration));
-    if let Some(tip) = send_msg_id(ctx, writer.clone(), Some(group), None, message).await? {
-        remember_incident(tip, incident(target, muted, verdict));
-    }
-    Ok(())
 }
 
-fn incident(target: &Target, muted: bool, verdict: Verdict) -> Incident {
-    Incident {
-        group: target.group.clone(),
-        user: target.user.clone(),
-        message_id: target.message_id.clone(),
-        muted,
-        verdict,
+async fn punish(
+    ctx: &Context,
+    writer: &LockedWriter,
+    config: &Config,
+    target: &Target,
+    (verdict, image): (Verdict, Vec<u8>),
+) -> Result<(), PluginError> {
+    let Target { group, user, name, message_id, .. } = target;
+    let kind = verdict.kind;
+    let basis = basis(&verdict);
+    let able = api::is_staff(&api::own_role(ctx, writer.clone(), group).await);
+    info!(target: LOG_TARGET, "群 {group} 的 {name}（{user}）发了{}图（{basis}）", kind.name());
+    let vars = |count: usize, duration: u64| Vars { name, kind: kind.name(), count, duration: duration_text(duration) };
+    let now = chrono::Utc::now().timestamp();
+    let (tip, action, muted_until) = if able {
+        let recalled = config.recall
+            && match api::delete_msg_in(ctx, writer.clone(), group, message_id).await {
+                Ok(()) => true,
+                Err(error) => {
+                    warn!(target: LOG_TARGET, "群 {group} 撤回 {message_id} 失败：{error}");
+                    false
+                }
+            };
+        let window = i64::try_from(config.window_hours * 3600).unwrap_or(86400);
+        let offense = Offense {
+            self_id: ctx.bot.self_id(),
+            group: group.clone(),
+            user: user.clone(),
+            message_id: message_id.clone(),
+            kind,
+            at: now,
+        };
+        let count = record(offense, window).await;
+        let duration = config.mute_seconds[(count - 1).min(config.mute_seconds.len() - 1)];
+        let mut muted = false;
+        if duration > 0 {
+            match writer
+                .call::<_, serde_json::Value>(
+                    ctx,
+                    "guild.member.mute",
+                    json!({"guild_id": group, "user_id": user, "duration": duration * 1000}),
+                )
+                .await
+            {
+                Ok(_) => muted = true,
+                Err(error) => warn!(target: LOG_TARGET, "群 {group} 禁言 {user} 失败：{error}"),
+            }
+        }
+        let mut done = Vec::new();
+        if recalled {
+            done.push("撤回".to_string());
+        }
+        if muted {
+            done.push(format!("禁言 {}", duration_text(duration)));
+        }
+        if done.is_empty() {
+            done.push("只提醒".to_string());
+        }
+        let action = format!("{}（{} 小时内第 {count} 次）", done.join("、"), config.window_hours);
+        let template = if muted { &config.mute_text } else { &config.recall_text };
+        let tip = if template.trim().is_empty() {
+            None
+        } else {
+            let message = render_into(Message::new(), template, user, &vars(count, duration));
+            send_msg_id(ctx, writer.clone(), Some(group), None, message).await?
+        };
+        let muted_until = if muted { now + i64::try_from(duration).unwrap_or(0) } else { 0 };
+        (tip, action, muted_until)
+    } else {
+        let tip = if config.remind_without_admin && !config.remind_text.trim().is_empty() {
+            let message = render_into(Message::new().reply(message_id), &config.remind_text, user, &vars(0, 0));
+            send_msg_id(ctx, writer.clone(), Some(group), None, message).await?
+        } else {
+            None
+        };
+        (tip, "只提醒（账号不是管理员）".to_string(), 0)
+    };
+    let caught = Caught {
+        no: 0,
+        self_id: ctx.bot.self_id(),
+        group: group.clone(),
+        group_name: target.group_name.clone(),
+        user: user.clone(),
+        name: name.clone(),
+        message_id: message_id.clone(),
+        tip,
+        report: None,
+        appeal: None,
+        kind,
+        basis,
+        action,
+        muted_until,
+        at: now,
+        cleared: false,
+    };
+    let no = save_caught(caught.clone(), &image, config.keep_days).await;
+    // 只提醒的那种，图还在群里，看得见；撤了的才需要抄一份。
+    if config.report && able && !image.is_empty() {
+        report(ctx, writer, config, &Caught { no, ..caught }, &image).await;
     }
+    Ok(())
 }
 
 struct Vars<'a> {
@@ -857,32 +1090,53 @@ fn render_into(mut message: Message, template: &str, user: &str, vars: &Vars) ->
 
 // ==================== 指令 ====================
 
+/// 指令从哪来、往哪回：群里（`group`），或私聊（`user`，号主与 ctl 管理员）。
+struct Place {
+    group: Option<String>,
+    user: Option<String>,
+}
+
 async fn run_command(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    group: &str,
+    place: &Place,
     matched: CommandMatch,
 ) -> Result<bool, PluginError> {
     let Some(message) = ctx.as_message() else {
         return Ok(false);
     };
     let message_id = message.message_id().to_string();
-    let say = |text: String| send_msg(ctx, writer.clone(), Some(group), None, Message::new().reply(&message_id).text(text));
+    let say = |text: String| {
+        send_msg(
+            ctx,
+            writer.clone(),
+            place.group.as_deref(),
+            place.user.as_deref(),
+            Message::new().reply(&message_id).text(text),
+        )
+    };
     let arg = command::extract_text_arg(&matched.args);
     let word = arg.split_whitespace().next().unwrap_or("");
     let rest = arg[word.len()..].trim();
+    let number = rest.trim_start_matches(['#', '＃']).parse::<u64>().ok();
     let attached = pictures(&matched.args, config);
     let wants_image = matched.reply_id.is_some() || !attached.is_empty();
+    let ask = Ask { place, matched: &matched, attached, number };
     match word {
-        "" | "测" | "测试" | "看看" if wants_image => test(ctx, writer, config, group, &matched, attached, &say).await?,
-        "" | "状态" | "帮助" => say(status(ctx, writer, config, group).await).await?,
+        "" | "测" | "测试" | "看看" if wants_image || number.is_some() => test(ctx, writer, config, ask, &say).await?,
+        "记录" | "最近" => say(history(ctx, place).await).await?,
+        "" | "状态" | "帮助" => match &place.group {
+            Some(group) => say(status(ctx, writer, config, group).await).await?,
+            None => say(history(ctx, place).await).await?,
+        },
+        "看" | "图" if place.group.is_none() => show(ctx, writer, place, number, &say).await?,
         "是" | "算" | "拦" => {
             let explicit = target_kind(rest);
-            correct(ctx, writer, config, group, &matched, attached, Correction::Is(explicit), &say).await?;
+            correct(ctx, writer, config, ask, Correction::Is(explicit), &say).await?;
         }
-        "不是" | "不算" | "放过" => correct(ctx, writer, config, group, &matched, attached, Correction::IsNot, &say).await?,
-        "忘了" | "忘记" => correct(ctx, writer, config, group, &matched, attached, Correction::Forget, &say).await?,
+        "不是" | "不算" | "放过" => correct(ctx, writer, config, ask, Correction::IsNot, &say).await?,
+        "忘了" | "忘记" => correct(ctx, writer, config, ask, Correction::Forget, &say).await?,
         // 没有指令前缀时「奶龙 好可爱」只是在聊天，不接话。
         _ if command::get_prefixes(ctx).iter().all(String::is_empty) => return Ok(false),
         _ => say(format!("❌ 不认识「{word}」\n{}", usage())).await?,
@@ -890,8 +1144,19 @@ async fn run_command(
     Ok(true)
 }
 
+/// 一条指令问的是哪张图：编号、引用、附图。
+struct Ask<'a> {
+    place: &'a Place,
+    matched: &'a CommandMatch,
+    attached: Vec<Picture>,
+    number: Option<u64>,
+}
+
 fn usage() -> String {
-    "引用一张图或表情发「奶龙 测」看分数\n管理员引用图或机器人的提醒发「奶龙 是」「奶龙 不是」纠正，「奶龙 忘了」撤销".into()
+    "引用一张图或表情发「奶龙 测」看分数\n\
+     管理员引用图或机器人的提醒发「奶龙 是」「奶龙 不是」纠正，「奶龙 忘了」撤销\n\
+     没看群也不怕：「奶龙 记录」翻近几天拦下的，「奶龙 不是 编号」改判"
+        .into()
 }
 
 async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str) -> String {
@@ -919,7 +1184,7 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         .map(|s| if *s == 0 { "只撤回".to_string() } else { format!("禁言 {}", duration_text(*s)) })
         .collect::<Vec<_>>()
         .join(" → ");
-    let lines = [
+    let mut lines = vec![
         format!("🐉 奶龙拦截 · 拦{}", config.kinds_text()),
         if able {
             format!("处理：{ladder}（{} 小时内累计）", config.window_hours)
@@ -932,30 +1197,107 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             format!("今天拦下 {blocked} 张、{people} 人 · 教过 {taught} 张 · 阈值 {:.0}%", config.threshold * 100.0)
         },
         format!("模型：{}", model::status()),
-        String::new(),
-        usage(),
     ];
+    if config.report {
+        lines.push("撤下的图另抄一份给号主核对".to_string());
+    }
+    lines.push(String::new());
+    lines.push(usage());
     lines.join("\n")
 }
 
-/// 引用或附带的图：先找机器人提醒过的那次（图已撤回），再取引用那条里的图、附带的图。
+/// 近几天拦下的：群里只列本群，私聊列全部。最新的在前，最多十条。
+async fn history(ctx: &Context, place: &Place) -> String {
+    let me = ctx.bot.self_id();
+    let items: Vec<Caught> = CAUGHT
+        .with(|log| {
+            log.items
+                .iter()
+                .filter(|c| c.self_id == me && place.group.as_ref().is_none_or(|g| &c.group == g))
+                .cloned()
+                .collect()
+        })
+        .await;
+    if items.is_empty() {
+        return "📭 近几天没拦过".into();
+    }
+    let mut lines = vec![format!("🐉 近几天拦下 {} 次{}", items.len(), if items.len() > 10 { "，列最近 10 次" } else { "" })];
+    for c in items.iter().rev().take(10) {
+        let place_text = if place.group.is_none() { format!(" · {}", group_label(c)) } else { String::new() };
+        let cleared = if c.cleared { " · 已改判不是" } else { "" };
+        lines.push(format!(
+            "#{} {}{place_text}\n   {}（{}）· {} · {} · {}{cleared}",
+            c.no,
+            when(c.at),
+            c.name,
+            c.user,
+            c.kind.name(),
+            c.basis,
+            c.action
+        ));
+    }
+    lines.push(String::new());
+    lines.push(format!("认错了发{}", spelled(ctx, "不是 编号")));
+    if place.group.is_none() {
+        lines.push(format!("看图发{}", spelled(ctx, "看 编号")));
+    }
+    lines.join("\n")
+}
+
+/// 私聊里按编号看那张图。
+async fn show<F>(
+    ctx: &Context,
+    writer: &LockedWriter,
+    place: &Place,
+    number: Option<u64>,
+    say: &impl Fn(String) -> F,
+) -> Result<(), PluginError>
+where
+    F: Future<Output = Result<(), crate::adapters::satori::BotError>>,
+{
+    let Some(no) = number else {
+        return say(format!("❌ 写上编号，比如{}", spelled(ctx, "看 12"))).await;
+    };
+    let (Some(caught), Some(image)) = (find_caught(None, Some(no), None).await, caught_image(no).await) else {
+        return say(format!("📭 没有 #{no}，或者过了保留期")).await;
+    };
+    let text = format!(
+        "\n#{} {} · {} · {}（{}）\n{} · {}",
+        caught.no,
+        when(caught.at),
+        group_label(&caught),
+        caught.name,
+        caught.user,
+        caught.basis,
+        caught.action
+    );
+    let message = Message::new().image(format!("base64://{}", STANDARD.encode(&image))).text(text);
+    send_msg(ctx, writer.clone(), None, place.user.as_deref(), message).await?;
+    Ok(())
+}
+
+/// 问的是哪张：先认拦下过的那次（按编号，或引用了提醒、抄送、喊冤），图从存档里取；
+/// 再取引用那条里的图、附带的图。
 async fn subject(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    group: &str,
-    matched: &CommandMatch,
-    attached: Vec<Picture>,
-) -> Result<(Option<(String, Incident)>, Vec<Verdict>), String> {
-    if let Some(reply) = &matched.reply_id
-        && let Some(found) = find_incident(group, reply)
-    {
-        let verdict = found.1.verdict.clone();
-        return Ok((Some(found), vec![verdict]));
+    ask: &Ask<'_>,
+) -> Result<(Option<Caught>, Vec<Verdict>), String> {
+    let scope = ask.place.group.as_deref();
+    if ask.number.is_some() || ask.matched.reply_id.is_some() {
+        if let Some(caught) = find_caught(scope, ask.number, ask.matched.reply_id.as_deref()).await {
+            let image = caught_image(caught.no).await.ok_or("那张图没存下来，或者过了保留期")?;
+            let verdict = judge_bytes(model::encoder().await?, &image, config).await?;
+            return Ok((Some(caught), vec![verdict]));
+        }
+        if let Some(no) = ask.number {
+            return Err(format!("{}没有 #{no}，或者过了保留期", if scope.is_some() { "本群" } else { "" }));
+        }
     }
-    let mut pictures = attached;
+    let mut pictures = ask.attached.clone();
     if pictures.is_empty()
-        && let Some(reply) = &matched.reply_id
+        && let Some(reply) = &ask.matched.reply_id
     {
         let quoted = api::get_msg(ctx, writer.clone(), reply).await.map_err(|_| "引用的那条读不到了，可能已撤回或太久".to_string())?;
         // 指令里总要看商城表情：本群不拦，也能测分数、教样本。
@@ -973,7 +1315,7 @@ async fn subject(
     }
     let mut verdicts = Vec::new();
     for picture in &pictures {
-        verdicts.push(inspect(picture, config).await?);
+        verdicts.push(inspect(picture, config).await?.0);
     }
     Ok((None, verdicts))
 }
@@ -982,15 +1324,13 @@ async fn test<F>(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    group: &str,
-    matched: &CommandMatch,
-    attached: Vec<Picture>,
+    ask: Ask<'_>,
     say: &impl Fn(String) -> F,
 ) -> Result<(), PluginError>
 where
     F: Future<Output = Result<(), crate::adapters::satori::BotError>>,
 {
-    let verdicts = match subject(ctx, writer, config, group, matched, attached).await {
+    let verdicts = match subject(ctx, writer, config, &ask).await {
         Ok((_, verdicts)) => verdicts,
         Err(error) => return say(format!("❌ {error}")).await,
     };
@@ -1023,14 +1363,11 @@ enum Correction {
     Forget,
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn correct<F>(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    group: &str,
-    matched: &CommandMatch,
-    attached: Vec<Picture>,
+    ask: Ask<'_>,
     correction: Correction,
     say: &impl Fn(String) -> F,
 ) -> Result<(), PluginError>
@@ -1040,18 +1377,35 @@ where
     let Some(message) = ctx.as_message() else {
         return Ok(());
     };
-    if !(crate::plugins::ctl::is_manager(ctx) || message.sender_role().is_some_and(api::is_staff)) {
+    if ask.matched.reply_id.is_none() && ask.attached.is_empty() && ask.number.is_none() {
+        return say(format!(
+            "❌ 先引用那张图或机器人的那条提醒再发这句；图撤了找不到，发{}看编号",
+            spelled(ctx, "记录")
+        ))
+        .await;
+    }
+    let by = message.user_id();
+    // 私聊进得来的只有号主与 ctl 管理员。
+    let allowed = ask.place.group.is_none()
+        || crate::plugins::ctl::is_manager(ctx)
+        || message.sender_role().is_some_and(api::is_staff);
+    if !allowed {
+        // 被拦的本人说「不是」：转给号主看，不让他自己给自己改判。
+        if matches!(correction, Correction::IsNot)
+            && let Some(caught) =
+                find_caught(ask.place.group.as_deref(), ask.number, ask.matched.reply_id.as_deref()).await
+            && caught.user == by
+        {
+            return say(appeal(ctx, writer, config, &caught).await).await;
+        }
         return say("❌ 只有群主、管理员能纠正\n想看分数可以发「奶龙 测」".into()).await;
     }
-    if matched.reply_id.is_none() && attached.is_empty() {
-        return say("❌ 先引用那张图，或机器人的那条提醒，再发这句".into()).await;
-    }
-    let (incident, verdicts) = match subject(ctx, writer, config, group, matched, attached).await {
+    let (caught, verdicts) = match subject(ctx, writer, config, &ask).await {
         Ok(found) => found,
         Err(error) => return say(format!("❌ {error}")).await,
     };
     let vectors: Vec<Vec<f32>> = verdicts.iter().flat_map(|v| v.vectors.iter().cloned()).collect();
-    let by = message.user_id();
+    let group = ask.place.group.as_deref().or(caught.as_ref().map(|c| c.group.as_str())).unwrap_or_default();
     let text = match correction {
         Correction::Is(explicit) => {
             let kind = explicit.unwrap_or_else(|| {
@@ -1065,8 +1419,8 @@ where
         Correction::IsNot => {
             let total = teach(Kind::Other, &vectors, by, group).await;
             let mut text = format!("✅ 记住了：这类图不拦\n已教 {total} 张；记错了发「奶龙 忘了」");
-            if let Some((tip, incident)) = incident {
-                text.push_str(&undo(ctx, writer, group, &tip, &incident).await);
+            if let Some(caught) = caught.filter(|c| !c.cleared) {
+                text.push_str(&undo(ctx, writer, &caught, ask.place.group.is_none()).await);
             }
             text
         }
@@ -1078,45 +1432,100 @@ where
     say(text).await
 }
 
-/// 「不是」的善后：解除这次禁言、这次不计入次数。
-async fn undo(ctx: &Context, writer: &LockedWriter, group: &str, tip: &str, incident: &Incident) -> String {
+/// 被拦的本人喊冤：把这次连同原图转给号主（引用当初那条抄送），每次只转一回。
+async fn appeal(ctx: &Context, writer: &LockedWriter, config: &Config, caught: &Caught) -> String {
+    if caught.cleared {
+        return "这次已经改判过了，不算你的".into();
+    }
+    if caught.appeal.is_some() {
+        return "已经转给号主了，认错了会解除禁言、不计次数".into();
+    }
+    let Some((group, user)) = report_place(ctx, config).filter(|_| config.report) else {
+        return "❌ 只有群主、管理员能纠正，找他们说一声".into();
+    };
+    let mut message = Message::new();
+    if let Some(report) = &caught.report {
+        message = message.reply(report);
+    } else if let Some(image) = caught_image(caught.no).await {
+        message = message.image(format!("base64://{}", STANDARD.encode(&image)));
+    }
+    let message = message.text(format!(
+        "\n🙋 #{} {}（{}）说这张不是{}图\n{} · {} · {}\n认错了引用这条回{}",
+        caught.no,
+        caught.name,
+        caught.user,
+        caught.kind.name(),
+        group_label(caught),
+        caught.basis,
+        caught.action,
+        spelled(ctx, "不是"),
+    ));
+    match send_msg_id(ctx, writer.clone(), group.as_deref(), user.as_deref(), message).await {
+        Ok(id) => {
+            update_caught(caught.no, |c| c.appeal = Some(id.unwrap_or_default())).await;
+            "已转给号主核对，认错了会解除禁言、不计次数".into()
+        }
+        Err(error) => {
+            warn!(target: LOG_TARGET, "#{} 喊冤没转出去：{error}", caught.no);
+            "❌ 没转出去，找群主、管理员说一声吧".into()
+        }
+    }
+}
+
+/// 「不是」的善后：解除这次禁言、这次不计入次数、撤回那条提醒。
+/// 在私聊里改判的，群里没人看见，补一句给当事人。
+async fn undo(ctx: &Context, writer: &LockedWriter, caught: &Caught, from_private: bool) -> String {
+    let group = caught.group.as_str();
     let mut done = Vec::new();
     LEDGER
         .with(|ledger| {
-            ledger.offenses.retain(|o| !(o.group == incident.group && o.message_id == incident.message_id));
+            ledger.offenses.retain(|o| !(o.group == caught.group && o.message_id == caught.message_id));
         })
         .await;
-    if incident.muted {
+    let mut unmuted = false;
+    if caught.muted_until > chrono::Utc::now().timestamp() {
         match writer
-            .call::<_, serde_json::Value>(
-                ctx,
-                "guild.member.mute",
-                json!({"guild_id": group, "user_id": incident.user, "duration": 0}),
-            )
+            .call::<_, serde_json::Value>(ctx, "guild.member.mute", json!({"guild_id": group, "user_id": caught.user, "duration": 0}))
             .await
         {
-            Ok(_) => done.push("解除了禁言".to_string()),
+            Ok(_) => {
+                unmuted = true;
+                done.push("解除了禁言".to_string());
+            }
             Err(error) => {
-                warn!(target: LOG_TARGET, "群 {group} 解除 {} 的禁言失败：{error}", incident.user);
+                warn!(target: LOG_TARGET, "群 {group} 解除 {} 的禁言失败：{error}", caught.user);
                 done.push("禁言没能解除，请手动解一下".to_string());
             }
         }
     }
-    if api::delete_msg_in(ctx, writer.clone(), group, tip).await.is_ok() {
+    if let Some(tip) = &caught.tip
+        && api::delete_msg_in(ctx, writer.clone(), group, tip).await.is_ok()
+    {
         done.push("撤回了那条提醒".to_string());
     }
-    INCIDENTS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|(id, _)| id != tip);
+    update_caught(caught.no, |c| c.cleared = true).await;
     done.push("这次不计入次数".to_string());
-    format!("\n{}", done.join("、"))
+    if from_private && (caught.tip.is_some() || unmuted) {
+        let tail = if unmuted { "，禁言已解除" } else { "" };
+        let message = Message::new()
+            .at(&caught.user)
+            .text(format!(" 刚才撤的那张认错了，不是{}图{tail}，不计次数。", caught.kind.name()));
+        if let Err(error) = send_msg(ctx, writer.clone(), Some(group), None, message).await {
+            warn!(target: LOG_TARGET, "群 {group} 改判通知没发出去：{error}");
+        }
+        done.push("在群里说了一声".to_string());
+    }
+    format!("\n#{} {}", caught.no, done.join("、"))
 }
 
 /// 启动（或刚被打开）时：样本读进内存，识图模型在后台先下好、载好，第一张图不必等。
 pub fn init(_ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
         SAMPLES.with(|state| refresh_taught(state)).await;
+        CAUGHT.preload().await;
+        if let Some(dir) = caught_dir() {
+            let _ = tokio::fs::create_dir_all(dir).await;
+        }
         tokio::spawn(async {
             // 失败已在 encoder() 里记了日志，第一张图到来时还会再试。
             let _ = model::encoder().await;
