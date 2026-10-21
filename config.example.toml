@@ -167,7 +167,7 @@ reject_message = "答案不对，看清入群问题再来～"
 # 防撤回：有人撤回消息时把原文转存到 target。连撤多条合成一条合并转发。
 [anti_recall]
 enabled = false
-# 存到哪：群号；或 private:QQ号；留空 = 私聊发给 ctl.admins 里的第一位。
+# 存到哪：群号；或 private:QQ号；留空 = 私聊发给 ctl.admins 里的第一位，名单空着就发给号主自己。
 target = ""
 # 私聊里的撤回也存。
 private = true

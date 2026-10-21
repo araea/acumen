@@ -47,19 +47,15 @@ impl PluginConfig for Config {
     const MISMATCH: &'static str = "admins 必须是用户 ID 字符串数组（如 [\"3373167460\"]），agent_control、guest_control、image_enabled 必须是布尔值，image_scale 必须是数字";
 }
 
+/// 能不能管：本机控制台、号主（登录账号在 QQ 客户端里亲手发的消息，不必写进 `admins`），
+/// 以及 `ctl.admins` 里的人。判据与 [`is_owner`] 是同一条——机器人自己发出去又回声进来的
+/// 那一份不算，哪怕 `admins` 里恰好写着登录号。
 pub fn is_manager(ctx: &Context) -> bool {
     if ctx.bot.adapter == "console" && ctx.bot.platform == "console" {
         return true;
     }
-    let cfg = ctx.config.read().unwrap();
-    let admins = cfg
-        .plugins
-        .get("ctl")
-        .and_then(|v| v.get("admins"))
-        .and_then(Value::as_array);
-    ctx.as_message().is_some_and(|msg| {
-        admins.is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(msg.user_id())))
-    })
+    ctx.as_message()
+        .is_some_and(|msg| is_owner(ctx, msg.user_id(), msg.is_manual_self()))
 }
 
 /// `[ctl].admins`：号主（以及他信任的其他全局管理员）。
@@ -108,7 +104,7 @@ pub(crate) fn agent_may_change(ctx: &Context, owner: bool) -> bool {
     config.agent_control && (owner || config.guest_control)
 }
 
-pub const DENIED: &str = "此操作仅限 ctl.admins 中的全局管理员；请由本机维护者在 config.toml 的 [ctl] 中配置 admins = [\"用户 ID\"]";
+pub const DENIED: &str = "此操作仅限号主（登录账号本人在 QQ 里亲手发）与 ctl.admins 中的全局管理员；其他人要由号主在控制台或 /ctl 里加进 admins";
 
 pub(crate) fn resolve(name: &str) -> Result<&'static Plugin, String> {
     get_plugins()
@@ -404,7 +400,11 @@ where
         return Err("为保留管理入口，ctl 不能通过聊天停用；需要时请停机编辑配置".into());
     }
     let console = ctx.bot.adapter == "console" && ctx.bot.platform == "console";
-    if !console && let Some(msg) = ctx.as_message() {
+    // 号主的权限不靠名单（见 [`is_owner`]），怎么改 admins 都锁不住他自己。
+    let owner = ctx
+        .as_message()
+        .is_some_and(|msg| msg.user_id() == ctx.bot.self_id() && msg.is_manual_self());
+    if !console && !owner && let Some(msg) = ctx.as_message() {
         let retained = next
             .plugins
             .get("ctl")

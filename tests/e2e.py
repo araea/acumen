@@ -251,6 +251,18 @@ async def main():
         await wait_for(lambda: any(m == "message.create" for m, b in posts[mark:]), "ctl list 回复（文本或卡片图）", 40)
         check("ctl list", True)
 
+        print("5b. 号主（登录号亲手发的）不在 admins 里也能管；机器人自己的回声不行")
+        mark = len(posts)
+        await inject("message-created", BOT, "/ctl set repeater cooldown_seconds 1", extra={"satori_qq": {"manual_self": True, "actual_user_id": BOT}})
+        await wait_for(lambda: any(m == "message.create" for m, _ in posts[mark:]), "号主的 ctl set 回复", 40)
+        await asyncio.sleep(0.5)
+        check("号主亲手发的 /ctl set 生效", re.search(r"cooldown_seconds = 1\b", open(os.path.join(WORK, "config.toml")).read()) is not None,
+              str([b.get("content", "")[:120] for m, b in posts[mark:] if m == "message.create"]))
+        mark = len(posts)
+        await inject("message-created", BOT, "/ctl set repeater cooldown_seconds 7")
+        await asyncio.sleep(3)
+        check("机器人自己的回声不能改配置", re.search(r"cooldown_seconds = 7\b", open(os.path.join(WORK, "config.toml")).read()) is None)
+
         print("6. ctl set 写配置（storage 原子写 0600）")
         mark = len(posts)
         await inject("message-created", ADMIN, "/ctl set repeater min_times 3")

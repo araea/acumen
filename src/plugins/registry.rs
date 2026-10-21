@@ -30,7 +30,7 @@ register_plugins!(
         config: ctl::Config,
         display_name: "插件控制",
         section: "system",
-        summary: "统一管理全部插件开关与配置；仅 ctl.admins 可改，首次启用自动初始化，排期修改下次连接生效",
+        summary: "统一管理全部插件开关与配置；仅号主与 ctl.admins 可改，首次启用自动初始化，排期修改下次连接生效",
         commands: cmds![
             ("ctl / 控制 / 插件", "查看完整用法和示例"),
             ("ctl list [on|off|关键词]", "查看全局状态及待重启提示"),

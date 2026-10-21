@@ -30,7 +30,7 @@ const LOG_TARGET: &str = "Plugin/AntiRecall";
 #[serde(default)]
 pub struct Config {
     enabled: bool,
-    /// 存到哪：群号；或 `private:QQ号`；留空 = 私聊发给第一位 ctl 管理员。
+    /// 存到哪：群号；或 `private:QQ号`；留空 = 私聊发给第一位 ctl 管理员，没有就发给号主自己。
     target: String,
     /// 在哪些群生效；两边都空 = 全部群。
     channel: ChannelConfig,
@@ -240,7 +240,7 @@ fn target_group(config: &Config) -> Option<&str> {
     (!target.is_empty() && !target.starts_with("private:")).then_some(target)
 }
 
-/// 去处：(群号, 私聊对象)。留空时私聊第一位管理员。
+/// 去处：(群号, 私聊对象)。留空时私聊第一位管理员，没有管理员就发给号主自己（登录账号）。
 fn destination(ctx: &Context, config: &Config) -> Option<(Option<String>, Option<String>)> {
     let target = config.target.trim();
     if let Some(user) = target.strip_prefix("private:") {
@@ -249,8 +249,11 @@ fn destination(ctx: &Context, config: &Config) -> Option<(Option<String>, Option
     if !target.is_empty() {
         return Some((Some(target.to_string()), None));
     }
-    let admin = crate::plugins::ctl::admin_ids(ctx).into_iter().next()?;
-    Some((None, Some(admin)))
+    let admin = crate::plugins::ctl::admin_ids(ctx)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| ctx.bot.self_id());
+    (!admin.is_empty()).then_some((None, Some(admin)))
 }
 
 fn enqueue(ctx: Context, writer: LockedWriter, config: &Config, item: Recalled) {
