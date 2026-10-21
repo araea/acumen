@@ -355,22 +355,39 @@
   let navPillFrame = 0;
   const calm = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /** 玻璃按速度变形：快了横向拉长、纵向收一点，体积大致守恒。v 是每毫秒像素。 */
-  function stretchPill(pill, velocity) {
-    const stretch = Math.min(1.32, 1 + Math.abs(velocity) * 0.22);
-    pill.style.scale = `${(1.06 * stretch).toFixed(3)} ${(1.06 / Math.sqrt(stretch)).toFixed(3)}`;
+  /** 把盒子的位置与尺寸写进胶囊。透镜的形变也走这里，不碰 CSS 的 scale。 */
+  function placePill(pill, box) {
+    pill.style.transform = `translate3d(${box.x.toFixed(2)}px, ${box.y.toFixed(2)}px, 0)`;
+    pill.style.width = `${Math.max(0, box.w).toFixed(2)}px`;
+    pill.style.height = `${Math.max(0, box.h).toFixed(2)}px`;
   }
 
-  /** 落格：玻璃凝回实心，形变回弹一下。 */
+  /** 玻璃按速度变形：快了横向拉长、纵向收一点，体积大致守恒。v 是每毫秒像素。
+   *
+   *  形变直接算进盒子（宽高与位移），不用 CSS 的 `scale`：Chromium 在同一个元素上
+   *  同时写 transform 与 scale 时，缩放后的盒子会被算到 translate 之外（实测在 390px
+   *  宽的屏幕里能跑到 x≈386px），拖动到最后一格时整枚玻璃越过屏幕右缘。改盒子的
+   *  宽高没有这个问题，也能顺手把它按在导航坞里面：贴到边上时向里堆，不伸出去。 */
+  function stretchPill(pill, box, velocity, bounds) {
+    if (!box.w) return placePill(pill, box);
+    const stretch = Math.min(1.32, 1 + Math.abs(velocity) * 0.22);
+    const w = Math.min(box.w * stretch, bounds.right - bounds.left);
+    const h = box.h * Math.sqrt(box.w / w);
+    const x = Math.min(
+      Math.max(box.x - (w - box.w) / 2, bounds.left),
+      bounds.right - w
+    );
+    placePill(pill, { x, y: box.y - (h - box.h) / 2, w, h });
+  }
+
+  /** 落格：玻璃凝回实心，高光边缘轻轻回弹一下。 */
   function settlePill(nav, pill) {
     delete nav.dataset.glass;
-    const from = pill.style.scale || "1.06 1.06";
-    pill.style.scale = "";
-    if (calm() || !pill.animate) return;
-    pill.animate(
-      [{ scale: from }, { scale: "0.94 1.06", offset: 0.45 }, { scale: "1.02 0.98", offset: 0.75 }, { scale: "1 1" }],
-      { duration: 460, easing: "cubic-bezier(0.3, 0.7, 0.4, 1)" }
-    );
+    if (calm()) return;
+    // 回弹画在 ::after 上：它只是一层高光，没有布局，也就不会再牵扯胶囊的位置。
+    pill.classList.remove("nav-settle");
+    void pill.offsetWidth;
+    pill.classList.add("nav-settle");
   }
   function paintNavPill(animate = true) {
     const nav = $("#nav");
@@ -394,19 +411,18 @@
     const start = performance.now();
     // 只有横向挪了格（手机底栏）才化成玻璃；导航轨上下换格照旧是实心滑块。
     const glide = duration > 0 && compactNav.matches;
+    // 玻璃能画到的范围：导航坞的内容盒（坐标与胶囊一样，相对 padding box）。
+    const cs = getComputedStyle(nav);
+    const bounds = {
+      left: parseFloat(cs.paddingLeft) || 0,
+      right: nav.clientWidth - (parseFloat(cs.paddingRight) || 0),
+    };
     let lastX = from.x;
     let lastT = start;
     if (!glide) {
       // 被打断的那一次（缩放、断点切换）留下的玻璃一并收起。
       delete nav.dataset.glass;
-      pill.style.scale = "";
     }
-
-    const place = (x, y, w, h) => {
-      pill.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0)`;
-      pill.style.width = `${Math.max(0, w).toFixed(2)}px`;
-      pill.style.height = `${Math.max(0, h).toFixed(2)}px`;
-    };
 
     const step = (now) => {
       const progress = duration > 0 ? Math.min(1, (now - start) / duration) : 1;
@@ -419,12 +435,19 @@
         h: rect.height,
       };
       const x = from.x + (to.x - from.x) * ease;
-      place(x, from.y + (to.y - from.y) * ease, from.w + (to.w - from.w) * ease, from.h + (to.h - from.h) * ease);
+      const box = {
+        x,
+        y: from.y + (to.y - from.y) * ease,
+        w: from.w + (to.w - from.w) * ease,
+        h: from.h + (to.h - from.h) * ease,
+      };
       if (glide) {
-        stretchPill(pill, (x - lastX) / Math.max(1, now - lastT));
+        stretchPill(pill, box, (x - lastX) / Math.max(1, now - lastT), bounds);
         pill.style.setProperty("--zw-glass-x", `${Math.round(50 + Math.sign(to.x - from.x) * 18)}%`);
         lastX = x;
         lastT = now;
+      } else {
+        placePill(pill, box);
       }
       if (progress < 1) navPillFrame = requestAnimationFrame(step);
       else if (glide) settlePill(nav, pill);
@@ -485,6 +508,9 @@
         cell, gap, centers, rect,
         top: list[0].getBoundingClientRect().top - rect.top - nav.clientTop,
         height: list[0].getBoundingClientRect().height,
+        // 玻璃不能越过的左右边界（相对 padding box），与胶囊的坐标同一个原点。
+        left: padL,
+        right: nav.clientWidth - padR,
       };
     };
 
@@ -502,20 +528,20 @@
       }
       const pill = nav.querySelector(".nav-pill");
       const localX = cx - (m.rect.left + nav.clientLeft) - m.cell / 2;
-      pill.style.transform = `translate3d(${localX.toFixed(2)}px, ${m.top.toFixed(2)}px, 0)`;
-      pill.style.width = `${m.cell.toFixed(2)}px`;
-      pill.style.height = `${m.height.toFixed(2)}px`;
-      if (!calm()) {
-        const now = performance.now();
-        // 速度取短时平均，手指一顿玻璃就慢慢缩回圆润，不会一抖一抖。
-        const instant = drag.lastX === undefined ? 0 : (x - drag.lastX) / Math.max(1, now - drag.lastT);
-        drag.velocity = (drag.velocity ?? 0) * 0.6 + instant * 0.4;
-        drag.lastX = x;
-        drag.lastT = now;
-        stretchPill(pill, drag.velocity);
-        const within = Math.min(1, Math.max(0, (x - (m.rect.left + nav.clientLeft + localX)) / m.cell));
-        pill.style.setProperty("--zw-glass-x", `${Math.round(within * 100)}%`);
+      const box = { x: localX, y: m.top, w: m.cell, h: m.height };
+      if (calm()) {
+        placePill(pill, box);
+        return;
       }
+      const now = performance.now();
+      // 速度取短时平均，手指一顿玻璃就慢慢缩回圆润，不会一抖一抖。
+      const instant = drag.lastX === undefined ? 0 : (x - drag.lastX) / Math.max(1, now - drag.lastT);
+      drag.velocity = (drag.velocity ?? 0) * 0.6 + instant * 0.4;
+      drag.lastX = x;
+      drag.lastT = now;
+      stretchPill(pill, box, drag.velocity, m);
+      const within = Math.min(1, Math.max(0, (x - (m.rect.left + nav.clientLeft + localX)) / m.cell));
+      pill.style.setProperty("--zw-glass-x", `${Math.round(within * 100)}%`);
     };
 
     const cleanup = () => {
@@ -949,6 +975,22 @@
     },
   };
 
+  /** 平台名说成人话：实现端报的是协议里的平台码（red 是 QQ）。 */
+  const platformName = (platform) =>
+    PLATFORM_NAMES[String(platform || "").toLowerCase()] || platform || "未知平台";
+
+  /** 头像或首字：微信实现端的登录快照不带头像，退成名字的第一个字。 */
+  const avatarInitial = (bot) => {
+    const text = [bot.name, bot.nick, bot.id].find((value) => typeof value === "string" && value.trim());
+    return text ? [...text.trim()][0] : "?";
+  };
+  const botAvatar = (bot) => {
+    const initial = avatarInitial(bot);
+    return bot.avatar
+      ? h`<span class="tile tile-avatar" aria-hidden="true"><img class="avatar" src="${bot.avatar}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-initial="${initial}"></span>`
+      : h`<span class="tile tile-avatar" aria-hidden="true"><span class="avatar-initial">${initial}</span></span>`;
+  };
+
   async function overviewPage() {
     const data = await api("/overview");
     const stat = (glyph, label, value, unit) =>
@@ -957,9 +999,9 @@
     const bots = data.bots.length
       ? h`<ul class="group">${data.bots.map(
           (bot) => h`<li class="item">
-            <span class="tile" aria-hidden="true">${icon("smart_toy")}</span>
+            ${botAvatar(bot)}
             <div class="item-content">
-              <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag">${bot.adapter}/${bot.platform}</span></span>
+              <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag tag-platform" data-platform="${bot.platform}">${platformName(bot.platform)}</span></span>
               <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "已连接实现端，账号尚未识别"}</span>
             </div>
             <div class="item-trailing"><span class="status status-success">已连接</span></div>
@@ -3022,7 +3064,7 @@
 
   const sameIds = (a, b) => a.length === b.length && a.every((id, index) => id === b[index]);
   // Satori 里 QQ 的平台名是 red（QQ NT 协议），微信是 wechat；认不得的原样大写显示。
-  const PLATFORM_NAMES = { red: "QQ", qq: "QQ", wechat: "微信", wx: "微信" };
+  const PLATFORM_NAMES = { red: "QQ", qq: "QQ", wechat: "微信", wx: "微信", console: "控制台" };
 
   /** 一份名册（ID → 名字）：已加入的群，或好友。名单里存的是 ID，人要看的是名字：页面一出现名单就去
    *  问后端要一次，回来后把 ID 补上名字；问不到（实现端没连上）也不影响手输 ID。 */
@@ -3919,6 +3961,13 @@
   /* ==================== §13 事件 ==================== */
 
   function bindEvents() {
+    /* 头像加载失败（离线、CDN 拦了、链接过期）时退回首字，不留一张破图。 */
+    addEventListener("error", (event) => {
+      const img = event.target;
+      if (!(img instanceof HTMLImageElement) || img.dataset.initial === undefined) return;
+      img.closest(".tile-avatar")?.replaceChildren(img.dataset.initial || "?");
+    }, true);
+
     /* 导航尺寸变了（断点、旋转、字体）就重新量一次胶囊；不参与换页动画。 */
     let navResize = 0;
     const repaintNav = () => {

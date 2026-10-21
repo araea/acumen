@@ -105,7 +105,7 @@ async fn overview(State(console): State<Arc<Console>>) -> Response {
                 "id": login.id,
                 "name": login.name,
                 "nick": login.nick,
-                "avatar": login.avatar,
+                "avatar": avatar_for(&bot.platform, &login.id, login.avatar.as_deref()),
             })
         })
         .collect();
@@ -123,6 +123,21 @@ async fn overview(State(console): State<Arc<Console>>) -> Response {
         "console": { "address": console.url.split("?t=").next().unwrap_or_default() },
     }))
     .into_response()
+}
+
+/// 连接列表里的头像：实现端给了就用它，没给时 QQ 还能用号码拼出公开头像。
+///
+/// 微信没有可推导的公开地址（实现端的登录快照里本来就不带头像），界面会退成首字。
+/// 只收 http(s)：头像是一条外部内容，不接受其它协议。
+fn avatar_for(platform: &str, id: &str, avatar: Option<&str>) -> Option<String> {
+    if let Some(url) = avatar.map(str::trim).filter(|url| !url.is_empty()) {
+        if url.starts_with("http://") || url.starts_with("https://") {
+            return Some(url.to_string());
+        }
+    }
+    let qq = matches!(platform.to_ascii_lowercase().as_str(), "red" | "qq");
+    let numeric = !id.is_empty() && id.chars().all(|c| c.is_ascii_digit());
+    (qq && numeric).then(|| format!("https://q.qlogo.cn/headimg_dl?dst_uin={id}&spec=640"))
 }
 
 // ==================== 插件 ====================

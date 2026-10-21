@@ -110,7 +110,10 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/api/overview') return reply({
     app: { name: '知微', version: '0.1.0', started: '2026-09-16 08:30:00', uptime: 8426 },
-    bots: [{ name: '知微', adapter: 'satori', platform: 'QQ', id: '10001' }],
+    bots: [
+      { name: '知微', adapter: 'satori', platform: 'QQ', id: '10001', avatar: '/icon.svg' },
+      { name: '渡一场风', adapter: 'satori', platform: 'wechat', id: 'wxid_js4fhacr8i8i22', nick: '陈师傅' },
+    ],
     plugins: { on: 22, total: 23, pending: 1 }, messages: { today: 3803, people: 711, week: 84737 },
     console: { address: 'http://127.0.0.1:7801/' },
   });
@@ -252,6 +255,53 @@ const posted = where => posts.filter(p => p.path === where);
   await until(() => js('return location.hash === "#/logs"'), "长按拖选到日志");
   assert.equal(await js('return document.querySelector("[aria-current=page]").dataset.nav'), "logs");
   await until(ready, "拖选后打开日志");
+
+  // —— 拖到最右一格：玻璃必须留在导航坞里，不能跟着缩放跑到屏幕外 ——
+  await route("overview");
+  await js(`(() => {
+    const items = [...document.querySelectorAll("#nav .nav-item")];
+    const from = items[0].getBoundingClientRect();
+    const y = from.top + from.height / 2;
+    const ev = (type, x, buttons) => new PointerEvent(type, {
+      bubbles: true, cancelable: true, pointerId: 79, pointerType: "touch", isPrimary: true,
+      button: 0, buttons, clientX: x, clientY: y,
+    });
+    items[0].dispatchEvent(ev("pointerdown", from.left + from.width / 2, 1));
+    window.__edgeDrag = (x) => window.dispatchEvent(ev("pointermove", x, 1));
+    window.__edgeDrop = () => window.dispatchEvent(ev("pointerup", innerWidth, 0));
+  })()`);
+  await sleep(240);
+  for (const x of [80, 160, 240, 320, 999, 999]) {
+    await js("window.__edgeDrag(arguments[0])", x);
+    await sleep(30);
+  }
+  const edge = await js(`return (() => {
+    const nav = document.querySelector("#nav").getBoundingClientRect();
+    const pill = document.querySelector("#nav .nav-pill").getBoundingClientRect();
+    return { navLeft: nav.left, navRight: nav.right, pillLeft: pill.left, pillRight: pill.right, scale: getComputedStyle(document.querySelector("#nav .nav-pill")).scale };
+  })()`);
+  assert.equal(edge.scale, "none", "玻璃不再用 CSS scale 变形");
+  assert.ok(edge.pillRight <= edge.navRight + 0.5, `拖到最后一格时玻璃越过导航坞右缘：${edge.pillRight} > ${edge.navRight}`);
+  assert.ok(edge.pillLeft >= edge.navLeft - 0.5, `拖到最后一格时玻璃越过导航坞左缘：${edge.pillLeft} < ${edge.navLeft}`);
+  await js("window.__edgeDrop()");
+  await sleep(520);
+  // 松手落在最后一格，顺手把连接区的头像断言做掉。
+  await route("overview");
+  assert.deepEqual(
+    await js(`return [...document.querySelectorAll('[aria-labelledby="bots-title"] .tag')].map(tag => tag.textContent)`),
+    ["QQ", "微信"],
+    "连接区显示平台名"
+  );
+  assert.equal(
+    await js(`return document.querySelector('[aria-labelledby="bots-title"] img.avatar')?.getAttribute("src")`),
+    "/icon.svg",
+    "有头像时用图片"
+  );
+  assert.equal(
+    await js(`return document.querySelector('[aria-labelledby="bots-title"] .avatar-initial')?.textContent`),
+    "渡",
+    "微信没有头像时用名字首字"
+  );
 
   // —— 触摸短按：click 可能被 pointerdown 的 preventDefault 吃掉，必须自己落格 ——
   await js(`(() => {
