@@ -61,9 +61,6 @@ pub struct Agent {
     #[serde(default)]
     pub description: String,
     /// 房间在 `/#` 列表里归到哪个分区；留空则按模型分组（一直以来的样子）。
-    ///
-    /// 内置的画图预设用它单独成区：那一批房间的共同点是「预设」而不是「模型」，
-    /// 按模型分组会把它们混进用户自己建的同模型房间里。
     #[serde(default)]
     pub section: String,
     /// 执行引擎：[`ENGINE_AGENT`] 或 [`ENGINE_CHAT`]。
@@ -202,7 +199,7 @@ impl Agent {
 
 /// `data/oai/config.json` 的形状：房间、模型列表与默认接口。
 ///
-/// 这一份不是 `config.toml`——它由 `/ctl`、`##` 系符号指令与启动时的预设补建共同维护，
+/// 这一份不是 `config.toml`——它由 `/ctl`、`##` 系符号指令与启动时的内置房间补建共同维护，
 /// 用户不直接手改。接口与密钥的权威来源仍是 `[oai]` 那一段，这里只存运行时选定的值。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -210,9 +207,13 @@ pub struct Config {
     pub api_base: String,
     /// 默认接口的密钥。
     pub api_key: String,
-    /// 中转站拉回的模型列表，供 `/%` 展示。
+    /// 默认接口（中转站）拉回的模型列表，供 `/%` 展示。
     #[serde(default)]
     pub models: Vec<String>,
+    /// 各家供应商自己的模型列表（键是 `[oai.providers]` 里的名字，值是裸模型 id）。
+    /// `/%` 接在默认接口那份后面列出、序号接着编；`房间%模型` 写裸名字时也在这里找。
+    #[serde(default)]
+    pub provider_models: std::collections::BTreeMap<String, Vec<String>>,
     /// 全部房间（智能体）。
     #[serde(default)]
     pub agents: Vec<Agent>,
@@ -222,10 +223,9 @@ pub struct Config {
     /// 内置默认值迁移版本；避免每次启动覆盖管理员后续的模型选择。
     #[serde(default)]
     pub defaults_version: u32,
-    /// 已经建过的内置房间名：内置智能体房间与画图/音乐/视频预设（见 [`super::presets`]）。
+    /// 已经建过的内置房间名（目前只有管家大人）。
     ///
-    /// 记的是「建过」而不是「存在」：管理员删掉哪间就是不要哪间，下次启动不复活；
-    /// 而新加的房间仍会补建，因为它的名字还不在这张表里。
+    /// 记的是「建过」而不是「存在」：管理员删掉哪间就是不要哪间，下次启动不复活。
     #[serde(default)]
     pub seeded_presets: Vec<String>,
 }

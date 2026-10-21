@@ -505,7 +505,7 @@ black = []
 # 智能对话：多智能体房间、模型与历史管理；内置 agent 房间能自己调工具。
 [oai]
 enabled = true
-# 内置 agent 房间（`##研究 agent`）没写模型时用哪个：留空或写 `agent` 的房间都取这里的值。
+# 内置 agent 房间（管家大人、`##研究 agent`）没写模型时用哪个：留空或写 `agent` 的房间都取这里的值。
 # 写成 `供应商/模型` 时按下面的 [oai.providers] 取接口；留空则退到 oai 的默认模型。
 agent_default_model = "deepseek/deepseek-flash"
 # 单次回复的总时间预算（秒）。
@@ -548,7 +548,7 @@ music_send = "both"
 # 走 OpenAI 视频任务接口（POST {base}/video/generations）的房间模型关键字。
 # 房间系统提示词当风格前缀，用户那句话接在后面；可带 --秒数 8 / --竖屏 / --横屏 /
 # 以及发法开关 --文件 / --视频 / --都发。
-# 默认预设使用 veo3.1-fast；实际时长、音效与费用以供应商和上游模型为准。
+# 实际时长、音效与费用以供应商和上游模型为准。
 # 别的模型用 `房间%模型` 换：veo3.1-pro、wan3.0-video-prime、sora-2、kling-video-v3……
 # 注意各家渠道的分组、单次价格与所需参数不一样，换之前先确认能调通。
 video_models = [
@@ -625,16 +625,18 @@ qq_mark_read = false
 media_deadline_seconds = 240
 
 # 供应商表：房间模型或判定模型写 `供应商/模型` 时按名字取这里的接口与密钥，
-# 例如 `##助手 deepseek/deepseek-flash`。不带前缀的仍走 oai 自己的默认接口；
-# 名为 apilio 的供应商即使不在这里配置，也始终回退到默认接口，无需重复填写。
-# 每个供应商两个字段：api_base（OpenAI 兼容基址）与 api_key。
+# 例如 `##助手 agent deepseek/deepseek-flash`。不带前缀的走 oai 自己的默认接口
+# （`oai 地址 密钥` 配的那个）；名为 apilio 的供应商没单独配置时也回退到默认接口。
+# 认得的供应商（deepseek、mimo、siliconflow、moonshot、zhipu、dashscope、volcengine、
+# minimax、openrouter、openai、anthropic、gemini、xai、groq、ollama）只填 api_key 就行：
+# api_base 留空取官方地址，api_key 留空读环境变量（如 DEEPSEEK_API_KEY）。
+# 最省事的是号主发一句 `oai deepseek sk-…`：验过密钥再写进这里，并撤回那条消息。
 [oai.providers.deepseek]
 api_base = "https://api.deepseek.com/v1"
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 # 高峰使用 peak.model = "mimo/mimo-v2.6-flash" 时还需配置 MiMo 官方接口。
 # [oai.providers.mimo]
-# api_base = "https://api.xiaomimimo.com/v1"
 # api_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 # 房间模型与判定模型都支持 `:强度` 后缀，强度取 off/minimal/low/medium/high。

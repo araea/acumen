@@ -33,7 +33,8 @@ pub enum Action {
     ClearEverything,
     Help,
     AutoFillDescriptions(String),
-    UpdateApi(String, String),
+    /// `oai 供应商 密钥` 这一类：接入模型接口（见 [`super::setup`]）。
+    Connect(super::setup::Connect),
 }
 
 #[derive(Debug, Clone)]
@@ -77,8 +78,8 @@ pub fn parse_global(raw: &str, prefixes: &[String]) -> Option<Command> {
         if rest.is_empty() {
             return Some(Command::new("", Action::Help));
         }
-        if let Some((u, k)) = super::utils::parse_api(rest) {
-            return Some(Command::new("", Action::UpdateApi(u, k)));
+        if let Some(request) = super::setup::parse(rest) {
+            return Some(Command::new("", Action::Connect(request)));
         }
     }
     if norm == "/#" {

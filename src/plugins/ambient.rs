@@ -1629,7 +1629,10 @@ async fn gate_endpoint(
         );
     };
     if base.is_empty() || key.is_empty() {
-        anyhow::bail!("判定模型需要 API 配置，请先设置 oai 的接口地址与密钥");
+        match provider.as_deref() {
+            Some(name) => anyhow::bail!("{}", crate::plugins::oai::catalog::missing_key_hint(name)),
+            None => anyhow::bail!("判定模型需要 API 配置，请先设置 oai 的接口地址与密钥"),
+        }
     }
     Ok((base, key, model))
 }

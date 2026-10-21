@@ -4,7 +4,6 @@ use regex::Regex;
 use simd_json::base::ValueAsScalar;
 use std::sync::OnceLock;
 
-pub static RE_API: OnceLock<Regex> = OnceLock::new();
 pub static RE_IDX: OnceLock<Regex> = OnceLock::new();
 
 /// 默认保留的模型关键字：中转站一次吐出近千个 id，其中绝大多数是历史快照、
@@ -205,23 +204,6 @@ pub fn normalize(s: &str) -> String {
             _ => c,
         })
         .collect()
-}
-
-pub fn parse_api(text: &str) -> Option<(String, String)> {
-    let re = RE_API.get_or_init(|| {
-        Regex::new(r"(?s)^(https?://\S+)\s+(sk-\S+)$|^(sk-\S+)\s+(https?://\S+)$").unwrap()
-    });
-    let t = text.trim();
-    re.captures(t).and_then(|c| {
-        c.get(1)
-            .zip(c.get(2))
-            .map(|(u, k)| (u.as_str().to_string(), k.as_str().to_string()))
-            .or_else(|| {
-                c.get(3)
-                    .zip(c.get(4))
-                    .map(|(k, u)| (u.as_str().to_string(), k.as_str().to_string()))
-            })
-    })
 }
 
 pub fn parse_indices(s: &str) -> Vec<usize> {

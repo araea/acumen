@@ -5,7 +5,7 @@
 //! 当一个视频消息发出去。接口是异步任务制的，一次生成通常一两分钟，所以这类房间用
 //! `[oai] media_timeout_seconds` 而不是普通的 `request_timeout_seconds`。
 //!
-//! 默认预设房间用的是 veo3.1-fast：实测能在同一套接口上跑通、自带同步音效、出片约
+//! 推荐 veo3.1-fast：实测能在同一套接口上跑通、自带同步音效、出片约
 //! 一分钟、一次约 $1.2，是这批顶级模型里性价比最高的一档。别的模型（`veo3.1-pro`、
 //! `wan3.0-video-prime`、`sora-2` …）用 `房间%模型` 换过来即可——接口格式一致，但
 //! 各家渠道的可用分组、单次价格与所需参数并不一样，换之前先确认能调通。
@@ -40,13 +40,9 @@ pub(super) const DEFAULT_VIDEO_MODELS: &[&str] = &[
     "luma_video",
 ];
 
-/// 兜底模型 id：模型列表还没拉回来时用它。
-/// 预设房间与群聊搭话的拍片工具都靠它兜底。
+/// 兜底模型 id：模型列表还没拉回来时群聊搭话的拍片工具用它。刻意挑 fast：
+/// 同一族的 pro 贵出好几倍（实测 $7 对 $1.2），不该一上来就把账单顶上去。
 pub(crate) const FALLBACK_MODEL: &str = "veo3.1-fast";
-
-/// 预设房间优先挑的那一档。刻意挑 fast：同一族的 pro 贵出好几倍（实测 $7 对 $1.2），
-/// 预设房间不该一上来就把账单顶上去。
-pub(super) const PREFERRED_MODEL_KEYWORD: &str = "veo3.1-fast";
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);

@@ -434,19 +434,103 @@ pub(super) async fn room_endpoint(
         agent.model.clone()
     };
     if spec.trim().is_empty() {
-        return Err("❌ 这间内置房间还没指定模型：用 `房间%供应商/模型` 设一个，或配置 [oai] agent_default_model".to_string());
+        return Err(format!(
+            "❌ {} 还没指定模型：用 `{}%供应商/模型` 设一个，或配置 [oai] agent_default_model",
+            agent.name, agent.name
+        ));
     }
     let (provider, chat_model) = super::utils::split_provider(&spec);
     let Some((api_base, api_key)) = super::resolve_endpoint(&oai.providers, &api.0, &api.1, provider.as_deref()) else {
+        let name = provider.as_deref().unwrap_or_default();
         return Err(format!(
-            "❌ 未知供应商：{}（在 [oai.providers] 里配置，或用默认接口）",
-            provider.as_deref().unwrap_or_default()
+            "❌ {} 用的是 {spec}，但不认得供应商「{name}」。\n自己的中转站发：oai {name} 地址 密钥\n认得的供应商发 `oai` 查看。",
+            agent.name
         ));
     };
     if api_base.is_empty() || api_key.is_empty() {
-        return Err("❌ API 未配置".to_string());
+        let mut text = match provider.as_deref().filter(|name| !name.eq_ignore_ascii_case("apilio")) {
+            Some(name) => format!("❌ {} 用的是 {spec}，但{}", agent.name, super::catalog::missing_key_hint(name)),
+            None => format!(
+                "❌ {} 用的是 {spec}，它走默认接口，而默认接口还没配。\n· 接中转站：oai 地址 密钥\n· 或换成官方供应商的模型：{}%deepseek/deepseek-flash",
+                agent.name, agent.name
+            ),
+        };
+        // 别家已经接好了：直接给一条能抄的换法。
+        if let Some((name, Some(known))) = super::catalog::ready(&oai.providers)
+            .into_iter()
+            .find(|(_, known)| known.is_some_and(|known| !known.model.is_empty()))
+        {
+            text.push_str(&format!("\n已经接好的 {} 也能用：{}%{name}/{}", known.name, agent.name, known.model));
+        }
+        return Err(text);
     }
     Ok((api_base, api_key, chat_model))
+}
+
+/// 画图、MJ、写歌、拍片这些模型走各自的专用接口，只有普通房间会把话转给它们；
+/// 内置智能体只会聊天补全，接上这种模型只会在第一轮就报错。
+fn is_media_model(model: &str, oai: &super::OaiConfig) -> bool {
+    let (_, id) = super::utils::split_provider(model);
+    super::mj::is_mj_model(&id)
+        || super::images::is_images_model(&id, &oai.image_models)
+        || super::music::is_music_model(&id, &oai.music_models)
+        || super::video::is_video_model(&id, &oai.video_models)
+}
+
+/// `chat`、`chat 模型`、`chat/模型`：把房间转成普通对话房间（不调工具）。写法同 [`super::agent::parse_agent_spec`]。
+fn parse_chat_spec(spec: &str) -> Option<String> {
+    const KEYWORD: &str = "chat";
+    let spec = spec.trim();
+    let tail = spec
+        .get(..KEYWORD.len())
+        .filter(|head| head.eq_ignore_ascii_case(KEYWORD))
+        .map(|_| &spec[KEYWORD.len()..])?;
+    let mut chars = tail.chars();
+    match chars.next() {
+        None => Some(String::new()),
+        Some('/' | ':' | '：' | ' ' | '\t') => Some(chars.as_str().trim().to_string()),
+        Some(_) => None,
+    }
+}
+
+/// 一个模型写法落成（引擎, 模型）。
+///
+/// - `agent [模型]` / `chat [模型]` 明说引擎；
+/// - 其余只换模型、**不换引擎**：管家大人写 `管家大人%deepseek-flash` 仍是内置智能体。
+///   从前 `%` 一律把房间转回普通对话，内置智能体换个模型就悄悄丢了全部工具；
+/// - 画图、写歌、拍片这类模型只能跑在普通房间里，写给智能体房间时自动转过去（回话里会说）。
+///
+/// 裸模型名在 `/%` 那份完整列表里找（序号、全名、只写模型名都行），找不到就原样用。
+fn resolve_room_model(
+    spec: &str,
+    room_is_agent: bool,
+    models: &[String],
+    mgr: &Manager,
+    oai: &super::OaiConfig,
+) -> (&'static str, String) {
+    let resolve = |text: &str| -> String {
+        if text.is_empty() {
+            return String::new();
+        }
+        match super::utils::split_provider(text) {
+            // 带供应商前缀时不做列表匹配，原样保留前缀交给路由。
+            (Some(_), _) => text.to_string(),
+            (None, bare) => mgr.resolve_model(&bare, models).unwrap_or(bare),
+        }
+    };
+    if let Some(model) = super::agent::parse_agent_spec(spec) {
+        return (super::types::ENGINE_AGENT, resolve(&model));
+    }
+    if let Some(model) = parse_chat_spec(spec) {
+        return (super::types::ENGINE_CHAT, resolve(&model));
+    }
+    let model = resolve(spec);
+    let engine = if room_is_agent && !is_media_model(&model, oai) {
+        super::types::ENGINE_AGENT
+    } else {
+        super::types::ENGINE_CHAT
+    };
+    (engine, model)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1263,39 +1347,8 @@ pub async fn execute(
     }
 
     match cmd.action {
-        Action::UpdateApi(url, key) => {
-            let url = super::utils::openai_api_base(&url);
-            let mut c = mgr.config.write().await;
-            c.api_base = url.clone();
-            c.api_key = key;
-            if let Err(error) = mgr.save(&mut c) {
-                reply_text(
-                    ctx,
-                    writer,
-                    &msg_event,
-                    format!("保存失败，已恢复原配置。请检查磁盘空间与目录权限后重试：{error}"),
-                )
-                .await;
-                return;
-            }
-            drop(c);
-            reply_text(ctx, writer, &msg_event, format!("✅ API 已配置：{url}")).await;
-            let filter =
-                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx).model_filter;
-            match mgr.fetch_models(&filter).await {
-                Ok(models) => {
-                    reply_text(
-                        ctx,
-                        writer,
-                        &msg_event,
-                        format!("验证成功，已获取 {} 个模型", models.len()),
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    reply_text(ctx, writer, &msg_event, format!("❌ 获取模型失败：{e}")).await;
-                }
-            }
+        Action::Connect(request) => {
+            super::setup::connect(request, ctx, writer, mgr).await;
         }
         Action::Chat => {
             chat(name, &prompt, imgs, false, &cmd, ctx, writer, mgr).await;
@@ -1485,44 +1538,23 @@ pub async fn execute(
                 .await;
             }
         }
-        // 同一个 `%` 既换模型也换引擎：`房间%agent` 转成内置智能体，`房间%agent 模型` 顺带
-        // 指定它用哪个模型，写中转站模型名则转回中转站房间。房间名不参与判断。
+        // `%` 换模型；引擎只在明写 `agent` / `chat` 时换（见 [`resolve_room_model`]）。
         Action::SetModel => {
             if cmd.args.is_empty() {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 请指定模型：`智能体%模型名`；交给内置智能体用 `智能体%agent` 或 `智能体%agent 模型`",
+                    "❌ 请指定模型：`房间%模型名`（`/%` 看能用的）；转成内置智能体用 `房间%agent`，转成普通对话用 `房间%chat`",
                 )
                 .await;
                 return;
             }
+            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
             let mut c = mgr.config.write().await;
-            let models = c.models.clone();
-            // 模型串支持 `:强度` 后缀；先摘掉它，剩下的再判 Pi 写法 / 供应商前缀。
+            let models = Manager::all_models(&c);
+            // 模型串支持 `:强度` 后缀；先摘掉它，剩下的再判引擎关键字 / 供应商前缀。
             let (spec, thinking) = super::utils::split_thinking(&cmd.args);
-            let agent_model = super::agent::parse_agent_spec(&spec);
-            let resolved = if let Some(model) = &agent_model { Some((super::types::ENGINE_AGENT, model.clone())) } else {
-                let (provider, bare) = super::utils::split_provider(&spec);
-                match provider {
-                    // 带供应商前缀时不做中转站模型匹配，原样保留前缀交给路由。
-                    Some(_) => Some((super::types::ENGINE_CHAT, spec.clone())),
-                    None => mgr
-                        .resolve_model(&bare, &models)
-                        .map(|model| (super::types::ENGINE_CHAT, model)),
-                }
-            };
-            let Some((engine, model)) = resolved else {
-                reply_text(
-                    ctx,
-                    writer,
-                    &msg_event,
-                    "❌ 无效模型\n`/%` 查看中转站模型，或用 `智能体%agent 模型` 交给内置智能体",
-                )
-                .await;
-                return;
-            };
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
                 reply_text(
                     ctx,
@@ -1533,6 +1565,20 @@ pub async fn execute(
                 .await;
                 return;
             };
+            let was_agent = a.uses_agent();
+            let (engine, mut model) = resolve_room_model(&spec, was_agent, &models, mgr, &oai);
+            // `房间%chat` 没写模型：沿用房间现在实际在用的那个，普通房间可没有「默认模型」。
+            if engine == super::types::ENGINE_CHAT && model.is_empty() {
+                model = if super::agent::uses_default_model(&a.model) {
+                    oai.agent_default_model().unwrap_or_default().to_string()
+                } else {
+                    a.model.clone()
+                };
+            }
+            if engine == super::types::ENGINE_CHAT && model.is_empty() {
+                reply_text(ctx, writer, &msg_event, "❌ 普通对话房间要写明模型：`房间%chat 供应商/模型`").await;
+                return;
+            }
             let old = room_model_label(a);
             a.set_engine(engine, &model);
             // 没写 `:强度` 就保留房间原来的档位，只换模型时不必重报思考强度。
@@ -1540,6 +1586,7 @@ pub async fn execute(
                 a.thinking = level;
             }
             let new = room_model_label(a);
+            let now_agent = a.uses_agent();
             if let Err(error) = mgr.save(&mut c) {
                 reply_text(
                     ctx,
@@ -1550,13 +1597,16 @@ pub async fn execute(
                 .await;
                 return;
             }
-            reply_text(
-                ctx,
-                writer,
-                &msg_event,
-                format!("{name} 模型：{old} → {new}"),
-            )
-            .await;
+            let mut text = format!("{name} 模型：{old} → {new}");
+            match (was_agent, now_agent) {
+                (true, false) if parse_chat_spec(&spec).is_none() => {
+                    text.push_str("\n这是画图/音乐/视频模型，只能在普通房间里用，已转成普通房间（不再调工具）。转回：`房间%agent`");
+                }
+                (true, false) => text.push_str("\n已转成普通对话房间：只聊天，不调工具。"),
+                (false, true) => text.push_str("\n已转成内置智能体：会自己用终端、联网和群聊工具。"),
+                _ => {}
+            }
+            reply_text(ctx, writer, &msg_event, text).await;
         }
         // `房间?` 管这间房要不要联网：不带词就换一边，`开`/`关` 明确指定，
         // `默认` 交回 [oai.search].enabled。房间自己的选择优先于全局。
@@ -1757,9 +1807,8 @@ pub async fn execute(
         Action::ListModels => {
             // 每次查看都强制刷新，确保能获取最新模型；刷新不慢，不先发提示
             // 尝试获取，如果失败则仅提示警告，后续继续尝试展示缓存
-            let filter =
-                crate::plugins::get_config_or_default::<super::OaiConfig>(ctx).model_filter;
-            if let Err(e) = mgr.fetch_models(&filter).await {
+            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+            if let Err(e) = mgr.fetch_models(&oai.model_filter, &oai.providers).await {
                 reply_text(
                     ctx,
                     writer,
@@ -1770,20 +1819,30 @@ pub async fn execute(
             }
 
             let c = mgr.config.read().await;
-            let models = &c.models;
+            let models = Manager::all_models(&c);
             if models.is_empty() {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    "📭 未找到可用模型（过滤规则见 [oai] model_filter.keep / .drop）",
+                    "📭 还没有可用模型：发 `oai deepseek 密钥` 接上一家（`oai` 看认得的供应商）；中转站列表为空时检查 [oai] model_filter",
                 )
                 .await;
                 return;
             }
 
+            // 各家官方供应商单独成组，标题用它的名字；默认接口那份照旧按厂商分。
+            let providers: Vec<(String, String)> = c
+                .provider_models
+                .keys()
+                .map(|name| {
+                    let title = super::catalog::find(name).map_or(name.clone(), |known| known.name.to_string());
+                    (name.clone(), title)
+                })
+                .collect();
             let listing = super::lists::Listing::Models(super::lists::Models::new(
-                models,
+                &models,
+                &providers,
                 &c.agents,
                 &c.default_model,
             ));
@@ -2181,8 +2240,9 @@ pub async fn execute(
             .await;
         }
         Action::Help => {
-            // 帮助只留要紧的：怎么聊、怎么管房间、历史怎么翻。绘图房间都能在 `/#` 里直接看到，
-            // 画图预设也随表自动出现，不再在这里抄一遍（抄了就得跟着改，还把帮助撑成一整面墙）。
+            // 先说接入状态（管家大人能不能用、缺什么），再是要紧的指令：怎么聊、怎么管房间、历史怎么翻。
+            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+            let status = super::setup::status(&oai, mgr).await;
             let help = r#"## 对话
 - `房间 内容` 和房间对话
 - `~房间 内容` 一次性，不留历史
@@ -2193,10 +2253,11 @@ pub async fn execute(
 前缀可叠加，如 `~"房间 内容`。房间名随便取，中文也行。
 
 ## 房间
-- `/#` 房间列表（画图房间也在里面），`/%` 模型列表
-- `##名称 模型 提示词` 新建或更新
-- `##名称 agent` 新建内置智能体房间：自己用工具、联网、做群聊动作
-- `房间%模型` 换模型，可写 `供应商/模型:思考强度`
+- `/#` 房间列表，`/%` 模型列表（默认接口与各家供应商）
+- `##名称 模型 提示词` 新建或更新（普通对话房间，只聊天）
+- `##名称 agent 模型` 新建内置智能体房间：自己用工具、联网、做群聊动作；模型可省
+- `房间%模型` 换模型，可写 `供应商/模型:思考强度`、序号或只写模型名；不改房间类型
+- `房间%agent`、`房间%chat` 转成内置智能体 / 普通对话
 - `房间$提示词` 改提示词，`房间$` 清空，`房间/$` 查看
 - `房间?开`、`?关`、`?默认` 这间房的联网搜索
 - `房间~=新名` 重命名，`房间~#新名` 复制
@@ -2212,44 +2273,47 @@ pub async fn execute(
 前面加 `&` 操作私有历史：`&房间/*`。符号半角全角都认。
 
 ## 画图
-- 绘图房间照 `/#` 里的名字用：`房间 提示词` 就出图
+- 建一间用图像模型的房间（`##画画 gpt-image-2.5`），`房间 提示词` 就出图
 - 发图、引用图片，或在房间名后 @某人，那张图就当垫图
 - 可加 `--size 1536x1024`、`--quality high`
 - MJ 的四宫格引用后回 `1`–`4` 放大
 
 ## 慎用
-`-*` 清空所有房间的公有历史，`-*!` 连私有历史一起清。接口配置：`oai API地址 API密钥`。
+`-*` 清空所有房间的公有历史，`-*!` 连私有历史一起清。
 "#;
+            let help = format!("{status}\n{help}");
             reply(
                 ctx,
                 writer,
                 &msg_event,
-                help,
+                &help,
                 cmd.text_mode,
                 "OAI 符号指令帮助",
             )
             .await;
         }
         Action::AutoFillDescriptions(model_ref) => {
+            let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+            // 没写模型就用管家大人那个：新装的机器人往往只接了一家官方供应商，默认接口是空的。
+            let fallback = super::setup::butler_spec(&oai, mgr).await.1;
             let (target_agents, api_config, use_model) = {
                 let c = mgr.config.read().await;
-                let models = c.models.clone();
-                let resolved_model = if model_ref.is_empty() {
-                    c.default_model.clone()
+                let models = Manager::all_models(&c);
+                let spec = if model_ref.is_empty() {
+                    fallback
                 } else {
                     mgr.resolve_model(&model_ref, &models).unwrap_or(model_ref)
                 };
+                let (provider, model_id) = super::utils::split_provider(&spec);
+                let api = super::resolve_endpoint(&oai.providers, &c.api_base, &c.api_key, provider.as_deref())
+                    .unwrap_or_default();
                 let targets: Vec<(String, String)> = c
                     .agents
                     .iter()
                     .filter(|a| a.description.is_empty() || a.description == "新建智能体")
                     .map(|a| (a.name.clone(), a.system_prompt.clone()))
                     .collect();
-                (
-                    targets,
-                    (c.api_base.clone(), c.api_key.clone()),
-                    resolved_model,
-                )
+                (targets, api, model_id)
             };
 
             if target_agents.is_empty() {
@@ -2320,30 +2384,22 @@ pub async fn handle_create(
     mgr: &Arc<Manager>,
 ) {
     let Some(msg_event) = ctx.as_message() else { return };
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     let mut c = mgr.config.write().await;
-    let models = c.models.clone();
-    // 建房时的模型位同样认 Pi 写法与供应商前缀：
-    // `##研究 agent`、`##研究 agent/apilio/claude-opus-5`、`##研究 deepseek/deepseek-flash:high`。
+    let models = Manager::all_models(&c);
+    // 建房时的模型位同样认引擎关键字与供应商前缀：
+    // `##研究 agent`、`##研究 agent deepseek/deepseek-flash`、`##研究 deepseek/deepseek-flash:high`。
+    // 已有的内置智能体房间重写一遍时不丢引擎，规则与 `%` 相同。
     let (spec, thinking) = super::utils::split_thinking(model);
-    let agent_model = super::agent::parse_agent_spec(&spec);
-    let (engine, model) = match agent_model {
-        Some(model) => (super::types::ENGINE_AGENT, model),
-        None => match super::utils::split_provider(&spec) {
-            // 带供应商前缀时保留原样，交给请求路由按供应商选接口。
-            (Some(_), _) => (super::types::ENGINE_CHAT, spec.clone()),
-            (None, bare) => (
-                super::types::ENGINE_CHAT,
-                mgr.resolve_model(&bare, &models).unwrap_or(bare),
-            ),
-        },
-    };
+    let was_agent = c.agents.iter().any(|a| a.name == name && a.uses_agent());
+    let (engine, model) = resolve_room_model(&spec, was_agent, &models, mgr, &oai);
     // 不再默认填充「你是一个有帮助的助手」：没写提示词就留空，让模型用裸提示词。
     // 生图房间尤其不该被一句通用预设污染提示词；普通房间也保持中立（MJ 同样留空）。
     let prompt = prompt.to_string();
 
     if let Some(a) = c.agents.iter_mut().find(|a| a.name == name) {
         // 省略模型位时只改提示词和描述，保留这个房间原来的引擎。
-        if !model.is_empty() || engine == super::types::ENGINE_AGENT {
+        if !spec.trim().is_empty() {
             a.set_engine(engine, &model);
         }
         if let Some(level) = &thinking {
@@ -2394,11 +2450,18 @@ pub async fn handle_create(
             .await;
             return;
         }
+        let tail = if engine == super::types::ENGINE_AGENT {
+            "\n内置智能体：会自己用终端、联网和群聊工具。"
+        } else if is_media_model(&model, &oai) || model.is_empty() {
+            ""
+        } else {
+            "\n普通对话房间：只聊天，不调工具；要工具就建成 `##名称 agent 模型`。"
+        };
         reply_text(
             ctx,
             writer,
             &msg_event,
-            format!("已创建 {name}（模型：{label}）"),
+            format!("已创建 {name}（模型：{label}）{tail}"),
         )
         .await;
     }

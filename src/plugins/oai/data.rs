@@ -9,7 +9,7 @@ use super::LOG_TARGET;
 
 const DEFAULT_MODEL: &str = "gpt-5.6-luna";
 const LEGACY_DEFAULT_MODEL: &str = "gpt-4o";
-const CURRENT_DEFAULTS_VERSION: u32 = 4;
+const CURRENT_DEFAULTS_VERSION: u32 = 5;
 
 /// 旧版建房间时自动填充的默认系统提示词，现已改为留空；迁移时按原样匹配后清掉。
 const LEGACY_DEFAULT_PROMPT: &str = "You are a helpful assistant.";
@@ -18,13 +18,16 @@ const LEGACY_DEFAULT_PROMPT: &str = "You are a helpful assistant.";
 ///
 /// 取四个字是刻意的：房间指令是前缀匹配的（`parse_agent_cmd`），名字越短越容易在
 /// 日常聊天里撞上；「管家大人」既不会被顺口带出，也叫得明白。
-const BUILTIN_ROOM: &str = "管家大人";
+pub(crate) const BUILTIN_ROOM: &str = "管家大人";
 
 /// 内置 agent 房间的人设。
 ///
 /// 只写「是谁、什么风格」；运行环境、工具策略与排版要求由内置 agent 自己生成——
 /// 那些内容写死在人设里会随时间过期，也没法随工具集变化。
 const BUILTIN_PERSONA: &str = "你是管家大人：务实、可靠、有分寸，不卖萌也不谄媚。号主问什么先给结论，再给依据；该提醒他注意的风险直说，不绕弯。";
+
+/// 从前随启动补建的画图 / 音乐 / 视频预设房间都挂在这几个分区下（1.11.0 起不再内置）。
+const RETIRED_PRESET_SECTIONS: [&str; 3] = ["画图预设", "音乐房间", "视频房间"];
 
 // 全局单例管理器
 pub static MANAGER: OnceLock<Arc<Manager>> = OnceLock::new();
@@ -79,6 +82,25 @@ impl Manager {
                     agent.system_prompt = String::new();
                 }
             }
+            // 内置的画图 / 音乐 / 视频预设房间不再提供：一并收走，`/#` 里只剩自己建的与管家大人。
+            let before = config.agents.len();
+            config.agents.retain(|agent| !RETIRED_PRESET_SECTIONS.contains(&agent.section.trim()));
+            if config.agents.len() < before {
+                info!(target: LOG_TARGET, "已移除 {} 间内置预设房间", before - config.agents.len());
+            }
+            config.seeded_presets.retain(|name| name.eq_ignore_ascii_case(BUILTIN_ROOM));
+            // 早先补建的管家大人把中转站默认模型抄成了自己的模型：那个模型要中转站密钥，
+            // 只填了 DeepSeek 的新用户一问就是「API 未配置」。改回「跟随默认模型」。
+            for agent in &mut config.agents {
+                if agent.uses_agent()
+                    && agent.name.eq_ignore_ascii_case(BUILTIN_ROOM)
+                    && [DEFAULT_MODEL, "deepseek/deepseek-flash"]
+                        .iter()
+                        .any(|model| agent.model.trim().eq_ignore_ascii_case(model))
+                {
+                    agent.model = String::new();
+                }
+            }
             config.defaults_version = CURRENT_DEFAULTS_VERSION;
             config_dirty = true;
         }
@@ -102,8 +124,7 @@ impl Manager {
             }
         }
 
-        // 内置智能体房间和其他内置房间一样，建过一次就记名：删掉的不复活，
-        // 而新加的房间（新预设）仍会补建，因为它的名字还不在表里。
+        // 内置智能体房间建过一次就记名：删掉的不复活。
         if !config
             .seeded_presets
             .iter()
@@ -114,34 +135,19 @@ impl Manager {
                 .iter()
                 .any(|agent| agent.name.eq_ignore_ascii_case(BUILTIN_ROOM))
             {
-                let model = if config.default_model.trim().is_empty() {
-                    DEFAULT_MODEL
-                } else {
-                    &config.default_model
-                };
+                // 模型留空 = 跟随 `[oai] agent_default_model`（默认 deepseek/deepseek-flash）：
+                // 填了 DeepSeek 密钥就能用，换默认模型时也不必逐间房去改。
                 let mut room = super::types::Agent::new(
                     BUILTIN_ROOM,
-                    model,
+                    "",
                     BUILTIN_PERSONA,
                     "终端与联网工具助手",
                 );
-                room.set_engine(super::types::ENGINE_AGENT, model);
+                room.set_engine(super::types::ENGINE_AGENT, "");
                 config.agents.push(room);
             }
             config.seeded_presets.push(BUILTIN_ROOM.to_string());
             config_dirty = true;
-        }
-        // 内置画图 / 音乐 / 视频预设：建过一次就记下名字，删掉的不复活，新加的才补建。
-        let created = super::presets::seed(&mut config);
-        if created > 0 {
-            config_dirty = true;
-            info!(
-                target: LOG_TARGET,
-                "已建好 {created} 间预设房间（/# 里的「{}」「{}」「{}」分区）",
-                super::presets::SECTION,
-                super::presets::MUSIC_SECTION,
-                super::presets::VIDEO_SECTION
-            );
         }
 
         if config_dirty && let Err(error) = write_config(&path, &config) {
@@ -225,84 +231,94 @@ impl Manager {
         }
     }
 
-    /// 拉取并按 `filter` 收敛模型列表。过滤规则来自 `[oai] model_filter`，
-    /// 由调用方读取后传入——Manager 是全局单例，够不到 `Context` 里的配置。
+    /// 拉取模型列表：默认接口一份（按 `filter` 收敛），每家配好的供应商各一份。
+    ///
+    /// 过滤规则来自 `[oai] model_filter`，供应商表来自 `[oai.providers]`，都由调用方读好传入——
+    /// Manager 是全局单例，够不到 `Context` 里的配置。哪一家拉不到就保留它上次的那份，
+    /// 全都没配或全都失败才报错。返回合并后的列表（与 `/%` 的序号一致）。
     pub async fn fetch_models(
         &self,
         filter: &super::utils::ModelFilterConfig,
+        providers: &HashMap<String, super::ProviderConfig>,
     ) -> anyhow::Result<Vec<String>> {
         let (base, key) = {
             let c = self.config.read().await;
             (c.api_base.clone(), c.api_key.clone())
         };
-        if base.is_empty() {
-            return Err(anyhow::anyhow!("API未配置"));
+        let ready = super::catalog::ready(providers);
+        if base.is_empty() && ready.is_empty() {
+            return Err(anyhow::anyhow!("还没配模型接口：发 `oai deepseek <密钥>`，或 `oai <地址> <密钥>` 接中转站"));
         }
 
-        // 自实现 GET {base}/models：DeepSeek 官方（及多数中转）返回的 model 对象
-        // 字段不全（缺 created），async-openai 的强类型反序列化会失败，这里宽松解析只取 id。
-        let base = base.trim_end_matches('/');
-        let mut urls = vec![format!("{base}/models")];
-        if !base.ends_with("/v1") {
-            urls.push(format!("{base}/v1/models"));
-        }
-        let mut body = None;
-        let mut last_error = String::new();
-        for url in urls {
-            match crate::http::client()
-                .get(&url)
-                .bearer_auth(&key)
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => match resp.json().await {
-                    Ok(value) => {
-                        body = Some(value);
-                        break;
+        let relay = async {
+            if base.is_empty() {
+                return None;
+            }
+            Some(list_models(&base, &key).await.map(|models| {
+                // 过滤结果为空说明关键字写错了，此时不再回落到完整列表——
+                // 悄悄塞回上千个模型比空列表更难排查。空的 `keep` 本身已经表示"全部接受"。
+                let mut kept = super::utils::filter_models(&models, filter);
+                if kept.is_empty() && !models.is_empty() {
+                    warn!(
+                        target: LOG_TARGET,
+                        "站点返回 {} 个模型，但 [oai] model_filter 过滤后为空，请检查 keep/drop 关键字",
+                        models.len()
+                    );
+                }
+                for model in super::mj::MJ_MODELS {
+                    if !kept.iter().any(|m| m == model) {
+                        kept.push((*model).to_string());
                     }
-                    Err(e) => last_error = format!("{url}: {e}"),
-                },
-                Ok(resp) => last_error = format!("{url}: HTTP {}", resp.status().as_u16()),
-                Err(e) => last_error = format!("{url}: {e}"),
+                }
+                kept
+            }))
+        };
+        let official = futures_util::future::join_all(ready.iter().map(|(name, _)| async move {
+            let found = super::catalog::resolve(providers, name)?;
+            let listed = list_models(&found.base, &found.key)
+                .await
+                .map(|models| chat_models_only(models, filter));
+            Some((name.clone(), listed))
+        }));
+        let (relay, official) = tokio::join!(relay, official);
+
+        let mut errors = Vec::new();
+        let mut c = self.config.write().await;
+        match relay {
+            Some(Ok(models)) => c.models = models,
+            Some(Err(error)) => errors.push(format!("默认接口：{error}")),
+            None => c.models.clear(),
+        }
+        // 撤掉了的供应商连同它的列表一起收走，免得 `/%` 里挂着用不了的模型。
+        c.provider_models.retain(|name, _| ready.iter().any(|(ready, _)| ready == name));
+        for (name, listed) in official.into_iter().flatten() {
+            match listed {
+                Ok(models) => {
+                    c.provider_models.insert(name, models);
+                }
+                Err(error) => errors.push(format!("{name}：{error}")),
             }
         }
-        let body: serde_json::Value =
-            body.ok_or_else(|| anyhow::anyhow!("模型列表请求失败: {last_error}"))?;
-        let mut models: Vec<String> = body
-            .get("data")
-            .and_then(|d| d.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        models.sort();
-        models.dedup();
-
-        // 过滤结果为空说明关键字写错了，此时不再回落到完整列表——
-        // 悄悄塞回上千个模型比空列表更难排查。空的 `keep` 本身已经表示"全部接受"。
-        let mut final_models = super::utils::filter_models(&models, filter);
-        if final_models.is_empty() && !models.is_empty() {
-            warn!(
-                target: LOG_TARGET,
-                "站点返回 {} 个模型，但 [oai] model_filter 过滤后为空，请检查 keep/drop 关键字",
-                models.len()
-            );
-        }
-        for model in super::mj::MJ_MODELS {
-            if !final_models.iter().any(|m| m == model) {
-                final_models.push((*model).to_string());
+        let all = Self::all_models(&c);
+        self.save(&mut c)?;
+        drop(c);
+        if !errors.is_empty() {
+            warn!(target: LOG_TARGET, "模型列表有几家没拉到：{}", errors.join("；"));
+            if all.is_empty() {
+                return Err(anyhow::anyhow!("模型列表请求失败：{}", errors.join("；")));
             }
         }
+        Ok(all)
+    }
 
-        {
-            let mut c = self.config.write().await;
-            c.models = final_models.clone();
-            self.save(&mut c)?;
+    /// `/%` 的那份完整列表：默认接口的裸模型名在前，各家供应商的 `供应商/模型` 接在后面。
+    /// 指令里写序号就是写这份列表的第几个。
+    pub fn all_models(config: &Config) -> Vec<String> {
+        let mut all = config.models.clone();
+        for (name, models) in &config.provider_models {
+            all.extend(models.iter().map(|model| format!("{name}/{model}")));
         }
-        Ok(final_models)
+        all
     }
 
     pub fn resolve_model(&self, input: &str, models: &[String]) -> Option<String> {
@@ -317,6 +333,13 @@ impl Manager {
         }
         let lower = input.to_lowercase();
         if let Some(exact) = models.iter().find(|model| model.to_lowercase() == lower) {
+            return Some(exact.clone());
+        }
+        // 只写了模型名、没写供应商：哪家有这个名字就用哪家（`deepseek-flash` → `deepseek/deepseek-flash`）。
+        if let Some(exact) = models
+            .iter()
+            .find(|model| model.rsplit_once('/').is_some_and(|(_, id)| id.to_lowercase() == lower))
+        {
             return Some(exact.clone());
         }
         for m in models {
@@ -336,6 +359,75 @@ impl Manager {
             .map(|a| a.name.clone())
             .collect()
     }
+}
+
+/// `GET {base}/models`，只取 id。
+///
+/// 自己发请求而不用强类型客户端：DeepSeek 官方（及多数中转）返回的 model 对象
+/// 字段不全（缺 created），强类型反序列化会失败，这里宽松解析只取 id。
+pub(crate) async fn list_models(base: &str, key: &str) -> anyhow::Result<Vec<String>> {
+    let base = base.trim_end_matches('/');
+    let mut urls = vec![format!("{base}/models")];
+    if !base.ends_with("/v1") && url::Url::parse(base).is_ok_and(|url| matches!(url.path(), "" | "/")) {
+        urls.push(format!("{base}/v1/models"));
+    }
+    let mut last_error = String::new();
+    for url in urls {
+        match crate::http::client()
+            .get(&url)
+            .bearer_auth(key)
+            .timeout(std::time::Duration::from_secs(20))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+                Ok(body) => {
+                    let mut models: Vec<String> = body
+                        .get("data")
+                        .and_then(|d| d.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|m| m.get("id").and_then(|id| id.as_str()))
+                                .map(ToString::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    models.sort();
+                    models.dedup();
+                    return Ok(models);
+                }
+                Err(e) => last_error = format!("{url}: {e}"),
+            },
+            Ok(resp) if matches!(resp.status().as_u16(), 401 | 403) => {
+                return Err(anyhow::anyhow!("密钥无效（HTTP {}）", resp.status().as_u16()));
+            }
+            Ok(resp) => last_error = format!("{url}: HTTP {}", resp.status().as_u16()),
+            Err(e) => last_error = format!("{url}: {e}"),
+        }
+    }
+    Err(anyhow::anyhow!("{last_error}"))
+}
+
+/// 供应商官方列表里只留聊天模型：语音、向量、重排这些挂进房间也说不了话。
+/// 列表太长（OpenRouter 有几百个）时再套一遍 `[oai] model_filter`。
+fn chat_models_only(models: Vec<String>, filter: &super::utils::ModelFilterConfig) -> Vec<String> {
+    const NOT_CHAT: &[&str] = &[
+        "tts", "asr", "embed", "whisper", "rerank", "moderation", "transcribe", "speech", "audio", "voice", "dall-e",
+    ];
+    let chat: Vec<String> = models
+        .into_iter()
+        .filter(|model| {
+            let lower = model.to_lowercase();
+            !NOT_CHAT.iter().any(|word| lower.contains(word))
+        })
+        .collect();
+    if chat.len() > 40 {
+        let kept = super::utils::filter_models(&chat, filter);
+        if !kept.is_empty() {
+            return kept;
+        }
+    }
+    chat
 }
 
 fn write_config(path: &std::path::Path, cfg: &Config) -> anyhow::Result<()> {

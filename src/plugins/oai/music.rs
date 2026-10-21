@@ -24,7 +24,7 @@ const LOG_TARGET: &str = "Plugin/OAI/Music";
 pub(super) const DEFAULT_MUSIC_MODELS: &[&str] = &["suno"];
 
 /// 兜底模型 id：模型列表还没拉回来（或列表里没有 Suno）时用它。
-/// 预设房间与群聊搭话的写歌工具都靠它兜底。
+/// 群聊搭话的写歌工具靠它兜底。
 pub(crate) const FALLBACK_MODEL: &str = "suno_music";
 
 /// 兜底版本号。中转站实际把 `chirp-v5` 映射到当前最新模型（返回里是 `v6` / `chirp-hawk`），

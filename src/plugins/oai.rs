@@ -8,6 +8,7 @@ use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjec
 use std::collections::HashMap;
 use std::sync::Arc;
 
+pub(crate) mod catalog;
 pub mod data;
 pub mod images;
 pub mod inbox;
@@ -20,9 +21,9 @@ pub mod music;
 pub mod parser;
 pub(crate) mod agent;
 pub(crate) mod chat;
-pub(crate) mod presets;
 pub mod render;
 pub(crate) mod search;
+pub(crate) mod setup;
 pub mod types;
 pub mod utils;
 pub mod video;
@@ -34,11 +35,13 @@ const LOG_TARGET: &str = "Plugin/OAI";
 /// 一个模型供应商的接入点与密钥。
 ///
 /// 房间模型、判定模型写成 `供应商/模型` 时，就按这里的名字取接口；
-/// 不带前缀的仍走 `oai` 自己那份默认配置（历史上就是 apilio 中转站）。
+/// 不带前缀的仍走 `oai` 自己那份默认接口（`oai <地址> <密钥>` 配的那个，多半是中转站）。
+/// 名字是 [`catalog::KNOWN`] 里认得的那几家时，`api_base` 可以留空（取官方地址），
+/// `api_key` 也可以留空改用环境变量（如 `DEEPSEEK_API_KEY`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub(crate) struct ProviderConfig {
-    /// OpenAI 兼容接口基址，例如 `https://api.deepseek.com/v1`。
+    /// OpenAI 兼容接口基址，例如 `https://api.deepseek.com/v1`；认得的供应商可留空。
     pub api_base: String,
     /// 该供应商的 APIKEY。
     pub api_key: String,
@@ -47,9 +50,11 @@ pub(crate) struct ProviderConfig {
 /// 解析一次请求要用的接口地址与密钥。
 ///
 /// - `provider` 为空：用默认接口（`oai` 数据配置，保持既有房间行为不变）；
-/// - 指定名字且 `[oai.providers]` 里有：用该供应商的配置；
+/// - 指定名字：按 [`catalog::resolve`] 取（配置优先，认得的供应商补官方地址与环境变量里的密钥）；
 /// - 指定 `apilio` 但没单独配置：回退到默认接口（它就是历史默认，避免重复填写）；
 /// - 其他未知名字：返回 `None`，宁可报错也不悄悄打到别的站点。
+///
+/// 密钥可能是空的（认得的供应商还没填）：调用方据此回 [`catalog::missing_key_hint`]。
 pub(crate) fn resolve_endpoint(
     providers: &HashMap<String, ProviderConfig>,
     default_base: &str,
@@ -60,8 +65,8 @@ pub(crate) fn resolve_endpoint(
     match name {
         None => Some((default_base.to_string(), default_key.to_string())),
         Some(name) => {
-            if let Some(found) = providers.get(name) {
-                return Some((found.api_base.clone(), found.api_key.clone()));
+            if let Some(found) = catalog::resolve(providers, name) {
+                return Some((found.base, found.key));
             }
             name.eq_ignore_ascii_case("apilio")
                 .then(|| (default_base.to_string(), default_key.to_string()))
@@ -129,7 +134,7 @@ pub(crate) struct OaiConfig {
     /// 不配也不影响既有房间——不带前缀的仍走 `oai` 默认接口。
     pub(crate) providers: HashMap<String, ProviderConfig>,
     /// 联网搜索：给内置 agent 房间的 `web_search` / `web_fetch`。
-    /// 默认关闭，群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
+    /// 默认开启（填了 DeepSeek 官方密钥就走它的搜索与抓取），群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
     pub(crate) search: search::SearchConfig,
     /// 群聊那一层：房间里能发的消息条数、能查几次资料、能画几张图，以及
     /// 哪些群允许管理动作。搭话有自己的一份节奏（见 `[ambient]`），这张表只管房间。
@@ -174,7 +179,14 @@ impl Default for OaiConfig {
             video_seconds: 5,
             video_send: "both".to_string(),
             media_timeout_seconds: 900,
-            providers: HashMap::new(),
+            // 默认就摆着 DeepSeek 这一格：控制台里一眼看到「填密钥」的地方，填完管家大人就能用。
+            providers: HashMap::from([(
+                "deepseek".to_string(),
+                ProviderConfig {
+                    api_base: "https://api.deepseek.com/v1".to_string(),
+                    api_key: String::new(),
+                },
+            )]),
             search: search::SearchConfig::default(),
             chat: chat::ChatConfig::default(),
         }
@@ -283,9 +295,9 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
         }
 
         // 尝试预加载模型列表
-        let filter = get_config_or_default::<OaiConfig>(&ctx).model_filter;
+        let oai = get_config_or_default::<OaiConfig>(&ctx);
         tokio::spawn(async move {
-            if let Err(e) = mgr.fetch_models(&filter).await {
+            if let Err(e) = mgr.fetch_models(&oai.model_filter, &oai.providers).await {
                 warn!(target: LOG_TARGET, "初始化获取模型列表失败: {}", e);
             } else {
                 info!(target: LOG_TARGET, "初始化获取模型列表成功");

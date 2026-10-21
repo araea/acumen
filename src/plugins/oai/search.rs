@@ -187,16 +187,16 @@ impl SearchConfig {
         if !self.keys("deepseek").is_empty() {
             return self;
         }
-        let official = providers.get("deepseek").filter(|provider| {
-            !provider.api_key.trim().is_empty()
-                && url::Url::parse(provider.api_base.trim())
+        // 认得的供应商可以只写密钥（地址取官方）、甚至只设环境变量，所以按解析后的结果判。
+        let official = super::catalog::resolve(providers, "deepseek").filter(|provider| {
+            !provider.key.trim().is_empty()
+                && url::Url::parse(provider.base.trim())
                     .ok()
                     .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
                     .is_some_and(|host| host == "api.deepseek.com")
         });
         if let Some(provider) = official {
-            self.backends.entry("deepseek".to_string()).or_default().api_key =
-                provider.api_key.trim().to_string();
+            self.backends.entry("deepseek".to_string()).or_default().api_key = provider.key.trim().to_string();
         }
         self
     }

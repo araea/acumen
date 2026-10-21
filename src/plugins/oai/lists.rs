@@ -73,8 +73,7 @@ pub(crate) struct Rooms {
 impl Rooms {
     /// `search_default` 是全局联网开关：没单独设过的房间跟着它走。
     pub(crate) fn new(agents: &[Agent], search_default: bool) -> Self {
-        // 分区优先于模型：内置预设那一批的共同点是「预设」而不是「跑哪个模型」，
-        // 混进用户自建的同模型房间里就找不着了。带分区的排在前面（false < true）。
+        // 分区优先于模型：手写了分区的房间按分区成组，排在前面（false < true）。
         let mut grouped: BTreeMap<(bool, String, String), Vec<&Agent>> = BTreeMap::new();
         for agent in agents {
             let section = agent.section.trim().to_string();
@@ -253,9 +252,15 @@ pub(crate) struct Models {
 }
 
 impl Models {
-    /// `models` 是中转站拉回的列表（序号 = 位置 + 1，指令里写序号就是写这个模型）；
-    /// `agents` 用来数每个模型被几个智能体用着。
-    pub(crate) fn new(models: &[String], agents: &[Agent], default_model: &str) -> Self {
+    /// `models` 是 `/%` 的完整列表（序号 = 位置 + 1，指令里写序号就是写这个模型）：默认接口的
+    /// 裸模型名在前，各家供应商的 `供应商/模型` 在后；`providers` 是（供应商名, 显示名），
+    /// 这些供应商的模型各自成组、不并进「其他」。`agents` 用来数每个模型被几个智能体用着。
+    pub(crate) fn new(
+        models: &[String],
+        providers: &[(String, String)],
+        agents: &[Agent],
+        default_model: &str,
+    ) -> Self {
         let mut used: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for agent in agents {
             *used.entry(agent.model.as_str()).or_insert(0) += 1;
@@ -265,18 +270,30 @@ impl Models {
         // 序号沿着图往下也大体递增。
         let mut order: Vec<&'static str> = Vec::new();
         let mut by_vendor: BTreeMap<&'static str, Vec<ModelRow>> = BTreeMap::new();
+        let mut official: Vec<ModelGroup> = Vec::new();
         for (i, name) in models.iter().enumerate() {
-            let vendor = model_vendor(name);
-            if !by_vendor.contains_key(vendor) {
-                order.push(vendor);
-            }
-            by_vendor.entry(vendor).or_default().push(ModelRow {
+            let row = ModelRow {
                 index: i + 1,
                 name: name.clone(),
                 vendor: None,
                 used: used.get(name.as_str()).copied().unwrap_or(0),
                 default: !default_model.is_empty() && name == default_model,
-            });
+            };
+            let provider = name
+                .split_once('/')
+                .and_then(|(provider, _)| providers.iter().find(|(id, _)| id == provider));
+            if let Some((_, title)) = provider {
+                match official.iter_mut().find(|group| &group.title == title) {
+                    Some(group) => group.rows.push(row),
+                    None => official.push(ModelGroup { title: title.clone(), rows: vec![row] }),
+                }
+                continue;
+            }
+            let vendor = model_vendor(name);
+            if !by_vendor.contains_key(vendor) {
+                order.push(vendor);
+            }
+            by_vendor.entry(vendor).or_default().push(row);
         }
         let vendors = order.len();
 
@@ -305,10 +322,13 @@ impl Models {
         if !rest.is_empty() {
             rest.sort_by_key(|row| row.index);
             groups.push(ModelGroup {
-                title: if has_multi { "其他厂商" } else { "全部模型" }.to_string(),
+                title: if has_multi { "其他厂商" } else if official.is_empty() { "全部模型" } else { "默认接口" }
+                    .to_string(),
                 rows: rest,
             });
         }
+        let vendors = vendors + official.len();
+        groups.extend(official);
         Models {
             groups,
             total: models.len(),
@@ -320,7 +340,7 @@ impl Models {
         let mut blocks = vec![Block::Title {
             title: "模型列表".into(),
             pill: None,
-            sub: format!("共 {} 个模型 · {} 个厂商", self.total, self.vendors),
+            sub: format!("共 {} 个模型 · {} 个来源", self.total, self.vendors),
         }];
         for group in &self.groups {
             blocks.push(Block::Section {
@@ -347,7 +367,7 @@ impl Models {
             width: WIDTH,
             kicker: "ACUMEN · MODELS".into(),
             blocks,
-            foot: "序号随模型列表刷新而变，长期使用请写完整的模型名".into(),
+            foot: "序号随模型列表刷新而变，长期使用请写完整的模型名；官方供应商的模型写成 供应商/模型".into(),
             hint: ("用序号换模型".into(), "<名称>%<序号>".into()),
         }
     }
@@ -404,7 +424,7 @@ mod tests {
         let ids: Vec<String> = ["claude-a", "claude-b", "gpt-5", "kimi-k3", "mystery"]
             .map(String::from)
             .into();
-        let models = Models::new(&ids, &[], "kimi-k3");
+        let models = Models::new(&ids, &[], &[], "kimi-k3");
         let titles: Vec<_> = models.groups.iter().map(|g| g.title.as_str()).collect();
         assert_eq!(titles, ["Anthropic", "其他厂商"]);
         let rest = &models.groups[1].rows;
@@ -426,8 +446,8 @@ mod tests {
     #[test]
     fn rooms_group_by_section_then_model_and_fold_singletons() {
         let agents = [
-            agent("画·一", "img", "预设"),
-            agent("画·二", "img", "预设"),
+            agent("一号", "img", "预设"),
+            agent("二号", "img", "预设"),
             agent("甲", "m1", ""),
             agent("乙", "m1", ""),
             agent("丙", "m2", ""),

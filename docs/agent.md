@@ -2,26 +2,65 @@
 
 `oai` 插件可将房间设为 Agent 房间。Agent 使用已配置的模型与工具处理任务后回复结果
 
+## 开箱即用：管家大人
+
+启动后自带一间 Agent 房间「管家大人」，模型跟随 `[oai] agent_default_model`（默认 `deepseek/deepseek-flash`），联网搜索与抓取走 DeepSeek 官方接口。只要接上 DeepSeek 一家就能用——号主在任意对话框里发：
+
+```text
+oai deepseek sk-xxxxxxxx
+```
+
+地址自动补成官方的 `https://api.deepseek.com/v1`；密钥先拿去请求一次模型列表，验过才存进 `config.toml` 的 `[oai.providers.deepseek]`，回话里说明管家大人现在用哪个模型、联网走哪条链。存好后自动撤回带密钥的那条消息（号主就在自己的账号上打字，打在哪儿别人都看得见），撤不回就提醒去重置。也可以在控制台「智能对话 → providers → deepseek」填 `api_key`，或设环境变量 `DEEPSEEK_API_KEY`。只有号主与 `ctl.admins` 能改接口。
+
+发 `oai` 看接入状态：管家大人用哪个模型、能不能用，默认接口与每家供应商配没配、密钥从哪来（配置还是环境变量），联网后端链。哪一家没配好时，管家大人的报错会直接写出缺什么、去哪儿申请，以及已接好的另一家怎么换（如 `管家大人%mimo/mimo-v2.6-flash`）。
+
+## 供应商
+
+认得的供应商只要给密钥，地址与环境变量名都内置（均为 OpenAI 兼容接口）：
+
+| 名字（别名） | 供应商 | 环境变量 |
+| --- | --- | --- |
+| `deepseek` | DeepSeek | `DEEPSEEK_API_KEY` |
+| `mimo`（xiaomi） | 小米 MiMo | `MIMO_API_KEY` |
+| `siliconflow` | 硅基流动 | `SILICONFLOW_API_KEY` |
+| `moonshot`（kimi） | 月之暗面 | `MOONSHOT_API_KEY` |
+| `zhipu`（glm） | 智谱 | `ZHIPU_API_KEY` |
+| `dashscope`（qwen、bailian） | 阿里云百炼 | `DASHSCOPE_API_KEY` |
+| `volcengine`（ark、doubao） | 火山方舟 | `ARK_API_KEY` |
+| `minimax` | MiniMax | `MINIMAX_API_KEY` |
+| `openrouter` | OpenRouter | `OPENROUTER_API_KEY` |
+| `openai`、`anthropic`、`gemini`、`xai`、`groq` | 同名 | `<名字>_API_KEY` |
+| `ollama` | 本机 Ollama（不要密钥，写进配置才算接上） | — |
+
+```text
+oai kimi sk-xxxx                        # 认得的供应商：名字或别名 + 密钥
+oai myrelay https://relay.example/v1 sk-xxxx  # 自己的中转站：名字 + 地址 + 密钥
+oai https://relay.example/v1 sk-xxxx    # 默认接口：不带供应商前缀的模型走它
+oai kimi 清除                            # 清掉一家的密钥
+```
+
+配置里写成 `[oai.providers.<名字>]`：认得的供应商 `api_base` 可留空，`api_key` 留空时读环境变量；写了 `api_base` 就用你写的。`/%` 同时列出默认接口与每家供应商的模型（官方供应商各自成组，写成 `供应商/模型`），序号接着编；语音、向量、重排这类不能对话的模型不列。
+
 ## 创建与切换
 
 ```text
-##研究 agent                         # 新建 Agent 房间
-##研究 agent/deepseek/deepseek-flash # 新建并指定模型
-研究%agent                            # 将已有房间改为 Agent
-研究%agent apilio/kimi-k3             # 指定供应商和模型
-研究%gpt-5.6-luna                     # 切回普通模型房间
+##研究 agent                          # 新建 Agent 房间，模型跟随默认
+##研究 agent deepseek/deepseek-flash  # 新建并指定模型
+研究%deepseek-v4-pro                   # 换模型；只写模型名时在 /% 里找是哪家的
+研究%agent                             # 将普通房间改为 Agent
+研究%chat                              # 改回普通对话房间（只聊天，不调工具）
 ```
 
-`agent` 后可用空格、`/` 或 `:` 分隔模型。房间名不受限，但不能包含 `-`，因为它用于删除房间。
+`%` 只换模型、**不改房间类型**：Agent 房间换个模型仍是 Agent。要换类型就明写 `agent` / `chat`；画图、写歌、拍片这类只能在普通房间里跑的模型写给 Agent 房间时会自动转过去，回话里会说。`agent`、`chat` 后可用空格、`/` 或 `:` 分隔模型。房间名不受限，但不能包含 `-`，因为它用于删除房间。
 
 ## 模型与思考强度
 
-模型可写成 `供应商/模型`。供应商在 `[oai.providers]` 配置 `api_base` 与 `api_key`；`apilio` 使用 `[oai]` 默认接口，不必重复配置。不带供应商前缀的模型也使用默认接口。未知供应商会报错。
+模型可写成 `供应商/模型`，前缀决定打哪个接口（见[供应商](#供应商)）；`apilio` 没单独配置时使用默认接口。不带供应商前缀的模型使用默认接口。不认得又没配置的供应商会报错。
 
 模型后可附 `:off`、`:minimal`、`:low`、`:medium`、`:high` 或 `:xhigh` 指定思考强度。模型后缀优先于房间的 `thinking` 配置，留空时使用模型服务默认值。
 
 ```text
-##研究 deepseek/deepseek-flash:high
+##研究 agent deepseek/deepseek-flash:high
 研究%deepseek/deepseek-flash:low
 ```
 
@@ -172,31 +211,18 @@ Agent 在群里生成的图、写进每轮临时目录的文件，都在这一�
 
 ## 媒体房间
 
-Acumen 会创建绘图、音乐与视频预设房间，位于 `/#` 的对应分区。预设是带提示词的普通房间，实际能力由 `[oai]` 中的模型与接口决定。使用 `房间名/$` 查看提示词，使用 `房间名$提示词` 修改；删除的房间不会在下次启动时自动恢复。
-
-绘图：
+不再内置画图、音乐、视频预设房间（1.11.0 起，老配置里的那几十间在升级时一并移除）。需要时自己建一间普通房间，房间的提示词就是风格前缀，用户那句话接在后面：
 
 ```text
-画·手办 一只戴眼镜的橘猫
+##画画 gpt-image-2.5 Turn the subject into a 1/7 scale collectible PVC figure…
+画画 一只戴眼镜的橘猫
 ```
 
-可附图片、引用图片或 @成员提供参考图，最多 4 张。支持 `--size` 与 `--quality`；加 `~` 前缀可不保存对话历史。绘图模型由 `[oai].image_models` 选择。结果只回一张成品图，不附提示词卡片；图发不出去时改回原图链接。
+绘图可附图片、引用图片或 @成员提供参考图，最多 4 张。支持 `--size` 与 `--quality`；加 `~` 前缀可不保存对话历史。绘图模型由 `[oai].image_models` 选择。结果只回一张成品图，不附提示词卡片；图发不出去时改回原图链接。
 
-音乐：
+音乐（模型命中 `[oai].music_models`，如 `##写歌 suno_music`）支持 `--标题`、`--风格`、`--版本` 与 `--纯音乐`，一次请求生成两个版本。`--文件`、`--语音` 与 `--都发` 可覆盖发送方式，默认值由 `[oai].music_send` 决定。Suno 等上游服务可能收费，使用前确认账号与费用。
 
-```text
-歌·民谣 唱一首关于秋天落叶的歌
-```
-
-支持 `--标题`、`--风格`、`--版本` 与 `--纯音乐`，一次请求生成两个版本。`--文件`、`--语音` 与 `--都发` 可覆盖发送方式，默认值由 `[oai].music_send` 决定。Suno 等上游服务可能收费，使用前确认账号与费用。
-
-视频：
-
-```text
-影·电影感 一只橘猫坐在窗台上看雨
-```
-
-支持 `--秒数`、`--竖屏`、`--横屏` 与 `--尺寸`。`--文件`、`--视频` 或 `--都发` 选择发送方式，默认值由 `[oai].video_send` 决定。视频任务用独立的 `media_timeout_seconds` 等待上限，并可能产生额外费用。
+视频（模型命中 `[oai].video_models`，如 `##拍片 veo3.1-fast`）支持 `--秒数`、`--竖屏`、`--横屏` 与 `--尺寸`。`--文件`、`--视频` 或 `--都发` 选择发送方式，默认值由 `[oai].video_send` 决定。视频任务用独立的 `media_timeout_seconds` 等待上限，并可能产生额外费用。
 
 ## 配置
 

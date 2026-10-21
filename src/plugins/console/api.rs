@@ -421,12 +421,12 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
                 "noun": "供应商",
                 "add": "添加供应商",
                 "empty": "还没有供应商。房间模型写成「供应商/模型」时按这里的名字找接口与密钥。",
-                "suggest": ["deepseek", "mimo", "openrouter", "siliconflow", "moonshot", "zhipu"],
+                "suggest": crate::plugins::oai::catalog::KNOWN.iter().map(|known| known.id).collect::<Vec<_>>(),
                 "optional": false,
                 "template": { "api_base": "", "api_key": "" },
                 "help": {
-                    "api_base": "OpenAI 兼容接口的基址，例如 https://api.deepseek.com/v1",
-                    "api_key": "这个供应商的密钥。",
+                    "api_base": "OpenAI 兼容接口的基址。认得的供应商（建议名里那些）留空就用官方地址；中转站必填。",
+                    "api_key": "这个供应商的密钥；认得的供应商留空时读环境变量（如 DEEPSEEK_API_KEY）。也可以私聊机器人发「oai 名字 密钥」，验过再存。",
                 },
             }));
             out.insert("search.backends".into(), json!({
