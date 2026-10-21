@@ -330,6 +330,8 @@
   --zw-log-fg: #eceaf6;
   --zw-log-dim: #a6a4ba;
   --zw-log-line: #2c2d3a;
+  /* 外观页「自选」那枚色板：一圈色相，告诉人这里什么颜色都能挑。 */
+  --zw-hue-wheel: conic-gradient(from 90deg, #e53935, #fdd835, #43a047, #00acc1, #1e88e5, #8e24aa, #e53935);
   --zw-glow: color-mix(in srgb, var(--md-sys-color-primary) 9%, transparent);
   --zw-hairline: color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
 
@@ -376,6 +378,8 @@
   --zw-size-mark: 34px;
   --zw-size-tile: 46px;
   --zw-size-tile-large: 56px;
+  --zw-size-swatch: 56px;
+  --zw-size-variant-strip: 40px;
   --zw-border-width: 1px;
   --zw-border-width-strong: 2px;
 

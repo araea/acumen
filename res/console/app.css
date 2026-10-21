@@ -3962,3 +3962,369 @@ fieldset[data-off] > .config-off-note {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ============================================================================
+   外观（设置 › 外观）
+   ----------------------------------------------------------------------------
+   色板学安卓「壁纸与个性化」：一枚圆盘切成三块（主色 / 次色容器 / 第三色），
+   选中时圆盘收进一圈主色描边、中间浮出对勾。整页随选择实时换色，
+   预览卡只补这一页上没有的几样（运行卡、开关、状态牌）。
+   ========================================================================== */
+
+.look-preview {
+  display: grid;
+  gap: var(--zw-space-04);
+}
+
+.look-hero {
+  position: relative;
+  display: grid;
+  gap: var(--zw-space-01);
+  padding: var(--zw-space-05) var(--zw-space-06);
+  border-radius: var(--zw-radius-card);
+  background-color: var(--zw-hero-a);
+  background-image: linear-gradient(145deg, var(--zw-hero-a), var(--zw-hero-b));
+  color: var(--zw-hero-fg);
+  overflow: hidden;
+}
+
+.look-hero-label {
+  color: var(--zw-hero-dim);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.look-hero-value {
+  font-size: var(--md-sys-typescale-headline-small-size);
+  line-height: var(--md-sys-typescale-headline-small-line-height);
+  font-weight: var(--md-sys-typescale-weight-display);
+  letter-spacing: var(--md-sys-typescale-tracking-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.look-hero-dot {
+  position: absolute;
+  top: var(--zw-space-05);
+  right: var(--zw-space-06);
+  width: var(--zw-space-04);
+  height: var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--zw-accent);
+}
+
+.look-row {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-04);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--zw-radius-row);
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.look-lines {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.look-lines b {
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-body-large-size);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.look-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-03);
+}
+
+.look-actions > * {
+  pointer-events: none;
+}
+
+/* —— 色板 —— */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(calc(var(--zw-size-swatch) + var(--zw-space-04)), 1fr));
+  gap: var(--zw-space-04) var(--zw-space-03);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.swatch {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: var(--zw-space-02);
+  padding-block: var(--zw-space-02);
+  border-radius: var(--md-sys-shape-corner-large);
+  color: var(--md-sys-color-on-surface-variant);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.swatch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.swatch-disc {
+  display: grid;
+  place-items: center;
+  width: var(--zw-size-swatch);
+  height: var(--zw-size-swatch);
+  border-radius: var(--md-sys-shape-corner-full);
+  /* 上半主色，下半左次色右第三色：三块各取一份。 */
+  background:
+    linear-gradient(var(--_a) 0 50%, transparent 50%),
+    linear-gradient(90deg, var(--_b) 0 50%, var(--_c) 50%);
+  box-shadow: inset 0 0 0 var(--zw-border-width) var(--zw-hairline);
+  transition:
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+.swatch-disc .i {
+  display: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  padding: var(--zw-space-02);
+  box-sizing: content-box;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.swatch-label {
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-medium);
+  white-space: nowrap;
+}
+
+/* 选中：圆盘缩成圆角方（M3E 的形状变化表达「选中」），外圈一道主色描边，中间对勾。 */
+.swatch:has(input:checked) .swatch-disc,
+.swatch-custom[data-on] .swatch-disc {
+  border-radius: var(--md-sys-shape-corner-large-increased);
+  box-shadow:
+    0 0 0 var(--zw-space-01) var(--md-sys-color-surface),
+    0 0 0 calc(var(--zw-space-01) + var(--zw-border-width-strong)) var(--md-sys-color-primary);
+}
+
+.swatch:has(input:checked) .swatch-disc .i,
+.swatch-custom[data-on] .swatch-disc .i {
+  display: block;
+}
+
+.swatch:has(input:checked) .swatch-label,
+.swatch-custom[data-on] .swatch-label {
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.swatch:has(input:focus-visible) {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.swatch:active .swatch-disc {
+  scale: 0.94;
+}
+
+/* 自选：圆盘就是那枚颜色本身，图标常驻（取色笔），选中时换成对勾的样式。 */
+.swatch-custom .swatch-disc {
+  background: var(--zw-hue-wheel);
+}
+
+.swatch-custom[data-on] .swatch-disc {
+  background: var(--_seed);
+}
+
+.swatch-custom .swatch-disc .i {
+  display: block;
+  background: var(--md-sys-color-surface-container-lowest);
+  color: var(--md-sys-color-on-surface);
+}
+
+.swatch-custom[data-on] .swatch-disc .i {
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+}
+
+.file-btn {
+  position: relative;
+  cursor: pointer;
+}
+
+.file-btn:has(input:focus-visible) {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+/* —— 配色风格：单选卡，左侧一条三色小样 —— */
+.variants {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 17rem), 1fr));
+  gap: var(--zw-group-gap);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.variant {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-04);
+  min-height: var(--zw-size-list-item);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--zw-radius-row);
+  background: var(--md-sys-color-surface-container-low);
+  cursor: pointer;
+  transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
+}
+
+.variant input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.variant-strip {
+  display: flex;
+  flex: none;
+  overflow: hidden;
+  width: var(--zw-size-variant-strip);
+  height: var(--zw-size-variant-strip);
+  border-radius: var(--md-sys-shape-corner-medium);
+  box-shadow: inset 0 0 0 var(--zw-border-width) var(--zw-hairline);
+}
+
+.variant-strip i {
+  flex: 1;
+}
+
+.variant-strip i:nth-child(1) {
+  flex: 2;
+  background: var(--_a);
+}
+
+.variant-strip i:nth-child(2) {
+  background: var(--_b);
+}
+
+.variant-strip i:nth-child(3) {
+  background: var(--_c);
+}
+
+.variant-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.variant-name {
+  font-size: var(--md-sys-typescale-body-large-size);
+  line-height: var(--zw-body-line);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.variant-hint {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+.variant-check {
+  display: none;
+  color: var(--md-sys-color-primary);
+}
+
+.variant:has(input:checked) {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.variant:has(input:checked) .variant-hint {
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.variant:has(input:checked) .variant-check {
+  display: block;
+}
+
+.variant:has(input:focus-visible) {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.variant::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .variant:hover::after {
+    opacity: var(--md-sys-state-hover-opacity);
+  }
+}
+
+/* 明暗 / 对比度 / 字号：分段按钮铺满这一格，窄屏上每段等宽，不折行。 */
+.segmented-fill {
+  display: flex;
+  flex-wrap: nowrap;
+  width: 100%;
+  margin: 0;
+  border: 0;
+}
+
+.segmented-fill .segment {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: var(--zw-space-03);
+  white-space: nowrap;
+}
+
+.segmented-fill .segment .i {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+@media (max-width: 379.98px) {
+  .segmented-fill .segment .i {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .swatch-disc,
+  .variant-strip {
+    forced-color-adjust: none;
+  }
+  .swatch:has(input:checked) .swatch-label,
+  .variant:has(input:checked) {
+    outline: var(--zw-border-width-strong) solid CanvasText;
+  }
+}

@@ -27,6 +27,8 @@ const INDEX: &[u8] = include_bytes!("../../../res/console/index.html");
 const TOKENS_CSS: &[u8] = include_bytes!("../../../res/console/tokens.css");
 const APP_CSS: &[u8] = include_bytes!("../../../res/console/app.css");
 const APP_JS: &[u8] = include_bytes!("../../../res/console/app.js");
+/// 外观引擎（`scripts/make-theme.sh` 构建）：只在外观页与主题需要重算时才加载。
+const THEME_JS: &[u8] = include_bytes!("../../../res/console/theme.js");
 const ICON: &[u8] = include_bytes!("../../../res/console/icon.svg");
 const ICON_192: &[u8] = include_bytes!("../../../res/console/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("../../../res/console/icon-512.png");
@@ -56,6 +58,10 @@ pub(super) async fn css(headers: HeaderMap) -> Response {
 
 pub(super) async fn js(headers: HeaderMap) -> Response {
     asset(&headers, APP_JS, "text/javascript; charset=utf-8")
+}
+
+pub(super) async fn theme_js(headers: HeaderMap) -> Response {
+    asset(&headers, THEME_JS, "text/javascript; charset=utf-8")
 }
 
 pub(super) async fn icon(headers: HeaderMap) -> Response {

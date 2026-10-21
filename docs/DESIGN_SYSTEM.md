@@ -38,6 +38,18 @@
 
 **深色面只有两处：运行卡与日志台**；其余是安静的纸面。运行卡是 `primary` 到 `primary-container` 的渐变（`--zw-hero-*`），深底浅字在明暗两档里都不反转。四格读数是四张独立的圆角卡，每格带一枚圆形图标；「已启用插件」靠图标底（tertiary-container）与 `<meter>` 占比条带一点第三色。日志台用 `--zw-log-*` 固定深色，与纸面正文分开。
 
+## 外观（主题配置）
+
+「设置 › 外观」（`#/settings/appearance`，`app.js` §11c）让人换掉默认的靛青。它只改控制台，**聊天卡片不跟着变**（卡片令牌已冻结，见上）。
+
+- **主题色**：九枚预设色板 + 「自选」（系统取色器）+ 「从图片取色」。色板学安卓「壁纸与个性化」：一枚圆盘切成主色 / 次色容器 / 第三色三块，选中时圆盘变成圆角方（M3E 用形状变化表达选中）、外圈主色描边、中间对勾。取色走 Material Color Utilities 的 Celebi 量化 + Score（与安卓壁纸取色同一套），图先缩到 128px，取前四种做候选，第一种直接换上。
+- **配色风格**：原色（Fidelity，默认）/ 柔和（Tonal Spot）/ 鲜明（Vibrant）/ 跳色（Expressive）/ 素雅（Neutral）/ 黑白（Monochrome）。每张单选卡左侧是这个种子在该方案下的三色小样，换种子时小样跟着重算。
+- **明暗**（跟随系统 / 浅色 / 深色）、**对比度**（跟随系统 / 标准 / 中 / 高，对应 contrast level 0 / 0.5 / 1；跟随系统时「增强对比度」取 0.5）、**字号**（小 / 标准 / 大 / 特大 = 根字号 93.75%–125%，全界面是 rem，所以整页按比例放大）。分段按钮铺满一行，窄于 380px 时去掉图标。
+- **改了立刻生效，没有「保存」**：这是偏好，不是配置（HIG 的设置页惯例）。成功不出提示条——页面本身变了就是回执；只有同步失败才报。「恢复默认外观」一键回到出厂。
+- **实现**：`res/console/theme.js` 是 `scripts/make-theme.sh` 用 esbuild 把 `scripts/theme/engine.mjs` 与 `@material/material-color-utilities@0.4.0`（2025 规范）打成的 IIFE，**只在外观页与主题需要重算时才加载**。它输出一张 `:root:root` 选择器的覆盖样式（比 tokens.css 的 `:root` 高一档，媒体查询里的也压得住），结构与 tokens.css 的生成段相同（浅 / 深 / 各自的增强对比度），外加 `--zw-selected-fg`（= on-primary-container）；换了种子时运行卡、日志台也跟着色相走（`--zw-hero-*` 取主色调色板 24 / 36 / 86 / 98 档，日志台取中性调色板 7 / 20 / 70 / 93 档）。默认种子 + 原色方案下引擎与 `make-tokens.py` 的结果逐项相同。
+- **首帧不闪**：算好的 CSS 连同选择记在 `localStorage["acumen.theme"]`，`index.html` 头部一小段内联脚本在样式表之后、`app.js` 之前把它贴回去，同时改 `theme-color` 与 `color-scheme`。全是默认值时什么都不注入。
+- **跨设备**：种子、方案、明暗、对比度存在 `data/console/theme.json`（`GET/POST /api/theme`，只认白名单里的值），登录后对一次，别的设备改过就跟上；字号只属于这台设备。
+
 ## 图标
 
 图标是 **Material Symbols Rounded**（字重 400、光学尺寸 24、GRAD 0）——M3E 配套的那一套，不再手绘。`scripts/make-icons.py` 从 `@material-symbols/svg-400` 取出用到的字形，写进 `index.html` 里一段 `@generated` 的内联精灵图；`app.js` 的 `icon()` 按名字取出 symbol 的路径，**抄进每一枚 `<svg>`**，不用 `<use href="#名字">`——不少手机自带浏览器与 App 内置浏览器画不出 `<use>` 引用的 symbol，整排图标空白。内联而非外部文件，首帧就有图标，也不多一条静态路由。用 `mask` 着色的品牌标记一类同时写 `-webkit-mask`（Chromium 120 以前只认带前缀的）。许可证见 THIRD_PARTY_NOTICES.md。

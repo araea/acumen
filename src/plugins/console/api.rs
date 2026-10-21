@@ -39,6 +39,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/settings/global", post(save_global))
         .route("/groups", get(groups))
         .route("/friends", get(friends))
+        .route("/theme", get(theme).post(save_theme))
         .route("/logs", get(log_history))
         .route("/logs/stream", get(log_stream))
         .route("/command", post(command))
@@ -897,6 +898,83 @@ fn tidy_ids(ids: &[String]) -> Vec<String> {
 struct RosterQuery {
     /// 带上它（值不拘）就绕过缓存，重新问一遍实现端。
     refresh: Option<String>,
+}
+
+// ==================== 外观 ====================
+
+/// 控制台的主题：种子色、配色方案、明暗与对比度。存在 `data/console/theme.json`，
+/// 换一台设备打开也是同一个样子；字号是各设备自己的，只在浏览器里记。
+/// 配色由页面自己算（`res/console/theme.js`），这里只存四个选择、只认白名单里的值。
+#[derive(Deserialize, serde::Serialize)]
+struct Theme {
+    seed: String,
+    variant: String,
+    mode: String,
+    contrast: String,
+}
+
+const THEME_VARIANTS: [&str; 7] = [
+    "fidelity",
+    "tonal",
+    "vibrant",
+    "expressive",
+    "content",
+    "neutral",
+    "monochrome",
+];
+
+impl Theme {
+    fn check(&self) -> Result<(), &'static str> {
+        let seed = self.seed.strip_prefix('#').unwrap_or("");
+        if seed.len() != 6 || !seed.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("主题色要写成 #RRGGBB 这样的六位十六进制");
+        }
+        if !THEME_VARIANTS.contains(&self.variant.as_str()) {
+            return Err("没有这种配色方案");
+        }
+        if !["system", "light", "dark"].contains(&self.mode.as_str()) {
+            return Err("明暗只能是跟随系统、浅色或深色");
+        }
+        if !["system", "standard", "medium", "high"].contains(&self.contrast.as_str()) {
+            return Err("对比度只能是跟随系统、标准、中或高");
+        }
+        Ok(())
+    }
+}
+
+async fn theme_path() -> Option<std::path::PathBuf> {
+    crate::plugins::get_data_dir("console")
+        .await
+        .ok()
+        .map(|dir| dir.join("theme.json"))
+}
+
+/// 没存过就是 `null`：页面按内置的默认主题画，不必知道默认值是什么。
+async fn theme() -> Response {
+    let Some(path) = theme_path().await else {
+        return Json(Value::Null).into_response();
+    };
+    let saved = tokio::fs::read(&path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Theme>(&bytes).ok())
+        .filter(|theme| theme.check().is_ok());
+    Json(json!(saved)).into_response()
+}
+
+async fn save_theme(Json(body): Json<Theme>) -> Response {
+    if let Err(message) = body.check() {
+        return bad(message);
+    }
+    let Some(path) = theme_path().await else {
+        return bad("数据目录不可写，主题没能保存");
+    };
+    let mut theme = body;
+    theme.seed = theme.seed.to_ascii_lowercase();
+    match write_atomic_async(path, serde_json::to_vec_pretty(&theme).unwrap_or_default()).await {
+        Ok(()) => Json(json!(theme)).into_response(),
+        Err(error) => bad(format!("主题没能保存：{error}")),
+    }
 }
 
 /// 已加入的群：给名单编辑器「从已加入的群里选」用，也用来把名单里的群号翻成群名。

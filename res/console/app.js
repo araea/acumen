@@ -12,7 +12,7 @@
    - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
    §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
-   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §12 解锁 · §13 事件 · §14 启动
+   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -695,6 +695,7 @@
     const [head = "", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
     const page = PAGES.some((p) => p.id === head) ? head : "overview";
     let arg = null;
+    if (page === "settings" && rest[0] === "appearance") return { page, arg: "appearance", key: "settings/appearance" };
     if (page === "plugins" && rest.length) {
       try {
         arg = decodeURIComponent(rest.join("/")) || null;
@@ -743,13 +744,14 @@
     plugins: (route) => pluginsPage(route),
     ambient: () => ambientPage(),
     logs: () => logsPage(),
-    settings: () => settingsPage(),
+    settings: (route) => (route.arg === "appearance" ? appearancePage() : settingsPage()),
   };
 
   const MOUNT = {
     ambient: () => paintGroupNames(),
     overview: () => overviewFeed.start(),
     logs: () => logs.mount(),
+    settings: () => appearance.mount(),
   };
 
 
@@ -2869,6 +2871,17 @@
     return h`<div class="page">
       ${pageHead("设置", "连接、全局行为与维护命令。这些项目不属于任何插件。")}
 
+      <section class="section" aria-label="外观">
+        <ul class="group"><li class="item">
+          <span class="tile" aria-hidden="true">${icon("palette")}</span>
+          <div class="item-content">
+            <a class="item-link item-title" href="#/settings/appearance">外观</a>
+            <span class="item-sub">${appearance.summary()}</span>
+          </div>
+          <div class="item-trailing">${icon("chevron_right", "chevron")}</div>
+        </li></ul>
+      </section>
+
       <section class="section" aria-labelledby="bots-title">
         <div class="section-head">
           <h2 class="section-title" id="bots-title">连接</h2>
@@ -3966,6 +3979,365 @@
   }
 
 
+  /* ==================== §11c 外观 ====================
+     主题色、配色方案、明暗、对比度与字号。改了立刻生效，不设「保存」：这是偏好，不是配置。
+     - 配色由 /theme.js（Material Color Utilities，与 make-tokens.py 同一套 2025 规范）在页面里算，
+       算好的 CSS 连同选择一起记在 localStorage，index.html 的小脚本首帧就贴回去；
+     - 四个选择同步到 /api/theme，换一台设备打开也是这个样子；字号只属于这台设备；
+     - 全是默认值时什么都不注入，界面用的就是 tokens.css 里那份生成的令牌。 */
+
+  const THEME_KEY = "acumen.theme";
+  const THEME_DEFAULT = { seed: "#3f51b5", variant: "fidelity", mode: "system", contrast: "system" };
+  const SEEDS = [
+    ["#3f51b5", "靛青"], ["#0061a4", "海蓝"], ["#006a6a", "青碧"], ["#386a20", "松绿"],
+    ["#8b5000", "琥珀"], ["#b3261e", "朱砂"], ["#b0275b", "海棠"], ["#6750a4", "紫藤"], ["#5f6368", "石墨"],
+  ];
+  const VARIANTS = [
+    ["fidelity", "原色", "主色就是你选的那一个，彩度不打折"],
+    ["tonal", "柔和", "Material You 的默认：主色收一点，整体更安静"],
+    ["vibrant", "鲜明", "彩度拉满，按钮与选中更醒目"],
+    ["expressive", "跳色", "主色与第三色拉开色相，更有个性"],
+    ["neutral", "素雅", "几乎只剩灰，颜色只留给要紧的地方"],
+    ["monochrome", "黑白", "纯灰阶，只靠明暗分层"],
+  ];
+  const MODES = [["system", "跟随系统", "brightness_auto"], ["light", "浅色", "light_mode"], ["dark", "深色", "dark_mode"]];
+  const CONTRASTS = [["system", "跟随系统"], ["standard", "标准"], ["medium", "中"], ["high", "高"]];
+  const SCALES = [[0.9375, "小"], [1, "标准"], [1.125, "大"], [1.25, "特大"]];
+
+  const appearance = {
+    engine: null,
+    picked: [],
+    syncTimer: 0,
+
+    stored() {
+      try {
+        return JSON.parse(localStorage.getItem(THEME_KEY) || "null") || {};
+      } catch {
+        return {};
+      }
+    },
+    prefs() {
+      return { ...THEME_DEFAULT, ...(this.stored().prefs || {}) };
+    },
+    scale() {
+      return this.stored().scale || 1;
+    },
+
+    /** 配色引擎按需加载一次。 */
+    load() {
+      if (this.engine) return Promise.resolve(this.engine);
+      if (window.ZwTheme) return Promise.resolve((this.engine = window.ZwTheme));
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "/theme.js";
+        script.onload = () => resolve((this.engine = window.ZwTheme));
+        script.onerror = () => reject(failure("配色引擎没能加载，刷新页面再试。"));
+        document.head.append(script);
+      });
+    },
+
+    isDefault: (prefs) => Object.keys(THEME_DEFAULT).every((key) => prefs[key] === THEME_DEFAULT[key]),
+
+    /** 算好、记下、贴上。`sync` 为真时顺手排一次同步。 */
+    async set(change, { sync = true } = {}) {
+      const stored = this.stored();
+      const prefs = { ...THEME_DEFAULT, ...(stored.prefs || {}), ...change };
+      let css = "";
+      let surface = null;
+      if (!this.isDefault(prefs)) {
+        const engine = await this.load();
+        const built = engine.build(prefs);
+        css = built.css;
+        surface = built.surface;
+      }
+      const next = { ...stored, prefs, css, surface };
+      this.write(next);
+      this.apply(next);
+      if (sync) this.push(prefs);
+    },
+
+    setScale(scale) {
+      const next = { ...this.stored(), scale };
+      this.write(next);
+      this.apply(next);
+    },
+
+    write(value) {
+      try {
+        localStorage.setItem(THEME_KEY, JSON.stringify(value));
+      } catch {
+        // 无痕模式之类存不下：这一次照样生效，只是下次打开回到同步的那一份。
+      }
+    },
+
+    /** 与 index.html 首帧那段同一个效果；这里还负责撤掉旧的。 */
+    apply({ prefs = THEME_DEFAULT, css = "", surface = null, scale = 1 }) {
+      let sheet = $("#zw-theme");
+      if (css) {
+        if (!sheet) {
+          sheet = document.createElement("style");
+          sheet.id = "zw-theme";
+          document.head.append(sheet);
+        }
+        sheet.textContent = css;
+      } else sheet?.remove();
+      document.documentElement.style.fontSize = scale && scale !== 1 ? `${scale * 100}%` : "";
+      const forced = prefs.mode === "light" || prefs.mode === "dark" ? prefs.mode : null;
+      const scheme = $('meta[name="color-scheme"]');
+      if (scheme) scheme.content = forced || "light dark";
+      for (const meta of $$('meta[name="theme-color"]')) {
+        meta.dataset.base ??= meta.content;
+        const dark = forced === "dark" || (!forced && /dark/.test(meta.media));
+        meta.content = surface ? (dark ? surface.dark : surface.light) : meta.dataset.base;
+      }
+      // 导航胶囊的位置与配色无关，但字号变了格子也变了。
+      requestAnimationFrame(() => syncNavPill());
+    },
+
+    /** 连着改（拖着取色器）只同步最后一次。失败才出声：成功本来就是看得见的。 */
+    push(prefs) {
+      clearTimeout(this.syncTimer);
+      this.syncTimer = setTimeout(async () => {
+        try {
+          await api("/theme", { method: "POST", body: prefs });
+        } catch (error) {
+          if (error.status === 401 || error.offline) return;
+          snackbar(`外观只在这台设备上生效：${error.message}`, "error");
+        }
+      }, 600);
+    },
+
+    /** 登录后对一次：别的设备改过主题，这里跟上。 */
+    async pull() {
+      let remote;
+      try {
+        remote = await api("/theme");
+      } catch {
+        return;
+      }
+      const local = this.prefs();
+      const wanted = remote ? { ...THEME_DEFAULT, ...remote } : THEME_DEFAULT;
+      if (Object.keys(THEME_DEFAULT).every((key) => wanted[key] === local[key])) return;
+      // 本机改过而服务端从没存过：以本机为准，补存一份。
+      if (!remote && !this.isDefault(local)) return this.push(local);
+      await this.set(wanted, { sync: false }).catch(() => {});
+      if (shown?.key === "settings/appearance") render({ quiet: true });
+    },
+
+    summary() {
+      const prefs = this.prefs();
+      const seed = SEEDS.find(([hex]) => hex === prefs.seed)?.[1] || prefs.seed.toUpperCase();
+      const variant = VARIANTS.find(([id]) => id === prefs.variant)?.[1];
+      const mode = MODES.find(([id]) => id === prefs.mode)?.[1];
+      const scale = SCALES.find(([value]) => value === this.scale())?.[1];
+      return `${seed} · ${variant} · ${mode === "跟随系统" ? "明暗跟随系统" : mode} · 字号${scale || "自定"}`;
+    },
+
+    mount() {
+      const root = $("#appearance");
+      if (!root) return;
+      root.addEventListener("change", (event) => this.onChange(event));
+      root.addEventListener("input", (event) => this.onInput(event));
+      root.addEventListener("click", (event) => this.onClick(event));
+    },
+
+    onInput(event) {
+      const target = event.target;
+      // 拖着取色器时逐帧跟随；松手的 change 才同步。
+      if (target.name === "seed-custom") {
+        cancelAnimationFrame(this.frame);
+        this.frame = requestAnimationFrame(() => this.pickSeed(target.value, { sync: false, live: true }));
+      }
+    },
+
+    async onChange(event) {
+      const target = event.target;
+      try {
+        if (target.name === "seed" || target.name === "seed-custom") await this.pickSeed(target.value);
+        else if (target.name === "variant") await this.set({ variant: target.value });
+        else if (target.name === "mode") await this.set({ mode: target.value });
+        else if (target.name === "contrast") await this.set({ contrast: target.value });
+        else if (target.name === "scale") this.setScale(Number(target.value));
+        else if (target.name === "seed-image") await this.fromImage(target);
+        else return;
+      } catch (error) {
+        snackbar(error.message, "error");
+        return;
+      }
+      $("#appearance-summary")?.replaceChildren(this.summary());
+    },
+
+    async onClick(event) {
+      if (!event.target.closest("[data-theme-reset]")) return;
+      this.picked = [];
+      this.setScale(1);
+      await this.set({ ...THEME_DEFAULT });
+      await render({ quiet: true });
+      snackbar("外观已恢复默认。");
+    },
+
+    /** 换种子色：色板的小样要跟着方案重画，其余控件不动（焦点与滚动都留着）。 */
+    async pickSeed(value, { sync = true, live = false } = {}) {
+      const seed = String(value).toLowerCase();
+      if (!/^#[0-9a-f]{6}$/.test(seed)) return;
+      await this.set({ seed }, { sync });
+      const custom = $("#seed-custom");
+      if (!live && custom && custom.value !== seed) custom.value = seed;
+      const known = $$('#appearance input[name="seed"]').some((radio) => radio.value === seed);
+      for (const radio of $$('#appearance input[name="seed"]')) radio.checked = radio.value === seed;
+      $("#seed-custom-swatch")?.toggleAttribute("data-on", !known);
+      $("#seed-custom-hex") && ($("#seed-custom-hex").textContent = seed.toUpperCase());
+      this.paintVariants(seed);
+    },
+
+    paintVariants(seed) {
+      if (!this.engine) return;
+      for (const card of $$("#appearance [data-variant-sample]")) {
+        const sample = this.engine.sample(seed, card.dataset.variantSample);
+        card.style.setProperty("--_a", sample.primary);
+        card.style.setProperty("--_b", sample.secondary);
+        card.style.setProperty("--_c", sample.tertiary);
+      }
+    },
+
+    /** 从一张图里取几枚候选：缩到 128px 再量化，大图也只算一万多个像素。 */
+    async fromImage(input) {
+      const file = input.files?.[0];
+      input.value = "";
+      if (!file) return;
+      const engine = await this.load();
+      let bitmap;
+      try {
+        bitmap = await createImageBitmap(file);
+      } catch {
+        throw failure("这张图打不开，换一张试试。");
+      }
+      const side = 128;
+      const ratio = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
+      canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close?.();
+      const colors = engine.fromImage(context.getImageData(0, 0, canvas.width, canvas.height).data, 4);
+      if (!colors.length) throw failure("这张图里取不出像样的颜色，换一张色彩多一点的。");
+      this.picked = colors;
+      await this.pickSeed(colors[0]);
+      await render({ quiet: true });
+      $('#appearance input[name="seed"]:checked')?.focus();
+      snackbar(`从图里取到 ${colors.length} 种颜色，已换上第一种。`);
+    },
+  };
+
+  const swatch = (hex, label, checked, engine) => {
+    const sample = engine.sample(hex, "tonal");
+    return h`<label class="swatch state" style="--_seed:${hex};--_a:${sample.primary};--_b:${sample.secondary};--_c:${sample.tertiary}">
+      <input type="radio" name="seed" value="${hex}"${attr(checked, "checked")}>
+      <span class="swatch-disc" aria-hidden="true">${icon("check")}</span>
+      <span class="swatch-label">${label}</span>
+    </label>`;
+  };
+
+  async function appearancePage() {
+    const engine = await appearance.load();
+    const prefs = appearance.prefs();
+    const scale = appearance.scale();
+    const presets = SEEDS.map(([hex]) => hex);
+    const picked = appearance.picked.filter((hex) => !presets.includes(hex));
+    const custom = !presets.includes(prefs.seed) && !picked.includes(prefs.seed);
+    const radio = (name, value, checked, label, glyph = "") =>
+      h`<label class="segment"><input type="radio" name="${name}" value="${value}"${attr(checked, "checked")}>${glyph ? icon(glyph) : ""}${label}</label>`;
+    return h`<div class="page" id="appearance" data-title="外观">
+      ${pageHead("外观", "只改这个控制台的样子，群里的卡片不受影响。改了立刻生效。", {
+        back: { href: "#/settings", label: "设置" },
+      })}
+
+      <section class="card look-preview" aria-labelledby="look-preview-title">
+        <h2 class="visually-hidden" id="look-preview-title">预览</h2>
+        <div class="look-hero" aria-hidden="true">
+          <span class="look-hero-label">运行中</span>
+          <span class="look-hero-value">3 天 4 小时</span>
+          <span class="look-hero-dot"></span>
+        </div>
+        <div class="look-row" aria-hidden="true">
+          <span class="tile">${icon("palette")}</span>
+          <span class="look-lines"><b>主色与容器</b><span>说明文字用 on-surface-variant</span></span>
+          <span class="switch look-switch" role="presentation" aria-checked="true"></span>
+        </div>
+        <div class="look-actions" aria-hidden="true">
+          <span class="btn btn-filled">主要</span><span class="btn btn-tonal">次要</span><span class="chip" aria-pressed="true">${icon("check")}已选</span>
+          <span class="status status-success">成功</span><span class="status status-warning">提醒</span>
+        </div>
+        <p class="note" id="appearance-summary">${appearance.summary()}</p>
+      </section>
+
+      <section class="section" aria-labelledby="seed-title">
+        <div class="section-head">
+          <h2 class="section-title" id="seed-title">主题色</h2>
+          <span class="section-meta">按 HCT 推出整套配色，对比度由算法保证</span>
+        </div>
+        <fieldset class="swatches" aria-labelledby="seed-title">
+          ${SEEDS.map(([hex, label]) => swatch(hex, label, hex === prefs.seed, engine))}
+          ${picked.map((hex, index) => swatch(hex, `图中 ${index + 1}`, hex === prefs.seed, engine))}
+          <label class="swatch swatch-custom state" id="seed-custom-swatch" style="--_seed:${prefs.seed}"${attr(custom, "data-on")}>
+            <input type="color" name="seed-custom" id="seed-custom" value="${prefs.seed}" aria-describedby="seed-custom-hex">
+            <span class="swatch-disc" aria-hidden="true">${icon("colorize")}</span>
+            <span class="swatch-label">自选 <span class="num" id="seed-custom-hex">${custom ? prefs.seed.toUpperCase() : ""}</span></span>
+          </label>
+        </fieldset>
+        <div class="actions">
+          <label class="btn btn-tonal state file-btn">${icon("image")}从图片取色
+            <input type="file" name="seed-image" accept="image/*" class="visually-hidden"></label>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="variant-title">
+        <div class="section-head"><h2 class="section-title" id="variant-title">配色风格</h2></div>
+        <fieldset class="variants" aria-labelledby="variant-title">
+          ${VARIANTS.map(([id, label, hint]) => {
+            const sample = engine.sample(prefs.seed, id);
+            return h`<label class="variant state" data-variant-sample="${id}" style="--_a:${sample.primary};--_b:${sample.secondary};--_c:${sample.tertiary}">
+              <input type="radio" name="variant" value="${id}"${attr(id === prefs.variant, "checked")} aria-describedby="variant-${id}-hint">
+              <span class="variant-strip" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="variant-text"><span class="variant-name">${label}</span><span class="variant-hint" id="variant-${id}-hint">${hint}</span></span>
+              <span class="variant-check" aria-hidden="true">${icon("check_circle-fill")}</span>
+            </label>`;
+          })}
+        </fieldset>
+      </section>
+
+      <section class="section" aria-labelledby="mode-title">
+        <div class="config-group">
+          <div class="setting">
+            <span class="field-label" id="mode-title">明暗</span>
+            <fieldset class="segmented segmented-fill" aria-labelledby="mode-title">
+              ${MODES.map(([id, label, glyph]) => radio("mode", id, id === prefs.mode, label, glyph))}
+            </fieldset>
+          </div>
+          <div class="setting">
+            <span class="field-label" id="contrast-title">对比度</span>
+            <span class="field-hint" id="contrast-hint">跟随系统时，打开系统的「增强对比度」就换成中档。</span>
+            <fieldset class="segmented segmented-fill" aria-labelledby="contrast-title" aria-describedby="contrast-hint">
+              ${CONTRASTS.map(([id, label]) => radio("contrast", id, id === prefs.contrast, label))}
+            </fieldset>
+          </div>
+          <div class="setting">
+            <span class="field-label" id="scale-title">字号</span>
+            <span class="field-hint" id="scale-hint">只在这台设备上生效；整页按比例放大，排版不会挤。</span>
+            <fieldset class="segmented segmented-fill" aria-labelledby="scale-title" aria-describedby="scale-hint">
+              ${SCALES.map(([value, label]) => radio("scale", value, value === scale, label))}
+            </fieldset>
+          </div>
+        </div>
+      </section>
+
+      <div class="actions">
+        <button class="btn btn-text" type="button" data-theme-reset>${icon("restart_alt")}恢复默认外观</button>
+      </div>
+    </div>`;
+  }
+
   /* ==================== §12 解锁 ==================== */
 
   function lock(reason = "") {
@@ -4008,6 +4380,7 @@
     lifecycle.probe().finally(() => {
       render();
       updates.check();
+      appearance.pull();
     });
   }
 
@@ -4491,6 +4864,7 @@
     lifecycle.probe().finally(() => {
       render();
       updates.check();
+      appearance.pull();
     });
   });
 })();

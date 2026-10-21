@@ -56,6 +56,7 @@ pub(super) fn assets<S: Clone + Send + Sync + 'static>(router: Router<S>) -> Rou
         .route("/apple-touch-icon.png", get(super::assets::apple_icon))
         .route("/app.css", get(super::assets::css))
         .route("/app.js", get(super::assets::js))
+        .route("/theme.js", get(super::assets::theme_js))
         .route("/manifest.webmanifest", get(super::assets::manifest))
 }
 
