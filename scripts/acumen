@@ -485,7 +485,7 @@ ${B}知微（acumen）$(version)${N}
   acumen status     运行状态、QQ 连接与保活情况
   acumen log        实时日志（Ctrl+C 退出）
   acumen ui         打开管理页（知微停着也能打开，在页面上启动、更新）；acumen ui url 只打印地址
-  acumen update     立即检查并更新（启动时与每天 04:30 也会自动做）
+  acumen update     立即检查并更新（启动时、每 6 小时与每天 04:30 也会自动做；群里发 /更新 同效）
 
   acumen setup      重新检查依赖、字体、root 守护
   acumen run        前台运行，调试用

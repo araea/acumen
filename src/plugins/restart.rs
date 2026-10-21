@@ -1,7 +1,8 @@
-//! restart 插件：例行维护（按时更新与重启）、启动时查更新、内存阈值监控、手动重启指令。
+//! restart 插件：例行维护（按时更新与重启）、周期查新、内存阈值监控，以及群里能直接用的
+//! `/版本`、`/查更新`、`/更新` 与 `/restart` 指令。
 //!
 //! 例行维护按配置的时刻进行：先查新版本，有就下载校验换上；再等群里安静下来、手头的
-//! 活儿做完，才请求主循环重启。每次启动（重启也是）稍后也查一次新版本，有才重启。重启由主循环收尾：停适配器与任务、关数据库与浏览器、
+//! 活儿做完，才请求主循环重启。除启动与每日维护，还会按 `check_interval_hours` 周期查新。每次启动（重启也是）稍后也查一次新版本，有才重启。重启由主循环收尾：停适配器与任务、关数据库与浏览器、
 //! 保存配置，Unix 下 exec 替换当前进程，PID 不变，托管它的 runit 不会当成崩溃。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
@@ -26,6 +27,8 @@ pub struct RestartConfig {
     times: Vec<String>,
     /// 启动时与例行维护时查新版本，有就下载、校验、换上（仅发布版）
     auto_update: bool,
+    /// 每隔这么多小时再自动查一次新版本（0 = 只在启动与每日维护时查）
+    check_interval_hours: u64,
     /// 例行维护时没有新版本也重启一次，放掉长时间运行积下的内存
     daily_restart: bool,
     /// 平滑重启：等到这么多秒没有新消息、手头也没有在处理的消息再动手
@@ -48,6 +51,7 @@ impl Default for RestartConfig {
             enabled: true,
             times: vec!["04:30".to_string()],
             auto_update: true,
+            check_interval_hours: 6,
             daily_restart: true,
             quiet_seconds: 120,
             max_wait_minutes: 30,
@@ -64,6 +68,12 @@ const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(30);
 /// 这么久以内查过，启动时就不再查：例行维护刚查完紧跟着的那次重启、崩溃后被反复拉起，
 /// 都不必再去敲 GitHub。
 const STARTUP_CHECK_INTERVAL: Duration = Duration::from_mins(10);
+/// 周期查新与 `/版本` 的查询上限：下载可以慢慢来，回一句话不能让人干等。
+const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+/// `/版本` 复用控制台那份结果，这么久以内不重复问 GitHub。
+const VERSION_CACHE: Duration = Duration::from_mins(10);
+/// 群里换上新版本后留给回执的时间：要够那条「已更新」先发出去。
+const CHAT_RESTART_DELAY: Duration = Duration::from_secs(5);
 
 // ================= 全局状态 =================
 
@@ -178,7 +188,25 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             });
         }
 
-        // 3. 内存阈值监控(仅 Linux 支持读取自身 RSS)
+        // 3. 周期查新：从启动与每日维护之外再补一道，白天发布的版本不必留到第二天
+        if cfg.auto_update && crate::release::managed() && cfg.check_interval_hours > 0 {
+            let hours = cfg.check_interval_hours;
+            let periodic_ctx = ctx.clone();
+            ctx.scheduler
+                .add_interval(Duration::from_hours(hours), move || {
+                    let ctx = periodic_ctx.clone();
+                    async move {
+                        // 刚启动或刚维护过就不必再问一次。
+                        if crate::release::checked_within(Duration::from_mins(30)) {
+                            return;
+                        }
+                        maintain(ctx, false).await;
+                    }
+                });
+            info!(target: LOG_TARGET, "每 {hours} 小时自动查一次新版本");
+        }
+
+        // 4. 内存阈值监控(仅 Linux 支持读取自身 RSS)
         if cfg.memory_threshold_mb > 0 {
             let threshold = cfg.memory_threshold_mb;
             let interval_secs = cfg.memory_check_interval_minutes.max(1) * 60;
@@ -273,6 +301,112 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
+        // ---- 版本：谁都能问；最新版本复用控制台那份查询结果 ----
+        if matches_any(&ctx, &["版本", "version"]) {
+            let Some(msg) = ctx.as_message() else {
+                return Ok(Some(ctx));
+            };
+            let prefix = get_prefixes(&ctx).first().cloned().unwrap_or_default();
+            let mut text = format!("知微 v{}", crate::release::VERSION);
+            if crate::release::managed() {
+                match tokio::time::timeout(
+                    CHECK_TIMEOUT,
+                    crate::release::check_cached(VERSION_CACHE),
+                )
+                .await
+                {
+                    Ok(Ok(Some(release))) => text.push_str(&format!(
+                        " · 有新版本 v{}，用 {prefix}更新 升级",
+                        release.version
+                    )),
+                    Ok(Ok(None)) => text.push_str(" · 已是最新"),
+                    Ok(Err(error)) => text.push_str(&format!(" · 查不到新版本：{error}")),
+                    Err(_) => text.push_str(" · 查新版本超时"),
+                }
+            } else {
+                text.push_str(" · 源码构建，不走自动更新");
+            }
+            let reply = Message::new().reply(msg.message_id()).text(text);
+            send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
+            return Ok(None);
+        }
+
+        // ---- 查更新：立即去 GitHub 问一次，不安装 ----
+        if matches_any(&ctx, &["查更新", "检查更新", "check"]) {
+            let Some(msg) = ctx.as_message() else {
+                return Ok(Some(ctx));
+            };
+            if !crate::plugins::ctl::is_manager(&ctx) {
+                let reply = Message::new()
+                    .reply(msg.message_id())
+                    .text(crate::plugins::ctl::DENIED);
+                send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
+                return Ok(None);
+            }
+            let prefix = get_prefixes(&ctx).first().cloned().unwrap_or_default();
+            let text = if !crate::release::managed() {
+                "这是从源码构建的版本，不走自动更新：拉取代码后重新编译".to_string()
+            } else {
+                match tokio::time::timeout(CHECK_TIMEOUT, crate::release::check()).await {
+                    Ok(Ok(Some(release))) => {
+                        let mut text = format!(
+                            "发现新版本 v{}（当前 v{}）",
+                            release.version,
+                            crate::release::VERSION
+                        );
+                        let notes = brief(&release.notes);
+                        if !notes.is_empty() {
+                            text.push('\n');
+                            text.push_str(&notes);
+                        }
+                        text.push_str(&format!("\n用 {prefix}更新 升级"));
+                        text
+                    }
+                    Ok(Ok(None)) => format!("已是最新版本 v{}", crate::release::VERSION),
+                    Ok(Err(error)) => format!("查不到新版本：{error}"),
+                    Err(_) => "查新版本超时，稍后再试".to_string(),
+                }
+            };
+            let reply = Message::new().reply(msg.message_id()).text(text);
+            send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
+            return Ok(None);
+        }
+
+        // ---- 更新：号主与管理员专用；先回执，下载完再报结果并平滑重启 ----
+        if matches_any(&ctx, &["更新", "升级", "update", "upgrade"]) {
+            let Some(msg) = ctx.as_message() else {
+                return Ok(Some(ctx));
+            };
+            if !crate::plugins::ctl::is_manager(&ctx) {
+                let reply = Message::new()
+                    .reply(msg.message_id())
+                    .text(crate::plugins::ctl::DENIED);
+                send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
+                return Ok(None);
+            }
+            let group_id = msg.group_id().map(str::to_string);
+            let user_id = msg.user_id().to_string();
+            let updatable = crate::release::managed();
+            let text = if updatable {
+                "⏳ 正在检查并下载更新…"
+            } else {
+                "这是从源码构建的版本，不走自动更新：拉取代码后重新编译"
+            };
+            let reply = Message::new().reply(msg.message_id()).text(text);
+            send_msg(
+                &ctx,
+                writer.clone(),
+                group_id.as_deref(),
+                Some(&user_id),
+                reply,
+            )
+            .await?;
+            if updatable {
+                tokio::spawn(chat_update(ctx.clone(), writer, group_id, user_id));
+            }
+            return Ok(None);
+        }
+
         if let Some(_cmd) = match_word_command(&ctx, "restart") {
             if !crate::plugins::ctl::is_manager(&ctx) {
                 let msg = ctx.as_message().unwrap();
@@ -372,32 +506,92 @@ fn arm(ctx: &Context, reason: &str, delay: Duration) -> Result<(), String> {
 /// 是用户亲手点的，所以不等群里安静：回执先落到浏览器（1.5 秒），随即重启。
 /// restart 插件没开时只换文件，回一句「重启后生效」。
 pub(crate) async fn update_now(ctx: &Context) -> Result<String, String> {
-    if !crate::release::managed() {
-        return Err("这是从源码构建的版本，不走自动更新：拉取代码后重新编译".into());
-    }
-    if MAINTAINING.swap(true, Ordering::SeqCst) {
-        return Err("已经有一次更新或例行维护在进行中，稍后再看".into());
-    }
-    let installed = async {
-        crate::release::mark_checked();
-        let release = crate::release::check()
-            .await
-            .map_err(|error| format!("查不到新版本：{error:#}"))?
-            .ok_or_else(|| "已经是最新版本".to_string())?;
-        crate::release::install(&release)
-            .await
-            .map_err(|error| format!("更新没装上：{error:#}"))?;
-        info!(target: LOG_TARGET, "新版本 {} 已换上（控制台）", release.version);
-        Ok::<_, String>(release.version)
-    }
-    .await;
-    MAINTAINING.store(false, Ordering::SeqCst);
-    let version = installed?;
+    let version = try_update()
+        .await?
+        .ok_or_else(|| "已经是最新版本".to_string())?;
     let reason = format!("更新 {} → {version}", crate::release::VERSION);
     Ok(match arm(ctx, &reason, Duration::from_millis(1500)) {
         Ok(()) => format!("已换上 {version}，正在重启"),
         Err(_) => format!("已换上 {version}，重启后生效"),
     })
+}
+
+/// 群里发起的更新：等下载校验换上，回一句结果，随即平滑重启。
+async fn chat_update(
+    ctx: Context,
+    writer: LockedWriter,
+    group_id: Option<String>,
+    user_id: String,
+) {
+    let text = match try_update().await {
+        Ok(Some(version)) => {
+            let reason = format!("更新 {} → {version}", crate::release::VERSION);
+            if arm(&ctx, &reason, CHAT_RESTART_DELAY).is_ok() {
+                format!(
+                    "✅ 已更新到 v{version}（原 v{}），{} 秒后重启",
+                    crate::release::VERSION,
+                    CHAT_RESTART_DELAY.as_secs()
+                )
+            } else {
+                format!(
+                    "✅ 已更新到 v{version}（原 v{}），重启后生效",
+                    crate::release::VERSION
+                )
+            }
+        }
+        Ok(None) => format!("已是最新版本 v{}", crate::release::VERSION),
+        Err(error) => format!("❌ {error}"),
+    };
+    let reply = Message::new().text(text);
+    if let Err(error) = send_msg(&ctx, writer, group_id.as_deref(), Some(&user_id), reply).await {
+        error!(target: LOG_TARGET, "更新结果发不出去：{error}");
+    }
+}
+
+/// 查、下载、校验、换上；返回换上的版本（已是最新则为 `None`）。
+///
+/// 与控制台、例行维护共用 `MAINTAINING` 这把锁，同一时刻只换一份。
+async fn try_update() -> Result<Option<String>, String> {
+    if !crate::release::managed() {
+        return Err("这是从源码构建的版本，不走自动更新：拉取代码后重新编译".into());
+    }
+    if MAINTAINING.swap(true, Ordering::SeqCst) {
+        return Err("已经有一次更新或维护在进行中，稍后再试".into());
+    }
+    let result = async {
+        crate::release::mark_checked();
+        let release = match tokio::time::timeout(CHECK_TIMEOUT, crate::release::check()).await {
+            Ok(Ok(Some(release))) => release,
+            Ok(Ok(None)) => return Ok(None),
+            Ok(Err(error)) => return Err(format!("查不到新版本：{error}")),
+            Err(_) => return Err("查新版本超时，稍后再试".to_string()),
+        };
+        crate::release::install(&release)
+            .await
+            .map_err(|error| format!("更新没装上：{error}"))?;
+        info!(target: LOG_TARGET, "新版本 {} 已换上", release.version);
+        Ok(Some(release.version))
+    }
+    .await;
+    MAINTAINING.store(false, Ordering::SeqCst);
+    result
+}
+
+/// 几条同义指令里有没有一条命中；边界与 `/restart` 一致，说半个词不算。
+fn matches_any(ctx: &Context, names: &[&str]) -> bool {
+    names
+        .iter()
+        .any(|name| match_word_command(ctx, name).is_some())
+}
+
+/// 更新说明压成一行，太长就截断：群消息里不该出现整段发布日志。
+fn brief(text: &str) -> String {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.chars().count() > 160 {
+        format!("{}…", line.chars().take(160).collect::<String>())
+    } else {
+        line
+    }
 }
 
 /// 只提出请求，统一由主循环清理，避免定时任务中止自身或两个进程同时写配置。

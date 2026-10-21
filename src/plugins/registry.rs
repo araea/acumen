@@ -387,10 +387,15 @@ register_plugins!(
     },
     restart {
         config: restart::RestartConfig,
-        display_name: "自动重启",
+        display_name: "更新与重启",
         section: "system",
-        summary: "每日定时自动重启 + 内存阈值监控，防止长时间运行卡顿",
-        commands: cmds![("restart", "仅限 ctl.admins；需开启 allow_manual_restart")],
+        summary: "群里直接查版本、查新版本并一键换上（自动下载、校验、平滑重启）；另有启动、周期与每日定时查新，以及内存阈值监控",
+        commands: cmds![
+            ("版本 / version", "当前版本、是不是发布版、有没有新版"),
+            ("查更新 / 检查更新 / check", "仅限 ctl.admins：立即查一次有没有新版，不安装"),
+            ("更新 / 升级 / update", "仅限 ctl.admins：下载校验并换上，随后平滑重启"),
+            ("restart", "仅限 ctl.admins；需开启 allow_manual_restart"),
+        ],
         on_init: Some(restart::init)
     },
 );
