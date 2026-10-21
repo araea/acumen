@@ -2,6 +2,8 @@
 //!
 //! - **认图**见 [`model`]：图像向量 + 分类头，教过的样本优先。动图按帧抽查，哪一帧像就算。
 //!   每张图下载一次、算一次，同一张图（按内容摘要）再出现直接用上次的结论。
+//! - **商城表情**（QQ 表情商店里的动画表情，`mface`）消息里没有图片地址，只有编号：按编号到
+//!   QQ 的表情资源站取动图来看，同一个编号只看一次。表情名里写着奶龙、奶蛙的不必等模型。
 //! - **处理**按「近 `window_hours` 小时第几次」走 `mute_seconds` 阶梯：默认第一次只撤回提醒，
 //!   之后 10 分钟、1 小时、1 天。账号不是群主或管理员时罚不了人，只引用那张图提醒一句
 //!   （`remind_without_admin` 可关）。群主、管理员与机器人管理员发的不管（`exempt_staff`）。
@@ -25,7 +27,7 @@ use image::{AnimationDecoder, ImageDecoder, RgbaImage};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use simd_json::OwnedValue;
-use simd_json::base::ValueAsScalar;
+use simd_json::base::{ValueAsObject, ValueAsScalar};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
@@ -66,6 +68,8 @@ pub struct Config {
     ignore_users: Vec<String>,
     /// 账号不是管理员（罚不了人）时，仍引用那张图提醒一句。
     remind_without_admin: bool,
+    /// 也看商城表情（QQ 表情商店的动画表情）。
+    check_mface: bool,
     /// 一条消息最多看几张图。
     max_images: usize,
     /// 动图最多抽查几帧。
@@ -91,6 +95,7 @@ impl Default for Config {
             exempt_staff: true,
             ignore_users: Vec::new(),
             remind_without_admin: true,
+            check_mface: true,
             max_images: 4,
             max_frames: 4,
             recall_text: "{at} 本群不收{kind}图，这张先撤了。".into(),
@@ -270,6 +275,8 @@ struct Verdict {
     scores: Scores,
     /// 命中了教过的样本：那个样本的类别与相似度。
     taught: Option<(Kind, f32)>,
+    /// 模型没认出来，但商城表情的名字里写着这类。
+    by_name: bool,
     /// 抽查过的帧的向量，教学用。
     vectors: Vec<Vec<f32>>,
 }
@@ -332,9 +339,65 @@ impl Drop for Queued {
 /// 单张图下载后的体积上限。
 const MAX_IMAGE_BYTES: usize = 15 * 1024 * 1024;
 
-async fn inspect(url: &str, config: &Config) -> Result<Verdict, String> {
-    // 模型还没就绪（下载失败在冷却）就不必下图了。
-    let encoder = model::encoder().await?;
+/// 一张要看的图：普通图片带直链；商城表情只有编号，图从 QQ 的表情资源站取。
+#[derive(Clone)]
+struct Picture {
+    url: String,
+    mface: Option<Mface>,
+}
+
+#[derive(Clone)]
+struct Mface {
+    /// 32 位十六进制编号，同一个表情处处相同。
+    id: String,
+    /// 表情名，QQ 给的带方括号（`[奶龙摇摆]`）。
+    name: String,
+}
+
+impl Mface {
+    /// 动图版；个别只有静图的表情退到 PNG。
+    fn urls(&self) -> [String; 2] {
+        let base = format!("https://gxh.vip.qq.com/club/item/parcel/item/{}/{}", &self.id[..2], self.id);
+        [format!("{base}/raw300.gif"), format!("{base}/300x300.png")]
+    }
+
+    /// 表情名里写着的那类。
+    fn named_kind(&self) -> Option<Kind> {
+        if self.name.contains("奶蛙") {
+            Some(Kind::Naiwa)
+        } else if self.name.contains("奶龙") {
+            Some(Kind::Nailong)
+        } else {
+            None
+        }
+    }
+}
+
+/// 从一个消息段认出要看的图：`image` 取直链，`mface` 取编号（`check_mface` 关掉就不看）。
+fn picture(kind: &str, data: &simd_json::owned::Object, config: &Config) -> Option<Picture> {
+    match kind {
+        "image" => {
+            let url = data
+                .get("url")
+                .and_then(|v| v.as_str())
+                .filter(|url| !url.is_empty())
+                .or_else(|| data.get("file").and_then(|v| v.as_str()).filter(|f| f.starts_with("http")))?;
+            Some(Picture { url: url.to_string(), mface: None })
+        }
+        "mface" if config.check_mface => {
+            let id = data.get("emoji_id").and_then(|v| v.as_str())?.trim().to_ascii_lowercase();
+            if id.len() < 2 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            let name = data.get("summary").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+            let mface = Mface { id, name };
+            Some(Picture { url: mface.urls()[0].clone(), mface: Some(mface) })
+        }
+        _ => None,
+    }
+}
+
+async fn download(url: &str) -> Result<Vec<u8>, String> {
     let bytes = tokio::time::timeout(Duration::from_secs(20), download_bytes(url))
         .await
         .map_err(|_| "下载超时".to_string())?
@@ -342,13 +405,72 @@ async fn inspect(url: &str, config: &Config) -> Result<Verdict, String> {
     if bytes.len() > MAX_IMAGE_BYTES {
         return Err(format!("图片有 {} MB，太大", bytes.len() / 1024 / 1024));
     }
-    let digest = format!("{:x}", md5::compute(&bytes));
-    if let Some(verdict) = VERDICTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).map.get(&digest) {
-        return Ok(verdict.clone());
+    Ok(bytes)
+}
+
+fn cached(key: &str) -> Option<Verdict> {
+    VERDICTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).map.get(key).cloned()
+}
+
+fn cache(key: String, verdict: &Verdict) {
+    let mut cache = VERDICTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if cache.map.insert(key.clone(), verdict.clone()).is_none() {
+        cache.order.push_back(key);
+        if cache.order.len() > VERDICT_CACHE
+            && let Some(old) = cache.order.pop_front()
+        {
+            cache.map.remove(&old);
+        }
     }
+}
+
+async fn inspect(picture: &Picture, config: &Config) -> Result<Verdict, String> {
+    // 模型还没就绪（下载失败在冷却）就不必下图了。
+    let encoder = model::encoder().await?;
+    // 商城表情按编号记结论，再出现连图都不用下。
+    let mface_key = picture.mface.as_ref().map(|m| format!("mface:{}", m.id));
+    if let Some(verdict) = mface_key.as_deref().and_then(cached) {
+        return Ok(verdict);
+    }
+    let bytes = match &picture.mface {
+        None => download(&picture.url).await?,
+        Some(mface) => {
+            let [gif, png] = mface.urls();
+            match download(&gif).await {
+                Ok(bytes) => bytes,
+                Err(_) => download(&png).await?,
+            }
+        }
+    };
+    let digest = format!("{:x}", md5::compute(&bytes));
+    let mut verdict = match cached(&digest) {
+        Some(verdict) => verdict,
+        None => {
+            let verdict = embed_and_judge(encoder, bytes, config).await?;
+            cache(digest, &verdict);
+            verdict
+        }
+    };
+    if let Some(mface) = &picture.mface {
+        // 名字只补模型的漏：教过「不是」的照样放过。
+        if verdict.kind == Kind::Other
+            && verdict.taught.is_none()
+            && let Some(kind) = mface.named_kind()
+        {
+            verdict.kind = kind;
+            verdict.by_name = true;
+        }
+    }
+    if let Some(key) = mface_key {
+        cache(key, &verdict);
+    }
+    Ok(verdict)
+}
+
+async fn embed_and_judge(encoder: std::sync::Arc<model::Encoder>, bytes: Vec<u8>, config: &Config) -> Result<Verdict, String> {
     let _permit = INFER.acquire().await.map_err(|e| e.to_string())?;
     let (max_frames, threshold) = (config.max_frames, config.threshold);
-    let verdict = tokio::task::spawn_blocking(move || -> Result<Verdict, String> {
+    tokio::task::spawn_blocking(move || -> Result<Verdict, String> {
         let frames = decode_frames(&bytes, max_frames)?;
         let mut best: Option<Verdict> = None;
         let mut vectors = Vec::new();
@@ -357,7 +479,7 @@ async fn inspect(url: &str, config: &Config) -> Result<Verdict, String> {
             let (kind, scores, taught) = judge(&vector, threshold);
             vectors.push(vector);
             let strength = |v: &Verdict| v.scores.nailong.max(v.scores.naiwa);
-            let candidate = Verdict { kind, scores, taught, vectors: Vec::new() };
+            let candidate = Verdict { kind, scores, taught, by_name: false, vectors: Vec::new() };
             let better = match &best {
                 None => true,
                 Some(b) => {
@@ -378,17 +500,7 @@ async fn inspect(url: &str, config: &Config) -> Result<Verdict, String> {
         Ok(verdict)
     })
     .await
-    .map_err(|e| format!("识别线程异常：{e}"))??;
-    let mut cache = VERDICTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if cache.map.insert(digest.clone(), verdict.clone()).is_none() {
-        cache.order.push_back(digest);
-        if cache.order.len() > VERDICT_CACHE
-            && let Some(old) = cache.order.pop_front()
-        {
-            cache.map.remove(&old);
-        }
-    }
-    Ok(verdict)
+    .map_err(|e| format!("识别线程异常：{e}"))?
 }
 
 /// 解出要看的帧：静图一帧；动图（GIF、WebP）均匀抽 `max_frames` 帧，先看第一帧。
@@ -577,8 +689,8 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         if user.is_empty() || user == ctx.bot.self_id() || config.ignore_users.contains(&user) {
             return Ok(Some(ctx));
         }
-        let urls = image_urls(message.0.get_array("message").map_or(&[][..], Vec::as_slice), config.max_images);
-        if urls.is_empty() {
+        let pictures = pictures(message.0.get_array("message").map_or(&[][..], Vec::as_slice), &config);
+        if pictures.is_empty() {
             return Ok(Some(ctx));
         }
         if config.exempt_staff
@@ -595,7 +707,7 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         let (task_ctx, task_writer) = (ctx.clone(), writer.clone());
         let queued = Queued::enter();
         tokio::spawn(async move {
-            let found = scan(&urls, &config).await;
+            let found = scan(&pictures, &config).await;
             drop(queued);
             if let Some(verdict) = found {
                 let target = Target { group, user, name, message_id };
@@ -608,25 +720,18 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
     })
 }
 
-fn image_urls(segments: &[OwnedValue], max: usize) -> Vec<String> {
+fn pictures(segments: &[OwnedValue], config: &Config) -> Vec<Picture> {
     segments
         .iter()
-        .filter(|segment| segment.get_str("type") == Some("image"))
-        .filter_map(|segment| {
-            let data = segment.get("data")?;
-            data.get_str("url")
-                .or_else(|| data.get_str("file").filter(|f| f.starts_with("http")))
-                .filter(|url| !url.is_empty())
-                .map(String::from)
-        })
-        .take(max)
+        .filter_map(|segment| picture(segment.get_str("type")?, segment.get("data")?.as_object()?, config))
+        .take(config.max_images)
         .collect()
 }
 
 /// 一条消息里的图挨个看，认出一张就停。
-async fn scan(urls: &[String], config: &Config) -> Option<Verdict> {
-    for url in urls {
-        match inspect(url, config).await {
+async fn scan(pictures: &[Picture], config: &Config) -> Option<Verdict> {
+    for picture in pictures {
+        match inspect(picture, config).await {
             Ok(verdict) if verdict.hits(config) => return Some(verdict),
             Ok(_) => {}
             Err(error) => debug!(target: LOG_TARGET, "这张图没看成：{error}"),
@@ -646,13 +751,17 @@ async fn punish(ctx: &Context, writer: &LockedWriter, config: &Config, target: &
     let Target { group, user, name, message_id } = target;
     let kind = verdict.kind;
     let score = verdict.taught.map_or_else(|| verdict.scores.of(kind), |(_, s)| s);
+    let how = match verdict.taught {
+        Some(_) => "，像教过的样本",
+        None if verdict.by_name => "，表情名写着",
+        None => "",
+    };
     let able = api::is_staff(&api::own_role(ctx, writer.clone(), group).await);
     info!(
         target: LOG_TARGET,
-        "群 {group} 的 {name}（{user}）发了{}图（{:.0}%{}）",
+        "群 {group} 的 {name}（{user}）发了{}图（{:.0}%{how}）",
         kind.name(),
         score * 100.0,
-        if verdict.taught.is_some() { "，像教过的样本" } else { "" }
     );
     let vars = |count: usize, duration: u64| Vars { name, kind: kind.name(), count, duration: duration_text(duration) };
     if !able {
@@ -763,7 +872,7 @@ async fn run_command(
     let arg = command::extract_text_arg(&matched.args);
     let word = arg.split_whitespace().next().unwrap_or("");
     let rest = arg[word.len()..].trim();
-    let attached = image_urls(&matched.args, 1);
+    let attached = pictures(&matched.args, config);
     let wants_image = matched.reply_id.is_some() || !attached.is_empty();
     match word {
         "" | "测" | "测试" | "看看" if wants_image => test(ctx, writer, config, group, &matched, attached, &say).await?,
@@ -782,7 +891,7 @@ async fn run_command(
 }
 
 fn usage() -> String {
-    "引用一张图发「奶龙 测」看分数\n管理员引用图或机器人的提醒发「奶龙 是」「奶龙 不是」纠正，「奶龙 忘了」撤销".into()
+    "引用一张图或表情发「奶龙 测」看分数\n管理员引用图或机器人的提醒发「奶龙 是」「奶龙 不是」纠正，「奶龙 忘了」撤销".into()
 }
 
 async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str) -> String {
@@ -836,7 +945,7 @@ async fn subject(
     config: &Config,
     group: &str,
     matched: &CommandMatch,
-    attached: Vec<String>,
+    attached: Vec<Picture>,
 ) -> Result<(Option<(String, Incident)>, Vec<Verdict>), String> {
     if let Some(reply) = &matched.reply_id
         && let Some(found) = find_incident(group, reply)
@@ -844,26 +953,27 @@ async fn subject(
         let verdict = found.1.verdict.clone();
         return Ok((Some(found), vec![verdict]));
     }
-    let mut urls = attached;
-    if urls.is_empty()
+    let mut pictures = attached;
+    if pictures.is_empty()
         && let Some(reply) = &matched.reply_id
     {
         let quoted = api::get_msg(ctx, writer.clone(), reply).await.map_err(|_| "引用的那条读不到了，可能已撤回或太久".to_string())?;
-        urls = quoted
+        // 指令里总要看商城表情：本群不拦，也能测分数、教样本。
+        let config = Config { check_mface: true, ..config.clone() };
+        pictures = quoted
             .message
             .0
             .iter()
-            .filter(|seg| seg.type_ == "image")
-            .filter_map(|seg| seg.data.get("url").and_then(|v| v.as_str()).map(String::from))
+            .filter_map(|seg| picture(&seg.type_, &seg.data, &config))
             .take(config.max_images)
             .collect();
     }
-    if urls.is_empty() {
+    if pictures.is_empty() {
         return Err("引用的那条里没有图".into());
     }
     let mut verdicts = Vec::new();
-    for url in &urls {
-        verdicts.push(inspect(url, config).await?);
+    for picture in &pictures {
+        verdicts.push(inspect(picture, config).await?);
     }
     Ok((None, verdicts))
 }
@@ -874,7 +984,7 @@ async fn test<F>(
     config: &Config,
     group: &str,
     matched: &CommandMatch,
-    attached: Vec<String>,
+    attached: Vec<Picture>,
     say: &impl Fn(String) -> F,
 ) -> Result<(), PluginError>
 where
@@ -892,6 +1002,10 @@ where
             let scores = format!("奶龙 {:.0}% · 奶蛙 {:.0}%", verdict.scores.nailong * 100.0, verdict.scores.naiwa * 100.0);
             let result = match (verdict.taught, verdict.hits(config)) {
                 (Some((kind, s)), _) => format!("像教过的一张{}图（{:.0}%），按{}算", kind.name(), s * 100.0, kind.name()),
+                (None, hits) if verdict.by_name => {
+                    let tail = if hits { "会拦" } else { "但本群没拦这类" };
+                    format!("表情名写着{}，{tail}", verdict.kind.name())
+                }
                 (None, true) => format!("会拦：{}", verdict.kind.name()),
                 (None, false) if verdict.kind != Kind::Other => format!("像{}，但本群没拦这类", verdict.kind.name()),
                 (None, false) => format!("不拦（阈值 {:.0}%）", config.threshold * 100.0),
@@ -916,7 +1030,7 @@ async fn correct<F>(
     config: &Config,
     group: &str,
     matched: &CommandMatch,
-    attached: Vec<String>,
+    attached: Vec<Picture>,
     correction: Correction,
     say: &impl Fn(String) -> F,
 ) -> Result<(), PluginError>
@@ -1062,6 +1176,23 @@ mod tests {
                 started.elapsed().as_millis()
             );
         }
+    }
+
+    #[test]
+    fn market_faces_become_pictures_by_their_id() {
+        let mut data = simd_json::owned::Object::new();
+        data.insert("emoji_id".into(), "10C79A73ED9A9318A4B523214BF300B3".into());
+        data.insert("summary".into(), "[奶龙摇摆]".into());
+        let config = Config::default();
+        let found = picture("mface", &data, &config).unwrap();
+        assert_eq!(
+            found.url,
+            "https://gxh.vip.qq.com/club/item/parcel/item/10/10c79a73ed9a9318a4b523214bf300b3/raw300.gif"
+        );
+        assert_eq!(found.mface.unwrap().named_kind(), Some(Kind::Nailong));
+        assert!(picture("mface", &data, &Config { check_mface: false, ..Config::default() }).is_none());
+        data.insert("emoji_id".into(), "../x".into());
+        assert!(picture("mface", &data, &config).is_none());
     }
 
     #[test]

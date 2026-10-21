@@ -203,6 +203,8 @@ exempt_staff = true
 ignore_users = []
 # 账号不是管理员（撤不了、禁不了）时，仍引用那张图提醒一句。
 remind_without_admin = true
+# 也看 QQ 表情商店的动画表情（商城表情）：按表情编号取图识别，表情名写着奶龙、奶蛙的直接算。
+check_mface = true
 # 一条消息最多看几张图（1–10）。
 max_images = 4
 # 动图最多抽查几帧（1–12，均匀抽，第一帧必看；哪帧像就算）。
