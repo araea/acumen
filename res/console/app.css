@@ -2001,6 +2001,216 @@ button.item:active::after {
   color: var(--md-sys-color-on-warning-container);
 }
 
+/* —— 列表编辑器：每一项一枚输入芯片 ——
+   芯片看得见的高度 40，上下各借 4px 的行缝凑满 48 的触控区；✕ 是独立的命中区。
+   正在改的那一枚描主色边，拖着的那一枚浮起来跟手。 */
+.tags {
+  gap: var(--zw-space-04);
+}
+
+.tags-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--zw-space-04);
+}
+
+.tags-head .field-text {
+  flex: 1;
+}
+
+.tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-03);
+}
+
+.tags-list:empty {
+  display: none;
+}
+
+.tag-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 100%;
+  min-height: var(--zw-size-tag-chip);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+  transition:
+    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
+    box-shadow var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+.tag-chip-body,
+.tag-chip-remove {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex;
+  align-items: center;
+  border-radius: inherit;
+  color: inherit;
+}
+
+.tag-chip-body {
+  min-width: 0;
+  padding: var(--zw-space-02) var(--zw-space-02) var(--zw-space-02) var(--zw-space-04);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  font-weight: var(--md-sys-typescale-weight-medium);
+  font-variant-numeric: tabular-nums;
+  text-align: start;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.tags[data-type="text"] .tag-chip-body {
+  font-family: var(--md-ref-typeface-mono);
+}
+
+.tag-chip-body::before,
+.tag-chip-remove::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--zw-size-target) - var(--zw-size-tag-chip)) / -2) 0;
+}
+
+.tag-chip-body::after,
+.tag-chip-remove::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.tag-chip-remove {
+  flex: none;
+  justify-content: center;
+  width: var(--zw-size-tag-chip);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.tag-chip-remove svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+@media (hover: hover) {
+  .tag-chip-body:hover::after,
+  .tag-chip-remove:hover::after {
+    opacity: var(--md-sys-state-hover-opacity);
+  }
+}
+
+.tag-chip-body:active::after,
+.tag-chip-remove:active::after {
+  opacity: var(--md-sys-state-pressed-opacity);
+}
+
+.tag-chip-body:focus-visible,
+.tag-chip-remove:focus-visible {
+  outline-offset: calc(var(--zw-focus-offset) * -1);
+}
+
+.tag-chip[data-editing] {
+  background: var(--md-sys-color-primary-container);
+  box-shadow: inset 0 0 0 var(--zw-border-width-strong) var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.tag-chip[data-editing] .tag-chip-remove {
+  color: inherit;
+}
+
+.tag-chip[data-dragging] {
+  z-index: 2;
+  background: var(--md-sys-color-secondary-container);
+  box-shadow: var(--md-sys-elevation-level3);
+  color: var(--md-sys-color-on-secondary-container);
+  scale: 1.04;
+  transition: none;
+  pointer-events: none;
+}
+
+.tags[data-dragging] .tag-chip-body {
+  cursor: grabbing;
+}
+
+.tag-chip[data-flash] {
+  animation: chip-flash 900ms var(--md-sys-motion-effects-default-easing);
+}
+
+@keyframes chip-flash {
+  0%,
+  60% {
+    background: var(--md-sys-color-tertiary-container);
+    color: var(--md-sys-color-on-tertiary-container);
+  }
+}
+
+.tags-add {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+}
+
+.tags-add .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.tags-add + .field-error {
+  margin-top: calc(var(--zw-space-02) * -1);
+}
+
+.tags-commit {
+  flex: none;
+}
+
+/* 时间点与数字都短：输入框不必铺满一整行，免得在宽屏上拉成一条空跑道。 */
+.tags:is([data-type="time"], [data-type="number"]) .tags-add .input {
+  flex: 0 1 14rem;
+}
+
+/* 用法说明只在编辑器有焦点时出现：一页十几个列表，每个底下都挂两行同样的话只是噪音。
+   它仍挂在输入框的 aria-describedby 上，读屏照样读得到。 */
+.tags:not(:focus-within) > .tags-hint {
+  display: none;
+}
+
+.weekdays .chip {
+  min-width: calc(var(--zw-size-chip) * 2);
+  justify-content: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tag-chip,
+  .tag-chip[data-flash] {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .tag-chip {
+    border: 1px solid CanvasText;
+  }
+
+  .tag-chip[data-editing] {
+    outline: 2px solid Highlight;
+  }
+}
+
 /* ==================== §6 反馈 ==================== */
 
 .status {
@@ -2900,6 +3110,183 @@ button.item:active::after {
 
 .toggle-row .field-text {
   flex: 1;
+}
+
+/* 键名一行：键、标记（总开关 / 已改）、尾部的「恢复默认」。按钮的 48 触控区不撑高这一行。 */
+.field-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-01) var(--zw-space-03);
+  min-width: 0;
+}
+
+.field-top .field-reset {
+  margin-block: calc((var(--zw-size-target) - var(--md-sys-typescale-label-large-line-height)) / -2);
+  margin-inline: auto calc(var(--zw-space-03) * -1);
+}
+
+.field-top .field-reset svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+.field-reset[aria-busy="true"] svg {
+  animation: spin var(--md-sys-motion-loop-duration) linear infinite;
+}
+
+.mod-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.config-about {
+  padding: 0 var(--zw-space-04) var(--zw-space-02);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+/* 一节的总开关：整行加重。开着时换成次色容器，这一节「在工作」一眼可见，又不抢主操作的颜色。 */
+.setting[data-master] .field-label {
+  font-size: var(--md-sys-typescale-title-small-size);
+}
+
+.setting[data-master]:has(> .switch[aria-checked="true"]) {
+  --_setting-bg: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.setting[data-master]:has(> .switch[aria-checked="true"]) .field-hint,
+.setting[data-master]:has(> .switch[aria-checked="true"]) .field-label {
+  color: inherit;
+}
+
+.setting[data-master]:has(> .switch[aria-checked="true"]) .tag {
+  background: color-mix(in srgb, var(--md-sys-color-on-secondary-container) 12%, transparent);
+  color: inherit;
+}
+
+.config-off-note {
+  display: none;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-02) var(--zw-space-05) var(--zw-space-03);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+fieldset[data-off] > .config-off-note {
+  display: flex;
+}
+
+.config-off-note svg,
+.map-empty svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: calc((var(--zw-body-medium-line) - var(--zw-size-icon-small)) / 2);
+}
+
+.textarea-json {
+  min-height: calc(var(--zw-body-line) * 4);
+}
+
+/* —— 映射表：每群覆盖、供应商…… —— */
+.legend-count {
+  display: inline-block;
+  margin-inline-start: var(--zw-space-03);
+  padding: 0 var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  font-family: var(--md-ref-typeface-plain);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  letter-spacing: 0;
+}
+
+.map-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-04) var(--zw-space-05);
+  border-radius: var(--zw-radius-row);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+.map-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-03);
+  margin-top: var(--zw-space-02);
+}
+
+.entry .item-sub:empty {
+  display: none;
+}
+
+.entry-body > .config-group {
+  margin: 0;
+}
+
+.entry-body .setting {
+  --_setting-bg: var(--md-sys-color-surface-container);
+}
+
+.entry-body .setting:focus-within {
+  --_setting-bg: var(--md-sys-color-surface-container-high);
+}
+
+.entry-body .setting .item,
+.entry-body .tag-chip {
+  --_item-bg: var(--md-sys-color-surface-container-highest);
+}
+
+.entry-missing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+}
+
+.entry-missing .chip svg {
+  display: block;
+}
+
+.entry-body > .actions {
+  margin-top: 0;
+}
+
+/* —— 配置筛选 —— */
+.config-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-04);
+}
+
+.config-tools .search {
+  flex: 1 1 16rem;
+}
+
+.config-tools .section-meta:empty {
+  display: none;
+}
+
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-05);
 }
 
 /* —— 搭话 —— */

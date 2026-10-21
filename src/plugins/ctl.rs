@@ -158,7 +158,8 @@ pub(crate) fn redacted(value: &Value) -> Value {
                 .map(|(k, v)| {
                     (
                         k.clone(),
-                        if sensitive(k) {
+                        // 空的密钥照实给：「没设」与「设了但不给看」是两回事，界面要分得出来。
+                        if sensitive(k) && v.as_str() != Some("") {
                             Value::String("<已隐藏>".into())
                         } else {
                             redacted(v)
@@ -318,6 +319,8 @@ fn constraints(value: &Value, path: &str) -> Result<(), String> {
 pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
     match (plugin, path) {
         ("ai_news", "mode" | "realtime_mode") => &["all", "selected"],
+        ("welcome", "verify.action") => &["kick", "mute", "none"],
+        ("ambient", "peak.mode") => &["normal", "swap", "sleep", "pause"],
         ("ai_news", "card_theme") => &[
             "auto", "light", "dark", "day", "night", "白天", "日间", "夜晚", "夜间",
         ],
@@ -449,6 +452,48 @@ pub async fn set_value(
             *slot = as_written(slot, value);
         }
         Ok(format!("已保存 {}.{}。{}", p.name, path, effect(p.name)))
+    })
+    .await
+}
+/// 往一张「键由人定」的表里加一项或补一个字段（控制台的每群覆盖、供应商这类）。
+///
+/// 父表必须已经存在，末段键必须还没有：改已有的值走 [`set_value`]。
+/// 写完照常过 [`change`] 的整套校验，所以插件不认得的形状会被原样拒掉。
+pub async fn insert_value(
+    ctx: &Context,
+    plugin: &str,
+    path: &str,
+    value: Value,
+) -> Result<String, String> {
+    let p = resolve(plugin)?;
+    let (parent, key) = path.rsplit_once('.').ok_or("配置路径不完整")?;
+    if key.is_empty() {
+        return Err("名字不能为空".into());
+    }
+    change(ctx, |cfg| {
+        let v = cfg.plugins.get_mut(p.name).ok_or("插件配置不存在")?;
+        let table = at_mut(v, parent)
+            .and_then(Value::as_table_mut)
+            .ok_or("配置路径不存在；可用 ctl show 查看完整配置")?;
+        if table.contains_key(key) {
+            return Err(format!("{key} 已经有了"));
+        }
+        table.insert(key.into(), value);
+        Ok(format!("已添加 {}.{}。{}", p.name, path, effect(p.name)))
+    })
+    .await
+}
+/// 从表里删掉一项。删完的形状同样要过校验：插件必需的键删不掉。
+pub async fn remove_value(ctx: &Context, plugin: &str, path: &str) -> Result<String, String> {
+    let p = resolve(plugin)?;
+    let (parent, key) = path.rsplit_once('.').ok_or("配置路径不完整")?;
+    change(ctx, |cfg| {
+        let v = cfg.plugins.get_mut(p.name).ok_or("插件配置不存在")?;
+        at_mut(v, parent)
+            .and_then(Value::as_table_mut)
+            .and_then(|table| table.remove(key))
+            .ok_or("配置路径不存在；可能已经删掉了")?;
+        Ok(format!("已删除 {}.{}。{}", p.name, path, effect(p.name)))
     })
     .await
 }

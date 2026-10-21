@@ -53,6 +53,7 @@ campaign markdown repeat cloud leaderboard gif_box grid_view qr_code_scanner sma
 music_note screenshot_monitor newspaper help restart_alt waving_hand restore_page
 
 system_update_alt power_settings_new stop_circle
+edit settings_backup_restore arrow_forward
 """
 
 # 失败比悄悄缺一个图标好：缺了就在这里报出来。

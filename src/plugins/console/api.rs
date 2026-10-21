@@ -27,6 +27,8 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/plugins/{name}", get(plugin_detail))
         .route("/plugins/{name}/enabled", post(set_enabled))
         .route("/plugins/{name}/config", post(set_config))
+        .route("/plugins/{name}/config/insert", post(insert_config))
+        .route("/plugins/{name}/config/remove", post(remove_config))
         .route("/plugins/{name}/reset", post(reset_config))
         .route("/ambient", get(ambient))
         .route("/ambient/sticker/{id}", get(sticker_image))
@@ -195,6 +197,7 @@ async fn plugin_detail(
         "config": crate::plugins::ctl::redacted(current),
         "field_help": field_help(plugin.name),
         "field_options": field_options(plugin.name, current),
+        "maps": maps(plugin.name, current),
         "defaults": crate::plugins::ctl::redacted(&defaults),
         "diff": diff,
     }))
@@ -243,6 +246,164 @@ async fn set_config(
         Ok(message) => Json(json!({ "message": message })).into_response(),
         Err(message) => bad(message),
     }
+}
+
+/// 往映射表里加一项（每群覆盖、供应商……），或给已有的一项补回一个字段。
+async fn insert_config(
+    State(console): State<Arc<Console>>,
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<Edit>,
+) -> Response {
+    let Ok(plugin) = crate::plugins::ctl::resolve(&name) else {
+        return missing(&name);
+    };
+    if let Err(message) = inside_map(plugin.name, &console, &body.path) {
+        return bad(message);
+    }
+    let value = match to_toml(&body.value) {
+        Ok(value) => value,
+        Err(message) => return bad(message),
+    };
+    match crate::plugins::ctl::insert_value(&console.local(), plugin.name, &body.path, value).await {
+        Ok(message) => Json(json!({ "message": message })).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct Remove {
+    path: String,
+}
+
+/// 删掉映射表里的一项，或一项里的某个字段（删了就沿用上层的设置）。
+async fn remove_config(
+    State(console): State<Arc<Console>>,
+    AxumPath(name): AxumPath<String>,
+    Json(body): Json<Remove>,
+) -> Response {
+    let Ok(plugin) = crate::plugins::ctl::resolve(&name) else {
+        return missing(&name);
+    };
+    if let Err(message) = inside_map(plugin.name, &console, &body.path) {
+        return bad(message);
+    }
+    match crate::plugins::ctl::remove_value(&console.local(), plugin.name, &body.path).await {
+        Ok(message) => Json(json!({ "message": message })).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+/// 增删只开放给映射表：`表.键` 是一整项，`表.键.字段` 是项里的一个字段。
+/// 其余的配置键是插件定死的，删了只会让校验报「缺少配置键」，干脆在门口拦下。
+fn inside_map(plugin: &str, console: &Console, path: &str) -> Result<(), &'static str> {
+    let config = console.ctx().config.read().unwrap();
+    let current = config.plugins.get(plugin).ok_or("插件配置不存在")?;
+    let maps = maps(plugin, current);
+    let ok = maps.keys().any(|map| {
+        path.strip_prefix(map.as_str())
+            .and_then(|rest| rest.strip_prefix('.'))
+            .is_some_and(|rest| {
+                let depth = rest.split('.').count();
+                !rest.split('.').any(str::is_empty) && (depth == 1 || (depth == 2 && maps[map]["optional"] == true))
+            })
+    });
+    if ok { Ok(()) } else { Err("这一项不能增删，只能修改") }
+}
+
+/// 「键由人定」的表：每群覆盖、供应商、搜索后端、推送目标偏好。
+///
+/// 默认配置里它们是空表，表单画不出任何东西、也加不进新项；这里告诉界面每张表的键是什么
+/// （群号、推送目标还是自取的名字）、新的一项长什么样、各字段是什么意思。
+/// `optional`：项里的字段可以单独删掉，删了就沿用上层的设置。模板取自当前的上层设置，
+/// 所以新加一项时行为不变，改哪项才是给它单独定。
+fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
+    let at = |path: &str| -> Value {
+        path.split('.')
+            .try_fold(current, |value, key| value.get(key))
+            .and_then(|value| serde_json::to_value(value).ok())
+            .unwrap_or(Value::Null)
+    };
+    let mut out = serde_json::Map::new();
+    match plugin {
+        "welcome" => {
+            out.insert("groups".into(), json!({
+                "key": "group",
+                "noun": "群",
+                "add": "为一个群单独设置",
+                "empty": "所有群都用上面的设置。要让某个群说不一样的欢迎词、单独开关验证，就在这里加上它。",
+                "optional": true,
+                "template": {
+                    "join_enabled": at("join.enabled"),
+                    "join_text": at("join.text"),
+                    "images": at("join.images"),
+                    "leave_enabled": at("leave.enabled"),
+                    "verify_enabled": at("verify.enabled"),
+                    "answers": at("verify.answers"),
+                    "approve_enabled": at("approve.enabled"),
+                    "keywords": at("approve.keywords"),
+                },
+                "help": {
+                    "join_enabled": "这个群发不发欢迎（join.enabled）。",
+                    "join_text": "这个群的欢迎词（join.text）。占位符：{at} {name} {user_id} {group} {group_id}",
+                    "images": "这个群的欢迎配图（join.images）。",
+                    "leave_enabled": "这个群发不发送别（leave.enabled）。",
+                    "verify_enabled": "这个群要不要入群验证（verify.enabled）。",
+                    "answers": "这个群的验证答案（verify.answers）。",
+                    "approve_enabled": "这个群自动审批加群申请（approve.enabled）。",
+                    "keywords": "这个群的审批关键词（approve.keywords）。",
+                },
+            }));
+        }
+        "ai_news" => {
+            out.insert("group_preferences".into(), json!({
+                "key": "target",
+                "noun": "推送目标",
+                "add": "为一个推送目标单独设置",
+                "empty": "所有推送目标都用全局的分类与静默时段。群里用 /ai分类、/ai静默 也会写到这里。",
+                "optional": true,
+                "template": {
+                    "category": at("category"),
+                    "quiet_start": at("realtime_quiet_start"),
+                    "quiet_end": at("realtime_quiet_end"),
+                },
+                "help": {
+                    "category": "只推这个分类：ai-models / ai-products / industry / paper / tip / opinion；留空 = 不限。",
+                    "quiet_start": "静默时段起点（HH:MM）；起止都留空 = 这个目标不静默。",
+                    "quiet_end": "静默时段终点（HH:MM），跨午夜按跨天算。",
+                },
+            }));
+        }
+        "oai" => {
+            out.insert("providers".into(), json!({
+                "key": "name",
+                "noun": "供应商",
+                "add": "添加供应商",
+                "empty": "还没有供应商。房间模型写成「供应商/模型」时按这里的名字找接口与密钥。",
+                "suggest": ["deepseek", "mimo", "openrouter", "siliconflow", "moonshot", "zhipu"],
+                "optional": false,
+                "template": { "api_base": "", "api_key": "" },
+                "help": {
+                    "api_base": "OpenAI 兼容接口的基址，例如 https://api.deepseek.com/v1",
+                    "api_key": "这个供应商的密钥。",
+                },
+            }));
+            out.insert("search.backends".into(), json!({
+                "key": "name",
+                "noun": "搜索后端",
+                "add": "添加搜索后端",
+                "empty": "没有配密钥的后端。auto 会只用免密钥的抓取（以及借 deepseek 供应商的密钥）。",
+                "suggest": ["tavily", "brave", "serper", "exa", "bocha", "searxng", "deepseek"],
+                "optional": false,
+                "template": { "api_key": "", "base_url": "" },
+                "help": {
+                    "api_key": "密钥；可以写多份（空白或逗号分隔），前一份额度用完就换下一份。",
+                    "base_url": "searxng 必填（自建实例地址）；deepseek 可改写接口根；其余留空。",
+                },
+            }));
+        }
+        _ => {}
+    }
+    out
 }
 
 #[derive(Deserialize)]
@@ -647,10 +808,11 @@ async fn save_global(
     State(console): State<Arc<Console>>,
     Json(body): Json<GlobalEdit>,
 ) -> Response {
-    if body
-        .command_prefix
-        .iter()
-        .all(|prefix| prefix.trim().is_empty())
+    if !body.command_prefix.is_empty()
+        && body
+            .command_prefix
+            .iter()
+            .all(|prefix| prefix.trim().is_empty())
     {
         // 空数组是合法的（无前缀），但一条空串只会在匹配时添乱。
         return bad("前缀写空串没有意义；不带前缀请用空数组 []");
@@ -907,6 +1069,12 @@ fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
             }
         } else if line.starts_with('[') {
             section = line.trim_matches(['[', ']']).to_string();
+            // 表头前的那段话就是这一节的说明（界面画在小标题下）；夹在里面的示例配置不算。
+            if let Some(path) = section.strip_prefix(&format!("{plugin}.")) {
+                if let Some(text) = tidy_help(&comments) {
+                    result.insert(path.to_string(), text);
+                }
+            }
             comments.clear();
         } else if let Some((key, _)) = line.split_once('=') {
             if section == plugin || section.starts_with(&format!("{plugin}.")) {
@@ -919,8 +1087,8 @@ fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
                 } else {
                     format!("{prefix}.{}", key.trim())
                 };
-                if !comments.is_empty() {
-                    result.insert(path, comments.join(" "));
+                if let Some(text) = tidy_help(&comments) {
+                    result.insert(path, text);
                 }
             }
             comments.clear();
@@ -929,6 +1097,34 @@ fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
         }
     }
     result
+}
+
+/// 说明拼好以后的收尾：示例配置抽走了，留下的「例如……：」就没了下文，一并剪掉。
+fn tidy_help(lines: &[String]) -> Option<String> {
+    let text = lines
+        .iter()
+        .filter(|line| !example_line(line))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let text = match text.strip_suffix('：').or_else(|| text.strip_suffix(':')) {
+        Some(head) => match head.rfind("例如") {
+            Some(at) => format!("{}。", head[..at].trim_end_matches([' ', '，', ',', '。'])),
+            None => text,
+        },
+        None => text,
+    };
+    let text = text.trim().to_string();
+    (!text.is_empty() && text != "。").then_some(text)
+}
+
+/// 注释里的示例配置（`# [x.y]`、`# key = 值`），不是给人读的说明。
+fn example_line(line: &str) -> bool {
+    let line = line.trim_start_matches(['#', ' ']);
+    line.starts_with('[')
+        || line
+            .split_once(" = ")
+            .is_some_and(|(key, _)| !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
 }
 
 #[test]
@@ -940,7 +1136,8 @@ fn dump_console_fixture() {
         "effect": crate::plugins::ctl::effect(plugin.name),
         "commands": plugin.commands.iter().map(|cmd| json!({"cmd": cmd.cmd, "note":cmd.note})).collect::<Vec<_>>(),
         "config": crate::plugins::ctl::redacted(&(plugin.default_config)()),
-        "field_help": field_help(plugin.name), "field_options": field_options(plugin.name, &(plugin.default_config)()), "defaults": {}, "diff": []
+        "field_help": field_help(plugin.name), "field_options": field_options(plugin.name, &(plugin.default_config)()),
+        "maps": maps(plugin.name, &(plugin.default_config)()), "defaults": crate::plugins::ctl::redacted(&(plugin.default_config)()), "diff": []
     })).collect();
     assert_eq!(plugins.len(), 27);
     std::fs::write(

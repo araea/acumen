@@ -12,7 +12,7 @@
    - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
    §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
-   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §12 解锁 · §13 事件 · §14 启动
+   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -1503,7 +1503,7 @@
     const top = `h${level}`;
     const sub = `h${Math.min(level + 1, 6)}`;
     const heading = (tag, id, text, cls = "section-title") => raw(`<${tag} class="${cls}" id="${id}">${esc(text)}</${tag}>`);
-    const form = configForm(plugin.config, plugin.field_help || {}, plugin.field_options || {});
+    const form = configForm(plugin);
     const commands = plugin.commands.length
       ? h`<ul class="group">${plugin.commands.map(
           (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
@@ -1536,8 +1536,17 @@
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
           ${heading(sub, "config-title", "配置")}
-          <span class="section-meta">离开输入框保存；单行输入框也可按回车保存</span>
+          <span class="section-meta">改完即保存：开关点一下，输入框离开或回车</span>
         </div>
+        ${form.leaves >= 12
+          ? h`<div class="config-tools">
+              <div class="search">${icon("search")}
+                <input class="input" id="config-filter-${plugin.name}" type="search" data-filter="${plugin.name}" placeholder="在 ${form.leaves} 项配置里找"
+                  aria-label="筛选配置项" aria-describedby="config-filter-${plugin.name}-status" autocomplete="off" spellcheck="false" enterkeyhint="search">
+              </div>
+              <span class="section-meta" id="config-filter-${plugin.name}-status" role="status"></span>
+            </div>`
+          : ""}
         ${form.count
           ? h`<form class="config" data-config="${plugin.name}" autocomplete="off" novalidate>${form.html}</form>`
           : h`<p class="note">没有可以调整的配置项。</p>`}
@@ -1567,85 +1576,219 @@
 
   let fieldSeq = 0;
 
-  /** 群号列表：名单、开启搭话 / 推送的群等。其余列表（前缀、别名、时间点……）仍是 JSON 编辑。 */
-  const GROUP_LIST = /(^|\.)(channel\.(white|black)|groups|management_groups|realtime_muted_groups|manual_channels)$/;
-  const USER_LIST = /(^|\.)(private_users|realtime_muted_private_users|admins)$/;
-  /** 这一项是不是 ID 名单，是哪一种；不是（或混着数字对象）就返回空串，仍走 JSON 编辑。 */
+  /** 群号列表：名单、开启搭话 / 推送的群等。其余的纯文字 / 数字 / 时间列表走列表编辑器（§11b）。 */
+  const GROUP_LIST = /(^|\.)(channel\.(white|black)|groups|management_groups|management_excluded|realtime_muted_groups|manual_channels)$/;
+  const USER_LIST = /(^|\.)(private_users|realtime_muted_private_users|admins|ignore_users)$/;
+  /** 这一项是不是 ID 名单，是哪一种；不是（或混着数字对象）就返回空串。 */
   const listKind = (path, value) =>
     !value.every((item) => typeof item === "string") ? "" : GROUP_LIST.test(path) ? "group" : USER_LIST.test(path) ? "user" : "";
 
   const isTable = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  const HIDDEN = "<已隐藏>";
+  /** 与后端 ctl::sensitive 同一张词表：这些键的值不回显，输入框只收新值。 */
+  const SECRET = /token|secret|password|api_?key|authorization|credential|cookie/i;
+  const TIME = /^\d{1,2}:\d{2}(:\d{2})?$/;
+  const valueAt = (root, path) =>
+    path.split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), root);
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  /** 每个插件表单的上下文：说明、可选项、映射表与默认值。行内「恢复默认」「已改」都要它。 */
+  const configs = new Map();
+  /** 映射表里展开着的项（插件:路径）。重画这一块时照原样展开，不让人重新找。 */
+  const openEntries = new Set();
+
+  /** 字段说明：配置参考里的那句话；映射表里一项的字段看映射表自带的说明。 */
+  function helpFor(ctx, path) {
+    const direct = ctx.help[path] || ctx.help[path.replace(/\.\d+(?=\.|$)/g, "")];
+    if (direct) return direct;
+    const inside = mapOf(ctx, path);
+    return inside?.field ? inside.spec.help?.[inside.field] || "" : "";
+  }
+
+  /** 路径落在哪张映射表里：表的路径、说明、键，以及（如果是项里的字段）字段名。 */
+  function mapOf(ctx, path) {
+    for (const [map, spec] of Object.entries(ctx.maps)) {
+      if (!path.startsWith(`${map}.`)) continue;
+      const [key, field = "", ...rest] = path.slice(map.length + 1).split(".");
+      if (!rest.length) return { map, spec, key, field };
+    }
+    return null;
+  }
+
+  /** 默认值的一句话说法，给「恢复默认」的名字用。 */
+  function describeDefault(value) {
+    if (typeof value === "boolean") return value ? "开" : "关";
+    if (Array.isArray(value)) return value.length ? `${value.length} 项` : "空列表";
+    if (typeof value === "string") return value ? `「${[...value].length > 24 ? `${[...value].slice(0, 24).join("")}…` : value}」` : "留空";
+    return String(value);
+  }
+
+  /** 这一行和默认值比怎么样、尾部给什么动作：
+   *  普通项改过了就有「已改」和「恢复默认」；映射表里一项的字段可以「沿用上层」（删掉这一项的单独设置）。
+   *  开关只给「已改」——再点一下就是恢复，不必多一个按钮。 */
+  function rowMeta(ctx, path, value, key) {
+    const inside = mapOf(ctx, path);
+    if (inside?.field) {
+      return {
+        modified: false,
+        action: inside.spec.optional
+          ? h`<button class="icon-btn state field-reset" type="button" data-inherit="${path}"
+              aria-label="不再单独设置 ${key}，沿用上层" title="不再单独设置，沿用上层">${icon("settings_backup_restore")}</button>`
+          : "",
+      };
+    }
+    const fallback = valueAt(ctx.defaults, path);
+    if (fallback === undefined || SECRET.test(key) || same(fallback, HIDDEN)) return { modified: false, action: "" };
+    const modified = !same(value, fallback);
+    return {
+      modified,
+      action: typeof value === "boolean"
+        ? ""
+        : h`<button class="icon-btn state field-reset" type="button" data-reset-path="${path}"${attr(!modified, "hidden")}
+            aria-label="${key} 恢复默认：${describeDefault(fallback)}" title="恢复默认：${describeDefault(fallback)}">${icon("settings_backup_restore")}</button>`,
+    };
+  }
+
+  /** 改完之后重判这一行是不是还与默认值不同。 */
+  function markModified(row, value) {
+    const form = row?.closest("[data-config]");
+    const ctx = form && configs.get(form.dataset.config);
+    if (!ctx || mapOf(ctx, row.dataset.setting)?.field) return;
+    const fallback = valueAt(ctx.defaults, row.dataset.setting);
+    if (fallback === undefined) return;
+    const modified = !same(value, fallback);
+    row.toggleAttribute("data-modified", modified);
+    const tag = $(".field-top .mod-tag", row);
+    if (tag) tag.hidden = !modified;
+    const reset = $(".field-top [data-reset-path]", row);
+    if (reset) {
+      // 焦点正落在要藏起来的按钮上：先交给这一行的控件，免得焦点掉回页首。
+      if (!modified && reset === document.activeElement) $("[data-path]:not([hidden]), .tags-add input, .switch", row)?.focus({ preventScroll: true });
+      reset.hidden = !modified;
+    }
+  }
 
   /** 配置表单。叶子收成一组分段列表（顶层叫「常规」），每个子表另起一块：
    *  同一层里叶子在前、子表在后，分段列表才不会被一张子表从中间隔开。 */
-  function configForm(config, help, options) {
-    const entries = Object.entries(config).filter(([key]) => key !== "enabled");
-    const field = ([key, value]) => configField(key, key, value, help, options);
+  function configForm(plugin) {
+    const ctx = {
+      name: plugin.name,
+      help: plugin.field_help || {},
+      options: plugin.field_options || {},
+      maps: plugin.maps || {},
+      defaults: plugin.defaults || {},
+    };
+    configs.set(plugin.name, ctx);
+    const entries = Object.entries(plugin.config).filter(([key]) => key !== "enabled");
+    const field = ([key, value]) => configField(key, key, value, ctx);
     const loose = entries.filter(([, value]) => !isTable(value));
     const tables = entries.filter(([, value]) => isTable(value));
+    const leaves = (value) => (isTable(value) ? Object.values(value).reduce((sum, child) => sum + leaves(child), 0) : 1);
     return {
       count: entries.length,
+      leaves: entries.reduce((sum, [, value]) => sum + leaves(value), 0),
       html: [
         loose.length
-          ? h`<fieldset class="config-group"><legend class="config-legend${tables.length ? "" : " visually-hidden"}">常规</legend>${loose.map(field)}</fieldset>`
+          ? h`<fieldset class="config-group" data-search="常规"><legend class="config-legend${tables.length ? "" : " visually-hidden"}">常规</legend>${loose.map(field)}</fieldset>`
           : "",
         ...tables.map(field),
       ],
     };
   }
 
+  /** 子表里的排序：总开关（enabled）打头，叶子在前，子表在后。 */
+  const fieldOrder = ([keyA, a], [keyB, b]) =>
+    (keyB === "enabled" && typeof b === "boolean") - (keyA === "enabled" && typeof a === "boolean") || isTable(a) - isTable(b);
+
   /** 一个配置项。子表展开成 fieldset，叶子就地成为能改的控件：
    *  名字（键）与说明各占一行，说明挂在控件的 aria-describedby 上，不混进控件的名字。 */
-  function configField(path, key, value, help = {}, options = {}) {
+  function configField(path, key, value, ctx, { master = false } = {}) {
     const id = `f${++fieldSeq}`;
-    const description = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || `${Array.isArray(value) ? "列表" : typeof value === "boolean" ? "开关" : typeof value === "number" ? "数值" : "文本"}配置；保存时由插件校验类型与范围。`;
-    const text = (label) => h`<div class="field-text">${label}<span class="field-hint" id="${id}-desc">${description}</span></div>`;
+    const description = helpFor(ctx, path);
+    const desc = description ? `${id}-desc` : "";
+    const meta = rowMeta(ctx, path, value, key);
+    const search = `${path} ${description}`.toLowerCase();
+    const text = (label) => h`<div class="field-text">
+        <div class="field-top">${label}${master ? h`<span class="tag">总开关</span>` : ""}<span class="mod-tag"${attr(!meta.modified, "hidden")}>已改</span>${meta.action}</div>
+        ${description ? h`<span class="field-hint" id="${desc}">${description}</span>` : ""}
+      </div>`;
     const named = h`<label class="field-label" for="${id}"><code>${key}</code></label>`;
-    if (options[path]?.length) {
-      return h`<div class="field setting" data-row="short">${text(named)}
-        <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}" aria-describedby="${id}-desc">
-        ${[...new Set([value, ...options[path]])].map(option => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
-        </select>${icon("keyboard_arrow_down")}</span></div>`;
+    const row = (cls, inner, extra = "") =>
+      h`<div class="${cls} setting" data-setting="${path}" data-search="${search}"${attr(meta.modified, "data-modified")}${raw(extra)}>${inner}</div>`;
+
+    if (isTable(value) && ctx.maps[path]) return mapEditor(path, key, value, ctx.maps[path], ctx);
+    if (isTable(value)) {
+      const children = Object.entries(value).sort(fieldOrder);
+      const hasMaster = typeof value.enabled === "boolean";
+      const about = ctx.help[path];
+      return h`<fieldset class="config-group" data-group="${path}" data-search="${`${path} ${about || ""}`.toLowerCase()}"${attr(hasMaster && !value.enabled, "data-off")}>
+        <legend class="config-legend">${key}</legend>
+        ${about ? h`<p class="config-about">${about}</p>` : ""}
+        ${children.map(([child, item], index) =>
+          index === 0 && hasMaster
+            ? h`${configField(`${path}.${child}`, child, item, ctx, { master: true })}
+                <p class="config-off-note">${icon("info-fill")}<span>总开关关着，这一节的其余设置暂不生效；可以先改好再打开。</span></p>`
+            : configField(`${path}.${child}`, child, item, ctx)
+        )}
+      </fieldset>`;
     }
-    const kind = Array.isArray(value) ? listKind(path, value) : "";
-    if (kind) {
-      const role = /(^|\.)channel\.white$/.test(path) ? "channel-white" : /(^|\.)channel\.black$/.test(path) ? "channel-black" : "";
-      const fallback = { "channel-white": "非空时，只在名单里的群生效。", "channel-black": "名单里的群一律不生效，优先于白名单。" }[role];
-      const hint = help[path] || help[path.replace(/\.\d+(?=\.|$)/g, "")] || fallback || (kind === "user" ? "用户账号列表。" : "群号列表。");
-      const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role];
-      return h`<div class="setting">${picker({
-        id, kind, mode: "save", ids: value, path, role, title: title || key,
-        label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${hint}</span>`,
-      })}</div>`;
+    if (ctx.options[path]?.length) {
+      return row("field", h`${text(named)}
+        <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}"${desc ? h` aria-describedby="${desc}"` : ""}>
+        ${[...new Set([value, ...ctx.options[path]])].map((option) => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
+        </select>${icon("keyboard_arrow_down")}</span>`, ' data-row="short"');
     }
     if (Array.isArray(value)) {
-      return h`<div class="field setting">${text(named)}
-        <input class="input mono" id="${id}" data-path="${path}" data-kind="list" value="${JSON.stringify(value)}"
-          spellcheck="false" autocapitalize="off" aria-describedby="${id}-desc ${id}-hint">
-        <span class="field-hint" id="${id}-hint">JSON 列表，空列表为 []；保留引号以区分文本和数字；对象列表可在此增删项目</span>
-      </div>`;
-    }
-    if (isTable(value)) {
-      const children = Object.entries(value).sort(([, a], [, b]) => isTable(a) - isTable(b)).map(([child, item]) => configField(`${path}.${child}`, child, item, help, options));
-      return h`<fieldset class="config-group"><legend class="config-legend">${key}</legend>${children}</fieldset>`;
+      const kind = listKind(path, value);
+      if (kind) {
+        const role = /(^|\.)channel\.white$/.test(path) ? "channel-white" : /(^|\.)channel\.black$/.test(path) ? "channel-black" : "";
+        const fallback = { "channel-white": "非空时，只在名单里的群生效。", "channel-black": "名单里的群一律不生效，优先于白名单。" }[role];
+        const hint = description || fallback || (kind === "user" ? "用户账号列表。" : "群号列表。");
+        const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role];
+        return row("", picker({
+          id, kind, mode: "save", ids: value, path, role, title: title || key,
+          label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${hint}</span>`,
+        }));
+      }
+      const shape = listShape(key, value, valueAt(ctx.defaults, path));
+      if (shape) {
+        return row("", listEditor({
+          id, type: shape, items: value, mode: "save", path, title: key, describedby: desc,
+          head: text(h`<span class="field-label" id="${id}-label"><code>${key}</code></span>`),
+        }));
+      }
+      // 对象列表、混着类型或带隐藏凭据的列表：只有 JSON 能把它原样说清。
+      return row("field", h`${text(named)}
+        <textarea class="textarea mono textarea-json" id="${id}" data-path="${path}" data-kind="list" spellcheck="false" autocapitalize="off"
+          aria-describedby="${[desc, `${id}-hint`].filter(Boolean).join(" ")}">${JSON.stringify(value, null, 2)}</textarea>
+        <span class="field-hint" id="${id}-hint">JSON 列表：保留引号以区分文本和数字，空列表写 []。离开输入框保存。</span>`);
     }
     if (typeof value === "boolean") {
-      return h`<div class="toggle-row setting">
-        ${text(h`<span class="field-label" id="${id}"><code>${key}</code></span>`)}
-        <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"
-          aria-checked="${bool(value)}" aria-labelledby="${id}" aria-describedby="${id}-desc"></button>
-      </div>`;
+      return row("toggle-row", h`${text(h`<span class="field-label" id="${id}"><code>${key}</code></span>`)}
+        <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"${attr(master, "data-master")}
+          aria-checked="${bool(value)}" aria-labelledby="${id}"${desc ? h` aria-describedby="${desc}"` : ""}></button>`, master ? ' data-master=""' : "");
+    }
+    if (typeof value === "string" && SECRET.test(key)) {
+      // 凭据不回显：框里永远是空的，占位说明有没有设过；只有亲手输入的新值才会提交。
+      const set = value !== "";
+      return row("field", h`${text(named)}
+        <div class="reveal">
+          <input class="input mono" id="${id}" type="password" data-path="${path}" data-kind="string" data-secret="${set ? "set" : ""}" value=""
+            placeholder="${set ? "已设置（不显示）；输入新值即替换" : "未设置"}" autocomplete="new-password" spellcheck="false" autocapitalize="off"
+            data-1p-ignore data-lpignore="true" data-bwignore="true"${desc ? h` aria-describedby="${desc}"` : ""}>
+          <button class="icon-btn state" type="button" data-reveal="#${id}" aria-pressed="false" aria-label="显示口令">${icon("visibility")}</button>
+        </div>`);
     }
     if (typeof value === "string" && (value.includes("\n") || value.length > 80)) {
-      return h`<div class="field setting">${text(named)}
-        <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false" aria-describedby="${id}-desc">${value}</textarea>
-      </div>`;
+      return row("field", h`${text(named)}
+        <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false"${desc ? h` aria-describedby="${desc}"` : ""}>${value}</textarea>`);
     }
     const numeric = typeof value === "number";
-    return h`<div class="field setting"${attr(numeric, 'data-row="short"')}>${text(named)}
-      <input class="input${numeric ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
-        value="${value ?? ""}" spellcheck="false" autocapitalize="off" aria-describedby="${id}-desc"${attr(numeric, 'inputmode="decimal"')}>
-    </div>`;
+    const clock = typeof value === "string" && TIME.test(value);
+    return row("field", h`${text(named)}
+      <input class="input${numeric || clock ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
+        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${desc ? h` aria-describedby="${desc}"` : ""}${attr(numeric, `inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}>`,
+      numeric || clock ? ' data-row="short"' : "");
   }
 
   function parseValue(kind, text) {
@@ -1658,7 +1801,7 @@
     try {
       const value = JSON.parse(text.trim() || "[]");
       if (!Array.isArray(value)) throw new Error();
-      if (JSON.stringify(value).includes("<已隐藏>")) throw new Error("masked");
+      if (JSON.stringify(value).includes(HIDDEN)) throw new Error("masked");
       return value;
     } catch (error) {
       if (error.message === "masked") throw new Error("列表含有已隐藏的凭据。请提供完整的新值，或使用维护命令按具体字段修改。");
@@ -1675,7 +1818,7 @@
     note.id = `${control.id}-error`;
     note.setAttribute("role", "alert");
     note.innerHTML = part(h`${icon("error-fill")}<span>${message}</span>`);
-    control.after(note);
+    (control.closest(".reveal, .tags-add") ?? control).after(note);
     const described = (control.getAttribute("aria-describedby") || "").split(" ").filter(Boolean);
     control.setAttribute("aria-describedby", [...described, note.id].join(" "));
   }
@@ -1690,6 +1833,9 @@
     else control.removeAttribute("aria-describedby");
   }
 
+  const configPost = (form, endpoint, body) =>
+    api(`/plugins/${encodeURIComponent(form.dataset.config)}/${endpoint}`, { method: "POST", body });
+
   async function commitField(control) {
     const form = control.closest("[data-config]");
     if (!form || control.disabled || control.getAttribute("aria-busy") === "true") return;
@@ -1700,6 +1846,8 @@
     if (kind === "bool") value = control.getAttribute("aria-checked") !== "true";
     else {
       if (control.value === (control.defaultValue ?? control.dataset.initial)) return;
+      // 凭据框只认亲手输入的新值：留空是「不改」，自动填进来的不算。
+      if (control.dataset.secret !== undefined && (!control.value || !typed.has(control))) return;
       try {
         value = parseValue(kind, control.value);
       } catch (error) {
@@ -1709,14 +1857,18 @@
     }
     control.setAttribute("aria-busy", "true");
     try {
-      const reply = await api(`/plugins/${encodeURIComponent(form.dataset.config)}/config`, {
-        method: "POST",
-        body: { path: control.dataset.path, value },
-      });
-      if (kind === "bool") control.setAttribute("aria-checked", String(value));
-      else control.defaultValue = submitted;
+      const reply = await configPost(form, "config", { path: control.dataset.path, value });
+      if (kind === "bool") {
+        control.setAttribute("aria-checked", String(value));
+        if (control.dataset.master !== undefined) control.closest("fieldset")?.toggleAttribute("data-off", !value);
+      } else if (control.dataset.secret !== undefined) {
+        control.value = "";
+        control.dataset.secret = "set";
+        control.placeholder = "已设置（不显示）；输入新值即替换";
+      } else control.defaultValue = submitted;
       saved = true;
       clearFieldError(control);
+      markModified(control.closest("[data-setting]"), value);
       snackbar(reply.message);
       refreshDiff(form.dataset.config);
     } catch (error) {
@@ -1725,17 +1877,348 @@
       else fieldError(control, error.message);
     } finally {
       control.removeAttribute("aria-busy");
-      if (saved && control.isConnected && kind !== "bool" && control.value !== submitted) void commitField(control);
+      if (saved && control.isConnected && kind !== "bool" && control.dataset.secret === undefined && control.value !== submitted) void commitField(control);
     }
+  }
+
+  /** 取一次插件详情，更新表单上下文（默认值、映射表模板会跟着当前配置变）。 */
+  async function freshPlugin(name) {
+    const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
+    const ctx = configs.get(name);
+    if (ctx) Object.assign(ctx, { help: plugin.field_help || {}, options: plugin.field_options || {}, maps: plugin.maps || {}, defaults: plugin.defaults || {} });
+    if ($(`[data-config="${CSS.escape(name)}"]`)) put($("#plugin-diff"), diffBlock(plugin.diff));
+    return plugin;
   }
 
   async function refreshDiff(name) {
     try {
-      const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
-      if ($(`[data-config="${CSS.escape(name)}"]`)) put($("#plugin-diff"), diffBlock(plugin.diff));
+      await freshPlugin(name);
     } catch {
       /* 差异只是参考信息，读不到不打扰 */
     }
+  }
+
+  /** 把一行换成新画的一行（值来自刚取回的配置），焦点交给新行里同一类控件。 */
+  function replaceRow(row, plugin, ctx) {
+    const path = row.dataset.setting;
+    const key = path.split(".").pop();
+    const holder = document.createElement("div");
+    put(holder, configField(path, key, valueAt(plugin.config, path), ctx));
+    const fresh = holder.firstElementChild;
+    row.replaceWith(fresh);
+    return fresh;
+  }
+
+  /** 行内「恢复默认」：只重置这一项（ctl reset 插件 路径），别的不动。 */
+  async function resetField(button) {
+    const row = button.closest("[data-setting]");
+    const form = button.closest("[data-config]");
+    if (!row || !form || button.getAttribute("aria-busy") === "true") return;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const reply = await configPost(form, "reset", { path: row.dataset.setting });
+      const plugin = await freshPlugin(form.dataset.config);
+      const fresh = replaceRow(row, plugin, configs.get(form.dataset.config));
+      $("[data-path]:not([hidden]), .tags-add input, .picker-add input", fresh)?.focus({ preventScroll: true });
+      snackbar(reply.message.replace(/^.*?(已|恢复)/, "$1"));
+    } catch (error) {
+      button.removeAttribute("aria-busy");
+      report(error);
+    }
+  }
+
+  /* ---------- 映射表：键由人定的表（每群覆盖、供应商、搜索后端……） ---------- */
+
+  /** 一项的名字：群显示群名，私聊目标显示好友名，其余就是键本身。 */
+  function entryLabel(spec, key) {
+    if (spec.key === "name") return { title: key, sub: "" };
+    const privateId = key.startsWith("private:") ? key.slice(8) : "";
+    if (privateId) {
+      const name = entryName("user", privateId);
+      return { title: name || `私聊 ${privateId}`, sub: name ? `私聊 · ${privateId}` : "私聊" };
+    }
+    const name = entryName("group", key);
+    return { title: name || `群 ${key}`, sub: name ? `群号 ${key}` : "" };
+  }
+
+  function mapEditor(path, key, value, spec, ctx) {
+    const keys = Object.keys(value);
+    const about = ctx.help[path];
+    if (spec.key !== "name") void Promise.all([KINDS.group.roster.load(), spec.key === "target" ? KINDS.user.roster.load() : null]).then(paintEntries);
+    const adders = spec.key === "target"
+      ? [["group", "groups", "加一个群"], ["user", "person", "加一个私聊对象"]]
+      : spec.key === "group" ? [["group", "groups", spec.add]] : [["name", "add", spec.add]];
+    return h`<fieldset class="config-group config-map" data-map="${path}" data-search="${`${path} ${about || ""} ${keys.join(" ")}`.toLowerCase()}">
+      <legend class="config-legend">${key}${keys.length ? h`<span class="legend-count num">${keys.length}</span>` : ""}</legend>
+      ${about ? h`<p class="config-about">${about}</p>` : ""}
+      ${keys.length
+        ? keys.map((item) => mapEntry(path, item, value[item], spec, ctx))
+        : h`<p class="map-empty">${icon("info")}<span>${spec.empty}</span></p>`}
+      <div class="map-actions">${adders.map(([kind, glyph, label]) =>
+        h`<button class="btn btn-tonal" type="button" data-map-add="${path}" data-add-kind="${kind}">${icon(glyph)}${label}</button>`)}</div>
+    </fieldset>`;
+  }
+
+  function mapEntry(path, key, value, spec, ctx) {
+    const full = `${path}.${key}`;
+    const fields = isTable(value) ? Object.entries(value).sort(fieldOrder) : [];
+    const missing = spec.optional ? Object.keys(spec.template).filter((field) => !(field in (value || {}))) : [];
+    const { title, sub } = entryLabel(spec, key);
+    const detail = spec.key === "name" ? value?.api_base || value?.base_url || "" : "";
+    const count = spec.optional ? `${fields.length} 项单独设置` : "";
+    const glyph = spec.key === "name" ? "key" : key.startsWith("private:") ? "person" : "groups";
+    return h`<details class="memory entry" data-entry="${full}" data-entry-key="${key}" data-key-kind="${spec.key}"${attr(openEntries.has(`${ctx.name}:${full}`), "open")}
+        data-search="${`${full} ${title} ${Object.keys(value || {}).join(" ")}`.toLowerCase()}">
+      <summary class="state">
+        <span class="item-leading" aria-hidden="true">${icon(glyph)}</span>
+        <span class="item-content">
+          <span class="item-title" data-entry-title>${title}</span>
+          <span class="item-sub" data-entry-sub>${[sub, detail, count].filter(Boolean).join(" · ") || " "}</span>
+        </span>
+        ${icon("chevron_right", "chevron")}
+      </summary>
+      <div class="memory-body entry-body">
+        ${fields.length ? h`<div class="config-group">${fields.map(([field, item]) => configField(`${full}.${field}`, field, item, ctx))}</div>` : ""}
+        ${missing.length
+          ? h`<div class="entry-missing">
+              <p class="field-hint">${fields.length ? "其余沿用上层设置。" : "全部沿用上层设置。"}想单独设置哪一项，点它：</p>
+              <div class="chips">${missing.map((field) => h`<button class="chip state" type="button" data-entry-field="${full}.${field}">${icon("add")}${field}</button>`)}</div>
+            </div>`
+          : ""}
+        <div class="actions">
+          <button class="btn btn-text btn-danger" type="button" data-entry-remove="${full}" data-entry-name="${title}">${icon("delete")}删除「${title}」</button>
+        </div>
+      </div>
+    </details>`;
+  }
+
+  /** 群名与好友名晚到：只改标题与副标题，不重画（重画会合上展开的项、冲掉输入）。 */
+  function paintEntries() {
+    for (const entry of $$("details.entry[data-key-kind]")) {
+      const kind = entry.dataset.keyKind;
+      if (kind === "name") continue;
+      const fieldset = entry.closest("[data-map]");
+      const form = entry.closest("[data-config]");
+      const spec = configs.get(form?.dataset.config)?.maps[fieldset?.dataset.map];
+      if (!spec) continue;
+      const { title, sub } = entryLabel(spec, entry.dataset.entryKey);
+      $("[data-entry-title]", entry).textContent = title;
+      const count = spec.optional ? `${$$(":scope > .entry-body > .config-group > [data-setting]", entry).length} 项单独设置` : "";
+      $("[data-entry-sub]", entry).textContent = [sub, count].filter(Boolean).join(" · ") || " ";
+      const remove = $("[data-entry-remove]", entry);
+      remove.dataset.entryName = title;
+      remove.lastChild.textContent = `删除「${title}」`;
+    }
+  }
+
+  /** 重画一整张映射表（加项、删项、补字段之后）。展开状态与焦点由调用方指定。 */
+  async function rebuildMap(form, mapPath, focus = "") {
+    const name = form.dataset.config;
+    const plugin = await freshPlugin(name);
+    const ctx = configs.get(name);
+    const node = $(`[data-map="${CSS.escape(mapPath)}"]`, form);
+    if (!node || !ctx) return;
+    const holder = document.createElement("div");
+    put(holder, mapEditor(mapPath, mapPath.split(".").pop(), valueAt(plugin.config, mapPath) || {}, ctx.maps[mapPath], ctx));
+    const fresh = holder.firstElementChild;
+    node.replaceWith(fresh);
+    (focus ? $(focus, fresh) : null)?.focus({ preventScroll: false });
+  }
+
+  /** 新的一项叫什么：群与私聊对象从名册里选，其余的（供应商、搜索后端）起个名字。 */
+  async function askEntryKeys(spec, kind, existing) {
+    if (kind === "group" || kind === "user") {
+      const picked = await openSheet({ selected: [], title: spec.noun, kind });
+      if (!picked) return [];
+      const keys = picked.map((id) => (kind === "user" ? `private:${id}` : id));
+      const fresh = keys.filter((key) => !existing.includes(key));
+      if (fresh.length < keys.length) snackbar(fresh.length ? "已经有单独设置的那几个跳过了。" : "选的都已经有单独设置了。");
+      return fresh;
+    }
+    const name = await promptName({
+      title: spec.add,
+      label: `${spec.noun}的名字`,
+      hint: "只用字母、数字、下划线和连字符；房间模型写「名字/模型」时就按它来找。",
+      suggest: (spec.suggest || []).filter((item) => !existing.includes(item)),
+      taken: existing,
+    });
+    return name ? [name] : [];
+  }
+
+  async function addEntries(button) {
+    const form = button.closest("[data-config]");
+    const mapPath = button.dataset.mapAdd;
+    const ctx = configs.get(form?.dataset.config);
+    const spec = ctx?.maps[mapPath];
+    if (!spec || button.getAttribute("aria-busy") === "true") return;
+    const existing = $$(":scope > details.entry", button.closest("[data-map]")).map((entry) => entry.dataset.entryKey);
+    const keys = await askEntryKeys(spec, button.dataset.addKind, existing);
+    if (!keys.length) return;
+    button.setAttribute("aria-busy", "true");
+    const done = [];
+    try {
+      for (const key of keys) {
+        await configPost(form, "config/insert", { path: `${mapPath}.${key}`, value: spec.template });
+        done.push(key);
+        openEntries.add(`${ctx.name}:${mapPath}.${key}`);
+      }
+      const said = done.length === 1 ? `已添加「${entryLabel(spec, done[0]).title}」` : `已添加 ${done.length} 个`;
+      snackbar(spec.optional ? `${said}，先照抄上层的设置；改哪项就是给它单独定。` : `${said}，把下面几项填上就能用。`);
+    } catch (error) {
+      report(error);
+    } finally {
+      button.removeAttribute("aria-busy");
+      if (done.length) {
+        const last = `${mapPath}.${done[done.length - 1]}`;
+        await rebuildMap(form, mapPath, `[data-entry="${CSS.escape(last)}"] > summary`).catch(report);
+      }
+    }
+  }
+
+  async function removeEntry(button) {
+    const form = button.closest("[data-config]");
+    const path = button.dataset.entryRemove;
+    const mapPath = button.closest("[data-map]")?.dataset.map;
+    const secret = $$("[data-secret='set']", button.closest("details")).length > 0;
+    const optional = configs.get(form?.dataset.config)?.maps[mapPath]?.optional;
+    const ok = await confirmAction({
+      title: `删除「${button.dataset.entryName}」？`,
+      body: secret
+        ? "这一项连同它的密钥一起删掉，无法撤销：密钥不会显示在页面上，删了只能重新填。"
+        : optional
+          ? "这一项的单独设置全部删掉，之后照上层的设置走。"
+          : "这一项连同它的全部设置一起删掉。",
+      confirm: "删除",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const reply = await configPost(form, "config/remove", { path });
+      openEntries.delete(`${form.dataset.config}:${path}`);
+      snackbar(reply.message);
+      await rebuildMap(form, mapPath, ".map-actions .btn");
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  /** 一项里的某个字段：「沿用上层」= 删掉它；点「补上」= 从模板加回来。 */
+  async function entryField(button, remove) {
+    const form = button.closest("[data-config]");
+    const mapPath = button.closest("[data-map]")?.dataset.map;
+    const ctx = configs.get(form?.dataset.config);
+    const path = remove ? button.dataset.inherit : button.dataset.entryField;
+    const inside = ctx && mapOf(ctx, path);
+    if (!inside?.field || button.getAttribute("aria-busy") === "true") return;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const reply = remove
+        ? await configPost(form, "config/remove", { path })
+        : await configPost(form, "config/insert", { path, value: inside.spec.template[inside.field] });
+      openEntries.add(`${ctx.name}:${mapPath}.${inside.key}`);
+      snackbar(remove ? `「${inside.field}」改回沿用上层。` : reply.message);
+      const entry = `[data-entry="${CSS.escape(`${mapPath}.${inside.key}`)}"]`;
+      await rebuildMap(form, mapPath, remove ? `${entry} [data-entry-field="${CSS.escape(path)}"]` : `${entry} [data-setting="${CSS.escape(path)}"] [data-path], ${entry} [data-setting="${CSS.escape(path)}"] .tags-add input`);
+    } catch (error) {
+      button.removeAttribute("aria-busy");
+      report(error);
+    }
+  }
+
+  /** 起名对话框：一个输入框加几枚建议。原生 dialog 管焦点与 Esc；名字不合规或重名就地说明。 */
+  function promptName({ title, label, hint, suggest = [], taken = [] }) {
+    const dialog = $("#dialog");
+    const opener = document.activeElement;
+    put(
+      dialog,
+      h`<h2 class="dialog-title" id="dialog-title">${title}</h2>
+        <form class="dialog-form" method="dialog" novalidate>
+          <div class="field">
+            <label class="field-label" for="dialog-name">${label}</label>
+            <input class="input mono" id="dialog-name" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="done" aria-describedby="dialog-body">
+            <span class="field-hint" id="dialog-body">${hint}</span>
+          </div>
+          ${suggest.length ? h`<div class="chips" role="group" aria-label="常用的名字">${suggest.map((item) => h`<button class="chip state" type="button" data-suggest="${item}">${item}</button>`)}</div>` : ""}
+          <div class="actions actions-end">
+            <button class="btn btn-text" type="button" value="cancel">取消</button>
+            <button class="btn btn-filled" type="submit" value="confirm">添加</button>
+          </div>
+        </form>`
+    );
+    const input = $("#dialog-name", dialog);
+    const check = () => {
+      const name = input.value.trim();
+      const problem = !name ? "先起个名字。" : !/^[A-Za-z0-9_-]{1,40}$/.test(name) ? "只能用字母、数字、下划线和连字符，不超过 40 个字。" : taken.includes(name) ? `「${name}」已经有了。` : "";
+      if (problem) fieldError(input, problem);
+      return problem ? "" : name;
+    };
+    return new Promise((resolve) => {
+      let result = "";
+      const click = (event) => {
+        const chip = event.target.closest("[data-suggest]");
+        if (chip) {
+          input.value = chip.dataset.suggest;
+          clearFieldError(input);
+          input.focus();
+          return;
+        }
+        if (event.target.closest('button[value="cancel"]')) dialog.close("cancel");
+      };
+      const submit = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        result = check();
+        if (result) dialog.close("confirm");
+        else input.focus();
+      };
+      const typing = () => clearFieldError(input);
+      dialog.addEventListener("click", click);
+      dialog.addEventListener("submit", submit);
+      input.addEventListener("input", typing);
+      dialog.addEventListener(
+        "close",
+        () => {
+          dialog.removeEventListener("click", click);
+          dialog.removeEventListener("submit", submit);
+          if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+          resolve(dialog.returnValue === "confirm" ? result : "");
+        },
+        { once: true }
+      );
+      dialog.returnValue = "";
+      dialog.showModal();
+      input.focus();
+    });
+  }
+
+  /** 配置项筛选：键名与说明都认；落在折起来的项里的命中会把那一项展开。 */
+  function filterConfig(input) {
+    const form = $(`[data-config="${CSS.escape(input.dataset.filter)}"]`);
+    if (!form) return;
+    const terms = input.value.normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
+    const hit = (node) => terms.every((term) => (node.dataset.search || "").includes(term));
+    // 由里往外：先判每一行，再判装着它们的项与小节——小节自己的名字命中时整节都留着。
+    const groups = $$("fieldset[data-search], details.entry", form);
+    for (const row of $$("[data-setting]", form)) {
+      row.hidden = terms.length > 0 && !hit(row) && !groups.some((group) => group.contains(row) && hit(group));
+    }
+    for (const group of groups.reverse()) {
+      const any = !terms.length || hit(group) || $$("[data-setting]", group).some((row) => !row.hidden);
+      group.hidden = !any;
+      if (terms.length && any && group.matches("details.entry") && !group.open) {
+        group.open = true;
+        group.dataset.autoOpen = "";
+      } else if (!terms.length && group.dataset.autoOpen !== undefined) {
+        group.open = false;
+        delete group.dataset.autoOpen;
+      }
+    }
+    // 筛选时只看配置项本身：小节说明、空表提示、添加按钮先收起来。
+    for (const note of $$(".config-about, .map-empty, .map-actions, .entry-missing", form)) note.hidden = terms.length > 0;
+    const count = $$("[data-setting]", form).filter((row) => !row.closest("[hidden]")).length;
+    const status = $(`#${CSS.escape(input.id)}-status`);
+    if (status) status.textContent = !terms.length ? "" : count ? `${count} 项匹配` : "没有匹配的配置项。换个关键词试试。";
+    form.toggleAttribute("data-filtered", terms.length > 0);
   }
 
   async function togglePlugin(button) {
@@ -2272,7 +2755,6 @@
 
   async function settingsPage() {
     const [data, overview] = await Promise.all([api("/settings"), api("/overview").catch(() => null)]);
-    const list = (values) => values.join(", ");
     const filter = data.global_filter;
     const flags = { white: !!filter.enable_whitelist, black: !!filter.enable_blacklist };
     return h`<div class="page">
@@ -2297,7 +2779,11 @@
         </div>
         <form id="global-form" class="section" autocomplete="off" novalidate>
           <div class="config-group">
-            ${textField("g-prefix", "指令前缀", "command_prefix", list(data.command_prefix), "多个用逗号分隔，例如 /, #", "", true)}
+            <div class="setting">${listEditor({
+              id: "g-prefix", type: "text", items: data.command_prefix, mode: "stage", name: "command_prefix", title: "指令前缀", describedby: "g-prefix-desc",
+              head: h`<div class="field-text"><span class="field-label" id="g-prefix-label">指令前缀</span>
+                <span class="field-hint" id="g-prefix-desc">群里的指令以其中任一个开头，例如 / 或 #；一个也不留就不用前缀。</span></div>`,
+            })}</div>
             ${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；下次启动生效", "", true)}
             <div class="setting">
               <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
@@ -2430,11 +2916,6 @@
 
   function globalPayload(form) {
     const value = (name) => form.elements[name]?.value ?? "";
-    const split = (name) =>
-      value(name)
-        .split(/[,，]/)
-        .map((piece) => piece.trim())
-        .filter(Boolean);
     // 输入框里还悬着没加进去的群号，保存前先收进名单；收不进去就停在这里，错误已写在那一格下面。
     for (const root of $$(".picker", form)) {
       if (!pickerSubmitText(root)) {
@@ -2442,10 +2923,14 @@
         throw Object.assign(new Error("名单输入框里还有没加进去的内容"), { refocus: pickerAdd(root) });
       }
     }
+    // 前缀框里还悬着一项没加进去：一并收下。
+    for (const root of $$(".tags", form)) {
+      if (!tagsSubmit(root)) throw Object.assign(new Error("列表输入框里还有没加进去的内容"), { refocus: tagsInput(root) });
+    }
     const groups = (name) => readIds($(`.picker-value[name="${name}"]`, form).closest(".picker"));
     const flag = (name) => $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
     return {
-      command_prefix: split("command_prefix"),
+      command_prefix: readList($(".tags-value[name='command_prefix']", form).closest(".tags")).map(String),
       browser_path: value("browser_path"),
       global_filter: {
         enable_blacklist: flag("enable_blacklist"),
@@ -2771,42 +3256,8 @@
     if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
   }
 
-  /** 把名单写进插件配置。保存期间的新改动合并成一次补写，失败则退回上次保存的样子并说明原因。 */
-  async function pickerSave(root, said, undo) {
-    const input = pickerValue(root);
-    const form = input.closest("[data-config]");
-    if (!form) return;
-    if (root.dataset.saving) {
-      root.pending = { said, undo };
-      return;
-    }
-    const submitted = input.value;
-    if (submitted === input.defaultValue) return;
-    root.dataset.saving = "1";
-    input.setAttribute("aria-busy", "true");
-    const add = pickerAdd(root);
-    try {
-      const reply = await api(`/plugins/${encodeURIComponent(form.dataset.config)}/config`, {
-        method: "POST",
-        body: { path: input.dataset.path, value: JSON.parse(submitted) },
-      });
-      input.defaultValue = submitted;
-      clearFieldError(add);
-      snackbar(`${said}，已保存。${reply.message.replace(/^已保存 [^。]*。/, "")}`, "info", undo);
-      refreshDiff(form.dataset.config);
-    } catch (error) {
-      if (error.status === 401) return;
-      input.value = input.defaultValue;
-      paintPicker(root);
-      fieldError(add, `没能保存，名单已退回原样：${error.message}`);
-    } finally {
-      delete root.dataset.saving;
-      input.removeAttribute("aria-busy");
-      const later = root.pending;
-      root.pending = null;
-      if (later && root.isConnected && input.value !== input.defaultValue) void pickerSave(root, later.said, later.undo);
-    }
-  }
+  /** 把名单写进插件配置（见 saveList）。 */
+  const pickerSave = (root, said, undo) => saveList(root, pickerValue(root), pickerAdd(root), () => paintPicker(root), said, undo);
 
   async function pickerRemove(button) {
     const root = button.closest(".picker");
@@ -3021,6 +3472,391 @@
     });
   }
 
+  /* ==================== §11b 列表编辑器 ==================== */
+  /* 不是 ID 的列表：前缀、别名、关键词、模型关键字、时间点、星期……旧版是一行 JSON，
+     要人自己写引号、数逗号。这里每一项是一枚输入芯片（M3 input chip）：点一下改、✕ 移走并能撤销、
+     拖动或 Alt+方向键排序、回车添加、整段粘贴按行拆开。时间点用系统的时间选择器并自动排好序，
+     星期是七枚开关芯片。写入口径与名单编辑器相同（save 立刻落盘、stage 随表单保存），值仍是原样的数组。 */
+
+  const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+  const LIST_TEXT = {
+    text: { placeholder: "输入一项，回车添加", hint: "粘贴多行会拆成多项。点一项可修改；按住拖动或 Alt+方向键调整顺序。" },
+    number: { placeholder: "输入数字，回车添加", hint: "可以一次输入一串，用空格或逗号隔开。点一项可修改。" },
+    time: { placeholder: "", hint: "选好时间点再点「添加」，按先后自动排序。点一项可修改。" },
+  };
+
+  /** 列表是哪一种：weekday / time / number / text；认不出（对象、混着类型、带隐藏凭据）返回空串，仍走 JSON。
+   *  空列表看默认值的元素类型，默认值也空就当文字。 */
+  function listShape(key, value, fallback) {
+    if (value.some((item) => typeof item === "string" && item.includes(HIDDEN))) return "";
+    const sample = value.length ? value : Array.isArray(fallback) ? fallback : [];
+    if (sample.length && sample.every((item) => typeof item === "number")) {
+      return key === "weekdays" && sample.every((day) => Number.isInteger(day) && day >= 1 && day <= 7) ? "weekday" : "number";
+    }
+    if (!sample.every((item) => typeof item === "string")) return "";
+    return sample.length && sample.every((item) => TIME.test(item)) ? "time" : "text";
+  }
+
+  const sortedType = (type) => type === "time" || type === "weekday";
+  const clockKey = (text) => text.split(":").map((part) => part.padStart(2, "0")).join(":");
+  const tidyList = (type, items) =>
+    type === "time" ? [...items].sort((a, b) => clockKey(a).localeCompare(clockKey(b))) : type === "weekday" ? [...items].sort((a, b) => a - b) : items;
+
+  function listEditor({ id, head, title, items, type, mode, path = "", name = "", describedby = "" }) {
+    const value = h`<input class="tags-value" id="${id}" type="text" hidden tabindex="-1" autocomplete="off" value="${JSON.stringify(items)}"
+        ${name ? h`name="${name}"` : ""} ${path ? h`data-path="${path}" data-kind="list"` : ""}>`;
+    const shell = (inner) => h`<div class="field tags" role="group" aria-labelledby="${id}-label"${describedby ? h` aria-describedby="${describedby}"` : ""}
+        data-tags="${mode}" data-type="${type}" data-title="${title}">${inner}${value}<span class="visually-hidden tags-live" role="status"></span></div>`;
+    if (type === "weekday") {
+      return shell(h`${head}<div class="chips weekdays">${WEEKDAYS.map((label, index) =>
+        h`<button class="chip state" type="button" data-weekday="${index + 1}" aria-pressed="${bool(items.includes(index + 1))}">${icon("check")}周${label}</button>`)}</div>`);
+    }
+    const words = LIST_TEXT[type];
+    const seconds = type === "time" && items.some((item) => item.split(":").length === 3);
+    return shell(h`<div class="tags-head">${head}<span class="picker-count num">${items.length ? `${items.length} 项` : ""}</span></div>
+      <ul class="tags-list" aria-label="${title} 的各项">${items.map(tagChip(type, items.length))}</ul>
+      <div class="tags-add">
+        <input class="input${type === "text" ? " mono" : " num"}" id="${id}-add" type="${type === "time" ? "time" : "text"}"
+          ${type === "number" ? raw('inputmode="decimal"') : ""}${attr(seconds, 'step="1"')} enterkeyhint="done" spellcheck="false" autocapitalize="off" autocomplete="off"
+          placeholder="${words.placeholder}" aria-label="添加到 ${title}" aria-describedby="${id}-hint">
+        <button class="icon-btn state tags-cancel" type="button" data-tags-cancel aria-label="取消修改" hidden>${icon("close")}</button>
+        <button class="btn btn-tonal tags-commit" type="button" data-tags-commit disabled>${icon("add")}<span>添加</span></button>
+      </div>
+      <span class="field-hint tags-hint" id="${id}-hint">${words.hint}</span>`);
+  }
+
+  /** 一枚芯片：本体是「修改」按钮，尾部 ✕ 是独立的命中区。 */
+  const tagChip = (type, total) => (item, index) =>
+    h`<li class="tag-chip" data-index="${index}">
+      <button class="tag-chip-body" type="button" data-tags-edit="${index}"${sortedType(type) ? "" : raw(' aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Delete"')}
+        aria-label="${String(item)}，第 ${index + 1} 项，共 ${total} 项。点按修改">${String(item)}</button>
+      <button class="tag-chip-remove" type="button" data-tags-remove="${index}" aria-label="移除 ${String(item)}">${icon("close")}</button>
+    </li>`;
+
+  const tagsValue = (root) => $(".tags-value", root);
+  const tagsInput = (root) => $(".tags-add input", root);
+
+  function readList(root) {
+    try {
+      const value = JSON.parse(tagsValue(root).value);
+      return Array.isArray(value) ? value : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function paintTags(root) {
+    const items = readList(root);
+    const type = root.dataset.type;
+    if (type === "weekday") {
+      for (const chip of $$("[data-weekday]", root)) chip.setAttribute("aria-pressed", bool(items.includes(Number(chip.dataset.weekday))));
+      return;
+    }
+    put($(".tags-list", root), items.map(tagChip(type, items.length)));
+    $(".picker-count", root).textContent = items.length ? `${items.length} 项` : "";
+    const editing = root.dataset.editing;
+    if (editing !== undefined) $(`.tag-chip[data-index="${editing}"]`, root)?.setAttribute("data-editing", "");
+  }
+
+  function syncTagsCommit(root) {
+    const button = $("[data-tags-commit]", root);
+    if (button) button.disabled = !tagsInput(root).value.trim();
+  }
+
+  /** 改列表的唯一入口：先改页面，再按模式写入；每次改动都能撤销（撤销本身不再给撤销）。 */
+  async function listEdit(root, next, said, { undoable = true, focus = null } = {}) {
+    const prev = readList(root);
+    next = tidyList(root.dataset.type, next);
+    if (same(prev, next)) return;
+    const input = tagsValue(root);
+    input.value = JSON.stringify(next);
+    typed.add(input);
+    paintTags(root);
+    focus?.();
+    const undo = undoable
+      ? { label: "撤销", run: () => void listEdit(root, prev, "已撤销", { undoable: false, focus: () => tagsInput(root)?.focus({ preventScroll: true }) }) }
+      : null;
+    if (root.dataset.tags === "save") return saveList(root, input, tagsInput(root) ?? $("[data-weekday]", root), () => paintTags(root), said, undo);
+    $(".tags-live", root).textContent = `${said}，现在共 ${next.length} 项。`;
+    if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
+  }
+
+  const quote = (item) => `「${String(item).length > 20 ? `${String(item).slice(0, 20)}…` : item}」`;
+
+  /** 输入框里的文字变成一项或几项。正在修改某一项时，是替换那一项。返回框里是否已经清空。 */
+  function tagsSubmit(root, pasted = null) {
+    const input = tagsInput(root);
+    if (!input) return true;
+    const type = root.dataset.type;
+    // 粘贴的整段直接拿来拆：单行输入框会把换行吞掉。
+    const text = (pasted ?? input.value).trim();
+    const items = readList(root);
+    const editing = root.dataset.editing === undefined ? -1 : Number(root.dataset.editing);
+    if (!text) {
+      if (editing >= 0) {
+        // 改成空就是删掉这一项。
+        stopEditing(root);
+        void listEdit(root, items.filter((_, index) => index !== editing), `已移除${quote(items[editing])}`, { focus: () => input.focus({ preventScroll: true }) });
+      }
+      return true;
+    }
+    let pieces;
+    if (type === "number") {
+      pieces = text.normalize("NFKC").split(/[\s,，、;；]+/u).filter(Boolean).map((piece) => ({ piece, value: Number(piece) }));
+      const bad = pieces.find(({ value }) => !Number.isFinite(value));
+      if (bad) {
+        fieldError(input, `「${bad.piece}」不是数字。`);
+        return false;
+      }
+      pieces = pieces.map(({ value }) => value);
+    } else if (type === "time") {
+      if (!TIME.test(text)) {
+        fieldError(input, "请选一个时间点，例如 08:30。");
+        return false;
+      }
+      pieces = [text];
+    } else pieces = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (editing >= 0) {
+      const value = pieces[0];
+      const clash = items.findIndex((item, index) => index !== editing && same(item, value));
+      if (clash >= 0) {
+        flashChip(root, clash);
+        fieldError(input, `${quote(value)} 已经在列表里了（第 ${clash + 1} 项）。`);
+        return false;
+      }
+      stopEditing(root);
+      input.value = "";
+      syncTagsCommit(root);
+      clearFieldError(input);
+      if (!same(items[editing], value)) {
+        const next = items.map((item, index) => (index === editing ? value : item));
+        void listEdit(root, next, `已把${quote(items[editing])}改成${quote(value)}`, { focus: () => focusChip(root, tidyList(type, next).findIndex((item) => same(item, value))) });
+      } else focusChip(root, editing);
+      return true;
+    }
+    const fresh = [];
+    for (const piece of pieces) if (!items.some((item) => same(item, piece)) && !fresh.some((item) => same(item, piece))) fresh.push(piece);
+    input.value = "";
+    syncTagsCommit(root);
+    clearFieldError(input);
+    if (!fresh.length) {
+      const clash = items.findIndex((item) => same(item, pieces[0]));
+      flashChip(root, clash);
+      snackbar(pieces.length === 1 ? `${quote(pieces[0])} 已经在列表里了。` : "这些都已经在列表里了。");
+      return true;
+    }
+    void listEdit(root, [...items, ...fresh], fresh.length === 1 ? `已添加${quote(fresh[0])}` : `已添加 ${fresh.length} 项`);
+    return true;
+  }
+
+  function focusChip(root, index) {
+    const chips = $$("[data-tags-edit]", root);
+    (index >= 0 && chips.length ? chips[Math.min(index, chips.length - 1)] : tagsInput(root))?.focus({ preventScroll: true });
+  }
+
+  function flashChip(root, index) {
+    const chip = $(`.tag-chip[data-index="${index}"]`, root);
+    if (!chip) return;
+    chip.removeAttribute("data-flash");
+    void chip.offsetWidth;
+    chip.setAttribute("data-flash", "");
+  }
+
+  /** 点一枚芯片：它的值进到下面的输入框里改，回车保存、Esc 取消；芯片标出「正在改」。 */
+  function startEditing(root, index) {
+    const items = readList(root);
+    if (index < 0 || index >= items.length) return;
+    const input = tagsInput(root);
+    root.dataset.editing = String(index);
+    for (const chip of $$(".tag-chip", root)) chip.toggleAttribute("data-editing", chip.dataset.index === String(index));
+    input.value = String(items[index]);
+    input.setAttribute("aria-label", `修改第 ${index + 1} 项`);
+    $("[data-tags-cancel]", root).hidden = false;
+    put($("[data-tags-commit]", root), h`${icon("check")}<span>保存</span>`);
+    syncTagsCommit(root);
+    clearFieldError(input);
+    input.focus({ preventScroll: true });
+    if (input.type === "text") input.select();
+  }
+
+  function stopEditing(root, { refocus = false } = {}) {
+    const index = root.dataset.editing;
+    if (index === undefined) return;
+    delete root.dataset.editing;
+    const input = tagsInput(root);
+    input.setAttribute("aria-label", `添加到 ${root.dataset.title}`);
+    $("[data-tags-cancel]", root).hidden = true;
+    put($("[data-tags-commit]", root), h`${icon("add")}<span>添加</span>`);
+    for (const chip of $$(".tag-chip[data-editing]", root)) chip.removeAttribute("data-editing");
+    if (refocus) {
+      input.value = "";
+      syncTagsCommit(root);
+      clearFieldError(input);
+      focusChip(root, Number(index));
+    }
+  }
+
+  function tagsRemove(button) {
+    const root = button.closest(".tags");
+    const index = Number(button.dataset.tagsRemove);
+    const items = readList(root);
+    if (root.dataset.editing !== undefined) stopEditing(root, { refocus: false });
+    tagsInput(root).value = "";
+    syncTagsCommit(root);
+    void listEdit(root, items.filter((_, at) => at !== index), `已移除${quote(items[index])}`, {
+      // 焦点交给顶上来的那一枚的 ✕：键盘用户连着删不必重新找位置。
+      focus: () => {
+        const removes = $$("[data-tags-remove]", root);
+        (removes[Math.min(index, removes.length - 1)] ?? tagsInput(root))?.focus({ preventScroll: true });
+      },
+    });
+  }
+
+  function tagsMove(root, from, to) {
+    const items = readList(root);
+    if (to < 0 || to >= items.length || from === to || sortedType(root.dataset.type)) return;
+    const next = [...items];
+    const [item] = next.splice(from, 1);
+    next.splice(to, 0, item);
+    void listEdit(root, next, `已把${quote(item)}移到第 ${to + 1} 项`, { focus: () => focusChip(root, to) });
+  }
+
+  function toggleWeekday(button) {
+    const root = button.closest(".tags");
+    const day = Number(button.dataset.weekday);
+    const items = readList(root);
+    const on = items.includes(day);
+    void listEdit(root, on ? items.filter((item) => item !== day) : [...items, day], `已${on ? "去掉" : "加上"}周${WEEKDAYS[day - 1]}`, { undoable: on });
+  }
+
+  /** 拖动排序。鼠标按下移动几像素就开始；触屏要先按住一小会儿（否则就是滚动页面）。
+   *  拖的时候芯片跟着手走，经过别的芯片就换位，松手才写入。 */
+  function bindTagDrag() {
+    let drag = null;
+    const finish = (commit) => {
+      if (!drag) return;
+      const { root, chip, from, timer, active } = drag;
+      clearTimeout(timer);
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      removeEventListener("pointercancel", cancel);
+      drag = null;
+      if (!active) return;
+      chip.removeAttribute("data-dragging");
+      chip.style.translate = "";
+      root.removeAttribute("data-dragging");
+      dragSuppress = Date.now() + 400;
+      const to = $$(".tag-chip", root).indexOf(chip);
+      if (commit && to !== from) tagsMove(root, from, to);
+      else paintTags(root);
+    };
+    const place = (event) => {
+      const { root, chip } = drag;
+      const others = $$(".tag-chip", root).filter((node) => node !== chip);
+      let target = null;
+      for (const node of others) {
+        const box = node.getBoundingClientRect();
+        if (event.clientY >= box.top && event.clientY <= box.bottom && event.clientX >= box.left && event.clientX <= box.right) target = node;
+      }
+      if (target) {
+        const box = target.getBoundingClientRect();
+        const after = event.clientX > box.left + box.width / 2;
+        const anchor = after ? target.nextElementSibling : target;
+        if (anchor !== chip && anchor !== chip.nextElementSibling) {
+          target.parentNode.insertBefore(chip, anchor);
+          if (navigator.vibrate) navigator.vibrate(5);
+        }
+      }
+      // 芯片在 DOM 里换了位，位移要按它的新位置重算，才一直贴着手指。
+      chip.style.translate = "";
+      const box = chip.getBoundingClientRect();
+      chip.style.translate = `${event.clientX - drag.dx - box.left}px ${event.clientY - drag.dy - box.top}px`;
+    };
+    const activate = () => {
+      if (!drag || drag.active) return;
+      drag.active = true;
+      const box = drag.chip.getBoundingClientRect();
+      drag.dx = drag.x0 - box.left;
+      drag.dy = drag.y0 - box.top;
+      drag.chip.setAttribute("data-dragging", "");
+      drag.root.setAttribute("data-dragging", "");
+      if (navigator.vibrate) navigator.vibrate(8);
+    };
+    const move = (event) => {
+      if (!drag || event.pointerId !== drag.id) return;
+      const far = Math.hypot(event.clientX - drag.x0, event.clientY - drag.y0);
+      if (!drag.active) {
+        if (drag.touch) {
+          if (far > 8) finish(false); // 按住之前就动了：那是在滚页面
+          return;
+        }
+        if (far < 6) return;
+        activate();
+      }
+      place(event);
+    };
+    const up = (event) => {
+      if (drag && event.pointerId === drag.id) finish(true);
+    };
+    const cancel = () => finish(false);
+    document.addEventListener("pointerdown", (event) => {
+      const body = event.target.closest?.(".tag-chip-body");
+      const root = body?.closest(".tags");
+      if (!body || !root || event.button !== 0 || sortedType(root.dataset.type) || readList(root).length < 2 || root.dataset.editing !== undefined) return;
+      const chip = body.closest(".tag-chip");
+      drag = { root, chip, id: event.pointerId, x0: event.clientX, y0: event.clientY, from: $$(".tag-chip", root).indexOf(chip), touch: event.pointerType !== "mouse", active: false };
+      if (drag.touch) drag.timer = setTimeout(activate, 320);
+      addEventListener("pointermove", move);
+      addEventListener("pointerup", up);
+      addEventListener("pointercancel", cancel);
+    });
+    // 已经拖起来了就不让页面跟着滚；没拖起来照常滚动。
+    document.addEventListener("touchmove", (event) => {
+      if (drag?.active && event.cancelable) event.preventDefault();
+    }, { passive: false });
+    // 按住时浏览器会弹长按菜单，拖动里不需要它。
+    document.addEventListener("contextmenu", (event) => {
+      if (drag && event.target.closest?.(".tag-chip-body")) event.preventDefault();
+    });
+  }
+  let dragSuppress = 0;
+
+  /** 把列表写进插件配置（名单编辑器与列表编辑器共用）。保存期间的新改动合并成一次补写，
+   *  失败则退回上次保存的样子，原因写在 `anchor`（添加框）底下。 */
+  async function saveList(root, input, anchor, repaint, said, undo) {
+    const form = input.closest("[data-config]");
+    if (!form) return;
+    if (root.dataset.saving) {
+      root.pending = { said, undo };
+      return;
+    }
+    const submitted = input.value;
+    if (submitted === input.defaultValue) return;
+    root.dataset.saving = "1";
+    input.setAttribute("aria-busy", "true");
+    try {
+      const reply = await configPost(form, "config", { path: input.dataset.path, value: JSON.parse(submitted) });
+      input.defaultValue = submitted;
+      if (anchor?.id) clearFieldError(anchor);
+      markModified(root.closest("[data-setting]"), JSON.parse(submitted));
+      snackbar(`${said}，已保存。${reply.message.replace(/^已保存 [^。]*。/, "")}`, "info", undo);
+      refreshDiff(form.dataset.config);
+    } catch (error) {
+      if (error.status === 401) return;
+      input.value = input.defaultValue;
+      repaint();
+      if (anchor?.id) fieldError(anchor, `没能保存，${root.matches(".picker") ? "名单" : "列表"}已退回原样：${error.message}`);
+      else report(error);
+    } finally {
+      delete root.dataset.saving;
+      input.removeAttribute("aria-busy");
+      const later = root.pending;
+      root.pending = null;
+      if (later && root.isConnected && input.value !== input.defaultValue) void saveList(root, input, anchor, repaint, later.said, later.undo);
+    }
+  }
+
+
   /* ==================== §12 解锁 ==================== */
 
   function lock(reason = "") {
@@ -3107,6 +3943,22 @@
         field.focus();
         return;
       }
+      if ((hit = on("[data-tags-edit]"))) {
+        if (Date.now() < dragSuppress) return;
+        const root = hit.closest(".tags");
+        const index = Number(hit.dataset.tagsEdit);
+        if (root.dataset.editing === String(index)) return stopEditing(root, { refocus: true });
+        return startEditing(root, index);
+      }
+      if ((hit = on("[data-tags-remove]"))) return tagsRemove(hit);
+      if ((hit = on("[data-tags-commit]"))) return void tagsSubmit(hit.closest(".tags"));
+      if ((hit = on("[data-tags-cancel]"))) return stopEditing(hit.closest(".tags"), { refocus: true });
+      if ((hit = on("[data-weekday]"))) return toggleWeekday(hit);
+      if ((hit = on("[data-reset-path]"))) return resetField(hit);
+      if ((hit = on("[data-inherit]"))) return entryField(hit, true);
+      if ((hit = on("[data-entry-field]"))) return entryField(hit, false);
+      if ((hit = on("[data-entry-remove]"))) return removeEntry(hit);
+      if ((hit = on("[data-map-add]"))) return addEntries(hit);
       if ((hit = on("[data-picker-remove]"))) return pickerRemove(hit);
       if ((hit = on("[data-picker-add]"))) return void pickerSubmitText(hit.closest(".picker"), { explicit: true });
       if ((hit = on("[data-picker-open]"))) return pickerChoose(hit.closest(".picker"));
@@ -3118,6 +3970,14 @@
         return;
       }
       if (on("[data-retry]")) return render();
+      // 设置行里点键名或说明，等于点它的开关：整行都是这个开关的命中区（HIG）。
+      if ((hit = on(".toggle-row.setting")) && !on("button, a, input, select, textarea, label") && !getSelection()?.toString()) {
+        const control = $(":scope > .switch", hit);
+        if (control && !control.disabled) {
+          control.focus({ preventScroll: true });
+          return commitField(control);
+        }
+      }
       if ((hit = on("[data-toggle]"))) return togglePlugin(hit);
       if ((hit = on('button[data-path][data-kind="bool"]'))) return commitField(hit);
       if ((hit = on("[data-sticker-play]"))) {
@@ -3274,6 +4134,11 @@
           const { ids, rejected } = parseIds(target.value);
           if (ids.length && !rejected.length) pickerSubmitText(root);
         }
+      } else if (target.matches?.(".tags-add input")) {
+        syncTagsCommit(target.closest(".tags"));
+        clearFieldError(target);
+      } else if (target.dataset?.filter !== undefined && target.matches("input[data-filter]")) {
+        filterConfig(target);
       } else if (target.id === "plugin-search") {
         plugins.query = target.value;
         plugins.repaint();
@@ -3288,6 +4153,16 @@
     // 输入框里已经有字，说明人在手打：那就按普通粘贴走，别把半个群号当成整个。
     document.addEventListener("paste", (event) => {
       const target = event.target;
+      // 列表：粘进来的一段有好几行（或一串数字），直接拆成多项加进去。
+      if (target.matches?.(".tags-add input") && !target.value) {
+        const root = target.closest(".tags");
+        const text = event.clipboardData?.getData("text") ?? "";
+        const many = root.dataset.type === "number" ? /[\s,，、;；]/u.test(text.trim()) : /\n/.test(text.trim());
+        if (!many || root.dataset.editing !== undefined) return;
+        event.preventDefault();
+        tagsSubmit(root, text);
+        return;
+      }
       if (!target.matches?.(".picker-add input") || target.value) return;
       const text = event.clipboardData?.getData("text") ?? "";
       if (!parseIds(text).ids.length) return;
@@ -3299,6 +4174,16 @@
     // 离开输入框即保存，与插件配置里其他格子一致。
     document.addEventListener("focusout", (event) => {
       const target = event.target;
+      if (target.matches?.(".tags-add input") && target.isConnected) {
+        const root = target.closest(".tags");
+        // 焦点只是挪到同一个编辑器里的按钮（保存、取消、某一枚芯片）上：不抢着提交。
+        if (root.contains(event.relatedTarget)) return;
+        if (root.dataset.editing !== undefined) {
+          if (target.value.trim() && target.value.trim() !== String(readList(root)[Number(root.dataset.editing)])) tagsSubmit(root);
+          else stopEditing(root);
+        } else if (target.value.trim()) tagsSubmit(root);
+        return;
+      }
       if (!target.matches?.(".picker-add input") || !target.isConnected || !target.value.trim()) return;
       pickerSubmitText(target.closest(".picker"));
     });
@@ -3306,6 +4191,49 @@
     document.addEventListener("keydown", (event) => {
       const target = event.target;
       if (event.isComposing) return;
+      if (target.matches?.(".tags-add input")) {
+        const root = target.closest(".tags");
+        if (event.key === "Enter") {
+          event.preventDefault();
+          tagsSubmit(root);
+        } else if (event.key === "Escape" && root.dataset.editing !== undefined) {
+          event.preventDefault();
+          stopEditing(root, { refocus: true });
+        } else if (event.key === "Backspace" && !target.value && root.dataset.editing === undefined) {
+          // 空框里退格：先跳到最后一枚芯片上（再按一次 Delete / 退格才删），不一下子删掉。
+          const chips = $$("[data-tags-edit]", root);
+          if (chips.length) {
+            event.preventDefault();
+            chips[chips.length - 1].focus();
+          }
+        }
+        return;
+      }
+      if (target.matches?.("[data-tags-edit]")) {
+        const root = target.closest(".tags");
+        const index = Number(target.dataset.tagsEdit);
+        const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[event.key];
+        if (step && event.altKey) {
+          event.preventDefault();
+          tagsMove(root, index, index + step);
+        } else if (event.key === "Delete" || event.key === "Backspace") {
+          event.preventDefault();
+          tagsRemove($(`[data-tags-remove="${index}"]`, root));
+        } else if (step && !event.altKey && !event.shiftKey) {
+          // 方向键在芯片之间走，与系统的芯片组一致。
+          const chips = $$("[data-tags-edit]", root);
+          const next = chips[index + step];
+          if (next) {
+            event.preventDefault();
+            next.focus();
+          }
+        }
+        return;
+      }
+      if (event.key === "Enter" && target.matches?.("input[data-filter]")) {
+        event.preventDefault();
+        return;
+      }
       if (event.key === "Enter" && target.matches?.(".picker-add input")) {
         // 表单里回车默认会提交整张表单；在这里它的意思只是「把这个群号加进去」。
         event.preventDefault();
@@ -3376,6 +4304,15 @@
       }
     });
 
+    // 映射表里展开 / 收起的项记下来：加项、删项后重画这一块时照旧。
+    document.addEventListener("toggle", (event) => {
+      const entry = event.target;
+      if (!entry.matches?.("details.entry")) return;
+      const key = `${entry.closest("[data-config]")?.dataset.config}:${entry.dataset.entry}`;
+      if (entry.open) openEntries.add(key);
+      else openEntries.delete(key);
+    }, true);
+
     const host = $("#snackbar");
     host.addEventListener("pointerenter", () => holdSnack(true));
     host.addEventListener("pointerleave", () => holdSnack(false));
@@ -3420,6 +4357,7 @@
     buildShell();
     bindEvents();
     bindNavDrag();
+    bindTagDrag();
     token = readToken();
     if (!token) {
       lock();
