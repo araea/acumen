@@ -303,8 +303,13 @@ fn inside_map(plugin: &str, console: &Console, path: &str) -> Result<(), &'stati
         path.strip_prefix(map.as_str())
             .and_then(|rest| rest.strip_prefix('.'))
             .is_some_and(|rest| {
-                let depth = rest.split('.').count();
-                !rest.split('.').any(str::is_empty) && (depth == 1 || (depth == 2 && maps[map]["optional"] == true))
+                let parts: Vec<_> = rest.split('.').collect();
+                // 项里的字段只认模板里有的：插件的反序列化不拒绝陌生键，写进去也只是一条没人读的垃圾。
+                let field_ok = |field: &str| {
+                    maps[map]["optional"] == true && maps[map]["template"].get(field).is_some()
+                };
+                !parts.iter().any(|part| part.is_empty())
+                    && (parts.len() == 1 || (parts.len() == 2 && field_ok(parts[1])))
             })
     });
     if ok { Ok(()) } else { Err("这一项不能增删，只能修改") }
@@ -1070,10 +1075,10 @@ fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
         } else if line.starts_with('[') {
             section = line.trim_matches(['[', ']']).to_string();
             // 表头前的那段话就是这一节的说明（界面画在小标题下）；夹在里面的示例配置不算。
-            if let Some(path) = section.strip_prefix(&format!("{plugin}.")) {
-                if let Some(text) = tidy_help(&comments) {
-                    result.insert(path.to_string(), text);
-                }
+            if let Some(path) = section.strip_prefix(&format!("{plugin}."))
+                && let Some(text) = tidy_help(&comments)
+            {
+                result.insert(path.to_string(), text);
             }
             comments.clear();
         } else if let Some((key, _)) = line.split_once('=') {

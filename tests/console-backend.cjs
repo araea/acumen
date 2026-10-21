@@ -54,7 +54,7 @@ async function until(predicate, description) {
   assert.equal(new URL(printed[0]).searchParams.get('t'), token, 'printed address round-trips the token');
   assert.equal((await api('/logs?limit=1')).lines.length, 1);
   const all = await api('/plugins');
-  assert.equal(all.plugins.length, 25);
+  assert.equal(all.plugins.length, 27);
   for (const plugin of all.plugins) {
     const detail = await api('/plugins/' + plugin.name);
     assert.equal(detail.name, plugin.name);
@@ -97,6 +97,26 @@ async function until(predicate, description) {
   // 先停用再存，保证不会在这个隔离实例里起真适配器。
   const post = (route, body) => fetch(base + '/api' + route, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: JSON.stringify(body) });
   const bots = async () => (await api('/settings')).bots;
+  // 映射表：只对键由人定的表开放增删；加进去的项过插件校验，删掉的字段沿用上层
+  const welcome = await api('/plugins/welcome');
+  assert.equal(welcome.maps.groups.key, 'group');
+  assert.equal((await post('/plugins/welcome/config/insert', { path: 'groups.123456', value: welcome.maps.groups.template })).status, 200);
+  assert.equal((await api('/plugins/welcome')).config.groups['123456'].join_text, welcome.config.join.text, '新项照抄上层');
+  assert.equal((await post('/plugins/welcome/config/insert', { path: 'groups.123456', value: {} })).status, 400, '重名拒收');
+  assert.equal((await post('/plugins/welcome/config/remove', { path: 'groups.123456.join_text' })).status, 200);
+  assert.equal('join_text' in (await api('/plugins/welcome')).config.groups['123456'], false);
+  assert.equal((await post('/plugins/welcome/config/insert', { path: 'groups.123456.bogus', value: 1 })).status, 400, '插件不认的字段过不了校验');
+  assert.equal((await post('/plugins/welcome/config/remove', { path: 'groups.123456' })).status, 200);
+  assert.equal((await post('/plugins/welcome/config/remove', { path: 'verify.enabled' })).status, 400, '定死的键不能删');
+  assert.equal((await post('/plugins/oai/config/remove', { path: 'providers.x.api_key' })).status, 400, '非覆盖表不能删字段');
+  // 空的密钥照实给出，「没设」与「已隐藏」分得开
+  assert.equal((await post('/plugins/oai/config/insert', { path: 'providers.demo', value: { api_base: '', api_key: '' } })).status, 200);
+  assert.equal((await api('/plugins/oai')).config.providers.demo.api_key, '');
+  assert.equal((await post('/plugins/oai/config', { path: 'providers.demo.api_key', value: 'sk-x' })).status, 200);
+  assert.equal((await api('/plugins/oai')).config.providers.demo.api_key, '<已隐藏>');
+  // 不用前缀（空数组）是合法的
+  assert.equal((await post('/settings/global', { command_prefix: [], browser_path: '', global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: false, whitelist: [] } })).status, 200);
+  assert.equal((await post('/settings/global', { command_prefix: [' '], browser_path: '', global_filter: { enable_blacklist: false, blacklist: [], enable_whitelist: false, whitelist: [] } })).status, 400);
   assert.equal((await post('/settings/bot', { enabled: false, protocol: 'satori', url: 'http://127.0.0.1:1', access_token: 'secret' })).status, 200);
   assert.deepEqual((await bots()).map(bot => bot.has_token), [true], '新增连接带上令牌');
   assert.equal((await post('/settings/bot', { index: 0, enabled: false, protocol: 'satori', url: 'http://127.0.0.1:2' })).status, 200);

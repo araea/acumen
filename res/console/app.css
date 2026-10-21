@@ -3170,8 +3170,10 @@ button.item:active::after {
   color: inherit;
 }
 
+/* 次色容器上的前景只比 4.5:1 高一点：小牌不再垫底色，只描一圈，字直接落在行底色上。 */
 .setting[data-master]:has(> .switch[aria-checked="true"]) .tag {
-  background: color-mix(in srgb, var(--md-sys-color-on-secondary-container) 12%, transparent);
+  background: transparent;
+  box-shadow: inset 0 0 0 var(--zw-border-width) currentColor;
   color: inherit;
 }
 

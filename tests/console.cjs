@@ -322,9 +322,28 @@ const posted = where => posts.filter(p => p.path === where);
   await key(KEY.tab);
   await sleep(200);
   assert.equal(posts.filter(p => p.path === '/api/plugins/oai/config' && p.body.path === 'retries').length, 2, '回车已存，离开不重复提交');
-  await js(`const g=document.querySelector('[data-path="groups"]'); g.value='[1, 2, 3]'; g.dispatchEvent(new Event('change',{bubbles:true}))`);
+  // —— 列表编辑器：数字列表是一枚枚芯片；回车添加、Alt+→ 排序、✕ 移除都立刻保存，移除带撤销 ——
+  const groupsList = '.tags:has(.tags-value[data-path="groups"])';
+  assert.equal(await js(`return document.querySelector('${groupsList}').dataset.type`), 'number');
+  await click(`${groupsList} .tags-add input`);
+  await type(`${groupsList} .tags-add input`, '3');
+  await key(KEY.enter);
   await until(() => posts.some(p => p.body.path === 'groups'), '列表提交');
-  assert.deepEqual(posts.find(p => p.body.path === 'groups').body.value, [1, 2, 3]);
+  assert.deepEqual(posts.filter(p => p.body.path === 'groups').at(-1).body.value, [175131947, 818965288, 3]);
+  assert.equal(await js(`return document.querySelectorAll('${groupsList} .tag-chip').length`), 3);
+  await type(`${groupsList} .tags-add input`, 'x');
+  await key(KEY.enter);
+  await until(() => js(`return document.querySelector('${groupsList} .field-error')?.textContent.includes('不是数字')`), '数字列表行内校验');
+  await js(`const i=document.querySelector('${groupsList} .tags-add input'); i.value=''; i.dispatchEvent(new Event('input',{bubbles:true}))`);
+  await js(`document.querySelector('${groupsList} [data-tags-edit="2"]').focus()`);
+  await cmd('POST', '/actions', { actions: [{ type: 'key', id: 'keyboard', actions: [{ type: 'keyDown', value: '\uE00A' }, { type: 'keyDown', value: '\uE012' }, { type: 'keyUp', value: '\uE012' }, { type: 'keyUp', value: '\uE00A' }] }] });
+  await until(() => posts.filter(p => p.body.path === 'groups').length === 2, 'Alt+← 排序后保存');
+  assert.deepEqual(posts.filter(p => p.body.path === 'groups').at(-1).body.value, [175131947, 3, 818965288]);
+  assert.equal(await js('return document.activeElement.textContent'), '3', '焦点跟着挪过去的那一枚');
+  await click(`${groupsList} [data-tags-remove="1"]`);
+  await until(() => posts.filter(p => p.body.path === 'groups').length === 3, '移除后保存');
+  assert.deepEqual(posts.filter(p => p.body.path === 'groups').at(-1).body.value, [175131947, 818965288]);
+  await until(() => js('return !!document.querySelector("[data-snack-action]")'), '移除可撤销');
   await click('[data-path="limits.peak.enabled"]');
   await until(() => posts.some(p => p.body.path === 'limits.peak.enabled' && p.body.value === true), '嵌套布尔项');
   assert.equal(await js('return !!document.querySelector("fieldset.config-group legend")'), true, '表展开为 fieldset');
@@ -526,7 +545,8 @@ const posted = where => posts.filter(p => p.path === where);
 
   // 保存还在路上就换页：写入已经在路上，不该弹「未保存」，也不该挡换页（回执照常落库）
   globalDelay = 700;
-  await type('#g-prefix', ', #');
+  // 指令前缀是列表编辑器：输入框里悬着的一项随保存一并收下
+  await type('#g-prefix-add', '#');
   await click('#global-form [type=submit]');
   await until(() => posted('/api/settings/global').length === 2, '在途保存已发出');
   await click('[data-nav="overview"]');
@@ -538,13 +558,13 @@ const posted = where => posts.filter(p => p.path === where);
   await route('settings');
 
   // 反向对照：真有未保存改动时仍然要拦
-  await type('#g-prefix', ', #');
+  await type('#g-prefix-add', '#');
   await click('[data-nav="overview"]');
   await sleep(200);
   assert.equal(await js('return !!document.querySelector("dialog")?.open'), true, '真有未保存改动仍要拦');
   await click('dialog [value=cancel]');
   await until(() => js('return location.hash === "#/settings"'), '取消后留在设置页');
-  await js('document.querySelector("#g-prefix").value = document.querySelector("#g-prefix").defaultValue');
+  await js('document.querySelector("#g-prefix-add").value = ""; const v = document.querySelector("#g-prefix"); v.value = v.defaultValue');
 
   // —— 「未保存」只认用户亲手输入：打开就走不弹窗；自动填充 / 扩展写值不算；点开再点关不算 ——
   await route('overview');
