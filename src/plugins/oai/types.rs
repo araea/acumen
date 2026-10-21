@@ -256,6 +256,9 @@ pub struct MjCache {
 pub struct GeneratingState {
     pub public: HashMap<String, u64>,
     pub private: HashMap<String, HashMap<String, u64>>,
+    /// 这一轮里已经被告知过「还在生成」的人（轮次编号 + 账号）。同一个人连着催，
+    /// 只回第一次：后面几句再回一遍同样的话，就是在群里刷屏。
+    told: std::collections::HashSet<(u64, String)>,
 }
 
 impl GeneratingState {
@@ -272,11 +275,26 @@ impl GeneratingState {
     pub fn is_current(&self, agent: &str, private: bool, uid: &str, id: u64) -> bool {
         self.current(agent, private, uid) == Some(id)
     }
+    /// 这一轮里第一次告诉 `who`「还在生成」时为真；之后同一轮再问都是假。
+    pub fn first_notice(&mut self, agent: &str, private: bool, uid: &str, who: &str) -> bool {
+        match self.current(agent, private, uid) {
+            Some(id) => self.told.insert((id, who.to_string())),
+            None => true,
+        }
+    }
     /// 在同一个写锁内占用会话，避免两个请求同时通过空闲检查。
     pub fn begin(&mut self, agent: &str, private: bool, uid: &str) -> Option<u64> {
         if self.is_generating(agent, private, uid) {
             return None;
         }
+        // 顺手把已经结束的轮次的告知记录清掉。
+        let live: std::collections::HashSet<u64> = self
+            .public
+            .values()
+            .chain(self.private.values().flat_map(HashMap::values))
+            .copied()
+            .collect();
+        self.told.retain(|(id, _)| live.contains(id));
         let id = rand::random();
         if private {
             self.private

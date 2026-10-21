@@ -35,6 +35,7 @@ try {
     var mode = zw.prefs && zw.prefs.mode;
     if (mode === "light" || mode === "dark") document.querySelector('meta[name="color-scheme"]').content = mode;
     if (zw.surface) document.querySelectorAll('meta[name="theme-color"]').forEach(function (meta) {
+      meta.setAttribute("data-base", meta.content);
       var dark = mode === "dark" || (mode !== "light" && /dark/.test(meta.media));
       meta.content = dark ? zw.surface.dark : zw.surface.light;
     });

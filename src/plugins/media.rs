@@ -69,10 +69,10 @@ async fn handle_to_url(
     let msg = ctx.as_message().unwrap();
 
     // 1. 检查指令后的参数中是否直接包含图片/视频
-    if let Some((url, type_name)) = find_media_in_segments(&matched.args) {
+    if let Some((url, _)) = find_media_in_segments(&matched.args) {
         let reply = Message::new()
             .reply(msg.message_id())
-            .text(format!("✅ 已提取{type_name}：\n{url}"));
+            .text(url);
         send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
         return Ok(None);
     }
@@ -87,7 +87,7 @@ async fn handle_to_url(
                 if let Some(url) = seg.data.get("url").and_then(|v| v.as_str()) {
                     let reply = Message::new()
                         .reply(msg.message_id())
-                        .text(format!("✅ 已提取图片：\n{url}"));
+                        .text(url);
                     send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                     return Ok(None);
                 }
@@ -101,7 +101,7 @@ async fn handle_to_url(
                 if let Some(url) = url_opt {
                     let reply = Message::new()
                         .reply(msg.message_id())
-                        .text(format!("✅ 已提取视频：\n{url}"));
+                        .text(url);
                     send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), reply).await?;
                     return Ok(None);
                 }

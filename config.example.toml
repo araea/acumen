@@ -130,8 +130,8 @@ timeout_seconds = 300
 answers = []
 # 每人发一个随机 4 位数验证码，回答须含这串数字（优先于 answers）。
 code = false
-# 剩余这么多秒时 @ 他提醒一次。
-remind_seconds = [120, 30]
+# 剩余这么多秒时 @ 新人提醒一次；新提醒顶替旧的，验证有了结果就把提醒撤掉。
+remind_seconds = [60]
 # 超时怎么办：kick 移出、mute 禁言、none 只记一笔。
 action = "kick"
 # action = mute 时禁言多久（秒）。

@@ -13,7 +13,7 @@
 //! 默认文案的取舍：一句欢迎、一句规矩、一句后果，短到在手机上一屏读完；口吻是「有人
 //! 管、但不凶」——后果写明白（多久、会怎样），不加感叹号堆砌与「警告」字样。
 
-use crate::adapters::satori::{LockedWriter, api, send_msg};
+use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
 use crate::clock::duration_text;
 use crate::event::{Context, EventType};
 use crate::message::Message;
@@ -149,7 +149,7 @@ impl Default for VerifyConfig {
         timeout_seconds: 300,
         answers: Vec::new(),
         code: false,
-        remind_seconds: vec![120, 30],
+        remind_seconds: vec![60],
         action: "kick".into(),
         mute_seconds: 86400,
         kick_permanent: false,
@@ -295,6 +295,10 @@ struct Pending {
     answers: Vec<String>,
     /// 已经提醒过的剩余秒数点。
     reminded: Vec<u64>,
+    /// 群里还挂着的那条倒计时提醒（消息 ID）。验证一有结果就撤掉：
+    /// 过期的「还剩 30 秒」留在聊天记录里，只会让往上翻的人多读一句废话。
+    #[serde(default)]
+    notices: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -447,6 +451,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             deadline: now() + i64::try_from(config.verify.timeout_seconds).unwrap_or(300),
             answers: answers.clone(),
             reminded: Vec::new(),
+            notices: Vec::new(),
         };
         STATE
             .with(|state| {
@@ -539,11 +544,18 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
     let was_pending = STATE
         .with(|state| {
             let before = state.pending.len();
+            let notices: Vec<String> = state
+                .pending
+                .iter()
+                .filter(|p| p.group == group && p.user_id == user)
+                .flat_map(|p| p.notices.clone())
+                .collect();
             state.pending.retain(|p| !(p.group == group && p.user_id == user));
-            before != state.pending.len()
+            (before != state.pending.len()).then_some(notices)
         })
         .await;
-    if was_pending {
+    if let Some(notices) = was_pending {
+        tidy(ctx, writer, group, notices);
         info!(target: LOG_TARGET, "群 {group} 待验证的 {user} 已离开，验证作废");
     }
     if !config.for_group(group).leave {
@@ -642,6 +654,7 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
         None => Ok(false),
         Some(Some(passed)) => {
             info!(target: LOG_TARGET, "群 {group} 的 {}（{user}）通过入群验证", passed.name);
+            tidy(ctx, writer, group, passed.notices.clone());
             if !config.verify.pass_text.trim().is_empty() {
                 let vars = Vars { name: &passed.name, user_id: user, group_id: group, ..Vars::default() };
                 send_msg(ctx, writer.clone(), Some(group), None, render(&config.verify.pass_text, &[user.to_string()], &vars)).await?;
@@ -737,8 +750,19 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
                     ..Vars::default()
                 };
                 let message = render(&config.verify.remind_text, std::slice::from_ref(&p.user_id), &vars);
-                if let Err(error) = send_msg(ctx, writer.clone(), Some(&p.group), None, message).await {
-                    warn!(target: LOG_TARGET, "群 {} 验证提醒没发出去：{error}", p.group);
+                match send_msg_id(ctx, writer.clone(), Some(&p.group), None, message).await {
+                    // 新提醒顶替旧提醒：群里同一时刻只挂一条倒计时。
+                    Ok(Some(id)) => {
+                        let stale = STATE
+                            .with(|state| {
+                                let found = state.pending.iter_mut().find(|q| q.group == p.group && q.user_id == p.user_id)?;
+                                Some(std::mem::replace(&mut found.notices, vec![id]))
+                            })
+                            .await;
+                        tidy(ctx, writer, &p.group, stale.unwrap_or_default());
+                    }
+                    Ok(None) => {}
+                    Err(error) => warn!(target: LOG_TARGET, "群 {} 验证提醒没发出去：{error}", p.group),
                 }
             }
             Due::Expire(p) => expire(ctx, writer, &config, p).await,
@@ -746,8 +770,24 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
     }
 }
 
+/// 撤掉验证期间发的倒计时提醒。撤不掉（过了时限、没权限）就留着，不值得为它出声。
+fn tidy(ctx: &Context, writer: &LockedWriter, group: &str, notices: Vec<String>) {
+    if notices.is_empty() {
+        return;
+    }
+    let (ctx, writer, group) = (ctx.clone(), writer.clone(), group.to_string());
+    tokio::spawn(async move {
+        for id in notices {
+            if let Err(error) = api::delete_msg_in(&ctx, writer.clone(), &group, &id).await {
+                debug!(target: LOG_TARGET, "群 {group} 的验证提醒 {id} 撤不掉：{error}");
+            }
+        }
+    });
+}
+
 async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pending) {
     let verify = &config.verify;
+    tidy(ctx, writer, &p.group, p.notices.clone());
     let result = match verify.action.as_str() {
         "kick" => {
             failed()

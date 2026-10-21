@@ -36,6 +36,25 @@ pub(crate) async fn mark_working(
     }
 }
 
+/// 「还在生成」：这句话带信息（你这句没被接住），但同一个人这一轮里只说一次。
+/// 再催的几句静默放过——第一次已经告诉过怎么停了。
+async fn busy_notice(
+    ctx: &Context,
+    writer: &LockedWriter,
+    event: &MessageEvent<'_>,
+    mgr: &Manager,
+    name: &str,
+    private: bool,
+    uid: &str,
+) {
+    let who = event.user_id().to_string();
+    if !mgr.generating.write().await.first_notice(name, private, uid, &who) {
+        debug!(target: LOG_TARGET, "{name} 还在生成，{who} 这一轮已经提醒过，不再重复");
+        return;
+    }
+    reply_text(ctx, writer, event, format!("⏳ {name} 还在回上一句，这句没接上；等它说完再发，或发「{name}!」停下")).await;
+}
+
 pub(crate) async fn reply_text(
     ctx: &Context,
     writer: &LockedWriter,
@@ -600,19 +619,13 @@ async fn chat(
                 }
                 return;
             }
-            reply_text(
-                ctx,
-                writer,
-                &event,
-                "⏳ 正在生成中，请等待，或使用「智能体!」停止",
-            )
-            .await;
+            busy_notice(ctx, writer, &event, mgr, name, is_priv_ctx, &uid).await;
             return;
         }
     }
 
     if !regen && prompt.is_empty() && imgs.is_empty() {
-        reply_text(ctx, writer, &event, "💡 请输入内容").await;
+        reply_text(ctx, writer, &event, format!("💡 {name} 后面接上要说的话，或引用一条消息再叫它")).await;
         return;
     }
     let (hist, gen_id) = if temp_mode {
@@ -625,13 +638,7 @@ async fn chat(
         let reservation = mgr.generating.write().await.begin(name, is_priv_ctx, &uid);
         let Some(id) = reservation else {
             drop(config);
-            reply_text(
-                ctx,
-                writer,
-                &event,
-                "⏳ 正在生成中，请等待，或使用「智能体!」停止",
-            )
-            .await;
+            busy_notice(ctx, writer, &event, mgr, name, is_priv_ctx, &uid).await;
             return;
         };
         let hist = prepare_history(current.history(is_priv_ctx, &uid), prompt, &imgs, regen, &from);
