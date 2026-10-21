@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+// 注册表里登记了几个插件（与 tests/e2e.py 同一个数法），加插件不必再改这里。
+const REGISTERED = fs.readFileSync(path.join(__dirname, '../src/plugins/registry.rs'), 'utf8').match(/^    [a-z_]+ \{/gm).length;
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
@@ -54,7 +56,7 @@ async function until(predicate, description) {
   assert.equal(new URL(printed[0]).searchParams.get('t'), token, 'printed address round-trips the token');
   assert.equal((await api('/logs?limit=1')).lines.length, 1);
   const all = await api('/plugins');
-  assert.equal(all.plugins.length, 27);
+  assert.equal(all.plugins.length, REGISTERED);
   for (const plugin of all.plugins) {
     const detail = await api('/plugins/' + plugin.name);
     assert.equal(detail.name, plugin.name);

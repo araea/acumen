@@ -7,12 +7,15 @@
 //! 一口气撤一串（管理员清屏）不该刷爆存储频道：同一个去处两秒内的撤回攒成一批，
 //! 一条就直接转，多条合成一条合并转发，每个节点署原作者。
 //!
+//! 去处留空就发到号主自己的私聊（QQ 里自己和自己的那个会话）：开了就能看到，不必先填什么。
+//! 控制台的插件页会显示去处、这次运行转存了几条，也能先发一条试试（[`live`]、[`test`]）。
+//!
 //! 原样再发有几处要改写：@ 到了别的会话就是 @ 一个不在场的人，改成文字「@名字」；
 //! 引用指向原会话的消息，摘掉、标一句「回复了一条消息」；语音、视频、文件不能和文字
 //! 拼成一条，跟在后面单独发。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
-use crate::event::{Context, EventType};
+use crate::event::{BotStatus, Context, EventType};
 use crate::message::{Message, Segment};
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
@@ -21,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 const LOG_TARGET: &str = "Plugin/AntiRecall";
@@ -30,7 +33,7 @@ const LOG_TARGET: &str = "Plugin/AntiRecall";
 #[serde(default)]
 pub struct Config {
     enabled: bool,
-    /// 存到哪：群号；或 `private:QQ号`；留空 = 私聊发给第一位 ctl 管理员，没有就发给号主自己。
+    /// 存到哪：群号；或 `private:QQ号`；留空 = 号主自己的私聊。
     target: String,
     /// 在哪些群生效；两边都空 = 全部群。
     channel: ChannelConfig,
@@ -65,7 +68,7 @@ impl PluginConfig for Config {
         let target = self.target.trim();
         let id = target.strip_prefix("private:").unwrap_or(target);
         if !target.is_empty() && (id.is_empty() || id.parse::<u64>().is_err()) {
-            return Err("target 写群号、private:QQ号，或留空（发给管理员）".into());
+            return Err("target 写群号、private:QQ号，或留空（发到号主自己的私聊）".into());
         }
         if !(1..=1440).contains(&self.retention_minutes) {
             return Err("retention_minutes 须在 1–1440 之间".into());
@@ -104,6 +107,7 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
     let EventType::Satori(raw) = &ctx.event else {
         return None;
     };
+    remember(&ctx.bot, writer);
     let config = get_config_or_default::<Config>(ctx);
     let group = raw.get_str("group_id").filter(|id| !id.is_empty()).map(str::to_owned);
     match &group {
@@ -176,6 +180,7 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                     kept
                 } else {
                     debug!(target: LOG_TARGET, "撤回的消息 {message_id} 没记着原文");
+                    tally().missed += 1;
                     return Ok(());
                 };
                 let operator = if by_other { operator } else { String::new() };
@@ -240,8 +245,8 @@ fn target_group(config: &Config) -> Option<&str> {
     (!target.is_empty() && !target.starts_with("private:")).then_some(target)
 }
 
-/// 去处：(群号, 私聊对象)。留空时私聊第一位管理员，没有管理员就发给号主自己（登录账号）。
-fn destination(ctx: &Context, config: &Config) -> Option<(Option<String>, Option<String>)> {
+/// 去处：(群号, 私聊对象)。留空就是号主自己的私聊（登录账号）。
+fn destination(bot: &BotStatus, config: &Config) -> Option<(Option<String>, Option<String>)> {
     let target = config.target.trim();
     if let Some(user) = target.strip_prefix("private:") {
         return Some((None, Some(user.to_string())));
@@ -249,16 +254,13 @@ fn destination(ctx: &Context, config: &Config) -> Option<(Option<String>, Option
     if !target.is_empty() {
         return Some((Some(target.to_string()), None));
     }
-    let admin = crate::plugins::ctl::admin_ids(ctx)
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| ctx.bot.self_id());
-    (!admin.is_empty()).then_some((None, Some(admin)))
+    let me = bot.self_id();
+    (!me.is_empty()).then_some((None, Some(me)))
 }
 
 fn enqueue(ctx: Context, writer: LockedWriter, config: &Config, item: Recalled) {
-    let Some((group, user)) = destination(&ctx, config) else {
-        warn!(target: LOG_TARGET, "没有转存去处：设置 anti_recall.target，或在 ctl.admins 里写一位管理员");
+    let Some((group, user)) = destination(&ctx.bot, config) else {
+        warn!(target: LOG_TARGET, "没有转存去处：还没拿到登录账号，或设置 anti_recall.target");
         return;
     };
     let key = format!("{}|{}", group.as_deref().unwrap_or(""), user.as_deref().unwrap_or(""));
@@ -278,8 +280,20 @@ fn enqueue(ctx: Context, writer: LockedWriter, config: &Config, item: Recalled) 
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&key)
             .unwrap_or_default();
-        if let Err(error) = deliver(&ctx, &writer, group.as_deref(), user.as_deref(), batch).await {
-            warn!(target: LOG_TARGET, "撤回的消息没转存出去：{error}");
+        let count = batch.len() as u64;
+        let last = batch.last().map(|item| headline(item).lines().next().unwrap_or("").to_string());
+        let result = deliver(&ctx, &writer, group.as_deref(), user.as_deref(), batch).await;
+        let mut tally = tally();
+        match result {
+            Ok(()) => {
+                tally.forwarded += count;
+                tally.last = last.map(|line| (now(), line));
+                tally.error = None;
+            }
+            Err(error) => {
+                warn!(target: LOG_TARGET, "撤回的消息没转存出去：{error}");
+                tally.error = Some((now(), error.to_string()));
+            }
         }
     });
 }
@@ -380,6 +394,129 @@ async fn deliver(
             send_msg(ctx, writer.clone(), group, user, message).await?;
             Ok(())
         }
+    }
+}
+
+// ==================== 控制台 ====================
+
+/// 这次运行的账：转存了几条、几次没找到原文、最近一条与最近一次失败。
+#[derive(Default)]
+struct Tally {
+    forwarded: u64,
+    missed: u64,
+    last: Option<(i64, String)>,
+    error: Option<(i64, String)>,
+}
+
+fn tally() -> std::sync::MutexGuard<'static, Tally> {
+    static TALLY: OnceLock<Mutex<Tally>> = OnceLock::new();
+    TALLY
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// 每个登录账号最近的那条连接：控制台要知道去处是谁、试发走哪条线。
+type Link = (Arc<BotStatus>, LockedWriter);
+
+fn links() -> std::sync::MutexGuard<'static, Vec<Link>> {
+    static LINKS: OnceLock<Mutex<Vec<Link>>> = OnceLock::new();
+    LINKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn remember(bot: &Arc<BotStatus>, writer: &LockedWriter) {
+    let me = bot.self_id();
+    if me.is_empty() {
+        return;
+    }
+    let mut links = links();
+    match links.iter_mut().find(|(known, _)| known.self_id() == me) {
+        Some(link) if Arc::ptr_eq(&link.1, writer) => {}
+        Some(link) => *link = (bot.clone(), writer.clone()),
+        None => links.push((bot.clone(), writer.clone())),
+    }
+}
+
+fn describe(bot: &BotStatus, config: &Config) -> String {
+    match destination(bot, config) {
+        Some((Some(group), _)) => format!("群 {group}"),
+        Some((None, Some(user))) if config.target.trim().is_empty() => {
+            let login = bot.login_user.get();
+            match login.name.as_deref().filter(|name| !name.is_empty()) {
+                Some(name) => format!("号主自己的私聊（{name} · {user}），在 QQ 里打开和自己的会话就能看到"),
+                None => format!("号主自己的私聊（{user}），在 QQ 里打开和自己的会话就能看到"),
+            }
+        }
+        Some((None, Some(user))) => format!("私聊 {user}"),
+        _ => "还没有去处".to_string(),
+    }
+}
+
+/// 控制台插件页上的那张「现在的情况」：几行字，加一个试发按钮。
+pub(crate) fn live(ctx: &Context) -> serde_json::Value {
+    let config = get_config_or_default::<Config>(ctx);
+    let mut lines = Vec::new();
+    let links = links().clone();
+    if links.is_empty() {
+        lines.push("还没收到过消息，连上账号后这里显示转存的去处。".to_string());
+    }
+    for (bot, _) in &links {
+        let lead = if config.enabled { "转存到" } else { "打开后转存到" };
+        lines.push(format!("{lead}：{}", describe(bot, &config)));
+    }
+    let tally = tally();
+    if tally.forwarded > 0 {
+        let last = tally
+            .last
+            .as_ref()
+            .map(|(at, line)| format!("，最近一条 {}：{}", clock(*at), line.trim_start_matches("🗑 ")))
+            .unwrap_or_default();
+        lines.push(format!("这次运行转存了 {} 条{last}", tally.forwarded));
+    } else if config.enabled {
+        lines.push("这次运行还没有人撤回过消息。".to_string());
+    }
+    if tally.missed > 0 {
+        lines.push(format!(
+            "有 {} 次撤回没找到原文：撤的是机器人启动前或 {} 分钟以前的消息；QQ 端还得是知弦 0.37.1 以上（升级后重启手机才生效）。",
+            tally.missed, config.retention_minutes
+        ));
+    }
+    if let Some((at, error)) = &tally.error {
+        lines.push(format!("{} 转存失败：{error}", clock(*at)));
+    }
+    serde_json::json!({ "lines": lines, "test": !links.is_empty() })
+}
+
+/// 往去处发一条说明，看看那边收不收得到。
+pub(crate) async fn test(ctx: &Context) -> Result<String, String> {
+    let config = get_config_or_default::<Config>(ctx);
+    let links = links().clone();
+    if links.is_empty() {
+        return Err("还没连上账号，等机器人收到第一条消息再试".into());
+    }
+    let mut sent = Vec::new();
+    for (bot, writer) in links {
+        let Some((group, user)) = destination(&bot, &config) else {
+            continue;
+        };
+        let mut ctx = ctx.clone();
+        ctx.bot = bot.clone();
+        let text = format!(
+            "🗑 防撤回试发：{}有人撤回消息时，原文会像这样转存到这里。",
+            if config.enabled { "" } else { "插件还没打开；打开后" }
+        );
+        send_msg(&ctx, writer, group.as_deref(), user.as_deref(), Message::new().text(text))
+            .await
+            .map_err(|error| format!("发不出去：{error}"))?;
+        sent.push(describe(&bot, &config));
+    }
+    match sent.as_slice() {
+        [] => Err("没有去处：设置 target，或等登录账号就绪".into()),
+        [one] => Ok(format!("已发到{}", one.split('，').next().unwrap_or(one))),
+        many => Ok(format!("已发到 {} 处", many.len())),
     }
 }
 

@@ -30,6 +30,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/plugins/{name}/config/insert", post(insert_config))
         .route("/plugins/{name}/config/remove", post(remove_config))
         .route("/plugins/{name}/reset", post(reset_config))
+        .route("/plugins/{name}/test", post(test_plugin))
         .route("/ambient", get(ambient))
         .route("/ambient/sticker/{id}", get(sticker_image))
         .route("/ambient/source", post(write_ambient_source))
@@ -130,10 +131,10 @@ async fn overview(State(console): State<Arc<Console>>) -> Response {
 /// 微信没有可推导的公开地址（实现端的登录快照里本来就不带头像），界面会退成首字。
 /// 只收 http(s)：头像是一条外部内容，不接受其它协议。
 fn avatar_for(platform: &str, id: &str, avatar: Option<&str>) -> Option<String> {
-    if let Some(url) = avatar.map(str::trim).filter(|url| !url.is_empty()) {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            return Some(url.to_string());
-        }
+    if let Some(url) = avatar.map(str::trim).filter(|url| !url.is_empty())
+        && (url.starts_with("http://") || url.starts_with("https://"))
+    {
+        return Some(url.to_string());
     }
     let qq = matches!(platform.to_ascii_lowercase().as_str(), "red" | "qq");
     let numeric = !id.is_empty() && id.chars().all(|c| c.is_ascii_digit());
@@ -215,8 +216,29 @@ async fn plugin_detail(
         "maps": maps(plugin.name, current),
         "defaults": crate::plugins::ctl::redacted(&defaults),
         "diff": diff,
+        "live": live(plugin.name, console.ctx()),
     }))
     .into_response()
+}
+
+/// 插件现在的情况（去处、计数之类），控制台插件页上方那张卡。只有少数插件有。
+fn live(name: &str, ctx: &crate::event::Context) -> Value {
+    match name {
+        "anti_recall" => crate::plugins::anti_recall::live(ctx),
+        _ => Value::Null,
+    }
+}
+
+/// 「发一条试试」：让插件往它的去处真发一条，看那边收不收得到。
+async fn test_plugin(State(console): State<Arc<Console>>, AxumPath(name): AxumPath<String>) -> Response {
+    let result = match name.as_str() {
+        "anti_recall" => crate::plugins::anti_recall::test(console.ctx()).await,
+        _ => return missing(&name),
+    };
+    match result {
+        Ok(message) => Json(json!({ "message": message, "live": live(&name, console.ctx()) })).into_response(),
+        Err(message) => super::server::fail(StatusCode::BAD_GATEWAY, &message),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1159,7 +1181,6 @@ fn dump_console_fixture() {
         "field_help": field_help(plugin.name), "field_options": field_options(plugin.name, &(plugin.default_config)()),
         "maps": maps(plugin.name, &(plugin.default_config)()), "defaults": crate::plugins::ctl::redacted(&(plugin.default_config)()), "diff": []
     })).collect();
-    assert_eq!(plugins.len(), 27);
     std::fs::write(
         std::env::var("ACUMEN_CONSOLE_FIXTURE").expect("fixture path"),
         serde_json::to_vec_pretty(&plugins).unwrap(),

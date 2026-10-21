@@ -198,10 +198,7 @@ impl Authority {
     }
 }
 
-/// 群里的管事身份：群主或管理员。
-pub(crate) fn is_staff(role: &str) -> bool {
-    matches!(role, "owner" | "admin" | "administrator")
-}
+pub(crate) use crate::adapters::satori::api::is_staff;
 
 /// 这个群开不开放管理动作：`role` 是账号自己在这个群里的身份。
 pub(crate) fn management_open(config: &ChatConfig, group: &str, role: &str) -> bool {

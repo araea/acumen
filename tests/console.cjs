@@ -3,6 +3,8 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+// 注册表里登记了几个插件（与 tests/e2e.py 同一个数法），加插件不必再改这里。
+const REGISTERED = fs.readFileSync(path.join(__dirname, '../src/plugins/registry.rs'), 'utf8').match(/^    [a-z_]+ \{/gm).length;
 const http = require('node:http');
 const { spawn, execFileSync } = require('node:child_process');
 
@@ -38,6 +40,7 @@ const plugins = [
     ...(name === 'stats' ? { channel: { white: [], black: ['818965288'] } } : {}),
     ...(name === 'ambient' ? { private_users: ['10001'], realtime_muted_private_users: [] } : {}) },
   defaults: {}, diff: name === 'oai' ? ['model: "默认模型" → "示例模型"'] : [],
+  live: name === 'webshot' ? { lines: ['转存到：号主自己的私聊（知微 · 10001），在 QQ 里打开和自己的会话就能看到', '这次运行还没有人撤回过消息。'], test: true } : null,
 }));
 const settings = {
   bots: [{ enabled: true, protocol: 'satori', url: 'http://127.0.0.1:3001', has_token: true }],
@@ -103,6 +106,10 @@ const server = http.createServer(async (req, res) => {
       await sleep(60);
       if (body.value.includes('666')) return reply({ error: '示例：后端不收这个群号' }, 400);
       return reply({ message: `已保存 ${url.pathname.split('/')[3]}.${body.path}。下一条消息生效。` });
+    }
+    if (url.pathname === '/api/plugins/webshot/test') {
+      await sleep(60);
+      return reply({ message: '已发到号主自己的私聊（知微 · 10001）', live: { lines: ['转存到：号主自己的私聊（知微 · 10001）', '试发过了'], test: true } });
     }
     if (url.pathname === '/api/settings/global') await sleep(globalDelay);
     await sleep(60);
@@ -334,6 +341,19 @@ const posted = where => posts.filter(p => p.path === where);
   await until(() => js('return location.hash === "#/plugins/oai" && document.querySelector(".page-title")?.textContent === "智能对话"'), '窄屏详情页');
   assert.equal(await js('return !!document.querySelector(".page-head .back[href=\\"#/plugins\\"]")'), true, '详情页有返回');
   assert.equal(await js('return document.title'), '智能对话 · 知微');
+
+  // —— 图标是内联字形（不靠 <use> 引精灵图），每一枚都画得出路径 ——
+  assert.equal(await js('return document.querySelectorAll("svg.i use").length'), 0, '不再用 <use>');
+  assert.equal(await js('return [...document.querySelectorAll("svg.i")].every(svg => svg.querySelector("path") && svg.getAttribute("viewBox"))'), true, '每枚图标都有字形');
+
+  // —— 插件「现在的情况」：去处、计数与试发 ——
+  await route('plugins/webshot');
+  await until(() => js('return !!document.querySelector("#live-webshot")'), '现在的情况卡');
+  assert.equal(await js('return document.querySelectorAll("#live-webshot .live-lines li").length'), 2);
+  await click('[data-live-test="webshot"]');
+  await until(() => posted('/api/plugins/webshot/test').length === 1, '试发 POST');
+  await until(() => js('return document.querySelector("#live-webshot .live-lines").textContent.includes("试发过了")'), '回执刷新卡片');
+  assert.equal(await js('return document.querySelector("#live-oai")'), null, '没有 live 的插件不出这张卡');
 
   // —— 宽屏：列表-详情并排，行内开关与行链接互不干扰，慢回包不能盖过后点的 ——
   await viewport(1400, 900);
@@ -960,7 +980,7 @@ const posted = where => posts.filter(p => p.path === where);
 
   // 所有注册插件使用真实的默认配置与说明，不复用通用假字段。
   realMode = true;
-  assert.equal(realPlugins.length, 27);
+  assert.equal(realPlugins.length, REGISTERED);
   for (const width of [320, 1400]) {
     await viewport(width, 900);
     for (const plugin of realPlugins) {

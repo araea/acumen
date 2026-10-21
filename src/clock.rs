@@ -19,6 +19,17 @@ pub fn beijing_now() -> DateTime<FixedOffset> {
     Utc::now().with_timezone(&beijing())
 }
 
+/// 时长说成人话：整天、整小时、整分钟各用自己的单位，零碎的才写「分 秒」。
+pub fn duration_text(seconds: u64) -> String {
+    match seconds {
+        s if s >= 86400 && s % 86400 == 0 => format!("{} 天", s / 86400),
+        s if s >= 3600 && s % 3600 == 0 => format!("{} 小时", s / 3600),
+        s if s >= 60 && s % 60 == 0 => format!("{} 分钟", s / 60),
+        s if s >= 60 => format!("{} 分 {} 秒", s / 60, s % 60),
+        s => format!("{s} 秒"),
+    }
+}
+
 /// 配置里的钟点：`HH:MM` 或 `HH:MM:SS`（时、分、秒各一到两位）。读不懂（含越界）返回 `None`，
 /// 由调用方决定是退回默认值、还是当作「没设」。
 pub fn parse_clock(raw: &str) -> Option<NaiveTime> {

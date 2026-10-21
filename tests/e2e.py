@@ -5,6 +5,9 @@
 引用类指令的报错回复（sticker）、/ctl 读写配置（原子写、0600）、自发消息入库、
 禁言通知入库与禁言排行榜、文字榜（字数与纯文本消息条数）的入库与出图（出图需要字体：
 E2E_FONT 指一个字体文件，缺省用 Termux 的 MiSans，都没有就只验入库与文字提示）。
+奶龙拦截要识图模型：`E2E_NAILONG_MODEL` 指 MobileCLIP-S0 的 vision_model.onnx，`E2E_NAILONG_POS` /
+`E2E_NAILONG_NEG` 各指一张奶龙图与一张普通图；缺任何一个就跳过这一段。`E2E_NAILONG_DOWNLOAD=1` 不预放模型，
+走插件自己的下载（真连 Hugging Face，首张图最多等 10 分钟）。
 `E2E_STARTUP=1` 改为「除 console / restart 外全部启用，连上后空等 25 秒」，只看启动有无
 ERRO 与 panic（不碰真账号：被测实例连的是自己起的假端口）。
 
@@ -26,6 +29,10 @@ ADMIN = "10001"
 ENABLED = {"meta_filter", "ctl", "recorder", "echo", "repeater", "recall", "sticker", "media", "stats", "welcome", "anti_recall"}
 FONT = next((f for f in (os.environ.get("E2E_FONT"), "/data/data/com.termux/files/usr/share/fonts/TTF/MiSans/MiSans-Medium.ttf") if f and os.path.exists(f)), None)
 STARTUP = os.environ.get("E2E_STARTUP") == "1"
+NAILONG = {k: os.environ.get(f"E2E_NAILONG_{k.upper()}") for k in ("model", "pos", "neg")}
+NAILONG = NAILONG if all(v and os.path.exists(v) for v in NAILONG.values()) else None
+if NAILONG:
+    ENABLED = ENABLED | {"nailong"}
 ALL_PLUGINS = re.findall(r"^    ([a-z_]+) \{", open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/registry.rs")).read(), re.M)
 
 LOGIN = {"platform": "red", "adapter": "satori-qq", "status": 1, "user": {"id": BOT, "name": "测试机器人"}, "features": []}
@@ -34,6 +41,10 @@ posts = []          # (method, body)
 ws_clients = []
 next_msg = [1000]
 sn = [0]
+
+
+async def serve_image(request):
+    return web.FileResponse(NAILONG[request.match_info["name"]])
 
 
 def fresh_id():
@@ -62,7 +73,8 @@ async def api(request):
         body = {}
     posts.append((method, body))
     if method == "message.create":
-        return web.json_response([{"id": fresh_id()}])
+        body["_id"] = fresh_id()  # 记下分给这条的 ID，引用机器人的话时要用
+        return web.json_response([{"id": body["_id"]}])
     if method in ("message.delete", "reaction.create", "reaction.delete", "guild.member.kick", "guild.member.mute", "guild.member.approve"):
         return web.json_response({})
     if method == "user.channel.create":
@@ -140,8 +152,8 @@ def write_config(directory):
             lines += ["[welcome.verify]", "enabled = true", "timeout_seconds = 30", 'answers = ["我已阅读群规"]',
                       "remind_seconds = [25]", 'action = "kick"', "", "[welcome.approve]", "enabled = true",
                       'keywords = ["芝麻开门"]', "reject = true"]
-        if name == "anti_recall":
-            lines += ['target = "private:10001"']
+        if name == "nailong":
+            lines += ["mute_seconds = [0, 600]"]
         if name == "repeater":
             lines += ["min_times = 2", "cooldown_seconds = 0", "max_delay_ms = 600000", "remember_hours = 0"]
         lines.append("")
@@ -162,6 +174,10 @@ async def main():
     app = web.Application(client_max_size=64 * 1024 * 1024)
     app.router.add_get("/v1/events", events_ws)
     app.router.add_post("/v1/{method:.*}", api)
+    app.router.add_get("/img/{name}", serve_image)
+    if NAILONG and os.environ.get("E2E_NAILONG_DOWNLOAD") != "1":
+        os.makedirs(os.path.join(WORK, "data", "nailong"))
+        shutil.copy(NAILONG["model"], os.path.join(WORK, "data", "nailong", "mobileclip_s0_vision.onnx"))
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", PORT).start()
@@ -209,13 +225,43 @@ async def main():
         await wait_for(lambda: any(m == "guild.member.kick" and b.get("user_id") == "10010" for m, b in posts[mark:]), "10010 超时被移出", 40)
         check("超时移出", not any(m == "guild.member.kick" and b.get("user_id") == "10009" for m, b in posts[mark:]))
 
-        print("1c. 防撤回：撤回的消息转存到 private:10001")
+        print("1c. 防撤回：去处留空，撤回的消息转存到号主自己的私聊")
         mark = len(posts)
         secret = await inject("message-created", "10002", "这句话我马上撤回")
         await asyncio.sleep(0.5)
         await inject("message-deleted", "10002", message_id=secret)
-        await wait_for(lambda: any(m == "message.create" and b.get("channel_id") == "private:10001" and "这句话我马上撤回" in b.get("content", "") for m, b in posts[mark:]), "转存到私聊")
+        await wait_for(lambda: any(m == "message.create" and b.get("channel_id") == f"private:{BOT}" and "这句话我马上撤回" in b.get("content", "") for m, b in posts[mark:]), "转存到私聊")
         check("撤回的原文转存到私聊", True)
+
+        if NAILONG:
+            print("1d. 奶龙拦截：撤回、第二次禁言、引用提醒说「不是」即解禁并记住、普通图不动")
+            mark = len(posts)
+            img = lambda name: f'<img src="http://127.0.0.1:{PORT}/img/{name}"/>'
+            tips = lambda: [b.get("content", "") for m, b in posts[mark:] if m == "message.create" and "奶龙" in b.get("content", "")]
+            first = await inject("message-created", "10030", img("pos"))
+            await wait_for(lambda: any(m == "message.delete" and b.get("message_id") == first for m, b in posts[mark:]), "奶龙图被撤回", 600 if os.environ.get("E2E_NAILONG_DOWNLOAD") == "1" else 90)
+            await wait_for(lambda: len(tips()) >= 1, "撤回后的提醒")
+            check("认出奶龙图、撤回并 @ 提醒", 'id="10030"' in tips()[0], tips()[0])
+            second = await inject("message-created", "10030", img("pos"))
+            await wait_for(lambda: any(m == "guild.member.mute" and b.get("duration") == 600000 for m, b in posts[mark:]), "第二次禁言 10 分钟")
+            check("第二次按阶梯禁言", any(m == "message.delete" and b.get("message_id") == second for m, b in posts[mark:]))
+            await wait_for(lambda: len(tips()) >= 2, "禁言提醒")
+            tip_id = [b["_id"] for m, b in posts[mark:] if m == "message.create" and "奶龙" in b.get("content", "")][-1]
+            await inject("message-created", ADMIN, f'<quote id="{tip_id}"/>/奶龙 不是')
+            await wait_for(lambda: any(m == "guild.member.mute" and b.get("duration") == 0 for m, b in posts[mark:]), "解除禁言")
+            await wait_for(lambda: any("记住了" in t for t in tips()), "纠正回执")
+            check("引用提醒说「不是」：解禁并回执", True)
+            later = len(posts)
+            third = await inject("message-created", "10031", img("pos"))
+            neg = await inject("message-created", "10032", img("neg"))
+            await asyncio.sleep(8)
+            check("纠正过的图与普通图都不再撤", not any(m == "message.delete" and b.get("message_id") in (third, neg) for m, b in posts[later:]))
+            await inject("message-created", "10033", "/奶龙")
+            await wait_for(lambda: any("拦下" in t or "还没拦过" in t for t in sent_texts()[-3:]), "状态")
+            status = next(t for t in reversed(sent_texts()) if "拦下" in t or "还没拦过" in t)
+            check("/奶龙 状态：纠正掉的那次不计，另一次还在", "今天拦下 1 张" in status, status)
+            for text in [b.get("content", "") for m, b in posts[mark:] if m == "message.create"]:
+                print("     机器人：" + re.sub(r"\s+", " ", re.sub(r"<[^>]+>", lambda t: "@" if t.group(0).startswith("<at") else "", text))[:120])
 
         print("2. 复读：两个不同的人接力同一句")
         before = len(sent_texts())

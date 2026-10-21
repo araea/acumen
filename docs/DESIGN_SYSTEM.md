@@ -40,7 +40,7 @@
 
 ## 图标
 
-图标是 **Material Symbols Rounded**（字重 400、光学尺寸 24、GRAD 0）——M3E 配套的那一套，不再手绘。`scripts/make-icons.py` 从 `@material-symbols/svg-400` 取出用到的字形，写进 `index.html` 里一段 `@generated` 的内联精灵图，界面用 `<svg><use href="#名字"/></svg>` 引用（`app.js` 的 `icon()`）；内联而非外部文件，首帧就有图标，也不多一条静态路由。许可证见 THIRD_PARTY_NOTICES.md。
+图标是 **Material Symbols Rounded**（字重 400、光学尺寸 24、GRAD 0）——M3E 配套的那一套，不再手绘。`scripts/make-icons.py` 从 `@material-symbols/svg-400` 取出用到的字形，写进 `index.html` 里一段 `@generated` 的内联精灵图；`app.js` 的 `icon()` 按名字取出 symbol 的路径，**抄进每一枚 `<svg>`**，不用 `<use href="#名字">`——不少手机自带浏览器与 App 内置浏览器画不出 `<use>` 引用的 symbol，整排图标空白。内联而非外部文件，首帧就有图标，也不多一条静态路由。用 `mask` 着色的品牌标记一类同时写 `-webkit-mask`（Chromium 120 以前只认带前缀的）。许可证见 THIRD_PARTY_NOTICES.md。
 
 - **一个概念一个图标，全界面同一个。** 导航的「搭话」是 `forum`，插件「群聊搭话」也是；导航的「日志」是 `receipt_long`，插件「日志输出」也是。旧版二十五个插件只有四五种图标（五个系统插件共用一个「设置」滑块，与导航里的「设置」撞车），列表里的图标等于噪音；现在**每个插件一个自己的字形**（`app.js` 的 `PLUGIN_ICONS`），新插件没登记时按分类兜底。
 - **字形是名字，色调是类别。** 插件的图标方块（`.tile`）按分类着色：消息 · 媒体取主色、互动 · 娱乐取第三色、统计 · 资讯取成功色、系统取中性色，底色是色调角色按 20% 调进容器色里（浅色是淡淡一抹、深色是暗暗一抹，不会像整块容器色那样在深色里亮成一片）。选中的行方块换实心主色。

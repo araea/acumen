@@ -1,6 +1,6 @@
 [package]
 name = "acumen"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.94"
 description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"
@@ -79,6 +79,7 @@ araea-wordcloud = "0.1.14"   # 词云生成
 cdp-html-shot = "0.3.0"     # HTML 截图
 rxing = { version = "0.9", default-features = false, features = ["qrcode", "decoders", "multi_barcode_readers", "encoding_rs"] }  # 二维码识别（zxing-cpp 的 Rust 移植，耗时有界）
 qrcode = { version = "0.14", default-features = false }  # 文字转二维码（只用编码，自己按整数像素画图）
+tract-onnx = "0.23"   # 奶龙识别：纯 Rust 跑 ONNX 图像编码器，发布版不必另装推理库
 
 # 时间与随机数
 chrono = "0.4"
@@ -96,4 +97,8 @@ strip = "debuginfo"
 [profile.dev.package.rxing]
 opt-level = 3
 [profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.tract-linalg]
+opt-level = 3
+[profile.dev.package.tract-core]
 opt-level = 3

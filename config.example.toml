@@ -167,7 +167,7 @@ reject_message = "答案不对，看清入群问题再来～"
 # 防撤回：有人撤回消息时把原文转存到 target。连撤多条合成一条合并转发。
 [anti_recall]
 enabled = false
-# 存到哪：群号；或 private:QQ号；留空 = 私聊发给 ctl.admins 里的第一位，名单空着就发给号主自己。
+# 存到哪：群号；或 private:QQ号；留空 = 号主自己的私聊（QQ 里和自己的会话）。插件页能看到去处与转存计数，也能先发一条试试。
 target = ""
 # 私聊里的撤回也存。
 private = true
@@ -179,6 +179,42 @@ ignore_users = []
 retention_minutes = 120
 
 [anti_recall.channel]
+# 白名单非空时只管这些群；黑名单里的群不管；两边都空 = 全部群。
+white = []
+black = []
+
+# 奶龙拦截：认出群里的奶龙、奶蛙图，撤回并按次数加码禁言。第一张图到来时自动下载识图模型（约 45 MB）。
+# 认错了：管理员引用机器人的提醒发「/奶龙 不是」——记住不拦、解除这次禁言、不计入次数。详见 docs/nailong.md。
+[nailong]
+enabled = false
+# 拦哪几类：nailong（奶龙）、naiwa（奶蛙）。
+targets = ["nailong", "naiwa"]
+# 判定阈值（0.3–0.95）：越高越不容易误判，也越容易漏。
+threshold = 0.8
+# 撤回认出来的图。
+recall = true
+# 近 window_hours 小时内第 1、2、3…次各禁言多少秒；0 = 只撤回不禁言，超出取最后一档。
+mute_seconds = [0, 600, 3600, 86400]
+# 次数的统计窗口（小时，1–720）。
+window_hours = 24
+# 群主、管理员与机器人管理员发的不管。
+exempt_staff = true
+# 这些人发的不管（QQ 号）。
+ignore_users = []
+# 账号不是管理员（撤不了、禁不了）时，仍引用那张图提醒一句。
+remind_without_admin = true
+# 一条消息最多看几张图（1–10）。
+max_images = 4
+# 动图最多抽查几帧（1–12，均匀抽，第一帧必看；哪帧像就算）。
+max_frames = 4
+# 撤回后说的话；留空不说（照常撤回）。占位符：{at} {name} {kind}（奶龙 / 奶蛙）{count}
+recall_text = "{at} 本群不收{kind}图，这张先撤了。"
+# 撤回并禁言后说的话；再多一个 {duration}。
+mute_text = "{at} 本群不收{kind}图，这是第 {count} 次，禁言 {duration}。"
+# 罚不了人时引用那张图说的话。
+remind_text = "本群不收{kind}图，麻烦撤回一下。"
+
+[nailong.channel]
 # 白名单非空时只管这些群；黑名单里的群不管；两边都空 = 全部群。
 white = []
 black = []

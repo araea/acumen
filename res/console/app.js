@@ -56,10 +56,23 @@
   /* ==================== §2 图标 ==================== */
   /* Material Symbols Rounded，随页面内联在 index.html 的精灵图里（scripts/make-icons.py 生成）。
      图标只是装饰，一律对辅助技术隐藏，名字由旁边的文字或 aria-label 负责。
-     `名字-fill` 是实心版：导航与状态符号成对出现，由 CSS 按选中态切换。 */
+     `名字-fill` 是实心版：导航与状态符号成对出现，由 CSS 按选中态切换。
+     字形是抄进每枚 <svg> 里的，不用 <use href="#名字">：不少手机自带浏览器与 App 内置浏览器
+     画不出 <use> 引用的 symbol，图标整排空白。 */
 
-  const icon = (name, extra = "") =>
-    raw(`<svg class="i${extra ? ` ${extra}` : ""}" aria-hidden="true" focusable="false"><use href="#${name}"/></svg>`);
+  const GLYPHS = new Map();
+  const glyph = (name) => {
+    if (!GLYPHS.has(name)) {
+      const symbol = document.getElementById(name);
+      GLYPHS.set(name, symbol ? [symbol.getAttribute("viewBox") || "0 -960 960 960", symbol.innerHTML] : ["0 0 0 0", ""]);
+    }
+    return GLYPHS.get(name);
+  };
+
+  const icon = (name, extra = "") => {
+    const [box, paths] = glyph(name);
+    return raw(`<svg class="i${extra ? ` ${extra}` : ""}" viewBox="${box}" aria-hidden="true" focusable="false">${paths}</svg>`);
+  };
 
   /** 一空一实两枚：选中时 CSS 只显示实心那枚。 */
   const duoIcon = (name) => h`${icon(name, "i-off")}${icon(`${name}-fill`, "i-on")}`;
@@ -73,7 +86,7 @@
     stats: "leaderboard", gif: "gif_box", image_split: "grid_view", qr_scan: "qr_code_scanner",
     video_parse: "smart_display", song: "music_note", webshot: "screenshot_monitor", oai: "smart_toy",
     ambient: "forum", ai_news: "newspaper", help: "help", restart: "restart_alt",
-    welcome: "waving_hand", anti_recall: "restore_page",
+    welcome: "waving_hand", anti_recall: "restore_page", nailong: "hide_image",
   };
   const SECTION_ICONS = { message: "chat", play: "extension", insight: "leaderboard", system: "tune", misc: "extension" };
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
@@ -1587,6 +1600,7 @@
           ${switchButton(plugin, { labelledby: "enable-label", describedby: "enable-hint" })}
         </div>
       </div>
+      ${liveCard(plugin)}
 
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
@@ -1888,8 +1902,46 @@
     else control.removeAttribute("aria-describedby");
   }
 
-  const configPost = (form, endpoint, body) =>
-    api(`/plugins/${encodeURIComponent(form.dataset.config)}/${endpoint}`, { method: "POST", body });
+  const configPost = async (form, endpoint, body) => {
+    const reply = await api(`/plugins/${encodeURIComponent(form.dataset.config)}/${endpoint}`, { method: "POST", body });
+    refreshLive(form.dataset.config);
+    return reply;
+  };
+
+  /** 插件「现在的情况」（去处、这次运行的计数）。只有后端给了 live 的插件才有这张卡。 */
+  const liveLines = (live) => h`<ul class="live-lines">${live.lines.map((line) => h`<li>${line}</li>`)}</ul>`;
+  const liveCard = (plugin) =>
+    plugin.live
+      ? h`<section class="card live" id="live-${plugin.name}" aria-labelledby="live-${plugin.name}-title">
+          <h3 class="live-title" id="live-${plugin.name}-title">现在的情况</h3>
+          <div class="live-body" aria-live="polite">${liveLines(plugin.live)}</div>
+          ${plugin.live.test
+            ? h`<div class="actions"><button class="btn btn-tonal" type="button" data-live-test="${plugin.name}">${icon("send")}发一条试试</button></div>`
+            : ""}
+        </section>`
+      : "";
+
+  async function refreshLive(name) {
+    const card = $(`#live-${CSS.escape(name)}`);
+    if (!card) return;
+    const plugin = await api(`/plugins/${encodeURIComponent(name)}`).catch(() => null);
+    if (plugin?.live) put($(".live-body", card), liveLines(plugin.live));
+  }
+
+  async function testLive(button) {
+    if (button.getAttribute("aria-busy") === "true") return;
+    const name = button.dataset.liveTest;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api(`/plugins/${encodeURIComponent(name)}/test`, { method: "POST", body: {} });
+      snackbar(reply.message);
+      if (reply.live) put($(`#live-${CSS.escape(name)} .live-body`), liveLines(reply.live));
+    } catch (error) {
+      report(error);
+    } finally {
+      button.removeAttribute("aria-busy");
+    }
+  }
 
   async function commitField(control) {
     const form = control.closest("[data-config]");
@@ -2285,6 +2337,7 @@
     try {
       const reply = await api(`/plugins/${encodeURIComponent(name)}/enabled`, { method: "POST", body: { on: next } });
       snackbar(reply.message);
+      refreshLive(name);
       // 以后端为准：重新取一次列表，就地改开关与状态，不整页重画。
       const fresh = await api("/plugins").catch(() => null);
       if (fresh) plugins.data = fresh;
@@ -4079,6 +4132,7 @@
         return;
       }
       if ((hit = on("[data-reset]"))) return resetPlugin(hit);
+      if ((hit = on("[data-live-test]"))) return testLive(hit);
       if ((hit = on("[data-copy]"))) return copyText(hit.dataset.copy);
       if ((hit = on('[role="tab"]'))) return selectTab(hit);
       if ((hit = on("[data-save-source]"))) return saveSource(hit);

@@ -82,8 +82,9 @@ pub(super) async fn apple_icon(headers: HeaderMap) -> Response {
     asset(&headers, APPLE_ICON, "image/png")
 }
 
+/// 没读页面就直接来要 `/favicon.ico` 的，多半也不认 SVG 图标：给位图。
 pub(super) async fn favicon(headers: HeaderMap) -> Response {
-    asset(&headers, ICON, "image/svg+xml")
+    asset(&headers, ICON_192, "image/png")
 }
 
 pub(super) async fn manifest(headers: HeaderMap) -> Response {

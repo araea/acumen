@@ -13,7 +13,8 @@
 //! 默认文案的取舍：一句欢迎、一句规矩、一句后果，短到在手机上一屏读完；口吻是「有人
 //! 管、但不凶」——后果写明白（多久、会怎样），不加感叹号堆砌与「警告」字样。
 
-use crate::adapters::satori::{LockedWriter, send_msg};
+use crate::adapters::satori::{LockedWriter, api, send_msg};
+use crate::clock::duration_text;
 use crate::event::{Context, EventType};
 use crate::message::Message;
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
@@ -272,16 +273,6 @@ fn render(template: &str, at: &[String], vars: &Vars) -> Message {
     message
 }
 
-fn duration_text(seconds: u64) -> String {
-    match seconds {
-        s if s >= 86400 && s % 86400 == 0 => format!("{} 天", s / 86400),
-        s if s >= 3600 && s % 3600 == 0 => format!("{} 小时", s / 3600),
-        s if s >= 60 && s % 60 == 0 => format!("{} 分钟", s / 60),
-        s if s >= 60 => format!("{} 分 {} 秒", s / 60, s % 60),
-        s => format!("{s} 秒"),
-    }
-}
-
 fn punish_text(config: &VerifyConfig) -> String {
     match config.action.as_str() {
         "kick" => "移出群聊".into(),
@@ -333,36 +324,6 @@ fn passes(answers: &[String], text: &str) -> bool {
         .iter()
         .map(|answer| answer.trim().to_lowercase())
         .any(|answer| !answer.is_empty() && text.contains(&answer))
-}
-
-// ==================== 账号身份 ====================
-
-/// 账号在各群的身份，查一次记十分钟：验证要罚人，先得罚得动。
-fn roles() -> &'static Mutex<HashMap<String, (String, Instant)>> {
-    static ROLES: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
-    ROLES.get_or_init(Default::default)
-}
-
-async fn own_role(ctx: &Context, writer: &LockedWriter, group: &str) -> String {
-    let key = format!("{}/{group}", ctx.bot.self_id());
-    if let Some((role, at)) = roles().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&key)
-        && at.elapsed() < Duration::from_mins(10)
-    {
-        return role.clone();
-    }
-    let role = crate::adapters::satori::api::get_group_member_info(ctx, writer.clone(), group, &ctx.bot.self_id(), false)
-        .await
-        .map(|info| info.role)
-        .unwrap_or_default();
-    roles()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(key, (role.clone(), Instant::now()));
-    role
-}
-
-fn is_staff(role: &str) -> bool {
-    matches!(role, "owner" | "admin" | "administrator")
 }
 
 // ==================== 事件 ====================
@@ -417,7 +378,7 @@ async fn display_name(ctx: &Context, writer: &LockedWriter, group: &str, user: &
             }
         }
     }
-    if let Ok(info) = crate::adapters::satori::api::get_group_member_info(ctx, writer.clone(), group, user, false).await {
+    if let Ok(info) = api::get_group_member_info(ctx, writer.clone(), group, user, false).await {
         let name = if info.card.trim().is_empty() { info.nickname } else { info.card };
         if !name.trim().is_empty() {
             return name.trim().to_string();
@@ -443,7 +404,7 @@ async fn group_name(ctx: &Context, writer: &LockedWriter, group: &str) -> String
     {
         return name.to_string();
     }
-    crate::adapters::satori::api::get_guild_info(ctx, writer.clone(), group)
+    api::get_guild_info(ctx, writer.clone(), group)
         .await
         .map(|info| info.group_name)
         .unwrap_or_default()
@@ -461,7 +422,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     let mut answers = Vec::new();
     if effective.verify {
         let exempt = crate::plugins::ctl::admin_ids(ctx).iter().any(|id| id == user);
-        if !exempt && is_staff(&own_role(ctx, writer, group).await) {
+        if !exempt && api::is_staff(&api::own_role(ctx, writer.clone(), group).await) {
             verify = true;
             answers = if config.verify.code {
                 vec![format!("{:04}", rand::random_range(0..10000))]
@@ -688,7 +649,7 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
             Ok(false)
         }
         Some(None) if config.verify.recall_unverified && !message_id.is_empty() => {
-            if let Err(error) = crate::adapters::satori::api::delete_msg_in(ctx, writer.clone(), group, &message_id).await {
+            if let Err(error) = api::delete_msg_in(ctx, writer.clone(), group, &message_id).await {
                 debug!(target: LOG_TARGET, "撤回待验证成员的消息失败：{error}");
             }
             Ok(true)

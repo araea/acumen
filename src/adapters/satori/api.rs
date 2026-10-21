@@ -232,6 +232,38 @@ pub struct GroupMemberInfo {
     pub card_changeable: bool,
 }
 
+/// 群里的管事身份：群主或管理员。
+pub fn is_staff(role: &str) -> bool {
+    matches!(role, "owner" | "admin" | "administrator")
+}
+
+/// 账号自己在这个群里的身份，查一次记十分钟：要罚人、撤别人的消息，先得罚得动。
+/// 查不到时给空串（按普通成员算）。
+pub async fn own_role(ctx: &Context, writer: LockedWriter, group_id: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static ROLES: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+    let roles = || {
+        ROLES
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    let key = format!("{}/{group_id}", ctx.bot.self_id());
+    if let Some((role, at)) = roles().get(&key)
+        && at.elapsed() < Duration::from_mins(10)
+    {
+        return role.clone();
+    }
+    let role = get_group_member_info(ctx, writer, group_id, &ctx.bot.self_id(), false)
+        .await
+        .map(|info| info.role)
+        .unwrap_or_default();
+    roles().insert(key, (role.clone(), Instant::now()));
+    role
+}
+
 pub async fn get_group_member_info(
     ctx: &Context,
     writer: LockedWriter,

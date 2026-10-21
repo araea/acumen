@@ -85,6 +85,20 @@ register_plugins!(
         section: "message",
         summary: "有人撤回消息时把原文转存到指定私聊或群；群黑白名单可收窄范围，连撤多条合并成一条转发"
     },
+    nailong {
+        config: nailong::Config,
+        display_name: "奶龙拦截",
+        section: "system",
+        summary: "认出群里的奶龙、奶蛙图：撤回并按次数加码禁言；认错了管理员引用提醒说「不是」即纠正并解禁，教过的图往后照此判断",
+        on_init: Some(nailong::init),
+        commands: cmds![
+            ("奶龙 / 奶蛙", "本群的拦截状态与今天拦下的数目"),
+            ("奶龙 测", "引用一张图（或附图）看奶龙、奶蛙的分数"),
+            ("奶龙 是 [奶龙|奶蛙]", "管理员：引用漏掉的图，往后同类图就拦"),
+            ("奶龙 不是", "管理员：引用误判的图或机器人的提醒，记住不拦、解除禁言"),
+            ("奶龙 忘了", "管理员：引用教过的图，撤销那次纠正"),
+        ]
+    },
     media {
         config: media::Config,
         display_name: "媒体转换",
