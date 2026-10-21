@@ -189,10 +189,23 @@ black = []
 enabled = false
 # 拦哪几类：nailong（奶龙）、naiwa（奶蛙）。
 targets = ["nailong", "naiwa"]
-# 判定阈值（0.3–0.95）：越高越不容易误判，也越容易漏。
-threshold = 0.8
+# 判定阈值（0.3–0.95）：越高越不容易误判，也越容易漏。只在只用本地模型（judge = "local"，或没配复核模型）时起作用。
+threshold = 0.5
 # 撤回认出来的图。
 recall = true
+# 认图方式：auto = oai 里配了复核模型（下面的 ai_model）就「本地初筛 + 大模型复核」，没配就只用本地；
+# local = 只用本地模型（离线、免费，误判多些）；hybrid = 本地初筛 + 大模型复核；ai = 每张图都问大模型（用量大）。
+judge = "auto"
+# 复核用的多模态模型，写法同 oai：供应商/模型。默认借 [oai.providers.deepseek] 的密钥。
+ai_model = "deepseek/deepseek-flash"
+# 本地分数低于它的直接放过，不问大模型。
+ask_floor = 0.2
+# 本地分数到它就不问、直接拦；1 = 本地觉得像的一律请大模型确认（误判最少）。
+sure = 1.0
+# 每天最多问大模型几张（所有群合计）；用完了当天先放过，宁漏勿错。问过的图记住结论，不会重复问。
+ai_daily_limit = 300
+# 问一张最多等几秒。
+ai_timeout_seconds = 20
 # 近 window_hours 小时内第 1、2、3…次各禁言多少秒；0 = 只撤回不禁言，超出取最后一档。
 mute_seconds = [0, 600, 3600, 86400]
 # 次数的统计窗口（小时，1–720）。

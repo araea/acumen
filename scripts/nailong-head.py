@@ -20,7 +20,7 @@ import onnxruntime as ort
 from PIL import Image
 
 CLASSES = ["other", "nailong", "naiwa"]
-HIDDEN, EPOCHS, LR, DECAY, BATCH, DROPOUT, SEED = 256, 60, 1e-3, 1e-4, 128, 0.2, 10
+HIDDEN, EPOCHS, LR, DECAY, BATCH, DROPOUT, SEED, SMOOTH = 384, 40, 1e-3, 1e-4, 256, 0.3, 10, 0.05
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../src/plugins/nailong/head.bin")
 
 
@@ -85,9 +85,9 @@ def softmax(z):
 def train(x, y):
     rng = np.random.default_rng(SEED)
     counts = np.bincount(y, minlength=3)
-    weight = np.sqrt(counts.sum() / (3 * counts))[y]
+    weight = (counts.sum() / (3 * counts))[y]
     weight /= weight.mean()
-    target = np.eye(3)[y]
+    target = np.eye(3)[y] * (1 - SMOOTH) + SMOOTH / 3
     p = {"W1": rng.normal(0, np.sqrt(2 / x.shape[1]), (x.shape[1], HIDDEN)).astype(np.float32),
          "b1": np.zeros(HIDDEN, np.float32),
          "W2": rng.normal(0, np.sqrt(1 / HIDDEN), (HIDDEN, 3)).astype(np.float32),
@@ -95,6 +95,7 @@ def train(x, y):
     m = {k: np.zeros_like(v) for k, v in p.items()}
     v = {k: np.zeros_like(v) for k, v in p.items()}
     step = 0
+    total = EPOCHS * ((len(y) + BATCH - 1) // BATCH)
     for _ in range(EPOCHS):
         order = rng.permutation(len(y))
         for start in range(0, len(y), BATCH):
@@ -111,7 +112,10 @@ def train(x, y):
                 grad = grads[k] + (DECAY * p[k] if k.startswith("W") else 0)
                 m[k] = 0.9 * m[k] + 0.1 * grad
                 v[k] = 0.999 * v[k] + 0.001 * grad * grad
-                p[k] -= LR * (m[k] / (1 - 0.9 ** step)) / (np.sqrt(v[k] / (1 - 0.999 ** step)) + 1e-8)
+                # OneCycle：前 30% 升到 3 倍学习率，之后余弦降到接近 0
+                frac = step / total
+                lr = LR * 3 * (frac / 0.3 if frac < 0.3 else 0.5 * (1 + np.cos(np.pi * (frac - 0.3) / 0.7)))
+                p[k] -= lr * (m[k] / (1 - 0.9 ** step)) / (np.sqrt(v[k] / (1 - 0.999 ** step)) + 1e-8)
     return p
 
 

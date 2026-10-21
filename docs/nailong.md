@@ -96,12 +96,29 @@ black = []
 
 占位符：`{at}` `{name}` `{kind}`（奶龙 / 奶蛙）`{count}` `{duration}`。文案留空则不说话，照常撤回与禁言。
 
+## 认图方式
+
+`judge` 选怎么认：
+
+| 取值 | 做法 |
+| --- | --- |
+| `auto`（默认） | oai 里配了复核模型（`ai_model`，默认 `deepseek/deepseek-flash`）就按 `hybrid`，没配就按 `local` |
+| `hybrid` | 本地模型初筛：分数低于 `ask_floor`（0.2）的直接放过；其余交给多模态大模型确认，它说是才拦 |
+| `local` | 只用本地模型，分数到 `threshold`（0.5）就拦。离线、免费，误判多一点 |
+| `ai` | 每张图都问大模型，用量大，一般用不着 |
+
+复核借 oai 插件的模型配置（`[oai.providers.<供应商>]` 的接口与密钥），oai 插件本身不必开着。问过的图按内容摘要记下结论（`data/nailong/ai_verdicts.json`），同一张图不问第二次；每天最多问 `ai_daily_limit`（300）张。名额用完、超时、出错时这张先放过——本地模型单独判断时误判多，宁可漏一张也不撤错别人的图。`sure` 设成小于 1 时，本地分数到它就不问、直接拦，能省一点用量。
+
+教过的样本优先于两者；商城表情名字里写着奶龙、奶蛙的直接算，不问。「奶龙 测」会同时列出本地分数与大模型的看法，「奶龙」状态里有今天复核了几张。
+
+实测（2026-10，DeepSeek V4.1 Flash，低推理强度，100 张人工标注图）：皮卡丘、小火龙、小黄人、黄色表情包、群聊截图 50 张一张没认错；奶龙 25 张认出 24；奶蛙 25 张认对 21、另 2 张认成奶龙（照样拦）。一张中位 2.2 秒，约 430 + 340 个 token。按下文留出集，`hybrid` 下群聊图与商城表情只有约 1.4% 需要问大模型。
+
 ## 模型
 
 两段：
 
 - **图像编码器**：[MobileCLIP-S0](https://huggingface.co/apple/MobileCLIP-S0) 的视觉部分（[Xenova 转的 ONNX](https://huggingface.co/Xenova/mobileclip_s0)，45 MB），把图压成 512 维向量。从 Hugging Face 下载，失败改走 hf-mirror.com；钉在固定提交，按 SHA-256 校验，存在 `data/nailong/`。权重随 Apple 的研究许可证，只在本机下载使用，不随发布包分发。
-- **分类头**：两层小网络（512 → 256 → 3，约 0.5 MB，编进可执行文件），输出「其他 / 奶龙 / 奶蛙」三类概率。
+- **分类头**：两层小网络（512 → 384 → 3，约 0.8 MB，编进可执行文件），输出「其他 / 奶龙 / 奶蛙」三类概率。
 
 推理用 [tract](https://github.com/sonos/tract)（纯 Rust），不依赖系统里的推理库。手机上一帧约 0.25 秒；同一张图（按内容摘要）再出现直接用上次的结论；同一时间只跑一张，排队超过 12 张时新来的不看，免得刷屏时积压到几分钟后才撤。
 
@@ -120,15 +137,29 @@ XiC1 的「奶龙」测试集是搜索引擎抓的，混着不少玫瑰、人像
 
 现有模型都训练于 2024 年，没见过 2026 年流行的**奶蛙**（AI 生成的写实「变异奶龙」），在奶蛙表情包上只认得出一半左右；YOLOX 版对普通表情包误判太多。所以换成通用图像向量 + 自己训的分类头，并留了「教」的口子：单张图的误判当场纠正，新画风攒够了样本再重训。
 
-### 训练数据
+### 训练数据（1.10.0 起）
 
-| 类别 | 来源 |
-| --- | --- |
-| 奶龙 | [XiC1/nailong-dataset](https://huggingface.co/datasets/XiC1/nailong-dataset) 训练集、[Logxk/nailong](https://github.com/Logxk/nailong) 图库、[whxoperator/nailongnaiwa](https://github.com/whxoperator/nailongnaiwa) |
-| 奶蛙 | [Nailong-Studio/wallpaper](https://github.com/Nailong-Studio/wallpaper)、whxoperator/nailongnaiwa |
-| 其他 | XiC1/nailong-dataset 训练集的通用表情包与黄色易混图（皮卡丘、小火龙、小黄人、海绵宝宝、黄发角色……） |
+约 7.1 万张去重后的图（8 万帧），人工逐批复核过标签：
 
-留出测试：XiC1 测试集（奶龙与其他）、[GeorgeNaNN/nailong-memes](https://github.com/GeorgeNaNN/nailong-memes)（奶蛙为主的表情包）。分类头是两层小网络（ReLU、dropout 0.2、Adam 60 轮、类别权重取样本数反比的平方根）：同样的数据上，逻辑回归在阈值调到普通表情包不误判时只认得出三到六成奶蛙。上表是只用训练来源训出的版本；发布的分类头用全部来源（含留出集）重训，超参不变。
+| 类别 | 张数 | 来源 |
+| --- | --- | --- |
+| 奶龙 | 1.4 万 | XiC1/nailong-dataset（含原始抓取目录）、[Hakureirm/NailongKiller](https://huggingface.co/datasets/Hakureirm/NailongKiller) 检测集（有框的）、[refoundd/NailongClassification](https://huggingface.co/datasets/refoundd/NailongClassification)、spawner1145/NailongRecognize 等 GitHub 图库、图片搜索（360、Bing、堆糖）、QQ 表情商城的奶龙官方表情包 |
+| 奶蛙 | 0.6 万 | Nailong-Studio/wallpaper、whxoperator/nailongnaiwa、GeorgeNaNN/nailong-memes、各奶蛙桌宠与图标仓库的素材、图片搜索 |
+| 其他 | 5.1 万 | 维护者所在群里真实发过的图（截图、照片、表情包，约 1.3 万）、随机抽取的 1500 套 QQ 商城表情、XiC1 的通用表情包与黄色易混图、图片搜索的易混角色（皮卡丘、小火龙、可达鸭、蛋黄哥、小黄人、青蛙、卡皮巴拉……） |
+
+公开数据集的标签相当脏：XiC1「奶龙」测试集 234 张里 39 张不是奶龙或看不清，原始抓取目录与检测集里也夹着人像、商品、别的卡通。清洗流程：模型折外打分，标签与分数冲突的、来源不可靠的（搜索结果、群图），按相似度 0.95 聚簇只看代表，缩略图成批人工过目。群图本身不进仓库，也不分发。
+
+**留出评测**（群图与商城表情一半只测不训，加 XiC1 测试集、GeorgeNaNN 奶蛙表情包；共 1.1 万张，与训练集近乎重复的已剔除）：
+
+| | 奶龙召回 | 奶蛙召回 | 误判（其他被认成） |
+| --- | --- | --- | --- |
+| 1.9 版分类头（阈值 0.8） | 82.4% | 92.4% | **6.1%**（群图 9.6%） |
+| 新分类头，阈值 0.5（`local`） | 100% | 93.6% | 0.20% |
+| 新分类头，初筛 0.2（`hybrid` 送复核的） | 100% | 99.4% | 0.55%（再由大模型否掉） |
+
+旧分类头没见过群聊截图，聊天记录、网页、代码、游戏界面能打到 0.99。新分类头的训练加大了少数类权重（样本数反比）、标签平滑 0.05、dropout 0.3、AdamW + OneCycle 40 轮。
+
+换更大的编码器（MobileCLIP-S1/S2）要多花 2–3 倍推理时间；DINOv2、SigLIP2、MobileCLIP-B 在 tract 里跑不起来。`hybrid` 下召回已近满分、误判由大模型兜底，没有换。
 
 ### 重训
 
@@ -136,7 +167,7 @@ XiC1 的「奶龙」测试集是搜索引擎抓的，混着不少玫瑰、人像
 python3 scripts/nailong-head.py vision_model.onnx 数据目录 --eval
 ```
 
-数据目录按 `nailong/`、`naiwa/`、`other/` 分类放图，`test/` 下同样三类是留出集（`--eval` 时只打分）。向量按图片内容缓存，加几张图再训只算新的。脚本写回 `src/plugins/nailong/head.bin`，重新构建即可。
+数据目录按 `nailong/`、`naiwa/`、`other/` 分类放图，`test/` 下同样三类是留出集（`--eval` 时只打分）。向量按图片内容缓存，加几张图再训只算新的。脚本写回 `src/plugins/nailong/head.bin`（输入维数、隐藏层宽度写在文件头里，插件照着读），重新构建即可。超参与发布版一致。
 
 ### 复核
 
