@@ -12,15 +12,21 @@
 //! 一口气撤一串（管理员清屏）不该刷爆存储频道：同一个去处两秒内的撤回攒成一批，
 //! 一条就直接转，多条合成一条合并转发，每个节点署原作者。
 //!
+//! 合并转发与引用回复这两类消息，光靠「撤回时再取」是取不到的：合并转发要读父消息，
+//! 父消息一撤，内核缓存与 resId 两条路都可能断；引用只带一个消息号，而那条消息未必还
+//! 在。所以收到时就各取一步（[`prefetch_forward`]、[`prefetch_quote`]），结果挂在缓存
+//! 条目上，撤回时直接用。合并转发按「再发一张合并转发」还原（[`forward_card`]），取不到
+//! 或实现端不收就退成文字聊天记录；引用回复在正文前加一行「↪ 回复 谁：原话」。
+//!
 //! 去处留空就发到号主自己的私聊（QQ 里自己和自己的那个会话）：开了就能看到，不必先填什么。
 //! 控制台的插件页会显示去处、这次运行转存了几条，也能先发一条试试（[`live`]、[`test`]）；
 //! 试发走框架登记的连接，不必等插件先收到一条消息。
 //!
 //! 原样再发有几处要改写：@ 到了别的会话就是 @ 一个不在场的人，改成文字「@名字」；
-//! 引用指向原会话的消息，摘掉、标一句「回复了一条消息」；语音、视频、文件不能和文字
-//! 拼成一条，跟在后面单独发。
+//! 语音、视频、文件不能和文字拼成一条，跟在后面单独发；合并转发里的二次转发展不平，
+//! 写成一句占位。
 
-use crate::adapters::satori::{self, LockedWriter, send_msg};
+use crate::adapters::satori::{self, LockedWriter, delivery_uncertain, forward, message, send_msg};
 use crate::event::{BotStatus, Context, EventType};
 use crate::message::{Message, Segment};
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
@@ -35,6 +41,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
+use tokio::sync::OnceCell;
 
 const LOG_TARGET: &str = "Plugin/AntiRecall";
 
@@ -52,6 +59,8 @@ pub struct Config {
     operator_recalls: bool,
     /// 号主在 QQ 里亲手发、又亲手撤回的也存（拿自己的消息试的时候打开）。机器人自己发的不存。
     self_recalls: bool,
+    /// 合并转发照原样再发一张合并转发；关掉只留文字聊天记录。
+    forward_records: bool,
     /// 这些人的撤回不管（QQ 号）。
     ignore_users: Vec<String>,
     /// 原文在内存里留多久（分钟）。普通成员只能撤回两分钟内的，管理员能撤更早的。
@@ -67,6 +76,7 @@ impl Default for Config {
             private: true,
             operator_recalls: true,
             self_recalls: false,
+            forward_records: true,
             ignore_users: Vec::new(),
             retention_minutes: 120,
         }
@@ -97,6 +107,7 @@ pub(crate) const LABELS: &[(&str, &str)] = &[
     ("private", "私聊撤回也存"),
     ("operator_recalls", "管理员撤回的也存"),
     ("self_recalls", "自己撤回的也存"),
+    ("forward_records", "合并转发连内容一起存"),
     ("ignore_users", "不管这些人"),
     ("retention_minutes", "原文留多久（分钟）"),
 ];
@@ -112,6 +123,28 @@ struct Kept {
     user_id: String,
     name: String,
     at: i64,
+    content: Message,
+    /// 收到时顺手取回来的两样东西：合并转发的聊天记录、引用回复的原话。
+    extra: Extra,
+}
+
+/// 撤回时才去取就晚了的那部分：收到时在后台填进来，撤回时直接读。
+///
+/// 每个槽只填一次，填的时候撤回任务还在等也看得见（[`tokio::sync::OnceCell::get`]
+/// 在填完之前给 `None`）；两样都没有就是空着。
+#[derive(Clone, Default)]
+struct Extra {
+    /// 这条消息是一张合并转发时，里面那份聊天记录。
+    forward: Arc<OnceCell<forward::View>>,
+    /// 这条消息引用回复了谁、说了什么。
+    quote: Arc<OnceCell<Option<Quote>>>,
+}
+
+/// 被引用的那条消息。
+#[derive(Clone)]
+struct Quote {
+    user_id: String,
+    name: String,
     content: Message,
 }
 
@@ -167,8 +200,9 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 name: message.sender_name().to_string(),
                 at: raw.get_i64("time").filter(|t| *t > 0).unwrap_or_else(now),
                 content,
+                extra: Extra::default(),
             };
-            prefetch(&kept.content);
+            prefetch(ctx, writer, &kept);
             let horizon = now() - i64::try_from(config.retention_minutes * 60).unwrap_or(7200);
             let mut expired = Vec::new();
             {
@@ -179,7 +213,7 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 cache.push_back(kept);
             }
             for kept in &expired {
-                forget(&kept.content);
+                forget(kept);
             }
             None
         }
@@ -270,6 +304,7 @@ async fn from_records(ctx: &Context, message_id: &str, channel: &str) -> Option<
         name: if nick.is_empty() { name } else { nick },
         at: row.try_get("", "time").unwrap_or_default(),
         content: Message::new().text(format!("{text}（只留下了文字摘要）")),
+        extra: Extra::default(),
     })
 }
 
@@ -286,7 +321,7 @@ const MEDIA_MINUTES: u64 = 30;
 const MEDIA_BUDGET: u64 = 100 << 20;
 
 /// 资源链接 → 取到本地的那份。同一个链接只取一次：撤回时预取还没完就等它。
-type Fetched = Arc<tokio::sync::OnceCell<Option<PathBuf>>>;
+type Fetched = Arc<OnceCell<Option<PathBuf>>>;
 
 fn stash() -> &'static Mutex<HashMap<String, Fetched>> {
     static STASH: OnceLock<Mutex<HashMap<String, Fetched>>> = OnceLock::new();
@@ -325,7 +360,7 @@ fn slot(key: &str) -> Fetched {
 }
 
 /// 收到就取：图和语音在后台落盘。
-fn prefetch(content: &Message) {
+fn prefetch_media(content: &Message) {
     if tokio::runtime::Handle::try_current().is_err() {
         return;
     }
@@ -346,8 +381,179 @@ fn prefetch(content: &Message) {
     }
 }
 
-/// 缓存里的消息过期了：它的媒体一起删掉。
-fn forget(content: &Message) {
+/// 等收到时那一步在后台取完：撤回来得太快时，别把「还在取」写成「没取到」。
+///
+/// 最多等 `wait`；没等到就照没取到处理，转存不能一直卡着。
+async fn settled<T>(cell: &OnceCell<T>, wait: Duration) -> Option<&T> {
+    settled_until(cell, tokio::time::Instant::now() + wait).await
+}
+
+async fn settled_until<T>(cell: &OnceCell<T>, deadline: tokio::time::Instant) -> Option<&T> {
+    loop {
+        if let Some(value) = cell.get() {
+            return Some(value);
+        }
+        if cell.initialized() || tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// 收到一条消息时顺手做的事：媒体落盘、合并转发展开、引用原话取回。
+///
+/// 后面两样都得趁现在：撤回之后再要，父消息与引用目标都可能已经不在了。
+fn prefetch(ctx: &Context, writer: &LockedWriter, kept: &Kept) {
+    prefetch_media(&kept.content);
+    prefetch_forward(ctx, writer, kept);
+    prefetch_quote(ctx, writer, kept);
+}
+
+/// 展开一条合并转发，连同里面的图一起留下。
+///
+/// 一次最多两张同时在读：群里连发几张转发时，别把实现端的取消息通道占满。
+fn prefetch_forward(ctx: &Context, writer: &LockedWriter, kept: &Kept) {
+    let Some(source) = forward::source_of(&kept.content, Some(kept.message_id.clone())) else {
+        return;
+    };
+    if kept.extra.forward.initialized() || tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let (ctx, writer, slot, channel) = (
+        ctx.clone(),
+        writer.clone(),
+        kept.extra.forward.clone(),
+        kept.channel_id.clone(),
+    );
+    tokio::spawn(async move {
+        static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+        let Ok(_permit) = GATE.acquire().await else {
+            return;
+        };
+        let view = forward::expand(&ctx, &writer, source.in_channel(channel)).await;
+        for node in &view.nodes {
+            prefetch_media(&node.message);
+        }
+        debug!(
+            target: LOG_TARGET,
+            "合并转发读回 {} 条{}",
+            view.nodes.len(),
+            if view.nodes.is_empty() { "（空）" } else { "" }
+        );
+        let _ = slot.set(view);
+    });
+}
+
+/// 引用回复只带一个消息号：趁被引的那条还在，把原话取回来。
+fn prefetch_quote(ctx: &Context, writer: &LockedWriter, kept: &Kept) {
+    let Some(id) = reply_id(&kept.content) else {
+        return;
+    };
+    if kept.extra.quote.initialized() || tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    let (ctx, writer, slot, channel) = (
+        ctx.clone(),
+        writer.clone(),
+        kept.extra.quote.clone(),
+        kept.channel_id.clone(),
+    );
+    tokio::spawn(async move {
+        let quote = quote_of(&ctx, &writer, &id, &channel).await;
+        if quote.is_none() {
+            debug!(target: LOG_TARGET, "引用的消息 {id} 没取到原文");
+        }
+        let _ = slot.set(quote);
+    });
+}
+
+/// 这条消息引用的是哪一条（Satori 的 `<quote>`，实现端给的是 `reply`）。
+fn reply_id(content: &Message) -> Option<String> {
+    let segment = content
+        .0
+        .iter()
+        .find(|segment| matches!(segment.type_.as_str(), "reply" | "quote"))?;
+    let value = segment.data.get("id")?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|id| id.to_string()))
+        .filter(|id| !id.is_empty())
+}
+
+/// 取回被引用的那条消息：先看自己记着的（刚说过的话多半在），再问平台。
+async fn quote_of(ctx: &Context, writer: &LockedWriter, id: &str, channel: &str) -> Option<Quote> {
+    let kept = {
+        let cache = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache
+            .iter()
+            .rev()
+            .find(|kept| kept.message_id == id && kept.channel_id == channel)
+            .cloned()
+    };
+    if let Some(kept) = kept {
+        return Some(Quote {
+            user_id: kept.user_id,
+            name: kept.name,
+            content: kept.content,
+        });
+    }
+    let raw: serde_json::Value = tokio::time::timeout(
+        Duration::from_secs(3),
+        writer.call(
+            ctx,
+            "message.get",
+            serde_json::json!({"channel_id": channel, "message_id": id}),
+        ),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let content = message::from_content_with(
+        raw.get("content").and_then(|value| value.as_str()).unwrap_or(""),
+        &writer.resources(),
+    );
+    if content.0.is_empty() {
+        return None;
+    }
+    let name = raw
+        .get("member")
+        .and_then(|member| member.get("nick"))
+        .and_then(|nick| nick.as_str())
+        .filter(|nick| !nick.is_empty())
+        .or_else(|| {
+            raw.get("user")
+                .and_then(|user| user.get("name"))
+                .and_then(|name| name.as_str())
+        })
+        .unwrap_or("")
+        .to_string();
+    Some(Quote {
+        user_id: raw
+            .get("user")
+            .and_then(|user| user.get("id"))
+            .and_then(|id| id.as_str())
+            .unwrap_or("")
+            .to_string(),
+        name,
+        content,
+    })
+}
+
+/// 缓存里的消息过期了：它的媒体一起删掉（合并转发里、引用里的也算）。
+fn forget(kept: &Kept) {
+    forget_media(&kept.content);
+    if let Some(view) = kept.extra.forward.get() {
+        for node in &view.nodes {
+            forget_media(&node.message);
+        }
+    }
+    if let Some(Some(quote)) = kept.extra.quote.get() {
+        forget_media(&quote.content);
+    }
+}
+
+fn forget_media(content: &Message) {
     for segment in &content.0 {
         let Some((key, _)) = media_source(segment) else {
             continue;
@@ -356,7 +562,7 @@ fn forget(content: &Message) {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&key);
-        if let Some(Some(path)) = slot.as_deref().and_then(tokio::sync::OnceCell::get) {
+        if let Some(Some(path)) = slot.as_deref().and_then(OnceCell::get) {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -520,6 +726,7 @@ fn enqueue(ctx: Context, writer: LockedWriter, config: &Config, item: Recalled) 
     if !first {
         return;
     }
+    let records = config.forward_records;
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let mut batch = queue()
@@ -533,7 +740,7 @@ fn enqueue(ctx: Context, writer: LockedWriter, config: &Config, item: Recalled) 
         let count = batch.len() as u64;
         let last = batch.last().map(|item| headline(item).lines().next().unwrap_or("").to_string());
         let (group, user) = (group.as_deref(), user.as_deref());
-        let result = match deliver(&ctx, &writer, group, user, &batch).await {
+        let result = match deliver(&ctx, &writer, group, user, &batch, records).await {
             Ok(()) => Ok(None),
             // 带媒体的那条发不出去（实现端拒收某个资源、合并转发太大……）：退一步只发文字，
             // 总比整条丢了强。
@@ -583,30 +790,34 @@ fn headline(item: &Recalled) -> String {
     } else {
         format!("，由 {} 撤回", item.operator)
     };
+    // 合并转发说清是什么：不然只看到一句「撤回了一条消息」加一张卡片。
+    let what = if kept.content.0.iter().any(|segment| segment.type_ == "forward") {
+        "一条合并转发"
+    } else {
+        "一条消息"
+    };
     format!(
-        "🗑 {who} 在{place}撤回了一条消息{by}\n{} 发出 · {} 撤回",
+        "🗑 {who} 在{place}撤回了{what}{by}\n{} 发出 · {} 撤回",
         clock(kept.at),
         clock(item.recalled_at)
     )
 }
 
 /// 原样再发要改写的几类元素：返回能拼在一起发的那部分，与要单独发的媒体。
-fn adapt(content: &Message) -> (Message, Vec<Segment>) {
+///
+/// `forward_sent` 表示这条消息里的合并转发会另外发一张卡片，正文里就不必再留占位。
+fn adapt(content: &Message, forward_sent: bool) -> (Message, Vec<Segment>) {
     let mut inline = Message::new();
     let mut separate = Vec::new();
     for segment in &content.0 {
-        let text = |key: &str| segment.data.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string();
         match segment.type_.as_str() {
             "text" | "image" | "face" | "mface" => inline.0.push(segment.clone()),
-            "at" => {
-                let name = text("name");
-                let label = if name.is_empty() { text("id") } else { name };
-                let label = if label.is_empty() { text("qq") } else { label };
-                inline = inline.text(if text("type") == "all" { "@全体成员 ".to_string() } else { format!("@{label} ") });
-            }
-            "reply" | "quote" => inline = inline.text("（回复了一条消息）"),
+            "at" => inline = inline.text(at_label(segment)),
+            // 引用由 [`quote_line`] 统一交代，这里不再另写一句。
+            "reply" | "quote" => {}
             "record" | "audio" | "video" | "file" => separate.push(segment.clone()),
-            "forward" => inline = inline.text("[合并转发]"),
+            "forward" if forward_sent => {}
+            "forward" => inline = inline.text("[合并转发（内容没取到）]"),
             "poke" => inline = inline.text("[戳一戳]"),
             "dice" => inline = inline.text("[骰子]"),
             "rps" => inline = inline.text("[猜拳]"),
@@ -617,22 +828,232 @@ fn adapt(content: &Message) -> (Message, Vec<Segment>) {
     (inline, separate)
 }
 
+/// @ 到了别的会话就是 @ 一个不在场的人：写成文字。
+fn at_label(segment: &Segment) -> String {
+    let text = |key: &str| segment.data.get(key).and_then(|value| value.as_str()).unwrap_or("");
+    if text("type") == "all" {
+        return "@全体成员 ".to_string();
+    }
+    let label = [text("name"), text("id"), text("qq")]
+        .into_iter()
+        .find(|value| !value.is_empty())
+        .unwrap_or("");
+    if label.is_empty() {
+        "@某人 ".to_string()
+    } else {
+        format!("@{label} ")
+    }
+}
+
+/// 转存一条消息要发的东西。
+struct Prepared {
+    /// 标题、引用、正文合在一条里。
+    body: Message,
+    /// 原消息是合并转发时，还原成的那张卡片。
+    forward: Option<Message>,
+    /// 没法跟文字拼成一条的媒体（语音、视频、文件），跟在后面单独发。
+    separate: Vec<Segment>,
+}
+
+/// 把一条撤回的消息整理成要发的样子。
+async fn prepare(item: &Recalled, records: bool) -> Prepared {
+    let kept = &item.kept;
+    // 撤回来得比预取还快时等一会儿：合并转发要展开、引用要问平台，都只在这一刻还来得及。
+    // 没有这两样的消息不等——那个槽永远不会有人填。
+    let view = match forward::source_of(&kept.content, None) {
+        Some(_) => settled(&kept.extra.forward, FORWARD_WAIT).await,
+        None => None,
+    }
+    .filter(|view| !view.nodes.is_empty());
+    if reply_id(&kept.content).is_some() {
+        let _ = settled(&kept.extra.quote, QUOTE_WAIT).await;
+    }
+    let mut body = Message::new().text(format!("{}\n", headline(item)));
+    if let Some(line) = quote_line(item) {
+        body = body.text(format!("{line}\n"));
+    }
+    let (inline, separate) = adapt(&kept.content, view.is_some());
+    body.0.extend(inline.0);
+    let mut card = None;
+    if let Some(view) = view {
+        if records {
+            card = forward_card(view).await;
+        }
+        if card.is_none() {
+            body = body.text(format!("\n{}", forward_text(view)));
+        }
+    }
+    Prepared {
+        body,
+        forward: card,
+        separate,
+    }
+}
+
+/// 引用回复的那一行：`↪ 回复 张三：原话`。没有引用就没有这一行。
+///
+/// 被引的那条取不到时也留一句，让人知道原文里还有一段引用。
+fn quote_line(item: &Recalled) -> Option<String> {
+    reply_id(&item.kept.content)?;
+    let Some(quote) = item.kept.extra.quote.get().and_then(Option::as_ref) else {
+        return Some("↪ 回复了一条消息（原文没取到）".to_string());
+    };
+    let who = match (quote.name.as_str(), quote.user_id.as_str()) {
+        ("", "") => "某人".to_string(),
+        ("", id) => id.to_string(),
+        (name, "") => name.to_string(),
+        (name, id) => format!("{name}（{id}）"),
+    };
+    // 引用的是合并转发时说「[合并转发]」，别用节点内部那套「嵌套」的说法。
+    let body = forward::describe(&quote.content).replace("[嵌套合并转发]", "[合并转发]");
+    if body.trim().is_empty() {
+        return Some(format!("↪ 回复了 {who} 的一条消息"));
+    }
+    Some(format!("↪ 回复 {who}：{body}"))
+}
+
+/// 撤回之后等预取最多多久：合并转发要展开，引用要问平台。
+const FORWARD_WAIT: Duration = Duration::from_secs(8);
+const QUOTE_WAIT: Duration = Duration::from_secs(2);
+
+/// 一张合并转发最多还原多少条：再多发得慢，也容易撞上实现端的超时。
+const CARD_NODES: usize = 40;
+/// 退成文字时，一条合并转发最多留多少字。
+const FORWARD_TEXT_CHARS: usize = 600;
+
+/// 把展开出来的聊天记录重新做成一张合并转发。
+///
+/// 图与语音用收到时存下的本地那份（[`localize`]），撤回之后也发得出去；视频、文件
+/// 在节点里只留一句占位——它们没有预取，撤回后十个有九个取不回来，等下去只会拖住整张卡。
+async fn forward_card(view: &forward::View) -> Option<Message> {
+    let mut card = Message::new();
+    let mut count = 0;
+    for node in view.nodes.iter().take(CARD_NODES) {
+        let content = localize(&flatten_node(&node.message)).await;
+        if content.0.is_empty() {
+            continue;
+        }
+        let name = if node.name.is_empty() {
+            node.user_id.clone()
+        } else {
+            node.name.clone()
+        };
+        let user = if node.user_id.is_empty() {
+            "0"
+        } else {
+            node.user_id.as_str()
+        };
+        card = card.node_custom(user, name, content);
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    let rest = view.nodes.len().saturating_sub(count);
+    let note = if rest > 0 {
+        Some(format!("（还有 {rest} 条记录没有转存）"))
+    } else if view.truncated {
+        Some("（内容较多，后面还有没读进来的）".to_string())
+    } else {
+        None
+    };
+    if let Some(note) = note {
+        card = card.node_custom("0", "防撤回", Message::new().text(note));
+    }
+    Some(card)
+}
+
+/// 合并转发的文字版：展开出来的聊天记录，一行一条。
+fn forward_text(view: &forward::View) -> String {
+    let transcript = view.transcript();
+    let transcript = transcript.trim();
+    if transcript.is_empty() {
+        return "（合并转发的内容没取到）".to_string();
+    }
+    format!(
+        "合并转发里的聊天记录：\n{}",
+        crate::storage::truncate_chars(transcript, FORWARD_TEXT_CHARS)
+    )
+}
+
+/// 节点正文里能发的东西：@ 变文字、二次转发变占位，其余照旧。
+fn flatten_node(content: &Message) -> Message {
+    let mut out = Message::new();
+    for segment in &content.0 {
+        match segment.type_.as_str() {
+            "text" | "image" | "face" | "mface" => out.0.push(segment.clone()),
+            "record" | "audio" => {
+                let mut segment = segment.clone();
+                segment.type_ = "record".to_string();
+                out.0.push(segment);
+            }
+            "at" => out = out.text(at_label(segment)),
+            "reply" | "quote" => out = out.text("（回复了一条消息）"),
+            "forward" | "node" => out = out.text("[合并转发里的转发]"),
+            "video" => out = out.text("[视频]"),
+            "file" => {
+                let name = segment
+                    .data
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                out = out.text(if name.is_empty() {
+                    "[文件]".to_string()
+                } else {
+                    format!("[文件：{name}]")
+                });
+            }
+            "poke" => out = out.text("[戳一戳]"),
+            "dice" => out = out.text("[骰子]"),
+            "rps" => out = out.text("[猜拳]"),
+            "json" | "lightapp" | "xml" | "ark" => out = out.text("[卡片消息]"),
+            other => out = out.text(format!("[{other}]")),
+        }
+    }
+    out
+}
+
 async fn deliver(
     ctx: &Context,
     writer: &LockedWriter,
     group: Option<&str>,
     user: Option<&str>,
     batch: &[Recalled],
+    records: bool,
 ) -> Result<(), PluginError> {
     match batch {
         [] => Ok(()),
         [item] => {
-            let (inline, separate) = adapt(&item.kept.content);
-            let mut message = Message::new().text(format!("{}\n", headline(item)));
-            message.0.extend(inline.0);
-            send_msg(ctx, writer.clone(), group, user, message).await?;
-            for segment in separate {
-                send_msg(ctx, writer.clone(), group, user, Message(vec![segment])).await?;
+            let prepared = prepare(item, records).await;
+            // 标题正文发不出去才算整条失败，交给外层退成纯文字。
+            send_msg(ctx, writer.clone(), group, user, prepared.body).await?;
+            if let Some(card) = prepared.forward
+                && let Err(error) = send_msg(ctx, writer.clone(), group, user, card).await
+            {
+                // 实现端不收这张卡片（超大、native 打包失败……）：把聊天记录写成文字补上，
+                // 至少别让这次撤回只剩一句「撤回了一条合并转发」。没收到回执时不再补发，
+                // 那张卡可能已经落地了，再发一遍就是重复。
+                if delivery_uncertain(error.as_ref()) {
+                    warn!(target: LOG_TARGET, "合并转发的发送结果未知，不再补发文字：{error}");
+                } else {
+                    warn!(target: LOG_TARGET, "合并转发没发出去，改发文字：{error}");
+                    if let Some(view) = item
+                        .kept
+                        .extra
+                        .forward
+                        .get()
+                        .filter(|view| !view.nodes.is_empty())
+                    {
+                        let fallback = Message::new().text(forward_text(view));
+                        send_msg(ctx, writer.clone(), group, user, fallback).await?;
+                    }
+                }
+            }
+            for segment in prepared.separate {
+                if let Err(error) = send_msg(ctx, writer.clone(), group, user, Message(vec![segment])).await {
+                    // 主内容已经发出去了，缺一段媒体不值得把整条再退成文字。
+                    warn!(target: LOG_TARGET, "随原文另发的媒体没发出去：{error}");
+                }
             }
             Ok(())
         }
@@ -643,12 +1064,30 @@ async fn deliver(
                 login.name.as_deref().unwrap_or("防撤回"),
                 Message::new().text(format!("一口气撤回了 {} 条消息", items.len())),
             );
+            // 一批里几张转发都还在展开时，总共只等一个 FORWARD_WAIT；引用同理。
+            let deadline = tokio::time::Instant::now() + FORWARD_WAIT;
+            let quote_deadline = tokio::time::Instant::now() + QUOTE_WAIT;
             for item in items {
-                let (inline, separate) = adapt(&item.kept.content);
+                let view = match forward::source_of(&item.kept.content, None) {
+                    Some(_) => settled_until(&item.kept.extra.forward, deadline).await,
+                    None => None,
+                }
+                .filter(|view| !view.nodes.is_empty());
+                if reply_id(&item.kept.content).is_some() {
+                    let _ = settled_until(&item.kept.extra.quote, quote_deadline).await;
+                }
                 let mut body = Message::new().text(format!("{}\n", headline(item)));
+                if let Some(line) = quote_line(item) {
+                    body = body.text(format!("{line}\n"));
+                }
+                let (inline, separate) = adapt(&item.kept.content, view.is_some());
                 body.0.extend(inline.0);
+                // 合并转发在节点里做不成一张卡片：退成文字聊天记录，跟着这条一起转。
+                if let Some(view) = view {
+                    body = body.text(format!("\n{}", forward_text(view)));
+                }
                 for segment in &separate {
-                    body = body.text(format!("[{}]", segment.type_));
+                    body = body.text(format!("[{}]", media_label(&segment.type_)));
                 }
                 let name = if item.kept.name.is_empty() { &item.kept.user_id } else { &item.kept.name };
                 message = message.node_custom(&item.kept.user_id, name, body);
@@ -668,19 +1107,37 @@ fn plain(batch: &[Recalled], error: &str) -> Message {
         }
         text.push_str(&headline(item));
         text.push('\n');
+        if let Some(line) = quote_line(item) {
+            text.push_str(&line);
+            text.push('\n');
+        }
+        let view = item
+            .kept
+            .extra
+            .forward
+            .get()
+            .filter(|view| !view.nodes.is_empty());
         for segment in &item.kept.content.0 {
             let kind = segment.type_.as_str();
             if MEDIA.contains(&kind) || kind == "audio" {
                 text.push_str(&format!("[{}]", media_label(kind)));
                 continue;
             }
-            let (inline, _) = adapt(&Message(vec![segment.clone()]));
+            // 合并转发按展开出来的聊天记录另外写在后面；没展开出来就留一句占位。
+            if kind == "forward" && view.is_some() {
+                continue;
+            }
+            let (inline, _) = adapt(&Message(vec![segment.clone()]), false);
             for part in inline.0.iter().filter(|part| part.type_ == "text") {
                 text.push_str(part.data.get("text").and_then(|v| v.as_str()).unwrap_or(""));
             }
             if kind == "face" || kind == "mface" {
                 text.push_str("[表情]");
             }
+        }
+        if let Some(view) = view {
+            text.push('\n');
+            text.push_str(&forward_text(view));
         }
     }
     let reason = crate::storage::truncate_chars(error, 80);
@@ -750,6 +1207,9 @@ pub(crate) fn live(ctx: &Context) -> serde_json::Value {
             tally.missed, config.retention_minutes
         ));
     }
+    if config.enabled && config.forward_records {
+        lines.push("合并转发会连里面的聊天记录一起转存成一张合并转发；引用回复会带上被引用的原话。".to_string());
+    }
     if !config.self_recalls {
         lines.push("自己撤回自己的消息不转存；想拿自己的消息试，打开「自己撤回的也存」。".to_string());
     }
@@ -788,3 +1248,223 @@ pub(crate) async fn test(ctx: &Context) -> Result<String, String> {
         many => Ok(format!("已发到 {} 处", many.len())),
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use simd_json::base::ValueAsArray;
+    use simd_json::owned::Object;
+
+    fn segment(kind: &str, pairs: &[(&str, &str)]) -> Segment {
+        let mut data = Object::new();
+        for (key, value) in pairs {
+            data.insert((*key).into(), OwnedValue::from(*value));
+        }
+        Segment::new(kind, data)
+    }
+
+    fn kept(content: Message) -> Kept {
+        Kept {
+            self_id: "1".into(),
+            message_id: "9001".into(),
+            channel_id: "280183116".into(),
+            group: Some("280183116".into()),
+            group_name: "测试群".into(),
+            user_id: "42".into(),
+            name: "张三".into(),
+            at: 0,
+            content,
+            extra: Extra::default(),
+        }
+    }
+
+    fn recalled(content: Message) -> Recalled {
+        Recalled {
+            kept: kept(content),
+            operator: String::new(),
+            recalled_at: 0,
+        }
+    }
+
+    fn view(nodes: Vec<forward::Node>, truncated: bool) -> forward::View {
+        forward::View {
+            nodes,
+            truncated,
+            notes: Vec::new(),
+        }
+    }
+
+    fn node(user: &str, name: &str, message: Message) -> forward::Node {
+        forward::Node {
+            depth: 0,
+            message_id: None,
+            user_id: user.into(),
+            name: name.into(),
+            time: 0,
+            message,
+        }
+    }
+
+    #[test]
+    fn quote_line_names_the_quoted_author() {
+        let item = recalled(Message(vec![segment("reply", &[("id", "123")])]));
+        item.kept
+            .extra
+            .quote
+            .set(Some(Quote {
+                user_id: "7".into(),
+                name: "李四".into(),
+                content: Message::new().text("这是原话"),
+            }))
+            .ok();
+        let line = quote_line(&item).unwrap_or_default();
+        assert_eq!(line, "↪ 回复 李四（7）：这是原话");
+    }
+
+    #[test]
+    fn quote_line_says_so_when_the_original_is_gone() {
+        let item = recalled(Message(vec![segment("reply", &[("id", "123")])]));
+        assert_eq!(
+            quote_line(&item).as_deref(),
+            Some("↪ 回复了一条消息（原文没取到）")
+        );
+    }
+
+    #[test]
+    fn quote_line_is_absent_without_a_reply() {
+        assert_eq!(quote_line(&recalled(Message::new().text("普通消息"))), None);
+    }
+
+    #[test]
+    fn adapt_turns_at_into_text_and_leaves_quotes_to_quote_line() {
+        let content = Message(vec![
+            segment("reply", &[("id", "1")]),
+            segment("at", &[("qq", "7"), ("name", "李四")]),
+            segment("text", &[("text", "看这个")]),
+        ]);
+        let (inline, separate) = adapt(&content, false);
+        assert!(separate.is_empty());
+        let text: String = inline
+            .0
+            .iter()
+            .filter(|part| part.type_ == "text")
+            .map(|part| part.data.get("text").and_then(|v| v.as_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(text, "@李四 看这个");
+    }
+
+    #[test]
+    fn adapt_only_mentions_the_forward_when_no_card_is_sent() {
+        let content = Message(vec![segment("forward", &[("id", "res")])]);
+        let (with_card, _) = adapt(&content, true);
+        assert!(with_card.0.is_empty());
+        let (without, _) = adapt(&content, false);
+        assert_eq!(without.0.len(), 1);
+        assert_eq!(
+            without.0[0].data.get("text").and_then(|v| v.as_str()),
+            Some("[合并转发（内容没取到）]")
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_card_keeps_authors_and_order() {
+        let view = view(
+            vec![
+                node("7", "李四", Message::new().text("第一句")),
+                node("", "", Message(vec![segment("forward", &[("id", "n")])])),
+                node("8", "王五", Message::new().text("第三句")),
+            ],
+            false,
+        );
+        let card = forward_card(&view).await.expect("一张卡");
+        let nodes: Vec<_> = card.0.iter().filter(|seg| seg.type_ == "node").collect();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(
+            nodes[0].data.get("nickname").and_then(|v| v.as_str()),
+            Some("李四")
+        );
+        // 没有作者的节点用 0 占位，名字空着也不报错。
+        assert_eq!(
+            nodes[1].data.get("user_id").and_then(|v| v.as_str()),
+            Some("0")
+        );
+        // 节点里的二次转发变成占位文字，不会带出一张打不开的子卡片。
+        let empty = Vec::new();
+        let body = nodes[1]
+            .data
+            .get("content")
+            .and_then(|v| v.as_array())
+            .unwrap_or(&empty);
+        assert!(body.iter().any(|part| {
+            part.get("data")
+                .and_then(|data| data.get("text"))
+                .and_then(|text| text.as_str())
+                .is_some_and(|text| text.contains("合并转发里的转发"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn forward_card_notes_what_did_not_fit() {
+        let view = view(vec![node("7", "李四", Message::new().text("一"))], true);
+        let card = forward_card(&view).await.expect("一张卡");
+        let nodes: Vec<_> = card.0.iter().filter(|seg| seg.type_ == "node").collect();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(
+            nodes[1].data.get("nickname").and_then(|v| v.as_str()),
+            Some("防撤回")
+        );
+    }
+
+    #[test]
+    fn forward_text_reads_like_a_transcript() {
+        let view = view(vec![node("7", "李四", Message::new().text("第一句"))], false);
+        let text = forward_text(&view);
+        assert!(text.starts_with("合并转发里的聊天记录："));
+        assert!(text.contains("李四(7)"));
+        assert!(text.contains("第一句"));
+    }
+
+    #[tokio::test]
+    async fn prepare_sends_a_card_for_a_recalled_forward() {
+        let item = recalled(Message(vec![segment("forward", &[("id", "res")])]));
+        item.kept
+            .extra
+            .forward
+            .set(view(vec![node("7", "李四", Message::new().text("第一句"))], false))
+            .ok();
+        let prepared = prepare(&item, true).await;
+        assert!(prepared.forward.is_some());
+        let body: String = prepared
+            .body
+            .0
+            .iter()
+            .filter(|part| part.type_ == "text")
+            .map(|part| part.data.get("text").and_then(|v| v.as_str()).unwrap_or(""))
+            .collect();
+        assert!(body.contains("一条合并转发"));
+        // 卡片另外发，正文里不再重复一遍聊天记录。
+        assert!(!body.contains("合并转发里的聊天记录"));
+    }
+
+    #[tokio::test]
+    async fn prepare_writes_the_transcript_when_records_are_off() {
+        let item = recalled(Message(vec![segment("forward", &[("id", "res")])]));
+        item.kept
+            .extra
+            .forward
+            .set(view(vec![node("7", "李四", Message::new().text("第一句"))], false))
+            .ok();
+        let prepared = prepare(&item, false).await;
+        assert!(prepared.forward.is_none());
+        let body: String = prepared
+            .body
+            .0
+            .iter()
+            .filter(|part| part.type_ == "text")
+            .map(|part| part.data.get("text").and_then(|v| v.as_str()).unwrap_or(""))
+            .collect();
+        assert!(body.contains("合并转发里的聊天记录"));
+    }
+}
+
