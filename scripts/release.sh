@@ -5,7 +5,7 @@
 #   scripts/release.sh --dry-run  只构建打包到 dist/，不发布
 #
 # 版本号取 Cargo.toml。说明取 CHANGELOG.md 里这个版本那一节。
-# 发布物：acumen-termux-aarch64.gz（可执行文件）、update.json（版本、下载地址、校验和；
+# 发布物：acumen-termux-aarch64.gz（可执行文件）、update.json（版本、下载地址、校验和与签名；
 # 已装的实例每天例行维护时读它）、install.sh（一行安装命令拉的就是它）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,9 +27,17 @@ notes=$(awk -v v="$version" '
 [[ -n $notes ]] || { echo "CHANGELOG.md 里没有 $version 这一节" >&2; exit 1; }
 summary=$(printf '%s\n' "$notes" | sed -n 's/^- //p' | head -n 3 | paste -sd '；' -)
 
-jq -n --arg version "$version" --arg sha "$sha" --arg notes "$summary" \
+# 清单签名：已装的实例会经第三方加速站取清单和可执行文件，只认这把私钥签过的。
+# 私钥丢了，老版本就再也认不出新清单（只能重装），务必备份。
+key=${ACUMEN_SIGNING_KEY:-$HOME/.config/acumen/release-signing-key.pem}
+[[ -r $key ]] || { echo "没有签名私钥 $key" >&2; exit 1; }
+printf 'acumen %s %s' "$version" "$sha" > dist/.signed
+signature=$(openssl pkeyutl -sign -rawin -inkey "$key" -in dist/.signed | base64 -w0)
+rm -f dist/.signed
+
+jq -n --arg version "$version" --arg sha "$sha" --arg notes "$summary" --arg signature "$signature" \
     --arg url "https://github.com/araea/acumen/releases/download/$tag/$asset" \
-    '{version: $version, url: $url, sha256: $sha, notes: $notes}' > dist/update.json
+    '{version: $version, url: $url, sha256: $sha, signature: $signature, notes: $notes}' > dist/update.json
 ls -la dist
 
 if [[ ${1:-} == --dry-run ]]; then exit 0; fi

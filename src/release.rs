@@ -21,12 +21,38 @@ const CLI: &str = include_str!("../scripts/acumen");
 const KEEPER: &str = include_str!("../scripts/keeper.sh");
 const KEEPER_PATH: &str = "/data/adb/service.d/acumen.sh";
 
+/// 发布清单的签名公钥（Ed25519）。私钥只在维护者手里（`scripts/release.sh` 用它签名），
+/// 所以经第三方加速站转来的清单与可执行文件也信得过：签名对上了，校验和才作数。
+const PUBLIC_KEY: &str = "cf7ea9cc07dc55c141978b75225962705a1aeef336ce57db224f0919285ad363";
+
+/// 内置的 GitHub 加速前缀。国内网络直连 GitHub 常常超时，这几家能把同一个地址原样转过来；
+/// 失效了也不要紧，同时问、谁先回用谁，`[restart] mirrors` 还能再补。
+const MIRRORS: &[&str] = &[
+    "https://gh-proxy.com/",
+    "https://cdn.gh-proxy.com/",
+    "https://gh.llkk.cc/",
+    "https://gh.idayer.com/",
+    "https://ghfast.top/",
+];
+
+/// 每个源取清单的时限。
+const MANIFEST_TIMEOUT: Duration = Duration::from_secs(12);
+/// 第一份清单到手后再等别的源这么久，取其中最新的：加速站偶尔缓存着旧清单。
+const MANIFEST_GRACE: Duration = Duration::from_millis(1500);
+/// 下载时这么久一个字节都没收到，就换下一个源。
+const STALL: Duration = Duration::from_secs(20);
+/// 下载过了这么久平均仍低于 `MIN_SPEED`（字节/秒），且后面还有源可换，就换。
+const SLOW_AFTER: Duration = Duration::from_secs(20);
+const MIN_SPEED: f64 = 48.0 * 1024.0;
+
 #[derive(Debug, Clone)]
 pub struct Release {
     pub version: String,
     url: String,
     sha256: String,
     pub notes: String,
+    /// 下载源（加速前缀，空串是直连），清单回得快的排前面。
+    sources: Vec<String>,
 }
 
 fn exe() -> Option<PathBuf> {
@@ -46,15 +72,16 @@ fn prefix() -> String {
     std::env::var("PREFIX").unwrap_or_else(|_| "/data/data/com.termux/files/usr".into())
 }
 
+fn version_parts(v: &str) -> Vec<u64> {
+    v.trim_start_matches('v')
+        .split(['.', '-'])
+        .map(|p| p.parse().unwrap_or(0))
+        .collect()
+}
+
 /// 版本号逐段按数字比；`a` 比 `b` 新才算。
 fn newer(a: &str, b: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> {
-        v.trim_start_matches('v')
-            .split(['.', '-'])
-            .map(|p| p.parse().unwrap_or(0))
-            .collect()
-    };
-    parts(a) > parts(b)
+    version_parts(a) > version_parts(b)
 }
 
 fn client() -> Result<reqwest::Client> {
@@ -88,16 +115,106 @@ pub fn checked_within(window: Duration) -> bool {
         .is_some_and(|age| age < window)
 }
 
-/// 查一次最新发布；比当前新才返回。
-pub async fn check() -> Result<Option<Release>> {
-    let manifest: serde_json::Value = client()?
-        .get(MANIFEST)
+/// restart 插件载入时交来的 `mirrors`；没交过（管理命令、管理面板这些别的进程）就读
+/// 可执行文件旁边的 config.toml。
+static CUSTOM_MIRRORS: std::sync::RwLock<Option<Vec<String>>> = std::sync::RwLock::new(None);
+
+pub fn set_mirrors(mirrors: Vec<String>) {
+    *CUSTOM_MIRRORS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(mirrors);
+}
+
+fn custom_mirrors() -> Vec<String> {
+    if let Some(mirrors) = CUSTOM_MIRRORS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+    {
+        return mirrors;
+    }
+    let Some(path) = exe().and_then(|exe| Some(exe.parent()?.join("config.toml"))) else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|table| table.get("restart")?.get("mirrors")?.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|v| v.as_str().map(str::to_string))
+        .collect()
+}
+
+/// 全部下载源：自定义的、直连、内置加速，去重。前缀统一以 `/` 结尾。
+fn sources() -> Vec<String> {
+    let mut list: Vec<String> = Vec::new();
+    let custom = custom_mirrors().into_iter().map(|m| {
+        let m = m.trim().to_string();
+        if m.ends_with('/') { m } else { format!("{m}/") }
+    });
+    for source in custom
+        .chain(std::iter::once(String::new()))
+        .chain(MIRRORS.iter().map(|m| (*m).to_string()))
+    {
+        if !list.contains(&source) {
+            list.push(source);
+        }
+    }
+    list
+}
+
+/// 下载源在日志与回执里的叫法。
+fn label(source: &str) -> String {
+    if source.is_empty() {
+        return "GitHub".into();
+    }
+    reqwest::Url::parse(source)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_else(|| source.to_string())
+}
+
+/// 失败原因压成几个字：一次要列好几个源，整条错误链太长。
+fn short(error: &anyhow::Error) -> String {
+    if let Some(error) = error.downcast_ref::<reqwest::Error>() {
+        if error.is_timeout() {
+            return "超时".into();
+        }
+        if error.is_connect() {
+            return "连不上".into();
+        }
+        if let Some(status) = error.status() {
+            return format!("HTTP {}", status.as_u16());
+        }
+    }
+    error.to_string()
+}
+
+fn signed_message(version: &str, sha256: &str) -> String {
+    format!("acumen {version} {sha256}")
+}
+
+fn verify(version: &str, sha256: &str, signature: &str) -> Result<()> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let signature = STANDARD
+        .decode(signature.trim())
+        .map_err(|_| anyhow!("签名读不出来"))?;
+    let key = hex::decode(PUBLIC_KEY)?;
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+        .verify(signed_message(version, sha256).as_bytes(), &signature)
+        .map_err(|_| anyhow!("签名不符"))
+}
+
+async fn fetch_manifest(client: &reqwest::Client, source: &str) -> Result<Release> {
+    let manifest: serde_json::Value = client
+        .get(format!("{source}{MANIFEST}"))
         .send()
         .await?
         .error_for_status()?
         .json()
         .await
-        .context("更新清单读不出来")?;
+        .map_err(|_| anyhow!("清单读不出来"))?;
     let field = |key: &str| {
         manifest
             .get(key)
@@ -110,11 +227,75 @@ pub async fn check() -> Result<Option<Release>> {
         url: field("url"),
         sha256: field("sha256").to_lowercase(),
         notes: field("notes"),
+        sources: Vec::new(),
     };
     if release.version.is_empty() || release.url.is_empty() || release.sha256.len() != 64 {
-        bail!("更新清单缺字段");
+        bail!("清单缺字段");
     }
-    Ok(newer(&release.version, VERSION).then_some(release))
+    verify(&release.version, &release.sha256, &field("signature"))?;
+    Ok(release)
+}
+
+/// 查一次最新发布；比当前新才返回。
+///
+/// 所有源同时问：第一份签名对得上的清单到手后再稍等片刻，取其中版本最新的；
+/// 下载时按回来的先后试。
+pub async fn check() -> Result<Option<Release>> {
+    use futures_util::StreamExt as _;
+    let client = crate::http::builder().timeout(MANIFEST_TIMEOUT).build()?;
+    let sources = sources();
+    let mut pending: futures_util::stream::FuturesUnordered<_> = sources
+        .iter()
+        .map(|source| {
+            let client = client.clone();
+            async move { (source, fetch_manifest(&client, source).await) }
+        })
+        .collect();
+    let mut found: Vec<(&String, Release)> = Vec::new();
+    let mut errors = Vec::new();
+    let mut deadline = None;
+    loop {
+        let next = match deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, pending.next()).await {
+                Ok(next) => next,
+                Err(_) => break,
+            },
+            None => pending.next().await,
+        };
+        let Some((source, result)) = next else { break };
+        match result {
+            Ok(release) => {
+                deadline.get_or_insert_with(|| tokio::time::Instant::now() + MANIFEST_GRACE);
+                found.push((source, release));
+            }
+            Err(error) => {
+                debug!(target: LOG_TARGET, "{} 取不到更新清单：{error:#}", label(source));
+                errors.push(format!("{} {}", label(source), short(&error)));
+            }
+        }
+    }
+    let Some(best) = found
+        .iter()
+        .map(|(_, release)| release)
+        .max_by(|a, b| version_parts(&a.version).cmp(&version_parts(&b.version)))
+        .cloned()
+    else {
+        bail!("{} 个下载源都不通（{}）", sources.len(), errors.join("、"));
+    };
+    let mut order: Vec<String> = found
+        .iter()
+        .filter(|(_, release)| release.version == best.version)
+        .map(|(source, _)| (*source).clone())
+        .collect();
+    for source in &sources {
+        if !order.contains(source) {
+            order.push(source.clone());
+        }
+    }
+    Ok(newer(&best.version, VERSION).then_some(Release {
+        sources: order,
+        ..best
+    }))
 }
 
 /// 最近一次查询的结果与时刻：控制台每次打开都要问一句「有没有新版」，不必每次都去 GitHub。
@@ -143,37 +324,74 @@ pub async fn check_cached(max_age: Duration) -> Result<Option<Release>> {
     Ok(release)
 }
 
-/// 下载、校验、换上新的可执行文件。正在跑的进程不受影响，重启后才是新版本。
-pub async fn install(release: &Release) -> Result<()> {
+/// 下载、校验、换上新的可执行文件；返回用的是哪个下载源。正在跑的进程不受影响，
+/// 重启后才是新版本。
+pub async fn install(release: &Release) -> Result<String> {
     let target = exe().ok_or_else(|| anyhow!("找不到自己的可执行文件"))?;
-    install_to(release, target).await
+    let client = client()?;
+    let mut errors = Vec::new();
+    for (index, source) in release.sources.iter().enumerate() {
+        let patient = index + 1 == release.sources.len();
+        let url = format!("{source}{}", release.url);
+        let result = async {
+            let packed = download(&client, &url, patient).await?;
+            unpack(packed, release.sha256.clone()).await
+        }
+        .await;
+        match result {
+            Ok(binary) => {
+                crate::storage::write_atomic_async(target.clone(), binary).await?;
+                set_mode(&target, 0o700)?;
+                return Ok(label(source));
+            }
+            Err(error) => {
+                warn!(target: LOG_TARGET, "经 {} 下载没成：{error:#}", label(source));
+                errors.push(format!("{} {}", label(source), short(&error)));
+            }
+        }
+    }
+    bail!("每个下载源都没下成（{}）", errors.join("、"))
 }
 
-async fn install_to(release: &Release, target: PathBuf) -> Result<()> {
-    let packed = client()?
-        .get(&release.url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await
-        .context("下载中断")?;
-    let expected = release.sha256.clone();
-    let binary = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
+/// 下一个源还有指望时，慢得不像话就放弃这个；最后一个源只要还在动就等它。
+async fn download(client: &reqwest::Client, url: &str, patient: bool) -> Result<Vec<u8>> {
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    let expected = response.content_length();
+    let mut packed = Vec::with_capacity(expected.unwrap_or(0).try_into().unwrap_or(0));
+    let started = tokio::time::Instant::now();
+    loop {
+        let chunk = tokio::time::timeout(STALL, response.chunk())
+            .await
+            .map_err(|_| anyhow!("{} 秒没收到数据", STALL.as_secs()))??;
+        let Some(chunk) = chunk else { break };
+        packed.extend_from_slice(&chunk);
+        let elapsed = started.elapsed();
+        #[allow(clippy::cast_precision_loss)]
+        let speed = packed.len() as f64 / elapsed.as_secs_f64();
+        if !patient && elapsed > SLOW_AFTER && speed < MIN_SPEED {
+            bail!("太慢（{:.0} KB/s）", speed / 1024.0);
+        }
+    }
+    if let Some(expected) = expected
+        && packed.len() as u64 != expected
+    {
+        bail!("下载不完整");
+    }
+    Ok(packed)
+}
+
+async fn unpack(packed: Vec<u8>, expected: String) -> Result<Vec<u8>> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
         let mut binary = Vec::new();
         flate2::read::GzDecoder::new(&packed[..])
             .read_to_end(&mut binary)
-            .context("解压失败")?;
-        let actual = hex::encode(Sha256::digest(&binary));
-        if actual != expected {
-            bail!("校验不符（{actual}），没有换上");
+            .map_err(|_| anyhow!("解压失败"))?;
+        if hex::encode(Sha256::digest(&binary)) != expected {
+            bail!("校验不符");
         }
         Ok(binary)
     })
-    .await??;
-    crate::storage::write_atomic_async(target.clone(), binary).await?;
-    set_mode(&target, 0o700)?;
-    Ok(())
+    .await?
 }
 
 #[cfg(unix)]
@@ -274,7 +492,8 @@ pub async fn command(arg: &str) -> Option<i32> {
             Ok(Some(release)) => {
                 eprintln!("正在下载 {} …", release.version);
                 match install(&release).await {
-                    Ok(()) => {
+                    Ok(via) => {
+                        eprintln!("经 {via} 下载");
                         println!("{}", release.version);
                         if !release.notes.is_empty() {
                             eprintln!("{}", release.notes);
@@ -325,5 +544,21 @@ mod tests {
         assert!(newer("v1.0.1", "1.0.0"));
         assert!(!newer("1.0.0", "1.0.0"));
         assert!(!newer("0.9.9", "1.0.0"));
+    }
+
+    #[test]
+    fn verifies_release_signature() {
+        let sha = "0".repeat(64);
+        let signature = "qbooniEXS6mg0q9+ECV6O34V1bDuTqas5dTtYvBAonv0FOCvPiekMvTLz+2JHMzMMXIx/EVg+SrtRQD7HCG+DA==";
+        assert!(verify("1.0.0", &sha, signature).is_ok());
+        assert!(verify("1.0.1", &sha, signature).is_err());
+        assert!(verify("1.0.0", &"1".repeat(64), signature).is_err());
+        assert!(verify("1.0.0", &sha, "").is_err());
+    }
+
+    #[test]
+    fn mirror_labels() {
+        assert_eq!(label(""), "GitHub");
+        assert_eq!(label("https://gh-proxy.com/"), "gh-proxy.com");
     }
 }

@@ -29,6 +29,8 @@ pub struct RestartConfig {
     auto_update: bool,
     /// 每隔这么多小时再自动查一次新版本（0 = 只在启动与每日维护时查）
     check_interval_hours: u64,
+    /// 额外的 GitHub 加速前缀（如 `https://gh-proxy.com/`），和内置的几家、直连一起同时试
+    mirrors: Vec<String>,
     /// 例行维护时没有新版本也重启一次，放掉长时间运行积下的内存
     daily_restart: bool,
     /// 平滑重启：等到这么多秒没有新消息、手头也没有在处理的消息再动手
@@ -52,6 +54,7 @@ impl Default for RestartConfig {
             times: vec!["04:30".to_string()],
             auto_update: true,
             check_interval_hours: 6,
+            mirrors: Vec::new(),
             daily_restart: true,
             quiet_seconds: 120,
             max_wait_minutes: 30,
@@ -68,8 +71,8 @@ const STARTUP_CHECK_DELAY: Duration = Duration::from_secs(30);
 /// 这么久以内查过，启动时就不再查：例行维护刚查完紧跟着的那次重启、崩溃后被反复拉起，
 /// 都不必再去敲 GitHub。
 const STARTUP_CHECK_INTERVAL: Duration = Duration::from_mins(10);
-/// 周期查新与 `/版本` 的查询上限：下载可以慢慢来，回一句话不能让人干等。
-const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
+/// `/版本`、`/查更新` 与 `/更新` 查清单的上限：各下载源同时问、每个 12 秒，这里再留点余量。
+const CHECK_TIMEOUT: Duration = Duration::from_secs(16);
 /// `/版本` 复用控制台那份结果，这么久以内不重复问 GitHub。
 const VERSION_CACHE: Duration = Duration::from_mins(10);
 /// 群里换上新版本后留给回执的时间：要够那条「已更新」先发出去。
@@ -141,6 +144,11 @@ impl PluginConfig for RestartConfig {
                 return Err(format!("times 里的「{time}」不是 HH:MM"));
             }
         }
+        for mirror in &self.mirrors {
+            if !mirror.starts_with("https://") && !mirror.starts_with("http://") {
+                return Err(format!("mirrors 里的「{mirror}」不是 http(s):// 开头的地址"));
+            }
+        }
         Ok(())
     }
 }
@@ -148,6 +156,7 @@ impl PluginConfig for RestartConfig {
 pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
         let cfg = get_config_or_default::<RestartConfig>(&ctx);
+        crate::release::set_mirrors(cfg.mirrors.clone());
         if !cfg.enabled {
             return Ok(());
         }
@@ -274,8 +283,8 @@ async fn maintain(ctx: Context, daily: bool) {
             Ok(Some(release)) => {
                 info!(target: LOG_TARGET, "发现新版本 {}，正在下载…", release.version);
                 match crate::release::install(&release).await {
-                    Ok(()) => {
-                        info!(target: LOG_TARGET, "新版本 {} 已换上，重启后生效", release.version);
+                    Ok(via) => {
+                        info!(target: LOG_TARGET, "新版本 {} 已经 {via} 换上，重启后生效", release.version);
                         reason = Some(format!(
                             "更新 {} → {}",
                             crate::release::VERSION,
@@ -506,13 +515,13 @@ fn arm(ctx: &Context, reason: &str, delay: Duration) -> Result<(), String> {
 /// 是用户亲手点的，所以不等群里安静：回执先落到浏览器（1.5 秒），随即重启。
 /// restart 插件没开时只换文件，回一句「重启后生效」。
 pub(crate) async fn update_now(ctx: &Context) -> Result<String, String> {
-    let version = try_update()
+    let (version, via) = try_update()
         .await?
         .ok_or_else(|| "已经是最新版本".to_string())?;
     let reason = format!("更新 {} → {version}", crate::release::VERSION);
     Ok(match arm(ctx, &reason, Duration::from_millis(1500)) {
-        Ok(()) => format!("已换上 {version}，正在重启"),
-        Err(_) => format!("已换上 {version}，重启后生效"),
+        Ok(()) => format!("已经 {via} 换上 {version}，正在重启"),
+        Err(_) => format!("已经 {via} 换上 {version}，重启后生效"),
     })
 }
 
@@ -524,17 +533,17 @@ async fn chat_update(
     user_id: String,
 ) {
     let text = match try_update().await {
-        Ok(Some(version)) => {
+        Ok(Some((version, via))) => {
             let reason = format!("更新 {} → {version}", crate::release::VERSION);
             if arm(&ctx, &reason, CHAT_RESTART_DELAY).is_ok() {
                 format!(
-                    "✅ 已更新到 v{version}（原 v{}），{} 秒后重启",
+                    "✅ 已更新到 v{version}（原 v{}，经 {via} 下载），{} 秒后重启",
                     crate::release::VERSION,
                     CHAT_RESTART_DELAY.as_secs()
                 )
             } else {
                 format!(
-                    "✅ 已更新到 v{version}（原 v{}），重启后生效",
+                    "✅ 已更新到 v{version}（原 v{}，经 {via} 下载），重启后生效",
                     crate::release::VERSION
                 )
             }
@@ -548,10 +557,10 @@ async fn chat_update(
     }
 }
 
-/// 查、下载、校验、换上；返回换上的版本（已是最新则为 `None`）。
+/// 查、下载、校验、换上；返回换上的版本与下载源（已是最新则为 `None`）。
 ///
 /// 与控制台、例行维护共用 `MAINTAINING` 这把锁，同一时刻只换一份。
-async fn try_update() -> Result<Option<String>, String> {
+async fn try_update() -> Result<Option<(String, String)>, String> {
     if !crate::release::managed() {
         return Err("这是从源码构建的版本，不走自动更新：拉取代码后重新编译".into());
     }
@@ -566,11 +575,11 @@ async fn try_update() -> Result<Option<String>, String> {
             Ok(Err(error)) => return Err(format!("查不到新版本：{error}")),
             Err(_) => return Err("查新版本超时，稍后再试".to_string()),
         };
-        crate::release::install(&release)
+        let via = crate::release::install(&release)
             .await
             .map_err(|error| format!("更新没装上：{error}"))?;
-        info!(target: LOG_TARGET, "新版本 {} 已换上", release.version);
-        Ok(Some(release.version))
+        info!(target: LOG_TARGET, "新版本 {} 已经 {via} 换上", release.version);
+        Ok(Some((release.version, via)))
     }
     .await;
     MAINTAINING.store(false, Ordering::SeqCst);

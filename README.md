@@ -12,6 +12,12 @@
 curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh | bash
 ```
 
+连不上 GitHub 时在地址前加一个加速前缀（脚本里的下载会自己换着试）：
+
+```sh
+curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/download/install.sh | bash
+```
+
 它会下载最新版本到 `~/acumen`，装好浏览器、中文字体与其余依赖，配好保活，然后启动并打开控制台。第一次要下载几百 MB，耗时几分钟。Termux 请从 F-Droid 或 GitHub 安装，并在 KernelSU 管理器的「超级用户」里给 Termux 授权。
 
 连接不用配置：端口与令牌跟随知弦模块里的设置。装了知言（satori-wx）模块的，会同时接入微信。
@@ -38,6 +44,7 @@ curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh |
 - 熄屏时持有 Termux 唤醒锁；Termux 加入系统省电白名单。
 - root 守护在开机后拉起 Termux 与机器人，Termux 被系统清理后再拉回来。设有锁屏密码时，重启后要先解锁一次。
 - 每天 04:30 例行维护：有新版本就下载、校验、换上，等群里安静两分钟后重启。每次启动或重启后也会查一次，之后每 6 小时再查一次（`check_interval_hours`），有新版本同样换上。时刻与开关在 `[restart]`。
+- 查新与下载同时试直连 GitHub 和几家加速站，谁快用谁，下得太慢或断了换下一家；国内不开代理也能更新。发布清单带签名，经哪家转来的都先验签、再对校验和才换上。加速站都失效时在 `[restart] mirrors` 里补一个。
 - 群里发 `/版本` 看当前版本与有没有新版，`/查更新` 查一次并看更新说明，`/更新` 直接换上并平滑重启——后两条只有号主与管理员能用。
 
 `acumen stop` 与在系统设置里强行停止 Termux 都算主动停止，守护不会再拉起。

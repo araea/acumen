@@ -3,6 +3,10 @@
 #
 #   curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh | bash
 #
+# 连不上 GitHub 时在前面加个加速前缀：
+#
+#   curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/download/install.sh | bash
+#
 # 下载最新的发布版到 ~/acumen，装好依赖、中文字体、浏览器与保活，然后启动并打开控制台。
 # 重复运行是安全的：已经装好的部分会跳过，配置与数据不动。
 #
@@ -13,6 +17,8 @@ main() {
     local prefix=${PREFIX:-/data/data/com.termux/files/usr}
     local app=${ACUMEN_HOME:-$HOME/acumen}
     local manifest=https://github.com/araea/acumen/releases/latest/download/update.json
+    # 直连 GitHub 与几家加速站（与可执行文件里内置的同一份），挨个试。
+    local mirrors=("" https://gh-proxy.com/ https://cdn.gh-proxy.com/ https://gh.llkk.cc/ https://gh.idayer.com/ https://ghfast.top/)
 
     if [[ ! -d /data/data/com.termux || $prefix != /data/data/com.termux/* ]]; then
         echo "知微只支持安卓上的 Termux。" >&2
@@ -25,8 +31,12 @@ main() {
     command -v curl >/dev/null || yes | pkg install -y curl >/dev/null 2>&1
 
     echo "正在获取最新版本 …"
-    local info version url sha
-    info=$(curl -fsSL --retry 3 "$manifest") || { echo "连不上 GitHub，检查网络后再试。" >&2; return 1; }
+    local info='' version url sha mirror
+    for mirror in "${mirrors[@]}"; do
+        info=$(curl -fsSL --connect-timeout 8 --max-time 20 "$mirror$manifest") && break
+        info=''
+    done
+    [[ -n $info ]] || { echo "GitHub 与加速站都连不上，检查网络后再试。" >&2; return 1; }
     version=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$info")
     url=$(sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$info")
     sha=$(sed -n 's/.*"sha256"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' <<< "$info")
@@ -37,10 +47,19 @@ main() {
         echo "已是最新版本 $version。"
     else
         echo "正在下载知微 $version …"
-        curl -fL --retry 3 --progress-bar "$url" | gzip -dc > "$app/acumen.new" || { echo "下载失败，再运行一次试试。" >&2; return 1; }
-        if [[ $(sha256sum "$app/acumen.new" | cut -d' ' -f1) != "$sha" ]]; then
+        local got=''
+        for mirror in "${mirrors[@]}"; do
+            # 半分钟平均不到 48 KB/s 就换下一家。
+            if curl -fL --connect-timeout 8 --speed-limit 49152 --speed-time 30 --progress-bar "$mirror$url" | gzip -dc > "$app/acumen.new" 2>/dev/null &&
+                [[ $(sha256sum "$app/acumen.new" | cut -d' ' -f1) == "$sha" ]]; then
+                got=1
+                break
+            fi
+            echo "  ${mirror:-GitHub 直连} 没下成，换下一个 …" >&2
+        done
+        if [[ -z $got ]]; then
             rm -f "$app/acumen.new"
-            echo "下载的文件校验不符，再运行一次试试。" >&2
+            echo "下载失败，再运行一次试试。" >&2
             return 1
         fi
         chmod 700 "$app/acumen.new"
