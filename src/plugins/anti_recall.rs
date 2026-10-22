@@ -715,7 +715,7 @@ pub(crate) fn live(ctx: &Context) -> serde_json::Value {
     }
     if tally.missed > 0 {
         lines.push(format!(
-            "有 {} 次撤回没找到原文：撤的是机器人启动前或 {} 分钟以前的消息；QQ 端还得是知弦 0.37.1 以上（升级后重启手机才生效）。",
+            "有 {} 次撤回没找到原文：撤的是机器人启动、插件打开之前，或 {} 分钟以前的消息；QQ 端还得是知弦 0.37.1 以上（升级后重启手机才生效）。",
             tally.missed, config.retention_minutes
         ));
     }
