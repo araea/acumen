@@ -22,6 +22,7 @@ pub mod parser;
 pub(crate) mod agent;
 pub(crate) mod chat;
 pub mod render;
+pub(crate) mod retry;
 pub(crate) mod search;
 pub(crate) mod setup;
 pub mod types;

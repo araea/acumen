@@ -89,9 +89,12 @@ pub(crate) async fn complete(
     history: Vec<Message>,
     thinking: Option<&str>,
 ) -> anyhow::Result<String> {
-    let response = self::model(api_base, api_key, model)
-        .call(request(history, Vec::new(), thinking, None))
-        .await?;
+    let endpoint = self::model(api_base, api_key, model);
+    let request = request(history, Vec::new(), thinking, None);
+    // 传输层偶尔断在半路（响应体没收全），换条连接就成；见 [`super::retry`]。
+    let response = super::retry::call("补全请求", || endpoint.call(request.clone()))
+        .await
+        .map_err(|error| anyhow::anyhow!("{}", super::retry::detail(&error)))?;
     let text = text_of(&response.choice);
     if text.trim().is_empty() {
         anyhow::bail!("API 返回了空回复");

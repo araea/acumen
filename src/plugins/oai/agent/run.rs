@@ -12,9 +12,11 @@
 
 use super::super::types::TraceStep;
 use super::super::llm;
+use super::super::retry::{self, Transient};
 use super::{AgentRun, compact, figures};
 use rig_core::completion::message::{DocumentSourceKind, Image, Text, ToolCall, ToolChoice, ToolResultContent, UserContent};
 use rig_core::completion::{AssistantContent, CompletionResponse, Message};
+use rig_core::error::ProviderError;
 use std::collections::HashMap;
 
 use crate::plugins::oai::LOG_TARGET;
@@ -209,6 +211,47 @@ struct Failure {
     used_tools: bool,
 }
 
+/// 单次请求的两种失败：接口那边报的错，或模型迟迟不开口。
+///
+/// 分开是为了让重试只认前者：接口报的错里有一半是换条连接就成的传输层故障
+/// （见 [`retry`]），而静默超时是上游真不说话，重发只会把预算再烧一遍。
+#[derive(Debug)]
+enum SendError {
+    /// 接口回的错（含传输层断在半路）。
+    Provider(Box<ProviderError>),
+    /// 超过这个时长没回音。
+    Stalled(std::time::Duration),
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Provider(error) => f.write_str(&retry::detail(&**error)),
+            Self::Stalled(limit) => {
+                write!(f, "模型请求静默超过 {} 秒无响应", limit.as_secs())
+            }
+        }
+    }
+}
+
+impl std::error::Error for SendError {}
+
+impl Transient for SendError {
+    fn transient(&self) -> bool {
+        match self {
+            Self::Provider(error) => error.transient(),
+            Self::Stalled(_) => false,
+        }
+    }
+
+    fn asked(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::Provider(error) => error.asked(),
+            Self::Stalled(_) => None,
+        }
+    }
+}
+
 async fn attempt(
     run: &AgentRun<'_>,
     history: &[super::super::types::ChatMessage],
@@ -271,25 +314,27 @@ async fn attempt(
         if last && !definitions.is_empty() {
             request.tool_choice = Some(ToolChoice::None);
         }
-        let response = match run.stall {
-            Some(limit) => match tokio::time::timeout(limit, model.call(request)).await {
-                Ok(response) => response,
-                Err(_) => {
-                    return Err(Failure {
-                        message: anyhow::anyhow!(
-                            "模型请求静默超过 {} 秒无响应",
-                            limit.as_secs()
-                        ),
-                        stalled: true,
-                        used_tools,
-                    });
+        let stall = run.stall;
+        let response = retry::call("模型请求", || {
+            let model = model.clone();
+            let request = request.clone();
+            async move {
+                match stall {
+                    Some(limit) => tokio::time::timeout(limit, model.call(request))
+                        .await
+                        .map_err(|_| SendError::Stalled(limit))?
+                        .map_err(|error| SendError::Provider(Box::new(error))),
+                    None => model
+                        .call(request)
+                        .await
+                        .map_err(|error| SendError::Provider(Box::new(error))),
                 }
-            },
-            None => model.call(request).await,
-        }
+            }
+        })
+        .await
         .map_err(|error| Failure {
             message: anyhow::anyhow!("{error}"),
-            stalled: false,
+            stalled: matches!(error, SendError::Stalled(_)),
             used_tools,
         });
         // 接口回了一条什么都没有的消息（连思考块都没有）不算出错：choice 是空的，
