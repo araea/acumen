@@ -12,6 +12,10 @@
 //! 禁言，这次就只算到那个时刻；时长没读出来的，只有后面紧跟解除时才能知道它到底多长。
 //! 自然到期没有通知，所以按通知里的时长算满。
 //!
+//! 统计窗口也会截断：一次禁言越过窗口末尾时只算到末尾。今天问「今日」，窗口末尾就是此刻，
+//! 所以「今日累计禁言时长」里一个人最多 24 小时——禁言 9 天的通知，今天只记已经过去的那段，
+//! 不会把还没禁完的 9 天一股脑记进来。这些「还没到期」的次数由 [`Board::ongoing`] 交代。
+//!
 //! ## 排谁
 //! [`tally`] 可以按**被禁言的人**排（谁被禁得多），也可以按**动手的管理员**排（谁禁得多）。
 //! 灰条里只有一个人（没写操作者）的禁言，不进管理员榜，只在榜外交代有几次。
@@ -163,18 +167,22 @@ pub struct Board {
     /// 榜上提前结束的禁言次数：被解除或改判，实际禁言的时间比通知里说的短。
     /// 这些次数只按实际时长累计，榜上要交代一声，否则「禁言 1 天」的人只算了几秒看着像记错了。
     pub cut_short: i64,
+    /// 榜上到窗口末尾还没结束的禁言次数：这些只算到此刻，不是最终长度。
+    pub ongoing: i64,
 }
 
 /// 区间内一次禁言的结果。
 struct Term<'a> {
     member: &'a str,
     operator: Option<&'a str>,
-    /// 实际禁言的秒数；`None` 是时长没读出、事后也没能推出。
+    /// 落在统计窗口内的实际禁言秒数；`None` 是时长没读出、事后也没能推出。
     served: Option<i64>,
     /// 通知里说的时长比实际禁言的长：中途被解除，或被新的禁言顶替了。
     cut_short: bool,
     /// 灰条上写的时长（秒）；`None` 是灰条没写。
     declared: Option<i64>,
+    /// 到窗口末尾还没结束：`served` 只是到此刻为止的长度，不是这一次的最终长度。
+    ongoing: bool,
 }
 
 /// 区间内的每一次禁言实际生效了多久。`events` 必须按 (人, 时间) 排好，即 [`events_since`] 的顺序。
@@ -186,22 +194,29 @@ fn terms(events: &[BanEvent], start: i64, end: i64) -> Vec<Term<'_>> {
                 continue;
             }
             let next = person.get(i + 1);
-            let gap = next.map(|next| next.time - event.time);
-            let served = if event.duration == UNKNOWN {
-                // 后面紧跟解除，这次的长度就是两者的间隔；否则只能认「不知道」。
-                match (next, gap) {
-                    (Some(next), Some(gap)) if next.duration == 0 => Some(gap),
-                    _ => None,
+            // 这一次真正结束的时刻：到期与下一条通知（解除、改判）取早的那个；
+            // 时长没读出的，只有后面紧跟解除才推得出来。
+            let real_end = match event.duration {
+                UNKNOWN => next.filter(|next| next.duration == 0).map(|next| next.time),
+                declared => {
+                    let expires = event.time.saturating_add(declared);
+                    Some(next.map_or(expires, |next| next.time.min(expires)))
                 }
-            } else {
-                Some(gap.map_or(event.duration, |gap| event.duration.min(gap)))
+            };
+            // 窗口末尾常比它先到：今天问「今日」，窗口末尾就是此刻。
+            // 只算落在窗口里的那段，一次禁言就不会把还没过去的几天记进今天。
+            let served = real_end.map(|real_end| (real_end.min(end) - event.time).max(0));
+            let cut_short = match (event.duration, real_end) {
+                (UNKNOWN, _) | (_, None) => false,
+                (declared, Some(real_end)) => real_end < event.time.saturating_add(declared),
             };
             out.push(Term {
                 member: &event.user_id,
                 operator: event.operator(),
                 served,
-                cut_short: served.is_some_and(|served| event.duration > served),
+                cut_short,
                 declared: (event.duration > 0).then_some(event.duration),
+                ongoing: real_end.is_some_and(|real_end| real_end > end),
             });
         }
     }
@@ -213,6 +228,7 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
     let mut rows: BTreeMap<&str, Tally> = BTreeMap::new();
     let mut unattributed = 0;
     let mut cut_short = 0;
+    let mut ongoing = 0;
     for term in terms(events, start, end) {
         let person = match by {
             By::Member => term.member,
@@ -235,6 +251,7 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
         });
         row.times += 1;
         cut_short += i64::from(term.cut_short);
+        ongoing += i64::from(term.ongoing);
         match term.declared {
             Some(secs) => row.declared += secs,
             None => row.undeclared += 1,
@@ -251,6 +268,7 @@ pub fn tally(events: &[BanEvent], start: i64, end: i64, by: By) -> Board {
         rows: rows.into_values().collect(),
         unattributed,
         cut_short,
+        ongoing,
     }
 }
 
@@ -303,6 +321,47 @@ mod tests {
         let events = [ev("a", 1_000, 30 * 86_400), ev("a", 1_060, 0)];
         let t = members(&events, 0, 10_000);
         assert_eq!((t[0].times, t[0].secs), (1, 60));
+    }
+
+    #[test]
+    fn a_running_ban_is_capped_by_the_window_end() {
+        // 今天上午禁言 9 天，现在才过一小时：今日榜只算这一小时，不是 9 天。
+        let day = 86_400;
+        let events = [ev("a", 10 * 3_600, 9 * day)];
+        let board = tally(&events, 0, 11 * 3_600, By::Member);
+        assert_eq!((board.rows[0].times, board.rows[0].secs), (1, 3_600));
+        assert_eq!(board.rows[0].longest, 3_600);
+        assert_eq!(board.ongoing, 1);
+        assert_eq!(board.cut_short, 0, "窗口截断不算提前解除");
+        assert!(board.rows[0].secs <= day, "今日累计不会超过一天");
+    }
+
+    #[test]
+    fn a_ban_that_outlives_the_window_counts_only_its_share() {
+        // 昨晚 23:00 禁言 2 小时，问「昨日」：只算到零点，一小时。
+        let day = 86_400;
+        let events = [ev("a", day - 3_600, 7_200)];
+        let t = members(&events, 0, day);
+        assert_eq!((t[0].times, t[0].secs, t[0].longest), (1, 3_600, 3_600));
+        // 今天再问：起于窗口之前的那次不算（按通知落在哪一天归属）。
+        assert!(members(&events, day, 2 * day).is_empty());
+    }
+
+    #[test]
+    fn a_ban_ending_exactly_at_the_window_end_is_not_ongoing() {
+        let events = [ev("a", 1_000, 600)];
+        let board = tally(&events, 0, 1_600, By::Member);
+        assert_eq!(board.rows[0].secs, 600);
+        assert_eq!(board.ongoing, 0);
+    }
+
+    #[test]
+    fn unknown_length_lifted_after_the_window_is_capped_too() {
+        let events = [ev("a", 1_000, UNKNOWN), ev("a", 5_000, 0)];
+        let board = tally(&events, 0, 3_000, By::Member);
+        assert_eq!(board.rows[0].secs, 2_000);
+        assert_eq!(board.ongoing, 1);
+        assert_eq!(board.cut_short, 0);
     }
 
     #[test]
@@ -399,7 +458,11 @@ mod tests {
             ev("a", 1_100, 0), // 区间之后的解除也要截断上一次
         ];
         let t = members(&events, 900, 1_050);
-        assert_eq!((t[0].times, t[0].secs), (1, 100));
+        assert_eq!(
+            (t[0].times, t[0].secs),
+            (1, 50),
+            "只算落在窗口里的五十秒；解除在窗口之后，不把窗口外的时长算进来"
+        );
         assert!(members(&events, 2_000, 3_000).is_empty());
     }
 

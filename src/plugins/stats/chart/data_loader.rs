@@ -327,7 +327,7 @@ fn user_metric(data_type: &str) -> UserMetric {
 pub enum Rank {
     /// 次数。
     Times,
-    /// 累计：每次实际禁言的时长加总。
+    /// 累计：每次实际禁言的时长加总，只算落在统计窗口里的那段；今天问就只到此刻，最多 24 小时。
     Total,
     /// 单次最长：每人名下实际禁言得最久的那一次。
     Longest,
@@ -407,6 +407,7 @@ pub async fn fetch_ban_bars(
         rows: mut tallies,
         unattributed,
         cut_short,
+        ongoing,
     } = bans::tally(&events, start_time, end_time, board.by);
     // 灰条所写榜看的是灰条上有没有写时长；其余按时长排的榜看实际时长算没算出来
     let unknown: i64 = match board.rank {
@@ -421,8 +422,14 @@ pub async fn fetch_ban_bars(
     match board.rank {
         // 实际时长的榜：禁言 1 天、几秒后就被解除的，只算那几秒；不说一声，
         // 榜上的数字对不上群里看到的灰条。
-        Rank::Total | Rank::Longest if cut_short > 0 => {
-            notes.push(format!("{cut_short} 次提前解除，按实际时长算"));
+        Rank::Total | Rank::Longest => {
+            if cut_short > 0 {
+                notes.push(format!("{cut_short} 次提前解除，按实际时长算"));
+            }
+            // 还没到期的禁言只算到此刻，说一声，免得拿 9 天的灰条去对榜上的几小时。
+            if ongoing > 0 {
+                notes.push(format!("{ongoing} 次仍在禁言，只算到此刻"));
+            }
         }
         // 灰条所写榜：数字就是灰条上的字，先把口径写明，再交代其中有几次后来提前解除了——
         // 这些次数照记，读者才不会拿它去对实际禁言的时长。
