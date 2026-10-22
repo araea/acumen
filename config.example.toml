@@ -185,6 +185,7 @@ black = []
 [welcome.groups]
 
 # 防撤回：有人撤回消息时把原文转存到 target。连撤多条合成一条合并转发。
+# 图和语音收到时就先取到本地（data/anti_recall/media，随原文一起过期），撤回后也发得出来。
 [anti_recall]
 enabled = false
 # 存到哪：群号；或 private:QQ号；留空 = 号主自己的私聊（QQ 里和自己的会话）。插件页能看到去处与转存计数，也能先发一条试试。
@@ -193,6 +194,8 @@ target = ""
 private = true
 # 管理员撤回别人的消息也存（清广告时会多一些）。
 operator_recalls = true
+# 号主在 QQ 里亲手发、又亲手撤回的也存（拿自己的消息试的时候打开）。机器人自己发的不存。
+self_recalls = false
 # 这些人的撤回不管（QQ 号）。
 ignore_users = []
 # 原文在内存里留多久（分钟，1–1440）。缓存外的只能从消息记录里找回文字摘要。

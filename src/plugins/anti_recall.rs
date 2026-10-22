@@ -4,26 +4,35 @@
 //! 内存（[`on_receive`]，按收到顺序，插件消费与否都不影响），留 `retention_minutes`。
 //! 缓存里没有的（进程重启之前的）再去消息记录库里找一行摘要文字，图就没有了。
 //!
+//! 图和语音收到时就取到本地（`data/anti_recall/media`，跟着缓存一起过期）：实现端给的
+//! `internal:` 链接是照原消息现取的，消息一撤回多半就取不到了，而一个取不开的链接会让
+//! 整条转存连文字一起发不出去。转存时把本地那份内联上去（发送层会 `upload.create`）；
+//! 还是没取到的换成一句「[图片（没取到）]」。真发不出去，再退一步只发文字。
+//!
 //! 一口气撤一串（管理员清屏）不该刷爆存储频道：同一个去处两秒内的撤回攒成一批，
 //! 一条就直接转，多条合成一条合并转发，每个节点署原作者。
 //!
 //! 去处留空就发到号主自己的私聊（QQ 里自己和自己的那个会话）：开了就能看到，不必先填什么。
-//! 控制台的插件页会显示去处、这次运行转存了几条，也能先发一条试试（[`live`]、[`test`]）。
+//! 控制台的插件页会显示去处、这次运行转存了几条，也能先发一条试试（[`live`]、[`test`]）；
+//! 试发走框架登记的连接，不必等插件先收到一条消息。
 //!
 //! 原样再发有几处要改写：@ 到了别的会话就是 @ 一个不在场的人，改成文字「@名字」；
 //! 引用指向原会话的消息，摘掉、标一句「回复了一条消息」；语音、视频、文件不能和文字
 //! 拼成一条，跟在后面单独发。
 
-use crate::adapters::satori::{LockedWriter, send_msg};
+use crate::adapters::satori::{self, LockedWriter, send_msg};
 use crate::event::{BotStatus, Context, EventType};
 use crate::message::{Message, Segment};
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use futures_util::future::BoxFuture;
 use sea_orm::{ConnectionTrait, DbBackend, Statement};
 use serde::{Deserialize, Serialize};
+use simd_json::OwnedValue;
 use simd_json::base::ValueAsScalar;
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -41,6 +50,8 @@ pub struct Config {
     private: bool,
     /// 管理员撤回别人的消息也存（清广告时会多一些）。
     operator_recalls: bool,
+    /// 号主在 QQ 里亲手发、又亲手撤回的也存（拿自己的消息试的时候打开）。机器人自己发的不存。
+    self_recalls: bool,
     /// 这些人的撤回不管（QQ 号）。
     ignore_users: Vec<String>,
     /// 原文在内存里留多久（分钟）。普通成员只能撤回两分钟内的，管理员能撤更早的。
@@ -55,6 +66,7 @@ impl Default for Config {
             channel: ChannelConfig::default(),
             private: true,
             operator_recalls: true,
+            self_recalls: false,
             ignore_users: Vec::new(),
             retention_minutes: 120,
         }
@@ -76,6 +88,18 @@ impl PluginConfig for Config {
         Ok(())
     }
 }
+
+/// 控制台上的字段名，按这个先后排。
+pub(crate) const LABELS: &[(&str, &str)] = &[
+    ("enabled", "启用"),
+    ("target", "转存到"),
+    ("channel", "生效的群"),
+    ("private", "私聊撤回也存"),
+    ("operator_recalls", "管理员撤回的也存"),
+    ("self_recalls", "自己撤回的也存"),
+    ("ignore_users", "不管这些人"),
+    ("retention_minutes", "原文留多久（分钟）"),
+];
 
 /// 记着的一条消息。
 #[derive(Clone)]
@@ -107,7 +131,6 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
     let EventType::Satori(raw) = &ctx.event else {
         return None;
     };
-    remember(&ctx.bot, writer);
     let config = get_config_or_default::<Config>(ctx);
     let group = raw.get_str("group_id").filter(|id| !id.is_empty()).map(str::to_owned);
     match &group {
@@ -119,7 +142,11 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
         "message-created" => {
             let user = raw.get_str("user_id").unwrap_or("");
             let message_id = raw.get_str("message_id").unwrap_or("");
-            if message_id.is_empty() || user.is_empty() || user == ctx.bot.self_id() {
+            if message_id.is_empty() || user.is_empty() {
+                return None;
+            }
+            // 号主亲手发的，实现端挂的作者是 `qq-client:<号>`；机器人自己发的就是登录号本身。
+            if user == ctx.bot.self_id() && !(config.self_recalls && by_hand(raw)) {
                 return None;
             }
             let content = raw
@@ -141,12 +168,19 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 at: raw.get_i64("time").filter(|t| *t > 0).unwrap_or_else(now),
                 content,
             };
+            prefetch(&kept.content);
             let horizon = now() - i64::try_from(config.retention_minutes * 60).unwrap_or(7200);
-            let mut cache = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            while cache.front().is_some_and(|old| old.at < horizon) || cache.len() >= CACHE_LIMIT {
-                cache.pop_front();
+            let mut expired = Vec::new();
+            {
+                let mut cache = cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                while cache.front().is_some_and(|old| old.at < horizon) || cache.len() >= CACHE_LIMIT {
+                    expired.extend(cache.pop_front());
+                }
+                cache.push_back(kept);
             }
-            cache.push_back(kept);
+            for kept in &expired {
+                forget(&kept.content);
+            }
             None
         }
         "message-deleted" => {
@@ -154,7 +188,8 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
             let user = raw.get_str("user_id").unwrap_or("").to_string();
             let operator = raw.get_str("operator_id").unwrap_or("").to_string();
             let me = ctx.bot.self_id();
-            if message_id.is_empty() || user == me || operator == me {
+            // 机器人（或号主）撤别人的：那是在管群，不是要藏什么。
+            if message_id.is_empty() || (operator == me && user != me) || (user == me && !config.self_recalls) {
                 return None;
             }
             if config.ignore_users.iter().any(|id| *id == user || *id == operator) {
@@ -172,6 +207,10 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 .rev()
                 .find(|kept| kept.message_id == message_id && kept.channel_id == channel && kept.self_id == me)
                 .cloned();
+            // 自己的消息只认缓存里那些亲手发的：机器人发的不进缓存，也不该去记录库里翻。
+            if user == me && kept.is_none() {
+                return None;
+            }
             let (ctx, writer) = (ctx.clone(), writer.clone());
             Some(Box::pin(async move {
                 let kept = if let Some(kept) = kept {
@@ -195,6 +234,14 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
 /// 防撤回不处理流水线里的事：活都在 [`on_receive`] 里干完了。
 pub fn handle(ctx: Context, _writer: LockedWriter) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move { Ok(Some(ctx)) })
+}
+
+/// 号主在 QQ 客户端里亲手发的（不是机器人经实现端发的）。
+fn by_hand(raw: &crate::event::Event) -> bool {
+    raw.get("_satori")
+        .and_then(|body| body.get("user"))
+        .and_then(|user| user.get_str("id"))
+        .is_some_and(|id| id.starts_with("qq-client:"))
 }
 
 /// 缓存里没有：去消息记录库找那一行摘要（重启之前收的消息只剩文字）。
@@ -224,6 +271,175 @@ async fn from_records(ctx: &Context, message_id: &str, channel: &str) -> Option<
         at: row.try_get("", "time").unwrap_or_default(),
         content: Message::new().text(format!("{text}（只留下了文字摘要）")),
     })
+}
+
+// ==================== 媒体 ====================
+
+/// 能内联转存的媒体段；收到时就取的只有图和语音（视频、文件可能很大，撤回时才现取）。
+const MEDIA: [&str; 4] = ["image", "record", "video", "file"];
+const PREFETCH: [&str; 2] = ["image", "record"];
+const PREFETCH_LIMIT: u64 = 16 << 20;
+const LATE_LIMIT: u64 = 64 << 20;
+
+/// 资源链接 → 取到本地的那份。同一个链接只取一次：撤回时预取还没完就等它。
+type Fetched = Arc<tokio::sync::OnceCell<Option<PathBuf>>>;
+
+fn stash() -> &'static Mutex<HashMap<String, Fetched>> {
+    static STASH: OnceLock<Mutex<HashMap<String, Fetched>>> = OnceLock::new();
+    STASH.get_or_init(Default::default)
+}
+
+/// 存放目录。上次运行留下的先清掉：内存里的索引随进程没了，那些文件再也用不上。
+fn media_dir() -> Option<&'static PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = crate::storage::data_path("anti_recall").ok()?.join("media");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    })
+    .as_ref()
+}
+
+/// 媒体段的 (键, 下载地址)：键是实现端给的资源链接，下载地址是框架换好的代理 URL。
+fn media_source(segment: &Segment) -> Option<(String, String)> {
+    if !MEDIA.contains(&segment.type_.as_str()) {
+        return None;
+    }
+    let field = |key: &str| segment.data.get(key).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+    let url = field("url")?;
+    Some((field("file").unwrap_or(url).to_string(), url.to_string()))
+}
+
+fn slot(key: &str) -> Fetched {
+    stash()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(key.to_string())
+        .or_default()
+        .clone()
+}
+
+/// 收到就取：图和语音在后台落盘。
+fn prefetch(content: &Message) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    for segment in &content.0 {
+        if !PREFETCH.contains(&segment.type_.as_str()) {
+            continue;
+        }
+        let Some((key, url)) = media_source(segment) else {
+            continue;
+        };
+        let slot = slot(&key);
+        if slot.initialized() {
+            continue;
+        }
+        tokio::spawn(async move {
+            slot.get_or_init(|| fetch(key, url, PREFETCH_LIMIT)).await;
+        });
+    }
+}
+
+/// 缓存里的消息过期了：它的媒体一起删掉。
+fn forget(content: &Message) {
+    for segment in &content.0 {
+        let Some((key, _)) = media_source(segment) else {
+            continue;
+        };
+        let slot = stash()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&key);
+        if let Some(Some(path)) = slot.as_deref().and_then(tokio::sync::OnceCell::get) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+async fn fetch(key: String, url: String, limit: u64) -> Option<PathBuf> {
+    // 别一口气把实现端的下载器挤满：群里刷图时排着来。
+    static GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(3);
+    let _permit = GATE.acquire().await.ok()?;
+    let dir = media_dir()?;
+    let download = async {
+        let response = crate::http::get(&url).await?.error_for_status()?;
+        if response.content_length().is_some_and(|size| size > limit) {
+            return Ok(None);
+        }
+        let bytes = response.bytes().await?;
+        Ok::<_, reqwest::Error>((!bytes.is_empty() && bytes.len() as u64 <= limit).then_some(bytes))
+    };
+    let bytes = match tokio::time::timeout(Duration::from_secs(30), download).await {
+        Ok(Ok(Some(bytes))) => bytes,
+        Ok(Ok(None)) => {
+            debug!(target: LOG_TARGET, "{key} 太大，不留");
+            return None;
+        }
+        Ok(Err(error)) => {
+            debug!(target: LOG_TARGET, "{key} 没取到：{error}");
+            return None;
+        }
+        Err(_) => {
+            debug!(target: LOG_TARGET, "{key} 取了 30 秒没取完");
+            return None;
+        }
+    };
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    let path = dir.join(format!("{:016x}", hasher.finish()));
+    tokio::fs::write(&path, &bytes).await.ok()?;
+    Some(path)
+}
+
+fn media_label(kind: &str) -> &'static str {
+    match kind {
+        "image" => "图片",
+        "record" | "audio" => "语音",
+        "video" => "视频",
+        _ => "文件",
+    }
+}
+
+/// 转存前把媒体换成本地那份的内联字节；预取没成的再现取一次，还不行就留一句说明。
+async fn localize(content: &Message) -> Message {
+    let mut out = Message::new();
+    for segment in &content.0 {
+        let Some((key, url)) = media_source(segment) else {
+            out.0.push(segment.clone());
+            continue;
+        };
+        let limit = if PREFETCH.contains(&segment.type_.as_str()) { PREFETCH_LIMIT } else { LATE_LIMIT };
+        let slot = slot(&key);
+        let waited = tokio::time::timeout(Duration::from_secs(40), async {
+            slot.get_or_init(|| fetch(key.clone(), url.clone(), limit)).await.clone()
+        })
+        .await
+        .ok()
+        .flatten();
+        let path = match waited {
+            Some(path) => Some(path),
+            None => fetch(key, url, limit).await,
+        };
+        let bytes = match path {
+            Some(path) => tokio::fs::read(path).await.ok(),
+            None => None,
+        };
+        match bytes {
+            Some(bytes) => {
+                let mut segment = segment.clone();
+                segment.data.remove("url");
+                segment
+                    .data
+                    .insert("file".into(), OwnedValue::from(format!("base64://{}", STANDARD.encode(bytes))));
+                out.0.push(segment);
+            }
+            None => out = out.text(format!("[{}（没取到）]", media_label(&segment.type_))),
+        }
+    }
+    out
 }
 
 // ==================== 转存 ====================
@@ -275,24 +491,39 @@ fn enqueue(ctx: Context, writer: LockedWriter, config: &Config, item: Recalled) 
     }
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let batch = queue()
+        let mut batch = queue()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&key)
             .unwrap_or_default();
+        for item in &mut batch {
+            item.kept.content = localize(&item.kept.content).await;
+        }
         let count = batch.len() as u64;
         let last = batch.last().map(|item| headline(item).lines().next().unwrap_or("").to_string());
-        let result = deliver(&ctx, &writer, group.as_deref(), user.as_deref(), batch).await;
+        let (group, user) = (group.as_deref(), user.as_deref());
+        let result = match deliver(&ctx, &writer, group, user, &batch).await {
+            Ok(()) => Ok(None),
+            // 带媒体的那条发不出去（实现端拒收某个资源、合并转发太大……）：退一步只发文字，
+            // 总比整条丢了强。
+            Err(error) => {
+                warn!(target: LOG_TARGET, "撤回的消息没转存出去，改发文字：{error}");
+                send_msg(&ctx, writer.clone(), group, user, plain(&batch, &error.to_string()))
+                    .await
+                    .map(|()| Some(error.to_string()))
+                    .map_err(|second| format!("{error}；只发文字也失败：{second}"))
+            }
+        };
         let mut tally = tally();
         match result {
-            Ok(()) => {
+            Ok(degraded) => {
                 tally.forwarded += count;
                 tally.last = last.map(|line| (now(), line));
-                tally.error = None;
+                tally.error = degraded.map(|error| (now(), format!("{error}（已改发文字）")));
             }
             Err(error) => {
                 warn!(target: LOG_TARGET, "撤回的消息没转存出去：{error}");
-                tally.error = Some((now(), error.to_string()));
+                tally.error = Some((now(), error));
             }
         }
     });
@@ -360,9 +591,9 @@ async fn deliver(
     writer: &LockedWriter,
     group: Option<&str>,
     user: Option<&str>,
-    batch: Vec<Recalled>,
+    batch: &[Recalled],
 ) -> Result<(), PluginError> {
-    match batch.as_slice() {
+    match batch {
         [] => Ok(()),
         [item] => {
             let (inline, separate) = adapt(&item.kept.content);
@@ -397,6 +628,34 @@ async fn deliver(
     }
 }
 
+/// 退路：整批只用文字说一遍，媒体写成「[图片]」，其余元素照 [`adapt`] 的写法。
+fn plain(batch: &[Recalled], error: &str) -> Message {
+    let mut text = String::new();
+    for item in batch {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str(&headline(item));
+        text.push('\n');
+        for segment in &item.kept.content.0 {
+            let kind = segment.type_.as_str();
+            if MEDIA.contains(&kind) || kind == "audio" {
+                text.push_str(&format!("[{}]", media_label(kind)));
+                continue;
+            }
+            let (inline, _) = adapt(&Message(vec![segment.clone()]));
+            for part in inline.0.iter().filter(|part| part.type_ == "text") {
+                text.push_str(part.data.get("text").and_then(|v| v.as_str()).unwrap_or(""));
+            }
+            if kind == "face" || kind == "mface" {
+                text.push_str("[表情]");
+            }
+        }
+    }
+    let reason = crate::storage::truncate_chars(error, 80);
+    Message::new().text(format!("{text}\n（原样转存没发出去，只留了文字：{reason}）"))
+}
+
 // ==================== 控制台 ====================
 
 /// 这次运行的账：转存了几条、几次没找到原文、最近一条与最近一次失败。
@@ -414,30 +673,6 @@ fn tally() -> std::sync::MutexGuard<'static, Tally> {
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// 每个登录账号最近的那条连接：控制台要知道去处是谁、试发走哪条线。
-type Link = (Arc<BotStatus>, LockedWriter);
-
-fn links() -> std::sync::MutexGuard<'static, Vec<Link>> {
-    static LINKS: OnceLock<Mutex<Vec<Link>>> = OnceLock::new();
-    LINKS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn remember(bot: &Arc<BotStatus>, writer: &LockedWriter) {
-    let me = bot.self_id();
-    if me.is_empty() {
-        return;
-    }
-    let mut links = links();
-    match links.iter_mut().find(|(known, _)| known.self_id() == me) {
-        Some(link) if Arc::ptr_eq(&link.1, writer) => {}
-        Some(link) => *link = (bot.clone(), writer.clone()),
-        None => links.push((bot.clone(), writer.clone())),
-    }
 }
 
 fn describe(bot: &BotStatus, config: &Config) -> String {
@@ -459,9 +694,9 @@ fn describe(bot: &BotStatus, config: &Config) -> String {
 pub(crate) fn live(ctx: &Context) -> serde_json::Value {
     let config = get_config_or_default::<Config>(ctx);
     let mut lines = Vec::new();
-    let links = links().clone();
+    let links = satori::logins();
     if links.is_empty() {
-        lines.push("还没收到过消息，连上账号后这里显示转存的去处。".to_string());
+        lines.push("还没连上账号，连上后这里显示转存的去处。".to_string());
     }
     for (bot, _) in &links {
         let lead = if config.enabled { "转存到" } else { "打开后转存到" };
@@ -484,6 +719,9 @@ pub(crate) fn live(ctx: &Context) -> serde_json::Value {
             tally.missed, config.retention_minutes
         ));
     }
+    if !config.self_recalls {
+        lines.push("自己撤回自己的消息不转存；想拿自己的消息试，打开「自己撤回的也存」。".to_string());
+    }
     if let Some((at, error)) = &tally.error {
         lines.push(format!("{} 转存失败：{error}", clock(*at)));
     }
@@ -493,9 +731,9 @@ pub(crate) fn live(ctx: &Context) -> serde_json::Value {
 /// 往去处发一条说明，看看那边收不收得到。
 pub(crate) async fn test(ctx: &Context) -> Result<String, String> {
     let config = get_config_or_default::<Config>(ctx);
-    let links = links().clone();
+    let links = satori::logins();
     if links.is_empty() {
-        return Err("还没连上账号，等机器人收到第一条消息再试".into());
+        return Err("还没连上账号，等机器人连上再试".into());
     }
     let mut sent = Vec::new();
     for (bot, writer) in links {

@@ -240,6 +240,7 @@ fn live(name: &str, ctx: &crate::event::Context) -> Value {
 fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
     match name {
         "welcome" => crate::plugins::welcome::LABELS,
+        "anti_recall" => crate::plugins::anti_recall::LABELS,
         _ => &[],
     }
 }

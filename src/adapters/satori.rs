@@ -425,6 +425,14 @@ fn register_route(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     routes.push(Route { client, bot });
 }
 
+/// 现在连着的每条连接及其登录：不等收到事件就要往外发的（控制台试发）用它挑线路。
+pub fn logins() -> Vec<(Arc<BotStatus>, LockedWriter)> {
+    routes()
+        .iter()
+        .map(|route| (route.bot.clone(), route.client.clone()))
+        .collect()
+}
+
 /// 目录：每个频道、群、用户 ID 是在哪条连接上见到的（值是 `connection_key`）。
 ///
 /// Satori 的 ID 只在各自平台内唯一，插件手里却只有 ID。回话时事件自带的连接就是对的；
