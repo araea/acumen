@@ -552,6 +552,34 @@ fn resolve_room_model(
     (engine, model)
 }
 
+/// `agent_owner_only` 开着时，别人叫智能体房间（对话、重来、停、导出……一概）就挡下，返回真。
+/// 在取引用、收文件之前判，客人发来的文件不会先落进智能体的收件箱。
+pub(crate) async fn owner_only_denied(ctx: &Context, writer: &LockedWriter, name: &str, mgr: &Manager) -> bool {
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+    if !oai.agent_owner_only || crate::access::is_manager(ctx) {
+        return false;
+    }
+    let is_agent = mgr.config.read().await.agents.iter().any(|a| a.name == name && a.uses_agent());
+    if !is_agent {
+        return false;
+    }
+    if let Some(event) = ctx.as_message()
+        && first_denial(event.user_id(), name)
+    {
+        reply_text(ctx, writer, &event, format!("🔒 {name} 只对号主与机器人管理员开放")).await;
+    }
+    true
+}
+
+/// 被挡下的人，同一间房十分钟内只告诉一次：再叫只是没回应，不在群里来回刷「不开放」。
+fn first_denial(user: &str, room: &str) -> bool {
+    type Told = std::collections::HashMap<(String, String), std::time::Instant>;
+    static TOLD: std::sync::LazyLock<std::sync::Mutex<Told>> = std::sync::LazyLock::new(Default::default);
+    let mut told = TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    told.retain(|_, at| at.elapsed() < std::time::Duration::from_mins(10));
+    told.insert((user.to_string(), room.to_string()), std::time::Instant::now()).is_none()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn chat(
     name: &str,

@@ -95,6 +95,10 @@ pub(crate) struct OaiConfig {
     /// 内置 agent 房间没指定模型（留空或写 `agent`）时用哪个模型。
     /// 写 `供应商/模型` 时按 `[oai.providers]` 取接口；留空则用 oai 的默认模型。
     pub(crate) agent_default_model: String,
+    /// 智能体房间（管家大人与 `##名字 agent` 建的）只给号主与机器人管理员（`[ctl] admins`）用。
+    /// 智能体能联网、读写文件、发消息、管群，权限比普通对话房间高得多；开了以后别人叫它
+    /// 只回一句说明（同一人十分钟内只说一次），普通对话房间不受影响。
+    pub(crate) agent_owner_only: bool,
     /// 单次回复的总时间预算。
     request_timeout_seconds: u64,
     /// 单次模型请求静默多少秒算卡死（内置 agent 一次性拿完整回复，
@@ -155,6 +159,7 @@ impl Default for OaiConfig {
         Self {
             enabled: true,
             agent_default_model: "deepseek/deepseek-flash".to_string(),
+            agent_owner_only: false,
             request_timeout_seconds: 300,
             request_stall_seconds: 180,
             plain_text_max_chars: 120,
@@ -411,6 +416,9 @@ pub fn handle(
 
         // 4. 智能体指令/对话解析
         if let Some(cmd) = parser::parse_agent_cmd(&raw_text, &agents) {
+            if logic::owner_only_denied(&ctx, &writer, &cmd.agent, mgr).await {
+                return Ok(None);
+            }
             let (quote, imgs, files) = utils::get_full_content(&ctx, &writer, Some(&cmd.agent)).await;
 
             // 拼接提示词：引用 + 用户输入参数

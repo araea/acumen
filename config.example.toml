@@ -519,6 +519,9 @@ enabled = true
 # 内置 agent 房间（管家大人、`##研究 agent`）没写模型时用哪个：留空或写 `agent` 的房间都取这里的值。
 # 写成 `供应商/模型` 时按下面的 [oai.providers] 取接口；留空则退到 oai 的默认模型。
 agent_default_model = "deepseek/deepseek-flash"
+# 智能体房间（管家大人与 `##名字 agent` 建的）只给号主与机器人管理员（[ctl] admins）用。
+# 智能体能联网、读写文件、发消息、管群，权限比普通对话房间高；开了以后别人叫它只回一句说明，普通房间不受影响。
+agent_owner_only = false
 # 单次回复的总时间预算（秒）。
 request_timeout_seconds = 300
 # 单次模型请求静默这么多秒算卡死，掐掉重来一次（没有中间事件可看，所以这是单次
