@@ -185,7 +185,7 @@ black = []
 [welcome.groups]
 
 # 防撤回：有人撤回消息时把原文转存到 target。连撤多条合成一条合并转发。
-# 图和语音收到时就先取到本地（data/anti_recall/media，随原文一起过期），撤回后也发得出来。
+# 图和语音收到时就先取到本地（data/anti_recall/media，留半小时、至多 100 MB），撤回后也发得出来。
 [anti_recall]
 enabled = false
 # 存到哪：群号；或 private:QQ号；留空 = 号主自己的私聊（QQ 里和自己的会话）。插件页能看到去处与转存计数，也能先发一条试试。

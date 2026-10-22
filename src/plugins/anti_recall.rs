@@ -4,7 +4,7 @@
 //! 内存（[`on_receive`]，按收到顺序，插件消费与否都不影响），留 `retention_minutes`。
 //! 缓存里没有的（进程重启之前的）再去消息记录库里找一行摘要文字，图就没有了。
 //!
-//! 图和语音收到时就取到本地（`data/anti_recall/media`，跟着缓存一起过期）：实现端给的
+//! 图和语音收到时就取到本地（`data/anti_recall/media`，留半小时、至多 100 MB）：实现端给的
 //! `internal:` 链接是照原消息现取的，消息一撤回多半就取不到了，而一个取不开的链接会让
 //! 整条转存连文字一起发不出去。转存时把本地那份内联上去（发送层会 `upload.create`）；
 //! 还是没取到的换成一句「[图片（没取到）]」。真发不出去，再退一步只发文字。
@@ -280,6 +280,10 @@ const MEDIA: [&str; 4] = ["image", "record", "video", "file"];
 const PREFETCH: [&str; 2] = ["image", "record"];
 const PREFETCH_LIMIT: u64 = 16 << 20;
 const LATE_LIMIT: u64 = 64 << 20;
+/// 本地那份最多留多久、目录最多多大：普通成员只能撤两分钟内的，半小时足够；
+/// 刷图高峰也不让它涨过这个数，超了先删最旧的。
+const MEDIA_MINUTES: u64 = 30;
+const MEDIA_BUDGET: u64 = 100 << 20;
 
 /// 资源链接 → 取到本地的那份。同一个链接只取一次：撤回时预取还没完就等它。
 type Fetched = Arc<tokio::sync::OnceCell<Option<PathBuf>>>;
@@ -391,7 +395,34 @@ async fn fetch(key: String, url: String, limit: u64) -> Option<PathBuf> {
     key.hash(&mut hasher);
     let path = dir.join(format!("{:016x}", hasher.finish()));
     tokio::fs::write(&path, &bytes).await.ok()?;
+    let _ = tokio::task::spawn_blocking(|| trim(dir)).await;
     Some(path)
+}
+
+/// 删掉过了 [`MEDIA_MINUTES`] 的，再从最旧的删起直到不超过 [`MEDIA_BUDGET`]。
+/// 删掉的那份转存时会再现取一次，取不到就写「没取到」。
+fn trim(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let horizon = std::time::SystemTime::now() - Duration::from_secs(MEDIA_MINUTES * 60);
+    let mut files: Vec<_> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok()?;
+            Some((meta.modified().ok()?, meta.len(), entry.path()))
+        })
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|(_, size, _)| size).sum();
+    for (modified, size, path) in files {
+        if modified >= horizon && total <= MEDIA_BUDGET {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total -= size;
+        }
+    }
 }
 
 fn media_label(kind: &str) -> &'static str {
