@@ -189,9 +189,9 @@ const JOIN_TEXT: &[&str] = &[
 ];
 const LEAVE_TEXT: &str = "{name}（{user_id}）离开了群聊。";
 const KICKED_TEXT: &str = "{name}（{user_id}）已被 {operator} 移出群聊。";
-const PROMPT_TEXT: &str = "请在 {timeout} 内{task}完成验证，超时会被{punish}。";
-const REMIND_TEXT: &str = "{at} 验证还剩 {remaining}：{task}就好，超时会被{punish}。";
-const WRONG_TEXT: &str = "{at} 还不对哦，{task}就好{chances}。";
+const PROMPT_TEXT: &str = "请在 {timeout}内{task}，完成验证；超时会被{punish}。";
+const REMIND_TEXT: &str = "{at} 验证还剩 {remaining}：请{task}，超时会被{punish}。";
+const WRONG_TEXT: &str = "{at} 还不对哦，请{task}{chances}。";
 const PASS_TEXT: &str = "{at} 验证通过，欢迎正式加入～";
 const FAIL_TEXT: &str = "{name} 未能完成入群验证，已{punish}。";
 const REJECT_MESSAGE: &str = "附言没有对上入群问题，看清问题再来申请吧～";
@@ -1246,8 +1246,15 @@ async fn run_command(ctx: &Context, writer: &LockedWriter, config: &Config, grou
             }
         }
         "放行" | "通过" => {
+            // 指令后面的 @ 留在参数里，指令前面的（引用回复自带的那个）在 at_ids 里；也认直接写号码。
             let mut ids = matched.at_ids.clone();
+            ids.extend(matched.args.iter().filter(|seg| seg.get_str("type") == Some("at")).filter_map(|seg| {
+                let data = seg.get("data")?;
+                data.get_str("qq").map(str::to_owned).or_else(|| data.get_i64("qq").map(|n| n.to_string()))
+            }));
             ids.extend(rest.split_whitespace().filter(|w| w.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned));
+            ids.retain(|id| id != &ctx.bot.self_id());
+            ids.dedup();
             if ids.is_empty() {
                 reply("要放行谁？发「欢迎 放行 @某人」".into()).await?;
                 return Ok(true);
@@ -1285,7 +1292,7 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     let welcome = e.join && !e.join_text.silent();
     let mut join = format!("· 欢迎：{}", onoff(welcome));
     if welcome {
-        let mut bits = vec![format!("{} 种说法轮着用", e.join_text.count())];
+        let mut bits = vec![format!("{} 种说法随机发", e.join_text.count())];
         if !e.images.is_empty() {
             bits.push(format!("配图 {} 张", e.images.len()));
         }
@@ -1333,10 +1340,11 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     lines.join("\n")
 }
 
-/// 剩余秒数凑个整：倒计时说「还剩 1 分钟」而不是「还剩 58 秒」。
+/// 剩余秒数凑个整：倒计时说「还剩 1 分钟」而不是「还剩 58 秒」（计时器 5 秒一跳，到点时总差几秒）。
+/// 两分钟以上往下取整到分钟——宁可说少，别让人以为还有 5 分钟、其实只剩 4 分多。
 fn remaining_round(seconds: i64) -> u64 {
     let seconds = seconds.max(0).unsigned_abs();
-    if seconds >= 120 { seconds.div_ceil(60) * 60 } else { seconds.div_ceil(10) * 10 }
+    if seconds >= 120 { seconds / 60 * 60 } else { seconds.div_ceil(10) * 10 }
 }
 
 /// 把一条提示对指令发出人发一遍，和真的一模一样（只是不开始验证、不定时撤回）。
@@ -1646,17 +1654,17 @@ pub(crate) fn templates(current: &toml::Value) -> Value {
         })
         .collect();
     let fields = [
-        ("join.text", Join, "新人进群时说的话"),
-        ("leave.text", Leave, "有人自己退群时说的话"),
-        ("leave.kicked_text", Kicked, "有人被移出时说的话"),
-        ("verify.prompt_text", Prompt, "接在欢迎后面的验证说明"),
-        ("verify.remind_text", Remind, "倒计时提醒"),
-        ("verify.wrong_text", Wrong, "答错时回的话"),
-        ("verify.pass_text", Pass, "通过时说的话"),
-        ("verify.fail_text", Fail, "超时或答错次数用完、处理之后说的话"),
-        ("groups.*.join_text", Join, "这个群的欢迎词"),
-        ("groups.*.leave_text", Leave, "这个群的送别"),
-        ("groups.*.kicked_text", Kicked, "这个群有人被移出时说的话"),
+        ("join.text", Join, "新人进群时 @ 他说的话。写几种说法，每次随机发一种，天天进人也不像复读机；全部删掉就不发。"),
+        ("leave.text", Leave, "有人自己退群时说的话；全部删掉就不说。"),
+        ("leave.kicked_text", Kicked, "有人被移出时说的话；全部删掉就不说。"),
+        ("verify.prompt_text", Prompt, "接在欢迎后面的验证说明，告诉新人要做什么、有多久、超时会怎样。"),
+        ("verify.remind_text", Remind, "倒计时提醒：到了「剩这些秒时提醒」里的时间点就发，新的一条顶替旧的。"),
+        ("verify.wrong_text", Wrong, "答错时回的话，15 秒内只回一次；全部删掉就不回。"),
+        ("verify.pass_text", Pass, "通过时说的话；全部删掉就不说。"),
+        ("verify.fail_text", Fail, "超时或答错次数用完、处理之后说的话；全部删掉就不说。"),
+        ("groups.*.join_text", Join, "这个群单独的欢迎词。"),
+        ("groups.*.leave_text", Leave, "这个群有人自己退群时说的话。"),
+        ("groups.*.kicked_text", Kicked, "这个群有人被移出时说的话。"),
     ];
     let fields: serde_json::Map<String, Value> = fields
         .iter()
@@ -1674,56 +1682,65 @@ pub(crate) fn templates(current: &toml::Value) -> Value {
 }
 
 /// 控制台表单里字段的中文名。键名照旧显示在旁边，`/ctl` 用的还是它。
-pub(crate) fn labels() -> Value {
-    const LABELS: &[(&str, &str)] = &[
-        ("channel", "生效范围"),
-        ("join", "欢迎"),
-        ("join.enabled", "进群时欢迎"),
-        ("join.text", "欢迎词"),
-        ("join.images", "配图"),
-        ("join.merge_seconds", "合并欢迎（秒）"),
-        ("join.recall_seconds", "欢迎自动撤回（秒）"),
-        ("leave", "送别"),
-        ("leave.enabled", "退群时说一声"),
-        ("leave.text", "主动退群"),
-        ("leave.kicked_text", "被移出"),
-        ("leave.recall_seconds", "送别自动撤回（秒）"),
-        ("verify", "入群验证"),
-        ("verify.enabled", "新人要先验证"),
-        ("verify.mode", "验证方式"),
-        ("verify.answers", "口令"),
-        ("verify.timeout_seconds", "时限（秒）"),
-        ("verify.attempts", "可答错次数"),
-        ("verify.remind_seconds", "剩这些秒时提醒"),
-        ("verify.action", "超时怎么办"),
-        ("verify.mute_seconds", "禁言多久（秒）"),
-        ("verify.kick_permanent", "移出后不许再申请"),
-        ("verify.recall_unverified", "撤回验证前的发言"),
-        ("verify.prompt_text", "验证说明"),
-        ("verify.remind_text", "倒计时提醒"),
-        ("verify.wrong_text", "答错时"),
-        ("verify.pass_text", "通过时"),
-        ("verify.fail_text", "未通过时"),
-        ("verify.recall_seconds", "结果自动撤回（秒）"),
-        ("approve", "加群申请"),
-        ("approve.enabled", "自动审批"),
-        ("approve.keywords", "附言关键词"),
-        ("approve.reject", "对不上就拒绝"),
-        ("approve.reject_message", "拒绝理由"),
-        ("groups", "按群单独设置"),
-        ("groups.*.join_enabled", "进群时欢迎"),
-        ("groups.*.join_text", "欢迎词"),
-        ("groups.*.images", "配图"),
-        ("groups.*.leave_enabled", "退群时说一声"),
-        ("groups.*.leave_text", "主动退群"),
-        ("groups.*.kicked_text", "被移出"),
-        ("groups.*.verify_enabled", "新人要先验证"),
-        ("groups.*.verify_mode", "验证方式"),
-        ("groups.*.answers", "口令"),
-        ("groups.*.approve_enabled", "自动审批"),
-        ("groups.*.keywords", "附言关键词"),
-    ];
-    LABELS.iter().map(|(path, label)| (path.to_string(), Value::from(*label))).collect::<serde_json::Map<_, _>>().into()
+pub(crate) const LABELS: &[(&str, &str)] = &[
+    ("channel", "生效范围"),
+    ("join", "欢迎"),
+    ("join.enabled", "进群时欢迎"),
+    ("join.text", "欢迎词"),
+    ("join.images", "配图"),
+    ("join.merge_seconds", "合并欢迎（秒）"),
+    ("join.recall_seconds", "欢迎自动撤回（秒）"),
+    ("leave", "送别"),
+    ("leave.enabled", "退群时说一声"),
+    ("leave.text", "主动退群"),
+    ("leave.kicked_text", "被移出"),
+    ("leave.recall_seconds", "送别自动撤回（秒）"),
+    ("verify", "入群验证"),
+    ("verify.enabled", "新人要先验证"),
+    ("verify.mode", "验证方式"),
+    ("verify.answers", "口令"),
+    ("verify.timeout_seconds", "时限（秒）"),
+    ("verify.attempts", "可答错次数"),
+    ("verify.remind_seconds", "剩这些秒时提醒"),
+    ("verify.action", "超时怎么办"),
+    ("verify.mute_seconds", "禁言多久（秒）"),
+    ("verify.kick_permanent", "移出后不许再申请"),
+    ("verify.recall_unverified", "撤回验证前的发言"),
+    ("verify.prompt_text", "验证说明"),
+    ("verify.remind_text", "倒计时提醒"),
+    ("verify.wrong_text", "答错时"),
+    ("verify.pass_text", "通过时"),
+    ("verify.fail_text", "未通过时"),
+    ("verify.recall_seconds", "结果自动撤回（秒）"),
+    ("approve", "加群申请"),
+    ("approve.enabled", "自动审批"),
+    ("approve.keywords", "附言关键词"),
+    ("approve.reject", "对不上就拒绝"),
+    ("approve.reject_message", "拒绝理由"),
+    ("groups", "按群单独设置"),
+    ("groups.*.join_enabled", "进群时欢迎"),
+    ("groups.*.join_text", "欢迎词"),
+    ("groups.*.images", "配图"),
+    ("groups.*.leave_enabled", "退群时说一声"),
+    ("groups.*.leave_text", "主动退群"),
+    ("groups.*.kicked_text", "被移出"),
+    ("groups.*.verify_enabled", "新人要先验证"),
+    ("groups.*.verify_mode", "验证方式"),
+    ("groups.*.answers", "口令"),
+    ("groups.*.approve_enabled", "自动审批"),
+    ("groups.*.keywords", "附言关键词"),
+];
+
+/// 只在某个取值下才用得到的项：界面在用不到时说一句，免得人改了半天没反应。
+pub(crate) fn depends() -> Value {
+    let checks = ["answer", "code", "math"];
+    json!({
+        "verify.answers": { "on": "verify.mode", "in": ["answer"] },
+        "verify.attempts": { "on": "verify.mode", "in": checks },
+        "verify.wrong_text": { "on": "verify.mode", "in": checks },
+        "verify.mute_seconds": { "on": "verify.action", "in": ["mute"] },
+        "verify.kick_permanent": { "on": "verify.action", "in": ["kick"] },
+    })
 }
 
 /// 下拉框里每个取值的说法。
@@ -1823,6 +1840,13 @@ mod tests {
         assert_eq!(table["leave"]["kicked_text"].as_str(), Some("{name} 走了"));
         assert_eq!(table["join"]["text"].as_str(), Some("自己写的欢迎"));
         assert!(!Config::migrate(&mut table), "第二次没有可改的");
+    }
+
+    #[test]
+    fn remaining_never_overstates_long_waits() {
+        assert_eq!(remaining_round(292), 240);
+        assert_eq!(remaining_round(57), 60);
+        assert_eq!(remaining_round(-3), 0);
     }
 
     #[test]

@@ -1739,18 +1739,89 @@
     }
   }
 
-  /** 配置表单。叶子收成一组分段列表（顶层叫「常规」），每个子表另起一块：
-   *  同一层里叶子在前、子表在后，分段列表才不会被一张子表从中间隔开。 */
-  function configForm(plugin) {
-    const ctx = {
-      name: plugin.name,
+  /** 插件详情里画表单要的那几样，进表单上下文（重取详情时也走这里，免得两处各抄一份）。 */
+  function absorb(ctx, plugin) {
+    Object.assign(ctx, {
       help: plugin.field_help || {},
       options: plugin.field_options || {},
       maps: plugin.maps || {},
       defaults: plugin.defaults || {},
+      config: plugin.config || {},
+      order: plugin.field_order || [],
+      labels: plugin.labels || {},
+      optionLabels: plugin.option_labels || {},
+      depends: plugin.depends || {},
+      templates: plugin.templates || null,
+    });
+  }
+
+  /** 映射表里一项的字段写成 `表.*.字段`：中文名、先后、模板说明都按这个通配路径登记。 */
+  function starPath(ctx, path) {
+    const inside = mapOf(ctx, path);
+    return inside?.field ? `${inside.map}.*.${inside.field}` : path;
+  }
+
+  const labelOf = (ctx, path) => ctx.labels?.[path] || ctx.labels?.[starPath(ctx, path)] || "";
+  const optionLabel = (ctx, path, value) => (ctx.optionLabels?.[path] || ctx.optionLabels?.[starPath(ctx, path)] || {})[value] || "";
+
+  /** 同一层里的先后：照配置参考里写的顺序（后端 field_order），没登记的按键名排在后面。 */
+  function byOrder(ctx, base) {
+    const rank = (key) => {
+      const index = ctx.order.indexOf(starPath(ctx, base ? `${base}.${key}` : key));
+      return index < 0 ? Infinity : index;
     };
+    return ([a], [b]) => rank(a) - rank(b) || (a < b ? -1 : a > b ? 1 : 0);
+  }
+
+  /** 名字：有中文名时中文名在前、键名作小字跟在后面（`/ctl` 认的还是键名）；没有就只有键名。 */
+  const keyName = (ctx, path, key) => {
+    const label = labelOf(ctx, path);
+    return label ? h`<span class="field-name">${label}</span> <code class="field-key">${key}</code>` : h`<code>${key}</code>`;
+  };
+
+  /** 有了中文名，说明开头再念一遍名字（「超时怎么办：……」「入群验证：……」）就是重复，剪掉。 */
+  function plainHelp(ctx, path, text) {
+    const parent = path.split(".").slice(0, -1).join(".");
+    for (const name of [labelOf(ctx, path), parent && labelOf(ctx, parent)]) {
+      if (name && text.startsWith(`${name}：`)) return text.slice(name.length + 1);
+    }
+    return text;
+  }
+
+  /** 以秒计的数字旁边换算成人话（300 → 5 分钟），改的时候跟着变。 */
+  const SECONDS = /_seconds$/;
+  function secondsText(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return "";
+    if (n % 86400 === 0) return `${n / 86400} 天`;
+    if (n % 3600 === 0) return `${n / 3600} 小时`;
+    if (n >= 60) return n % 60 ? `${Math.floor(n / 60)} 分 ${n % 60} 秒` : `${n / 60} 分钟`;
+    return "";
+  }
+
+  /** 只在某个取值下才用得到的项：那一项现在不是这些值时，行里说一句。 */
+  function mootNote(ctx, path) {
+    const rule = ctx.depends?.[path];
+    if (!rule) return "";
+    const current = valueAt(ctx.config, rule.on);
+    const wanted = rule.in.map((value) => `「${optionLabel(ctx, rule.on, value) || value}」`).join("或");
+    const name = labelOf(ctx, rule.on) || rule.on;
+    return h`<p class="field-moot" data-moot-on="${rule.on}" data-moot-in="${rule.in.join(" ")}"${attr(rule.in.includes(current), "hidden")}>
+      ${icon("info")}<span>${name}选${wanted}时才用得到。</span></p>`;
+  }
+
+  /** 下拉框改了：依赖它的那几行跟着显示或收起「用不到」的说明。 */
+  function paintMoot(form, path, value) {
+    for (const note of $$(`[data-moot-on="${CSS.escape(path)}"]`, form)) note.hidden = note.dataset.mootIn.split(" ").includes(value);
+  }
+
+  /** 配置表单。叶子收成一组分段列表（顶层叫「常规」），每个子表另起一块：
+   *  同一层里叶子在前、子表在后，分段列表才不会被一张子表从中间隔开。 */
+  function configForm(plugin) {
+    const ctx = { name: plugin.name };
+    absorb(ctx, plugin);
     configs.set(plugin.name, ctx);
-    const entries = Object.entries(plugin.config).filter(([key]) => key !== "enabled");
+    const entries = Object.entries(plugin.config).filter(([key]) => key !== "enabled").sort(byOrder(ctx, ""));
     const field = ([key, value]) => configField(key, key, value, ctx);
     const loose = entries.filter(([, value]) => !isTable(value));
     const tables = entries.filter(([, value]) => isTable(value));
@@ -1767,6 +1838,11 @@
     };
   }
 
+  const legendName = (ctx, path, key) => {
+    const label = labelOf(ctx, path);
+    return label ? h`<span class="legend-name">${label}</span><code class="legend-key">${key}</code>` : key;
+  };
+
   /** 子表里的排序：总开关（enabled）打头，叶子在前，子表在后。 */
   const fieldOrder = ([keyA, a], [keyB, b]) =>
     (keyB === "enabled" && typeof b === "boolean") - (keyA === "enabled" && typeof a === "boolean") || isTable(a) - isTable(b);
@@ -1775,25 +1851,27 @@
    *  名字（键）与说明各占一行，说明挂在控件的 aria-describedby 上，不混进控件的名字。 */
   function configField(path, key, value, ctx, { master = false } = {}) {
     const id = `f${++fieldSeq}`;
-    const description = helpFor(ctx, path);
+    const description = templateOf(ctx, path)?.about || plainHelp(ctx, path, helpFor(ctx, path));
     const desc = description ? `${id}-desc` : "";
     const meta = rowMeta(ctx, path, value, key);
-    const search = `${path} ${description}`.toLowerCase();
+    const search = `${path} ${labelOf(ctx, path)} ${description}`.toLowerCase();
     const text = (label) => h`<div class="field-text">
         <div class="field-top">${label}${master ? h`<span class="tag">总开关</span>` : ""}<span class="mod-tag"${attr(!meta.modified, "hidden")}>已改</span>${meta.action}</div>
         ${description ? h`<span class="field-hint" id="${desc}">${description}</span>` : ""}
+        ${mootNote(ctx, path)}
       </div>`;
-    const named = h`<label class="field-label" for="${id}"><code>${key}</code></label>`;
+    const name = keyName(ctx, path, key);
+    const named = h`<label class="field-label" for="${id}">${name}</label>`;
     const row = (cls, inner, extra = "") =>
       h`<div class="${cls} setting" data-setting="${path}" data-search="${search}"${attr(meta.modified, "data-modified")}${raw(extra)}>${inner}</div>`;
 
     if (isTable(value) && ctx.maps[path]) return mapEditor(path, key, value, ctx.maps[path], ctx);
     if (isTable(value)) {
-      const children = Object.entries(value).sort(fieldOrder);
+      const children = Object.entries(value).sort((a, b) => fieldOrder(a, b) || byOrder(ctx, path)(a, b));
       const hasMaster = typeof value.enabled === "boolean";
       const about = ctx.help[path];
-      return h`<fieldset class="config-group" data-group="${path}" data-search="${`${path} ${about || ""}`.toLowerCase()}"${attr(hasMaster && !value.enabled, "data-off")}>
-        <legend class="config-legend">${key}</legend>
+      return h`<fieldset class="config-group" data-group="${path}" data-search="${`${path} ${labelOf(ctx, path)} ${about || ""}`.toLowerCase()}"${attr(hasMaster && !value.enabled, "data-off")}>
+        <legend class="config-legend">${legendName(ctx, path, key)}</legend>
         ${about ? h`<p class="config-about">${about}</p>` : ""}
         ${children.map(([child, item], index) =>
           index === 0 && hasMaster
@@ -1806,7 +1884,7 @@
     if (ctx.options[path]?.length) {
       return row("field", h`${text(named)}
         <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}"${desc ? h` aria-describedby="${desc}"` : ""}>
-        ${[...new Set([value, ...ctx.options[path]])].map((option) => h`<option value="${option}"${attr(option === value, "selected")}>${option}</option>`)}
+        ${[...new Set([value, ...ctx.options[path]])].map((option) => h`<option value="${option}"${attr(option === value, "selected")}>${optionLabel(ctx, path, option) || option}</option>`)}
         </select>${icon("keyboard_arrow_down")}</span>`, ' data-row="short"');
     }
     if (Array.isArray(value)) {
@@ -1815,17 +1893,19 @@
         const role = /(^|\.)channel\.white$/.test(path) ? "channel-white" : /(^|\.)channel\.black$/.test(path) ? "channel-black" : "";
         const fallback = { "channel-white": "非空时，只在名单里的群生效。", "channel-black": "名单里的群一律不生效，优先于白名单。" }[role];
         const hint = description || fallback || (kind === "user" ? "用户账号列表。" : "群号列表。");
-        const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role];
+        const title = { "channel-white": "白名单", "channel-black": "黑名单" }[role] || labelOf(ctx, path);
         return row("", picker({
           id, kind, mode: "save", ids: value, path, role, title: title || key,
           label: h`${title ? h`<span>${title}</span> ` : ""}<code>${key}</code><span class="field-hint">${hint}</span>`,
         }));
       }
+      const spec = templateOf(ctx, path);
+      if (spec) return row("tpl-row", h`${text(h`<span class="field-label" id="${id}-label">${name}</span>`)}${templateBody(id, path, value, ctx, spec)}`);
       const shape = listShape(key, value, valueAt(ctx.defaults, path));
       if (shape) {
         return row("", listEditor({
-          id, type: shape, items: value, mode: "save", path, title: key, describedby: desc,
-          head: text(h`<span class="field-label" id="${id}-label"><code>${key}</code></span>`),
+          id, type: shape, items: value, mode: "save", path, title: labelOf(ctx, path) || key, describedby: desc,
+          head: text(h`<span class="field-label" id="${id}-label">${name}</span>`),
         }));
       }
       // 对象列表、混着类型或带隐藏凭据的列表：只有 JSON 能把它原样说清。
@@ -1835,7 +1915,7 @@
         <span class="field-hint" id="${id}-hint">JSON 列表：保留引号以区分文本和数字，空列表写 []。离开输入框保存。</span>`);
     }
     if (typeof value === "boolean") {
-      return row("toggle-row", h`${text(h`<span class="field-label" id="${id}"><code>${key}</code></span>`)}
+      return row("toggle-row", h`${text(h`<span class="field-label" id="${id}">${name}</span>`)}
         <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"${attr(master, "data-master")}
           aria-checked="${bool(value)}" aria-labelledby="${id}"${desc ? h` aria-describedby="${desc}"` : ""}></button>`, master ? ' data-master=""' : "");
     }
@@ -1850,15 +1930,22 @@
           <button class="icon-btn state" type="button" data-reveal="#${id}" aria-pressed="false" aria-label="显示口令">${icon("visibility")}</button>
         </div>`);
     }
+    if (typeof value === "string" && templateOf(ctx, path)) {
+      return row("tpl-row", h`${text(h`<span class="field-label" id="${id}-label">${name}</span>`)}${templateBody(id, path, value, ctx, templateOf(ctx, path))}`);
+    }
     if (typeof value === "string" && (value.includes("\n") || value.length > 80)) {
       return row("field", h`${text(named)}
         <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false"${desc ? h` aria-describedby="${desc}"` : ""}>${value}</textarea>`);
     }
     const numeric = typeof value === "number";
     const clock = typeof value === "string" && TIME.test(value);
+    const seconds = numeric && SECONDS.test(key);
+    const input = h`<input class="input${numeric || clock ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
+        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${[desc, seconds ? `${id}-unit` : ""].some(Boolean) ? h` aria-describedby="${[desc, seconds ? `${id}-unit` : ""].filter(Boolean).join(" ")}"` : ""}${attr(numeric, `inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}>`;
     return row("field", h`${text(named)}
-      <input class="input${numeric || clock ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
-        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${desc ? h` aria-describedby="${desc}"` : ""}${attr(numeric, `inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}>`,
+      ${seconds
+        ? h`<span class="input-unit">${input}<span class="unit-text num" id="${id}-unit" data-seconds-for="${id}">${secondsText(value)}</span></span>`
+        : input}`,
       numeric || clock ? ' data-row="short"' : "");
   }
 
@@ -1978,6 +2065,7 @@
       saved = true;
       clearFieldError(control);
       markModified(control.closest("[data-setting]"), value);
+      if (control.tagName === "SELECT") paintMoot(form, control.dataset.path, value);
       snackbar(reply.message);
       refreshDiff(form.dataset.config);
     } catch (error) {
@@ -1994,7 +2082,10 @@
   async function freshPlugin(name) {
     const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
     const ctx = configs.get(name);
-    if (ctx) Object.assign(ctx, { help: plugin.field_help || {}, options: plugin.field_options || {}, maps: plugin.maps || {}, defaults: plugin.defaults || {} });
+    if (ctx) {
+      absorb(ctx, plugin);
+      repaintPreviews(name);
+    }
     if ($(`[data-config="${CSS.escape(name)}"]`)) put($("#plugin-diff"), diffBlock(plugin.diff));
     return plugin;
   }
@@ -2028,12 +2119,185 @@
       const reply = await configPost(form, "reset", { path: row.dataset.setting });
       const plugin = await freshPlugin(form.dataset.config);
       const fresh = replaceRow(row, plugin, configs.get(form.dataset.config));
-      $("[data-path]:not([hidden]), .tags-add input, .picker-add input", fresh)?.focus({ preventScroll: true });
+      $("[data-path]:not([hidden]), [data-tpl-input], .tags-add input, .picker-add input", fresh)?.focus({ preventScroll: true });
       snackbar(reply.message.replace(/^.*?(已|恢复)/, "$1"));
     } catch (error) {
       button.removeAttribute("aria-busy");
       report(error);
     }
+  }
+
+  /* ---------- 文案编辑器：带占位符的提示（几种说法随机一种、点按插入占位符、就地预览） ---------- */
+
+  /** 这一项是不是提示模板；是就给它的说明（哪一种提示、一句用途）。 */
+  const templateOf = (ctx, path) => ctx.templates?.fields?.[path] || ctx.templates?.fields?.[starPath(ctx, path)] || null;
+  const holdersFor = (ctx, kind) => (ctx.templates?.placeholders || []).filter((holder) => holder.kinds.includes(kind));
+  const variantsOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === "string" && value ? [value] : []);
+
+  function templateBody(id, path, value, ctx, spec) {
+    const variants = variantsOf(value);
+    const holders = holdersFor(ctx, spec.kind);
+    const extras = ctx.templates?.extras || [];
+    return h`<div class="tpl" id="${id}" data-tpl="${path}" data-tpl-kind="${spec.kind}" data-tpl-saved="${JSON.stringify(variants)}">
+      <ol class="tpl-list" aria-label="${spec.about}">${variants.map((text, index) => templateVariant(id, index, text, ctx, spec))}</ol>
+      <p class="tpl-silent"${attr(variants.length, "hidden")}>${icon("notifications_off")}<span>一种说法都没有：这条提示不发。</span></p>
+      <div class="tpl-tools">
+        <span class="tpl-tools-label" id="${id}-insert">插入</span>
+        <div class="tpl-holders" role="group" aria-labelledby="${id}-insert">
+          ${holders.map((holder) => h`<button class="chip tpl-holder state" type="button" data-tpl-insert="{${holder.key}}"
+              title="{${holder.key}}${holder.hint ? ` · ${holder.hint}` : ""}" aria-label="插入${holder.label}{${holder.key}}${holder.hint ? `：${holder.hint}` : ""}">${holder.label}</button>`)}
+          ${extras.map((extra) => h`<button class="chip tpl-holder tpl-extra state" type="button" data-tpl-insert="${extra.insert}"
+              title="${extra.hint}" aria-label="插入${extra.label}：${extra.hint}">${extra.label}</button>`)}
+        </div>
+        <button class="btn btn-text tpl-add" type="button" data-tpl-add>${icon("add")}${variants.length ? "再加一种说法" : "写一句"}</button>
+      </div>
+    </div>`;
+  }
+
+  function templateVariant(id, index, text, ctx, spec) {
+    const field = `${id}-v${index}`;
+    const { html, problems } = previewOf(text, ctx, spec);
+    return h`<li class="tpl-item" data-tpl-index="${index}">
+      <div class="tpl-item-head">
+        <label class="tpl-item-label" for="${field}">说法 ${index + 1}</label>
+        <button class="icon-btn state tpl-remove" type="button" data-tpl-remove="${index}" aria-label="删掉说法 ${index + 1}" title="删掉这种说法">${icon("delete")}</button>
+      </div>
+      <textarea class="textarea tpl-input" id="${field}" data-tpl-input rows="2" spellcheck="false" autocapitalize="off"
+        aria-describedby="${field}-problems ${field}-preview">${text}</textarea>
+      <p class="field-hint tpl-problems" id="${field}-problems" role="status">${problems}</p>
+      <div class="tpl-preview" id="${field}-preview" aria-label="预览">
+        <span class="tpl-avatar" aria-hidden="true">${icon("smart_toy")}</span>
+        <div class="tpl-bubble">${html}</div>
+      </div>
+    </li>`;
+  }
+
+  /** 模板在群里大概长什么样：占位符换成样例值，@ 与图、表情画成小块。
+   *  认不出、或这条提示里用不了的占位符原样留着并标出来——发出去也是原样，不如现在就看见。 */
+  function previewOf(text, ctx, spec) {
+    const samples = ctx.templates?.samples || {};
+    const allowed = new Set(holdersFor(ctx, spec.kind).map((holder) => holder.key));
+    const bad = [];
+    const pill = (glyph, label) => `<span class="tpl-pill">${part(icon(glyph))}${esc(label)}</span>`;
+    let html = "";
+    let last = 0;
+    let images = false;
+    for (const match of text.matchAll(/\{([^{}]*)\}/g)) {
+      html += esc(text.slice(last, match.index));
+      last = match.index + match[0].length;
+      const inner = match[1].trim();
+      if (inner === "at" && allowed.has("at")) html += `<span class="tpl-at">@${esc(samples.name || "小林")}</span>`;
+      else if (inner === "image" && allowed.has("image")) {
+        images = true;
+        html += pill("image", "配图");
+      } else if (inner === "avatar") html += pill("account_circle", "头像");
+      else if (/^face:\d+$/.test(inner)) html += pill("mood", "表情");
+      else if (inner.includes("|")) html += `<span class="tpl-pick" title="每次随机换成其中一个：${esc(inner.split("|").join("、"))}">${esc(inner.split("|")[0])}</span>`;
+      else if (allowed.has(inner) && inner in samples) html += `<span class="tpl-var">${esc(samples[inner])}</span>`;
+      else {
+        html += `<mark class="tpl-bad">${esc(match[0])}</mark>`;
+        bad.push(match[0]);
+      }
+    }
+    html += esc(text.slice(last));
+    if (spec.kind === "join" && !images && (valueAt(ctx.config, "join.images") || []).length) html += `\n${pill("image", "配图")}`;
+    if (!text.trim()) html = `<span class="tpl-empty">空着：发的时候跳过这一种</span>`;
+    const problems = bad.length
+      ? h`${icon("warning")}<span>${[...new Set(bad)].join(" ")} ${bad.length > 1 ? "这几个" : "这个"}占位符在这里用不了，会原样发出去。</span>`
+      : "";
+    return { html: raw(html), problems };
+  }
+
+  /** 编辑器现在的几种说法（含还没保存的）。 */
+  const tplRead = (root) => $$("[data-tpl-input]", root).map((input) => input.value);
+
+  function tplRepaint(input) {
+    const root = input.closest("[data-tpl]");
+    const ctx = configs.get(root?.closest("[data-config]")?.dataset.config);
+    const spec = ctx && templateOf(ctx, root.dataset.tpl);
+    if (!spec) return;
+    const item = input.closest(".tpl-item");
+    const { html, problems } = previewOf(input.value, ctx, spec);
+    put($(".tpl-bubble", item), html);
+    put($(".tpl-problems", item), problems);
+  }
+
+  /** 设置一改（验证方式、时限……），预览里的样例跟着变。 */
+  function repaintPreviews(name) {
+    for (const input of $$(`[data-config="${CSS.escape(name)}"] [data-tpl-input]`)) tplRepaint(input);
+  }
+
+  /** 整个编辑器重画一遍（加、删说法之后），焦点落到指定的那一种说法上。 */
+  function tplRedraw(root, variants, focus = -1) {
+    const form = root.closest("[data-config]");
+    const ctx = configs.get(form.dataset.config);
+    const path = root.dataset.tpl;
+    const holder = document.createElement("div");
+    put(holder, templateBody(root.id, path, variants, ctx, templateOf(ctx, path)));
+    const fresh = holder.firstElementChild;
+    fresh.dataset.tplSaved = root.dataset.tplSaved;
+    root.replaceWith(fresh);
+    const target = focus >= 0 ? $$("[data-tpl-input]", fresh)[focus] : $("[data-tpl-add]", fresh);
+    target?.focus({ preventScroll: focus < 0 });
+    if (focus >= 0) target.setSelectionRange(target.value.length, target.value.length);
+    return fresh;
+  }
+
+  /** 存下这个编辑器：和上次存的一样就不发请求。 */
+  async function tplSave(root) {
+    const form = root.closest("[data-config]");
+    if (!form || root.getAttribute("aria-busy") === "true") return;
+    const value = tplRead(root);
+    if (JSON.stringify(value) === root.dataset.tplSaved) return;
+    root.setAttribute("aria-busy", "true");
+    const row = root.closest("[data-setting]");
+    const first = $("[data-tpl-input]", root) || $("[data-tpl-add]", root);
+    try {
+      await configPost(form, "config", { path: root.dataset.tpl, value });
+      root.dataset.tplSaved = JSON.stringify(value);
+      if (first) clearFieldError(first);
+      markModified(row, value);
+      const ctx = configs.get(form.dataset.config);
+      const label = (ctx && labelOf(ctx, root.dataset.tpl)) || root.dataset.tpl;
+      snackbar(value.some((text) => text.trim()) ? `已保存「${label}」` : `已保存：「${label}」现在不发`);
+      refreshDiff(form.dataset.config);
+    } catch (error) {
+      if (error.status === 401) return;
+      if (first) fieldError(first, error.message);
+      else report(error);
+    } finally {
+      root.removeAttribute("aria-busy");
+      // 保存的工夫里又改了：再存一次。
+      if (root.isConnected && JSON.stringify(tplRead(root)) !== root.dataset.tplSaved && !root.contains(document.activeElement)) void tplSave(root);
+    }
+  }
+
+  /** 点芯片插入占位符：插在光标处（没点过哪一种说法就插进第一种），焦点回到输入框、光标落在插入之后。 */
+  function tplInsert(button) {
+    const root = button.closest("[data-tpl]");
+    const inputs = $$("[data-tpl-input]", root);
+    if (!inputs.length) {
+      const fresh = tplRedraw(root, [button.dataset.tplInsert], 0);
+      void tplSave(fresh);
+      return;
+    }
+    const input = inputs[Number(root.dataset.tplActive) || 0] || inputs[0];
+    const text = button.dataset.tplInsert;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.focus({ preventScroll: true });
+    input.setRangeText(text, start, end, "end");
+    // 随机片段选中示例文字，直接打字就替换掉。
+    if (text.includes("|")) input.setSelectionRange(start + 1, start + text.length - 1);
+    tplRepaint(input);
+    tplGrow(input);
+  }
+
+  /** 输入框随内容长高，免得一句三行的欢迎词要在两行高的框里滚着改。 */
+  function tplGrow(input) {
+    if (CSS.supports("field-sizing", "content")) return;
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight + 2}px`;
   }
 
   /* ---------- 映射表：键由人定的表（每群覆盖、供应商、搜索后端……） ---------- */
@@ -2058,7 +2322,7 @@
       ? [["group", "groups", "加一个群"], ["user", "person", "加一个私聊对象"]]
       : spec.key === "group" ? [["group", "groups", spec.add]] : [["name", "add", spec.add]];
     return h`<fieldset class="config-group config-map" data-map="${path}" data-search="${`${path} ${about || ""} ${keys.join(" ")}`.toLowerCase()}">
-      <legend class="config-legend">${key}${keys.length ? h`<span class="legend-count num">${keys.length}</span>` : ""}</legend>
+      <legend class="config-legend">${legendName(ctx, path, key)}${keys.length ? h`<span class="legend-count num">${keys.length}</span>` : ""}</legend>
       ${about ? h`<p class="config-about">${about}</p>` : ""}
       ${keys.length
         ? keys.map((item) => mapEntry(path, item, value[item], spec, ctx))
@@ -2070,8 +2334,10 @@
 
   function mapEntry(path, key, value, spec, ctx) {
     const full = `${path}.${key}`;
-    const fields = isTable(value) ? Object.entries(value).sort(fieldOrder) : [];
-    const missing = spec.optional ? Object.keys(spec.template).filter((field) => !(field in (value || {}))) : [];
+    const fields = isTable(value) ? Object.entries(value).sort((a, b) => fieldOrder(a, b) || byOrder(ctx, full)(a, b)) : [];
+    const missing = spec.optional
+      ? Object.keys(spec.template).filter((field) => !(field in (value || {}))).sort((a, b) => byOrder(ctx, full)([a], [b]))
+      : [];
     const { title, sub } = entryLabel(spec, key);
     const detail = spec.key === "name" ? value?.api_base || value?.base_url || "" : "";
     const count = spec.optional ? `${fields.length} 项单独设置` : "";
@@ -2091,7 +2357,8 @@
         ${missing.length
           ? h`<div class="entry-missing">
               <p class="field-hint">${fields.length ? "其余沿用上层设置。" : "全部沿用上层设置。"}想单独设置哪一项，点它：</p>
-              <div class="chips">${missing.map((field) => h`<button class="chip state" type="button" data-entry-field="${full}.${field}">${icon("add")}${field}</button>`)}</div>
+              <div class="chips">${missing.map((field) => h`<button class="chip state" type="button" data-entry-field="${full}.${field}"
+                aria-label="单独设置 ${labelOf(ctx, `${full}.${field}`) || field}">${icon("add")}${labelOf(ctx, `${full}.${field}`) || field}</button>`)}</div>
             </div>`
           : ""}
         <div class="actions">
@@ -4467,6 +4734,35 @@
       if ((hit = on("[data-tags-commit]"))) return void tagsSubmit(hit.closest(".tags"));
       if ((hit = on("[data-tags-cancel]"))) return stopEditing(hit.closest(".tags"), { refocus: true });
       if ((hit = on("[data-weekday]"))) return toggleWeekday(hit);
+      if ((hit = on("[data-tpl-insert]"))) return tplInsert(hit);
+      if ((hit = on("[data-tpl-add]"))) {
+        const root = hit.closest("[data-tpl]");
+        const variants = tplRead(root);
+        const fresh = tplRedraw(root, [...variants, ""], variants.length);
+        fresh.dataset.tplActive = String(variants.length);
+        return;
+      }
+      if ((hit = on("[data-tpl-remove]"))) {
+        const root = hit.closest("[data-tpl]");
+        const index = Number(hit.dataset.tplRemove);
+        const variants = tplRead(root);
+        const [gone] = variants.splice(index, 1);
+        const fresh = tplRedraw(root, variants, variants.length ? Math.min(index, variants.length - 1) : -1);
+        await tplSave(fresh);
+        if (gone.trim()) {
+          snackbar(`删掉了说法 ${index + 1}`, "info", {
+            label: "撤销",
+            run: () => {
+              const now = $(`[data-tpl="${CSS.escape(fresh.dataset.tpl)}"]`);
+              if (!now) return;
+              const back = tplRead(now);
+              back.splice(index, 0, gone);
+              void tplSave(tplRedraw(now, back, index));
+            },
+          });
+        }
+        return;
+      }
       if ((hit = on("[data-reset-path]"))) return resetField(hit);
       if ((hit = on("[data-inherit]"))) return entryField(hit, true);
       if ((hit = on("[data-entry-field]"))) return entryField(hit, false);
@@ -4635,6 +4931,17 @@
     // 用户亲手输入才算编辑（见 typed）。
     document.addEventListener("beforeinput", markTyped);
     // 自动填充会写 value 并补发 input / change，也可能在聚焦时才填：这些都不是用户的输入。
+    // 文案编辑器记住最后在写哪一种说法：插入芯片往那里插。
+    // 点芯片时不让输入框失焦——手机上键盘不必收起又弹出，光标也还在原处。
+    document.addEventListener("mousedown", (event) => {
+      if (event.target.closest?.("[data-tpl-insert]") && document.activeElement?.matches?.("[data-tpl-input]")) event.preventDefault();
+    });
+    document.addEventListener("focusin", (event) => {
+      if (event.target.matches?.("[data-tpl-input]")) {
+        const root = event.target.closest("[data-tpl]");
+        root.dataset.tplActive = event.target.closest(".tpl-item").dataset.tplIndex;
+      }
+    });
     document.addEventListener("focusin", (event) => {
       if (event.target.name === "access_token") scrubAutofill(event.target.form);
     });
@@ -4643,6 +4950,10 @@
       const target = event.target;
       markTyped(event);
       if (target.name === "access_token") scrubAutofill(target.form);
+      if (target.matches?.("input[data-kind=\"number\"]")) {
+        const unit = $(`[data-seconds-for="${CSS.escape(target.id)}"]`);
+        if (unit) unit.textContent = secondsText(target.value);
+      }
       if (target.matches?.(".picker-add input")) {
         const root = target.closest(".picker");
         // 刚加完一个又敲了空格：框里只剩空白就清掉，别留个看不见的前导空格。
@@ -4654,6 +4965,9 @@
           const { ids, rejected } = parseIds(target.value);
           if (ids.length && !rejected.length) pickerSubmitText(root);
         }
+      } else if (target.matches?.("[data-tpl-input]")) {
+        tplRepaint(target);
+        tplGrow(target);
       } else if (target.matches?.(".tags-add input")) {
         syncTagsCommit(target.closest(".tags"));
         clearFieldError(target);
@@ -4694,6 +5008,12 @@
     // 离开输入框即保存，与插件配置里其他格子一致。
     document.addEventListener("focusout", (event) => {
       const target = event.target;
+      // 文案编辑器：焦点还在这个编辑器里（换到另一种说法、点了插入芯片）就先不存，整个离开才存。
+      const tpl = target.closest?.("[data-tpl]");
+      if (tpl) {
+        if (!tpl.contains(event.relatedTarget) && tpl.isConnected) void tplSave(tpl);
+        return;
+      }
       if (target.matches?.(".tags-add input") && target.isConnected) {
         const root = target.closest(".tags");
         // 焦点只是挪到同一个编辑器里的按钮（保存、取消、某一枚芯片）上：不抢着提交。
@@ -4758,6 +5078,11 @@
         // 表单里回车默认会提交整张表单；在这里它的意思只是「把这个群号加进去」。
         event.preventDefault();
         pickerSubmitText(target.closest(".picker"), { explicit: true });
+        return;
+      }
+      if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && target.matches?.("[data-tpl-input]")) {
+        event.preventDefault();
+        void tplSave(target.closest("[data-tpl]"));
         return;
       }
       if (event.key === "Enter" && target.matches?.("input[data-path]")) {

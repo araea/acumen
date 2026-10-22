@@ -215,6 +215,7 @@ async fn plugin_detail(
         "field_help": field_help(plugin.name),
         "field_order": field_order(plugin.name),
         "labels": labels(plugin.name),
+        "depends": depends(plugin.name),
         "option_labels": option_labels(plugin.name),
         "templates": templates(plugin.name, current),
         "field_options": field_options(plugin.name, current),
@@ -235,10 +236,26 @@ fn live(name: &str, ctx: &crate::event::Context) -> Value {
     }
 }
 
-/// 字段的中文名（键名照旧显示在旁边）。映射表里一项的字段写成 `表.*.字段`。
-fn labels(name: &str) -> Value {
+/// 字段的中文名（键名照旧显示在旁边）。映射表里一项的字段写成 `表.*.字段`，按想要的先后排。
+fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
     match name {
-        "welcome" => crate::plugins::welcome::labels(),
+        "welcome" => crate::plugins::welcome::LABELS,
+        _ => &[],
+    }
+}
+
+fn labels(name: &str) -> Value {
+    label_list(name)
+        .iter()
+        .map(|(path, label)| ((*path).to_string(), Value::from(*label)))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
+}
+
+/// 只在某个取值下才用得到的项：`{ 路径: { on: 看哪一项, in: [那一项取这些值时才用得到] } }`。
+fn depends(name: &str) -> Value {
+    match name {
+        "welcome" => crate::plugins::welcome::depends(),
         _ => json!({}),
     }
 }
@@ -409,20 +426,26 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
                     "join_text": at("join.text"),
                     "images": at("join.images"),
                     "leave_enabled": at("leave.enabled"),
+                    "leave_text": at("leave.text"),
+                    "kicked_text": at("leave.kicked_text"),
                     "verify_enabled": at("verify.enabled"),
+                    "verify_mode": at("verify.mode"),
                     "answers": at("verify.answers"),
                     "approve_enabled": at("approve.enabled"),
                     "keywords": at("approve.keywords"),
                 },
                 "help": {
-                    "join_enabled": "这个群发不发欢迎（join.enabled）。",
-                    "join_text": "这个群的欢迎词（join.text）。占位符：{at} {name} {user_id} {group} {group_id}",
-                    "images": "这个群的欢迎配图（join.images）。",
-                    "leave_enabled": "这个群发不发送别（leave.enabled）。",
-                    "verify_enabled": "这个群要不要入群验证（verify.enabled）。",
-                    "answers": "这个群的验证答案（verify.answers）。",
-                    "approve_enabled": "这个群自动审批加群申请（approve.enabled）。",
-                    "keywords": "这个群的审批关键词（approve.keywords）。",
+                    "join_enabled": "这个群发不发欢迎。",
+                    "join_text": "这个群单独的欢迎词。",
+                    "images": "这个群的欢迎配图：图片直链或 data/welcome/ 下的文件名。",
+                    "leave_enabled": "这个群有人退群时说不说一声。",
+                    "leave_text": "这个群有人自己退群时说的话。",
+                    "kicked_text": "这个群有人被移出时说的话。",
+                    "verify_enabled": "这个群的新人要不要先验证。",
+                    "verify_mode": "这个群的验证方式。",
+                    "answers": "这个群的口令（验证方式是「发出口令」时用）。",
+                    "approve_enabled": "这个群的加群申请要不要自动审批。",
+                    "keywords": "这个群审批看的附言关键词。",
                 },
             }));
         }
@@ -1273,6 +1296,12 @@ fn field_order(plugin: &str) -> Vec<String> {
             let prefix = rest.trim_start_matches('.');
             let key = key.trim();
             push(if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") });
+        }
+    }
+    // 映射表里一项的字段（`表.*.字段`）配置参考里没有，按中文名表的先后排。
+    for (path, _) in label_list(plugin) {
+        if path.contains(".*.") {
+            push((*path).to_string());
         }
     }
     order

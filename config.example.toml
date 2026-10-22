@@ -149,11 +149,11 @@ kick_permanent = false
 # 验证通过前他发的其他消息撤回掉（防新号进群就发广告）。
 recall_unverified = false
 # 接在欢迎后面的验证说明。占位符：{timeout} 时限、{task} 要做的事（随验证方式变，如「发送验证码 4821」）、{answer} 口令或题目、{punish} 后果，以及欢迎词里那些。
-prompt_text = ["请在 {timeout} 内{task}完成验证，超时会被{punish}。"]
+prompt_text = ["请在 {timeout}内{task}，完成验证；超时会被{punish}。"]
 # 倒计时提醒，多一个 {remaining}（剩余时间）。
-remind_text = ["{at} 验证还剩 {remaining}：{task}就好，超时会被{punish}。"]
+remind_text = ["{at} 验证还剩 {remaining}：请{task}，超时会被{punish}。"]
 # 答错时回的话，多一个 {chances}：限了次数时是「（还能再试 2 次）」，不限时为空。留空 = 答错不回。
-wrong_text = ["{at} 还不对哦，{task}就好{chances}。"]
+wrong_text = ["{at} 还不对哦，请{task}{chances}。"]
 # 通过时说的话；留空不说。
 pass_text = ["{at} 验证通过，欢迎正式加入～"]
 # 超时或答错次数用完、处理之后说的话；留空不说。

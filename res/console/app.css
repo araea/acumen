@@ -4329,3 +4329,360 @@ fieldset[data-off] > .config-off-note {
     outline: var(--zw-border-width-strong) solid CanvasText;
   }
 }
+
+/* —— 字段的中文名：名字在前，键名作小字跟在后面（`/ctl` 认的还是键名） —— */
+.field-name {
+  color: var(--md-sys-color-on-surface);
+}
+
+.config .field-label .field-key {
+  margin-inline-start: var(--zw-space-01);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-regular, 400);
+}
+
+.config-legend:has(.legend-name) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--zw-space-01) var(--zw-space-03);
+  font-family: inherit;
+  letter-spacing: normal;
+}
+
+.legend-name {
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+}
+
+.legend-key {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-regular, 400);
+}
+
+/* 只在某个取值下才用得到的项：一句说明，不把整行压暗（压暗会把字压到 AA 以下）。 */
+.field-moot {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-02);
+  margin-top: var(--zw-space-01);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+.field-moot[hidden] {
+  display: none;
+}
+
+.field-moot svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: calc((var(--zw-body-medium-line) - var(--zw-size-icon-small)) / 2);
+  color: var(--md-sys-color-primary);
+}
+
+/* 以秒计的数字：框里是数，旁边换算成人话。 */
+.input-unit {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-03);
+  min-width: 0;
+}
+
+.input-unit .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.unit-text {
+  flex: none;
+  min-width: 4.5em;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+.unit-text:empty {
+  display: none;
+}
+
+/* —— 文案编辑器：几种说法 + 插入占位符 + 就地预览 —— */
+.tpl {
+  container: tpl / inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  min-width: 0;
+}
+
+.tpl[aria-busy="true"] {
+  cursor: progress;
+}
+
+.tpl-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tpl-list:empty {
+  display: none;
+}
+
+.tpl-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-03) var(--zw-space-04) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container);
+}
+
+.setting:focus-within .tpl-item {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.tpl-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-03);
+  min-height: var(--zw-size-icon);
+}
+
+.tpl-item-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.tpl-remove {
+  margin-block: calc((var(--zw-size-target) - var(--zw-size-icon)) / -2);
+  margin-inline-end: calc(var(--zw-space-03) * -1);
+}
+
+.tpl-remove svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+.textarea.tpl-input {
+  min-height: calc(var(--zw-body-line) * 2 + var(--zw-space-03) * 2 + var(--zw-border-width) * 2);
+  max-height: calc(var(--zw-body-line) * 12);
+  resize: none;
+  field-sizing: content;
+  background: var(--md-sys-color-surface-container-highest);
+}
+
+.textarea.tpl-input:focus {
+  background: var(--md-sys-color-surface-container-lowest);
+}
+
+.tpl-problems {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-02);
+  color: var(--md-sys-color-error);
+}
+
+.tpl-problems:empty {
+  display: none;
+}
+
+.tpl-problems svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: calc((var(--zw-body-medium-line) - var(--zw-size-icon-small)) / 2);
+}
+
+/* 预览：像群里的一条消息——左边一枚头像，右边一个气泡，贴头像的那一角收小。 */
+.tpl-preview {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  min-width: 0;
+}
+
+.tpl-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+}
+
+.tpl-avatar svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+.tpl-bubble {
+  min-width: 0;
+  max-width: 100%;
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-extra-small) var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-bright);
+  box-shadow: inset 0 0 0 var(--zw-border-width) var(--md-sys-color-outline-variant);
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-body-large-size);
+  line-height: var(--zw-body-line);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tpl-at {
+  color: var(--md-sys-color-primary);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+/* 占位符换上的样例值：点线下划，看得出「这里会变」。 */
+.tpl-var,
+.tpl-pick {
+  text-decoration: underline dotted var(--md-sys-color-outline);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 0.25em;
+}
+
+.tpl-pick {
+  text-decoration-style: dashed;
+}
+
+.tpl-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-01);
+  margin-inline: 0.15em;
+  padding: 0 var(--zw-space-03) 0 var(--zw-space-02);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  vertical-align: 0.06em;
+  white-space: nowrap;
+}
+
+.tpl-pill svg {
+  width: 1.1em;
+  height: 1.1em;
+}
+
+.tpl-bad {
+  padding: 0 0.15em;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+
+.tpl-empty {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+}
+
+.tpl-silent {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+.tpl-silent[hidden] {
+  display: none;
+}
+
+.tpl-silent svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: calc((var(--zw-body-medium-line) - var(--zw-size-icon-small)) / 2);
+}
+
+/* 插入一行：窄屏横着滑，一屏放不下也不折成好几行把编辑区往下顶；宽了就换行铺开。 */
+.tpl-tools {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
+}
+
+.tpl-tools-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+}
+
+.tpl-holders {
+  display: flex;
+  gap: var(--zw-space-02);
+  min-width: 0;
+  padding-block: var(--zw-space-02);
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+  mask-image: linear-gradient(to right, #000 calc(100% - var(--zw-space-06)), transparent);
+}
+
+.tpl-holders::-webkit-scrollbar {
+  display: none;
+}
+
+.tpl-holder {
+  scroll-snap-align: start;
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.tpl-extra {
+  border-color: var(--md-sys-color-outline);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.tpl-add {
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-inline-start: calc(var(--zw-space-04) * -1);
+}
+
+@container tpl (min-width: 30rem) {
+  .tpl-holders {
+    flex-wrap: wrap;
+    overflow: visible;
+    mask-image: none;
+  }
+
+  .tpl-tools {
+    align-items: start;
+  }
+
+  .tpl-tools-label {
+    padding-block-start: calc(var(--zw-space-02) + (var(--zw-size-chip) - var(--md-sys-typescale-label-large-line-height)) / 2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tpl-holders {
+    scroll-snap-type: none;
+  }
+}
