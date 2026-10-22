@@ -183,8 +183,8 @@ retention_minutes = 120
 white = []
 black = []
 
-# 奶龙提醒：认出群里的奶龙、奶蛙图，只把原图与来龙去脉发到私聊或指定群，由管理员确认后手动处理。
-# 不撤回、不禁言、不在群里说话。第一张图到来时自动下载识图模型（约 45 MB）。详见 docs/nailong.md。
+# 奶龙提醒：认出群里的奶龙、奶蛙图，把原图与来龙去脉发到私聊或指定群，由管理员确认后处理。
+# 默认只提醒；想让它顺手撤回、禁言，打开下面的 [nailong.manage]。第一张图到来时自动下载识图模型（约 45 MB）。详见 docs/nailong.md。
 [nailong]
 enabled = false
 # 认哪几类：nailong（奶龙）、naiwa（奶蛙）。
@@ -212,8 +212,9 @@ notify_image = true
 repeat_minutes = 30
 # 全部群每小时最多提醒几条（0–1000）：超出只记录、不再提醒，免得刷屏。0 = 不限。
 max_per_hour = 30
-# 提醒文案；留空只发原图。占位符：{no} {kind} {group} {name} {user} {basis} {count} {prefix}
-notify_text = "🐉 #{no} 可能是{kind}图\n{group} · {name}（{user}）\n{basis}\n本群今天第 {count} 张；没有自动撤回或禁言，请在群里确认后手动处理。\n认错了引用这条回「{prefix}奶龙 不是」"
+# 提醒文案；留空只发原图。占位符：{no} {kind} {group} {name} {user} {basis} {count} {prefix}，
+# {action} 是群管理做了什么（没开时是「请确认后手动处理」）。
+notify_text = "🐉 #{no} 可能是{kind}图\n{group} · {name}（{user}）\n{basis}\n本群今天第 {count} 张；{action}\n认错了引用这条回「{prefix}奶龙 不是」"
 # 群主、管理员与机器人管理员发的不管。
 exempt_staff = true
 # 这些人发的不管（QQ 号）。
@@ -231,6 +232,24 @@ max_frames = 4
 # 白名单非空时只管这些群；黑名单里的群不管；两边都空 = 全部群。
 white = []
 black = []
+
+# 群管理（默认关）：提醒之外顺手撤回、禁言。三样都满足才动手——这里开着、账号是本群群主或管理员、
+# 这张图认得有把握（大模型确认、教过、表情名写着，或本地分数到 min_score）；缺一样就照旧只提醒。
+# 发图的是群主、管理员时从不动手。做了什么写进提醒，认错了回「不是」会解除禁言。
+[nailong.manage]
+enabled = false
+# 只在这些群动手（群号）；留空 = 生效范围内账号是管理员的全部群。
+groups = []
+# 撤回那张图。
+recall = true
+# 禁言阶梯（秒）：近 window_hours 小时内第 1、2、3… 次各禁多久，超出按最后一档；0 = 不禁言。
+mute_seconds = [0, 600, 3600]
+# 次数按多少小时内算（1–720）。
+window_hours = 24
+# 只凭本地模型认的，分数到这个才动手（0.5–1）；大模型确认的、教过的、表情名写着的不看分数。
+min_score = 0.9
+# 动手后在群里说的话，两分钟后自动撤掉；留空不说。占位符：{at}（@ 发图的人）{kind} {action}
+notice = "{at} 本群不收{kind}图，{action}"
 
 # 把收到的消息打印到控制台日志。排查「到底有没有收到」时开它，平时关掉免得刷屏。
 [logger]
