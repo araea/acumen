@@ -2728,8 +2728,8 @@ button.item:active::after {
   gap: var(--zw-space-07) var(--zw-space-06);
 }
 
-/* 全页唯一的深色块：运行卡。深底浅字是刻意的，它在浅色界面里像一张
-   被放上桌的黑色卡片，也是整个界面的视觉锚点。 */
+/* 运行卡：整个界面的视觉锚点。浅色里是一张淡淡的主色调卡片（T92→T86），
+   深色里才是深底（T22→T30）——锚点靠色相与大字，不靠一块压在纸面上的黑。 */
 .hero {
   position: relative;
   display: flex;
@@ -2744,7 +2744,7 @@ button.item:active::after {
   isolation: isolate;
 }
 
-/* 两圈装饰：不承载信息，只是让深色块不是一块死板的矩形。 */
+/* 两圈装饰：不承载信息，只是让这张卡不是一块死板的矩形。 */
 .hero::before,
 .hero::after {
   content: "";
@@ -3494,8 +3494,9 @@ fieldset[data-off] > .config-off-note {
   line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
-/* —— 日志：深色终端台 ——
-   明暗两档都是深底浅字：日志是「机器说话」的地方，和纸面正文分开。
+/* —— 日志台 ——
+   等宽字的一块独立底色，随明暗走：浅色里是一张浅灰纸（T95），深色里是 T10。
+   日志常常一看就是几分钟，浅色界面里嵌一块黑底会让眼睛在两种亮度间来回调。
    级别始终带文字；警告与错误另有一道行首色条。 */
 .logs {
   display: flex;
@@ -3603,8 +3604,8 @@ fieldset[data-off] > .config-off-note {
 }
 
 .log-row[data-level="info"] .log-level {
-  background: color-mix(in srgb, var(--md-sys-color-primary) 40%, var(--zw-log-bg));
-  color: var(--zw-log-fg);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
 }
 
 @container log (min-width: 44rem) {

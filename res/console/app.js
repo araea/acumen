@@ -3987,14 +3987,16 @@
      - 全是默认值时什么都不注入，界面用的就是 tokens.css 里那份生成的令牌。 */
 
   const THEME_KEY = "acumen.theme";
-  const THEME_DEFAULT = { seed: "#3f51b5", variant: "fidelity", mode: "system", contrast: "system" };
+  /* 引擎的取色表改过就加一：旧版算好的缓存不再贴（index.html 首帧那段认同一个数），登录后按原来的选择重算。 */
+  const THEME_ENGINE = 2;
+  const THEME_DEFAULT = { seed: "#3f51b5", variant: "tonal", mode: "system", contrast: "system" };
   const SEEDS = [
     ["#3f51b5", "靛青"], ["#0061a4", "海蓝"], ["#006a6a", "青碧"], ["#386a20", "松绿"],
     ["#8b5000", "琥珀"], ["#b3261e", "朱砂"], ["#b0275b", "海棠"], ["#6750a4", "紫藤"], ["#5f6368", "石墨"],
   ];
   const VARIANTS = [
+    ["tonal", "柔和", "默认。主色收一点、表面带一丝色调，久看不累眼"],
     ["fidelity", "原色", "主色就是你选的那一个，彩度不打折"],
-    ["tonal", "柔和", "安卓自带的那种：主色收一点，整体更安静"],
     ["vibrant", "鲜明", "彩度拉满，按钮与选中更醒目"],
     ["expressive", "跳色", "主色与第三色拉开色相，更有个性"],
     ["neutral", "素雅", "几乎只剩灰，颜色只留给要紧的地方"],
@@ -4058,7 +4060,7 @@
         css = built.css;
         surface = built.surface;
       }
-      const next = { ...stored, prefs, css, surface };
+      const next = { ...stored, prefs, css, surface, engine: THEME_ENGINE };
       this.write(next);
       this.apply(next);
       if (sync) this.push(prefs);
@@ -4124,15 +4126,25 @@
       try {
         remote = await api("/theme");
       } catch {
-        return;
+        return this.refresh();
       }
       const local = this.prefs();
       const wanted = remote ? { ...THEME_DEFAULT, ...remote } : THEME_DEFAULT;
-      if (Object.keys(THEME_DEFAULT).every((key) => wanted[key] === local[key])) return;
+      if (Object.keys(THEME_DEFAULT).every((key) => wanted[key] === local[key])) return this.refresh();
       // 本机改过而服务端从没存过：以本机为准，补存一份。
-      if (!remote && !this.isDefault(local)) return this.push(local);
+      if (!remote && !this.isDefault(local)) {
+        this.push(local);
+        return this.refresh();
+      }
       await this.set(wanted, { sync: false }).catch(() => {});
       if (shown?.key === "settings/appearance") render({ quiet: true });
+    },
+
+    /** 缓存是旧版引擎算的：选择不变，按现在的取色表重算一遍。 */
+    refresh() {
+      const stored = this.stored();
+      if (!stored.prefs || stored.engine === THEME_ENGINE) return;
+      return this.set({}, { sync: false }).catch(() => {});
     },
 
     summary() {

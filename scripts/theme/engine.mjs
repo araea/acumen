@@ -38,6 +38,13 @@ const SCHEMES = {
 const DEFAULT_SEED = "#3f51b5";
 const SUCCESS = 0xff2e8b57;
 const WARNING = 0xffb8860b;
+const ACCENT = 0xffffc65c;
+/* 深色表面族在标准对比度下抬离近黑（make-tokens.py 的 DARK_SURFACES）。 */
+const DARK_SURFACES = {
+  surface: 6, surfaceDim: 6, surfaceBright: 24,
+  surfaceContainerLowest: 4, surfaceContainerLow: 10, surfaceContainer: 12,
+  surfaceContainerHigh: 17, surfaceContainerHighest: 22,
+};
 const CONTRAST = { standard: 0, medium: 0.5, high: 1 };
 
 const ROLES = [
@@ -62,7 +69,7 @@ const hex = (argb) => hexFromArgb(argb);
 
 function normalize(prefs = {}) {
   const seed = /^#[0-9a-f]{6}$/i.test(prefs.seed || "") ? prefs.seed.toLowerCase() : DEFAULT_SEED;
-  const variant = SCHEMES[prefs.variant] ? prefs.variant : "fidelity";
+  const variant = SCHEMES[prefs.variant] ? prefs.variant : "tonal";
   const mode = ["light", "dark"].includes(prefs.mode) ? prefs.mode : "system";
   const contrast = CONTRAST[prefs.contrast] !== undefined ? prefs.contrast : "system";
   return { seed, variant, mode, contrast };
@@ -72,12 +79,36 @@ function scheme(seed, variant, dark, contrast) {
   return new SCHEMES[variant](Hct.fromInt(seed), dark, contrast, "2025");
 }
 
-/** 一套角色：系统色、成功 / 警告、以及界面专属的几支（运行卡、选中行文字、日志台）。 */
+/** 界面专属的几支：运行卡、日志台、光点与选中行文字。与 make-tokens.py 的 interface() 同一张表。 */
+function interface_(base, dark, contrast, sys) {
+  const p = base.primaryPalette;
+  const n = base.neutralPalette;
+  const lift = TonalPalette.fromHueAndChroma((p.hue + 18) % 360, p.chroma * 1.15);
+  const amber = Hct.fromInt(ACCENT);
+  const glow = TonalPalette.fromHueAndChroma(amber.hue, amber.chroma);
+  const hc = contrast >= 0.5;
+  const t = dark
+    ? { "hero-a": [p, 22], "hero-b": [lift, 30], "hero-fg": [p, 95], "hero-dim": [p, hc ? 92 : 82],
+        "on-hero-fill": [p, 86], "on-hero-ink": [p, 20], accent: [glow, 80],
+        "log-bg": [n, 10], "log-fg": [n, hc ? 98 : 88], "log-dim": [n, hc ? 85 : 70], "log-line": [n, 22] }
+    : { "hero-a": [p, 92], "hero-b": [lift, 86], "hero-fg": [p, 10], "hero-dim": [p, hc ? 20 : 30],
+        "on-hero-fill": [p, 40], "on-hero-ink": [p, 100], accent: [glow, 62],
+        "log-bg": [n, 95], "log-fg": [n, hc ? 6 : 15], "log-dim": [n, hc ? 25 : 38], "log-line": [n, 88] };
+  const out = {};
+  for (const [key, [palette, tone]] of Object.entries(t)) out[key] = hex(palette.tone(tone));
+  out["selected-fg"] = sys["on-primary-container"];
+  return out;
+}
+
+/** 一套角色：系统色、成功 / 警告、以及界面专属的几支。 */
 function roles(prefs, dark, contrast) {
   const seed = argbFromHex(prefs.seed);
   const base = scheme(seed, prefs.variant, dark, contrast);
   const out = {};
   for (const role of ROLES) out[kebab(role)] = hex(colors[role]().getArgb(base));
+  if (dark && contrast === 0) {
+    for (const [role, tone] of Object.entries(DARK_SURFACES)) out[kebab(role)] = hex(base.neutralPalette.tone(tone));
+  }
   for (const [name, raw] of [["success", SUCCESS], ["warning", WARNING]]) {
     const custom = scheme(Blend.harmonize(raw, seed), prefs.variant, dark, contrast);
     for (const [role, shape] of CUSTOM) {
@@ -85,26 +116,7 @@ function roles(prefs, dark, contrast) {
       out[key] = hex(colors[role]().getArgb(custom));
     }
   }
-  const zw = { "selected-fg": out["on-primary-container"] };
-  // 默认种子沿用 tokens.css 里手定的运行卡与日志台；换了种子才跟着色相走。
-  if (prefs.seed !== DEFAULT_SEED || prefs.variant !== "fidelity") {
-    const p = base.primaryPalette;
-    const n = base.neutralPalette;
-    const lift = TonalPalette.fromHueAndChroma((p.hue + 18) % 360, Math.max(p.chroma * 1.15, p.chroma));
-    Object.assign(zw, {
-      "hero-a": hex(p.tone(24)),
-      "hero-b": hex(lift.tone(36)),
-      "hero-fg": hex(p.tone(98)),
-      "hero-dim": hex(p.tone(86)),
-      "on-hero-fill": "#ffffff",
-      "on-hero-ink": hex(p.tone(22)),
-      "log-bg": hex(n.tone(7)),
-      "log-fg": hex(n.tone(93)),
-      "log-dim": hex(n.tone(70)),
-      "log-line": hex(n.tone(20)),
-    });
-  }
-  return { sys: out, zw };
+  return { sys: out, zw: interface_(base, dark, contrast, out) };
 }
 
 function block(selector, prefs, dark, contrast, scheme) {
@@ -139,7 +151,7 @@ export function build(input) {
   } else {
     parts.push(...pair(prefs.mode === "dark", true));
   }
-  const surface = (dark) => hex(colors.surface().getArgb(scheme(argbFromHex(prefs.seed), prefs.variant, dark, fixed ?? 0)));
+  const surface = (dark) => roles(prefs, dark, fixed ?? 0).sys.surface;
   return { prefs, css: parts.join("\n"), surface: { light: surface(false), dark: surface(true) } };
 }
 
