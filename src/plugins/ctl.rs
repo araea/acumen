@@ -279,6 +279,10 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
     match (plugin, path) {
         ("ai_news", "mode" | "realtime_mode") => &["all", "selected"],
         ("welcome", "verify.action") => &["kick", "mute", "none"],
+        ("welcome", "verify.mode") => &["any", "answer", "code", "math"],
+        ("welcome", path) if path.starts_with("groups.") && path.ends_with(".verify_mode") => {
+            &["any", "answer", "code", "math"]
+        }
         ("ambient", "peak.mode") => &["normal", "swap", "sleep", "pause"],
         ("ai_news", "card_theme") => &[
             "auto", "light", "dark", "day", "night", "白天", "日间", "夜晚", "夜间",

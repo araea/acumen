@@ -95,72 +95,92 @@ token = ""
 # 日志面板往回保留多少行。上限 2000，写更大也只按 2000 收。
 log_lines = 400
 
-# 入群欢迎：进群 @ 一句欢迎（可配图）、退群送别；可选入群验证与加群申请自动审批。
-# 默认关着；打开前先用 channel 圈定要欢迎的群。模板占位符：{at} 真 @、{name} 名字、
-# {user_id} 号码、{group} 群名、{group_id} 群号；验证相关的另有 {timeout} {remaining} {answer} {punish}。
+# 入群欢迎：进群 @ 一句欢迎（多种说法随机、可配图）、退群送别；可选入群验证与加群申请自动审批。
+# 默认关着；打开前先用 channel 圈定要欢迎的群。每条提示都可以写几种说法、每次随机一种，
+# 占位符见各条说明。群主或管理员在群里发「欢迎 预览」能把提示对自己发一遍看效果。
 [welcome]
 enabled = false
 
-[welcome.channel]
-# 白名单非空时只在这些群生效；黑名单里的群一律不生效；两边都空 = 账号所在的全部群。
-white = []
-black = []
-
 [welcome.join]
+# 新人进群时 @ 他说一句。
 enabled = true
-text = "欢迎 {at} 加入{group}～\n先看看群公告，有问题直接问。"
-# 配图：图片直链，或 data/welcome/ 下的文件名（也可写绝对路径）；多张时每次随机一张。
+# 欢迎词：可以写好几种说法，每次随机挑一种；全部留空 = 不发。占位符：{at} @新人、{name} 昵称、{group} 群名、{member_count} 群人数、{greeting} 早上好 / 晚上好……、{date} {time} {weekday}、{avatar} 他的头像、{image} 配图的位置、{face:14} QQ 表情、{甲|乙} 随机片段。
+text = [
+    "欢迎 {at} 加入{group}～\n群公告里有群规和常用信息，有问题直接问就好。",
+    "{greeting}，{at}！欢迎来到{group}。\n先看看群公告，有什么想问的随时开口～",
+    "{at} 来啦，欢迎～\n群公告里写着群规和常用信息，先看一眼，有问题直接问。",
+]
+# 配图：图片直链，或 data/welcome/ 下的文件名（也可写绝对路径）；多张时每次随机一张。欢迎词里没写 {image} 时接在最后。
 images = []
-# 这么多秒内进群的人合并成一条欢迎（不刷屏）；0 = 来一个欢迎一个。最多 120。
+# 这么多秒内进群的人合并成一条欢迎（不刷屏），{name} 变成「小林、阿杰」这样的一串、{count} 是人数；0 = 来一个欢迎一个。最多 120。
 merge_seconds = 0
+# 欢迎发出这么多秒后自己撤回，群里不留一长串欢迎；0 = 不撤。要验证的新人等验证有了结果再撤。
+recall_seconds = 0
 
 [welcome.leave]
+# 有人退群或被移出时说一声。
 enabled = false
-# 自己退群时说的话。
-text = "{name}（{user_id}）离开了本群。"
-# 被移出时说的话，多一个 {operator}；留空则同 text。
-kicked_text = "{name}（{user_id}）已被移出本群。"
+# 自己退群时说的话；留空 = 不说。占位符同欢迎词（{at} 没有意义）。
+text = ["{name}（{user_id}）离开了群聊。"]
+# 被移出时说的话，多一个 {operator}（操作人）；留空 = 被移出时不说。
+kicked_text = ["{name}（{user_id}）已被 {operator} 移出群聊。"]
+# 送别发出这么多秒后自己撤回；0 = 不撤。
+recall_seconds = 0
 
 [welcome.verify]
-# 入群验证：新人要在时限内发出指定内容；账号不是群主或管理员时自动跳过。
+# 入群验证：新人要在时限内完成一件小事，挡住进群就发广告的小号；账号不是群主或管理员时自动跳过、只发欢迎。
 enabled = false
+# 验证方式：code 回随机 4 位验证码、math 算一道两位数以内的加法、answer 发出下面的口令、any 说任意一句话。
+mode = "code"
+# 口令（mode = answer）：回答里含其中任一句即通过，不分大小写、空格与全半角；留空时等同任意一句话。
+answers = []
 # 时限（秒，30–86400）。
 timeout_seconds = 300
-# 回答里含其中任一句即通过（不分大小写）；留空且不用验证码 = 说任意一句话就行。
-answers = []
-# 每人发一个随机 4 位数验证码，回答须含这串数字（优先于 answers）。
-code = false
+# 答错这么多次就按超时处理；0 = 不限。每次答错会回一句提示（15 秒内只回一次）。
+attempts = 0
 # 剩余这么多秒时 @ 新人提醒一次；新提醒顶替旧的，验证有了结果就把提醒撤掉。
 remind_seconds = [60]
 # 超时怎么办：kick 移出、mute 禁言、none 只记一笔。
 action = "kick"
 # action = mute 时禁言多久（秒）。
 mute_seconds = 86400
-# 移出时拒绝再次申请。
+# 移出时拒绝他再次申请。
 kick_permanent = false
 # 验证通过前他发的其他消息撤回掉（防新号进群就发广告）。
 recall_unverified = false
-prompt_text = "请在 {timeout} 内发送「{answer}」完成验证，超时将{punish}。"
-remind_text = "{at} 验证还剩 {remaining}：发送「{answer}」即可，超时将{punish}。"
+# 接在欢迎后面的验证说明。占位符：{timeout} 时限、{task} 要做的事（随验证方式变，如「发送验证码 4821」）、{answer} 口令或题目、{punish} 后果，以及欢迎词里那些。
+prompt_text = ["请在 {timeout} 内{task}完成验证，超时会被{punish}。"]
+# 倒计时提醒，多一个 {remaining}（剩余时间）。
+remind_text = ["{at} 验证还剩 {remaining}：{task}就好，超时会被{punish}。"]
+# 答错时回的话，多一个 {chances}：限了次数时是「（还能再试 2 次）」，不限时为空。留空 = 答错不回。
+wrong_text = ["{at} 还不对哦，{task}就好{chances}。"]
 # 通过时说的话；留空不说。
-pass_text = "{at} 验证通过，欢迎正式入群！"
-# 超时处理后说的话；留空不说。
-fail_text = "{name} 未在时限内完成入群验证，已{punish}。"
+pass_text = ["{at} 验证通过，欢迎正式加入～"]
+# 超时或答错次数用完、处理之后说的话；留空不说。
+fail_text = ["{name} 未能完成入群验证，已{punish}。"]
+# 「通过」「未通过」那两句发出这么多秒后自己撤回；0 = 不撤。
+recall_seconds = 0
 
 [welcome.approve]
 # 加群申请：附言里含关键词的自动同意。
 enabled = false
-# 附言含其中任一个（不分大小写）就同意；留空 = 全部同意。
+# 附言含其中任一个（不分大小写、空格与全半角）就同意；留空 = 全部同意。
 keywords = []
 # 对不上关键词时拒绝；否则留给管理员（群管理开放时智能体也看得到）。
 reject = false
 # 拒绝时给申请人看的话。
-reject_message = "答案不对，看清入群问题再来～"
+reject_message = "附言没有对上入群问题，看清问题再来申请吧～"
+
+[welcome.channel]
+# 白名单非空时只在这些群生效；黑名单里的群一律不生效；两边都空 = 账号所在的全部群。
+white = []
+black = []
 
 # 每个群单独的文案与开关，只写想改的项，例如：
 # [welcome.groups."123456"]
-# join_text = "欢迎 {at}！本群只聊技术。"
+# join_text = ["欢迎 {at}！本群只聊技术。"]
 # verify_enabled = true
+# verify_mode = "answer"
 # answers = ["我已阅读群规"]
 [welcome.groups]
 

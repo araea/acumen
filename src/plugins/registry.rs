@@ -75,8 +75,13 @@ register_plugins!(
         config: welcome::Config,
         display_name: "入群欢迎",
         section: "system",
-        summary: "进群 @ 欢迎（可配图）、退群送别；可选入群验证（限时回复，超时移出或禁言、倒计时提醒）与加群申请自动审批",
-        on_connected: Some(welcome::on_connected)
+        summary: "进群 @ 欢迎（多种说法随机、可配图配头像、可自动撤回）、退群送别；可选入群验证（口令、验证码或算术，倒计时提醒、答错提示，超时移出或禁言）与加群申请自动审批",
+        on_connected: Some(welcome::on_connected),
+        commands: cmds![
+            ("欢迎", "群管理：本群的欢迎与验证设置、待验证名单"),
+            ("欢迎 预览 [送别|移出|验证|提醒|答错|通过|超时]", "群管理：把这条提示对自己发一遍看效果"),
+            ("欢迎 放行 @某人", "群管理：让待验证的新人直接通过"),
+        ]
     },
     anti_recall {
         config: anti_recall::Config,

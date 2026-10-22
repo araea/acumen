@@ -94,6 +94,8 @@ pub struct Plugin {
     /// 默认配置与校验都由注册时给的配置类型生成，见 [`PluginConfig`]
     pub default_config: fn() -> Value,
     pub validate_config: fn(&Value) -> Result<(), String>,
+    /// 启动时在补默认值之前改写旧版配置，见 [`PluginConfig::migrate`]
+    pub migrate_config: fn(&mut toml::Table) -> bool,
 
     // —— 帮助元数据 ——
     // 三个字段一并写在注册表里，帮助中心直接读，不再另设一份清单。
@@ -248,6 +250,7 @@ macro_rules! register_plugins {
                                 on_sent: None,
                                 default_config: default_config_of::<$config>,
                                 validate_config: validate_config_of::<$config>,
+                                migrate_config: <$config as PluginConfig>::migrate,
                                 section: "misc",
                                 summary: "",
                                 commands: &[],
@@ -574,6 +577,12 @@ pub trait PluginConfig: Serialize + DeserializeOwned + Default {
     /// 类型读通之后的取值检查（范围、可选值之类），`/ctl` 与控制台保存前调用。
     fn check(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// 旧版配置的改写：改了名、改了形状的键，以及仍是旧默认值的文案换成新的。
+    /// 启动时在补默认值之前调用一次；返回是否改了东西（改了就落盘）。
+    fn migrate(_table: &mut toml::Table) -> bool {
+        false
     }
 }
 

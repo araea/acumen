@@ -133,6 +133,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if let Some(existing_config) = app_config.plugins.get_mut(plugin.name) {
             // 配置已存在：把默认值里新增的字段补进来，嵌套表里的也补。
             if let toml::Value::Table(existing_table) = existing_config {
+                if (plugin.migrate_config)(existing_table) {
+                    info!("配置迁移：[{}] 换成了新版的写法", plugin.name);
+                    config_dirty = true;
+                }
                 config_dirty |= config::fill_missing(existing_table, default_config, plugin.name);
             }
         } else {

@@ -213,6 +213,10 @@ async fn plugin_detail(
         "commands": commands,
         "config": crate::plugins::ctl::redacted(current),
         "field_help": field_help(plugin.name),
+        "field_order": field_order(plugin.name),
+        "labels": labels(plugin.name),
+        "option_labels": option_labels(plugin.name),
+        "templates": templates(plugin.name, current),
         "field_options": field_options(plugin.name, current),
         "maps": maps(plugin.name, current),
         "defaults": crate::plugins::ctl::redacted(&defaults),
@@ -226,6 +230,31 @@ async fn plugin_detail(
 fn live(name: &str, ctx: &crate::event::Context) -> Value {
     match name {
         "anti_recall" => crate::plugins::anti_recall::live(ctx),
+        "welcome" => crate::plugins::welcome::live(ctx),
+        _ => Value::Null,
+    }
+}
+
+/// 字段的中文名（键名照旧显示在旁边）。映射表里一项的字段写成 `表.*.字段`。
+fn labels(name: &str) -> Value {
+    match name {
+        "welcome" => crate::plugins::welcome::labels(),
+        _ => json!({}),
+    }
+}
+
+/// 下拉框里每个取值的说法：`{ 路径: { 取值: 说法 } }`。
+fn option_labels(name: &str) -> Value {
+    match name {
+        "welcome" => crate::plugins::welcome::option_labels(),
+        _ => json!({}),
+    }
+}
+
+/// 哪些字段是带占位符的提示模板：界面换成文案编辑器（几种说法、插入占位符、预览）。
+fn templates(name: &str, current: &Toml) -> Value {
+    match name {
+        "welcome" => crate::plugins::welcome::templates(current),
         _ => Value::Null,
     }
 }
@@ -1217,6 +1246,36 @@ fn field_help(plugin: &str) -> std::collections::BTreeMap<String, String> {
         }
     }
     result
+}
+
+/// 配置项在配置参考里出现的先后：表单照这个顺序排，而不是按键名的字母序——
+/// 配置参考是按「先要紧的、相关的挨着」写的，字母序会把「欢迎」排到「审批」后面。
+fn field_order(plugin: &str) -> Vec<String> {
+    let mut order = Vec::new();
+    let mut section = String::new();
+    let mut push = |path: String| {
+        if !order.contains(&path) {
+            order.push(path);
+        }
+    };
+    for line in include_str!("../../../config.example.toml").lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line.trim_matches(['[', ']']).to_string();
+            if let Some(path) = section.strip_prefix(&format!("{plugin}.")) {
+                push(path.to_string());
+            }
+        } else if !line.starts_with('#')
+            && let Some((key, _)) = line.split_once('=')
+            && let Some(rest) = section.strip_prefix(plugin)
+            && (rest.is_empty() || rest.starts_with('.'))
+        {
+            let prefix = rest.trim_start_matches('.');
+            let key = key.trim();
+            push(if prefix.is_empty() { key.to_string() } else { format!("{prefix}.{key}") });
+        }
+    }
+    order
 }
 
 /// 说明拼好以后的收尾：示例配置抽走了，留下的「例如……：」就没了下文，一并剪掉。

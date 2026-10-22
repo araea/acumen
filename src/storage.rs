@@ -189,6 +189,11 @@ where
         result
     }
 
+    /// 不等锁地看一眼（控制台这类同步的展示用）：正被改着或还没读盘时给 `None`。
+    pub fn peek(&self) -> Option<T> {
+        self.cell.try_lock().ok().and_then(|guard| guard.clone())
+    }
+
     /// 提前把文件读进内存（插件初始化时调用），免得第一次用到时才读盘。
     pub async fn preload(&self) {
         let mut guard = self.cell.lock().await;
