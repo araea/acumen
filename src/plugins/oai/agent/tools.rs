@@ -8,6 +8,7 @@
 //! 而手写的 schema 反而更好按模型实际用得顺手的写法调。
 
 use rig_core::completion::ToolDefinition;
+use rig_core::completion::message::ToolName;
 use serde_json::{Value, json};
 
 /// 本地工具：需要 shell 或文件系统就能完成的那些。
@@ -874,11 +875,12 @@ fn spec(name: &str) -> Option<ToolDefinition> {
         ),
         _ => return None,
     };
-    Some(ToolDefinition {
-        name: name.to_string(),
-        description: description.to_string(),
-        parameters,
-    })
+    Some(ToolDefinition::new(tool_name(name), description, parameters))
+}
+
+/// 工具名都是写死在代码里的常量，不会是空的。
+pub(crate) fn tool_name(name: &str) -> ToolName {
+    ToolName::new(name).expect("工具名不能为空")
 }
 
 /// `satori_action` 的 request 参数：与聊天界面那一侧接受的写法一一对应。

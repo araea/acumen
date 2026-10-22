@@ -2,7 +2,7 @@
 name = "acumen"
 version = "1.14.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.99"
 description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"
 
 [lints.rust]
@@ -26,7 +26,7 @@ unnested_or_patterns = "warn"
 anyhow = "1.0"
 
 # 文本处理
-jieba-rs = "0.10"     # 中文分词
+jieba-rs = "0.11"     # 中文分词
 regex = "1.13"        # 正则表达式
 pulldown-cmark = "0.13" # Markdown 解析
 glob = "0.3"          # 内置 agent 的文件匹配工具
@@ -41,7 +41,7 @@ toml = "1.1"
 
 # 加密与哈希
 md5 = "0.8"
-sha2 = "0.10"         # 自动更新：校验下载的可执行文件
+sha2 = "0.11"         # 自动更新：校验下载的可执行文件
 hex = "0.4"
 flate2 = "1"          # 自动更新：发布包是 gzip
 base64 = "0.23"
@@ -52,7 +52,8 @@ http = "1.5"
 url = "2.5"
 tokio-tungstenite = "0.30"  # WebSocket
 quick-xml = "0.42"           # Satori 消息元素解析
-rig-core = { version = "0.42", default-features = false, features = ["reqwest", "rustls"] }  # OpenAI 兼容补全
+rig-core = { version = "0.45", default-features = false, features = ["reqwest", "rustls"] }  # OpenAI 兼容补全
+rig-reqwest = { version = "0.45", default-features = false, features = ["rustls"] }  # 让 rig 走进程共用的 reqwest 客户端
 
 # 异步运行时与工具
 tokio = { version = "1", features = ["full"] }

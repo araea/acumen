@@ -41,14 +41,14 @@ struct Note {
 static STORE: JsonState<Notes> = JsonState::new(super::super::LOG_TARGET, "oai", "notes.json", "管家手记");
 
 pub(crate) fn spec() -> ToolDefinition {
-    ToolDefinition {
-        name: NAME.to_string(),
-        description: "号主的手记：跨房间、跨清空历史都留着的短清单，每一轮的提示词里都会带上。\
+    ToolDefinition::new(
+        super::tools::tool_name(NAME),
+        "号主的手记：跨房间、跨清空历史都留着的短清单，每一轮的提示词里都会带上。\
             号主说「记住」「以后……」「别忘了」，或者你发现一条值得长期记着的事实与偏好（称呼、作息、常用设备与账号叫法、固定的做事规矩）时，用 add 记一条；\
             条目写成一句自成一体的话，别写「今天」「刚才」这类过几天就看不懂的词。号主说「别记这个了」「忘掉」时用 forget 删掉对应编号；list 看全部（提示词里已经有，一般不必查）。\
             只记事实与偏好，不要记密码、密钥、令牌；一次性的事别记，那是提醒（schedule）的活。"
             .to_string(),
-        parameters: json!({
+        json!({
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["add", "forget", "list"]},
@@ -57,7 +57,7 @@ pub(crate) fn spec() -> ToolDefinition {
             },
             "required": ["action"]
         }),
-    }
+    )
 }
 
 pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<String> {

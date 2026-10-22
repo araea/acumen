@@ -9,21 +9,27 @@
 //! 想加什么参数直接写进 `additional_params` 即可（provider 会把它扁平进顶层 body），
 //! 不必为每个参数准备一个 builder。
 
-use rig_core::client::{BearerAuth, ClientBuilder, CompletionClient};
-use rig_core::completion::{AssistantContent, CompletionModel, CompletionRequest, Message};
-use rig_core::providers::openai::{CompletionsClient, OpenAICompletionsExtBuilder};
+use rig_core::Model;
+use rig_core::completion::{AssistantContent, CompletionRequest, Message, ToolDefinition};
+use rig_core::providers::openai::OpenAIConfig;
+use rig_core::providers::openai::wire::{Chat, Dialect};
 
-/// 按接口地址与密钥建一个 Chat Completions 客户端。
+/// 通用的 OpenAI 兼容接口：只走 `/chat/completions`，不套任何一家的特殊处理。
+/// 房间接的多半是中转站，按某家官方的脾气改请求反而会出错。
+const COMPATIBLE: Dialect = Dialect::gateway("openai-compatible", "", "");
+
+/// 一个模型的 Chat Completions 端点。
+pub(crate) type ChatModel = Model<Chat>;
+
+/// 按接口地址、密钥与模型 id 建一个 Chat Completions 端点。
 ///
 /// 复用进程级的 `crate::http::client()`：它与其它出网请求共用连接池与代理设置，
 /// 在手机上少开一套 TLS 栈。
-pub(crate) fn client(api_base: &str, api_key: &str) -> anyhow::Result<CompletionsClient> {
-    ClientBuilder::<OpenAICompletionsExtBuilder>::default()
-        .api_key::<BearerAuth>(api_key.to_string())
-        .base_url(super::utils::openai_api_base(api_base))
-        .http_client(crate::http::client())
-        .build()
-        .map_err(|error| anyhow::anyhow!("构建 OpenAI 客户端失败：{error}"))
+pub(crate) fn model(api_base: &str, api_key: &str, model: &str) -> ChatModel {
+    OpenAIConfig::with_key(&COMPATIBLE, api_key)
+        .with_base_url(super::utils::openai_api_base(api_base))
+        .connect(rig_reqwest::ReqwestClient::from(crate::http::client()))
+        .chat(model)
 }
 
 /// 把房间的思考强度映射成 Chat Completions 的 `reasoning_effort`。
@@ -48,29 +54,23 @@ fn reasoning_effort(level: &str) -> Option<&'static str> {
 /// `temperature` 为 `None` 时连这个字段都不发，交给接口自己的默认值。
 pub(crate) fn request(
     history: Vec<Message>,
-    tools: Vec<rig_core::completion::ToolDefinition>,
+    tools: Vec<ToolDefinition>,
     thinking: Option<&str>,
     temperature: Option<f64>,
 ) -> CompletionRequest {
-    CompletionRequest {
-        model: None,
-        preamble: None,
-        chat_history: history,
-        documents: Vec::new(),
-        tools,
-        temperature,
-        max_tokens: None,
-        tool_choice: None,
-        additional_params: thinking
-            .and_then(reasoning_effort)
-            .map(|effort| serde_json::json!({ "reasoning_effort": effort })),
-        output_schema: None,
-        record_telemetry_content: false,
-    }
+    let mut request = CompletionRequest::from(history).tools(tools);
+    request.temperature = temperature;
+    // 中转站常回些规范外的结束原因：照常收下，别把整轮当失败。
+    request.accept_unknown_finish_reasons = true;
+    request.additional_params = thinking
+        .and_then(reasoning_effort)
+        .map(|effort| serde_json::json!({ "reasoning_effort": effort }));
+    request
 }
 
 /// 取出一份回复里的全部正文。
-pub(crate) fn text_of(choice: &[AssistantContent]) -> String {    choice
+pub(crate) fn text_of(choice: &[AssistantContent]) -> String {
+    choice
         .iter()
         .filter_map(|part| match part {
             AssistantContent::Text(text) => Some(text.text.as_str()),
@@ -89,9 +89,8 @@ pub(crate) async fn complete(
     history: Vec<Message>,
     thinking: Option<&str>,
 ) -> anyhow::Result<String> {
-    let response = client(api_base, api_key)?
-        .completion_model(model)
-        .completion(request(history, Vec::new(), thinking, None))
+    let response = self::model(api_base, api_key, model)
+        .call(request(history, Vec::new(), thinking, None))
         .await?;
     let text = text_of(&response.choice);
     if text.trim().is_empty() {

@@ -212,7 +212,7 @@ pub(crate) async fn judge(
                 data: DocumentSourceKind::Url(image.data_url),
                 media_type: None,
                 detail: None,
-                additional_params: None,
+                native: None,
             }));
         }
     }

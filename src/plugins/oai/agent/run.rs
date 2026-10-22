@@ -13,12 +13,8 @@
 use super::super::types::TraceStep;
 use super::super::llm;
 use super::{AgentRun, compact, figures};
-use rig_core::client::CompletionClient;
-use rig_core::completion::message::{
-    DocumentSourceKind, EMPTY_RESPONSE_ERROR, Image, Text, ToolCall, ToolChoice, ToolResult, ToolResultContent,
-    UserContent,
-};
-use rig_core::completion::{AssistantContent, CompletionModel, Message};
+use rig_core::completion::message::{DocumentSourceKind, Image, Text, ToolCall, ToolChoice, ToolResultContent, UserContent};
+use rig_core::completion::{AssistantContent, CompletionResponse, Message};
 use std::collections::HashMap;
 
 use crate::plugins::oai::LOG_TARGET;
@@ -219,12 +215,7 @@ async fn attempt(
 ) -> Result<super::AgentReply, Failure> {
     let context = Context::prepare(run, history).await?;
     let definitions = super::tools::definitions(run.tools, run.kit());
-    let client = llm::client(run.api_base, run.api_key).map_err(|message| Failure {
-        message,
-        stalled: false,
-        used_tools: false,
-    })?;
-    let model = client.completion_model(run.model);
+    let model = llm::model(run.api_base, run.api_key, run.model);
 
     let mut messages = context.messages;
     let mut trace = Trace::default();
@@ -281,7 +272,7 @@ async fn attempt(
             request.tool_choice = Some(ToolChoice::None);
         }
         let response = match run.stall {
-            Some(limit) => match tokio::time::timeout(limit, model.completion(request)).await {
+            Some(limit) => match tokio::time::timeout(limit, model.call(request)).await {
                 Ok(response) => response,
                 Err(_) => {
                     return Err(Failure {
@@ -294,28 +285,16 @@ async fn attempt(
                     });
                 }
             },
-            None => model.completion(request).await,
+            None => model.call(request).await,
         }
         .map_err(|error| Failure {
             message: anyhow::anyhow!("{error}"),
             stalled: false,
             used_tools,
         });
-        let response = match response {
-            Ok(response) => response,
-            // 接口回了一条什么都没有的消息（连思考块都没有）：和「只想不说」同一种待遇，催一次。
-            Err(failure)
-                if run.rescue
-                    && !nudged
-                    && step + 1 < steps
-                    && failure.message.to_string().contains(EMPTY_RESPONSE_ERROR) =>
-            {
-                nudged = true;
-                messages.push(user_note(EMPTY_REPLY));
-                continue;
-            }
-            Err(failure) => return Err(failure),
-        };
+        // 接口回了一条什么都没有的消息（连思考块都没有）不算出错：choice 是空的，
+        // 和「只想不说」一样落到下面的催一次。
+        let response = response?;
 
         let calls: Vec<_> = response
             .choice
@@ -351,10 +330,7 @@ async fn attempt(
             };
             if !figures.failures().is_empty() && !corrected && step + 1 < steps {
                 corrected = true;
-                messages.push(Message::Assistant {
-                    id: response.message_id.clone(),
-                    content: response.choice.clone(),
-                });
+                messages.push(echo(&response));
                 messages.push(user_note(&complaint(&figures)));
                 continue;
             }
@@ -364,10 +340,7 @@ async fn attempt(
             {
                 let more = steer.settle();
                 if !more.is_empty() {
-                    messages.push(Message::Assistant {
-                        id: response.message_id.clone(),
-                        content: response.choice.clone(),
-                    });
+                    messages.push(echo(&response));
                     for text in more {
                         messages.push(user_note(&steer_note(&text)));
                         steered.push(text);
@@ -387,14 +360,11 @@ async fn attempt(
         }
 
         // 原样回填模型的这一份回复：工具调用、思考块与签名都要跟着走。
-        messages.push(Message::Assistant {
-            id: response.message_id.clone(),
-            content: response.choice.clone(),
-        });
+        messages.push(echo(&response));
 
         for call in &calls {
-            trace.push(&call.function.name, super::tools::label(&call.function.arguments));
-            if super::tools::is_side_effecting(&call.function.name) {
+            trace.push(call.function.name.as_str(), super::tools::label(&call.function.arguments_value()));
+            if super::tools::is_side_effecting(call.function.name.as_str()) {
                 used_tools = true;
             }
         }
@@ -410,12 +380,7 @@ async fn attempt(
                     seen.extend(std::mem::take(&mut output.images));
                 }
             }
-            results.push(UserContent::ToolResult(ToolResult {
-                call: call.id.clone(),
-                provider: call.provider.clone(),
-                name: call.function.name.clone(),
-                content: vec![ToolResultContent::text(output.text)],
-            }));
+            results.push(UserContent::ToolResult(call.result(vec![ToolResultContent::text(output.text)])));
         }
         messages.push(Message::User { content: results });
         // 工具读来的图附在这一批回执之后：tool 消息里放不了图，放在用户消息里模型照样看得见。
@@ -426,7 +391,7 @@ async fn attempt(
                     data: DocumentSourceKind::Url(data_url),
                     media_type: None,
                     detail: None,
-                    additional_params: None,
+                    native: None,
                 })
             }));
             messages.push(Message::User { content });
@@ -474,13 +439,13 @@ impl Repeats {
     /// `satori_*` 不计：同样的参数（比如 `satori_context` 的空参数）在群聊往前走之后
     /// 结果本来就不同。
     fn check(&mut self, call: &ToolCall) -> Option<String> {
-        let name = &call.function.name;
+        let name = call.function.name.as_str();
         if name.starts_with("satori_") {
             return None;
         }
         let seen = self
             .0
-            .entry(format!("{name}\u{0}{}", call.function.arguments))
+            .entry(format!("{name}\u{0}{}", call.function.arguments_json()))
             .or_default();
         *seen += 1;
         (*seen > MAX_SAME_CALL).then(|| {
@@ -503,6 +468,8 @@ async fn execute_batch(
     repeats: &mut Repeats,
 ) -> Vec<super::tools::ToolOutput> {
     let refused: Vec<Option<String>> = calls.iter().map(|call| repeats.check(call)).collect();
+    let args: Vec<serde_json::Value> = calls.iter().map(|call| call.function.arguments_value()).collect();
+    let ids: Vec<String> = calls.iter().map(|call| call.id.to_string()).collect();
     let mut outputs: Vec<super::tools::ToolOutput> =
         (0..calls.len()).map(|_| Default::default()).collect();
     let mut index = 0;
@@ -510,18 +477,13 @@ async fn execute_batch(
         let mut end = index;
         while end < calls.len()
             && refused[end].is_none()
-            && super::tools::parallel_safe(&calls[end].function.name)
+            && super::tools::parallel_safe(calls[end].function.name.as_str())
         {
             end += 1;
         }
         if end - index >= 2 {
             let group = (index..end).map(|k| {
-                super::tools::execute(
-                    &calls[k].function.name,
-                    &calls[k].function.arguments,
-                    run,
-                    calls[k].id.as_str(),
-                )
+                super::tools::execute(calls[k].function.name.as_str(), &args[k], run, &ids[k])
             });
             for (k, output) in (index..end).zip(futures_util::future::join_all(group).await) {
                 outputs[k] = output;
@@ -531,19 +493,17 @@ async fn execute_batch(
             outputs[index] = if let Some(reason) = &refused[index] {
                 reason.clone().into()
             } else {
-                let call = &calls[index];
-                super::tools::execute(
-                    &call.function.name,
-                    &call.function.arguments,
-                    run,
-                    call.id.as_str(),
-                )
-                .await
+                super::tools::execute(calls[index].function.name.as_str(), &args[index], run, &ids[index]).await
             };
             index += 1;
         }
     }
     outputs
+}
+
+/// 模型这一份回复原样作为历史里的一条：工具调用、思考块与来源都跟着走，重放时上游才认得出。
+fn echo(response: &CompletionResponse) -> Message {
+    Message::Assistant(response.head().with_content(response.choice.clone()))
 }
 
 /// 回复里有图没取到：把原因告诉模型，让它改好再给最终回复。
@@ -601,7 +561,7 @@ impl Context {
             }
             let tool_names: Vec<String> = super::tools::definitions(run.tools, run.kit())
                 .into_iter()
-                .map(|tool| tool.name)
+                .map(|tool| tool.name.as_str().to_owned())
                 .collect();
             if run.seat.is_some() {
                 let has = |name: &str| tool_names.iter().any(|tool| tool == name);
@@ -689,10 +649,7 @@ impl Context {
                 "assistant" => {
                     let clean = clean_history(&message.content);
                     if !clean.trim().is_empty() {
-                        messages.push(Message::Assistant {
-                            id: None,
-                            content: vec![AssistantContent::Text(Text::new(clean))],
-                        });
+                        messages.push(Message::assistant(clean));
                         // 那一轮用过的工具另成一条系统记录，而不是缀在回复末尾：缀在末尾，
                         // 模型会把它当成自己回复的格式，照着往每条回复后面续。
                         if !message.work.is_empty() && index >= digest_from {
@@ -736,7 +693,7 @@ async fn user_content(text: &str, images: &[String]) -> Vec<UserContent> {
             data: DocumentSourceKind::Url(data_url),
             media_type: None,
             detail: None,
-            additional_params: None,
+            native: None,
         }));
     }
     content

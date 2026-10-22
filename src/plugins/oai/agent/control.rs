@@ -44,9 +44,9 @@ const SEALED: [(&str, &str); 5] = [
 ];
 
 pub(crate) fn spec() -> ToolDefinition {
-    ToolDefinition {
-        name: NAME.to_string(),
-        description: "查看和管理这台机器人（acumen）自己：有哪些插件、各自开没开、配置是什么，开关插件、改配置、看运行状态、重启。\
+    ToolDefinition::new(
+        super::tools::tool_name(NAME),
+        "查看和管理这台机器人（acumen）自己：有哪些插件、各自开没开、配置是什么，开关插件、改配置、看运行状态、重启。\
             等价于号主在聊天里手打 /ctl。动手之前先 list 或 show 看一眼现状，改完再 show 复核，用一句话告诉对方改了什么、什么时候生效。\
             list 列出全部插件（带一句话说明与开关状态，filter 可写 on / off / 关键词）；show 看某个插件的配置（密钥自动隐藏），path 可钻进嵌套字段；\
             defaults 看默认值，diff 看与默认值的差异；status 看版本、内存与待重启的插件；\
@@ -56,7 +56,7 @@ pub(crate) fn spec() -> ToolDefinition {
             凭据、管理员名单、控制台、模型供应商与搜索后端的配置不开放，也不能停用 oai / ctl / console；要动这些请号主去本机控制台。\
             这台机器人同时服务很多群和人，改动会影响所有人，涉及推送目标、白名单这类会波及他人的项，先说清要改什么、等对方确认。"
             .to_string(),
-        parameters: json!({
+        json!({
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["list", "show", "enable", "disable", "set", "reset", "diff", "defaults", "status", "restart"]},
@@ -70,7 +70,7 @@ pub(crate) fn spec() -> ToolDefinition {
             },
             "required": ["action"]
         }),
-    }
+    )
 }
 
 pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<String> {

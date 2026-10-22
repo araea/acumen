@@ -16,16 +16,16 @@ use serde_json::{Value, json};
 pub(crate) const NAME: &str = "schedule";
 
 pub(crate) fn spec() -> ToolDefinition {
-    ToolDefinition {
-        name: NAME.to_string(),
-        description: "替用户安排到点要办的事，重启也不丢。add 新排一条：时间用 at（北京时间，如 2026-10-19 08:30，或只写 08:30 表示今天/明天最近的那个钟点）\
+    ToolDefinition::new(
+        super::tools::tool_name(NAME),
+        "替用户安排到点要办的事，重启也不丢。add 新排一条：时间用 at（北京时间，如 2026-10-19 08:30，或只写 08:30 表示今天/明天最近的那个钟点）\
             或 in_minutes（多少分钟后）；repeat 默认 once，也可以是 daily / weekly / monthly（按 at 的钟点与日期重复）或 minutes（再配 every_minutes，至少 10）。\
             内容二选一：text = 到点原样发一句话提醒（群里会 @ 提出的人，不经过模型，准时可靠，「叫我喝水」「十点开会」这类用它）；\
             task = 到点由你把这件事办一遍、结果发回来（「每天早上查天气和新闻简报」这类，要查要算要动手的用它；只替号主排，重复间隔至少 60 分钟）。\
             task 要写成一段自成一体的话（到点的你看不到现在的对话）。list 看这个聊天里排了什么；cancel 按编号取消。\
             用户说「明天」「下周一」「半小时后」时，先对照提示词里的今天日期算准确切时刻再排，回执里会写出实际的触发时刻，核对一遍再告诉用户。"
             .to_string(),
-        parameters: json!({
+        json!({
             "type": "object",
             "properties": {
                 "action": {"type": "string", "enum": ["add", "list", "cancel"]},
@@ -39,7 +39,7 @@ pub(crate) fn spec() -> ToolDefinition {
             },
             "required": ["action"]
         }),
-    }
+    )
 }
 
 pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<String> {

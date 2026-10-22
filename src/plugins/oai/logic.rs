@@ -7,7 +7,7 @@ use crate::event::{Context, MessageEvent};
 use crate::message::Message;
 use regex::Regex;
 use rig_core::completion::message::{DocumentSourceKind, Image, Text, UserContent};
-use rig_core::completion::{AssistantContent, Message as LlmMessage};
+use rig_core::completion::Message as LlmMessage;
 use std::{fs::File, io::Write, sync::Arc};
 
 use super::LOG_TARGET;
@@ -1251,10 +1251,7 @@ async fn build_chat_messages(agent: &Agent, hist: &[ChatMessage]) -> Vec<LlmMess
             let clean_content = re.replace_all(&m.content, "[Image Created]").to_string();
             // 空内容的 assistant 消息会被请求校验拒掉（provider 侧同样报错），跳过。
             if !clean_content.trim().is_empty() {
-                msgs.push(LlmMessage::Assistant {
-                    id: None,
-                    content: vec![AssistantContent::Text(Text::new(clean_content))],
-                });
+                msgs.push(LlmMessage::assistant(clean_content));
             }
             let gen_imgs = extract_image_urls(&m.content);
             if !gen_imgs.is_empty() {
@@ -1279,7 +1276,7 @@ fn image_content(url: String) -> UserContent {
         data: DocumentSourceKind::Url(url),
         media_type: None,
         detail: None,
-        additional_params: None,
+        native: None,
     })
 }
 

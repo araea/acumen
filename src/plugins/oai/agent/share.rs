@@ -19,14 +19,14 @@ pub(crate) const NAME: &str = "send_file";
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 
 pub(crate) fn spec() -> ToolDefinition {
-    ToolDefinition {
-        name: NAME.to_string(),
-        description: "把本机的一个文件发到当前这个聊天里（图片会直接显示，其他当文件发）。\
+    ToolDefinition::new(
+        super::tools::tool_name(NAME),
+        "把本机的一个文件发到当前这个聊天里（图片会直接显示，其他当文件发）。\
             做好了报告、导出了日志、画好了图，用户要拿到手时用它；单个文件不超过 20 MiB，发到哪里不能指定，永远是当前聊天。\
             这是立刻发出的动作，发之前确认路径对、内容是用户该看的（别把密钥、配置文件、别人的私人资料发出去）。\
             回复正文里仍要用一两句话交代发了什么。"
             .to_string(),
-        parameters: json!({
+        json!({
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "文件路径（绝对路径，或相对工作目录）"},
@@ -34,7 +34,7 @@ pub(crate) fn spec() -> ToolDefinition {
             },
             "required": ["path"]
         }),
-    }
+    )
 }
 
 pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<String> {

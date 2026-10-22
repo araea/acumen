@@ -69,11 +69,12 @@ fn message_size(message: &Message) -> usize {
                 _ => 0,
             })
             .sum(),
-        Message::Assistant { content, .. } => content
+        Message::Assistant(turn) => turn
+            .content
             .iter()
             .map(|part| match part {
                 AssistantContent::Text(text) => text.text.chars().count(),
-                AssistantContent::ToolCall(call) => call.function.arguments.to_string().len(),
+                AssistantContent::ToolCall(call) => call.function.arguments_json().len(),
                 _ => 0,
             })
             .sum(),
@@ -193,17 +194,15 @@ fn drop_old_views(messages: &mut [Message]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rig_core::completion::message::{DocumentSourceKind, Image, ToolResult};
-    use rig_core::completion::message::ToolCallId;
+    use rig_core::completion::message::{CallId, DocumentSourceKind, Image, LocalCallId, ToolName};
 
     fn tool(text: &str) -> Message {
         Message::User {
-            content: vec![UserContent::ToolResult(ToolResult {
-                call: ToolCallId::mint(),
-                provider: None,
-                name: "bash".into(),
-                content: vec![ToolResultContent::text(text)],
-            })],
+            content: vec![UserContent::tool_result(
+                CallId::from(LocalCallId::new()),
+                ToolName::new("bash").unwrap(),
+                vec![ToolResultContent::text(text)],
+            )],
         }
     }
 
@@ -214,7 +213,7 @@ mod tests {
                 data: DocumentSourceKind::Url("data:image/png;base64,AAAA".into()),
                 media_type: None,
                 detail: None,
-                additional_params: None,
+                native: None,
             }));
         }
         Message::User { content }

@@ -444,7 +444,7 @@ pub(super) async fn describe(
                     data: DocumentSourceKind::Url(image.to_string()),
                     media_type: None,
                     detail: None,
-                    additional_params: None,
+                    native: None,
                 }),
                 UserContent::Text(Text::new("这张头像长什么样？")),
             ],

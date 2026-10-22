@@ -129,7 +129,7 @@ pub async fn ask(ctx: &Context, model: &str, png: &[u8], digest: &str, limit: u3
                 data: DocumentSourceKind::Url(format!("data:image/png;base64,{}", STANDARD.encode(png))),
                 media_type: None,
                 detail: None,
-                additional_params: None,
+                native: None,
             }),
         ],
     }];
