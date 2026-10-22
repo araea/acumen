@@ -51,7 +51,12 @@ bot_pid() {
     fi
     for pid in $(pgrep -f "$EXE" 2>/dev/null); do
         exe=$(readlink "/proc/$pid/exe" 2>/dev/null) || continue
-        [[ ${exe% (deleted)} == "$EXE" ]] && { echo "$pid"; return 0; }
+        [[ ${exe% (deleted)} == "$EXE" ]] || continue
+        # 管理面板（acumen --panel）是同一个可执行文件，但不是机器人：认成它的话，
+        # 机器人停着时 status 会说「运行中」，start 也以为已经起来了。
+        tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -qx -- --panel && continue
+        echo "$pid"
+        return 0
     done
     return 1
 }
