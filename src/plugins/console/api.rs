@@ -11,7 +11,7 @@ use crate::plugins::{get_plugins, pending_startup};
 use crate::storage::write_atomic_async;
 use axum::Json;
 use axum::Router;
-use axum::extract::{Path as AxumPath, Query, State};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -31,6 +31,13 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/plugins/{name}/config/remove", post(remove_config))
         .route("/plugins/{name}/reset", post(reset_config))
         .route("/plugins/{name}/test", post(test_plugin))
+        // 本机图库：相册里选的配图从这里进来，页面再按缩略图取回。
+        // 只有上传这一条放开 16 MB 的请求体上限，其余接口仍是默认的 2 MB。
+        .route(
+            "/plugins/{name}/asset",
+            post(super::gallery::upload).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+        )
+        .route("/plugins/{name}/asset/{file}", get(super::gallery::file))
         .route("/ambient", get(ambient))
         .route("/ambient/sticker/{id}", get(sticker_image))
         .route("/ambient/source", post(write_ambient_source))

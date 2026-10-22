@@ -1904,7 +1904,7 @@
       const shape = listShape(key, value, valueAt(ctx.defaults, path));
       if (shape) {
         return row("", listEditor({
-          id, type: shape, items: value, mode: "save", path, title: labelOf(ctx, path) || key, describedby: desc,
+          id, type: shape, items: value, mode: "save", path, title: labelOf(ctx, path) || key, describedby: desc, plugin: ctx.name,
           head: text(h`<span class="field-label" id="${id}-label">${name}</span>`),
         }));
       }
@@ -3874,10 +3874,11 @@
     time: { placeholder: "", hint: "选好时间点再点「添加」，按先后自动排序。点一项可修改。" },
   };
 
-  /** 列表是哪一种：weekday / time / number / text；认不出（对象、混着类型、带隐藏凭据）返回空串，仍走 JSON。
-   *  空列表看默认值的元素类型，默认值也空就当文字。 */
+  /** 列表是哪一种：image / weekday / time / number / text；认不出（对象、混着类型、带隐藏凭据）返回空串，仍走 JSON。
+   *  空列表看默认值的元素类型，默认值也空就当文字。`images` 是配图，走图库编辑器。 */
   function listShape(key, value, fallback) {
     if (value.some((item) => typeof item === "string" && item.includes(HIDDEN))) return "";
+    if (key === "images" && value.every((item) => typeof item === "string")) return "image";
     const sample = value.length ? value : Array.isArray(fallback) ? fallback : [];
     if (sample.length && sample.every((item) => typeof item === "number")) {
       return key === "weekdays" && sample.every((day) => Number.isInteger(day) && day >= 1 && day <= 7) ? "weekday" : "number";
@@ -3891,11 +3892,12 @@
   const tidyList = (type, items) =>
     type === "time" ? [...items].sort((a, b) => clockKey(a).localeCompare(clockKey(b))) : type === "weekday" ? [...items].sort((a, b) => a - b) : items;
 
-  function listEditor({ id, head, title, items, type, mode, path = "", name = "", describedby = "" }) {
+  function listEditor({ id, head, title, items, type, mode, path = "", name = "", describedby = "", plugin = "" }) {
     const value = h`<input class="tags-value" id="${id}" type="text" hidden tabindex="-1" autocomplete="off" value="${JSON.stringify(items)}"
         ${name ? h`name="${name}"` : ""} ${path ? h`data-path="${path}" data-kind="list"` : ""}>`;
     const shell = (inner) => h`<div class="field tags" role="group" aria-labelledby="${id}-label"${describedby ? h` aria-describedby="${describedby}"` : ""}
         data-tags="${mode}" data-type="${type}" data-title="${title}">${inner}${value}<span class="visually-hidden tags-live" role="status"></span></div>`;
+    if (type === "image") return photoEditor({ id, head, title, items, mode, path, name, describedby, plugin });
     if (type === "weekday") {
       return shell(h`${head}<div class="chips weekdays">${WEEKDAYS.map((label, index) =>
         h`<button class="chip state" type="button" data-weekday="${index + 1}" aria-pressed="${bool(items.includes(index + 1))}">${icon("check")}周${label}</button>`)}</div>`);
@@ -3912,6 +3914,169 @@
         <button class="btn btn-tonal tags-commit" type="button" data-tags-commit disabled>${icon("add")}<span>添加</span></button>
       </div>
       <span class="field-hint tags-hint" id="${id}-hint">${words.hint}</span>`);
+  }
+
+  /** 配图。相册里选的图先收进插件的本机图库（服务端 `data/<插件>/`），列表里只留文件名；
+   *  也还能贴图片直链。一格方图一张：点开看原图，右上角 ✕ 是独立的移除键。 */
+  function photoEditor({ id, head, title, items, mode, path = "", name = "", describedby = "", plugin = "" }) {
+    const value = h`<input class="tags-value" id="${id}" type="text" hidden tabindex="-1" autocomplete="off" value="${JSON.stringify(items)}"
+        ${name ? h`name="${name}"` : ""} ${path ? h`data-path="${path}" data-kind="list"` : ""}>`;
+    return h`<div class="field tags photos" role="group" aria-labelledby="${id}-label"${describedby ? h` aria-describedby="${describedby}"` : ""}
+        data-tags="${mode}" data-type="image" data-title="${title}" data-plugin="${plugin}">
+      <div class="tags-head">${head}<span class="picker-count num">${items.length ? `${items.length} 张` : ""}</span></div>
+      <ul class="photos-list" aria-label="${title} 的图片">${items.map(photoTile(plugin, items.length))}</ul>
+      <div class="photos-empty"${attr(items.length, "hidden")}>
+        <span class="photos-empty-icon" aria-hidden="true">${icon("perm_media")}</span>
+        <span>还没有配图。</span>
+        <span class="field-hint">从相册选一张，或者粘贴图片链接。</span>
+      </div>
+      <div class="photos-actions">
+        <button class="btn btn-tonal" type="button" data-photo-pick>${icon("perm_media")}<span>从相册选择</span></button>
+        <button class="btn btn-outlined" type="button" data-photo-link>${icon("add")}<span>粘贴链接</span></button>
+        <input class="photo-file" type="file" accept="image/*" multiple hidden aria-hidden="true" tabindex="-1">
+      </div>
+      <div class="photos-link" hidden>
+        <div class="tags-add">
+          <input class="input mono" id="${id}-add" type="text" enterkeyhint="done" spellcheck="false" autocapitalize="off" autocomplete="off"
+            placeholder="https://… 图片直链" aria-label="添加图片链接" aria-describedby="${id}-hint">
+          <button class="btn btn-tonal tags-commit" type="button" data-tags-commit disabled>${icon("add")}<span>添加</span></button>
+        </div>
+        <span class="field-hint" id="${id}-hint">图片收在本机 data/${plugin}/ 里，配置里只存文件名；可以一次传多张。</span>
+      </div>
+      ${value}<span class="visually-hidden tags-live" role="status"></span>
+    </div>`;
+  }
+
+  /** 一张配图的地址：直链原样用，其余当成本机图库里的文件名；给了宽度就要缩略图。 */
+  function photoSrc(plugin, item, width) {
+    const text = String(item).trim();
+    if (/^https?:\/\//i.test(text)) return text;
+    if (!plugin || !text || text.startsWith("/") || text.startsWith("~") || text.includes("\\")) return "";
+    const query = `?t=${encodeURIComponent(token)}${width ? `&w=${width}` : ""}`;
+    return `/api/plugins/${encodeURIComponent(plugin)}/asset/${encodeURIComponent(text)}${query}`;
+  }
+
+  /** 图下面那一行小字：直链说域名与文件名，本机文件说文件名，绝对路径说最后一段。 */
+  function photoName(item) {
+    const text = String(item).trim();
+    if (/^https?:\/\//i.test(text)) {
+      try {
+        const url = new URL(text);
+        const last = url.pathname.split("/").filter(Boolean).pop();
+        return `${url.hostname}${last ? ` · ${last}` : ""}`;
+      } catch {
+        return text;
+      }
+    }
+    return text.split(/[\\/]/).pop() || text;
+  }
+
+  /** 一格方图。图没加载出来时下面那枚图标留着当占位，不留一张破图。 */
+  const photoTile = (plugin, total) => (item, index) => {
+    const text = String(item);
+    const src = photoSrc(plugin, text, 480);
+    return h`<li class="photo" data-index="${index}">
+      <button class="photo-open" type="button" data-photo-open="${index}" aria-label="查看第 ${index + 1} 张配图，共 ${total} 张">
+        <span class="photos-void" aria-hidden="true">${icon("image")}</span>${src ? h`<img src="${src}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ""}
+      </button>
+      <button class="photo-remove" type="button" data-tags-remove="${index}" aria-label="移除第 ${index + 1} 张配图">${icon("close")}</button>
+      <span class="photo-name" title="${text}">${photoName(text)}</span>
+    </li>`;
+  };
+
+  /** 点一格方图看原图。原生 dialog 管 Esc 与焦点，关掉后焦点回到那一格。 */
+  function photoPreview(root, index) {
+    const items = readList(root);
+    const item = items[index];
+    if (item === undefined) return;
+    const dialog = $("#dialog");
+    const opener = document.activeElement;
+    const src = photoSrc(root.dataset.plugin || "", item, 0);
+    put(
+      dialog,
+      h`<h2 class="dialog-title" id="dialog-title">配图 ${index + 1} / ${items.length}</h2>
+        <div class="dialog-photo">${src
+          ? h`<img src="${src}" alt="第 ${index + 1} 张配图的预览" decoding="async">`
+          : h`<span>这张是本机路径，页面读不到：<code>${String(item)}</code></span>`}</div>
+        <p class="dialog-body" id="dialog-body">${String(item)}</p>
+        <div class="actions actions-end"><button class="btn btn-filled" type="button" value="close">关闭</button></div>`
+    );
+    const close = (event) => {
+      if (event.target.closest("button[value]")) dialog.close("close");
+    };
+    dialog.addEventListener("click", close);
+    dialog.addEventListener(
+      "close",
+      () => {
+        dialog.removeEventListener("click", close);
+        if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+      },
+      { once: true }
+    );
+    dialog.returnValue = "";
+    dialog.showModal();
+  }
+
+  /** 一张图 POST 上去：字节走请求体，文件名放查询串（请求头只放得下 ASCII）。 */
+  async function uploadPhoto(plugin, file) {
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 60000);
+    let response;
+    try {
+      response = await fetch(`/api/plugins/${encodeURIComponent(plugin)}/asset?name=${encodeURIComponent(file.name || "image")}`, {
+        method: "POST",
+        headers: { "x-acumen-token": token, "content-type": file.type || "image/*" },
+        body: file,
+        signal: abort.signal,
+      });
+    } catch {
+      throw failure(abort.signal.aborted ? "这张图 60 秒没传完；换一张小一点的再试。" : "连不上控制台，图没有传上去。");
+    } finally {
+      clearTimeout(timer);
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw failure(payload.error || `上传失败（${response.status}）`, response.status);
+    return payload.name;
+  }
+
+  /** 一次传完选中的所有图，再一次性写进列表：中途失败就只加已经传上去的那几张。 */
+  async function pickPhotos(root, files) {
+    const plugin = root.dataset.plugin;
+    if (!plugin) return;
+    // 有的文件管理器不给 MIME：那就照收，服务端按字节判是不是图。
+    const list = files.filter((file) => !file.type || file.type.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(file.name));
+    if (!list.length) return snackbar("只认得图片文件。", "error");
+    const button = $("[data-photo-pick]", root);
+    const label = $("span", button);
+    const live = $(".tags-live", root);
+    const said = label.textContent;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    // 一张失败不耽误其余的：已经传上去的照样加进列表，失败的那几张在提示里点名。
+    const added = [];
+    let trouble = "";
+    for (const [index, file] of list.entries()) {
+      if (list.length > 1) label.textContent = `正在上传 ${index + 1}/${list.length}…`;
+      live.textContent = `正在上传第 ${index + 1} 张，共 ${list.length} 张。`;
+      try {
+        added.push(await uploadPhoto(plugin, file));
+      } catch (error) {
+        trouble = error.message || String(error);
+        if (error.status === 401) break;
+      }
+    }
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    label.textContent = said;
+    live.textContent = "";
+    if (!added.length) return trouble ? snackbar(trouble, "error") : undefined;
+    const items = readList(root);
+    const fresh = added.filter((name) => !items.includes(name));
+    const dup = added.length - fresh.length;
+    if (!fresh.length) return trouble ? snackbar(trouble, "error") : snackbar("这几张已经在列表里了。");
+    void listEdit(root, [...items, ...fresh], `已加入 ${fresh.length} 张配图${dup ? `（${dup} 张重复，没再加）` : ""}${trouble ? `；有一张没传上去：${trouble}` : ""}`, {
+      focus: () => $$("[data-photo-open]", root)[items.length]?.focus({ preventScroll: true }),
+    });
   }
 
   /** 一枚芯片：本体是「修改」按钮，尾部 ✕ 是独立的命中区。 */
@@ -3937,6 +4102,12 @@
   function paintTags(root) {
     const items = readList(root);
     const type = root.dataset.type;
+    if (type === "image") {
+      put($(".photos-list", root), items.map(photoTile(root.dataset.plugin || "", items.length)));
+      $(".picker-count", root).textContent = items.length ? `${items.length} 张` : "";
+      $(".photos-empty", root).hidden = items.length > 0;
+      return;
+    }
     if (type === "weekday") {
       for (const chip of $$("[data-weekday]", root)) chip.setAttribute("aria-pressed", bool(items.includes(Number(chip.dataset.weekday))));
       return;
@@ -4234,7 +4405,8 @@
       if (error.status === 401) return;
       input.value = input.defaultValue;
       repaint();
-      if (anchor?.id) fieldError(anchor, `没能保存，${root.matches(".picker") ? "名单" : "列表"}已退回原样：${error.message}`);
+      // 锚点在收起来的「粘贴链接」里时，错误写在看不见的地方等于没说：改成提示条。
+      if (anchor?.id && !anchor.closest("[hidden]")) fieldError(anchor, `没能保存，${root.matches(".picker") ? "名单" : "列表"}已退回原样：${error.message}`);
       else report(error);
     } finally {
       delete root.dataset.saving;
@@ -4723,6 +4895,17 @@
         field.focus();
         return;
       }
+      if ((hit = on("[data-photo-pick]"))) {
+        $(".photo-file", hit.closest(".photos"))?.click();
+        return;
+      }
+      if ((hit = on("[data-photo-link]"))) {
+        const row = $(".photos-link", hit.closest(".photos"));
+        row.hidden = false;
+        $("input", row)?.focus({ preventScroll: true });
+        return;
+      }
+      if ((hit = on("[data-photo-open]"))) return photoPreview(hit.closest(".photos"), Number(hit.dataset.photoOpen));
       if ((hit = on("[data-tags-edit]"))) {
         if (Date.now() < dragSuppress) return;
         const root = hit.closest(".tags");
@@ -4921,6 +5104,13 @@
 
     document.addEventListener("change", (event) => {
       const target = event.target;
+      // 相册里选完图：立刻上传，再把这些文件名加进列表。选完就清空，同一张图还能再选一次。
+      if (target.matches?.(".photo-file")) {
+        const files = [...(target.files || [])];
+        target.value = "";
+        if (files.length) void pickPhotos(target.closest(".photos"), files);
+        return;
+      }
       if (target.matches?.("input[data-path], textarea[data-path], select[data-path]")) return void commitField(target);
       if (target.name === "log-level") {
         logs.level = target.value;

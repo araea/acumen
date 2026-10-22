@@ -398,6 +398,8 @@
   --zw-size-avatar: 42px;
   --zw-size-chip: 36px;
   --zw-size-tag-chip: 40px;
+  --zw-size-photo-min: 6.5rem;
+  --zw-size-photo-remove: 32px;
   --zw-size-search: 56px;
   --zw-size-list-item: 68px;
   --zw-size-switch-width: 52px;

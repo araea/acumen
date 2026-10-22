@@ -2269,6 +2269,184 @@ button.item:active::after {
   display: none;
 }
 
+/* —— 配图（本机图库） ——
+   一格方图一张：点开是原图，右上角 ✕ 是独立的 48px 命中区（看得见的是 32px 的圆）。
+   列宽由容器自己分：手机上两三列、宽屏四五列，图按 cover 裁成方，边角跟 M3 形状级。
+   图没到（还没加载、加载失败、是页面读不到的本机路径）时，底下那枚图标露出来当占位。 */
+.photos {
+  gap: var(--zw-space-04);
+}
+
+.photos-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--zw-size-photo-min), 1fr));
+  gap: var(--zw-space-03);
+}
+
+.photos-list:empty {
+  display: none;
+}
+
+.photo {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-02);
+  min-width: 0;
+}
+
+.photo-open {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  transition:
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+.photo-open:active {
+  border-radius: var(--md-sys-shape-corner-medium);
+  scale: 0.98;
+}
+
+.photo-open img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.photos-void {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+}
+
+.photos-void svg,
+.photos-empty-icon svg {
+  width: var(--zw-size-icon);
+  height: var(--zw-size-icon);
+  opacity: 0.6;
+}
+
+.photo-remove {
+  position: absolute;
+  inset-block-start: var(--zw-space-02);
+  inset-inline-end: var(--zw-space-02);
+  display: grid;
+  place-items: center;
+  width: var(--zw-size-photo-remove);
+  height: var(--zw-size-photo-remove);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  box-shadow: var(--md-sys-elevation-level2);
+}
+
+/* 看得见的是 32 的圆，按下去的是 48：四周各借 8px。 */
+.photo-remove::before {
+  content: "";
+  position: absolute;
+  inset: calc((var(--zw-size-target) - var(--zw-size-photo-remove)) / -2);
+}
+
+.photo-remove svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+@media (hover: hover) {
+  .photo-remove:hover {
+    background: var(--md-sys-color-surface-bright);
+  }
+}
+
+.photo-remove:active {
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.photo-name {
+  overflow: hidden;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.photos-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--zw-space-02);
+  padding: var(--zw-space-06) var(--zw-space-05);
+  border: var(--zw-border-width) dashed var(--md-sys-color-outline-variant);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-low);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+  text-align: center;
+}
+
+.photos-empty[hidden],
+.photos-link[hidden] {
+  display: none;
+}
+
+.photos-empty-icon {
+  display: grid;
+  place-items: center;
+}
+
+/* 「从相册选择」吃掉剩下的宽度，「粘贴链接」保持它自己的大小；320px 上也放得下。 */
+.photos-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-03);
+}
+
+.photos-actions .btn-tonal {
+  flex: 1 1 auto;
+}
+
+.photos-link {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+}
+
+/* 原图预览：撑到对话框上限，长图自己滚，不把整页顶开。 */
+.dialog-photo {
+  display: grid;
+  place-items: center;
+  max-height: 60vh;
+  overflow: auto;
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--md-sys-typescale-body-medium-line-height);
+}
+
+.dialog-photo img {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+}
+
+.dialog-photo span {
+  padding: var(--zw-space-05);
+}
+
 .weekdays .chip {
   min-width: calc(var(--zw-size-chip) * 2);
   justify-content: center;
@@ -2276,14 +2454,18 @@ button.item:active::after {
 
 @media (prefers-reduced-motion: reduce) {
   .tag-chip,
-  .tag-chip[data-flash] {
+  .tag-chip[data-flash],
+  .photo-open {
     animation: none;
     transition: none;
   }
 }
 
 @media (forced-colors: active) {
-  .tag-chip {
+  .tag-chip,
+  .photo-open,
+  .photo-remove,
+  .photos-empty {
     border: 1px solid CanvasText;
   }
 

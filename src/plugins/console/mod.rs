@@ -17,6 +17,7 @@
 
 mod api;
 mod assets;
+mod gallery;
 pub(crate) mod panel;
 mod server;
 mod state;
