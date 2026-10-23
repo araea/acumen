@@ -30,6 +30,14 @@ pub fn hook(sink: impl Fn(Line) + Send + Sync + 'static) -> bool {
     SINK.set(Box::new(sink)).is_ok()
 }
 
+/// 日志改写到标准错误：管理命令（`acumen --update` 这些）的标准输出是交给 shell 的结果，
+/// 日志混进去，`acumen update` 就会把一行调试日志当成版本号念出来。
+static TO_STDERR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn to_stderr() {
+    TO_STDERR.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// 统一日志输出函数
 /// 格式: [Time] [LEVEL] [Target] Message
 pub fn print(level: Level, target: &str, args: std::fmt::Arguments) {
@@ -48,7 +56,7 @@ pub fn print(level: Level, target: &str, args: std::fmt::Arguments) {
         Level::Debug => ("\x1b[34m", "DEBG"), // Blue
     };
 
-    println!(
+    let line = format_args!(
         "{}[{}] {}[{}] {}{}{}{} {}",
         gray,
         now,
@@ -60,6 +68,11 @@ pub fn print(level: Level, target: &str, args: std::fmt::Arguments) {
         reset,
         args
     );
+    if TO_STDERR.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{line}");
+    } else {
+        println!("{line}");
+    }
 
     // 终端那一行已经打完了，落点里再走一遍格式化：`format_args!` 只能消费一次，
     // 而控制台要的是同一句话的另一份（无颜色、带级别与 target 的字段）。

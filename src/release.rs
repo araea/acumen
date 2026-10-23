@@ -686,6 +686,12 @@ async fn update_target() -> Result<Option<Release>> {
 
 /// 管理命令调用的几个隐藏参数。返回 `None` 表示不是它们，照常启动。
 pub async fn command(arg: &str) -> Option<i32> {
+    if matches!(
+        arg,
+        "--version" | "-V" | "--check-update" | "--update" | "--install-cli" | "--install-keeper"
+    ) {
+        crate::log::to_stderr();
+    }
     let code = match arg {
         "--version" | "-V" => {
             println!("{VERSION}");
