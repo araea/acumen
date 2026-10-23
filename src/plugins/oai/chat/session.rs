@@ -1039,13 +1039,25 @@ impl Session {
                     self.place.is_group() || !action.needs_group(),
                     "私聊里没有群管理动作；能做的只有发消息、撤回、戳一戳、表态和合并转发"
                 );
-                if !self.place.is_group()
-                    && let Action::Send { parts, .. } = &action
-                {
-                    ensure!(
-                        !parts.iter().any(|part| matches!(part, Part::At { .. })),
-                        "私聊里没有 @，直接叫名字就行"
-                    );
+                if !self.place.is_group() {
+                    if let Action::Send { parts, .. } = &action {
+                        ensure!(
+                            !parts.iter().any(|part| matches!(part, Part::At { .. })),
+                            "私聊里没有 @，直接叫名字就行"
+                        );
+                    }
+                    // 私聊只有一个对象。允许戳一个不在这个对话里的号，等于给模型一个
+                    // 按号打扰陌生人的入口。
+                    if let Action::Poke { user_id } = &action {
+                        let peer = match &self.place {
+                            Place::Direct { user_id, .. } => user_id.as_str(),
+                            Place::Group { .. } => "",
+                        };
+                        ensure!(
+                            user_id == peer || *user_id == self.ctx.bot.login_user.get().id,
+                            "私聊里只能戳对面这个人或自己"
+                        );
+                    }
                 }
                 let mut turns = self.scene_turns(80).await;
                 self.hydrate(&action, &mut turns).await?;
