@@ -53,8 +53,10 @@ const LOCAL_ROOTS: &[&str] = &[
     "/storage/emulated/0/Android/data/com.tencent.mobileqq/Tencent/QQfile_recv",
     "/storage/emulated/0/Android/data/com.tencent.tim/Tencent/TIMfile_recv",
     "/storage/emulated/0/Android/data/com.tencent.mm/MicroMsg/Download",
-    "/storage/emulated/0/Download",
+    DOWNLOAD,
 ];
+/// 下载目录：维护者发版时把安装包存在这里转发给别人，收拾时要手下留情（见 [`clean_packages`]）。
+const DOWNLOAD: &str = "/storage/emulated/0/Download";
 /// 往下找几层：QQ 会按会话分子目录，下载目录里也常有 QQ、WeiXin 这样的子目录。
 const LOCAL_DEPTH: usize = 4;
 
@@ -464,7 +466,7 @@ fn package_info(head: &[u8]) -> Result<(String, String)> {
 /// 读一个文件（`limit` 只读开头这么多字节）。自己读不了就经 su 读：Android/data 底下的
 /// 只有 root 读得到。路径从标准输入交给 su，不经 shell 拼接。
 async fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncReadExt as _;
     if let Ok(mut file) = tokio::fs::File::open(path).await {
         let mut bytes = Vec::new();
         match limit {
@@ -474,9 +476,21 @@ async fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {
         return Ok(bytes);
     }
     let script = match limit {
-        Some(limit) => format!(r#"IFS= read -r f; head -c {limit} -- "$f""#),
-        None => r#"IFS= read -r f; cat -- "$f""#.to_string(),
+        Some(limit) => format!(r#"head -c {limit} -- "$f""#),
+        None => r#"cat -- "$f""#.to_string(),
     };
+    let output = su_on(path, &script).await?;
+    if output.is_empty() {
+        bail!("读不到 {}", path.display());
+    }
+    Ok(output)
+}
+
+/// 经 su 对一个文件跑一句命令（里面用 `$f` 指它），返回标准输出。路径从标准输入交给 su，
+/// 不经 shell 拼接。
+async fn su_on(path: &Path, script: &str) -> Result<Vec<u8>> {
+    use tokio::io::AsyncWriteExt as _;
+    let script = format!("IFS= read -r f; {script}");
     let mut child = tokio::process::Command::new("su")
         .args(["-c", &script])
         .stdin(std::process::Stdio::piped())
@@ -484,7 +498,7 @@ async fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true)
         .spawn()
-        .context("读不到安装包（没有 su）")?;
+        .context("没有 su")?;
     if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(format!("{}\n", path.display()).as_bytes())
@@ -493,8 +507,8 @@ async fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {
     let output = tokio::time::timeout(Duration::from_mins(2), child.wait_with_output())
         .await
         .context("su 没有回应")??;
-    if !output.status.success() || output.stdout.is_empty() {
-        bail!("读不到 {}", path.display());
+    if !output.status.success() {
+        bail!("su 读写不了 {}", path.display());
     }
     Ok(output.stdout)
 }
@@ -592,6 +606,35 @@ async fn find_local() -> Option<Release> {
     best
 }
 
+/// 收拾用过的安装包，每次启动时做（换上新版本后总要重启一次）：QQ、TIM、微信接收目录里
+/// 不比当前新的都删掉；下载目录里只删比当前旧的——维护者刚发的那份就存在那儿等着转发。
+/// 只删签名对得上的，碰巧同名的别的文件不动。
+async fn clean_packages() {
+    for path in local_candidates().await {
+        let Ok(release) = local_release(&path).await else {
+            continue;
+        };
+        let used = if path.starts_with(DOWNLOAD) {
+            newer(VERSION, &release.version)
+        } else {
+            !newer(&release.version, VERSION)
+        };
+        if !used {
+            continue;
+        }
+        let removed = match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(_) => su_on(&path, r#"rm -f -- "$f""#).await.map(drop),
+        };
+        match removed {
+            Ok(()) => info!(target: LOG_TARGET, "删掉用过的安装包 {}", path.display()),
+            Err(error) => {
+                warn!(target: LOG_TARGET, "用过的安装包 {} 删不掉：{error:#}", path.display());
+            }
+        }
+    }
+}
+
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -608,6 +651,7 @@ pub async fn refresh() {
     if !managed() {
         return;
     }
+    tokio::spawn(clean_packages());
     let cli = PathBuf::from(prefix()).join("bin/acumen");
     if std::fs::read_to_string(&cli).ok().as_deref() != Some(CLI) {
         match write_cli(&cli) {
