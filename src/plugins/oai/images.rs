@@ -352,7 +352,9 @@ async fn edit_form(
 
 /// 参考图 → (mime, bytes)。复用聊天历史那套带缓存的下载，避免同一张图重复拉取。
 async fn fetch_image(url: &str) -> anyhow::Result<(String, Vec<u8>)> {
-    let data_url = super::logic::to_data_url(url).await;
+    let data_url = super::logic::to_data_url(url)
+        .await
+        .ok_or_else(|| anyhow!("无法读取参考图 {url}"))?;
     let (meta, encoded) = data_url
         .split_once(',')
         .filter(|(meta, _)| meta.starts_with("data:"))

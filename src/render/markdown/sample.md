@@ -93,11 +93,31 @@ cargo build --release --locked && acumen restart
 术语
 : 定义列表里的解释文字。
 
-行内公式 $E=mc^2$ 与块级公式：
+## 公式
+
+质能方程 $E=mc^2$，圆面积 \(S = \pi r^2\)，二次方程的根 $x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$；
+价格写成 $5 到 $10 不会被当成公式。速度 $v = \frac{\text{路程}}{时间}$ 里的汉字不排斜体。
 
 $$
 \int_0^1 x^2 \, dx = \frac{1}{3}
 $$
+
+\[
+\sum_{k=1}^{n} k^2 = \frac{n(n+1)(2n+1)}{6}, \qquad \lim_{x \to 0} \frac{\sin x}{x} = 1
+\]
+
+```math
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}^{-1}
+= \frac{1}{ad-bc} \begin{pmatrix} d & -b \\ -c & a \end{pmatrix}
+```
+
+$$
+f(x) = \begin{cases} x^2, & x \ge 0 \\ -x, & x < 0 \end{cases}
+\quad \mathbb{E}[X] = \sum_{i} x_i\, p_i \quad \nabla \cdot \vec{E} = \frac{\rho}{\varepsilon_0}
+\quad e^{i\theta} = \cos\theta + i\sin\theta \quad \binom{n}{k} = \frac{n!}{k!\,(n-k)!}
+$$
+
+键盘 <kbd>Ctrl</kbd> + <kbd>C</kbd>，<mark>高亮</mark>，H<sub>2</sub>O 与 x<sup>2</sup>。
 
 ![架构图](https://example.com/a.png)
 

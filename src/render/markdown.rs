@@ -14,6 +14,7 @@
 
 pub(crate) mod highlight;
 
+use crate::render::math;
 use crate::render::web::{DESIGN_SYSTEM, esc};
 use pulldown_cmark::{
     Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, LinkType, MetadataBlockKind,
@@ -346,17 +347,16 @@ impl<'a> Doc<'a> {
                 );
             }
             Event::InlineMath(tex) => {
-                inl.raw(
-                    &format!("<span class=\"math\">{}</span>", esc(tex.trim())),
-                    text_em(&tex) + 0.8,
-                );
+                // 宽度按读出来的样子估：源码里 `\frac{a}{b}` 十几个字符，排出来只占两三个。
+                inl.raw(&math::inline_html(&tex), text_em(&math::to_unicode(&tex)) * 0.9 + 0.4);
             }
             Event::DisplayMath(tex) => {
-                // 块级公式：样式里是 display:block，自成一行（或几行）。
-                inl.raw(
-                    &format!("<span class=\"math-block\">{}</span>", esc(tex.trim())),
-                    text_em(&tex) + 4.0,
-                );
+                // 块级公式自成一块（display:block），高度按行数与有没有分式、求和这类
+                // 上下叠放的结构估。
+                inl.raw(&math::display_html(&tex), 0.0);
+                for _ in 0..display_math_lines(&tex) {
+                    inl.lines.push(0.0);
+                }
             }
             Event::SoftBreak if self.s.keep_breaks => inl.line_break(),
             Event::SoftBreak => inl.text(" "),
@@ -365,6 +365,8 @@ impl<'a> Doc<'a> {
                 let tag = html.trim().to_ascii_lowercase();
                 if matches!(tag.as_str(), "<br>" | "<br/>" | "<br />") {
                     inl.line_break();
+                } else if let Some(tag) = phrasing_tag(&tag) {
+                    inl.raw(&tag, 0.0);
                 } else if !tag.starts_with("<!--") {
                     // 其余标签不解释，当文字显示：模型与群友写的 HTML 不该改卡片的样子。
                     inl.text(html.trim_end_matches('\n'));
@@ -1001,6 +1003,32 @@ impl<'a> Doc<'a> {
     }
 }
 
+/// 块级公式占几行正文行高（含上下留白）。
+fn display_math_lines(tex: &str) -> usize {
+    let rows = 1 + tex.matches("\\\\").count();
+    let stacked = ["\\frac", "\\dfrac", "\\sum", "\\int", "\\prod", "\\lim", "\\binom", "\\over", "matrix", "cases"]
+        .iter()
+        .any(|cmd| tex.contains(cmd));
+    let per_row = if stacked { 2.0 } else { 1.4 };
+    (rows as f64 * per_row + 0.6).ceil() as usize
+}
+
+/// 行内 HTML 里放行的几个短语标签：模型和群友常写 `<sup>`、`<kbd>`、`<mark>`，
+/// 当文字显示反而难读。只认不带属性的裸标签，重新生成而不是照抄原文。
+fn phrasing_tag(tag: &str) -> Option<String> {
+    let (close, name) = match tag.strip_prefix("</") {
+        Some(rest) => (true, rest.strip_suffix('>')?),
+        None => (false, tag.strip_prefix('<')?.strip_suffix('>')?),
+    };
+    let name = name.trim();
+    let allowed = matches!(
+        name,
+        "sup" | "sub" | "kbd" | "mark" | "u" | "ins" | "small" | "b" | "i" | "s" | "del"
+            | "strong" | "em"
+    );
+    allowed.then(|| if close { format!("</{name}>") } else { format!("<{name}>") })
+}
+
 fn alert(kind: BlockQuoteKind) -> (&'static str, &'static str, &'static str) {
     match kind {
         BlockQuoteKind::Note => ("note", "说明", ICON_INFO),
@@ -1092,7 +1120,7 @@ fn paginate(blocks: Vec<Block>, target: f64) -> Vec<Vec<Block>> {
 
 /// 渲染。返回空页表示没有可渲染的内容（全是空白或注释）。
 pub fn render(source: &str, s: &Settings) -> Rendered {
-    let text = normalize(source);
+    let text = math::normalize_delimiters(&normalize(source));
     let mut options = Options::empty();
     options.insert(Options::ENABLE_TABLES);
     options.insert(Options::ENABLE_FOOTNOTES);
@@ -1179,6 +1207,8 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
         String::new()
     };
     let width = doc.s.width;
+    // 数学字体两百多 KB，只给真有公式的页（转换失败退回源码的也算，它的样式在同一张表里）。
+    let math_css = if body.contains("class=\"math") { math::css() } else { "" };
     // 字阶的根：`tokens.css` 把 `1rem` 定在 20px（`:root` 的 font-size），
     // 这里在 html 上以内联样式盖掉它，整套 `rem` 字号就按正文字号缩放。
     // 内联样式优先于样式表的 `:root` 规则，不必与令牌表争顺序。
@@ -1186,7 +1216,7 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
         r#"<!doctype html><html lang="zh-CN" style="font-size:{font}px"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; font-src data:">
-<title>Markdown</title><style>{DESIGN_SYSTEM}{CSS}</style></head>
+<title>Markdown</title><style>{DESIGN_SYSTEM}{CSS}{math_css}</style></head>
 <body class="md-text{dark}" style="width:{outer}px"><main class="shot"><article class="card md-card" style="width:{width}px">
 <div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>Markdown<span class="md-kicker-en">ACUMEN</span></div>{pager}</div>
 <div class="doc">{body}</div></div>{refs}</article></main></body></html>"#,
@@ -1194,4 +1224,43 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
         font = doc.s.font_size,
         outer = width + 40,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 出图核对：`MD_DUMP=<目录> [MD_SRC=<md 文件>] cargo test --release markdown_dump -- --ignored`，
+    /// 浅深两套，每页一张 png 加一份 html。
+    #[tokio::test]
+    #[ignore]
+    async fn markdown_dump() {
+        let Ok(dir) = std::env::var("MD_DUMP") else { return };
+        let src = std::env::var("MD_SRC")
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_else(|| include_str!("markdown/sample.md").to_string());
+        let browser = std::env::var("CHROME_BIN").ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        for dark in [false, true] {
+            let settings = Settings { dark, ..Settings::default() };
+            let rendered = render(&src, &settings);
+            for (index, html) in rendered.pages.iter().enumerate() {
+                let name = format!("{dir}/{}-{}", if dark { "dark" } else { "light" }, index + 1);
+                std::fs::write(format!("{name}.html"), html).unwrap();
+                let png = crate::render::web::shoot(
+                    crate::render::web::Shot::new(html, settings.width + 40)
+                        .scale(2.0)
+                        .max_height(settings.page_height * 8.0)
+                        .browser(browser.as_deref()),
+                )
+                .await
+                .unwrap();
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(png).unwrap();
+                std::fs::write(format!("{name}.png"), bytes).unwrap();
+            }
+        }
+        cdp_html_shot::Browser::shutdown_global().await;
+    }
 }

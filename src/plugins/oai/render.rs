@@ -10,6 +10,7 @@
 //! 区分、代码块深色高对比、表格斑马纹、长 URL 强制断行；正文之外还能挂来源列表
 //! 与耗时页脚，让读者一眼看清结论出处与代价。
 
+use crate::render::math;
 use crate::render::web::{self as render, esc};
 use super::agent::figures;
 use pulldown_cmark::{Parser, html};
@@ -69,10 +70,20 @@ pub(crate) async fn render_card(card: Card<'_>, scale: f64) -> anyhow::Result<St
 fn build_html(card: &Card<'_>) -> String {
     // 正文里写的 HTML 一律当文本；图片由 `figures::place` 在这之后按位置放进去，
     // 所以那里生成的 HTML 是卡片自己的，不会被这一步误伤。
-    let events: Vec<_> = Parser::new_ext(card.markdown, figures::options())
+    // 公式先统一定界符：`\(…\)`、`\[…\]` 在 CommonMark 里是转义括号，不换就成了
+    // 一串带反斜杠的源码。公式转 MathML 发生在「HTML 当文本」之后，生成的标记是卡片
+    // 自己的。
+    let markdown = math::normalize_delimiters(card.markdown);
+    let events: Vec<_> = Parser::new_ext(&markdown, figures::options())
         .map(|event| match event {
             pulldown_cmark::Event::Html(text) | pulldown_cmark::Event::InlineHtml(text) => {
                 pulldown_cmark::Event::Text(text)
+            }
+            pulldown_cmark::Event::InlineMath(tex) => {
+                pulldown_cmark::Event::InlineHtml(math::inline_html(&tex).into())
+            }
+            pulldown_cmark::Event::DisplayMath(tex) => {
+                pulldown_cmark::Event::InlineHtml(math::display_html(&tex).into())
             }
             other => other,
         })
@@ -99,9 +110,11 @@ fn build_html(card: &Card<'_>) -> String {
     format!(
         r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{SYSTEM}{CSS}</style></head>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:"><style>{SYSTEM}{CSS}{math_css}</style></head>
 <body class="scheme-reply md-text"><div class="shot"><div class="card md-card"><div class="inner"><div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>智能回复<span class="md-kicker-en">REPLY</span></div>{stamp}</div><div class="head md-title md-type-title-small">{title}</div><hr class="md-divider"><div class="body">{body}</div></div>{sources}{footer}</div></div></body></html>"#,
         SYSTEM = crate::render::web::DESIGN_SYSTEM,
+        // 数学字体只给真有公式的卡片。
+        math_css = if body.contains("class=\"math") { math::css() } else { "" },
         title = esc(card.title),
     )
 }
@@ -357,3 +370,30 @@ div.fig-miss{display:block;margin:var(--md-space-3) 0;padding:var(--md-space-3);
   color:var(--md-sys-color-on-surface-variant)}
 .head,.agent-mini,.chip,.trace-name{min-width:0;overflow-wrap:anywhere}
 ";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn html_of(markdown: &str) -> String {
+        build_html(&Card {
+            title: "t",
+            markdown,
+            sources: &[],
+            figures: &figures::Figures::default(),
+            footer: None,
+        })
+    }
+
+    #[test]
+    fn formulas_become_mathml_and_bring_their_font() {
+        let html = html_of("根是 \\(x_1 = \\frac{-b}{2a}\\)，\n\n\\[\\sum_{k=1}^n k\\]");
+        assert!(html.contains("<math"), "{html}");
+        assert!(html.contains("display=\"block\""));
+        assert!(html.contains("Acumen Math"));
+        // 下标不再被当成强调吃掉。
+        assert!(!html.contains("<em>"));
+        // 没有公式的卡片不背字体。
+        assert!(!html_of("普通回复").contains("Acumen Math"));
+    }
+}

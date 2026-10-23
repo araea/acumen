@@ -2331,12 +2331,12 @@ async fn deliver(
         message.0.extend(utterance.message.0.iter().cloned());
         // 长文排成图再发；渲染失败就照原文发——宁可多一段字，也不能把话丢掉。
         let message = match &card_source {
-            Some(text) => {
-                long_text::as_card(&message, text, ctx.browser_path().as_deref())
-                    .await
-                    .unwrap_or(message)
-            }
-            None => message,
+            Some(text) => match long_text::as_card(&message, text, ctx.browser_path().as_deref()).await {
+                Some(card) => card,
+                None => long_text::readable(message),
+            },
+            // 照文字发的话，公式换成能读的写法（`$x^2$` → `x²`）。
+            None => long_text::readable(message),
         };
         let spoken = plain_text(&utterance.message);
         let id = match send_fresh_msg_id(

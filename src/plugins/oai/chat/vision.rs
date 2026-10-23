@@ -170,7 +170,8 @@ pub(super) async fn usable_image(url: &str) -> Option<String> {
     if let Some(hit) = cached(url) {
         return hit;
     }
-    let data_url = crate::plugins::oai::logic::to_data_url(url).await;
+    // 取不回不进缓存：资源代理可能只是一时没下完，下一轮还值得再试。
+    let data_url = crate::plugins::oai::logic::to_data_url(url).await?;
     let usable = normalize(&data_url);
     remember(url, usable.clone());
     usable

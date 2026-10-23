@@ -1,5 +1,5 @@
 use super::data::Manager;
-use super::logic::{mark_working, reply_text, to_data_url};
+use super::logic::{mark_working, reply_text};
 use super::types::{Agent, MjMessageTask};
 use super::utils::{excerpt, normalize, scalar_string};
 use crate::adapters::satori::{LockedWriter, send_msg, send_msg_id};
@@ -152,7 +152,7 @@ fn join_prompt(system: &str, user: &str) -> String {
 
 async fn image_data_urls(images: &[String]) -> Vec<String> {
     // 图片通常来自同一条消息，数量很少；并行下载能明显减少垫图等待。
-    futures_util::future::join_all(images.iter().map(|url| to_data_url(url))).await
+    super::logic::resolve_images(images).await
 }
 
 async fn submit(base: &str, key: &str, endpoint: &str, body: Value) -> anyhow::Result<String> {

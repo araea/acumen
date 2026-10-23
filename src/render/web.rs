@@ -606,6 +606,18 @@ pub async fn shoot(shot: Shot<'_>) -> Result<String> {
                         ...Array.from(document.images, img => img.decode().catch(() => {{}}))
                     ]);
                     try {{ await Promise.race([assets, deadline]); }} catch (_) {{}}
+                    // 公式不能折行：过宽的块级公式按版心缩小（最多缩到六成，再小就认不清了），
+                    // 不缩就会被卡边裁掉。字体到齐之后才量得准。
+                    for (const box of document.querySelectorAll('[data-fit]')) {{
+                        const math = box.firstElementChild;
+                        if (!math) continue;
+                        const need = math.getBoundingClientRect().width;
+                        const avail = box.clientWidth;
+                        if (avail > 0 && need > avail) {{
+                            const size = parseFloat(getComputedStyle(math).fontSize);
+                            math.style.fontSize = (size * Math.max(0.6, avail / need * 0.98)) + 'px';
+                        }}
+                    }}
                     // 让出一轮宏任务，把上一步的样式与布局提交掉。
                     await new Promise(resolve => setTimeout(resolve, 0));
                     const el = document.querySelector({selector});

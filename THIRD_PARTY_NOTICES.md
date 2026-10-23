@@ -20,6 +20,11 @@ OAI harness 的设计改编自 MIT 许可的 [oh-my-pi](https://github.com/can13
 [Logxk/nailong](https://github.com/Logxk/nailong)、[whxoperator/nailongnaiwa](https://github.com/whxoperator/nailongnaiwa)、
 [Nailong-Studio/wallpaper](https://github.com/Nailong-Studio/wallpaper)、[GeorgeNaNN/nailong-memes](https://github.com/GeorgeNaNN/nailong-memes)。
 
+卡片里的公式由 MIT 许可的 [math-core](https://github.com/tmke8/math-core)（Hiromu Sugiura、Thomas MK）转成 MathML，
+`res/cards/math.css` 的修补段落抄自它的 `css/mathmlfixes.css`。内嵌的数学字体 `res/fonts/newcm-math.woff2`
+是 [New Computer Modern Math Book](https://ctan.org/pkg/newcomputermodern)（Antonis Tsolomitis，GUST Font License）
+的子集，由 `scripts/make-math-font.py` 用 fontTools 裁出，字形未改动。
+
 ## Material Symbols、Material Color Utilities
 
 Copyright Google LLC. Licensed under the Apache License, Version 2.0
@@ -52,3 +57,17 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## New Computer Modern Math
+
+New Computer Modern fonts, copyright Antonis Tsolomitis, derived from Latin Modern (GUST e-foundry).
+Licensed under the GUST Font License (<https://www.gust.org.pl/projects/e-foundry/licenses>),
+which is legally equivalent to the LaTeX Project Public License 1.3c or later.
+This subset is a modified version distributed under that license; the original is available from CTAN.
+
+## math-core
+
+MIT License, Copyright 2020 Hiromu Sugiura and math-core contributors (Thomas MK). Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software, to deal in the Software without restriction, subject to including
+the copyright notice and this permission notice in all copies. THE SOFTWARE IS PROVIDED "AS IS",
+WITHOUT WARRANTY OF ANY KIND.

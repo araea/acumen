@@ -311,22 +311,51 @@ fn extract_video_urls(content: &str) -> Vec<String> {
 
 /// 把图片地址转成多模态模型可内联的 data URL。
 /// 已经是 `data:` 的保持不变；其余（QQ 图片 / 头像等远程 URL）下载后转 base64，
-/// 避免 QQ 图片防盗链导致服务端拉不到图。下载失败则回退原 URL，由服务端自行尝试。
-pub(crate) async fn to_data_url(url: &str) -> String {
+/// 避免 QQ 图片防盗链导致服务端拉不到图。
+///
+/// 下载失败时只有公网链接才原样交给服务端自己再试；`127.0.0.1` 上的 Satori 资源代理、
+/// 内网地址与 `internal:` 链接对服务端来说根本不存在，交出去只会让整轮对话 400。
+/// 这类图取不回就返回 `None`，由调用方丢掉并告诉模型少了几张。
+pub(crate) async fn to_data_url(url: &str) -> Option<String> {
     if url.starts_with("data:") {
-        return url.to_string();
+        return Some(url.to_string());
     }
     // 历史里的图片每一轮都会重新入参，没有缓存就意味着每轮重下一遍：多图会话里
     // 这部分等待往往比模型本身还久。
     if let Some(cached) = cached_data_url(url) {
-        return cached;
+        return Some(cached);
     }
     match download_image_to_data_url(url).await {
         Some(data_url) => {
             remember_data_url(url, &data_url);
-            data_url
+            Some(data_url)
         }
-        None => url.to_string(),
+        None => is_public_url(url).then(|| url.to_string()),
+    }
+}
+
+/// 服务端能自己拉取的地址：http(s)，且主机不是本机、内网或链路本地。
+fn is_public_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else { return false };
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return false;
+    }
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain != "localhost" && !domain.ends_with(".localhost") && !domain.ends_with(".local")
+        }
+        Some(url::Host::Ipv4(ip)) => {
+            !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified())
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            let first = ip.segments()[0];
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80)
+        }
+        None => false,
     }
 }
 
@@ -358,6 +387,22 @@ fn remember_data_url(url: &str, data_url: &str) {
 }
 
 async fn download_image_to_data_url(url: &str) -> Option<String> {
+    // 本机资源代理第一次取图时要等 QQ 内核下载，偶尔超时或 5xx；再试一次就够，
+    // 4xx 是资源确实没有，重试也没用。
+    for attempt in 0..2 {
+        match download_once(url).await {
+            Ok(data_url) => return Some(data_url),
+            Err(retry) if retry && attempt == 0 => {
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+            }
+            Err(_) => break,
+        }
+    }
+    None
+}
+
+/// 下载一次；失败时 `Err(true)` 表示值得重试。
+async fn download_once(url: &str) -> Result<String, bool> {
     const MAX_BYTES: usize = 20 * 1024 * 1024;
 
     let resp = crate::http::client()
@@ -369,9 +414,10 @@ async fn download_image_to_data_url(url: &str) -> Option<String> {
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+        .map_err(|_| true)?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(status.is_server_error() || status.as_u16() == 429);
     }
 
     let content_type = resp
@@ -380,9 +426,9 @@ async fn download_image_to_data_url(url: &str) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string);
 
-    let bytes = resp.bytes().await.ok()?;
+    let bytes = resp.bytes().await.map_err(|_| true)?;
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
-        return None;
+        return Err(false);
     }
 
     let mime = content_type
@@ -391,7 +437,7 @@ async fn download_image_to_data_url(url: &str) -> Option<String> {
 
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Some(format!("data:{mime};base64,{b64}"))
+    Ok(format!("data:{mime};base64,{b64}"))
 }
 
 fn sniff_image_mime(bytes: &[u8]) -> &'static str {
@@ -1268,7 +1314,14 @@ async fn build_chat_messages(agent: &Agent, hist: &[ChatMessage]) -> Vec<LlmMess
             if !m.content.is_empty() {
                 parts.push(UserContent::Text(Text::new(m.content.clone())));
             }
-            for data_url in resolve_images(&m.images).await {
+            let images = resolve_images(&m.images).await;
+            let lost = m.images.len() - images.len();
+            if lost > 0 {
+                parts.push(UserContent::Text(Text::new(format!(
+                    "（这条消息里有 {lost} 张图片没能取回，看不到内容，别猜测图里有什么）"
+                ))));
+            }
+            for data_url in images {
                 parts.push(image_content(data_url));
             }
             if parts.is_empty() {
@@ -1308,22 +1361,30 @@ fn image_content(url: String) -> UserContent {
     })
 }
 
-/// 并发解析一条消息里的全部图片地址。
+/// 并发解析一条消息里的全部图片地址，取不回的直接丢掉。
 ///
 /// 逐张串行下载会让多图历史在每一轮都白等一次网络往返；缓存则让同一张图在整个
 /// 会话里只下载一次。
-async fn resolve_images(urls: &[String]) -> Vec<String> {
-    futures_util::future::join_all(urls.iter().map(|url| to_data_url(url))).await
+pub(crate) async fn resolve_images(urls: &[String]) -> Vec<String> {
+    futures_util::future::join_all(urls.iter().map(|url| to_data_url(url)))
+        .await
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// 短回复能否直接以纯文本发送。
 ///
-/// 只要出现标题、列表、表格、代码块或链接，排版就有信息量，仍旧渲染卡片。
+/// 只要出现标题、列表、表格、代码块、链接或公式，排版就有信息量，仍旧渲染卡片。
 pub(super) fn is_plain_enough(text: &str, max_chars: usize) -> bool {
     if max_chars == 0 || text.chars().count() > max_chars {
         return false;
     }
     if text.contains("](") || text.contains("```") || text.contains('|') {
+        return false;
+    }
+    // 公式在纯文本里只剩一串反斜杠，排进卡片才读得了。
+    if crate::render::math::has_math(text) {
         return false;
     }
     !text.lines().any(|line| {
@@ -2520,4 +2581,26 @@ fn confirm_destructive(key: String, fingerprint: String) -> bool {
     }
     pending.insert(key, (fingerprint, now));
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_public_url;
+
+    #[test]
+    fn local_resource_links_are_never_handed_to_the_provider() {
+        for url in [
+            "http://127.0.0.1:3001/v1/proxy/internal:red/1/_tmp/a.image",
+            "http://localhost:5500/x.png",
+            "http://192.168.1.2/x.png",
+            "http://10.0.0.1/x.png",
+            "http://[::1]/x.png",
+            "internal:red/1/_tmp/a.image",
+            "file:///sdcard/a.png",
+        ] {
+            assert!(!is_public_url(url), "{url}");
+        }
+        assert!(is_public_url("https://multimedia.nt.qq.com.cn/download?appid=1407"));
+        assert!(is_public_url("http://8.8.8.8/x.png"));
+    }
 }

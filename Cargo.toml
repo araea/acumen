@@ -1,6 +1,6 @@
 [package]
 name = "acumen"
-version = "1.20.3"
+version = "1.21.0"
 edition = "2024"
 rust-version = "1.99"
 description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"
@@ -86,6 +86,7 @@ tract-onnx = "0.23"   # 奶龙识别：纯 Rust 跑 ONNX 图像编码器，发�
 # 时间与随机数
 chrono = "0.4"
 rand = "0.10"
+math-core = "0.9"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2" # 取消时终止同组工具进程

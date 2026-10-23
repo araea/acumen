@@ -732,8 +732,14 @@ async fn user_content(text: &str, images: &[String]) -> Vec<UserContent> {
     if !text.trim().is_empty() {
         content.push(UserContent::Text(Text::new(text)));
     }
-    for url in images {
-        let data_url = super::super::logic::to_data_url(url).await;
+    let resolved = super::super::logic::resolve_images(images).await;
+    let lost = images.len() - resolved.len();
+    if lost > 0 {
+        content.push(UserContent::Text(Text::new(format!(
+            "（随附的 {lost} 张图片没能取回，看不到内容，别猜测图里有什么）"
+        ))));
+    }
+    for data_url in resolved {
         content.push(UserContent::Image(Image {
             data: DocumentSourceKind::Url(data_url),
             media_type: None,

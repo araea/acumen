@@ -14,6 +14,7 @@
 
 use crate::message::Message;
 use crate::render::markdown::{self, Settings};
+use crate::render::math;
 use crate::render::web::{self as web, Shot};
 use simd_json::base::ValueAsScalar;
 use std::time::Duration;
@@ -57,12 +58,32 @@ pub(crate) fn body(message: &Message) -> Option<String> {
 }
 
 /// 长到该排成图的正文；`limit` 为 0 表示关掉。
+///
+/// 一行字说不清的公式（矩阵、多行推导、独立成行的式子，见
+/// [`math::is_heavy`]）不论长短都排成图：换成文字只剩一串斜杠或丢了结构。
 pub(crate) fn source(message: &Message, limit: usize) -> Option<String> {
     if limit == 0 {
         return None;
     }
     let text = body(message)?;
-    (text.chars().count() >= limit).then_some(text)
+    (text.chars().count() >= limit || math::is_heavy(&text)).then_some(text)
+}
+
+/// 照文字发出去之前，把里面的公式换成能直接读的写法（`$x^2$` → `x²`）。
+pub(crate) fn readable(mut message: Message) -> Message {
+    for segment in &mut message.0 {
+        if segment.type_ != "text" {
+            continue;
+        }
+        let Some(text) = segment.data.get("text").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        if math::has_math(text) {
+            let plain = math::plain(text);
+            segment.data.insert("text".into(), plain.into());
+        }
+    }
+    message
 }
 
 /// 排版一张长文卡要等多久。调用方据此估算「打字」的时长。
@@ -148,5 +169,10 @@ mod tests {
         assert!(source(&Message::new().image("x.png"), 240).is_none());
         // 只有引用没有正文，不算一条可发的消息。
         assert!(source(&Message::new().reply("42"), 1).is_none());
+        // 矩阵这类一行字说不清的公式，短也排成图；简单的行内式照旧发文字。
+        assert!(source(&Message::new().text("$$\\begin{pmatrix}1&0\\\\0&1\\end{pmatrix}$$"), 240).is_some());
+        assert!(source(&Message::new().text("答案是 $x^2$"), 240).is_none());
+        let plain = readable(Message::new().reply("42").text("答案是 $x^2$"));
+        assert_eq!(super::super::plain_text(&plain).trim(), "答案是 x²");
     }
 }

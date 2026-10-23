@@ -55,6 +55,7 @@ pub(crate) fn options() -> Options {
         | Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_FOOTNOTES
+        | Options::ENABLE_MATH
 }
 
 /// 这一条回复里取到的图：地址（原样，和正文里写的一致）→ data URL。

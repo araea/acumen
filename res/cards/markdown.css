@@ -83,27 +83,25 @@ sup.fn-ref {
   font-size: 0.84em;
   line-height: 1;
 }
-.math {
-  padding: 0 4px;
+.doc kbd {
+  padding: 0 5px;
+  border: 1px solid var(--md-sys-color-outline-variant);
+  border-bottom-width: 2px;
   border-radius: var(--md-shape-xs);
   background: var(--md-sys-color-surface-container-high);
-  color: var(--md-sys-color-tertiary);
   font-family: var(--md-font-mono);
-  font-size: 0.86em;
-  white-space: pre-wrap;
+  font-size: 0.84em;
 }
-.math-block {
-  display: block;
-  margin: var(--md-space-3) 0;
-  padding: var(--md-space-3) var(--md-space-4);
-  border-radius: var(--md-shape-m);
-  background: var(--md-sys-color-surface-container-high);
-  color: var(--md-sys-color-tertiary);
-  font-family: var(--md-font-mono);
-  font-size: var(--md-type-body-small-size);
-  line-height: 1.6;
-  text-align: center;
-  white-space: pre-wrap;
+.doc mark {
+  padding: 0 2px;
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-primary-tint-strong);
+  color: inherit;
+}
+.doc sup,
+.doc sub {
+  font-size: 0.72em;
+  line-height: 0;
 }
 .img-ph {
   display: inline-flex;

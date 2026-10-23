@@ -1,0 +1,130 @@
+/* 公式（MathML）的版式。只在页面真有公式时由 render::math::css() 追加，前面
+   拼着内嵌数学字体的 @font-face。与其余卡片样式一样不写色值字面量。
+
+   修补段落抄自 math-core 的 css/mathmlfixes.css（MIT），是它输出的 MathML
+   在 Chromium 上排对所必需的：表格单元的内边距、Chromium 没实现的 menclose、
+   重音符号下的空隙。 */
+
+math {
+  font-family: "Acumen Math", math;
+  /* 数学字体的 x 高比 MiSans 矮一截，同字号摆在一行里公式显得小一号。 */
+  font-size: 1.08em;
+  font-style: normal;
+  font-weight: normal;
+  letter-spacing: normal;
+  text-indent: 0;
+  text-transform: none;
+  direction: ltr;
+  color: inherit;
+}
+/* \text{} 里的字用正文字体：汉字、说明文字不该是数学字体的样子。 */
+mtext {
+  font-family: var(--md-font-plain);
+}
+mtext code {
+  font-family: var(--md-font-mono);
+}
+mtext span.math-core-sans-serif-font {
+  font-family: var(--md-font-plain);
+}
+merror.math-core-unknown-cmd {
+  border: 0;
+  background: none;
+  color: var(--md-sys-color-error);
+}
+
+.math {
+  /* 行内公式不折行；前后留一点气口，别和汉字黏在一起。 */
+  white-space: nowrap;
+  padding: 0 0.12em;
+}
+.math-block {
+  display: block;
+  white-space: nowrap;
+  margin: var(--md-space-2) 0;
+  padding: var(--md-space-1) 0;
+  text-align: center;
+  overflow: hidden;
+  line-height: normal;
+}
+.math-block > math {
+  /* 行内排、靠外层居中：这样量得到公式本身的宽度（块级 math 总是占满整行），
+     截图前好把过宽的缩进版心。display="block" 带来的展示样式（大号求和号、
+     上下限）由 math-style 管，不受这里影响。 */
+  display: inline math;
+  font-size: 1.14em;
+}
+/* 转换失败时的源码：和行内代码一个样子，读者至少看得到原式。 */
+.math-src {
+  padding: 1px 6px;
+  border-radius: var(--md-shape-xs);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-tertiary);
+  font-family: var(--md-font-mono);
+  font-size: 0.84em;
+  white-space: pre-wrap;
+}
+.math-src.block {
+  display: block;
+  margin: var(--md-space-2) 0;
+  padding: var(--md-space-3) var(--md-space-4);
+  border-radius: var(--md-shape-m);
+  text-align: center;
+}
+
+mtd {
+  padding: 0.5ex 0.4em;
+}
+mtr > mtd:first-child {
+  padding-left: 0;
+}
+mtr > mtd:last-child {
+  padding-right: 0;
+}
+menclose {
+  position: relative;
+  padding: 0.5ex 0;
+}
+menclose[notation~="box" i] {
+  border: 0.04em solid;
+  padding: 0.3rem;
+}
+menclose[notation~="actuarial" i] {
+  padding: 0.03889rem 0.03889rem 0 0.03889rem;
+  border-width: 0.08em 0.08em 0 0;
+  border-style: solid;
+  margin-right: 0.03889rem;
+}
+menclose[notation~="phasorangle" i] {
+  border-bottom: 0.067em solid;
+  padding: 0.2em 0.2em 0.1em 0.6em;
+}
+mrow.menclose-phasorangle {
+  display: inline-block;
+  position: absolute;
+  left: 0.5px;
+  bottom: -0.04em;
+  height: 100%;
+  aspect-ratio: 0.5;
+  background-color: currentcolor;
+  clip-path: polygon(0.05em 100%, 0 calc(100% - 0.05em), calc(100% - 0.05em) 0, 100% 0.05em);
+}
+mrow.menclose-updiagonalstrike,
+mrow.menclose-downdiagonalstrike {
+  display: inline-block;
+  position: absolute;
+  left: 0.5px;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background-color: currentcolor;
+}
+mrow.menclose-updiagonalstrike {
+  clip-path: polygon(0.05em 100%, 0 calc(100% - 0.05em), calc(100% - 0.05em) 0, 100% 0.05em);
+}
+mrow.menclose-downdiagonalstrike {
+  clip-path: polygon(0 0.05em, 0.05em 0, 100% calc(100% - 0.05em), calc(100% - 0.05em) 100%);
+}
+mover[accent="true" i] > mo:nth-child(2) {
+  margin-bottom: 0.15ex;
+}

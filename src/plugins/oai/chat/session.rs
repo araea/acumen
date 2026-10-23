@@ -1551,6 +1551,16 @@ impl Session {
                         return self.send_card(card, text).await;
                     }
                 }
+                // 照文字发的话，公式换成能读的写法（`$x^2$` → `x²`）。
+                let parts: Vec<Part> = parts
+                    .into_iter()
+                    .map(|part| match part {
+                        Part::Text { text } => Part::Text {
+                            text: crate::render::math::plain(&text),
+                        },
+                        other => other,
+                    })
+                    .collect();
                 // 一整段话按换气处分成几条发出去。模型写得越顺，越容易把两三个意思
                 // 塞进一条；群里没人这么说话。切法见 [`super::breath`]，切几条受本轮
                 // 剩下的消息额度约束——真正发出去的条数才是额度算的东西。
