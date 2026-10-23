@@ -55,6 +55,8 @@ curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/
 
 AI 对话、搭话等功能需要自备模型服务的 API 密钥。最快的是号主在任意对话框里发 `oai deepseek sk-…`：密钥验过才存、存好自动撤回那条消息，内置的房间「管家大人」随即可用（全量工具：会用终端，联网搜索与抓取走 DeepSeek 官方接口）。自己建的房间默认只聊天，`房间?联网`、`房间?全量` 按需打开工具；`oai 用 <模型>` 一句换掉所有房间的默认模型。其他供应商（Kimi、智谱、百炼、硅基流动、OpenRouter……）同样一句接上，发 `oai` 看接入状态；也可以在控制台的插件页填写。详见 [docs/agent.md](docs/agent.md)。
 
+群里反复被问的问题交给「自动回复」：在控制台插件页的「回复规则」里加，或者让群管理员在群里发 `自动回复 添加 下载 安装包在群文件里～`。回复可以带图，也可以引用一条合并转发存成回复。有冷却和字数上限防误触，「试一句」能先看某句话会不会触发。详见 [docs/autoreply.md](docs/autoreply.md)。
+
 ## 卸载
 
 ```sh
@@ -81,6 +83,7 @@ acumen uninstall --purge  # 一起删除
 - [Markdown 转图](docs/markdown.md)
 - [二维码识别与生成](docs/qr_scan.md)
 - [奶龙提醒](docs/nailong.md)
+- [自动回复](docs/autoreply.md)
 - [架构与插件开发](docs/ARCHITECTURE.md)
 - [WebUI 设计系统](docs/DESIGN_SYSTEM.md)
 - [更新记录](CHANGELOG.md)

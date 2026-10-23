@@ -570,7 +570,8 @@ impl Here<'_> {
             return "试哪句话？比如「自动回复 试 请问怎么下载」".into();
         }
         let max = self.config.contains_max_chars;
-        let group = self.group;
+        // 私聊里管的是所有群共用的规则：按「一个没有单独规则的群」来试。
+        let group = self.group.or(Some("*"));
         let found = BOOK.read(|b| book::best(&b.rules, &Asked::new(text, false, group), max).map(|(r, k)| (r.clone(), k))).await;
         let at = BOOK.read(|b| book::best(&b.rules, &Asked::new(text, true, group), max).map(|(r, k)| (r.clone(), k))).await;
         match (found, at) {

@@ -56,6 +56,7 @@ system_update_alt power_settings_new stop_circle
 edit settings_backup_restore arrow_forward send
 palette contrast light_mode dark_mode brightness_auto format_size image colorize
 account_circle mood shuffle notifications_off
+data_object quickreply forward alternate_email
 """
 
 # 失败比悄悄缺一个图标好：缺了就在这里报出来。

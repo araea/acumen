@@ -12,7 +12,7 @@
    - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
    §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
-   §7 总览 · §8 插件 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
+   §7 总览 · §8 插件 · §8b 自动回复的规则面板 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -86,7 +86,7 @@
     stats: "leaderboard", gif: "gif_box", image_split: "grid_view", qr_scan: "qr_code_scanner",
     video_parse: "smart_display", song: "music_note", webshot: "screenshot_monitor", oai: "smart_toy",
     ambient: "forum", ai_news: "newspaper", help: "help", restart: "restart_alt",
-    welcome: "waving_hand", anti_recall: "restore_page", nailong: "hide_image",
+    welcome: "waving_hand", anti_recall: "restore_page", nailong: "hide_image", autoreply: "quickreply",
   };
   const SECTION_ICONS = { message: "chat", play: "extension", insight: "leaderboard", system: "tune", misc: "extension" };
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
@@ -795,17 +795,20 @@
 
   /** 带着没保存改动的表单，用人话命名，给离开确认列出来。 */
   function unsavedAreas() {
-    return $$(FORMS).filter((form) => formDirty(form, false)).map((form) => {
-      if (form.id === "global-form") return "全局设置";
-      if (form.hasAttribute("data-bot")) return form.dataset.bot === "" ? "新连接" : `连接 ${Number(form.dataset.bot) + 1}`;
-      const plugin = plugins.data?.plugins.find((item) => item.name === form.dataset.config);
-      return `${plugin?.display || form.dataset.config} 的配置`;
-    });
+    return [
+      ...$$(FORMS).filter((form) => formDirty(form, false)).map((form) => {
+        if (form.id === "global-form") return "全局设置";
+        if (form.hasAttribute("data-bot")) return form.dataset.bot === "" ? "新连接" : `连接 ${Number(form.dataset.bot) + 1}`;
+        const plugin = plugins.data?.plugins.find((item) => item.name === form.dataset.config);
+        return `${plugin?.display || form.dataset.config} 的配置`;
+      }),
+      ...$$("[data-rule][data-unsaved]").map((entry) => `自动回复规则 #${entry.dataset.rule}（没存上）`),
+    ];
   }
 
   /** 离开时要不要拦人。正在保存的控件不算未保存：提交会自己跑完，回执到了基线才更新，
    *  否则「点保存→立刻换页」会弹一个假的「离开未保存的编辑」。 */
-  const hasFormDrafts = () => $$(FORMS).some((form) => formDirty(form, false));
+  const hasFormDrafts = () => $$(FORMS).some((form) => formDirty(form, false)) || !!$("[data-rule][data-unsaved]");
 
   /* 历史条目的单调编号：只用来判断「这一步是前进还是后退」，取消离开时好原路退回，
      而不是 replaceState 把后退栈改写成两个同样的条目（安卓手势返回会因此「按一下没反应」）。 */
@@ -1611,6 +1614,7 @@
       </div>
       ${commands}
       ${liveCard(plugin)}
+      ${plugin.panel === "autoreply" ? rulesSection(sub) : ""}
 
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
@@ -1676,14 +1680,30 @@
     return inside?.field ? inside.spec.help?.[inside.field] || "" : "";
   }
 
-  /** 路径落在哪张映射表里：表的路径、说明、键，以及（如果是项里的字段）字段名。 */
+  /** 路径落在哪张映射表里：表的路径（具体的）、登记的写法（可以带 `*`）、说明、键，以及（如果是项里的字段）字段名。
+   *  一项里的字段自己也可以是一张映射表（每群的自定义占位符），所以挑最深的那一张。 */
   function mapOf(ctx, path) {
-    for (const [map, spec] of Object.entries(ctx.maps)) {
-      if (!path.startsWith(`${map}.`)) continue;
-      const [key, field = "", ...rest] = path.slice(map.length + 1).split(".");
-      if (!rest.length) return { map, spec, key, field };
+    const parts = path.split(".");
+    let found = null;
+    for (const [pattern, spec] of Object.entries(ctx.maps)) {
+      const head = pattern.split(".");
+      if (parts.length <= head.length || !head.every((want, index) => want === "*" || want === parts[index])) continue;
+      const [key, field = "", ...rest] = parts.slice(head.length);
+      if (rest.length || (found && found.depth >= head.length)) continue;
+      found = { map: parts.slice(0, head.length).join("."), pattern, spec, key, field, depth: head.length };
     }
-    return null;
+    return found;
+  }
+
+  /** 这一项本身是不是一张映射表；登记的写法里的 `*` 匹配任意一个键。 */
+  function mapSpec(ctx, path) {
+    if (ctx.maps[path]) return ctx.maps[path];
+    const parts = path.split(".");
+    const hit = Object.entries(ctx.maps).find(([pattern]) => {
+      const head = pattern.split(".");
+      return head.length === parts.length && head.every((want, index) => want === "*" || want === parts[index]);
+    });
+    return hit ? hit[1] : null;
   }
 
   /** 默认值的一句话说法，给「恢复默认」的名字用。 */
@@ -1758,7 +1778,8 @@
   /** 映射表里一项的字段写成 `表.*.字段`：中文名、先后、模板说明都按这个通配路径登记。 */
   function starPath(ctx, path) {
     const inside = mapOf(ctx, path);
-    return inside?.field ? `${inside.map}.*.${inside.field}` : path;
+    if (!inside) return path;
+    return inside.field ? `${inside.pattern}.*.${inside.field}` : `${inside.pattern}.*`;
   }
 
   const labelOf = (ctx, path) => ctx.labels?.[path] || ctx.labels?.[starPath(ctx, path)] || "";
@@ -1865,7 +1886,7 @@
     const row = (cls, inner, extra = "") =>
       h`<div class="${cls} setting" data-setting="${path}" data-search="${search}"${attr(meta.modified, "data-modified")}${raw(extra)}>${inner}</div>`;
 
-    if (isTable(value) && ctx.maps[path]) return mapEditor(path, key, value, ctx.maps[path], ctx);
+    if (isTable(value) && mapSpec(ctx, path)) return mapEditor(path, key, value, mapSpec(ctx, path), ctx);
     if (isTable(value)) {
       const children = Object.entries(value).sort((a, b) => fieldOrder(a, b) || byOrder(ctx, path)(a, b));
       const hasMaster = typeof value.enabled === "boolean";
@@ -2130,28 +2151,62 @@
   /* ---------- 文案编辑器：带占位符的提示（几种说法随机一种、点按插入占位符、就地预览） ---------- */
 
   /** 这一项是不是提示模板；是就给它的说明（哪一种提示、一句用途）。 */
-  const templateOf = (ctx, path) => ctx.templates?.fields?.[path] || ctx.templates?.fields?.[starPath(ctx, path)] || null;
-  const holdersFor = (ctx, kind) => (ctx.templates?.placeholders || []).filter((holder) => holder.kinds.includes(kind));
+  const templateOf = (ctx, path) =>
+    ctx.templates?.fields?.[path] || ctx.templates?.fields?.[starPath(ctx, path)] || ctx.templates?.fallback || null;
+  /** 这一项属于哪个群的单独设置（`groups.群号.…`）：那个群自己的自定义占位符只在它的提示里认得。 */
+  const groupOf = (path) => /^groups\.([^.]+)\./.exec(path)?.[1] || "";
+  const tplSpec = (ctx, path) => {
+    const spec = templateOf(ctx, path);
+    return spec ? { ...spec, group: groupOf(path) } : null;
+  };
+  /** 这种提示能用的占位符：内置的、全局的自定义占位符，再叠上本群自己的（同名的顶掉全局那份）。 */
+  function holdersFor(ctx, kind, group = "") {
+    const local = (ctx.templates?.group_custom?.[group]?.placeholders || []).filter((holder) => holder.kinds.includes(kind));
+    const shared = (ctx.templates?.placeholders || []).filter((holder) => holder.kinds.includes(kind) && !local.some((own) => own.key === holder.key));
+    return [...shared, ...local];
+  }
   const variantsOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === "string" && value ? [value] : []);
 
-  function templateBody(id, path, value, ctx, spec) {
-    const variants = variantsOf(value);
-    const holders = holdersFor(ctx, spec.kind);
+  /** 「插入」那一排芯片。自定义占位符带一枚 {} 图标，和内置的分得开。 */
+  function holderChips(ctx, spec) {
     const extras = ctx.templates?.extras || [];
+    return h`${holdersFor(ctx, spec.kind, spec.group).map((holder) => h`<button class="chip tpl-holder${holder.custom ? " tpl-own" : ""} state" type="button" data-tpl-insert="{${holder.key}}"
+        title="{${holder.key}}${holder.hint ? ` · ${holder.hint}` : ""}" aria-label="插入${holder.custom ? "自定义占位符" : ""}${holder.label}{${holder.key}}${holder.hint ? `：${holder.hint}` : ""}">${holder.custom ? icon("data_object") : ""}${holder.label}</button>`)}
+      ${extras.map((extra) => h`<button class="chip tpl-holder tpl-extra state" type="button" data-tpl-insert="${extra.insert}"
+          title="${extra.hint}" aria-label="插入${extra.label}：${extra.hint}">${extra.label}</button>`)}`;
+  }
+
+  function templateBody(id, path, value, ctx, base) {
+    const variants = variantsOf(value);
+    const spec = { ...base, group: groupOf(path) };
+    const silent = spec.silent || (spec.kind === "custom" ? "一种说法都没有：插进去是空的。" : "一种说法都没有：这条提示不发。");
     return h`<div class="tpl" id="${id}" data-tpl="${path}" data-tpl-kind="${spec.kind}" data-tpl-saved="${JSON.stringify(variants)}">
       <ol class="tpl-list" aria-label="${spec.about}">${variants.map((text, index) => templateVariant(id, index, text, ctx, spec))}</ol>
-      <p class="tpl-silent"${attr(variants.length, "hidden")}>${icon("notifications_off")}<span>一种说法都没有：这条提示不发。</span></p>
+      <p class="tpl-silent"${attr(variants.length, "hidden")}>${icon("notifications_off")}<span>${silent}</span></p>
       <div class="tpl-tools">
         <span class="tpl-tools-label" id="${id}-insert">插入</span>
-        <div class="tpl-holders" role="group" aria-labelledby="${id}-insert">
-          ${holders.map((holder) => h`<button class="chip tpl-holder state" type="button" data-tpl-insert="{${holder.key}}"
-              title="{${holder.key}}${holder.hint ? ` · ${holder.hint}` : ""}" aria-label="插入${holder.label}{${holder.key}}${holder.hint ? `：${holder.hint}` : ""}">${holder.label}</button>`)}
-          ${extras.map((extra) => h`<button class="chip tpl-holder tpl-extra state" type="button" data-tpl-insert="${extra.insert}"
-              title="${extra.hint}" aria-label="插入${extra.label}：${extra.hint}">${extra.label}</button>`)}
+        <div class="tpl-holders" role="group" aria-labelledby="${id}-insert">${holderChips(ctx, spec)}</div>
+        <div class="tpl-more">
+          <button class="btn btn-text tpl-add" type="button" data-tpl-add>${icon("add")}${variants.length ? "再加一种说法" : "写一句"}</button>
+          ${spec.images
+            ? h`<button class="btn btn-text tpl-image" type="button" data-tpl-image>${icon("image")}<span>插入图片</span></button>
+                <input class="tpl-image-file" type="file" accept="image/*" hidden aria-hidden="true" tabindex="-1">`
+            : ""}
         </div>
-        <button class="btn btn-text tpl-add" type="button" data-tpl-add>${icon("add")}${variants.length ? "再加一种说法" : "写一句"}</button>
       </div>
     </div>`;
+  }
+
+  /** 自定义占位符加了、删了、改了：各编辑器的插入芯片与预览跟着换。 */
+  function repaintHolders(name) {
+    const ctx = configs.get(name);
+    if (!ctx) return;
+    for (const root of $$(`[data-config="${CSS.escape(name)}"] [data-tpl]`)) {
+      const spec = tplSpec(ctx, root.dataset.tpl);
+      const row = $(".tpl-holders", root);
+      if (spec && row && !row.contains(document.activeElement)) put(row, holderChips(ctx, spec));
+    }
+    repaintPreviews(name);
   }
 
   function templateVariant(id, index, text, ctx, spec) {
@@ -2174,9 +2229,12 @@
 
   /** 模板在群里大概长什么样：占位符换成样例值，@ 与图、表情画成小块。
    *  认不出、或这条提示里用不了的占位符原样留着并标出来——发出去也是原样，不如现在就看见。 */
-  function previewOf(text, ctx, spec) {
-    const samples = ctx.templates?.samples || {};
-    const allowed = new Set(holdersFor(ctx, spec.kind).map((holder) => holder.key));
+  function previewOf(text, ctx, spec, depth = 0) {
+    const own = ctx.templates?.group_custom?.[spec.group || ""];
+    const samples = { ...(ctx.templates?.samples || {}), ...(own?.samples || {}) };
+    const holders = holdersFor(ctx, spec.kind, spec.group);
+    const allowed = new Set(holders.map((holder) => holder.key));
+    const snippets = new Set(holders.filter((holder) => holder.custom).map((holder) => holder.key));
     const bad = [];
     const pill = (glyph, label) => `<span class="tpl-pill">${part(icon(glyph))}${esc(label)}</span>`;
     let html = "";
@@ -2192,8 +2250,17 @@
         html += pill("image", "配图");
       } else if (inner === "avatar") html += pill("account_circle", "头像");
       else if (/^face:\d+$/.test(inner)) html += pill("mood", "表情");
-      else if (inner.includes("|")) html += `<span class="tpl-pick" title="每次随机换成其中一个：${esc(inner.split("|").join("、"))}">${esc(inner.split("|")[0])}</span>`;
-      else if (allowed.has(inner) && inner in samples) html += `<span class="tpl-var">${esc(samples[inner])}</span>`;
+      else if (/^image:./.test(inner)) {
+        const src = spec.images ? photoSrc(spec.images, inner.slice(6).trim(), 240) : "";
+        html += src ? `<img class="tpl-thumb" src="${esc(src)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : pill("image", "图片");
+      } else if (inner.includes("|")) html += `<span class="tpl-pick" title="每次随机换成其中一个：${esc(inner.split("|").join("、"))}">${esc(inner.split("|")[0])}</span>`;
+      else if (snippets.has(inner) && depth === 0) {
+        // 自定义占位符：把它的内容就地展开预览（里面的占位符照这条提示的值填），只展开一层。
+        const body = String(samples[inner] ?? "");
+        html += body.trim()
+          ? `<span class="tpl-snippet" title="{${esc(inner)}}">${part(previewOf(body, ctx, spec, 1).html)}</span>`
+          : `<span class="tpl-empty">（{${esc(inner)}} 是空的）</span>`;
+      } else if (allowed.has(inner) && !snippets.has(inner) && inner in samples) html += `<span class="tpl-var">${esc(samples[inner])}</span>`;
       else {
         html += `<mark class="tpl-bad">${esc(match[0])}</mark>`;
         bad.push(match[0]);
@@ -2201,7 +2268,7 @@
     }
     html += esc(text.slice(last));
     if (spec.kind === "join" && !images && (valueAt(ctx.config, "join.images") || []).length) html += `\n${pill("image", "配图")}`;
-    if (!text.trim()) html = `<span class="tpl-empty">空着：发的时候跳过这一种</span>`;
+    if (!text.trim() && depth === 0) html = `<span class="tpl-empty">空着：发的时候跳过这一种</span>`;
     const problems = bad.length
       ? h`${icon("warning")}<span>${[...new Set(bad)].join(" ")} ${bad.length > 1 ? "这几个" : "这个"}占位符在这里用不了，会原样发出去。</span>`
       : "";
@@ -2211,10 +2278,13 @@
   /** 编辑器现在的几种说法（含还没保存的）。 */
   const tplRead = (root) => $$("[data-tpl-input]", root).map((input) => input.value);
 
+  /** 文案编辑器的上下文：配置表单里的看插件，自动回复的规则面板有自己的一份。 */
+  const tplCtx = (root) => configs.get(root?.closest("[data-config]")?.dataset.config) || (root?.closest("[data-rule]") ? rules.ctx : null);
+
   function tplRepaint(input) {
     const root = input.closest("[data-tpl]");
-    const ctx = configs.get(root?.closest("[data-config]")?.dataset.config);
-    const spec = ctx && templateOf(ctx, root.dataset.tpl);
+    const ctx = tplCtx(root);
+    const spec = ctx && tplSpec(ctx, root.dataset.tpl);
     if (!spec) return;
     const item = input.closest(".tpl-item");
     const { html, problems } = previewOf(input.value, ctx, spec);
@@ -2229,8 +2299,7 @@
 
   /** 整个编辑器重画一遍（加、删说法之后），焦点落到指定的那一种说法上。 */
   function tplRedraw(root, variants, focus = -1) {
-    const form = root.closest("[data-config]");
-    const ctx = configs.get(form.dataset.config);
+    const ctx = tplCtx(root);
     const path = root.dataset.tpl;
     const holder = document.createElement("div");
     put(holder, templateBody(root.id, path, variants, ctx, templateOf(ctx, path)));
@@ -2246,6 +2315,8 @@
   /** 存下这个编辑器：和上次存的一样就不发请求。 */
   async function tplSave(root) {
     const form = root.closest("[data-config]");
+    // 规则面板里的回复：随整条规则一起存。
+    if (!form && root.closest("[data-rule]")) return ruleSave(root.closest("[data-rule]"));
     if (!form || root.getAttribute("aria-busy") === "true") return;
     const value = tplRead(root);
     if (JSON.stringify(value) === root.dataset.tplSaved) return;
@@ -2258,9 +2329,16 @@
       if (first) clearFieldError(first);
       markModified(row, value);
       const ctx = configs.get(form.dataset.config);
-      const label = (ctx && labelOf(ctx, root.dataset.tpl)) || root.dataset.tpl;
-      snackbar(value.some((text) => text.trim()) ? `已保存「${label}」` : `已保存：「${label}」现在不发`);
-      refreshDiff(form.dataset.config);
+      const custom = ctx && templateOf(ctx, root.dataset.tpl)?.kind === "custom";
+      const label = custom ? `{${root.dataset.tpl.split(".").pop()}}` : (ctx && labelOf(ctx, root.dataset.tpl)) || root.dataset.tpl;
+      snackbar(value.some((text) => text.trim()) ? `已保存「${label}」` : custom ? `已保存：「${label}」现在是空的` : `已保存：「${label}」现在不发`);
+      if (custom) {
+        await freshPlugin(form.dataset.config).catch(() => null);
+        repaintHolders(form.dataset.config);
+        const entry = root.closest("details.entry");
+        const first = value.find((text) => text.trim()) || "";
+        if (entry) $("[data-entry-sub]", entry).textContent = first ? snippetBrief(first) : "还是空的";
+      } else refreshDiff(form.dataset.config);
     } catch (error) {
       if (error.status === 401) return;
       if (first) fieldError(first, error.message);
@@ -2305,6 +2383,7 @@
   /** 一项的名字：群显示群名，私聊目标显示好友名，其余就是键本身。 */
   function entryLabel(spec, key) {
     if (spec.key === "name") return { title: key, sub: "" };
+    if (spec.key === "word") return { title: `{${key}}`, sub: "" };
     const privateId = key.startsWith("private:") ? key.slice(8) : "";
     if (privateId) {
       const name = entryName("user", privateId);
@@ -2316,13 +2395,19 @@
 
   function mapEditor(path, key, value, spec, ctx) {
     const keys = Object.keys(value);
-    const about = ctx.help[path];
-    if (spec.key !== "name") void Promise.all([KINDS.group.roster.load(), spec.key === "target" ? KINDS.user.roster.load() : null]).then(paintEntries);
+    const about = ctx.help[path] || helpFor(ctx, path);
+    if (spec.key === "group" || spec.key === "target") void Promise.all([KINDS.group.roster.load(), spec.key === "target" ? KINDS.user.roster.load() : null]).then(paintEntries);
     const adders = spec.key === "target"
       ? [["group", "groups", "加一个群"], ["user", "person", "加一个私聊对象"]]
-      : spec.key === "group" ? [["group", "groups", spec.add]] : [["name", "add", spec.add]];
-    return h`<fieldset class="config-group config-map" data-map="${path}" data-search="${`${path} ${about || ""} ${keys.join(" ")}`.toLowerCase()}">
-      <legend class="config-legend">${legendName(ctx, path, key)}${keys.length ? h`<span class="legend-count num">${keys.length}</span>` : ""}</legend>
+      : spec.key === "group" ? [["group", "groups", spec.add]] : [[spec.key === "word" ? "word" : "name", "add", spec.add]];
+    // 这张表本身是上一层某一项里的字段（每群的自定义占位符）：可以整张删掉，沿用上层。
+    const outer = mapOf(ctx, path);
+    const inherit = outer?.field && outer.spec.optional
+      ? h`<button class="icon-btn state field-reset legend-action" type="button" data-inherit="${path}"
+          aria-label="不再单独设置 ${labelOf(ctx, path) || key}，沿用上层" title="不再单独设置，沿用上层">${icon("settings_backup_restore")}</button>`
+      : "";
+    return h`<fieldset class="config-group config-map${outer?.field ? " config-map-nested" : ""}" data-map="${path}" data-search="${`${path} ${about || ""} ${keys.join(" ")}`.toLowerCase()}">
+      <legend class="config-legend">${legendName(ctx, path, key)}${keys.length ? h`<span class="legend-count num">${keys.length}</span>` : ""}${inherit}</legend>
       ${about ? h`<p class="config-about">${about}</p>` : ""}
       ${keys.length
         ? keys.map((item) => mapEntry(path, item, value[item], spec, ctx))
@@ -2332,8 +2417,35 @@
     </fieldset>`;
   }
 
+  /** 自定义占位符在列表里的一句话：头一种说法，压成一行。 */
+  const snippetBrief = (text) => {
+    const line = String(text).replace(/\s+/g, " ").trim();
+    return [...line].length > 40 ? `${[...line].slice(0, 40).join("")}…` : line;
+  };
+
   function mapEntry(path, key, value, spec, ctx) {
     const full = `${path}.${key}`;
+    if (spec.value === "template") {
+      // 每一项本身就是一条提示模板（自定义占位符）：展开就是文案编辑器。
+      const first = variantsOf(value).find((text) => text.trim()) || "";
+      return h`<details class="memory entry" data-entry="${full}" data-entry-key="${key}" data-key-kind="word"${attr(openEntries.has(`${ctx.name}:${full}`), "open")}
+          data-search="${`${full} ${key} ${variantsOf(value).join(" ")}`.toLowerCase()}">
+        <summary class="state">
+          <span class="item-leading" aria-hidden="true">${icon("data_object")}</span>
+          <span class="item-content">
+            <span class="item-title" data-entry-title><code>{${key}}</code></span>
+            <span class="item-sub" data-entry-sub>${first ? snippetBrief(first) : "还是空的"}</span>
+          </span>
+          ${icon("chevron_right", "chevron")}
+        </summary>
+        <div class="memory-body entry-body">
+          <div class="config-group">${configField(full, key, value, ctx)}</div>
+          <div class="actions">
+            <button class="btn btn-text btn-danger" type="button" data-entry-remove="${full}" data-entry-name="{${key}}">${icon("delete")}删除「{${key}}」</button>
+          </div>
+        </div>
+      </details>`;
+    }
     const fields = isTable(value) ? Object.entries(value).sort((a, b) => fieldOrder(a, b) || byOrder(ctx, full)(a, b)) : [];
     const missing = spec.optional
       ? Object.keys(spec.template).filter((field) => !(field in (value || {}))).sort((a, b) => byOrder(ctx, full)([a], [b]))
@@ -2372,16 +2484,18 @@
   function paintEntries() {
     for (const entry of $$("details.entry[data-key-kind]")) {
       const kind = entry.dataset.keyKind;
-      if (kind === "name") continue;
+      if (kind === "name" || kind === "word") continue;
       const fieldset = entry.closest("[data-map]");
       const form = entry.closest("[data-config]");
-      const spec = configs.get(form?.dataset.config)?.maps[fieldset?.dataset.map];
+      const ctx = configs.get(form?.dataset.config);
+      const spec = ctx && fieldset && mapSpec(ctx, fieldset.dataset.map);
       if (!spec) continue;
       const { title, sub } = entryLabel(spec, entry.dataset.entryKey);
-      $("[data-entry-title]", entry).textContent = title;
-      const count = spec.optional ? `${$$(":scope > .entry-body > .config-group > [data-setting]", entry).length} 项单独设置` : "";
-      $("[data-entry-sub]", entry).textContent = [sub, count].filter(Boolean).join(" · ") || " ";
-      const remove = $("[data-entry-remove]", entry);
+      $(":scope > summary [data-entry-title]", entry).textContent = title;
+      const count = spec.optional ? `${$$(":scope > .entry-body > .config-group > :is([data-setting], [data-map])", entry).length} 项单独设置` : "";
+      $(":scope > summary [data-entry-sub]", entry).textContent = [sub, count].filter(Boolean).join(" · ") || " ";
+      // 只认这一项自己的删除键：项里还套着一张小表（每群的自定义占位符）时，那里面也有删除键。
+      const remove = $(":scope > .entry-body > .actions [data-entry-remove]", entry);
       remove.dataset.entryName = title;
       remove.lastChild.textContent = `删除「${title}」`;
     }
@@ -2394,10 +2508,12 @@
     const ctx = configs.get(name);
     const node = $(`[data-map="${CSS.escape(mapPath)}"]`, form);
     if (!node || !ctx) return;
+    const spec = mapSpec(ctx, mapPath);
     const holder = document.createElement("div");
-    put(holder, mapEditor(mapPath, mapPath.split(".").pop(), valueAt(plugin.config, mapPath) || {}, ctx.maps[mapPath], ctx));
+    put(holder, mapEditor(mapPath, mapPath.split(".").pop(), valueAt(plugin.config, mapPath) || {}, spec, ctx));
     const fresh = holder.firstElementChild;
     node.replaceWith(fresh);
+    if (spec?.value === "template") repaintHolders(name);
     (focus ? $(focus, fresh) : null)?.focus({ preventScroll: false });
   }
 
@@ -2410,6 +2526,21 @@
       const fresh = keys.filter((key) => !existing.includes(key));
       if (fresh.length < keys.length) snackbar(fresh.length ? "已经有单独设置的那几个跳过了。" : "选的都已经有单独设置了。");
       return fresh;
+    }
+    if (kind === "word") {
+      const reserved = spec.reserved || [];
+      const name = await promptName({
+        title: spec.add,
+        label: `${spec.noun}的名字`,
+        hint: "提示里写 {名字} 就插进去，比如「群规」「下载地址」。最多 20 个字，不能有空格、花括号、竖线、冒号、点和引号。",
+        taken: existing,
+        mono: false,
+        validate: (text) =>
+          [...text].length > 20 ? "名字最多 20 个字。"
+            : /[\s{}|:.'"]/.test(text) ? "名字里不能有空格、花括号、竖线、冒号、点和引号。"
+              : reserved.includes(text) ? `{${text}} 是内置占位符，换个名字。` : "",
+      });
+      return name ? [name] : [];
     }
     const name = await promptName({
       title: spec.add,
@@ -2425,7 +2556,7 @@
     const form = button.closest("[data-config]");
     const mapPath = button.dataset.mapAdd;
     const ctx = configs.get(form?.dataset.config);
-    const spec = ctx?.maps[mapPath];
+    const spec = ctx && mapSpec(ctx, mapPath);
     if (!spec || button.getAttribute("aria-busy") === "true") return;
     const existing = $$(":scope > details.entry", button.closest("[data-map]")).map((entry) => entry.dataset.entryKey);
     const keys = await askEntryKeys(spec, button.dataset.addKind, existing);
@@ -2439,14 +2570,14 @@
         openEntries.add(`${ctx.name}:${mapPath}.${key}`);
       }
       const said = done.length === 1 ? `已添加「${entryLabel(spec, done[0]).title}」` : `已添加 ${done.length} 个`;
-      snackbar(spec.optional ? `${said}，先照抄上层的设置；改哪项就是给它单独定。` : `${said}，把下面几项填上就能用。`);
+      snackbar(spec.value === "template" ? `${said}，在下面写上它的内容。` : spec.optional ? `${said}，先照抄上层的设置；改哪项就是给它单独定。` : `${said}，把下面几项填上就能用。`);
     } catch (error) {
       report(error);
     } finally {
       button.removeAttribute("aria-busy");
       if (done.length) {
-        const last = `${mapPath}.${done[done.length - 1]}`;
-        await rebuildMap(form, mapPath, `[data-entry="${CSS.escape(last)}"] > summary`).catch(report);
+        const last = `[data-entry="${CSS.escape(`${mapPath}.${done[done.length - 1]}`)}"]`;
+        await rebuildMap(form, mapPath, spec.value === "template" ? `${last} [data-tpl-input]` : `${last} > summary`).catch(report);
       }
     }
   }
@@ -2456,7 +2587,8 @@
     const path = button.dataset.entryRemove;
     const mapPath = button.closest("[data-map]")?.dataset.map;
     const secret = $$("[data-secret='set']", button.closest("details")).length > 0;
-    const optional = configs.get(form?.dataset.config)?.maps[mapPath]?.optional;
+    const ctx = configs.get(form?.dataset.config);
+    const optional = ctx && mapPath && mapSpec(ctx, mapPath)?.optional;
     const ok = await confirmAction({
       title: `删除「${button.dataset.entryName}」？`,
       body: secret
@@ -2481,11 +2613,12 @@
   /** 一项里的某个字段：「沿用上层」= 删掉它；点「补上」= 从模板加回来。 */
   async function entryField(button, remove) {
     const form = button.closest("[data-config]");
-    const mapPath = button.closest("[data-map]")?.dataset.map;
     const ctx = configs.get(form?.dataset.config);
     const path = remove ? button.dataset.inherit : button.dataset.entryField;
     const inside = ctx && mapOf(ctx, path);
     if (!inside?.field || button.getAttribute("aria-busy") === "true") return;
+    // 字段本身是一张表（每群的自定义占位符）时，按钮在那张小表里；要重画的是装着这一项的外层表。
+    const mapPath = inside.map;
     button.setAttribute("aria-busy", "true");
     try {
       const reply = remove
@@ -2502,7 +2635,7 @@
   }
 
   /** 起名对话框：一个输入框加几枚建议。原生 dialog 管焦点与 Esc；名字不合规或重名就地说明。 */
-  function promptName({ title, label, hint, suggest = [], taken = [] }) {
+  function promptName({ title, label, hint, suggest = [], taken = [], validate = null, mono = true }) {
     const dialog = $("#dialog");
     const opener = document.activeElement;
     put(
@@ -2511,7 +2644,7 @@
         <form class="dialog-form" method="dialog" novalidate>
           <div class="field">
             <label class="field-label" for="dialog-name">${label}</label>
-            <input class="input mono" id="dialog-name" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="done" aria-describedby="dialog-body">
+            <input class="input${mono ? " mono" : ""}" id="dialog-name" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="done" aria-describedby="dialog-body">
             <span class="field-hint" id="dialog-body">${hint}</span>
           </div>
           ${suggest.length ? h`<div class="chips" role="group" aria-label="常用的名字">${suggest.map((item) => h`<button class="chip state" type="button" data-suggest="${item}">${item}</button>`)}</div>` : ""}
@@ -2524,7 +2657,8 @@
     const input = $("#dialog-name", dialog);
     const check = () => {
       const name = input.value.trim();
-      const problem = !name ? "先起个名字。" : !/^[A-Za-z0-9_-]{1,40}$/.test(name) ? "只能用字母、数字、下划线和连字符，不超过 40 个字。" : taken.includes(name) ? `「${name}」已经有了。` : "";
+      const shape = validate ? validate(name) : !/^[A-Za-z0-9_-]{1,40}$/.test(name) ? "只能用字母、数字、下划线和连字符，不超过 40 个字。" : "";
+      const problem = !name ? "先起个名字。" : shape || (taken.includes(name) ? `「${name}」已经有了。` : "");
       if (problem) fieldError(input, problem);
       return problem ? "" : name;
     };
@@ -2656,6 +2790,642 @@
       snackbar(`已复制 ${text}`);
     } catch {
       snackbar("浏览器没有给剪贴板权限；可以长按或拖选文字复制。", "error");
+    }
+  }
+
+  /* ==================== §8b 自动回复的规则面板 ====================
+     规则不在配置里（data/autoreply/rules.json），所以不画成配置表单：每条规则一张可展开的卡，
+     改完即存——整条规则一起存，存不上就留着草稿、在卡里说清哪里不行，删了能撤销。
+     触发词、群名单、回复分别复用列表编辑器、名单编辑器与文案编辑器，只是写入换成 emit：
+     值交给这条规则，由 ruleSave 一并提交。上方「试一句」随打随试，防误触从这里开始。 */
+
+  const rules = {
+    data: null,
+    /** 文案编辑器的上下文（占位符、样例、图库）。 */
+    ctx: null,
+    open: new Set(),
+    tryTimer: 0,
+    trySeq: 0,
+    mounting: 0,
+  };
+
+  const RULE_EXTRAS = [
+    { insert: "{face:14}", label: "QQ 表情", hint: "{face:ID}：插一个 QQ 小黄脸，ID 是表情编号（14 是微笑）" },
+    { insert: "{你好|嗨}", label: "随机片段", hint: "{甲|乙|丙}：每次随机换成其中一个" },
+  ];
+
+  /** 详情里的那一节：先占个位，数据到了再画（规则在另一条接口上）。 */
+  function rulesSection(sub) {
+    clearTimeout(rules.mounting);
+    rules.mounting = setTimeout(() => void rulesMount(), 0);
+    return h`<section class="section rules" id="rules-panel" aria-labelledby="rules-title" aria-busy="true">
+      <div class="section-head">
+        ${raw(`<${sub} class="section-title" id="rules-title">回复规则</${sub}>`)}
+        <span class="section-meta" id="rules-count">正在读取…</span>
+      </div>
+      <div id="rules-body"><div class="progress" role="progressbar" aria-label="正在读取规则"></div></div>
+    </section>`;
+  }
+
+  async function rulesMount({ focus = "" } = {}) {
+    const panel = $("#rules-panel");
+    if (!panel) return;
+    try {
+      const data = await api("/autoreply");
+      if (!panel.isConnected) return;
+      rules.data = data;
+      rules.ctx = {
+        name: "autoreply",
+        maps: {},
+        help: {},
+        labels: {},
+        config: {},
+        templates: {
+          placeholders: data.placeholders.map((holder) => ({ ...holder, kinds: ["reply"] })),
+          samples: data.samples,
+          extras: RULE_EXTRAS,
+          fallback: { kind: "reply", about: "回复的几种说法", images: "autoreply", silent: "没有文字回复。" },
+        },
+      };
+      rulesPaint();
+      void KINDS.group.roster.load().then(() => {
+        rulesGroupOptions();
+        for (const entry of $$("[data-rule]")) rulePaintSummary(entry);
+      });
+      if (focus) $(focus)?.focus({ preventScroll: false });
+    } catch (error) {
+      if (error.status === 401) return;
+      put($("#rules-body"), emptyState(`规则没读出来：${error.message}`, "error"));
+      $("#rules-count").textContent = "";
+    } finally {
+      panel.removeAttribute("aria-busy");
+    }
+  }
+
+  function rulesPaint() {
+    const { rules: list, trash } = rules.data;
+    $("#rules-count").textContent = list.length ? `${list.length} 条 · 改完即保存` : "";
+    put($("#rules-body"), h`
+      <div class="card rules-try">
+        <div class="field-text">
+          <label class="field-label" for="rules-try-input">试一句</label>
+          <span class="field-hint" id="rules-try-hint">输入群友可能发的话，看会不会触发、由哪条回。加规则前后都试试，误触在这里就看得出来。</span>
+        </div>
+        <div class="rules-try-row">
+          <input class="input" id="rules-try-input" type="text" enterkeyhint="search" autocomplete="off" spellcheck="false"
+            placeholder="比如：请问在哪下载" aria-describedby="rules-try-hint rules-try-result">
+          <span class="select"><select id="rules-try-group" aria-label="在哪儿说这句">${rulesGroupChoices()}</select>${icon("keyboard_arrow_down")}</span>
+        </div>
+        <p class="rules-try-result" id="rules-try-result" role="status"></p>
+      </div>
+      <div class="rules-tools">
+        ${list.length >= 6
+          ? h`<div class="search">${icon("search")}
+              <input class="input" id="rules-search" type="search" placeholder="在 ${list.length} 条规则里找" aria-label="筛选规则"
+                aria-describedby="rules-search-status" autocomplete="off" spellcheck="false" enterkeyhint="search">
+            </div>`
+          : ""}
+        <button class="btn btn-filled" type="button" data-rule-new>${icon("add")}新建规则</button>
+      </div>
+      <p class="section-meta" id="rules-search-status" role="status"></p>
+      <div class="rules-list" id="rules-list">
+        ${list.length
+          ? list.map(ruleEntry)
+          : emptyState("还没有规则。点「新建规则」；群管理员也可以在群里发「自动回复 添加 下载 安装包在群文件里～」。", "quickreply")}
+      </div>
+      ${trash.length ? rulesTrash(trash) : ""}`);
+  }
+
+  function rulesTrash(trash) {
+    return h`<details class="memory rules-trash" id="rules-trash">
+      <summary class="state">
+        <span class="item-leading" aria-hidden="true">${icon("delete")}</span>
+        <span class="item-content"><span class="item-title">最近删除</span><span class="item-sub">留最近 ${trash.length} 条，可以找回来</span></span>
+        ${icon("chevron_right", "chevron")}
+      </summary>
+      <ul class="memory-body rules-trash-list">${trash.map((item) => h`<li class="rules-trash-row">
+        <span class="item-content"><span class="item-title">#${item.id} ${item.title}</span>
+          <span class="item-sub">${ago(item.at)}${item.group ? `在群 ${entryName("group", item.group) || item.group} 删的` : "删的"}</span></span>
+        <button class="btn btn-tonal" type="button" data-rule-restore="${item.id}">${icon("undo")}找回</button>
+      </li>`)}</ul>
+    </details>`;
+  }
+
+  /** 「试一句」在哪儿说：只看共用规则的「别的群」、各个群（有单独规则的排前面）、私聊。 */
+  function rulesGroupChoices(current = "*") {
+    const scoped = new Set((rules.data?.rules || []).flatMap((rule) => rule.groups));
+    const known = KINDS.group.roster.list.map((entry) => entry.id);
+    const ids = [...new Set([...scoped, ...known])].sort((a, b) => scoped.has(b) - scoped.has(a));
+    const option = (value, label) => h`<option value="${value}"${attr(value === current, "selected")}>${label}</option>`;
+    return [
+      option("*", "别的群（只看共用规则）"),
+      ...ids.map((id) => option(id, `${entryName("group", id) || `群 ${id}`}${scoped.has(id) ? " · 有单独规则" : ""}`)),
+      option("", "私聊"),
+    ];
+  }
+
+  function rulesGroupOptions() {
+    const select = $("#rules-try-group");
+    if (select) put(select, rulesGroupChoices(select.value));
+  }
+
+  const modeOf = (code) => rules.data?.modes.find((mode) => mode.code === code) || { code, label: code, explain: "" };
+
+  /** 卡片标题：触发词一个个排开；正则原样等宽显示。 */
+  const ruleTitle = (rule) =>
+    rule.keywords.length
+      ? h`${rule.keywords.slice(0, 4).map((word) => h`<span class="rule-word${rule.mode === "regex" ? " mono" : ""}">${word}</span>`)}${rule.keywords.length > 4 ? h`<span class="rule-more">等 ${rule.keywords.length} 个</span>` : ""}`
+      : h`<span class="rule-word rule-word-none">还没有触发词</span>`;
+
+  function ruleWhere(rule) {
+    if (rule.groups.length === 1) return entryName("group", rule.groups[0]) || `群 ${rule.groups[0]}`;
+    if (rule.groups.length > 1) return `${rule.groups.length} 个群`;
+    return rule.exclude.length ? `所有群（${rule.exclude.length} 个群不回）` : "所有群";
+  }
+
+  function ruleSub(rule) {
+    const texts = rule.replies.filter((reply) => typeof reply.text === "string").length;
+    const forwards = rule.replies.length - texts;
+    const bits = [`#${rule.id}`, modeOf(rule.mode).label, ruleWhere(rule)];
+    if (rule.replies.length > 1) bits.push(`${rule.replies.length} 种回复`);
+    else if (forwards) bits.push("合并转发");
+    bits.push(rule.hits ? `回过 ${num(rule.hits)} 次` : "还没回过");
+    return bits.join(" · ");
+  }
+
+  const ruleFlags = (rule) =>
+    h`${!rule.enabled ? h`<span class="status">已停用</span>` : ""}${rule.at_only ? h`<span class="rule-flag" title="只在 @ 机器人时回">${icon("alternate_email")}<span class="visually-hidden">只在 @ 时回</span></span>` : ""}${rule.forward || rule.replies.some((reply) => reply.forward) ? h`<span class="rule-flag" title="以合并转发发出">${icon("forward")}<span class="visually-hidden">合并转发</span></span>` : ""}`;
+
+  const ruleSearchText = (rule) =>
+    [`#${rule.id}`, ...rule.keywords, ...(rule.briefs || []), ...rule.groups.map((id) => `${id} ${entryName("group", id)}`)].join(" ").normalize("NFKC").toLowerCase();
+
+  function ruleMeta(rule) {
+    const bits = [rule.hits ? `回过 ${num(rule.hits)} 次，最近${ago(rule.last_hit)}` : "还没回过"];
+    if (rule.author) bits.push(rule.author === "控制台" ? "在控制台添加" : `由 ${rule.author} 添加`);
+    if (rule.created_at) bits.push(new Date(rule.created_at * 1000).toLocaleDateString("zh-CN"));
+    return bits.join(" · ");
+  }
+
+  /** 一条规则的卡。存下来的那份放在 data-rule-saved 里：比对「改没改」、拼请求都从它出发。 */
+  function ruleEntry(rule) {
+    const id = `rule-${rule.id}`;
+    const texts = rule.replies.filter((reply) => typeof reply.text === "string").map((reply) => reply.text);
+    const forwards = rule.replies.filter((reply) => Array.isArray(reply.forward)).map((reply) => reply.forward);
+    const defaults = rules.data.defaults;
+    const mode = modeOf(rule.mode);
+    const shared = !rule.groups.length;
+    const toggle = (field, label, hint, on) => h`<div class="toggle-row setting">
+        <div class="field-text"><span class="field-label" id="${id}-${field}">${label}</span>${hint ? h`<span class="field-hint" id="${id}-${field}-hint">${hint}</span>` : ""}</div>
+        <button class="switch" type="button" role="switch" data-rule-switch="${field}" aria-checked="${bool(on)}" aria-labelledby="${id}-${field}"${hint ? h` aria-describedby="${id}-${field}-hint"` : ""}></button>
+      </div>`;
+    const head = (field, label, hint) => h`<div class="field-text">
+        <span class="field-label" id="${id}-${field}-label">${label}</span>${hint ? h`<span class="field-hint" id="${id}-${field}-hint">${hint}</span>` : ""}
+      </div>`;
+    return h`<details class="memory rule" data-rule="${rule.id}" data-rule-saved="${JSON.stringify(rule)}" data-forwards="${JSON.stringify(forwards)}"
+        data-search="${ruleSearchText(rule)}"${attr(rules.open.has(rule.id), "open")}${attr(!rule.enabled, "data-off")}>
+      <summary class="state">
+        <span class="item-leading" aria-hidden="true">${icon("quickreply")}</span>
+        <span class="item-content">
+          <span class="item-title rule-title" data-rule-title>${ruleTitle(rule)}</span>
+          <span class="item-sub" data-rule-sub>${ruleSub(rule)}</span>
+        </span>
+        <span class="rule-flags"><span class="mod-tag" data-rule-unsaved hidden>没存上</span><span data-rule-flags>${ruleFlags(rule)}</span></span>
+        ${icon("chevron_right", "chevron")}
+      </summary>
+      <div class="memory-body rule-body">
+        <div class="config-group">
+          ${toggle("enabled", "启用这条规则", "关掉就不回，规则还留着。", rule.enabled)}
+          <div class="setting">${listEditor({
+            id: `${id}-kw`, type: "text", items: rule.keywords, mode: "emit", title: "触发词", describedby: `${id}-kw-hint`,
+            head: head("kw", "触发词", "任一对上就回。比之前去掉空格和标点、全角转半角、不分大小写。"),
+          })}</div>
+          <div class="setting">
+            ${head("mode", "怎么比", "")}
+            <fieldset class="segmented segmented-fill rule-modes" aria-labelledby="${id}-mode-label" aria-describedby="${id}-mode-explain">
+              ${rules.data.modes.map((item) => h`<label class="segment"><input type="radio" name="${id}-mode" value="${item.code}"${attr(item.code === rule.mode, "checked")}>${item.label}</label>`)}
+            </fieldset>
+            <p class="field-hint rule-explain" id="${id}-mode-explain">${mode.explain}${rule.mode === "exact" ? "。最不会误触" : rule.mode === "contains" ? "。触发词至少两个字" : ""}。</p>
+          </div>
+          <div class="setting tpl-row">
+            ${head("reply", "回复", "几种说法每次随机一种。可以插图、表情、@ 提问的人；合并转发要在群里引用一条再发「自动回复 加说法 编号」。")}
+            <ul class="rule-forwards" aria-label="合并转发回复">${forwards.map(forwardCard)}</ul>
+            ${templateBody(`${id}-tpl`, `rules.${rule.id}`, texts, rules.ctx, templateOf(rules.ctx, `rules.${rule.id}`))}
+          </div>
+          <div class="setting">${picker({
+            id: `${id}-groups`, kind: "group", mode: "emit", ids: rule.groups, role: "rule-groups", title: "只在这些群回",
+            label: h`<span>在哪些群回</span><span class="field-hint">留空 = 所有群共用；加了群就只在这些群回。</span>`,
+          })}</div>
+          ${shared
+            ? h`<div class="setting">${picker({
+                id: `${id}-exclude`, kind: "group", mode: "emit", ids: rule.exclude, role: "rule-exclude", title: "这些群不回",
+                label: h`<span>这些群不回</span><span class="field-hint">共用规则在某几个群停用；群管理员在群里发「自动回复 停用 ${rule.id}」也会记到这里。</span>`,
+              })}</div>
+              ${toggle("private", "私聊里也回", "有人私聊机器人说到触发词时也回。", rule.private)}`
+            : ""}
+          ${toggle("at_only", "只在 @ 机器人时回", "最稳的防误触：没 @ 就当没听见。", rule.at_only)}
+          ${toggle("forward", "折成合并转发", "长内容不刷屏；回复里单独一行写 --- 分成几条。", rule.forward)}
+          <div class="field setting" data-row="short">
+            <div class="field-text">
+              <label class="field-label" for="${id}-cooldown">冷却（秒）</label>
+              <span class="field-hint" id="${id}-cooldown-hint">同一个群里隔多久才回第二次；留空照全局（${defaults.cooldown_seconds} 秒），0 = 不冷却。同一个人 ${defaults.user_cooldown_seconds} 秒内只回一次、每群每分钟最多 ${defaults.per_minute} 次，照全局。</span>
+            </div>
+            <span class="input-unit">
+              <input class="input num" id="${id}-cooldown" data-rule-cooldown inputmode="numeric" spellcheck="false" autocomplete="off"
+                value="${rule.cooldown_seconds ?? ""}" placeholder="${defaults.cooldown_seconds}" aria-describedby="${id}-cooldown-hint ${id}-cooldown-unit">
+              <span class="unit-text num" id="${id}-cooldown-unit" data-seconds-for="${id}-cooldown">${secondsText(rule.cooldown_seconds ?? "")}</span>
+            </span>
+          </div>
+        </div>
+        <p class="field-error rule-error" id="${id}-error" role="alert" hidden></p>
+        <div class="rule-foot">
+          <span class="rule-meta" data-rule-meta>${ruleMeta(rule)}</span>
+          <button class="btn btn-text btn-danger" type="button" data-rule-delete="${rule.id}">${icon("delete")}删除这条</button>
+        </div>
+      </div>
+    </details>`;
+  }
+
+  /** 一整条合并转发：列出前几条，可以整条删掉（加一条要在群里引用后发指令）。 */
+  function forwardCard(nodes, index) {
+    const shown = nodes.slice(0, 4);
+    const brief = (text) => {
+      const plain = String(text).replace(/\{image:[^}]*\}/g, "〔图〕").replace(/\s+/g, " ").trim();
+      return [...plain].length > 48 ? `${[...plain].slice(0, 48).join("")}…` : plain;
+    };
+    return h`<li class="rule-forward" data-forward-index="${index}">
+      <div class="rule-forward-head">
+        <span class="rule-forward-title">${icon("forward")}合并转发 · ${nodes.length} 条</span>
+        <button class="icon-btn state" type="button" data-forward-remove="${index}" aria-label="删掉这条合并转发（${nodes.length} 条）">${icon("delete")}</button>
+      </div>
+      <ol class="rule-forward-nodes">${shown.map((node) => h`<li><span class="rule-forward-name">${node.name || node.user_id || "机器人"}</span>${brief(node.text)}</li>`)}</ol>
+      ${nodes.length > shown.length ? h`<p class="field-hint">还有 ${nodes.length - shown.length} 条</p>` : ""}
+    </li>`;
+  }
+
+  /** 卡片上现在的样子拼成一条规则。 */
+  function ruleRead(entry) {
+    const saved = JSON.parse(entry.dataset.ruleSaved);
+    const on = (field) => $(`[data-rule-switch="${field}"]`, entry)?.getAttribute("aria-checked") === "true";
+    const forwards = JSON.parse(entry.dataset.forwards || "[]");
+    const texts = tplRead($("[data-tpl]", entry));
+    const exclude = $('.picker[data-role="rule-exclude"]', entry);
+    const cooldown = $("[data-rule-cooldown]", entry).value.trim();
+    return {
+      ...saved,
+      enabled: on("enabled"),
+      keywords: readList($(".tags", entry)),
+      mode: $(".rule-modes input:checked", entry)?.value || saved.mode,
+      replies: [...forwards.map((forward) => ({ forward })), ...texts.map((text) => ({ text }))],
+      groups: readIds($('.picker[data-role="rule-groups"]', entry)),
+      exclude: exclude ? readIds(exclude) : [],
+      private: $('[data-rule-switch="private"]', entry) ? on("private") : false,
+      at_only: on("at_only"),
+      forward: on("forward"),
+      cooldown_seconds: cooldown === "" ? null : Number(cooldown.normalize("NFKC")),
+    };
+  }
+
+  /** 和存下来的那份比，只看人能改的那几项。 */
+  const RULE_FIELDS = ["enabled", "keywords", "mode", "replies", "groups", "exclude", "private", "at_only", "forward", "cooldown_seconds"];
+  const ruleSame = (a, b) => RULE_FIELDS.every((field) => same(a[field] ?? null, b[field] ?? null));
+
+  function ruleProblem(entry, message) {
+    const note = $(".rule-error", entry);
+    note.hidden = !message;
+    put(note, message ? h`${icon("error-fill")}<span>没存上：${message}</span>` : "");
+    entry.toggleAttribute("data-unsaved", !!message);
+    $("[data-rule-unsaved]", entry).hidden = !message;
+  }
+
+  /** 存一条规则。存的工夫里又改了，等这次回来再补存一次；存不上就留着草稿、说明原因。 */
+  async function ruleSave(entry, { said = "", undo = null } = {}) {
+    if (!entry?.isConnected) return;
+    if (entry.dataset.saving) {
+      entry.pending = { said, undo };
+      return;
+    }
+    const cooldown = $("[data-rule-cooldown]", entry);
+    const draft = ruleRead(entry);
+    if (draft.cooldown_seconds !== null && !(Number.isInteger(draft.cooldown_seconds) && draft.cooldown_seconds >= 0)) {
+      fieldError(cooldown, "冷却写一个不小于 0 的整数（秒），或者留空照全局。");
+      return;
+    }
+    clearFieldError(cooldown);
+    if (ruleSame(draft, JSON.parse(entry.dataset.ruleSaved)) && !entry.hasAttribute("data-unsaved")) return;
+    entry.dataset.saving = "1";
+    entry.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api("/autoreply/rules", { method: "POST", body: draft });
+      ruleProblem(entry, "");
+      ruleAdopt(entry, reply.rule);
+      snackbar(said ? `${said}，已保存。` : reply.message, "info", undo);
+    } catch (error) {
+      if (error.status === 401) return;
+      ruleProblem(entry, error.message);
+    } finally {
+      delete entry.dataset.saving;
+      entry.removeAttribute("aria-busy");
+      const later = entry.pending;
+      entry.pending = null;
+      if (later) void ruleSave(entry, later);
+    }
+  }
+
+  /** 存好的规则写回卡片：基线、标题、副标题、标记、统计。控件本身不重画，免得冲掉焦点与光标。 */
+  function ruleAdopt(entry, rule) {
+    entry.dataset.ruleSaved = JSON.stringify(rule);
+    const list = rules.data.rules;
+    const index = list.findIndex((item) => item.id === rule.id);
+    if (index >= 0) list[index] = rule;
+    entry.toggleAttribute("data-off", !rule.enabled);
+    entry.dataset.search = ruleSearchText(rule);
+    rulePaintSummary(entry);
+    const root = $("[data-tpl]", entry);
+    if (root) root.dataset.tplSaved = JSON.stringify(rule.replies.filter((reply) => typeof reply.text === "string").map((reply) => reply.text));
+    // 只在本群用的规则不需要「这些群不回」：范围一变，那两格要出现或收起。
+    const shared = !rule.groups.length;
+    if (shared !== !!$('.picker[data-role="rule-exclude"]', entry)) ruleRedraw(entry, rule);
+  }
+
+  function rulePaintSummary(entry) {
+    const rule = JSON.parse(entry.dataset.ruleSaved);
+    put($("[data-rule-title]", entry), ruleTitle(rule));
+    $("[data-rule-sub]", entry).textContent = ruleSub(rule);
+    put($("[data-rule-flags]", entry), ruleFlags(rule));
+    const meta = $("[data-rule-meta]", entry);
+    if (meta) meta.textContent = ruleMeta(rule);
+  }
+
+  /** 整张卡重画（范围变了、找回来了）：展开状态照旧，焦点尽量落回原处。 */
+  function ruleRedraw(entry, rule) {
+    const focused = document.activeElement;
+    const selector = focused?.dataset?.ruleSwitch ? `[data-rule-switch="${focused.dataset.ruleSwitch}"]` : focused?.id ? `#${CSS.escape(focused.id)}` : "";
+    const holder = document.createElement("div");
+    put(holder, ruleEntry(rule));
+    const fresh = holder.firstElementChild;
+    fresh.open = entry.open;
+    entry.replaceWith(fresh);
+    if (selector && entry.contains(focused)) $(selector, fresh)?.focus({ preventScroll: true });
+    return fresh;
+  }
+
+  async function ruleSwitch(button) {
+    const entry = button.closest("[data-rule]");
+    const on = button.getAttribute("aria-checked") !== "true";
+    button.setAttribute("aria-checked", bool(on));
+    await ruleSave(entry);
+  }
+
+  function ruleModePick(input) {
+    const entry = input.closest("[data-rule]");
+    const mode = modeOf(input.value);
+    $(".rule-explain", entry).textContent = `${mode.explain}${mode.code === "exact" ? "。最不会误触" : mode.code === "contains" ? "。触发词至少两个字" : ""}。`;
+    void ruleSave(entry);
+  }
+
+  async function forwardRemove(button) {
+    const entry = button.closest("[data-rule]");
+    const index = Number(button.dataset.forwardRemove);
+    const forwards = JSON.parse(entry.dataset.forwards || "[]");
+    const [gone] = forwards.splice(index, 1);
+    const paint = (list) => {
+      entry.dataset.forwards = JSON.stringify(list);
+      put($(".rule-forwards", entry), list.map(forwardCard));
+    };
+    paint(forwards);
+    ($("[data-forward-remove]", entry) || $("[data-tpl-add]", entry))?.focus({ preventScroll: true });
+    await ruleSave(entry, {
+      said: `删掉了一条合并转发（${gone.length} 条）`,
+      undo: {
+        label: "撤销",
+        run: () => {
+          const back = JSON.parse(entry.dataset.forwards || "[]");
+          back.splice(index, 0, gone);
+          paint(back);
+          void ruleSave(entry, { said: "合并转发放回去了" });
+        },
+      },
+    });
+  }
+
+  async function ruleDelete(button) {
+    const entry = button.closest("[data-rule]");
+    const id = Number(entry.dataset.rule);
+    if (button.getAttribute("aria-busy") === "true") return;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api(`/autoreply/rules/${id}/delete`, { method: "POST", body: {} });
+      const entries = $$("[data-rule]");
+      const next = entries[entries.indexOf(entry) + 1] || entries[entries.indexOf(entry) - 1];
+      rules.open.delete(id);
+      await rulesMount();
+      ($(`[data-rule="${next?.dataset.rule}"] > summary`) || $("[data-rule-new]"))?.focus({ preventScroll: true });
+      snackbar(reply.message, "info", { label: "撤销", run: () => void ruleRestore(id) });
+    } catch (error) {
+      button.removeAttribute("aria-busy");
+      report(error);
+    }
+  }
+
+  async function ruleRestore(id) {
+    try {
+      const reply = await api("/autoreply/restore", { method: "POST", body: { id } });
+      rules.open.add(reply.rule.id);
+      await rulesMount({ focus: `[data-rule="${reply.rule.id}"] > summary` });
+      snackbar(reply.message);
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  /** 「试一句」：停手 300 毫秒再问，结果里带一枚「看这条」直达那张卡。 */
+  function ruleTry() {
+    clearTimeout(rules.tryTimer);
+    rules.tryTimer = setTimeout(async () => {
+      const input = $("#rules-try-input");
+      const out = $("#rules-try-result");
+      if (!input || !out) return;
+      const text = input.value.trim();
+      for (const entry of $$("[data-rule][data-hit]")) entry.removeAttribute("data-hit");
+      if (!text) {
+        put(out, "");
+        return;
+      }
+      const seq = ++rules.trySeq;
+      try {
+        const group = $("#rules-try-group").value;
+        const reply = await api("/autoreply/test", { method: "POST", body: { text, group } });
+        if (seq !== rules.trySeq) return;
+        const hit = reply.hit && $(`[data-rule="${reply.hit.id}"]`);
+        if (hit) hit.dataset.hit = "";
+        out.dataset.tone = reply.hit ? "ok" : "info";
+        put(out, h`${icon(reply.hit ? "check_circle-fill" : "info")}<span>${reply.message}</span>${hit
+          ? h`<button class="btn btn-text" type="button" data-rule-show="${reply.hit.id}">看 #${reply.hit.id}</button>`
+          : ""}`);
+      } catch (error) {
+        if (seq === rules.trySeq && error.status !== 401) put(out, h`${icon("error")}<span>${error.message}</span>`);
+      }
+    }, 300);
+  }
+
+  function ruleShow(id) {
+    const entry = $(`[data-rule="${CSS.escape(String(id))}"]`);
+    if (!entry) return;
+    entry.hidden = false;
+    entry.open = true;
+    rules.open.add(Number(id));
+    $(":scope > summary", entry).focus({ preventScroll: true });
+    entry.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
+
+  function rulesFilter(input) {
+    const terms = input.value.normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    for (const entry of $$("[data-rule]")) {
+      const hit = terms.every((term) => entry.dataset.search.includes(term));
+      entry.hidden = !hit;
+      shown += hit;
+    }
+    $("#rules-search-status").textContent = terms.length ? (shown ? `${shown} 条匹配` : "没有匹配的规则。换个词试试。") : "";
+  }
+
+  /** 新建：先问触发词和第一句回复（加上比法与范围），建好再展开细调。 */
+  function ruleNew() {
+    const dialog = $("#dialog");
+    const opener = document.activeElement;
+    const defaults = rules.data.defaults;
+    const explain = (code) => `${modeOf(code).explain}。`;
+    put(dialog, h`<h2 class="dialog-title" id="dialog-title">新建规则</h2>
+      <form class="dialog-form" method="dialog" novalidate>
+        <div class="field">
+          <label class="field-label" for="rule-new-keywords">触发词</label>
+          <input class="input" id="rule-new-keywords" autocomplete="off" spellcheck="false" enterkeyhint="next" placeholder="下载 | 安装包" aria-describedby="rule-new-keywords-hint">
+          <span class="field-hint" id="rule-new-keywords-hint">几个触发词用 | 隔开，任一对上就回。</span>
+        </div>
+        <div class="field">
+          <span class="field-label" id="rule-new-mode-label">怎么比</span>
+          <fieldset class="segmented segmented-fill" aria-labelledby="rule-new-mode-label" aria-describedby="rule-new-mode-explain">
+            ${rules.data.modes.map((item) => h`<label class="segment"><input type="radio" name="rule-new-mode" value="${item.code}"${attr(item.code === defaults.mode, "checked")}>${item.label}</label>`)}
+          </fieldset>
+          <span class="field-hint" id="rule-new-mode-explain">${explain(defaults.mode)}</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="rule-new-reply">回复</label>
+          <textarea class="textarea" id="rule-new-reply" rows="3" spellcheck="false" placeholder="安装包在群文件里～" aria-describedby="rule-new-reply-hint"></textarea>
+          <span class="field-hint" id="rule-new-reply-hint">先写一句；图片、更多说法、只在 @ 时回这些，建好后在卡片里加。</span>
+        </div>
+        <div class="field">
+          <label class="field-label" for="rule-new-scope">在哪回</label>
+          <span class="select"><select id="rule-new-scope">
+            <option value="">所有群（共用）</option>
+            ${KINDS.group.roster.list.map((entry) => h`<option value="${entry.id}">只在 ${entry.name || `群 ${entry.id}`}</option>`)}
+          </select>${icon("keyboard_arrow_down")}</span>
+        </div>
+        <div class="actions actions-end">
+          <button class="btn btn-text" type="button" value="cancel">取消</button>
+          <button class="btn btn-filled" type="submit" value="confirm">添加</button>
+        </div>
+      </form>`);
+    const words = $("#rule-new-keywords", dialog);
+    const text = $("#rule-new-reply", dialog);
+    let created = null;
+    const click = (event) => {
+      if (event.target.closest('button[value="cancel"]')) dialog.close("cancel");
+    };
+    const change = (event) => {
+      if (event.target.name === "rule-new-mode") $("#rule-new-mode-explain", dialog).textContent = explain(event.target.value);
+    };
+    const typing = (event) => {
+      if (event.target.getAttribute("aria-invalid") === "true") clearFieldError(event.target);
+    };
+    const submit = async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const keywords = words.value.split(/[|｜\n]/).map((word) => word.trim()).filter(Boolean);
+      if (!keywords.length) return fieldError(words, "先写一个触发词。"), words.focus();
+      if (!text.value.trim()) return fieldError(text, "先写一句回复。"), text.focus();
+      const confirm = $('button[value="confirm"]', dialog);
+      confirm.setAttribute("aria-busy", "true");
+      try {
+        const scope = $("#rule-new-scope", dialog).value;
+        const body = {
+          id: 0,
+          keywords,
+          mode: $('input[name="rule-new-mode"]:checked', dialog)?.value || defaults.mode,
+          replies: [{ text: text.value }],
+          groups: scope ? [scope] : [],
+        };
+        created = await api("/autoreply/rules", { method: "POST", body });
+        dialog.close("confirm");
+      } catch (error) {
+        if (error.status === 401) return dialog.close("cancel");
+        const target = /回复/.test(error.message) && !/触发词/.test(error.message) ? text : words;
+        fieldError(target, error.message);
+        target.focus();
+      } finally {
+        confirm.removeAttribute("aria-busy");
+      }
+    };
+    dialog.addEventListener("click", click);
+    dialog.addEventListener("change", change);
+    dialog.addEventListener("input", typing);
+    dialog.addEventListener("submit", submit);
+    dialog.addEventListener(
+      "close",
+      async () => {
+        dialog.removeEventListener("click", click);
+        dialog.removeEventListener("change", change);
+        dialog.removeEventListener("input", typing);
+        dialog.removeEventListener("submit", submit);
+        if (!created) {
+          if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+          return;
+        }
+        rules.open.add(created.rule.id);
+        await rulesMount({ focus: `[data-rule="${created.rule.id}"] > summary` });
+        $(`[data-rule="${created.rule.id}"]`)?.scrollIntoView({ block: "nearest" });
+        snackbar(`${created.message}。展开的卡片里还能加图、加说法、限定群。`);
+      },
+      { once: true }
+    );
+    dialog.returnValue = "";
+    dialog.showModal();
+    words.focus();
+  }
+
+  /** 回复里插一张图：先收进本机图库，再把 {image:文件名} 插在光标处。 */
+  async function tplImage(input) {
+    const root = input.closest("[data-tpl]");
+    const file = input.files?.[0];
+    input.value = "";
+    const ctx = tplCtx(root);
+    const plugin = ctx && tplSpec(ctx, root.dataset.tpl)?.images;
+    if (!file || !plugin) return;
+    const button = $("[data-tpl-image]", root);
+    const label = $("span", button);
+    button.setAttribute("aria-busy", "true");
+    label.textContent = "正在上传…";
+    try {
+      const name = await uploadPhoto(plugin, file);
+      const mark = `{image:${name}}`;
+      const inputs = $$("[data-tpl-input]", root);
+      if (!inputs.length) {
+        void tplSave(tplRedraw(root, [mark], 0));
+        return;
+      }
+      const target = inputs[Number(root.dataset.tplActive) || 0] || inputs[0];
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? start;
+      target.focus({ preventScroll: true });
+      target.setRangeText(mark, start, end, "end");
+      tplRepaint(target);
+      tplGrow(target);
+      await tplSave(root);
+    } catch (error) {
+      report(error);
+    } finally {
+      button.removeAttribute("aria-busy");
+      label.textContent = "插入图片";
     }
   }
 
@@ -3509,6 +4279,8 @@
             : ["info", "名单是空的，没有群被排除。"],
     "channel-white": (n) => (n ? ["ok", `只在这 ${n} 个群里生效。`] : ["info", "名单是空的：所有群都生效。"]),
     "channel-black": (n) => (n ? ["ok", `这 ${n} 个群不生效，且优先于白名单。`] : ["info", "名单是空的：没有群被排除。"]),
+    "rule-groups": (n) => (n ? ["ok", `只在这 ${n} 个群里回。`] : ["info", "名单是空的：所有群都回（共用规则）。"]),
+    "rule-exclude": (n) => (n ? ["ok", `这 ${n} 个群不回，别的群照回。`] : ["info", "没有不回的群。"]),
   };
 
   const statusLine = (role, n, on) => {
@@ -3584,7 +4356,7 @@
     const node = $(".picker-status", root);
     if (!node || !STATUS[root.dataset.role]) return;
     const form = root.closest("form");
-    const on = (name) => $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
+    const on = (name) => !!form && $(`[name="${name}"]`, form)?.getAttribute("aria-checked") === "true";
     const { tone, html } = statusLine(root.dataset.role, ids.length, { white: on("enable_whitelist"), black: on("enable_blacklist") });
     node.dataset.tone = tone;
     put(node, html);
@@ -3640,6 +4412,7 @@
         }
       : null;
     if (root.dataset.picker === "save") return pickerSave(root, said, undo);
+    if (root.dataset.picker === "emit") return void root.dispatchEvent(new CustomEvent("listchange", { bubbles: true, detail: { said, undo } }));
     $(".picker-live", root).textContent = `${said}，现在共 ${next.length} 个。`;
     // 草稿里加一个群不必打扰；移除才值得留一条能撤销的提示。
     if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
@@ -4137,6 +4910,8 @@
       ? { label: "撤销", run: () => void listEdit(root, prev, "已撤销", { undoable: false, focus: () => tagsInput(root)?.focus({ preventScroll: true }) }) }
       : null;
     if (root.dataset.tags === "save") return saveList(root, input, tagsInput(root) ?? $("[data-weekday]", root), () => paintTags(root), said, undo);
+    // emit：值交给外面的人去存（自动回复的规则随整条一起存）。
+    if (root.dataset.tags === "emit") return void root.dispatchEvent(new CustomEvent("listchange", { bubbles: true, detail: { said, undo } }));
     $(".tags-live", root).textContent = `${said}，现在共 ${next.length} 项。`;
     if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
   }
@@ -4918,6 +5693,16 @@
       if ((hit = on("[data-tags-cancel]"))) return stopEditing(hit.closest(".tags"), { refocus: true });
       if ((hit = on("[data-weekday]"))) return toggleWeekday(hit);
       if ((hit = on("[data-tpl-insert]"))) return tplInsert(hit);
+      if ((hit = on("[data-tpl-image]"))) {
+        $(".tpl-image-file", hit.closest("[data-tpl]"))?.click();
+        return;
+      }
+      if (on("[data-rule-new]")) return ruleNew();
+      if ((hit = on("[data-rule-switch]"))) return ruleSwitch(hit);
+      if ((hit = on("[data-rule-delete]"))) return ruleDelete(hit);
+      if ((hit = on("[data-rule-restore]"))) return ruleRestore(Number(hit.dataset.ruleRestore));
+      if ((hit = on("[data-rule-show]"))) return ruleShow(hit.dataset.ruleShow);
+      if ((hit = on("[data-forward-remove]"))) return forwardRemove(hit);
       if ((hit = on("[data-tpl-add]"))) {
         const root = hit.closest("[data-tpl]");
         const variants = tplRead(root);
@@ -4967,7 +5752,7 @@
         const control = $(":scope > .switch", hit);
         if (control && !control.disabled) {
           control.focus({ preventScroll: true });
-          return commitField(control);
+          return control.dataset.ruleSwitch !== undefined ? ruleSwitch(control) : commitField(control);
         }
       }
       if ((hit = on("[data-toggle]"))) return togglePlugin(hit);
@@ -5112,6 +5897,10 @@
         return;
       }
       if (target.matches?.("input[data-path], textarea[data-path], select[data-path]")) return void commitField(target);
+      if (target.matches?.(".tpl-image-file")) return void tplImage(target);
+      if (target.matches?.(".rule-modes input")) return ruleModePick(target);
+      if (target.matches?.("[data-rule-cooldown]")) return void ruleSave(target.closest("[data-rule]"));
+      if (target.id === "rules-try-group") return ruleTry();
       if (target.name === "log-level") {
         logs.level = target.value;
         logs.paint();
@@ -5140,10 +5929,12 @@
       const target = event.target;
       markTyped(event);
       if (target.name === "access_token") scrubAutofill(target.form);
-      if (target.matches?.("input[data-kind=\"number\"]")) {
+      if (target.matches?.("input[data-kind=\"number\"], [data-rule-cooldown]")) {
         const unit = $(`[data-seconds-for="${CSS.escape(target.id)}"]`);
         if (unit) unit.textContent = secondsText(target.value);
       }
+      if (target.id === "rules-try-input") return ruleTry();
+      if (target.id === "rules-search") return rulesFilter(target);
       if (target.matches?.(".picker-add input")) {
         const root = target.closest(".picker");
         // 刚加完一个又敲了空格：框里只剩空白就清掉，别留个看不见的前导空格。
@@ -5260,8 +6051,13 @@
         }
         return;
       }
-      if (event.key === "Enter" && target.matches?.("input[data-filter]")) {
+      if (event.key === "Enter" && target.matches?.("input[data-filter], #rules-try-input, #rules-search")) {
         event.preventDefault();
+        return;
+      }
+      if (event.key === "Enter" && target.matches?.("[data-rule-cooldown]")) {
+        event.preventDefault();
+        void ruleSave(target.closest("[data-rule]"));
         return;
       }
       if (event.key === "Enter" && target.matches?.(".picker-add input")) {
@@ -5339,8 +6135,20 @@
       }
     });
 
+    // 规则面板里的列表（触发词、群名单）改了：随整条规则一起存。
+    document.addEventListener("listchange", (event) => {
+      const entry = event.target.closest?.("[data-rule]");
+      if (entry) void ruleSave(entry, event.detail || {});
+    });
+
     // 映射表里展开 / 收起的项记下来：加项、删项后重画这一块时照旧。
     document.addEventListener("toggle", (event) => {
+      if (event.target.matches?.("details.rule")) {
+        const id = Number(event.target.dataset.rule);
+        if (event.target.open) rules.open.add(id);
+        else rules.open.delete(id);
+        return;
+      }
       const entry = event.target;
       if (!entry.matches?.("details.entry")) return;
       const key = `${entry.closest("[data-config]")?.dataset.config}:${entry.dataset.entry}`;

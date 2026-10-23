@@ -4841,10 +4841,58 @@ fieldset[data-off] > .config-off-note {
   color: var(--md-sys-color-on-surface-variant);
 }
 
-.tpl-add {
+/* 「再加一种说法」「插入图片」：文字按钮一排，左缘对齐编辑器（借掉按钮自己的内边距）。 */
+.tpl-more {
   grid-column: 1 / -1;
-  justify-self: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--zw-space-02);
   margin-inline-start: calc(var(--zw-space-04) * -1);
+}
+
+/* 自定义占位符的芯片：次色容器，带一枚 {} 图标，和内置的一眼分得开（不只靠颜色）。 */
+.tpl-own {
+  gap: var(--zw-space-02);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.tpl-own svg {
+  display: block;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+/* 预览里展开的自定义占位符：一层淡底标出「这一段来自 {名字}」，字色不变。 */
+.tpl-snippet {
+  padding: 0.1em 0.2em;
+  border-radius: var(--md-sys-shape-corner-extra-small);
+  background: var(--md-sys-color-surface-container-highest);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* 预览里的一张图：缩略图大小，像聊天里那样就地排着。 */
+.tpl-thumb {
+  display: inline-block;
+  max-width: min(9rem, 100%);
+  max-height: 9rem;
+  margin: var(--zw-space-01) 0.15em;
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-surface-container-highest);
+  vertical-align: middle;
+  object-fit: cover;
+}
+
+.config-legend:has(.legend-action) {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-02);
+}
+
+.legend-action {
+  margin-block: calc((var(--zw-size-target) - var(--md-sys-typescale-title-small-line-height)) / -2);
+  margin-inline-start: auto;
 }
 
 @container tpl (min-width: 30rem) {
@@ -4866,5 +4914,310 @@ fieldset[data-off] > .config-off-note {
 @media (prefers-reduced-motion: reduce) {
   .tpl-holders {
     scroll-snap-type: none;
+  }
+}
+
+/* —— 自动回复的规则面板 ——
+   上面一张「试一句」卡，接着工具条（筛选 + 新建），再是一摞可展开的规则卡（与映射表同一种分段小卡）。
+   卡片收起时只露触发词与一行说明；展开后是与配置表单同一套设置行。 */
+.rules-try {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-04);
+}
+
+.rules-try-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-03);
+}
+
+.rules-try-row .input {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.rules-try-row .select {
+  flex: 0 1 16rem;
+  min-width: 0;
+}
+
+.rules-try-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
+  min-height: var(--zw-body-medium-line);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+.rules-try-result:empty {
+  display: none;
+}
+
+.rules-try-result > svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+.rules-try-result[data-tone="ok"] > svg {
+  color: var(--md-sys-color-success);
+}
+
+.rules-try-result > span {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.rules-try-result .btn {
+  margin-block: calc((var(--zw-size-target) - var(--zw-body-medium-line)) / -2);
+}
+
+.rules-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--zw-space-03);
+}
+
+.rules-tools .search {
+  flex: 1 1 16rem;
+}
+
+#rules-search-status:empty {
+  display: none;
+}
+
+.rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-group-gap);
+}
+
+.rule > summary .item-content {
+  flex: 1 1 auto;
+}
+
+.rule-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-01) var(--zw-space-02);
+}
+
+/* 触发词一个个排开：每个是一枚小牌，读得出「这是几个词」而不是一句话。 */
+.rule-word {
+  padding: 0 var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-surface-container-highest);
+  overflow-wrap: anywhere;
+}
+
+.rule-word.mono {
+  font-family: var(--md-ref-typeface-mono);
+  font-size: 0.92em;
+}
+
+.rule-word-none,
+.rule-more {
+  color: var(--md-sys-color-on-surface-variant);
+  font-weight: var(--md-sys-typescale-weight-regular);
+}
+
+.rule-more {
+  padding: 0 var(--zw-space-01);
+}
+
+.rule-flags {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--zw-space-02);
+}
+
+.rule-flags > [data-rule-flags] {
+  display: contents;
+}
+
+.rule-flag {
+  display: grid;
+  place-items: center;
+  width: var(--zw-size-icon);
+  height: var(--zw-size-icon);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container-highest);
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.rule-flag svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+/* 停用的规则：标题退成次要色，「已停用」牌子说明原因（不只靠颜色）。 */
+.rule[data-off] > summary .rule-word {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+/* 「试一句」对上的那一条：主色描边，滚到眼前时一眼认得出。 */
+.rule[data-hit] {
+  box-shadow: inset 0 0 0 var(--zw-focus-width) var(--md-sys-color-primary);
+}
+
+.rule[aria-busy="true"] > summary {
+  cursor: progress;
+}
+
+.rule-body > .config-group {
+  margin: 0;
+}
+
+.rule-body .setting {
+  --_setting-bg: var(--md-sys-color-surface-container);
+}
+
+.rule-body .setting:focus-within {
+  --_setting-bg: var(--md-sys-color-surface-container-high);
+}
+
+.rule-body .setting .item,
+.rule-body .tag-chip {
+  --_item-bg: var(--md-sys-color-surface-container-highest);
+}
+
+.rule-modes {
+  padding: var(--zw-space-01);
+}
+
+.rule-explain {
+  margin: 0;
+}
+
+.rule-forwards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rule-forwards:empty {
+  display: none;
+}
+
+.rule-forward {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-02);
+  padding: var(--zw-space-03) var(--zw-space-04) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-large);
+  background: var(--md-sys-color-surface-container-high);
+}
+
+.rule-forward-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-03);
+  min-height: var(--zw-size-icon);
+}
+
+.rule-forward-head .icon-btn {
+  margin-block: calc((var(--zw-size-target) - var(--zw-size-icon)) / -2);
+  margin-inline-end: calc(var(--zw-space-03) * -1);
+}
+
+.rule-forward-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-02);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.rule-forward-title svg {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+.rule-forward-nodes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.rule-forward-name {
+  margin-inline-end: var(--zw-space-02);
+  color: var(--md-sys-color-on-surface-variant);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.rule-forward-name::after {
+  content: "：";
+}
+
+.rule-error:not([hidden]) {
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--md-sys-color-error-container);
+  color: var(--md-sys-color-on-error-container);
+}
+
+.rule-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-02) var(--zw-space-04);
+}
+
+.rule-meta {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  font-variant-numeric: tabular-nums;
+}
+
+.rule-foot .btn {
+  margin-inline-end: calc(var(--zw-space-04) * -1);
+}
+
+.rules-trash-list {
+  margin: 0;
+  list-style: none;
+}
+
+.rules-trash-row {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-04);
+  min-width: 0;
+}
+
+.rules-trash-row .item-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+@media (forced-colors: active) {
+  .rule[data-hit] {
+    outline: var(--zw-focus-width) solid Highlight;
+  }
+
+  .rule-word,
+  .tpl-snippet {
+    border: 1px solid CanvasText;
   }
 }

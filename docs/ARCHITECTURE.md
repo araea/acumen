@@ -22,7 +22,8 @@ src/
   plugins/         插件实现；registry.rs 是唯一插件清单
   render/          卡片渲染、原生字体与画布；render/markdown 是 markdown 插件的排版
   scheduler.rs     定时任务与错峰推送
-  storage.rs       数据目录、原子写文件、文件名清理与常驻 JSON 状态
+  storage.rs       数据目录、原子写文件、文件名清理与常驻 JSON 状态；storage/picture 是插件的本机图库
+  template.rs      提示模板：{占位符} 切成消息段（入群欢迎与自动回复共用）
   text.rs          共用的中文分词
   db/              SeaORM 实体、SQLite 查询与统计
 res/               词库、提示词、技能、卡片与控制台资源

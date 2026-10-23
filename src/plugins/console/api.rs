@@ -1422,7 +1422,11 @@ fn example_line(line: &str) -> bool {
     line.starts_with('[')
         || line
             .split_once(" = ")
-            .is_some_and(|(key, _)| !key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+            .is_some_and(|(key, _)| {
+                // 带引号的键（`"群规" = …`）也是示例；说明文字里的「留空 = 不发」不是。
+                let quoted = key.len() > 2 && key.starts_with('"') && key.ends_with('"') && !key[1..key.len() - 1].contains('"');
+                quoted || (!key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+            })
 }
 
 fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<String, Vec<String>> {
