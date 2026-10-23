@@ -2096,7 +2096,9 @@
   async function commitRatio(box) {
     const slider = box.closest(".ratio")?.querySelector(".slider");
     if (!slider) return;
-    const typed = Math.round(Number(box.value));
+    // 清空了就当没改：空框不等于 0（0 是「永不跟读」，不能靠删一刀误触）。
+    const raw = box.value.trim();
+    const typed = raw === "" ? Number.NaN : Math.round(Number(raw));
     const pct = Number.isFinite(typed) ? Math.min(100, Math.max(0, typed)) : Math.round(Number(slider.value));
     paintRatio(slider, pct);
     await commitField(slider);
@@ -3742,6 +3744,7 @@
               : ""}
           </div>
           <p class="field-hint lk-range-hint" id="lk-range-hint">序号可以写区间与几段：「1-20 25」「全部 除 3 7」「1-30 !5」。</p>
+          <p class="field-hint lk-warn-line" id="lk-warn-line">${lurkerWarnLine()}</p>
           <p class="section-meta" id="lk-status" role="status"></p>
           <div class="lk-scroll" tabindex="0" role="region" aria-label="潜水名单，可滚动"><ol class="lk-list" id="lk-list"></ol></div>
           <div class="lk-bar" id="lk-bar"></div>`
@@ -3791,13 +3794,16 @@
     const bar = $("#lk-bar");
     if (!bar || !lurk.scan) return;
     const n = lurk.chosen.size;
-    const sure = lurk.scan.entries.length && lurk.scan.can_kick;
+    const total = lurk.scan.entries.length;
+    const sure = total && lurk.scan.can_kick;
     const busy = lurk.job && ["running", "interrupted"].includes(lurk.job.state);
+    const pending = lurk.data?.warn_pending?.[lurk.scan.group] || 0;
     put(bar, sure
-      ? h`<span class="lk-count" role="status">${n ? h`已选 <b>${n}</b> 人` : "勾选要处理的人，或按序号选"}</span>
+      ? h`<span class="lk-count" role="status">${n ? h`已选 <b>${n}</b> 人` : "勾选要处理的人，或按序号选"}${pending ? h`<span class="lk-pending">${pending} 人等着到期移出</span>` : ""}</span>
           <div class="lk-actions">
             ${n ? h`<button class="btn btn-text" type="button" data-lk-clear>清空</button>` : h`<button class="btn btn-text" type="button" data-lk-all>选这一类</button>`}
-            <button class="btn btn-tonal" type="button" data-lk-warn${attr(!n, "disabled")}>${icon("notifications_active")}提醒</button>
+            <button class="btn btn-outlined" type="button" data-lk-warn-all>${icon("campaign")}提醒全部</button>
+            <button class="btn btn-tonal" type="button" data-lk-warn${attr(!n, "disabled")}>${icon("notifications_active")}提醒${n ? ` ${n} 人` : ""}</button>
             <button class="btn btn-filled btn-danger" type="button" data-lk-kick${attr(!n || busy, "disabled")}>${icon("person_remove")}${n ? `移出 ${n} 人` : "移出"}</button>
           </div>`
       : "");
@@ -3880,23 +3886,55 @@
     }
   }
 
-  async function lurkerWarn() {
+  /** 操作条上方那句：当前的提醒方式与到期策略，省得去配置里翻。 */
+  function lurkerWarnLine() {
+    const warn = lurk.data?.warn;
+    if (!warn) return "";
+    const after = warn.escalate
+      ? `${warn.grace_days} 天后还没冒泡的会自动移出`
+      : `提醒只打招呼，不会自动移出`;
+    return `提醒方式：${warn.mode_name || "群里 @ 每个人"}；${after}。在下面的「提醒」一节里改。`;
+  }
+
+  /** 提醒的描述：按配置里的方式说清会发生什么，别让人按下去才知道。 */
+  function lurkerWarnWords() {
+    const warn = lurk.data?.warn || {};
+    const mode = warn.mode_name || "群里 @ 每个人";
+    const will = {
+      mention: `会在群里 @ 他们（一条最多 ${warn.batch || 20} 人）`,
+      digest: "会在群里发一条，把名字列出来、不 @ 任何人",
+      private: "会挨个私聊他们，群里一句话不说",
+      mention_private: `会在群里 @ 他们（一条最多 ${warn.batch || 20} 人），再挨个私聊`,
+      digest_private: "会在群里发一条列出名字，再挨个私聊",
+    }[warn.mode] || "会在群里 @ 他们";
+    const after = warn.escalate
+      ? `${warn.grace_days || 3} 天后还没冒泡的会自动移出。`
+      : "提醒只打招呼，不会自动移出；到时候重新查一遍名单再说。";
+    return { mode, body: `${will}，说清 ${warn.grace_days || 3} 天没说话的宽限。${after}提醒的话在下面的配置里改。` };
+  }
+
+  async function lurkerWarn(all) {
     const scan = lurk.scan;
-    const chosen = lurkerChosenEntries();
+    const chosen = all ? scan.entries : lurkerChosenEntries();
     if (!chosen.length) return;
+    const words = lurkerWarnWords(chosen.length);
     const ok = await confirmAction({
-      title: `在「${scan.group_name}」@ ${chosen.length} 人提醒一声？`,
-      body: `会在群里 @ 他们（一条最多 20 人），说清 ${lurk.data.grace_days} 天后还没冒泡会被移出。提醒的话在下面配置的「提醒的话」里改。`,
-      confirm: "发提醒",
+      title: all ? `提醒「${scan.group_name}」名单上全部 ${chosen.length} 人？` : `在「${scan.group_name}」提醒 ${chosen.length} 人？`,
+      body: words.body,
+      confirm: `提醒 ${chosen.length} 人`,
     });
     if (!ok) return;
     try {
-      const reply = await api("/lurker/warn", { method: "POST", body: { group: scan.group, at: scan.at, ids: chosen.map((entry) => entry.id) } });
+      const reply = await api("/lurker/warn", { method: "POST", body: { group: scan.group, at: scan.at, ids: all ? [] : chosen.map((entry) => entry.id) } });
       const now = Date.now() / 1000;
       for (const entry of chosen) entry.warned = now;
-      lurk.chosen.clear();
+      if (!all) lurk.chosen.clear();
       lurkerPaintRows();
       snackbar(reply.message);
+      void api("/lurker").then((data) => {
+        lurk.data = data;
+        lurkerPaintBar();
+      });
     } catch (error) {
       report(error);
     }
@@ -4014,7 +4052,8 @@
       return lurkerPaintRows();
     }
     if (on("[data-lk-kick]")) return void lurkerKick();
-    if (on("[data-lk-warn]")) return void lurkerWarn();
+    if (on("[data-lk-warn-all]")) return void lurkerWarn(true);
+    if (on("[data-lk-warn]")) return void lurkerWarn(false);
     if ((hit = on("[data-lk-exempt]"))) return void lurkerExempt(hit.dataset.lkExempt);
     if ((hit = on("[data-lk-stop]"))) {
       hit.setAttribute("aria-busy", "true");
@@ -6562,7 +6601,7 @@
       // 概率滑块：拖动时只改填充与右边的数，松手才落盘（change）。
       if (target.matches?.("input[data-kind=\"ratio\"]")) syncRatio(target);
       // 反过来：直接在框里敲数字，滑块与填充跟着走（离开输入框才落盘）。
-      if (target.matches?.(".ratio-input")) {
+      if (target.matches?.(".ratio-input") && target.value.trim() !== "") {
         const slider = target.closest(".ratio")?.querySelector(".slider");
         const pct = Math.round(Number(target.value));
         if (slider && Number.isFinite(pct) && pct >= 0 && pct <= 100) paintRatio(slider, pct);

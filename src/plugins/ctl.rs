@@ -284,7 +284,9 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
             &["any", "answer", "code", "math"]
         }
         ("autoreply" | "lurker", "managers") => &["staff", "admin"],
+        ("lurker", "warn.mode") => &["mention", "digest", "private", "mention_private", "digest_private"],
         ("ambient", "peak.mode") => &["normal", "swap", "sleep", "pause"],
+        ("ambient", "thinking" | "help_thinking") => &["off", "minimal", "low", "medium", "high"],
         ("ai_news", "card_theme") => &[
             "auto", "light", "dark", "day", "night", "白天", "日间", "夜晚", "夜间",
         ],

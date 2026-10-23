@@ -134,16 +134,51 @@ impl Default for Pace {
 pub struct Warn {
     /// 提醒之后宽限几天。
     grace_days: u32,
-    /// 提醒的话，几种说法随机一种。
+    /// 怎么提醒：mention（群里 @）、digest（群里一条、不 @）、private（只私聊），
+    /// 以及 mention_private / digest_private 两种组合。
+    ///
+    /// 默认是在群里 @：被提醒的人手机会亮，多半会回来看一眼；大群里一次 @ 十几个人
+    /// 满屏蓝字，就换成 digest——一条消息把名字列完，谁看到算谁的；不想在群里点名，
+    /// 就只私聊。三种各有各的得罪人的地方，让人按群的口味挑。
+    mode: String,
+    /// mention 一条消息里最多 @ 几个人：再多一屏就全是蓝字了。
+    batch: u32,
+    /// 两条提醒之间歇几秒（mention 的分批、私聊的逐条都按它）。
+    pause_seconds: u32,
+    /// 提醒的话（mention 用），几种说法随机一种。
     text: Vec<String>,
+    /// 一条列名字、不 @ 的话（digest 用）。
+    digest_text: Vec<String>,
+    /// 私聊里说的话（private 用）。
+    private_text: Vec<String>,
+    /// 宽限期满，把这一批提醒过、还没冒泡的人移出。
+    ///
+    /// 默认关：提醒是一句招呼，移出是另一件事，得人点头。打开之后「先提醒、到期再看
+    /// 一遍」才是一条完整的路——名单重新查，冒泡的人自然不在了，只动当初被提醒过的那几个。
+    escalate: bool,
 }
 
 pub(crate) const WARN_TEXT: &str =
     "{at}\n你们在群里已经 {days} 天以上没说话了。按群规，{deadline}前还没冒泡的会被移出群聊——说句话就好，不用多～";
 
+pub(crate) const WARN_DIGEST: &str =
+    "{names}\n你们在群里已经 {days} 天以上没说话了。按群规，{deadline}前还没冒泡的会被移出群聊——说句话就好，不用多～";
+
+pub(crate) const WARN_PRIVATE: &str =
+    "你在「{group}」已经 {days} 天以上没说话了。按群规，{deadline}前还没冒泡的会被移出群聊——说句话就好，不用多～";
+
 impl Default for Warn {
     fn default() -> Self {
-        Self { grace_days: 3, text: vec![WARN_TEXT.into()] }
+        Self {
+            grace_days: 3,
+            mode: "mention".into(),
+            batch: 20,
+            pause_seconds: 2,
+            text: vec![WARN_TEXT.into()],
+            digest_text: vec![WARN_DIGEST.into()],
+            private_text: vec![WARN_PRIVATE.into()],
+            escalate: false,
+        }
     }
 }
 
@@ -233,6 +268,20 @@ impl PluginConfig for Config {
         if self.warn.grace_days > 30 {
             return Err("warn.grace_days 最多 30".into());
         }
+        if !matches!(
+            self.warn.mode.as_str(),
+            "mention" | "digest" | "private" | "mention_private" | "digest_private"
+        ) {
+            return Err("warn.mode 只能是 mention（群里 @）、digest（群里一条）、private（只私聊）\
+或它们的组合 mention_private / digest_private"
+                .into());
+        }
+        if !(1..=50).contains(&self.warn.batch) {
+            return Err("warn.batch 要在 1 到 50 之间".into());
+        }
+        if self.warn.pause_seconds > 60 {
+            return Err("warn.pause_seconds 最多 60".into());
+        }
         let auto = &self.auto;
         if crate::clock::parse_clock(&auto.time).is_none() {
             return Err("auto.time 写成 HH:MM，比如 20:00".into());
@@ -310,6 +359,17 @@ async fn background(ctx: Context, mut interrupted: Vec<(String, usize)>) {
             }
         }
         auto::tick(&ctx, &writer).await;
+        warn::tick(&ctx, &writer).await;
+    }
+}
+
+/// 私聊告诉号主与机器人管理员（除了机器人自己）。
+pub(crate) async fn tell_keepers(ctx: &Context, writer: &LockedWriter, text: &str) {
+    let me = ctx.bot.self_id();
+    for admin in crate::access::admin_ids(ctx).into_iter().filter(|id| *id != me) {
+        if let Err(error) = crate::adapters::satori::send_msg(ctx, writer.clone(), None, Some(&admin), crate::message::Message::new().text(text)).await {
+            warn!(target: LOG_TARGET, "没能私聊告诉 {admin}：{error}");
+        }
     }
 }
 
@@ -392,8 +452,14 @@ pub const LABELS: &[(&str, &str)] = &[
     ("pace.burst", "每批几人"),
     ("pace.rest_seconds", "每批之后歇"),
     ("pace.max_per_run", "一次最多移出"),
+    ("warn.mode", "提醒方式"),
     ("warn.grace_days", "提醒后宽限几天"),
-    ("warn.text", "提醒的话"),
+    ("warn.batch", "一条消息最多 @ 几人"),
+    ("warn.pause_seconds", "两条之间歇几秒"),
+    ("warn.text", "群里 @ 时说"),
+    ("warn.digest_text", "群里一条（不 @）时说"),
+    ("warn.private_text", "私聊时说"),
+    ("warn.escalate", "到期自动移出"),
     ("auto.enabled", "自动清理"),
     ("auto.groups", "自动清理哪些群"),
     ("auto.weekdays", "哪几天发提醒"),
@@ -412,24 +478,44 @@ pub const LABELS: &[(&str, &str)] = &[
 pub fn option_labels() -> serde_json::Value {
     serde_json::json!({
         "managers": { "staff": "群主、管理员与机器人管理员", "admin": "只有机器人管理员" },
+        "warn.mode": {
+            "mention": "群里 @ 每个人",
+            "digest": "群里一条，列出名字、不 @",
+            "private": "只私聊，群里不说",
+            "mention_private": "群里 @ 并私聊",
+            "digest_private": "群里一条并私聊",
+        },
     })
 }
 
-/// 两条提示的文案编辑器：占位符与样例。
+/// 只在某种提醒方式下才用得到的项。
+pub fn depends() -> serde_json::Value {
+    serde_json::json!({
+        "warn.text": { "on": "warn.mode", "in": ["mention", "mention_private"] },
+        "warn.digest_text": { "on": "warn.mode", "in": ["digest", "digest_private"] },
+        "warn.private_text": { "on": "warn.mode", "in": ["private", "mention_private", "digest_private"] },
+        "warn.batch": { "on": "warn.mode", "in": ["mention", "mention_private"] },
+    })
+}
+
+/// 提醒与公告的文案编辑器：占位符与样例。
 pub fn templates() -> serde_json::Value {
     serde_json::json!({
         "fields": {
-            "warn.text": { "kind": "warn", "about": "提醒潜水成员的话", "silent": "没有提醒的话：「潜水 提醒」与自动清理的提醒都发不出去。" },
+            "warn.text": { "kind": "warn", "about": "在群里 @ 每个人时说的话", "silent": "这一句是空的：群里 @ 的那种提醒发不出去。" },
+            "warn.digest_text": { "kind": "warn_digest", "about": "群里只发一条、列出名字时说的话", "silent": "这一句是空的：不 @ 的那种提醒发不出去。" },
+            "warn.private_text": { "kind": "warn_private", "about": "私聊每个人时说的话", "silent": "这一句是空的：私聊提醒发不出去。" },
             "auto.announce_text": { "kind": "announce", "about": "自动清理做完在群里说的话", "silent": "做完不在群里说。" },
         },
         "placeholders": [
-            { "key": "at", "label": "@ 被提醒的人", "hint": "一条提醒最多 @ 20 人，人多就分几条", "kinds": ["warn"] },
-            { "key": "days", "label": "天数", "hint": "多少天没说话算潜水（本群单独设了就照本群）", "kinds": ["warn", "announce"] },
-            { "key": "deadline", "label": "宽限到哪天", "hint": "提醒那天加上「提醒后宽限几天」", "kinds": ["warn"] },
-            { "key": "grace", "label": "宽限几天", "kinds": ["warn"] },
-            { "key": "count", "label": "人数", "hint": "这次提醒（或移出）了几个人", "kinds": ["warn", "announce"] },
-            { "key": "names", "label": "移出了谁", "hint": "最多列十个名字，再多写「等 N 人」", "kinds": ["announce"] },
+            { "key": "at", "label": "@ 被提醒的人", "hint": "一条最多 @「一条消息最多 @ 几人」那么多，人多就分几条", "kinds": ["warn"] },
+            { "key": "names", "label": "名字", "hint": "被提醒的人名，最多列三十个，再多写「等 N 人」", "kinds": ["warn", "warn_digest", "announce"] },
+            { "key": "group", "label": "群名", "hint": "私聊里说清是哪个群，对方才知道在说哪儿", "kinds": ["warn_private"] },
+            { "key": "days", "label": "天数", "hint": "多少天没说话算潜水（本群单独设了就照本群）", "kinds": ["warn", "warn_digest", "warn_private", "announce"] },
+            { "key": "deadline", "label": "宽限到哪天", "hint": "提醒那天加上「提醒后宽限几天」", "kinds": ["warn", "warn_digest", "warn_private"] },
+            { "key": "grace", "label": "宽限几天", "kinds": ["warn", "warn_digest", "warn_private"] },
+            { "key": "count", "label": "人数", "hint": "这次提醒（或移出）了几个人", "kinds": ["warn", "warn_digest", "warn_private", "announce"] },
         ],
-        "samples": { "name": "小林", "days": "30", "deadline": "10 月 26 日", "grace": "3", "count": "12", "names": "小林、阿哲、晚风 等 12 人" },
+        "samples": { "name": "小林", "days": "30", "deadline": "10 月 26 日", "grace": "3", "count": "12", "group": "手机交流群", "names": "小林、阿哲、晚风 等 12 人" },
     })
 }

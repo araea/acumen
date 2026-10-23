@@ -166,6 +166,9 @@ pub(super) fn user_prompt(
 /// 于是对着记忆里的东西或更早的话题答了一句——答非所问。被叫到的这一轮把叫到的那条
 /// 原话再摆一遍，让它的回话有个锚。
 fn anchor(turns: &[Turn], called: Called) -> String {
+    if called == Called::Greet {
+        return "有人刚进群。打个招呼要接着群里刚才在聊的事，别只背一句欢迎词。\n".to_string();
+    }
     if called == Called::Ordinary {
         return String::new();
     }
@@ -204,6 +207,9 @@ fn closing(called: Called) -> &'static str {
         Called::Summon => {
             "有人想听你说一句。看看上面的记录，怎么接、说多少都随你；只输出 [silent] 也算数。"
         }
+        Called::Greet => {
+            "有新人刚进群。说一句就让对方知道这是什么地方、有问题可以怎么问；别热络过头，也别把人晾着。不想说就 [silent]。"
+        }
         Called::Ordinary => {
             "看看最新消息里有没有你想接的话——接的得是眼前正在聊的事，不是记忆里翻出来的。想说就说，不想说就 [silent]，也可以只调整关注后看着。"
         }
@@ -221,14 +227,17 @@ pub(crate) enum Called {
     Mention,
     /// 群里发了搭话指令。
     Summon,
+    /// 有人刚进群，这一轮是去打招呼。
+    Greet,
 }
 
 impl Called {
-    pub(crate) fn of(mentioned: bool, summoned: bool) -> Self {
-        match (mentioned, summoned) {
-            (_, true) => Called::Summon,
-            (true, false) => Called::Mention,
-            (false, false) => Called::Ordinary,
+    pub(crate) fn of(mentioned: bool, summoned: bool, greet: bool) -> Self {
+        match (mentioned, summoned, greet) {
+            (_, true, _) => Called::Summon,
+            (true, false, _) => Called::Mention,
+            (false, false, true) => Called::Greet,
+            (false, false, false) => Called::Ordinary,
         }
     }
 }
@@ -295,7 +304,7 @@ pub(crate) async fn compose(
             Called::Mention => !turn.from_me && turn.call.mine(),
             // 搭话指令：最近亲手敲的那一句，号主自己在群里敲的也算。
             Called::Summon => turn.manual || !turn.from_me,
-            Called::Ordinary => false,
+            Called::Ordinary | Called::Greet => false,
         })?;
         Some(agent::Seat {
             room: "群聊搭话".to_string(),

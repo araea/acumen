@@ -475,6 +475,37 @@ impl GroupState {
         count
     }
 
+    /// 上一眼之后进来的那些（含平台事件），按时间正序。与 [`Self::unseen`] 不同，
+    /// 这里把每一条都交出来：判读「有人提问」「有人刚进群」要看正文。
+    pub(crate) fn fresh(&self) -> Vec<Turn> {
+        let mut fresh: Vec<Turn> = self
+            .turns
+            .iter()
+            .rev()
+            .take_while(|turn| self.looked_id.is_empty() || turn.message_id != self.looked_id)
+            .cloned()
+            .collect();
+        fresh.reverse();
+        fresh
+    }
+
+    /// 最近一段时间里平均每分钟几条群友消息（不含自己）。
+    ///
+    /// 只看还留在窗口里的消息，窗口是 80 条，热闹的群可能把它盖满；盖满时
+    /// 这个数偏小，也就是更容易被判成「闲」——宁可多等一会儿，也不在刷屏时
+    /// 追着每一条判。
+    pub(crate) fn rate(&self, window: Duration) -> f32 {
+        let seconds = window.as_secs().max(1) as f32;
+        let since = chrono::Local::now().timestamp() - window.as_secs() as i64;
+        let count = self.turns.iter().filter(|turn| !turn.from_me && turn.at >= since).count();
+        count as f32 * 60.0 / seconds
+    }
+
+    /// 距上一眼过了多久；还没看过是 None。
+    pub(crate) fn since_look(&self) -> Option<Duration> {
+        self.looked_at.map(|at| at.elapsed())
+    }
+
     /// 正聊在兴头上：在关注某个人或话题，或者几分钟内刚开过口。
     pub(crate) fn engaged(&self) -> bool {
         self.active_focus().is_some()

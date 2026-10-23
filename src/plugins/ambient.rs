@@ -104,6 +104,32 @@ const GATE_PERSONA: &str = "\
 的时候，你多半只挑一摊接一句，同一件事说过了就过。沉默对你是常态，
 不是憋着。判断「你会不会想接这句话」即可，措辞风格不用你操心。";
 
+/// 群管辅助：把搭话从「想接就接」扩到「有事的时候搭把手」。
+///
+/// 两件事都只改「什么时候看一眼」，不改判定的标准：看是本地读窗口，不花钱；
+/// 要不要开口仍然由判定那一步说。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct Assist {
+    /// 有人提问时提前看一眼：问题带着「怎么、为什么、能不能、报错」这些字眼，
+    /// 或者以问号收尾。只是把下一眼提前，答不答仍由判定决定。
+    pub questions: bool,
+    /// 新人入群时交给人格打个招呼（跳过判定）。
+    ///
+    /// 与入群欢迎插件二选一：那个是每来一个人就发、话是写好的；这一句是人格看着
+    /// 群里的现场说的，能接上前一句、能回答新人问的事，但只在这个批次的窗口里
+    /// 有新人时才发生。不想两套欢迎同时响，就只开一个。
+    pub newcomers: bool,
+    /// 进群后多少秒内还能补一句招呼；超过这个时间就不追着补了（默认 180）。
+    pub newcomer_within_seconds: u64,
+}
+
+impl Default for Assist {
+    fn default() -> Self {
+        Self { questions: true, newcomers: false, newcomer_within_seconds: 180 }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AmbientConfig {
@@ -184,7 +210,39 @@ pub(crate) struct AmbientConfig {
     /// 没人叫它时，隔多久「扫一眼群」（主动判定一次），实际间隔在它的 0.6–1.5 倍间
     /// 随机；正聊着（在关注、或三分钟内开过口）时缩到三分之一。被 @、引用、戳、
     /// 喊名字与搭话指令不等这一眼。这一眼之间的消息不会丢：下一眼连同前情一起看。
+    ///
+    /// 这个数是「平时的节奏」。adaptive_gate 打开时它还会跟着群里的热闹程度伸缩：
+    /// 一直有人说话就看得勤一点，半天没人吭声就看得稀一点——判定是这里唯一按次计费的
+    /// 东西，没人的时候没必要按原来的节拍一直敲。
     pub gate_interval_seconds: u64,
+    /// 看群间隔跟着群里的热闹程度走。
+    ///
+    /// 以最近五分钟的消息速率（不含自己）为准：达到 busy_rate 就缩到
+    /// busy_factor 分之一，几乎没人说话就拉长到 quiet_factor 倍，中间照
+    /// gate_interval_seconds。上限是 gate_interval_max。
+    pub adaptive_gate: bool,
+    /// 算「忙」的门槛：最近五分钟平均每分钟几条（不含自己），默认 6。
+    pub busy_rate: u32,
+    /// 忙的时候间隔缩到几分之一（1–6）。
+    ///
+    /// 默认 1：热闹的群本来就靠「攒够十几条提前看」跟住话题，再把基础间隔也砍半
+    /// 等于判定次数翻倍，与省钱的初衷相反。想让它跟得更紧，再调 2。
+    pub busy_factor: u32,
+    /// 闲的时候间隔拉长到几倍（1–6）。
+    pub quiet_factor: u32,
+    /// 拉长之后最多隔多久看一眼（秒）。
+    pub gate_interval_max: u64,
+    /// 上一眼之后又攒了这么多条，就不等下一眼了；0 关闭。
+    ///
+    /// 这是「消息量波动」那一档：群里突然聊开了（十几条在几十秒里涌进来），
+    /// 跟着原节拍等下去，接上话时话题已经过去。提前看这一眼仍然走完判定，
+    /// 只是不再干等；两次提前看之间至少隔 burst_min_gap_seconds，免得刷屏时
+    /// 每来一条就判一次，反而更贵。
+    pub burst_look: usize,
+    /// 两次提前看之间至少隔几秒。
+    pub burst_min_gap_seconds: u64,
+    /// 群管辅助（见 [Assist]）。
+    pub assist: Assist,
     /// 两次主动开口之间的时间下限；0 关闭。
     ///
     /// 从前这里是一道墙——冷却没走完就一句话都不说，被点名才绕得过。现在它是一笔
@@ -344,6 +402,14 @@ impl Default for AmbientConfig {
             debounce_seconds: 6,
             max_pending_seconds: 40,
             gate_interval_seconds: 90,
+            adaptive_gate: true,
+            busy_rate: 6,
+            busy_factor: 1,
+            quiet_factor: 3,
+            gate_interval_max: 900,
+            burst_look: 15,
+            burst_min_gap_seconds: 30,
+            assist: Assist::default(),
             cooldown_seconds: 150,
             cooldown_penalty: 18,
             focus_max_seconds: 180,
@@ -418,6 +484,27 @@ impl AmbientConfig {
 
     fn gate_interval(&self) -> Duration {
         Duration::from_secs(self.gate_interval_seconds.min(3_600))
+    }
+
+    /// 这一眼该隔多久（不含 look_due 自己的随机倍数与「正聊着」的三分之一）。
+    ///
+    /// 以最近五分钟的速率判断忙闲，只分三档：忙、平常、闲。不做连续插值，
+    /// 是因为这个数只该在「群里确实热闹」与「确实没人」时变，中间地带跟着
+    /// 基础间隔走最稳；分档也让人在配置里能预料到它什么时候会变。
+    fn look_interval(&self, rate: f32) -> Duration {
+        let base = self.gate_interval();
+        if !self.adaptive_gate {
+            return base;
+        }
+        let scale = if rate >= self.busy_rate.max(1) as f32 {
+            1.0 / self.busy_factor.clamp(1, 6) as f32
+        } else if rate <= 0.25 {
+            self.quiet_factor.clamp(1, 6) as f32
+        } else {
+            1.0
+        };
+        let max = Duration::from_secs(self.gate_interval_max.clamp(60, 3_600));
+        base.mul_f32(scale).clamp(Duration::from_secs(15), max)
     }
 
     fn cooldown(&self) -> Duration {
@@ -1344,20 +1431,57 @@ impl Drop for Worker {
 /// 等的这段时间里新来的消息照样进窗口，下一眼一起看，一条都不漏。有人叫它就不等
 /// 下一眼了——但没在聊的时候，从手机亮起到真的点开也要几秒到十几秒，秒回是机器。
 async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
-    let interval = config.gate_interval();
     loop {
-        let (urgent, engaged, due) = window::with_group(group, |state| {
-            (state.urgent(), state.engaged(), state.look_due(interval))
+        let gap = Duration::from_secs(config.burst_min_gap_seconds.clamp(0, 300));
+        let (urgent, engaged, due, burst, question, joining, rate) = window::with_group(group, |state| {
+            let rate = state.rate(Duration::from_mins(5));
+            let interval = config.look_interval(rate);
+            let since = state.since_look();
+            let ready = since.is_none_or(|elapsed| elapsed >= gap);
+            let burst = config.burst_look > 0 && state.unseen() >= config.burst_look && ready;
+            let fresh = state.fresh();
+            let question = config.assist.questions
+                && ready
+                && fresh.iter().any(|turn| !turn.from_me && looks_like_question(&turn.text));
+            let now = chrono::Local::now().timestamp();
+            let joining = config.assist.newcomers
+                && ready
+                && fresh.iter().any(|turn| {
+                    !turn.from_me
+                        && is_join_notice(&turn.text)
+                        && now - turn.at <= config.assist.newcomer_within_seconds as i64
+                });
+            (
+                state.urgent(),
+                state.engaged(),
+                state.look_due(interval),
+                burst,
+                question,
+                joining,
+                rate,
+            )
         });
-        if urgent {
+        if urgent || question || joining {
             // 看群越勤，被叫到也看得越快；间隔调成 0 就是随叫随到。
             if !engaged {
-                tokio::time::sleep(notice_delay().min(interval / 5)).await;
+                tokio::time::sleep(notice_delay().min(config.gate_interval() / 5)).await;
+            }
+            if (question || joining) && !urgent {
+                debug!(
+                    target: LOG_TARGET,
+                    "群 {group} {}，提前看一眼",
+                    if joining { "有人进群" } else { "有人提问" }
+                );
             }
             wait_for_owner(ctx, group, config).await;
             return;
         }
+        if burst {
+            debug!(target: LOG_TARGET, "群 {group} 攒够 {burst} 条新消息，不等下一眼", burst = config.burst_look);
+            return;
+        }
         if due.is_zero() {
+            debug!(target: LOG_TARGET, "群 {group} 这一眼（最近五分钟 {rate:.1} 条/分钟）");
             return;
         }
         let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
@@ -1718,11 +1842,31 @@ async fn consider_batch(
     }
 
     // 这一眼看到了哪些：上一眼之后新来的几条，判定要把它们和前情分开看。
-    let (fresh, glance) = window::with_group(group, |state| {
+    // 顺手认一下有没有人刚进群——这一行在平台上是个事件，不是谁说的话。
+    let (fresh, glance, joined) = window::with_group(group, |state| {
         let fresh = state.unseen();
+        let joined = config.assist.newcomers.then(|| {
+            let now = chrono::Local::now().timestamp();
+            state
+                .fresh()
+                .into_iter()
+                .rev()
+                .find(|turn| {
+                    !turn.from_me
+                        && is_join_notice(&turn.text)
+                        && now - turn.at <= config.assist.newcomer_within_seconds as i64
+                })
+        });
         state.mark_look();
-        (fresh, state.recent((fresh + 6).clamp(12, 36)))
+        (fresh, state.recent((fresh + 6).clamp(12, 36)), joined.flatten())
     });
+
+    // 上一眼之后什么都没有（只多了自己说的话、或者全是没进窗口的指令）：这一眼
+    // 不必问模型。这是最便宜的一道闸——不花一分钱，也最常生效。
+    if fresh == 0 && joined.is_none() && !mentioned && !summoned {
+        debug!(target: LOG_TARGET, "群 {group} 这一眼没有新东西，不判定");
+        return Ok(());
+    }
 
     // 号主本人在线：机器人不主动插话。这一眼算看过了（上面已经 mark_look），他看过的
     // 话题不会等他走了再被机器人翻出来接。被点名与搭话指令不在此列。
@@ -1763,7 +1907,11 @@ async fn consider_batch(
     let scene = Scene::build(group, config, turns, rhythm.to_string());
     let mut noticed = String::new();
     let mut careful = false;
-    if summoned {
+    // 刚进群的人也在这一批里：不判定，直接让人格看着现场说一句。
+    let greet = joined.is_some() && !mentioned && !summoned;
+    if greet {
+        info!(target: LOG_TARGET, "群 {group} 有人进群，交给人格打个招呼");
+    } else if summoned {
         // 指令是人按下的：判定那一步整个不发生，这一批直接进第三步。
         info!(target: LOG_TARGET, "群 {group} 收到搭话指令，这一批交给人格");
     } else if !mentioned {
@@ -1866,7 +2014,7 @@ async fn consider_batch(
         base,
         config,
         &latest,
-        Called::of(mentioned, summoned),
+        Called::of(mentioned, summoned, greet),
         &persona,
         &scene,
         seq,
@@ -1953,6 +2101,30 @@ async fn quick_word(
     if let Err(error) = deliver(ctx, writer, group, config, &turns, utterances, seq, false, started).await {
         debug!(target: LOG_TARGET, "群 {group} 随口一句没发出去：{error:#}");
     }
+}
+
+/// 平台事件里的一行「某某加入了群聊」。
+fn is_join_notice(text: &str) -> bool {
+    text.starts_with("[群成员 ") && text.contains(" 加入了群聊]")
+}
+
+/// 群里有人像在提问：以问号收尾，或者带着「求问」「报错」这类字眼。
+///
+/// 与 [`asks_for_answer`] 分开：那个判的是「@ 它的时候是不是在问事」，上下文明确，
+/// 可以用「怎么」「为什么」这种很宽的词；这里没人叫它，一句「怎么会」也会命中，
+/// 放得太宽等于每有闲聊就提前看一眼。所以只认问号和明确的求助词，且要求不是平台事件。
+fn looks_like_question(text: &str) -> bool {
+    let text = text.trim();
+    if text.chars().count() < 4 || text.starts_with('[') {
+        return false;
+    }
+    text.ends_with('？')
+        || text.ends_with('?')
+        || [
+            "有没有人知道", "有没有人懂", "求问", "求教", "求助", "报错", "怎么办", "怎么解决",
+        ]
+        .iter()
+        .any(|word| text.contains(word))
 }
 
 /// 一句 @ 它的话是不是在问事（而不是逗它）。刻意收窄：「你是不是人机」不算。
@@ -2409,7 +2581,140 @@ async fn deliver(
 
 impl PluginConfig for AmbientConfig {
     const NAME: &'static str = "ambient";
+
+    fn check(&self) -> Result<(), String> {
+        if !(1..=6).contains(&self.busy_factor) {
+            return Err("busy_factor 要在 1 到 6 之间".into());
+        }
+        if !(1..=6).contains(&self.quiet_factor) {
+            return Err("quiet_factor 要在 1 到 6 之间".into());
+        }
+        if !(1..=120).contains(&self.busy_rate) {
+            return Err("busy_rate 要在 1 到 120 之间（每分钟几条）".into());
+        }
+        if !(60..=3_600).contains(&self.gate_interval_max) {
+            return Err("gate_interval_max 要在 60 到 3600 秒之间".into());
+        }
+        if self.burst_look > 200 {
+            return Err("burst_look 最多 200（0 = 关闭）".into());
+        }
+        if self.burst_min_gap_seconds > 300 {
+            return Err("burst_min_gap_seconds 最多 300".into());
+        }
+        if self.assist.newcomer_within_seconds > 3_600 {
+            return Err("assist.newcomer_within_seconds 最多 3600".into());
+        }
+        Ok(())
+    }
 }
+
+pub const LABELS: &[(&str, &str)] = &[
+    ("enabled", "总开关"),
+    ("groups", "搭话的群"),
+    ("management_groups", "直接开放管理的群"),
+    ("management_auto", "账号是管理员时自动管群"),
+    ("management_excluded", "永远不管的群"),
+    ("management_daily", "每天最多管几次"),
+    ("gate_model", "判定模型"),
+    ("gate_persona", "判定用的兴趣画像"),
+    ("reply_model", "发言模型"),
+    ("thinking", "思考强度"),
+    ("temperature", "采样温度"),
+    ("help_thinking", "答疑时的思考强度"),
+    ("help_model", "答疑时的发言模型"),
+    ("breakthrough_per_hour", "每小时紧急突破几次"),
+    ("tools", "发言时可用的工具"),
+    ("score_threshold", "开口门槛"),
+    ("silence_relief_per_10min", "每沉默十分钟降几分"),
+    ("silence_relief_cap", "沉默补偿的上限"),
+    ("speech_penalty_per_turn", "每说过一轮加几分"),
+    ("speech_penalty_cap", "加价的上限"),
+    ("focus_relief", "接着聊时的折扣"),
+    ("context_turns", "上下文条数"),
+    ("context_images", "附几张图"),
+    ("debounce_seconds", "安静几秒算一阵"),
+    ("max_pending_seconds", "最多等多久"),
+    ("gate_interval_seconds", "看群间隔"),
+    ("adaptive_gate", "按热闹程度调节"),
+    ("busy_rate", "算「忙」的门槛"),
+    ("busy_factor", "忙时缩短到几分之一"),
+    ("quiet_factor", "闲时拉长到几倍"),
+    ("gate_interval_max", "最长隔多久看"),
+    ("burst_look", "攒够几条提前看"),
+    ("burst_min_gap_seconds", "两次提前看至少隔"),
+    ("assist", "群管辅助"),
+    ("assist.questions", "有人提问时提前看"),
+    ("assist.newcomers", "新人进群打个招呼"),
+    ("assist.newcomer_within_seconds", "进群多久内还打招呼"),
+    ("cooldown_seconds", "开口后的冷却"),
+    ("cooldown_penalty", "冷却期门槛加价"),
+    ("focus_max_seconds", "关注最多多久"),
+    ("max_per_hour", "每小时目标轮数"),
+    ("budget_penalty", "超出后每轮加几分"),
+    ("reply_on_mention", "被 @ 时直接开口"),
+    ("aliases", "别名"),
+    ("preferred_name", "自我介绍用的称呼"),
+    ("summon_command", "搭话指令"),
+    ("memory_enabled", "记住群里的人和事"),
+    ("mood_enabled", "按作息起伏"),
+    ("memo_budget", "每轮最多写几条记忆"),
+    ("search_enabled", "允许联网"),
+    ("search_budget", "每轮联网几次"),
+    ("peak", "计价高峰"),
+    ("peak.mode", "高峰时怎么办"),
+    ("peak.windows", "高峰时段"),
+    ("peak.weekdays", "哪几天算高峰"),
+    ("peak.holidays", "法定节假日"),
+    ("peak.model", "高峰用的模型"),
+    ("peak.swap_reply", "发言也换模型"),
+    ("peak.doze_gate_seconds", "睡着时隔多久看一眼"),
+    ("peak.doze_reply_limit", "睡着时每小时最多开口"),
+    ("reflect_enabled", "定期复盘群聊"),
+    ("quick_per_hour", "每小时随口几句"),
+    ("quick_floor", "随口一句的分数下限"),
+    ("owner_quiet_seconds", "号主说话后安静多久"),
+    ("owner_grace_seconds", "先等号主答多久"),
+    ("send_freshness_seconds", "消息时效窗口"),
+    ("qq_typing", "发前显示正在输入"),
+    ("qq_mark_read", "看过后标记已读"),
+    ("screenshot_on_suspicion", "被质疑时发聊天截图"),
+    ("screenshot_cooldown_seconds", "截图冷却"),
+    ("messages_budget", "一次最多几条"),
+    ("split_chars", "多长换气"),
+    ("long_text_chars", "多长排成图片"),
+    ("actions_budget", "每轮最多几个动作"),
+    ("draw_budget", "每轮最多画几张"),
+    ("music_budget", "每轮最多写几首歌"),
+    ("video_budget", "每轮最多拍几段视频"),
+    ("sticker_max", "表情包最多留几张"),
+    ("typing_cpm", "打字速度"),
+    ("voice_cpm", "语音输入速度"),
+    ("think_seconds", "思考时间"),
+    ("gate_timeout_seconds", "判定超时"),
+    ("reply_timeout_seconds", "发言超时"),
+];
+
+/// 下拉框里每个取值的说法。
+pub fn option_labels() -> serde_json::Value {
+    let thinking = serde_json::json!({
+        "off": "不思考",
+        "minimal": "很少",
+        "low": "少",
+        "medium": "中",
+        "high": "高",
+    });
+    serde_json::json!({
+        "thinking": thinking,
+        "help_thinking": thinking,
+        "peak.mode": {
+            "normal": "照常，不理会时段",
+            "swap": "换一个便宜模型照常跑",
+            "sleep": "睡着，偶尔看一眼",
+            "pause": "完全不说话",
+        },
+    })
+}
+
 
 
 /// 启动：铺开人设与 skill，并确保模型接口那一份共享配置已就绪。
@@ -2459,3 +2764,54 @@ pub fn handle(
         Ok(Some(ctx))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> AmbientConfig {
+        let mut config = AmbientConfig::default();
+        config.gate_interval_seconds = 90;
+        config.gate_interval_max = 900;
+        config
+    }
+
+    #[test]
+    fn look_interval_follows_activity() {
+        let mut config = config();
+        // 没人说话：90 × 3 = 270 秒。
+        assert_eq!(config.look_interval(0.0), Duration::from_secs(270));
+        // 中间地带照基础间隔。
+        assert_eq!(config.look_interval(3.0), Duration::from_secs(90));
+        // 忙：默认不缩短（busy_factor = 1），照基础间隔。
+        assert_eq!(config.look_interval(8.0), Duration::from_secs(90));
+        // 调成 2 就跟得更紧：90 ÷ 2 = 45 秒。
+        config.busy_factor = 2;
+        assert_eq!(config.look_interval(8.0), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn quiet_interval_is_capped() {
+        let mut config = config();
+        config.quiet_factor = 6;
+        config.gate_interval_max = 300;
+        assert_eq!(config.look_interval(0.0), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn manual_mode_keeps_the_flat_interval() {
+        let mut config = config();
+        config.adaptive_gate = false;
+        assert_eq!(config.look_interval(8.0), Duration::from_secs(90));
+        assert_eq!(config.look_interval(0.0), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn questions_are_narrow() {
+        assert!(looks_like_question("这个报错怎么修？"));
+        assert!(looks_like_question("有没有人知道这是什么情况"));
+        assert!(!looks_like_question("怎么会这样"));
+        assert!(!looks_like_question("[群成员 123 加入了群聊]"));
+    }
+}
+

@@ -24,7 +24,7 @@ fn usage(prefix: &str) -> String {
         "潜水清理的用法（只有群主、管理员能用）：".to_string(),
         format!("· {prefix}潜水：查一遍本群谁在潜水，名单带序号；{prefix}潜水 60：这次按 60 天看"),
         format!("· {prefix}潜水 踢 1-20 25：移出这些序号的人，回「确认」才动手；也可以写「全部」「全部 除 3 7」"),
-        format!("· {prefix}潜水 提醒 1-20：先 @ 他们打个招呼，说清几天后会被移出"),
+        format!("· {prefix}潜水 提醒：把名单上的人一次性提醒一遍；{prefix}潜水 提醒 1-20 私聊：只提醒这几个，并且私聊"),
         format!("· {prefix}潜水 进度 / 停 / 继续：看进展、停下、接着中断的那批"),
         format!("· {prefix}潜水 豁免 @某人：这个人永远不进名单；{prefix}潜水 取消豁免 @某人；{prefix}潜水 豁免：看名单"),
         format!("· {prefix}潜水 天数 45：本群改成 45 天没说话算潜水；{prefix}潜水 天数 默认：照全局"),
@@ -279,14 +279,26 @@ impl<'a> Here<'a> {
     }
 
     async fn warn(&self, rest: &str) -> Result<String, PluginError> {
+        if matches!(rest, "状态" | "进度" | "情况") {
+            return Ok(super::warn::status(self.group).await);
+        }
         let scan = match self.scan().await {
             Ok(scan) => scan,
             Err(text) => return Ok(text),
         };
-        let picks = match picks(rest, scan.entries.len()) {
-            Ok(picks) => picks,
-            Err(text) => return Ok(text),
+        // 不写序号就是名单上全部的人；末尾可以跟一句用哪种方式提醒。
+        let (mode, rest) = super::warn::parse_mode(rest);
+        let picks: Vec<u32> = if rest.trim().is_empty() {
+            (1..=u32::try_from(scan.entries.len()).unwrap_or(u32::MAX)).collect()
+        } else {
+            match picks(&rest, scan.entries.len()) {
+                Ok(picks) => picks,
+                Err(text) => return Ok(text),
+            }
         };
+        if scan.entries.is_empty() {
+            return Ok(format!("名单上没有要提醒的人。按「{}」查过了，本群没有潜水的。", scan.rule.text));
+        }
         let now = chrono::Utc::now().timestamp();
         // 看提醒记录本身，不看名单上的标记：名单可能是提醒之前查的。
         let warned = super::warn::warned(self.group).await;
@@ -296,18 +308,22 @@ impl<'a> Here<'a> {
             .partition(|e| warned.get(&e.id).is_some_and(|at| now - at < 86_400));
         let people: Vec<(String, String)> = people.into_iter().map(|e| (e.id.clone(), e.name.clone())).collect();
         if people.is_empty() {
-            return Ok("这些人今天都提醒过了。".into());
+            return Ok("这些人今天都提醒过了。发「潜水 提醒 状态」看还剩谁。".into());
         }
-        if super::warn::pick(&self.config.warn.text).is_none() {
-            return Ok("提醒的话（warn.text）是空的，在控制台写一句再来。".into());
+        let mut config = self.config.clone();
+        if let Some(mode) = &mode {
+            config.warn.mode.clone_from(mode);
         }
-        let n = super::warn::send(self.ctx, self.writer, self.config, self.group, &people).await?;
-        let mut text = format!(
-            "提醒了 {n} 人。{} 天后还没冒泡的，发「{}潜水」重新查，再按序号移出。",
-            self.config.warn.grace_days, self.prefix
-        );
+        let report = match super::warn::send(self.ctx, self.writer, &config, self.group, &people).await {
+            Ok(report) => report,
+            Err(error) => return Ok(error.to_string()),
+        };
+        let mut text = report.describe(&config);
         if !recent.is_empty() {
-            text.push_str(&format!("另有 {} 人今天已经提醒过，没再 @。", recent.len()));
+            text.push_str(&format!("另有 {} 人今天已经提醒过，跳过了。", recent.len()));
+        }
+        if !self.prefix.is_empty() {
+            text.push_str(&format!("重新查一遍：「{p}潜水」；看提醒进展：「{p}潜水 提醒 状态」。", p = self.prefix));
         }
         Ok(text)
     }

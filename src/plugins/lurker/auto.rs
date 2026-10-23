@@ -12,9 +12,8 @@
 use super::purge::{self, Job, State, Target};
 use super::roster::{self, Scan};
 use super::{Config, LOG_TARGET};
-use crate::adapters::satori::{LockedWriter, send_msg};
+use crate::adapters::satori::LockedWriter;
 use crate::event::Context;
-use crate::message::Message;
 use crate::plugins::get_config_or_default;
 use crate::storage::JsonState;
 use chrono::{Datelike, Timelike};
@@ -90,7 +89,7 @@ async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str,
         Err(error) => return format!("没查成：{error}"),
     };
     if !scan.can_kick {
-        tell_keepers(ctx, writer, &format!("自动清理潜水：我在「{}」（{group}）不是管理员，这次跳过了。", scan.group_name)).await;
+        super::tell_keepers(ctx, writer, &format!("自动清理潜水：我在「{}」（{group}）不是管理员，这次跳过了。", scan.group_name)).await;
         return "机器人不是管理员，跳过".into();
     }
     if scan.entries.is_empty() {
@@ -98,7 +97,7 @@ async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str,
     }
     let ratio = scan.entries.len() * 100 / scan.total.max(1);
     if ratio > config.auto.max_ratio as usize {
-        tell_keepers(
+        super::tell_keepers(
             ctx,
             writer,
             &format!(
@@ -127,7 +126,7 @@ async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str,
     if !fresh.is_empty() {
         let people: Vec<(String, String)> = fresh.iter().map(|e| (e.id.clone(), e.name.clone())).collect();
         match super::warn::send(ctx, writer, config, group, &people).await {
-            Ok(n) => said.push(format!("提醒了 {n} 人")),
+            Ok(report) => said.push(report.brief()),
             Err(error) => said.push(format!("提醒没发出去：{error}")),
         }
     }
@@ -199,12 +198,3 @@ pub fn announcement(config: &Config, job: &Job) -> Option<String> {
     )
 }
 
-/// 私聊告诉号主与机器人管理员（除了机器人自己）。
-async fn tell_keepers(ctx: &Context, writer: &LockedWriter, text: &str) {
-    let me = ctx.bot.self_id();
-    for admin in crate::access::admin_ids(ctx).into_iter().filter(|id| *id != me) {
-        if let Err(error) = send_msg(ctx, writer.clone(), None, Some(&admin), Message::new().text(text)).await {
-            warn!(target: LOG_TARGET, "没能私聊告诉 {admin}：{error}");
-        }
-    }
-}

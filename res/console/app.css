@@ -5796,6 +5796,19 @@ label.lk-hit {
   font-variant-numeric: tabular-nums;
 }
 
+/* 等待到期移出的人：贴在「已选几人」后面，是个数不是按钮，读屏一起播报。 */
+.lk-pending {
+  display: inline-block;
+  margin-inline-start: var(--zw-space-03);
+  padding: 2px var(--zw-space-02);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-variant-numeric: tabular-nums;
+}
+
 .lk-actions {
   display: flex;
   flex-wrap: wrap;

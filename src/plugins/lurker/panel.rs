@@ -69,7 +69,15 @@ pub async fn overview(ctx: &Context) -> Value {
         "rule": { "days": config.days, "min_messages": config.min_messages, "newcomer_days": config.newcomer_days },
         "pace": { "interval_seconds": config.pace.interval_seconds, "burst": config.pace.burst, "rest_seconds": config.pace.rest_seconds, "max_per_run": config.pace.max_per_run },
         "permanent": config.permanent,
-        "grace_days": config.warn.grace_days,
+        "warn": {
+            "mode": config.warn.mode,
+            "mode_name": super::warn::mode_name(&config.warn.mode),
+            "grace_days": config.warn.grace_days,
+            "batch": config.warn.batch,
+            "escalate": config.warn.escalate,
+            "pending": super::warn::pending_count(),
+        },
+        "warn_pending": super::warn::pending_by_group(),
         "lists": lists,
         "pending": pending,
         "history": history,
@@ -159,17 +167,25 @@ pub async fn kick(ctx: &Context, group: &str, at: i64, ids: &[String]) -> Result
     Ok(job_status(&ctx, group).await)
 }
 
-/// @ 页面上勾的人提醒一声。
+/// 提醒页面上勾的人；一个都没勾就是名单上的全部。
 pub async fn warn(ctx: &Context, group: &str, at: i64, ids: &[String]) -> Result<String, String> {
     let (ctx, writer) = link(ctx)?;
     let config = get_config_or_default::<Config>(&ctx);
     let scan = fresh_scan(group, at).await?;
-    let people: Vec<(String, String)> = chosen(&scan, ids)?.into_iter().map(|t| (t.id, t.name)).collect();
-    if super::warn::pick(&config.warn.text).is_none() {
-        return Err("「提醒的话」是空的，先写一句".into());
+    let targets = if ids.is_empty() {
+        scan.entries
+            .iter()
+            .map(|e| Target { id: e.id.clone(), name: e.name.clone(), no: e.no, since: e.since, kind: e.kind })
+            .collect()
+    } else {
+        chosen(&scan, ids)?
+    };
+    let people: Vec<(String, String)> = targets.into_iter().map(|t| (t.id, t.name)).collect();
+    if people.is_empty() {
+        return Err("名单上没有要提醒的人".into());
     }
-    let n = super::warn::send(&ctx, &writer, &config, group, &people).await.map_err(|e| format!("提醒没发出去：{e}"))?;
-    Ok(format!("提醒了 {n} 人；{} 天后还没冒泡的再移出", config.warn.grace_days))
+    let report = super::warn::send(&ctx, &writer, &config, group, &people).await.map_err(|e| format!("提醒没发出去：{e}"))?;
+    Ok(report.describe(&config))
 }
 
 /// 这个群进行中的那批，与最近做完的一批。
@@ -227,6 +243,16 @@ pub fn live(ctx: &Context) -> Value {
         config.pace.rest_seconds,
         config.pace.max_per_run
     )];
+    lines.push(format!(
+        "提醒方式：{}；{} 天后还没冒泡的{}；{}",
+        super::warn::mode_name(&config.warn.mode),
+        config.warn.grace_days,
+        if config.warn.escalate { "会自动移出" } else { "再手动移出" },
+        match super::warn::pending_count() {
+            0 => "现在没有等着的到期清理。".to_string(),
+            n => format!("{n} 人等着到期移出。"),
+        }
+    ));
     for job in purge::peek_pending() {
         lines.push(match job.state {
             State::Interrupted => format!("「{}」上次那批被打断了，还剩 {} 人", job.group_name, job.queue.len()),

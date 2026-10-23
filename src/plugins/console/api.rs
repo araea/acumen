@@ -397,6 +397,7 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
         "autoreply" => crate::plugins::autoreply::LABELS,
         "lurker" => crate::plugins::lurker::LABELS,
         "repeater" => crate::plugins::repeater::LABELS,
+        "ambient" => crate::plugins::ambient::LABELS,
         _ => &[],
     }
 }
@@ -413,6 +414,7 @@ fn labels(name: &str) -> Value {
 fn depends(name: &str) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::depends(),
+        "lurker" => crate::plugins::lurker::depends(),
         _ => json!({}),
     }
 }
@@ -423,6 +425,7 @@ fn option_labels(name: &str) -> Value {
         "welcome" => crate::plugins::welcome::option_labels(),
         "autoreply" => crate::plugins::autoreply::option_labels(),
         "lurker" => crate::plugins::lurker::option_labels(),
+        "ambient" => crate::plugins::ambient::option_labels(),
         _ => json!({}),
     }
 }

@@ -60,7 +60,7 @@ module = "satori_wx"   # 知言：微信；send_allow 白名单之外的会话�
 enabled = true
 
 # 插件控制：全局开关与配置的统一入口，也是唯一一条写配置的路径。
-# 聊天里走 /ctl，内置 agent 走 `acumen_plugins` 工具（见 docs/CONTROL.md）。两者都按这份 admins 认号主。
+# 聊天里走 /ctl，内置 agent 走 `acumen_plugins` 工具。两者都按这份 admins 认号主。
 [ctl]
 enabled = true
 # 维护者的用户 ID（QQ 号、wxid……）。空列表表示只允许本机控制台管理，聊天里谁也不许改。
@@ -143,12 +143,27 @@ rest_seconds = 40
 # 一次确认最多移出几人（1–1000）。
 max_per_run = 100
 
-# 「潜水 提醒 1-20」先 @ 一下潜水的人，说清几天后会被移出；自动清理也用这一句。
+# 「潜水 提醒」先打个招呼，说清几天后还没冒泡会被移出；自动清理也用这一套。
 [lurker.warn]
 # 提醒之后宽限几天（0–30）。名单上会标「几天前提醒过」。
 grace_days = 3
-# 提醒的话，几种说法随机一种。占位符：{at} @ 被提醒的人（一条最多 20 个，人多分几条）、{days} 天数、{deadline} 宽限到哪天、{grace} 宽限几天、{count} 人数、{甲|乙} 随机片段、{face:14} QQ 表情。
+# 怎么提醒：mention = 群里 @ 每个人；digest = 群里只发一条、列出名字、不 @；
+# private = 只私聊、群里不说；mention_private / digest_private 是两种组合。
+# 群里发「潜水 提醒 1-20 私聊」可以只对这一次换一种方式。
+mode = "mention"
+# 一条消息最多 @ 几个人（1–50）：再多一屏就全是蓝字了。
+batch = 20
+# 两条提醒之间歇几秒（0–60）：mention 的分批、私聊的逐条都按它。
+pause_seconds = 2
+# 群里 @ 时说的话，几种说法随机一种。占位符：{at} @ 被提醒的人、{names} 名字、{days} 天数、{deadline} 宽限到哪天、{grace} 宽限几天、{count} 人数、{甲|乙} 随机片段、{face:14} QQ 表情。
 text = ["{at}\n你们在群里已经 {days} 天以上没说话了。按群规，{deadline}前还没冒泡的会被移出群聊——说句话就好，不用多～"]
+# 群里只发一条、不 @ 时说的话。占位符同上（{at} 在这里没有意义）。
+digest_text = ["{names}\n你们在群里已经 {days} 天以上没说话了。按群规，{deadline}前还没冒泡的会被移出群聊——说句话就好，不用多～"]
+# 私聊时说的话，一条一条发。占位符：{group} 群名，其余同上。
+private_text = ["你在「{group}」已经 {days} 天以上没说话了。按群规，{deadline}前还没冒泡的会被移出群聊——说句话就好，不用多～"]
+# 宽限期满，把这一批提醒过、还没冒泡的人移出（重新查名单，冒泡的人自然不在里面）。
+# 默认关：提醒是一句招呼，移出是另一件事。打开后「先提醒、到期再看一遍」才是一条完整的路。
+escalate = false
 
 # 默认关。打开后只管 groups 里点了名的群，每天到点看一遍：提醒满宽限期还没冒泡的移出，
 # 到了 weekdays 里的日子给新查到的人发提醒。查出来的人多得反常（超过 max_ratio）就不动手，私聊告诉号主去看一眼。
@@ -358,7 +373,7 @@ white = []
 black = []
 
 # 奶龙提醒：认出群里的奶龙、奶蛙图，把原图与来龙去脉发到私聊或指定群，由管理员确认后处理。
-# 默认只提醒；想让它顺手撤回、禁言，打开下面的 [nailong.manage]。第一张图到来时自动下载识图模型（约 45 MB）。详见 docs/nailong.md。
+# 默认只提醒；想让它顺手撤回、禁言，打开下面的 [nailong.manage]。第一张图到来时自动下载识图模型（约 45 MB）。
 [nailong]
 enabled = false
 # 认哪几类：nailong（奶龙）、naiwa（奶蛙）。
@@ -904,13 +919,13 @@ results = 8
 
 # 群聊搭话：独立插件，复用 [oai] 的模型接入层（接口、密钥、供应商、联网、绘图）。
 # 让内置 agent 以固定人格在指定群里旁听，绝大多数时候沉默。
-# 完整字段与取舍见 docs/ambient.md；人设在 data/ambient/persona.md。
+# 人设在 data/ambient/persona.md。
 [ambient]
 enabled = false
 # 开启搭话的群号；空列表等于不开启。
 groups = []
 # 账号在群里是群主或管理员时，人格自动以管理员身份管群，照 data/ambient/rules.md 与
-# rules/<群号>.md 的群规（见 docs/ambient.md「管群」）。
+# rules/<群号>.md 的群规。
 management_auto = true
 # 不看账号身份、直接开放人格群管理的群号。还须 QQ 权限。
 management_groups = []
@@ -957,7 +972,7 @@ aliases = []
 # 平时介绍自己用的称呼，优先于群名片；留空沿用平台昵称。
 preferred_name = ""
 # 开口意愿分门槛，调高更沉默。实际门槛还会随「最近十分钟自己说了几轮」抬高
-# （每轮 +8，最多 +24），随关注中的续聊下调 5 分，见 docs/ambient.md。
+# （每轮 +8，最多 +24），随关注中的续聊下调 5 分。
 # 续聊折扣给得小是有意的：群里长期只聊一个话题时，「还在聊那个话题」会一直
 # 为真，折扣一大就等于常年半价放行。
 score_threshold = 60
@@ -1044,6 +1059,21 @@ focus_max_seconds = 180
 debounce_seconds = 6
 max_pending_seconds = 40
 gate_interval_seconds = 90
+# 看群间隔跟着群里的热闹程度伸缩：一直有人说话就看勤一点，半天没人吭声就看稀一点。
+# 只是「什么时候看一眼」，看不看都要等判定那一步，判定仍然按次计费。
+adaptive_gate = true
+# 最近五分钟平均每分钟几条（不含自己）算「忙」；达到它就缩到 busy_factor 分之一。
+# busy_factor 默认 1：热闹时靠「攒够十几条提前看」跟话题，基础间隔不再砍半（砍半等于判定翻倍）。
+busy_rate = 6
+busy_factor = 1
+# 最近五分钟每分钟不到 0.25 条算「闲」，间隔拉长到 quiet_factor 倍。
+quiet_factor = 3
+# 拉长之后最多隔这么久看一眼（秒，60–3600）。
+gate_interval_max = 900
+# 上一眼之后又攒了这么多条，就不等下一眼了（0 = 关闭）；
+# 两次提前看之间至少隔 burst_min_gap_seconds，免得刷屏时反而更贵。
+burst_look = 15
+burst_min_gap_seconds = 30
 # 判定一轮最多花多少秒；超时按「不说话」算。这是每群固定要付的等待成本，
 # 调大只会让群里等得久，不会让它更聪明。
 gate_timeout_seconds = 45
@@ -1060,6 +1090,17 @@ search_enabled = true
 search_budget = 3
 # 别人 @ 它时是否必答。关掉之后点名也要过判定。
 reply_on_mention = true
+
+# 群管辅助：把搭话从「想接就接」扩到「有事的时候搭把手」。
+# 两件事都只改「什么时候看一眼」，不改判定的标准；看是本地读窗口，不花钱。
+[ambient.assist]
+# 有人提问（带着怎么、为什么、能不能、报错这些字眼，或者以问号收尾）时提前看一眼。
+# 只是把下一眼提前，答不答仍由判定决定。
+questions = true
+# 新人入群时交给人格打个招呼（跳过判定）。与入群欢迎插件二选一，别让两套欢迎一起响。
+newcomers = false
+# 进群后多少秒内还能补一句招呼；超过就不追着补了。
+newcomer_within_seconds = 180
 
 # 跟着 DeepSeek 的计价时段作息：官方接口空闲时段半价，高峰是北京时间周一至周五
 # 9:00-12:00、14:00-18:00。搭话是这里唯一无人触发的付费功能，最值得挑时段。
