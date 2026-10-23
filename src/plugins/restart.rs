@@ -284,7 +284,7 @@ async fn maintain(ctx: Context, daily: bool) {
                 info!(target: LOG_TARGET, "发现新版本 {}，正在下载…", release.version);
                 match crate::release::install(&release).await {
                     Ok(via) => {
-                        info!(target: LOG_TARGET, "新版本 {} 已经 {via} 换上，重启后生效", release.version);
+                        info!(target: LOG_TARGET, "新版本 {} 已换上（{via}），重启后生效", release.version);
                         reason = Some(format!(
                             "更新 {} → {}",
                             crate::release::VERSION,
@@ -520,8 +520,8 @@ pub(crate) async fn update_now(ctx: &Context) -> Result<String, String> {
         .ok_or_else(|| "已经是最新版本".to_string())?;
     let reason = format!("更新 {} → {version}", crate::release::VERSION);
     Ok(match arm(ctx, &reason, Duration::from_millis(1500)) {
-        Ok(()) => format!("已经 {via} 换上 {version}，正在重启"),
-        Err(_) => format!("已经 {via} 换上 {version}，重启后生效"),
+        Ok(()) => format!("已换上 {version}（{via}），正在重启"),
+        Err(_) => format!("已换上 {version}（{via}），重启后生效"),
     })
 }
 
@@ -537,13 +537,13 @@ async fn chat_update(
             let reason = format!("更新 {} → {version}", crate::release::VERSION);
             if arm(&ctx, &reason, CHAT_RESTART_DELAY).is_ok() {
                 format!(
-                    "✅ 已更新到 v{version}（原 v{}，经 {via} 下载），{} 秒后重启",
+                    "✅ 已更新到 v{version}（原 v{}，{via}），{} 秒后重启",
                     crate::release::VERSION,
                     CHAT_RESTART_DELAY.as_secs()
                 )
             } else {
                 format!(
-                    "✅ 已更新到 v{version}（原 v{}，经 {via} 下载），重启后生效",
+                    "✅ 已更新到 v{version}（原 v{}，{via}），重启后生效",
                     crate::release::VERSION
                 )
             }
@@ -578,7 +578,7 @@ async fn try_update() -> Result<Option<(String, String)>, String> {
         let via = crate::release::install(&release)
             .await
             .map_err(|error| format!("更新没装上：{error}"))?;
-        info!(target: LOG_TARGET, "新版本 {} 已经 {via} 换上", release.version);
+        info!(target: LOG_TARGET, "新版本 {} 已换上（{via}）", release.version);
         Ok(Some((release.version, via)))
     }
     .await;

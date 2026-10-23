@@ -45,6 +45,19 @@ const STALL: Duration = Duration::from_secs(20);
 const SLOW_AFTER: Duration = Duration::from_secs(20);
 const MIN_SPEED: f64 = 48.0 * 1024.0;
 
+/// 本地安装包放在哪儿找：QQ、TIM、微信收到的文件，以及下载目录。发布物
+/// `acumen-termux-aarch64.gz` 本身就是安装包（签名写在 gzip 头的注释里），维护者另存一份
+/// `acumen-<版本>.gz` 到下载目录，经 QQ 发给别人，对方不用连 GitHub。
+/// QQ 们的目录在 Android/data 底下，Termux 自己读不到，经 su 去找、去读。
+const LOCAL_ROOTS: &[&str] = &[
+    "/storage/emulated/0/Android/data/com.tencent.mobileqq/Tencent/QQfile_recv",
+    "/storage/emulated/0/Android/data/com.tencent.tim/Tencent/TIMfile_recv",
+    "/storage/emulated/0/Android/data/com.tencent.mm/MicroMsg/Download",
+    "/storage/emulated/0/Download",
+];
+/// 往下找几层：QQ 会按会话分子目录，下载目录里也常有 QQ、WeiXin 这样的子目录。
+const LOCAL_DEPTH: usize = 4;
+
 #[derive(Debug, Clone)]
 pub struct Release {
     pub version: String,
@@ -53,6 +66,8 @@ pub struct Release {
     pub notes: String,
     /// 下载源（加速前缀，空串是直连），清单回得快的排前面。
     sources: Vec<String>,
+    /// 本地安装包：有它就不联网。
+    file: Option<PathBuf>,
 }
 
 fn exe() -> Option<PathBuf> {
@@ -228,6 +243,7 @@ async fn fetch_manifest(client: &reqwest::Client, source: &str) -> Result<Releas
         sha256: field("sha256").to_lowercase(),
         notes: field("notes"),
         sources: Vec::new(),
+        file: None,
     };
     if release.version.is_empty() || release.url.is_empty() || release.sha256.len() != 64 {
         bail!("清单缺字段");
@@ -236,11 +252,17 @@ async fn fetch_manifest(client: &reqwest::Client, source: &str) -> Result<Releas
     Ok(release)
 }
 
-/// 查一次最新发布；比当前新才返回。
-///
-/// 所有源同时问：第一份签名对得上的清单到手后再稍等片刻，取其中版本最新的；
-/// 下载时按回来的先后试。
+/// 查一次最新发布；比当前新才返回。手机里有比当前新的本地安装包就用它，不联网。
 pub async fn check() -> Result<Option<Release>> {
+    if let Some(release) = find_local().await {
+        return Ok(Some(release));
+    }
+    check_online().await
+}
+
+/// 联网查：所有源同时问：第一份签名对得上的清单到手后再稍等片刻，取其中版本最新的；
+/// 下载时按回来的先后试。
+async fn check_online() -> Result<Option<Release>> {
     use futures_util::StreamExt as _;
     let client = crate::http::builder().timeout(MANIFEST_TIMEOUT).build()?;
     let sources = sources();
@@ -324,10 +346,18 @@ pub async fn check_cached(max_age: Duration) -> Result<Option<Release>> {
     Ok(release)
 }
 
-/// 下载、校验、换上新的可执行文件；返回用的是哪个下载源。正在跑的进程不受影响，
-/// 重启后才是新版本。
+/// 下载、校验、换上新的可执行文件；返回一句从哪儿来的（「经 某某 下载」或「用的本地安装包 …」）。正在跑的进程
+/// 不受影响，重启后才是新版本。
 pub async fn install(release: &Release) -> Result<String> {
     let target = exe().ok_or_else(|| anyhow!("找不到自己的可执行文件"))?;
+    if let Some(file) = &release.file {
+        let packed = read_file(file, None).await?;
+        let binary = unpack(packed, release.sha256.clone()).await?;
+        crate::storage::write_atomic_async(target.clone(), binary).await?;
+        set_mode(&target, 0o700)?;
+        let name = file.file_name().unwrap_or(file.as_os_str());
+        return Ok(format!("用的本地安装包 {}", name.to_string_lossy()));
+    }
     let client = client()?;
     let mut errors = Vec::new();
     for (index, source) in release.sources.iter().enumerate() {
@@ -342,7 +372,7 @@ pub async fn install(release: &Release) -> Result<String> {
             Ok(binary) => {
                 crate::storage::write_atomic_async(target.clone(), binary).await?;
                 set_mode(&target, 0o700)?;
-                return Ok(label(source));
+                return Ok(format!("经 {} 下载", label(source)));
             }
             Err(error) => {
                 warn!(target: LOG_TARGET, "经 {} 下载没成：{error:#}", label(source));
@@ -392,6 +422,174 @@ async fn unpack(packed: Vec<u8>, expected: String) -> Result<Vec<u8>> {
         Ok(binary)
     })
     .await?
+}
+
+/// gzip 头里的注释（FCOMMENT），读不出来就是 `None`。
+fn gzip_comment(head: &[u8]) -> Option<&str> {
+    const FEXTRA: u8 = 0x04;
+    const FNAME: u8 = 0x08;
+    const FCOMMENT: u8 = 0x10;
+    if head.get(..3)? != [0x1f, 0x8b, 0x08] {
+        return None;
+    }
+    let flags = *head.get(3)?;
+    let mut at = 10;
+    if flags & FEXTRA != 0 {
+        at += 2 + usize::from(u16::from_le_bytes([*head.get(at)?, *head.get(at + 1)?]));
+    }
+    if flags & FNAME != 0 {
+        at += head.get(at..)?.iter().position(|&b| b == 0)? + 1;
+    }
+    if flags & FCOMMENT == 0 {
+        return None;
+    }
+    let rest = head.get(at..)?;
+    std::str::from_utf8(&rest[..rest.iter().position(|&b| b == 0)?]).ok()
+}
+
+/// 读出安装包里签过名的版本与校验和：注释是 `acumen <版本> <sha256> <签名>`。
+fn package_info(head: &[u8]) -> Result<(String, String)> {
+    let comment = gzip_comment(head).ok_or_else(|| anyhow!("不是知微的安装包（没有签名）"))?;
+    let mut parts = comment.split_whitespace();
+    let (Some("acumen"), Some(version), Some(sha256), Some(signature)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        bail!("不是知微的安装包");
+    };
+    let sha256 = sha256.to_lowercase();
+    verify(version, &sha256, signature)?;
+    Ok((version.to_string(), sha256))
+}
+
+/// 读一个文件（`limit` 只读开头这么多字节）。自己读不了就经 su 读：Android/data 底下的
+/// 只有 root 读得到。路径从标准输入交给 su，不经 shell 拼接。
+async fn read_file(path: &Path, limit: Option<usize>) -> Result<Vec<u8>> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    if let Ok(mut file) = tokio::fs::File::open(path).await {
+        let mut bytes = Vec::new();
+        match limit {
+            Some(limit) => file.take(limit as u64).read_to_end(&mut bytes).await?,
+            None => file.read_to_end(&mut bytes).await?,
+        };
+        return Ok(bytes);
+    }
+    let script = match limit {
+        Some(limit) => format!(r#"IFS= read -r f; head -c {limit} -- "$f""#),
+        None => r#"IFS= read -r f; cat -- "$f""#.to_string(),
+    };
+    let mut child = tokio::process::Command::new("su")
+        .args(["-c", &script])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("读不到安装包（没有 su）")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(format!("{}\n", path.display()).as_bytes())
+            .await?;
+    }
+    let output = tokio::time::timeout(Duration::from_mins(2), child.wait_with_output())
+        .await
+        .context("su 没有回应")??;
+    if !output.status.success() || output.stdout.is_empty() {
+        bail!("读不到 {}", path.display());
+    }
+    Ok(output.stdout)
+}
+
+fn is_package_name(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name.starts_with("acumen") && name.ends_with(".gz")
+}
+
+/// 手机里所有像安装包的文件。有 root 时经 su 一次找全，没有就只找自己读得到的。
+async fn local_candidates() -> Vec<PathBuf> {
+    let script = format!(
+        "find {} -maxdepth {LOCAL_DEPTH} -type f -iname 'acumen*.gz' -size +1M 2>/dev/null",
+        LOCAL_ROOTS.join(" ")
+    );
+    let found = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new("su")
+            .args(["-c", &script])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    if let Ok(Ok(output)) = found
+        && !output.stdout.is_empty()
+    {
+        return String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(PathBuf::from)
+            .collect();
+    }
+    tokio::task::spawn_blocking(|| {
+        let mut found = Vec::new();
+        for root in LOCAL_ROOTS {
+            walk(Path::new(root), LOCAL_DEPTH, &mut found);
+        }
+        found
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() && depth > 1 {
+            walk(&path, depth - 1, found);
+        } else if kind.is_file() && is_package_name(&entry.file_name().to_string_lossy()) {
+            found.push(path);
+        }
+    }
+}
+
+/// 一个本地安装包：签名对得上才算。
+async fn local_release(path: &Path) -> Result<Release> {
+    let head = read_file(path, Some(4096)).await?;
+    let (version, sha256) = package_info(&head)?;
+    Ok(Release {
+        version,
+        url: String::new(),
+        sha256,
+        notes: String::new(),
+        sources: Vec::new(),
+        file: Some(path.to_path_buf()),
+    })
+}
+
+/// 手机里比当前新的本地安装包，取版本最新的那个。
+async fn find_local() -> Option<Release> {
+    let mut best: Option<Release> = None;
+    for path in local_candidates().await {
+        match local_release(&path).await {
+            Ok(release) => {
+                if newer(&release.version, VERSION)
+                    && best
+                        .as_ref()
+                        .is_none_or(|b| newer(&release.version, &b.version))
+                {
+                    best = Some(release);
+                }
+            }
+            Err(error) => {
+                debug!(target: LOG_TARGET, "{} 不是可用的安装包：{error:#}", path.display());
+            }
+        }
+    }
+    best
 }
 
 #[cfg(unix)]
@@ -470,6 +668,22 @@ async fn install_keeper() -> Result<()> {
     Ok(())
 }
 
+/// `--update` 要换上的版本：后面跟了安装包路径就只认它，否则照常查（先本地、后联网）。
+async fn update_target() -> Result<Option<Release>> {
+    let Some(path) = std::env::args().nth(2) else {
+        return check().await;
+    };
+    let path = std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(path));
+    let release = local_release(&path)
+        .await
+        .with_context(|| format!("安装包 {} 用不了", path.display()))?;
+    if !newer(&release.version, VERSION) {
+        eprintln!("安装包是 {}，不比当前的 {VERSION} 新", release.version);
+        return Ok(None);
+    }
+    Ok(Some(release))
+}
+
 /// 管理命令调用的几个隐藏参数。返回 `None` 表示不是它们，照常启动。
 pub async fn command(arg: &str) -> Option<i32> {
     let code = match arg {
@@ -488,12 +702,16 @@ pub async fn command(arg: &str) -> Option<i32> {
                 2
             }
         },
-        "--update" => match check().await {
+        "--update" => match update_target().await {
             Ok(Some(release)) => {
-                eprintln!("正在下载 {} …", release.version);
+                if release.file.is_some() {
+                    eprintln!("正在换上 {} …", release.version);
+                } else {
+                    eprintln!("正在下载 {} …", release.version);
+                }
                 match install(&release).await {
                     Ok(via) => {
-                        eprintln!("经 {via} 下载");
+                        eprintln!("{via}");
                         println!("{}", release.version);
                         if !release.notes.is_empty() {
                             eprintln!("{}", release.notes);
@@ -554,6 +772,25 @@ mod tests {
         assert!(verify("1.0.1", &sha, signature).is_err());
         assert!(verify("1.0.0", &"1".repeat(64), signature).is_err());
         assert!(verify("1.0.0", &sha, "").is_err());
+    }
+
+    #[test]
+    fn reads_package_signature_from_gzip_comment() {
+        let signature = "qbooniEXS6mg0q9+ECV6O34V1bDuTqas5dTtYvBAonv0FOCvPiekMvTLz+2JHMzMMXIx/EVg+SrtRQD7HCG+DA==";
+        let comment = format!("acumen 1.0.0 {} {signature}", "0".repeat(64));
+        let mut head = vec![0x1f, 0x8b, 0x08, 0x10, 0, 0, 0, 0, 2, 3];
+        head.extend_from_slice(comment.as_bytes());
+        head.push(0);
+        head.extend_from_slice(b"deflate...");
+        assert_eq!(
+            package_info(&head).unwrap(),
+            ("1.0.0".into(), "0".repeat(64))
+        );
+        head[4 + 10 + 7] = b'1'; // 版本改成 1.0.1，签名就对不上
+        assert!(package_info(&head).is_err());
+        assert!(package_info(&[0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 2, 3]).is_err());
+        assert!(is_package_name("acumen-1.26.0(1).gz"));
+        assert!(!is_package_name("acumen-1.26.0.zip"));
     }
 
     #[test]

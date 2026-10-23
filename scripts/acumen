@@ -347,11 +347,17 @@ cmd_ui() {
     open_url "$url"
 }
 
+# 不跟参数：先找手机里的本地安装包（QQ、微信收到的，下载目录里的），没有再联网；
+# 跟一个安装包路径就只装它。
 cmd_update() {
     installed
-    say "当前 $(version)，正在检查 …"
+    if [[ -n ${1:-} ]]; then
+        say "当前 $(version)，正在检查安装包 $1 …"
+    else
+        say "当前 $(version)，正在检查 …"
+    fi
     local new code
-    new=$("$EXE" --update)
+    new=$("$EXE" --update "$@")
     code=$?
     case $code in
         0)
@@ -361,7 +367,10 @@ cmd_update() {
             if bot_pid >/dev/null; then cmd_restart; fi
             ;;
         1) ok "已是最新版本" ;;
-        *) exit 1 ;;
+        *)
+            say "${D}连不上 GitHub 的话，找人要一份安装包（acumen-版本号.gz）：在 QQ 或微信里点开下载完，再运行 acumen update。${N}"
+            exit 1
+            ;;
     esac
 }
 
@@ -491,6 +500,8 @@ ${B}知微（acumen）$(version)${N}
   acumen log        实时日志（Ctrl+C 退出）
   acumen ui         打开管理页（知微停着也能打开，在页面上启动、更新）；acumen ui url 只打印地址
   acumen update     立即检查并更新（启动时、每 6 小时与每天 04:30 也会自动做；群里发 /更新 同效）
+                    QQ、微信里收到的安装包（acumen-版本号.gz）下载完就会先用它，不必联网；
+                    acumen update 文件路径  只装这一个安装包
 
   acumen setup      重新检查依赖、字体、root 守护
   acumen run        前台运行，调试用
@@ -507,7 +518,7 @@ case "${1:-start}" in
     status | s) cmd_status ;;
     log | logs) shift; cmd_log "$@" ;;
     ui | web | open) shift; cmd_ui "$@" ;;
-    update | upgrade) cmd_update ;;
+    update | upgrade) shift; cmd_update "$@" ;;
     setup) cmd_setup ;;
     run) cmd_run ;;
     uninstall) shift; cmd_uninstall "$@" ;;

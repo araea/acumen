@@ -31,7 +31,7 @@ curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/
 | `acumen restart` | 重启 |
 | `acumen status` | 运行状态、QQ 连接与保活情况 |
 | `acumen log` | 实时日志，`Ctrl+C` 退出 |
-| `acumen update` | 立即检查并更新 |
+| `acumen update` | 立即检查并更新（手机里有收到的安装包就先用它，不联网） |
 | `acumen help` | 全部命令 |
 
 管理页（`acumen ui`，默认 `http://127.0.0.1:7800`）在知微停着时也打得开：可以直接在网页上启动、停止、重启和更新，不必回到 Termux 敲命令。添加到主屏幕后就像一个应用。
@@ -45,6 +45,7 @@ curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/
 - root 守护在开机后拉起 Termux 与机器人，Termux 被系统清理后再拉回来。设有锁屏密码时，重启后要先解锁一次。
 - 每天 04:30 例行维护：有新版本就下载、校验、换上，等群里安静两分钟后重启。每次启动或重启后也会查一次，之后每 6 小时再查一次（`check_interval_hours`），有新版本同样换上。时刻与开关在 `[restart]`。
 - 查新与下载同时试直连 GitHub 和几家加速站，谁快用谁，下得太慢或断了换下一家；国内不开代理也能更新。发布清单带签名，经哪家转来的都先验签、再对校验和才换上。加速站都失效时在 `[restart] mirrors` 里补一个。
+- 连不上 GitHub 也能更新：找人要一份安装包 `acumen-版本号.gz`（就是发布页上的 `acumen-termux-aarch64.gz`），在 QQ 或微信里点开下载完，回 Termux 运行 `acumen update`。知微会经 root 自己去 QQ、TIM、微信的接收目录与「下载」目录里找，签名与校验和都对得上才换上；不用 Termux 时群里发 `/更新`、或等例行检查，同样先用手机里的安装包。也可以 `acumen update 文件路径` 指定一份。
 - 群里发 `/版本` 看当前版本与有没有新版，`/查更新` 查一次并看更新说明，`/更新` 直接换上并平滑重启——后两条只有号主与管理员能用。
 
 `acumen stop` 与在系统设置里强行停止 Termux 都算主动停止，守护不会再拉起。

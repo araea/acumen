@@ -1,5 +1,14 @@
 # 更新记录
 
+## 1.26.0
+
+- 连不上 GitHub 也能更新：找已经更新的人要一份安装包 `acumen-版本号.gz`（发版时另存在维护者手机的「下载」目录里，经 QQ 或微信发过来就行），在 QQ / 微信里点开下载完，回 Termux 运行 `acumen update` 就换上并重启，全程不联网。不用找文件存在哪：知微会经 root 自己去 QQ、TIM、微信的接收目录和「下载」目录里找，挑签名对得上、版本最新的那份
+- 不进 Termux 也行：群里发 `/更新`、控制台点更新、每次启动和每 6 小时的例行检查，都会先看手机里有没有更新的安装包，有就直接用
+- 也可以指定文件：`acumen update 文件路径`
+- 安装包就是 GitHub 发布页上的 `acumen-termux-aarch64.gz`，签名写在 gzip 头里，经谁转手都先验签、再对校验和才换上；改过或下坏了的不会装
+- 还在 1.25.0 及更早版本的，第一次没有这条路，收到安装包后在 Termux 里粘贴这一行（之后就都是 `acumen update`）：
+  `su -c 'cat "$(ls -t /storage/emulated/0/Android/data/com.tencent.mobileqq/Tencent/QQfile_recv/acumen*.gz /storage/emulated/0/Download/acumen*.gz 2>/dev/null | head -n 1)"' | gzip -dc > ~/acumen/acumen.new && chmod 700 ~/acumen/acumen.new && mv -f ~/acumen/acumen.new ~/acumen/acumen && acumen restart`
+
 ## 1.25.0
 
 - 修正自动回复「明明设好了却不回」：号主（机器人登录的就是这个号）自己在群里发触发词，以前一律不回——最常见的自测方式反而永远看不到效果。现在号主亲手发的话照常回，机器人自己发出去的消息仍不理，不会回复触发回复；不想被自己的规则接话，把新开关「号主自己说也回」（`owner_triggers`）关掉
