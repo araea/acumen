@@ -198,6 +198,10 @@ impl Steering {
 pub(crate) trait ChatBridge: Send + Sync {
     /// 工具调用：`op` + 参数，`call_id` 兼作回执去重键。
     fn call<'a>(&'a self, call_id: &'a str, op: &'a str, params: Value) -> BoxFuture<'a, Value>;
+    /// 这一轮在私聊里（提示词要换一种说法；群管理那一套也不会挂）。
+    fn direct(&self) -> bool {
+        false
+    }
 }
 
 /// 旧写法 `agent`、`agent 模型`、`agent/模型`、`agent:模型`（大小写与全角冒号皆可）：
@@ -335,6 +339,7 @@ impl<'a> AgentRun<'a> {
     pub(crate) fn kit(&self) -> tools::Kit {
         tools::Kit {
             chat: self.bridge.is_some(),
+            direct: self.bridge.as_ref().is_some_and(|bridge| bridge.direct()),
             web: self.web.is_some(),
             seat: self.seat.is_some(),
             owner: self.seat.is_some_and(|seat| seat.asker.owner),
@@ -390,14 +395,14 @@ pub(crate) struct AgentReply {
     pub steered: Vec<String>,
 }
 
-/// 房间在群里说话时的那一份现场：接进能力层要用它开一轮。
+/// 房间接进能力层时的那一份现场。
 ///
-/// 私聊里的房间没有这一份（没有群、也就没有群资料与群动作），拿到的仍是本机
-/// 工具与联网。
+/// 群和私聊都有：发消息、读消息、翻记录、戳一戳、表态、撤回、转发两边一样；
+/// 群多出来的是群资料、群成员与群管理，由 [`Place`] 分辨。
 pub(crate) struct ChatContext {
     pub ctx: crate::event::Context,
     pub writer: crate::adapters::satori::LockedWriter,
-    pub group: String,
+    pub place: crate::plugins::oai::chat::Place,
     /// 这一轮允许做什么：额度、开关、管理群，见 [`crate::plugins::oai::chat::ChatConfig`]。
     pub config: crate::plugins::oai::chat::ChatConfig,
     /// 工具白名单；`None` 表示有什么挂什么。
@@ -461,7 +466,7 @@ pub(crate) async fn conversation(
             let opened = crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
                 ctx: &chat.ctx,
                 writer: &chat.writer,
-                group: chat.group.clone(),
+                place: chat.place.clone(),
                 config: chat.config.clone(),
                 // 房间总是开着：用户问一句就答一句；动手也不必等群聊停下来。
                 enabled: true,

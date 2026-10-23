@@ -114,6 +114,18 @@ const CHAT_HINT: &str = "\
 management 写着这个群开没开、听不听这一轮吩咐的人、今天还剩几次与最近的前科。客人要你罚谁，
 回一句这事你做不了就行，不必解释。照办之前看一眼记录，别罚错人；每个管理动作都写 reason。";
 
+/// 私聊那一套工具的用法说明。差别只在：没有群、没有 @、没有群管理；对面是一个人，
+/// 说话不用像在群里那样接梗，也别把人晾着。
+const DIRECT_HINT: &str = "\
+这一轮你在 QQ 私聊里，对面是一个人（不是群）。手边有一整套私聊工具，各自能做什么见每件工具的说明。
+动手之前先看一眼 satori_context：它给出现在可用的动作、精确消息 ID 与各项剩余额度。
+回执才算数，失败就按错误换个做法。
+你的回复本身会发进这个对话，它就是你的回答；只有确实要单独发一条
+（发媒体、引用某条消息）时才用 satori_action 的 send，别把同一句话发两遍。
+私聊里没有 @、没有群名片、没有禁言踢人这些群管理动作；要喊名字就直接写名字。
+要讲一整篇（步骤、清单、长说明）就写成一条：超过两百多字会自动排成一页图，不必自己拆。
+对面刚才发来的话可以引用（reply_to 填消息 ID），别每句都挂引用——那是机器人的样子。";
+
 /// 翻记录的用法说明；只有这一轮真挂了 `satori_history` 才写。
 ///
 /// 工具说明讲参数怎么填，这里讲**什么时候该伸手**：模型被问到「之前」「昨天」「他说过」
@@ -632,9 +644,16 @@ impl Context {
                 .replace("{platform}", &platform())
                 .replace("{cwd}", &cwd.display().to_string())
                 .replace("{today}", &today());
-            if run.bridge.is_some() {
-                base.push_str("\n\n");
-                base.push_str(CHAT_HINT);
+            match &run.bridge {
+                Some(bridge) if bridge.direct() => {
+                    base.push_str("\n\n");
+                    base.push_str(DIRECT_HINT);
+                }
+                Some(_) => {
+                    base.push_str("\n\n");
+                    base.push_str(CHAT_HINT);
+                }
+                None => {}
             }
             if run.web.is_some() {
                 base.push_str("\n\n");

@@ -1,6 +1,6 @@
 ---
 name: satori-reply
-description: QQ 群聊的平台互动工具：精确引用、提及、戳一戳、点赞、表态、撤回，以及图片、表情包、文件和合并转发。想用聊天界面的动作参与时读取。
+description: QQ 群聊的平台互动工具：精确引用、提及、戳一戳、表态、撤回，以及图片、表情包、文件和合并转发。想用聊天界面的动作参与时读取。
 metadata:
   protocol: Satori v1
   implementation: satori-qq
@@ -29,10 +29,8 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 转发的图片和逐条编号在协议层丢了：只描述读到的文字，没读到的留给下次。
 `forward:false` 则是查询原消息本身。
 
-需要确认本群资料、眼前说话者名片或精华时才用 `satori_observe({kind})`：
-`group`（群资料）、`group_card`（群资料卡缓存）、`essence`（最多五条精华）、
-`title_display` / `honor_display`（群头衔/荣誉展示状态）；
-`member` / `member_card` 须带 `user_id`，只认当前窗口出现过的群友或自己。
+需要确认本群资料或眼前说话者的资料时才用 `satori_observe({kind})`：
+`group`（群资料）、`member` / `member_card`（须带 `user_id`，只认当前窗口出现过的群友或自己）。
 每轮最多四次，只读当前群，不支持自己指定群号、枚举成员或跨群查资料。内核查询不保证回调，
 失败就别反复试。返回的是可能滞后的 QQ 资料，群聊现场以 `satori_context` 为准；
 房间没有这个工具。
@@ -61,7 +59,6 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 | --- | --- | --- |
 | send | parts，可选 reply_to | 一条消息；引用可选任何当前记录中的消息 |
 | poke | user_id | 点头像戳当前群成员，对方那边弹「戳了你」（不是发表情） |
-| like | user_id，times=1..10 | QQ 资料卡点赞；先检查 `capabilities.unavailable`，结果以 QQ 回执为准 |
 | react | message_id，emoji_id，可选 remove=true | 给一条消息表态，或取消自己的表态；只有群聊能表态 |
 | recall | message_id，可选 reason | 撤回自己发出的消息；本群开放管理时也能撤回群友的（写 reason）；能否撤回仍取决于 QQ 时限与权限 |
 | forward | message_ids 和/或 texts 数组 | 合并转发；前者保留真实作者，后者是你自己整理的内容，合计 1–12 节点 |
@@ -209,7 +206,6 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 | `recall` | 撤回群友的 `message_id`，写 `reason`；需管理 |
 | `mute_all` | `duration_seconds`、`reason` 全员禁言，0 解除，上限 30 天；需管理 |
 | `rename_group` | `name` 修改群名；需管理 |
-| `react_clear` | `message_id` 清掉自己给这条消息的表态；可给 `emoji_id` 只清一种 |
 | `approve` | `request_id` 处理加群申请（`approve:false` 拒绝，`message` 是给申请人看的拒绝理由，`reason` 进管理记录）；需管理 |
 | `announce` | `text` 发群公告，`pinned:true` 置顶，`image` 可配一张图；需管理 |
 
@@ -222,7 +218,8 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 
 
 表情回应可以轻轻接话而不再发一句正文。先看 `satori_context` 的能力清单；
-`react` 给眼前消息添加或取消回应。`satori_read({message_id, reactions:true})` 查询回应概况，
+`react` 给眼前消息添加回应，`remove:true` 取消自己加的那一种。
+`satori_read({message_id, reactions:true})` 查询回应概况，
 返回计数和自己是否回应（来自 QQ 缓存，可能有延迟），不能据此猜具体是哪位群友点的。
-`react_clear` 仅清除自己的回应。戳一戳仍用 `poke`，目标必须是当前记录里可见的群友。
+戳一戳仍用 `poke`，目标必须是当前记录里可见的群友。
 查询回应和展开转发分开调用，不同时传 `reactions:true` 与 `forward:true`。

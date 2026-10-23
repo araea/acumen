@@ -1,10 +1,13 @@
-//! 一轮群聊行动的工具出口：写操作串行、回执可见、同一请求只执行一次。
+//! 一轮会话行动的工具出口：写操作串行、回执可见、同一请求只执行一次。
+//!
+//! 群和私聊共用这一份：channel 是二者的唯一区别，群资料、群成员与群管理按
+//! [`super::Place`] 在入口处挡掉。
 //!
 //! `satori_*` 工具由执行层转发进来（见 [`crate::plugins::oai::agent::ChatBridge`]），
 //! [`Bridge::call`] 直接进 [`Session`]：额度、去重、平台拒绝记账都在这一层。
 //! 人格只在这一层之外——需要问一句的地方走 [`super::Persona`]。
 use super::{
-    Authority, ChatConfig, ChatEnv, Persona,
+    Authority, ChatConfig, ChatEnv, Persona, Place,
     actions::{self, Action, Part},
     history, identity, memory, moderation, stickers,
     trigger::Trigger,
@@ -32,10 +35,13 @@ use std::{
 ///
 /// 人格对「自己能做什么」的认知不该只靠 skill 里那张手写的表——文档会过期，
 /// 这份清单和代码一起走，`satori_context` 每次都照它报告。
-pub(crate) const ACTION_KINDS: [&str; 17] = [
+///
+/// 私聊里只剩会真的落到这个会话上的五件：发消息、撤回、戳一戳、表态、合并转发。
+/// 资料卡点赞在 Android QQ 上没有内核入口（见 satori-qq 的 JNI_CAPABILITIES），
+/// 试一次就要白占一次额度，2026-10 从两端一并删掉。
+pub(crate) const GROUP_ACTIONS: [&str; 15] = [
     "send",
     "poke",
-    "like",
     "react",
     "recall",
     "forward",
@@ -47,10 +53,21 @@ pub(crate) const ACTION_KINDS: [&str; 17] = [
     "kick",
     "mute_all",
     "rename_group",
-    "react_clear",
     "approve",
     "announce",
 ];
+
+/// 私聊里能做的：群管理那一批没有对象，@ 也没有意义。
+pub(crate) const DIRECT_ACTIONS: [&str; 5] = ["send", "poke", "react", "recall", "forward"];
+
+/// 这一轮这个会话接受的动作。
+pub(crate) fn action_kinds(place: &Place) -> &'static [&'static str] {
+    if place.is_group() {
+        &GROUP_ACTIONS
+    } else {
+        &DIRECT_ACTIONS
+    }
+}
 
 /// 一轮最多取回几份附件、单份与合计多大。附件落在本轮的工作目录里，轮末随目录清掉。
 const SAVE_FILES: usize = 4;
@@ -82,16 +99,17 @@ impl Scene {
 }
 
 /// 搭话的只读探查白名单。参数全部由本群上下文构造，模型不能传入任意方法名、群号或分页游标。
+/// 搭话的只读探查白名单只留三样会真回数据的：群资料、成员、成员名片卡。
+///
+/// 群资料卡（group_profile_card）与精华列表（group_essence_list）在 QQ 9.3.70 上
+/// 内核不回回调，0.29.0 接入后从未真机通过；头衔/荣誉展示那两个是开关，不是现场。
+/// 它们放在这里只会让模型把动作额度花在永不返回的查询上。
 fn observation(kind: &str, group: &str, user_id: &str) -> Result<(&'static str, Value)> {
     let guild = group;
     Ok(match kind {
         "group" => ("guild.get", json!({"guild_id":guild})),
         "member" => ("guild.member.get", json!({"guild_id":guild,"user_id":user_id})),
         "member_card" => ("internal/group_member_card", json!({"guild_id":guild,"user_id":user_id})),
-        "group_card" => ("internal/group_profile_card", json!({"guild_id":guild,"fetch_mode":"KFROMCACHE"})),
-        "essence" => ("internal/group_essence_list", json!({"guild_id":guild,"page_start":0,"page_limit":5})),
-        "title_display" => ("internal/title_display", json!({"guild_id":guild})),
-        "honor_display" => ("internal/honor_display", json!({"guild_id":guild})),
         _ => anyhow::bail!("未知环境探查类型：{kind}"),
     })
 }
@@ -137,7 +155,6 @@ fn capability(action: &Action) -> &'static str {
     match action {
         Action::Send { .. } => "send",
         Action::Poke { .. } => "poke",
-        Action::Like { .. } => "like",
         Action::React { .. } => "react",
         Action::Recall { .. } => "recall",
         Action::Forward { .. } => "forward",
@@ -149,7 +166,6 @@ fn capability(action: &Action) -> &'static str {
         Action::Kick { .. } => "kick",
         Action::MuteAll { .. } => "mute_all",
         Action::RenameGroup { .. } => "rename_group",
-        Action::ReactClear { .. } => "react_clear",
         Action::Approve { .. } => "approve",
         Action::Announce { .. } => "announce",
     }
@@ -163,6 +179,8 @@ pub(crate) struct Bridge {
     session: Arc<tokio::sync::Mutex<Session>>,
     attempted: Arc<AtomicBool>,
     seq: Arc<AtomicU64>,
+    /// 这一轮是私聊。会话建好后不会再变，所以留在外面，免得为一个布尔加锁。
+    direct: bool,
 }
 impl Bridge {
     /// 走完整信封：`id` 用于回执去重，`op` 取自请求本身。
@@ -194,6 +212,9 @@ impl Bridge {
 
 /// 接进 agent 执行层的聊天界面出口（见 [`crate::plugins::oai::agent::ChatBridge`]）。
 impl crate::plugins::oai::agent::ChatBridge for Bridge {
+    fn direct(&self) -> bool {
+        self.direct
+    }
     fn call<'a>(
         &'a self,
         call_id: &'a str,
@@ -204,10 +225,21 @@ impl crate::plugins::oai::agent::ChatBridge for Bridge {
     }
 }
 
+/// 一轮里只发一次的两种 QQ 状态。
+#[derive(Clone, Copy)]
+enum Hint {
+    Read,
+    Typing,
+}
+
 struct Session {
     ctx: Context,
     writer: LockedWriter,
-    group: String,
+    /// 这一轮在群还是私聊；群才有的能力都从这里判断。
+    place: Place,
+    /// Satori 的 channel id：群里就是群号，私聊是 private:<QQ号>。发消息、读消息、
+    /// 翻记录、戳一戳都以它为目标。
+    channel: String,
     config: ChatConfig,
     persona: Option<Arc<dyn Persona>>,
     scratch: PathBuf,
@@ -235,9 +267,6 @@ struct Session {
     started: Instant,
     receipts: HashMap<String, Value>,
     capabilities: Value,
-    own_reactions: HashMap<String, Vec<String>>,
-    /// 平台明确拒绝过的能力（动作名 → 给模型的解释）。见 [`Session::refused`]。
-    refusals: HashMap<&'static str, String>,
     /// 这个群现在开着吗；停用之后这一轮什么都不做。
     enabled: bool,
     /// 动手之前要不要确认群聊没有往前走。
@@ -266,7 +295,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
     let ChatEnv {
         ctx,
         writer,
-        group,
+        place,
         config,
         enabled,
         require_fresh,
@@ -279,12 +308,15 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
     } = env;
     // 起点记下群聊现场走到哪一步：模型读完 `satori_context` 之后，这里就是它看过
     // 的那一版；期间群里又有人说话，动手之前就会被拦下。
-    let seq = Arc::new(AtomicU64::new(window::with_group(&group, |s| s.seq)));
+    let channel = place.channel();
+    let direct = !place.is_group();
+    let seq = Arc::new(AtomicU64::new(window::with_group(&channel, |s| s.seq)));
     let attempted = Arc::new(AtomicBool::new(false));
     let session = Session {
         ctx: ctx.clone(),
         writer: writer.clone(),
-        group,
+        place,
+        channel,
         config: config.clone(),
         persona,
         scratch: scratch.to_path_buf(),
@@ -309,8 +341,6 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         started: Instant::now(),
         receipts: HashMap::new(),
         capabilities: Value::Null,
-        own_reactions: HashMap::new(),
-        refusals: HashMap::new(),
         enabled,
         require_fresh,
         scene,
@@ -322,6 +352,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         session: Arc::new(tokio::sync::Mutex::new(session)),
         attempted,
         seq,
+        direct,
     })
 }
 
@@ -331,7 +362,7 @@ impl Session {
     /// 窗口那一侧直接读常驻窗口；房间那一侧向平台要最近一页，一轮只取一次。
     async fn scene_turns(&mut self, count: usize) -> Vec<Turn> {
         match self.scene {
-            Scene::Window => window::with_group(&self.group, |state| state.recent(count)),
+            Scene::Window => window::with_group(&self.channel, |state| state.recent(count)),
             Scene::Channel => {
                 if self.page.is_none() {
                     self.page = self.fetch_page(count).await.ok();
@@ -367,7 +398,12 @@ impl Session {
         let me = self.ctx.bot.self_id();
         let mentioned: Vec<String> = trigger.mentions.into_iter().filter(|id| *id != me).collect();
         if !mentioned.is_empty() {
-            let names = history::names_of(&self.ctx.db, &self.group, &mentioned).await;
+            let names = history::names_of(
+                &self.ctx.db,
+                history::Scope::guild(&self.channel),
+                &mentioned,
+            )
+            .await;
             block["mentions"] = mentioned
                 .iter()
                 .map(|id| json!({"user_id": id, "name": names.get(id)}))
@@ -395,13 +431,13 @@ impl Session {
         let raw = self
             .rpc(
                 "message.get",
-                json!({"channel_id":self.group.clone(),"message_id":id.clone()}),
+                json!({"channel_id":self.channel.clone(),"message_id":id.clone()}),
             )
             .await?;
         // 消息号是模型给的：平台若按号全局查，就得认一认它确实是本群的，别让这条路
         // 变成读别的群的入口。
         if let Some(channel) = raw.pointer("/channel/id").and_then(Value::as_str) {
-            ensure!(channel == self.group, "这条消息不在本群");
+            ensure!(channel == self.channel, "这条消息不在这个会话");
         }
         turn_from_platform(&self.ctx, &self.writer, &raw)
             .ok_or_else(|| anyhow::anyhow!("QQ 没有返回这条消息"))
@@ -423,7 +459,7 @@ impl Session {
             let raw = self
                 .rpc(
                     "message.get",
-                    json!({"channel_id":self.group.clone(),"message_id":id.clone()}),
+                    json!({"channel_id":self.channel.clone(),"message_id":id.clone()}),
                 )
                 .await?;
             if let Some(turn) = turn_from_platform(&self.ctx, &self.writer, &raw) {
@@ -447,7 +483,7 @@ impl Session {
         let page = self
             .rpc(
                 "message.list",
-                json!({"channel_id":self.group.clone(),"limit":count.clamp(1,100)}),
+                json!({"channel_id":self.channel.clone(),"limit":count.clamp(1,100)}),
             )
             .await?;
         let Some(items) = page["data"].as_array() else {
@@ -466,14 +502,14 @@ impl Session {
     fn current(&self) -> bool {
         self.enabled
             && (!self.require_fresh
-                || window::with_group(&self.group, |s| s.seq) == self.seq.load(Ordering::SeqCst))
+                || window::with_group(&self.channel, |s| s.seq) == self.seq.load(Ordering::SeqCst))
     }
     /// 打完字那一刻还发不发：比 [`Self::current`] 宽一条——打字的工夫里群里冒出
     /// 一句无关的，人照样会发出去；来了好几句、或者有人点了名，就得重看现场。
     fn sendable(&self) -> bool {
         self.enabled
             && (!self.require_fresh
-                || window::with_group(&self.group, |s| {
+                || window::with_group(&self.channel, |s| {
                     s.drift(self.seq.load(Ordering::SeqCst)) <= 1 && !s.has_unread_mention()
                 }))
     }
@@ -499,7 +535,12 @@ impl Session {
     async fn execute(&mut self, request: &Value) -> Result<Value> {
         match request["op"].as_str().unwrap_or("") {
             "context" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
+                // 看一眼就是读过了：真人打开会话也会把未读消掉。一次会话只发一次。
+                if !self.read_marked {
+                    self.hint(Hint::Read);
+                    self.read_marked = true;
+                }
                 if self.capabilities.is_null() {
                     self.capabilities = self.describe_capabilities().await;
                 }
@@ -507,7 +548,7 @@ impl Session {
                 // 免得人格把一个已知按不动的按钮当成还没试过的。
                 let mut capabilities = self.capabilities.clone();
                 capabilities["management_enabled"] = json!(self.management_enabled());
-                let unavailable: serde_json::Map<String, Value> = ACTION_KINDS
+                let unavailable: serde_json::Map<String, Value> = action_kinds(&self.place)
                     .iter()
                     .filter_map(|kind| {
                         platform_refusal(&self.refusal_scope(), kind).map(|why| ((*kind).to_string(), json!(why)))
@@ -516,7 +557,7 @@ impl Session {
                 capabilities["unavailable"] = Value::Object(unavailable);
                 let count = self.config.context_turns.clamp(1, 80);
                 let (seq, turns, rhythm) = match self.scene {
-                    Scene::Window => window::with_group(&self.group, |s| {
+                    Scene::Window => window::with_group(&self.channel, |s| {
                         s.take_mention();
                         (s.seq, s.recent(count), s.rhythm())
                     }),
@@ -531,7 +572,7 @@ impl Session {
                 let persona = self
                     .persona
                     .as_ref()
-                    .map_or(Value::Null, |persona| persona.scene(&self.group, &turns, &rhythm));
+                    .map_or(Value::Null, |persona| persona.scene(&self.channel, &turns, &rhythm));
                 let turns: Vec<Value> = turns.iter().map(|t| json!({
                     "message_id":t.message_id.clone(),"user_id":t.user_id.clone(),"name":t.name,
                     "text":t.text,"from_me":t.from_me,"time":t.at,"elements":t.elements,
@@ -548,17 +589,26 @@ impl Session {
                     }
                 }
                 // 还没认过这个群就先问一遍「我在这个群里是谁」；有缓存时是一个空转。
-                if identity::of(&self.group).is_none() {
+                // 私聊里没有群身份，跳过。
+                if self.place.is_group() && identity::of(&self.channel).is_none() {
                     let avatar = self.persona.as_ref().and_then(|persona| persona.avatar());
-                    identity::refresh(&self.ctx, &self.writer, avatar.as_ref(), &self.group).await;
+                    identity::refresh(&self.ctx, &self.writer, avatar.as_ref(), &self.channel).await;
                 }
-                let identity = identity::of(&self.group).map(|identity| json!({
-                    "name": identity.name, "card": identity.card, "display": identity.display(),
-                    "title": identity.title, "role": identity.role, "joined_at": identity.joined_at,
-                    "group_name": identity.group_name, "avatar": identity.avatar,
-                }));
+                let identity = self.place.is_group().then(|| {
+                    identity::of(&self.channel).map(|identity| json!({
+                        "name": identity.name, "card": identity.card, "display": identity.display(),
+                        "title": identity.title, "role": identity.role, "joined_at": identity.joined_at,
+                        "group_name": identity.group_name, "avatar": identity.avatar,
+                    }))
+                }).flatten();
+                // 私聊里「对面是谁」就是这一轮唯一的对方；群里的成员关系另有一份。
+                let peer = match &self.place {
+                    Place::Direct { user_id, name, .. } => json!({"user_id":user_id,"name":name}),
+                    Place::Group { .. } => Value::Null,
+                };
                 Ok(
-                    json!({"revision":seq,"group_id":self.group.clone(),"self_id":self.ctx.bot.login_user.get().id,
+                    json!({"revision":seq,"group_id":self.place.guild(),"channel_id":self.channel.clone(),"self_id":self.ctx.bot.login_user.get().id,
+                    "place":if self.place.is_group(){"群聊"}else{"私聊"},"peer":peer,
                     "identity":identity,
                     "now":super::now_context(),
                     "register":persona.get("register").and_then(Value::as_str).unwrap_or(""),
@@ -567,7 +617,7 @@ impl Session {
                     "trigger":trigger,
                     "capabilities":capabilities,"management":management,"rhythm":rhythm,"messages":turns,"media":media,
                     "observations_remaining":if self.scene == Scene::Window {4usize.saturating_sub(self.observations)} else {0},
-                    "environment_lookups":if self.scene == Scene::Window {json!(["group","member","member_card","group_card","essence","title_display","honor_display"])} else {json!([])},
+                    "environment_lookups":if self.scene == Scene::Window {json!(["group","member","member_card"])} else {json!([])},
                     "writes_remaining":self.config.actions_budget.clamp(1,12).saturating_sub(self.writes),
                     "messages_remaining":self.config.messages_budget.clamp(1,5).saturating_sub(self.messages),
                     "draws_remaining":self.config.draw_budget.clamp(0,8).saturating_sub(self.draws),
@@ -577,7 +627,7 @@ impl Session {
                 )
             }
             "read" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 let id = request["message_id"].as_str().unwrap_or("");
                 let turn = self.turn_of(id).await?;
                 ensure!(!(request["reactions"].as_bool().unwrap_or(false) && request["forward"].as_bool().unwrap_or(false)), "回应查询与转发展开请分开调用");
@@ -590,7 +640,7 @@ impl Session {
                     if request["forward"].as_bool().unwrap_or(false) {
                         let source = forward::source_of(&turn.elements, Some(turn.message_id.clone()))
                             .ok_or_else(|| anyhow::anyhow!("该消息不是合并转发"))?
-                            .in_channel(self.group.clone());
+                            .in_channel(self.channel.clone());
                         let view = forward::expand(&self.ctx, &self.writer, source).await;
                         ensure!(!view.is_empty(), "合并转发没有读到内容");
                         let elements: Vec<Segment> = view
@@ -607,11 +657,11 @@ impl Session {
                         .await;
                 }
                 if request["reactions"].as_bool().unwrap_or(false) {
-                    self.rpc("internal/reaction_summary", json!({"channel_id":self.group.clone(),"message_id":id})).await
+                    self.rpc("internal/reaction_summary", json!({"channel_id":self.channel.clone(),"message_id":id})).await
                 } else if request["forward"].as_bool().unwrap_or(false) {
                     let source = forward::source_of(&turn.elements, Some(turn.message_id.clone()))
                         .ok_or_else(|| anyhow::anyhow!("该消息不是合并转发"))?
-                        .in_channel(self.group.clone());
+                        .in_channel(self.channel.clone());
                     let view = forward::expand(&self.ctx, &self.writer, source).await;
                     ensure!(
                         !view.is_empty(),
@@ -643,14 +693,14 @@ impl Session {
                     let message = self
                         .rpc(
                             "message.get",
-                            json!({"channel_id":self.group.clone(),"message_id":id}),
+                            json!({"channel_id":self.channel.clone(),"message_id":id}),
                         )
                         .await?;
                     Ok(message)
                 }
             }
             "observe" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 ensure!(self.scene == Scene::Window, "环境探查只对搭话开放；房间使用现有上下文和精确消息读取");
                 ensure!(self.ctx.bot.adapter == "satori-qq", "环境探查需要 satori-qq");
                 ensure!(self.observations < 4, "本轮环境探查次数已用完");
@@ -659,10 +709,10 @@ impl Session {
                 // 只允许查本群窗口里真实出现过的人，不能把 QQ 号当成任意资料查询入口。
                 if matches!(kind, "member" | "member_card") {
                     ensure!(user_id.parse::<i64>().is_ok_and(|id| id > 0), "需要有效的群成员 QQ 号");
-                    let known = window::with_group(&self.group, |state| state.recent(80).iter().any(|t| t.user_id == user_id));
+                    let known = window::with_group(&self.channel, |state| state.recent(80).iter().any(|t| t.user_id == user_id));
                     ensure!(known || user_id == self.ctx.bot.login_user.get().id, "只可探查当前群聊中出现的成员或自己");
                 }
-                let (method, params) = observation(kind, &self.group, user_id)?;
+                let (method, params) = observation(kind, &self.channel, user_id)?;
                 if method.starts_with("internal/") {
                     if self.capabilities.is_null() {
                         self.capabilities = self.describe_capabilities().await;
@@ -677,13 +727,18 @@ impl Session {
                 Ok(json!({"kind":kind,"data":data,"source":method,"note":"QQ 内核资料可能滞后；返回值不等于实时现场，以回执和群聊记录为准"}))
             }
             "history" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 let limits = self.scene.history();
                 ensure!(self.histories < limits.lookups, "本轮翻记录的次数已用完");
                 // 查询失败也计入：记录库打不开时反复重试没有意义。
                 self.histories += 1;
                 let me = self.ctx.bot.self_id();
-                let found = history::search(&self.ctx.db, &self.group, &me, limits, request).await?;
+                let scope = if self.place.is_group() {
+                    history::Scope::guild(&self.channel)
+                } else {
+                    history::Scope::channel(&self.channel)
+                };
+                let found = history::search(&self.ctx.db, scope, &me, limits, request).await?;
                 // 翻到的原文算「眼前」：之后说「上次有人提过……」不会被翻旧账守卫咽回。
                 self.consulted.extend(
                     found["messages"]
@@ -695,7 +750,7 @@ impl Session {
                 Ok(found)
             }
             "draw" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "绘图提示词先给几个字");
@@ -754,7 +809,7 @@ impl Session {
                 }))
             }
             "music" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "写歌得先说清楚写一首什么样的歌");
@@ -840,7 +895,7 @@ impl Session {
                 }))
             }
             "video" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 ensure!(self.current(), "群聊已更新，先读 satori_context 再决定");
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "拍片得先说清楚要拍什么");
@@ -899,7 +954,7 @@ impl Session {
                 }))
             }
             "memo" => {
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
                 ensure!(self.config.memory_enabled, "本群已关闭记忆");
                 let budget = self.config.memo_budget.clamp(0, 8);
                 ensure!(
@@ -927,7 +982,7 @@ impl Session {
                             .find(|turn| turn.user_id == id)
                             .map(|turn| turn.name.clone())
                             .unwrap_or_default();
-                        memory::edit(&self.group, |memory| {
+                        memory::edit(&self.channel, |memory| {
                             memory.see(&id, &name, now);
                             if let Some(address) = address {
                                 memory.address(&id, address)?;
@@ -943,33 +998,33 @@ impl Session {
                 if let Some(notes) = request["notes"].as_array() {
                     for note in notes.iter().take(8) {
                         let text = note.as_str().unwrap_or("");
-                        memory::edit(&self.group, |memory| memory.jot(text, now))?;
+                        memory::edit(&self.channel, |memory| memory.jot(text, now))?;
                         done.push("记下一件事".to_string());
                     }
                 }
                 for entry in request["forget_people"].as_array().into_iter().flatten() {
                     let id = actions::id(entry.as_str().unwrap_or(""))?;
-                    if memory::edit(&self.group, |memory| memory.forget(&id)) {
+                    if memory::edit(&self.channel, |memory| memory.forget(&id)) {
                         done.push(format!("忘掉 {id}"));
                     }
                 }
                 for entry in request["forget_notes"].as_array().into_iter().flatten() {
                     let text = entry.as_str().unwrap_or("");
-                    if memory::edit(&self.group, |memory| memory.drop_note(text)) {
+                    if memory::edit(&self.channel, |memory| memory.drop_note(text)) {
                         done.push("忘掉一件事".to_string());
                     }
                 }
                 for entry in request["forget_claims"].as_array().into_iter().flatten() {
                     let text = entry.as_str().unwrap_or("");
-                    if memory::edit(&self.group, |memory| memory.drop_claim(text)) {
+                    if memory::edit(&self.channel, |memory| memory.drop_claim(text)) {
                         done.push("忘掉一条自己说过的话".to_string());
                     }
                 }
                 ensure!(!done.is_empty(), "没有可写入的记忆内容");
-                memory::flush_now(&self.group).await;
+                memory::flush_now(&self.channel).await;
                 Ok(json!({
                     "applied": done,
-                    "summary": memory::with_group(&self.group, |memory| memory.summary()),
+                    "summary": memory::with_group(&self.channel, |memory| memory.summary()),
                     "memos_remaining": budget.saturating_sub(self.memos),
                 }))
             }
@@ -977,7 +1032,21 @@ impl Session {
                 // 一旦选择工具动作，就不再把最终解释当作第二份消息发送。
                 self.attempted.store(true, Ordering::SeqCst);
                 let action: Action = serde_json::from_value(request["request"].clone())?;
-                ensure!(self.enabled(), "本群的群聊功能已停用");
+                ensure!(self.enabled(), "{}的聊天功能已停用", self.place.label());
+                // 群管理在私聊里没有对象，@ 也没有意义。在参数校验之前就挡下，
+                // 模型不用等一次注定失败的回执。
+                ensure!(
+                    self.place.is_group() || !action.needs_group(),
+                    "私聊里没有群管理动作；能做的只有发消息、撤回、戳一戳、表态和合并转发"
+                );
+                if !self.place.is_group()
+                    && let Action::Send { parts, .. } = &action
+                {
+                    ensure!(
+                        !parts.iter().any(|part| matches!(part, Part::At { .. })),
+                        "私聊里没有 @，直接叫名字就行"
+                    );
+                }
                 let mut turns = self.scene_turns(80).await;
                 self.hydrate(&action, &mut turns).await?;
                 let me = self.ctx.bot.login_user.get().id.clone();
@@ -990,6 +1059,10 @@ impl Session {
                     "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
                 );
                 let target = if managing {
+                    ensure!(
+                        self.place.is_group(),
+                        "私聊里只能撤回自己发的消息；要处理别人的话，回一句就行"
+                    );
                     self.check_management(&action, &mut turns, &me).await?
                 } else {
                     Target::default()
@@ -1017,7 +1090,7 @@ impl Session {
                         });
                         all
                     };
-                    if let Some(reason) = persona.vet_text(&self.group, &body, &seen) {
+                    if let Some(reason) = persona.vet_text(&self.channel, &body, &seen) {
                         anyhow::bail!("{reason}");
                     }
                 }
@@ -1043,24 +1116,16 @@ impl Session {
                     self.log_management(&action, target).await;
                 }
                 if let Err(ref error) = result {
-                    if self.remember_refusal(&action, error) {
-                        // 服务端直接判定不允许，动作没有到达聊天：退回额度，别让它算作用掉一次。
-                        self.writes -= 1;
-                        if action.is_message() {
-                            self.messages -= 1;
-                        }
-                    } else {
-                        // 其余错误进入下一轮上下文；网络超时可能已经成功，不自动重放。
-                        self.record(
-                            format!(
-                                "[动作未确认 {}：{}；结果未知，换个做法更稳]",
-                                request["request"]["action"], error
-                            ),
-                            String::new(),
-                            Message::new(),
-                            false,
-                        );
-                    }
+                    // 失败进入下一轮上下文；网络超时可能已经成功，不自动重放。
+                    self.record(
+                        format!(
+                            "[动作未确认 {}：{}；结果未知，换个做法更稳]",
+                            request["request"]["action"], error
+                        ),
+                        String::new(),
+                        Message::new(),
+                        false,
+                    );
                 }
                 result
             }
@@ -1099,8 +1164,8 @@ impl Session {
             .and_then(|value| value.get("removed"))
             .and_then(Value::as_object)
         {
-            for kind in ACTION_KINDS {
-                let Some(why) = removed.get(kind).and_then(Value::as_str) else {
+            for kind in action_kinds(&self.place) {
+                let Some(why) = removed.get(*kind).and_then(Value::as_str) else {
                     continue;
                 };
                 remember_platform_refusal(
@@ -1109,14 +1174,24 @@ impl Session {
                 );
             }
         }
-        let own_member = self.rpc("guild.member.get", json!({"guild_id":self.group.clone(),"user_id":self.ctx.bot.login_user.get().id})).await;
-        let environment = match own_member {
-            Ok(member) => {
-                json!({"self_member":member,"observed_at":chrono::Utc::now().timestamp_millis()})
+        // 私聊里没人在群名册上，别为一个没有对象的问题花一次内核调用。
+        let environment = if self.place.is_group() {
+            match self
+                .rpc(
+                    "guild.member.get",
+                    json!({"guild_id":self.channel.clone(),"user_id":self.ctx.bot.login_user.get().id}),
+                )
+                .await
+            {
+                Ok(member) => {
+                    json!({"self_member":member,"observed_at":chrono::Utc::now().timestamp_millis()})
+                }
+                Err(e) => {
+                    json!({"self_member":null,"error":e.to_string(),"observed_at":chrono::Utc::now().timestamp_millis()})
+                }
             }
-            Err(e) => {
-                json!({"self_member":null,"error":e.to_string(),"observed_at":chrono::Utc::now().timestamp_millis()})
-            }
+        } else {
+            json!({"self_member":null,"observed_at":chrono::Utc::now().timestamp_millis()})
         };
         let mut out = json!({
             "adapter": self.ctx.bot.adapter,
@@ -1126,12 +1201,11 @@ impl Session {
             "qq_extensions": qq,
             "login_status": login.as_ref().and_then(|login| login.get("status")),
             "platform_features": features,
-            "actions": ACTION_KINDS,
+            "actions": action_kinds(&self.place),
             "note": "以回执为准；这里列的是参数层面接受什么，不保证 QQ 服务端每次都放行。",
         });
         if !qq {
-            out["note"] =
-                json!("当前适配器未声明 QQ 扩展：戳一戳与资料卡点赞不可用，其余以回执为准。");
+            out["note"] = json!("当前适配器未声明 QQ 扩展：戳一戳不可用，其余以回执为准。");
         }
         out
     }
@@ -1144,54 +1218,31 @@ impl Session {
 
 
     /// 已知不可用的能力；有值就直接回绝，不占动作额度。
-    /// 先看本轮的记账，再看跨轮那份（平台限制不会因为换了一轮就消失）。
-    fn refused(&self, action: &Action) -> Option<String> {
-        let key = capability(action);
-        self.refusals
-            .get(key)
-            .cloned()
-            .or_else(|| platform_refusal(&self.refusal_scope(), key))
-    }
-    /// 记录一次「服务端明确拒绝、动作从未到达聊天」的失败，并返回它是否属于这一类。
     ///
-    /// 只认平台自己给出的判定语句。网络超时的结果是未知的，绝不能算进来——
-    /// 那会让一次可能已经送达的操作被当成没发生。
-    fn remember_refusal(&mut self, action: &Action, error: &anyhow::Error) -> bool {
-        let text = format!("{error:#}");
-        let refusal = match action {
-            // 资料卡点赞自 2026 年起被腾讯按 appid 限流，整段 oidb 被服务端驳回。
-            Action::Like { .. }
-                if text.contains("send_like failed") || text.contains("not match appid") =>
-            {
-                "QQ 拒绝了这个账号的资料卡点赞（平台限制，不是参数问题）。这一轮换个法子回应更划算。"
-            }
-            // satori-qq 0.23.0 起只走 JNI 层，资料卡点赞（要 QQ 的 WUP/Handler 通道）不在了。
-            // 实现端会给 `code=removed_action`，按它认，别去匹配会变的中文文案。
-            Action::Like { .. } if text.contains("removed_action") => {
-                "实现端已不再提供资料卡点赞（0.23.0 起只走 JNI 层）。这一轮换个法子回应更划算。"
-            }
-            _ => return false,
-        };
-        let reason = format!("{refusal}原始回执：{text}");
-        remember_platform_refusal(&self.refusal_scope(), capability(action), &reason);
-        self.refusals.insert(capability(action), reason);
-        true
+    /// 名单来自实现端自报的 removed，以及历史上撞过的平台拒绝——两者都按能力记在
+    /// 进程级，换个会话也算数。
+    fn refused(&self, action: &Action) -> Option<String> {
+        platform_refusal(&self.refusal_scope(), capability(action))
     }
     fn enabled(&self) -> bool {
         self.enabled
     }
     /// 账号自己在这个群里的身份：本轮问过平台就用那一份，否则用群身份缓存。
     fn own_role(&self) -> String {
+        if !self.place.is_group() {
+            return String::new();
+        }
         self.capabilities
             .pointer("/environment/self_member/roles/0/id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or_else(|| identity::of(&self.group).map(|identity| identity.role))
+            .or_else(|| identity::of(&self.channel).map(|identity| identity.role))
             .unwrap_or_default()
     }
-    /// 这个群允许执行群管理动作吗（见 [`super::management_open`]）。
+    /// 这个群允许执行群管理动作吗（见 [`super::management_open`]）。私聊永远不开放。
     fn management_enabled(&self) -> bool {
-        super::management_open(&self.config, &self.group, &self.own_role())
+        self.place.is_group()
+            && super::management_open(&self.config, &self.channel, &self.own_role())
     }
     /// 递给模型的管理那一栏：开没开、听谁的、今天还剩几次、最近的前科。
     async fn management_block(&self) -> Value {
@@ -1203,10 +1254,10 @@ impl Session {
             Value::Null
         } else {
             json!(daily.saturating_sub(
-                moderation::used_since(&self.group, moderation::today_start()).await
+                moderation::used_since(&self.channel, moderation::today_start()).await
             ))
         };
-        let recent: Vec<Value> = moderation::recent(&self.group, chrono::Utc::now().timestamp())
+        let recent: Vec<Value> = moderation::recent(&self.channel, chrono::Utc::now().timestamp())
             .await
             .into_iter()
             .map(|entry| {
@@ -1229,7 +1280,7 @@ impl Session {
             },
             "today_remaining": remaining,
             "recent": recent,
-            "requests": crate::requests::pending(&self.group)
+            "requests": crate::requests::pending(&self.channel)
                 .into_iter()
                 .map(|request| {
                     let time = chrono::DateTime::from_timestamp(request.at, 0)
@@ -1264,7 +1315,7 @@ impl Session {
         );
         let daily = self.config.management_daily;
         if daily > 0 && !action.lifts() {
-            let used = moderation::used_since(&self.group, moderation::today_start()).await;
+            let used = moderation::used_since(&self.channel, moderation::today_start()).await;
             ensure!(
                 used < daily,
                 "本群今天的管理动作已到上限（{daily} 次）。真要紧就在群里喊号主或别的管理员"
@@ -1274,7 +1325,7 @@ impl Session {
             Action::Recall { message_id, .. } => actions::message(turns, message_id)?.user_id.clone(),
             // 申请人还不是群成员，名册里查不到；账上有这条申请就够了。
             Action::Approve { request_id, .. } => {
-                let request = crate::requests::find(&self.group, request_id).ok_or_else(|| {
+                let request = crate::requests::find(&self.channel, request_id).ok_or_else(|| {
                     anyhow::anyhow!("本群没有这条待处理的加群申请（可能已被别的管理员处理）；看 satori_context 的 management.requests")
                 })?;
                 return Ok(Target { user_id: request.user_id, name: String::new() });
@@ -1314,7 +1365,7 @@ impl Session {
         let member = self
             .rpc(
                 "guild.member.get",
-                json!({"guild_id":self.group.clone(),"user_id":uid.clone()}),
+                json!({"guild_id":self.channel.clone(),"user_id":uid.clone()}),
             )
             .await;
         let member = match member {
@@ -1355,10 +1406,10 @@ impl Session {
         info!(
             target: super::LOG_TARGET,
             "群 {} 管理动作 {kind} {}（{}）{}秒，经手：{by}，理由：{}",
-            self.group, target.name, target.user_id, seconds, action.reason()
+            self.channel, target.name, target.user_id, seconds, action.reason()
         );
         moderation::record(
-            &self.group,
+            &self.channel,
             moderation::Entry {
                 at: chrono::Utc::now().timestamp(),
                 action: kind.to_string(),
@@ -1414,7 +1465,7 @@ impl Session {
             if let Some(id) = stickers::keep(
                 &segment,
                 source,
-                &self.group,
+                &self.channel,
                 note,
                 bytes.as_deref(),
                 self.config.sticker_max,
@@ -1478,7 +1529,9 @@ impl Session {
             .ok_or_else(|| anyhow::anyhow!("上传未返回资源"))
     }
     async fn perform(&mut self, action: &Action, turns: &[Turn]) -> Result<Value> {
-        let group = self.group.clone();
+        let channel = self.channel.clone();
+        // 群才有的动作已经在 execute 里挡掉了；这里取群号只是为了让参数拼得对。
+        let guild = self.place.guild().unwrap_or_default().to_string();
         let (method, params, summary) = match action {
             Action::Send { parts, reply_to } => {
                 // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
@@ -1644,13 +1697,8 @@ impl Session {
             }
             Action::Poke { user_id } => (
                 "internal/poke",
-                json!({"guild_id":group,"user_id":user_id}),
+                json!({"channel_id":channel,"user_id":user_id}),
                 format!("[戳一戳 {user_id}]"),
-            ),
-            Action::Like { user_id, times } => (
-                "internal/like",
-                json!({"user_id":user_id,"times":times}),
-                format!("[给 {user_id} 资料卡点赞 {times} 次]"),
             ),
             Action::React {
                 message_id,
@@ -1662,7 +1710,7 @@ impl Session {
                 } else {
                     "reaction.create"
                 },
-                json!({"channel_id":group,"message_id":message_id,"emoji_id":emoji_id}),
+                json!({"channel_id":channel,"message_id":message_id,"emoji_id":emoji_id}),
                 format!(
                     "[{}消息 {message_id} 的表态 {emoji_id}]",
                     if *remove { "取消" } else { "添加" }
@@ -1670,22 +1718,22 @@ impl Session {
             ),
             Action::Sign => (
                 "internal/sign",
-                json!({"guild_id":group}),
+                json!({"guild_id":guild}),
                 "[群签到]".into(),
             ),
             Action::Card { user_id, card } => (
                 "internal/card",
-                json!({"guild_id":group,"user_id":user_id.as_deref().unwrap_or(&self.ctx.bot.login_user.get().id),"card":card}),
+                json!({"guild_id":guild,"user_id":user_id.as_deref().unwrap_or(&self.ctx.bot.login_user.get().id),"card":card}),
                 format!("[设置群名片：{card}]"),
             ),
             Action::Title { user_id, title } => (
                 "internal/special_title",
-                json!({"guild_id":group,"user_id":user_id,"title":title}),
+                json!({"guild_id":guild,"user_id":user_id,"title":title}),
                 format!("[设置 {user_id} 的群头衔：{title}]"),
             ),
             Action::Essence { message_id, remove } => (
                 "internal/essence",
-                json!({"guild_id":group,"message_id":message_id,"remove":remove}),
+                json!({"guild_id":guild,"message_id":message_id,"remove":remove}),
                 format!(
                     "[{}精华消息 {message_id}]",
                     if *remove { "取消" } else { "设置" }
@@ -1697,21 +1745,21 @@ impl Session {
                 ..
             } => (
                 "guild.member.mute",
-                json!({"guild_id":group,"user_id":user_id,"duration":u64::from(*duration_seconds)*1000}),
+                json!({"guild_id":guild,"user_id":user_id,"duration":u64::from(*duration_seconds)*1000}),
                 format!("[禁言 {user_id} {duration_seconds} 秒；0 为解除]"),
             ),
             Action::Kick {
                 user_id, permanent, ..
             } => (
                 "guild.member.kick",
-                json!({"guild_id":group,"user_id":user_id,"permanent":permanent}),
+                json!({"guild_id":guild,"user_id":user_id,"permanent":permanent}),
                 format!("[移出群成员 {user_id}]"),
             ),
             Action::MuteAll {
                 duration_seconds, ..
             } => (
                 "channel.mute",
-                json!({"channel_id":group,"duration":u64::from(*duration_seconds)*1000}),
+                json!({"channel_id":channel,"duration":u64::from(*duration_seconds)*1000}),
                 format!("[全员禁言 {duration_seconds} 秒；0 为解除]"),
             ),
             Action::Approve {
@@ -1720,7 +1768,7 @@ impl Session {
                 message,
                 ..
             } => {
-                let request = crate::requests::find(&group, request_id)
+                let request = crate::requests::find(&guild, request_id)
                     .ok_or_else(|| anyhow::anyhow!("这条加群申请已经不在了"))?;
                 let params = json!({"message_id":request.flag,"approve":approve,"comment":message});
                 let verdict = if *approve { "同意" } else { "拒绝" };
@@ -1739,7 +1787,7 @@ impl Session {
                 pinned,
                 image,
             } => {
-                let mut params = json!({"guild_id":group,"text":text.trim(),"pinned":pinned});
+                let mut params = json!({"guild_id":guild,"text":text.trim(),"pinned":pinned});
                 if let Some(image) = image {
                     params["image"] = json!(self.source(image.trim(), "announce.png").await?);
                 }
@@ -1751,34 +1799,12 @@ impl Session {
             }
             Action::RenameGroup { name } => (
                 "channel.update",
-                json!({"channel_id":group,"data":{"name":name}}),
+                json!({"channel_id":channel,"data":{"name":name}}),
                 format!("[群名改为 {name}]"),
             ),
-            Action::ReactClear {
-                message_id,
-                emoji_id,
-            } => {
-                if emoji_id.is_none()
-                    && self
-                        .own_reactions
-                        .get(message_id)
-                        .is_some_and(|ids| !ids.is_empty())
-                {
-                    return self.clear_known_reactions(message_id).await;
-                }
-                let mut params = json!({"channel_id":group,"message_id":message_id});
-                if let Some(emoji) = emoji_id {
-                    params["emoji_id"] = json!(emoji);
-                }
-                (
-                    if emoji_id.is_some() { "reaction.delete" } else { "internal/reaction_clear" },
-                    params,
-                    format!("[清除自己在消息 {message_id} 上的表态]"),
-                )
-            }
             Action::Recall { message_id, .. } => (
                 "message.delete",
-                json!({"channel_id":group,"message_id":message_id}),
+                json!({"channel_id":channel,"message_id":message_id}),
                 match actions::message(turns, message_id) {
                     Ok(turn) if !turn.from_me => format!("[撤回 {} 的消息 {message_id}]", turn.name),
                     _ => format!("[撤回自己的消息 {message_id}]"),
@@ -1800,93 +1826,11 @@ impl Session {
             "本群管理动作已停用"
         );
         let result = self.rpc(method, params).await?;
-        match action {
-            Action::React {
-                message_id,
-                emoji_id,
-                remove,
-            } => {
-                let emojis = self.own_reactions.entry(message_id.clone()).or_default();
-                emojis.retain(|id| id != emoji_id);
-                if !remove {
-                    emojis.push(emoji_id.clone());
-                }
-            }
-            Action::ReactClear {
-                message_id,
-                emoji_id,
-            } => {
-                if let Some(emoji) = emoji_id {
-                    if let Some(ids) = self.own_reactions.get_mut(message_id) {
-                        ids.retain(|id| id != emoji);
-                    }
-                } else {
-                    self.own_reactions.remove(message_id);
-                }
-            }
-            _ => {}
-        }
         if let Action::Recall { message_id, .. } = action {
-            window::with_group(&self.group, |s| s.recall(message_id.trim()));
+            window::with_group(&self.channel, |s| s.recall(message_id.trim()));
         }
         self.record(summary, String::new(), Message::new(), true);
         Ok(json!({"status":"confirmed","data":result}))
-    }
-    /// QQ 的表态缓存可能晚于添加回执。仅对明确的“无已知表态”补偿，超时不重放。
-    async fn clear_known_reactions(&mut self, message_id: &str) -> Result<Value> {
-        ensure!(self.current(), "群聊已更新，请先读 satori_context");
-        let params = json!({"channel_id":self.group.clone(),"message_id":message_id});
-        match self.rpc("internal/reaction_clear", params.clone()).await {
-            Ok(data) => {
-                self.own_reactions.remove(message_id);
-                self.record(
-                    format!("[清除自己在消息 {message_id} 上的表态]"),
-                    String::new(),
-                    Message::new(),
-                    true,
-                );
-                Ok(json!({"status":"confirmed","data":data}))
-            }
-            Err(error)
-                if error
-                    .to_string()
-                    .contains("no reaction set by this login on the message")
-                    || error.to_string().contains("(404") =>
-            {
-                let known = self
-                    .own_reactions
-                    .get(message_id)
-                    .cloned()
-                    .unwrap_or_default();
-                let mut cleared = Vec::new();
-                for emoji in known {
-                    ensure!(
-                        self.current(),
-                        "群聊已更新，已取消的表态：{cleared:?}；其余未执行"
-                    );
-                    let mut item = params.clone();
-                    item["emoji_id"] = json!(emoji);
-                    self.rpc("reaction.delete", item)
-                        .await
-                        .with_context(|| format!("已取消的表态：{cleared:?}；其余未确认"))?;
-                    if let Some(ids) = self.own_reactions.get_mut(message_id) {
-                        ids.retain(|id| id != &emoji);
-                    }
-                    cleared.push(emoji);
-                }
-                self.record(
-                    format!("[取消消息 {message_id} 的本轮表态 {cleared:?}；其他表态未知]"),
-                    String::new(),
-                    Message::new(),
-                    true,
-                );
-                Ok(
-                    json!({"status":"partial","cleared":cleared,"scope":"this_turn",
-                    "note":"QQ 表态缓存尚未提供列表；已取消本轮成功添加的表态，其他表态是否存在仍未知。"}),
-                )
-            }
-            Err(error) => Err(error),
-        }
     }
 
     /// 把切好的几条依次发出去，当作模型的同一次 send。
@@ -1965,6 +1909,39 @@ impl Session {
         let chars = spoken.chars().count();
         self.send_spoken(message, spoken, chars).await
     }
+    /// 给人看的两道状态：已读、正在输入。
+    ///
+    /// 它们是 QQ 客户端的实验性 JNI 扩展，不是消息：实现端不认、内核不回执、或者
+    /// 对面刚发了新消息，都不该影响这句话发不发。所以丢进后台任务，最多等三秒。
+    fn hint(&self, kind: Hint) {
+        if self.ctx.bot.adapter != "satori-qq" {
+            return;
+        }
+        let enabled = match kind {
+            Hint::Read => self.config.qq_mark_read,
+            Hint::Typing => self.config.qq_typing,
+        };
+        if !enabled {
+            return;
+        }
+        let ctx = self.ctx.clone();
+        let writer = self.writer.clone();
+        let channel = self.channel.clone();
+        tokio::spawn(async move {
+            let call = async {
+                match kind {
+                    Hint::Read => {
+                        crate::adapters::satori::qq::mark_read(&ctx, &writer, &channel).await
+                    }
+                    Hint::Typing => {
+                        crate::adapters::satori::qq::typing(&ctx, &writer, &channel).await
+                    }
+                }
+            };
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(3), call).await;
+        });
+    }
+
     async fn send_spoken(
         &mut self,
         message: Message,
@@ -1974,7 +1951,7 @@ impl Session {
         let pace = self
             .persona
             .as_ref()
-            .map(|persona| persona.pace(&self.group))
+            .map(|persona| persona.pace(&self.channel))
             .unwrap_or_default();
         let typing = pace.typing_delay(typing_chars);
         // 模型耗时算在「读和想」里，字还得一个个敲：首条不再从打字时间里扣掉它。
@@ -1989,48 +1966,50 @@ impl Session {
         tokio::time::sleep(delay.saturating_sub(input_time)).await;
         ensure!(
             self.sendable(),
-            "准备发送期间群聊已更新，尚未发送；请读 satori_context"
+            "准备发送期间{}已更新，尚未发送；请读 satori_context",
+            if self.place.is_group() { "群聊" } else { "对话" }
         );
-        if self.config.qq_mark_read && !self.read_marked
-            && self.ctx.bot.adapter == "satori-qq"
-        {
-            self.read_marked = true; // one attempt per session, even on timeout
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                crate::adapters::satori::qq::mark_read(
-                    &self.ctx, &self.writer, &self.group,
-                ),
-            ).await;
+        // 已读与「正在输入」都是给人看的状态，不是消息：发出去之后才需要等回执。
+        // 放它们自己的任务里跑，实验性接口超时也拖不住这句话。
+        if !self.read_marked {
+            self.hint(Hint::Read);
+            self.read_marked = true;
         }
-        if self.config.qq_typing && self.ctx.bot.adapter == "satori-qq"
-            && input_time >= std::time::Duration::from_secs(1)
-        {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                crate::adapters::satori::qq::typing(
-                    &self.ctx, &self.writer, &self.group,
-                ),
-            ).await;
+        if input_time >= std::time::Duration::from_secs(1) {
+            self.hint(Hint::Typing);
         }
         tokio::time::sleep(input_time).await;
         ensure!(
             self.sendable(),
-            "准备发送期间群聊已更新，尚未发送；请读 satori_context"
+            "准备发送期间{}已更新，尚未发送；请读 satori_context",
+            if self.place.is_group() { "群聊" } else { "对话" }
         );
+        let (group_id, user_id) = match &self.place {
+            Place::Group { id, .. } => (Some(id.as_str()), None),
+            Place::Direct { user_id, .. } => (None, Some(user_id.as_str())),
+        };
+        // 时效条件只对群：实现端的入站锚点按群记，私聊没有这个口径。
+        let freshness = self.place.guild().and_then(|_| {
+            freshness_for(
+                &self.channel,
+                std::time::Duration::from_secs(self.config.freshness_seconds),
+            )
+        });
         let receipt = send_fresh_msg_id(
             &self.ctx,
             self.writer.clone(),
-            Some(&self.group),
-            None,
+            group_id,
+            user_id,
             &message,
-            freshness_for(&self.group, std::time::Duration::from_secs(self.config.freshness_seconds)),
+            freshness,
         )
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
         let id = receipt.ok_or_else(|| {
             anyhow::anyhow!(
-                "这一句没有发出去：交给 QQ 之前群里又有人说话（或被插件拦截）。\
-                 先读 satori_context 看看现在在聊什么，再决定要不要说"
+                "这一句没有发出去：交给 QQ 之前{}又有人说话（或被插件拦截）。\
+                 先读 satori_context 看看现在在聊什么，再决定要不要说",
+                if self.place.is_group() { "群里" } else { "对面" }
             )
         })?;
         self.record(spoken, id.clone(), message, true);
@@ -2038,10 +2017,10 @@ impl Session {
     }
     fn record(&mut self, text: String, message_id: String, elements: Message, success: bool) {
         let me = self.ctx.bot.self_id();
-        info!(target: super::LOG_TARGET, "群 {} 动作：{}", &self.group, text);
+        info!(target: super::LOG_TARGET, "{} 动作：{}", self.place.label(), text);
         if success && !self.spoke {
             // 锁不可重入：记忆与状态都在 window 的锁外面更新。
-            let target = window::with_group(&self.group, |s| {
+            let target = window::with_group(&self.channel, |s| {
                 s.recent(20)
                     .iter()
                     .rev()
@@ -2049,16 +2028,16 @@ impl Session {
                     .map(|turn| turn.user_id.clone())
             });
             if let Some(persona) = &self.persona {
-                persona.spoke(&self.group);
+                persona.spoke(&self.channel);
             }
             if self.config.memory_enabled
                 && let Some(id) = target
             {
                 let now = chrono::Local::now().timestamp();
-                memory::edit(&self.group, |memory| memory.exchange(&id, now));
+                memory::edit(&self.channel, |memory| memory.exchange(&id, now));
             }
         }
-        window::with_group(&self.group, |s| {
+        window::with_group(&self.channel, |s| {
             if success && !self.spoke {
                 s.mark_spoke();
             }
@@ -2181,7 +2160,7 @@ impl Session {
         info!(
             target: super::LOG_TARGET,
             "群 {} 取回附件：{} 份，另有 {} 份没取（本轮合计 {} 字节）",
-            self.group,
+            self.channel,
             files.len(),
             skipped.len(),
             self.saved_bytes

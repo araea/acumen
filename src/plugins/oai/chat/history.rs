@@ -101,10 +101,10 @@ struct Filter {
 }
 
 impl Filter {
-    fn new(group: &str) -> Self {
+    fn new(scope: Scope<'_>) -> Self {
         Self {
-            sql: "guild_id = ?".to_string(),
-            values: vec![group.to_string().into()],
+            sql: scope.clause(),
+            values: vec![scope.key.to_string().into()],
         }
     }
 
@@ -133,6 +133,30 @@ impl Filter {
     }
 }
 
+/// 记录库按哪个会话查。
+///
+/// 群按 guild_id；私聊在记录库里没有群号，按 channel_id（private:<QQ号>）查。
+/// 只差一列，所以这里只带列名，其余查询照旧。
+#[derive(Clone, Copy)]
+pub(crate) struct Scope<'a> {
+    column: &'static str,
+    key: &'a str,
+}
+
+impl<'a> Scope<'a> {
+    pub(crate) fn guild(id: &'a str) -> Self {
+        Self { column: "guild_id", key: id }
+    }
+
+    pub(crate) fn channel(id: &'a str) -> Self {
+        Self { column: "channel_id", key: id }
+    }
+
+    fn clause(&self) -> String {
+        format!("{} = ?", self.column)
+    }
+}
+
 /// 翻哪一段：最新的一页、某条之前、某条之后。
 #[derive(Clone, Copy)]
 enum Cursor {
@@ -153,17 +177,17 @@ enum Who {
 /// 翻一次记录。`me` 是机器人自己的号（同一个号有两个作者：机器人和号主亲手打的）。
 pub(crate) async fn search(
     db: &DatabaseConnection,
-    group: &str,
+    scope: Scope<'_>,
     me: &str,
     limits: Limits,
     request: &Value,
 ) -> Result<Value> {
-    search_at(db, group, me, limits, request, chrono::Utc::now().timestamp()).await
+    search_at(db, scope, me, limits, request, chrono::Utc::now().timestamp()).await
 }
 
 async fn search_at(
     db: &DatabaseConnection,
-    group: &str,
+    scope: Scope<'_>,
     me: &str,
     limits: Limits,
     request: &Value,
@@ -175,9 +199,9 @@ async fn search_at(
         .clamp(1, limits.max_rows);
     let around = text(request, "around");
     let found = if around.is_empty() {
-        filtered(db, group, wanted, request, now).await?
+        filtered(db, scope, wanted, request, now).await?
     } else {
-        Found::around(db, group, &around).await?
+        Found::around(db, scope, &around).await?
     };
     let Found { rows, total, more, who, what } = match found {
         Outcome::Found(found) => found,
@@ -266,11 +290,12 @@ async fn search_at(
         out["who"] = json!({"user_id": id, "name": name});
     }
     if shown == 0 {
-        out["coverage"] = coverage(db, group, now).await?;
+        out["coverage"] = coverage(db, scope, now).await?;
     }
     info!(
         target: LOG_TARGET,
-        "群 {group} 翻群记录：{}，翻到 {shown} 条（共 {} 条）",
+        "{} 翻记录：{}，翻到 {shown} 条（共 {} 条）",
+        scope.key,
         what.label,
         total.map_or_else(|| "?".to_string(), |total| total.to_string())
     );
@@ -299,10 +324,10 @@ enum Outcome {
 
 impl Found {
     /// 围着某条消息看前后文：前面连同它自己，后面各取几条。
-    async fn around(db: &DatabaseConnection, group: &str, message_id: &str) -> Result<Outcome> {
-        let (time, id) = anchor(db, group, message_id).await?;
+    async fn around(db: &DatabaseConnection, scope: Scope<'_>, message_id: &str) -> Result<Outcome> {
+        let (time, id) = anchor(db, scope, message_id).await?;
         let backend = db.get_database_backend();
-        let filter = Filter::new(group);
+        let filter = Filter::new(scope);
         let upto = filter.with(
             "(time < ? or (time = ? and id <= ?))",
             [time.into(), time.into(), id.into()],
@@ -346,17 +371,17 @@ impl Found {
 /// 按发言人 / 关键词 / 时间段筛，翻最新的一页（或某条之前、之后的一页）。
 async fn filtered(
     db: &DatabaseConnection,
-    group: &str,
+    scope: Scope<'_>,
     wanted: i64,
     request: &Value,
     now: i64,
 ) -> Result<Outcome> {
     let backend = db.get_database_backend();
-    let who = resolve_user(db, group, request).await?;
+    let who = resolve_user(db, scope, request).await?;
     if let Who::Several(candidates) = who {
         return Ok(Outcome::Ambiguous(candidates));
     }
-    let mut filter = Filter::new(group);
+    let mut filter = Filter::new(scope);
     if let Who::One { id, .. } = &who {
         filter.and("user_id = ?", [id.clone().into()]);
     }
@@ -400,11 +425,11 @@ async fn filtered(
     let cursor = match (before.as_str(), after.as_str()) {
         ("", "") => Cursor::Latest,
         (before, "") => {
-            let (time, id) = anchor(db, group, before).await?;
+            let (time, id) = anchor(db, scope, before).await?;
             Cursor::Before { time, id }
         }
         ("", after) => {
-            let (time, id) = anchor(db, group, after).await?;
+            let (time, id) = anchor(db, scope, after).await?;
             Cursor::After { time, id }
         }
         _ => anyhow::bail!("before 与 after 只能给一个"),
@@ -459,12 +484,15 @@ async fn filtered(
 }
 
 /// 一条消息的 (time, id)，翻页与围着看都以它为锚。
-async fn anchor(db: &DatabaseConnection, group: &str, message_id: &str) -> Result<(i64, i64)> {
+async fn anchor(db: &DatabaseConnection, scope: Scope<'_>, message_id: &str) -> Result<(i64, i64)> {
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
-            "select time, id from message_records where guild_id = ? and message_id = ?",
-            [group.to_string().into(), message_id.to_string().into()],
+            &format!(
+                "select time, id from message_records where {} and message_id = ?",
+                scope.clause()
+            ),
+            [scope.key.to_string().into(), message_id.to_string().into()],
         ))
         .await
         .context("记录库查询失败")?
@@ -473,12 +501,15 @@ async fn anchor(db: &DatabaseConnection, group: &str, message_id: &str) -> Resul
 }
 
 /// 记录库对这个群覆盖到哪儿：空手而归时告诉模型「是没说过，还是库里本来就没有」。
-async fn coverage(db: &DatabaseConnection, group: &str, now: i64) -> Result<Value> {
+async fn coverage(db: &DatabaseConnection, scope: Scope<'_>, now: i64) -> Result<Value> {
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
-            "select min(time) as first, count(*) as n from message_records where guild_id = ?",
-            [group.to_string().into()],
+            &format!(
+                "select min(time) as first, count(*) as n from message_records where {}",
+                scope.clause()
+            ),
+            [scope.key.to_string().into()],
         ))
         .await
         .context("记录库查询失败")?;
@@ -506,7 +537,7 @@ async fn coverage(db: &DatabaseConnection, group: &str, now: i64) -> Result<Valu
 ///
 /// 优先级：整词相同 > 包含。整词相同的只有一位就是他；包含的也只有一位就是他；
 /// 其余一律摆候选，不替模型挑。
-async fn resolve_user(db: &DatabaseConnection, group: &str, request: &Value) -> Result<Who> {
+async fn resolve_user(db: &DatabaseConnection, scope: Scope<'_>, request: &Value) -> Result<Who> {
     let id = text(request, "user_id");
     if !id.is_empty() {
         ensure!(is_qq(&id), "user_id 要写 QQ 号；只知道名字就用 user");
@@ -541,12 +572,15 @@ async fn resolve_user(db: &DatabaseConnection, group: &str, request: &Value) -> 
     let rows = db
         .query_all_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
-            "select user_id, user_name, member_nick, count(*) as n, max(id) as last \
-             from message_records where guild_id = ? \
-             and (member_nick like ? escape '\\' or user_name like ? escape '\\') \
-             group by user_id, user_name, member_nick order by last desc limit 80",
+            &format!(
+                "select user_id, user_name, member_nick, count(*) as n, max(id) as last \
+                 from message_records where {} \
+                 and (member_nick like ? escape '\\' or user_name like ? escape '\\') \
+                 group by user_id, user_name, member_nick order by last desc limit 80",
+                scope.clause()
+            ),
             [
-                group.to_string().into(),
+                scope.key.to_string().into(),
                 pattern.clone().into(),
                 pattern.into(),
             ],
@@ -617,7 +651,7 @@ async fn resolve_user(db: &DatabaseConnection, group: &str, request: &Value) -> 
 /// 一批 QQ 号 → 各自最近用的名字（认不出的号不在表里）。
 pub(crate) async fn names_of(
     db: &DatabaseConnection,
-    group: &str,
+    scope: Scope<'_>,
     ids: &[String],
 ) -> HashMap<String, String> {
     let ids: Vec<&String> = ids.iter().filter(|id| is_qq(id)).take(10).collect();
@@ -625,14 +659,15 @@ pub(crate) async fn names_of(
         return HashMap::new();
     }
     let marks = vec!["?"; ids.len()].join(",");
-    let mut values: Vec<sea_orm::Value> = vec![group.to_string().into()];
+    let mut values: Vec<sea_orm::Value> = vec![scope.key.to_string().into()];
     values.extend(ids.iter().map(|id| (*id).clone().into()));
     let Ok(rows) = db
         .query_all_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
             format!(
                 "select user_id, user_name, member_nick from message_records \
-                 where guild_id = ? and user_id in ({marks}) order by id desc limit 200"
+                 where {} and user_id in ({marks}) order by id desc limit 200",
+                scope.clause()
             ),
             values,
         ))

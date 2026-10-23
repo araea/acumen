@@ -60,11 +60,6 @@ pub(crate) enum Action {
     Poke {
         user_id: String,
     },
-    Like {
-        user_id: String,
-        #[serde(default = "one")]
-        times: u8,
-    },
     React {
         message_id: String,
         emoji_id: String,
@@ -114,11 +109,6 @@ pub(crate) enum Action {
     RenameGroup {
         name: String,
     },
-    ReactClear {
-        message_id: String,
-        #[serde(default)]
-        emoji_id: Option<String>,
-    },
     /// 处理一条加群申请（`request_id` 是管理栏里列出的申请号，也认申请人 QQ 号）。
     Approve {
         request_id: String,
@@ -156,10 +146,6 @@ fn label(value: &str, max: usize) -> Result<()> {
         "名称为空、过长或含控制字符"
     );
     Ok(())
-}
-
-fn one() -> u8 {
-    1
 }
 
 fn yes() -> bool {
@@ -328,10 +314,6 @@ impl Action {
             Self::Poke { user_id } => {
                 user(turns, user_id)?;
             }
-            Self::Like { user_id, times } => {
-                user(turns, user_id)?;
-                ensure!((1..=10).contains(times), "单次资料卡点赞 1–10 次");
-            }
             Self::React {
                 message_id,
                 emoji_id,
@@ -402,15 +384,6 @@ impl Action {
                     ensure!(!image.trim().is_empty(), "配图来源是空的；不配图就省略 image");
                 }
             }
-            Self::ReactClear {
-                message_id,
-                emoji_id,
-            } => {
-                message(turns, message_id)?;
-                if let Some(emoji) = emoji_id {
-                    ensure!(emoji.parse::<u32>().is_ok(), "表态 ID 用数字");
-                }
-            }
             Self::Forward { message_ids, texts } => {
                 ensure!(
                     (1..=12).contains(&(message_ids.len() + texts.len())),
@@ -442,6 +415,23 @@ impl Action {
         }
         Ok(())
     }
+    /// 只有群里才有对象的动作。私聊里没有群资料、没有群成员、没有管理。
+    pub(crate) fn needs_group(&self) -> bool {
+        matches!(
+            self,
+            Self::Sign
+                | Self::Card { .. }
+                | Self::Title { .. }
+                | Self::Essence { .. }
+                | Self::Mute { .. }
+                | Self::Kick { .. }
+                | Self::MuteAll { .. }
+                | Self::RenameGroup { .. }
+                | Self::Approve { .. }
+                | Self::Announce { .. }
+        )
+    }
+
     pub(crate) fn management_target(&self) -> Option<&str> {
         match self {
             Self::Card { user_id, .. } => user_id.as_deref(),

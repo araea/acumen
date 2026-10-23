@@ -336,7 +336,7 @@ pub(crate) async fn compose(
             crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
                 ctx,
                 writer,
-                group: group.to_string(),
+                place: crate::plugins::oai::chat::Place::group(group.to_string()),
                 config: chat,
                 enabled: config.enabled,
                 require_fresh: true,

@@ -265,9 +265,10 @@ pub(crate) struct AmbientConfig {
     /// 消息时效窗口（秒）：请求交给 satori-qq 之后，群里只要又有人说话就不再发
     /// 出这一句。0 关闭。见 [`crate::adapters::satori::Freshness`]。
     pub send_freshness_seconds: u64,
-    /// 发送前短暂显示 QQ 原生“正在输入”（内核实验性接口，默认关闭）。
+    /// 发送前短暂显示 QQ 原生“正在输入”。它是给人看的状态，不是消息：失败只丢一次
+    /// 后台调用，不会拦下这句话。
     pub qq_typing: bool,
-    /// 回话前在 QQ 原生内核中标记本群已读（实验性；默认关闭）。
+    /// 看过群聊就把它标成已读（一轮最多一次，随读上下文或开口触发）。
     pub qq_mark_read: bool,
     /// 群友直接质疑是不是机器人时，偶尔将本群最近 1-3 条消息渲染成图打趣回复。
     /// 仅 satori-qq；图片不是身份凭据，默认关闭，避免自动转发群聊内容。
@@ -364,8 +365,8 @@ impl Default for AmbientConfig {
             owner_quiet_seconds: 480,
             owner_grace_seconds: 75,
             send_freshness_seconds: 25,
-            qq_typing: false,
-            qq_mark_read: false,
+            qq_typing: true,
+            qq_mark_read: true,
             screenshot_on_suspicion: false,
             screenshot_cooldown_seconds: 21_600,
             messages_budget: 2,

@@ -177,6 +177,23 @@ async fn reply_card(
     // 出图成功后不再补发等价文本：卡片已经把正文、来源与页脚都画进去了，
     // 再发一遍只是在群里刷屏。只有没出图时才退回文本。
     if !illustrated {
+        // 一段纯文字：先在 QQ 里亮起「正在输入」，再按字数等一小会儿。真人打完字
+        // 也要一点时间；空降到一堵字墙是机器人最好认的样子。实验性接口，失败就算了。
+        if oai.chat.qq_typing && ctx.bot.adapter == "satori-qq" && !event.channel_id().is_empty() {
+            let chars = spoken.chars().count().min(400) as u64;
+            let wait = std::time::Duration::from_millis((chars * 60_000 / 150).clamp(800, 6_000));
+            // 丢进后台：实验性接口，超时也不该让答复多等一秒。
+            let (ctx, writer, channel) =
+                (ctx.clone(), writer.clone(), event.channel_id().to_string());
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    crate::adapters::satori::qq::typing(&ctx, &writer, &channel),
+                )
+                .await;
+            });
+            tokio::time::sleep(wait).await;
+        }
         reply_text(ctx, writer, event, accessible).await;
     }
     illustrated
@@ -788,14 +805,22 @@ async fn chat(
                 draw_agent.model = chat_model.clone();
                 super::images::generate_reply(&base, &api_key, &draw_agent, &hist).await
             } else {
-                // 全量档的房间在群里说话时接上群聊能力层：群资料、翻旧账、发消息、画图写歌
-                // 那一套从此也在房间里可用。私聊里的房间、轻量两档没有这一份。
-                let chat = event.group_id().filter(|_| agent.tools == Tools::Full).map(|group| {
+                // 全量档的房间接上聊天能力层：群里有群资料、群管理；私聊里是
+                // 发消息、读消息、翻记录、发表情包这些。轻量两档没有这一份。
+                let chat = (agent.tools == Tools::Full).then(|| {
                     let trigger = super::chat::trigger::Trigger::from_event(&event);
+                    let place = match event.group_id() {
+                        Some(group) => super::chat::Place::group(group),
+                        None => super::chat::Place::direct(
+                            event.channel_id(),
+                            event.user_id(),
+                            event.sender_name(),
+                        ),
+                    };
                     super::agent::ChatContext {
                         ctx: ctx.clone(),
                         writer: writer.clone(),
-                        group: group.to_string(),
+                        place,
                         config: oai.chat.clone(),
                         tools: Some(room_tools(&oai.chat)),
                         authority: super::chat::Authority::of(asker.owner, &trigger.role),

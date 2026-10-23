@@ -1,4 +1,7 @@
-//! 群聊能力层：在一个真实的 QQ 群里看现场、查资料、动手。
+//! 聊天能力层：在一个真实的 QQ 会话里看现场、查资料、动手。
+//!
+//! 会话有两种——群聊与私聊，共同点是都有一个 channel id、都能发消息读消息；
+//! 群多出来的是群资料、群成员与群管理（见 [`Place`]）。
 //!
 //! 这一层不属于任何一个人格。内置智能体房间与群聊搭话共用它，区别只在调用方给的
 //! [`ChatConfig`] 与有没有 [`Persona`]：
@@ -66,7 +69,7 @@ pub(crate) const LOG_TARGET: &str = "Plugin/OAI/Chat";
 #[serde(default)]
 pub(crate) struct ChatConfig {
     /// 不看账号身份、直接开放群管理动作（踢人、禁言、撤回别人的消息、全员禁言、改群名、
-    /// 设精华、改他人名片）的群号。QQ 那边没给权限的照样会被服务端驳回。
+    /// 设精华、改他人名片）的群号。私聊里永远不开放；QQ 那边没给权限的照样会被服务端驳回。
     pub management_groups: Vec<String>,
     /// 账号在群里是群主或管理员时自动开放管理动作。
     ///
@@ -103,10 +106,12 @@ pub(crate) struct ChatConfig {
     pub long_text_chars: usize,
     /// 发出前的时效窗口（秒）：群里又有人说话就整条不发。0 表示不带时效条件。
     pub freshness_seconds: u64,
-    /// QQ 原生输入状态（实验性：内核回调尚未实机确认）。只在即将发送时短暂展示；
-    /// 默认关闭，不会因为 QQ 无此能力而阻止正常发送。
+    /// 发送前在 QQ 里显示「正在输入」。
+    ///
+    /// 这是给人看的状态，不是消息：实现端不认、内核不回执都不影响这句话发出去
+    /// （见 Session::hint，它跑在自己的任务里）。真人不会凭空冒出一句话。
     pub qq_typing: bool,
-    /// QQ JNI 已读标记；仅在确实准备回复时调用一次，默认关闭。
+    /// 看过会话就把它标成已读（看上下文或开口之前各一次，一轮最多一次）。
     pub qq_mark_read: bool,
     /// 一次媒体生成（图、歌、片）最多等多久（秒）。
     pub media_deadline_seconds: u64,
@@ -137,22 +142,81 @@ impl Default for ChatConfig {
             split_chars: 60,
             long_text_chars: 240,
             freshness_seconds: 0,
-            qq_typing: false,
-            qq_mark_read: false,
+            qq_typing: true,
+            qq_mark_read: true,
             media_deadline_seconds: 240,
             tools: String::new(),
         }
     }
 }
 
-/// 一次行动的环境：在哪个群、用哪几个目录、有没有人格。
+/// 这一轮在哪儿说话：一个群，还是和一个朋友的私聊。
+///
+/// 两边的共同点是「一个会话」——发消息、读消息、翻记录、戳一戳、表态、撤回、转发
+/// 都只认一个 channel id。差别只在群才有的东西：群资料、群成员、群管理、@。
+#[derive(Debug, Clone)]
+pub(crate) enum Place {
+    Group { id: String },
+    /// 私聊：channel 由实现端定（QQ 是 private:<QQ号>，微信就是对方 id），
+    /// 所以由调用方从现场取来，不在这里拼。
+    Direct { channel: String, user_id: String, name: String },
+}
+
+impl Place {
+    pub(crate) fn group(id: impl Into<String>) -> Self {
+        Self::Group { id: id.into() }
+    }
+
+    pub(crate) fn direct(
+        channel: impl Into<String>,
+        user_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
+        Self::Direct {
+            channel: channel.into(),
+            user_id: user_id.into(),
+            name: name.into(),
+        }
+    }
+
+    /// Satori 的 channel id：群里就是群号，私聊由实现端给。
+    pub(crate) fn channel(&self) -> String {
+        match self {
+            Self::Group { id, .. } => id.clone(),
+            Self::Direct { channel, .. } => channel.clone(),
+        }
+    }
+
+    /// 群号；私聊没有。
+    pub(crate) fn guild(&self) -> Option<&str> {
+        match self {
+            Self::Group { id, .. } => Some(id),
+            Self::Direct { .. } => None,
+        }
+    }
+
+    pub(crate) fn is_group(&self) -> bool {
+        self.guild().is_some()
+    }
+
+    /// 日志与回执里怎么说这个地方。
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Self::Group { id, .. } => format!("群 {id}"),
+            Self::Direct { user_id, .. } => format!("私聊 {user_id}"),
+        }
+    }
+}
+
+/// 一次行动的环境：在哪儿、用哪几个目录、有没有人格。
 pub(crate) struct ChatEnv<'a> {
     pub ctx: &'a Context,
     pub writer: &'a crate::adapters::satori::LockedWriter,
-    /// 群号。能力层只在群里工作——私聊没有群资料、没有群动作，也就没有这一层。
-    pub group: String,
+    /// 这一轮说话的地方：群或私聊。两边共用同一套发消息、读消息的出口，
+    /// 群才有的动作在私聊里由能力层按 Place::guild 挡掉。
+    pub place: Place,
     pub config: ChatConfig,
-    /// 这一轮在这个群开着。房间总是开着，搭话看自己的开关与群列表。
+    /// 这一轮开着。房间总是开着，搭话看自己的开关与群列表。
     pub enabled: bool,
     /// 动手之前先确认群聊没有往前走。
     ///
@@ -256,7 +320,7 @@ pub(crate) struct Avatar {
     pub model: String,
 }
 
-/// 这一轮该挂哪些群聊工具。
+/// 这一轮该挂哪些聊天工具（群与私聊同一份；群管理写在 `satori_action` 里按会话收敛）。
 ///
 /// 一道道闸与能力层真正会拒绝的开关是同一份：记忆关着就不给 `satori_memo`，
 /// 画图、写歌、拍片额度为 0 连工具都不挂。调用方（房间与搭话）照它拼白名单，
@@ -281,6 +345,18 @@ pub(crate) fn tool_names(config: &ChatConfig) -> Vec<&'static str> {
         names.push("satori_video");
     }
     names
+}
+
+/// 私聊会话在实现端叫什么：QQ 是 private:<QQ号>，微信就是对方自己的 id。
+///
+/// 只有拿不到现场时才用它（定时任务：到点没有事件可读）；有现场事件时，
+/// 事件里的 channel_id 永远更准。
+pub(crate) fn direct_channel(platform: &str, user_id: &str) -> String {
+    if platform == "red" {
+        format!("private:{user_id}")
+    } else {
+        user_id.to_string()
+    }
 }
 
 /// 能力层的数据根：记忆、表情包库、群身份缓存。
@@ -406,3 +482,41 @@ pub(crate) fn plain_text(message: &Message) -> String {
     }
     out.trim().to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_uses_private_channel_and_group_uses_id() {
+        let direct = Place::direct("private:114514", "114514", "小明");
+        assert_eq!(direct.channel(), "private:114514");
+        assert!(!direct.is_group());
+        assert_eq!(direct.guild(), None);
+
+        let group = Place::group("818965288");
+        assert_eq!(group.channel(), "818965288");
+        assert!(group.is_group());
+        assert_eq!(group.guild(), Some("818965288"));
+    }
+
+    /// 只有拿不到现场时才拼频道；QQ 与微信的私聊 id 不是一种写法。
+    #[test]
+    fn direct_channel_depends_on_platform() {
+        assert_eq!(direct_channel("red", "42"), "private:42");
+        assert_eq!(direct_channel("wechat", "wxid_x"), "wxid_x");
+    }
+
+    /// 私聊的动作表里不能有群管理：模型看到的就是它真能按的。
+    #[test]
+    fn direct_actions_have_no_group_management() {
+        let kinds = session::action_kinds(&Place::direct("private:1", "1", ""));
+        assert!(kinds.contains(&"send"));
+        for group_only in ["mute", "kick", "mute_all", "announce", "approve", "essence"] {
+            assert!(!kinds.contains(&group_only), "{group_only} 不该出现在私聊");
+        }
+        let group = session::action_kinds(&Place::group("1"));
+        assert!(group.contains(&"mute"));
+    }
+}
+

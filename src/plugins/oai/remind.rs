@@ -424,10 +424,20 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
         origin: super::agent::Origin::Scheduled,
         public: false,
     };
-    let chat = job.group.as_ref().map(|group| super::agent::ChatContext {
+    // 到点办事的地方就是它要说话的地方：群里是那个群，私聊是这个人。
+    let place = match (&job.group, job.private) {
+        (Some(group), _) => Some(super::chat::Place::group(group.clone())),
+        (None, true) => Some(super::chat::Place::direct(
+            super::chat::direct_channel(&bot.ctx.bot.platform, &job.user),
+            job.user.clone(),
+            job.name.clone(),
+        )),
+        (None, false) => None,
+    };
+    let chat = place.map(|place| super::agent::ChatContext {
         ctx: bot.ctx.clone(),
         writer: bot.writer.clone(),
-        group: group.clone(),
+        place,
         config: oai.chat.clone(),
         tools: Some(super::logic::room_tools(&oai.chat)),
         trigger: None,
