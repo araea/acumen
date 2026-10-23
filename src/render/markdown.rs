@@ -348,7 +348,10 @@ impl<'a> Doc<'a> {
             }
             Event::InlineMath(tex) => {
                 // 宽度按读出来的样子估：源码里 `\frac{a}{b}` 十几个字符，排出来只占两三个。
-                inl.raw(&math::inline_html(&tex), text_em(&math::to_unicode(&tex)) * 0.9 + 0.4);
+                inl.raw(
+                    &math::inline_html(&tex),
+                    text_em(&math::to_unicode(&tex)) * 0.9 + 0.4,
+                );
             }
             Event::DisplayMath(tex) => {
                 // 块级公式自成一块（display:block），高度按行数与有没有分式、求和这类
@@ -1006,9 +1009,12 @@ impl<'a> Doc<'a> {
 /// 块级公式占几行正文行高（含上下留白）。
 fn display_math_lines(tex: &str) -> usize {
     let rows = 1 + tex.matches("\\\\").count();
-    let stacked = ["\\frac", "\\dfrac", "\\sum", "\\int", "\\prod", "\\lim", "\\binom", "\\over", "matrix", "cases"]
-        .iter()
-        .any(|cmd| tex.contains(cmd));
+    let stacked = [
+        "\\frac", "\\dfrac", "\\sum", "\\int", "\\prod", "\\lim", "\\binom", "\\over", "matrix",
+        "cases",
+    ]
+    .iter()
+    .any(|cmd| tex.contains(cmd));
     let per_row = if stacked { 2.0 } else { 1.4 };
     (rows as f64 * per_row + 0.6).ceil() as usize
 }
@@ -1023,10 +1029,27 @@ fn phrasing_tag(tag: &str) -> Option<String> {
     let name = name.trim();
     let allowed = matches!(
         name,
-        "sup" | "sub" | "kbd" | "mark" | "u" | "ins" | "small" | "b" | "i" | "s" | "del"
-            | "strong" | "em"
+        "sup"
+            | "sub"
+            | "kbd"
+            | "mark"
+            | "u"
+            | "ins"
+            | "small"
+            | "b"
+            | "i"
+            | "s"
+            | "del"
+            | "strong"
+            | "em"
     );
-    allowed.then(|| if close { format!("</{name}>") } else { format!("<{name}>") })
+    allowed.then(|| {
+        if close {
+            format!("</{name}>")
+        } else {
+            format!("<{name}>")
+        }
+    })
 }
 
 fn alert(kind: BlockQuoteKind) -> (&'static str, &'static str, &'static str) {
@@ -1208,7 +1231,11 @@ fn page_html(doc: &Doc, blocks: &[Block], index: usize, total: usize) -> String 
     };
     let width = doc.s.width;
     // 数学字体两百多 KB，只给真有公式的页（转换失败退回源码的也算，它的样式在同一张表里）。
-    let math_css = if body.contains("class=\"math") { math::css() } else { "" };
+    let math_css = if body.contains("class=\"math") {
+        math::css()
+    } else {
+        ""
+    };
     // 字阶的根：`tokens.css` 把 `1rem` 定在 20px（`:root` 的 font-size），
     // 这里在 html 上以内联样式盖掉它，整套 `rem` 字号就按正文字号缩放。
     // 内联样式优先于样式表的 `:root` 规则，不必与令牌表争顺序。
@@ -1235,7 +1262,9 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn markdown_dump() {
-        let Ok(dir) = std::env::var("MD_DUMP") else { return };
+        let Ok(dir) = std::env::var("MD_DUMP") else {
+            return;
+        };
         let src = std::env::var("MD_SRC")
             .ok()
             .and_then(|path| std::fs::read_to_string(path).ok())
@@ -1243,10 +1272,17 @@ mod tests {
         let browser = std::env::var("CHROME_BIN").ok();
         std::fs::create_dir_all(&dir).unwrap();
         for dark in [false, true] {
-            let settings = Settings { dark, ..Settings::default() };
+            let settings = Settings {
+                dark,
+                ..Settings::default()
+            };
             let rendered = render(&src, &settings);
             for (index, html) in rendered.pages.iter().enumerate() {
-                let name = format!("{dir}/{}-{}", if dark { "dark" } else { "light" }, index + 1);
+                let name = format!(
+                    "{dir}/{}-{}",
+                    if dark { "dark" } else { "light" },
+                    index + 1
+                );
                 std::fs::write(format!("{name}.html"), html).unwrap();
                 let png = crate::render::web::shoot(
                     crate::render::web::Shot::new(html, settings.width + 40)
@@ -1257,7 +1293,9 @@ mod tests {
                 .await
                 .unwrap();
                 use base64::Engine as _;
-                let bytes = base64::engine::general_purpose::STANDARD.decode(png).unwrap();
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(png)
+                    .unwrap();
                 std::fs::write(format!("{name}.png"), bytes).unwrap();
             }
         }

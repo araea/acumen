@@ -6,13 +6,16 @@
 //! - [`data_path`]：数据目录怎么算只有一份，同步与异步调用方得到同一个路径；
 //! - [`write_atomic`]：先写同目录下的临时文件、落盘、再改名，读的一方永远看不到写了
 //!   一半的文件，进程在写的中途被杀也只会留下旧版本；
-//! - [`JsonState`]：一份常驻内存、改完整份落盘的 JSON 状态（去重表、取片记录这类）。
+//! - [`JsonState`]：一份常驻内存、改完整份落盘的 JSON 状态（去重表、取片记录这类）；
+//! - [`picture`]：插件的本机图库（收一张图、起文件名、超大的先缩）。
 
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex as AsyncMutex;
+
+pub mod picture;
 
 /// 插件数据目录（`<可执行文件目录>/data/<插件>`），不创建。
 ///
@@ -187,6 +190,12 @@ where
         let snapshot = state.clone();
         self.save(&snapshot).await;
         result
+    }
+
+    /// 在锁内只读一眼，不落盘：每条消息都要查一遍的那种读法（比对规则）用它，免得白写一次文件。
+    pub async fn read<R>(&self, look: impl FnOnce(&T) -> R) -> R {
+        let mut guard = self.cell.lock().await;
+        look(self.loaded(&mut guard).await)
     }
 
     /// 不等锁地看一眼（控制台这类同步的展示用）：正被改着或还没读盘时给 `None`。

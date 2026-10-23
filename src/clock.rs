@@ -19,6 +19,39 @@ pub fn beijing_now() -> DateTime<FixedOffset> {
     Utc::now().with_timezone(&beijing())
 }
 
+/// 提示里常用的几样「此刻」：问候、时刻、日期、星期。入群欢迎与自动回复的占位符共用这一份。
+pub struct Moment {
+    /// 早上好、上午好、中午好、下午好、晚上好、夜深了
+    pub greeting: &'static str,
+    /// 21:05
+    pub time: String,
+    /// 10 月 22 日
+    pub date: String,
+    /// 星期三
+    pub weekday: String,
+}
+
+pub fn moment() -> Moment {
+    use chrono::{Datelike, Timelike};
+    let now = beijing_now();
+    let greeting = match now.hour() {
+        5..=8 => "早上好",
+        9..=10 => "上午好",
+        11..=12 => "中午好",
+        13..=17 => "下午好",
+        18..=22 => "晚上好",
+        _ => "夜深了",
+    };
+    let weekday =
+        ["一", "二", "三", "四", "五", "六", "日"][now.weekday().num_days_from_monday() as usize];
+    Moment {
+        greeting,
+        time: format!("{:02}:{:02}", now.hour(), now.minute()),
+        date: format!("{} 月 {} 日", now.month(), now.day()),
+        weekday: format!("星期{weekday}"),
+    }
+}
+
 /// 时长说成人话：整天、整小时、整分钟各用自己的单位，零碎的才写「分 秒」。
 pub fn duration_text(seconds: u64) -> String {
     match seconds {

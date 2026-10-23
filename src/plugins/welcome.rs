@@ -4,7 +4,9 @@
 //!
 //! - **欢迎 / 送别**：每条提示是一个 [`Template`]——可以写好几种说法，每次随机挑一种；
 //!   占位符见 [`PLACEHOLDERS`]（`{at}` 是真 @，`{image}` `{avatar}` `{face:ID}` 是图与表情，
-//!   `{甲|乙}` 是随机片段）。同一时间涌进来好几个人时可以合并成一条（`join.merge_seconds`），
+//!   `{甲|乙}` 是随机片段）。常用的一段话（群规、下载地址、管理名单）可以起个名字存成**自定义
+//!   占位符**（`custom`，每群还能各写一份），各条提示里写 `{群规}` 就插进去，改一处处处跟着变。
+//!   同一时间涌进来好几个人时可以合并成一条（`join.merge_seconds`），
 //!   发出去的欢迎可以过一会儿自己撤掉（`recall_seconds`），不占群聊。
 //! - **入群验证**：新人要在时限内完成一件小事——说任意一句话、发出指定口令、回验证码或算一道
 //!   加法（`verify.mode`）；期间按 `remind_seconds` 的剩余时间点 @ 他倒计时，答错有提示、
@@ -20,18 +22,18 @@
 //! 三种说法轮着用，群里天天进人也不像复读机。
 
 use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
-use crate::clock::{beijing_now, duration_text};
+use crate::clock::duration_text;
 use crate::command::{self, CommandMatch};
 use crate::event::{Context, EventType};
 use crate::message::Message;
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use crate::storage::JsonState;
-use chrono::{Datelike, Timelike};
+use crate::template::Piece;
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -49,9 +51,14 @@ pub struct Config {
     leave: LeaveConfig,
     verify: VerifyConfig,
     approve: ApproveConfig,
+    /// 自定义占位符：名字 → 内容（也可以写几种说法随机一种）。提示里写 `{名字}` 就插进去。
+    custom: Custom,
     /// 每个群单独的文案与开关，键是群号；没写的项沿用上面的。
     groups: HashMap<String, GroupOverride>,
 }
+
+/// 自定义占位符表。按名字排着，界面与 `/ctl show` 里的先后都稳定。
+type Custom = BTreeMap<String, Template>;
 
 /// 一条提示：可以写几种说法，每次随机挑一种；一种都没写（或都是空白）就不发。
 ///
@@ -180,6 +187,8 @@ struct GroupOverride {
     answers: Option<Vec<String>>,
     approve_enabled: Option<bool>,
     keywords: Option<Vec<String>>,
+    /// 这个群自己的自定义占位符：同名的顶掉全局那份，没有的照用全局的。
+    custom: Option<Custom>,
 }
 
 const JOIN_TEXT: &[&str] = &[
@@ -288,9 +297,13 @@ impl PluginConfig for Config {
                 return Err(format!("{path}.recall_seconds 最多 86400 秒（一天）"));
             }
         }
+        check_custom("custom", &self.custom)?;
         for (group, o) in &self.groups {
             if group.parse::<u64>().is_err() {
                 return Err("groups 的键写群号".into());
+            }
+            if let Some(custom) = &o.custom {
+                check_custom(&format!("groups.\"{group}\".custom"), custom)?;
             }
             if let Some(mode) = &o.verify_mode
                 && !MODES.contains(&mode.as_str())
@@ -335,6 +348,41 @@ impl PluginConfig for Config {
     }
 }
 
+/// 自定义占位符的名字：短、不带花括号与分隔符，也不能和内置的撞名（撞了就永远轮不到它）。
+fn check_custom(path: &str, custom: &Custom) -> Result<(), String> {
+    for (name, template) in custom {
+        if let Some(problem) = custom_name_problem(name) {
+            return Err(format!("{path} 里的「{name}」{problem}"));
+        }
+        if template.0.iter().any(|text| text.chars().count() > 2000) {
+            return Err(format!("{path}.{name} 每种说法最多 2000 字"));
+        }
+    }
+    Ok(())
+}
+
+/// 名字哪里不行；行就是 `None`。控制台起名对话框照同一套规则先挡一道（映射表说明里的 `reserved`）。
+fn custom_name_problem(name: &str) -> Option<&'static str> {
+    if name.trim().is_empty() {
+        return Some("名字是空的");
+    }
+    if name.chars().count() > 20 {
+        return Some("名字最多 20 个字");
+    }
+    if name.chars().any(|c| c.is_whitespace() || "{}|:.\"'".contains(c)) {
+        return Some("名字里不能有空格、花括号、竖线、冒号、点和引号");
+    }
+    if reserved().any(|key| key == name) {
+        return Some("和内置占位符重名了，换个名字");
+    }
+    None
+}
+
+/// 内置占位符的键：自定义的不能和它们重名。
+pub(crate) fn reserved() -> impl Iterator<Item = &'static str> {
+    PLACEHOLDERS.iter().map(|p| p.key).chain(["face"])
+}
+
 /// 这个群实际生效的那一份：全局配置叠上每群覆盖。
 struct Effective {
     join: bool,
@@ -348,11 +396,14 @@ struct Effective {
     answers: Vec<String>,
     approve: bool,
     keywords: Vec<String>,
+    custom: Custom,
 }
 
 impl Config {
     fn for_group(&self, group: &str) -> Effective {
         let o = self.groups.get(group).cloned().unwrap_or_default();
+        let mut custom = self.custom.clone();
+        custom.extend(o.custom.unwrap_or_default());
         Effective {
             join: o.join_enabled.unwrap_or(self.join.enabled),
             join_text: o.join_text.unwrap_or_else(|| self.join.text.clone()),
@@ -365,7 +416,13 @@ impl Config {
             answers: o.answers.unwrap_or_else(|| self.verify.answers.clone()),
             approve: o.approve_enabled.unwrap_or(self.approve.enabled),
             keywords: o.keywords.unwrap_or_else(|| self.approve.keywords.clone()),
+            custom,
         }
+    }
+
+    /// 这个群的提示要用的那几样：问候、时刻这些，加上本群生效的自定义占位符。
+    fn vars(&self, group: &str) -> Vars {
+        Vars::now().custom(self.for_group(group).custom)
     }
 }
 
@@ -438,32 +495,32 @@ const PLACEHOLDERS: &[Placeholder] = &[
 ];
 
 /// 一条提示里能填的值。`{at}` `{image}` `{avatar}` `{face:ID}` 不在这里：它们是消息段，由 [`pieces`] 切开。
-struct Vars(HashMap<&'static str, String>);
+struct Vars {
+    values: HashMap<&'static str, String>,
+    /// 自定义占位符：内容本身也是模板，切的时候就地展开。
+    custom: Custom,
+}
 
 impl Vars {
     /// 带上与人无关的那几样：问候、时刻、日期、星期。
     fn now() -> Self {
-        let now = beijing_now();
-        let greeting = match now.hour() {
-            5..=8 => "早上好",
-            9..=10 => "上午好",
-            11..=12 => "中午好",
-            13..=17 => "下午好",
-            18..=22 => "晚上好",
-            _ => "夜深了",
-        };
-        let weekday = ["一", "二", "三", "四", "五", "六", "日"][now.weekday().num_days_from_monday() as usize];
+        let moment = crate::clock::moment();
         let mut map = HashMap::new();
-        map.insert("greeting", greeting.to_string());
-        map.insert("time", format!("{:02}:{:02}", now.hour(), now.minute()));
-        map.insert("date", format!("{} 月 {} 日", now.month(), now.day()));
-        map.insert("weekday", format!("星期{weekday}"));
+        map.insert("greeting", moment.greeting.to_string());
+        map.insert("time", moment.time);
+        map.insert("date", moment.date);
+        map.insert("weekday", moment.weekday);
         map.insert("count", "1".into());
-        Self(map)
+        Self { values: map, custom: Custom::new() }
     }
 
     fn set(mut self, key: &'static str, value: impl Into<String>) -> Self {
-        self.0.insert(key, value.into());
+        self.values.insert(key, value.into());
+        self
+    }
+
+    fn custom(mut self, custom: Custom) -> Self {
+        self.custom = custom;
         self
     }
 
@@ -478,61 +535,18 @@ impl Vars {
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum Piece {
-    Text(String),
-    At,
-    Image,
-    Avatar,
-    Face(String),
+impl crate::template::Values for Vars {
+    fn value(&self, key: &str) -> Option<String> {
+        self.values.get(key).cloned()
+    }
+
+    fn snippet(&self, key: &str) -> Option<String> {
+        self.custom.get(key).map(|template| template.pick().unwrap_or_default())
+    }
 }
 
-/// 模板切成消息段。认不出的 `{…}` 原样留着——宁可让人看到自己写错了，也不悄悄吞掉。
 fn pieces(template: &str, vars: &Vars) -> Vec<Piece> {
-    let mut out = Vec::new();
-    let mut text = String::new();
-    let mut rest = template;
-    while let Some(open) = rest.find('{') {
-        text.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        let Some(close) = after.find(['}', '{']).filter(|&at| after.as_bytes()[at] == b'}') else {
-            text.push('{');
-            rest = after;
-            continue;
-        };
-        let inner = after[..close].trim();
-        let piece = match inner {
-            "at" => Some(Piece::At),
-            "image" => Some(Piece::Image),
-            "avatar" => Some(Piece::Avatar),
-            _ => match inner.strip_prefix("face:") {
-                Some(id) if !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()) => Some(Piece::Face(id.to_string())),
-                _ => None,
-            },
-        };
-        match piece {
-            Some(piece) => {
-                if !text.is_empty() {
-                    out.push(Piece::Text(std::mem::take(&mut text)));
-                }
-                out.push(piece);
-            }
-            None if inner.contains('|') => {
-                let options: Vec<&str> = inner.split('|').collect();
-                text.push_str(options[rand::random_range(0..options.len())]);
-            }
-            None => match vars.0.get(inner) {
-                Some(value) => text.push_str(value),
-                None => text.push_str(&rest[open..open + close + 2]),
-            },
-        }
-        rest = &after[close + 1..];
-    }
-    text.push_str(rest);
-    if !text.is_empty() {
-        out.push(Piece::Text(text));
-    }
-    out
+    crate::template::pieces(template, vars)
 }
 
 /// 发给谁、配什么图：渲染一条提示要的上下文。
@@ -544,7 +558,7 @@ struct Draft<'a> {
 /// 模板 → 消息：`{at}` 处换成对这些人的 @，图片与表情就地插入。整条只剩空白就不发（返回 `None`）。
 async fn compose(ctx: &Context, writer: &LockedWriter, template: &str, vars: &Vars, draft: &Draft<'_>) -> Option<Message> {
     let parts = pieces(template, vars);
-    let placed = parts.contains(&Piece::Image);
+    let placed = parts.contains(&Piece::Image(None));
     let mut message = Message::new();
     let mut visible = false;
     for part in parts {
@@ -562,7 +576,13 @@ async fn compose(ctx: &Context, writer: &LockedWriter, template: &str, vars: &Va
                     visible = true;
                 }
             }
-            Piece::Image => {
+            Piece::Image(Some(src)) => {
+                if let Some(file) = image(ctx, writer, std::slice::from_ref(&src)).await {
+                    message = message.image(file);
+                    visible = true;
+                }
+            }
+            Piece::Image(None) => {
                 if let Some(file) = image(ctx, writer, draft.images).await {
                     message = message.image(file);
                     visible = true;
@@ -922,6 +942,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             let (ctx, writer, group) = (ctx.clone(), writer.clone(), group.to_string());
             let delay = Duration::from_secs(config.join.merge_seconds);
             let (template, images, recall) = (effective.join_text.clone(), effective.images.clone(), config.join.recall_seconds);
+            let custom = effective.custom.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
                 let people = batch()
@@ -931,6 +952,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
                     .unwrap_or_default();
                 let (users, names): (Vec<String>, Vec<String>) = people.into_iter().unzip();
                 let vars = Vars::now()
+                    .custom(custom)
                     .group(&info)
                     .person(&users.join("、"), &names_text(&names))
                     .set("count", users.len().to_string());
@@ -945,7 +967,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         return Ok(());
     }
 
-    let mut vars = Vars::now().group(&info).person(user, &name);
+    let mut vars = config.vars(group).group(&info).person(user, &name);
     let mut template = if welcome { effective.join_text.pick().unwrap_or_default() } else { String::new() };
     let mut pending = None;
     if let Some((mode, answers, question)) = verify {
@@ -1033,7 +1055,7 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
     let name = display_name(ctx, writer, group, user).await;
     let operator_name = if kicked { display_name(ctx, writer, group, &operator).await } else { String::new() };
     let info = group_info(ctx, writer, group).await;
-    let vars = Vars::now().group(&info).person(user, &name).set("operator", operator_name);
+    let vars = config.vars(group).group(&info).person(user, &name).set("operator", operator_name);
     let at = [user.to_string()];
     if let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &[] }).await {
         say(ctx, writer, group, message, config.leave.recall_seconds).await?;
@@ -1171,7 +1193,7 @@ async fn pass(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pending
     settle(ctx, writer, config, p);
     if let Some(text) = config.verify.pass_text.pick() {
         let info = group_info(ctx, writer, &p.group).await;
-        let vars = Vars::now().group(&info).person(&p.user_id, &p.name);
+        let vars = config.vars(&p.group).group(&info).person(&p.user_id, &p.name);
         let at = [p.user_id.clone()];
         if let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &[] }).await {
             say(ctx, writer, &p.group, message, config.verify.recall_seconds).await?;
@@ -1186,7 +1208,7 @@ async fn wrong_hint(ctx: &Context, writer: &LockedWriter, config: &Config, p: &P
     let limit = config.verify.attempts;
     let chances = if limit > 0 { format!("（还能再试 {} 次）", limit.saturating_sub(p.wrong)) } else { String::new() };
     let info = group_info(ctx, writer, &p.group).await;
-    let vars = Vars::now()
+    let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)
         .set("task", p.task())
@@ -1324,6 +1346,10 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         lines.push("· 入群验证：关".into());
     }
     lines.push(format!("· 申请审批：{}", onoff(e.approve)));
+    if !e.custom.is_empty() {
+        let names: Vec<String> = e.custom.keys().map(|name| format!("{{{name}}}")).collect();
+        lines.push(format!("· 自定义占位符：{}", names.join("、")));
+    }
     let me = ctx.bot.self_id();
     let pending: Vec<Pending> = STATE
         .with(|state| state.pending.iter().filter(|p| p.group == group && p.self_id == me).cloned().collect())
@@ -1392,7 +1418,7 @@ async fn preview(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
         welcome: None,
     };
     let remind = verify.remind_seconds.iter().copied().max().unwrap_or(60).min(verify.timeout_seconds);
-    let vars = Vars::now()
+    let vars = config.vars(group)
         .group(&info)
         .person(me, &name)
         .set("operator", ctx.as_message().map(|m| m.sender_name().to_string()).unwrap_or_default())
@@ -1482,7 +1508,7 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
             Due::Remind(p, remaining) => {
                 let Some(text) = config.verify.remind_text.pick() else { continue };
                 let info = group_info(ctx, writer, &p.group).await;
-                let vars = Vars::now()
+                let vars = config.vars(&p.group)
                     .group(&info)
                     .person(&p.user_id, &p.name)
                     .set("remaining", duration_text(remaining_round(i64::try_from(remaining).unwrap_or(0))))
@@ -1550,7 +1576,7 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
     info!(target: LOG_TARGET, "群 {} 的 {}（{}）验证未通过，已按 {} 处理", p.group, p.name, p.user_id, verify.action);
     let Some(text) = verify.fail_text.pick() else { return };
     let info = group_info(ctx, writer, &p.group).await;
-    let vars = Vars::now()
+    let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)
         .set("timeout", duration_text(verify.timeout_seconds))
@@ -1600,6 +1626,10 @@ pub(crate) fn live(ctx: &Context) -> Value {
             None => {}
         }
     }
+    if !config.custom.is_empty() {
+        let names: Vec<String> = config.custom.keys().take(8).map(|name| format!("{{{name}}}")).collect();
+        lines.push(format!("自定义占位符 {} 个：{}。", config.custom.len(), names.join("、")));
+    }
     if !config.groups.is_empty() {
         lines.push(format!("{} 个群有单独的设置。", config.groups.len()));
     }
@@ -1642,17 +1672,38 @@ pub(crate) fn templates(current: &toml::Value) -> Value {
         .set("answer", sample.answer())
         .set("punish", punish_text(verify))
         .set("chances", if verify.attempts > 1 { format!("（还能再试 {} 次）", verify.attempts - 1) } else { String::new() });
-    let placeholders: Vec<Value> = PLACEHOLDERS
+    // 自定义占位符的内容里能用全部内置占位符（插到哪种提示里，就照那种提示的值填），所以内置的都多认一种 custom。
+    let mut placeholders: Vec<Value> = PLACEHOLDERS
         .iter()
         .map(|p| {
-            json!({
-                "key": p.key,
-                "label": p.label,
-                "hint": p.hint,
-                "kinds": p.kinds.iter().map(|k| k.code()).collect::<Vec<_>>(),
-            })
+            let mut kinds: Vec<&str> = p.kinds.iter().map(|k| k.code()).collect();
+            kinds.push("custom");
+            json!({ "key": p.key, "label": p.label, "hint": p.hint, "kinds": kinds })
         })
         .collect();
+    let every: Vec<&str> = Kind::ALL.iter().map(|k| k.code()).collect();
+    let custom_holder = |name: &str, template: &Template| {
+        let first = template.variants().next().unwrap_or_default();
+        let hint = crate::storage::truncate_chars(&first.split_whitespace().collect::<Vec<_>>().join(" "), 40);
+        json!({ "key": name, "label": name, "hint": hint, "kinds": every, "custom": true })
+    };
+    placeholders.extend(config.custom.iter().map(|(name, template)| custom_holder(name, template)));
+    // 每群自己的那份：只在那个群的提示里认得出，预览也照那个群的内容。
+    let group_custom: serde_json::Map<String, Value> = config
+        .groups
+        .iter()
+        .filter_map(|(group, o)| {
+            let custom = o.custom.as_ref().filter(|c| !c.is_empty())?;
+            let holders: Vec<Value> = custom.iter().map(|(name, template)| custom_holder(name, template)).collect();
+            let samples: serde_json::Map<String, Value> =
+                custom.iter().map(|(name, t)| (name.clone(), t.variants().next().unwrap_or_default().into())).collect();
+            Some((group.clone(), json!({ "placeholders": holders, "samples": samples })))
+        })
+        .collect();
+    let mut samples: serde_json::Map<String, Value> = vars.values.iter().map(|(k, v)| ((*k).to_string(), v.clone().into())).collect();
+    for (name, template) in &config.custom {
+        samples.insert(name.clone(), template.variants().next().unwrap_or_default().into());
+    }
     let fields = [
         ("join.text", Join, "新人进群时 @ 他说的话。写几种说法，每次随机发一种，天天进人也不像复读机；全部删掉就不发。"),
         ("leave.text", Leave, "有人自己退群时说的话；全部删掉就不说。"),
@@ -1666,14 +1717,18 @@ pub(crate) fn templates(current: &toml::Value) -> Value {
         ("groups.*.leave_text", Leave, "这个群有人自己退群时说的话。"),
         ("groups.*.kicked_text", Kicked, "这个群有人被移出时说的话。"),
     ];
-    let fields: serde_json::Map<String, Value> = fields
+    let mut fields: serde_json::Map<String, Value> = fields
         .iter()
         .map(|(path, kind, about)| (path.to_string(), json!({ "kind": kind.code(), "about": about })))
         .collect();
+    let about = "这段内容插到哪条提示里，里面的占位符就照那条提示的值填。写几种说法时每次随机一种；全部删掉 = 插进去是空的。";
+    fields.insert("custom.*".into(), json!({ "kind": "custom", "about": about }));
+    fields.insert("groups.*.custom.*".into(), json!({ "kind": "custom", "about": about }));
     json!({
         "fields": fields,
         "placeholders": placeholders,
-        "samples": vars.0,
+        "samples": samples,
+        "group_custom": group_custom,
         "extras": [
             { "insert": "{face:14}", "label": "QQ 表情", "hint": "{face:ID}：插一个 QQ 小黄脸，ID 是表情编号（14 是微笑）" },
             { "insert": "{你好|嗨}", "label": "随机片段", "hint": "{甲|乙|丙}：每次随机换成其中一个" },
@@ -1717,6 +1772,7 @@ pub(crate) const LABELS: &[(&str, &str)] = &[
     ("approve.keywords", "附言关键词"),
     ("approve.reject", "对不上就拒绝"),
     ("approve.reject_message", "拒绝理由"),
+    ("custom", "自定义占位符"),
     ("groups", "按群单独设置"),
     ("groups.*.join_enabled", "进群时欢迎"),
     ("groups.*.join_text", "欢迎词"),
@@ -1729,6 +1785,7 @@ pub(crate) const LABELS: &[(&str, &str)] = &[
     ("groups.*.answers", "口令"),
     ("groups.*.approve_enabled", "自动审批"),
     ("groups.*.keywords", "附言关键词"),
+    ("groups.*.custom", "本群的自定义占位符"),
 ];
 
 /// 只在某个取值下才用得到的项：界面在用不到时说一句，免得人改了半天没反应。
@@ -1757,33 +1814,33 @@ pub(crate) fn option_labels() -> Value {
 mod tests {
     use super::*;
 
-    fn vars() -> Vars {
-        Vars::now().set("name", "小林").set("group", "测试群")
-    }
-
     #[test]
-    fn pieces_split_at_image_face_and_keep_unknown_braces() {
-        let parts = pieces("欢迎 {at} 来到{group}{face:14}{image}{nope}{", &vars());
-        assert_eq!(
-            parts,
-            vec![
-                Piece::Text("欢迎 ".into()),
-                Piece::At,
-                Piece::Text(" 来到测试群".into()),
-                Piece::Face("14".into()),
-                Piece::Image,
-                Piece::Text("{nope}{".into()),
-            ]
+    fn custom_placeholders_expand_once_and_group_ones_win() {
+        let mut config = Config::default();
+        config.custom.insert("群规".into(), Template::of(&["不发广告，{group}欢迎你{face:1}"]));
+        config.custom.insert("套娃".into(), Template::of(&["{群规}"]));
+        config.groups.insert(
+            "1".into(),
+            GroupOverride { custom: Some(Custom::from([("群规".into(), Template::of(&["一群的规矩"]))])), ..Default::default() },
         );
+        let vars = config.vars("2").set("group", "测试群");
+        assert_eq!(
+            pieces("看{群规}", &vars),
+            vec![Piece::Text("看不发广告，测试群欢迎你".into()), Piece::Face("1".into())]
+        );
+        assert_eq!(pieces("{套娃}", &vars), vec![Piece::Text("{群规}".into())], "自定义里不再套自定义");
+        assert_eq!(pieces("{群规}", &config.vars("1")), vec![Piece::Text("一群的规矩".into())]);
     }
 
     #[test]
-    fn random_fragment_picks_one_option() {
-        for _ in 0..20 {
-            let parts = pieces("{你好|嗨}，{name}", &vars());
-            let [Piece::Text(text)] = &parts[..] else { panic!("{parts:?}") };
-            assert!(text == "你好，小林" || text == "嗨，小林", "{text}");
-        }
+    fn custom_names_cannot_shadow_builtins() {
+        assert!(custom_name_problem("群规").is_none());
+        assert!(custom_name_problem("name").is_some());
+        assert!(custom_name_problem("a b").is_some());
+        assert!(custom_name_problem("a|b").is_some());
+        let mut config = Config::default();
+        config.custom.insert("group".into(), Template::of(&["x"]));
+        assert!(config.check().is_err());
     }
 
     #[test]

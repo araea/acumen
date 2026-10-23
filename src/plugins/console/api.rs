@@ -38,6 +38,11 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
             post(super::gallery::upload).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route("/plugins/{name}/asset/{file}", get(super::gallery::file))
+        .route("/autoreply", get(autoreply))
+        .route("/autoreply/rules", post(autoreply_save))
+        .route("/autoreply/rules/{id}/delete", post(autoreply_delete))
+        .route("/autoreply/restore", post(autoreply_restore))
+        .route("/autoreply/test", post(autoreply_test))
         .route("/ambient", get(ambient))
         .route("/ambient/sticker/{id}", get(sticker_image))
         .route("/ambient/source", post(write_ambient_source))
@@ -230,8 +235,63 @@ async fn plugin_detail(
         "defaults": crate::plugins::ctl::redacted(&defaults),
         "diff": diff,
         "live": live(plugin.name, console.ctx()),
+        "panel": panel(plugin.name),
     }))
     .into_response()
+}
+
+/// 配置表单之外、插件自己的一块面板（自动回复的规则）。界面按名字画，接口在下面各自的路由。
+fn panel(name: &str) -> Value {
+    match name {
+        "autoreply" => json!("autoreply"),
+        _ => Value::Null,
+    }
+}
+
+// ---------- 自动回复的规则面板：规则不在配置里，单独几条路由 ----------
+
+async fn autoreply(State(console): State<Arc<Console>>) -> Response {
+    Json(crate::plugins::autoreply::panel_overview(console.ctx()).await).into_response()
+}
+
+async fn autoreply_save(Json(body): Json<Value>) -> Response {
+    match crate::plugins::autoreply::panel_save(body).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+async fn autoreply_delete(AxumPath(id): AxumPath<u32>) -> Response {
+    match crate::plugins::autoreply::panel_delete(id).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct Restore {
+    id: Option<u32>,
+}
+
+async fn autoreply_restore(Json(body): Json<Restore>) -> Response {
+    match crate::plugins::autoreply::panel_restore(body.id).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct Trial {
+    text: String,
+    #[serde(default)]
+    group: String,
+    #[serde(default)]
+    at: bool,
+}
+
+async fn autoreply_test(State(console): State<Arc<Console>>, Json(body): Json<Trial>) -> Response {
+    let group = Some(body.group.as_str()).filter(|g| !g.is_empty());
+    Json(crate::plugins::autoreply::panel_test(console.ctx(), &body.text, group, body.at).await).into_response()
 }
 
 /// 插件现在的情况（去处、计数之类），控制台插件页上方那张卡。只有少数插件有。
@@ -239,6 +299,7 @@ fn live(name: &str, ctx: &crate::event::Context) -> Value {
     match name {
         "anti_recall" => crate::plugins::anti_recall::live(ctx),
         "welcome" => crate::plugins::welcome::live(ctx),
+        "autoreply" => crate::plugins::autoreply::live(ctx),
         _ => Value::Null,
     }
 }
@@ -248,6 +309,7 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
     match name {
         "welcome" => crate::plugins::welcome::LABELS,
         "anti_recall" => crate::plugins::anti_recall::LABELS,
+        "autoreply" => crate::plugins::autoreply::LABELS,
         _ => &[],
     }
 }
@@ -272,6 +334,7 @@ fn depends(name: &str) -> Value {
 fn option_labels(name: &str) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::option_labels(),
+        "autoreply" => crate::plugins::autoreply::option_labels(),
         _ => json!({}),
     }
 }
@@ -391,18 +454,20 @@ fn inside_map(plugin: &str, console: &Console, path: &str) -> Result<(), &'stati
     let config = console.ctx().config.read().unwrap();
     let current = config.plugins.get(plugin).ok_or("插件配置不存在")?;
     let maps = maps(plugin, current);
-    let ok = maps.keys().any(|map| {
-        path.strip_prefix(map.as_str())
-            .and_then(|rest| rest.strip_prefix('.'))
-            .is_some_and(|rest| {
-                let parts: Vec<_> = rest.split('.').collect();
-                // 项里的字段只认模板里有的：插件的反序列化不拒绝陌生键，写进去也只是一条没人读的垃圾。
-                let field_ok = |field: &str| {
-                    maps[map]["optional"] == true && maps[map]["template"].get(field).is_some()
-                };
-                !parts.iter().any(|part| part.is_empty())
-                    && (parts.len() == 1 || (parts.len() == 2 && field_ok(parts[1])))
-            })
+    let parts: Vec<&str> = path.split('.').collect();
+    let ok = maps.iter().any(|(map, spec)| {
+        // 表的路径里可以有 `*`（映射表里一项的某个字段本身又是一张映射表，如每群的自定义占位符）。
+        let head: Vec<&str> = map.split('.').collect();
+        if parts.len() <= head.len()
+            || !head.iter().zip(&parts).all(|(want, got)| *want == "*" || want == got)
+        {
+            return false;
+        }
+        let rest = &parts[head.len()..];
+        // 项里的字段只认模板里有的：插件的反序列化不拒绝陌生键，写进去也只是一条没人读的垃圾。
+        let field_ok = |field: &str| spec["optional"] == true && spec["template"].get(field).is_some();
+        !parts.iter().any(|part| part.is_empty())
+            && (rest.len() == 1 || (rest.len() == 2 && field_ok(rest[1])))
     });
     if ok { Ok(()) } else { Err("这一项不能增删，只能修改") }
 }
@@ -412,7 +477,8 @@ fn inside_map(plugin: &str, console: &Console, path: &str) -> Result<(), &'stati
 /// 默认配置里它们是空表，表单画不出任何东西、也加不进新项；这里告诉界面每张表的键是什么
 /// （群号、推送目标还是自取的名字）、新的一项长什么样、各字段是什么意思。
 /// `optional`：项里的字段可以单独删掉，删了就沿用上层的设置。模板取自当前的上层设置，
-/// 所以新加一项时行为不变，改哪项才是给它单独定。
+/// 所以新加一项时行为不变，改哪项才是给它单独定。`value = "template"` 的表每一项本身就是一条
+/// 提示模板（自定义占位符），界面直接给文案编辑器；表的路径里的 `*` 匹配任意一个键。
 fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
     let at = |path: &str| -> Value {
         path.split('.')
@@ -441,6 +507,7 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
                     "answers": at("verify.answers"),
                     "approve_enabled": at("approve.enabled"),
                     "keywords": at("approve.keywords"),
+                    "custom": {},
                 },
                 "help": {
                     "join_enabled": "这个群发不发欢迎。",
@@ -454,8 +521,23 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
                     "answers": "这个群的口令（验证方式是「发出口令」时用）。",
                     "approve_enabled": "这个群的加群申请要不要自动审批。",
                     "keywords": "这个群审批看的附言关键词。",
+                    "custom": "这个群自己的自定义占位符：同名的顶掉上面那份，没写的照用上面的。",
                 },
             }));
+            let custom = |empty: &str| {
+                json!({
+                    "key": "word",
+                    "noun": "占位符",
+                    "add": "新建占位符",
+                    "empty": empty,
+                    "value": "template",
+                    "optional": false,
+                    "template": [""],
+                    "reserved": crate::plugins::welcome::reserved().collect::<Vec<_>>(),
+                })
+            };
+            out.insert("custom".into(), custom("还没有自定义占位符。把群规、下载地址这类常用的话存成一个，各条提示里点一下就能插进去，改这里处处跟着变。"));
+            out.insert("groups.*.custom".into(), custom("这个群没有自己的占位符，全部照用上面的。要让这个群的 {群规} 说别的，就在这里加一个同名的。"));
         }
         "ai_news" => {
             out.insert("group_preferences".into(), json!({

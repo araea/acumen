@@ -287,20 +287,17 @@ async fn use_model(ctx: &Context, oai: &super::OaiConfig, mgr: &Manager, spec: &
         .then(|| catalog::configured(&oai.providers, spec).map(|(name, _)| name.to_string()).or_else(|| catalog::find(spec).map(|known| known.id.to_string())))
         .flatten();
     let target = if let Some(name) = as_provider {
-        match catalog::find(&name).map(|known| known.model).filter(|model| !model.is_empty()) {
-            Some(model) => format!("{name}/{model}"),
-            None => {
-                let listed = provider_models.get(&name).map(Vec::as_slice).unwrap_or_default();
-                if listed.is_empty() {
-                    return Err(format!("{name} 没有推荐模型，写全：`oai 用 {name}/模型名`（先 `/%` 看它有哪些）"));
-                }
-                let shown: Vec<&str> = listed.iter().take(12).map(String::as_str).collect();
-                return Err(format!(
-                    "{name} 没有推荐模型，挑一个写全：`oai 用 {name}/模型名`\n它有：{}{}",
-                    shown.join("、"),
-                    if listed.len() > shown.len() { "……（`/%` 看全部）" } else { "" }
-                ));
+        if let Some(model) = catalog::find(&name).map(|known| known.model).filter(|model| !model.is_empty()) { format!("{name}/{model}") } else {
+            let listed = provider_models.get(&name).map(Vec::as_slice).unwrap_or_default();
+            if listed.is_empty() {
+                return Err(format!("{name} 没有推荐模型，写全：`oai 用 {name}/模型名`（先 `/%` 看它有哪些）"));
             }
+            let shown: Vec<&str> = listed.iter().take(12).map(String::as_str).collect();
+            return Err(format!(
+                "{name} 没有推荐模型，挑一个写全：`oai 用 {name}/模型名`\n它有：{}{}",
+                shown.join("、"),
+                if listed.len() > shown.len() { "……（`/%` 看全部）" } else { "" }
+            ));
         }
     } else {
         match super::utils::split_provider(spec) {

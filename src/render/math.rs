@@ -51,7 +51,11 @@ pub fn mathml(tex: &str, display: bool) -> Option<String> {
     if tex.is_empty() {
         return None;
     }
-    let mode = if display { MathDisplay::Block } else { MathDisplay::Inline };
+    let mode = if display {
+        MathDisplay::Block
+    } else {
+        MathDisplay::Inline
+    };
     converter()
         .convert_with_local_state(&wrap_cjk(tex), mode)
         .ok()
@@ -76,7 +80,11 @@ pub fn display_html(tex: &str) -> String {
 }
 
 fn source_html(tex: &str, display: bool) -> String {
-    let class = if display { "math-src block" } else { "math-src" };
+    let class = if display {
+        "math-src block"
+    } else {
+        "math-src"
+    };
     format!(
         "<code class=\"{class}\">{}</code>",
         crate::render::web::esc(tex.trim())
@@ -87,8 +95,20 @@ fn source_html(tex: &str, display: bool) -> String {
 /// 浏览器只能硬拧，难看也难认。已经在 `\text{…}` 一类参数里的不动。
 fn wrap_cjk(tex: &str) -> String {
     const TEXT_CMDS: &[&str] = &[
-        "text", "textrm", "textbf", "textit", "textsf", "texttt", "mbox", "operatorname",
-        "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "hbox",
+        "text",
+        "textrm",
+        "textbf",
+        "textit",
+        "textsf",
+        "texttt",
+        "mbox",
+        "operatorname",
+        "mathrm",
+        "mathbf",
+        "mathit",
+        "mathsf",
+        "mathtt",
+        "hbox",
     ];
     if !tex.chars().any(is_cjk) {
         return tex.to_string();
@@ -178,7 +198,8 @@ pub fn normalize_delimiters(markdown: &str) -> String {
         let marker = trimmed.chars().next().filter(|c| *c == '`' || *c == '~');
         if let Some((ch, len, is_math)) = fence {
             let run = trimmed.chars().take_while(|c| *c == ch).count();
-            if marker == Some(ch) && run >= len && trimmed[run * ch.len_utf8()..].trim().is_empty() {
+            if marker == Some(ch) && run >= len && trimmed[run * ch.len_utf8()..].trim().is_empty()
+            {
                 fence = None;
                 if is_math {
                     out.push_str("$$");
@@ -220,18 +241,24 @@ fn inline_delimiters(line: &str) -> String {
                 chars.next();
                 run += 1;
             }
-            ticks = if ticks == 0 { run } else if ticks == run { 0 } else { ticks };
+            ticks = if ticks == 0 {
+                run
+            } else if ticks == run {
+                0
+            } else {
+                ticks
+            };
             out.extend(std::iter::repeat_n('`', run));
             continue;
         }
         if c == '\\' && ticks == 0 {
             match chars.peek() {
-                Some('(') | Some(')') => {
+                Some('(' | ')') => {
                     chars.next();
                     out.push('$');
                     continue;
                 }
-                Some('[') | Some(']') => {
+                Some('[' | ']') => {
                     chars.next();
                     out.push_str("$$");
                     continue;
@@ -302,17 +329,17 @@ fn spans(text: &str) -> Vec<Span> {
             i += 2;
             continue;
         }
-        if text[i..].starts_with("\\[") {
-            if let Some(next) = pair("\\[", "\\]", true, &mut out) {
-                i = next;
-                continue;
-            }
+        if text[i..].starts_with("\\[")
+            && let Some(next) = pair("\\[", "\\]", true, &mut out)
+        {
+            i = next;
+            continue;
         }
-        if text[i..].starts_with("\\(") {
-            if let Some(next) = pair("\\(", "\\)", false, &mut out) {
-                i = next;
-                continue;
-            }
+        if text[i..].starts_with("\\(")
+            && let Some(next) = pair("\\(", "\\)", false, &mut out)
+        {
+            i = next;
+            continue;
         }
         if b == b'\\' {
             // 转义的美元符号等：跳过下一个字符。
@@ -475,43 +502,162 @@ fn optional(s: &str) -> (Option<&str>, &str) {
 
 fn symbol(name: &str) -> Option<&'static str> {
     Some(match name {
-        "alpha" => "α", "beta" => "β", "gamma" => "γ", "delta" => "δ", "epsilon" => "ϵ",
-        "varepsilon" => "ε", "zeta" => "ζ", "eta" => "η", "theta" => "θ", "vartheta" => "ϑ",
-        "iota" => "ι", "kappa" => "κ", "lambda" => "λ", "mu" => "μ", "nu" => "ν", "xi" => "ξ",
-        "pi" => "π", "varpi" => "ϖ", "rho" => "ρ", "varrho" => "ϱ", "sigma" => "σ",
-        "varsigma" => "ς", "tau" => "τ", "upsilon" => "υ", "phi" => "ϕ", "varphi" => "φ",
-        "chi" => "χ", "psi" => "ψ", "omega" => "ω", "Gamma" => "Γ", "Delta" => "Δ",
-        "Theta" => "Θ", "Lambda" => "Λ", "Xi" => "Ξ", "Pi" => "Π", "Sigma" => "Σ",
-        "Upsilon" => "Υ", "Phi" => "Φ", "Psi" => "Ψ", "Omega" => "Ω",
-        "times" => "×", "cdot" => "·", "div" => "÷", "pm" => "±", "mp" => "∓",
-        "le" | "leq" | "leqslant" => "≤", "ge" | "geq" | "geqslant" => "≥", "ne" | "neq" => "≠",
-        "approx" => "≈", "equiv" => "≡", "sim" => "∼", "simeq" => "≃", "cong" => "≅",
-        "propto" => "∝", "ll" => "≪", "gg" => "≫", "infty" => "∞", "partial" => "∂",
-        "nabla" => "∇", "sum" => "∑", "prod" => "∏", "coprod" => "∐", "int" => "∫",
-        "iint" => "∬", "iiint" => "∭", "oint" => "∮", "to" | "rightarrow" => "→",
-        "leftarrow" | "gets" => "←", "Rightarrow" => "⇒", "Leftarrow" => "⇐",
-        "Leftrightarrow" => "⇔", "leftrightarrow" => "↔", "mapsto" => "↦",
-        "implies" | "Longrightarrow" => "⟹", "iff" | "Longleftrightarrow" => "⟺",
-        "longrightarrow" => "⟶", "longleftarrow" => "⟵", "uparrow" => "↑",
-        "downarrow" => "↓", "in" => "∈", "notin" => "∉", "ni" => "∋", "subset" => "⊂",
-        "subseteq" => "⊆", "supset" => "⊃", "supseteq" => "⊇", "subsetneq" => "⊊",
-        "cup" => "∪", "cap" => "∩", "bigcup" => "⋃", "bigcap" => "⋂", "setminus" => "∖",
-        "emptyset" | "varnothing" => "∅", "forall" => "∀", "exists" => "∃",
-        "nexists" => "∄", "neg" | "lnot" => "¬", "land" | "wedge" => "∧",
-        "lor" | "vee" => "∨", "oplus" => "⊕", "otimes" => "⊗", "circ" => "∘",
-        "bullet" => "•", "star" => "⋆", "ast" => "∗", "cdots" => "⋯",
-        "ldots" | "dots" | "dotsc" | "dotsb" => "…", "vdots" => "⋮", "ddots" => "⋱",
-        "angle" => "∠", "perp" => "⊥", "parallel" => "∥", "mid" => "∣", "nmid" => "∤",
-        "degree" => "°", "prime" => "′", "hbar" => "ℏ", "ell" => "ℓ", "Re" => "ℜ",
-        "Im" => "ℑ", "aleph" => "ℵ", "wp" => "℘", "langle" => "⟨", "rangle" => "⟩",
-        "lfloor" => "⌊", "rfloor" => "⌋", "lceil" => "⌈", "rceil" => "⌉", "|" | "Vert" => "‖",
-        "vert" => "|", "therefore" => "∴", "because" => "∵", "triangle" => "△",
-        "square" | "Box" => "□", "checkmark" => "✓", "top" => "⊤", "bot" => "⊥",
-        "vdash" => "⊢", "models" => "⊨", "dagger" => "†", "S" => "§", "colon" => ":",
-        "lbrace" | "{" => "{", "rbrace" | "}" => "}", "%" => "%", "$" => "$", "&" => "&",
-        "#" => "#", "_" => "_", "lt" => "<", "gt" => ">", "backslash" => "\\",
+        "alpha" => "α",
+        "beta" => "β",
+        "gamma" => "γ",
+        "delta" => "δ",
+        "epsilon" => "ϵ",
+        "varepsilon" => "ε",
+        "zeta" => "ζ",
+        "eta" => "η",
+        "theta" => "θ",
+        "vartheta" => "ϑ",
+        "iota" => "ι",
+        "kappa" => "κ",
+        "lambda" => "λ",
+        "mu" => "μ",
+        "nu" => "ν",
+        "xi" => "ξ",
+        "pi" => "π",
+        "varpi" => "ϖ",
+        "rho" => "ρ",
+        "varrho" => "ϱ",
+        "sigma" => "σ",
+        "varsigma" => "ς",
+        "tau" => "τ",
+        "upsilon" => "υ",
+        "phi" => "ϕ",
+        "varphi" => "φ",
+        "chi" => "χ",
+        "psi" => "ψ",
+        "omega" => "ω",
+        "Gamma" => "Γ",
+        "Delta" => "Δ",
+        "Theta" => "Θ",
+        "Lambda" => "Λ",
+        "Xi" => "Ξ",
+        "Pi" => "Π",
+        "Sigma" => "Σ",
+        "Upsilon" => "Υ",
+        "Phi" => "Φ",
+        "Psi" => "Ψ",
+        "Omega" => "Ω",
+        "times" => "×",
+        "cdot" => "·",
+        "div" => "÷",
+        "pm" => "±",
+        "mp" => "∓",
+        "le" | "leq" | "leqslant" => "≤",
+        "ge" | "geq" | "geqslant" => "≥",
+        "ne" | "neq" => "≠",
+        "approx" => "≈",
+        "equiv" => "≡",
+        "sim" => "∼",
+        "simeq" => "≃",
+        "cong" => "≅",
+        "propto" => "∝",
+        "ll" => "≪",
+        "gg" => "≫",
+        "infty" => "∞",
+        "partial" => "∂",
+        "nabla" => "∇",
+        "sum" => "∑",
+        "prod" => "∏",
+        "coprod" => "∐",
+        "int" => "∫",
+        "iint" => "∬",
+        "iiint" => "∭",
+        "oint" => "∮",
+        "to" | "rightarrow" => "→",
+        "leftarrow" | "gets" => "←",
+        "Rightarrow" => "⇒",
+        "Leftarrow" => "⇐",
+        "Leftrightarrow" => "⇔",
+        "leftrightarrow" => "↔",
+        "mapsto" => "↦",
+        "implies" | "Longrightarrow" => "⟹",
+        "iff" | "Longleftrightarrow" => "⟺",
+        "longrightarrow" => "⟶",
+        "longleftarrow" => "⟵",
+        "uparrow" => "↑",
+        "downarrow" => "↓",
+        "in" => "∈",
+        "notin" => "∉",
+        "ni" => "∋",
+        "subset" => "⊂",
+        "subseteq" => "⊆",
+        "supset" => "⊃",
+        "supseteq" => "⊇",
+        "subsetneq" => "⊊",
+        "cup" => "∪",
+        "cap" => "∩",
+        "bigcup" => "⋃",
+        "bigcap" => "⋂",
+        "setminus" => "∖",
+        "emptyset" | "varnothing" => "∅",
+        "forall" => "∀",
+        "exists" => "∃",
+        "nexists" => "∄",
+        "neg" | "lnot" => "¬",
+        "land" | "wedge" => "∧",
+        "lor" | "vee" => "∨",
+        "oplus" => "⊕",
+        "otimes" => "⊗",
+        "circ" => "∘",
+        "bullet" => "•",
+        "star" => "⋆",
+        "ast" => "∗",
+        "cdots" => "⋯",
+        "ldots" | "dots" | "dotsc" | "dotsb" => "…",
+        "vdots" => "⋮",
+        "ddots" => "⋱",
+        "angle" => "∠",
+        "perp" => "⊥",
+        "parallel" => "∥",
+        "mid" => "∣",
+        "nmid" => "∤",
+        "degree" => "°",
+        "prime" => "′",
+        "hbar" => "ℏ",
+        "ell" => "ℓ",
+        "Re" => "ℜ",
+        "Im" => "ℑ",
+        "aleph" => "ℵ",
+        "wp" => "℘",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
+        "|" | "Vert" => "‖",
+        "vert" => "|",
+        "therefore" => "∴",
+        "because" => "∵",
+        "triangle" => "△",
+        "square" | "Box" => "□",
+        "checkmark" => "✓",
+        "top" => "⊤",
+        "bot" => "⊥",
+        "vdash" => "⊢",
+        "models" => "⊨",
+        "dagger" => "†",
+        "S" => "§",
+        "colon" => ":",
+        "lbrace" | "{" => "{",
+        "rbrace" | "}" => "}",
+        "%" => "%",
+        "$" => "$",
+        "&" => "&",
+        "#" => "#",
+        "_" => "_",
+        "lt" => "<",
+        "gt" => ">",
+        "backslash" => "\\",
         "," | ":" | ";" | ">" | " " | "space" | "thinspace" | "medspace" => " ",
-        "quad" => "  ", "qquad" => "    ", "!" | "negthinspace" => "",
+        "quad" => "  ",
+        "qquad" => "    ",
+        "!" | "negthinspace" => "",
         _ => return None,
     })
 }
@@ -520,11 +666,45 @@ fn symbol(name: &str) -> Option<&'static str> {
 fn is_function(name: &str) -> bool {
     matches!(
         name,
-        "sin" | "cos" | "tan" | "cot" | "sec" | "csc" | "arcsin" | "arccos" | "arctan"
-            | "sinh" | "cosh" | "tanh" | "coth" | "log" | "ln" | "lg" | "exp" | "lim"
-            | "liminf" | "limsup" | "max" | "min" | "sup" | "inf" | "det" | "gcd" | "lcm"
-            | "deg" | "dim" | "ker" | "arg" | "Pr" | "hom" | "mod" | "bmod" | "tr" | "rank"
-            | "sgn" | "span"
+        "sin"
+            | "cos"
+            | "tan"
+            | "cot"
+            | "sec"
+            | "csc"
+            | "arcsin"
+            | "arccos"
+            | "arctan"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "coth"
+            | "log"
+            | "ln"
+            | "lg"
+            | "exp"
+            | "lim"
+            | "liminf"
+            | "limsup"
+            | "max"
+            | "min"
+            | "sup"
+            | "inf"
+            | "det"
+            | "gcd"
+            | "lcm"
+            | "deg"
+            | "dim"
+            | "ker"
+            | "arg"
+            | "Pr"
+            | "hom"
+            | "mod"
+            | "bmod"
+            | "tr"
+            | "rank"
+            | "sgn"
+            | "span"
     )
 }
 
@@ -532,16 +712,43 @@ fn is_function(name: &str) -> bool {
 fn is_font_command(name: &str) -> bool {
     matches!(
         name,
-        "text" | "textrm" | "textbf" | "textit" | "textsf" | "texttt" | "textnormal" | "mbox"
-            | "hbox" | "mathrm" | "mathbf" | "mathit" | "mathsf" | "mathtt" | "mathnormal"
-            | "boldsymbol" | "bm" | "mathcal" | "mathscr" | "mathfrak" | "operatorname"
-            | "displaystyle" | "textstyle" | "emph" | "pmb"
+        "text"
+            | "textrm"
+            | "textbf"
+            | "textit"
+            | "textsf"
+            | "texttt"
+            | "textnormal"
+            | "mbox"
+            | "hbox"
+            | "mathrm"
+            | "mathbf"
+            | "mathit"
+            | "mathsf"
+            | "mathtt"
+            | "mathnormal"
+            | "boldsymbol"
+            | "bm"
+            | "mathcal"
+            | "mathscr"
+            | "mathfrak"
+            | "operatorname"
+            | "displaystyle"
+            | "textstyle"
+            | "emph"
+            | "pmb"
     )
 }
 
 fn double_struck(c: char) -> char {
     match c {
-        'N' => 'ℕ', 'Z' => 'ℤ', 'Q' => 'ℚ', 'R' => 'ℝ', 'C' => 'ℂ', 'P' => 'ℙ', 'H' => 'ℍ',
+        'N' => 'ℕ',
+        'Z' => 'ℤ',
+        'Q' => 'ℚ',
+        'R' => 'ℝ',
+        'C' => 'ℂ',
+        'P' => 'ℙ',
+        'H' => 'ℍ',
         'A'..='Z' => char::from_u32(0x1D538 + (c as u32 - 'A' as u32)).unwrap_or(c),
         'a'..='z' => char::from_u32(0x1D552 + (c as u32 - 'a' as u32)).unwrap_or(c),
         '0'..='9' => char::from_u32(0x1D7D8 + (c as u32 - '0' as u32)).unwrap_or(c),
@@ -551,24 +758,90 @@ fn double_struck(c: char) -> char {
 
 fn superscript(c: char) -> Option<char> {
     Some(match c {
-        '0' => '⁰', '1' => '¹', '2' => '²', '3' => '³', '4' => '⁴', '5' => '⁵', '6' => '⁶',
-        '7' => '⁷', '8' => '⁸', '9' => '⁹', '+' => '⁺', '-' | '−' => '⁻', '=' => '⁼',
-        '(' => '⁽', ')' => '⁾', 'n' => 'ⁿ', 'i' => 'ⁱ', 'a' => 'ᵃ', 'b' => 'ᵇ', 'c' => 'ᶜ',
-        'd' => 'ᵈ', 'e' => 'ᵉ', 'f' => 'ᶠ', 'g' => 'ᵍ', 'h' => 'ʰ', 'j' => 'ʲ', 'k' => 'ᵏ',
-        'l' => 'ˡ', 'm' => 'ᵐ', 'o' => 'ᵒ', 'p' => 'ᵖ', 'r' => 'ʳ', 's' => 'ˢ', 't' => 'ᵗ',
-        'u' => 'ᵘ', 'v' => 'ᵛ', 'w' => 'ʷ', 'x' => 'ˣ', 'y' => 'ʸ', 'z' => 'ᶻ', 'T' => 'ᵀ',
-        '′' => '′', '°' => '°', '*' => '*', ' ' => ' ',
+        '0' => '⁰',
+        '1' => '¹',
+        '2' => '²',
+        '3' => '³',
+        '4' => '⁴',
+        '5' => '⁵',
+        '6' => '⁶',
+        '7' => '⁷',
+        '8' => '⁸',
+        '9' => '⁹',
+        '+' => '⁺',
+        '-' | '−' => '⁻',
+        '=' => '⁼',
+        '(' => '⁽',
+        ')' => '⁾',
+        'n' => 'ⁿ',
+        'i' => 'ⁱ',
+        'a' => 'ᵃ',
+        'b' => 'ᵇ',
+        'c' => 'ᶜ',
+        'd' => 'ᵈ',
+        'e' => 'ᵉ',
+        'f' => 'ᶠ',
+        'g' => 'ᵍ',
+        'h' => 'ʰ',
+        'j' => 'ʲ',
+        'k' => 'ᵏ',
+        'l' => 'ˡ',
+        'm' => 'ᵐ',
+        'o' => 'ᵒ',
+        'p' => 'ᵖ',
+        'r' => 'ʳ',
+        's' => 'ˢ',
+        't' => 'ᵗ',
+        'u' => 'ᵘ',
+        'v' => 'ᵛ',
+        'w' => 'ʷ',
+        'x' => 'ˣ',
+        'y' => 'ʸ',
+        'z' => 'ᶻ',
+        'T' => 'ᵀ',
+        '′' => '′',
+        '°' => '°',
+        '*' => '*',
+        ' ' => ' ',
         _ => return None,
     })
 }
 
 fn subscript(c: char) -> Option<char> {
     Some(match c {
-        '0' => '₀', '1' => '₁', '2' => '₂', '3' => '₃', '4' => '₄', '5' => '₅', '6' => '₆',
-        '7' => '₇', '8' => '₈', '9' => '₉', '+' => '₊', '-' | '−' => '₋', '=' => '₌',
-        '(' => '₍', ')' => '₎', 'a' => 'ₐ', 'e' => 'ₑ', 'h' => 'ₕ', 'i' => 'ᵢ', 'j' => 'ⱼ',
-        'k' => 'ₖ', 'l' => 'ₗ', 'm' => 'ₘ', 'n' => 'ₙ', 'o' => 'ₒ', 'p' => 'ₚ', 'r' => 'ᵣ',
-        's' => 'ₛ', 't' => 'ₜ', 'u' => 'ᵤ', 'v' => 'ᵥ', 'x' => 'ₓ', ' ' => ' ',
+        '0' => '₀',
+        '1' => '₁',
+        '2' => '₂',
+        '3' => '₃',
+        '4' => '₄',
+        '5' => '₅',
+        '6' => '₆',
+        '7' => '₇',
+        '8' => '₈',
+        '9' => '₉',
+        '+' => '₊',
+        '-' | '−' => '₋',
+        '=' => '₌',
+        '(' => '₍',
+        ')' => '₎',
+        'a' => 'ₐ',
+        'e' => 'ₑ',
+        'h' => 'ₕ',
+        'i' => 'ᵢ',
+        'j' => 'ⱼ',
+        'k' => 'ₖ',
+        'l' => 'ₗ',
+        'm' => 'ₘ',
+        'n' => 'ₙ',
+        'o' => 'ₒ',
+        'p' => 'ₚ',
+        'r' => 'ᵣ',
+        's' => 'ₛ',
+        't' => 'ₜ',
+        'u' => 'ᵤ',
+        'v' => 'ᵥ',
+        'x' => 'ₓ',
+        ' ' => ' ',
         _ => return None,
     })
 }
@@ -644,14 +917,24 @@ pub fn to_unicode(tex: &str) -> String {
                         let (den, tail) = group(tail).unwrap_or(("", ""));
                         rest = tail;
                         let (num, den) = (to_unicode(num), to_unicode(den));
-                        let wrap = |s: String| if needs_parens(&s) { format!("({})", s.trim()) } else { s.trim().to_string() };
+                        let wrap = |s: String| {
+                            if needs_parens(&s) {
+                                format!("({})", s.trim())
+                            } else {
+                                s.trim().to_string()
+                            }
+                        };
                         out.push_str(&format!("{}/{}", wrap(num), wrap(den)));
                     }
                     "binom" | "dbinom" | "tbinom" => {
                         let (n, tail) = group(rest).unwrap_or(("", ""));
                         let (k, tail) = group(tail).unwrap_or(("", ""));
                         rest = tail;
-                        out.push_str(&format!("C({}, {})", to_unicode(n).trim(), to_unicode(k).trim()));
+                        out.push_str(&format!(
+                            "C({}, {})",
+                            to_unicode(n).trim(),
+                            to_unicode(k).trim()
+                        ));
                     }
                     "sqrt" => {
                         let (index, tail) = optional(rest);
@@ -665,7 +948,9 @@ pub fn to_unicode(tex: &str) -> String {
                             Some(n) => format!("{}√", script(&to_unicode(n), true)),
                         };
                         out.push_str(&root);
-                        if body.trim().chars().count() > 1 && !(body.starts_with('(') && body.ends_with(')')) {
+                        if body.trim().chars().count() > 1
+                            && !(body.starts_with('(') && body.ends_with(')'))
+                        {
                             out.push_str(&format!("({})", body.trim()));
                         } else {
                             out.push_str(body.trim());
@@ -851,10 +1136,7 @@ mod tests {
         assert_eq!(normalize_delimiters("a \\(x\\) b"), "a $x$ b");
         assert_eq!(normalize_delimiters("\\[\nx\n\\]"), "$$\nx\n$$");
         assert_eq!(normalize_delimiters("`\\(x\\)`"), "`\\(x\\)`");
-        assert_eq!(
-            normalize_delimiters("```math\nx^2\n```\n"),
-            "$$\nx^2\n$$\n"
-        );
+        assert_eq!(normalize_delimiters("```math\nx^2\n```\n"), "$$\nx^2\n$$\n");
         assert_eq!(
             normalize_delimiters("```rust\nlet a = \"\\(\";\n```\n"),
             "```rust\nlet a = \"\\(\";\n```\n"

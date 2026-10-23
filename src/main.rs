@@ -18,6 +18,7 @@ mod render;
 mod requests;
 mod scheduler;
 mod storage;
+mod template;
 mod text;
 
 use crate::config::AppConfig;

@@ -1261,7 +1261,7 @@ pub(super) async fn respond(
             oai.request_timeout(),
         )
         .await?;
-        return Ok(Reply {
+        Ok(Reply {
             text: result.text,
             sources: result.sources,
             trace: result.trace,

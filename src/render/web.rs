@@ -622,7 +622,11 @@ mod cache {
     }
 
     pub(super) fn key(html: &str, scale: f64) -> String {
-        format!("{:x}@{}", md5::compute(html.as_bytes()), super::scale_factor(scale))
+        format!(
+            "{:x}@{}",
+            md5::compute(html.as_bytes()),
+            super::scale_factor(scale)
+        )
     }
 
     pub(super) fn get(key: &str) -> Option<String> {
