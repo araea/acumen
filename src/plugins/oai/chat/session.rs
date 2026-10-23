@@ -766,7 +766,7 @@ impl Session {
                 let size = request["size"].as_str().map(str::to_string);
                 let quality = request["quality"].as_str().map(str::to_string);
                 let budget = self.config.draw_budget.clamp(0, 8);
-                ensure!(budget > 0, "本群已关闭绘图（draw_budget = 0）");
+                ensure!(budget > 0, "这个会话已关闭绘图（draw_budget = 0）");
                 ensure!(self.draws < budget, "本轮绘图额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx,
@@ -814,7 +814,7 @@ impl Session {
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "写歌得先说清楚写一首什么样的歌");
                 let budget = self.config.music_budget.clamp(0, 4);
-                ensure!(budget > 0, "本群已关闭写歌（music_budget = 0）");
+                ensure!(budget > 0, "这个会话已关闭写歌（music_budget = 0）");
                 ensure!(self.music < budget, "本轮写歌额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx,
@@ -900,7 +900,7 @@ impl Session {
                 let prompt = request["prompt"].as_str().unwrap_or("").trim().to_string();
                 ensure!(!prompt.is_empty(), "拍片得先说清楚要拍什么");
                 let budget = self.config.video_budget.clamp(0, 2);
-                ensure!(budget > 0, "本群已关闭拍片（video_budget = 0）");
+                ensure!(budget > 0, "这个会话已关闭拍片（video_budget = 0）");
                 ensure!(self.videos < budget, "本轮拍片额度已用完");
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx,
@@ -955,11 +955,11 @@ impl Session {
             }
             "memo" => {
                 ensure!(self.enabled(), "这个会话的聊天功能已停用");
-                ensure!(self.config.memory_enabled, "本群已关闭记忆");
+                ensure!(self.config.memory_enabled, "这个会话已关闭记忆");
                 let budget = self.config.memo_budget.clamp(0, 8);
                 ensure!(
                     budget > 0,
-                    "本群已关闭记忆写入（memo_budget = 0）"
+                    "这个会话已关闭记忆写入（memo_budget = 0）"
                 );
                 ensure!(self.memos < budget, "本轮记忆额度已用完");
                 self.memos += 1;

@@ -162,7 +162,7 @@ pub(crate) fn message<'a>(turns: &'a [Turn], raw: &str) -> Result<&'a Turn> {
     turns
         .iter()
         .find(|t| t.message_id == id)
-        .ok_or_else(|| anyhow::anyhow!("消息不在本群当前窗口内，先读 satori_context"))
+        .ok_or_else(|| anyhow::anyhow!("消息不在当前窗口内，先读 satori_context"))
 }
 pub(crate) fn user(turns: &[Turn], raw: &str) -> Result<String> {
     let id = id(raw)?;
