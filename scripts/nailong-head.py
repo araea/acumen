@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""重训奶龙拦截的分类头（src/plugins/nailong/head.bin）。做法与数据来源见 docs/nailong.md。
+"""重训奶龙拦截的分类头（src/plugins/nailong/head.bin）。
 
     python3 scripts/nailong-head.py <vision_model.onnx> <数据目录> [--eval]
 

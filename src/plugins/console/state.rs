@@ -104,8 +104,8 @@ pub(super) async fn install(ctx: Context, cfg: Config) -> Result<(), String> {
 
 /// 把带口令的地址写一份在 `data/console/url`（0600）。
 ///
-/// 启动日志里有同一行，但日志会被群里刷走（`tail -F` 那个窗口尤其，
-/// 见 docs/CONTROL.md 末尾那条），落一个文件之后 `acumen ui` 随时能把它捞出来。
+/// 启动日志里有同一行，但日志会被后面的输出刷走，落一个文件之后
+/// `acumen ui` 随时能把它捞出来。
 async fn record_url(url: &str) {
     let Ok(dir) = crate::plugins::get_data_dir("console").await else {
         return;

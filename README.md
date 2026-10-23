@@ -1,64 +1,49 @@
 # 知微（acumen）
 
-群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力
-
-[![GitHub](https://img.shields.io/badge/GitHub-araea%2Facumen-181717?logo=github&logoColor=white)](https://github.com/araea/acumen)
+群聊机器人。经 Satori 接入 QQ，用插件提供 AI 对话、群管与媒体处理。
 
 ## 安装
 
-需要一台已 root（KernelSU）的安卓手机，装好 [知弦（satori-qq）](https://github.com/araea/satori-qq) 模块并登录 QQ。在 Termux 里运行：
+一台已 root（KernelSU）的安卓手机，装好[知弦（satori-qq）](https://github.com/araea/satori-qq)模块并登录 QQ。在 Termux 里运行：
 
 ```sh
 curl -fsSL https://github.com/araea/acumen/releases/latest/download/install.sh | bash
 ```
 
-连不上 GitHub 时在地址前加一个加速前缀（脚本里的下载会自己换着试）：
+连不上 GitHub 时加一个加速前缀：
 
 ```sh
 curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/download/install.sh | bash
 ```
 
-它会下载最新版本到 `~/acumen`，装好浏览器、中文字体与其余依赖，配好保活，然后启动并打开控制台。第一次要下载几百 MB，耗时几分钟。Termux 请从 F-Droid 或 GitHub 安装，并在 KernelSU 管理器的「超级用户」里给 Termux 授权。
+脚本把最新版本装到 `~/acumen`，装好依赖、浏览器与中文字体，然后启动并打开控制台。第一次要下载几百 MB。Termux 从 F-Droid 或 GitHub 安装，并在 KernelSU 里给 Termux 授予 root。
 
-连接不用配置：端口与令牌跟随知弦模块里的设置。装了知言（satori-wx）模块的，会同时接入微信。
+端口与令牌不用填，跟随知弦模块的设置。装了[知言（satori-wx）](https://github.com/araea/satori-wx)的，同时接入微信。
 
 ## 使用
 
 | 命令 | 用途 |
 | --- | --- |
-| `acumen` | 启动并打开管理页；已在运行就只打开管理页 |
-| `acumen stop` | 停止；开机与守护都不会再拉起，直到下次启动 |
+| `acumen` | 启动并打开控制台；已在运行就只打开控制台 |
+| `acumen stop` | 停止 |
 | `acumen restart` | 重启 |
-| `acumen status` | 运行状态、QQ 连接与保活情况 |
+| `acumen status` | 运行状态与连接情况 |
 | `acumen log` | 实时日志，`Ctrl+C` 退出 |
-| `acumen update` | 立即检查并更新（手机里有收到的安装包就先用它，不联网） |
+| `acumen update` | 更新到最新版本 |
 | `acumen help` | 全部命令 |
 
-管理页（`acumen ui`，默认 `http://127.0.0.1:7800`）在知微停着时也打得开：可以直接在网页上启动、停止、重启和更新，不必回到 Termux 敲命令。添加到主屏幕后就像一个应用。
+控制台默认在 `http://127.0.0.1:7800`（`acumen ui` 打开）。知微停着时也能打开，可以在页面上启动、停止、重启、更新。添加到主屏幕后像一个应用。
 
-在 QQ 里发送 `/help` 查看指令，`/ctl` 查看插件状态、开关和配置。在群里改配置要先成为管理员：在控制台的插件页打开「插件控制」，把自己的 QQ 号加进 `admins`。
+QQ 里发 `/help` 看指令，`/ctl` 看插件状态、开关与配置。要让群管理员也能改配置，在控制台的插件页把 QQ 号加进 `admins`。
 
-## 保活与更新
+## 功能
 
-- 进程崩溃由 Termux 里的 runit 立即拉起。
-- 熄屏时持有 Termux 唤醒锁；Termux 加入系统省电白名单。
-- root 守护在开机后拉起 Termux 与机器人，Termux 被系统清理后再拉回来。设有锁屏密码时，重启后要先解锁一次。
-- 每天 04:30 例行维护：有新版本就下载、校验、换上，等群里安静两分钟后重启。每次启动或重启后也会查一次，之后每 6 小时再查一次（`check_interval_hours`），有新版本同样换上。时刻与开关在 `[restart]`。
-- 查新与下载同时试直连 GitHub 和几家加速站，谁快用谁，下得太慢或断了换下一家；国内不开代理也能更新。发布清单带签名，经哪家转来的都先验签、再对校验和才换上。加速站都失效时在 `[restart] mirrors` 里补一个。
-- 连不上 GitHub 也能更新：找人要一份安装包 `acumen-版本号.gz`（就是发布页上的 `acumen-termux-aarch64.gz`），在 QQ 或微信里点开下载完，回 Termux 运行 `acumen update`。知微会经 root 自己去 QQ、TIM、微信的接收目录与「下载」目录里找，签名与校验和都对得上才换上；不用 Termux 时群里发 `/更新`、或等例行检查，同样先用手机里的安装包。也可以 `acumen update 文件路径` 指定一份。
-- 群里发 `/版本` 看当前版本与有没有新版，`/查更新` 查一次并看更新说明，`/更新` 直接换上并平滑重启——后两条只有号主与管理员能用。
+- AI 对话与群聊搭话：内置房间「管家大人」，会用终端与联网；自建房间默认只聊天，按需开工具。
+- 群管：自动回复、潜水清理、入群欢迎。
+- 媒体：B 站视频解析、点歌、二维码识别与生成、Markdown 转图。
+- 其它：奶龙提醒、群统计、词云。
 
-`acumen stop` 与在系统设置里强行停止 Termux 都算主动停止，守护不会再拉起。
-
-## 配置
-
-配置在 `~/acumen/config.toml`，数据在 `~/acumen/data/`。日常修改用控制台或 `/ctl`；直接编辑文件前先 `acumen stop`，运行中的实例退出时会写回内存里的配置。完整配置项见 [`config.example.toml`](config.example.toml)。
-
-AI 对话、搭话等功能需要自备模型服务的 API 密钥。最快的是号主在任意对话框里发 `oai deepseek sk-…`：密钥验过才存、存好自动撤回那条消息，内置的房间「管家大人」随即可用（全量工具：会用终端，联网搜索与抓取走 DeepSeek 官方接口）。自己建的房间默认只聊天，`房间?联网`、`房间?全量` 按需打开工具；`oai 用 <模型>` 一句换掉所有房间的默认模型。其他供应商（Kimi、智谱、百炼、硅基流动、OpenRouter……）同样一句接上，发 `oai` 看接入状态；也可以在控制台的插件页填写。详见 [docs/agent.md](docs/agent.md)。
-
-群里反复被问的问题交给「自动回复」：在控制台插件页的「回复规则」里加，或者让群管理员在群里发 `自动回复 添加 下载 安装包在群文件里～`。回复可以带图，也可以引用一条合并转发存成回复。有冷却和字数上限防误触，「试一句」能先看某句话会不会触发。详见 [docs/autoreply.md](docs/autoreply.md)。
-
-要求成员保持活跃的群交给「潜水清理」：群主或管理员发 `潜水`，收到一份带序号的长图名单（按多久没说话分节、带头像），再发 `潜水 踢 1-20` 并回「确认」，机器人就低速分批移出，中途冒泡的留下。也能先 `潜水 提醒 1-20` 打个招呼，或在控制台插件页勾选。机器人离线过也不会把那几天说过话的人当成潜水。详见 [docs/lurker.md](docs/lurker.md)。
+AI 功能要自备模型服务的密钥。在控制台的插件页填，或在任意对话里发 `oai deepseek sk-…`。
 
 ## 卸载
 
@@ -67,27 +52,12 @@ acumen uninstall          # 保留配置与数据
 acumen uninstall --purge  # 一起删除
 ```
 
-## 限制 / 风险
+## 限制
 
 只提供安卓 Termux（arm64）的发布版。
 
-部分能力（视频解析的 1080P、AI 生图 / 生歌 / 生视频）依赖外部服务并可能产生费用，启用前确认账号与价格。
+视频解析的高画质、AI 生图生歌生视频依赖外部服务，可能产生费用。
 
-全量档房间的 `bash` 等本机工具不是安全沙箱，具有 Termux 账户权限；只有号主与管理员能把房间开到全量，共享房间不建议开。
+全量档房间的终端工具不是沙箱，有 Termux 账户的权限。
 
-## 必要链接
-
-- [插件控制与部署](docs/CONTROL.md)
-- [Satori 接入](docs/SATORI.md)
-- [群聊搭话](docs/ambient.md)
-- [房间与工具](docs/agent.md)
-- [视频解析](docs/video_parse.md)
-- [点歌](docs/song.md)
-- [Markdown 转图](docs/markdown.md)
-- [二维码识别与生成](docs/qr_scan.md)
-- [奶龙提醒](docs/nailong.md)
-- [自动回复](docs/autoreply.md)
-- [潜水清理](docs/lurker.md)
-- [架构与插件开发](docs/ARCHITECTURE.md)
-- [WebUI 设计系统](docs/DESIGN_SYSTEM.md)
-- [更新记录](CHANGELOG.md)
+更新记录见 [CHANGELOG.md](CHANGELOG.md)。
