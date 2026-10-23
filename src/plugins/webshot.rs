@@ -108,7 +108,7 @@ const MAX_CAPTURE_PIXELS: f64 = 64_000_000.0;
 /// 截出来没有内容的站点。几种成因——登录墙、风控验证页、只有微信客户端能开的
 /// 模板页——结果一样：发给群里的图不是登录页就是「请在客户端打开」的死页，
 /// 所以默认跳过（`block_walled_sites` 可关）。实测能正常渲染的（CSDN、虎扑、豆瓣、
-/// 今日头条、淘宝、闲鱼、BOSS直聘、AcFun、晋江、起点、番茄、Tumblr、Threads、
+/// 今日头条、淘宝与天猫的商品页、闲鱼、BOSS直聘、AcFun、晋江、起点、番茄、Tumblr、Threads、
 /// B 站的番剧与直播页、`m.weibo.cn`）都不在此列；贴吧的「百度安全验证」是偶发的，重测
 /// 三次有两次能出内容，也不列。按域名后缀匹配，`douyin.com` 覆盖分享短链的落点
 /// `v.douyin.com`，但覆盖不到 `iesdouyin.com`，同名的那条要单独列。
@@ -148,6 +148,14 @@ const WALLED_DOMAINS: &[&str] = &[
     // 店铺和主图。2026-09-16 连测两轮都是同一张验证页。
     "qr.1688.com",
     "m.1688.com",
+    // 淘宝 / 天猫的分享口令短链。`m.tb.cn/h.xxxx` 不是商品页，而是一张 callapp
+    // 跳板：正文只有一个脚本，200 毫秒后 `location.replace` 到
+    // `web.m.taobao.com/app/HP/…` 的 weex 回流页。那个地址是纯客户端渲染的壳，
+    // 抓下来整页 1.7 KB、一个字都没有（2026-10-23 实测），浏览器里打开就是白纸。
+    // 商品详情只有装了淘宝的手机才渲染得出来，所以短链与落点各列一条——卡片与
+    // 转发里也会直接出现落点地址。`tb.cn` 一并覆盖 `e.tb.cn`、`s.tb.cn`。
+    "tb.cn",
+    "web.m.taobao.com",
     // 微信客户端专属页。合并转发、收藏这类卡片的 XML 里自带一条
     // `support.weixin.qq.com` 的 readtemplate 兜底链接，satori-wx 解不出卡片时
     // 把它当普通链接发进来，手动复制也有同样效果；整站（首页、readtemplate 各页）
@@ -1290,6 +1298,11 @@ mod tests {
             // 1688 分享短链与它跳转的移动站落点，都停在滑块验证页。
             "https://qr.1688.com/s/7HOhG7uS",
             "https://m.1688.com/offer/1046051827096.html",
+            // 淘宝的分享口令短链与它跳转的 weex 落点：页面只是唤起 App 的跳板，
+            // 内容全靠客户端渲染，浏览器里打开是一张白纸。
+            "https://m.tb.cn/h.jW6OwPv",
+            "https://e.tb.cn/h.abc",
+            "https://web.m.taobao.com/app/HP/bybt-weex/ShareBackflowInterPage?wh_weex=true&sceneId=guaguale",
             // 微信卡片自带的兜底链接：只有微信客户端能开的模板页。
             "https://support.weixin.qq.com/cgi-bin/mmsupport-bin/readtemplate?t=page/favorite_record__w_unsupport&from=singlemessage&isappinstalled=0",
         ] {
@@ -1308,6 +1321,9 @@ mod tests {
             "https://www.hupu.com/",
             // 后缀匹配不误伤同前缀的别的域名。
             "https://coolapk.com.example.net/feed/1",
+            // 淘宝与天猫的商品页未登录也能看到标题、价格与主图，不能整站拉黑。
+            "https://item.taobao.com/item.htm?id=123",
+            "https://detail.tmall.com/item.htm?id=123",
             // 1688 的桌面站不在名单里：商品页未登录也有内容。
             "https://detail.1688.com/offer/1046051827096.html",
             "https://www.1688.com/",
