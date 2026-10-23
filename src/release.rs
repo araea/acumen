@@ -6,7 +6,7 @@
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
-use std::io::Read;
+use std::io::{IsTerminal as _, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -39,6 +39,10 @@ const MIRRORS: &[&str] = &[
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(12);
 /// 第一份清单到手后再等别的源这么久，取其中最新的：加速站偶尔缓存着旧清单。
 const MANIFEST_GRACE: Duration = Duration::from_millis(1500);
+/// 到手的那份还不如当前版本时，再多等一会儿：缓存着旧清单的加速站回得快，直连才是新的。
+const MANIFEST_PATIENT: Duration = Duration::from_secs(4);
+/// 别的进程（`acumen status`）复用上次查询结果的时限。
+const CHECK_REUSE: Duration = Duration::from_mins(10);
 /// 下载时这么久一个字节都没收到，就换下一个源。
 const STALL: Duration = Duration::from_secs(20);
 /// 下载过了这么久平均仍低于 `MIN_SPEED`（字节/秒），且后面还有源可换，就换。
@@ -120,6 +124,33 @@ pub fn mark_checked() {
         && let Err(error) = crate::storage::write_atomic(&path, b"")
     {
         warn!(target: LOG_TARGET, "记不下查更新的时刻：{error}");
+    }
+}
+
+/// 上一次查询的结果记在这儿：空文件表示「没有新版」，修改时间就是查询时刻。别的进程
+/// 直接读它，不必每次都去问 GitHub、也不必再翻一遍手机里的安装包。
+fn latest_file() -> Option<PathBuf> {
+    crate::storage::data_path("release")
+        .ok()
+        .map(|dir| dir.join("latest"))
+}
+
+fn remembered(max_age: Duration) -> Option<Option<String>> {
+    let path = latest_file()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    if meta.modified().ok()?.elapsed().ok()? >= max_age {
+        return None;
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    let version = text.trim();
+    Some((!version.is_empty()).then(|| version.to_string()))
+}
+
+fn remember(release: Option<&Release>) {
+    let Some(path) = latest_file() else { return };
+    let text = release.map_or("", |release| release.version.as_str());
+    if let Err(error) = crate::storage::write_atomic(&path, text.as_bytes()) {
+        debug!(target: LOG_TARGET, "记不下查到的版本：{error}");
     }
 }
 
@@ -256,14 +287,24 @@ async fn fetch_manifest(client: &reqwest::Client, source: &str) -> Result<Releas
 
 /// 查一次最新发布；比当前新才返回。手机里有比当前新的本地安装包就用它，不联网。
 pub async fn check() -> Result<Option<Release>> {
-    if let Some(release) = find_local().await {
-        return Ok(Some(release));
-    }
-    check_online().await
+    let found = match find_local().await {
+        Some(release) => Some(release),
+        None => check_online().await?,
+    };
+    remember(found.as_ref());
+    Ok(found)
 }
 
-/// 联网查：所有源同时问：第一份签名对得上的清单到手后再稍等片刻，取其中版本最新的；
-/// 下载时按回来的先后试。
+/// 和 [`check`] 一样，但 `max_age` 以内查过（别的进程也算）就用上次的结果，只回答有没有新版。
+pub async fn check_cached_shared(max_age: Duration) -> Result<Option<String>> {
+    if let Some(found) = remembered(max_age) {
+        return Ok(found);
+    }
+    Ok(check().await?.map(|release| release.version))
+}
+
+/// 联网查：所有源同时问，取签名对得上的清单里版本最新的。一份新的都没到手时多等一会儿，
+/// 免得缓存着旧清单的加速站把回得慢的直连压过去。下载时按回来的先后试。
 async fn check_online() -> Result<Option<Release>> {
     use futures_util::StreamExt as _;
     let client = crate::http::builder().timeout(MANIFEST_TIMEOUT).build()?;
@@ -277,7 +318,8 @@ async fn check_online() -> Result<Option<Release>> {
         .collect();
     let mut found: Vec<(&String, Release)> = Vec::new();
     let mut errors = Vec::new();
-    let mut deadline = None;
+    let hard = tokio::time::Instant::now() + MANIFEST_TIMEOUT;
+    let mut deadline: Option<tokio::time::Instant> = None;
     loop {
         let next = match deadline {
             Some(deadline) => match tokio::time::timeout_at(deadline, pending.next()).await {
@@ -289,8 +331,12 @@ async fn check_online() -> Result<Option<Release>> {
         let Some((source, result)) = next else { break };
         match result {
             Ok(release) => {
-                deadline.get_or_insert_with(|| tokio::time::Instant::now() + MANIFEST_GRACE);
                 found.push((source, release));
+                let fresh = found
+                    .iter()
+                    .any(|(_, release)| newer(&release.version, VERSION));
+                let wait = if fresh { MANIFEST_GRACE } else { MANIFEST_PATIENT };
+                deadline = Some((tokio::time::Instant::now() + wait).min(hard));
             }
             Err(error) => {
                 debug!(target: LOG_TARGET, "{} 取不到更新清单：{error:#}", label(source));
@@ -355,10 +401,9 @@ pub async fn install(release: &Release) -> Result<String> {
     if let Some(file) = &release.file {
         let packed = read_file(file, None).await?;
         let binary = unpack(packed, release.sha256.clone()).await?;
-        crate::storage::write_atomic_async(target.clone(), binary).await?;
-        set_mode(&target, 0o700)?;
+        stage(&target, binary, &release.version).await?;
         let name = file.file_name().unwrap_or(file.as_os_str());
-        return Ok(format!("用的本地安装包 {}", name.to_string_lossy()));
+        return Ok(format!("本地安装包 {}", name.to_string_lossy()));
     }
     let client = client()?;
     let mut errors = Vec::new();
@@ -366,14 +411,13 @@ pub async fn install(release: &Release) -> Result<String> {
         let patient = index + 1 == release.sources.len();
         let url = format!("{source}{}", release.url);
         let result = async {
-            let packed = download(&client, &url, patient).await?;
+            let packed = download(&client, &url, patient, &release.version).await?;
             unpack(packed, release.sha256.clone()).await
         }
         .await;
         match result {
             Ok(binary) => {
-                crate::storage::write_atomic_async(target.clone(), binary).await?;
-                set_mode(&target, 0o700)?;
+                stage(&target, binary, &release.version).await?;
                 return Ok(format!("经 {} 下载", label(source)));
             }
             Err(error) => {
@@ -386,30 +430,104 @@ pub async fn install(release: &Release) -> Result<String> {
 }
 
 /// 下一个源还有指望时，慢得不像话就放弃这个；最后一个源只要还在动就等它。
-async fn download(client: &reqwest::Client, url: &str, patient: bool) -> Result<Vec<u8>> {
-    let mut response = client.get(url).send().await?.error_for_status()?;
-    let expected = response.content_length();
-    let mut packed = Vec::with_capacity(expected.unwrap_or(0).try_into().unwrap_or(0));
-    let started = tokio::time::Instant::now();
-    loop {
-        let chunk = tokio::time::timeout(STALL, response.chunk())
-            .await
-            .map_err(|_| anyhow!("{} 秒没收到数据", STALL.as_secs()))??;
-        let Some(chunk) = chunk else { break };
-        packed.extend_from_slice(&chunk);
-        let elapsed = started.elapsed();
-        #[allow(clippy::cast_precision_loss)]
-        let speed = packed.len() as f64 / elapsed.as_secs_f64();
-        if !patient && elapsed > SLOW_AFTER && speed < MIN_SPEED {
-            bail!("太慢（{:.0} KB/s）", speed / 1024.0);
+/// 人在终端里时顺手画一行进度；机器人的输出不是终端，不画。
+async fn download(
+    client: &reqwest::Client,
+    url: &str,
+    patient: bool,
+    version: &str,
+) -> Result<Vec<u8>> {
+    let live = std::io::stderr().is_terminal();
+    let mut drew = false;
+    let result = async {
+        let mut response = client.get(url).send().await?.error_for_status()?;
+        let expected = response.content_length();
+        let mut packed = Vec::with_capacity(expected.unwrap_or(0).try_into().unwrap_or(0));
+        let started = tokio::time::Instant::now();
+        let mut drawn = started;
+        loop {
+            let chunk = tokio::time::timeout(STALL, response.chunk())
+                .await
+                .map_err(|_| anyhow!("{} 秒没收到数据", STALL.as_secs()))??;
+            let Some(chunk) = chunk else { break };
+            packed.extend_from_slice(&chunk);
+            let elapsed = started.elapsed();
+            #[allow(clippy::cast_precision_loss)]
+            let speed = packed.len() as f64 / elapsed.as_secs_f64();
+            if live && drawn.elapsed() >= Duration::from_millis(200) {
+                eprint!("\r\x1b[K{}", progress(version, packed.len(), expected, speed));
+                drew = true;
+                drawn = tokio::time::Instant::now();
+            }
+            if !patient && elapsed > SLOW_AFTER && speed < MIN_SPEED {
+                bail!("太慢（{:.0} KB/s）", speed / 1024.0);
+            }
         }
+        if let Some(expected) = expected
+            && packed.len() as u64 != expected
+        {
+            bail!("下载不完整");
+        }
+        Ok(packed)
     }
-    if let Some(expected) = expected
-        && packed.len() as u64 != expected
-    {
-        bail!("下载不完整");
+    .await;
+    if drew {
+        eprintln!();
     }
-    Ok(packed)
+    result
+}
+
+/// 下载进度一行：百分比、已下大小、平均速度。
+fn progress(version: &str, got: usize, total: Option<u64>, speed: f64) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let got = got as f64 / (1024.0 * 1024.0);
+    let speed = speed / (1024.0 * 1024.0);
+    match total {
+        Some(total) if total > 0 => {
+            #[allow(clippy::cast_precision_loss)]
+            let total = total as f64 / (1024.0 * 1024.0);
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let percent = (got / total * 100.0) as u32;
+            format!("  正在下载 {version}  {percent:>3}%  {got:.1}/{total:.1} MB  {speed:.1} MB/s")
+        }
+        _ => format!("  正在下载 {version}  {got:.1} MB  {speed:.1} MB/s"),
+    }
+}
+
+/// 先把新程序写在旁边、跑一次 `--version`，对上了才换上去。换上一个跑不起来的文件，
+/// 重启之后就起不来了。
+async fn stage(target: &Path, binary: Vec<u8>, version: &str) -> Result<()> {
+    let staged = target.with_file_name("acumen.new");
+    tokio::fs::write(&staged, &binary)
+        .await
+        .with_context(|| format!("写不进 {}", staged.display()))?;
+    set_mode(&staged, 0o700)?;
+    let check = tokio::time::timeout(
+        Duration::from_secs(15),
+        tokio::process::Command::new(&staged)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+    let passed = match check {
+        Ok(Ok(output)) => {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).trim() == version
+        }
+        _ => false,
+    };
+    if !passed {
+        let _ = tokio::fs::remove_file(&staged).await;
+        bail!("新版本跑不起来（--version 没通过），没有换");
+    }
+    tokio::fs::rename(&staged, target)
+        .await
+        .with_context(|| format!("换不上 {}", target.display()))?;
+    Ok(())
 }
 
 async fn unpack(packed: Vec<u8>, expected: String) -> Result<Vec<u8>> {
@@ -712,20 +830,71 @@ async fn install_keeper() -> Result<()> {
     Ok(())
 }
 
+/// `--update` 查到的结果。
+enum Target {
+    New(Release),
+    /// 已经是最新。
+    Latest,
+    /// 给的安装包比当前的旧。
+    Older,
+}
+
 /// `--update` 要换上的版本：后面跟了安装包路径就只认它，否则照常查（先本地、后联网）。
-async fn update_target() -> Result<Option<Release>> {
+async fn update_target() -> Result<Target> {
     let Some(path) = std::env::args().nth(2) else {
-        return check().await;
+        return Ok(match check().await? {
+            Some(release) => Target::New(release),
+            None => Target::Latest,
+        });
     };
     let path = std::fs::canonicalize(&path).unwrap_or_else(|_| PathBuf::from(path));
     let release = local_release(&path)
         .await
         .with_context(|| format!("安装包 {} 用不了", path.display()))?;
-    if !newer(&release.version, VERSION) {
-        eprintln!("安装包是 {}，不比当前的 {VERSION} 新", release.version);
-        return Ok(None);
+    if newer(&release.version, VERSION) {
+        return Ok(Target::New(release));
     }
-    Ok(Some(release))
+    if release.version == VERSION {
+        eprintln!("安装包就是当前的 {VERSION}");
+        return Ok(Target::Latest);
+    }
+    eprintln!("安装包是 {}，比当前的 {VERSION} 旧", release.version);
+    Ok(Target::Older)
+}
+
+/// `--update` 的整套流程：查（或核对指定的安装包）、下载、校验、换上。
+/// 返回退出码：0 换上了，1 已是最新，3 安装包不比当前新，2 出了错。
+async fn update() -> i32 {
+    if std::env::args().nth(2).is_none() {
+        eprintln!("正在检查新版本 …");
+    }
+    match update_target().await {
+        Ok(Target::New(release)) => {
+            if release.file.is_none() {
+                eprintln!("最新版本 {}，开始下载", release.version);
+            }
+            match install(&release).await {
+                Ok(via) => {
+                    eprintln!("{via}，校验通过");
+                    println!("{}", release.version);
+                    if !release.notes.is_empty() {
+                        eprintln!("本次更新：{}", release.notes);
+                    }
+                    0
+                }
+                Err(error) => {
+                    eprintln!("更新失败：{error:#}");
+                    2
+                }
+            }
+        }
+        Ok(Target::Latest) => 1,
+        Ok(Target::Older) => 3,
+        Err(error) => {
+            eprintln!("更新失败：{error:#}");
+            2
+        }
+    }
 }
 
 /// 管理命令调用的几个隐藏参数。返回 `None` 表示不是它们，照常启动。
@@ -741,9 +910,9 @@ pub async fn command(arg: &str) -> Option<i32> {
             println!("{VERSION}");
             0
         }
-        "--check-update" => match check().await {
-            Ok(Some(release)) => {
-                println!("{}", release.version);
+        "--check-update" => match check_cached_shared(CHECK_REUSE).await {
+            Ok(Some(version)) => {
+                println!("{version}");
                 0
             }
             Ok(None) => 1,
@@ -752,34 +921,7 @@ pub async fn command(arg: &str) -> Option<i32> {
                 2
             }
         },
-        "--update" => match update_target().await {
-            Ok(Some(release)) => {
-                if release.file.is_some() {
-                    eprintln!("正在换上 {} …", release.version);
-                } else {
-                    eprintln!("正在下载 {} …", release.version);
-                }
-                match install(&release).await {
-                    Ok(via) => {
-                        eprintln!("{via}");
-                        println!("{}", release.version);
-                        if !release.notes.is_empty() {
-                            eprintln!("{}", release.notes);
-                        }
-                        0
-                    }
-                    Err(error) => {
-                        eprintln!("更新失败：{error:#}");
-                        2
-                    }
-                }
-            }
-            Ok(None) => 1,
-            Err(error) => {
-                eprintln!("查不到新版本：{error:#}");
-                2
-            }
-        },
+        "--update" => update().await,
         "--install-cli" => {
             let path = PathBuf::from(prefix()).join("bin/acumen");
             match write_cli(&path) {

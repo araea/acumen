@@ -325,8 +325,8 @@ cmd_status() {
         warn "root 守护没在跑：运行 acumen setup（需要给 Termux 授予 root）"
     fi
     local latest
-    if latest=$("$EXE" --check-update 2>/dev/null); then
-        say "  ${Y}有新版本 $latest${N}：acumen update 立即更新；重启或每天例行维护时也会自动换上"
+    if latest=$(timeout 20 "$EXE" --check-update 2>/dev/null); then
+        say "  ${Y}有新版本 $latest${N}：acumen update 立即更新；不操作也会在例行检查时自动换上"
     fi
 }
 
@@ -351,24 +351,30 @@ cmd_ui() {
 # 跟一个安装包路径就只装它。
 cmd_update() {
     installed
+    local here new code
+    here=$(version)
     if [[ -n ${1:-} ]]; then
-        say "当前 $(version)，正在检查安装包 $1 …"
+        say "当前 $here，正在核对安装包 $1 …"
     else
-        say "当前 $(version)，正在检查 …"
+        say "当前 $here"
     fi
-    local new code
     new=$("$EXE" --update "$@")
     code=$?
     case $code in
         0)
             "$EXE" --install-cli >/dev/null 2>&1
-            ok "已更新到 $new"
             [[ -d $PANEL/supervise ]] && sv restart acumen-panel >/dev/null 2>&1
-            if bot_pid >/dev/null; then cmd_restart; fi
+            ok "已更新到 $new"
+            if bot_pid >/dev/null; then
+                cmd_restart
+            else
+                say "${D}知微没在运行，下次 acumen start 用上新版本。${N}"
+            fi
             ;;
-        1) ok "已是最新版本" ;;
+        1) ok "已是最新版本 $here" ;;
+        3) say "没有换，继续用 $here。" ;;
         *)
-            say "${D}连不上 GitHub 的话，找人要一份安装包（acumen-版本号.gz）：在 QQ 或微信里点开下载完，再运行 acumen update。${N}"
+            say "${D}连不上 GitHub 时，让人把安装包（acumen-版本号.gz）发到 QQ 或微信，下载完再运行 acumen update；也可以 acumen update 文件路径 直接指定。${N}"
             exit 1
             ;;
     esac
