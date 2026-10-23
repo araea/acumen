@@ -88,8 +88,59 @@ pub async fn wait_request() {
 
 /// 重启防抖标记:防止定时任务与内存监控同时触发导致双重重启
 static RESTARTING: AtomicBool = AtomicBool::new(false);
-/// 例行维护进行中（在等安静或在下载），同一时刻只跑一份。
+/// 换文件的活儿（查新、下载、校验、换上）正在跑，同一时刻只跑一份。
 static MAINTAINING: AtomicBool = AtomicBool::new(false);
+/// 已经有一次重启在排队（在等安静，或已交给主循环），同一时刻只排一份。
+static RESTART_QUEUED: AtomicBool = AtomicBool::new(false);
+
+/// 拿着它＝换文件的活儿归我；放下时自动解锁。
+///
+/// 靠 `Drop` 而不是手写 `store(false)`：future 被丢弃（控制台那边浏览器断线会把 handler
+/// 一起丢掉）、任务被 abort、中途 panic，锁都跟着放掉，不会把后面的更新永远挡在门外。
+struct Swapping(());
+
+impl Drop for Swapping {
+    fn drop(&mut self) {
+        MAINTAINING.store(false, Ordering::SeqCst);
+    }
+}
+
+fn begin_swap() -> Option<Swapping> {
+    MAINTAINING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| Swapping(()))
+}
+
+/// 用户亲手点的更新：别人正在查（十几秒）就等一等，别为这几秒回一句「稍后再试」。
+async fn begin_swap_patiently() -> Option<Swapping> {
+    for attempt in 0..=20 {
+        if let Some(swapping) = begin_swap() {
+            return Some(swapping);
+        }
+        if attempt == 0 {
+            info!(target: LOG_TARGET, "有一次更新或维护正在跑，等它做完…");
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    None
+}
+
+/// 拿着它＝这次重启归我排队；放下时把牌子摘掉。
+struct QueuedRestart(());
+
+impl Drop for QueuedRestart {
+    fn drop(&mut self) {
+        RESTART_QUEUED.store(false, Ordering::SeqCst);
+    }
+}
+
+fn queue_restart() -> Option<QueuedRestart> {
+    RESTART_QUEUED
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .ok()
+        .map(|_| QueuedRestart(()))
+}
 
 /// 正在处理的事件数与最近一次收到事件的时刻，平滑重启靠它们判断「现在安静」。
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
@@ -226,9 +277,11 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                     async move {
                         match current_rss_mb() {
                             Some(mb) if mb >= threshold => {
-                                if MAINTAINING.swap(true, Ordering::SeqCst) {
+                                // 等安静的这段时间不占换文件那把锁：它可能长达半个小时，
+                                // 挡着用户亲手点的更新没有道理。
+                                let Some(_queued) = queue_restart() else {
                                     return;
-                                }
+                                };
                                 warn!(
                                     target: LOG_TARGET,
                                     "内存占用 {}MB 达到阈值 {}MB，安静下来就重启",
@@ -238,7 +291,6 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
                                 wait_quiet(&get_config_or_default::<RestartConfig>(&ctx)).await;
                                 do_restart(&ctx, format!("内存超限 ({mb}MB >= {threshold}MB)"))
                                     .await;
-                                MAINTAINING.store(false, Ordering::SeqCst);
                             }
                             Some(mb) => {
                                 debug!(
@@ -272,9 +324,12 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
 /// 维护：先把新版本换上（换文件不影响正在跑的进程），再等安静、重启。
 /// 每日例行维护（`daily`）在没有新版本时按 `daily_restart` 决定是否照常重启；启动时那次只为更新。
 async fn maintain(ctx: Context, daily: bool) {
-    if MAINTAINING.swap(true, Ordering::SeqCst) {
+    // 换文件期间才占 `MAINTAINING`；等安静的那段改由 `RESTART_QUEUED` 管，
+    // 免得一次例行重启把用户发来的 `/更新` 挡上半小时。
+    let Some(swapping) = begin_swap() else {
+        debug!(target: LOG_TARGET, "已有一次维护在跑，这次跳过");
         return;
-    }
+    };
     let cfg = get_config_or_default::<RestartConfig>(&ctx);
     let mut reason = (daily && cfg.daily_restart).then(|| "每日定时".to_string());
     if cfg.auto_update && crate::release::managed() {
@@ -298,11 +353,15 @@ async fn maintain(ctx: Context, daily: bool) {
             Err(error) => warn!(target: LOG_TARGET, "查不到新版本：{error:#}"),
         }
     }
+    drop(swapping);
     if let Some(reason) = reason {
+        let Some(_queued) = queue_restart() else {
+            debug!(target: LOG_TARGET, "已经有一次重启在排队，这次不再排");
+            return;
+        };
         wait_quiet(&cfg).await;
         do_restart(&ctx, reason).await;
     }
-    MAINTAINING.store(false, Ordering::SeqCst);
 }
 
 pub fn handle(
@@ -564,26 +623,22 @@ async fn try_update() -> Result<Option<(String, String)>, String> {
     if !crate::release::managed() {
         return Err("这是从源码构建的版本，不走自动更新：拉取代码后重新编译".into());
     }
-    if MAINTAINING.swap(true, Ordering::SeqCst) {
-        return Err("已经有一次更新或维护在进行中，稍后再试".into());
-    }
-    let result = async {
-        crate::release::mark_checked();
-        let release = match tokio::time::timeout(CHECK_TIMEOUT, crate::release::check()).await {
-            Ok(Ok(Some(release))) => release,
-            Ok(Ok(None)) => return Ok(None),
-            Ok(Err(error)) => return Err(format!("查不到新版本：{error}")),
-            Err(_) => return Err("查新版本超时，稍后再试".to_string()),
-        };
-        let via = crate::release::install(&release)
-            .await
-            .map_err(|error| format!("更新没装上：{error}"))?;
-        info!(target: LOG_TARGET, "新版本 {} 已换上（{via}）", release.version);
-        Ok(Some((release.version, via)))
-    }
-    .await;
-    MAINTAINING.store(false, Ordering::SeqCst);
-    result
+    // 拿到手之前那把锁可能正被例行检查抓着（十几秒），先等一等再报错。
+    let Some(_swapping) = begin_swap_patiently().await else {
+        return Err("已经有一次更新在跑，等了 20 秒还没完，稍后再试".into());
+    };
+    crate::release::mark_checked();
+    let release = match tokio::time::timeout(CHECK_TIMEOUT, crate::release::check()).await {
+        Ok(Ok(Some(release))) => release,
+        Ok(Ok(None)) => return Ok(None),
+        Ok(Err(error)) => return Err(format!("查不到新版本：{error}")),
+        Err(_) => return Err("查新版本超时，稍后再试".to_string()),
+    };
+    let via = crate::release::install(&release)
+        .await
+        .map_err(|error| format!("更新没装上：{error}"))?;
+    info!(target: LOG_TARGET, "新版本 {} 已换上（{via}）", release.version);
+    Ok(Some((release.version, via)))
 }
 
 /// 几条同义指令里有没有一条命中；边界与 `/restart` 一致，说半个词不算。
@@ -671,3 +726,36 @@ pub(crate) fn current_rss_mb() -> Option<u64> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 锁跟着 guard 走：别人拿不到，放下之后才轮得到下一个。
+    #[test]
+    fn swap_lock_follows_the_guard() {
+        let first = begin_swap().expect("第一次该拿得到");
+        assert!(begin_swap().is_none(), "同一时刻只该有一份");
+        drop(first);
+        assert!(begin_swap().is_some(), "放下之后能再拿到");
+    }
+
+    /// 排队重启同理：卡在「等安静」的那次不会把后面的更新挡在门外（两把锁互不相干）。
+    #[test]
+    fn restart_queue_is_independent_of_swap_lock() {
+        let queued = queue_restart().expect("第一次该排得上");
+        assert!(queue_restart().is_none(), "同一时刻只该排一份");
+        assert!(
+            swap_lock_free(),
+            "等安静的时候换文件那把锁该是空的，用户还能发 /更新"
+        );
+        drop(queued);
+        assert!(queue_restart().is_some());
+    }
+
+    fn swap_lock_free() -> bool {
+        let swapping = begin_swap();
+        let free = swapping.is_some();
+        drop(swapping);
+        free
+    }
+}
