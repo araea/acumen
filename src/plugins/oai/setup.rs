@@ -119,7 +119,7 @@ pub async fn connect(request: Connect, ctx: &Context, writer: &LockedWriter, mgr
             Ok(()) => text.push_str("\n\n带密钥的那条消息已撤回。"),
             Err(error) => {
                 debug!(target: LOG_TARGET, "撤回带密钥的消息失败：{error}");
-                text.push_str("\n\n⚠️ 带密钥的那条消息没能撤回：别人可能看得到，建议到供应商后台重置这把密钥再发一次。");
+                text.push_str("\n\n⚠️ 带密钥的那条消息没能撤回：别人可能看得到。到供应商后台重置这把密钥，再手动删掉那条消息。");
             }
         }
     }

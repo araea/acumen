@@ -1,6 +1,6 @@
 [package]
 name = "acumen"
-version = "1.30.0"
+version = "1.31.0"
 edition = "2024"
 rust-version = "1.99"
 description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"

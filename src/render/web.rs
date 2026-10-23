@@ -216,11 +216,14 @@ fn kicker_en(kicker: &str) -> &str {
         .trim()
 }
 
-/// 指令写成 HTML：`<名称>`、`[路径]` 这类占位符与照打的字分两种样式。
+/// 指令写成 HTML：`{名称}`、`[路径]` 这类占位符与照打的字分两种样式。
 ///
 /// 一条指令里哪些字要原样敲、哪些要换成自己的内容，是读指令时最先要分清的事；
-/// 全写成一个颜色，读者得回头去数尖括号。占位符降一档、字重放轻，照打的部分
+/// 全写成一个颜色，读者得回头去数括号。占位符降一档、字重放轻，照打的部分
 /// 保持主色加粗。前缀（`/`）本身就是要打的，算照打的一部分。
+///
+/// 花括号是手册卡的说法（占位符就是一个槽），尖括号留着给别的卡（它们照的是
+/// 指令原文里那对括号），两种都认。
 fn command_html(prefix: &str, cmd: &str) -> String {
     let mut out = String::new();
     let mut literal = String::from(prefix);
@@ -233,6 +236,7 @@ fn command_html(prefix: &str, cmd: &str) -> String {
     let mut chars = cmd.char_indices().peekable();
     while let Some((start, ch)) = chars.next() {
         let close = match ch {
+            '{' => '}',
             '<' => '>',
             '[' => ']',
             _ => {

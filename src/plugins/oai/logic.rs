@@ -2274,14 +2274,10 @@ pub async fn execute(
                     tooled: c.agents.iter().filter(|a| a.tools != Tools::Off && !is_media_room(a, &oai)).count(),
                 }
             };
-            let prefix = crate::command::get_prefixes(ctx)
-                .into_iter()
-                .find(|prefix| !prefix.is_empty())
-                .unwrap_or_default();
             if !cmd.text_mode && oai.image_enabled() {
                 let browser_path = ctx.browser_path();
                 match crate::render::web::capture(
-                    &super::manual::doc(&overview, &rooms, &prefix),
+                    &super::manual::doc(&overview, &rooms),
                     oai.image_scale(),
                     browser_path.as_deref(),
                 )
@@ -2294,12 +2290,21 @@ pub async fn execute(
                     Err(error) => warn!(target: LOG_TARGET, "帮助卡渲染失败，退回文本：{error:#}"),
                 }
             }
-            reply_text(ctx, writer, &msg_event, super::manual::markdown(&overview, &rooms, &prefix)).await;
+            reply_text(ctx, writer, &msg_event, super::manual::markdown(&overview, &rooms)).await;
         }
         Action::AutoFillDescriptions(model_ref) => {
             let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-            // 没写模型就用管家大人那个：新装的机器人往往只接了一家官方供应商，默认接口是空的。
-            let fallback = super::setup::butler_spec(&oai, mgr).await.1;
+            // 描述是十几个字的标签，用便宜的模型就够：默认挑 deepseek-flash。
+            // 没接这家（模型列表里没有）才退回管家大人那个。
+            let preferred = {
+                let c = mgr.config.read().await;
+                let models = Manager::all_models(&c);
+                mgr.resolve_model("deepseek-flash", &models).filter(|spec| models.contains(spec))
+            };
+            let fallback = match preferred {
+                Some(spec) => spec,
+                None => super::setup::butler_spec(&oai, mgr).await.1,
+            };
             let (target_agents, api_config, use_model) = {
                 let c = mgr.config.read().await;
                 let models = Manager::all_models(&c);

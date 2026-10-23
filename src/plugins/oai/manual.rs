@@ -10,14 +10,16 @@
 
 use super::setup::Overview;
 use super::types::Tools;
-use crate::render::web::{Block, Cmd, Doc, Fact, State, Theme, Tier, Tile, Tone};
+use crate::render::web::{Block, Cmd, Doc, Fact, Theme, Tier, Tone};
 
 /// 一组指令：标题、英文代号，以及（指令、说明）。
+///
+/// 指令里要原样敲的字写在外面，要换成自己内容的占位符用 `{…}`、可省的用 `[…] `。
+/// 这一组命令本身就是 `oai` 打头的两条指令名，不再另加指令前缀——前缀是可省的装饰，
+/// 图上多一个 `/` 反而让人以为必须带。
 struct Group {
     title: &'static str,
     en: &'static str,
-    /// 这一组是 `oai` 词指令：图里要带上指令前缀。
-    worded: bool,
     cmds: &'static [(&'static str, &'static str)],
 }
 
@@ -25,59 +27,55 @@ const GROUPS: &[Group] = &[
     Group {
         title: "对话",
         en: "CHAT",
-        worded: false,
         cmds: &[
-            ("<房间> <内容>", "和房间对话；引用一条消息再叫它，那条也算进去"),
-            ("~<房间> <内容>", "一次性对话，不留历史"),
-            ("\"<房间> <内容>", "只回文字，不排成图"),
-            ("&<房间> <内容>", "用你自己的私有历史"),
-            ("<房间>~", "重新生成上一条"),
-            ("<房间>!", "停止生成"),
+            ("{房间} {内容}", "和房间对话；引用也算"),
+            ("~{房间} {内容}", "一次性，说过就忘"),
+            ("\"{房间} {内容}", "只回文字，不排成图"),
+            ("&{房间} {内容}", "只用自己的私有历史"),
+            ("{房间}~", "重新生成上一条"),
+            ("{房间}!", "让它停下来"),
         ],
     },
     Group {
         title: "房间",
         en: "ROOMS",
-        worded: false,
         cmds: &[
-            ("##<名称> [模型] [提示词]", "新建或更新；模型可省或写「默认」，跟随默认模型"),
-            ("<房间>%<模型>", "换模型：供应商/模型:思考强度、/% 里的序号或只写模型名；%默认 改回跟随"),
-            ("<房间>$<提示词>", "改提示词，只写 $ 清空，/$ 查看"),
-            ("<房间>~=<新名>", "重命名；~#<新名> 复制一间"),
-            ("<房间>:<描述>", "写描述；##:<模型> 给没描述的房间批量生成"),
-            ("-#<名称>", "删除房间"),
-            ("/#", "房间列表；/% 模型列表"),
+            ("##{名称} [模型] [提示词]", "新建或更新；后两项可省"),
+            ("{房间}%{模型}", "换模型；%默认 回跟随"),
+            ("{房间}${提示词}", "改提示词；只写 $ 清空"),
+            ("{房间}~={新名}", "重命名；~# 复制一间"),
+            ("{房间}:{描述}", "写描述；##: 批量生成"),
+            ("-#{名称}", "删除房间"),
+            ("/#", "房间列表；/% 模型表"),
         ],
     },
     Group {
         title: "模型与接入",
         en: "MODELS",
-        worded: true,
         cmds: &[
-            ("oai <供应商> <密钥>", "接上一家：地址自动补，验过才存，存好撤回那条消息"),
-            ("oai 用 <模型>", "换默认模型，跟随默认的房间一起换；只写供应商名就用它的推荐模型"),
-            ("oai <名字> <地址> <密钥>", "接自己的中转站；不写名字只写 <地址> <密钥> 是配默认接口"),
-            ("oai <名字> 清除", "清掉一家的密钥"),
+            ("oai {供应商} {密钥}", "接上一家，存好撤回消息"),
+            ("oai 用 {模型}", "换默认，跟随的一起换"),
+            ("oai {名字} {地址} {密钥}", "接自己的中转站"),
+            ("oai {名字} 清除", "清掉一家的密钥"),
         ],
     },
     Group {
         title: "历史",
         en: "HISTORY",
-        worded: false,
         cmds: &[
-            ("<房间>/*", "查看全部；/1 看一条，/1-5 看一段"),
-            ("<房间>_*", "导出成 .txt"),
-            ("<房间>'<序号> <内容>", "改第几条"),
-            ("<房间>-<序号>", "删第几条，多条写 -1,3；-* 清空"),
+            ("{房间}/*", "全部；/1-5 看一段"),
+            ("{房间}_*", "导出成 .txt"),
+            ("{房间}'{序号} {内容}", "改第几条"),
+            ("{房间}-{序号}", "删第几条；-* 清空"),
         ],
     },
 ];
 
 /// 画图那一段只有几句用法，没有可列的指令。
 const MEDIA: &[&str] = &[
-    "建一间用图像模型的房间，如 ##画画 gpt-image-2.5，之后「画画 <提示词>」就出图",
-    "发图、引用图片，或在房间名后 @某人，那张图就当垫图；可加 --size、--quality",
-    "MJ 的四宫格引用后回 1–4 放大；写歌、拍片房间同理，模型命中 [oai] 的关键字就行",
+    "建一间用图像模型的房间（##画画 gpt-image-2.5），之后「画画 {提示词}」就出图",
+    "发图、引用图片，或在房间名后 @某人，那张图当垫图；可加 --size、--quality",
+    "MJ 四宫格引用后回 1–4 放大；写歌、拍片同理，模型命中 [oai] 的关键字就行",
 ];
 
 /// 档位名旁「谁能切」的说法。
@@ -97,17 +95,19 @@ fn level(tools: Tools) -> u8 {
 }
 
 /// 「还差什么」那一句；能用时为 `None`。
-fn gap(overview: &Overview, prefix: &str) -> Option<String> {
+///
+/// 例子里的指令一律不写前缀：这条卡片讲的正是前缀可以省。
+fn gap(overview: &Overview) -> Option<String> {
     if overview.ready {
         return None;
     }
     Some(match &overview.switch_to {
         Some(name) => format!(
-            "默认模型 {} 这家还没接。已经接上的 {name} 能用：发 {prefix}oai 用 {name}",
+            "默认模型 {} 这家还没接。已经接上的 {name} 能用：发 oai 用 {name}",
             overview.default_model
         ),
         None => format!(
-            "还没接模型供应商：号主发 {prefix}oai deepseek 密钥，验过就能用（默认模型 {}）",
+            "还没接模型供应商：号主发 oai deepseek 密钥，验过就能用（默认模型 {}）",
             overview.default_model
         ),
     })
@@ -132,27 +132,21 @@ pub(super) struct Rooms {
 }
 
 /// 帮助卡的文档模型。
-pub(super) fn doc(overview: &Overview, rooms: &Rooms, prefix: &str) -> Doc {
-    let mut blocks = vec![
-        Block::Title {
-            title: "智能对话".into(),
-            pill: Some(if overview.ready { ("可以用了".into(), true) } else { ("还没接上".into(), false) }),
-            sub: "每间房都是同一个智能体，工具按需打开".into(),
-        },
-        Block::Tiles(vec![
-            // 三格都是数：读数格的字号放得下的只有数，名字长短不一，塞进去就折成两行。
-            Tile { value: rooms.total.to_string(), label: "房间".into(), state: State::Plain },
-            Tile { value: rooms.tooled.to_string(), label: "挂着工具".into(), state: State::Plain },
-            Tile {
-                value: overview.connected.to_string(),
-                label: "已接供应商".into(),
-                state: if overview.connected > 0 { State::On } else { State::Pending },
-            },
-        ]),
-    ];
+pub(super) fn doc(overview: &Overview, rooms: &Rooms) -> Doc {
+    let mut blocks = vec![Block::Title {
+        title: "智能对话".into(),
+        pill: Some(if overview.ready { ("可以用了".into(), true) } else { ("还没接上".into(), false) }),
+        // 三个数并成副题里的一行，不再各占一格：省下的高度全给下面的指令表。
+        sub: format!(
+            "{} 间房 · {} 间挂着工具 · {} 家供应商已接",
+            rooms.total,
+            rooms.tooled,
+            overview.connected
+        ),
+    }];
     let mut facts = vec![Fact { label: "默认模型".into(), command: overview.default_model.clone() }];
     if let Some(chain) = overview.search.as_ref().filter(|chain| !chain.is_empty()) {
-        facts.push(Fact { label: "联网链".into(), command: chain.join(" → ") });
+        facts.push(Fact { label: "联网".into(), command: chain.join(" → ") });
     }
     facts.push(Fact { label: "供应商".into(), command: providers_line(overview) });
     if !overview.relay.is_empty() {
@@ -162,11 +156,15 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms, prefix: &str) -> Doc {
         });
     }
     blocks.push(Block::Facts(facts));
-    if let Some(text) = gap(overview, prefix) {
+    if let Some(text) = gap(overview) {
         blocks.push(Block::Callout { tone: Tone::Info, text });
     }
 
-    blocks.push(Block::Section { title: "工具三档".into(), en: "TOOLS".into(), count: String::new() });
+    blocks.push(Block::Section {
+        title: "工具三档".into(),
+        en: "TOOLS".into(),
+        count: format!("{} 档", Tools::ALL.len()),
+    });
     blocks.push(Block::Tiers(
         Tools::ALL
             .iter()
@@ -174,7 +172,7 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms, prefix: &str) -> Doc {
                 level: level(tools),
                 name: tools.label().into(),
                 summary: tools.summary().into(),
-                command: format!("<房间>?{}", tools.label()),
+                command: format!("{{房间}}?{}", tools.label()),
                 who: who(tools).into(),
                 default: tools == Tools::default(),
             })
@@ -185,14 +183,15 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms, prefix: &str) -> Doc {
         blocks.push(Block::Section {
             title: group.title.into(),
             en: group.en.into(),
-            count: String::new(),
+            count: format!("{} 条", group.cmds.len()),
         });
         blocks.push(Block::Cmds(
             group
                 .cmds
                 .iter()
                 .map(|(cmd, note)| Cmd {
-                    prefix: if group.worded { prefix.to_string() } else { String::new() },
+                    // 指令前缀可省，图上不画：oai 开头的那组本身就是指令名。
+                    prefix: String::new(),
                     cmd: (*cmd).into(),
                     note: (*note).into(),
                     aliases: Vec::new(),
@@ -200,7 +199,11 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms, prefix: &str) -> Doc {
                 .collect(),
         ));
     }
-    blocks.push(Block::Section { title: "画图".into(), en: "MEDIA".into(), count: String::new() });
+    blocks.push(Block::Section {
+        title: "画图".into(),
+        en: "MEDIA".into(),
+        count: format!("{} 条", MEDIA.len()),
+    });
     blocks.push(Block::Notes(MEDIA.iter().map(|line| (*line).to_string()).collect()));
     blocks.push(Block::Callout {
         tone: Tone::Info,
@@ -213,15 +216,15 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms, prefix: &str) -> Doc {
         kicker: "ACUMEN · OAI".into(),
         blocks,
         foot: format!(
-            "前缀可叠加，如 ~\"房间 内容；符号半角全角都认。认得的供应商：{}",
+            "花括号里换成自己的内容，方括号里可省；指令前缀可省，~ \" & 可以叠加。认得的供应商：{}",
             super::setup::known_list()
         ),
-        hint: ("和房间对话".into(), "<房间> <内容>".into()),
+        hint: ("和房间对话".into(), "{房间} {内容}".into()),
     }
 }
 
 /// 出图关掉或失败时发的文本；与卡片同一份数据。
-pub(super) fn markdown(overview: &Overview, rooms: &Rooms, prefix: &str) -> String {
+pub(super) fn markdown(overview: &Overview, rooms: &Rooms) -> String {
     let mut out = String::from("## 接入状态\n");
     out.push_str(&format!(
         "- 默认模型：{}（{}）\n",
@@ -238,14 +241,14 @@ pub(super) fn markdown(overview: &Overview, rooms: &Rooms, prefix: &str) -> Stri
         out.push_str(&format!("- 默认接口：{}{}\n", overview.relay, if overview.relay_key { "" } else { "（缺密钥）" }));
     }
     out.push_str(&format!("- 房间：{} 间，{} 间挂着工具\n", rooms.total, rooms.tooled));
-    if let Some(text) = gap(overview, prefix) {
+    if let Some(text) = gap(overview) {
         out.push_str(&format!("\n💡 {text}\n"));
     }
 
     out.push_str("\n## 工具三档\n");
     for tools in Tools::ALL {
         out.push_str(&format!(
-            "- `房间?{}` {}（{}{}）\n",
+            "- `{{房间}}?{}` {}（{}{}）\n",
             tools.label(),
             tools.summary(),
             who(tools),
@@ -255,8 +258,7 @@ pub(super) fn markdown(overview: &Overview, rooms: &Rooms, prefix: &str) -> Stri
     for group in GROUPS {
         out.push_str(&format!("\n## {}\n", group.title));
         for (cmd, note) in group.cmds {
-            let head = if group.worded { format!("{prefix}{cmd}") } else { (*cmd).to_string() };
-            out.push_str(&format!("- `{head}` {note}\n"));
+            out.push_str(&format!("- `{cmd}` {note}\n"));
         }
     }
     out.push_str("\n## 画图\n");
@@ -288,16 +290,16 @@ mod tests {
     #[test]
     fn card_and_text_list_every_tier_and_group() {
         let rooms = Rooms { total: 4, tooled: 1 };
-        let html = web::html(&doc(&sample(true), &rooms, "/"));
-        let text = markdown(&sample(true), &rooms, "/");
+        let html = web::html(&doc(&sample(true), &rooms));
+        let text = markdown(&sample(true), &rooms);
         for tools in Tools::ALL {
             assert!(html.contains(tools.label()) && text.contains(tools.label()));
         }
         for group in GROUPS {
             assert!(html.contains(group.title) && text.contains(group.title));
         }
-        assert!(text.contains("`/oai 用 <模型>`"));
-        assert!(markdown(&sample(false), &Rooms { total: 0, tooled: 0 }, "/").contains("/oai 用 mimo"));
+        assert!(text.contains("`oai 用 {模型}`"));
+        assert!(markdown(&sample(false), &Rooms { total: 0, tooled: 0 }).contains("oai 用 mimo"));
     }
 
     /// 出一份 HTML 看版式：`ACUMEN_DUMP=目录 cargo test --release manual::tests::dump -- --ignored`。
@@ -306,8 +308,8 @@ mod tests {
     fn dump() {
         let dir = std::env::var("ACUMEN_DUMP").expect("ACUMEN_DUMP");
         let rooms = Rooms { total: 4, tooled: 1 };
-        std::fs::write(format!("{dir}/oai-help.html"), web::html(&doc(&sample(true), &rooms, "/"))).unwrap();
+        std::fs::write(format!("{dir}/oai-help.html"), web::html(&doc(&sample(true), &rooms))).unwrap();
         let empty = Rooms { total: 0, tooled: 0 };
-        std::fs::write(format!("{dir}/oai-help-gap.html"), web::html(&doc(&sample(false), &empty, "/"))).unwrap();
+        std::fs::write(format!("{dir}/oai-help-gap.html"), web::html(&doc(&sample(false), &empty))).unwrap();
     }
 }

@@ -1435,6 +1435,29 @@ impl Session {
         )
         .await;
     }
+    /// 执行一个动作。撤回有「刚发出去还撤不了」的空窗（见 api::recall_retryable），
+    /// 隔一会儿重试两次；别的动作一次定输赢，不替它们吞掉错误。
+    async fn rpc_action(&self, method: &str, params: Value) -> Result<Value> {
+        use crate::adapters::satori::api;
+        if method != "message.delete" {
+            return self.rpc(method, params).await;
+        }
+        let mut attempt = 0;
+        loop {
+            match self.rpc(method, params.clone()).await {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if attempt < api::RECALL_BACKOFF.len()
+                        && api::recall_retryable(&format!("{error:#}")) =>
+                {
+                    tokio::time::sleep(api::RECALL_BACKOFF[attempt]).await;
+                    attempt += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         ensure!(
             !method.starts_with("internal/") || self.ctx.bot.adapter == "satori-qq",
@@ -1837,7 +1860,7 @@ impl Session {
             !managing || (self.management_enabled() && self.authority != Authority::Guest),
             "本群管理动作已停用"
         );
-        let result = self.rpc(method, params).await?;
+        let result = self.rpc_action(method, params).await?;
         if let Action::Recall { message_id, .. } = action {
             window::with_group(&self.channel, |s| s.recall(message_id.trim()));
         }

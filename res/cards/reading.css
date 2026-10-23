@@ -119,7 +119,7 @@ code {
 
 /* —— 分区 —— */
 .section {
-  margin: var(--md-space-8) 0 var(--md-space-3);
+  margin: var(--md-space-6) 0 var(--md-space-1);
 }
 .section h2 {
   font-weight: var(--md-sys-typescale-weight-display);
@@ -167,20 +167,54 @@ code {
   text-wrap: pretty;
 }
 
-/* —— 指令 —— */
-/* 照打的字主色加粗，`<占位>` 与 `[可选]` 降一档：读指令先分清哪些是原样敲的。
-   不再给每条指令套一个框——一排十几个框，整张卡看上去全是容器。 */
+/* —— 指令表 —— */
+/* 一条指令一行：左边照打，右边一句话说清。命令列定宽，说明列从同一条竖线起，
+   二十几条扫下来是一条直线——找指令只看左边那一列，不必读完整段话。
+   整组不套容器，行与行之间只留一道极细的分隔：一排十几个框，看上去全是框。
+   说明一律短句：一行的说明比两行的说明快一倍。 */
+.md-seg.commands {
+  --md-seg-bg: transparent;
+  gap: 0;
+}
+.commands > li {
+  display: grid;
+  /* 命令列定宽（最长的一条指令刚好放得下），说明列吃掉剩下的宽度：
+     两列都从同一条竖线起，二十几条扫下来是一条直线。 */
+  grid-template-columns: 11.8rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--md-space-4);
+  padding: var(--md-space-3) 0;
+  border-radius: 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+.commands > li:first-child {
+  padding-top: 0;
+  border-top: 0;
+  border-radius: 0;
+}
+.commands > li:last-child {
+  padding-bottom: var(--md-space-1);
+  border-radius: 0;
+}
+.commands .item-desc {
+  margin-top: 0;
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.62;
+  text-wrap: pretty;
+}
 .command {
-  display: block;
   color: var(--md-sys-color-primary);
   font-size: var(--md-type-label-large-size);
-  line-height: 1.6;
-  font-weight: var(--md-sys-typescale-weight-display);
+  line-height: 1.5;
+  font-weight: var(--md-sys-typescale-weight-emphasized);
   white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
+/* 占位符降一档、字重放轻：读指令先分清哪些原样敲、哪些要换成自己的内容。
+   括号与括号里的字同色，槽位整体后退一步。 */
 .command .ph {
   color: var(--md-sys-color-on-surface-variant);
-  font-weight: var(--md-sys-typescale-weight-medium);
+  font-weight: var(--md-sys-typescale-weight-regular);
 }
 .aliases {
   display: flex;
@@ -451,28 +485,31 @@ code {
   font-weight: var(--md-sys-typescale-weight-emphasized);
 }
 
-/* —— 下一步清单（标签 + 指令） —— */
+/* —— 接入状态（标签 + 值） —— */
+/* 状态是背景信息，读的时候不该先抢眼睛：整块比正文低一档，标签走淡色、
+   值走正文色而不是主色（主色要留给指令那一列）。 */
 .facts {
   display: grid;
-  gap: var(--md-space-3);
+  gap: var(--md-space-2);
   padding: var(--md-space-4) var(--md-space-5);
   border-radius: var(--md-shape-l-plus);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--md-sys-color-primary-tint);
 }
 .fact {
   display: grid;
-  grid-template-columns: 4.6em minmax(0, 1fr);
+  grid-template-columns: 5em minmax(0, 1fr);
   align-items: baseline;
   gap: var(--md-space-3);
 }
 .fact dt {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-type-label-large-size);
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.6;
 }
 .fact code {
-  color: var(--md-sys-color-primary);
-  font-size: var(--md-type-label-large-size);
-  font-weight: var(--md-sys-typescale-weight-display);
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-type-body-small-size);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
   line-height: 1.6;
 }
 .section + .facts {
@@ -487,9 +524,25 @@ code {
 /* 一档一段，从轻到重。名字左边一条三格刻度：档位是一条轴，读者不读字也看得出
    「这一档比上一档多了什么」；刻度只是帮眼睛，名字本身已经说全了（颜色不单独传信息）。
    指令与「谁能切」同一行、分在两端：先看怎么打，再看自己能不能打。 */
+.md-seg.tiers {
+  --md-seg-bg: transparent;
+  gap: 0;
+}
 .tiers > li {
   display: grid;
   gap: var(--md-space-1);
+  padding: var(--md-space-3) 0;
+  border-radius: 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+.tiers > li:first-child {
+  padding-top: 0;
+  border-top: 0;
+  border-radius: 0;
+}
+.tiers > li:last-child {
+  padding-bottom: var(--md-space-1);
+  border-radius: 0;
 }
 .tier-head {
   display: flex;
@@ -513,20 +566,25 @@ code {
   box-shadow: none;
 }
 .tier-name {
-  font-size: var(--md-type-title-medium-size);
-  line-height: var(--md-type-title-medium-line);
+  font-size: var(--md-type-title-small-size);
+  line-height: var(--md-type-label-large-line);
   font-weight: var(--md-sys-typescale-weight-emphasized);
   color: var(--md-sys-color-on-surface);
 }
 .tier-default {
   margin-left: auto;
-  padding: 1px var(--md-space-3);
+  padding: 0 var(--md-space-2);
   border-radius: var(--md-shape-full);
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
   font-size: var(--md-type-label-medium-size);
   line-height: 1.6;
   font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+.tiers .item-desc {
+  margin-top: 0;
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.62;
 }
 .tier-foot {
   display: flex;
@@ -538,6 +596,8 @@ code {
 }
 .tier-foot .command {
   display: inline;
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.6;
 }
 .tier-who {
   color: var(--md-sys-color-on-surface-variant);

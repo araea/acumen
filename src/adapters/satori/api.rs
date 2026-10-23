@@ -6,6 +6,7 @@ use crate::message::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use simd_json::derived::ValueObjectAccessAsScalar;
+use std::time::Duration;
 
 pub type ApiError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -35,13 +36,49 @@ where
     Ok(())
 }
 
+/// 撤回失败后隔多久再试：消息刚发出去时内核还没把它收进本地库，第一次常被回绝。
+pub(crate) const RECALL_BACKOFF: [Duration; 2] = [Duration::from_millis(700), Duration::from_millis(1600)];
+
+/// 这次撤回失败是不是「过一会儿再发就好」。
+///
+/// QQ 的撤回有两个已知的短空窗：消息刚发出、内核还没落库时回 code=8；
+/// 会话里刚有动静时回 c2c custom recall beat。两者都不是权限问题，
+/// 隔一秒再发一次就过了；真正的拒绝（消息不存在、超过时限、不是管事的）没有这两个记号。
+pub(crate) fn recall_retryable(error: &str) -> bool {
+    if error.contains("recall beat") || error.contains("timeout") || error.contains("Timeout") {
+        return true;
+    }
+    error
+        .split("code=")
+        .skip(1)
+        .filter_map(|tail| {
+            let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+            digits.parse::<u32>().ok()
+        })
+        .any(|code| code == 8 || code == 100_000_041)
+}
+
 /// 撤回当前会话里的一条消息。
+///
+/// 撞上上一段说到的空窗时退避重试两次（共约 2.3 秒，远在平台的两分钟时限内）——
+/// 配置供应商后要撤的那条「带密钥的消息」几乎必然撞上第一次。
 pub async fn delete_msg(
     ctx: &Context,
     writer: LockedWriter,
     message_id: &str,
 ) -> Result<(), ApiError> {
-    delete_msg_in(ctx, writer, &channel_id(ctx)?, message_id).await
+    let channel = channel_id(ctx)?;
+    let mut attempt = 0;
+    loop {
+        match delete_msg_in(ctx, writer.clone(), &channel, message_id).await {
+            Ok(()) => return Ok(()),
+            Err(error) if attempt < RECALL_BACKOFF.len() && recall_retryable(&error.to_string()) => {
+                tokio::time::sleep(RECALL_BACKOFF[attempt]).await;
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// 撤回指定频道里的一条消息；频道与当前上下文无关时（跟随撤回回复）用它。
