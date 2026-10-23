@@ -12,7 +12,7 @@
    - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
    §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
-   §7 总览 · §8 插件 · §8b 自动回复的规则面板 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
+   §7 总览 · §8 插件 · §8b 自动回复的规则面板 · §8c 潜水清理的名单面板 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -87,6 +87,7 @@
     video_parse: "smart_display", song: "music_note", webshot: "screenshot_monitor", oai: "smart_toy",
     ambient: "forum", ai_news: "newspaper", help: "help", restart: "restart_alt",
     welcome: "waving_hand", anti_recall: "restore_page", nailong: "hide_image", autoreply: "quickreply",
+    lurker: "scuba_diving",
   };
   const SECTION_ICONS = { message: "chat", play: "extension", insight: "leaderboard", system: "tune", misc: "extension" };
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
@@ -1613,6 +1614,7 @@
         </div>
       </div>
       ${plugin.panel === "autoreply" ? rulesSection(sub) : ""}
+      ${plugin.panel === "lurker" ? lurkerSection(sub) : ""}
       ${liveCard(plugin)}
       ${commands}
 
@@ -1653,7 +1655,7 @@
 
   /** 群号列表：名单、开启搭话 / 推送的群等。其余的纯文字 / 数字 / 时间列表走列表编辑器（§11b）。 */
   const GROUP_LIST = /(^|\.)(channel\.(white|black)|groups|management_groups|management_excluded|realtime_muted_groups|manual_channels)$/;
-  const USER_LIST = /(^|\.)(private_users|realtime_muted_private_users|admins|ignore_users)$/;
+  const USER_LIST = /(^|\.)(private_users|realtime_muted_private_users|admins|ignore_users|exempt)$/;
   /** 这一项是不是 ID 名单，是哪一种；不是（或混着数字对象）就返回空串。 */
   const listKind = (path, value) =>
     !value.every((item) => typeof item === "string") ? "" : GROUP_LIST.test(path) ? "group" : USER_LIST.test(path) ? "user" : "";
@@ -3522,6 +3524,485 @@
     } finally {
       button.removeAttribute("aria-busy");
       label.textContent = "插入图片";
+    }
+  }
+
+  /* ==================== §8c 潜水清理的名单面板 ====================
+     选一个群、查一遍，名单与群里那张长图同一份（同样的序号）：按类别筛、按名字或号码找、
+     勾人或按序号区间选，再「提醒」或「移出」。移出前的确认框写清人数、谁、要多久；
+     移出走与群里同一条慢队列，这里显示进度，可以随时停。拿不准的人（待观察）没有勾选框。
+     面板的事件挂在自己的根节点上，重画时跟着换。 */
+
+  const lurk = { data: null, group: "", scan: null, filter: "all", query: "", chosen: new Set(), job: null, poll: 0, mounting: 0 };
+
+  const LK_KINDS = [
+    { code: "all", label: "全部" },
+    { code: "silent", label: "很久没说话" },
+    { code: "never", label: "进群后没说过话" },
+    { code: "quiet", label: "说得太少" },
+    { code: "unsure", label: "待观察" },
+  ];
+
+  const lkDate = (at) => {
+    if (!at) return "";
+    const day = new Date(at * 1000);
+    const sameYear = day.getFullYear() === new Date().getFullYear();
+    return sameYear ? `${day.getMonth() + 1} 月 ${day.getDate()} 日` : `${day.getFullYear()} 年 ${day.getMonth() + 1} 月 ${day.getDate()} 日`;
+  };
+  const lkDays = (scan, at) => Math.max(0, Math.floor((scan.at - at) / 86400));
+  const lkMinutes = (seconds) => (seconds > 0 ? `${Math.max(1, Math.ceil(seconds / 60))} 分钟` : "不到 1 分钟");
+  const lkAvatar = (id) => (/^\d{5,}$/.test(id) ? `https://q1.qlogo.cn/g?b=qq&nk=${id}&s=100` : "");
+  const lkInitial = (name) => [...String(name)].find((c) => /[\p{L}\p{N}]/u.test(c))?.toUpperCase() || "?";
+  const lkGroupName = (id) => entryName("group", id) || lurk.data?.lists.find((list) => list.group === id)?.group_name || `群 ${id}`;
+
+  function lurkerSection(sub) {
+    clearTimeout(lurk.mounting);
+    lurk.mounting = setTimeout(() => void lurkerMount(), 0);
+    return h`<section class="section lk" id="lurker-panel" aria-labelledby="lurker-title" aria-busy="true">
+      <div class="section-head">
+        ${raw(`<${sub} class="section-title" id="lurker-title">潜水名单</${sub}>`)}
+        <span class="section-meta">与群里「潜水」那张图同一份、同样的序号</span>
+      </div>
+      <div id="lurker-body"><div class="progress" role="progressbar" aria-label="正在读取"></div></div>
+    </section>`;
+  }
+
+  async function lurkerMount() {
+    const panel = $("#lurker-panel");
+    if (!panel) return;
+    if (!panel.dataset.bound) {
+      panel.dataset.bound = "";
+      panel.addEventListener("click", lurkerClick);
+      panel.addEventListener("change", lurkerChange);
+      panel.addEventListener("input", lurkerInput);
+      panel.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && event.target.id === "lk-range") {
+          event.preventDefault();
+          lurkerRange();
+        } else if (event.key === "Enter" && event.target.id === "lk-days") {
+          event.preventDefault();
+          void lurkerScan(true);
+        }
+      });
+    }
+    try {
+      lurk.data = await api("/lurker");
+      if (!panel.isConnected) return;
+      const active = lurk.data.pending[0]?.group;
+      lurk.group ||= active || lurk.data.lists[0]?.group || "";
+      lurkerPaint();
+      void KINDS.group.roster.load().then(() => {
+        const select = $("#lk-group");
+        if (select) put(select, lurkerGroupChoices());
+      });
+      const recent = lurk.data.lists.find((list) => list.group === lurk.group);
+      if (recent && Date.now() / 1000 - recent.at < 600) void lurkerScan(false);
+      else if (lurk.scan?.group === lurk.group) lurkerPaintScan();
+      if (lurk.group) void lurkerJob();
+    } catch (error) {
+      if (error.status === 401) return;
+      put($("#lurker-body"), emptyState(`没读出来：${error.message}`, "error"));
+    } finally {
+      panel.removeAttribute("aria-busy");
+    }
+  }
+
+  function lurkerGroupChoices() {
+    const known = KINDS.group.roster.list.map((entry) => entry.id);
+    const scanned = (lurk.data?.lists || []).map((list) => list.group);
+    const ids = [...new Set([...scanned, ...known])];
+    const option = (id) => h`<option value="${id}"${attr(id === lurk.group, "selected")}>${lkGroupName(id)}${scanned.includes(id) ? " · 查过" : ""}</option>`;
+    return [h`<option value=""${attr(!lurk.group, "selected")} disabled>选一个群</option>`, ...ids.map(option)];
+  }
+
+  function lurkerPaint() {
+    const data = lurk.data;
+    put($("#lurker-body"), h`
+      ${data.enabled ? "" : h`<div class="rules-off" role="note">${icon("warning-fill")}<span class="rules-off-text"><strong>潜水清理还关着。</strong>能查名单，但移不出人；打开上面的开关再来。</span></div>`}
+      ${data.connected ? "" : h`<div class="rules-off" role="note">${icon("info-fill")}<span class="rules-off-text">机器人还没连上账号，连上后才能查名单。</span></div>`}
+      <div class="card lk-pick">
+        <div class="lk-pick-row">
+          <span class="select lk-group"><select id="lk-group" aria-label="查哪个群">${lurkerGroupChoices()}</select>${icon("keyboard_arrow_down")}</span>
+          <span class="input-unit lk-days">
+            <input class="input num" id="lk-days" inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="${data.rule.days}"
+              aria-label="多少天没说话算潜水（留空照配置）" aria-describedby="lk-pick-hint">
+            <span class="unit-text">天</span>
+          </span>
+          <button class="btn btn-filled" type="button" data-lk-scan>${icon("search")}查一遍</button>
+        </div>
+        <p class="field-hint" id="lk-pick-hint">天数留空照配置（${data.rule.days} 天，单独设过的群照它自己的）；填了只这一次按它看。群主、管理员、号主与豁免名单里的人不会进名单。</p>
+      </div>
+      <div id="lk-job" aria-live="polite"></div>
+      <div id="lk-result"></div>
+      ${data.history.length ? lurkerHistory(data.history) : ""}`);
+  }
+
+  async function lurkerScan(again) {
+    const group = $("#lk-group")?.value || lurk.group;
+    if (!group) return snackbar("先选一个群", "error");
+    const daysText = $("#lk-days")?.value.trim() || "";
+    const days = daysText ? Number(daysText) : null;
+    if (daysText && !(Number.isInteger(days) && days >= 1 && days <= 3650)) return snackbar("天数写 1 到 3650 之间的整数", "error");
+    lurk.group = group;
+    const button = $("[data-lk-scan]");
+    button?.setAttribute("aria-busy", "true");
+    put($("#lk-result"), h`<div class="card lk-loading"><div class="progress" role="progressbar" aria-label="正在查"></div><p class="note">正在拉全群名单、对消息记录，大群要几秒钟…</p></div>`);
+    try {
+      lurk.scan = await api("/lurker/scan", { method: "POST", body: { group, days, again } });
+      lurk.chosen.clear();
+      lurk.filter = "all";
+      lurk.query = "";
+      lurkerPaintScan();
+      void lurkerJob();
+    } catch (error) {
+      put($("#lk-result"), h`<div class="card">${emptyState(`没查成：${error.message}`, "error")}</div>`);
+      report(error);
+    } finally {
+      button?.removeAttribute("aria-busy");
+    }
+  }
+
+  const lkAll = () => [...(lurk.scan?.entries || []), ...(lurk.scan?.unsure || [])];
+  const lkVisible = () => {
+    const query = lurk.query.normalize("NFKC").toLowerCase();
+    return lkAll().filter((entry) => (lurk.filter === "all" || entry.kind === lurk.filter) && (!query || `${entry.no} ${entry.name} ${entry.nick} ${entry.id} ${entry.title || ""}`.normalize("NFKC").toLowerCase().includes(query)));
+  };
+
+  function lurkerPaintScan() {
+    const scan = lurk.scan;
+    if (!scan) return;
+    const count = (kind) => lkAll().filter((entry) => entry.kind === kind).length;
+    const kept = scan.protected.map(([label, n]) => `${label} ${n}`);
+    if (scan.newcomers) kept.push(`进群不满 ${scan.rule.days} 天的新人 ${scan.newcomers}`);
+    put($("#lk-result"), h`
+      <div class="card lk-head">
+        <p class="lk-summary">「${scan.group_name}」全群 <b>${num(scan.total)}</b> 人，按「${scan.rule.text}」查到 <b>${num(scan.entries.length)}</b> 人${scan.entries.length ? "" : "，没有要清理的"}。
+          <span class="lk-stamp">${ago(scan.at)}查的</span>
+          <button class="btn btn-text" type="button" data-lk-rescan>${icon("refresh")}重新查</button></p>
+        ${scan.note ? h`<p class="lk-note" role="note">${icon("info-fill")}<span>${scan.note}</span></p>` : ""}
+        ${scan.can_kick ? "" : h`<p class="lk-note" role="note">${icon("warning-fill")}<span>机器人在这个群里不是管理员，只能看，移不出人。</span></p>`}
+        ${kept.length ? h`<p class="field-hint">不在名单上的：${kept.join(" · ")}</p>` : ""}
+      </div>
+      ${lkAll().length
+        ? h`<div class="chips chips-scroll lk-kinds" role="group" aria-label="按类别筛选">${LK_KINDS.filter((kind) => kind.code === "all" || count(kind.code)).map((kind) => h`<button class="chip" type="button" data-lk-kind="${kind.code}" aria-pressed="${bool(lurk.filter === kind.code)}">${icon("check")}${kind.label}<span class="chip-count">${kind.code === "all" ? lkAll().length : count(kind.code)}</span></button>`)}</div>
+          <div class="lk-tools">
+            <div class="search">${icon("search")}<input class="input" id="lk-search" type="search" placeholder="按名字、号码、头衔或序号找" aria-label="在名单里找" autocomplete="off" spellcheck="false" value="${lurk.query}"></div>
+            ${scan.entries.length
+              ? h`<div class="lk-range">
+                  <input class="input" id="lk-range" type="text" placeholder="按序号选：1-20 25" aria-label="按序号选" aria-describedby="lk-range-hint" autocomplete="off" spellcheck="false" enterkeyhint="done">
+                  <button class="btn btn-tonal" type="button" data-lk-range>选中</button>
+                </div>`
+              : ""}
+          </div>
+          <p class="field-hint lk-range-hint" id="lk-range-hint">序号可以写区间与几段：「1-20 25」「全部 除 3 7」「1-30 !5」。</p>
+          <p class="section-meta" id="lk-status" role="status"></p>
+          <div class="lk-scroll" tabindex="0" role="region" aria-label="潜水名单，可滚动"><ol class="lk-list" id="lk-list"></ol></div>
+          <div class="lk-bar" id="lk-bar"></div>`
+        : ""}`);
+    lurkerPaintRows();
+  }
+
+  function lurkerRow(entry) {
+    const scan = lurk.scan;
+    const days = lkDays(scan, entry.since);
+    const gone = entry.kind === "quiet" ? `${entry.said} 句` : entry.kind === "unsure" ? `${days}+ 天` : entry.last || entry.kind === "never" ? `${days} 天` : `≥${days} 天`;
+    const last = entry.kind === "never" ? "进群后没说过话" : entry.kind === "unsure" ? (entry.last ? `记录不全 · 见过 ${lkDate(entry.last)}` : "记录不全 · 没见过他说话") : entry.last ? `最后 ${lkDate(entry.last)}` : "没有发言记录";
+    const meta = [entry.nick && entry.nick !== entry.name ? entry.nick : "", entry.id, entry.level ? `LV${entry.level}` : "", entry.title ? `「${entry.title}」` : "", entry.joined ? `${lkDate(entry.joined)}进群` : ""].filter(Boolean).join(" · ");
+    const src = lkAvatar(entry.id);
+    const face = src
+      ? h`<span class="lk-face" aria-hidden="true"><img src="${src}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-initial="${lkInitial(entry.name)}"></span>`
+      : h`<span class="lk-face" aria-hidden="true">${lkInitial(entry.name)}</span>`;
+    const checked = lurk.chosen.has(entry.id);
+    const sure = entry.no > 0 && scan.can_kick;
+    const removed = lurk.job?.done?.find((outcome) => outcome.id === entry.id);
+    const tags = h`${entry.warned ? h`<span class="status">${ago(entry.warned)}提醒过</span>` : ""}${removed ? h`<span class="status ${removed.result === "removed" ? "status-success" : ""}">${{ removed: "已移出", spoke: "冒泡了，留下", left: "已不在群里", failed: "没移出去", skipped: "没轮到" }[removed.result]}</span>` : ""}`;
+    const body = h`<span class="lk-no">${entry.no || "—"}</span>${face}
+      <span class="lk-who"><span class="lk-name">${entry.name}${tags}</span><span class="lk-meta">${meta}</span></span>
+      <span class="lk-when"><span class="lk-gone">${gone}</span><span class="lk-last">${last}</span></span>`;
+    return h`<li class="lk-row${checked ? " lk-on" : ""}${removed?.result === "removed" ? " lk-gone-row" : ""}" data-lk-id="${entry.id}"${attr(entry.kind === "unsure", "data-unsure")}>
+      ${sure && !removed
+        ? h`<label class="lk-hit"><input type="checkbox" class="lk-check" value="${entry.id}"${attr(checked, "checked")} aria-label="选中 ${entry.no} 号 ${entry.name}（${entry.id}）">${body}</label>`
+        : h`<div class="lk-hit"><span class="lk-check-none" aria-hidden="true"></span>${body}</div>`}
+      <button class="icon-btn state lk-exempt" type="button" data-lk-exempt="${entry.id}" aria-label="豁免 ${entry.name}：以后不进这个群的名单" title="豁免：以后不进这个群的名单">${icon("shield_person")}</button>
+    </li>`;
+  }
+
+  /** 名单很长时只先画前 200 行，往下有「再显示」——几百行一次画完，手机上会卡一下。
+   *  名单在一个限高的滚动区里：再长也不把下面的配置挤到看不见的地方，操作条始终贴在名单下面。 */
+  function lurkerPaintRows(limit = 200) {
+    const list = $("#lk-list");
+    if (!list) return;
+    const rows = lkVisible();
+    put(list, h`${rows.slice(0, limit).map(lurkerRow)}${rows.length > limit ? h`<li class="lk-more"><button class="btn btn-tonal" type="button" data-lk-more="${limit + 200}">再显示 ${Math.min(200, rows.length - limit)} 人（共 ${rows.length}）</button></li>` : ""}`);
+    if (!rows.length) put(list, h`<li>${emptyState(lurk.query ? "没有对得上的人。" : "这一类没有人。", "search")}</li>`);
+    const status = $("#lk-status");
+    if (status) status.textContent = lurk.filter === "all" && !lurk.query ? "" : `找到 ${rows.length} 人`;
+    lurkerPaintBar();
+  }
+
+  function lurkerPaintBar() {
+    const bar = $("#lk-bar");
+    if (!bar || !lurk.scan) return;
+    const n = lurk.chosen.size;
+    const sure = lurk.scan.entries.length && lurk.scan.can_kick;
+    const busy = lurk.job && ["running", "interrupted"].includes(lurk.job.state);
+    put(bar, sure
+      ? h`<span class="lk-count" role="status">${n ? h`已选 <b>${n}</b> 人` : "勾选要处理的人，或按序号选"}</span>
+          <div class="lk-actions">
+            ${n ? h`<button class="btn btn-text" type="button" data-lk-clear>清空</button>` : h`<button class="btn btn-text" type="button" data-lk-all>选这一类</button>`}
+            <button class="btn btn-tonal" type="button" data-lk-warn${attr(!n, "disabled")}>${icon("notifications_active")}提醒</button>
+            <button class="btn btn-filled btn-danger" type="button" data-lk-kick${attr(!n || busy, "disabled")}>${icon("person_remove")}${n ? `移出 ${n} 人` : "移出"}</button>
+          </div>`
+      : "");
+    bar.hidden = !sure;
+  }
+
+  function lurkerChosenEntries() {
+    return lurk.scan.entries.filter((entry) => lurk.chosen.has(entry.id));
+  }
+
+  /** 「1-20 25」「全部 除 3 7」「1-30 !5」→ 序号。与群里「潜水 踢」同一套写法。 */
+  function lkPicks(text, max) {
+    const normal = text.normalize("NFKC").replace(/[~～—–－到至]/g, "-").replace(/[，,、；;]/g, " ");
+    let chosen = [];
+    const dropped = new Set();
+    let excluding = false;
+    for (let token of normal.split(/\s+/).filter(Boolean)) {
+      let negate = false;
+      if (token.startsWith("!")) {
+        negate = true;
+        token = token.slice(1);
+      }
+      if (["除", "除了", "不要", "排除", "不含"].includes(token)) {
+        excluding = true;
+        continue;
+      }
+      let range;
+      if (["全部", "所有", "全", "all"].includes(token)) range = Array.from({ length: max }, (_, i) => i + 1);
+      else {
+        const [a, b = a] = token.split("-").map(Number);
+        if (!Number.isInteger(a) || !Number.isInteger(b) || a < 1 || b < 1 || a > max || b > max) throw new Error(`「${token}」不在名单上（1-${max}）`);
+        range = Array.from({ length: Math.abs(b - a) + 1 }, (_, i) => Math.min(a, b) + i);
+      }
+      for (const n of range) (excluding || negate ? dropped.add(n) : chosen.push(n));
+    }
+    if (!chosen.length && dropped.size) chosen = Array.from({ length: max }, (_, i) => i + 1);
+    return [...new Set(chosen)].filter((n) => !dropped.has(n));
+  }
+
+  function lurkerRange() {
+    const input = $("#lk-range");
+    if (!input || !lurk.scan) return;
+    try {
+      const picks = lkPicks(input.value, lurk.scan.entries.length);
+      if (!picks.length) return snackbar("写几个序号，比如 1-20 25", "error");
+      const ids = lurk.scan.entries.filter((entry) => picks.includes(entry.no)).map((entry) => entry.id);
+      lurk.chosen = new Set(ids);
+      lurkerPaintRows();
+      snackbar(`选中了 ${ids.length} 人`);
+    } catch (error) {
+      snackbar(error.message, "error");
+    }
+  }
+
+  async function lurkerKick() {
+    const scan = lurk.scan;
+    const chosen = lurkerChosenEntries();
+    if (!chosen.length) return;
+    const pace = lurk.data.pace;
+    if (chosen.length > pace.max_per_run) return snackbar(`一次最多移出 ${pace.max_per_run} 人；分几次来，或调高下面的「一次最多移出」`, "error");
+    const rests = pace.burst ? Math.floor((chosen.length - 1) / pace.burst) : 0;
+    const eta = chosen.length * pace.interval_seconds + rests * pace.rest_seconds;
+    const half = chosen.length * 2 > scan.total ? `这是全群 ${scan.total} 人里的一半以上。` : "";
+    const ok = await confirmAction({
+      title: `从「${scan.group_name}」移出 ${chosen.length} 人？`,
+      body: `${half}分批慢慢移出，大约 ${lkMinutes(eta)}；排队时说了话的会留下，可以随时停。${lurk.data.permanent ? "移出后他们不能再申请加群。" : ""}`,
+      detail: h`<ol class="lk-confirm">${chosen.map((entry) => h`<li><b>${entry.no}</b> ${entry.name}（${entry.id}）</li>`)}</ol>`,
+      confirm: `移出 ${chosen.length} 人`,
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const status = await api("/lurker/kick", { method: "POST", body: { group: scan.group, at: scan.at, ids: chosen.map((entry) => entry.id) } });
+      lurk.chosen.clear();
+      lurkerJobPaint(status);
+      lurkerPaintRows();
+      snackbar(`开始移出 ${chosen.length} 人`);
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  async function lurkerWarn() {
+    const scan = lurk.scan;
+    const chosen = lurkerChosenEntries();
+    if (!chosen.length) return;
+    const ok = await confirmAction({
+      title: `在「${scan.group_name}」@ ${chosen.length} 人提醒一声？`,
+      body: `会在群里 @ 他们（一条最多 20 人），说清 ${lurk.data.grace_days} 天后还没冒泡会被移出。提醒的话在下面配置的「提醒的话」里改。`,
+      confirm: "发提醒",
+    });
+    if (!ok) return;
+    try {
+      const reply = await api("/lurker/warn", { method: "POST", body: { group: scan.group, at: scan.at, ids: chosen.map((entry) => entry.id) } });
+      const now = Date.now() / 1000;
+      for (const entry of chosen) entry.warned = now;
+      lurk.chosen.clear();
+      lurkerPaintRows();
+      snackbar(reply.message);
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  async function lurkerExempt(id) {
+    const scan = lurk.scan;
+    const entry = lkAll().find((item) => item.id === id);
+    if (!scan || !entry) return;
+    try {
+      await api("/lurker/exempt", { method: "POST", body: { group: scan.group, id, on: true } });
+      const restore = { entries: [...scan.entries], unsure: [...scan.unsure] };
+      scan.entries = scan.entries.filter((item) => item.id !== id);
+      scan.unsure = scan.unsure.filter((item) => item.id !== id);
+      lurk.chosen.delete(id);
+      lurkerPaintRows();
+      snackbar(`${entry.name} 以后不进这个群的名单`, "info", {
+        label: "撤销",
+        run: async () => {
+          try {
+            await api("/lurker/exempt", { method: "POST", body: { group: scan.group, id, on: false } });
+            Object.assign(scan, restore);
+            lurkerPaintRows();
+          } catch (error) {
+            report(error);
+          }
+        },
+      });
+    } catch (error) {
+      report(error);
+    }
+  }
+
+  async function lurkerJob() {
+    if (!lurk.group) return;
+    try {
+      lurkerJobPaint(await api(`/lurker/job?group=${encodeURIComponent(lurk.group)}`));
+    } catch (error) {
+      if (error.status !== 401) put($("#lk-job"), "");
+    }
+  }
+
+  function lurkerJobPaint(status) {
+    const slot = $("#lk-job");
+    clearTimeout(lurk.poll);
+    if (!slot) return;
+    const job = status.active;
+    const wasRunning = lurk.job && lurk.job.state === "running";
+    lurk.job = job || (lurk.scan && status.last && status.last.created >= lurk.scan.at ? status.last : null);
+    if (!job) {
+      put(slot, "");
+      if (wasRunning && status.last) {
+        snackbar(status.last.summary.split("\n")[0]);
+        lurkerPaintRows();
+        void api("/lurker").then((data) => {
+          lurk.data = data;
+          const history = $("#lk-history");
+          if (history) history.outerHTML = part(lurkerHistory(data.history));
+        });
+      }
+      return;
+    }
+    const handled = job.total - job.left;
+    const interrupted = job.state === "interrupted";
+    put(slot, h`<div class="card lk-job" data-state="${job.state}">
+      <div class="lk-job-head">
+        <span class="lk-job-title">${interrupted ? "上次的移出被打断了" : `正在从「${job.group_name}」移出`}</span>
+        <button class="btn btn-outlined" type="button" data-lk-stop>${icon("stop_circle")}${interrupted ? "作罢" : "停下"}</button>
+      </div>
+      <meter class="meter" min="0" max="${job.total}" value="${handled}" aria-label="移出进度">${handled} / ${job.total}</meter>
+      <p class="lk-job-line">已处理 <b>${handled}</b> / ${job.total} 人：移出 ${job.removed}${job.spoke ? ` · 冒泡留下 ${job.spoke}` : ""}${job.gone ? ` · 已不在群里 ${job.gone}` : ""}${job.failed ? ` · 没移出去 ${job.failed}` : ""}${interrupted ? `。还剩 ${job.left} 人，在群里发「潜水 继续」接着做。` : `。还剩 ${job.left} 人，大约 ${lkMinutes(job.eta)}。`}</p>
+    </div>`);
+    if (!interrupted) lurk.poll = setTimeout(() => $("#lk-job") && void lurkerJob(), 3000);
+    lurkerPaintRows();
+  }
+
+  function lurkerHistory(history) {
+    const when = (at) => new Date(at * 1000).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    const who = { group: (job) => job.operator_name || job.operator, console: () => "控制台", auto: () => "自动清理" };
+    return h`<details class="memory lk-history" id="lk-history">
+      <summary class="state">
+        <span class="item-leading" aria-hidden="true">${icon("history")}</span>
+        <span class="item-content"><span class="item-title">最近的移出</span><span class="item-sub">${history.length} 次 · 谁确认的、移出了谁</span></span>
+        ${icon("chevron_right", "chevron")}
+      </summary>
+      <ul class="memory-body lk-history-list">${history.map((job) => {
+        const removed = job.done.filter((outcome) => outcome.result === "removed");
+        return h`<li class="lk-history-row">
+          <span class="item-title">${when(job.created)} · ${job.group_name} · ${(who[job.source] || who.console)(job)}</span>
+          <span class="item-sub">${job.summary}</span>
+          ${removed.length ? h`<span class="lk-history-names">${removed.map((outcome) => `${outcome.name}（${outcome.id}）`).join("、")}</span>` : ""}
+        </li>`;
+      })}</ul>
+    </details>`;
+  }
+
+  function lurkerClick(event) {
+    const on = (selector) => event.target.closest(selector);
+    let hit;
+    if (on("[data-lk-scan]")) return void lurkerScan(false);
+    if (on("[data-lk-rescan]")) return void lurkerScan(true);
+    if ((hit = on("[data-lk-kind]"))) {
+      lurk.filter = hit.dataset.lkKind;
+      for (const chip of $$("[data-lk-kind]")) chip.setAttribute("aria-pressed", bool(chip === hit));
+      return lurkerPaintRows();
+    }
+    if ((hit = on("[data-lk-more]"))) return lurkerPaintRows(Number(hit.dataset.lkMore));
+    if (on("[data-lk-range]")) return lurkerRange();
+    if (on("[data-lk-clear]")) {
+      lurk.chosen.clear();
+      return lurkerPaintRows();
+    }
+    if (on("[data-lk-all]")) {
+      for (const entry of lkVisible()) if (entry.no > 0) lurk.chosen.add(entry.id);
+      return lurkerPaintRows();
+    }
+    if (on("[data-lk-kick]")) return void lurkerKick();
+    if (on("[data-lk-warn]")) return void lurkerWarn();
+    if ((hit = on("[data-lk-exempt]"))) return void lurkerExempt(hit.dataset.lkExempt);
+    if ((hit = on("[data-lk-stop]"))) {
+      hit.setAttribute("aria-busy", "true");
+      return void api("/lurker/stop", { method: "POST", body: { group: lurk.group } })
+        .then((reply) => snackbar(reply.message))
+        .catch(report)
+        .finally(() => void lurkerJob());
+    }
+  }
+
+  function lurkerChange(event) {
+    const target = event.target;
+    if (target.id === "lk-group") {
+      lurk.group = target.value;
+      lurk.scan = null;
+      lurk.job = null;
+      lurk.chosen.clear();
+      put($("#lk-result"), "");
+      const recent = lurk.data?.lists.find((list) => list.group === lurk.group);
+      if (recent && Date.now() / 1000 - recent.at < 600) void lurkerScan(false);
+      void lurkerJob();
+      return;
+    }
+    if (target.matches(".lk-check")) {
+      if (target.checked) lurk.chosen.add(target.value);
+      else lurk.chosen.delete(target.value);
+      target.closest(".lk-row")?.classList.toggle("lk-on", target.checked);
+      lurkerPaintBar();
+    }
+  }
+
+  function lurkerInput(event) {
+    if (event.target.id === "lk-search") {
+      lurk.query = event.target.value.trim();
+      lurkerPaintRows();
     }
   }
 
@@ -5725,7 +6206,7 @@
     addEventListener("error", (event) => {
       const img = event.target;
       if (!(img instanceof HTMLImageElement) || img.dataset.initial === undefined) return;
-      img.closest(".tile-avatar")?.replaceChildren(img.dataset.initial || "?");
+      img.closest(".tile-avatar, .lk-face")?.replaceChildren(img.dataset.initial || "?");
     }, true);
 
     /* 导航尺寸变了（断点、旋转、字体）就重新量一次胶囊；不参与换页动画。 */

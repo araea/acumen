@@ -25,7 +25,8 @@ src/
   storage.rs       数据目录、原子写文件、文件名清理与常驻 JSON 状态；storage/picture 是插件的本机图库
   template.rs      提示模板：{占位符} 切成消息段（入群欢迎与自动回复共用）
   text.rs          共用的中文分词
-  db/              SeaORM 实体、SQLite 查询与统计
+  departures.rs    经我们之手移出、已经交代过的人（入群欢迎据此不再逐个送别）
+  db/              SeaORM 实体、SQLite 查询与统计；db/activity 是成员活跃度（按日聚合）
 res/               词库、提示词、技能、卡片与控制台资源
 docs/              项目文档
 tests/             一条端到端冒烟（控制台适配器，不连真平台）

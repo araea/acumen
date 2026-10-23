@@ -412,7 +412,6 @@ fn labels(name: &str) -> Value {
 fn depends(name: &str) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::depends(),
-        "lurker" => crate::plugins::lurker::depends(),
         _ => json!({}),
     }
 }

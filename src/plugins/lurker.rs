@@ -371,6 +371,12 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
 
 /// 字段的中文名。
 pub const LABELS: &[(&str, &str)] = &[
+    ("channel", "生效范围"),
+    ("list", "名单的样子"),
+    ("pace", "移出的节奏"),
+    ("warn", "提醒"),
+    ("auto", "自动清理"),
+    ("groups", "每群单独设置"),
     ("days", "多少天没说话算潜水"),
     ("min_messages", "至少说几句"),
     ("newcomer_days", "新人几天不说话也算"),
@@ -406,21 +412,6 @@ pub const LABELS: &[(&str, &str)] = &[
 pub fn option_labels() -> serde_json::Value {
     serde_json::json!({
         "managers": { "staff": "群主、管理员与机器人管理员", "admin": "只有机器人管理员" },
-    })
-}
-
-pub fn depends() -> serde_json::Value {
-    serde_json::json!({
-        "auto.groups": { "on": "auto.enabled", "in": [true] },
-        "auto.weekdays": { "on": "auto.enabled", "in": [true] },
-        "auto.time": { "on": "auto.enabled", "in": [true] },
-        "auto.warn": { "on": "auto.enabled", "in": [true] },
-        "auto.max_kicks": { "on": "auto.enabled", "in": [true] },
-        "auto.max_ratio": { "on": "auto.enabled", "in": [true] },
-        "auto.announce": { "on": "auto.enabled", "in": [true] },
-        "auto.announce_text": { "on": "auto.announce", "in": [true] },
-        "list.rows_per_image": { "on": "list.image", "in": [true] },
-        "list.avatars": { "on": "list.image", "in": [true] },
     })
 }
 

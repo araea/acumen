@@ -288,8 +288,12 @@ impl<'a> Here<'a> {
             Err(text) => return Ok(text),
         };
         let now = chrono::Utc::now().timestamp();
-        let (recent, people): (Vec<_>, Vec<_>) =
-            picks.iter().filter_map(|&no| scan.numbered(no)).partition(|e| e.warned > 0 && now - e.warned < 86_400);
+        // 看提醒记录本身，不看名单上的标记：名单可能是提醒之前查的。
+        let warned = super::warn::warned(self.group).await;
+        let (recent, people): (Vec<_>, Vec<_>) = picks
+            .iter()
+            .filter_map(|&no| scan.numbered(no))
+            .partition(|e| warned.get(&e.id).is_some_and(|at| now - at < 86_400));
         let people: Vec<(String, String)> = people.into_iter().map(|e| (e.id.clone(), e.name.clone())).collect();
         if people.is_empty() {
             return Ok("这些人今天都提醒过了。".into());
@@ -540,7 +544,7 @@ pub fn picks(text: &str, max: usize) -> Result<Vec<u32>, String> {
     let mut dropped: Vec<u32> = Vec::new();
     let mut excluding = false;
     let parse = |n: &str| -> Result<u32, String> {
-        let n: u32 = n.trim().parse().map_err(|_| format!("「{n}」不是序号"))?;
+        let n: u32 = n.trim().parse().map_err(|_| format!("「{n}」不是序号；写法如「潜水 踢 1-20 25」「潜水 踢 全部 除 3 7」"))?;
         if n == 0 || n > max {
             return Err(format!("序号 {n} 不在名单上（1-{max}）"));
         }
