@@ -4,6 +4,7 @@ mod clock;
 mod command;
 mod config;
 mod db;
+mod departures;
 mod event;
 #[macro_use]
 mod log;

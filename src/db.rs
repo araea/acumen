@@ -7,6 +7,7 @@ use tokio::fs;
 
 use crate::info;
 
+pub mod activity;
 pub mod bans;
 pub mod entity;
 pub mod queries;

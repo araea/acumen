@@ -43,6 +43,13 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/autoreply/rules/{id}/delete", post(autoreply_delete))
         .route("/autoreply/restore", post(autoreply_restore))
         .route("/autoreply/test", post(autoreply_test))
+        .route("/lurker", get(lurker))
+        .route("/lurker/scan", post(lurker_scan))
+        .route("/lurker/kick", post(lurker_kick))
+        .route("/lurker/warn", post(lurker_warn))
+        .route("/lurker/job", get(lurker_job))
+        .route("/lurker/stop", post(lurker_stop))
+        .route("/lurker/exempt", post(lurker_exempt))
         .route("/ambient", get(ambient))
         .route("/ambient/sticker/{id}", get(sticker_image))
         .route("/ambient/source", post(write_ambient_source))
@@ -244,7 +251,84 @@ async fn plugin_detail(
 fn panel(name: &str) -> Value {
     match name {
         "autoreply" => json!("autoreply"),
+        "lurker" => json!("lurker"),
         _ => Value::Null,
+    }
+}
+
+// ---------- 潜水清理的名单面板：查、勾、移出、看进度 ----------
+
+async fn lurker(State(console): State<Arc<Console>>) -> Response {
+    Json(crate::plugins::lurker::panel_overview(console.ctx()).await).into_response()
+}
+
+#[derive(Deserialize)]
+struct LurkerScan {
+    group: String,
+    #[serde(default)]
+    days: Option<u32>,
+    #[serde(default)]
+    again: bool,
+}
+
+async fn lurker_scan(State(console): State<Arc<Console>>, Json(body): Json<LurkerScan>) -> Response {
+    if body.days.is_some_and(|days| !(1..=3650).contains(&days)) {
+        return bad("天数要在 1 到 3650 之间");
+    }
+    match crate::plugins::lurker::panel_scan(console.ctx(), &body.group, body.days, body.again).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct LurkerPick {
+    group: String,
+    at: i64,
+    ids: Vec<String>,
+}
+
+async fn lurker_kick(State(console): State<Arc<Console>>, Json(body): Json<LurkerPick>) -> Response {
+    match crate::plugins::lurker::panel_kick(console.ctx(), &body.group, body.at, &body.ids).await {
+        Ok(reply) => Json(reply).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+async fn lurker_warn(State(console): State<Arc<Console>>, Json(body): Json<LurkerPick>) -> Response {
+    match crate::plugins::lurker::panel_warn(console.ctx(), &body.group, body.at, &body.ids).await {
+        Ok(message) => Json(json!({ "message": message })).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct LurkerGroup {
+    group: String,
+}
+
+async fn lurker_job(State(console): State<Arc<Console>>, Query(query): Query<LurkerGroup>) -> Response {
+    Json(crate::plugins::lurker::panel_job(console.ctx(), &query.group).await).into_response()
+}
+
+async fn lurker_stop(Json(body): Json<LurkerGroup>) -> Response {
+    match crate::plugins::lurker::panel_stop(&body.group).await {
+        Ok(message) => Json(json!({ "message": message })).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct LurkerExempt {
+    group: String,
+    id: String,
+    on: bool,
+}
+
+async fn lurker_exempt(State(console): State<Arc<Console>>, Json(body): Json<LurkerExempt>) -> Response {
+    match crate::plugins::lurker::panel_exempt(console.ctx(), &body.group, &body.id, body.on).await {
+        Ok(message) => Json(json!({ "message": message })).into_response(),
+        Err(message) => bad(message),
     }
 }
 
@@ -300,6 +384,7 @@ fn live(name: &str, ctx: &crate::event::Context) -> Value {
         "anti_recall" => crate::plugins::anti_recall::live(ctx),
         "welcome" => crate::plugins::welcome::live(ctx),
         "autoreply" => crate::plugins::autoreply::live(ctx),
+        "lurker" => crate::plugins::lurker::live(ctx),
         _ => Value::Null,
     }
 }
@@ -310,6 +395,7 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
         "welcome" => crate::plugins::welcome::LABELS,
         "anti_recall" => crate::plugins::anti_recall::LABELS,
         "autoreply" => crate::plugins::autoreply::LABELS,
+        "lurker" => crate::plugins::lurker::LABELS,
         _ => &[],
     }
 }
@@ -326,6 +412,7 @@ fn labels(name: &str) -> Value {
 fn depends(name: &str) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::depends(),
+        "lurker" => crate::plugins::lurker::depends(),
         _ => json!({}),
     }
 }
@@ -335,6 +422,7 @@ fn option_labels(name: &str) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::option_labels(),
         "autoreply" => crate::plugins::autoreply::option_labels(),
+        "lurker" => crate::plugins::lurker::option_labels(),
         _ => json!({}),
     }
 }
@@ -343,6 +431,7 @@ fn option_labels(name: &str) -> Value {
 fn templates(name: &str, current: &Toml) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::templates(current),
+        "lurker" => crate::plugins::lurker::templates(),
         _ => Value::Null,
     }
 }
@@ -538,6 +627,27 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
             };
             out.insert("custom".into(), custom("还没有自定义占位符。把群规、下载地址这类常用的话存成一个，各条提示里点一下就能插进去，改这里处处跟着变。"));
             out.insert("groups.*.custom".into(), custom("这个群没有自己的占位符，全部照用上面的。要让这个群的 {群规} 说别的，就在这里加一个同名的。"));
+        }
+        "lurker" => {
+            out.insert("groups".into(), json!({
+                "key": "group",
+                "noun": "群",
+                "add": "为一个群单独设置",
+                "empty": "所有群都用上面的口径。群规不一样的群（比如要求两周说一次话）在这里单独设；群管理员在群里发「潜水 天数 14」「潜水 豁免 @某人」也会写到这里。",
+                "optional": true,
+                "template": {
+                    "days": at("days"),
+                    "min_messages": at("min_messages"),
+                    "newcomer_days": at("newcomer_days"),
+                    "exempt": [],
+                },
+                "help": {
+                    "days": "这个群多少天没说话算潜水。",
+                    "min_messages": "这个群在这段时间里至少说几句才算活跃（1 = 说过话就行）。",
+                    "newcomer_days": "这个群的新人进群满几天还一句没说也算（0 = 不单独看新人）。",
+                    "exempt": "这个群里永远不进名单的人（叠在全局豁免名单之上）。",
+                },
+            }));
         }
         "ai_news" => {
             out.insert("group_preferences".into(), json!({

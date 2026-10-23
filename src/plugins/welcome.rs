@@ -37,7 +37,7 @@ use serde_json::{Value, json};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const LOG_TARGET: &str = "Plugin/Welcome";
 
@@ -1199,8 +1199,8 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
     };
     let operator = raw.get_str("operator_id").unwrap_or("").to_string();
     let kicked = !operator.is_empty() && operator != user;
-    // 自己按超时踢掉的已经说过一句了，别再报一遍。
-    if kicked && operator == ctx.bot.self_id() && recently_failed(group, user) {
+    // 自己动手移出的（验证超时、清理潜水）那一处已经说过了，别再报一遍。
+    if kicked && operator == ctx.bot.self_id() && crate::departures::expected(group, user) {
         return Ok(());
     }
     let template = if kicked { &effective.kicked_text } else { &effective.leave_text };
@@ -1216,18 +1216,6 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
         say(ctx, writer, group, message, config.leave.recall_seconds).await?;
     }
     Ok(())
-}
-
-/// 刚因验证超时被我们移出的人（群, QQ），记两分钟：退群事件回来时不再说第二遍。
-fn failed() -> &'static Mutex<Vec<(String, String, Instant)>> {
-    static FAILED: OnceLock<Mutex<Vec<(String, String, Instant)>>> = OnceLock::new();
-    FAILED.get_or_init(Default::default)
-}
-
-fn recently_failed(group: &str, user: &str) -> bool {
-    let mut list = failed().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    list.retain(|(_, _, at)| at.elapsed() < Duration::from_mins(2));
-    list.iter().any(|(g, u, _)| g == group && u == user)
 }
 
 async fn request(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str) -> Result<(), PluginError> {
@@ -1686,10 +1674,7 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
     settle(ctx, writer, config, &p);
     let result = match verify.action.as_str() {
         "kick" => {
-            failed()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((p.group.clone(), p.user_id.clone(), Instant::now()));
+            crate::departures::expect(&p.group, &p.user_id);
             writer
                 .call::<_, Value>(
                     ctx,

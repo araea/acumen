@@ -1078,6 +1078,15 @@ async fn connect_and_listen(
     .await
 }
 
+/// 最近一次从实现端收到帧（事件或 PONG）的时刻（Unix 秒），0 = 还没连上过。
+static HEARD_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// 事件连接上一次有动静是什么时候：心跳每隔几十秒就有一个 PONG，久没动静就是断了。
+/// 清理潜水据此记下机器人哪些时候在收消息，断开的那几段里谁说过话它不知道。
+pub fn heard_at() -> i64 {
+    HEARD_AT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 事件循环：`EVENT` 进插件流水线，`META` 刷新代理路由，`PING` 回 `PONG`。
 #[allow(clippy::too_many_arguments)]
 async fn listen(
@@ -1104,6 +1113,10 @@ async fn listen(
             frame = ws_read.next() => match frame { Some(frame) => frame?, None => return Ok(()) },
             _ = tokio::time::sleep_until(pong_deadline) => return Err("Satori PONG 超时".into()),
         };
+        HEARD_AT.store(
+            chrono::Utc::now().timestamp(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         match frame {
             WsMessage::Text(text) => {
                 let packet: Value = match serde_json::from_str(&text) {

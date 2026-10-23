@@ -283,7 +283,7 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
         ("welcome", path) if path.starts_with("groups.") && path.ends_with(".verify_mode") => {
             &["any", "answer", "code", "math"]
         }
-        ("autoreply", "managers") => &["staff", "admin"],
+        ("autoreply" | "lurker", "managers") => &["staff", "admin"],
         ("ambient", "peak.mode") => &["normal", "swap", "sleep", "pause"],
         ("ai_news", "card_theme") => &[
             "auto", "light", "dark", "day", "night", "白天", "日间", "夜晚", "夜间",
