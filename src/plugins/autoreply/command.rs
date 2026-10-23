@@ -4,7 +4,7 @@
 //! 可以在自己群里把它停用。号主私聊机器人用同一套指令，管的就是所有群共用的那些。
 //! 普通群友发「问答」看本群能问什么（[`menu`]）。
 
-use super::book::{self, Asked, BOOK, Mode, Reply, Rule};
+use super::book::{self, BOOK, Mode, Reply, Rule};
 use super::reply::{self, Bit};
 use super::{Config, LOG_TARGET};
 use crate::adapters::satori::{LockedWriter, api, send_msg};
@@ -19,6 +19,7 @@ fn usage(manager: bool) -> String {
     let mut lines = vec![
         "自动回复的用法（编号看「自动回复 列表」）：",
         "· 添加 <触发词> <回复>：本群有人说到触发词就回这句；几个触发词用 | 隔开，回复里可以带图。也可以引用一条消息（含合并转发）再发「自动回复 添加 触发词」",
+        "· 触发词写成 /正则/ 就按正则比，比如「自动回复 添加 /^(在吗|有人吗)$/ 在的～」",
         "· 加说法 <编号> <回复>：再加一种回复，每次随机一种；改 <编号> <回复>：换掉全部回复",
         "· 加词 / 删词 <编号> <触发词…>：增删触发词",
         "· 模式 <编号> 精确|包含|开头|正则：怎么比（精确最不会误触）",
@@ -148,9 +149,12 @@ fn number(word: &str) -> Option<u32> {
     folded.parse().ok().filter(|n| *n > 0)
 }
 
-/// 「下载|安装包」→ 两个触发词。
-fn keywords_of(word: &str) -> Vec<String> {
-    word.split(['|', '｜']).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned).collect()
+/// 「下载|安装包」→ 两个触发词；`/…/` 是一个正则，里头的 `|` 不拆。
+fn keywords_of(word: &str) -> (Vec<String>, Option<Mode>) {
+    if let Some(pattern) = book::unslash(word) {
+        return (vec![pattern.to_string()], Some(Mode::Regex));
+    }
+    (word.split(['|', '｜']).map(str::trim).filter(|k| !k.is_empty()).map(str::to_owned).collect(), None)
 }
 
 /// 指令参数里跳过前 `tokens` 个词，剩下的（文字、图、表情原样排着）就是回复内容。
@@ -295,7 +299,7 @@ impl Here<'_> {
 
     async fn detail(&self, rest: &[&str]) -> Said {
         let rule = self.find(rest.first()).await?;
-        let max = self.config.contains_max_chars;
+        let max = self.config.limits.contains_max_chars;
         let mut lines = vec![format!("#{} {}{}", rule.id, rule.title(), if rule.enabled { "" } else { "（停用）" })];
         if rule.keywords.len() > 3 {
             lines.push(format!("· 触发词：{}", rule.keywords.join("、")));
@@ -307,7 +311,7 @@ impl Here<'_> {
         }
         let cooldown = match rule.cooldown_seconds {
             Some(s) => format!("{s} 秒"),
-            None => format!("{} 秒（全局）", self.config.cooldown_seconds),
+            None => format!("{} 秒（全局）", self.config.limits.cooldown_seconds),
         };
         let onoff = |on: bool| if on { "开" } else { "关" };
         lines.push(format!("· 冷却 {cooldown} · 折成合并转发：{} · 只在 @ 我时回：{}", onoff(rule.forward), onoff(rule.at_only)));
@@ -359,7 +363,7 @@ impl Here<'_> {
 
     async fn add(&self, matched: &CommandMatch, everywhere: bool) -> Said {
         let words: Vec<String> = command::extract_text_arg(&matched.args).split_whitespace().map(str::to_owned).collect();
-        let keywords = words.get(1).map(|w| keywords_of(w)).unwrap_or_default();
+        let (keywords, regex) = words.get(1).map(|w| keywords_of(w)).unwrap_or_default();
         if keywords.is_empty() {
             return Err("触发词呢？比如「自动回复 添加 下载 安装包在群文件里～」；几个触发词用 | 隔开".into());
         }
@@ -368,7 +372,7 @@ impl Here<'_> {
             (false, Some(group)) => vec![group.to_string()],
             _ => Vec::new(),
         };
-        let mode = self.config.default_mode();
+        let mode = regex.unwrap_or_default();
         // 同一处已经有一模一样的触发词：这句并进去当另一种说法。
         let twin = BOOK.read(|b| b.twin(&keywords, mode, &groups)).await;
         if let Some(id) = twin {
@@ -391,7 +395,7 @@ impl Here<'_> {
         };
         let saved = BOOK.with(|b| b.insert(rule)).await?;
         info!(target: LOG_TARGET, "{} 加了 #{}{}", self.user, saved.id, saved.title());
-        let max = self.config.contains_max_chars;
+        let max = self.config.limits.contains_max_chars;
         let mut lines = vec![format!(
             "已添加 #{}：{}有人{}，就回这句。",
             saved.id,
@@ -399,11 +403,12 @@ impl Here<'_> {
             match saved.mode {
                 Mode::Exact => format!("说{}", saved.title()),
                 Mode::Prefix => format!("以{}开头说话", saved.title()),
+                Mode::Regex => format!("说的话对上正则 {}", saved.keywords.join(" ")),
                 _ if max > 0 => format!("在 {max} 字内说到{}", saved.title()),
                 _ => format!("说到{}", saved.title()),
             }
         )];
-        if saved.mode != Mode::Exact {
+        if matches!(saved.mode, Mode::Contains | Mode::Prefix) {
             lines.push(format!("怕误触就改成整句一样才回：自动回复 模式 {} 精确", saved.id));
         }
         lines.push(format!("再加一种说法：自动回复 加说法 {} <回复>", saved.id));
@@ -430,11 +435,17 @@ impl Here<'_> {
     }
 
     async fn keywords(&self, rest: &[&str], add: bool) -> Said {
-        let words: Vec<String> = rest.iter().skip(1).flat_map(|w| keywords_of(w)).collect();
-        if words.is_empty() {
+        let given: Vec<&str> = rest.iter().skip(1).copied().collect();
+        if given.is_empty() {
             return Err(format!("{}哪些词？比如「自动回复 {} 3 安装包|下载地址」", if add { "加" } else { "删" }, if add { "加词" } else { "删词" }));
         }
         self.edit(rest.first(), |rule| {
+            // 正则规则的 `|` 是正则自己的「或」，一个词就是一整条正则。
+            let words: Vec<String> = if rule.mode == Mode::Regex {
+                given.iter().map(|w| book::unslash(w).unwrap_or(w).to_string()).collect()
+            } else {
+                given.iter().flat_map(|w| keywords_of(w).0).collect()
+            };
             if add {
                 for word in &words {
                     if !rule.keywords.iter().any(|k| book::fold(k) == book::fold(word)) {
@@ -458,7 +469,7 @@ impl Here<'_> {
 
     async fn mode(&self, rest: &[&str]) -> Said {
         let mode = rest.get(1).and_then(|w| Mode::parse(w)).ok_or("怎么比？精确、包含、开头或正则，比如「自动回复 模式 3 精确」")?;
-        let max = self.config.contains_max_chars;
+        let max = self.config.limits.contains_max_chars;
         self.edit(rest.first(), |rule| {
             rule.mode = mode;
             Ok(format!("#{} 改成{}：{}。", rule.id, mode.label(), mode.explain(max)))
@@ -483,7 +494,7 @@ impl Here<'_> {
             Some(word) => Some(word.trim_end_matches('秒').parse::<u64>().map_err(|_| "冷却写秒数，或写「默认」照全局")?),
             None => return Err("冷却多少秒？比如「自动回复 冷却 3 60」，写「默认」就照全局".into()),
         };
-        let global = self.config.cooldown_seconds;
+        let global = self.config.limits.cooldown_seconds;
         self.edit(rest.first(), |rule| {
             rule.cooldown_seconds = value;
             Ok(match value {
@@ -565,20 +576,15 @@ impl Here<'_> {
     }
 
     async fn test(&self, text: &str) -> String {
-        let text = text.trim();
-        if text.is_empty() {
+        if text.trim().is_empty() {
             return "试哪句话？比如「自动回复 试 请问怎么下载」".into();
         }
-        let max = self.config.contains_max_chars;
         // 私聊里管的是所有群共用的规则：按「一个没有单独规则的群」来试。
         let group = self.group.or(Some("*"));
-        let found = BOOK.read(|b| book::best(&b.rules, &Asked::new(text, false, group), max).map(|(r, k)| (r.clone(), k))).await;
-        let at = BOOK.read(|b| book::best(&b.rules, &Asked::new(text, true, group), max).map(|(r, k)| (r.clone(), k))).await;
-        match (found, at) {
-            (Some((rule, keyword)), _) => format!("会由 #{}{} 回复（{}，对上了「{keyword}」）。", rule.id, rule.title(), rule.mode.label()),
-            (None, Some((rule, _))) => format!("直接说不会触发；@ 我再说，会由 #{}{} 回复。", rule.id, rule.title()),
-            (None, None) => "没有规则会回这句。".into(),
-        }
+        let trial = super::trial(self.ctx, self.config, text, group, false).await;
+        let mut lines = vec![trial.message];
+        lines.extend(trial.blocks);
+        lines.join("\n")
     }
 }
 
@@ -611,7 +617,8 @@ mod tests {
         assert_eq!(number("#3"), Some(3));
         assert_eq!(number("１２"), Some(12));
         assert_eq!(number("0"), None);
-        assert_eq!(keywords_of("下载|安装包｜ 地址 "), vec!["下载", "安装包", "地址"]);
+        assert_eq!(keywords_of("下载|安装包｜ 地址 ").0, vec!["下载", "安装包", "地址"]);
+        assert_eq!(keywords_of("/^(在吗|有人吗)$/"), (vec!["^(在吗|有人吗)$".to_string()], Some(Mode::Regex)));
     }
 
     #[test]

@@ -78,7 +78,7 @@ impl Mode {
             Self::Contains if max_chars > 0 => format!("{max_chars} 字以内的消息里含有触发词就回"),
             Self::Contains => "消息里含有触发词就回".into(),
             Self::Prefix => "消息以触发词开头就回".into(),
-            Self::Regex => "消息原文匹配这个正则表达式就回（不分大小写）".into(),
+            Self::Regex => "消息原文匹配这个正则表达式就回（不分大小写），比如 ^(在吗|有人吗)$".into(),
         }
     }
 
@@ -207,13 +207,33 @@ pub struct Asked<'a> {
     pub at_bot: bool,
     /// 群号；私聊为 `None`。
     pub group: Option<&'a str>,
+    /// 消息以这个指令前缀开头：只有自己也带着这个前缀的触发词才算对上（「/菜单」），
+    /// 其余的交给指令——不然折叠掉标点之后「/下载 …」也会被「下载」接走。
+    pub command: Option<&'a str>,
 }
 
 impl<'a> Asked<'a> {
     pub fn new(raw: &'a str, at_bot: bool, group: Option<&'a str>) -> Self {
         let raw = raw.trim();
-        Self { raw, folded: fold(raw), at_bot, group }
+        Self { raw, folded: fold(raw), at_bot, group, command: None }
     }
+
+    pub fn command(self, prefix: Option<&'a str>) -> Self {
+        Self { command: prefix, ..self }
+    }
+}
+
+/// 触发词自己是不是以这个指令前缀开头。正则看去掉 `^` 与转义之后的样子（`^/菜单`、`^\/菜单`）。
+fn carries(keyword: &str, mode: Mode, prefix: &str) -> bool {
+    let keyword = keyword.trim();
+    let keyword = if mode == Mode::Regex { keyword.trim_start_matches('^') } else { keyword };
+    keyword.starts_with(prefix) || (mode == Mode::Regex && keyword.strip_prefix('\\').is_some_and(|k| k.starts_with(prefix)))
+}
+
+/// 正则可以照习惯写成 `/…/`：存的时候去掉两边的斜杠。
+pub fn unslash(keyword: &str) -> Option<&str> {
+    let inner = keyword.trim().strip_prefix('/')?.strip_suffix('/')?;
+    (!inner.trim().is_empty()).then_some(inner)
 }
 
 impl Rule {
@@ -236,6 +256,9 @@ impl Rule {
             return None;
         }
         self.keywords.iter().map(String::as_str).find(|keyword| {
+            if asked.command.is_some_and(|prefix| !carries(keyword, self.mode, prefix)) {
+                return false;
+            }
             let key = fold(keyword);
             match self.mode {
                 Mode::Regex => regex(keyword).is_some_and(|re| re.is_match(asked.raw)),
@@ -321,7 +344,10 @@ impl Rule {
             keep
         });
         for keyword in &mut self.keywords {
-            *keyword = keyword.trim().to_string();
+            *keyword = match unslash(keyword) {
+                Some(inner) if self.mode == Mode::Regex => inner.to_string(),
+                _ => keyword.trim().to_string(),
+            };
         }
         self.replies.retain(|r| !r.blank());
         for list in [&mut self.groups, &mut self.exclude] {
@@ -571,6 +597,27 @@ mod tests {
         let re = rule(Mode::Regex, &[r"^(在吗|有人吗)[?？]*$"]);
         assert!(re.hit(&ask("在吗？"), 40).is_some());
         assert!(re.hit(&ask("你在吗"), 40).is_none());
+    }
+
+    #[test]
+    fn command_prefixed_messages_need_a_prefixed_keyword() {
+        let plain = rule(Mode::Contains, &["下载"]);
+        assert!(plain.hit(&ask("/下载 链接").command(Some("/")), 40).is_none(), "指令交给指令");
+        let menu = rule(Mode::Exact, &["/菜单"]);
+        assert!(menu.hit(&ask("/菜单").command(Some("/")), 40).is_some(), "触发词自己带前缀");
+        let re = rule(Mode::Regex, &[r"^\/菜单$"]);
+        assert!(re.hit(&ask("/菜单").command(Some("/")), 40).is_some());
+    }
+
+    #[test]
+    fn regex_may_be_written_between_slashes() {
+        let mut r = rule(Mode::Regex, &["/^(在吗|有人吗)$/"]);
+        r.tidy();
+        assert_eq!(r.keywords, vec!["^(在吗|有人吗)$"]);
+        assert!(r.hit(&ask("有人吗"), 40).is_some());
+        let mut plain = rule(Mode::Exact, &["/菜单/"]);
+        plain.tidy();
+        assert_eq!(plain.keywords, vec!["/菜单/"], "不是正则就原样留着");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! 规则不在 `config.toml` 里，所以不走 `ctl::change`；写入照样先校验（[`Rule::problem`]）、
 //! 再原子落盘（[`BOOK`]），失败不改内存。群里的指令写的是同一份，两边随改随见。
 
-use super::book::{self, Asked, BOOK, Mode, Rule};
+use super::book::{self, BOOK, Mode, Rule};
 use super::{Config, reply};
 use crate::event::Context;
 use crate::plugins::get_config_or_default;
@@ -34,7 +34,8 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
             (rules, trash)
         })
         .await;
-    let max = config.contains_max_chars;
+    let limits = &config.limits;
+    let max = limits.contains_max_chars;
     let modes: Vec<Value> =
         Mode::ALL.iter().map(|m| json!({ "code": m.code(), "label": m.label(), "explain": m.explain(max) })).collect();
     let moment = crate::clock::moment();
@@ -42,11 +43,12 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
         "rules": rules,
         "trash": trash,
         "modes": modes,
+        "enabled": crate::plugins::enabled(&ctx.config.read().unwrap(), "autoreply"),
         "defaults": {
-            "mode": config.default_mode().code(),
-            "cooldown_seconds": config.cooldown_seconds,
-            "user_cooldown_seconds": config.user_cooldown_seconds,
-            "per_minute": config.per_minute,
+            "mode": Mode::default().code(),
+            "cooldown_seconds": limits.cooldown_seconds,
+            "user_cooldown_seconds": limits.user_cooldown_seconds,
+            "per_minute": limits.per_minute,
             "contains_max_chars": max,
         },
         "limits": {
@@ -93,48 +95,29 @@ pub(crate) async fn restore(id: Option<u32>) -> Result<Value, String> {
     Ok(json!({ "message": format!("#{}{} 回来了", rule.id, rule.title()), "rule": shape(&rule) }))
 }
 
-/// 「试一句」：这句话在这个群（`None` = 私聊）里会不会触发、由哪条回、为什么。
+/// 「试一句」：这句话在这个群（`None` = 私聊，`*` = 没有单独规则的群）里会不会回、由哪条回、为什么。
 pub(crate) async fn test(ctx: &Context, text: &str, group: Option<&str>, at_bot: bool) -> Value {
     let config = get_config_or_default::<Config>(ctx);
-    let max = config.contains_max_chars;
-    let text = text.trim();
-    if text.is_empty() {
-        return json!({ "hit": Value::Null, "message": "" });
-    }
-    let hit = pick(text, group, at_bot, max).await;
-    let (hit, message) = match hit {
-        Some((id, title, mode, keyword)) => {
-            (json!({ "id": id, "keyword": keyword }), format!("会由 #{id}{title} 回复：{}匹配，对上了「{keyword}」。", mode.label()))
-        }
-        None => {
-            if let Some((id, title, ..)) = pick(text, group, true, max).await.filter(|_| !at_bot) {
-                (Value::Null, format!("直接说不会触发；@ 机器人再说，会由 #{id}{title} 回复。"))
-            } else {
-                let folded = book::fold(text).chars().count();
-                let long = max > 0 && folded > max as usize;
-                let note = if long { format!("这句去掉空格标点有 {folded} 字，超过包含匹配的 {max} 字上限。") } else { String::new() };
-                (Value::Null, format!("没有规则会回这句。{note}"))
-            }
-        }
+    let trial = super::trial(ctx, &config, text, group, at_bot).await;
+    let tone = match (&trial.hit, trial.blocks.is_empty()) {
+        (Some(_), true) => "ok",
+        (Some(_), false) => "warn",
+        (None, _) => "info",
     };
-    let skipped = config.skip_commands
-        && crate::command::get_prefixes(ctx).iter().any(|p| !p.is_empty() && text.starts_with(p.as_str()));
-    let message = if skipped { "这句以指令前缀开头，按设置不自动回复（交给指令）。".to_string() } else { message };
-    json!({ "hit": if skipped { Value::Null } else { hit }, "message": message })
+    json!({
+        "hit": trial.hit.map(|(id, keyword)| json!({ "id": id, "keyword": keyword })),
+        "message": trial.message,
+        "blocks": trial.blocks,
+        "notes": trial.notes,
+        "tone": tone,
+    })
 }
 
-async fn pick(text: &str, group: Option<&str>, at_bot: bool, max: u32) -> Option<(u32, String, Mode, String)> {
-    let asked = Asked::new(text, at_bot, group);
-    BOOK.read(|b| book::best(&b.rules, &asked, max).map(|(rule, keyword)| (rule.id, rule.title(), rule.mode, keyword))).await
-}
-
-/// 插件页上方「现在的情况」。
+/// 插件页上方「现在的情况」：规则总数与回过几次。防刷屏的口径就在下方配置里，不再抄一遍。
 pub(crate) fn live(ctx: &Context) -> Value {
     let config = get_config_or_default::<Config>(ctx);
+    // 插件关着这件事由规则面板顶上的横幅来说（带「打开」），这里不再重复。
     let mut lines = Vec::new();
-    if !config.enabled {
-        lines.push("插件关着。打开后群里有人问到下面的触发词就自动回；规则可以先加好。".to_string());
-    }
     match BOOK.peek() {
         Some(book) if !book.rules.is_empty() => {
             let shared = book.rules.iter().filter(|r| r.groups.is_empty()).count();
@@ -149,15 +132,11 @@ pub(crate) fn live(ctx: &Context) -> Value {
             let total: u64 = book.rules.iter().map(|r| r.hits).sum();
             lines.push(format!("一共回过 {total} 次；最近一天里有 {recent} 条规则被问到。"));
         }
-        Some(_) => lines.push("还没有规则。点「新建规则」，或者群管理员在群里发「自动回复 添加 下载 安装包在群文件里～」。".to_string()),
+        Some(_) => lines.push("还没有规则。点下面的「新建规则」，或者群管理员在群里发「自动回复 添加 下载 安装包在群文件里～」。".to_string()),
         None => {}
     }
-    lines.push(format!(
-        "防误触：同一条规则每群 {} 秒内只回一次，同一个人 {} 秒内只回一次，每群每分钟最多 {} 次{}。",
-        config.cooldown_seconds,
-        config.user_cooldown_seconds,
-        config.per_minute,
-        if config.contains_max_chars > 0 { format!("；包含匹配只看 {} 字以内的消息", config.contains_max_chars) } else { String::new() }
-    ));
+    if !config.owner_triggers {
+        lines.push("号主（机器人登录的这个号）自己发的话不会触发；想自己在群里试，打开配置里的「号主自己说也回」。".to_string());
+    }
     json!({ "lines": lines })
 }

@@ -1612,9 +1612,9 @@
           ${switchButton(plugin, { labelledby: "enable-label", describedby: "enable-hint" })}
         </div>
       </div>
-      ${commands}
-      ${liveCard(plugin)}
       ${plugin.panel === "autoreply" ? rulesSection(sub) : ""}
+      ${liveCard(plugin)}
+      ${commands}
 
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
@@ -2753,6 +2753,7 @@
       const reply = await api(`/plugins/${encodeURIComponent(name)}/enabled`, { method: "POST", body: { on: next } });
       snackbar(reply.message);
       refreshLive(name);
+      if (name === "autoreply") rulesSwitched(next);
       // 以后端为准：重新取一次列表，就地改开关与状态，不整页重画。
       const fresh = await api("/plugins").catch(() => null);
       if (fresh) plugins.data = fresh;
@@ -2816,6 +2817,8 @@
     /** 文案编辑器的上下文（占位符、样例、图库）。 */
     ctx: null,
     open: new Set(),
+    /** 展开了「更多设置」的规则：重画时照旧展开。 */
+    more: new Set(),
     tryTimer: 0,
     trySeq: 0,
     mounting: 0,
@@ -2878,17 +2881,18 @@
     const { rules: list, trash } = rules.data;
     $("#rules-count").textContent = list.length ? `${list.length} 条 · 改完即保存` : "";
     put($("#rules-body"), h`
+      <div id="rules-off">${rulesOff()}</div>
       <div class="card rules-try">
         <div class="field-text">
           <label class="field-label" for="rules-try-input">试一句</label>
-          <span class="field-hint" id="rules-try-hint">输入群友可能发的话，看会不会触发、由哪条回。加规则前后都试试，误触在这里就看得出来。</span>
+          <span class="field-hint" id="rules-try-hint">输入群友可能发的话，看会不会回、由哪条回；不回也会说清是哪一步拦下的。加规则前后都试试，误触在这里就看得出来。</span>
         </div>
         <div class="rules-try-row">
           <input class="input" id="rules-try-input" type="text" enterkeyhint="search" autocomplete="off" spellcheck="false"
             placeholder="比如：请问在哪下载" aria-describedby="rules-try-hint rules-try-result">
           <span class="select"><select id="rules-try-group" aria-label="在哪儿说这句">${rulesGroupChoices()}</select>${icon("keyboard_arrow_down")}</span>
         </div>
-        <p class="rules-try-result" id="rules-try-result" role="status"></p>
+        <div class="rules-try-result" id="rules-try-result" role="status"></div>
       </div>
       <div class="rules-tools">
         ${list.length >= 6
@@ -2906,6 +2910,35 @@
           : emptyState("还没有规则。点「新建规则」；群管理员也可以在群里发「自动回复 添加 下载 安装包在群文件里～」。", "quickreply")}
       </div>
       ${trash.length ? rulesTrash(trash) : ""}`);
+  }
+
+  /** 插件总开关关着时，规则面板顶上的一行：规则加得再好也不会回，这一点不能藏在下面的「现在的情况」里。 */
+  function rulesOff() {
+    if (rules.data?.enabled !== false) return "";
+    return h`<div class="rules-off" role="note">
+      ${icon("warning-fill")}
+      <span class="rules-off-text"><strong>自动回复还关着。</strong>下面的规则都在，但群里问到也不会回。</span>
+      <button class="btn btn-filled" type="button" data-rules-enable>${icon("power_settings_new")}打开</button>
+    </div>`;
+  }
+
+  /** 总开关变了（上面的开关、或这一行的「打开」）：横幅跟着收起或出现，「试一句」重新判一次。 */
+  function rulesSwitched(on) {
+    if (!rules.data) return;
+    rules.data.enabled = on;
+    const slot = $("#rules-off");
+    if (slot) put(slot, rulesOff());
+    if ($("#rules-try-input")?.value.trim()) ruleTry();
+  }
+
+  function rulesEnable(button) {
+    const master = $('.switch[data-toggle="autoreply"]');
+    if (!master || master.getAttribute("aria-checked") === "true") return rulesSwitched(true);
+    button.setAttribute("aria-busy", "true");
+    void togglePlugin(master).then(() => {
+      if (master.getAttribute("aria-checked") === "true") master.focus({ preventScroll: true });
+      else button.removeAttribute("aria-busy");
+    });
   }
 
   function rulesTrash(trash) {
@@ -2965,6 +2998,16 @@
     return bits.join(" · ");
   }
 
+  /** 「更多设置」收起时的一行：改过的几项照实说，都没改就列出里面有什么。 */
+  function ruleMoreSub(rule) {
+    const bits = [];
+    if (rule.exclude?.length) bits.push(`${rule.exclude.length} 个群不回`);
+    if (rule.private) bits.push("私聊也回");
+    if (rule.forward) bits.push("合并转发");
+    if (rule.cooldown_seconds != null) bits.push(rule.cooldown_seconds ? `冷却 ${secondsText(rule.cooldown_seconds) || `${rule.cooldown_seconds} 秒`}` : "不冷却");
+    return bits.length ? bits.join(" · ") : `${rule.groups.length ? "" : "停用的群、私聊、"}合并转发、冷却`;
+  }
+
   const ruleFlags = (rule) =>
     h`${!rule.enabled ? h`<span class="status">已停用</span>` : ""}${rule.at_only ? h`<span class="rule-flag" title="只在 @ 机器人时回">${icon("alternate_email")}<span class="visually-hidden">只在 @ 时回</span></span>` : ""}${rule.forward || rule.replies.some((reply) => reply.forward) ? h`<span class="rule-flag" title="以合并转发发出">${icon("forward")}<span class="visually-hidden">合并转发</span></span>` : ""}`;
 
@@ -3009,7 +3052,7 @@
           ${toggle("enabled", "启用这条规则", "关掉就不回，规则还留着。", rule.enabled)}
           <div class="setting">${listEditor({
             id: `${id}-kw`, type: "text", items: rule.keywords, mode: "emit", title: "触发词", describedby: `${id}-kw-hint`,
-            head: head("kw", "触发词", "任一对上就回。比之前去掉空格和标点、全角转半角、不分大小写。"),
+            head: head("kw", "触发词", keywordHint(rule.mode)),
           })}</div>
           <div class="setting">
             ${head("mode", "怎么比", "")}
@@ -3027,26 +3070,34 @@
             id: `${id}-groups`, kind: "group", mode: "emit", ids: rule.groups, role: "rule-groups", title: "只在这些群回",
             label: h`<span>在哪些群回</span><span class="field-hint">留空 = 所有群共用；加了群就只在这些群回。</span>`,
           })}</div>
-          ${shared
-            ? h`<div class="setting">${picker({
-                id: `${id}-exclude`, kind: "group", mode: "emit", ids: rule.exclude, role: "rule-exclude", title: "这些群不回",
-                label: h`<span>这些群不回</span><span class="field-hint">共用规则在某几个群停用；群管理员在群里发「自动回复 停用 ${rule.id}」也会记到这里。</span>`,
-              })}</div>
-              ${toggle("private", "私聊里也回", "有人私聊机器人说到触发词时也回。", rule.private)}`
-            : ""}
           ${toggle("at_only", "只在 @ 机器人时回", "最稳的防误触：没 @ 就当没听见。", rule.at_only)}
-          ${toggle("forward", "折成合并转发", "长内容不刷屏；回复里单独一行写 --- 分成几条。", rule.forward)}
-          <div class="field setting" data-row="short">
-            <div class="field-text">
-              <label class="field-label" for="${id}-cooldown">冷却（秒）</label>
-              <span class="field-hint" id="${id}-cooldown-hint">同一个群里隔多久才回第二次；留空照全局（${defaults.cooldown_seconds} 秒），0 = 不冷却。同一个人 ${defaults.user_cooldown_seconds} 秒内只回一次、每群每分钟最多 ${defaults.per_minute} 次，照全局。</span>
+          <details class="rule-more"${attr(rules.more.has(rule.id), "open")}>
+            <summary class="state">
+              <span class="item-content"><span class="item-title">更多设置</span><span class="item-sub" data-rule-more-sub>${ruleMoreSub(rule)}</span></span>
+              ${icon("chevron_right", "chevron")}
+            </summary>
+            <div class="rule-more-body">
+              ${shared
+                ? h`<div class="setting">${picker({
+                    id: `${id}-exclude`, kind: "group", mode: "emit", ids: rule.exclude, role: "rule-exclude", title: "这些群不回",
+                    label: h`<span>这些群不回</span><span class="field-hint">共用规则在某几个群停用；群管理员在群里发「自动回复 停用 ${rule.id}」也会记到这里。</span>`,
+                  })}</div>
+                  ${toggle("private", "私聊里也回", "有人私聊机器人说到触发词时也回。", rule.private)}`
+                : ""}
+              ${toggle("forward", "折成合并转发", "长内容不刷屏；回复里单独一行写 --- 分成几条。", rule.forward)}
+              <div class="field setting" data-row="short">
+                <div class="field-text">
+                  <label class="field-label" for="${id}-cooldown">冷却（秒）</label>
+                  <span class="field-hint" id="${id}-cooldown-hint">同一个群里隔多久才回第二次；留空照全局（${defaults.cooldown_seconds} 秒），0 = 不冷却。同一个人 ${defaults.user_cooldown_seconds} 秒内只回一次、每群每分钟最多 ${defaults.per_minute} 次，照全局。</span>
+                </div>
+                <span class="input-unit">
+                  <input class="input num" id="${id}-cooldown" data-rule-cooldown inputmode="numeric" spellcheck="false" autocomplete="off"
+                    value="${rule.cooldown_seconds ?? ""}" placeholder="${defaults.cooldown_seconds}" aria-describedby="${id}-cooldown-hint ${id}-cooldown-unit">
+                  <span class="unit-text num" id="${id}-cooldown-unit" data-seconds-for="${id}-cooldown">${secondsText(rule.cooldown_seconds ?? "")}</span>
+                </span>
+              </div>
             </div>
-            <span class="input-unit">
-              <input class="input num" id="${id}-cooldown" data-rule-cooldown inputmode="numeric" spellcheck="false" autocomplete="off"
-                value="${rule.cooldown_seconds ?? ""}" placeholder="${defaults.cooldown_seconds}" aria-describedby="${id}-cooldown-hint ${id}-cooldown-unit">
-              <span class="unit-text num" id="${id}-cooldown-unit" data-seconds-for="${id}-cooldown">${secondsText(rule.cooldown_seconds ?? "")}</span>
-            </span>
-          </div>
+          </details>
         </div>
         <p class="field-error rule-error" id="${id}-error" role="alert" hidden></p>
         <div class="rule-foot">
@@ -3073,6 +3124,12 @@
       ${nodes.length > shown.length ? h`<p class="field-hint">还有 ${nodes.length - shown.length} 条</p>` : ""}
     </li>`;
   }
+
+  /** 触发词那一格的说明随比法变：正则对原文比，其余先折叠再比。 */
+  const keywordHint = (mode) =>
+    mode === "regex"
+      ? "每一项是一条正则，任一对上就回；对消息原文比、不分大小写。可以照习惯写成 /…/。"
+      : "任一对上就回。比之前去掉空格和标点、全角转半角、不分大小写；以指令前缀开头的消息只认同样带前缀的触发词。";
 
   /** 卡片上现在的样子拼成一条规则。 */
   function ruleRead(entry) {
@@ -3166,6 +3223,8 @@
     put($("[data-rule-flags]", entry), ruleFlags(rule));
     const meta = $("[data-rule-meta]", entry);
     if (meta) meta.textContent = ruleMeta(rule);
+    const more = $("[data-rule-more-sub]", entry);
+    if (more) more.textContent = ruleMoreSub(rule);
   }
 
   /** 整张卡重画（范围变了、找回来了）：展开状态照旧，焦点尽量落回原处。 */
@@ -3192,6 +3251,9 @@
     const entry = input.closest("[data-rule]");
     const mode = modeOf(input.value);
     $(".rule-explain", entry).textContent = `${mode.explain}${mode.code === "exact" ? "。最不会误触" : mode.code === "contains" ? "。触发词至少两个字" : ""}。`;
+    const hint = $(`#${CSS.escape(entry.querySelector(".tags")?.getAttribute("aria-describedby") || "")}`);
+    if (hint) hint.textContent = keywordHint(mode.code);
+    $(".tags", entry)?.classList.toggle("tags-regex", mode.code === "regex");
     void ruleSave(entry);
   }
 
@@ -3270,12 +3332,16 @@
         if (seq !== rules.trySeq) return;
         const hit = reply.hit && $(`[data-rule="${reply.hit.id}"]`);
         if (hit) hit.dataset.hit = "";
-        out.dataset.tone = reply.hit ? "ok" : "info";
-        put(out, h`${icon(reply.hit ? "check_circle-fill" : "info")}<span>${reply.message}</span>${hit
-          ? h`<button class="btn btn-text" type="button" data-rule-show="${reply.hit.id}">看 #${reply.hit.id}</button>`
-          : ""}`);
+        const tone = reply.tone || (reply.hit ? "ok" : "info");
+        const glyph = { ok: "check_circle-fill", warn: "warning-fill", info: "info" }[tone] || "info";
+        const lines = [...(reply.blocks || []), ...(reply.notes || [])];
+        out.dataset.tone = tone;
+        put(out, h`<p class="rules-try-line">${icon(glyph)}<span>${reply.message}</span>${hit
+            ? h`<button class="btn btn-text" type="button" data-rule-show="${reply.hit.id}">看 #${reply.hit.id}</button>`
+            : ""}</p>
+          ${lines.length ? h`<ul class="rules-try-notes">${lines.map((line, index) => h`<li${attr(index < (reply.blocks || []).length, "data-block")}>${line}</li>`)}</ul>` : ""}`);
       } catch (error) {
-        if (seq === rules.trySeq && error.status !== 401) put(out, h`${icon("error")}<span>${error.message}</span>`);
+        if (seq === rules.trySeq && error.status !== 401) put(out, h`<p class="rules-try-line">${icon("error")}<span>${error.message}</span></p>`);
       }
     }, 300);
   }
@@ -3307,12 +3373,14 @@
     const opener = document.activeElement;
     const defaults = rules.data.defaults;
     const explain = (code) => `${modeOf(code).explain}。`;
+    const wordsHint = (code) =>
+      code === "regex" ? "写一条正则（里面的 | 是「或」，不会拆开），也可以写成 /…/；要几条就建好后在卡片里加。" : "几个触发词用 | 隔开，任一对上就回；写成 /…/ 就按正则比。";
     put(dialog, h`<h2 class="dialog-title" id="dialog-title">新建规则</h2>
       <form class="dialog-form" method="dialog" novalidate>
         <div class="field">
           <label class="field-label" for="rule-new-keywords">触发词</label>
           <input class="input" id="rule-new-keywords" autocomplete="off" spellcheck="false" enterkeyhint="next" placeholder="下载 | 安装包" aria-describedby="rule-new-keywords-hint">
-          <span class="field-hint" id="rule-new-keywords-hint">几个触发词用 | 隔开，任一对上就回。</span>
+          <span class="field-hint" id="rule-new-keywords-hint">${wordsHint(defaults.mode)}</span>
         </div>
         <div class="field">
           <span class="field-label" id="rule-new-mode-label">怎么比</span>
@@ -3344,16 +3412,32 @@
     const click = (event) => {
       if (event.target.closest('button[value="cancel"]')) dialog.close("cancel");
     };
+    const pickedMode = () => $('input[name="rule-new-mode"]:checked', dialog)?.value || defaults.mode;
+    const showMode = (code) => {
+      $("#rule-new-mode-explain", dialog).textContent = explain(code);
+      $("#rule-new-keywords-hint", dialog).textContent = wordsHint(code);
+      words.classList.toggle("mono", code === "regex");
+    };
     const change = (event) => {
-      if (event.target.name === "rule-new-mode") $("#rule-new-mode-explain", dialog).textContent = explain(event.target.value);
+      if (event.target.name === "rule-new-mode") showMode(event.target.value);
     };
     const typing = (event) => {
       if (event.target.getAttribute("aria-invalid") === "true") clearFieldError(event.target);
+      // 写成 /…/ 的就是正则：比法跟着切过去，省得再点一下。
+      if (event.target === words && /^\/.+\/$/.test(words.value.trim()) && pickedMode() !== "regex") {
+        const radio = $('input[name="rule-new-mode"][value="regex"]', dialog);
+        if (radio) {
+          radio.checked = true;
+          showMode("regex");
+        }
+      }
     };
     const submit = async (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const keywords = words.value.split(/[|｜\n]/).map((word) => word.trim()).filter(Boolean);
+      // 正则里的 | 是「或」，不能拆；其余用 | 隔开几个触发词。
+      const mode = pickedMode();
+      const keywords = words.value.split(mode === "regex" ? /\n/ : /[|｜\n]/).map((word) => word.trim()).filter(Boolean);
       if (!keywords.length) return fieldError(words, "先写一个触发词。"), words.focus();
       if (!text.value.trim()) return fieldError(text, "先写一句回复。"), text.focus();
       const confirm = $('button[value="confirm"]', dialog);
@@ -3363,7 +3447,7 @@
         const body = {
           id: 0,
           keywords,
-          mode: $('input[name="rule-new-mode"]:checked', dialog)?.value || defaults.mode,
+          mode,
           replies: [{ text: text.value }],
           groups: scope ? [scope] : [],
         };
@@ -5710,6 +5794,7 @@
         return;
       }
       if (on("[data-rule-new]")) return ruleNew();
+      if ((hit = on("[data-rules-enable]"))) return rulesEnable(hit);
       if ((hit = on("[data-rule-switch]"))) return ruleSwitch(hit);
       if ((hit = on("[data-rule-delete]"))) return ruleDelete(hit);
       if ((hit = on("[data-rule-restore]"))) return ruleRestore(Number(hit.dataset.ruleRestore));
@@ -6159,6 +6244,12 @@
         const id = Number(event.target.dataset.rule);
         if (event.target.open) rules.open.add(id);
         else rules.open.delete(id);
+        return;
+      }
+      if (event.target.matches?.("details.rule-more")) {
+        const id = Number(event.target.closest("[data-rule]")?.dataset.rule);
+        if (event.target.open) rules.more.add(id);
+        else rules.more.delete(id);
         return;
       }
       const entry = event.target;

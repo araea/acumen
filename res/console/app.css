@@ -4926,6 +4926,12 @@ fieldset[data-off] > .config-off-note {
 /* —— 自动回复的规则面板 ——
    上面一张「试一句」卡，接着工具条（筛选 + 新建），再是一摞可展开的规则卡（与映射表同一种分段小卡）。
    卡片收起时只露触发词与一行说明；展开后是与配置表单同一套设置行。 */
+#rules-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-04);
+}
+
 .rules-try {
   display: flex;
   flex-direction: column;
@@ -4950,10 +4956,8 @@ fieldset[data-off] > .config-off-note {
 
 .rules-try-result {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--zw-space-02) var(--zw-space-03);
-  min-height: var(--zw-body-medium-line);
+  flex-direction: column;
+  gap: var(--zw-space-02);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
@@ -4963,23 +4967,95 @@ fieldset[data-off] > .config-off-note {
   display: none;
 }
 
-.rules-try-result > svg {
+.rules-try-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--zw-space-02) var(--zw-space-03);
+  margin: 0;
+  color: var(--md-sys-color-on-surface);
+}
+
+.rules-try-line > svg {
   flex: none;
   width: var(--zw-size-icon-small);
   height: var(--zw-size-icon-small);
+  margin-block: calc((var(--zw-body-medium-line) - var(--zw-size-icon-small)) / 2);
 }
 
-.rules-try-result[data-tone="ok"] > svg {
+.rules-try-result[data-tone="ok"] .rules-try-line > svg {
   color: var(--md-sys-color-success);
 }
 
-.rules-try-result > span {
+.rules-try-result[data-tone="warn"] .rules-try-line > svg {
+  color: var(--md-sys-color-warning);
+}
+
+.rules-try-line > span {
   flex: 1 1 12rem;
   min-width: 0;
 }
 
-.rules-try-result .btn {
+.rules-try-line .btn {
   margin-block: calc((var(--zw-size-target) - var(--zw-body-medium-line)) / -2);
+}
+
+/* 规则对上了、却还回不出去的原因（插件关着、冷却里）排在前面，用正文色；
+   只是提一句的说明用次要色。缩进与上一行的文字对齐。 */
+.rules-try-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  margin: 0;
+  padding: 0 0 0 calc(var(--zw-size-icon-small) + var(--zw-space-03));
+  list-style: none;
+}
+
+.rules-try-notes > li[data-block] {
+  color: var(--md-sys-color-on-surface);
+}
+
+/* 插件关着：规则面板顶上一行。柔和的提醒底，不用整块反色；按钮就地打开。 */
+.rules-off {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-03) var(--zw-space-04);
+  padding: var(--zw-space-04) var(--zw-space-04) var(--zw-space-04) var(--zw-space-05);
+  border-radius: var(--zw-radius-card);
+  background: color-mix(in srgb, var(--md-sys-color-warning-container) 28%, var(--md-sys-color-surface-container-low));
+  color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+.rules-off > svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  color: var(--md-sys-color-warning);
+}
+
+.rules-off-text {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.rules-off-text strong {
+  font-weight: 600;
+}
+
+.rules-off .btn {
+  margin-inline-start: auto;
+}
+
+#rules-off:empty {
+  display: none;
+}
+
+.tags-regex .tag-chip,
+.tags-regex .tags-add .input {
+  font-family: var(--md-ref-typeface-mono);
 }
 
 .rules-tools {
@@ -5092,6 +5168,45 @@ fieldset[data-off] > .config-off-note {
 .rule-body .setting .item,
 .rule-body .tag-chip {
   --_item-bg: var(--md-sys-color-surface-container-highest);
+}
+
+/* 「更多设置」：停用的群、私聊、合并转发、冷却这些不常动的，收进一行；
+   收起时副标题照实说改过哪几项，不用展开也知道。 */
+.rule-more > summary {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-04);
+  min-height: var(--zw-size-list-item);
+  padding: var(--zw-space-04) var(--zw-space-05);
+  border-radius: var(--zw-radius-row);
+  background: var(--md-sys-color-surface-container);
+  cursor: pointer;
+  list-style: none;
+}
+
+.rule-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rule-more > summary .item-content {
+  flex: 1 1 auto;
+}
+
+.rule-more > summary .chevron {
+  transition: transform var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+.rule-more[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+
+.rule-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-group-gap);
+  margin-top: var(--zw-group-gap);
 }
 
 .rule-modes {
