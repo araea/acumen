@@ -9,7 +9,7 @@
 //! 时，服务端拿不到 `msgSeq`，会直接拒绝。
 
 use crate::adapters::satori::{LockedWriter, api, send_msg};
-use crate::command::first_command_match;
+use crate::command::match_word_command;
 use crate::event::Context;
 use crate::plugins::{PluginConfig, PluginError};
 use futures_util::future::BoxFuture;
@@ -41,9 +41,17 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let action = first_command_match(&ctx, ADD)
+        // 用「整词」匹配：「加精了」「加精是什么意思」这类闲聊不该被当成指令接走。
+        let action = ADD
+            .iter()
+            .find_map(|word| match_word_command(&ctx, word))
             .map(|match_| (match_, true))
-            .or_else(|| first_command_match(&ctx, REMOVE).map(|match_| (match_, false)));
+            .or_else(|| {
+                REMOVE
+                    .iter()
+                    .find_map(|word| match_word_command(&ctx, word))
+                    .map(|match_| (match_, false))
+            });
         let Some((matched, add)) = action else {
             return Ok(Some(ctx));
         };
