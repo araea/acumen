@@ -2239,62 +2239,37 @@ pub async fn execute(
             .await;
         }
         Action::Help => {
-            // 先说接入状态（管家大人能不能用、缺什么），再是要紧的指令：怎么聊、怎么管房间、历史怎么翻。
+            // 先说接入状态（能不能用、缺什么），再是工具三档与按场景分组的指令（见 [`super::manual`]）。
             let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-            let status = super::setup::status(&oai, mgr).await;
-            let help = r#"## 对话
-- `房间 内容` 和房间对话
-- `~房间 内容` 一次性，不留历史
-- `"房间 内容` 只回文字，不转图
-- `&房间 内容` 用私有历史
-- `房间~` 重新生成上一条，`房间!` 停止生成
-
-前缀可叠加，如 `~"房间 内容`。房间名随便取，中文也行。
-
-## 工具
-每间房都是同一个智能体，手边的工具分三档：
-- `房间?无工具` 只聊天（新建的房间都是这一档）
-- `房间?联网` 按需搜索、读网页
-- `房间?全量` 终端与文件、联网、群聊动作、提醒与插件管控（只有号主与管理员能开）
-
-`房间?` 看现在是哪一档。
-
-## 房间
-- `/#` 房间列表，`/%` 模型列表（默认接口与各家供应商）
-- `##名称` 新建，`##名称 模型 提示词` 一并写好；模型写 `默认` 跟随默认模型
-- `房间%模型` 换模型，可写 `供应商/模型:思考强度`、序号或只写模型名；`房间%默认` 跟随默认
-- `房间$提示词` 改提示词，`房间$` 清空，`房间/$` 查看
-- `房间~=新名` 重命名，`房间~#新名` 复制
-- `房间:描述` 写描述，`##:模型` 批量生成
-- `-#名称` 删除房间
-
-## 历史
-- `房间/*` 查看，`/1` 一条，`/1-5` 一段
-- `房间_*` 导出为 .txt
-- `房间'1 内容` 改第 1 条
-- `房间-1` 删第 1 条，`-1,3` 多条，`-*` 清空
-
-前面加 `&` 操作私有历史：`&房间/*`。符号半角全角都认。
-
-## 画图
-- 建一间用图像模型的房间（`##画画 gpt-image-2.5`），`房间 提示词` 就出图
-- 发图、引用图片，或在房间名后 @某人，那张图就当垫图
-- 可加 `--size 1536x1024`、`--quality high`
-- MJ 的四宫格引用后回 `1`–`4` 放大
-
-## 慎用
-`-*` 清空所有房间的公有历史，`-*!` 连私有历史一起清。
-"#;
-            let help = format!("{status}\n{help}");
-            reply(
-                ctx,
-                writer,
-                &msg_event,
-                &help,
-                cmd.text_mode,
-                "OAI 符号指令帮助",
-            )
-            .await;
+            let overview = super::setup::overview(&oai, mgr).await;
+            let rooms = {
+                let c = mgr.config.read().await;
+                super::manual::Rooms {
+                    total: c.agents.len(),
+                    tooled: c.agents.iter().filter(|a| a.tools != Tools::Off && !is_media_room(a, &oai)).count(),
+                }
+            };
+            let prefix = crate::command::get_prefixes(ctx)
+                .into_iter()
+                .find(|prefix| !prefix.is_empty())
+                .unwrap_or_default();
+            if !cmd.text_mode && oai.image_enabled() {
+                let browser_path = ctx.browser_path();
+                match crate::render::web::capture(
+                    &super::manual::doc(&overview, &rooms, &prefix),
+                    oai.image_scale(),
+                    browser_path.as_deref(),
+                )
+                .await
+                {
+                    Ok(b64) => {
+                        reply_image(ctx, writer, &msg_event, &b64, "OAI 帮助").await;
+                        return;
+                    }
+                    Err(error) => warn!(target: LOG_TARGET, "帮助卡渲染失败，退回文本：{error:#}"),
+                }
+            }
+            reply_text(ctx, writer, &msg_event, super::manual::markdown(&overview, &rooms, &prefix)).await;
         }
         Action::AutoFillDescriptions(model_ref) => {
             let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);

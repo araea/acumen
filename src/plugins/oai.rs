@@ -16,6 +16,7 @@ pub mod remind;
 pub(crate) mod lists;
 pub(crate) mod llm;
 pub mod logic;
+pub(crate) mod manual;
 pub mod mj;
 pub mod music;
 pub mod parser;

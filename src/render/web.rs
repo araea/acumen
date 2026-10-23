@@ -100,6 +100,19 @@ pub struct ModelRow {
     pub used: usize,
     pub default: bool,
 }
+/// 档位清单的一档：几格的刻度、名字、这一档做什么、怎么切过去、谁能切。
+pub struct Tier {
+    /// 刻度亮几格（1–3）：档位是一条从轻到重的轴，刻度让读者不读字也看得出先后。
+    pub level: u8,
+    pub name: String,
+    pub summary: String,
+    /// 切到这一档的指令（`<房间>` 这类占位符照常降一档着色）。
+    pub command: String,
+    /// 谁能切，写在指令右边。
+    pub who: String,
+    /// 新建的房间就是这一档：名字旁挂一枚「新房间默认」。
+    pub default: bool,
+}
 pub enum Tone {
     Info,
     Empty,
@@ -144,6 +157,8 @@ pub enum Block {
     Facts(Vec<Fact>),
     /// 几条并列的说明，每条一个圆点。
     Notes(Vec<String>),
+    /// 档位清单：一档一段，从轻到重。
+    Tiers(Vec<Tier>),
     Callout {
         tone: Tone,
         text: String,
@@ -369,6 +384,22 @@ fn html_at(doc: &Doc, stamp: &str) -> String {
                     body.push_str(&format!("<div class=fact><dt>{}</dt><dd><code>{}</code></dd></div>", esc(&fact.label), esc(&fact.command)));
                 }
                 body.push_str("</dl>");
+            }
+            Block::Tiers(tiers) => {
+                body.push_str("<ol class=\"md-seg tiers\">");
+                for tier in tiers {
+                    let meter: String = (1..=3u8)
+                        .map(|step| if step <= tier.level { "<i class=lit></i>" } else { "<i></i>" })
+                        .collect();
+                    body.push_str(&format!(
+                        "<li class=tier><div class=tier-head><span class=tier-meter aria-hidden=true>{meter}</span><h3 class=tier-name>{}</h3>{}</div><p class=item-desc>{}</p><div class=tier-foot><code class=command>{}</code><span class=tier-who>{}</span></div></li>",
+                        esc(&tier.name),
+                        if tier.default { "<span class=tier-default>新房间默认</span>" } else { "" },
+                        esc(&tier.summary),
+                        command_html("", &tier.command),
+                        esc(&tier.who)));
+                }
+                body.push_str("</ol>");
             }
             Block::Notes(notes) => {
                 body.push_str("<aside class=\"callout md-callout notes\"><ul>");

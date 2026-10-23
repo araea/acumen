@@ -478,6 +478,72 @@ code {
 .section + .facts {
   margin-top: 0;
 }
+/* 读数格下面紧跟一块事实：两块都是浅底容器，贴在一起会读成一块 */
+.md-tiles + .facts {
+  margin-top: var(--md-space-3);
+}
+
+/* —— 档位清单 —— */
+/* 一档一段，从轻到重。名字左边一条三格刻度：档位是一条轴，读者不读字也看得出
+   「这一档比上一档多了什么」；刻度只是帮眼睛，名字本身已经说全了（颜色不单独传信息）。
+   指令与「谁能切」同一行、分在两端：先看怎么打，再看自己能不能打。 */
+.tiers > li {
+  display: grid;
+  gap: var(--md-space-1);
+}
+.tier-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--md-space-1) var(--md-space-3);
+}
+.tier-meter {
+  display: inline-flex;
+  gap: 3px;
+}
+.tier-meter i {
+  width: 12px;
+  height: 6px;
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-surface-container-highest);
+  box-shadow: inset 0 0 0 1px var(--md-sys-color-outline-variant);
+}
+.tier-meter i.lit {
+  background: var(--md-sys-color-primary);
+  box-shadow: none;
+}
+.tier-name {
+  font-size: var(--md-type-title-medium-size);
+  line-height: var(--md-type-title-medium-line);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  color: var(--md-sys-color-on-surface);
+}
+.tier-default {
+  margin-left: auto;
+  padding: 1px var(--md-space-3);
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.6;
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+.tier-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--md-space-1) var(--md-space-4);
+  margin-top: var(--md-space-1);
+}
+.tier-foot .command {
+  display: inline;
+}
+.tier-who {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-label-medium-size);
+  line-height: 1.6;
+}
 
 /* —— 说明与提示 —— */
 .md-callout {

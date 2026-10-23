@@ -425,24 +425,43 @@ async fn butler_line(oai: &super::OaiConfig, mgr: &Manager) -> String {
     line
 }
 
-/// `oai` 卡片开头那段：接入状态。
-pub async fn status(oai: &super::OaiConfig, mgr: &Manager) -> String {
-    let (base, has_key) = {
+/// `oai` 帮助卡开头那段的数据：接入状态。卡片与纯文本两种输出都从这里取（见 [`super::manual`]）。
+pub(crate) struct Overview {
+    /// 默认模型（管家大人与没写模型的房间用的那个）。
+    pub default_model: String,
+    /// 默认模型现在打不打得通。
+    pub ready: bool,
+    /// 打不通时，已经接上的哪一家可以换：`oai 用 <这个>`。
+    pub switch_to: Option<String>,
+    /// 默认接口（中转站）的地址；没配是空串。
+    pub relay: String,
+    pub relay_key: bool,
+    /// 各家供应商：（显示名，状态）。
+    pub providers: Vec<(String, String)>,
+    /// 其中已经接上（有密钥或本机免密钥）的几家。
+    pub connected: usize,
+    /// 联网后端链；`[oai.search] enabled` 关着时为 `None`。
+    pub search: Option<Vec<String>>,
+}
+
+pub(crate) async fn overview(oai: &super::OaiConfig, mgr: &Manager) -> Overview {
+    let (_, default_model) = butler_spec(oai, mgr).await;
+    let ready = spec_ready(oai, mgr, &default_model).await;
+    let switch_to = (!ready)
+        .then(|| {
+            catalog::ready(&oai.providers)
+                .into_iter()
+                .find(|(_, known)| known.is_some_and(|known| !known.model.is_empty()))
+                .map(|(name, _)| name)
+        })
+        .flatten();
+    let (relay, relay_key) = {
         let c = mgr.config.read().await;
         (c.api_base.clone(), !c.api_key.is_empty())
     };
-    let mut out = String::from("## 接入状态\n");
-    out.push_str(&format!("- {}\n", butler_line(oai, mgr).await.replace('\n', "\n- ")));
-    let default = if base.is_empty() {
-        "未配置（不带供应商前缀的模型走它）".to_string()
-    } else if has_key {
-        format!("{base}（已接上）")
-    } else {
-        format!("{base}（缺密钥）")
-    };
-    out.push_str(&format!("- 默认接口：{default}\n"));
 
-    let mut rows = Vec::new();
+    let mut providers = Vec::new();
+    let mut connected = 0;
     for known in catalog::KNOWN {
         let configured = catalog::configured(&oai.providers, known.id);
         let Some(found) = catalog::resolve(&oai.providers, configured.map_or(known.id, |(name, _)| name)) else {
@@ -450,27 +469,38 @@ pub async fn status(oai: &super::OaiConfig, mgr: &Manager) -> String {
         };
         let state = match found.key_from {
             KeyFrom::Config => "已接上".to_string(),
-            KeyFrom::Env(var) => format!("已接上，密钥取自 {var}"),
+            KeyFrom::Env(var) => format!("已接上 · 密钥取自 {var}"),
             KeyFrom::Keyless if configured.is_some() => "本机".to_string(),
             _ if configured.is_some() => "缺密钥".to_string(),
             _ => continue,
         };
-        rows.push(format!("{}（{state}）", known.name));
+        if state != "缺密钥" {
+            connected += 1;
+        }
+        providers.push((known.name.to_string(), state));
     }
     for (name, entry) in &oai.providers {
         if catalog::find(name).is_some() || name.eq_ignore_ascii_case("apilio") {
             continue;
         }
-        let state = if entry.api_key.trim().is_empty() { "缺密钥" } else { "已接上" };
-        rows.push(format!("{name}（{state}）"));
+        let key = !entry.api_key.trim().is_empty();
+        connected += usize::from(key);
+        providers.push((name.clone(), if key { "已接上" } else { "缺密钥" }.to_string()));
     }
-    out.push_str(&format!(
-        "- 供应商：{}\n",
-        if rows.is_empty() { "一家都没配".to_string() } else { rows.join(" · ") }
-    ));
-    out.push_str(&format!(
-        "\n接入一家：`oai deepseek 密钥`（存好后自动撤回带密钥的那条消息）\n换默认模型：`oai 用 mimo`、`oai 用 deepseek/deepseek-pro`、`oai 用 序号`\n自己的中转站：`oai 名字 地址 密钥`；默认接口：`oai 地址 密钥`；清掉：`oai 名字 清除`\n认得的供应商：{}\n",
-        known_names()
-    ));
-    out
+    let search = oai.search_config();
+    Overview {
+        default_model,
+        ready,
+        switch_to,
+        relay,
+        relay_key,
+        providers,
+        connected,
+        search: search.enabled.then(|| search.chain()),
+    }
+}
+
+/// 认得的供应商名字，帮助卡末尾列出。
+pub(crate) fn known_list() -> String {
+    known_names()
 }
