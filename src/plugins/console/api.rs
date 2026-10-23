@@ -415,6 +415,7 @@ fn depends(name: &str) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::depends(),
         "lurker" => crate::plugins::lurker::depends(),
+        "repeater" => crate::plugins::repeater::depends(),
         _ => json!({}),
     }
 }
@@ -426,6 +427,7 @@ fn option_labels(name: &str) -> Value {
         "autoreply" => crate::plugins::autoreply::option_labels(),
         "lurker" => crate::plugins::lurker::option_labels(),
         "ambient" => crate::plugins::ambient::option_labels(),
+        "repeater" => crate::plugins::repeater::option_labels(),
         _ => json!({}),
     }
 }

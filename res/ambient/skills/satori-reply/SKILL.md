@@ -200,7 +200,7 @@ QQ 官方机器人的 Markdown 正文会进入记录，内联按钮只显示标�
 | `sign` | 本群签到 |
 | `card` | `card` 修改自己的群名片，空字符串清除；`user_id` 改别人需开放管理 |
 | `title` | `user_id`、`title` 设置头衔，空字符串清除；需管理且 QQ 群主权限 |
-| `essence` | `message_id` 设置精华，`remove:true` 取消；需管理 |
+| `essence` | `message_id` 设置精华，`remove:true` 取消；需本群群主或管理员 |
 | `mute` | `user_id`、`duration_seconds`、`reason` 禁言，0 解禁，上限 30 天；需管理 |
 | `kick` | `user_id`、`reason` 移出成员，默认允许再次入群；`permanent:true` 拒绝再次加入；需管理 |
 | `recall` | 撤回群友的 `message_id`，写 `reason`；需管理 |

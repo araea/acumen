@@ -153,6 +153,16 @@ register_plugins!(
         summary: "机器人为群主时，给申请者设置群专属头衔",
         commands: cmds![("我要头衔 <文字>", "给自己申请一个群专属头衔")]
     },
+    essence {
+        config: essence::Config,
+        display_name: "群精华",
+        section: "play",
+        summary: "群主或管理员引用一条消息发「加精」收进群精华，「取消加精」移出；机器人需要是群主或管理员",
+        commands: cmds![
+            ("加精 / 设精华", "群管理：引用一条消息，把它设为群精华"),
+            ("取消加精 / 撤精", "群管理：引用一条精华消息，把它移出群精华"),
+        ]
+    },
     recall {
         config: recall::Config,
         on_sent: Some(recall::on_sent),

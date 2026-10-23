@@ -1824,6 +1824,17 @@
     return "";
   }
 
+  /** 以毫秒计的数字旁边换算成人话（1200 → 1.2 秒；0 → 不停顿）。
+   *  延迟这一类数量在手机上敲的是毫秒，读的时候想的是「一秒上下」。 */
+  const MILLIS = /_ms$/;
+  function millisText(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || !Number.isInteger(n)) return "";
+    if (n === 0) return "不停顿";
+    if (n < 1000) return `${n} 毫秒`;
+    return `${Number((n / 1000).toFixed(2))} 秒`;
+  }
+
   /** 只在某个取值下才用得到的项：那一项现在不是这些值时，行里说一句。 */
   function mootNote(ctx, path) {
     const rule = ctx.depends?.[path];
@@ -1981,12 +1992,12 @@
     }
     const numeric = typeof value === "number";
     const clock = typeof value === "string" && TIME.test(value);
-    const seconds = numeric && SECONDS.test(key);
+    const unit = numeric && SECONDS.test(key) ? "s" : numeric && MILLIS.test(key) ? "ms" : "";
     const input = h`<input class="input${numeric || clock ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
-        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${[desc, seconds ? `${id}-unit` : ""].some(Boolean) ? h` aria-describedby="${[desc, seconds ? `${id}-unit` : ""].filter(Boolean).join(" ")}"` : ""}${attr(numeric, `inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}>`;
+        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${[desc, unit ? `${id}-unit` : ""].some(Boolean) ? h` aria-describedby="${[desc, unit ? `${id}-unit` : ""].filter(Boolean).join(" ")}"` : ""}${attr(numeric, `inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}>`;
     return row("field", h`${text(named)}
-      ${seconds
-        ? h`<span class="input-unit">${input}<span class="unit-text num" id="${id}-unit" data-seconds-for="${id}">${secondsText(value)}</span></span>`
+      ${unit
+        ? h`<span class="input-unit">${input}<span class="unit-text num" id="${id}-unit" data-unit-for="${id}" data-unit="${unit}">${unit === "ms" ? millisText(value) : secondsText(value)}</span></span>`
         : input}`,
       numeric || clock ? ' data-row="short"' : "");
   }
@@ -6595,8 +6606,8 @@
       markTyped(event);
       if (target.name === "access_token") scrubAutofill(target.form);
       if (target.matches?.("input[data-kind=\"number\"], [data-rule-cooldown]")) {
-        const unit = $(`[data-seconds-for="${CSS.escape(target.id)}"]`);
-        if (unit) unit.textContent = secondsText(target.value);
+        const unit = $(`[data-unit-for="${CSS.escape(target.id)}"]`) || $(`[data-seconds-for="${CSS.escape(target.id)}"]`);
+        if (unit) unit.textContent = unit.dataset.unit === "ms" ? millisText(target.value) : secondsText(target.value);
       }
       // 概率滑块：拖动时只改填充与右边的数，松手才落盘（change）。
       if (target.matches?.("input[data-kind=\"ratio\"]")) syncRatio(target);

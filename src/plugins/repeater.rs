@@ -49,6 +49,8 @@ const LOG_TARGET: &str = "Plugin/Repeater";
 #[serde(default)]
 pub struct RepeaterConfig {
     pub enabled: bool,
+    /// 跟读与主动打断发出前停顿多久。
+    pub delay: DelayConfig,
     /// 同一句话累计到几条开始跟读（小于 2 按 2 处理，否则等于逢消息必复读）
     pub min_times: usize,
     /// 跟读概率，取值 0~1
@@ -79,6 +81,7 @@ impl Default for RepeaterConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            delay: DelayConfig::default(),
             min_times: 2,
             probability: 0.7,
             cooldown_seconds: 15,
@@ -97,11 +100,104 @@ impl Default for RepeaterConfig {
 
 impl PluginConfig for RepeaterConfig {
     const NAME: &'static str = "repeater";
+
+    fn check(&self) -> Result<(), String> {
+        self.delay.check()
+    }
+}
+
+/// 复读前的停顿。真人接上一句不会像条件反射，停一下更像群里有人跟着说。
+///
+/// 三种取法：`off` 立刻发；`fixed` 每次停同样久；`random` 在区间里均匀取一个，
+/// 同一句接力两次的节奏不会一模一样。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DelayConfig {
+    /// off / fixed / random
+    pub mode: String,
+    /// fixed 模式的停顿（毫秒）
+    pub fixed_ms: u64,
+    /// random 模式的下限（毫秒）
+    pub min_ms: u64,
+    /// random 模式的上限（毫秒）
+    pub max_ms: u64,
+}
+
+impl Default for DelayConfig {
+    fn default() -> Self {
+        Self {
+            mode: "random".to_string(),
+            fixed_ms: 800,
+            min_ms: 250,
+            max_ms: 1200,
+        }
+    }
+}
+
+/// 停顿上限。再久就不像跟读，像忘了又想起来。
+const MAX_DELAY_MS: u64 = 30_000;
+
+impl DelayConfig {
+    /// 这一次实际停多久（毫秒）。区间反了就按反过来的顺序取，不让人因为写反了而静默失步。
+    fn sample_ms(&self) -> u64 {
+        let clamp = |ms: u64| ms.min(MAX_DELAY_MS);
+        match self.mode.as_str() {
+            "fixed" => clamp(self.fixed_ms),
+            "random" => {
+                let (lo, hi) = (clamp(self.min_ms), clamp(self.max_ms));
+                let (lo, hi) = if lo <= hi { (lo, hi) } else { (hi, lo) };
+                rand::rng().random_range(lo..=hi)
+            }
+            _ => 0,
+        }
+    }
+
+    fn check(&self) -> Result<(), String> {
+        match self.mode.as_str() {
+            "off" | "fixed" | "random" => {}
+            other => return Err(format!("delay.mode 只能是 off、fixed 或 random，收到「{other}」")),
+        }
+        for (path, value) in [
+            ("delay.fixed_ms", self.fixed_ms),
+            ("delay.min_ms", self.min_ms),
+            ("delay.max_ms", self.max_ms),
+        ] {
+            if value > MAX_DELAY_MS {
+                return Err(format!("{path} 最多 {MAX_DELAY_MS} 毫秒（30 秒）"));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 控制台里各延迟取值的说法。
+pub(crate) fn option_labels() -> serde_json::Value {
+    serde_json::json!({
+        "delay.mode": {
+            "off": "立刻跟读",
+            "fixed": "固定停顿",
+            "random": "随机停顿",
+        }
+    })
+}
+
+/// 只在某个延迟方式下才用得到的项。
+pub(crate) fn depends() -> serde_json::Value {
+    serde_json::json!({
+        "delay.fixed_ms": {"on": "delay.mode", "in": ["fixed"]},
+        "delay.min_ms": {"on": "delay.mode", "in": ["random"]},
+        "delay.max_ms": {"on": "delay.mode", "in": ["random"]},
+    })
 }
 
 /// 控制台里的中文名。键名 probability、max_delay_ms 这些光看猜不出在说什么，
 /// 名字在前、键名作小字跟在后面（/ctl set 认的还是键名）。
 pub(crate) const LABELS: &[(&str, &str)] = &[
+    ("delay", "发送停顿"),
+    ("delay.mode", "停顿方式"),
+    ("delay.fixed_ms", "固定时长"),
+    ("delay.min_ms", "最短停顿"),
+    ("delay.max_ms", "最长停顿"),
     ("min_times", "接力条数"),
     ("probability", "跟读概率"),
     ("interrupt_probability", "主动打断"),
@@ -579,6 +675,8 @@ pub struct PreparedRepeat {
     group_id: Option<String>,
     user_id: String,
     content: OwnedValue,
+    /// 发出前停多久（毫秒）。已计入 guard 的有效期。
+    delay_ms: u64,
 }
 
 fn scoped_key(
@@ -684,17 +782,23 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
                 .or_else(|| body.get_u64("timestamp").filter(|t| *t > 0))
         })
         .unwrap_or(now);
-    let expires_at = source.min(now).saturating_add(config.max_delay_ms.max(1));
+    // 时效按「触发消息有多旧」判，停顿是之后才加上的：晚到的复读不该因为自己要停
+    // 一会儿反而把更旧的消息也算成新鲜。
+    let deadline = source.min(now).saturating_add(config.max_delay_ms.max(1));
     let sig = event
         .get_array("message")
         .and_then(|segments| signature(segments, &config));
-    if now >= expires_at
+    if now >= deadline
         || (config.ignore_commands && is_command(&get_prefixes(ctx), msg.text()))
         || sig.is_none()
     {
         break_chain(key, now / 1000);
         return None;
     }
+    // 停顿也计入有效期：否则固定时长稍微调大一点，guard 会先于发送过期，
+    // 看起来就是「设了延迟反而永远不复读」。
+    let delay_ms = config.delay.sample_ms();
+    let expires_at = deadline.saturating_add(delay_ms);
     let self_id = ctx.bot.self_id();
     let sender = if !user_id.is_empty() && user_id == self_id {
         Sender::Bot
@@ -734,6 +838,7 @@ pub fn prepare(ctx: &mut Context, writer: &LockedWriter) -> Option<PreparedRepea
         group_id: group_id.map(str::to_owned),
         user_id: user_id.to_string(),
         content,
+        delay_ms,
     })
 }
 
@@ -746,7 +851,17 @@ pub fn on_receive(
     let pending = prepare(ctx, writer)?;
     let (ctx, writer) = (ctx.clone(), writer.clone());
     Some(Box::pin(async move {
-        send_prepared(&ctx, writer, pending).await
+        if pending.delay_ms == 0 {
+            return send_prepared(&ctx, writer, pending).await;
+        }
+        // 停顿放到后台：这一条事件的流水线不必陪着等，群里也不会因为一句复读
+        // 把别的响应一起卡住。有效期与新鲜度仍由 guard 守。
+        tokio::spawn(async move {
+            if let Err(error) = send_prepared(&ctx, writer, pending).await {
+                warn!(target: LOG_TARGET, "延迟复读发送失败: {error}");
+            }
+        });
+        Ok(())
     }))
 }
 
@@ -755,6 +870,9 @@ async fn send_prepared(
     writer: LockedWriter,
     pending: PreparedRepeat,
 ) -> Result<(), PluginError> {
+    if pending.delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(pending.delay_ms)).await;
+    }
     if pending.guard.is_current() {
         send_guarded_msg(
             ctx,
@@ -856,5 +974,52 @@ mod tests {
         let (state, action) = chain(&config);
         assert_eq!(action, Action::Silent);
         assert!(!state.repeated, "概率没命中不该置位，下一条还要能再摇");
+    }
+
+    #[test]
+    fn delay_modes_sample_inside_their_window() {
+        let fixed = DelayConfig {
+            mode: "fixed".into(),
+            fixed_ms: 750,
+            ..Default::default()
+        };
+        assert_eq!(fixed.sample_ms(), 750);
+        assert_eq!(DelayConfig { mode: "off".into(), ..Default::default() }.sample_ms(), 0);
+
+        let random = DelayConfig {
+            mode: "random".into(),
+            min_ms: 200,
+            max_ms: 300,
+            ..Default::default()
+        };
+        for _ in 0..64 {
+            assert!((200..=300).contains(&random.sample_ms()));
+        }
+        // 写反了也照样有界，不静默变成 0 或一个巨大的数。
+        let reversed = DelayConfig {
+            mode: "random".into(),
+            min_ms: 900,
+            max_ms: 100,
+            ..Default::default()
+        };
+        for _ in 0..64 {
+            assert!((100..=900).contains(&reversed.sample_ms()));
+        }
+    }
+
+    #[test]
+    fn delay_check_rejects_unknown_mode_and_too_long_wait() {
+        let bad_mode = RepeaterConfig {
+            delay: DelayConfig { mode: "sometimes".into(), ..Default::default() },
+            ..Default::default()
+        };
+        assert!(bad_mode.check().is_err());
+
+        let too_long = RepeaterConfig {
+            delay: DelayConfig { mode: "fixed".into(), fixed_ms: MAX_DELAY_MS + 1, ..Default::default() },
+            ..Default::default()
+        };
+        assert!(too_long.check().is_err());
+        assert!(RepeaterConfig::default().check().is_ok());
     }
 }

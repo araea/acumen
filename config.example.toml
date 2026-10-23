@@ -677,6 +677,11 @@ black = []
 [group_title]
 enabled = true
 
+# 群精华：群主或管理员引用一条消息发「加精」收进群精华，「取消加精」移出。
+# 机器人自己也得是群主或管理员，否则 QQ 会回绝。
+[essence]
+enabled = true
+
 # 复读机：同一句话接力到阈值就跟读一次；也可以按概率主动打断这次接力，改发一句打断语。
 [repeater]
 enabled = true
@@ -703,6 +708,16 @@ allow_same_user = false
 ignore_commands = true
 # 跟读过的话多少小时内不再跟读，哪怕群友又接力起来（记录落盘，重启不忘）。0 为只按最近 128 条淘汰。
 remember_hours = 24
+
+# 跟读与打断发出前停顿多久。真人接上一句不会像条件反射，停一下更像群里有人跟着说。
+[repeater.delay]
+# off 立刻发出；fixed 每次停 fixed_ms；random 在 min_ms 到 max_ms 之间随机取一个。
+mode = "random"
+# fixed 模式的停顿（毫秒）。
+fixed_ms = 800
+# random 模式的停顿区间（毫秒）。默认 250—1200：接得上一句，又不显得拖沓。
+min_ms = 250
+max_ms = 1200
 
 [repeater.channel]
 white = []

@@ -958,7 +958,7 @@ pub(crate) fn satori_action_schema(direct: bool) -> Value {
         ),
         (
             "essence",
-            json!({"message_id":id("本群消息"),"remove":{"type":"boolean"}}),
+            json!({"message_id":id("本群消息"),"remove":{"type":"boolean","description":"true 取消精华，默认设为精华"}}),
             vec!["message_id"],
         ),
         (

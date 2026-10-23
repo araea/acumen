@@ -285,6 +285,7 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
         }
         ("autoreply" | "lurker", "managers") => &["staff", "admin"],
         ("lurker", "warn.mode") => &["mention", "digest", "private", "mention_private", "digest_private"],
+        ("repeater", "delay.mode") => &["off", "fixed", "random"],
         ("ambient", "peak.mode") => &["normal", "swap", "sleep", "pause"],
         ("ambient", "thinking" | "help_thinking") => &["off", "minimal", "low", "medium", "high"],
         ("ai_news", "card_theme") => &[

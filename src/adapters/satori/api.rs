@@ -37,7 +37,8 @@ where
 }
 
 /// 撤回失败后隔多久再试：消息刚发出去时内核还没把它收进本地库，第一次常被回绝。
-pub(crate) const RECALL_BACKOFF: [Duration; 2] = [Duration::from_millis(700), Duration::from_millis(1600)];
+pub(crate) const RECALL_BACKOFF: [Duration; 2] =
+    [Duration::from_millis(700), Duration::from_millis(1600)];
 
 /// 这次撤回失败是不是「过一会儿再发就好」。
 ///
@@ -72,7 +73,9 @@ pub async fn delete_msg(
     loop {
         match delete_msg_in(ctx, writer.clone(), &channel, message_id).await {
             Ok(()) => return Ok(()),
-            Err(error) if attempt < RECALL_BACKOFF.len() && recall_retryable(&error.to_string()) => {
+            Err(error)
+                if attempt < RECALL_BACKOFF.len() && recall_retryable(&error.to_string()) =>
+            {
                 tokio::time::sleep(RECALL_BACKOFF[attempt]).await;
                 attempt += 1;
             }
@@ -212,6 +215,31 @@ pub async fn set_group_special_title(
                 "guild_id": group_id,
                 "user_id": user_id,
                 "title": special_title,
+            }),
+        )
+        .await?;
+    Ok(())
+}
+
+/// 把一条群消息设为精华，或取消它的精华。
+///
+/// 账号需要是群主或管理员。`message_id` 必须是本模块见过、还留在缓存里的消息
+/// （刚收到的、或者从记录里取到的）；QQ 只认本地记录里的 `msgSeq` / `msgRandom`。
+pub async fn set_group_essence(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: &str,
+    message_id: &str,
+    add: bool,
+) -> Result<(), ApiError> {
+    let _: Value = writer
+        .call(
+            ctx,
+            "internal/essence",
+            json!({
+                "guild_id": group_id,
+                "message_id": message_id,
+                "remove": !add,
             }),
         )
         .await?;
