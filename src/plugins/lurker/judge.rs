@@ -163,7 +163,7 @@ pub enum Verdict {
     Newcomer,
     /// 潜水：`since` 起再没说过话（最后一次说话，或进群那一刻）。
     Lurking { since: i64, kind: Kind },
-    /// 记录不全，拿不准：`since` 是能确定的最晚一次动静（可能是 0）。
+    /// 记录不全，拿不准：只知道 `since`（机器人的记录从这时起没断）以来他没说过话。
     Unsure { since: i64 },
 }
 
@@ -225,11 +225,11 @@ pub fn judge(member: &Member, seen: Option<&Seen>, basis: &Basis) -> Verdict {
         return if heard_since(joined) {
             Verdict::Lurking { since: joined, kind: Kind::Never }
         } else {
-            Verdict::Unsure { since: last }
+            Verdict::Unsure { since: basis.heard_from.max(last) }
         };
     }
     if !heard_since(cutoff) {
-        return Verdict::Unsure { since: last.max(joined) };
+        return Verdict::Unsure { since: basis.heard_from.max(last) };
     }
     // 「从没说过话」要整段在册才说得出口：QQ 可信，或机器人从他进群起就在记。
     let never_known = never && joined > 0 && heard_since(joined);
@@ -323,7 +323,7 @@ mod tests {
         // 机器人十天前才连续在线：三十天的沉默它没资格判。
         let b = basis(&rule, Trust::Missing, NOW - 10 * DAY);
         let m = member("1", 200, None);
-        assert_eq!(judge(&m, None, &b), Verdict::Unsure { since: m.joined });
+        assert_eq!(judge(&m, None, &b), Verdict::Unsure { since: NOW - 10 * DAY });
         // 但十天内说过话的照样算活跃。
         assert_eq!(judge(&m, Some(&seen(3, 4)), &b), Verdict::Active);
     }

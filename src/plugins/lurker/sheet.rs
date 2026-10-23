@@ -64,9 +64,9 @@ fn parts(scan: &Scan) -> Vec<Part> {
 fn gone(entry: &Entry, now: i64) -> String {
     let days = ((now - entry.since) / 86_400).max(0);
     match entry.kind {
-        Category::Never => format!("{days}<small>天没说过话</small>"),
+        Category::Never => format!("{days}<small>天</small>"),
         Category::Quiet => format!("{}<small>句</small>", entry.said),
-        Category::Unsure if entry.last == 0 => format!("≥{days}<small>天</small>"),
+        Category::Unsure => format!("{days}+<small>天</small>"),
         _ if entry.last == 0 => format!("≥{days}<small>天</small>"),
         _ => format!("{days}<small>天</small>"),
     }
@@ -81,6 +81,9 @@ fn meta(entry: &Entry) -> String {
     bits.push(esc(&entry.id));
     if entry.level > 0 {
         bits.push(format!("LV{}", entry.level));
+    }
+    if !entry.title.trim().is_empty() {
+        bits.push(format!("「{}」", esc(entry.title.trim())));
     }
     if entry.joined > 0 {
         bits.push(format!("{}进群", date(entry.joined)));
@@ -99,10 +102,13 @@ fn last_line(entry: &Entry, now: i64) -> String {
         Category::Quiet => {
             let _ = write!(out, "最后 {}", date(entry.last));
         }
+        Category::Unsure if entry.last > 0 => {
+            let _ = write!(out, r#"<span class="tag">记录不全</span>见过 {}"#, date(entry.last));
+        }
+        Category::Unsure => out.push_str(r#"<span class="tag">记录不全</span>没见过他说话"#),
         _ if entry.last > 0 => {
             let _ = write!(out, "最后 {}", date(entry.last));
         }
-        Category::Unsure => out.push_str(r#"<span class="tag">记录不全</span>"#),
         _ => out.push_str("没有发言记录"),
     }
     out
@@ -290,6 +296,7 @@ pub fn text(scan: &Scan, per_chunk: usize) -> Vec<String> {
             let gone = match entry.kind {
                 Category::Never => format!("进群 {days} 天没说过话"),
                 Category::Quiet => format!("{} 天里 {} 句", scan.rule.days, entry.said),
+                Category::Unsure => format!("机器人记录里 {days} 天没说话（之前的不知道）"),
                 _ if entry.last > 0 => format!("{days} 天没说话（最后 {}）", date(entry.last)),
                 _ => format!("至少 {days} 天没说话"),
             };
@@ -384,6 +391,7 @@ mod tests {
             name: format!("成员{no}"),
             nick: String::new(),
             level: 3,
+            title: String::new(),
             joined: 1_000,
             last: if kind == Category::Never { 0 } else { 1_800_000_000 - days * 86_400 },
             since: 1_800_000_000 - days * 86_400,

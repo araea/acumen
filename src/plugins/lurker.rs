@@ -53,7 +53,7 @@ pub struct Config {
     min_messages: u32,
     /// 新人进群满这么多天还一句没说，也算潜水（0 = 不单独看新人）。
     newcomer_days: u32,
-    /// 有群头衔的人不动（头衔多半是群主亲手给的）。
+    /// 有群头衔的人不动。默认关：不少群的头衔是群友自己领的（「我要头衔」），不代表群主看重。
     protect_titled: bool,
     /// 群等级不低于这个数的人不动（0 = 不看等级）。
     protect_level: u32,
@@ -79,7 +79,7 @@ impl Default for Config {
             days: 30,
             min_messages: 1,
             newcomer_days: 0,
-            protect_titled: true,
+            protect_titled: false,
             protect_level: 0,
             exempt: Vec::new(),
             managers: "staff".into(),

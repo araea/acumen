@@ -29,7 +29,7 @@ fn usage(prefix: &str) -> String {
         format!("· {prefix}潜水 豁免 @某人：这个人永远不进名单；{prefix}潜水 取消豁免 @某人；{prefix}潜水 豁免：看名单"),
         format!("· {prefix}潜水 天数 45：本群改成 45 天没说话算潜水；{prefix}潜水 天数 默认：照全局"),
         format!("· {prefix}潜水 记录：最近几次移出了谁"),
-        "群主、管理员、号主、有群头衔的人不会进名单；进群不满天数的新人也不算。".to_string(),
+        "群主、管理员、号主与豁免名单里的人不会进名单；进群不满天数的新人也不算。".to_string(),
     ]
     .join("\n")
 }
@@ -81,7 +81,8 @@ pub async fn answer(ctx: &Context, writer: &LockedWriter, config: &Config, group
     }
     let here = Here::of(ctx, writer, config, group);
     if yes {
-        here.confirm().await?;
+        let said = here.confirm().await?;
+        here.say(said).await?;
     } else {
         take_plan(group, &user);
         here.say("好，不移出了。").await?;
@@ -462,8 +463,9 @@ fn headline(scan: &Scan, prefix: &str) -> String {
             scan.entries.len()
         )
     };
-    if !scan.unsure.is_empty() {
-        text.push_str(&format!("\n另有 {} 人记录不全、拿不准，单列在后面，不会被移出。", scan.unsure.len()));
+    if let Some(note) = roster::source_note(scan) {
+        text.push('\n');
+        text.push_str(&note);
     }
     if !scan.can_kick {
         text.push_str("\n机器人在本群不是管理员，只能看。");

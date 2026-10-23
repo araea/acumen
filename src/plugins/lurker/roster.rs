@@ -27,6 +27,9 @@ pub struct Entry {
     pub nick: String,
     #[serde(default)]
     pub level: u32,
+    /// 群头衔。
+    #[serde(default)]
+    pub title: String,
     /// 进群时刻，0 = 不知道。
     pub joined: i64,
     /// 已知的最后一次说话，0 = 没有记录。
@@ -76,8 +79,8 @@ pub struct Scan {
     pub unsure: Vec<Entry>,
     /// 进群还不满观察期的人数。
     pub newcomers: usize,
-    /// 不动的人，按原因数。
-    pub protected: BTreeMap<String, usize>,
+    /// 不动的人，按原因数（顺序固定：机器人自己、群主与管理员……）。
+    pub protected: Vec<(String, usize)>,
     /// QQ 那份「最后发言」的情况：missing / stale / trusted。
     pub source: String,
     /// 机器人的记录从这一刻起没断过。
@@ -165,7 +168,7 @@ pub async fn members(ctx: &Context, writer: &LockedWriter, group: &str, refresh:
 fn member(value: &Value) -> Option<Member> {
     let user = value.get("user")?;
     let id = user.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())?.to_string();
-    let text = |v: Option<&Value>| v.and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+    let text = |v: Option<&Value>| v.and_then(Value::as_str).map(str::trim).filter(|s| visible(s)).map(str::to_owned);
     let nick = text(user.get("name")).or_else(|| text(user.get("nick"))).unwrap_or_default();
     let card = text(value.get("nick")).or_else(|| text(value.get("name")));
     let millis = |key: &str| value.get(key).and_then(Value::as_i64).map(|ms| ms.max(0) / 1000);
@@ -185,6 +188,15 @@ fn member(value: &Value) -> Option<Member> {
         spoke: millis("last_sent_at"),
         level: value.get("level").and_then(Value::as_u64).and_then(|l| u32::try_from(l).ok()).unwrap_or(0),
         title: text(value.get("title")).unwrap_or_default(),
+    })
+}
+
+/// 名字里有没有看得见的字。QQ 昵称常见「ㅤ」（韩文填充字）、零宽字符这类占位，画出来是一片空白。
+fn visible(name: &str) -> bool {
+    name.chars().any(|c| {
+        !c.is_whitespace()
+            && !c.is_control()
+            && !matches!(c, '\u{115F}' | '\u{1160}' | '\u{3164}' | '\u{FFA0}' | '\u{2800}' | '\u{FEFF}' | '\u{200B}'..='\u{200F}' | '\u{2060}'..='\u{206F}' | '\u{202A}'..='\u{202E}')
     })
 }
 
@@ -247,6 +259,7 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
             name: member.name.clone(),
             nick: member.nick.clone(),
             level: member.level,
+            title: member.title.clone(),
             joined: member.joined,
             last,
             since,
@@ -267,7 +280,8 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
     for (index, entry) in entries.iter_mut().enumerate() {
         entry.no = u32::try_from(index + 1).unwrap_or(u32::MAX);
     }
-    unsure.sort_by(|a, b| (a.since, &a.id).cmp(&(b.since, &b.id)));
+    // 拿不准的按「最后一次见他说话」排，没见过的在前、早进群的在前。
+    unsure.sort_by(|a, b| (a.last, a.joined, &a.id).cmp(&(b.last, b.joined, &b.id)));
 
     let group_name = api::get_guild_info(ctx, writer.clone(), group)
         .await
@@ -314,12 +328,12 @@ pub fn source_note(scan: &Scan) -> Option<String> {
         "trusted" => None,
         _ if scan.unsure.is_empty() => None,
         "stale" => Some(format!(
-            "QQ 给的最后发言时间像是旧的，没拿它下结论；机器人自己的记录从 {} 起才完整，更早就沉默的 {} 人先列在「待观察」，不编号、不会被移出。",
+            "QQ 给的最后发言时间像是旧的，没拿它下结论；机器人自己的记录从 {} 起才没断过，那之前说没说过话不知道，所以 {} 人列在「待观察」，不编号、不会被移出。过几天记录够长了再查。",
             since(scan.heard_from),
             scan.unsure.len()
         )),
         _ => Some(format!(
-            "QQ 没给最后发言时间（知弦 0.39 起才有），只能看机器人收到的消息；记录从 {} 起才完整，更早就沉默的 {} 人先列在「待观察」，不编号、不会被移出。",
+            "QQ 端没给最后发言时间（知弦 0.39 起才有，升级后重启手机生效），只能看机器人收到的消息；记录从 {} 起才没断过，那之前说没说过话不知道，所以 {} 人列在「待观察」，不编号、不会被移出。",
             since(scan.heard_from),
             scan.unsure.len()
         )),
