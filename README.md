@@ -53,7 +53,7 @@ curl -fsSL https://gh-proxy.com/https://github.com/araea/acumen/releases/latest/
 
 配置在 `~/acumen/config.toml`，数据在 `~/acumen/data/`。日常修改用控制台或 `/ctl`；直接编辑文件前先 `acumen stop`，运行中的实例退出时会写回内存里的配置。完整配置项见 [`config.example.toml`](config.example.toml)。
 
-AI 对话、搭话等功能需要自备模型服务的 API 密钥。最快的是号主在任意对话框里发 `oai deepseek sk-…`：密钥验过才存、存好自动撤回那条消息，内置的 Agent 房间「管家大人」随即可用（会用终端，联网搜索与抓取走 DeepSeek 官方接口）。其他供应商（Kimi、智谱、百炼、硅基流动、OpenRouter……）同样一句接上，发 `oai` 看接入状态；也可以在控制台的插件页填写。详见 [docs/agent.md](docs/agent.md)。
+AI 对话、搭话等功能需要自备模型服务的 API 密钥。最快的是号主在任意对话框里发 `oai deepseek sk-…`：密钥验过才存、存好自动撤回那条消息，内置的房间「管家大人」随即可用（全量工具：会用终端，联网搜索与抓取走 DeepSeek 官方接口）。自己建的房间默认只聊天，`房间?联网`、`房间?全量` 按需打开工具；`oai 用 <模型>` 一句换掉所有房间的默认模型。其他供应商（Kimi、智谱、百炼、硅基流动、OpenRouter……）同样一句接上，发 `oai` 看接入状态；也可以在控制台的插件页填写。详见 [docs/agent.md](docs/agent.md)。
 
 ## 卸载
 
@@ -68,14 +68,14 @@ acumen uninstall --purge  # 一起删除
 
 部分能力（视频解析的 1080P、AI 生图 / 生歌 / 生视频）依赖外部服务并可能产生费用，启用前确认账号与价格。
 
-Agent 房间的 `bash` 等本机工具不是安全沙箱，具有 Termux 账户权限；共享房间不应开放 Agent 控制通道。
+全量档房间的 `bash` 等本机工具不是安全沙箱，具有 Termux 账户权限；只有号主与管理员能把房间开到全量，共享房间不建议开。
 
 ## 必要链接
 
 - [插件控制与部署](docs/CONTROL.md)
 - [Satori 接入](docs/SATORI.md)
 - [群聊搭话](docs/ambient.md)
-- [内置 Agent 房间](docs/agent.md)
+- [房间与工具](docs/agent.md)
 - [视频解析](docs/video_parse.md)
 - [点歌](docs/song.md)
 - [Markdown 转图](docs/markdown.md)

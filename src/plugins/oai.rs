@@ -93,12 +93,12 @@ pub(crate) async fn model_endpoint(ctx: &Context, model: &str) -> Option<(String
 #[serde(default)]
 pub(crate) struct OaiConfig {
     enabled: bool,
-    /// 内置 agent 房间没指定模型（留空或写 `agent`）时用哪个模型。
+    /// 房间没指定模型（留空）时用哪个模型，`oai 用 <模型>` 改的就是它。
     /// 写 `供应商/模型` 时按 `[oai.providers]` 取接口；留空则用 oai 的默认模型。
     pub(crate) agent_default_model: String,
-    /// 智能体房间（管家大人与 `##名字 agent` 建的）只给号主与机器人管理员（`[ctl] admins`）用。
-    /// 智能体能联网、读写文件、发消息、管群，权限比普通对话房间高得多；开了以后别人叫它
-    /// 只回一句说明（同一人十分钟内只说一次），普通对话房间不受影响。
+    /// 全量档的房间（管家大人，以及 `房间?全量` 打开的）只给号主与机器人管理员（`[ctl] admins`）用。
+    /// 全量档能读写文件、跑命令、发消息、管群，权限比联网、无工具两档高得多；开了以后别人叫它
+    /// 只回一句说明（同一人十分钟内只说一次），另两档不受影响。
     pub(crate) agent_owner_only: bool,
     /// 单次回复的总时间预算。
     request_timeout_seconds: u64,
@@ -138,8 +138,8 @@ pub(crate) struct OaiConfig {
     /// 可选供应商表：模型写 `供应商/模型` 时按名字取这里的接口与密钥。
     /// 不配也不影响既有房间——不带前缀的仍走 `oai` 默认接口。
     pub(crate) providers: HashMap<String, ProviderConfig>,
-    /// 联网搜索：给内置 agent 房间的 `web_search` / `web_fetch`。
-    /// 默认开启（填了 DeepSeek 官方密钥就走它的搜索与抓取），群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
+    /// 联网搜索：联网、全量两档房间的 `web_search` / `web_fetch`；`enabled` 是房间这边的总闸。
+    /// 默认开启（填了 DeepSeek 官方密钥就优先走它的搜索与抓取），群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
     pub(crate) search: search::SearchConfig,
     /// 群聊那一层：房间里能发的消息条数、能查几次资料、能画几张图，以及
     /// 哪些群允许管理动作。搭话有自己的一份节奏（见 `[ambient]`），这张表只管房间。
@@ -269,6 +269,27 @@ impl OaiConfig {
 
 impl PluginConfig for OaiConfig {
     const NAME: &'static str = "oai";
+
+    /// 模型保留清单还是某一版的旧默认值（号主没动过）：换成这一版的。
+    /// 模型一代代上新，旧清单留着只会让 `/%` 里全是上一代。
+    fn migrate(table: &mut toml::Table) -> bool {
+        let Some(toml::Value::Table(filter)) = table.get_mut("model_filter") else { return false };
+        let Some(keep) = filter.get("keep").and_then(toml::Value::as_array) else { return false };
+        let keep: Vec<&str> = keep.iter().filter_map(toml::Value::as_str).collect();
+        if !utils::RETIRED_MODEL_KEEP.contains(&keep.as_slice()) {
+            return false;
+        }
+        filter.insert(
+            "keep".into(),
+            toml::Value::Array(utils::DEFAULT_MODEL_KEEP.iter().map(|kw| toml::Value::from(*kw)).collect()),
+        );
+        if let Some(toml::Value::Array(drop)) = filter.get_mut("drop")
+            && !drop.iter().any(|kw| kw.as_str() == Some("-flash-0"))
+        {
+            drop.push("-flash-0".into());
+        }
+        true
+    }
 }
 
 /// 确保模型接口配置（`data/oai/config.json`）已加载。
@@ -431,10 +452,17 @@ pub fn handle(
             } else {
                 cmd.args.clone()
             };
-            // 发给智能体房间的文件先取回本机，路径写进提示词，管家自己读（见 [`inbox`]）。
+            // 发给全量档房间的文件先取回本机，路径写进提示词，管家自己读（见 [`inbox`]）。
+            // 别的档没有读文件的工具，收下来也只是一串它打不开的路径。
             if !files.is_empty()
                 && matches!(cmd.action, parser::Action::Chat)
-                && mgr.config.read().await.agents.iter().any(|a| a.name == cmd.agent && a.uses_agent())
+                && mgr
+                    .config
+                    .read()
+                    .await
+                    .agents
+                    .iter()
+                    .any(|a| a.name == cmd.agent && a.tools == types::Tools::Full)
             {
                 prompt.push_str(&inbox::receive(&files).await);
             }

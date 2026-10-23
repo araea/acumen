@@ -19,7 +19,8 @@ pub enum Action {
     Delete,
     List,
     SetModel,
-    SetSearch,
+    /// `房间?`：看或切换工具档位。
+    SetTools,
     SetPrompt,
     ViewPrompt,
     ListModels,
@@ -139,7 +140,12 @@ pub fn parse_create(raw: &str) -> Option<(String, String, String, String)> {
         (String::new(), rest)
     };
 
-    let parts: Vec<&str> = after_desc.split_whitespace().collect();
+    let mut parts: Vec<&str> = after_desc.split_whitespace().collect();
+    // 模型名都是 ASCII：第一个词带中文（又不是 `默认`）就是直接写了提示词，模型跟随默认。
+    // `##翻译 你是翻译官` 不该建出一间模型叫「你是翻译官」的房间。
+    if parts.first().is_some_and(|first| !first.is_ascii() && *first != "默认") {
+        parts.insert(0, "");
+    }
     let model = parts.first().unwrap_or(&"").to_string();
     if model.chars().count() > 50 {
         return None;
@@ -313,8 +319,7 @@ fn parse_suffix(norm: &str, raw: &str, has_priv_prefix: bool) -> (Action, String
         return (Action::SetModel, arg.to_string(), vec![]);
     }
 
-    // `?` 是「联网搜索」。符号表里再没有比问号更贴切的了：它就是一个问句的收尾。
-    // 后面跟的词交给 [`search_choice`] 解释，认不出来时回到 `args` 里让调用方提示用法。
+    // `?` 管工具档位：问号是在问「你手边有什么」，后面跟档位名就是切换（见 [`super::types::Tools::parse`]）。
     if s.starts_with('?') {
         let skip_len = if r.starts_with('？') {
             '？'.len_utf8()
@@ -322,7 +327,7 @@ fn parse_suffix(norm: &str, raw: &str, has_priv_prefix: bool) -> (Action, String
             '?'.len_utf8()
         };
         let arg = r.get(skip_len..).unwrap_or("").trim();
-        return (Action::SetSearch, arg.to_string(), vec![]);
+        return (Action::SetTools, arg.to_string(), vec![]);
     }
 
     if s == "/$" {
@@ -384,20 +389,3 @@ fn parse_suffix(norm: &str, raw: &str, has_priv_prefix: bool) -> (Action, String
 
     (Action::Chat, r.to_string(), vec![])
 }
-
-/// `房间?` 后面那个词要落下的状态。
-///
-/// 返回 `Some(None)` 表示「交回全局配置」，`Some(Some(..))` 是明确的开关，
-/// 返回 `None` 表示这个词不认识——调用方据此回一句用法，而不是默默当成切换。
-/// 空词是切换：`房间?` 一次就换一边，这是最省事的写法。
-pub(crate) fn search_choice(word: &str, current: bool) -> Option<Option<bool>> {
-    let word = normalize(word.trim()).trim().to_ascii_lowercase();
-    Some(match word.as_str() {
-        "" => Some(!current),
-        "on" | "开" | "打开" | "联网" | "搜索" | "开联网" => Some(true),
-        "off" | "关" | "关闭" | "不联网" | "不搜索" | "关联网" => Some(false),
-        "auto" | "默认" | "跟随" | "继承" | "全局" => None,
-        _ => return None,
-    })
-}
-

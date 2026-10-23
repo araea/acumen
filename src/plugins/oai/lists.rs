@@ -9,7 +9,7 @@
 //! 四十来个模型分在十几家厂商底下，其中一半厂商只有一个模型——每家一个标题，
 //! 整张图就成了标题多过内容。
 
-use super::types::Agent;
+use super::types::{Agent, Tools};
 use crate::storage::truncate_chars as truncate_str;
 use super::utils::{escape_markdown_special, model_vendor};
 use crate::render::web::{Block, Doc, ModelRow, RoomRow, Theme};
@@ -53,7 +53,8 @@ struct Room {
     desc: String,
     /// 纯文本里的简介（较短）。
     short: String,
-    search: bool,
+    /// 工具档位的标签（「联网」「全量」）；不挂工具、媒体房间没有。
+    tag: Option<&'static str>,
     /// 所在分组的标题没写模型时，这一行自己带。
     model: Option<String>,
 }
@@ -68,13 +69,14 @@ struct RoomGroup {
 pub(crate) struct Rooms {
     groups: Vec<RoomGroup>,
     total: usize,
-    searching: usize,
+    /// 挂着工具（联网或全量）的房间数。
+    tooled: usize,
 }
 
 impl Rooms {
-    /// `search_default` 是全局联网开关：没单独设过的房间跟着它走。
-    /// `default_model` 是内置智能体房间没写模型时实际用的那个（`[oai] agent_default_model`）。
-    pub(crate) fn new(agents: &[Agent], search_default: bool, default_model: Option<&str>) -> Self {
+    /// 房间没写模型时实际用的那个取自 `[oai] agent_default_model`；媒体房间不标工具档位。
+    pub(crate) fn new(agents: &[Agent], oai: &super::OaiConfig) -> Self {
+        let default_model = oai.agent_default_model();
         // 分区优先于模型：手写了分区的房间按分区成组，排在前面（false < true）。
         let mut grouped: BTreeMap<(bool, String, String), Vec<&Agent>> = BTreeMap::new();
         for agent in agents {
@@ -109,8 +111,9 @@ impl Rooms {
                 name: agent.name.clone(),
                 desc,
                 short,
-                // 联网只对内置智能体房间有意义：中转站房间根本没有工具可调。
-                search: agent.uses_agent() && agent.web_search(search_default),
+                // 画图、写歌、拍片房间直接出成品，档位对它们没意义。
+                tag: (agent.tools != Tools::Off && !super::logic::is_media_room(agent, oai))
+                    .then(|| agent.tools.label()),
                 model,
             }
         };
@@ -146,14 +149,14 @@ impl Rooms {
             });
         }
 
-        let searching = groups
+        let tooled = groups
             .iter()
             .flat_map(|g| g.rooms.iter())
-            .filter(|r| r.search)
+            .filter(|r| r.tag.is_some())
             .count();
         Rooms {
             total: agents.len(),
-            searching,
+            tooled,
             groups,
         }
     }
@@ -185,7 +188,7 @@ impl Rooms {
                     .map(|r| RoomRow {
                         name: r.name.clone(),
                         desc: r.desc.clone(),
-                        search: r.search,
+                        tag: r.tag,
                         model: r.model.clone(),
                     })
                     .collect(),
@@ -196,10 +199,10 @@ impl Rooms {
             width: WIDTH,
             kicker: "ACUMEN · ROOMS".into(),
             blocks,
-            foot: if self.searching > 0 {
-                "标「联网」的智能体会按需上网查资料，其余只凭模型自己的知识".into()
+            foot: if self.tooled > 0 {
+                "标「联网」的会按需上网查资料，标「全量」的还能跑命令、做群聊动作；`名字?` 看或切换".into()
             } else {
-                "智能体名字就是触发词，后面跟内容就是对话".into()
+                "名字就是触发词，后面跟内容就是对话；`名字?联网` 让它能上网查资料".into()
             },
             hint: ("与智能体对话".into(), "<名称> <内容>".into()),
         }
@@ -223,8 +226,8 @@ impl Rooms {
             for room in &group.rooms {
                 seq += 1;
                 let mut desc = room.short.clone();
-                if room.search {
-                    desc = format!("联网 · {desc}");
+                if let Some(tag) = room.tag {
+                    desc = format!("{tag} · {desc}");
                 }
                 if let Some(model) = &room.model {
                     desc = format!("{desc} · {model}");

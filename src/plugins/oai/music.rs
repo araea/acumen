@@ -371,7 +371,7 @@ fn mmss(seconds: f64) -> String {
 
 /// 提交一次生成并等到出结果。
 ///
-/// 与房间的回复构造解耦，供普通房间（[`generate_reply`]）与群聊搭话的写歌工具共用；
+/// 与房间的回复构造解耦，供写歌房间（[`generate_reply`]）与群聊搭话的写歌工具共用；
 /// 搭话那条路径拿不到 `Reply`，要的是落到本地、能随后用 `satori_action` 发出去的成品。
 pub(crate) async fn generate(
     api_base: &str,

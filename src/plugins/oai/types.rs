@@ -9,10 +9,10 @@ pub struct ChatMessage {
     pub images: Vec<String>,
     #[serde(default)]
     pub timestamp: i64,
-    /// 这条回复之前用过哪些工具（给下一轮当线索，用户看不到）。只有智能体房间的回复才有。
+    /// 这条回复之前用过哪些工具（给下一轮当线索，用户看不到）。没用工具的回复没有。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub work: String,
-    /// 这句话是谁说的（`号主` 或 `名字（QQ 号）·客人`）。只有智能体房间的**公共历史**里的用户消息才有：
+    /// 这句话是谁说的（`号主` 或 `名字（QQ 号）·客人`）。只有**公共历史**里的用户消息才有：
     /// 一间房的公共历史是大家共用的，下一轮展开时不标出说话人，模型就会把别人说过的话算到眼前这个人头上。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub from: String,
@@ -41,12 +41,64 @@ impl ChatMessage {
     }
 }
 
-/// 房间交给内置智能体执行（带工具的 agent 循环）。
-pub const ENGINE_AGENT: &str = "agent";
-/// 房间走中转站的 Chat Completions（含 MJ / 图像房间）。
-pub const ENGINE_CHAT: &str = "chat";
+/// 房间手边有哪些工具。
+///
+/// 所有房间都是同一个智能体，差别只在这里：能力按需打开，而不是建房时选一种「引擎」。
+/// 新建的房间是 [`Tools::Off`]——一间只聊天的房间不该先背上一整套终端和群聊工具的提示词，
+/// 也不该让客人顺手就能叫它跑命令；要查资料开 [`Tools::Web`]，要办事（终端、文件、群聊动作、
+/// 提醒、插件管控）开 [`Tools::Full`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tools {
+    /// 不挂任何工具：一问一答。
+    #[default]
+    Off,
+    /// 只挂联网搜索与网页抓取。
+    Web,
+    /// 全部工具：终端与文件、联网、群聊工具、办事台。
+    Full,
+}
 
-/// 合法的思考强度档位，与 Pi 的 `--thinking` 取值一致（普通房间转成 `reasoning_effort`）。
+impl Tools {
+    /// 三档按从轻到重排好，状态卡与帮助里按这个顺序列。
+    pub const ALL: [Tools; 3] = [Tools::Off, Tools::Web, Tools::Full];
+
+    /// 给人看的名字；也是切换指令里写的那个词（`房间?联网`）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Tools::Off => "无工具",
+            Tools::Web => "联网",
+            Tools::Full => "全量",
+        }
+    }
+
+    /// 一句话说明这一档能做什么。
+    pub fn summary(self) -> &'static str {
+        match self {
+            Tools::Off => "只聊天，不调任何工具",
+            Tools::Web => "按需联网搜索、读网页",
+            Tools::Full => "终端与文件、联网、群聊动作、提醒与插件管控",
+        }
+    }
+
+    /// 这一档有没有联网工具。
+    pub fn web(self) -> bool {
+        matches!(self, Tools::Web | Tools::Full)
+    }
+
+    /// 切换指令里的那个词 → 档位；认不出来返回 `None`。
+    pub fn parse(word: &str) -> Option<Tools> {
+        let word = super::utils::normalize(word.trim()).trim().to_ascii_lowercase();
+        Some(match word.as_str() {
+            "无工具" | "无" | "关" | "关闭" | "不联网" | "聊天" | "纯聊天" | "off" | "none" | "chat" | "0" => Tools::Off,
+            "联网" | "搜索" | "开" | "打开" | "开联网" | "web" | "search" | "on" | "1" => Tools::Web,
+            "全量" | "全部" | "全能" | "完整" | "满血" | "full" | "all" | "agent" | "2" => Tools::Full,
+            _ => return None,
+        })
+    }
+}
+
+/// 合法的思考强度档位，与 Pi 的 `--thinking` 取值一致（请求里转成 `reasoning_effort`）。
 pub const THINKING_LEVELS: [&str; 5] = ["off", "minimal", "low", "medium", "high"];
 
 /// 归一化思考强度：只认内置档位，大小写与首尾空白不敏感；其余返回 `None`。
@@ -63,27 +115,20 @@ pub struct Agent {
     /// 房间在 `/#` 列表里归到哪个分区；留空则按模型分组（一直以来的样子）。
     #[serde(default)]
     pub section: String,
-    /// 执行引擎：[`ENGINE_AGENT`] 或 [`ENGINE_CHAT`]。
-    ///
-    /// 引擎是房间自己的属性，名字与它无关——叫什么都行，`#` 列表里显示的是
-    /// 「内置」而不是这个字符串。留空按 [`ENGINE_CHAT`] 算。
+    /// 这间房手边有哪些工具，用 `房间?` 系指令切换。
     #[serde(default)]
-    pub engine: String,
-    /// 引擎对应的模型：中转站房间是 `供应商/模型` 或裸模型 id；内置 agent 房间写
-    /// `供应商/模型`（`供应商/` 决定打到哪个接口，见 `[oai.providers]`），留空表示
-    /// 用 `[oai] agent_default_model`。
+    pub tools: Tools,
+    /// 房间的模型：`供应商/模型` 或裸模型 id（`供应商/` 决定打到哪个接口，见 `[oai.providers]`），
+    /// 留空表示跟随 `[oai] agent_default_model`。画图、写歌、拍片这类模型走各自的专用接口，
+    /// 工具档位对它们不起作用。
     pub model: String,
     /// 房间默认思考强度（`off` / `minimal` / `low` / `medium` / `high`）。
     /// 留空表示交给引擎默认；模型写法里的 `:强度` 后缀优先于这里。
     #[serde(default)]
     pub thinking: String,
-    /// 这间房是否联网搜索。
-    ///
-    /// 三态：`None` 跟随 `[oai.search].enabled`（没动过的房间都是这个），
-    /// `Some(true)` / `Some(false)` 是这间房自己的选择，不受全局开关影响。
-    /// 「这间要查资料、那间只聊天」是常有的事，用 `房间?` 系指令设置。
-    #[serde(default)]
-    pub search: Option<bool>,
+    /// 1.22.0 之前的房间类型（`agent` / `chat`），只在升级时读一次，换算成 [`Self::tools`]。
+    #[serde(default, skip_serializing)]
+    pub engine: String,
     pub system_prompt: String,
     #[serde(default)]
     pub public_history: Vec<ChatMessage>,
@@ -101,10 +146,10 @@ impl Agent {
             name: name.to_string(),
             description: desc.to_string(),
             section: String::new(),
+            tools: Tools::Off,
             engine: String::new(),
             model: model.to_string(),
             thinking: String::new(),
-            search: None,
             system_prompt: prompt.to_string(),
             public_history: Vec::new(),
             private_histories: HashMap::new(),
@@ -113,32 +158,14 @@ impl Agent {
         }
     }
 
-    /// 这个房间由内置智能体接管（带工具的 agent 循环）。
-    ///
-    /// 只看 `engine`：名字不参与判断。没写过引擎的房间按中转站房间算。
-    pub fn uses_agent(&self) -> bool {
-        self.engine.trim().eq_ignore_ascii_case(ENGINE_AGENT)
-    }
-
-    /// 记下这个房间用哪个引擎和模型；引擎一旦写下就不再依赖房间名。
-    pub fn set_engine(&mut self, engine: &str, model: &str) {
-        self.engine = engine.to_string();
-        self.model = model.to_string();
-    }
-
     /// 请求时真正生效的思考强度：模型写法里的 `:强度` 后缀优先，其次房间字段。
     ///
-    /// `set_engine` 会把后缀收进 `thinking`，所以两者通常一致；保留后缀优先是因为
+    /// 换模型时会把后缀收进 `thinking`，所以两者通常一致；保留后缀优先是因为
     /// 手改过的模型串可能还带着后缀，不该被静默忽略。
     pub fn effective_thinking(&self) -> Option<String> {
         super::utils::split_thinking(&self.model)
             .1
             .or_else(|| normalize_thinking(&self.thinking))
-    }
-
-    /// 这间房实际是否联网：房间自己的选择优先，没写过就跟 `[oai.search].enabled`。
-    pub fn web_search(&self, fallback: bool) -> bool {
-        self.search.unwrap_or(fallback)
     }
 
     pub fn history_mut(&mut self, private: bool, uid: &str) -> &mut Vec<ChatMessage> {

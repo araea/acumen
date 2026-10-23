@@ -394,10 +394,10 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
             (config.api_base.clone(), config.api_key.clone()),
         )
     };
-    let agent = agent
-        .filter(super::types::Agent::uses_agent)
-        .ok_or_else(|| anyhow::anyhow!("房间「{}」已经不在或不是智能体房间", job.room))?;
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(&bot.ctx);
+    let agent = agent
+        .filter(|agent| !super::logic::is_media_room(agent, &oai))
+        .ok_or_else(|| anyhow::anyhow!("房间「{}」已经不在，或换成了画图 / 写歌 / 拍片模型", job.room))?;
     let (api_base, api_key, model) = super::logic::room_endpoint(&agent, &oai, &mgr, &api)
         .await
         .map_err(anyhow::Error::msg)?;

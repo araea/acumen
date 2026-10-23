@@ -542,14 +542,14 @@ remember_hours = 24
 white = []
 black = []
 
-# 智能对话：多智能体房间、模型与历史管理；内置 agent 房间能自己调工具。
+# 智能对话：多房间智能体对话，每间房按需开工具（`房间?无工具` / `?联网` / `?全量`），模型与历史各自管理。
 [oai]
 enabled = true
-# 内置 agent 房间（管家大人、`##研究 agent`）没写模型时用哪个：留空或写 `agent` 的房间都取这里的值。
+# 默认模型：没单独写模型的房间（管家大人、`##研究` 建的）都用它；`oai 用 <模型>` 改的就是这一项。
 # 写成 `供应商/模型` 时按下面的 [oai.providers] 取接口；留空则退到 oai 的默认模型。
 agent_default_model = "deepseek/deepseek-flash"
-# 智能体房间（管家大人与 `##名字 agent` 建的）只给号主与机器人管理员（[ctl] admins）用。
-# 智能体能联网、读写文件、发消息、管群，权限比普通对话房间高；开了以后别人叫它只回一句说明，普通房间不受影响。
+# 全量档的房间（管家大人，以及 `房间?全量` 打开的）只给号主与机器人管理员（[ctl] admins）用。
+# 全量档能读写文件、跑命令、发消息、管群；开了以后别人叫它只回一句说明，联网、无工具两档不受影响。
 agent_owner_only = false
 # 单次回复的总时间预算（秒）。
 request_timeout_seconds = 300
@@ -691,27 +691,25 @@ api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 #   /ctl set oai model_filter.keep ["gpt-5.6", "claude-opus-5"]
 [oai.model_filter]
 keep = [
-    "gpt-5.6", "gpt-5.5", "gpt-image-2.5",
-    "claude-opus-5", "claude-fable-5", "claude-sonnet-5", "claude-opus-4-8",
-    "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview",
-    "gemini-3-pro-image", "gemini-3.1-flash-image",
-    "grok-4.6", "grok-4.5",
-    "deepseek-v4-pro", "deepseek-v4-flash", "kimi-k3", "kimi-k2.6",
-    "qwen3.8-max", "glm-5.3", "minimax-m2.7", "mimo-v2.5", "doubao-seedream-5-0",
+    "gpt-6", "gpt-5.6", "gpt-image-2.5",
+    "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-haiku-5",
+    "gemini-4", "gemini-3.8-flash", "gemini-3-pro-image", "gemini-3.1-flash-image",
+    "grok-4.7", "grok-4.6",
+    "deepseek-v4.1", "deepseek-v4-pro", "kimi-k3", "qwen3.8-max", "glm-5.3",
+    "minimax-m2.7", "mimo-v2.6", "doubao-seed-2-0-pro", "doubao-seedream-5-0",
 ]
 # 同一模型的重复投影：发布日期快照、低算力/低分辨率档位、中转站自加的聚合别名。
 drop = [
     "-2025-", "-2026-", "-thinking-low", "-thinking-minimal", "thinking-*",
     "-lite", "-512px", "-2k", "-4k", "-all", "-beta",
-    "customtools", "highspeed", "lightning", "-image-preview", "-vision-exp",
+    "customtools", "highspeed", "lightning", "-image-preview", "-vision-exp", "-flash-0",
 ]
 
-# 联网搜索：内置 agent 房间的 web_search / web_fetch 两个出网工具。
+# 联网搜索：联网、全量两档房间的 web_search / web_fetch 两个出网工具。
 # 默认开启；群聊搭话那边也默认开着（[ambient] search_enabled），两个开关彼此独立，
 # 要关就各关各的。后端、预算与密钥在这里配一次，两边共用。
-# 这里是「没单设过的房间」的默认值；每间房用符号指令自己定：`房间?` 换一边、
-# `房间?开` / `房间?关` 明确指定、`房间?默认` 回到这里。开着只是让模型能查，
-# 搜不搜由它自己按这句话需不需要判断，不会每轮都搜。
+# `enabled` 是房间这边的总闸：关了哪一档都不联网。每间房开不开联网看它的档位（`房间?联网`）；
+# 开着只是让模型能查，搜不搜由它自己按这句话需不需要判断，不会每轮都搜。
 [oai.search]
 enabled = true
 # 后端顺序：前一个不可用（没配密钥）或失败（超时/报错/零结果）就顺延到下一个。
@@ -724,7 +722,8 @@ enabled = true
 # 同一个后端可以写多份密钥（空白或逗号分隔），前一份失败（额度用尽、限流）
 # 就顺延到下一份——同一家的第二个账号就是第二份额度。
 # 免密钥抓取够日常用，但中文时效性内容（比赛战况、新版本）的召回不如商业接口；
-# 只要在下面配上 tavily 之类的密钥，它就会自动排到最前面。
+# 只要在下面配上 tavily 之类的密钥，它就会自动排到免密钥抓取前面（DeepSeek 之后）。
+# DeepSeek 配上了就总在最前：手写的清单里没写 deepseek 也会补在链首。
 providers = ["auto"]
 # 一轮对话里搜索与抓取加起来最多几次。
 max_uses = 4
@@ -836,7 +835,7 @@ draw_budget = 2
 music_budget = 1
 # 每轮最多生成几段视频（走 [oai] 配置的视频接口）；0 关闭视频生成。服务可能收费。
 video_budget = 1
-# 表情包库上限；普通图片保存在 data/oai/chat/stickers/，并与 Agent 房间共用。
+# 表情包库上限；普通图片保存在 data/oai/chat/stickers/，并与房间共用。
 # 超出上限时清理较少使用的项目；0 关闭收藏。
 sticker_max = 120
 # 消息时效窗口（秒）：请求交给 satori-qq 之后还要排队，这段时间里群里只要又有人

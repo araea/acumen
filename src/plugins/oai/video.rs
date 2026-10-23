@@ -286,7 +286,7 @@ pub(crate) struct Generated {
 
 /// 提交一次生成并等到出片。
 ///
-/// 与房间的回复构造解耦，供普通房间（[`generate_reply`]）与群聊搭话的拍片工具共用。
+/// 与房间的回复构造解耦，供拍片房间（[`generate_reply`]）与群聊搭话的拍片工具共用。
 pub(crate) async fn generate(
     api_base: &str,
     api_key: &str,

@@ -18,7 +18,10 @@
 //! - [`schedule`]：`schedule`，提醒与定时任务的工具面（存储与到点执行在 [`super::remind`]）。
 //!
 //! 与从前那套外部 CLI 最大的行为差别是**没有会话文件**：房间历史始终由 acumen 侧持有，
-//! 每轮按需展开成消息，所以编辑/删除/清空/重新生成的行为与普通房间完全一致。
+//! 每轮按需展开成消息，所以编辑/删除/清空/重新生成都只是改历史。
+//!
+//! 所有房间都走这里，工具多少由房间的档位（[`super::types::Tools`]）决定：不挂工具的
+//! 一轮就是一次请求，与从前的「普通房间」等价，只是历史、追加话、身份注记都是同一套。
 
 pub(crate) mod bash;
 pub(crate) mod compact;
@@ -197,12 +200,13 @@ pub(crate) trait ChatBridge: Send + Sync {
     fn call<'a>(&'a self, call_id: &'a str, op: &'a str, params: Value) -> BoxFuture<'a, Value>;
 }
 
-/// 解析房间的写法：`agent`、`agent 模型`、`agent/模型`、`agent:模型`（大小写与全角冒号皆可）。
+/// 旧写法 `agent`、`agent 模型`、`agent/模型`、`agent:模型`（大小写与全角冒号皆可）：
+/// 现在等于「全量工具 + 这个模型」。
 ///
 /// 返回 `Some(模型)`——空串表示房间没指定模型，用 `[oai] agent_default_model`。
-/// 不是这个写法时返回 `None`，调用方按中转站模型处理。
+/// 不是这个写法时返回 `None`。
 pub(crate) fn parse_agent_spec(spec: &str) -> Option<String> {
-    /// 引擎关键字。写模型位时它代替模型名，说「这间房交给内置智能体」。
+    /// 从前的引擎关键字，写在模型位上。
     const KEYWORD: &str = "agent";
     let spec = spec.trim();
     let tail = spec
@@ -218,9 +222,9 @@ pub(crate) fn parse_agent_spec(spec: &str) -> Option<String> {
     }
 }
 
-/// 房间模型是否表示「用默认模型」：留空或写 `agent`。
+/// 房间模型是否表示「用默认模型」：留空或写 `agent`（旧写法）。
 ///
-/// 留空时由 `[oai] agent_default_model` 接手；写 `agent` 是同一件事的显式说法。
+/// 留空时由 `[oai] agent_default_model` 接手。
 pub(crate) fn uses_default_model(model: &str) -> bool {
     let model = model.trim();
     model.is_empty() || model.eq_ignore_ascii_case("agent")
@@ -279,7 +283,7 @@ pub(crate) struct AgentRun<'a> {
     pub model: &'a str,
     /// 思考强度（off/minimal/low/…）。
     pub thinking: Option<&'a str>,
-    /// 采样温度；`None` 交给接口默认值。群聊那边调高，判定与普通房间不动。
+    /// 采样温度；`None` 交给接口默认值。群聊那边调高，判定与房间不动。
     pub temperature: Option<f64>,
     /// 额外载入的 skill 文件或目录。
     pub skills: &'a [PathBuf],
@@ -404,6 +408,9 @@ pub(crate) struct ChatContext {
     pub authority: crate::plugins::oai::chat::Authority,
 }
 
+/// 联网档的工具白名单。
+const LIGHT_WEB_TOOLS: &str = "web_search,web_fetch";
+
 /// 总预算 `budget` 之内留给收尾的那一截。
 ///
 /// 要盖住两件事：正在飞的那一步（模型请求加工具，检查期限只能在步与步之间）还得跑完，
@@ -420,11 +427,16 @@ pub(crate) fn soft_deadline(budget: std::time::Duration) -> std::time::Instant {
 /// 房间对话：按历史展开消息，驱动一轮 agent。
 ///
 /// 房间历史仍是唯一事实来源；中途的工具调用不写回历史，下一轮按历史重新展开。
+///
+/// `tools` 是房间的档位：全量照旧（管家的整套提示词、群聊能力层、办事台）；联网与无工具
+/// 两档换一份轻量的提示词（见 [`run::light_prompt`]），不开群聊能力层——一间只聊天或只查资料的
+/// 房间，不该每轮都背着十几 k 字它用不上的工具说明。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn conversation(
     api_base: &str,
     api_key: &str,
     base: &Path,
+    tools: super::types::Tools,
     persona: &str,
     model: &str,
     thinking: Option<&str>,
@@ -441,8 +453,10 @@ pub(crate) async fn conversation(
         .filter(|(message, _)| message.role == "user")
         .ok_or_else(|| anyhow::anyhow!("没有可重新生成的用户消息，请先发送内容"))?;
     let dir = ScratchDir::new(base)?;
+    let full = tools == super::types::Tools::Full;
+    let chat = chat.filter(|_| full);
     // 房间在群里时把群聊能力层接上：工具表里那十个 `satori_*` 因此才存在。
-    let (bridge, tools): (Option<std::sync::Arc<dyn ChatBridge>>, Option<&str>) = match &chat {
+    let (bridge, whitelist): (Option<std::sync::Arc<dyn ChatBridge>>, Option<&str>) = match &chat {
         Some(chat) => {
             let opened = crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
                 ctx: &chat.ctx,
@@ -468,10 +482,16 @@ pub(crate) async fn conversation(
         }
         None => (None, None),
     };
+    // 轻量两档用白名单收住：联网档只有那两件出网工具，无工具档一件都不给。
+    let whitelist = match tools {
+        super::types::Tools::Full => whitelist,
+        super::types::Tools::Web => Some(LIGHT_WEB_TOOLS),
+        super::types::Tools::Off => Some(""),
+    };
     // 搜索状态一轮一份：预算、客户端与引用来源都随这一轮生灭。
-    let web = search
-        .enabled
-        .then(|| super::search::Search::new(search.clone()));
+    let web = (search.enabled && tools.web()).then(|| super::search::Search::new(search.clone()));
+    let room = seat.as_ref().map_or("", |seat| seat.room.as_str());
+    let light = (!full).then(|| run::light_prompt(room, tools, web.is_some(), persona));
     // 房间的工作目录沿用 bot 自身：与从前一致，bash 与文件工具都在这里活动。
     let cwd = std::env::current_dir().ok();
     run::run_with_history(
@@ -480,13 +500,14 @@ pub(crate) async fn conversation(
             api_key,
             dir: dir.path(),
             cwd: cwd.as_deref(),
+            system_prompt: light.as_deref(),
             append_system_prompt: persona,
             model,
             thinking: thinking.filter(|value| !value.trim().is_empty()),
-            room: seat.as_ref().map_or("", |seat| seat.room.as_str()),
+            room,
             seat: seat.as_ref(),
             steer,
-            tools,
+            tools: whitelist,
             bridge,
             stall,
             web: web.as_ref(),

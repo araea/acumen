@@ -1,4 +1,4 @@
-use super::types::{Config, GeneratingState, MjCache};
+use super::types::{Config, GeneratingState, MjCache, Tools};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
@@ -9,7 +9,7 @@ use super::LOG_TARGET;
 
 const DEFAULT_MODEL: &str = "gpt-5.6-luna";
 const LEGACY_DEFAULT_MODEL: &str = "gpt-4o";
-const CURRENT_DEFAULTS_VERSION: u32 = 5;
+const CURRENT_DEFAULTS_VERSION: u32 = 6;
 
 /// 旧版建房间时自动填充的默认系统提示词，现已改为留空；迁移时按原样匹配后清掉。
 const LEGACY_DEFAULT_PROMPT: &str = "You are a helpful assistant.";
@@ -92,7 +92,7 @@ impl Manager {
             // 早先补建的管家大人把中转站默认模型抄成了自己的模型：那个模型要中转站密钥，
             // 只填了 DeepSeek 的新用户一问就是「API 未配置」。改回「跟随默认模型」。
             for agent in &mut config.agents {
-                if agent.uses_agent()
+                if ["agent", "pi"].contains(&agent.engine.trim().to_ascii_lowercase().as_str())
                     && agent.name.eq_ignore_ascii_case(BUILTIN_ROOM)
                     && [DEFAULT_MODEL, "deepseek/deepseek-flash"]
                         .iter()
@@ -101,16 +101,17 @@ impl Manager {
                     agent.model = String::new();
                 }
             }
+            // 1.22.0 起不再分「普通房间 / 智能体房间」，所有房间都是智能体，差别只在工具档位：
+            // 从前的智能体房间开全量，普通房间不挂工具——升级前后每间房能做的事不变。
+            for agent in &mut config.agents {
+                agent.tools = if ["agent", "pi"].contains(&agent.engine.trim().to_ascii_lowercase().as_str()) {
+                    Tools::Full
+                } else {
+                    Tools::Off
+                };
+            }
             config.defaults_version = CURRENT_DEFAULTS_VERSION;
             config_dirty = true;
-        }
-
-        // 引擎关键字从 `pi` 改成 `agent`：老配置里写着旧值，改一次就好。
-        for agent in &mut config.agents {
-            if agent.engine.trim().eq_ignore_ascii_case("pi") {
-                agent.engine = super::types::ENGINE_AGENT.to_string();
-                config_dirty = true;
-            }
         }
 
         // `模型:强度` 的旧写法收进独立的 `thinking` 字段：行为等价，但让强度可单独
@@ -137,13 +138,14 @@ impl Manager {
             {
                 // 模型留空 = 跟随 `[oai] agent_default_model`（默认 deepseek/deepseek-flash）：
                 // 填了 DeepSeek 密钥就能用，换默认模型时也不必逐间房去改。
+                // 管家大人是来办事的：别的房间建出来不挂工具，它一建好就是全量。
                 let mut room = super::types::Agent::new(
                     BUILTIN_ROOM,
                     "",
                     BUILTIN_PERSONA,
                     "终端与联网工具助手",
                 );
-                room.set_engine(super::types::ENGINE_AGENT, "");
+                room.tools = Tools::Full;
                 config.agents.push(room);
             }
             config.seeded_presets.push(BUILTIN_ROOM.to_string());

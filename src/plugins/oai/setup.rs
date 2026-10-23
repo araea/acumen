@@ -11,7 +11,12 @@
 //! - `oai <供应商> <密钥>`：认得的供应商（[`super::catalog::KNOWN`]，名字或别名）或已经配过的名字；
 //! - `oai <名字> <地址> <密钥>`：自己的中转站，地址与密钥顺序随意；
 //! - `oai <地址> <密钥>`：默认接口（不带供应商前缀的模型走它，从前就是这么配的）；
-//! - `oai <供应商> 清除`：清掉这一家的密钥。
+//! - `oai <供应商> 清除`：清掉这一家的密钥；
+//! - `oai 用 <模型>`：换默认模型（`[oai] agent_default_model`），没单独写模型的房间都跟着换。
+//!   可以只写供应商名（取它的推荐模型）、`供应商/模型`、只写模型名，或 `/%` 里的序号。
+//!
+//! 接上第一家能用的供应商时，默认模型若还指着一家没接的，就顺手换成这一家的推荐模型：
+//! 只填了小米密钥的新用户，不该还要再学一条指令才能让管家大人开口。
 //!
 //! 改接口只有号主与 `ctl.admins` 能做：换一个 `api_base` 就能把所有对话寄到别人的服务器上。
 //! 存好之后试着撤回带密钥的那条消息（号主就在自己的账号上打字，打在哪个对话框里别人都看得见），
@@ -36,7 +41,12 @@ pub enum Connect {
     Provider { name: String, base: String, key: String },
     /// 清掉一家的密钥。
     Clear { name: String },
+    /// 换默认模型；空串表示只看现在用的是哪个、还能换成什么。
+    Use { spec: String },
 }
+
+/// `oai 用 …` 的那个词。
+const USE_WORDS: [&str; 4] = ["用", "默认", "换", "use"];
 
 fn is_url(token: &str) -> bool {
     let lower = token.to_ascii_lowercase();
@@ -61,6 +71,9 @@ fn is_name(token: &str) -> bool {
 pub fn parse(rest: &str) -> Option<Connect> {
     let tokens: Vec<&str> = rest.split_whitespace().collect();
     match tokens.as_slice() {
+        [word, spec @ ..] if USE_WORDS.contains(&word.to_ascii_lowercase().as_str()) && spec.len() <= 1 => {
+            Some(Connect::Use { spec: spec.first().map_or_else(String::new, |spec| (*spec).to_string()) })
+        }
         [a, b] if is_url(a) && is_key(b) => Some(Connect::Default { base: (*a).into(), key: (*b).into() }),
         [a, b] if is_key(a) && is_url(b) => Some(Connect::Default { base: (*b).into(), key: (*a).into() }),
         [name, word] if is_name(name) && ["清除", "删除", "clear", "-"].contains(word) => {
@@ -91,6 +104,7 @@ pub async fn connect(request: Connect, ctx: &Context, writer: &LockedWriter, mgr
         Connect::Default { base, key } => connect_default(base, key, mgr).await,
         Connect::Provider { name, base, key } => connect_provider(ctx, &oai, mgr, name, base, key).await,
         Connect::Clear { name } => clear_provider(ctx, &oai, name).await,
+        Connect::Use { spec } => use_model(ctx, &oai, mgr, spec).await,
     };
     let mut text = match outcome {
         Ok(text) => text,
@@ -100,7 +114,7 @@ pub async fn connect(request: Connect, ctx: &Context, writer: &LockedWriter, mgr
     // 带密钥的那条消息留在会话里不妥（号主多半是在某个群或某个好友的对话框里打的）：
     // 能撤就撤，撤不回就让号主去重置。本机控制台没有「别人看得见」的问题；清除不带密钥。
     let console = ctx.bot.adapter == "console" && ctx.bot.platform == "console";
-    if !console && !matches!(request, Connect::Clear { .. }) {
+    if !console && matches!(request, Connect::Default { .. } | Connect::Provider { .. }) {
         match api::delete_msg(ctx, writer.clone(), event.message_id()).await {
             Ok(()) => text.push_str("\n\n带密钥的那条消息已撤回。"),
             Err(error) => {
@@ -111,7 +125,10 @@ pub async fn connect(request: Connect, ctx: &Context, writer: &LockedWriter, mgr
     }
     reply_text(ctx, writer, &event, text).await;
 
-    // 列表刷新放在回话之后：多家供应商一起拉要一两秒，不让号主干等。
+    // 列表刷新放在回话之后：多家供应商一起拉要一两秒，不让号主干等。换默认模型不动接口，不必拉。
+    if matches!(request, Connect::Use { .. }) {
+        return;
+    }
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     if let Err(error) = mgr.fetch_models(&oai.model_filter, &oai.providers).await {
         debug!(target: LOG_TARGET, "接入后刷新模型列表失败：{error}");
@@ -194,8 +211,144 @@ async fn connect_provider(
     .await?;
     info!(target: LOG_TARGET, "号主接入了供应商 {entry_name}（{base}）");
 
+    // 默认模型指着一家没接的（新装好的机器人都指着 DeepSeek）：换成刚接上的这家，
+    // 省得号主再学一条 `oai 用`。默认模型本来就能用时不动——接第二家不该改掉号主的选择。
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-    Ok(format!("✅ {label} 已接上（{note}）。\n{}", butler_line(&oai, mgr).await))
+    let mut switched = String::new();
+    let (_, current) = butler_spec(&oai, mgr).await;
+    if !spec_ready(&oai, mgr, &current).await
+        && let Some(model) = known.map(|known| known.model).filter(|model| !model.is_empty())
+    {
+        let spec = format!("{entry_name}/{model}");
+        match set_default_model(ctx, &spec).await {
+            Ok(()) => switched = format!("默认模型 {current} 这家还没接，已换成 {spec}。\n"),
+            Err(error) => debug!(target: LOG_TARGET, "接入后换默认模型失败：{error}"),
+        }
+    }
+    let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
+    Ok(format!("✅ {label} 已接上（{note}）。\n{switched}{}", butler_line(&oai, mgr).await))
+}
+
+/// 把 `[oai] agent_default_model` 写成 `spec`（经 ctl，与控制台同一条事务）。
+async fn set_default_model(ctx: &Context, spec: &str) -> Result<(), String> {
+    let spec = spec.to_string();
+    crate::plugins::ctl::change(ctx, move |cfg| {
+        let oai = cfg.plugins.get_mut("oai").and_then(Value::as_table_mut).ok_or("oai 配置不存在")?;
+        oai.insert("agent_default_model".into(), Value::String(spec));
+        Ok(String::new())
+    })
+    .await
+    .map(|_| ())
+}
+
+/// 这个模型写法现在打得通吗：它的供应商（或默认接口）有地址也有密钥。
+async fn spec_ready(oai: &super::OaiConfig, mgr: &Manager, spec: &str) -> bool {
+    let (provider, _) = super::utils::split_provider(spec);
+    let (base, key) = {
+        let c = mgr.config.read().await;
+        (c.api_base.clone(), c.api_key.clone())
+    };
+    super::resolve_endpoint(&oai.providers, &base, &key, provider.as_deref())
+        .is_some_and(|(base, key)| !base.is_empty() && !key.is_empty())
+}
+
+/// `oai 用 <模型>`：换默认模型。
+///
+/// 写法从宽：供应商名（取推荐模型；没有推荐的列出它的模型让号主挑）、`供应商/模型`、
+/// 只写模型名或 `/%` 序号（在完整列表里找）。换之前确认这家接上了——换成一个打不通的模型，
+/// 下一句话就是满屏报错。
+async fn use_model(ctx: &Context, oai: &super::OaiConfig, mgr: &Manager, spec: &str) -> Result<String, String> {
+    let (_, current) = butler_spec(oai, mgr).await;
+    let spec = spec.trim();
+    if spec.is_empty() {
+        let mut lines = vec![format!("默认模型：{current}{}", if spec_ready(oai, mgr, &current).await { "" } else { "（这家还没接上）" })];
+        let ready: Vec<String> = catalog::ready(&oai.providers)
+            .into_iter()
+            .map(|(name, known)| match known.map(|known| known.model).filter(|model| !model.is_empty()) {
+                Some(model) => format!("`oai 用 {name}`（{name}/{model}）"),
+                None => format!("`oai 用 {name}/模型`"),
+            })
+            .collect();
+        if ready.is_empty() {
+            lines.push("还没接任何供应商：先发 `oai deepseek 密钥`".to_string());
+        } else {
+            lines.push(format!("能换成：{}", ready.join("、")));
+        }
+        lines.push("也可以写 `/%` 里的序号或模型名；只想换一间房就用 `房间%模型`。".to_string());
+        return Ok(lines.join("\n"));
+    }
+
+    let (models, provider_models) = {
+        let c = mgr.config.read().await;
+        (Manager::all_models(&c), c.provider_models.clone())
+    };
+    // 只写了供应商名：取它的推荐模型；没有推荐就把它的模型列出来。
+    let as_provider = (!spec.contains('/'))
+        .then(|| catalog::configured(&oai.providers, spec).map(|(name, _)| name.to_string()).or_else(|| catalog::find(spec).map(|known| known.id.to_string())))
+        .flatten();
+    let target = if let Some(name) = as_provider {
+        match catalog::find(&name).map(|known| known.model).filter(|model| !model.is_empty()) {
+            Some(model) => format!("{name}/{model}"),
+            None => {
+                let listed = provider_models.get(&name).map(Vec::as_slice).unwrap_or_default();
+                if listed.is_empty() {
+                    return Err(format!("{name} 没有推荐模型，写全：`oai 用 {name}/模型名`（先 `/%` 看它有哪些）"));
+                }
+                let shown: Vec<&str> = listed.iter().take(12).map(String::as_str).collect();
+                return Err(format!(
+                    "{name} 没有推荐模型，挑一个写全：`oai 用 {name}/模型名`\n它有：{}{}",
+                    shown.join("、"),
+                    if listed.len() > shown.len() { "……（`/%` 看全部）" } else { "" }
+                ));
+            }
+        }
+    } else {
+        match super::utils::split_provider(spec) {
+            (Some(_), _) => spec.to_string(),
+            (None, bare) => mgr.resolve_model(&bare, &models).unwrap_or(bare),
+        }
+    };
+    if !spec_ready(oai, mgr, &target).await {
+        let (provider, _) = super::utils::split_provider(&target);
+        return Err(match provider {
+            Some(name) if super::resolve_endpoint(&oai.providers, "", "", Some(&name)).is_some() => {
+                format!("{target} 打不通：{}", catalog::missing_key_hint(&name))
+            }
+            Some(name) => format!("不认得供应商「{name}」。认得的有：{}；自己的中转站先 `oai {name} 地址 密钥`", known_names()),
+            None => format!("{target} 走默认接口，而默认接口还没配：先 `oai 地址 密钥`，或写成 `供应商/模型`"),
+        });
+    }
+    if target == current {
+        return Ok(format!("默认模型本来就是 {target}"));
+    }
+    set_default_model(ctx, &target).await?;
+    info!(target: LOG_TARGET, "默认模型：{current} → {target}");
+
+    // 说清楚谁跟着换了、谁没换：单独写了模型的房间不受影响。
+    let (following, pinned): (Vec<String>, Vec<String>) = {
+        let c = mgr.config.read().await;
+        let following = c
+            .agents
+            .iter()
+            .filter(|agent| super::agent::uses_default_model(&agent.model))
+            .map(|agent| agent.name.clone())
+            .collect();
+        let pinned = c
+            .agents
+            .iter()
+            .filter(|agent| !super::agent::uses_default_model(&agent.model))
+            .map(|agent| format!("{}（{}）", agent.name, agent.model))
+            .collect();
+        (following, pinned)
+    };
+    let mut text = format!("✅ 默认模型：{current} → {target}");
+    if !following.is_empty() {
+        text.push_str(&format!("\n跟着换的房间：{}", following.join("、")));
+    }
+    if !pinned.is_empty() {
+        text.push_str(&format!("\n单独写了模型、没换的：{}（`房间%默认` 改成跟随）", pinned.join("、")));
+    }
+    Ok(text)
 }
 
 async fn clear_provider(ctx: &Context, oai: &super::OaiConfig, name: &str) -> Result<String, String> {
@@ -223,14 +376,14 @@ fn known_names() -> String {
     catalog::KNOWN.iter().map(|known| known.id).collect::<Vec<_>>().join("、")
 }
 
-/// 内置智能体房间（优先管家大人）的名字与它实际用的模型写法。
+/// 管家大人（不在了就找一间全量档的房间）的名字与它实际用的模型写法。
 pub(crate) async fn butler_spec(oai: &super::OaiConfig, mgr: &Manager) -> (String, String) {
     let c = mgr.config.read().await;
     let room = c
         .agents
         .iter()
-        .find(|agent| agent.uses_agent() && agent.name == super::data::BUILTIN_ROOM)
-        .or_else(|| c.agents.iter().find(|agent| agent.uses_agent()));
+        .find(|agent| agent.name == super::data::BUILTIN_ROOM)
+        .or_else(|| c.agents.iter().find(|agent| agent.tools == super::types::Tools::Full));
     let name = room.map_or(super::data::BUILTIN_ROOM, |room| room.name.as_str()).to_string();
     let spec = match room {
         Some(room) if !super::agent::uses_default_model(&room.model) => room.model.clone(),
@@ -254,14 +407,14 @@ async fn butler_line(oai: &super::OaiConfig, mgr: &Manager) -> String {
         None => !mgr.config.read().await.api_key.is_empty(),
     };
     let mut line = if ready {
-        format!("{room}用 {spec}，可以直接用了")
+        format!("默认模型 {spec}，{room}可以直接用了")
     } else {
-        let mut line = format!("{room}用 {spec}，但这家还没配好");
+        let mut line = format!("默认模型 {spec}，但这家还没配好");
         if let Some((name, Some(known))) = catalog::ready(&oai.providers)
             .into_iter()
             .find(|(_, known)| known.is_some_and(|known| !known.model.is_empty()))
         {
-            line.push_str(&format!("；可换成已接上的：{room}%{name}/{}", known.model));
+            line.push_str(&format!("；可换成已接上的：`oai 用 {name}`（{name}/{}）", known.model));
         }
         line
     };
@@ -316,7 +469,7 @@ pub async fn status(oai: &super::OaiConfig, mgr: &Manager) -> String {
         if rows.is_empty() { "一家都没配".to_string() } else { rows.join(" · ") }
     ));
     out.push_str(&format!(
-        "\n接入一家：`oai deepseek 密钥`（存好后自动撤回带密钥的那条消息）\n自己的中转站：`oai 名字 地址 密钥`；默认接口：`oai 地址 密钥`；清掉：`oai 名字 清除`\n认得的供应商：{}\n",
+        "\n接入一家：`oai deepseek 密钥`（存好后自动撤回带密钥的那条消息）\n换默认模型：`oai 用 mimo`、`oai 用 deepseek/deepseek-pro`、`oai 用 序号`\n自己的中转站：`oai 名字 地址 密钥`；默认接口：`oai 地址 密钥`；清掉：`oai 名字 清除`\n认得的供应商：{}\n",
         known_names()
     ));
     out

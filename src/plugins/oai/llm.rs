@@ -1,6 +1,6 @@
 //! OpenAI 兼容补全的唯一入口。
 //!
-//! 普通房间与判定都从这里发一轮请求：接口地址、密钥、模型 id 由调用方解析好，
+//! 判定、描述生成这类单轮请求都从这里发：接口地址、密钥、模型 id 由调用方解析好，
 //! 这里只负责拼请求、发出去、把候选回复里的文本取出来。
 //!
 //! 之前这层用 `async-openai`，两个痛点：它的强类型反序列化对「字段不全」的
@@ -49,7 +49,7 @@ fn reasoning_effort(level: &str) -> Option<&'static str> {
 
 /// 组装一次补全请求。
 ///
-/// `tools` 为空就是普通房间的形态——请求里连 tools 字段都不会有意义；
+/// `tools` 为空就是单轮问答的形态——请求里连 tools 字段都不会有意义；
 /// 思考强度走 `additional_params.reasoning_effort`，由 provider 扁平进顶层。
 /// `temperature` 为 `None` 时连这个字段都不发，交给接口自己的默认值。
 pub(crate) fn request(
@@ -81,7 +81,7 @@ pub(crate) fn text_of(choice: &[AssistantContent]) -> String {
 
 /// 单轮补全：无工具、无历史维护，返回候选回复的正文。
 ///
-/// 普通房间与群聊判定都走这里；带工具的多轮循环在 [`super::agent`]。
+/// 群聊判定、描述生成这类单轮请求走这里；房间（含不挂工具的）一律走 [`super::agent`]。
 pub(crate) async fn complete(
     api_base: &str,
     api_key: &str,

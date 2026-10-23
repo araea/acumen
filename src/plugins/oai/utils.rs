@@ -13,34 +13,43 @@ pub static RE_IDX: OnceLock<Regex> = OnceLock::new();
 /// 站点上新时改 `[oai] model_filter.keep` 即可，不必改代码。
 pub const DEFAULT_MODEL_KEEP: &[&str] = &[
     // OpenAI
+    "gpt-6",
     "gpt-5.6",
-    "gpt-5.5",
     "gpt-image-2.5",
-    // Anthropic
+    // Anthropic（`claude-opus-5` 同时命中 5 与 5-5）
     "claude-opus-5",
-    "claude-fable-5",
     "claude-sonnet-5",
-    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-haiku-5",
     // Google
+    "gemini-4",
     "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.1-pro-preview",
     "gemini-3-pro-image",
     "gemini-3.1-flash-image",
     // xAI
+    "grok-4.7",
     "grok-4.6",
-    "grok-4.5",
     // 国内
+    "deepseek-v4.1",
     "deepseek-v4-pro",
-    "deepseek-v4-flash",
     "kimi-k3",
-    "kimi-k2.6",
     "qwen3.8-max",
     "glm-5.3",
     "minimax-m2.7",
-    "mimo-v2.5",
+    "mimo-v2.6",
+    "doubao-seed-2-0-pro",
     "doubao-seedream-5-0",
 ];
+
+/// 从前几版的默认保留清单。配置里原样留着其中一份的，说明号主没动过它：
+/// 升级时换成 [`DEFAULT_MODEL_KEEP`]（见 `OaiConfig::migrate`），自己改过的不碰。
+pub(crate) const RETIRED_MODEL_KEEP: &[&[&str]] = &[&[
+    "gpt-5.6", "gpt-5.5", "gpt-image-2.5", "claude-opus-5", "claude-fable-5", "claude-sonnet-5",
+    "claude-opus-4-8", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview",
+    "gemini-3-pro-image", "gemini-3.1-flash-image", "grok-4.6", "grok-4.5", "deepseek-v4-pro",
+    "deepseek-v4-flash", "kimi-k3", "kimi-k2.6", "qwen3.8-max", "glm-5.3", "minimax-m2.7",
+    "mimo-v2.5", "doubao-seedream-5-0",
+]];
 
 /// 默认剔除的模型关键字，优先于 `DEFAULT_MODEL_KEEP`。
 /// 命中的多是同一模型的重复投影：带发布日期的快照、低算力/低分辨率档位，
@@ -62,6 +71,8 @@ pub const DEFAULT_MODEL_DROP: &[&str] = &[
     "lightning",
     "-image-preview",
     "-vision-exp",
+    // 同一个模型的日期快照（`deepseek-v4.1-flash-0910`）
+    "-flash-0",
 ];
 
 /// 模型列表过滤规则。两份关键字都不区分大小写、按子串匹配。

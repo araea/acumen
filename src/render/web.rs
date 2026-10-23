@@ -87,7 +87,8 @@ pub struct DiffRow {
 pub struct RoomRow {
     pub name: String,
     pub desc: String,
-    pub search: bool,
+    /// 名字旁的小标签（房间的工具档位）；没有就不画。
+    pub tag: Option<&'static str>,
     /// 分区标题里没写模型的行才自己带一行模型。
     pub model: Option<String>,
 }
@@ -260,6 +261,11 @@ fn code_lines(lang: Option<&str>, lines: &[String]) -> String {
 }
 
 pub fn html(doc: &Doc) -> String {
+    html_at(doc, &stamp())
+}
+
+/// 同 [`html`]，页眉的出图时刻由调用方给：缓存键要的是「去掉时刻」的那一份。
+fn html_at(doc: &Doc, stamp: &str) -> String {
     let mut body = String::new();
     for block in &doc.blocks {
         match block {
@@ -289,7 +295,7 @@ pub fn html(doc: &Doc) -> String {
                 for room in rooms {
                     body.push_str(&format!("<li><div class=room-name><h3>{}</h3>{}</div><div class=room-body><p class=room-desc>{}</p>{}</div></li>",
                         esc(&room.name),
-                        if room.search { "<span class=room-tag>联网</span>" } else { "" },
+                        room.tag.map(|tag| format!("<span class=room-tag>{}</span>", esc(tag))).unwrap_or_default(),
                         esc(&room.desc),
                         room.model.as_ref().map(|m| format!("<code class=room-model>{}</code>", esc(m))).unwrap_or_default()));
                 }
@@ -391,7 +397,7 @@ pub fn html(doc: &Doc) -> String {
         css = include_str!("../../res/cards/reading.css"),
         width = doc.width,
         kicker = esc(kicker_en(&doc.kicker)),
-        stamp = esc(&stamp()),
+        stamp = esc(stamp),
         hint = esc(&doc.hint.0),
         command = esc(&doc.hint.1),
         foot = esc(&doc.foot)
@@ -542,12 +548,71 @@ impl<'a> Shot<'a> {
 }
 
 pub async fn capture(doc: &Doc, scale: f64, browser_path: Option<&str>) -> Result<String> {
-    shoot(
+    let key = cache::key(&html_at(doc, ""), scale);
+    if let Some(hit) = cache::get(&key) {
+        return Ok(hit);
+    }
+    let shot = shoot(
         Shot::new(&html(doc), doc.width as u32)
             .scale(scale)
             .browser(browser_path),
     )
-    .await
+    .await?;
+    cache::put(key, &shot);
+    Ok(shot)
+}
+
+/// 结构化卡片的成图缓存。
+///
+/// 手册、控制、房间与模型列表这几类卡片，内容只随配置变：同一张帮助卡一天被叫几十次，
+/// 每次都开一页 Chromium、等字体、截图，白占一两秒和几十 MB。所以按「页面内容」记下成图，
+/// 内容一样就直接发上次那张。
+///
+/// - **键是去掉出图时刻的整页 HTML**（加出图倍率）：任何一个字、一枚状态变了，键就变了，
+///   不会发出过时的图；页眉的时刻不进键，否则每分钟都是新键。命中时图上的时刻是上次出图的时刻，
+///   而那一刻起内容确实没变过——它说的仍是实话。
+/// - 只放进程内存，不落盘：样式表是编译进来的，换了版本就该重出。
+/// - 最多 [`cache::CAPACITY`] 张，最旧的先走；超过 [`cache::TTL`] 的也重出，让时刻别旧得离谱。
+///
+/// 模型写的回复卡（`oai::render`）每张都不同，不走这里。
+mod cache {
+    use std::collections::VecDeque;
+    use std::sync::{LazyLock, Mutex, PoisonError};
+    use std::time::{Duration, Instant};
+
+    pub(super) const CAPACITY: usize = 12;
+    pub(super) const TTL: Duration = Duration::from_hours(12);
+
+    type Entries = VecDeque<(String, Instant, String)>;
+    static ENTRIES: LazyLock<Mutex<Entries>> = LazyLock::new(Default::default);
+
+    fn entries() -> std::sync::MutexGuard<'static, Entries> {
+        ENTRIES.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub(super) fn key(html: &str, scale: f64) -> String {
+        format!("{:x}@{}", md5::compute(html.as_bytes()), super::scale_factor(scale))
+    }
+
+    pub(super) fn get(key: &str) -> Option<String> {
+        let mut entries = entries();
+        entries.retain(|(_, at, _)| at.elapsed() < TTL);
+        let index = entries.iter().position(|(k, _, _)| k == key)?;
+        // 命中的挪到队尾：常用的那几张不会被偶尔出一次的卡挤掉。
+        let entry = entries.remove(index)?;
+        let image = entry.2.clone();
+        entries.push_back(entry);
+        Some(image)
+    }
+
+    pub(super) fn put(key: String, image: &str) {
+        let mut entries = entries();
+        entries.retain(|(k, _, _)| *k != key);
+        while entries.len() >= CAPACITY {
+            entries.pop_front();
+        }
+        entries.push_back((key, Instant::now(), image.to_string()));
+    }
 }
 
 /// 把一段自带样式的整页 HTML 截成图片的 base64。

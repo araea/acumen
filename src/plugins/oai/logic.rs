@@ -1,12 +1,12 @@
 use super::data::Manager;
 use super::parser::{Action, Command, Scope};
-use super::types::{Agent, ChatMessage};
+use super::types::{Agent, ChatMessage, Tools};
 use super::utils::{escape_markdown_special, format_export_txt, format_history};
 use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::event::{Context, MessageEvent};
 use crate::message::Message;
 use regex::Regex;
-use rig_core::completion::message::{DocumentSourceKind, Image, Text, UserContent};
+use rig_core::completion::message::{Text, UserContent};
 use rig_core::completion::Message as LlmMessage;
 use std::{fs::File, io::Write, sync::Arc};
 
@@ -482,8 +482,7 @@ fn prepare_history(
 
 /// 房间的模型落到哪个接口：返回（接口基址、密钥、发给接口的模型 id）；失败时是一句可以直接回给用户的话。
 ///
-/// 内置 agent 房间可以只写 `agent`（或干脆留空）表示「用默认模型」：先看 `[oai] agent_default_model`，
-/// 再退到 oai config.json 里的 default_model；普通房间没有这层回退——模型是建房时就定下的。
+/// 房间模型留空表示「用默认模型」：先看 `[oai] agent_default_model`，再退到 oai config.json 里的 default_model。
 /// 房间模型可以写成 `供应商/模型`，前缀决定打哪个接口，剥掉前缀的部分才是发给接口的模型 id。
 /// 定时任务到点开一轮时走的是同一条路，所以收在这里一处。
 pub(super) async fn room_endpoint(
@@ -492,7 +491,7 @@ pub(super) async fn room_endpoint(
     mgr: &Manager,
     api: &(String, String),
 ) -> Result<(String, String, String), String> {
-    let spec = if agent.uses_agent() && super::agent::uses_default_model(&agent.model) {
+    let spec = if super::agent::uses_default_model(&agent.model) {
         let fallback = mgr.config.read().await.default_model.clone();
         oai.agent_default_model().unwrap_or(fallback.as_str()).to_string()
     } else {
@@ -500,7 +499,7 @@ pub(super) async fn room_endpoint(
     };
     if spec.trim().is_empty() {
         return Err(format!(
-            "❌ {} 还没指定模型：用 `{}%供应商/模型` 设一个，或配置 [oai] agent_default_model",
+            "❌ {} 还没指定模型：用 `{}%供应商/模型` 设一个，或发 `oai 用 供应商/模型` 定下默认模型",
             agent.name, agent.name
         ));
     }
@@ -520,20 +519,24 @@ pub(super) async fn room_endpoint(
                 agent.name, agent.name
             ),
         };
-        // 别家已经接好了：直接给一条能抄的换法。
+        // 别家已经接好了：直接给一条能抄的换法。跟随默认模型的房间换默认模型（一次换齐），
+        // 单独写了模型的房间只换它自己。
         if let Some((name, Some(known))) = super::catalog::ready(&oai.providers)
             .into_iter()
             .find(|(_, known)| known.is_some_and(|known| !known.model.is_empty()))
         {
-            text.push_str(&format!("\n已经接好的 {} 也能用：{}%{name}/{}", known.name, agent.name, known.model));
+            if super::agent::uses_default_model(&agent.model) {
+                text.push_str(&format!("\n已经接好的 {} 也能用：号主发 `oai 用 {name}`，跟随默认模型的房间一起换", known.name));
+            } else {
+                text.push_str(&format!("\n已经接好的 {} 也能用：{}%{name}/{}", known.name, agent.name, known.model));
+            }
         }
         return Err(text);
     }
     Ok((api_base, api_key, chat_model))
 }
 
-/// 画图、MJ、写歌、拍片这些模型走各自的专用接口，只有普通房间会把话转给它们；
-/// 内置智能体只会聊天补全，接上这种模型只会在第一轮就报错。
+/// 画图、MJ、写歌、拍片这些模型走各自的专用接口：房间把话直接转给它们，工具档位不起作用。
 fn is_media_model(model: &str, oai: &super::OaiConfig) -> bool {
     let (_, id) = super::utils::split_provider(model);
     super::mj::is_mj_model(&id)
@@ -542,7 +545,12 @@ fn is_media_model(model: &str, oai: &super::OaiConfig) -> bool {
         || super::video::is_video_model(&id, &oai.video_models)
 }
 
-/// `chat`、`chat 模型`、`chat/模型`：把房间转成普通对话房间（不调工具）。写法同 [`super::agent::parse_agent_spec`]。
+/// 这间房的模型是不是画图 / 写歌 / 拍片模型。
+pub(super) fn is_media_room(agent: &Agent, oai: &super::OaiConfig) -> bool {
+    !super::agent::uses_default_model(&agent.model) && is_media_model(&agent.model, oai)
+}
+
+/// 旧写法 `chat`、`chat 模型`、`chat/模型`：现在等于「不挂工具 + 这个模型」。写法同 [`super::agent::parse_agent_spec`]。
 fn parse_chat_spec(spec: &str) -> Option<String> {
     const KEYWORD: &str = "chat";
     let spec = spec.trim();
@@ -558,23 +566,15 @@ fn parse_chat_spec(spec: &str) -> Option<String> {
     }
 }
 
-/// 一个模型写法落成（引擎, 模型）。
+/// 一个模型写法落成（档位, 模型）。
 ///
-/// - `agent [模型]` / `chat [模型]` 明说引擎；
-/// - 其余只换模型、**不换引擎**：管家大人写 `管家大人%deepseek-flash` 仍是内置智能体。
-///   从前 `%` 一律把房间转回普通对话，内置智能体换个模型就悄悄丢了全部工具；
-/// - 画图、写歌、拍片这类模型只能跑在普通房间里，写给智能体房间时自动转过去（回话里会说）。
-///
-/// 裸模型名在 `/%` 那份完整列表里找（序号、全名、只写模型名都行），找不到就原样用。
-fn resolve_room_model(
-    spec: &str,
-    room_is_agent: bool,
-    models: &[String],
-    mgr: &Manager,
-    oai: &super::OaiConfig,
-) -> (&'static str, String) {
+/// 只换模型、**不动工具档位**；旧写法 `agent [模型]` / `chat [模型]` 顺带把档位换成全量 / 无工具。
+/// 裸模型名在 `/%` 那份完整列表里找（序号、全名、只写模型名都行），找不到就原样用；
+/// `默认`（或 `-`）表示跟随默认模型。
+fn resolve_room_model(spec: &str, models: &[String], mgr: &Manager) -> (Option<Tools>, String) {
     let resolve = |text: &str| -> String {
-        if text.is_empty() {
+        let text = text.trim();
+        if text.is_empty() || ["默认", "-", "default"].contains(&text) {
             return String::new();
         }
         match super::utils::split_provider(text) {
@@ -584,29 +584,39 @@ fn resolve_room_model(
         }
     };
     if let Some(model) = super::agent::parse_agent_spec(spec) {
-        return (super::types::ENGINE_AGENT, resolve(&model));
+        return (Some(Tools::Full), resolve(&model));
     }
     if let Some(model) = parse_chat_spec(spec) {
-        return (super::types::ENGINE_CHAT, resolve(&model));
+        return (Some(Tools::Off), resolve(&model));
     }
-    let model = resolve(spec);
-    let engine = if room_is_agent && !is_media_model(&model, oai) {
-        super::types::ENGINE_AGENT
-    } else {
-        super::types::ENGINE_CHAT
-    };
-    (engine, model)
+    (None, resolve(spec))
 }
 
-/// `agent_owner_only` 开着时，别人叫智能体房间（对话、重来、停、导出……一概）就挡下，返回真。
+/// 全量档能跑命令、读写文件、改机器人设置：只有号主与机器人管理员能把房间开到这一档。
+/// 联网与无工具两档谁都能切。
+async fn full_denied(ctx: &Context, writer: &LockedWriter, event: &MessageEvent<'_>, name: &str) -> bool {
+    if crate::access::is_manager(ctx) {
+        return false;
+    }
+    reply_text(
+        ctx,
+        writer,
+        event,
+        format!("🔒 全量档能执行命令、读写文件、改机器人设置，只有号主与机器人管理员能打开；`{name}?联网` 谁都能开"),
+    )
+    .await;
+    true
+}
+
+/// `agent_owner_only` 开着时，别人叫全量档的房间（对话、重来、停、导出……一概）就挡下，返回真。
 /// 在取引用、收文件之前判，客人发来的文件不会先落进智能体的收件箱。
 pub(crate) async fn owner_only_denied(ctx: &Context, writer: &LockedWriter, name: &str, mgr: &Manager) -> bool {
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     if !oai.agent_owner_only || crate::access::is_manager(ctx) {
         return false;
     }
-    let is_agent = mgr.config.read().await.agents.iter().any(|a| a.name == name && a.uses_agent());
-    if !is_agent {
+    let full = mgr.config.read().await.agents.iter().any(|a| a.name == name && a.tools == Tools::Full);
+    if !full {
         return false;
     }
     if let Some(event) = ctx.as_message()
@@ -649,7 +659,6 @@ async fn chat(
         return;
     };
 
-    let use_agent = agent.uses_agent();
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
     let (api_base, api_key, chat_model) = match room_endpoint(&agent, &oai, mgr, &api).await {
         Ok(endpoint) => endpoint,
@@ -658,8 +667,10 @@ async fn chat(
             return;
         }
     };
-    // 按剥掉供应商前缀后的名字判家族，与后面的图像模型判断保持一致。
-    if !use_agent && super::mj::is_mj_model(&chat_model) {
+    // 画图、写歌、拍片房间走各自的专用接口；其余房间都是智能体（工具多少看档位）。
+    // 按剥掉供应商前缀后的名字判家族。
+    let media = is_media_model(&chat_model, &oai);
+    if super::mj::is_mj_model(&chat_model) {
         // MJ 房间天生是无历史任务流；引用文字也不应混入绘图提示词。
         super::mj::handle_agent(&agent, &cmd.args, imgs, ctx, writer, mgr).await;
         return;
@@ -669,17 +680,17 @@ async fn chat(
     let uid = event.user_id().to_string();
     let temp_mode = cmd.temp_mode;
     let asker = super::agent::Asker::from_event(ctx, &event);
-    // 公共历史是大家共用的：智能体房间里把说话人记在每句话上，下一轮展开时才不会张冠李戴。
-    let from = if use_agent && !is_priv_ctx { asker.tag() } else { String::new() };
+    // 公共历史是大家共用的：把说话人记在每句话上，下一轮展开时才不会张冠李戴。
+    let from = if !media && !is_priv_ctx { asker.tag() } else { String::new() };
 
     if !temp_mode {
         let busy = mgr.generating.read().await.is_generating(name, is_priv_ctx, &uid);
         if busy {
-            // 智能体房间里，发起这一轮的人又发了话：并进正在跑的这一轮（贴个赞表示收到），
+            // 发起这一轮的人又发了话：并进正在跑的这一轮（贴个赞表示收到），
             // 而不是让他等完再重发。带图的补充带不进去，仍按「正在生成」回。
             // 机器人自己发出去的话作为回声回来时，发送者也是账号自己：那不是号主在补充。
             let echo = uid == ctx.bot.self_id() && !event.is_manual_self();
-            if use_agent
+            if !media
                 && !echo
                 && !regen
                 && imgs.is_empty()
@@ -739,8 +750,8 @@ async fn chat(
     mark_working(ctx, writer, &event, true).await;
 
     let started = std::time::Instant::now();
-    // 内置智能体房间这一轮的办事台：谁在问、在哪儿、够不够得着机器人本体（见 `agent::Seat`）。
-    let seat = use_agent.then(|| super::agent::Seat {
+    // 这一轮的办事台：谁在问、在哪儿、够不够得着机器人本体（见 `agent::Seat`）。
+    let seat = (!media).then(|| super::agent::Seat {
         room: name.to_string(),
         asker: asker.clone(),
         ctx: ctx.clone(),
@@ -751,7 +762,7 @@ async fn chat(
         public: false,
     });
     // 这一轮进行当中，发起人又发来的话排在这个信箱里（临时对话不占会话，不开）。
-    let steering = (use_agent && !temp_mode).then(|| mgr.open_steering(name, is_priv_ctx, &uid));
+    let steering = (!media && !temp_mode).then(|| mgr.open_steering(name, is_priv_ctx, &uid));
 
     // 出结果与到总预算在同一个任务里赛跑。用 select 而不是另起任务，是因为发消息
     // 要用借来的 ctx/event，搬进 spawn 就得整套克隆一遍。把工作 Future 放进独立
@@ -759,11 +770,10 @@ async fn chat(
     //
     // 中途不发任何「还在处理」提示：等待本身是隐式的，一条进度播报换不来更快的
     // 回复，只会在群里插进一段与上下文无关的噪音。
-    // 图像 / 音乐 / 视频房间各自走专用接口，其余房间继续走聊天补全 / 内置 agent。
-    // 内置 agent 房间的模型是交给执行层解析的，不能拿它去撞中转站的这些模型关键字。
-    let draw = !use_agent && super::images::is_images_model(&chat_model, &oai.image_models);
-    let music = !use_agent && super::music::is_music_model(&chat_model, &oai.music_models);
-    let video = !use_agent && super::video::is_video_model(&chat_model, &oai.video_models);
+    // 图像 / 音乐 / 视频房间各自走专用接口，其余房间走智能体。
+    let draw = super::images::is_images_model(&chat_model, &oai.image_models);
+    let music = super::music::is_music_model(&chat_model, &oai.music_models);
+    let video = super::video::is_video_model(&chat_model, &oai.video_models);
     // 视频与一首歌都是异步任务，普通的 5 分钟预算不够它们出成品。
     let media_room = music || video;
 
@@ -778,9 +788,9 @@ async fn chat(
                 draw_agent.model = chat_model.clone();
                 super::images::generate_reply(&base, &api_key, &draw_agent, &hist).await
             } else {
-                // 在群里说话的房间接上群聊能力层：群资料、翻旧账、发消息、画图写歌
-                // 那一套从此也在房间里可用。私聊里的房间没有这一份。
-                let chat = event.group_id().map(|group| {
+                // 全量档的房间在群里说话时接上群聊能力层：群资料、翻旧账、发消息、画图写歌
+                // 那一套从此也在房间里可用。私聊里的房间、轻量两档没有这一份。
+                let chat = event.group_id().filter(|_| agent.tools == Tools::Full).map(|group| {
                     let trigger = super::chat::trigger::Trigger::from_event(&event);
                     super::agent::ChatContext {
                         ctx: ctx.clone(),
@@ -934,15 +944,14 @@ async fn chat(
 
             // 图片的去向有两种。
             //
-            // **内嵌**（智能体房间、回复要渲染成卡片、且正文里确实写了图）：图按位置画进卡片，
+            // **内嵌**（不是媒体房间、回复要渲染成卡片、且正文里确实写了图）：图按位置画进卡片，
             // 取图已经在 agent 层做完（见 `agent::figures`）。卡片没发出去才把图另发。
             //
             // **另发**（其余所有情形）：正文里只留文字，图作为真图单独发出——卡片只放行
             // `data:` 图片，远程直链在卡里是个空框；把图再塞进卡片或附一串链接只是重复。
             // 画图房间的正文是「加粗的提示词 + 图片链接」，那是留给历史记录与垫图回放
             // 的，不是给人看的：只发成品图，引用着用户那句话。
-            let inline = agent.uses_agent()
-                && !draw
+            let inline = !media
                 && !cmd.text_mode
                 && oai.image_enabled()
                 && !super::agent::figures::sources(&content).is_empty();
@@ -1059,37 +1068,42 @@ fn search_backends(config: &super::search::SearchConfig) -> String {
     chain.join(" → ")
 }
 
-/// 房间里显示的联网状态：区分「这间房自己定的」和「跟着全局走」。
-fn search_state(agent: &Agent, global: bool) -> String {
-    if !agent.uses_agent() {
-        return "不适用（普通房间）".to_string();
+/// 房间里显示的工具档位；联网的两档顺带说一句会打到哪些后端（全局关了联网也说破）。
+fn tools_state(agent: &Agent, oai: &super::OaiConfig) -> String {
+    if is_media_room(agent, oai) {
+        return "不适用（画图 / 写歌 / 拍片模型直接出成品）".to_string();
     }
-    // 两件事分开说：**现在开没开**（有效值）与**这个值是谁定的**。
-    // 只写「跟随全局」的话，读者看不出当下到底是开还是关——而那是这一行最要紧的
-    // 信息，不能为了让词表短一档就丢掉。
-    match (agent.web_search(global), agent.search) {
-        (true, Some(true)) => "已打开（本房间设置）".to_string(),
-        (true, _) => "已打开（跟随全局）".to_string(),
-        (false, Some(false)) => "已关闭（本房间设置）".to_string(),
-        (false, _) => "已关闭（跟随全局）".to_string(),
+    let mut text = format!("{}：{}", agent.tools.label(), agent.tools.summary());
+    if agent.tools.web() {
+        if oai.search.enabled {
+            text.push_str(&format!("（联网走 {}）", search_backends(&oai.search_config())));
+        } else {
+            text.push_str("（但 [oai.search] enabled 关着，暂时上不了网）");
+        }
     }
+    text
 }
 
-/// 房间列表和回执里显示的模型：内置 agent 房间前面挂上引擎，一眼能看出这间屋子
-/// 谁在跑；设了思考强度就一并标出。
+/// 三档怎么切：状态回执与写错时都附上这一段。
+fn tools_menu(name: &str) -> String {
+    Tools::ALL
+        .iter()
+        .map(|tools| format!("· `{name}?{}` {}", tools.label(), tools.summary()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 房间列表和回执里显示的模型；设了思考强度就一并标出。
 ///
-/// 内置智能体房间没写模型时，把实际用的默认模型（`default`）写出来，
-/// 不然「内置 · 默认模型」说了等于没说。
+/// 没写模型时把实际用的默认模型（`default`）写出来，不然「默认模型」说了等于没说。
 pub(super) fn room_model_label_with(agent: &Agent, default: Option<&str>) -> String {
-    let base = if !agent.uses_agent() {
-        agent.model.clone()
-    } else if super::agent::uses_default_model(&agent.model) {
+    let base = if super::agent::uses_default_model(&agent.model) {
         match default {
-            Some(model) => format!("内置 · {model}（默认）"),
-            None => "内置 · 默认模型".to_string(),
+            Some(model) => format!("{model}（默认）"),
+            None => "默认模型".to_string(),
         }
     } else {
-        format!("内置 · {}", agent.model)
+        agent.model.clone()
     };
     match agent.effective_thinking() {
         Some(level) => format!("{base} · 思考:{level}"),
@@ -1207,7 +1221,7 @@ pub(super) fn room_tools(config: &super::chat::ChatConfig) -> String {
 /// `satori_action` 一份 6.9k——19 个动作变体的严格结构，换的是「一次填对参数」。
 /// 2026-10-17 联网两件工具从 0.8k 涨到 1.7k（站点/日期/语种/正文/翻页的参数与用法），
 /// 加联网约 17.1k 字；换来的是一次搜索就能带准条件，少绕几轮。
-/// 内置 agent 房间走带工具的多轮循环，普通房间走单轮 Chat Completions。
+/// 一轮房间对话：工具多少由房间档位定（见 [`super::agent::conversation`]）。
 ///
 /// `api_base` / `api_key` 已按房间模型的 `供应商/` 前缀解析好；
 /// `chat_model` 是真正要发给接口的模型 id（已剥掉前缀）。
@@ -1226,17 +1240,15 @@ pub(super) async fn respond(
     chat: Option<super::agent::ChatContext>,
 ) -> anyhow::Result<Reply> {
     let thinking = agent.effective_thinking();
-    if agent.uses_agent() {
-        // 联网开关是房间自己的选择优先，没写过才跟 `[oai.search].enabled`。
-        // 工具只是挂上去，搜不搜由模型按需决定，没有任何一轮是强制的。
-        let search = super::search::SearchConfig {
-            enabled: agent.web_search(oai.search.enabled),
-            ..oai.search_config()
-        };
+    {
+        // 联网工具只是挂上去，搜不搜由模型按需决定，没有任何一轮是强制的；
+        // `[oai.search] enabled` 是总闸，关了哪一档都不联网。
+        let search = oai.search_config();
         let result = super::agent::conversation(
             api_base,
             api_key,
             data_dir,
+            agent.tools,
             &agent.system_prompt,
             chat_model,
             thinking.as_deref(),
@@ -1264,101 +1276,8 @@ pub(super) async fn respond(
             media: Vec::new(),
             figures: result.figures,
             steered: result.steered,
-        });
+        })
     }
-    let msgs = build_chat_messages(agent, hist).await;
-    Ok(Reply {
-        text: super::llm::complete(api_base, api_key, chat_model, msgs, thinking.as_deref())
-            .await?,
-        sources: Vec::new(),
-        trace: Vec::new(),
-        trace_overflow: 0,
-        model: Some(chat_model.to_string()),
-        plain: false,
-        media: Vec::new(),
-        figures: super::agent::figures::Figures::default(),
-        steered: Vec::new(),
-    })
-}
-
-/// 把房间历史转成 Chat Completions 消息。
-async fn build_chat_messages(agent: &Agent, hist: &[ChatMessage]) -> Vec<LlmMessage> {
-    let mut msgs: Vec<LlmMessage> = Vec::new();
-
-    // 少数图像模型不接受 system 角色，只能把提示词并进首条用户消息。
-    let model_lower = agent.model.to_lowercase();
-    let force_user_role_for_system = [
-        "nano-banana",
-        "gemini-2.5-flash-image",
-        "gemini-3-pro-image",
-    ]
-    .iter()
-    .any(|kw| model_lower.contains(kw));
-
-    let mut pending_sys_prompt =
-        (!agent.system_prompt.is_empty()).then(|| agent.system_prompt.clone());
-
-    if !force_user_role_for_system && let Some(sp) = pending_sys_prompt.take() {
-        msgs.push(LlmMessage::System { content: sp });
-    }
-
-    let re = Regex::new(r"!\[.*?\]\((data:image/[^\s\)]+)\)").unwrap();
-    for m in hist {
-        if m.role == "user" {
-            let mut parts = Vec::new();
-
-            if let Some(sp) = pending_sys_prompt.take() {
-                parts.push(UserContent::Text(Text::new(sp)));
-            }
-
-            if !m.content.is_empty() {
-                parts.push(UserContent::Text(Text::new(m.content.clone())));
-            }
-            let images = resolve_images(&m.images).await;
-            let lost = m.images.len() - images.len();
-            if lost > 0 {
-                parts.push(UserContent::Text(Text::new(format!(
-                    "（这条消息里有 {lost} 张图片没能取回，看不到内容，别猜测图里有什么）"
-                ))));
-            }
-            for data_url in images {
-                parts.push(image_content(data_url));
-            }
-            if parts.is_empty() {
-                continue;
-            }
-            msgs.push(LlmMessage::User { content: parts });
-        } else if m.role == "assistant" {
-            let clean_content = re.replace_all(&m.content, "[Image Created]").to_string();
-            // 空内容的 assistant 消息会被请求校验拒掉（provider 侧同样报错），跳过。
-            if !clean_content.trim().is_empty() {
-                msgs.push(LlmMessage::assistant(clean_content));
-            }
-            let gen_imgs = extract_image_urls(&m.content);
-            if !gen_imgs.is_empty() {
-                msgs.push(LlmMessage::User {
-                    content: gen_imgs.into_iter().map(image_content).collect(),
-                });
-            }
-        }
-    }
-
-    if let Some(sp) = pending_sys_prompt {
-        msgs.push(LlmMessage::User {
-            content: vec![UserContent::Text(Text::new(sp))],
-        });
-    }
-    msgs
-}
-
-/// 图片地址是多模态模型可内联的 data URL 时原样交给 provider。
-fn image_content(url: String) -> UserContent {
-    UserContent::Image(Image {
-        data: DocumentSourceKind::Url(url),
-        media_type: None,
-        detail: None,
-        native: None,
-    })
 }
 
 /// 并发解析一条消息里的全部图片地址，取不回的直接丢掉。
@@ -1520,8 +1439,9 @@ pub async fn execute(
                     &src.system_prompt,
                     &format!("复制自 {name}"),
                 );
-                // 副本要连引擎一起带走：新名字不再能推断出「这是一间 Agent 房间」。
-                new_agent.set_engine(&src.engine, &src.model);
+                // 副本连工具档位与思考强度一起带走。
+                new_agent.tools = src.tools;
+                new_agent.thinking = src.thinking.clone();
                 new_agent.description = src.description.clone();
                 c.agents.push(new_agent);
                 if let Err(error) = mgr.save(&mut c) {
@@ -1637,23 +1557,29 @@ pub async fn execute(
                 .await;
             }
         }
-        // `%` 换模型；引擎只在明写 `agent` / `chat` 时换（见 [`resolve_room_model`]）。
+        // `%` 换模型；工具档位不动（旧写法 `%agent` / `%chat` 例外，见 [`resolve_room_model`]）。
         Action::SetModel => {
             if cmd.args.is_empty() {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    "❌ 请指定模型：`房间%模型名`（`/%` 看能用的）；转成内置智能体用 `房间%agent`，转成普通对话用 `房间%chat`",
+                    "❌ 请指定模型：`房间%模型名`（`/%` 看能用的，写序号也行）；`房间%默认` 跟随默认模型",
                 )
                 .await;
                 return;
             }
             let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-            let mut c = mgr.config.write().await;
-            let models = Manager::all_models(&c);
-            // 模型串支持 `:强度` 后缀；先摘掉它，剩下的再判引擎关键字 / 供应商前缀。
+            // 模型串支持 `:强度` 后缀；先摘掉它，剩下的再判旧写法 / 供应商前缀。
             let (spec, thinking) = super::utils::split_thinking(&cmd.args);
+            let (tools, model) = {
+                let c = mgr.config.read().await;
+                resolve_room_model(&spec, &Manager::all_models(&c), mgr)
+            };
+            if tools == Some(Tools::Full) && full_denied(ctx, writer, &msg_event, name).await {
+                return;
+            }
+            let mut c = mgr.config.write().await;
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
                 reply_text(
                     ctx,
@@ -1664,28 +1590,19 @@ pub async fn execute(
                 .await;
                 return;
             };
-            let was_agent = a.uses_agent();
-            let (engine, mut model) = resolve_room_model(&spec, was_agent, &models, mgr, &oai);
-            // `房间%chat` 没写模型：沿用房间现在实际在用的那个，普通房间可没有「默认模型」。
-            if engine == super::types::ENGINE_CHAT && model.is_empty() {
-                model = if super::agent::uses_default_model(&a.model) {
-                    oai.agent_default_model().unwrap_or_default().to_string()
-                } else {
-                    a.model.clone()
-                };
-            }
-            if engine == super::types::ENGINE_CHAT && model.is_empty() {
-                reply_text(ctx, writer, &msg_event, "❌ 普通对话房间要写明模型：`房间%chat 供应商/模型`").await;
-                return;
-            }
             let old = room_model_label_with(a, oai.agent_default_model());
-            a.set_engine(engine, &model);
+            let old_tools = a.tools;
+            a.model = model;
+            if let Some(tools) = tools {
+                a.tools = tools;
+            }
             // 没写 `:强度` 就保留房间原来的档位，只换模型时不必重报思考强度。
             if let Some(level) = thinking {
                 a.thinking = level;
             }
             let new = room_model_label_with(a, oai.agent_default_model());
-            let now_agent = a.uses_agent();
+            let media = is_media_room(a, &oai);
+            let now_tools = a.tools;
             if let Err(error) = mgr.save(&mut c) {
                 reply_text(
                     ctx,
@@ -1697,21 +1614,32 @@ pub async fn execute(
                 return;
             }
             let mut text = format!("{name} 模型：{old} → {new}");
-            match (was_agent, now_agent) {
-                (true, false) if parse_chat_spec(&spec).is_none() => {
-                    text.push_str("\n这是画图/音乐/视频模型，只能在普通房间里用，已转成普通房间（不再调工具）。转回：`房间%agent`");
-                }
-                (true, false) => text.push_str("\n已转成普通对话房间：只聊天，不调工具。"),
-                (false, true) => text.push_str("\n已转成内置智能体：会自己用终端、联网和群聊工具。"),
-                _ => {}
+            if media {
+                text.push_str("\n这是画图 / 写歌 / 拍片模型：房间直接出成品，工具档位对它不起作用。");
+            } else if now_tools != old_tools {
+                text.push_str(&format!("\n工具：{} → {}", old_tools.label(), now_tools.label()));
             }
             reply_text(ctx, writer, &msg_event, text).await;
         }
-        // `房间?` 管这间房要不要联网：不带词就换一边，`开`/`关` 明确指定，
-        // `默认` 交回 [oai.search].enabled。房间自己的选择优先于全局。
-        Action::SetSearch => {
+        // `房间?` 看这间房的工具档位，`房间?无工具` / `?联网` / `?全量` 切换。
+        // 不带词时只看不改：三档轮换着切，用户得数自己按了几下。
+        Action::SetTools => {
             let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-            let global = oai.search.enabled;
+            let word = cmd.args.trim();
+            let choice = Tools::parse(word);
+            if !word.is_empty() && choice.is_none() {
+                reply_text(
+                    ctx,
+                    writer,
+                    &msg_event,
+                    format!("❌ 不认识「{word}」\n{}", tools_menu(name)),
+                )
+                .await;
+                return;
+            }
+            if choice == Some(Tools::Full) && full_denied(ctx, writer, &msg_event, name).await {
+                return;
+            }
             let mut c = mgr.config.write().await;
             let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) else {
                 reply_text(
@@ -1723,31 +1651,19 @@ pub async fn execute(
                 .await;
                 return;
             };
-            if !a.uses_agent() {
-                reply_text(
-                    ctx,
-                    writer,
-                    &msg_event,
-                    format!(
-                        "❌ {name} 是普通房间，联网搜索只挂在内置智能体上；先 `{name}%agent` 把它转过来"
-                    ),
-                )
-                .await;
-                return;
-            }
-            let Some(choice) = super::parser::search_choice(&cmd.args, a.web_search(global)) else {
-                reply_text(
-                    ctx,
-                    writer,
-                    &msg_event,
-                    "❌ 不认识这个写法\n`房间?` 换一边，`房间?开` / `房间?关` 明确开关，`房间?默认` 跟随全局",
-                )
-                .await;
+            let Some(choice) = choice else {
+                let text = format!("{name} 现在是 {}\n{}", tools_state(a, &oai), tools_menu(name));
+                drop(c);
+                reply_text(ctx, writer, &msg_event, text).await;
                 return;
             };
-            a.search = choice;
-            let now = a.web_search(global);
-            if let Err(error) = mgr.save(&mut c) {
+            let old = a.tools;
+            a.tools = choice;
+            let state = tools_state(a, &oai);
+            let media = is_media_room(a, &oai);
+            if old != choice
+                && let Err(error) = mgr.save(&mut c)
+            {
                 reply_text(
                     ctx,
                     writer,
@@ -1757,25 +1673,15 @@ pub async fn execute(
                 .await;
                 return;
             }
-            let state = match choice {
-                Some(true) => "已打开（按需触发）",
-                Some(false) => "已关闭",
-                None if now => "已打开（跟随全局）",
-                None => "已关闭（跟随全局）",
-            };
-            // 打开时顺带说一句会打到哪个后端，省得去翻配置确认密钥有没有生效。
-            let backends = if now {
-                format!("　后端 {}", search_backends(&oai.search_config()))
+            let mut text = if old == choice {
+                format!("{name} 本来就是 {state}")
             } else {
-                String::new()
+                format!("{name} 工具：{} → {state}", old.label())
             };
-            reply_text(
-                ctx,
-                writer,
-                &msg_event,
-                format!("{name} 联网搜索：{state}{backends}"),
-            )
-            .await;
+            if media {
+                text.push_str("\n（它现在用的是画图 / 写歌 / 拍片模型，换回聊天模型后才生效）");
+            }
+            reply_text(ctx, writer, &msg_event, text).await;
         }
         Action::SetPrompt => {
             let mut c = mgr.config.write().await;
@@ -1819,11 +1725,10 @@ pub async fn execute(
                     escape_markdown_special(&a.system_prompt)
                 };
                 let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-                let search_default = oai.search.enabled;
                 let content = format!(
-                    "**模型**: `{}`\n\n**联网搜索**: {}\n\n**提示词**:\n```\n{}\n```",
+                    "**模型**: `{}`\n\n**工具**: {}\n\n**提示词**:\n```\n{}\n```",
                     room_model_label_with(a, oai.agent_default_model()),
-                    search_state(a, search_default),
+                    tools_state(a, &oai),
                     prompt_display
                 );
                 reply(
@@ -1847,22 +1752,20 @@ pub async fn execute(
         }
         Action::List => {
             let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-            let search_default = oai.search.enabled;
             let c = mgr.config.read().await;
             if c.agents.is_empty() {
                 reply_text(
                     ctx,
                     writer,
                     &msg_event,
-                    "📭 暂无智能体，使用 ##名称 模型 提示词 创建",
+                    "📭 还没有房间：`##名称` 建一间（模型留空跟随默认模型）",
                 )
                 .await;
                 return;
             }
             let listing = super::lists::Listing::Rooms(super::lists::Rooms::new(
                 &c.agents,
-                search_default,
-                oai.agent_default_model(),
+                &oai,
             ));
             reply_list(
                 ctx,
@@ -2348,14 +2251,19 @@ pub async fn execute(
 
 前缀可叠加，如 `~"房间 内容`。房间名随便取，中文也行。
 
+## 工具
+每间房都是同一个智能体，手边的工具分三档：
+- `房间?无工具` 只聊天（新建的房间都是这一档）
+- `房间?联网` 按需搜索、读网页
+- `房间?全量` 终端与文件、联网、群聊动作、提醒与插件管控（只有号主与管理员能开）
+
+`房间?` 看现在是哪一档。
+
 ## 房间
 - `/#` 房间列表，`/%` 模型列表（默认接口与各家供应商）
-- `##名称 模型 提示词` 新建或更新（普通对话房间，只聊天）
-- `##名称 agent 模型` 新建内置智能体房间：自己用工具、联网、做群聊动作；模型可省
-- `房间%模型` 换模型，可写 `供应商/模型:思考强度`、序号或只写模型名；不改房间类型
-- `房间%agent`、`房间%chat` 转成内置智能体 / 普通对话
+- `##名称` 新建，`##名称 模型 提示词` 一并写好；模型写 `默认` 跟随默认模型
+- `房间%模型` 换模型，可写 `供应商/模型:思考强度`、序号或只写模型名；`房间%默认` 跟随默认
 - `房间$提示词` 改提示词，`房间$` 清空，`房间/$` 查看
-- `房间?开`、`?关`、`?默认` 这间房的联网搜索
 - `房间~=新名` 重命名，`房间~#新名` 复制
 - `房间:描述` 写描述，`##:模型` 批量生成
 - `-#名称` 删除房间
@@ -2481,22 +2389,27 @@ pub async fn handle_create(
 ) {
     let Some(msg_event) = ctx.as_message() else { return };
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-    let mut c = mgr.config.write().await;
-    let models = Manager::all_models(&c);
-    // 建房时的模型位同样认引擎关键字与供应商前缀：
-    // `##研究 agent`、`##研究 agent deepseek/deepseek-flash`、`##研究 deepseek/deepseek-flash:high`。
-    // 已有的内置智能体房间重写一遍时不丢引擎，规则与 `%` 相同。
+    // 建房时的模型位认供应商前缀、序号与 `:强度`：`##研究 deepseek/deepseek-flash:high`、`##研究 3`；
+    // `默认`（或 `-`）跟随默认模型，后面照样能接提示词。旧写法 `##研究 agent` 顺带开全量。
     let (spec, thinking) = super::utils::split_thinking(model);
-    let was_agent = c.agents.iter().any(|a| a.name == name && a.uses_agent());
-    let (engine, model) = resolve_room_model(&spec, was_agent, &models, mgr, &oai);
-    // 不再默认填充「你是一个有帮助的助手」：没写提示词就留空，让模型用裸提示词。
-    // 生图房间尤其不该被一句通用预设污染提示词；普通房间也保持中立（MJ 同样留空）。
+    let (tools, model) = {
+        let c = mgr.config.read().await;
+        resolve_room_model(&spec, &Manager::all_models(&c), mgr)
+    };
+    if tools == Some(Tools::Full) && full_denied(ctx, writer, &msg_event, name).await {
+        return;
+    }
+    // 不再默认填充「你是一个有帮助的助手」：没写提示词就留空。
     let prompt = prompt.to_string();
+    let mut c = mgr.config.write().await;
 
     if let Some(a) = c.agents.iter_mut().find(|a| a.name == name) {
-        // 省略模型位时只改提示词和描述，保留这个房间原来的引擎。
+        // 省略模型位时只改提示词和描述；工具档位只有旧写法会动。
         if !spec.trim().is_empty() {
-            a.set_engine(engine, &model);
+            a.model = model;
+        }
+        if let Some(tools) = tools {
+            a.tools = tools;
         }
         if let Some(level) = &thinking {
             a.thinking = level.clone();
@@ -2506,6 +2419,7 @@ pub async fn handle_create(
             a.description = desc.to_string();
         }
         let updated_model = room_model_label_with(a, oai.agent_default_model());
+        let updated_tools = a.tools.label();
         if let Err(error) = mgr.save(&mut c) {
             reply_text(
                 ctx,
@@ -2520,7 +2434,7 @@ pub async fn handle_create(
             ctx,
             writer,
             &msg_event,
-            format!("已更新 {name}（模型：{updated_model}）"),
+            format!("已更新 {name}（模型：{updated_model} · 工具：{updated_tools}）"),
         )
         .await;
     } else {
@@ -2530,11 +2444,18 @@ pub async fn handle_create(
             desc.to_string()
         };
         let mut agent = Agent::new(name, &model, &prompt, &description);
-        agent.set_engine(engine, &model);
+        agent.tools = tools.unwrap_or_default();
         if let Some(level) = thinking {
             agent.thinking = level;
         }
         let label = room_model_label_with(&agent, oai.agent_default_model());
+        let tail = if is_media_room(&agent, &oai) {
+            format!("\n`{name} 内容` 直接出成品。")
+        } else if agent.tools == Tools::Off {
+            format!("\n现在只聊天、不调工具；要它查资料发 `{name}?联网`，全部工具 `{name}?全量`。")
+        } else {
+            format!("\n工具：{}（{}）", agent.tools.label(), agent.tools.summary())
+        };
         c.agents.push(agent);
         if let Err(error) = mgr.save(&mut c) {
             reply_text(
@@ -2546,13 +2467,6 @@ pub async fn handle_create(
             .await;
             return;
         }
-        let tail = if engine == super::types::ENGINE_AGENT {
-            "\n内置智能体：会自己用终端、联网和群聊工具。"
-        } else if is_media_model(&model, &oai) || model.is_empty() {
-            ""
-        } else {
-            "\n普通对话房间：只聊天，不调工具；要工具就建成 `##名称 agent 模型`。"
-        };
         reply_text(
             ctx,
             writer,

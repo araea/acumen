@@ -206,8 +206,21 @@ impl SearchConfig {
     /// 密钥后端排在前面：既然配了密钥，就是想要它的召回质量，不该被 Bing 挡在外面；
     /// 免密钥的那两个留在链尾，密钥额度用尽或上游抽风时还能出结果。
     /// 房间回执里那句「后端 A → B」也用它。
+    ///
+    /// DeepSeek 官方接口配上了就总在最前：清单里明写了它就照写的位置排，没写（例如老配置里
+    /// 手写的 `["tavily", "bing"]`）也补在链首——它与主模型同一把密钥、出日期与权威度，
+    /// 没有理由让别家挡在它前面。
     pub(crate) fn chain(&self) -> Vec<String> {
         let mut chain = Vec::new();
+        let named = |name: &str| {
+            self.providers.iter().any(|provider| {
+                let provider = provider.trim();
+                provider.eq_ignore_ascii_case(name) || provider.eq_ignore_ascii_case("auto")
+            })
+        };
+        if !named("deepseek") && self.available("deepseek") {
+            chain.push("deepseek".to_string());
+        }
         for provider in &self.providers {
             let provider = provider.trim().to_ascii_lowercase();
             if provider == "auto" {
