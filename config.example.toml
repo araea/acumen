@@ -148,7 +148,7 @@ mute_seconds = 86400
 kick_permanent = false
 # 验证通过前他发的其他消息撤回掉（防新号进群就发广告）。
 recall_unverified = false
-# 接在欢迎后面的验证说明。占位符：{timeout} 时限、{task} 要做的事（随验证方式变，如「发送验证码 4821」）、{answer} 口令或题目、{punish} 后果，以及欢迎词里那些。
+# 接在欢迎后面的验证说明。占位符：{timeout} 时限、{task} 要做的事（随验证方式变，如「发送验证码 4821」）、{answer} 口令或题目、{punish} 后果，以及欢迎词里那些；{task} {punish} 这类的说法在 [welcome.phrases] 里改。
 prompt_text = ["请在 {timeout}内{task}，完成验证；超时会被{punish}。"]
 # 倒计时提醒，多一个 {remaining}（剩余时间）。
 remind_text = ["{at} 验证还剩 {remaining}：请{task}，超时会被{punish}。"]
@@ -175,6 +175,34 @@ reject_message = "附言没有对上入群问题，看清问题再来申请吧�
 # 例如（中文名字在 TOML 里要加引号，控制台里加不用管）：
 # "群规" = "1. 不发广告\n2. 提问前先搜一下群文件"
 [welcome.custom]
+
+# {task} {punish} {chances} {greeting} 与人多时的 {name} 换成的那句话原本是插件写好的，这里可以改成你群里的口吻。每句都能写几种说法随机一种，还能用自己的小占位符（{answer} 验证码或口令、{duration} 禁言多久……）与 {甲|乙}；只认文字，不能放 @、图片和表情。全部留空 = 换成空的。
+[welcome.phrases]
+# {task}：验证方式是「说任意一句话」时。
+task_any = ["随便说一句话"]
+# {task}：验证方式是「发出口令」时；{answer} 是口令（写了几句时用第一句）。
+task_answer = ["发送「{answer}」"]
+# {task}：验证方式是「回随机验证码」时；{answer} 是这次的 4 位验证码。
+task_code = ["发送验证码 {answer}"]
+# {task}：验证方式是「算一道加法」时；{answer} 是题目，如 7 + 5。
+task_math = ["发出 {answer} 的答案"]
+# {punish}：超时移出时。
+punish_kick = ["移出群聊"]
+# {punish}：超时禁言时；{duration} 是禁言多久，如 1 天。
+punish_mute = ["禁言 {duration}"]
+# {punish}：超时只记一笔时。
+punish_none = ["记录在案"]
+# {chances}：限了答错次数时；{left} 是还能再试几次。不限次数时 {chances} 为空。
+chances = ["（还能再试 {left} 次）"]
+# {greeting}：按北京时间分六段，5–8 点、9–10 点、11–12 点、13–17 点、18–22 点、23–4 点。
+greeting_morning = ["早上好"]
+greeting_forenoon = ["上午好"]
+greeting_noon = ["中午好"]
+greeting_afternoon = ["下午好"]
+greeting_evening = ["晚上好"]
+greeting_night = ["夜深了"]
+# 合并欢迎超过三个人时 {name} 的说法；{names} 是前三个名字、{count} 是总人数。三个以内直接列全。
+crowd = ["{names} 等 {count} 人"]
 
 [welcome.channel]
 # 白名单非空时只在这些群生效；黑名单里的群一律不生效；两边都空 = 账号所在的全部群。

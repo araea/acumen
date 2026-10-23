@@ -6,6 +6,8 @@
 //!   占位符见 [`PLACEHOLDERS`]（`{at}` 是真 @，`{image}` `{avatar}` `{face:ID}` 是图与表情，
 //!   `{甲|乙}` 是随机片段）。常用的一段话（群规、下载地址、管理名单）可以起个名字存成**自定义
 //!   占位符**（`custom`，每群还能各写一份），各条提示里写 `{群规}` 就插进去，改一处处处跟着变。
+//!   内置占位符里由插件来写的那几句（`{task}` 要做的事、`{punish}` 后果、`{chances}`、`{greeting}`
+//!   问候、人多时的 `{name}`）也能换成自己的说法（[`Phrases`]）。
 //!   同一时间涌进来好几个人时可以合并成一条（`join.merge_seconds`），
 //!   发出去的欢迎可以过一会儿自己撤掉（`recall_seconds`），不占群聊。
 //! - **入群验证**：新人要在时限内完成一件小事——说任意一句话、发出指定口令、回验证码或算一道
@@ -53,6 +55,8 @@ pub struct Config {
     approve: ApproveConfig,
     /// 自定义占位符：名字 → 内容（也可以写几种说法随机一种）。提示里写 `{名字}` 就插进去。
     custom: Custom,
+    /// 内置占位符换成的那几句话。
+    phrases: Phrases,
     /// 每个群单独的文案与开关，键是群号；没写的项沿用上面的。
     groups: HashMap<String, GroupOverride>,
 }
@@ -251,6 +255,165 @@ impl Default for ApproveConfig {
     }
 }
 
+// ==================== 占位符的说法 ====================
+
+/// 内置占位符里由插件来写的那几句话：`{task}` `{punish}` `{chances}` `{greeting}`，以及合并欢迎人多时的
+/// `{name}`。各句都能写几种说法随机一种，里面有自己的几个小占位符（验证码、禁言多久……）与 `{甲|乙}`；
+/// 全部删掉就换成空的。它们是插在别的提示中间的一句话，所以只认文字，不认 @、图片与表情。
+///
+/// 一张平表而不是按占位符分小表：控制台里子表总排在叶子后面，`{chances}` 会跑到 `{task}` 前头。
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(default)]
+struct Phrases {
+    /// `{task}` 随验证方式变；`{answer}` 是口令、验证码或算术题。
+    task_any: Template,
+    task_answer: Template,
+    task_code: Template,
+    task_math: Template,
+    /// `{punish}` 随「超时怎么办」变；禁言那句的 `{duration}` 是禁言多久。
+    punish_kick: Template,
+    punish_mute: Template,
+    punish_none: Template,
+    /// 限了答错次数时 `{chances}` 的说法；`{left}` 是还能再试几次。不限次数时 `{chances}` 为空。
+    chances: Template,
+    /// `{greeting}`：按北京时间的六段。
+    greeting_morning: Template,
+    greeting_forenoon: Template,
+    greeting_noon: Template,
+    greeting_afternoon: Template,
+    greeting_evening: Template,
+    greeting_night: Template,
+    /// 合并欢迎超过三个人时 `{name}` 的说法：`{names}` 前三个名字、`{count}` 总人数。
+    crowd: Template,
+}
+
+impl Default for Phrases {
+    fn default() -> Self {
+        use crate::clock::DayPart;
+        let greeting = |part: DayPart| Template::of(&[part.greeting()]);
+        Self {
+            task_any: Template::of(&["随便说一句话"]),
+            task_answer: Template::of(&["发送「{answer}」"]),
+            task_code: Template::of(&["发送验证码 {answer}"]),
+            task_math: Template::of(&["发出 {answer} 的答案"]),
+            punish_kick: Template::of(&["移出群聊"]),
+            punish_mute: Template::of(&["禁言 {duration}"]),
+            punish_none: Template::of(&["记录在案"]),
+            chances: Template::of(&["（还能再试 {left} 次）"]),
+            greeting_morning: greeting(DayPart::Morning),
+            greeting_forenoon: greeting(DayPart::Forenoon),
+            greeting_noon: greeting(DayPart::Noon),
+            greeting_afternoon: greeting(DayPart::Afternoon),
+            greeting_evening: greeting(DayPart::Evening),
+            greeting_night: greeting(DayPart::Night),
+            crowd: Template::of(&["{names} 等 {count} 人"]),
+        }
+    }
+}
+
+impl Phrases {
+    /// 每一句的键与内容：检查与控制台都照这张表。
+    fn each_mut(&mut self) -> [(&'static str, &mut Template); 15] {
+        [
+            ("task_any", &mut self.task_any),
+            ("task_answer", &mut self.task_answer),
+            ("task_code", &mut self.task_code),
+            ("task_math", &mut self.task_math),
+            ("punish_kick", &mut self.punish_kick),
+            ("punish_mute", &mut self.punish_mute),
+            ("punish_none", &mut self.punish_none),
+            ("chances", &mut self.chances),
+            ("greeting_morning", &mut self.greeting_morning),
+            ("greeting_forenoon", &mut self.greeting_forenoon),
+            ("greeting_noon", &mut self.greeting_noon),
+            ("greeting_afternoon", &mut self.greeting_afternoon),
+            ("greeting_evening", &mut self.greeting_evening),
+            ("greeting_night", &mut self.greeting_night),
+            ("crowd", &mut self.crowd),
+        ]
+    }
+
+    /// 每句只留头一种说法：控制台的样例与说明照它，刷新时不跳来跳去。
+    fn settled(&self) -> Self {
+        let mut out = self.clone();
+        for (_, template) in out.each_mut() {
+            template.0 = template.variants().take(1).map(str::to_owned).collect();
+        }
+        out
+    }
+
+    fn task(&self, p: &Pending) -> String {
+        match (p.mode.as_str(), p.answers.first()) {
+            ("math", _) => phrase(&self.task_math, &[("answer", p.question.clone())]),
+            ("code", Some(code)) => phrase(&self.task_code, &[("answer", code.clone())]),
+            (_, Some(answer)) => phrase(&self.task_answer, &[("answer", answer.clone())]),
+            _ => phrase(&self.task_any, &[]),
+        }
+    }
+
+    fn punish(&self, verify: &VerifyConfig) -> String {
+        match verify.action.as_str() {
+            "kick" => phrase(&self.punish_kick, &[]),
+            "mute" => phrase(&self.punish_mute, &[("duration", duration_text(verify.mute_seconds))]),
+            _ => phrase(&self.punish_none, &[]),
+        }
+    }
+
+    /// `left`：还能再试几次；不限次数是 `None`，那就为空。
+    fn chances(&self, left: Option<u32>) -> String {
+        left.map(|left| phrase(&self.chances, &[("left", left.to_string())])).unwrap_or_default()
+    }
+
+    fn greeting(&self, part: crate::clock::DayPart) -> String {
+        use crate::clock::DayPart;
+        let template = match part {
+            DayPart::Morning => &self.greeting_morning,
+            DayPart::Forenoon => &self.greeting_forenoon,
+            DayPart::Noon => &self.greeting_noon,
+            DayPart::Afternoon => &self.greeting_afternoon,
+            DayPart::Evening => &self.greeting_evening,
+            DayPart::Night => &self.greeting_night,
+        };
+        phrase(template, &[])
+    }
+
+    /// 合并欢迎时 `{name}` 的说法：三个以内全写出来，再多就照 `crowd`。
+    fn crowd(&self, names: &[String]) -> String {
+        match names.len() {
+            0..=3 => names.join("、"),
+            n => phrase(&self.crowd, &[("names", names[..3].join("、")), ("count", n.to_string())]),
+        }
+    }
+}
+
+/// 一句说法：随机挑一种，填上它自己的小占位符；`{甲|乙}` 照样随机，认不出的原样留着。
+fn phrase(template: &Template, locals: &[(&'static str, String)]) -> String {
+    let Some(text) = template.pick() else { return String::new() };
+    let values: HashMap<&str, String> = locals.iter().cloned().collect();
+    crate::template::pieces(&text, &values)
+        .into_iter()
+        .filter_map(|piece| match piece {
+            Piece::Text(text) => Some(text),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 说法里放了 @、图片或表情：插在一句话中间发不出来，存的时候就挡下。
+fn check_phrases(phrases: &Phrases) -> Result<(), String> {
+    for (path, template) in phrases.clone().each_mut() {
+        for text in &template.0 {
+            if text.chars().count() > 200 {
+                return Err(format!("phrases.{path} 每种说法最多 200 字"));
+            }
+            if crate::template::pieces(text, &HashMap::<&str, String>::new()).iter().any(|p| !matches!(p, Piece::Text(_))) {
+                return Err(format!("phrases.{path} 是插在提示中间的一句话，不能放 @、图片或表情"));
+            }
+        }
+    }
+    Ok(())
+}
+
 const MODES: [&str; 4] = ["any", "answer", "code", "math"];
 
 /// 1.16 及以前的默认文案。用户没动过的照新版换掉，改过的原样留着。
@@ -298,6 +461,7 @@ impl PluginConfig for Config {
             }
         }
         check_custom("custom", &self.custom)?;
+        check_phrases(&self.phrases)?;
         for (group, o) in &self.groups {
             if group.parse::<u64>().is_err() {
                 return Err("groups 的键写群号".into());
@@ -422,7 +586,7 @@ impl Config {
 
     /// 这个群的提示要用的那几样：问候、时刻这些，加上本群生效的自定义占位符。
     fn vars(&self, group: &str) -> Vars {
-        Vars::now().custom(self.for_group(group).custom)
+        Vars::now(&self.phrases).custom(self.for_group(group).custom)
     }
 }
 
@@ -502,11 +666,11 @@ struct Vars {
 }
 
 impl Vars {
-    /// 带上与人无关的那几样：问候、时刻、日期、星期。
-    fn now() -> Self {
+    /// 带上与人无关的那几样：问候（照设好的说法）、时刻、日期、星期。
+    fn now(phrases: &Phrases) -> Self {
         let moment = crate::clock::moment();
         let mut map = HashMap::new();
-        map.insert("greeting", moment.greeting.to_string());
+        map.insert("greeting", phrases.greeting(moment.part));
         map.insert("time", moment.time);
         map.insert("date", moment.date);
         map.insert("weekday", moment.weekday);
@@ -674,14 +838,6 @@ fn recall_later(ctx: &Context, writer: &LockedWriter, group: &str, id: String, s
     });
 }
 
-fn punish_text(config: &VerifyConfig) -> String {
-    match config.action.as_str() {
-        "kick" => "移出群聊".into(),
-        "mute" => format!("禁言 {}", duration_text(config.mute_seconds)),
-        _ => "记录在案".into(),
-    }
-}
-
 // ==================== 待验证名单 ====================
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -718,22 +874,28 @@ struct Pending {
 }
 
 impl Pending {
-    fn task(&self) -> String {
-        task_text(&self.mode, &self.answers, &self.question)
+    /// 不进名单的样例：预览、控制台的说明照它出题。
+    fn sample(mode: &str, answers: &[String]) -> Self {
+        let (mode, answers, question) = challenge(mode, answers);
+        Self {
+            self_id: String::new(),
+            group: String::new(),
+            user_id: String::new(),
+            name: String::new(),
+            deadline: 0,
+            answers,
+            mode,
+            question,
+            reminded: Vec::new(),
+            notices: Vec::new(),
+            wrong: 1,
+            hinted_at: 0,
+            welcome: None,
+        }
     }
 
     fn answer(&self) -> String {
         if self.mode == "math" { self.question.clone() } else { self.answers.first().cloned().unwrap_or_default() }
-    }
-}
-
-/// `{task}`：随验证方式变的那半句话。
-fn task_text(mode: &str, answers: &[String], question: &str) -> String {
-    match (mode, answers.first()) {
-        ("math", _) => format!("发出 {question} 的答案"),
-        ("code", Some(code)) => format!("发送验证码 {code}"),
-        (_, Some(answer)) => format!("发送「{answer}」"),
-        _ => "随便说一句话".into(),
     }
 }
 
@@ -904,14 +1066,6 @@ fn batch() -> &'static Mutex<Batch> {
     BATCH.get_or_init(Default::default)
 }
 
-/// 合并欢迎时 `{name}` 的说法：三个以内全写出来，再多写前三个加总数。
-fn names_text(names: &[String]) -> String {
-    match names.len() {
-        0..=3 => names.join("、"),
-        n => format!("{} 等 {n} 人", names[..3].join("、")),
-    }
-}
-
 async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, user: &str) -> Result<(), PluginError> {
     let effective = config.for_group(group);
     let mut verify = None;
@@ -942,6 +1096,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             let (ctx, writer, group) = (ctx.clone(), writer.clone(), group.to_string());
             let delay = Duration::from_secs(config.join.merge_seconds);
             let (template, images, recall) = (effective.join_text.clone(), effective.images.clone(), config.join.recall_seconds);
+            let phrases = config.phrases.clone();
             let custom = effective.custom.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(delay).await;
@@ -951,10 +1106,10 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
                     .remove(&group)
                     .unwrap_or_default();
                 let (users, names): (Vec<String>, Vec<String>) = people.into_iter().unzip();
-                let vars = Vars::now()
+                let vars = Vars::now(&phrases)
                     .custom(custom)
                     .group(&info)
-                    .person(&users.join("、"), &names_text(&names))
+                    .person(&users.join("、"), &phrases.crowd(&names))
                     .set("count", users.len().to_string());
                 let Some(text) = template.pick() else { return };
                 let draft = Draft { at: &users, images: &images };
@@ -988,9 +1143,9 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         };
         vars = vars
             .set("timeout", duration_text(config.verify.timeout_seconds))
-            .set("task", entry.task())
+            .set("task", config.phrases.task(&entry))
             .set("answer", entry.answer())
-            .set("punish", punish_text(&config.verify));
+            .set("punish", config.phrases.punish(&config.verify));
         if let Some(prompt) = config.verify.prompt_text.pick() {
             template = if !template.is_empty() {
                 format!("{template}\n{prompt}")
@@ -1206,12 +1361,12 @@ async fn pass(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pending
 async fn wrong_hint(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pending) {
     let Some(text) = config.verify.wrong_text.pick() else { return };
     let limit = config.verify.attempts;
-    let chances = if limit > 0 { format!("（还能再试 {} 次）", limit.saturating_sub(p.wrong)) } else { String::new() };
+    let chances = config.phrases.chances((limit > 0).then(|| limit.saturating_sub(p.wrong)));
     let info = group_info(ctx, writer, &p.group).await;
     let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)
-        .set("task", p.task())
+        .set("task", config.phrases.task(p))
         .set("answer", p.answer())
         .set("chances", chances);
     let at = [p.user_id.clone()];
@@ -1339,7 +1494,7 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         lines.push(format!(
             "· 入群验证：{mode}，{}内完成，超时{}{}",
             duration_text(config.verify.timeout_seconds),
-            punish_text(&config.verify),
+            config.phrases.punish(&config.verify),
             if staff { "" } else { "\n  ⚠ 账号不是本群管理员，验证暂不生效（只发欢迎）" }
         ));
     } else {
@@ -1401,22 +1556,7 @@ async fn preview(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
     };
     let name = display_name(ctx, writer, group, me).await;
     let info = group_info(ctx, writer, group).await;
-    let (mode, answers, question) = challenge(&e.mode, &e.answers);
-    let sample = Pending {
-        self_id: String::new(),
-        group: group.to_string(),
-        user_id: me.to_string(),
-        name: name.clone(),
-        deadline: 0,
-        answers,
-        mode,
-        question,
-        reminded: Vec::new(),
-        notices: Vec::new(),
-        wrong: 1,
-        hinted_at: 0,
-        welcome: None,
-    };
+    let sample = Pending::sample(&e.mode, &e.answers);
     let remind = verify.remind_seconds.iter().copied().max().unwrap_or(60).min(verify.timeout_seconds);
     let vars = config.vars(group)
         .group(&info)
@@ -1424,10 +1564,10 @@ async fn preview(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
         .set("operator", ctx.as_message().map(|m| m.sender_name().to_string()).unwrap_or_default())
         .set("timeout", duration_text(verify.timeout_seconds))
         .set("remaining", duration_text(remaining_round(i64::try_from(remind).unwrap_or(60))))
-        .set("task", sample.task())
+        .set("task", config.phrases.task(&sample))
         .set("answer", sample.answer())
-        .set("punish", punish_text(verify))
-        .set("chances", if verify.attempts > 1 { format!("（还能再试 {} 次）", verify.attempts - 1) } else { String::new() });
+        .set("punish", config.phrases.punish(verify))
+        .set("chances", config.phrases.chances((verify.attempts > 1).then(|| verify.attempts - 1)));
     let at = [me.to_string()];
     let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &images }).await else {
         return Err("这条提示渲染出来是空的".into());
@@ -1512,9 +1652,9 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
                     .group(&info)
                     .person(&p.user_id, &p.name)
                     .set("remaining", duration_text(remaining_round(i64::try_from(remaining).unwrap_or(0))))
-                    .set("task", p.task())
+                    .set("task", config.phrases.task(&p))
                     .set("answer", p.answer())
-                    .set("punish", punish_text(&config.verify));
+                    .set("punish", config.phrases.punish(&config.verify));
                 let at = [p.user_id.clone()];
                 if let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &[] }).await {
                     notice(ctx, writer, &p, message).await;
@@ -1580,7 +1720,7 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
         .group(&info)
         .person(&p.user_id, &p.name)
         .set("timeout", duration_text(verify.timeout_seconds))
-        .set("punish", punish_text(verify));
+        .set("punish", config.phrases.punish(verify));
     let at = [p.user_id.clone()];
     if let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &[] }).await
         && let Err(error) = say(ctx, writer, &p.group, message, verify.recall_seconds).await
@@ -1609,7 +1749,7 @@ pub(crate) fn live(ctx: &Context) -> Value {
         lines.push(format!(
             "入群验证开着：{}内完成，超时{}。只在账号是群主或管理员的群里生效。",
             duration_text(config.verify.timeout_seconds),
-            punish_text(&config.verify)
+            config.phrases.punish(&config.verify)
         ));
         match STATE.peek() {
             Some(state) if !state.pending.is_empty() => {
@@ -1642,24 +1782,11 @@ pub(crate) fn live(ctx: &Context) -> Value {
 pub(crate) fn templates(current: &toml::Value) -> Value {
     let config = Config::deserialize(current.clone()).unwrap_or_default();
     let verify = &config.verify;
-    let (mode, answers, question) = challenge(&verify.mode, &verify.answers);
-    let sample = Pending {
-        self_id: String::new(),
-        group: String::new(),
-        user_id: String::new(),
-        name: String::new(),
-        deadline: 0,
-        answers,
-        mode,
-        question,
-        reminded: Vec::new(),
-        notices: Vec::new(),
-        wrong: 1,
-        hinted_at: 0,
-        welcome: None,
-    };
+    let phrases = config.phrases.settled();
+    let sample = Pending::sample(&verify.mode, &verify.answers);
     let remind = verify.remind_seconds.iter().copied().max().unwrap_or(60).min(verify.timeout_seconds);
-    let vars = Vars::now()
+    let chances = |left: u32| phrases.chances(Some(left));
+    let vars = Vars::now(&phrases)
         .set("name", "小林")
         .set("user_id", "10001")
         .set("group", "示例群")
@@ -1668,19 +1795,41 @@ pub(crate) fn templates(current: &toml::Value) -> Value {
         .set("operator", "群主")
         .set("timeout", duration_text(verify.timeout_seconds))
         .set("remaining", duration_text(remaining_round(i64::try_from(remind).unwrap_or(60))))
-        .set("task", sample.task())
+        .set("task", phrases.task(&sample))
         .set("answer", sample.answer())
-        .set("punish", punish_text(verify))
-        .set("chances", if verify.attempts > 1 { format!("（还能再试 {} 次）", verify.attempts - 1) } else { String::new() });
+        .set("punish", phrases.punish(verify))
+        .set("chances", if verify.attempts > 1 { chances(verify.attempts - 1) } else { String::new() });
+    // {task} {punish} 这几个的说明照现在的说法写，改了说法芯片上看得见。
+    let mut hints: HashMap<&str, String> = HashMap::new();
+    let probe = |mode: &str, answers: &[&str], question: &str| {
+        let answers = answers.iter().map(ToString::to_string).collect();
+        phrases.task(&Pending { mode: mode.into(), answers, question: question.into(), ..Pending::sample("any", &[]) })
+    };
+    let tasks = [probe("any", &[], ""), probe("answer", &[PHRASE_ANSWER], ""), probe("code", &["4821"], ""), probe("math", &["12"], "7 + 5")];
+    hints.insert("task", format!("随验证方式变：{}。说法在「占位符的说法」里改", tasks.join(" / ")));
+    let punishes: Vec<String> = ["kick", "mute", "none"]
+        .iter()
+        .map(|action| phrases.punish(&VerifyConfig { action: (*action).into(), ..verify.clone() }))
+        .collect();
+    hints.insert("punish", format!("随「超时怎么办」变：{}。说法在「占位符的说法」里改", punishes.join(" / ")));
+    hints.insert("chances", format!("限了次数时是「{}」，不限时为空。说法在「占位符的说法」里改", chances(2)));
+    let greetings: Vec<String> = DAY_PARTS.iter().map(|part| phrases.greeting(*part)).collect();
+    hints.insert("greeting", format!("按北京时间：{}。说法在「占位符的说法」里改", greetings.join("、")));
     // 自定义占位符的内容里能用全部内置占位符（插到哪种提示里，就照那种提示的值填），所以内置的都多认一种 custom。
     let mut placeholders: Vec<Value> = PLACEHOLDERS
         .iter()
         .map(|p| {
             let mut kinds: Vec<&str> = p.kinds.iter().map(|k| k.code()).collect();
             kinds.push("custom");
-            json!({ "key": p.key, "label": p.label, "hint": p.hint, "kinds": kinds })
+            let hint = hints.get(p.key).map_or(p.hint, String::as_str);
+            json!({ "key": p.key, "label": p.label, "hint": hint, "kinds": kinds })
         })
         .collect();
+    // 说法里自己的小占位符：只在那一句里认得。
+    placeholders.extend(PHRASE_LOCALS.iter().map(|(key, label, hint, kinds)| {
+        let kinds: Vec<String> = kinds.iter().map(|k| format!("phrase_{k}")).collect();
+        json!({ "key": key, "label": label, "hint": hint, "kinds": kinds })
+    }));
     let every: Vec<&str> = Kind::ALL.iter().map(|k| k.code()).collect();
     let custom_holder = |name: &str, template: &Template| {
         let first = template.variants().next().unwrap_or_default();
@@ -1724,17 +1873,95 @@ pub(crate) fn templates(current: &toml::Value) -> Value {
     let about = "这段内容插到哪条提示里，里面的占位符就照那条提示的值填。写几种说法时每次随机一种；全部删掉 = 插进去是空的。";
     fields.insert("custom.*".into(), json!({ "kind": "custom", "about": about }));
     fields.insert("groups.*.custom.*".into(), json!({ "kind": "custom", "about": about }));
+    let answer = verify.answers.iter().find(|a| !a.trim().is_empty()).cloned().unwrap_or_else(|| PHRASE_ANSWER.into());
+    // 说法只是一句话，单独看不出放进去顺不顺：预览套进头一条真用到它的提示里。
+    let (prompt, remind, wrong) = (("验证说明", Prompt, &verify.prompt_text), ("倒计时提醒", Remind, &verify.remind_text), ("答错时", Wrong, &verify.wrong_text));
+    let (join, pass, fail) = (("欢迎词", Join, &config.join.text), ("通过时", Pass, &verify.pass_text), ("未通过时", Fail, &verify.fail_text));
+    let host = |slot: &str, sources: &[(&'static str, Kind, &Template)]| {
+        let mark = format!("{{{slot}}}");
+        sources.iter().find_map(|(label, kind, template)| {
+            let text = template.variants().find(|text| text.contains(&mark))?;
+            Some((*label, json!({ "text": text, "kind": kind.code(), "slot": slot })))
+        })
+    };
+    for (key, title, about) in PHRASE_FIELDS {
+        let host = match key.split('_').next() {
+            Some("task") => host("task", &[prompt, remind, wrong]),
+            Some("punish") => host("punish", &[prompt, remind, fail]),
+            Some("chances") => host("chances", &[wrong]),
+            Some("greeting") => host("greeting", &[join, prompt, pass]),
+            _ => host("name", &[join]),
+        };
+        let about = match &host {
+            Some((label, _)) => format!("{about}预览套在「{label}」里，垫淡底的是这句。"),
+            None => (*about).to_string(),
+        };
+        let samples = match *key {
+            "task_answer" => json!({ "answer": answer }),
+            "task_code" => json!({ "answer": "4821" }),
+            "task_math" => json!({ "answer": "7 + 5" }),
+            "punish_mute" => json!({ "duration": duration_text(verify.mute_seconds) }),
+            "chances" => json!({ "left": "2" }),
+            "crowd" => json!({ "names": "小林、阿杰、小美", "count": "5" }),
+            _ => json!({}),
+        };
+        fields.insert(
+            format!("phrases.{key}"),
+            json!({
+                "kind": format!("phrase_{key}"), "about": about, "title": title, "plain": true, "samples": samples,
+                "host": host.map(|(_, host)| host), "silent": "一种说法都没有：这个占位符换成空的。",
+            }),
+        );
+    }
     json!({
         "fields": fields,
         "placeholders": placeholders,
         "samples": samples,
         "group_custom": group_custom,
         "extras": [
-            { "insert": "{face:14}", "label": "QQ 表情", "hint": "{face:ID}：插一个 QQ 小黄脸，ID 是表情编号（14 是微笑）" },
+            { "insert": "{face:14}", "label": "QQ 表情", "hint": "{face:ID}：插一个 QQ 小黄脸，ID 是表情编号（14 是微笑）", "kinds": every.iter().copied().chain(["custom"]).collect::<Vec<_>>() },
             { "insert": "{你好|嗨}", "label": "随机片段", "hint": "{甲|乙|丙}：每次随机换成其中一个" },
         ],
     })
 }
+
+/// 口令方式没写口令时，样例里拿来顶的那句。
+const PHRASE_ANSWER: &str = "我已阅读群规";
+
+const DAY_PARTS: [crate::clock::DayPart; 6] = {
+    use crate::clock::DayPart::{Afternoon, Evening, Forenoon, Morning, Night, Noon};
+    [Morning, Forenoon, Noon, Afternoon, Evening, Night]
+};
+
+/// 占位符的说法：键、编辑器标题、一句用途。先后与配置参考一致。
+const PHRASE_FIELDS: &[(&str, &str, &str)] = &[
+    ("task_any", "{task} · 说任意一句话", "验证方式是「说任意一句话」时，{task} 换成这句。"),
+    ("task_answer", "{task} · 发出口令", "验证方式是「发出口令」时；{answer} 是口令（写了几句时用第一句）。"),
+    ("task_code", "{task} · 回验证码", "验证方式是「回随机验证码」时；{answer} 是这次的 4 位验证码。"),
+    ("task_math", "{task} · 算加法", "验证方式是「算一道加法」时；{answer} 是题目，如 7 + 5。"),
+    ("punish_kick", "{punish} · 移出", "超时选「移出群聊」时，{punish} 换成这句。"),
+    ("punish_mute", "{punish} · 禁言", "超时选「禁言」时；{duration} 是禁言多久，如 1 天。"),
+    ("punish_none", "{punish} · 只记一笔", "超时选「只记一笔，不处理」时。"),
+    ("chances", "{chances}", "限了答错次数时接在答错提示里；{left} 是还能再试几次。不限次数时 {chances} 是空的。"),
+    ("greeting_morning", "{greeting} · 早上", "5–8 点（北京时间）的问候。"),
+    ("greeting_forenoon", "{greeting} · 上午", "9–10 点的问候。"),
+    ("greeting_noon", "{greeting} · 中午", "11–12 点的问候。"),
+    ("greeting_afternoon", "{greeting} · 下午", "13–17 点的问候。"),
+    ("greeting_evening", "{greeting} · 晚上", "18–22 点的问候。"),
+    ("greeting_night", "{greeting} · 深夜", "23 点到凌晨 4 点的问候。"),
+    ("crowd", "{name} · 人多时", "合并欢迎超过三个人时 {name} 换成这句；{names} 是前三个名字，{count} 是总人数。三个以内直接列全。"),
+];
+
+/// 说法里自己的小占位符：键、芯片上的名字、说明、能出现在哪几句（`phrases.` 之后的键）。
+const PHRASE_LOCALS: &[(&str, &str, &str, &[&str])] = &[
+    ("answer", "口令", "写了几句口令时是第一句", &["task_answer"]),
+    ("answer", "验证码", "这次的 4 位验证码，如 4821", &["task_code"]),
+    ("answer", "题目", "算术题本身，如 7 + 5", &["task_math"]),
+    ("duration", "禁言时长", "照「禁言多久」，如 1 天", &["punish_mute"]),
+    ("left", "还能试几次", "如 2", &["chances"]),
+    ("names", "前三个名字", "如 小林、阿杰、小美", &["crowd"]),
+    ("count", "总人数", "这一批一共几个人", &["crowd"]),
+];
 
 /// 控制台表单里字段的中文名。键名照旧显示在旁边，`/ctl` 用的还是它。
 pub(crate) const LABELS: &[(&str, &str)] = &[
@@ -1773,6 +2000,22 @@ pub(crate) const LABELS: &[(&str, &str)] = &[
     ("approve.reject", "对不上就拒绝"),
     ("approve.reject_message", "拒绝理由"),
     ("custom", "自定义占位符"),
+    ("phrases", "占位符的说法"),
+    ("phrases.task_any", "要做的事 · 说任意一句话"),
+    ("phrases.task_answer", "要做的事 · 发出口令"),
+    ("phrases.task_code", "要做的事 · 回验证码"),
+    ("phrases.task_math", "要做的事 · 算加法"),
+    ("phrases.punish_kick", "后果 · 移出"),
+    ("phrases.punish_mute", "后果 · 禁言"),
+    ("phrases.punish_none", "后果 · 只记一笔"),
+    ("phrases.chances", "剩余次数"),
+    ("phrases.greeting_morning", "问候 · 早上"),
+    ("phrases.greeting_forenoon", "问候 · 上午"),
+    ("phrases.greeting_noon", "问候 · 中午"),
+    ("phrases.greeting_afternoon", "问候 · 下午"),
+    ("phrases.greeting_evening", "问候 · 晚上"),
+    ("phrases.greeting_night", "问候 · 深夜"),
+    ("phrases.crowd", "人多时的昵称"),
     ("groups", "按群单独设置"),
     ("groups.*.join_enabled", "进群时欢迎"),
     ("groups.*.join_text", "欢迎词"),
@@ -1796,6 +2039,9 @@ pub(crate) fn depends() -> Value {
         "verify.attempts": { "on": "verify.mode", "in": checks },
         "verify.wrong_text": { "on": "verify.mode", "in": checks },
         "verify.mute_seconds": { "on": "verify.action", "in": ["mute"] },
+        "phrases.punish_kick": { "on": "verify.action", "in": ["kick"] },
+        "phrases.punish_mute": { "on": "verify.action", "in": ["mute"] },
+        "phrases.punish_none": { "on": "verify.action", "in": ["none"] },
         "verify.kick_permanent": { "on": "verify.action", "in": ["kick"] },
     })
 }
@@ -1830,6 +2076,32 @@ mod tests {
         );
         assert_eq!(pieces("{套娃}", &vars), vec![Piece::Text("{群规}".into())], "自定义里不再套自定义");
         assert_eq!(pieces("{群规}", &config.vars("1")), vec![Piece::Text("一群的规矩".into())]);
+    }
+
+    #[test]
+    fn phrases_replace_builtin_wording() {
+        let mut config = Config::default();
+        config.phrases.task_code = Template::of(&["回复 {answer} 就行"]);
+        config.phrases.punish_mute = Template::of(&["关小黑屋 {duration}"]);
+        config.phrases.chances = Template::of(&[""]);
+        config.verify.action = "mute".into();
+        let mut p = Pending::sample("code", &[]);
+        p.answers = vec!["0421".into()];
+        assert_eq!(config.phrases.task(&p), "回复 0421 就行");
+        assert_eq!(config.phrases.punish(&config.verify), "关小黑屋 1 天");
+        assert_eq!(config.phrases.chances(Some(2)), "", "全部删掉就是空的");
+        let fresh = Phrases::default();
+        assert_eq!(fresh.chances(Some(2)), "（还能再试 2 次）");
+        assert_eq!(fresh.chances(None), "", "不限次数时为空");
+        assert_eq!(fresh.task(&Pending::sample("math", &[])).split(' ').count(), 5, "发出 a + b 的答案");
+        let names = ["甲", "乙", "丙", "丁"].map(String::from);
+        assert_eq!(fresh.crowd(&names), "甲、乙、丙 等 4 人");
+        assert_eq!(fresh.crowd(&names[..2]), "甲、乙");
+        config.phrases.greeting_night = Template::of(&["还没睡呀"]);
+        assert_eq!(config.phrases.greeting(crate::clock::DayPart::Night), "还没睡呀");
+        assert!(config.check().is_ok());
+        config.phrases.task_any = Template::of(&["说句话{face:1}"]);
+        assert!(config.check().is_err(), "说法里不能放表情");
     }
 
     #[test]

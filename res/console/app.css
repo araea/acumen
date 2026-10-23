@@ -4872,6 +4872,12 @@ fieldset[data-off] > .config-off-note {
   -webkit-box-decoration-break: clone;
 }
 
+/* 占位符的说法套在一条提示里预览：这句用次色容器标出来，深色里也看得出边界。 */
+.tpl-phrase {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
 /* 预览里的一张图：缩略图大小，像聊天里那样就地排着。 */
 .tpl-thumb {
   display: inline-block;

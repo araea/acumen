@@ -19,8 +19,51 @@ pub fn beijing_now() -> DateTime<FixedOffset> {
     Utc::now().with_timezone(&beijing())
 }
 
+/// 一天里的哪一段：问候语按它挑。入群欢迎允许每段换成自己的说法。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DayPart {
+    /// 5–8 点
+    Morning,
+    /// 9–10 点
+    Forenoon,
+    /// 11–12 点
+    Noon,
+    /// 13–17 点
+    Afternoon,
+    /// 18–22 点
+    Evening,
+    /// 23–4 点
+    Night,
+}
+
+impl DayPart {
+    pub fn of(hour: u32) -> Self {
+        match hour {
+            5..=8 => Self::Morning,
+            9..=10 => Self::Forenoon,
+            11..=12 => Self::Noon,
+            13..=17 => Self::Afternoon,
+            18..=22 => Self::Evening,
+            _ => Self::Night,
+        }
+    }
+
+    /// 默认的问候语。
+    pub fn greeting(self) -> &'static str {
+        match self {
+            Self::Morning => "早上好",
+            Self::Forenoon => "上午好",
+            Self::Noon => "中午好",
+            Self::Afternoon => "下午好",
+            Self::Evening => "晚上好",
+            Self::Night => "夜深了",
+        }
+    }
+}
+
 /// 提示里常用的几样「此刻」：问候、时刻、日期、星期。入群欢迎与自动回复的占位符共用这一份。
 pub struct Moment {
+    pub part: DayPart,
     /// 早上好、上午好、中午好、下午好、晚上好、夜深了
     pub greeting: &'static str,
     /// 21:05
@@ -34,18 +77,12 @@ pub struct Moment {
 pub fn moment() -> Moment {
     use chrono::{Datelike, Timelike};
     let now = beijing_now();
-    let greeting = match now.hour() {
-        5..=8 => "早上好",
-        9..=10 => "上午好",
-        11..=12 => "中午好",
-        13..=17 => "下午好",
-        18..=22 => "晚上好",
-        _ => "夜深了",
-    };
+    let part = DayPart::of(now.hour());
     let weekday =
         ["一", "二", "三", "四", "五", "六", "日"][now.weekday().num_days_from_monday() as usize];
     Moment {
-        greeting,
+        part,
+        greeting: part.greeting(),
         time: format!("{:02}:{:02}", now.hour(), now.minute()),
         date: format!("{} 月 {} 日", now.month(), now.day()),
         weekday: format!("星期{weekday}"),

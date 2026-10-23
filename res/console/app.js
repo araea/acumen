@@ -2167,9 +2167,9 @@
   }
   const variantsOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === "string" && value ? [value] : []);
 
-  /** 「插入」那一排芯片。自定义占位符带一枚 {} 图标，和内置的分得开。 */
+  /** 「插入」那一排芯片。自定义占位符带一枚 {} 图标，和内置的分得开。表情这类只给认得它的提示。 */
   function holderChips(ctx, spec) {
-    const extras = ctx.templates?.extras || [];
+    const extras = (ctx.templates?.extras || []).filter((extra) => !extra.kinds || extra.kinds.includes(spec.kind));
     return h`${holdersFor(ctx, spec.kind, spec.group).map((holder) => h`<button class="chip tpl-holder${holder.custom ? " tpl-own" : ""} state" type="button" data-tpl-insert="{${holder.key}}"
         title="{${holder.key}}${holder.hint ? ` · ${holder.hint}` : ""}" aria-label="插入${holder.custom ? "自定义占位符" : ""}${holder.label}{${holder.key}}${holder.hint ? `：${holder.hint}` : ""}">${holder.custom ? icon("data_object") : ""}${holder.label}</button>`)}
       ${extras.map((extra) => h`<button class="chip tpl-holder tpl-extra state" type="button" data-tpl-insert="${extra.insert}"
@@ -2228,10 +2228,16 @@
   }
 
   /** 模板在群里大概长什么样：占位符换成样例值，@ 与图、表情画成小块。
-   *  认不出、或这条提示里用不了的占位符原样留着并标出来——发出去也是原样，不如现在就看见。 */
-  function previewOf(text, ctx, spec, depth = 0) {
+   *  认不出、或这条提示里用不了的占位符原样留着并标出来——发出去也是原样，不如现在就看见。
+   *  占位符的说法（`spec.plain`）只是一句话：套进一条真用到它的提示里预览（`spec.host`），这句垫淡底。 */
+  function previewOf(text, ctx, spec, depth = 0, inject = null) {
+    if (spec.host && depth === 0 && text.trim()) {
+      const own = previewOf(text, ctx, { ...spec, host: null }, 1);
+      const host = previewOf(spec.host.text, ctx, { kind: spec.host.kind, group: "" }, 0, { [spec.host.slot]: own.html });
+      return { html: host.html, problems: own.problems };
+    }
     const own = ctx.templates?.group_custom?.[spec.group || ""];
-    const samples = { ...(ctx.templates?.samples || {}), ...(own?.samples || {}) };
+    const samples = { ...(ctx.templates?.samples || {}), ...(own?.samples || {}), ...(spec.samples || {}) };
     const holders = holdersFor(ctx, spec.kind, spec.group);
     const allowed = new Set(holders.map((holder) => holder.key));
     const snippets = new Set(holders.filter((holder) => holder.custom).map((holder) => holder.key));
@@ -2244,13 +2250,14 @@
       html += esc(text.slice(last, match.index));
       last = match.index + match[0].length;
       const inner = match[1].trim();
-      if (inner === "at" && allowed.has("at")) html += `<span class="tpl-at">@${esc(samples.name || "小林")}</span>`;
+      if (inject && inner in inject) html += `<span class="tpl-snippet tpl-phrase" title="{${esc(inner)}} 的这句说法">${part(inject[inner])}</span>`;
+      else if (inner === "at" && allowed.has("at")) html += `<span class="tpl-at">@${esc(samples.name || "小林")}</span>`;
       else if (inner === "image" && allowed.has("image")) {
         images = true;
         html += pill("image", "配图");
-      } else if (inner === "avatar") html += pill("account_circle", "头像");
-      else if (/^face:\d+$/.test(inner)) html += pill("mood", "表情");
-      else if (/^image:./.test(inner)) {
+      } else if (inner === "avatar" && !spec.plain) html += pill("account_circle", "头像");
+      else if (/^face:\d+$/.test(inner) && !spec.plain) html += pill("mood", "表情");
+      else if (/^image:./.test(inner) && !spec.plain) {
         const src = spec.images ? photoSrc(spec.images, inner.slice(6).trim(), 240) : "";
         html += src ? `<img class="tpl-thumb" src="${esc(src)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : pill("image", "图片");
       } else if (inner.includes("|")) html += `<span class="tpl-pick" title="每次随机换成其中一个：${esc(inner.split("|").join("、"))}">${esc(inner.split("|")[0])}</span>`;
@@ -2270,7 +2277,7 @@
     if (spec.kind === "join" && !images && (valueAt(ctx.config, "join.images") || []).length) html += `\n${pill("image", "配图")}`;
     if (!text.trim() && depth === 0) html = `<span class="tpl-empty">空着：发的时候跳过这一种</span>`;
     const problems = bad.length
-      ? h`${icon("warning")}<span>${[...new Set(bad)].join(" ")} ${bad.length > 1 ? "这几个" : "这个"}占位符在这里用不了，会原样发出去。</span>`
+      ? h`${icon("warning")}<span>${[...new Set(bad)].join(" ")} ${bad.length > 1 ? "这几个" : "这个"}占位符在这里用不了${spec.plain ? "（这句插在提示中间，只认文字）" : "，会原样发出去"}。</span>`
       : "";
     return { html: raw(html), problems };
   }
@@ -2329,15 +2336,20 @@
       if (first) clearFieldError(first);
       markModified(row, value);
       const ctx = configs.get(form.dataset.config);
-      const custom = ctx && templateOf(ctx, root.dataset.tpl)?.kind === "custom";
-      const label = custom ? `{${root.dataset.tpl.split(".").pop()}}` : (ctx && labelOf(ctx, root.dataset.tpl)) || root.dataset.tpl;
-      snackbar(value.some((text) => text.trim()) ? `已保存「${label}」` : custom ? `已保存：「${label}」现在是空的` : `已保存：「${label}」现在不发`);
+      const spec = ctx && templateOf(ctx, root.dataset.tpl);
+      const custom = spec?.kind === "custom";
+      const label = custom ? `{${root.dataset.tpl.split(".").pop()}}` : spec?.title || (ctx && labelOf(ctx, root.dataset.tpl)) || root.dataset.tpl;
+      snackbar(value.some((text) => text.trim()) ? `已保存「${label}」` : custom || spec?.plain ? `已保存：「${label}」现在是空的` : `已保存：「${label}」现在不发`);
       if (custom) {
         await freshPlugin(form.dataset.config).catch(() => null);
         repaintHolders(form.dataset.config);
         const entry = root.closest("details.entry");
         const first = value.find((text) => text.trim()) || "";
         if (entry) $("[data-entry-sub]", entry).textContent = first ? snippetBrief(first) : "还是空的";
+      } else if (spec?.plain) {
+        // 说法变了：别的编辑器里 {task} 这些的样例与芯片说明跟着换。
+        await refreshDiff(form.dataset.config);
+        repaintHolders(form.dataset.config);
       } else refreshDiff(form.dataset.config);
     } catch (error) {
       if (error.status === 401) return;
