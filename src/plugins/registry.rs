@@ -187,7 +187,7 @@ register_plugins!(
         on_sent: Some(repeater::on_sent),
         display_name: "复读机",
         section: "play",
-        summary: "同一句话接力到阈值就跟读一次，带冷却、概率与打断复读"
+        summary: "同一句话接力到阈值就跟读一次；可设冷却与跟读概率，也可以按概率主动打断这次接力"
     },
     wordcloud {
         config: wordcloud::WordCloudConfig,

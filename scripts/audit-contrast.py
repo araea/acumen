@@ -40,7 +40,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PORT = int(os.environ.get("CHROMEDRIVER_PORT", "9531"))
 OUT = os.environ.get("ACUMEN_AUDIT_OUT", os.path.join(os.environ.get("TMPDIR", "/tmp"), "acumen-contrast"))
 
-PAGES = ["", "plugins", "plugins/oai", "plugins/welcome", "plugins/autoreply", "plugins/lurker", "ambient", "logs", "settings"]
+PAGES = ["", "plugins", "plugins/oai", "plugins/welcome", "plugins/autoreply", "plugins/lurker", "plugins/repeater", "ambient", "logs", "settings"]
 VIEWPORTS = [("compact", 430, 1060), ("medium", 800, 1060), ("expanded", 1400, 900)]
 THEMES = ["light", "dark"]
 

@@ -1715,6 +1715,143 @@ button.item:active::after {
   }
 }
 
+/* —— 概率滑块（M3E slider） ——
+   轨 16dp、把手是一条 4×44dp 的竖条（悬停变宽，跟手）；走过的一段用主色，
+   剩下的一段用次色容器。填充比例由脚本写在 --_fill 上，样式里不出现具体数值。 */
+.ratio {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-04);
+  min-width: 0;
+}
+
+/* 右边的数字框：拖着看图、敲数字图个准。填色与输入框同一套，聚焦时描主色边。 */
+.ratio-box {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--zw-space-01);
+  min-height: var(--zw-size-control);
+  padding: 0 var(--zw-space-03);
+  border: var(--zw-border-width) solid transparent;
+  border-radius: var(--zw-radius-field);
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface);
+  transition:
+    background-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
+    border-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.ratio-box:focus-within {
+  border-color: var(--md-sys-color-primary);
+  outline: var(--zw-border-width-strong) solid var(--md-sys-color-primary);
+  outline-offset: calc(var(--zw-border-width) * -1);
+  background: var(--md-sys-color-surface-container-lowest);
+}
+
+.ratio-input {
+  width: 3ch;
+  min-height: var(--zw-space-07);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.ratio-input:focus {
+  outline: none;
+}
+
+.ratio-input::-webkit-outer-spin-button,
+.ratio-input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.ratio-unit {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+}
+
+.slider {
+  --_fill: 0%;
+  flex: 1;
+  min-width: var(--zw-space-10);
+  height: var(--zw-size-target);
+  /* 两端各让出半个把手：0% 与 100% 时那根竖条才整根留在框里，不被切掉半边。 */
+  padding: 0 calc(var(--zw-size-slider-thumb) / 2);
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.slider:focus-visible {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+  border-radius: var(--md-sys-shape-corner-full);
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: var(--zw-size-slider-track);
+  border-radius: var(--md-sys-shape-corner-full);
+  background:
+    linear-gradient(
+      to right,
+      var(--md-sys-color-primary) 0 var(--_fill),
+      var(--md-sys-color-secondary-container) var(--_fill) 100%
+    );
+}
+
+.slider::-webkit-slider-thumb {
+  width: var(--zw-size-slider-thumb);
+  height: var(--zw-size-slider-thumb-tall);
+  margin-top: calc((var(--zw-size-slider-track) - var(--zw-size-slider-thumb-tall)) / 2);
+  border: none;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-primary);
+  -webkit-appearance: none;
+  transition: width var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.slider::-moz-range-track {
+  height: var(--zw-size-slider-track);
+  border-radius: var(--md-sys-shape-corner-full);
+  background:
+    linear-gradient(
+      to right,
+      var(--md-sys-color-primary) 0 var(--_fill),
+      var(--md-sys-color-secondary-container) var(--_fill) 100%
+    );
+}
+
+.slider::-moz-range-thumb {
+  width: var(--zw-size-slider-thumb);
+  height: var(--zw-size-slider-thumb-tall);
+  border: none;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-primary);
+}
+
+@media (hover: hover) {
+  .slider:hover::-webkit-slider-thumb {
+    width: var(--zw-size-slider-thumb-hover);
+  }
+
+  .slider:hover::-moz-range-thumb {
+    width: var(--zw-size-slider-thumb-hover);
+  }
+}
+
 /* —— 文本框：填充式 —— */
 .field {
   display: flex;

@@ -396,6 +396,7 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
         "anti_recall" => crate::plugins::anti_recall::LABELS,
         "autoreply" => crate::plugins::autoreply::LABELS,
         "lurker" => crate::plugins::lurker::LABELS,
+        "repeater" => crate::plugins::repeater::LABELS,
         _ => &[],
     }
 }

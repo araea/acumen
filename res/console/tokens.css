@@ -408,6 +408,11 @@
   --zw-size-switch-thumb-on: 24px;
   --zw-size-switch-thumb-pressed: 28px;
   --zw-size-progress: 4px;
+  /* 概率滑块（M3E slider）：轨 16dp，把手是一条 4dp 宽、44dp 高的竖条，悬停时变宽。 */
+  --zw-size-slider-track: 16px;
+  --zw-size-slider-thumb: 4px;
+  --zw-size-slider-thumb-hover: 8px;
+  --zw-size-slider-thumb-tall: 44px;
   --zw-size-sticker: 132px;
   --zw-size-mark: 34px;
   --zw-size-tile: 46px;

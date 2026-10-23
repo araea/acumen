@@ -1665,6 +1665,8 @@
   /** 与后端 ctl::sensitive 同一张词表：这些键的值不回显，输入框只收新值。 */
   const SECRET = /token|secret|password|api_?key|authorization|credential|cookie/i;
   const TIME = /^\d{1,2}:\d{2}(:\d{2})?$/;
+  /** 0—1 的比例（概率类配置）：表单里换成百分数滑块，手机上不必敲「0.35」。 */
+  const RATIO = /(^|\.|_)(interrupt_)?probability$/;
   const valueAt = (root, path) =>
     path.split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), root);
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -1960,6 +1962,23 @@
       return row("field", h`${text(named)}
         <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false"${desc ? h` aria-describedby="${desc}"` : ""}>${value}</textarea>`);
     }
+    // 概率：滑块 + 一个能敲的百分数框，两个入口改的是同一个值。
+    // 拖动时右边跟着变、松手落盘；敲进框里回车或离开也落盘，超出 0—100 收回来。
+    if (typeof value === "number" && RATIO.test(path) && value >= 0 && value <= 1) {
+      const pct = Math.round(value * 100);
+      const label = labelOf(ctx, path) || key;
+      return row("field ratio-field", h`${text(h`<label class="field-label" for="${id}" id="${id}-label">${name}</label>`)}
+        <div class="ratio">
+          <input class="slider" type="range" id="${id}" data-path="${path}" data-kind="ratio" min="0" max="100" step="1"
+            value="${pct}" style="--_fill:${pct}%" aria-valuetext="${pct}%" spellcheck="false"
+            ${desc ? h` aria-describedby="${desc}"` : ""}>
+          <label class="ratio-box">
+            <input class="ratio-input num" type="number" min="0" max="100" step="1" inputmode="numeric" spellcheck="false"
+              value="${pct}" aria-label="${label}（百分数，0 到 100）"${desc ? h` aria-describedby="${desc}"` : ""}>
+            <span class="ratio-unit" aria-hidden="true">%</span>
+          </label>
+        </div>`);
+    }
     const numeric = typeof value === "number";
     const clock = typeof value === "string" && TIME.test(value);
     const seconds = numeric && SECONDS.test(key);
@@ -1973,6 +1992,12 @@
   }
 
   function parseValue(kind, text) {
+    // 滑块给的是 0—100 的整数，配置里收 0—1：留三位小数，够 1% 的粒度又不带浮点尾巴。
+    if (kind === "ratio") {
+      const value = Number(text) / 100;
+      if (!Number.isFinite(value)) throw new Error("这一项需要一个 0 到 100 的百分数。");
+      return Math.round(value * 1000) / 1000;
+    }
     if (kind === "number") {
       const value = Number(text.trim());
       if (!text.trim() || !Number.isFinite(value)) throw new Error("这一项需要一个数字。");
@@ -2053,6 +2078,28 @@
     } finally {
       button.removeAttribute("aria-busy");
     }
+  }
+
+  /** 概率的这一格：把百分数同时写到滑块、填充、读屏值与右边的数字框上。 */
+  function paintRatio(slider, pct) {
+    const pctText = String(pct);
+    slider.value = pctText;
+    slider.style.setProperty("--_fill", `${pctText}%`);
+    slider.setAttribute("aria-valuetext", `${pctText}%`);
+    const box = slider.closest(".ratio")?.querySelector(".ratio-input");
+    if (box && box.value !== pctText) box.value = pctText;
+  }
+
+  const syncRatio = (slider) => paintRatio(slider, Math.round(Number(slider.value)));
+
+  /** 在数字框里敲完：收进 0—100，两个控件对齐，再走一次正常的保存。 */
+  async function commitRatio(box) {
+    const slider = box.closest(".ratio")?.querySelector(".slider");
+    if (!slider) return;
+    const typed = Math.round(Number(box.value));
+    const pct = Number.isFinite(typed) ? Math.min(100, Math.max(0, typed)) : Math.round(Number(slider.value));
+    paintRatio(slider, pct);
+    await commitField(slider);
   }
 
   async function commitField(control) {
@@ -6474,6 +6521,7 @@
         if (files.length) void pickPhotos(target.closest(".photos"), files);
         return;
       }
+      if (target.matches?.(".ratio-input")) return void commitRatio(target);
       if (target.matches?.("input[data-path], textarea[data-path], select[data-path]")) return void commitField(target);
       if (target.matches?.(".tpl-image-file")) return void tplImage(target);
       if (target.matches?.(".rule-modes input")) return ruleModePick(target);
@@ -6510,6 +6558,14 @@
       if (target.matches?.("input[data-kind=\"number\"], [data-rule-cooldown]")) {
         const unit = $(`[data-seconds-for="${CSS.escape(target.id)}"]`);
         if (unit) unit.textContent = secondsText(target.value);
+      }
+      // 概率滑块：拖动时只改填充与右边的数，松手才落盘（change）。
+      if (target.matches?.("input[data-kind=\"ratio\"]")) syncRatio(target);
+      // 反过来：直接在框里敲数字，滑块与填充跟着走（离开输入框才落盘）。
+      if (target.matches?.(".ratio-input")) {
+        const slider = target.closest(".ratio")?.querySelector(".slider");
+        const pct = Math.round(Number(target.value));
+        if (slider && Number.isFinite(pct) && pct >= 0 && pct <= 100) paintRatio(slider, pct);
       }
       if (target.id === "rules-try-input") return ruleTry();
       if (target.id === "rules-search") return rulesFilter(target);
@@ -6647,6 +6703,12 @@
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && target.matches?.("[data-tpl-input]")) {
         event.preventDefault();
         void tplSave(target.closest("[data-tpl]"));
+        return;
+      }
+      if (event.key === "Enter" && target.matches?.(".ratio-input")) {
+        // 离开输入框就是「敲完了」：change 会把它收进 0—100 并保存。
+        event.preventDefault();
+        target.blur();
         return;
       }
       if (event.key === "Enter" && target.matches?.("input[data-path]")) {

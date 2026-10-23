@@ -18,8 +18,9 @@
 //! 未实际发送的候选不入记录。记录落盘在 `data/repeater/recent.json`，
 //! 重启、重连都不会忘。
 //!
-//! 触发点上依次过三道闸：冷却 → 概率 → 打断。命中打断则改发一句打断语，
-//! 概率未命中不置位 `repeated`，同一句话的下一条仍有机会触发。
+//! 触发点上依次过三道闸：冷却 → 主动打断 → 跟读概率。打断与跟读各自独立判定：
+//! 先看要不要拆台（发一句打断语），没拆台再看要不要跟读；
+//! 跟读概率未命中不置位 `repeated`，同一句话的下一条仍有机会触发。
 
 use crate::adapters::satori::{Freshness, LockedWriter, send_guarded_msg};
 use crate::command::get_prefixes;
@@ -50,7 +51,7 @@ pub struct RepeaterConfig {
     pub enabled: bool,
     /// 同一句话累计到几条开始跟读（小于 2 按 2 处理，否则等于逢消息必复读）
     pub min_times: usize,
-    /// 触发概率，取值 0~1
+    /// 跟读概率，取值 0~1
     pub probability: f64,
     /// 同一频道两次复读之间的冷却秒数，0 为不限制
     pub cooldown_seconds: u64,
@@ -64,7 +65,7 @@ pub struct RepeaterConfig {
     pub ignore_commands: bool,
     /// 是否允许复读图片与表情
     pub allow_media: bool,
-    /// 打断复读的概率：在本该跟读时改为发送一句打断语
+    /// 主动打断的概率：达到阈值时改为发送一句打断语、把这次接力拆散，与跟读概率独立判定
     pub interrupt_probability: f64,
     /// 打断语文案池，随机取一条
     pub interrupt_texts: Vec<String>,
@@ -79,7 +80,7 @@ impl Default for RepeaterConfig {
         Self {
             enabled: true,
             min_times: 2,
-            probability: 1.0,
+            probability: 0.7,
             cooldown_seconds: 15,
             max_delay_ms: 3000,
             max_chars: 200,
@@ -98,6 +99,21 @@ impl PluginConfig for RepeaterConfig {
     const NAME: &'static str = "repeater";
 }
 
+/// 控制台里的中文名。键名 probability、max_delay_ms 这些光看猜不出在说什么，
+/// 名字在前、键名作小字跟在后面（/ctl set 认的还是键名）。
+pub(crate) const LABELS: &[(&str, &str)] = &[
+    ("min_times", "接力条数"),
+    ("probability", "跟读概率"),
+    ("interrupt_probability", "主动打断"),
+    ("interrupt_texts", "打断语"),
+    ("cooldown_seconds", "冷却"),
+    ("max_delay_ms", "时效"),
+    ("max_chars", "字数上限"),
+    ("allow_media", "图片与表情"),
+    ("allow_same_user", "同一人连发"),
+    ("ignore_commands", "跳过指令"),
+    ("remember_hours", "记住多久"),
+];
 
 impl RepeaterConfig {
     /// min_times = 0/1 等价于逢消息必复读，收敛到 2
@@ -464,19 +480,24 @@ fn feed(
     {
         return Action::Silent;
     }
-    // 概率没命中不置位，同一句话的下一条还能再摇一次
+    // 先摇打断：这是一次独立的判定，不被跟读概率打折。设成 0.3 就是每三次达到阈值
+    // 里有一次拆台，而不是「本该跟读的那几次」里再挑三成——否则把跟读概率调低，
+    // 打断也跟着一起变得几乎不发生。
+    if roll(config.interrupt_probability)
+        && let Some(text) = pick_interrupt(&config.interrupt_texts)
+    {
+        state.repeated = true;
+        state.last_repeat_at = now;
+        return Action::Interrupt(text);
+    }
+
+    // 跟读概率没命中不置位，同一句话的下一条还能再摇一次
     if !roll(config.probability) {
         return Action::Silent;
     }
 
     state.repeated = true;
     state.last_repeat_at = now;
-
-    if roll(config.interrupt_probability)
-        && let Some(text) = pick_interrupt(&config.interrupt_texts)
-    {
-        return Action::Interrupt(text);
-    }
     Action::Repeat
 }
 
@@ -783,3 +804,57 @@ pub fn handle(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn content() -> OwnedValue {
+        simd_json::serde::to_owned_value(Message::new().text("再来一次")).expect("文本消息")
+    }
+
+    /// 两个人接力到阈值：第一条只计数，第二条才触发。
+    fn chain(config: &RepeaterConfig) -> (ChannelState, Action) {
+        let mut state = ChannelState::default();
+        let first = feed(&mut state, "t:再来一次".into(), content(), Sender::User("a".into()), config, 1_000);
+        assert_eq!(first, Action::Silent);
+        let second = feed(&mut state, "t:再来一次".into(), content(), Sender::User("b".into()), config, 1_001);
+        (state, second)
+    }
+
+    #[test]
+    fn interrupt_is_independent_of_repeat_probability() {
+        // 跟读概率 0、打断概率 1：照样会主动打断。以前打断是挂在「本该跟读」之后的，
+        // 这里会被跟读概率掐掉，一次都打断不了。
+        let config = RepeaterConfig {
+            probability: 0.0,
+            interrupt_probability: 1.0,
+            ..Default::default()
+        };
+        let (state, action) = chain(&config);
+        assert!(matches!(action, Action::Interrupt(_)), "应主动打断，实际 {action:?}");
+        assert!(state.repeated, "打断之后这次接力不该再被跟读");
+    }
+
+    #[test]
+    fn repeat_when_interrupt_is_off() {
+        let config = RepeaterConfig {
+            probability: 1.0,
+            interrupt_probability: 0.0,
+            ..Default::default()
+        };
+        let (_, action) = chain(&config);
+        assert_eq!(action, Action::Repeat);
+    }
+
+    #[test]
+    fn missed_repeat_leaves_room_for_the_next_message() {
+        let config = RepeaterConfig {
+            probability: 0.0,
+            interrupt_probability: 0.0,
+            ..Default::default()
+        };
+        let (state, action) = chain(&config);
+        assert_eq!(action, Action::Silent);
+        assert!(!state.repeated, "概率没命中不该置位，下一条还要能再摇");
+    }
+}
