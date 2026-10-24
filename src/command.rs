@@ -230,34 +230,52 @@ fn non_empty(value: &OwnedValue) -> Option<String> {
 
 /// 一条消息里的链接候选，按可信度排序。
 ///
-/// 卡片给出的落地地址排在正文前面：它是「点开卡片会去哪」，而 `raw_message`
-/// 里那串载荷还混着封面与图标的地址，正则先抓到的多半不是它。
+/// 卡片给出的落地地址排在正文前面：它是「点开卡片会去哪」。正文只看 `text`
+/// 段，不扫卡片载荷里的封面与图标；没有消息段时才退回 `raw_message`。
 ///
-/// 正文只取第一个，与 [`find_url`] 在同一处；卡片可以有好几张，按出现顺序排。
+/// 正文与卡片都按出现顺序收全量并去重，由调用方决定取几条。
 pub fn message_links(ctx: &Context) -> Vec<String> {
     let mut links = Vec::new();
     let Some(message) = ctx.as_message() else {
         return links;
     };
+    let mut text_links = Vec::new();
+    let mut has_segments = false;
     if let Some(segments) = message.0.get_array("message") {
+        has_segments = true;
         for segment in segments {
-            if segment.get_str("type") != Some("json") {
-                continue;
-            }
             let Some(data) = segment.get("data") else {
                 continue;
             };
-            let payload = data
-                .get_str("data")
-                .or_else(|| data.get_str("content"))
-                .unwrap_or("");
-            if let Some(url) = card_target_url(payload) {
-                push_unique(&mut links, url);
+            match segment.get_str("type") {
+                Some("json") => {
+                    let payload = data
+                        .get_str("data")
+                        .or_else(|| data.get_str("content"))
+                        .unwrap_or("");
+                    if let Some(url) = card_target_url(payload) {
+                        push_unique(&mut links, url);
+                    }
+                }
+                Some("text") => {
+                    if let Some(text) = data.get_str("text") {
+                        for url in find_urls(text) {
+                            push_unique(&mut text_links, url);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
-    if let Some(url) = find_url(message.text()) {
-        push_unique(&mut links, url);
+    if has_segments {
+        for url in text_links {
+            push_unique(&mut links, url);
+        }
+    } else {
+        for url in find_urls(message.text()) {
+            push_unique(&mut links, url);
+        }
     }
     links
 }

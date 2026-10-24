@@ -1,10 +1,10 @@
-//! 视频站链接：群里出现一条能解析的链接，就地把原片取进群。
+//! 视频站链接：消息里出现能解析的链接，就地把原片取进群。
 //!
 //! 视频站的链接不适合交给截图：抖音那类本来就只有登录墙，B 站这类要等播放器起
 //! 画面，截出来又慢又没什么信息。所以这些链接改由本插件接，一步到底：
 //! 链接进来、片子出去，不先回预览，不等引用，也没有要用户记住的指令。
 //!
-//! 触发面覆盖消息里的三种形态，判据都是「点开它会去哪」：
+//! 触发面覆盖消息里的两种形态，判据都是「点开它会去哪」：
 //!
 //! - 正文里的链接（[`crate::command::message_links`] 认得的都算）；
 //! - QQ 的小程序卡与分享卡——链接在那段 `json` 载荷里，正文是空的。
@@ -14,6 +14,10 @@
 //! 引用**——视频在 QQ 里是「顺媒体」，与引用放在一条消息里就显示不出来（见 [`send`]）。
 //! 群里等得着的只有片子，中途冒出来的每一句都是打扰。
 //! 同一个人在同一会话里十分钟内重贴同一条不会下第二遍（[`state`]）。
+//!
+//! 一条消息里的多条链接默认逐条取片；`max_videos_per_message` 可收成只取第一个或前 N 个。
+//! 多条任务保持串行，前一个结束后可按 `interval_min_seconds`—`interval_max_seconds`
+//! 随机歇一会儿再做下一个，既不并发挤爆本机，也不让成品在同一瞬间刷进群。
 //!
 //! 链接准入：links::is_video_link 认得的 B 站稿件、加上本插件认得的抖音链接，
 //! 都归这里；截图那边见链接就跳过，两处不会各截一次又取一次。抖音没开时，
@@ -61,6 +65,9 @@ const LOG_TARGET: &str = "Plugin/VideoParse";
 /// 认稿件与取流的接口都很轻，10 秒足够。
 const API_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// 同一消息里相邻取片任务的最长可配间隔，避免误配后把后续任务押到几小时之后。
+const MAX_INTERVAL_SECONDS: u64 = 600;
+
 /// 同时进行的取片上限。任意群友贴一条链接就能让我们下几十兆，没有闸门时
 /// 一个人连贴五条链接就是五份并发下载，手机的网络与内存都吃不下。
 /// 排队排在下载预算之外：等闸门的时间不算进单片的超时，也不在群里冒出一句状态。
@@ -83,6 +90,12 @@ pub struct Config {
     /// 默认只发气泡，一份成品一条消息，不让群文件白占一份空间；要群文件的群再开
     /// `file` 或 `both`——`both` 也是安全的：气泡先发，文件那条腿失败只少一个文件。
     pub send: String,
+    /// 单条消息最多解析几个视频；0 为不限制，1 为只取第一个。
+    pub max_videos_per_message: usize,
+    /// 同一消息里相邻取片任务的最小随机间隔（秒）。
+    pub interval_min_seconds: u64,
+    /// 同一消息里相邻取片任务的最大随机间隔（秒）。
+    pub interval_max_seconds: u64,
     /// 一次取片的总预算（秒），含挑画质、下载与上传。
     pub timeout_seconds: u64,
     /// B 站登录 Cookie，留空即匿名。
@@ -102,6 +115,9 @@ impl Default for Config {
             max_size_mb: 80,
             prefer_quality: 64,
             send: "bubble".to_string(),
+            max_videos_per_message: 0,
+            interval_min_seconds: 0,
+            interval_max_seconds: 0,
             timeout_seconds: 300,
             cookie: String::new(),
             platforms: vec!["bilibili".to_string()],
@@ -112,6 +128,21 @@ impl Default for Config {
 
 impl PluginConfig for Config {
     const NAME: &'static str = "video_parse";
+
+    fn check(&self) -> Result<(), String> {
+        for (name, value) in [
+            ("interval_min_seconds", self.interval_min_seconds),
+            ("interval_max_seconds", self.interval_max_seconds),
+        ] {
+            if value > MAX_INTERVAL_SECONDS {
+                return Err(format!("{name} 最多 {MAX_INTERVAL_SECONDS} 秒"));
+            }
+        }
+        if self.interval_min_seconds > self.interval_max_seconds {
+            return Err("interval_min_seconds 不能大于 interval_max_seconds".into());
+        }
+        Ok(())
+    }
 }
 
 impl Config {
@@ -188,29 +219,50 @@ pub fn handle(
         }
 
         // 链接不一定写在正文里：QQ 的小程序卡与分享卡是一段落在 `json` 元素里的
-        // 载荷，落地地址要从里面取（见 `message_links`）。两种来源都收，取第一个
-        // 认得的稿件页。
-        let Some((platform, candidate)) = take_candidate(&ctx, &config) else {
+        // 载荷，落地地址要从里面取（见 `message_links`）。卡片与正文里的候选都收，
+        // 默认逐条处理；配置上限在这里收口，超出的链接连解析请求都不会发。
+        let candidates = candidates_from_links(message_links(&ctx), &config);
+        if candidates.is_empty() {
             return Ok(Some(ctx));
-        };
+        }
 
-        if let Err(error) = take(&ctx, &writer, &config, platform, &candidate, group_id, user_id).await {
-            // 取不到就静默收场：群里只当这条链接没被接住，原因留给日志。
-            // 一条「没取到」在群里就是一次打扰，而贴链接的人自己看得出来没片子。
-            warn!(target: LOG_TARGET, "取片失败（{}）：{}", candidate, error);
+        let total = candidates.len();
+        for (index, (platform, candidate)) in candidates.into_iter().enumerate() {
+            // 每单片都可能要下载与上传，串行本身就有间隔；配置的节奏在前一个任务
+            // 彻底结束后再叠加，不另起一批后台任务，也不让后面的链接抢占发送顺序。
+            if index > 0 {
+                let wait = task_interval_seconds(&config);
+                if wait > 0 {
+                    time::sleep(Duration::from_secs(wait)).await;
+                }
+            }
+            if let Err(error) = take(
+                &ctx, &writer, &config, platform, &candidate, group_id, user_id,
+            )
+            .await
+            {
+                // 取不到就静默收场：群里只当这条链接没被接住，原因留给日志。
+                // 单片失败不挡住同一条消息里的后续链接。
+                let ordinal = index + 1;
+                warn!(target: LOG_TARGET, "取片失败（{ordinal}/{total}，{candidate}）：{error}");
+            }
         }
         // 视频站的链接归本插件，后面几个链接类插件（截图）不必再看一眼。
         Ok(None)
     })
 }
 
-/// 这条消息里第一个本插件接得住的链接，连同它属于哪个平台。
+/// 这条消息里本插件接得住的链接，连同它们属于哪个平台。
 ///
-/// message_links 把卡片里的落地地址排在正文前面，这里逐个认——卡片载荷里
-/// 还混着封面与图标的地址，第一个接得住的才作数。平台开了才认领：没开的平台
-/// 让链接原样过去（截图那边本来就不接视频站）。
-fn take_candidate(ctx: &Context, config: &Config) -> Option<(&'static str, String)> {
-    for url in message_links(ctx) {
+/// message_links 把卡片里的落地地址排在正文前面，这里逐个认。平台开了才认领：
+/// 没开的平台让链接原样过去（截图那边本来就不接视频站）。上限只约束真正准入的
+/// 候选，普通网页与不支持的视频站不占名额。
+fn candidates_from_links(
+    links: impl IntoIterator<Item = String>,
+    config: &Config,
+) -> Vec<(&'static str, String)> {
+    let mut candidates = Vec::new();
+    for url in links {
         let Ok(parsed) = Url::parse(&url) else {
             continue;
         };
@@ -218,14 +270,35 @@ fn take_candidate(ctx: &Context, config: &Config) -> Option<(&'static str, Strin
         if (bilibili::is_short_host(host) || bilibili::reference(&parsed).is_some())
             && config.platform_enabled("bilibili")
         {
-            return Some(("bilibili", url));
+            candidates.push(("bilibili", url));
+            continue;
         }
         if douyin::is_douyin_host(host) && config.platform_enabled("douyin") {
-            return Some(("douyin", url));
+            candidates.push(("douyin", url));
         }
     }
-    None
+    let limit = config.max_videos_per_message;
+    if limit > 0 && candidates.len() > limit {
+        let available = candidates.len();
+        info!(target: LOG_TARGET, "本条消息有 {available} 条可解析链接，按配置只取前 {limit} 条");
+        candidates.truncate(limit);
+    }
+    candidates
 }
+
+/// 同一消息里下一个取片任务前歇多久。保存配置时会校验区间；直接改坏配置时
+/// 也在运行侧夹住并交换两端，不让异常值变成长时间占用或 panic。
+fn task_interval_seconds(config: &Config) -> u64 {
+    let min = config.interval_min_seconds.min(MAX_INTERVAL_SECONDS);
+    let max = config.interval_max_seconds.min(MAX_INTERVAL_SECONDS);
+    let (min, max) = if min <= max { (min, max) } else { (max, min) };
+    if min == max {
+        min
+    } else {
+        rand::random_range(min..=max)
+    }
+}
+
 /// 会话标识：群聊 `g:群号`，私聊 `u:用户 ID`。
 fn target_key(group_id: Option<&str>, user_id: &str) -> String {
     match group_id {
@@ -555,6 +628,70 @@ async fn discard_stale_parts(dir: &Path) {
         if stale {
             let _ = tokio::fs::remove_file(&path).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidates_keep_all_by_default_and_respect_platforms_and_limit() {
+        let links = || {
+            [
+                "https://www.bilibili.com/video/BV1GJ411x7h7",
+                "https://example.com/watch/1",
+                "https://v.douyin.com/abc/",
+                "https://b23.tv/BV1GJ411x7h8",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        };
+
+        let defaults = Config::default();
+        let candidates = candidates_from_links(links(), &defaults);
+        assert_eq!(candidates.len(), 2, "普通网页与未启用的抖音不占名额");
+        assert!(
+            candidates
+                .iter()
+                .all(|(platform, _)| *platform == "bilibili")
+        );
+
+        let all_platforms = Config {
+            platforms: vec!["bilibili".into(), "douyin".into()],
+            ..Config::default()
+        };
+        let candidates = candidates_from_links(links(), &all_platforms);
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[1].0, "douyin");
+
+        let only_one = Config {
+            max_videos_per_message: 1,
+            ..all_platforms
+        };
+        let candidates = candidates_from_links(links(), &only_one);
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].1.contains("BV1GJ411x7h7"));
+    }
+
+    #[test]
+    fn task_interval_stays_inside_the_configured_window() {
+        let mut config = Config {
+            interval_min_seconds: 2,
+            interval_max_seconds: 5,
+            ..Config::default()
+        };
+        assert!(config.check().is_ok());
+        for _ in 0..32 {
+            assert!((2..=5).contains(&task_interval_seconds(&config)));
+        }
+
+        config.interval_min_seconds = 6;
+        assert!(config.check().is_err());
+        config.interval_min_seconds = 2;
+        config.interval_max_seconds = MAX_INTERVAL_SECONDS + 1;
+        assert!(config.check().is_err());
     }
 }
 

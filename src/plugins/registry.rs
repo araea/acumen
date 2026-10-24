@@ -310,7 +310,7 @@ register_plugins!(
         config: video_parse::Config,
         display_name: "视频解析",
         section: "message",
-        summary: "视频站链接（正文、小程序卡、分享卡）就地取原片进群，成品只发视频气泡；平台可配（platforms，默认仅 B 站，抖音可选开）"
+        summary: "视频站链接（正文、小程序卡、分享卡）就地取原片进群；同一条消息默认全解析，可限条数并随机间隔；平台可配（默认仅 B 站，抖音可选开）"
     },
     song {
         config: song::Config,

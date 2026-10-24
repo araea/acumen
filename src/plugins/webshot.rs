@@ -148,6 +148,9 @@ const WALLED_DOMAINS: &[&str] = &[
     // 店铺和主图。2026-09-16 连测两轮都是同一张验证页。
     "qr.1688.com",
     "m.1688.com",
+    // 京东推广短链只负责跳转与归因，浏览器里看不到稳定的商品详情，截下来没有意义。
+    // 只拦 `u.jd.com`：普通商品页是否可看仍按实际页面处理，不整站拉黑京东。
+    "u.jd.com",
     // 淘宝 / 天猫的分享口令短链。`m.tb.cn/h.xxxx` 不是商品页，而是一张 callapp
     // 跳板：正文只有一个脚本，200 毫秒后 `location.replace` 到
     // `web.m.taobao.com/app/HP/…` 的 weex 回流页。那个地址是纯客户端渲染的壳，
@@ -331,7 +334,7 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
         if config.block_walled_sites
             && let Some(rule) = WALLED_DOMAINS.iter().find(|rule| domain_matches(&name, rule))
         {
-            return Err(format!("{rule} 截出来是登录墙或验证页，没有内容"));
+            return Err(format!("{rule} 没有可截的正文（登录墙、验证页或客户端跳转页）"));
         }
     }
 
@@ -1356,6 +1359,9 @@ mod tests {
             // 1688 分享短链与它跳转的移动站落点，都停在滑块验证页。
             "https://qr.1688.com/s/7HOhG7uS",
             "https://m.1688.com/offer/1046051827096.html",
+            // 京东推广短链只有跳转与归因，没有稳定可截的商品详情。
+            "https://u.jd.com/5rjIEHC",
+            "https://u.jd.com/5OjtBTN",
             // 淘宝的分享口令短链与它跳转的 weex 落点：页面只是唤起 App 的跳板，
             // 内容全靠客户端渲染，浏览器里打开是一张白纸。
             "https://m.tb.cn/h.jW6OwPv",
@@ -1379,6 +1385,8 @@ mod tests {
             "https://www.hupu.com/",
             // 后缀匹配不误伤同前缀的别的域名。
             "https://coolapk.com.example.net/feed/1",
+            // 只拦京东推广短链，不把京东整站拉黑。
+            "https://item.jd.com/123.html",
             // 淘宝与天猫的商品页未登录也能看到标题、价格与主图，不能整站拉黑。
             "https://item.taobao.com/item.htm?id=123",
             "https://detail.tmall.com/item.htm?id=123",
