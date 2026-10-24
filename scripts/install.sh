@@ -18,7 +18,7 @@ main() {
     local app=${ACUMEN_HOME:-$HOME/acumen}
     local manifest=https://github.com/araea/acumen/releases/latest/download/update.json
     # 直连 GitHub 与几家加速站（与可执行文件里内置的同一份），挨个试。
-    local mirrors=("" https://gh-proxy.com/ https://cdn.gh-proxy.com/ https://gh.llkk.cc/ https://gh.idayer.com/ https://ghfast.top/)
+    local mirrors=("" https://gh-proxy.com/ https://cdn.gh-proxy.com/ https://gh.llkk.cc/ https://ghproxy.net/ https://ghfast.top/)
 
     if [[ ! -d /data/data/com.termux || $prefix != /data/data/com.termux/* ]]; then
         echo "知微只支持安卓上的 Termux。" >&2

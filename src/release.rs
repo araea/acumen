@@ -26,12 +26,14 @@ const KEEPER_PATH: &str = "/data/adb/service.d/acumen.sh";
 const PUBLIC_KEY: &str = "cf7ea9cc07dc55c141978b75225962705a1aeef336ce57db224f0919285ad363";
 
 /// 内置的 GitHub 加速前缀。国内网络直连 GitHub 常常超时，这几家能把同一个地址原样转过来；
-/// 失效了也不要紧，同时问、谁先回用谁，`[restart] mirrors` 还能再补。
+/// `[restart] mirrors` 还能再补。名单会轮换：某一家被限流（Cloudflare 回 429 之类）、
+/// 挂掉或缓存没命中都是常事，单家不回不算故障——所有源同时问，谁先回用谁，只有全都
+/// 不通才算查不到。`scripts/install.sh` 里是同一份名单，有测试盯着两边别走偏。
 const MIRRORS: &[&str] = &[
     "https://gh-proxy.com/",
     "https://cdn.gh-proxy.com/",
     "https://gh.llkk.cc/",
-    "https://gh.idayer.com/",
+    "https://ghproxy.net/",
     "https://ghfast.top/",
 ];
 
@@ -233,10 +235,20 @@ fn short(error: &anyhow::Error) -> String {
             return "连不上".into();
         }
         if let Some(status) = error.status() {
-            return format!("HTTP {}", status.as_u16());
+            return status_hint(status.as_u16());
         }
     }
     error.to_string()
+}
+
+/// 加速站回的状态码说成人话：限流是它自己在扛流量，不是这边做错了什么。
+fn status_hint(code: u16) -> String {
+    match code {
+        403 | 429 | 451 => format!("被限流（{code}）"),
+        404 => "没有清单（404）".into(),
+        500..=599 => format!("源出错（{code}）"),
+        _ => format!("HTTP {code}"),
+    }
 }
 
 fn signed_message(version: &str, sha256: &str) -> String {
@@ -335,11 +347,17 @@ async fn check_online() -> Result<Option<Release>> {
                 let fresh = found
                     .iter()
                     .any(|(_, release)| newer(&release.version, VERSION));
-                let wait = if fresh { MANIFEST_GRACE } else { MANIFEST_PATIENT };
+                let wait = if fresh {
+                    MANIFEST_GRACE
+                } else {
+                    MANIFEST_PATIENT
+                };
                 deadline = Some((tokio::time::Instant::now() + wait).min(hard));
             }
             Err(error) => {
-                debug!(target: LOG_TARGET, "{} 取不到更新清单：{error:#}", label(source));
+                // 单家加速站被限流、挂掉、缓存没命中都是常事，不是这台机器出了故障：
+                // 只在最后全都不通时把理由摆出来，别的源好好的就一个字也不说，
+                // 免得每次查更新都在日志里留一行看着像报错的东西。
                 errors.push(format!("{} {}", label(source), short(&error)));
             }
         }
@@ -421,7 +439,12 @@ pub async fn install(release: &Release) -> Result<String> {
                 return Ok(format!("经 {} 下载", label(source)));
             }
             Err(error) => {
-                warn!(target: LOG_TARGET, "经 {} 下载没成：{error:#}", label(source));
+                debug!(
+                    target: LOG_TARGET,
+                    "经 {} 下载没成：{}，换下一个源",
+                    label(source),
+                    short(&error)
+                );
                 errors.push(format!("{} {}", label(source), short(&error)));
             }
         }
@@ -455,7 +478,10 @@ async fn download(
             #[allow(clippy::cast_precision_loss)]
             let speed = packed.len() as f64 / elapsed.as_secs_f64();
             if live && drawn.elapsed() >= Duration::from_millis(200) {
-                eprint!("\r\x1b[K{}", progress(version, packed.len(), expected, speed));
+                eprint!(
+                    "\r\x1b[K{}",
+                    progress(version, packed.len(), expected, speed)
+                );
                 drew = true;
                 drawn = tokio::time::Instant::now();
             }
@@ -515,8 +541,7 @@ async fn stage(target: &Path, binary: Vec<u8>, version: &str) -> Result<()> {
     .await;
     let passed = match check {
         Ok(Ok(output)) => {
-            output.status.success()
-                && String::from_utf8_lossy(&output.stdout).trim() == version
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == version
         }
         _ => false,
     };
@@ -989,5 +1014,32 @@ mod tests {
     fn mirror_labels() {
         assert_eq!(label(""), "GitHub");
         assert_eq!(label("https://gh-proxy.com/"), "gh-proxy.com");
+    }
+
+    #[test]
+    fn reads_mirror_status() {
+        assert_eq!(status_hint(429), "被限流（429）");
+        assert_eq!(status_hint(403), "被限流（403）");
+        assert_eq!(status_hint(404), "没有清单（404）");
+        assert_eq!(status_hint(502), "源出错（502）");
+        assert_eq!(status_hint(418), "HTTP 418");
+    }
+
+    /// 安装脚本与可执行文件里是同一份加速站名单，改一边忘了另一边会让离线安装绕远路。
+    #[test]
+    fn install_script_uses_the_same_mirrors() {
+        let line = include_str!("../scripts/install.sh")
+            .lines()
+            .find(|line| line.trim_start().starts_with("local mirrors="))
+            .expect("install.sh 里找不到 mirrors 一行");
+        let listed: Vec<&str> = line
+            .split(['(', ')'])
+            .nth(1)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter(|item| *item != "\"\"")
+            .map(|item| item.trim_matches('"'))
+            .collect();
+        assert_eq!(listed, MIRRORS);
     }
 }
