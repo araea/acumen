@@ -81,7 +81,8 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://api.moonshot.cn/v1",
         "MOONSHOT_API_KEY",
         "https://platform.moonshot.cn/console/api-keys",
-        "",
+        // k2 系列与 kimi-latest 已于 2026 年下线，官方指名用 kimi-k3。
+        "kimi-k3",
         &["kimi"],
     ),
     known(

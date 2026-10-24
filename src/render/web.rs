@@ -113,6 +113,14 @@ pub struct Tier {
     /// 新建的房间就是这一档：名字旁挂一枚「新房间默认」。
     pub default: bool,
 }
+/// 上手步骤：从装好到开口的三步。数字就是顺序，标题说这一步做什么，
+/// 指令给出原样能敲的写法，说明补一句为什么。
+pub struct Step {
+    pub title: String,
+    /// 这一步要敲的指令（占位符照常降一档着色）。
+    pub command: String,
+    pub note: String,
+}
 pub enum Tone {
     Info,
     Empty,
@@ -163,6 +171,8 @@ pub enum Block {
         tone: Tone,
         text: String,
     },
+    /// 上手步骤：编号的一小串，从装好到开口。
+    Steps(Vec<Step>),
 }
 pub struct Doc {
     pub theme: Theme,
@@ -409,6 +419,19 @@ fn html_at(doc: &Doc, stamp: &str) -> String {
                 body.push_str("<aside class=\"callout md-callout notes\"><ul>");
                 for note in notes { body.push_str(&format!("<li>{}</li>", esc(note))); }
                 body.push_str("</ul></aside>");
+            }
+            Block::Steps(steps) => {
+                body.push_str("<ol class=\"md-seg steps\">");
+                for (index, step) in steps.iter().enumerate() {
+                    body.push_str(&format!(
+                        "<li><span class=step-no aria-hidden=true>{}</span><div class=step-body><h3 class=step-title>{}</h3><code class=command>{}</code><p class=item-desc>{}</p></div></li>",
+                        index + 1,
+                        esc(&step.title),
+                        command_html("", &step.command),
+                        esc(&step.note)
+                    ));
+                }
+                body.push_str("</ol>");
             }
             Block::Callout { tone, text } => body.push_str(&format!("<aside class=\"callout md-callout md-type-body-medium {}\">{}</aside>",
                 match tone { Tone::Info => "info", Tone::Empty => "md-callout-empty" }, esc(text))),

@@ -35,10 +35,6 @@ pub(crate) struct Video {
     pub(crate) bvid: String,
     /// 选中那一 P 的 `cid`，取流时要用
     pub(crate) cid: i64,
-    /// 选中那一 P 的序号
-    pub(crate) page: u32,
-    /// 总共几 P
-    pub(crate) pages: u32,
     pub(crate) title: String,
 }
 
@@ -61,8 +57,6 @@ pub(crate) async fn info(reference: &VideoRef, cookie: &str, timeout: Duration) 
     Ok(Video {
         bvid: data.bvid,
         cid,
-        page,
-        pages: data.videos.max(1),
         title: data.title.trim().to_string(),
     })
 }
@@ -82,8 +76,6 @@ struct ViewData {
     cid: i64,
     #[serde(default)]
     title: String,
-    #[serde(default)]
-    videos: u32,
     #[serde(default)]
     pages: Vec<Page>,
 }

@@ -104,7 +104,12 @@ pub fn init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
             warn!(target: LOG_TARGET, "禁言记录表初始化失败: {}", e);
         }
 
-        // 5. 注册每日数据清理任务
+        // 5. 艾特记录表（被艾特/艾特别人排行榜的数据源）
+        if let Err(e) = crate::db::mentions::init(db).await {
+            warn!(target: LOG_TARGET, "艾特记录表初始化失败: {}", e);
+        }
+
+        // 6. 注册每日数据清理任务
         let scheduler = ctx.scheduler.clone();
         let db_clone = ctx.db.clone();
         let config_clone = ctx.config.clone();
@@ -307,7 +312,7 @@ async fn insert(
         record.time_hour = Set(dt.hour() as i32);
         record.time_weekday = Set(dt.weekday().num_days_from_sunday() as i32);
     }
-    let (text_len, raw_text) = parse_message_content(message, &mut record);
+    let (text_len, raw_text, at_targets) = parse_message_content(message, &mut record);
     record.length = Set(text_len);
     let tokens = if raw_text.is_empty() {
         String::new()
@@ -337,13 +342,31 @@ async fn insert(
         is_forward: active_bool(&record.is_forward),
         face_count: active_i32(&record.face_count),
     };
-    // 消息插入 + 聚合 UPSERT 在同一事务内：要么同时生效，要么同时回滚
+    // 艾特记录与消息同库同事务：一条 @ 记一行，@全体成员已经在解析那一步排掉
+    let platform = active_str(&record.platform);
+    let self_id = active_str(&record.self_id);
+    let mention_rows: Vec<crate::db::mentions::MentionRow> = at_targets
+        .into_iter()
+        .map(|(atte_id, atte_name)| crate::db::mentions::MentionRow {
+            guild_id: active_str(&record.guild_id),
+            guild_name: active_str(&record.guild_name),
+            message_id: active_str(&record.message_id),
+            atter_id: active_str(&record.user_id),
+            atte_id,
+            atte_name,
+            time,
+        })
+        .collect();
+
+    // 消息插入 + 聚合 UPSERT + 艾特记录在同一事务内：要么同时生效，要么同时回滚
     let inserted = ctx
         .db
         .transaction(|txn| {
             Box::pin(async move {
                 record.insert(txn).await?;
                 crate::db::stats::upsert_message_stats(txn, &delta).await?;
+                crate::db::mentions::insert(txn, &platform, &self_id, &mention_rows)
+                .await?;
                 Ok::<(), sea_orm::DbErr>(())
             })
         })
@@ -375,11 +398,12 @@ fn active_str(v: &ActiveValue<String>) -> String {
     }
 }
 
-/// 解析消息段数组，提取富文本摘要、特征标记，并返回 (纯文本长度, 拼接后的纯文本)
+/// 解析消息段数组，提取富文本摘要、特征标记，并返回 (纯文本长度, 拼接后的纯文本, 艾特目标)。
+/// 艾特目标是消息里每个 @ 指向的人（QQ 号与段里带的名字），@全体成员不算。
 fn parse_message_content(
     msg_val: Option<&OwnedValue>,
     record: &mut RecordActiveModel,
-) -> (i32, String) {
+) -> (i32, String, Vec<(String, String)>) {
     let mut rich_text = String::new();
     // 存储分段的纯文本，用于最终拼接 tokens
     let mut text_segments: Vec<String> = Vec::new();
@@ -389,6 +413,7 @@ fn parse_message_content(
     let mut image_count = 0;
     let mut at_count = 0;
     let mut face_count = 0;
+    let mut at_targets: Vec<(String, String)> = Vec::new();
 
     // 标记变量
     let mut is_anim_emoji = false;
@@ -433,12 +458,26 @@ fn parse_message_content(
                                     .map(ToString::to_string)
                                     .or_else(|| d.get_i64("qq").map(|i| i.to_string()))
                                     .or_else(|| d.get_u64("qq").map(|i| i.to_string()))
+                                    // satori 写法里目标也可能落在 id / user_id 上
+                                    .or_else(|| d.get_str("user_id").map(ToString::to_string))
+                                    .or_else(|| d.get_str("id").map(ToString::to_string))
                             })
                             .unwrap_or_default();
                         if qq == crate::message::AT_ALL {
                             rich_text.push_str("[@全体成员]");
                         } else {
                             rich_text.push_str(&format!("[@{qq}]"));
+                            // 艾特目标：被艾特排行榜按它合计；名字段有就带上，没有留给查询时补。
+                            if !qq.is_empty() {
+                                let name = data
+                                    .and_then(|d| {
+                                        d.get_str("name")
+                                            .or_else(|| d.get_str("nick"))
+                                            .map(ToString::to_string)
+                                    })
+                                    .unwrap_or_default();
+                                at_targets.push((qq, name));
+                            }
                         }
                     }
                     "face" => {
@@ -525,5 +564,5 @@ fn parse_message_content(
     record.is_poke = Set(is_poke);
     record.is_forward = Set(is_forward);
 
-    (text_char_count as i32, joined_text)
+    (text_char_count as i32, joined_text, at_targets)
 }

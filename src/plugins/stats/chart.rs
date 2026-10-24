@@ -11,7 +11,9 @@ use crate::plugins::stats::StatsConfig;
 use self::avatar::prepare_avatars;
 use self::data_loader::{
     BanBoard, BarData, Rank, SeriesData, TextBoard, fetch_ban_bars, fetch_bar_data, fetch_line_data,
+    fetch_mention_bars,
 };
+use crate::db::mentions;
 use self::renderer::{BarUnit, draw_bar_chart, draw_line_chart, draw_message_type_ranking};
 
 /// 图表生成不出来的原因。分两类是因为对用户来说这是两件事：
@@ -73,6 +75,11 @@ pub fn is_ban_ranking(data_type: &str) -> bool {
     BanBoard::parse(data_type).is_some()
 }
 
+/// 艾特榜：被艾特、艾特别人。
+pub fn is_mention_ranking(data_type: &str) -> bool {
+    MentionBoard::parse(data_type).is_some()
+}
+
 /// 文字类榜：按纯文本消息条数或文本字数排。
 pub fn is_text_ranking(data_type: &str) -> bool {
     TextBoard::parse(data_type).is_some()
@@ -82,6 +89,9 @@ pub fn is_text_ranking(data_type: &str) -> bool {
 /// 文字类榜把「字数」「纯文本」这类顺口说法统一成「发言字数」「文本消息」；其余原样。
 pub fn ranking_name(data_type: &str) -> &str {
     if let Some(board) = TextBoard::parse(data_type) {
+        return board.name();
+    }
+    if let Some(board) = MentionBoard::parse(data_type) {
         return board.name();
     }
     BanBoard::parse(data_type).map_or(data_type, |board| board.name())
@@ -129,7 +139,20 @@ pub async fn generate(
 
     // 2. 柱状图 / 排行榜
     let (mut bar_data, unit, notes): (Vec<BarData>, BarUnit, Vec<String>) =
-        if let Some(board) = BanBoard::parse(data_type) {
+        if let Some(board) = MentionBoard::parse(data_type) {
+            let bars = fetch_mention_bars(
+                db,
+                query_group,
+                query_user,
+                sender_id,
+                start_time,
+                end_time,
+                limit,
+                board.direction,
+            )
+            .await?;
+            (bars, BarUnit::Count, Vec::new())
+        } else if let Some(board) = BanBoard::parse(data_type) {
             let guild = query_group.ok_or("禁言榜只统计群里的")?;
             let (bars, notes) =
                 fetch_ban_bars(db, guild, start_time, end_time, limit, sender_id, board).await?;
@@ -176,4 +199,33 @@ pub async fn generate(
     .await
     .map_err(|e| format!("图表任务失败：{e}"))??;
     Ok(image)
+}
+
+/// 艾特榜：排被 @ 的人（被艾特），或动手 @ 的人（艾特别人）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MentionBoard {
+    pub direction: mentions::Direction,
+}
+
+impl MentionBoard {
+    /// 指令里的数据类型 → 榜的种类；不是艾特榜返回 None。
+    ///
+    /// 「艾特」单说指动手的那一方：跟「禁言」与「管理员禁言」的关系一样，
+    /// 被动的一方有「被」字打头，不会混。
+    pub fn parse(data_type: &str) -> Option<Self> {
+        let direction = match data_type {
+            "被艾特" => mentions::Direction::Received,
+            "艾特" | "艾特别人" => mentions::Direction::Given,
+            _ => return None,
+        };
+        Some(Self { direction })
+    }
+
+    /// 榜名里数据类型那一段。
+    pub fn name(self) -> &'static str {
+        match self.direction {
+            mentions::Direction::Received => "被艾特",
+            mentions::Direction::Given => "艾特别人",
+        }
+    }
 }

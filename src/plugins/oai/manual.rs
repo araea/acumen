@@ -1,20 +1,19 @@
-//! `oai` 的帮助卡：接入状态、工具三档与全部符号指令。
+//! `oai` 的帮助卡：接入状态、三步上手与全部指令。
 //!
-//! 从前这张帮助是一段 Markdown，交给回复卡去排——那是给模型写的长文准备的版式，
-//! 状态、档位、指令全挤成一样的段落与列表。这里改用手册卡那套文档模型（[`crate::render::web`]）：
-//! 页首一眼看到「能不能用、默认模型是谁、联网走哪儿」，接着是三档工具的刻度，再是按场景分组的指令，
-//! 照打的字与 `<占位>` 分两种颜色。
+//! 版式走手册卡那套文档模型（[`crate::render::web`]）。阅读顺序是「先会聊、再调档、
+//! 再管房间与历史、最后才动模型与接入」：新读者从头往下读，每一段都建立在上一段之上，
+//! 不必跳来跳去；老读者靠分区标题与英文代号直奔目标。
 //!
 //! 卡片与纯文本回退从同一份数据出（[`GROUPS`] 与 [`Overview`]），图里一套、字里另一套迟早对不上。
 //! 出图走 [`crate::render::web::capture`] 的内容缓存：状态没变就直接发上次那张。
 
 use super::setup::Overview;
 use super::types::Tools;
-use crate::render::web::{Block, Cmd, Doc, Fact, Theme, Tier, Tone};
+use crate::render::web::{Block, Cmd, Doc, Fact, Step, Theme, Tier, Tone};
 
 /// 一组指令：标题、英文代号，以及（指令、说明）。
 ///
-/// 指令里要原样敲的字写在外面，要换成自己内容的占位符用 `{…}`、可省的用 `[…] `。
+/// 指令里要原样敲的字写在外面，要换成自己内容的占位符用 `{…}`、可省的用 `[…]`。
 /// 这一组命令本身就是 `oai` 打头的两条指令名，不再另加指令前缀——前缀是可省的装饰，
 /// 图上多一个 `/` 反而让人以为必须带。
 struct Group {
@@ -23,6 +22,7 @@ struct Group {
     cmds: &'static [(&'static str, &'static str)],
 }
 
+/// 分组顺序即阅读顺序：先会聊，再管房间，再翻历史，最后才是接模型。
 const GROUPS: &[Group] = &[
     Group {
         title: "对话",
@@ -50,16 +50,6 @@ const GROUPS: &[Group] = &[
         ],
     },
     Group {
-        title: "模型与接入",
-        en: "MODELS",
-        cmds: &[
-            ("oai {供应商} {密钥}", "接上一家，存好撤回消息"),
-            ("oai 用 {模型}", "换默认，跟随的一起换"),
-            ("oai {名字} {地址} {密钥}", "接自己的中转站"),
-            ("oai {名字} 清除", "清掉一家的密钥"),
-        ],
-    },
-    Group {
         title: "历史",
         en: "HISTORY",
         cmds: &[
@@ -69,6 +59,24 @@ const GROUPS: &[Group] = &[
             ("{房间}-{序号}", "删第几条；-* 清空"),
         ],
     },
+    Group {
+        title: "模型与接入",
+        en: "MODELS",
+        cmds: &[
+            ("oai {供应商} {密钥}", "接上一家，存好撤回消息"),
+            ("oai 用 {模型}", "换默认，跟随的一起换"),
+            ("oai {名字} {地址} {密钥}", "接自己的中转站，之后 名字/模型 都能用"),
+            ("oai {名字} 清除", "清掉一家的密钥"),
+        ],
+    },
+];
+
+/// 三步上手：新装好的机器人，从建房间到开口就这三步。放最前面，别让人在三档工具
+/// 和十来条指令里自己找入口。三元组是（标题，指令，说明）。
+const STEPS: &[(&str, &str, &str)] = &[
+    ("建一间房", "##{名称} {提示词}", "提示词写它的性格，如「##小助理 耐心帮我查资料」"),
+    ("开聊", "{房间} {内容}", "直接发文字就回；引用一条消息、发一张图也算"),
+    ("要它查资料再挂工具", "{房间}?联网", "只回话不用挂；全量档能读写文件跑命令，只有号主与管理员能开"),
 ];
 
 /// 画图那一段只有几句用法，没有可列的指令。
@@ -132,6 +140,10 @@ pub(super) struct Rooms {
 }
 
 /// 帮助卡的文档模型。
+///
+/// 结构即引导：页首状态（能不能用）→ 三步上手（先聊起来）→ 工具三档（聊到什么深度）
+/// → 对话 / 房间 / 历史（日常使用）→ 模型与接入（号主的活）→ 画图与慎用（收尾）。
+/// 每一段只回答一个问题，往下读不必回头。
 pub(super) fn doc(overview: &Overview, rooms: &Rooms) -> Doc {
     let mut blocks = vec![Block::Title {
         title: "智能对话".into(),
@@ -159,6 +171,22 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms) -> Doc {
     if let Some(text) = gap(overview) {
         blocks.push(Block::Callout { tone: Tone::Info, text });
     }
+
+    blocks.push(Block::Section {
+        title: "三步上手".into(),
+        en: "START".into(),
+        count: "3 步".into(),
+    });
+    blocks.push(Block::Steps(
+        STEPS
+            .iter()
+            .map(|(title, command, note)| Step {
+                title: (*title).into(),
+                command: (*command).into(),
+                note: (*note).into(),
+            })
+            .collect(),
+    ));
 
     blocks.push(Block::Section {
         title: "工具三档".into(),
@@ -216,10 +244,10 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms) -> Doc {
         kicker: "ACUMEN · OAI".into(),
         blocks,
         foot: format!(
-            "花括号里换成自己的内容，方括号里可省；指令前缀可省，~ \" & 可以叠加。认得的供应商：{}",
+            "花括号里换成自己的内容，方括号里可省；oai 与符号指令带不带前缀都认，~ \" & 可以叠加。认得的供应商：{}",
             super::setup::known_list()
         ),
-        hint: ("和房间对话".into(), "{房间} {内容}".into()),
+        hint: ("从三步上手开始".into(), "##{名称} {提示词}".into()),
     }
 }
 
@@ -245,6 +273,10 @@ pub(super) fn markdown(overview: &Overview, rooms: &Rooms) -> String {
         out.push_str(&format!("\n💡 {text}\n"));
     }
 
+    out.push_str("\n## 三步上手\n");
+    for (index, (title, command, note)) in STEPS.iter().enumerate() {
+        out.push_str(&format!("{}. **{title}**：`{command}` {note}\n", index + 1));
+    }
     out.push_str("\n## 工具三档\n");
     for tools in Tools::ALL {
         out.push_str(&format!(
@@ -265,7 +297,7 @@ pub(super) fn markdown(overview: &Overview, rooms: &Rooms) -> String {
     for line in MEDIA {
         out.push_str(&format!("- {line}\n"));
     }
-    out.push_str("\n慎用：`-*` 清空所有房间的公有历史，`-*!` 连私有历史一起清。\n");
+    out.push_str("\n慎用：`-*` 清空所有房间的公有历史，`-*!` 连私有历史一起清。指令前缀可省。\n");
     out
 }
 
@@ -288,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn card_and_text_list_every_tier_and_group() {
+    fn card_and_text_list_every_tier_group_and_step() {
         let rooms = Rooms { total: 4, tooled: 1 };
         let html = web::html(&doc(&sample(true), &rooms));
         let text = markdown(&sample(true), &rooms);
@@ -298,6 +330,15 @@ mod tests {
         for group in GROUPS {
             assert!(html.contains(group.title) && text.contains(group.title));
         }
+        for (title, _, _) in STEPS {
+            assert!(html.contains(title) && text.contains(title));
+        }
+        // 分组在纯文本里按阅读顺序出现：对话在前，模型与接入殿后。
+        let chat = text.find("## 对话").unwrap();
+        let rooms_i = text.find("## 房间").unwrap();
+        let history = text.find("## 历史").unwrap();
+        let models = text.find("## 模型与接入").unwrap();
+        assert!(chat < rooms_i && rooms_i < history && history < models);
         assert!(text.contains("`oai 用 {模型}`"));
         assert!(markdown(&sample(false), &Rooms { total: 0, tooled: 0 }).contains("oai 用 mimo"));
     }

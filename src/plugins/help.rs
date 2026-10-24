@@ -103,9 +103,12 @@ fn is_enabled(ctx: &Context, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 符号指令（`/#`、`~名`、`##`、`-#` 等）本身就是完整指令，不再拼接前缀
+/// 符号指令（`/#`、`~名`、`##`、`-#` 等）本身就是完整指令，不再拼接前缀。
+/// `oai` 开头的词指令两样都认（见 oai::parser），图上写裸写法，短、且与实际用法一致。
 pub(crate) fn needs_prefix(cmd: &str) -> bool {
-    !cmd.starts_with(['/', '#', '~', '-', '<']) && !cmd.starts_with("画·")
+    !cmd.starts_with(['/', '#', '~', '-', '<'])
+        && !cmd.starts_with("画·")
+        && !cmd.starts_with("oai")
 }
 
 fn prefix_of(ctx: &Context) -> String {

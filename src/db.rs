@@ -10,6 +10,7 @@ use crate::info;
 pub mod activity;
 pub mod bans;
 pub mod entity;
+pub mod mentions;
 pub mod queries;
 pub mod stats;
 pub mod utils;

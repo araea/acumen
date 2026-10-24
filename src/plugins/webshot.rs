@@ -234,6 +234,55 @@ fn is_official_bot(user_id: &str) -> bool {
             .any(|prefix| user_id.starts_with(prefix))
 }
 
+/// 模型 API 的请求端点。这类地址是给程序调的，没有给人看的页面——
+/// 截图不是登录墙就是一行 JSON，混在群里的链接截图里只有干扰。
+///
+/// 认两类：接口路径（/v1/chat/completions 这类，中转站分享时最常见），以及
+/// OAI 供应商目录里那几家的接口主机（api.deepseek.com 等，路径写成
+/// /api/paas/v4 什么的也能兜住）。不按 api. 前缀猜：api.github.com
+/// 那类主机里也有能看的页面，宁可漏放。
+const API_PATHS: &[&str] = &[
+    "/chat/completions",
+    "/completions",
+    "/embeddings",
+    "/moderations",
+    "/images/generations",
+    "/images/edits",
+    "/audio/transcriptions",
+    "/audio/translations",
+    "/audio/speech",
+    "/responses",
+    "/models",
+    "/messages",
+];
+
+fn is_model_api_url(url: &Url, host: &str) -> bool {
+    // 认得的供应商接口主机：与 oai 的供应商目录同源，目录加了新家这里自动跟上。
+    for known in crate::plugins::oai::catalog::KNOWN {
+        if let Ok(base) = Url::parse(known.base)
+            && let Some(base_host) = base.host_str()
+            && domain_matches(host, base_host)
+        {
+            return true;
+        }
+    }
+    let path = url.path().trim_end_matches('/');
+    // 裸的版本根（/v1、/v1beta、/api/paas/v4）：贴配置示例时最常见的形态。
+    // 只有路径像版本根还不够，主机里得有点接口的味道，
+    // 免得把 example.com/v2 这种普通文章路径也拦了。
+    let last = path.rsplit('/').next().unwrap_or("");
+    let version_root = last.starts_with('v')
+        && last.len() > 1
+        && last[1..].chars().next().is_some_and(|c| c.is_ascii_digit());
+    if version_root {
+        let hint = ["api.", "openai", "oapi", "gateway", "llm", "aihub", "oneapi", "new-api", "relay"];
+        if hint.iter().any(|h| host.contains(h)) {
+            return true;
+        }
+    }
+    API_PATHS.iter().any(|api| path.ends_with(api))
+}
+
 /// 链接是否允许截图，不允许时返回可写进日志的原因。
 ///
 /// 机器人跑在本机，`[webshot]` 又把截图原样发回群里，所以任意群友都能借一条链接
@@ -246,6 +295,15 @@ async fn check_url(raw: &str, config: &Config) -> std::result::Result<Url, Strin
         return Err(format!("不支持的协议 {}", url.scheme()));
     }
     let host = url.host().ok_or_else(|| "链接缺少主机名".to_string())?;
+
+    // 模型 API 端点：没有可看的页面，截了也是白截。手动指令同样跳过——
+    // 对着 api.deepseek.com 要一张图，要的也不是一行 JSON。
+    if let Host::Domain(name) = host {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        if is_model_api_url(&url, &name) {
+            return Err("模型接口端点没有可看的页面".to_string());
+        }
+    }
 
     // 视频站的链接交给 video_parse：那边就地取原片发进群。
     // 这里跳过不截——稿件页要等播放器起画面，截出来又慢又没什么有效信息。

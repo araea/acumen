@@ -226,7 +226,10 @@ async fn connect_provider(
         }
     }
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
-    Ok(format!("✅ {label} 已接上（{note}）。\n{switched}{}", butler_line(&oai, mgr).await))
+    Ok(format!(
+        "✅ {label} 已接上（{note}）。\n{switched}{}\n它的模型写成 {entry_name}/…：`oai 用 {entry_name}/模型` 换默认，`/%` 看它有哪些。",
+        butler_line(&oai, mgr).await
+    ))
 }
 
 /// 把 `[oai] agent_default_model` 写成 `spec`（经 ctl，与控制台同一条事务）。

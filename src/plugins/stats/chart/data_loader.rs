@@ -1,10 +1,11 @@
 use super::utils::format_thousands;
 use crate::db::bans;
+use crate::db::mentions;
 use crate::db::queries::{self, UserMetric};
 use crate::db::entity::{self, Entity as MessageLogs};
 use plotters::style::RGBColor;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
 };
 use std::collections::HashMap;
 
@@ -729,4 +730,128 @@ pub async fn fetch_bar_data(
     }
 
     Ok(bar_data)
+}
+
+/// 艾特榜：排被 @ 的人，或动手 @ 的人（方向见 mentions::Direction）。
+///
+/// 「我的」范围排群：我在哪些群被 @（或 @ 人）最多，一行一个群；
+/// 其余范围排人，发起者用消息里带的名字，目标用最近发言的昵称，都没有就退号码。
+#[allow(clippy::too_many_arguments)]
+pub async fn fetch_mention_bars(
+    db: &DatabaseConnection,
+    query_group: Option<&str>,
+    query_user: Option<&str>,
+    sender_id: &str,
+    start_time: i64,
+    end_time: i64,
+    limit: usize,
+    direction: mentions::Direction,
+) -> Result<Vec<BarData>, String> {
+    let n = limit as u64;
+
+    // 「我的」：按群合计。群头像从聚合表里取，与本群活跃榜同一出处。
+    if let Some(user) = query_user.filter(|_| query_group.is_none()) {
+        let rows = mentions::ranking_in_guilds(db, user, start_time, end_time, n, direction)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut bars = Vec::with_capacity(rows.len());
+        for row in rows {
+            let avatar: Option<String> = if row.id.is_empty() {
+                None
+            } else {
+                sqlx_query_one(
+                    db,
+                    format!(
+                        "SELECT guild_avatar FROM message_stats_daily \
+                         WHERE guild_id = '{}' AND guild_avatar != '' LIMIT 1",
+                        row.id.replace('\'', "''")
+                    ),
+                )
+                .await
+            };
+            bars.push(BarData {
+                label: if row.name.is_empty() { row.id.clone() } else { row.name },
+                value: row.count,
+                avatar_url: avatar,
+                avatar_img: None,
+                theme_color: FALLBACK_THEME,
+                detail: None,
+                icon_char: None,
+            });
+        }
+        return Ok(bars);
+    }
+
+    let rows = mentions::ranking(db, query_group, start_time, end_time, n, direction)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut sender_found = false;
+    let mut bars = Vec::with_capacity(rows.len());
+    for row in rows {
+        let is_sender = row.id == sender_id && !sender_id.is_empty();
+        sender_found |= is_sender;
+        // 目标的名字段常是空的（实现端不带），退到最近发言里的昵称；
+        // 头像同理，都没有就用 QQ 号拼头像地址，取不到头像是默认图，无妨。
+        let (nick, avatar) = if row.name.is_empty() {
+            mentions::latest_identity(db, query_group, &row.id)
+                .await
+                .unwrap_or_default()
+        } else {
+            (row.name, String::new())
+        };
+        let label = if nick.is_empty() { row.id.clone() } else { nick };
+        bars.push(BarData {
+            label: if is_sender { format!("★ {label}") } else { label },
+            value: row.count,
+            avatar_url: Some(if avatar.is_empty() {
+                format!("https://q.qlogo.cn/headimg_dl?dst_uin={}&spec=640", row.id)
+            } else {
+                avatar
+            }),
+            avatar_img: None,
+            theme_color: FALLBACK_THEME,
+            detail: None,
+            icon_char: None,
+        });
+    }
+
+    // 榜外补位：发榜的人自己不在榜上时补一行，与发言榜同一规矩。
+    if !sender_found
+        && !sender_id.is_empty()
+        && let Ok(count) = mentions::total_for(db, query_group, sender_id, start_time, end_time, direction).await
+        && count > 0
+    {
+        let (nick, avatar) = mentions::latest_identity(db, query_group, sender_id)
+            .await
+            .unwrap_or_default();
+        let label = if nick.is_empty() { sender_id.to_string() } else { nick };
+        bars.push(BarData {
+            label: format!("★ {label}"),
+            value: count,
+            avatar_url: Some(if avatar.is_empty() {
+                format!("https://q.qlogo.cn/headimg_dl?dst_uin={sender_id}&spec=640")
+            } else {
+                avatar
+            }),
+            avatar_img: None,
+            theme_color: FALLBACK_THEME,
+            detail: None,
+            icon_char: None,
+        });
+    }
+    Ok(bars)
+}
+
+/// 一条单值查询。艾特榜这边只偶尔按群号取一次头像，不值得为此建实体。
+async fn sqlx_query_one(db: &DatabaseConnection, sql: String) -> Option<String> {
+    let rows = db
+        .query_all_raw(sea_orm::Statement::from_string(
+            db.get_database_backend(),
+            sql,
+        ))
+        .await
+        .ok()?;
+    rows.first()
+        .and_then(|row| row.try_get::<String>("", "guild_avatar").ok())
 }

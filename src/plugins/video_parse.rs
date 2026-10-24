@@ -15,11 +15,28 @@
 //! 群里等得着的只有片子，中途冒出来的每一句都是打扰。
 //! 同一个人在同一会话里十分钟内重贴同一条不会下第二遍（[`state`]）。
 //!
-//! 链接准入与 `webshot` 共用一个判据（[`is_video_link`]）：本插件负责的链接，
-//! 截图那边直接跳过，两处不会各截一次又取一次。
+//! 链接准入：links::is_video_link 认得的 B 站稿件、加上本插件认得的抖音链接，
+//! 都归这里；截图那边见链接就跳过，两处不会各截一次又取一次。抖音没开时，
+//! 抖音链接两边都不接（截图的登录墙名单本来也不放它进来）。
 
 pub(crate) mod bilibili;
+mod douyin;
 mod state;
+
+/// 一条待下载的成品：直链、去重键与文件名。B 站与抖音各自解析出它，
+/// 下载与发送只认这一份，不再关心片子从哪儿来。
+pub(crate) struct Item {
+    /// 去重与临时文件名（B 站稿件号 / 抖音 aweme id）。
+    key: String,
+    /// 文件名与日志用的标题。
+    title: String,
+    /// 原片直链（分段的按顺序拼）。
+    urls: Vec<String>,
+    /// 下载时要带的 Referer：B 站 CDN 查它，抖音不用。
+    referer: Option<&'static str>,
+    /// 日志里的画质说明。
+    note: String,
+}
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::message_links;
@@ -70,6 +87,10 @@ pub struct Config {
     pub timeout_seconds: u64,
     /// B 站登录 Cookie，留空即匿名。
     pub cookie: String,
+    /// 接哪些平台的链接：bilibili、douyin。默认只开 B 站——每多接一家，
+    /// 群里能触发下载的链接面就宽一分；抖音的解析靠落地页里带的数据，上游改版
+    /// 就会失手，让号主按自己的群况决定开不开。
+    pub platforms: Vec<String>,
     /// 群名单：配了黑名单就对名单外的所有群生效，配了白名单则只对名单内的群生效。
     pub channel: ChannelConfig,
 }
@@ -83,6 +104,7 @@ impl Default for Config {
             send: "bubble".to_string(),
             timeout_seconds: 300,
             cookie: String::new(),
+            platforms: vec!["bilibili".to_string()],
             channel: ChannelConfig::default(),
         }
     }
@@ -92,25 +114,44 @@ impl PluginConfig for Config {
     const NAME: &'static str = "video_parse";
 }
 
+impl Config {
+    /// 某个平台（bilibili / douyin）接不接。写法从宽：中文名与常见别名都认。
+    fn platform_enabled(&self, platform: &str) -> bool {
+        let aliases: &[&str] = match platform {
+            "bilibili" => &["bilibili", "bili", "b站", "哔哩哔哩", "b站"],
+            "douyin" => &["douyin", "抖音"],
+            _ => &[],
+        };
+        self.platforms.iter().any(|configured| {
+            let configured = configured.trim().to_ascii_lowercase();
+            configured == platform || aliases.contains(&configured.as_str())
+        })
+    }
+}
+
 
 // ================= 链接准入 =================
 
-/// 链接是否属于本插件负责的视频站。
-///
-/// `webshot` 也用这个判据：两边必须认同一份名单，否则同一条链接会被截一次图、
-/// 又取一遍片。
-use crate::links::is_video_link;
-
-/// 短链先跟着跳一次拿到真正的地址，长链原样返回。
-async fn resolve_link(raw: &str) -> Result<Url> {
+/// 短链先跟着跳一次拿到真正的地址，长链原样返回。两家都有分享短链，各带各的 UA。
+async fn resolve_link(raw: &str, platform: &str) -> Result<Url> {
     let url = Url::parse(raw).map_err(|_| anyhow!("无法解析的链接"))?;
-    let short = url.host_str().is_some_and(bilibili::is_short_host);
+    let short = match platform {
+        "bilibili" => url.host_str().is_some_and(bilibili::is_short_host),
+        "douyin" => url
+            .host_str()
+            .is_some_and(|host| host.starts_with("v.douyin.")),
+        _ => false,
+    };
     if !short {
         return Ok(url);
     }
+    let ua = match platform {
+        "douyin" => douyin::UA,
+        _ => bilibili::UA,
+    };
     let response = crate::http::client()
         .get(url)
-        .header(reqwest::header::USER_AGENT, bilibili::UA)
+        .header(reqwest::header::USER_AGENT, ua)
         .timeout(API_TIMEOUT)
         .send()
         .await?;
@@ -149,11 +190,11 @@ pub fn handle(
         // 链接不一定写在正文里：QQ 的小程序卡与分享卡是一段落在 `json` 元素里的
         // 载荷，落地地址要从里面取（见 `message_links`）。两种来源都收，取第一个
         // 认得的稿件页。
-        let Some(candidate) = take_candidate(&ctx) else {
+        let Some((platform, candidate)) = take_candidate(&ctx, &config) else {
             return Ok(Some(ctx));
         };
 
-        if let Err(error) = take(&ctx, &writer, &config, &candidate, group_id, user_id).await {
+        if let Err(error) = take(&ctx, &writer, &config, platform, &candidate, group_id, user_id).await {
             // 取不到就静默收场：群里只当这条链接没被接住，原因留给日志。
             // 一条「没取到」在群里就是一次打扰，而贴链接的人自己看得出来没片子。
             warn!(target: LOG_TARGET, "取片失败（{}）：{}", candidate, error);
@@ -163,16 +204,28 @@ pub fn handle(
     })
 }
 
-/// 这条消息里第一个本插件接得住的链接。
+/// 这条消息里第一个本插件接得住的链接，连同它属于哪个平台。
 ///
-/// [`message_links`] 把卡片里的落地地址排在正文前面，这里逐个过一遍
-/// [`is_video_link`]——卡片载荷里还混着封面与图标的地址，第一个能用的才作数。
-fn take_candidate(ctx: &Context) -> Option<String> {
-    message_links(ctx)
-        .into_iter()
-        .find(|url| is_video_link(url))
+/// message_links 把卡片里的落地地址排在正文前面，这里逐个认——卡片载荷里
+/// 还混着封面与图标的地址，第一个接得住的才作数。平台开了才认领：没开的平台
+/// 让链接原样过去（截图那边本来就不接视频站）。
+fn take_candidate(ctx: &Context, config: &Config) -> Option<(&'static str, String)> {
+    for url in message_links(ctx) {
+        let Ok(parsed) = Url::parse(&url) else {
+            continue;
+        };
+        let host = parsed.host_str().unwrap_or_default();
+        if (bilibili::is_short_host(host) || bilibili::reference(&parsed).is_some())
+            && config.platform_enabled("bilibili")
+        {
+            return Some(("bilibili", url));
+        }
+        if douyin::is_douyin_host(host) && config.platform_enabled("douyin") {
+            return Some(("douyin", url));
+        }
+    }
+    None
 }
-
 /// 会话标识：群聊 `g:群号`，私聊 `u:用户 ID`。
 fn target_key(group_id: Option<&str>, user_id: &str) -> String {
     match group_id {
@@ -194,28 +247,58 @@ async fn take(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
+    platform: &str,
     raw_url: &str,
     group_id: Option<&str>,
     user_id: &str,
 ) -> Result<()> {
-    let url = resolve_link(raw_url).await?;
-    let reference = bilibili::reference(&url).ok_or_else(|| anyhow!("链接没落到稿件页"))?;
-    let video = bilibili::info(&reference, &config.cookie, API_TIMEOUT).await?;
+    let url = resolve_link(raw_url, platform).await?;
+    let item = if platform == "douyin" {
+            let parsed = douyin::parse(raw_url, API_TIMEOUT).await?;
+            let key = parsed.key;
+            let title = if parsed.title.is_empty() { key.clone() } else { parsed.title };
+            Item {
+                key,
+                title,
+                urls: parsed.urls,
+                referer: None,
+                note: "原画".to_string(),
+            }
+        } else {
+            let reference = bilibili::reference(&url).ok_or_else(|| anyhow!("链接没落到稿件页"))?;
+            let video = bilibili::info(&reference, &config.cookie, API_TIMEOUT).await?;
+            let streams = bilibili::plan(
+                &video.bvid,
+                video.cid,
+                config.prefer_quality,
+                // 这里把体积上限交给上游筛一遍画质；真正的上限在下载那一步再兜一次。
+                writer.fit_upload_cap(config.max_size_mb.clamp(1, 2048) * 1_048_576),
+                &config.cookie,
+                API_TIMEOUT,
+            )
+            .await?;
+            Item {
+                key: video.bvid.clone(),
+                title: video.title.clone(),
+                urls: streams.urls,
+                referer: Some(bilibili::REFERER),
+                note: bilibili::quality_label(streams.quality),
+            }
+        };
 
     // 同一个人在同一个会话里刚贴过同一条：片子已经在群里，或者正在取，不必再来一遍。
-    // 判在拉完稿件信息之后，是因为判据要用上游认出来的 `bvid`——同一条链接
-    // 一次是短链、一次是长链时，光比地址认不出来。
+    // 判在解析出稿件号之后——同一条链接一次是短链、一次是长链时，光比地址认不出来。
     let target = target_key(group_id, user_id);
     let now = chrono::Utc::now().timestamp();
-    if state::claim(&target, user_id, &video.bvid, now).await == state::Claim::Recent {
-        info!(target: LOG_TARGET, "同一条刚由同一个人贴过，不再取第二遍：{}", video.bvid);
+    if state::claim(&target, user_id, &item.key, now).await == state::Claim::Recent {
+        info!(target: LOG_TARGET, "同一条刚由同一个人贴过，不再取第二遍：{}", item.key);
         return Ok(());
     }
 
-    let result = extract(ctx, writer, config, &video, group_id, user_id).await;
+    let result = extract(ctx, writer, config, &item, group_id, user_id).await;
     if result.is_err() {
         // 没取到就把名额放回去：他重贴一次还能再来。
-        state::release(&target, user_id, &video.bvid).await;
+        state::release(&target, user_id, &item.key).await;
     }
     result
 }
@@ -239,7 +322,24 @@ pub(crate) async fn take_by_bvid(
         page: 1,
     };
     let video = bilibili::info(&reference, &config.cookie, API_TIMEOUT).await?;
-    extract(ctx, writer, config, &video, group_id, user_id).await
+    let cap = writer.fit_upload_cap(config.max_size_mb.clamp(1, 2048) * 1_048_576);
+    let streams = bilibili::plan(
+        &video.bvid,
+        video.cid,
+        config.prefer_quality,
+        cap,
+        &config.cookie,
+        API_TIMEOUT,
+    )
+    .await?;
+    let item = Item {
+        key: video.bvid.clone(),
+        title: video.title.clone(),
+        urls: streams.urls,
+        referer: Some(bilibili::REFERER),
+        note: bilibili::quality_label(streams.quality),
+    };
+    extract(ctx, writer, config, &item, group_id, user_id).await
 }
 
 /// 挑画质、下载到本地、发进群，最后把本地那份删掉。
@@ -251,45 +351,25 @@ async fn extract(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    video: &bilibili::Video,
+    item: &Item,
     group_id: Option<&str>,
     user_id: &str,
 ) -> Result<()> {
     // 实现端声明了上传上限就按它收窄：超过它的片子下载下来也送不进去。
     let cap = writer.fit_upload_cap(config.max_size_mb.clamp(1, 2048) * 1_048_576);
     let budget = Duration::from_secs(config.timeout_seconds.clamp(30, 1800));
-    let streams = bilibili::plan(
-        &video.bvid,
-        video.cid,
-        config.prefer_quality,
-        cap,
-        &config.cookie,
-        API_TIMEOUT,
-    )
-    .await?;
 
     let dir = get_data_dir("video_parse").await.map_err(failed)?;
     discard_stale_parts(&dir).await;
-    let scratch = Scratch::new(&dir, &video.bvid);
+    let scratch = Scratch::new(&dir, &item.key);
 
     // 闸门在下载预算之外：排在前头那单的时间里不算这一单的超时。
     let _permit = TAKE_GATE
         .acquire()
         .await
         .map_err(|_| anyhow!("取片闸门不可用"))?;
-    let size = download(&streams.urls, scratch.path(), cap, budget).await?;
-    send(
-        ctx,
-        writer,
-        config,
-        video,
-        &streams,
-        size,
-        scratch.path(),
-        group_id,
-        user_id,
-    )
-    .await
+    let size = download(&item.urls, scratch.path(), cap, budget, item.referer).await?;
+    send(ctx, writer, config, item, size, scratch.path(), group_id, user_id).await
 }
 
 /// 一次取片落在本地的那一份片子，析构时删掉。
@@ -334,20 +414,26 @@ impl Drop for Scratch {
 /// 老稿件的 `durl` 会切成好几段，它们本来就是同一路 mp4 的连续分片，顺序拼起来
 /// 即可。上限在看之前先按站点给的字节数筛过一道，这里再兜一次——免得上游少报了
 /// 体积，把手机写满。
-async fn download(urls: &[String], path: &Path, cap: u64, budget: Duration) -> Result<u64> {
+async fn download(
+    urls: &[String],
+    path: &Path,
+    cap: u64,
+    budget: Duration,
+    referer: Option<&str>,
+) -> Result<u64> {
     let client = crate::http::client();
     let mut file = tokio::fs::File::create(path).await?;
     let mut total = 0u64;
 
     let attempt = async {
         for url in urls {
-            let response = client
+            let mut request = client
                 .get(url)
-                .header(reqwest::header::USER_AGENT, bilibili::UA)
-                .header(reqwest::header::REFERER, bilibili::REFERER)
-                .send()
-                .await?
-                .error_for_status()?;
+                .header(reqwest::header::USER_AGENT, bilibili::UA);
+            if let Some(referer) = referer {
+                request = request.header(reqwest::header::REFERER, referer);
+            }
+            let response = request.send().await?.error_for_status()?;
             let mut stream = response.bytes_stream();
             while let Some(chunk) = stream.next().await {
                 let chunk = chunk?;
@@ -383,14 +469,13 @@ async fn send(
     ctx: &Context,
     writer: &LockedWriter,
     config: &Config,
-    video: &bilibili::Video,
-    streams: &bilibili::Streams,
+    item: &Item,
     size: u64,
     path: &Path,
     group_id: Option<&str>,
     user_id: &str,
 ) -> Result<()> {
-    let name = format!("{}.mp4", media_file_name(&video.title));
+    let name = format!("{}.mp4", media_file_name(&item.title));
     let bytes = tokio::fs::read(path).await?;
     let uploaded = writer
         .upload(ctx, bytes, &name, "video/mp4")
@@ -441,12 +526,10 @@ async fn send(
 
     info!(
         target: LOG_TARGET,
-        "已取片：{}（{} · P{}/{} · {} · {:.1} MB）",
-        video.title,
-        video.bvid,
-        video.page,
-        video.pages,
-        bilibili::quality_label(streams.quality),
+        "已取片：{}（{} · {} · {:.1} MB）",
+        item.title,
+        item.key,
+        item.note,
         size as f64 / 1_048_576.0,
     );
     Ok(())

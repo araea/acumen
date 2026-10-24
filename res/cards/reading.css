@@ -642,3 +642,54 @@ footer {
   background: var(--md-sys-color-primary-tint);
   font-size: var(--md-type-label-large-size);
 }
+
+/* —— 上手步骤 ——
+   数字徽章用主色容器：一条 520 宽的卡上，三个圆号就是「按顺序来」的形状语言。
+   指令独立成行，说明跟在下面，与指令表同一套字阶。 */
+.md-seg.steps > li {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--md-space-3);
+  align-items: start;
+  padding: var(--md-space-3) 0;
+  border-top: 1px solid var(--md-sys-color-outline-variant);
+}
+.md-seg.steps > li:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.md-seg.steps > li:last-child {
+  padding-bottom: var(--md-space-1);
+}
+.step-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--md-shape-full);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  font-size: var(--md-type-label-large-size);
+  line-height: 1;
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  font-variant-numeric: tabular-nums;
+}
+.step-title {
+  font-size: var(--md-type-title-small-size);
+  line-height: var(--md-type-label-large-line);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  color: var(--md-sys-color-on-surface);
+}
+.step-body {
+  display: grid;
+  gap: var(--md-space-1);
+}
+.step-body .command {
+  justify-self: start;
+}
+.md-seg.steps .item-desc {
+  margin-top: 0;
+  font-size: var(--md-type-body-small-size);
+  line-height: 1.62;
+}
