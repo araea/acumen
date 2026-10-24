@@ -144,13 +144,23 @@ fn remembered(max_age: Duration) -> Option<Option<String>> {
         return None;
     }
     let text = std::fs::read_to_string(path).ok()?;
-    let version = text.trim();
-    Some((!version.is_empty()).then(|| version.to_string()))
+    Some(pending(&text))
+}
+
+/// 记下来的版本还能不能当「有新版本」用：得比当前这个新。刚换上新版本的那十分钟里，
+/// 文件里记的是换版之前查到的那个版本，也就是现在正跑着的；再拿它当新版报，
+/// `acumen status` 会说一个刚装上的版本「有新版本」。
+fn pending(recorded: &str) -> Option<String> {
+    let version = recorded.trim();
+    newer(version, VERSION).then(|| version.to_string())
 }
 
 fn remember(release: Option<&Release>) {
     let Some(path) = latest_file() else { return };
-    let text = release.map_or("", |release| release.version.as_str());
+    let text = release
+        .map(|release| release.version.as_str())
+        .filter(|version| newer(version, VERSION))
+        .unwrap_or_default();
     if let Err(error) = crate::storage::write_atomic(&path, text.as_bytes()) {
         debug!(target: LOG_TARGET, "记不下查到的版本：{error}");
     }
@@ -1014,6 +1024,14 @@ mod tests {
     fn mirror_labels() {
         assert_eq!(label(""), "GitHub");
         assert_eq!(label("https://gh-proxy.com/"), "gh-proxy.com");
+    }
+
+    #[test]
+    fn a_version_already_installed_is_not_an_update() {
+        assert_eq!(pending(VERSION), None);
+        assert_eq!(pending(&format!("{VERSION}\n")), None);
+        assert_eq!(pending(""), None);
+        assert_eq!(pending("999.0.0").as_deref(), Some("999.0.0"));
     }
 
     #[test]
