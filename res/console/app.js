@@ -102,6 +102,9 @@
     misc: { icon: "extension", hint: "还没归类的插件", name: "其他" },
   };
   const sectionMeta = (code) => SECTION_META[code] || { icon: "extension", hint: "其它插件", name: "其他" };
+  /* 分类格只有一枚图标加一行字，四个字最稳；完整名字仍用在列表标题、详情与读屏里。 */
+  const SECTION_SHORT = { ai: "AI 资讯", system: "系统运维" };
+  const sectionLabel = (code, name) => SECTION_SHORT[code] || name;
   const SECTION_ICONS = Object.fromEntries(Object.entries(SECTION_META).map(([code, meta]) => [code, meta.icon]));
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
   const pluginTile = (plugin, extra = "") =>
@@ -355,7 +358,9 @@
     { id: "settings", label: "设置", glyph: "settings" },
   ];
 
-  const wide = matchMedia("(min-width: 840px)");
+  // 840px 起左侧导航会展开成 264px，留给内容的宽度不够并排摆列表与详情；
+  // 到 1000px 再切双栏，平板竖屏与 840–999 的窗口仍走单栏详情页。
+  const wide = matchMedia("(min-width: 1000px)");
   const compactNav = matchMedia("(max-width: 599.98px)");
 
   function buildShell() {
@@ -1418,18 +1423,31 @@
 
     visible() {
       const text = this.query.trim().toLowerCase();
-      return this.data.plugins.filter(
-        (plugin) =>
-          (!this.section || plugin.section === this.section) &&
-          (!this.status || (this.status === "on") === !!plugin.on) &&
-          (!text ||
-            plugin.name.toLowerCase().includes(text) ||
-            plugin.display.toLowerCase().includes(text) ||
-            plugin.summary.toLowerCase().includes(text) ||
-            plugin.commands.some((command) =>
-              `${command.cmd} ${command.note}`.toLowerCase().includes(text)
-            ))
-      );
+      const squashed = text.replace(/[\s·・/]+/g, "");
+      const normalize = (value) => String(value ?? "").toLowerCase().replace(/[\s·・/]+/g, "");
+      return this.data.plugins.filter((plugin) => {
+        if (this.section && plugin.section !== this.section) return false;
+        if (this.status && (this.status === "on") !== !!plugin.on) return false;
+        if (!text) return true;
+        const section = this.data.sections.find((item) => item.code === plugin.section);
+        const meta = sectionMeta(plugin.section);
+        // 列表接口带的是完整指令；万一与旧版后端错配成数字，退化成不搜指令，别让整页输不出结果。
+        const commands = Array.isArray(plugin.commands) ? plugin.commands : [];
+        return [
+          plugin.name,
+          plugin.display,
+          plugin.summary,
+          section?.name,
+          section?.en,
+          meta.name,
+          sectionLabel(plugin.section, section?.name || meta.name),
+          ...commands.map((command) => `${command.cmd} ${command.note}`),
+        ].some((value) => {
+          const hay = String(value ?? "").toLowerCase();
+          // 「AI资讯」「系统运维」这类去空格、去间隔号的写法也该找得到。
+          return hay.includes(text) || (squashed !== "" && normalize(hay).includes(squashed));
+        });
+      });
     },
 
     rows() {
@@ -1443,11 +1461,12 @@
         .filter(([, members]) => members.length)
         .map(([code, members]) => {
           const meta = sectionMeta(code);
+          const on = members.filter((plugin) => plugin.on).length;
           return h`<section class="plugin-block" data-tone="${code}" aria-labelledby="block-${code}">
             <h2 class="list-title" id="block-${code}">
               <span class="list-title-icon" aria-hidden="true">${icon(meta.icon)}</span>
               <span class="list-title-text">${nameOf(code)}<span class="list-title-hint">${meta.hint}</span></span>
-              <span class="num">${members.length}</span>
+              <span class="num" aria-label="共 ${members.length} 个插件，${on} 个已启用">${members.length}</span>
             </h2>
             <ul class="group">${members.map(
               (plugin) => h`<li class="item" data-plugin="${plugin.name}">
@@ -1465,29 +1484,58 @@
         });
     },
 
-    /** 分类导轨：每格一枚图标、一句人话和数量。比一排只有名字的芯片更好扫。
-     *  选中的那格用 tonal 填充并抬起，触屏上 48px 起步，横向可滑动。 */
-    sectionRail() {
+    /** 只列真的有插件的分类；注册表里新出现、还没登记进分区的代号也要有一格。 */
+    categories() {
+      const seen = new Set();
+      const list = [];
+      for (const section of this.data.sections) {
+        if (!this.data.plugins.some((plugin) => plugin.section === section.code)) continue;
+        seen.add(section.code);
+        list.push(section);
+      }
+      for (const plugin of this.data.plugins) {
+        if (seen.has(plugin.section)) continue;
+        seen.add(plugin.section);
+        list.push({ code: plugin.section, name: sectionMeta(plugin.section).name, en: plugin.section });
+      }
+      return list;
+    },
+
+    /** 分类网格：手机与平板 4×2、宽屏一行，所有分类一屏都在，不必横向滑动。
+     *  每格是 tonal 容器 + 图标 + 名称 + 总数；选中时图标填色、圆角与阴影抬起。 */
+    sectionPicker() {
       const counts = new Map();
-      for (const plugin of this.data.plugins) counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
-      const card = (code, label, hint, glyph, total) =>
-        h`<button class="section-card" type="button" data-section="${code}" data-tone="${code || "all"}"
-            aria-pressed="${bool(this.section === code)}" aria-controls="plugin-list">
-          <span class="section-card-icon" aria-hidden="true">${icon(glyph)}</span>
-          <span class="section-card-body">
-            <span class="section-card-name">${label}</span>
-            <span class="section-card-hint">${hint}</span>
+      const enabled = new Map();
+      for (const plugin of this.data.plugins) {
+        counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
+        if (plugin.on) enabled.set(plugin.section, (enabled.get(plugin.section) || 0) + 1);
+      }
+      const card = (code, label, longName, hint, glyph, total, on) =>
+        h`<button class="section-card" type="button" role="radio" data-section="${code}" data-tone="${code || "all"}"
+            aria-checked="${bool(this.section === code)}" aria-controls="plugin-list"
+            tabindex="${this.section === code ? "0" : "-1"}" title="${hint}"
+            aria-label="${longName}：${total} 个插件，${on} 个已启用。${hint}">
+          <span class="section-card-top">
+            <span class="section-card-icon" aria-hidden="true">${icon(glyph)}<span class="section-card-check">${icon("check")}</span></span>
+            <span class="section-card-count num" aria-hidden="true">${total}</span>
           </span>
-          <span class="section-card-count num" aria-hidden="true">${total}</span>
+          <span class="section-card-name">${label}</span>
         </button>`;
       return [
-        card("", "全部", "所有插件一屏看全", "grid_view", this.data.plugins.length),
-        ...this.data.sections
-          .filter((section) => counts.get(section.code))
-          .map((section) => {
-            const meta = sectionMeta(section.code);
-            return card(section.code, section.name, meta.hint, meta.icon, counts.get(section.code));
-          }),
+        card("", "全部", "全部插件", "所有插件一屏看全", "grid_view", this.data.plugins.length,
+          this.data.plugins.filter((plugin) => plugin.on).length),
+        ...this.categories().map((section) => {
+          const meta = sectionMeta(section.code);
+          return card(
+            section.code,
+            sectionLabel(section.code, section.name),
+            section.name,
+            meta.hint,
+            meta.icon,
+            counts.get(section.code),
+            enabled.get(section.code) || 0
+          );
+        }),
       ];
     },
 
@@ -1495,42 +1543,100 @@
       return !!(this.query.trim() || this.section || this.status);
     },
 
+    sectionTotals(code) {
+      const members = code ? this.data.plugins.filter((plugin) => plugin.section === code) : this.data.plugins;
+      return { total: members.length, on: members.filter((plugin) => plugin.on).length };
+    },
+
+    sectionName(code) {
+      return this.data.sections.find((section) => section.code === code)?.name || sectionMeta(code).name;
+    },
+
     clearFilters() {
       this.query = "";
       this.section = "";
       this.status = "";
+      try {
+        localStorage.removeItem("acumen.plugins.section");
+      } catch {}
       const input = $("#plugin-search");
       if (input) input.value = "";
       this.repaint();
       input?.focus({ preventScroll: true });
     },
 
+    /** 分类是单选：选中后立即筛列表，并把选择记在本机；焦点留在同一格上。 */
+    chooseSection(code) {
+      const next = code || "";
+      const changed = this.section !== next;
+      this.section = next;
+      try {
+        if (next) localStorage.setItem("acumen.plugins.section", next);
+        else localStorage.removeItem("acumen.plugins.section");
+      } catch {}
+      this.repaint();
+      $(`[data-section="${CSS.escape(next)}"]`)?.focus({ preventScroll: true });
+      if (changed) this.revealList();
+    },
+
+    /** 宽屏分类格吸顶时，从列表深处切分类后把工具条带回可见区；窄屏不抢滚动。 */
+    revealList() {
+      if (!wide.matches) return;
+      const toolbar = $(".plugin-toolbar");
+      const nav = $(".section-nav");
+      if (!toolbar || !nav) return;
+      // 不用 scrollIntoView：它算不到吸顶分类格占掉的高度，工具条会藏在格子后面。
+      // 等一帧再量：过滤后列表变短，浏览器的滚动锚定会先把 scrollY 收敛到新的上限。
+      requestAnimationFrame(() => {
+        const below = nav.getBoundingClientRect().bottom;
+        const top = toolbar.getBoundingClientRect().top;
+        if (top >= below) return;
+        // 直接落位：跨分类时列表高度会骤降，省得和滚动锚定打架。
+        scrollBy({ top: top - below - 8, behavior: "auto" });
+      });
+    },
+
     /** 按启用状态筛：全部 / 已启用 / 已停用，带个数，一眼看清。 */
     statusChips() {
       const on = this.data.plugins.filter((p) => p.on).length;
-      const chip = (code, label, total) =>
-        h`<button class="chip state" type="button" data-status-filter="${code}" aria-pressed="${bool(this.status === code)}">
-          ${icon("check")}${label}<span class="chip-count">${total}</span></button>`;
-      return [chip("", "全部", this.data.plugins.length), chip("on", "已启用", on), chip("off", "已停用", this.data.plugins.length - on)];
+      const total = this.data.plugins.length;
+      const chip = (code, label, count) =>
+        h`<button class="chip state" type="button" data-status-filter="${code}" aria-pressed="${bool(this.status === code)}"
+            aria-label="${label}，${count} 个">
+          <span>${label}</span><span class="chip-count" aria-hidden="true">${count}</span></button>`;
+      return [chip("", "全部", total), chip("on", "已启用", on), chip("off", "已停用", total - on)];
     },
 
     summary() {
-      const on = this.data.plugins.filter((p) => p.on).length;
-      const shownCount = this.visible().length;
-      return shownCount === this.data.plugins.length
-        ? `共 ${this.data.plugins.length} 个，已启用 ${on} 个`
-        : `显示 ${shownCount} / ${this.data.plugins.length} 个`;
+      const total = this.data.plugins.length;
+      const on = this.data.plugins.filter((plugin) => plugin.on).length;
+      const shown = this.visible().length;
+      const filtering = !!(this.query.trim() || this.status);
+      if (this.section) {
+        const stats = this.sectionTotals(this.section);
+        const name = this.sectionName(this.section);
+        return filtering
+          ? `${name}内显示 ${shown} / ${stats.total} 个`
+          : `${name} · ${stats.total} 个插件，${stats.on} 个已启用`;
+      }
+      return filtering ? `显示 ${shown} / ${total} 个` : `共 ${total} 个插件，${on} 个已启用`;
     },
 
     /** 只重画列表与计数：打一个字就整页重来会把输入法与光标一起冲掉。 */
     repaint() {
       put($("#plugin-list"), this.rows());
-      put($("#plugin-chips"), this.sectionRail());
+      put($("#plugin-chips"), this.sectionPicker());
       put($("#plugin-status"), this.statusChips());
       const status = $("#plugin-count");
       if (status) status.textContent = this.summary();
       const clear = $("#plugin-clear");
       if (clear) clear.hidden = !this.filtered();
+      // 没筛东西时，状态分段已有「全部 / 已启用 / 已停用」三个数，不必再占一行重复。
+      const line = $(".plugin-count-line");
+      if (line) line.hidden = !this.filtered();
+      // 宽屏右栏还没选插件时，占位卡也要跟着当前分类与搜索走，别留着上一分类的推荐。
+      const pane = $("#plugin-detail");
+      if (pane && !this.selected) put(pane, detailPlaceholder());
     },
 
     async swapDetail(name) {
@@ -1604,9 +1710,21 @@
     ]);
     plugins.data = list;
     plugins.selected = route.arg;
-    if (!route.arg && !plugins.section) {
-      const saved = localStorage.getItem("acumen.plugins.section");
-      if (saved !== null && list.sections.some((section) => section.code === saved)) plugins.section = saved;
+    const available = new Set(list.plugins.map((plugin) => plugin.section));
+    if (plugins.section && !available.has(plugins.section)) plugins.section = "";
+    if (!route.arg) {
+      let saved = null;
+      try {
+        saved = localStorage.getItem("acumen.plugins.section");
+      } catch {}
+      if (saved) {
+        if (available.has(saved)) plugins.section = saved;
+        else {
+          try {
+            localStorage.removeItem("acumen.plugins.section");
+          } catch {}
+        }
+      }
     }
     const dual = wide.matches;
     if (detail instanceof Error && detail.status === 401) throw detail;
@@ -1633,26 +1751,26 @@
         }</section>`;
 
     const title = detail && !(detail instanceof Error) ? detail.display : "";
-    const section = plugins.section ? sectionMeta(plugins.section).name : "全部";
     return h`<div class="page page-plugins"${title ? h` data-title="${title}"` : ""}>
-      ${pageHead("插件", "先按用途找分类，再搜名字或指令；开关即时生效，配置随改随存。")}
-      <div class="section-rail-wrap">
-        <div class="section-rail" id="plugin-chips" role="group" aria-label="按用途筛选插件">${plugins.sectionRail()}</div>
+      ${pageHead("插件", "所有分类一屏摆开，点一下就能筛；开关即时生效，配置随改随存。")}
+      <div class="section-nav">
+        <div class="section-grid" id="plugin-chips" role="radiogroup" aria-label="按用途筛选插件">${plugins.sectionPicker()}</div>
       </div>
       <div class="split"${attr(dual, "data-dual")}>
         <div class="split-list">
           <div class="plugin-toolbar">
             <div class="search">${icon("search")}
-              <input class="input" id="plugin-search" type="search" placeholder="搜索插件、指令或说明"
-                aria-label="搜索插件、指令或说明" autocomplete="off" value="${plugins.query}">
+              <input class="input" id="plugin-search" type="search" placeholder="搜索插件、分类或指令"
+                aria-label="搜索插件、分类或指令" autocomplete="off" value="${plugins.query}">
               <kbd class="search-key" aria-hidden="true">/</kbd>
             </div>
-            <div class="chips chips-scroll" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
+            <div class="chips filter-segments" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
           </div>
-          <p class="section-meta plugin-count-line" id="plugin-count" role="status">${plugins.summary()}
+          <p class="section-meta plugin-count-line"${attr(!plugins.filtered(), "hidden")}>
+            <span id="plugin-count" role="status">${plugins.summary()}</span>
             <button class="btn btn-text btn-small" type="button" id="plugin-clear" data-clear-filters${attr(!plugins.filtered(), "hidden")}>清除筛选</button>
           </p>
-          <div class="plugin-list" id="plugin-list" data-section-label="${section}">${plugins.rows()}</div>
+          <div class="plugin-list" id="plugin-list">${plugins.rows()}</div>
         </div>
         ${pane}
       </div>
@@ -2916,9 +3034,22 @@
         if (plugin.pending) row.insertAdjacentHTML("beforeend", part(h`<span class="status status-warning">待重启</span>`));
       }
       for (const badge of $$(`[data-status-for="${CSS.escape(name)}"]`)) put(badge, statusBadge(plugin));
-      const counter = $("#plugin-count");
-      if (counter && plugins.data) counter.textContent = plugins.summary();
-      if (plugins.data) put($("#plugin-status"), plugins.statusChips());
+      if (plugins.data) {
+        const counter = $("#plugin-count");
+        if (counter) counter.textContent = plugins.summary();
+        put($("#plugin-chips"), plugins.sectionPicker());
+        put($("#plugin-status"), plugins.statusChips());
+        // 正在按状态筛时，刚翻过的行可能已经不该出现：重画列表，焦点跟着走。
+        if (plugins.status) {
+          const inList = document.activeElement?.closest?.("#plugin-list");
+          put($("#plugin-list"), plugins.rows());
+          if (inList) {
+            const still = $(`#plugin-list [data-plugin="${CSS.escape(name)}"] [data-toggle]`);
+            if (still) still.focus({ preventScroll: true });
+            else $(`[data-status-filter="${CSS.escape(plugins.status)}"]`)?.focus({ preventScroll: true });
+          }
+        }
+      }
     } catch (error) {
       report(error);
     } finally {
@@ -6546,16 +6677,11 @@
       if ((hit = on("[data-status-filter]"))) {
         plugins.status = hit.dataset.statusFilter;
         plugins.repaint();
-        $(`[data-status-filter="${CSS.escape(plugins.status)}"]`)?.focus();
+        $(`[data-status-filter="${CSS.escape(plugins.status)}"]`)?.focus({ preventScroll: true });
         return;
       }
       if ((hit = on("[data-section]"))) {
-        plugins.section = hit.dataset.section;
-        try {
-          localStorage.setItem("acumen.plugins.section", plugins.section);
-        } catch {}
-        plugins.repaint();
-        $(`[data-section="${CSS.escape(plugins.section)}"]`)?.focus();
+        plugins.chooseSection(hit.dataset.section);
         return;
       }
       if ((hit = on("[data-clear-filters]"))) {
@@ -6795,6 +6921,26 @@
       // 只在插件页生效，也不抢输入框里的按键。
       if ($("#plugin-search") && !document.querySelector("dialog[open]")) {
         const typing = target.matches?.("input, textarea, select, [contenteditable]");
+        // 分类网格是单选组：方向键按网格走，Home / End 接到两头，选中即筛选。
+        const rail = target.closest?.("#plugin-chips");
+        if (rail && !typing && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+          const cards = $$("[data-section]", rail);
+          const index = cards.indexOf(target.closest("[data-section]"));
+          // 用第一行实际摆了几格算列数：桌面 7/8 格随宽度自适应，读计算样式不可靠。
+          const columns = Math.max(1, cards.filter((card) => card.offsetTop === cards[0]?.offsetTop).length);
+          let next = -1;
+          if (event.key === "ArrowRight") next = (index + 1) % cards.length;
+          else if (event.key === "ArrowLeft") next = (index - 1 + cards.length) % cards.length;
+          else if (event.key === "ArrowDown") next = (index + columns) % cards.length;
+          else if (event.key === "ArrowUp") next = (index - columns + cards.length) % cards.length;
+          else if (event.key === "Home") next = 0;
+          else if (event.key === "End") next = cards.length - 1;
+          if (index >= 0 && next >= 0) {
+            event.preventDefault();
+            plugins.chooseSection(cards[next].dataset.section);
+            return;
+          }
+        }
         if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === "/") {
           event.preventDefault();
           $("#plugin-search").focus({ preventScroll: true });

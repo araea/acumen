@@ -5955,31 +5955,27 @@ label.lk-hit {
   overflow-wrap: anywhere;
 }
 
-/* ==================== §3b 插件分类导轨（M3E） ====================
-   分类是插件页的第一层信息架构：先按用途扫一眼，再进列表。
-   每格是一枚 tonal 容器 + 图标 + 一句人话 + 数量；选中时整格抬起并换成
-   primary-container。窄屏横向滑动，宽屏吸顶，滚动时仍然够得着。 */
+/* ==================== §3b 插件分类网格（M3E） ====================
+   分类是插件页的第一层信息架构：手机与平板 4×2、宽屏一行，所有分类一屏都在，
+   不用横向滑动。每格是一枚 tonal 容器 + 图标 + 名称 + 总数；选中时图标
+   填色、圆角变大、整格抬起。读屏走 radiogroup / radio 的单选语义。 */
 
 .page-plugins {
-  --_rail-top: calc(var(--zw-topbar-height) + var(--zw-safe-top));
+  --_nav-top: calc(var(--zw-topbar-height) + var(--zw-safe-top));
+  /* 桌面一排分类格的实际高度：上下 4px 内边距 + 68px 卡面；
+     字号放大后名称可能折成两行，留到 96px 不遮详情栏。 */
+  --_section-nav-height: calc(var(--zw-space-10) + var(--zw-space-07));
 }
 
-.section-rail-wrap {
+.section-nav {
   min-width: 0;
 }
 
-.section-rail {
-  display: flex;
-  gap: var(--zw-space-02);
+.section-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--zw-space-03);
   padding-block: var(--zw-space-01) var(--zw-space-02);
-  overflow-x: auto;
-  scroll-snap-type: x proximity;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-.section-rail::-webkit-scrollbar {
-  display: none;
 }
 
 .section-card {
@@ -5987,32 +5983,40 @@ label.lk-hit {
   --_tone: var(--md-sys-color-primary);
   position: relative;
   display: flex;
-  flex: none;
-  align-items: center;
-  gap: var(--zw-space-03);
-  min-height: 60px;
-  padding: var(--zw-space-02) var(--zw-space-03);
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--zw-space-01);
+  min-width: 0;
+  min-height: 72px;
+  padding: var(--zw-space-03);
   border: var(--zw-border-width) solid var(--md-sys-color-outline);
   border-radius: var(--md-sys-shape-corner-large-increased);
-  background: var(--md-sys-color-surface-container-low);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--_tone) 5%, transparent), transparent 64%),
+    var(--md-sys-color-surface-container-low);
   color: var(--md-sys-color-on-surface-variant);
   text-align: start;
-  scroll-snap-align: start;
+  isolation: isolate;
   transition:
     background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
     border-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
     color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
     transform var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
     box-shadow var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
-.section-card:hover {
-  background: var(--md-sys-color-surface-container-high);
-  border-color: color-mix(in srgb, var(--_tone) 32%, transparent);
+@media (hover: hover) {
+  .section-card:hover {
+    border-color: color-mix(in srgb, var(--_tone) 44%, transparent);
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--_tone) 9%, transparent), transparent 64%),
+      var(--md-sys-color-surface-container-high);
+  }
 }
 
 .section-card:active {
-  transform: scale(0.975);
+  transform: scale(0.97);
 }
 
 .section-card:focus-visible {
@@ -6020,21 +6024,32 @@ label.lk-hit {
   outline-offset: var(--zw-focus-offset);
 }
 
-.section-card[aria-pressed="true"] {
-  border-color: var(--_tone);
-  background: color-mix(in srgb, var(--_tone) 13%, var(--md-sys-color-surface-container-low));
+.section-card[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--_tone) 62%, transparent);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--_tone) 18%, transparent), transparent 72%),
+    var(--md-sys-color-surface-container-high);
   color: var(--md-sys-color-on-surface);
+  transform: translateY(-1px);
   box-shadow:
-    0 10px 24px -14px color-mix(in srgb, var(--_tone) 42%, transparent),
+    0 12px 26px -18px color-mix(in srgb, var(--_tone) 48%, transparent),
     inset 0 1px 0 var(--zw-card-highlight);
 }
 
+.section-card-top {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+}
+
 .section-card-icon {
+  position: relative;
   display: grid;
   flex: none;
   place-items: center;
-  width: 40px;
-  height: 40px;
+  width: 28px;
+  height: 28px;
   border-radius: var(--md-sys-shape-corner-medium);
   background: color-mix(in srgb, var(--_tone) 14%, var(--md-sys-color-surface-container-high));
   color: var(--_tone);
@@ -6043,59 +6058,72 @@ label.lk-hit {
     color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
 }
 
-.section-card-icon .i {
+.section-card-icon > .i {
   width: var(--zw-size-icon-small);
   height: var(--zw-size-icon-small);
 }
 
-.section-card[aria-pressed="true"] .section-card-icon {
+.section-card[aria-checked="true"] .section-card-icon {
   background: var(--_tone);
   color: var(--md-sys-color-surface);
 }
 
-.section-card-body {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  line-height: 1.25;
+/* 选中角标：不占顶部宽度，窄屏也不会把图标与数量挤在一起。 */
+.section-card-check {
+  position: absolute;
+  inset-inline-end: -4px;
+  inset-block-end: -4px;
+  display: none;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface);
+  color: var(--_tone);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--_tone) 36%, transparent);
 }
 
-.section-card-name {
-  color: var(--md-sys-color-on-surface);
-  font-size: var(--md-sys-typescale-title-small-size);
-  font-weight: var(--md-sys-typescale-weight-emphasized);
-  letter-spacing: 0;
-  white-space: nowrap;
+.section-card-check .i {
+  width: 11px;
+  height: 11px;
 }
 
-.section-card-hint {
-  margin-top: 2px;
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-label-small-size);
-  font-weight: var(--md-sys-typescale-weight-regular);
-  letter-spacing: 0;
-  white-space: nowrap;
+.section-card[aria-checked="true"] .section-card-check {
+  display: grid;
 }
 
 .section-card-count {
+  position: absolute;
+  inset-block-start: var(--zw-space-03);
+  inset-inline-end: var(--zw-space-03);
   display: grid;
-  flex: none;
   place-items: center;
-  min-width: 24px;
-  height: 24px;
-  margin-inline-start: var(--zw-space-01);
-  padding-inline: 6px;
+  min-width: 20px;
+  height: 20px;
+  padding-inline: 4px;
   border-radius: var(--md-sys-shape-corner-full);
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 8%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 7%, transparent);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-label-small-size);
   font-weight: var(--md-sys-typescale-weight-emphasized);
   font-variant-numeric: tabular-nums;
 }
 
-.section-card[aria-pressed="true"] .section-card-count {
-  background: color-mix(in srgb, var(--_tone) 18%, transparent);
+.section-card[aria-checked="true"] .section-card-count {
+  background: color-mix(in srgb, var(--_tone) 20%, transparent);
   color: var(--md-sys-color-on-surface);
+}
+
+.section-card-name {
+  display: block;
+  width: 100%;
+  color: var(--md-sys-color-on-surface);
+  font-size: clamp(var(--md-sys-typescale-label-medium-size), 3.5vw, var(--md-sys-typescale-label-large-size));
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  letter-spacing: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .section-card[data-tone="group"] { --_tone: var(--md-sys-color-primary); }
@@ -6119,11 +6147,52 @@ label.lk-hit {
   flex: none;
 }
 
+/* 状态筛选做成等宽分段：三格同屏，不用横向滑动，也不会把「已停用」藏在屏外。 */
+.plugin-toolbar .filter-segments {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--zw-space-01);
+  padding: var(--zw-space-01);
+  border: var(--zw-border-width) solid var(--md-sys-color-outline);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-surface-container);
+}
+
+.filter-segments .chip {
+  justify-content: center;
+  min-width: 0;
+  min-height: 40px;
+  padding-inline: var(--zw-space-02);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: transparent;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+@media (hover: hover) {
+  .filter-segments .chip:hover {
+    background: color-mix(in srgb, var(--md-sys-color-on-surface) 6%, transparent);
+  }
+
+  .filter-segments .chip[aria-pressed="true"]:hover {
+    background: color-mix(in srgb, var(--md-sys-color-on-secondary-container) 8%, var(--md-sys-color-secondary-container));
+  }
+}
+
+.filter-segments .chip[aria-pressed="true"] {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.filter-segments .chip[aria-pressed="true"] .chip-count {
+  opacity: 1;
+}
+
 .search-key {
   position: absolute;
   inset-inline-end: var(--zw-space-04);
   inset-block-start: 50%;
   translate: 0 -50%;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
   min-width: 22px;
   padding: 2px 6px;
   border: var(--zw-border-width) solid var(--md-sys-color-outline-variant);
@@ -6135,6 +6204,11 @@ label.lk-hit {
   line-height: 1.2;
   text-align: center;
   pointer-events: none;
+}
+
+/* 有字时把 / 提示让给浏览器自带的清除按钮，别叠在一起。 */
+.search .input:not(:placeholder-shown) ~ .search-key {
+  opacity: 0;
 }
 
 .plugin-count-line {
@@ -6199,40 +6273,36 @@ label.lk-hit {
   margin-inline-start: auto;
 }
 
-@media (max-width: 719px) {
-  /* 窄屏先把一句说明收起来：一屏能看见三格，比看两句被截断的说明更有用。 */
-  .section-card {
-    gap: var(--zw-space-02);
-    min-height: 52px;
-    padding-inline: var(--zw-space-02);
-  }
-
-  .section-card-hint {
-    display: none;
-  }
-
-  .section-card-count {
-    min-width: 20px;
-    height: 20px;
-  }
-
-  .section-rail {
-    mask-image: linear-gradient(to right, #000 92%, transparent);
-    -webkit-mask-image: linear-gradient(to right, #000 92%, transparent);
-  }
-}
-
-@media (min-width: 720px) {
-  .section-card {
-    padding-inline: var(--zw-space-04);
-  }
-}
-
 @media (min-width: 840px) {
-  /* 宽屏才吸顶：窄屏上吸一条导轨会吃掉本来就不多的聊天高度。 */
-  .section-rail-wrap {
+  .section-card {
+    min-height: 68px;
+  }
+
+  .section-card-icon {
+    width: 30px;
+    height: 30px;
+  }
+
+  .section-card-name {
+    font-size: var(--md-sys-typescale-label-large-size);
+  }
+
+  .plugin-toolbar .search {
+    max-width: none;
+  }
+}
+
+@media (min-width: 1000px) {
+  /* 宽屏一排八格，全部露出来；吸顶后分类始终够得着。 */
+  .section-grid {
+    /* 7 个分类时不留下空槽，8 个时正好排满。 */
+    grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
+    padding-block: var(--zw-space-02);
+  }
+
+  .section-nav {
     position: sticky;
-    inset-block-start: var(--_rail-top);
+    inset-block-start: var(--_nav-top);
     z-index: 4;
     margin-inline: calc(var(--zw-page-gutter) * -1);
     padding-inline: var(--zw-page-gutter);
@@ -6242,18 +6312,39 @@ label.lk-hit {
     box-shadow: 0 1px 0 color-mix(in srgb, var(--md-sys-color-outline-variant) 46%, transparent);
   }
 
-  .section-rail {
-    flex-wrap: wrap;
-    overflow: visible;
-    padding-block: var(--zw-space-02);
+  /* 顶部分类吸顶后，详情栏也要让开这一条。 */
+  .split[data-dual] .split-detail {
+    top: calc(var(--_nav-top) + var(--_section-nav-height) + var(--zw-space-03));
+    max-height: calc(100dvh - var(--_nav-top) - var(--_section-nav-height) - var(--zw-space-06));
   }
+}
 
+@media (prefers-reduced-transparency: reduce) {
+  .section-nav {
+    background: var(--md-sys-color-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
   .section-card {
-    flex: 1 1 150px;
+    border-color: var(--md-sys-color-outline);
+  }
+}
+
+@media (forced-colors: active) {
+  .section-card {
+    border: var(--zw-border-width) solid CanvasText;
   }
 
-  .plugin-toolbar .search {
-    max-width: none;
+  .section-card[aria-checked="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .section-card-count {
+    border: var(--zw-border-width) solid CanvasText;
   }
 }
 

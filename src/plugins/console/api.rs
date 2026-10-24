@@ -7,7 +7,7 @@
 use super::state::Console;
 
 use crate::adapters::satori::Roster;
-use crate::plugins::{get_plugins, pending_startup};
+use crate::plugins::{Plugin, get_plugins, pending_startup};
 use crate::storage::write_atomic_async;
 use axum::Json;
 use axum::Router;
@@ -163,12 +163,31 @@ fn avatar_for(platform: &str, id: &str, avatar: Option<&str>) -> Option<String> 
 
 // ==================== 插件 ====================
 
+/// 列表与详情共用同一份指令文本：列表靠它支持按指令搜索，详情靠它显示完整清单。
+/// 前缀取配置里的第一条，与机器人实际认的写法一致。
+fn command_entries(plugin: &Plugin, prefix: &str) -> Vec<Value> {
+    plugin
+        .commands
+        .iter()
+        .map(|cmd| {
+            let first = cmd.cmd.split(" / ").next().unwrap_or(cmd.cmd);
+            let text = if crate::plugins::help::needs_prefix(first) {
+                format!("{prefix}{first}")
+            } else {
+                first.to_string()
+            };
+            json!({ "cmd": text, "note": cmd.note })
+        })
+        .collect()
+}
+
 async fn plugins(State(console): State<Arc<Console>>) -> Response {
     let config = console.ctx().config.read().unwrap();
     let sections: Vec<Value> = crate::plugins::help::sections()
         .iter()
         .map(|(code, cn, en)| json!({ "code": code, "name": cn, "en": en }))
         .collect();
+    let prefix = config.command_prefix.first().map_or("", String::as_str);
     let list: Vec<Value> = get_plugins()
         .iter()
         .map(|plugin| {
@@ -180,7 +199,7 @@ async fn plugins(State(console): State<Arc<Console>>) -> Response {
                 "summary": plugin.summary,
                 "on": on,
                 "pending": on && pending_startup(plugin.name),
-                "commands": plugin.commands.len(),
+                "commands": command_entries(plugin, prefix),
                 "configurable": plugin.name != "meta_filter",
             })
         })
@@ -203,23 +222,8 @@ async fn plugin_detail(
     let mut diff = Vec::new();
     crate::plugins::ctl::differences(&defaults, current, "", &mut diff);
     let on = crate::plugins::enabled(&config, plugin.name);
-    let commands: Vec<Value> = plugin
-        .commands
-        .iter()
-        .map(|cmd| {
-            let first = cmd.cmd.split(" / ").next().unwrap_or(cmd.cmd);
-            let prefix = config
-                .command_prefix
-                .first()
-                .map_or("", String::as_str);
-            let text = if crate::plugins::help::needs_prefix(first) {
-                format!("{prefix}{first}")
-            } else {
-                first.to_string()
-            };
-            json!({ "cmd": text, "note": cmd.note })
-        })
-        .collect();
+    let prefix = config.command_prefix.first().map_or("", String::as_str);
+    let commands = command_entries(plugin, prefix);
 
     Json(json!({
         "name": plugin.name,
