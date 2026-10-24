@@ -699,8 +699,8 @@ enabled = true
 enabled = true
 # 手动指令给谁用：all（所有人）或 admin（群主/管理员）。
 permission = "all"
-# 同一个群两次手动上报的最小间隔（秒）。
-cooldown_secs = 30
+# 同一个群两次手动写入的最小间隔（秒）；查询与停计划不占。
+cooldown_secs = 15
 # 自动续报的默认间隔（分钟）与随机抖动（分钟）。
 default_interval_minutes = 8
 jitter_minutes = 3
@@ -708,7 +708,7 @@ jitter_minutes = 3
 auto_admin_only = true
 # 自动续报时顺带说一句的概率（0~1）；不想刷屏就写 0。
 announce_chance = 0.3
-# 自定义文字头衔（假头衔 文字 …）与最长字数。
+# 群主专属头衔：允许「假头衔 文字 …」与最长字数（QQ 最多六字）。
 allow_custom_text = true
 max_text_chars = 6
 

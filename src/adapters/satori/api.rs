@@ -260,8 +260,10 @@ pub async fn title_list(
 /// 佩戴 / 更换 / 摘下自己头上的群身份头衔。
 ///
 /// `params` 直接交给实现端的 `title_wear`：`role`（群主、管理员、等级、off）、
-/// `title`（自定义文字，走名片兜底）、`title_id`（指定编号）、`strategy`
-/// （`wear` / `card` / `auto`）与 `verify`。
+/// `name`（按目录里的名字挑）、`title`（群主专属的六字以内文字）、`title_id`
+/// （指定编号）、`strategy`（`auto` / `identity` / `special`）与 `verify`。
+/// 回包里 `accepted` 是 QQ 收下了，`worn` 是回读确认真的戴着；`reason` / `hint`
+/// 说明没戴上的原因（普通成员戴不上群主 / 管理员不是接口错误）。
 pub async fn title_wear(
     ctx: &Context,
     writer: LockedWriter,
