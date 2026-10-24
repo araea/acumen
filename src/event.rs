@@ -6,7 +6,7 @@ use crate::scheduler::Scheduler;
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use simd_json::OwnedValue;
-use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
+use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsArray, ValueObjectAccessAsScalar};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::sync::Mutex as AsyncMutex;
@@ -173,6 +173,27 @@ impl<'a> MessageEvent<'a> {
         self.0.get_str("raw_message").unwrap_or("")
     }
 
+    /// 这条消息除了引用之外还带了点东西没有：文字、QQ 表情、图片、语音、卡片都算。
+    ///
+    /// `text()` 只认纯文字，而 QQ 的小黄脸（狗头之类）在消息里只有一个 `face` 段——
+    /// 只发一个表情时正文是空的。拿 `text()` 判断「人说话了没有」会把这种回复当成没说话，
+    /// 入群验证因此要认这一位。
+    pub fn has_body(&self) -> bool {
+        let Some(segments) = self.0.get_array("message") else {
+            return !self.text().trim().is_empty();
+        };
+        segments.iter().any(|segment| match segment.get_str("type").unwrap_or("") {
+            // 引用本身不是说的话。
+            "reply" => false,
+            // 空白的文字段也不算（有的实现端会补一个换行或空格）。
+            "text" => segment
+                .get("data")
+                .and_then(|data| data.get_str("text"))
+                .is_some_and(|text| !text.trim().is_empty()),
+            _ => true,
+        })
+    }
+
     /// 这条消息 @ 了谁，以及有没有 @全体成员。
     pub fn mentions(&self) -> crate::message::Mentions {
         self.0
@@ -303,5 +324,29 @@ impl SendPacket {
     /// 获取消息类型字符串，返回 Option，若不存在则返回 None
     pub fn message_type(&self) -> Option<&str> {
         self.params.get_str("message_type")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(event: OwnedValue) -> bool {
+        MessageEvent(&event).has_body()
+    }
+
+    #[test]
+    fn face_only_messages_still_count_as_saying_something() {
+        use simd_json::json;
+        // QQ 狗头：消息里只有一个表情段，正文 raw_message 是空的。
+        assert!(body(json!({"post_type": "message", "raw_message": "", "message": [{"type": "face", "data": {"id": "14"}}]})));
+        assert!(body(json!({"post_type": "message", "raw_message": "", "message": [{"type": "image", "data": {"file": "a.png"}}]})));
+        assert!(body(json!({"post_type": "message", "raw_message": "在的", "message": [{"type": "text", "data": {"text": "在的"}}]})));
+        // 引用、空白文字不算说了话。
+        assert!(!body(json!({"post_type": "message", "raw_message": "", "message": [{"type": "reply", "data": {"id": "1"}}]})));
+        assert!(!body(json!({"post_type": "message", "raw_message": " ", "message": [{"type": "text", "data": {"text": " "}}]})));
+        // 没有消息段时退回正文。
+        assert!(body(json!({"post_type": "message", "raw_message": "你好"})));
+        assert!(!body(json!({"post_type": "message", "raw_message": "  "})));
     }
 }

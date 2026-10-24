@@ -925,10 +925,10 @@ fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// 比对用的写法：去空白、全角转半角、不分大小写。
+/// 比对用的写法：去空白（含零宽字符）、全角转半角、不分大小写。
 fn normalize(text: &str) -> String {
     text.chars()
-        .filter(|c| !c.is_whitespace())
+        .filter(|c| !c.is_whitespace() && !matches!(c, '\u{200b}'..='\u{200f}' | '\u{feff}'))
         .map(|c| match c {
             '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
             _ => c,
@@ -941,9 +941,15 @@ fn normalize(text: &str) -> String {
 fn passes(pending: &Pending, text: &str) -> bool {
     let text = normalize(text);
     match pending.mode.as_str() {
-        "code" | "math" => text
-            .split(|c: char| !c.is_ascii_digit())
-            .any(|number| !number.is_empty() && pending.answers.iter().any(|a| a == number)),
+        "code" | "math" => {
+            // 一道题只答一个数：整条消息里的数字正好对上也算（「0 4 2 1」「04​21」这种
+            // 被输入法、零宽字符拆开的答法），再看能否从正文里拿出完整的一段。
+            let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+            pending.answers.iter().any(|a| a == &digits)
+                || text
+                    .split(|c: char| !c.is_ascii_digit())
+                    .any(|number| !number.is_empty() && pending.answers.iter().any(|a| a == number))
+        }
         _ if pending.answers.is_empty() => !text.is_empty(),
         _ => pending.answers.iter().map(|a| normalize(a)).any(|a| !a.is_empty() && text.contains(&a)),
     }
@@ -999,21 +1005,29 @@ fn staff(ctx: &Context) -> bool {
     crate::access::is_manager(ctx) || ctx.as_message().and_then(|m| m.sender_role()).is_some_and(api::is_staff)
 }
 
+/// 事件里带的名字（群名片优先）；没有就是 `None`。
+fn event_name(ctx: &Context, user: &str) -> Option<String> {
+    let EventType::Satori(raw) = &ctx.event else { return None };
+    if raw.get_str("user_id") != Some(user) {
+        return None;
+    }
+    for path in [["_satori", "member", "nick"], ["_satori", "user", "nick"], ["_satori", "user", "name"]] {
+        if let Some(name) = raw
+            .get(path[0])
+            .and_then(|v| v.get(path[1]))
+            .and_then(|v| v.get_str(path[2]))
+            .filter(|name| !name.trim().is_empty())
+        {
+            return Some(name.trim().to_string());
+        }
+    }
+    None
+}
+
 /// 事件里带的名字；没有就问一次平台，再没有用号码。
 async fn display_name(ctx: &Context, writer: &LockedWriter, group: &str, user: &str) -> String {
-    if let EventType::Satori(raw) = &ctx.event
-        && raw.get_str("user_id") == Some(user)
-    {
-        for path in [["_satori", "member", "nick"], ["_satori", "user", "nick"], ["_satori", "user", "name"]] {
-            if let Some(name) = raw
-                .get(path[0])
-                .and_then(|v| v.get(path[1]))
-                .and_then(|v| v.get_str(path[2]))
-                .filter(|name| !name.trim().is_empty())
-            {
-                return name.trim().to_string();
-            }
-        }
+    if let Some(name) = event_name(ctx, user) {
+        return name;
     }
     if let Ok(info) = api::get_group_member_info(ctx, writer.clone(), group, user, false).await {
         let name = if info.card.trim().is_empty() { info.nickname } else { info.card };
@@ -1081,7 +1095,40 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     if !welcome && verify.is_none() {
         return Ok(());
     }
+
+    // 先把待验证登记上，再去问名字、发欢迎：后面这几步都要经过网络（几百毫秒到几秒），
+    // 新人往往在欢迎发出去之前就回了句「你好」或一个表情。登记晚了，那句就白说，
+    // 人也可能到点被当成没验证移出。
+    let mut pending = None;
+    if let Some((mode, answers, question)) = verify.take() {
+        let entry = Pending {
+            self_id: ctx.bot.self_id(),
+            group: group.to_string(),
+            user_id: user.to_string(),
+            name: event_name(ctx, user).unwrap_or_else(|| user.to_string()),
+            deadline: now() + i64::try_from(config.verify.timeout_seconds).unwrap_or(300),
+            answers,
+            mode,
+            question,
+            reminded: Vec::new(),
+            notices: Vec::new(),
+            wrong: 0,
+            hinted_at: 0,
+            welcome: None,
+        };
+        STATE
+            .with(|state| {
+                state.pending.retain(|p| !(p.self_id == entry.self_id && p.group == entry.group && p.user_id == entry.user_id));
+                state.pending.push(entry.clone());
+            })
+            .await;
+        pending = Some(entry);
+    }
+
     let name = display_name(ctx, writer, group, user).await;
+    if let Some(entry) = &pending {
+        info!(target: LOG_TARGET, "群 {group} 新成员 {name}（{user}）开始入群验证（{}）", entry.mode);
+    }
     let info = group_info(ctx, writer, group).await;
 
     // 要验证的人单独欢迎：验证说明里有他自己的验证码与倒计时，合不进别人的那条。
@@ -1124,26 +1171,10 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
 
     let mut vars = config.vars(group).group(&info).person(user, &name);
     let mut template = if welcome { effective.join_text.pick().unwrap_or_default() } else { String::new() };
-    let mut pending = None;
-    if let Some((mode, answers, question)) = verify {
-        let entry = Pending {
-            self_id: ctx.bot.self_id(),
-            group: group.to_string(),
-            user_id: user.to_string(),
-            name: name.clone(),
-            deadline: now() + i64::try_from(config.verify.timeout_seconds).unwrap_or(300),
-            answers,
-            mode,
-            question,
-            reminded: Vec::new(),
-            notices: Vec::new(),
-            wrong: 0,
-            hinted_at: 0,
-            welcome: None,
-        };
+    if let Some(entry) = &pending {
         vars = vars
             .set("timeout", duration_text(config.verify.timeout_seconds))
-            .set("task", config.phrases.task(&entry))
+            .set("task", config.phrases.task(entry))
             .set("answer", entry.answer())
             .set("punish", config.phrases.punish(&config.verify));
         if let Some(prompt) = config.verify.prompt_text.pick() {
@@ -1155,8 +1186,6 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
                 format!("{{at}} {prompt}")
             };
         }
-        info!(target: LOG_TARGET, "群 {group} 新成员 {name}（{user}）开始入群验证（{}）", entry.mode);
-        pending = Some(entry);
     }
     let images = if welcome { effective.images } else { Vec::new() };
     let at = [user.to_string()];
@@ -1164,28 +1193,61 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     // 有验证时欢迎先不定时撤：上面写着验证码，撤早了新人就没处看了。
     let recall = if pending.is_some() { 0 } else { config.join.recall_seconds };
     let sent = match message {
-        Some(message) => say(ctx, writer, group, message, recall).await?,
+        Some(message) => match say(ctx, writer, group, message, recall).await {
+            Ok(sent) => sent,
+            Err(error) => {
+                // 欢迎没发出去：验证码没落到他眼前，这份待验证记录就作废，别让他到点被罚。
+                if pending.is_some() {
+                    forget(&ctx.bot.self_id(), group, user).await;
+                }
+                return Err(error);
+            }
+        },
         None => None,
     };
-    if let Some(mut entry) = pending {
-        entry.welcome = sent.map(|id| (id, now()));
+    if pending.is_some() {
+        // 名字问到以后补进名单（事件里常常没带），顺便记下欢迎的消息 ID：验证有了结果再撤。
+        // 当中要是人已经验证过了，记录已不在名单里，这里就什么也不做。
         STATE
-            .with(|state| {
-                state.pending.retain(|p| !(p.group == entry.group && p.user_id == entry.user_id));
-                state.pending.push(entry);
+            .update(|state| {
+                let Some(p) = state.pending.iter_mut().find(|p| p.group == group && p.user_id == user) else {
+                    return ((), false);
+                };
+                p.name = name;
+                p.welcome = sent.map(|id| (id, now()));
+                ((), true)
             })
             .await;
     }
     Ok(())
 }
 
-async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, user: &str) -> Result<(), PluginError> {
-    let gone = STATE
-        .with(|state| {
-            let index = state.pending.iter().position(|p| p.group == group && p.user_id == user)?;
-            Some(state.pending.remove(index))
+/// 撤销某个人的待验证记录（欢迎没发出去时用）。
+async fn forget(me: &str, group: &str, user: &str) {
+    STATE
+        .update(|state| {
+            let before = state.pending.len();
+            state.pending.retain(|p| !(p.self_id == me && p.group == group && p.user_id == user));
+            ((), state.pending.len() != before)
         })
         .await;
+}
+
+/// 从名单里拿走某个人；不在名单里就不写盘。
+async fn take(me: &str, group: &str, user: &str) -> Option<Pending> {
+    STATE
+        .update(|state| {
+            let Some(index) = state.pending.iter().position(|p| p.self_id == me && p.group == group && p.user_id == user) else {
+                return (None, false);
+            };
+            (Some(state.pending.remove(index)), true)
+        })
+        .await
+}
+
+async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, user: &str) -> Result<(), PluginError> {
+    let me = ctx.bot.self_id();
+    let gone = take(&me, group, user).await;
     if let Some(p) = gone {
         settle(ctx, writer, config, &p);
         info!(target: LOG_TARGET, "群 {group} 待验证的 {user} 已离开，验证作废");
@@ -1200,7 +1262,7 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
     let operator = raw.get_str("operator_id").unwrap_or("").to_string();
     let kicked = !operator.is_empty() && operator != user;
     // 自己动手移出的（验证超时、清理潜水）那一处已经说过了，别再报一遍。
-    if kicked && operator == ctx.bot.self_id() && crate::departures::expected(group, user) {
+    if kicked && operator == me && crate::departures::expected(group, user) {
         return Ok(());
     }
     let template = if kicked { &effective.kicked_text } else { &effective.leave_text };
@@ -1262,29 +1324,29 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
         return Ok(false);
     };
     let text = message.text().to_string();
+    // QQ 的小黄脸（狗头之类）只有表情段、正文是空的：只认文字就会把一条真回复当成没说话。
+    let body = message.has_body();
     let message_id = message.message_id().to_string();
     let limit = config.verify.attempts;
-    let throttle = now() - 15;
+    let me = ctx.bot.self_id();
     let outcome = STATE
-        .with(|state| {
-            let index = state.pending.iter().position(|p| p.group == group && p.user_id == user)?;
-            let p = &mut state.pending[index];
-            if passes(p, &text) {
-                return Some(Outcome::Passed(state.pending.remove(index)));
-            }
-            // 任意一句的方式没有「答错」；发图、发表情（没有文字）也不算一次。
-            if p.mode == "any" || normalize(&text).is_empty() {
-                return Some(Outcome::Waiting(None));
-            }
-            p.wrong += 1;
-            if limit > 0 && p.wrong >= limit {
-                return Some(Outcome::OutOfChances(state.pending.remove(index)));
-            }
-            if p.hinted_at > throttle {
-                return Some(Outcome::Waiting(None));
-            }
-            p.hinted_at = now();
-            Some(Outcome::Waiting(Some(p.clone())))
+        .update(|state| {
+            let Some(index) = state.pending.iter().position(|p| p.self_id == me && p.group == group && p.user_id == user) else {
+                return (None, false);
+            };
+            let (wrong, hinted_at) = (state.pending[index].wrong, state.pending[index].hinted_at);
+            let step = judge(&mut state.pending[index], &text, body, limit, now());
+            // 「这次不回提示」也可能记了一笔答错，得照实落盘。
+            let (outcome, changed) = match step {
+                Step::Passed => (Some(Outcome::Passed(state.pending.remove(index))), true),
+                Step::OutOfChances => (Some(Outcome::OutOfChances(state.pending.remove(index))), true),
+                Step::Hint => (Some(Outcome::Waiting(Some(state.pending[index].clone()))), true),
+                Step::Silent => {
+                    let p = &state.pending[index];
+                    (Some(Outcome::Waiting(None)), p.wrong != wrong || p.hinted_at != hinted_at)
+                }
+            };
+            (outcome, changed)
         })
         .await;
     let Some(outcome) = outcome else {
@@ -1310,6 +1372,51 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
         return Ok(true);
     }
     Ok(false)
+}
+
+/// 一条消息怎么算。
+enum Step {
+    /// 答对了。
+    Passed,
+    /// 答错到次数用完。
+    OutOfChances,
+    /// 还不对：回一句提示。
+    Hint,
+    /// 什么都不用做。
+    Silent,
+}
+
+/// 拿一条消息去比对。`body` 是「除了引用与空文字之外还带了东西没有」（QQ 表情、图片……），
+/// `at` 是现在（答错提示 15 秒内只回一次）。
+fn judge(p: &mut Pending, text: &str, body: bool, limit: u32, at: i64) -> Step {
+    if passes(p, text) {
+        return Step::Passed;
+    }
+    // 「说任意一句话」时发什么都算数：只丢一个狗头、一张图、一条语音也是人来了。
+    if p.mode == "any" {
+        return if body { Step::Passed } else { Step::Silent };
+    }
+    // 要发指定内容的方式：没有文字就没法比对，不算答错、也不占次数；
+    // 但得回一句告诉他该发什么——只发表情的人多半是没看懂要做什么。
+    if normalize(text).is_empty() {
+        return if body { hint(p, at) } else { Step::Silent };
+    }
+    p.wrong += 1;
+    if limit > 0 && p.wrong >= limit {
+        return Step::OutOfChances;
+    }
+    hint(p, at)
+}
+
+/// 答错提示 15 秒内只回一次：连着发错不句句都回。
+const HINT_INTERVAL: i64 = 15;
+
+fn hint(p: &mut Pending, at: i64) -> Step {
+    if p.hinted_at > at - HINT_INTERVAL {
+        return Step::Silent;
+    }
+    p.hinted_at = at;
+    Step::Hint
 }
 
 enum Outcome {
@@ -1425,14 +1532,9 @@ async fn run_command(ctx: &Context, writer: &LockedWriter, config: &Config, grou
                 return Ok(true);
             }
             let mut missed = Vec::new();
+            let me = ctx.bot.self_id();
             for id in ids {
-                let found = STATE
-                    .with(|state| {
-                        let index = state.pending.iter().position(|p| p.group == group && p.user_id == id)?;
-                        Some(state.pending.remove(index))
-                    })
-                    .await;
-                match found {
+                match take(&me, group, &id).await {
                     Some(p) => pass(ctx, writer, config, &p).await?,
                     None => missed.push(id),
                 }
@@ -1594,9 +1696,10 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
     let now = now();
     let mut remind_points = config.verify.remind_seconds.clone();
     remind_points.sort_unstable_by(|a, b| b.cmp(a));
-    let due: Vec<Due> = STATE
-        .with(|state| {
+    let due = STATE
+        .update(|state| {
             let mut due = Vec::new();
+            let mut changed = false;
             state.pending.retain_mut(|p| {
                 if p.self_id != me {
                     return true;
@@ -1604,11 +1707,13 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
                 // 插件关了、或这个群不再验证：名单作废，不罚。
                 if !config.enabled || !config.channel.allows_group(&p.group) || !config.for_group(&p.group).verify {
                     due.push(Due::Drop(p.clone()));
+                    changed = true;
                     return false;
                 }
                 let remaining = p.deadline - now;
                 if remaining <= 0 {
                     due.push(Due::Expire(p.clone()));
+                    changed = true;
                     return false;
                 }
                 let remaining = remaining.unsigned_abs();
@@ -1622,13 +1727,15 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
                     for skipped in remind_points.iter().filter(|q| **q >= point) {
                         if !p.reminded.contains(skipped) {
                             p.reminded.push(*skipped);
+                            changed = true;
                         }
                     }
                     due.push(Due::Remind(p.clone(), remaining));
                 }
                 true
             });
-            due
+            // 大多数跳什么都没变（名单空着或还早），不必每 5 秒重写一遍文件。
+            (due, changed)
         })
         .await;
     for item in due {
@@ -2128,6 +2235,9 @@ mod tests {
         assert!(passes(&p("code", "0421"), "验证码 ０４２１"));
         assert!(!passes(&p("math", "12"), "123"));
         assert!(passes(&p("math", "12"), "是12吧"));
+        // 被空格、零宽字符拆开的答法也算（输入法、复制粘贴常见）。
+        assert!(passes(&p("code", "0421"), "0 4 2 1"));
+        assert!(passes(&p("code", "4821"), "验证码 4\u{200b}821"));
         assert!(passes(&p("answer", "我已阅读群规"), "我已 阅读 群规！"));
         assert!(!passes(&p("answer", "我已阅读群规"), "你好"));
     }
@@ -2154,6 +2264,43 @@ mod tests {
         assert_eq!(table["leave"]["kicked_text"].as_str(), Some("{name} 走了"));
         assert_eq!(table["join"]["text"].as_str(), Some("自己写的欢迎"));
         assert!(!Config::migrate(&mut table), "第二次没有可改的");
+    }
+
+    #[test]
+    fn face_only_replies_are_counted() {
+        let sample = |mode: &str, answer: &str| Pending {
+            self_id: String::new(),
+            group: String::new(),
+            user_id: String::new(),
+            name: String::new(),
+            deadline: 0,
+            answers: if mode == "any" { Vec::new() } else { vec![answer.into()] },
+            mode: mode.into(),
+            question: String::new(),
+            reminded: Vec::new(),
+            notices: Vec::new(),
+            wrong: 0,
+            hinted_at: 0,
+            welcome: None,
+        };
+
+        // 「说任意一句话」：只丢一个 QQ 表情（狗头）也是人来了，正文是空的也算。
+        let mut any = sample("any", "");
+        assert!(matches!(judge(&mut any, "", true, 0, 1000), Step::Passed));
+        assert!(matches!(judge(&mut any, "在的", false, 0, 1000), Step::Passed));
+        assert!(matches!(judge(&mut any, "", false, 0, 1000), Step::Silent), "只引用了一下不算");
+
+        // 要发指定内容时，表情没法比对：不算答错、不占次数，但要回一句告诉他发什么。
+        let mut code = sample("code", "0421");
+        assert!(matches!(judge(&mut code, "", true, 2, 1000), Step::Hint));
+        assert_eq!(code.wrong, 0, "发表情不占答错次数");
+        assert!(matches!(judge(&mut code, "", true, 2, 1005), Step::Silent), "15 秒内只回一次");
+        assert!(matches!(judge(&mut code, "", true, 2, 1020), Step::Hint));
+        assert!(matches!(judge(&mut code, "你好", false, 2, 1030), Step::Silent), "刚回过的提示不复读");
+        assert_eq!(code.wrong, 1);
+        assert!(matches!(judge(&mut code, "12", false, 2, 1060), Step::OutOfChances), "答错到次数用完");
+        let mut fresh = sample("code", "0421");
+        assert!(matches!(judge(&mut fresh, "验证码 ０４２１", false, 2, 1000), Step::Passed));
     }
 
     #[test]

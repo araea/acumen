@@ -192,6 +192,21 @@ where
         result
     }
 
+    /// 在锁内读改写状态，但只在真的改了的时候落盘：`change` 除结果外还说一句这次改没改。
+    ///
+    /// 每条群消息、每 5 秒一跳的计时器都会进来一趟，次数多而绝大多数时候无事可做；
+    /// 用 [`with`](Self::with) 会每次都重写一遍文件（Termux 上就是反复写闪存）。
+    pub async fn update<R>(&self, change: impl FnOnce(&mut T) -> (R, bool)) -> R {
+        let mut guard = self.cell.lock().await;
+        let state = self.loaded(&mut guard).await;
+        let (result, changed) = change(state);
+        if changed {
+            let snapshot = state.clone();
+            self.save(&snapshot).await;
+        }
+        result
+    }
+
     /// 在锁内只读一眼，不落盘：每条消息都要查一遍的那种读法（比对规则）用它，免得白写一次文件。
     pub async fn read<R>(&self, look: impl FnOnce(&T) -> R) -> R {
         let mut guard = self.cell.lock().await;
