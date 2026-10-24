@@ -21,18 +21,16 @@ html {
   text-size-adjust: 100%;
   scroll-padding-top: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-04));
   scroll-padding-bottom: calc(var(--zw-navbar-height) + var(--zw-safe-bottom) + var(--zw-space-04));
-  background: var(--md-sys-color-surface);
+  background: var(--zw-canvas);
   scrollbar-color: var(--md-sys-color-outline-variant) transparent;
 }
 
 body {
   margin: 0;
   min-height: 100dvh;
-  background-color: var(--md-sys-color-surface);
-  background-image:
-    radial-gradient(54rem 34rem at 82% -14rem, var(--zw-glow-strong), transparent 68%),
-    radial-gradient(44rem 30rem at 6% -16rem, var(--zw-glow), transparent 72%),
-    linear-gradient(180deg, color-mix(in srgb, var(--md-sys-color-surface-container-low) 44%, transparent), transparent 24rem);
+  /* 纸面只有一处极淡的晕：从右上角品牌光点的方向来，往下很快散掉。 */
+  background-color: var(--zw-canvas);
+  background-image: radial-gradient(48rem 28rem at 92% -12rem, var(--zw-glow-strong), transparent 70%);
   background-repeat: no-repeat;
   color: var(--md-sys-color-on-surface);
   font-family: var(--md-ref-typeface-plain);
@@ -250,9 +248,12 @@ time {
   transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
+/* 滚动后顶栏变成一层磨砂的纸：底下的内容透出来一点，边界只有一根极细的线。 */
 .topbar[data-scrolled] {
   background: var(--zw-topbar-bg);
   box-shadow: 0 1px 0 var(--zw-hairline);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  backdrop-filter: blur(20px) saturate(1.4);
 }
 
 .brand {
@@ -266,14 +267,49 @@ time {
   text-decoration: none;
 }
 
-/* 品牌标记：同一枚新图标（缺一角的环 + 一点光），用蒙版着色。 */
-.brand-mark {
+/* 品牌标记：同一枚图标（缺一角的环 + 一粒光），环用主色蒙版着色；
+   那粒光单独画一层暖色（--zw-glimmer），是整个界面唯一的一束光：
+   知微在线时它慢慢呼吸，像有人掌着灯。光点的位置是图标网格里 (69.7, 38.3)
+   这一点按蒙版 136% 放大后的落点。 */
+.brand-logo {
+  position: relative;
   flex: none;
   width: var(--zw-size-mark);
   height: var(--zw-size-mark);
-  background: linear-gradient(135deg, var(--md-sys-color-primary), var(--md-sys-color-tertiary));
+}
+
+.brand-mark {
+  position: absolute;
+  inset: 0;
+  background: var(--md-sys-color-primary);
   -webkit-mask: url("/icon-monochrome.svg") center / 136% no-repeat;
   mask: url("/icon-monochrome.svg") center / 136% no-repeat;
+}
+
+.brand-glimmer {
+  position: absolute;
+  top: 30.2%;
+  left: 69.8%;
+  width: 17%;
+  height: 17%;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--zw-glimmer);
+  translate: -50% -50%;
+}
+
+body[data-state="ready"] .brand-glimmer {
+  animation: glimmer 4.8s var(--md-sys-motion-effects-slow-easing) infinite;
+}
+
+@keyframes glimmer {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--zw-glimmer-halo);
+  }
+
+  40% {
+    box-shadow: 0 0 0 5px transparent;
+  }
 }
 
 .brand-name {
@@ -363,9 +399,16 @@ time {
   border-radius: calc(var(--zw-dock-height) / 2);
   background: var(--zw-nav-bg);
   box-shadow:
-    var(--md-sys-elevation-level2),
+    var(--zw-float-shadow),
     inset 0 1px 0 var(--zw-nav-highlight);
+  -webkit-backdrop-filter: blur(24px) saturate(1.6);
+  backdrop-filter: blur(24px) saturate(1.6);
   isolation: isolate;
+  transition:
+    height var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing),
+    padding var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing),
+    inset var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing),
+    background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
   /* 底栏不承担滚动：按住时浏览器不要把它当成 pan-y 手势而发 pointercancel。 */
   touch-action: none;
   user-select: none;
@@ -393,8 +436,7 @@ time {
   width: 0;
   height: 0;
   border-radius: var(--md-sys-shape-corner-full);
-  background: linear-gradient(135deg, var(--md-sys-color-secondary-container), color-mix(in srgb, var(--md-sys-color-primary-container) 58%, var(--md-sys-color-secondary-container)));
-  box-shadow: var(--md-sys-elevation-level2);
+  background: var(--md-sys-color-secondary-container);
   pointer-events: none;
   transform: translate3d(0, 0, 0);
   will-change: transform, width, height;
@@ -550,6 +592,23 @@ time {
   display: block;
 }
 
+/* 选中的那一格图标「落定」：先被按扁一点，再由 spatial-fast 的弹簧弹回来。
+   只在换格时播一次（app.js 给新格挂 data-pop），首帧与刷新不播。 */
+.nav-item[data-pop] .nav-icon {
+  animation: nav-pop var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+@keyframes nav-pop {
+  from {
+    transform: scale(0.72);
+  }
+}
+
+.nav-item:active .nav-icon {
+  transform: scale(0.86);
+  transition-duration: var(--md-sys-motion-effects-fast-duration);
+}
+
 /* 窄屏只让当前格的字露出来；其余格的字宽高归零，但仍然留在 DOM 里，
    读屏器照常读到每个入口的名字。 */
 .nav-label {
@@ -615,6 +674,39 @@ time {
   margin-inline: auto;
   padding: var(--zw-space-02) calc(var(--zw-page-gutter) + var(--zw-safe-right))
     var(--zw-space-08) calc(var(--zw-page-gutter) + var(--zw-safe-left));
+}
+
+/* —— 收起（compact） ——
+   往下读的时候，底栏让出一截：坞变矮、当前格的字收起，只剩图标；往上一滑或停在
+   页顶就恢复。触控高度仍不小于 48px。读屏与键盘不受影响（字一直在 DOM 里）。 */
+@media (max-width: 599.98px) {
+  .nav[data-mini] {
+    --zw-dock-height: 60px;
+    left: calc(var(--zw-safe-left) + var(--zw-dock-inset) + var(--zw-space-06));
+    right: calc(var(--zw-safe-right) + var(--zw-dock-inset) + var(--zw-space-06));
+    padding: var(--zw-space-02) var(--zw-space-03);
+    background: color-mix(in srgb, var(--zw-plate) 70%, transparent);
+  }
+
+  .nav[data-mini] .nav-item {
+    height: var(--zw-size-target);
+    border-radius: calc(var(--zw-size-target) / 2);
+  }
+
+  .nav[data-mini] .nav-item[aria-current="page"] {
+    flex-basis: clamp(72px, 20vw, 96px);
+    padding-inline: var(--zw-space-03);
+  }
+
+  .nav[data-mini] .nav-item[aria-current="page"] .nav-label {
+    max-width: 0;
+    opacity: 0;
+    transition-delay: 0ms;
+  }
+
+  .nav[data-mini] .nav-item[aria-current="page"] {
+    gap: 0;
+  }
 }
 
 /* —— 长按拖选（compact） ——
@@ -695,6 +787,8 @@ time {
     border-radius: 0;
     background: transparent;
     box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 
   .nav-item,
@@ -757,7 +851,7 @@ time {
     display: inline;
   }
 
-  .brand-mark {
+  .brand-logo {
     width: calc(var(--zw-size-mark) + var(--zw-space-01));
     height: calc(var(--zw-size-mark) + var(--zw-space-01));
   }
@@ -846,14 +940,49 @@ body[data-state="locked"] .brand-name {
   gap: var(--zw-space-07);
 }
 
-.page[data-enter] {
-  animation: page-enter var(--md-sys-motion-effects-slow-duration) var(--md-sys-motion-spatial-default-easing) both;
+/* 进场：页头先到，下面的块一块接一块升上来（每块晚 40ms），像纸一张张摞上桌。
+   位移走 spatial 弹簧（带一点点回弹），透明度走 effects（不回弹）。只填 backwards：
+   放完就撤，不在块上留一个 transform（否则里面 fixed 的保存条会被它兜住）。 */
+.page[data-enter] > *,
+.page[data-enter] > .overview > * {
+  animation:
+    page-rise var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing) backwards,
+    page-fade var(--md-sys-motion-effects-slow-duration) var(--md-sys-motion-effects-slow-easing) backwards;
 }
 
-@keyframes page-enter {
+.page[data-enter] > :nth-child(2),
+.page[data-enter] > .overview > :nth-child(1) {
+  animation-delay: 40ms;
+}
+
+.page[data-enter] > :nth-child(3),
+.page[data-enter] > .overview > :nth-child(2) {
+  animation-delay: 80ms;
+}
+
+.page[data-enter] > :nth-child(4),
+.page[data-enter] > .overview > :nth-child(3) {
+  animation-delay: 120ms;
+}
+
+.page[data-enter] > :nth-child(n + 5),
+.page[data-enter] > .overview > :nth-child(n + 4) {
+  animation-delay: 160ms;
+}
+
+.page[data-enter] > .overview {
+  animation: none;
+}
+
+@keyframes page-rise {
+  from {
+    transform: translateY(var(--zw-space-05));
+  }
+}
+
+@keyframes page-fade {
   from {
     opacity: 0;
-    transform: translateY(var(--zw-space-04));
   }
 }
 
@@ -1001,7 +1130,7 @@ body[data-state="locked"] .brand-name {
   padding: var(--zw-space-05);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-card);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   box-shadow: var(--zw-card-shadow);
 }
 
@@ -1051,7 +1180,7 @@ body[data-state="locked"] .brand-name {
 }
 
 .item {
-  --_item-bg: var(--md-sys-color-surface-container-low);
+  --_item-bg: var(--zw-plate);
   --_item-line: var(--zw-card-line);
   position: relative;
   display: flex;
@@ -1071,12 +1200,14 @@ body[data-state="locked"] .brand-name {
 .card .item,
 .setting .item,
 .memory .item {
-  --_item-bg: var(--md-sys-color-surface-container-high);
+  --_item-bg: var(--zw-plate-inset);
 }
 
+/* 可点的行：名字与行尾的动作图标已经说明它能点（WCAG 1.4.11 不要求再画边框），
+   行与行靠纸片的色调分开，不画线——画一根够不到 3:1 的细线反而算「看不清的边界」。
+   悬停与按下靠状态层；提高对比度时 --zw-card-line 补回实线。 */
 button.item {
-  /* 可点的行需要一条能看见的边界（WCAG 1.4.11）；纯装饰的分隔线仍用低对比的 --zw-card-line。 */
-  --_item-line: var(--md-sys-color-outline);
+  --_item-line: var(--zw-card-line);
   width: 100%;
 }
 
@@ -1296,6 +1427,36 @@ button.item:active::after {
   --_tone: var(--md-sys-color-on-surface-variant);
 }
 
+/* 每个用途一种 M3E 形状：群管理 12 瓣曲奇、聊天互动四叶草、媒体 9 瓣曲奇、AI 柔和爆发
+   （像一粒火花）、数据与系统保持圆角方块。扫一眼列表，形状比颜色更早被认出来，
+   色弱的人也一样。形状是蒙版，图标在中间，不会被裁到。 */
+.tile[data-tone],
+.section-card-icon {
+  -webkit-mask: var(--_shape, none) center / contain no-repeat;
+  mask: var(--_shape, none) center / contain no-repeat;
+}
+
+.tile[data-tone="group"],
+.section-card[data-tone="group"] .section-card-icon {
+  --_shape: var(--zw-shape-cookie12);
+}
+
+.tile[data-tone="chat"],
+.tile[data-tone="play"],
+.section-card[data-tone="chat"] .section-card-icon {
+  --_shape: var(--zw-shape-clover4);
+}
+
+.tile[data-tone="media"],
+.section-card[data-tone="media"] .section-card-icon {
+  --_shape: var(--zw-shape-cookie9);
+}
+
+.tile[data-tone="ai"],
+.section-card[data-tone="ai"] .section-card-icon {
+  --_shape: var(--zw-shape-burst);
+}
+
 .item:has(.item-link[aria-current="page"]) .tile {
   background: var(--md-sys-color-primary);
   color: var(--md-sys-color-on-primary);
@@ -1409,7 +1570,6 @@ button.item:active::after {
 .btn-filled {
   --_btn-bg: var(--md-sys-color-primary);
   --_btn-fg: var(--md-sys-color-on-primary);
-  box-shadow: var(--md-sys-elevation-level2);
 }
 
 .btn-tonal {
@@ -1689,6 +1849,9 @@ button.item:active::after {
 }
 
 /* —— 连接按钮组 —— */
+/* 分段控件全站一个样子（这里、选项卡、插件状态筛选、设置分区）：一条凹下去的轨
+   （--zw-track），选中的一段是浮在轨上的一块纸片（--zw-track-on），不投影、不换色相。
+   选中时纸片从中间长出来（spatial-fast 弹簧），按下时收成中圆角。 */
 .segmented {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1696,7 +1859,7 @@ button.item:active::after {
   min-width: 0;
   padding: var(--zw-space-01);
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-high);
+  background: var(--zw-track);
 }
 
 .segment {
@@ -1725,11 +1888,27 @@ button.item:active::after {
 }
 
 .segment:has(input:checked) {
-  box-shadow: inset 0 1px 0 var(--zw-card-highlight);
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-track-on);
   color: var(--md-sys-color-on-surface);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-  box-shadow: var(--md-sys-elevation-level2);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent);
+  animation: segment-on var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+@keyframes segment-on {
+  from {
+    scale: 0.9 0.8;
+  }
+}
+
+.segment {
+  transition:
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.segment:active {
+  border-radius: var(--md-sys-shape-corner-medium);
 }
 
 .segment:has(input:focus-visible) {
@@ -1785,7 +1964,7 @@ button.item:active::after {
   border-color: var(--md-sys-color-primary);
   outline: var(--zw-border-width-strong) solid var(--md-sys-color-primary);
   outline-offset: calc(var(--zw-border-width) * -1);
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-plate);
 }
 
 .ratio-input {
@@ -1971,7 +2150,7 @@ button.item:active::after {
   border-color: var(--md-sys-color-primary);
   outline: var(--zw-border-width-strong) solid var(--md-sys-color-primary);
   outline-offset: calc(var(--zw-border-width) * -1);
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-plate);
 }
 
 .input[aria-invalid="true"],
@@ -2059,19 +2238,19 @@ button.item:active::after {
   padding-inline: calc(var(--zw-space-05) + var(--zw-size-icon) + var(--zw-space-04)) var(--zw-space-05);
   border-color: transparent;
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-high);
+  background: var(--zw-plate);
 }
 
 @media (hover: hover) {
   .search .input:hover:not(:focus, :disabled) {
     border-color: transparent;
-    background: var(--md-sys-color-surface-container-highest);
+    background: var(--zw-plate-hover);
   }
 }
 
 .search .input:focus {
   border-color: var(--md-sys-color-primary);
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-plate);
 }
 
 .search .input::-webkit-search-cancel-button {
@@ -2092,7 +2271,7 @@ button.item:active::after {
   padding: var(--zw-space-01);
   overflow-x: auto;
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-high);
+  background: var(--zw-track);
   scrollbar-width: none;
 }
 
@@ -2119,10 +2298,11 @@ button.item:active::after {
 }
 
 .tab[aria-selected="true"] {
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-track-on);
   color: var(--md-sys-color-on-surface);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-  box-shadow: var(--md-sys-elevation-level2);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent);
+  animation: segment-on var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
 .tab:focus-visible {
@@ -2565,7 +2745,7 @@ button.item:active::after {
   padding: var(--zw-space-06) var(--zw-space-05);
   border: var(--zw-border-width) dashed var(--md-sys-color-outline-variant);
   border-radius: var(--md-sys-shape-corner-large);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--md-sys-typescale-body-medium-line-height);
@@ -2717,7 +2897,7 @@ button.item:active::after {
   border-radius: var(--md-sys-shape-corner-extra-large);
   background: var(--md-sys-color-inverse-surface);
   color: var(--md-sys-color-inverse-on-surface);
-  box-shadow: var(--md-sys-elevation-level3);
+  box-shadow: var(--zw-float-shadow);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
   /* 提示条不接住它下面的点击：它是过场，不该让页面短暂「点不动」。 */
@@ -2759,20 +2939,26 @@ button.item:active::after {
   padding: var(--zw-space-06);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-hero);
-  background: var(--md-sys-color-surface-container-high);
+  background: var(--zw-plate);
   color: var(--md-sys-color-on-surface);
-  box-shadow: var(--md-sys-elevation-level3);
+  box-shadow: var(--zw-float-shadow);
 }
 
+/* 对话框像一张纸从页面里浮起来：尺寸走 spatial 弹簧，透明度走 effects。
+   底下的页面压暗并轻轻失焦，注意力只留在这一张上。 */
 .dialog[open] {
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-05);
-  animation: dialog-in var(--md-sys-motion-effects-slow-duration) var(--md-sys-motion-effects-slow-easing);
+  animation:
+    dialog-in var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing),
+    page-fade var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
 .dialog::backdrop {
-  background: color-mix(in srgb, var(--md-sys-color-scrim) 42%, transparent);
+  background: color-mix(in srgb, var(--md-sys-color-scrim) 36%, transparent);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 
 .dialog-icon {
@@ -2809,8 +2995,7 @@ button.item:active::after {
 
 @keyframes dialog-in {
   from {
-    opacity: 0;
-    transform: scale(0.96);
+    transform: translateY(var(--zw-space-04)) scale(0.94);
   }
 }
 
@@ -3101,51 +3286,32 @@ button.item:active::after {
   gap: var(--zw-space-07) var(--zw-space-06);
 }
 
-/* 运行卡：整个界面的视觉锚点。浅色里是一张淡淡的主色调卡片（T92→T86），
-   深色里才是深底（T22→T30）——锚点靠色相与大字，不靠一块压在纸面上的黑。 */
+/* 运行卡（状态台）：整个界面的视觉锚点。它不靠一大块饱和色撑场面，而靠一枚 M3E
+   形状和一行大字——形状随状态换（正常是 9 瓣曲奇，慢慢转着；要处理时换成柔和爆发形、
+   停住），色调随状态换（主色 / 警示色），其余都是纸片上的普通文字，读起来不累眼。
+   旧的 --zw-hero-* 在卡内就地改指向纸面文字色：停机页与外观预览共用这一套。 */
 .hero {
+  --zw-hero-fg: var(--md-sys-color-on-surface);
+  --zw-hero-dim: var(--md-sys-color-on-surface-variant);
+  --zw-hero-line: var(--zw-hairline);
+  --zw-on-hero-fill: var(--md-sys-color-primary);
+  --zw-on-hero-ink: var(--md-sys-color-on-primary);
+  --_tone: var(--md-sys-color-primary);
   position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-02);
   overflow: hidden;
   padding: var(--zw-space-06);
-  border: var(--zw-border-width) solid var(--zw-hero-line);
+  border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-hero);
-  background-color: var(--zw-hero-a);
-  background-image:
-    radial-gradient(30rem 18rem at 88% 8%, var(--zw-hero-glow), transparent 68%),
-    linear-gradient(145deg, var(--zw-hero-a), var(--zw-hero-b));
-  box-shadow: var(--zw-card-shadow);
+  background: var(--zw-plate);
   color: var(--zw-hero-fg);
   isolation: isolate;
 }
 
-/* 两圈装饰：不承载信息，只是让这张卡不是一块死板的矩形。 */
-.hero::before,
-.hero::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  border-radius: var(--md-sys-shape-corner-full);
-  border: var(--zw-border-width) solid var(--zw-hero-line);
-  pointer-events: none;
-}
-
-.hero::before {
-  top: calc(var(--zw-space-10) * -2);
-  right: calc(var(--zw-space-10) * -1.4);
-  width: calc(var(--zw-space-10) * 4.5);
-  height: calc(var(--zw-space-10) * 4.5);
-}
-
-.hero::after {
-  right: calc(var(--zw-space-10) * 0.4);
-  bottom: calc(var(--zw-space-10) * -2.2);
-  width: calc(var(--zw-space-10) * 3.2);
-  height: calc(var(--zw-space-10) * 3.2);
-  background: color-mix(in srgb, var(--zw-hero-fg) 5%, transparent);
-  border-color: transparent;
+.hero[data-tone="warning"] {
+  --_tone: var(--md-sys-color-warning);
 }
 
 .hero-top {
@@ -3222,24 +3388,10 @@ button.item:active::after {
   outline-color: var(--zw-hero-fg);
 }
 
-/* 背景里那枚放大的环：装饰，辅助技术看不到。 */
-.hero-art {
-  position: absolute;
-  right: calc(var(--zw-space-09) * -0.6);
-  bottom: calc(var(--zw-space-09) * -0.8);
-  z-index: -1;
-  width: calc(var(--zw-space-10) * 3.6);
-  height: calc(var(--zw-space-10) * 3.6);
-  background: var(--zw-hero-fg);
-  opacity: 0.07;
-  -webkit-mask: url("/icon-monochrome.svg") center / contain no-repeat;
-  mask: url("/icon-monochrome.svg") center / contain no-repeat;
-}
-
 .stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--zw-group-gap);
+  gap: var(--zw-space-03);
 }
 
 .stat {
@@ -3250,10 +3402,7 @@ button.item:active::after {
   padding: var(--zw-space-05);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-extra-large);
-  background:
-    linear-gradient(180deg, var(--zw-card-highlight), transparent 42%),
-    var(--md-sys-color-surface-container-low);
-  box-shadow: var(--zw-card-shadow);
+  background: var(--zw-plate);
 }
 
 .stat-label {
@@ -3266,15 +3415,14 @@ button.item:active::after {
   font-weight: var(--md-sys-typescale-weight-medium);
 }
 
+/* 读数带的图标只是读数的「部首」：不上色块，跟标签一个颜色，数字才是主角。 */
 .stat-icon {
   display: grid;
   flex: none;
   place-items: center;
-  width: var(--zw-size-chip);
-  height: var(--zw-size-chip);
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  color: var(--md-sys-color-on-surface-variant);
 }
 
 .stat-icon svg {
@@ -3292,11 +3440,6 @@ button.item:active::after {
   font-weight: var(--md-sys-typescale-weight-display);
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
-}
-
-.stat-plugins .stat-icon {
-  background: var(--md-sys-color-tertiary-container);
-  color: var(--md-sys-color-on-tertiary-container);
 }
 
 .stat-unit {
@@ -3376,28 +3519,31 @@ button.item:active::after {
 }
 
 .hero .status-warning {
-  background: var(--md-sys-color-warning-container);
-  color: var(--md-sys-color-on-warning-container);
+  background: color-mix(in srgb, var(--md-sys-color-warning) 14%, var(--zw-plate));
+  color: var(--md-sys-color-warning);
+}
+
+.hero-eyebrow {
+  font-variant-numeric: tabular-nums;
 }
 
 .hero-main {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
   gap: var(--zw-space-05);
 }
 
 .hero-copy {
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-03);
+  gap: var(--zw-space-02);
   min-width: 0;
 }
 
 .hero-title {
   color: var(--zw-hero-fg);
-  font-size: var(--zw-type-page-title);
-  line-height: 1.12;
+  font-size: var(--md-sys-typescale-headline-large-size);
+  line-height: var(--md-sys-typescale-headline-large-line-height);
   font-weight: var(--md-sys-typescale-weight-display);
   letter-spacing: var(--md-sys-typescale-tracking-display);
 }
@@ -3410,17 +3556,51 @@ button.item:active::after {
   text-wrap: pretty;
 }
 
+/* 状态锚点：一枚 M3E 曲奇（与品牌图标同一族形状），浅浅的状态色；中间的图标不转，
+   形状本身每 40 秒转一圈——在跑着，但安静到不会被余光注意到。右上角那粒暖色的光
+   与顶栏品牌的光点是同一束：在线时呼吸。要处理时换成柔和爆发形、停转、光点熄灭。 */
 .hero-signal {
+  position: relative;
   display: grid;
   flex: none;
   place-items: center;
-  width: calc(var(--zw-space-10) + var(--zw-space-05));
-  height: calc(var(--zw-space-10) + var(--zw-space-05));
-  border: var(--zw-border-width) solid color-mix(in srgb, var(--zw-hero-fg) 16%, transparent);
-  border-radius: var(--md-sys-shape-corner-extra-extra-large);
-  background: color-mix(in srgb, var(--zw-hero-fg) 9%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--zw-hero-fg) 18%, transparent);
-  color: var(--zw-hero-fg);
+  width: calc(var(--zw-space-10) + var(--zw-space-06));
+  height: calc(var(--zw-space-10) + var(--zw-space-06));
+  color: var(--_tone);
+}
+
+.hero-signal-shape {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: color-mix(in srgb, var(--_tone) 15%, var(--zw-plate));
+  -webkit-mask: var(--zw-shape-cookie9) center / contain no-repeat;
+  mask: var(--zw-shape-cookie9) center / contain no-repeat;
+  animation: spin 40s linear infinite;
+}
+
+.hero-signal::after {
+  content: "";
+  position: absolute;
+  top: 6%;
+  right: 6%;
+  width: var(--zw-space-04);
+  height: var(--zw-space-04);
+  border: var(--zw-space-01) solid var(--zw-plate);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--zw-glimmer);
+  box-sizing: content-box;
+  animation: glimmer 4.8s var(--md-sys-motion-effects-slow-easing) infinite;
+}
+
+.hero[data-tone="warning"] .hero-signal-shape {
+  -webkit-mask-image: var(--zw-shape-burst);
+  mask-image: var(--zw-shape-burst);
+  animation: none;
+}
+
+.hero[data-tone="warning"] .hero-signal::after {
+  display: none;
 }
 
 .hero-signal svg {
@@ -3435,7 +3615,7 @@ button.item:active::after {
   justify-content: space-between;
   gap: var(--zw-space-02) var(--zw-space-05);
   padding-top: var(--zw-space-05);
-  border-top: var(--zw-border-width) solid color-mix(in srgb, var(--zw-hero-fg) 16%, transparent);
+  border-top: var(--zw-border-width) solid var(--zw-hairline);
 }
 
 .home-runtime .hero-label {
@@ -3462,16 +3642,39 @@ button.item:active::after {
   padding-top: 0;
 }
 
+/* M3E 连接按钮组：几枚按钮之间只留 2px 的缝，组的两头是全圆角、中间是小圆角；
+   按下的那一枚收成全圆角并轻轻内缩，告诉你按的是哪一个。 */
+.btn-group {
+  display: inline-flex;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.btn-group > .btn {
+  border-radius: var(--md-sys-shape-corner-medium);
+  padding-inline: var(--zw-space-05);
+}
+
+.btn-group > .btn:first-child {
+  border-start-start-radius: var(--md-sys-shape-corner-full);
+  border-end-start-radius: var(--md-sys-shape-corner-full);
+}
+
+.btn-group > .btn:last-child {
+  border-start-end-radius: var(--md-sys-shape-corner-full);
+  border-end-end-radius: var(--md-sys-shape-corner-full);
+}
+
+.btn-group > .btn:active:not(:disabled) {
+  border-radius: var(--md-sys-shape-corner-full);
+}
+
+/* 常用操作不再套一层卡：四枚入口自己就是纸片，直接落在纸面上。 */
 .quick-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--zw-space-05);
+  gap: var(--zw-space-04);
   min-width: 0;
-  padding: var(--zw-space-05);
-  border: var(--zw-border-width) solid var(--zw-card-line);
-  border-radius: var(--zw-radius-card);
-  background: var(--md-sys-color-surface-container-low);
-  box-shadow: var(--zw-card-shadow);
 }
 
 .home-panel-head {
@@ -3520,8 +3723,8 @@ button.item:active::after {
   min-height: calc(var(--zw-space-10) * 2);
   padding: var(--zw-space-04);
   border: var(--zw-border-width) solid transparent;
-  border-radius: var(--md-sys-shape-corner-large-increased);
-  background: var(--md-sys-color-surface-container-high);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--zw-plate);
   color: var(--md-sys-color-on-surface);
   text-decoration: none;
   transition:
@@ -3534,11 +3737,28 @@ button.item:active::after {
 .quick-icon {
   display: grid;
   place-items: center;
-  width: var(--zw-size-chip);
-  height: var(--zw-size-chip);
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-lowest);
+  width: calc(var(--zw-size-chip) + var(--zw-space-03));
+  height: calc(var(--zw-size-chip) + var(--zw-space-03));
+  background: color-mix(in srgb, var(--md-sys-color-primary) 13%, var(--zw-plate));
   color: var(--md-sys-color-primary);
+  -webkit-mask: var(--zw-shape-cookie9) center / contain no-repeat;
+  mask: var(--zw-shape-cookie9) center / contain no-repeat;
+  transition: rotate var(--md-sys-motion-spatial-slow-duration) var(--md-sys-motion-spatial-slow-easing);
+}
+
+/* 悬停时曲奇转过一瓣（40°），图标跟着转回来——看起来只有外形在动。 */
+@media (hover: hover) {
+  .quick-action:hover .quick-icon {
+    rotate: 40deg;
+  }
+
+  .quick-action:hover .quick-icon svg {
+    rotate: -40deg;
+  }
+}
+
+.quick-icon svg {
+  transition: rotate var(--md-sys-motion-spatial-slow-duration) var(--md-sys-motion-spatial-slow-easing);
 }
 
 .quick-icon svg {
@@ -3577,13 +3797,7 @@ button.item:active::after {
 
 @media (hover: hover) {
   .quick-action:hover {
-    background: var(--md-sys-color-secondary-container);
-    color: var(--md-sys-color-on-secondary-container);
-  }
-
-  .quick-action:hover .quick-copy > span,
-  .quick-action:hover .quick-arrow {
-    color: inherit;
+    background: var(--zw-plate-hover);
   }
 
   .quick-action:hover .quick-arrow {
@@ -3628,21 +3842,6 @@ button.item:active::after {
 .home-stats .stat-unit {
   flex: none;
   white-space: nowrap;
-}
-
-.stat[data-tone="secondary"] .stat-icon {
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
-}
-
-.stat[data-tone="tertiary"] .stat-icon {
-  background: var(--md-sys-color-tertiary-container);
-  color: var(--md-sys-color-on-tertiary-container);
-}
-
-.stat[data-tone="success"] .stat-icon {
-  background: var(--md-sys-color-success-container);
-  color: var(--md-sys-color-on-success-container);
 }
 
 .home-panel {
@@ -3698,45 +3897,31 @@ button.item:active::after {
 @media (max-width: 599.98px) {
   .home-runtime .actions {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--zw-space-02);
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--zw-space-03);
   }
 
-  .home-runtime .actions > .btn {
-    justify-content: center;
-    min-height: var(--zw-size-target);
+  .home-runtime .btn-group > .btn {
+    flex: 1 1 0;
+    min-width: 0;
     padding-inline: var(--zw-space-03);
   }
 
-  .home-runtime .actions > .btn-filled {
-    grid-column: 1 / -1;
-  }
-
-  /* 手机上把右下角那两圈装饰收小、推远：它们不该落在按钮底下。 */
-  .home-runtime .hero-art {
-    right: calc(var(--zw-space-10) * -1);
-    bottom: calc(var(--zw-space-10) * -1.3);
-    width: calc(var(--zw-space-10) * 2.4);
-    height: calc(var(--zw-space-10) * 2.4);
-  }
-
-  .home-runtime::after {
-    right: calc(var(--zw-space-10) * -1);
-    bottom: calc(var(--zw-space-10) * -2.8);
-    width: calc(var(--zw-space-10) * 2.6);
-    height: calc(var(--zw-space-10) * 2.6);
-  }
-
   .hero-signal {
-    width: var(--zw-space-10);
-    height: var(--zw-space-10);
-    border-radius: var(--md-sys-shape-corner-extra-large-increased);
+    width: calc(var(--zw-space-10) + var(--zw-space-03));
+    height: calc(var(--zw-space-10) + var(--zw-space-03));
   }
 
   .hero-signal svg {
     width: var(--zw-space-07);
     height: var(--zw-space-07);
   }
+
+  .hero-title {
+    font-size: var(--md-sys-typescale-headline-medium-size);
+    line-height: var(--md-sys-typescale-headline-medium-line-height);
+  }
+
 
   .home-runtime .hero-note {
     font-size: var(--md-sys-typescale-label-medium-size);
@@ -3988,7 +4173,7 @@ button.item:active::after {
 }
 
 .setting {
-  --_setting-bg: var(--md-sys-color-surface-container-low);
+  --_setting-bg: var(--zw-plate);
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-04);
@@ -4001,11 +4186,11 @@ button.item:active::after {
 }
 
 .setting:focus-within {
-  --_setting-bg: var(--md-sys-color-surface-container);
+  --_setting-bg: var(--zw-plate-hover);
 }
 
 .setting .item {
-  --_item-bg: var(--md-sys-color-surface-container-high);
+  --_item-bg: var(--zw-plate-inset);
 }
 
 .field-text {
@@ -4170,7 +4355,7 @@ fieldset[data-off] > .config-off-note {
   gap: var(--zw-space-03);
   padding: var(--zw-space-04) var(--zw-space-05);
   border-radius: var(--zw-radius-row);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
@@ -4270,7 +4455,7 @@ fieldset[data-off] > .config-off-note {
 .memory {
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-row);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
 }
 
 .memory > summary {
@@ -4322,7 +4507,7 @@ fieldset[data-off] > .config-off-note {
   min-width: 0;
   padding: var(--zw-space-03);
   border-radius: var(--md-sys-shape-corner-large-increased);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
 }
 
 .sticker-img {
@@ -4500,7 +4685,7 @@ fieldset[data-off] > .config-off-note {
   bottom: var(--zw-space-05);
   left: 50%;
   translate: -50% 0;
-  box-shadow: var(--md-sys-elevation-level2);
+  box-shadow: var(--zw-float-shadow);
 }
 
 /* —— 设置 —— */
@@ -4527,7 +4712,7 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-05);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-row);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
 }
 
 .bot-head {
@@ -4583,7 +4768,7 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-01);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-track);
 }
 
 .settings-tab {
@@ -4613,8 +4798,14 @@ fieldset[data-off] > .config-off-note {
 }
 
 .settings-tab[aria-current="page"] {
-  background: var(--md-sys-color-primary-container);
-  color: var(--md-sys-color-on-primary-container);
+  background: var(--zw-track-on);
+  color: var(--md-sys-color-on-surface);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent);
+  animation: segment-on var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+.settings-tab[aria-current="page"] svg {
+  color: var(--md-sys-color-primary);
 }
 
 .settings-tab:active {
@@ -4645,9 +4836,7 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-04) var(--zw-space-05);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-card);
-  background:
-    radial-gradient(20rem 8rem at 92% 0%, var(--zw-glow-strong), transparent 72%),
-    var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   color: var(--md-sys-color-on-surface);
   text-decoration: none;
   box-shadow: var(--zw-card-shadow);
@@ -4690,7 +4879,7 @@ fieldset[data-off] > .config-off-note {
   width: var(--zw-space-06);
   height: var(--zw-space-06);
   margin-inline-start: calc(var(--zw-space-03) * -1);
-  border: var(--zw-border-width-strong) solid var(--md-sys-color-surface-container-low);
+  border: var(--zw-border-width-strong) solid var(--zw-plate);
   border-radius: var(--md-sys-shape-corner-full);
   background: var(--md-sys-color-primary);
 }
@@ -4801,7 +4990,7 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-04) var(--zw-space-05);
   border: var(--zw-border-width) solid color-mix(in srgb, var(--md-sys-color-success) 20%, var(--zw-card-line));
   border-radius: var(--md-sys-shape-corner-large-increased);
-  background: color-mix(in srgb, var(--md-sys-color-success-container) 20%, var(--md-sys-color-surface-container-low));
+  background: color-mix(in srgb, var(--md-sys-color-success-container) 20%, var(--zw-plate));
   color: var(--md-sys-color-on-surface);
   box-shadow: inset var(--zw-space-01) 0 0 color-mix(in srgb, var(--md-sys-color-success) 72%, transparent);
 }
@@ -4930,8 +5119,8 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-03) var(--zw-space-03) var(--zw-space-03) var(--zw-space-05);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-extra-large-increased);
-  background: var(--md-sys-color-surface-container-lowest);
-  box-shadow: var(--md-sys-elevation-level2);
+  background: var(--zw-plate);
+  box-shadow: var(--zw-float-shadow);
 }
 
 #global-form[data-dirty] .settings-savebar {
@@ -4961,6 +5150,18 @@ fieldset[data-off] > .config-off-note {
 
 .settings-save-state[data-dirty="true"] svg {
   color: inherit;
+}
+
+/* 有没保存的改动：亮起那粒暖光（与品牌、新版本同一束），提醒但不催。 */
+.settings-save-state[data-dirty="true"]::before {
+  content: "";
+  flex: none;
+  width: var(--zw-space-03);
+  height: var(--zw-space-03);
+  margin-inline-end: var(--zw-space-01);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--zw-glimmer);
+  animation: glimmer 4.8s var(--md-sys-motion-effects-slow-easing) infinite;
 }
 
 .settings-save-state:focus-visible,
@@ -5010,7 +5211,7 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-04);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-large-increased);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
 }
 
 .connection-overview > div {
@@ -5378,16 +5579,14 @@ fieldset[data-off] > .config-off-note {
   padding: var(--zw-space-07) var(--zw-space-06);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-hero);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   box-shadow: var(--zw-card-shadow);
 }
 
-.lock-mark {
+/* 解锁页的大图标与顶栏品牌同一套结构：主色的环 + 一粒暖光（等着被点亮，所以不呼吸）。 */
+.lock-logo {
   width: var(--zw-size-tile-large);
   height: var(--zw-size-tile-large);
-  background: var(--md-sys-color-primary);
-  -webkit-mask: url("/icon-monochrome.svg") center / 136% no-repeat;
-  mask: url("/icon-monochrome.svg") center / 136% no-repeat;
 }
 
 .lock-title {
@@ -5408,7 +5607,18 @@ fieldset[data-off] > .config-off-note {
 /* ==================== §8 偏好 ==================== */
 
 @media (prefers-reduced-motion: reduce) {
-  .page[data-enter],
+  .page[data-enter] > *,
+  .page[data-enter] > .overview > *,
+  .brand-glimmer,
+  .hero-signal-shape,
+  .hero-signal::after,
+  .update-chip::before,
+  .settings-save-state[data-dirty="true"]::before,
+  .nav-item[data-pop] .nav-icon,
+  .segment:has(input:checked),
+  .tab[aria-selected="true"],
+  .settings-tab[aria-current="page"],
+  .filter-segments .chip[aria-pressed="true"],
   .snackbar,
   .dialog[open],
   .skeleton-block,
@@ -5452,9 +5662,13 @@ fieldset[data-off] > .config-off-note {
   }
 
   .brand-mark,
-  .lock-mark,
-  .hero-art {
+  .brand-glimmer,
+  .hero-signal-shape {
     background: CanvasText;
+  }
+
+  .hero-signal {
+    color: Canvas;
   }
 
   .status::before {
@@ -5476,23 +5690,49 @@ fieldset[data-off] > .config-off-note {
 }
 
 /* —— 新版本 ——
-   顶栏右侧的一枚小药丸，只在有新版本时出现：tonal 容器色、图标加短字，窄屏只留图标。 */
+   顶栏右侧的一枚小药丸，只在有新版本时出现。它不是这一页最重要的事，所以不用
+   实心色块喊人：纸片底色 + 一粒暖色光点（与品牌那粒同一束光）+「新版本」三个字。 */
 .update-chip {
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
-  gap: var(--zw-space-02);
-  min-height: var(--zw-size-control);
+  gap: var(--zw-space-03);
+  min-height: calc(var(--zw-size-control) - var(--zw-space-03));
+  margin-block: var(--zw-space-02);
   padding: 0 var(--zw-space-05) 0 var(--zw-space-04);
-  border: 0;
+  border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-tertiary-container);
-  color: var(--md-sys-color-on-tertiary-container);
+  background: var(--zw-plate);
+  color: var(--md-sys-color-on-surface);
+  transition:
+    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
   font: inherit;
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-emphasized);
   cursor: pointer;
   animation: update-in var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing);
+}
+
+.update-chip > svg {
+  display: none;
+}
+
+.update-chip::before {
+  content: "";
+  flex: none;
+  width: var(--zw-space-03);
+  height: var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--zw-glimmer);
+  animation: glimmer 4.8s var(--md-sys-motion-effects-slow-easing) infinite;
+}
+
+.update-chip:active {
+  border-radius: var(--md-sys-shape-corner-medium);
+  scale: var(--zw-press-scale);
 }
 
 .update-chip:focus-visible {
@@ -5525,6 +5765,12 @@ fieldset[data-off] > .config-off-note {
   .update-chip {
     padding-inline: var(--zw-space-03);
   }
+
+  .update-chip > svg {
+    display: block;
+    width: var(--zw-size-icon-small);
+    height: var(--zw-size-icon-small);
+  }
 }
 
 /* 更新说明：对话框里一块可以滚动的纸面，保留原文的换行。 */
@@ -5544,8 +5790,8 @@ fieldset[data-off] > .config-off-note {
 /* —— 停机页（管理面板） ——
    知微没在运行时的总览：运行卡换成中性色调的「已停止」，下面是启动、更新与终端日志。 */
 .hero[data-offline] {
-  background-image: linear-gradient(145deg, var(--md-sys-color-surface-container-highest), var(--md-sys-color-surface-container-high));
-  background-color: var(--md-sys-color-surface-container-highest);
+  /* 停着的知微：纸片退成凹下去的一格，没有光点，也没有在转的形状。 */
+  background: var(--zw-plate-inset);
   color: var(--md-sys-color-on-surface);
 }
 
@@ -5553,20 +5799,6 @@ fieldset[data-off] > .config-off-note {
 .hero[data-offline] .hero-label,
 .hero[data-offline] .hero-note {
   color: var(--md-sys-color-on-surface-variant);
-}
-
-.hero[data-offline]::before,
-.hero[data-offline]::after {
-  border-color: color-mix(in srgb, var(--md-sys-color-on-surface) 10%, transparent);
-}
-
-.hero[data-offline]::after {
-  background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
-}
-
-.hero[data-offline] .hero-art {
-  background: var(--md-sys-color-on-surface);
-  opacity: 0.05;
 }
 
 .hero[data-offline] .btn-filled {
@@ -5584,13 +5816,8 @@ fieldset[data-off] > .config-off-note {
 }
 
 .status-idle {
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-track);
   color: var(--md-sys-color-on-surface-variant);
-}
-
-.hero .btn-stop {
-  border-color: color-mix(in srgb, var(--zw-hero-fg) 58%, transparent);
-  --_btn-fg: var(--zw-hero-fg);
 }
 
 /* 正在执行的起停 / 更新：一条波浪进度 + 管理命令最后几行输出。 */
@@ -5648,14 +5875,13 @@ fieldset[data-off] > .config-off-note {
   gap: var(--zw-space-01);
   padding: var(--zw-space-05) var(--zw-space-06);
   border-radius: var(--zw-radius-card);
-  background-color: var(--zw-hero-a);
-  background-image: linear-gradient(145deg, var(--zw-hero-a), var(--zw-hero-b));
-  color: var(--zw-hero-fg);
+  background: var(--zw-plate-inset);
+  color: var(--md-sys-color-on-surface);
   overflow: hidden;
 }
 
 .look-hero-label {
-  color: var(--zw-hero-dim);
+  color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-label-large-size);
   line-height: var(--md-sys-typescale-label-large-line-height);
   font-weight: var(--md-sys-typescale-weight-emphasized);
@@ -5676,7 +5902,8 @@ fieldset[data-off] > .config-off-note {
   width: var(--zw-space-04);
   height: var(--zw-space-04);
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--zw-accent);
+  background: var(--zw-glimmer);
+  box-shadow: 0 0 0 var(--zw-space-02) var(--zw-glimmer-halo);
 }
 
 .look-row {
@@ -5858,7 +6085,7 @@ fieldset[data-off] > .config-off-note {
   min-height: var(--zw-size-list-item);
   padding: var(--zw-space-03) var(--zw-space-04);
   border-radius: var(--zw-radius-row);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   cursor: pointer;
   transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
@@ -6151,7 +6378,7 @@ fieldset[data-off] > .config-off-note {
 }
 
 .textarea.tpl-input:focus {
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-plate);
 }
 
 .tpl-problems {
@@ -6506,7 +6733,7 @@ fieldset[data-off] > .config-off-note {
   gap: var(--zw-space-03) var(--zw-space-04);
   padding: var(--zw-space-04) var(--zw-space-04) var(--zw-space-04) var(--zw-space-05);
   border-radius: var(--zw-radius-card);
-  background: color-mix(in srgb, var(--md-sys-color-warning-container) 28%, var(--md-sys-color-surface-container-low));
+  background: color-mix(in srgb, var(--md-sys-color-warning-container) 28%, var(--zw-plate));
   color: var(--md-sys-color-on-surface);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
@@ -6955,7 +7182,7 @@ fieldset[data-off] > .config-off-note {
   display: flex;
   align-items: center;
   border-radius: var(--md-sys-shape-corner-extra-small);
-  background: var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   transition: background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
@@ -7182,7 +7409,7 @@ label.lk-hit {
 }
 
 .lk-job .meter {
-  background: var(--md-sys-color-surface-container-lowest);
+  background: var(--zw-plate);
 }
 
 .lk-job-line {
@@ -7265,34 +7492,28 @@ label.lk-hit {
   min-width: 0;
   min-height: 72px;
   padding: var(--zw-space-03);
-  border: var(--zw-border-width) solid var(--md-sys-color-outline);
+  border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-large-increased);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--_tone) 5%, transparent), transparent 64%),
-    var(--md-sys-color-surface-container-low);
+  background: var(--zw-plate);
   color: var(--md-sys-color-on-surface-variant);
   text-align: start;
   isolation: isolate;
   transition:
     background-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
-    border-color var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing),
     border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
     color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
-    transform var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
+    scale var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
     box-shadow var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing);
 }
 
 @media (hover: hover) {
   .section-card:hover {
-    border-color: color-mix(in srgb, var(--_tone) 44%, transparent);
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--_tone) 9%, transparent), transparent 64%),
-      var(--md-sys-color-surface-container-high);
+    background: var(--zw-plate-hover);
   }
 }
 
 .section-card:active {
-  transform: scale(0.97);
+  scale: var(--zw-press-scale);
 }
 
 .section-card:focus-visible {
@@ -7300,17 +7521,13 @@ label.lk-hit {
   outline-offset: var(--zw-focus-offset);
 }
 
+/* 选中：整格染上用途的色调、圆角收大一档、外面描一圈同色的环（形状与环一起说「这格选中了」，
+   不只靠颜色）。不再抬起投影。 */
 .section-card[aria-checked="true"] {
-  border-color: color-mix(in srgb, var(--_tone) 62%, transparent);
   border-radius: var(--md-sys-shape-corner-extra-large);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--_tone) 18%, transparent), transparent 72%),
-    var(--md-sys-color-surface-container-high);
+  background: color-mix(in srgb, var(--_tone) 12%, var(--zw-plate));
   color: var(--md-sys-color-on-surface);
-  transform: translateY(-1px);
-  box-shadow:
-    0 12px 26px -18px color-mix(in srgb, var(--_tone) 48%, transparent),
-    inset 0 1px 0 var(--zw-card-highlight);
+  box-shadow: inset 0 0 0 var(--zw-border-width-strong) color-mix(in srgb, var(--_tone) 55%, transparent);
 }
 
 .section-card-top {
@@ -7429,9 +7646,9 @@ label.lk-hit {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--zw-space-01);
   padding: var(--zw-space-01);
-  border: var(--zw-border-width) solid var(--md-sys-color-outline);
+  border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-surface-container);
+  background: var(--zw-track);
 }
 
 .filter-segments .chip {
@@ -7450,13 +7667,16 @@ label.lk-hit {
   }
 
   .filter-segments .chip[aria-pressed="true"]:hover {
-    background: color-mix(in srgb, var(--md-sys-color-on-secondary-container) 8%, var(--md-sys-color-secondary-container));
+    background: var(--zw-track-on);
   }
 }
 
 .filter-segments .chip[aria-pressed="true"] {
-  background: var(--md-sys-color-secondary-container);
-  color: var(--md-sys-color-on-secondary-container);
+  background: var(--zw-track-on);
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent);
+  animation: segment-on var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
 .filter-segments .chip[aria-pressed="true"] .chip-count {
@@ -7555,8 +7775,8 @@ label.lk-hit {
   }
 
   .section-card-icon {
-    width: 30px;
-    height: 30px;
+    width: 36px;
+    height: 36px;
   }
 
   .section-card-name {

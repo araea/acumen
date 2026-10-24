@@ -420,74 +420,97 @@
     void pill.offsetWidth;
     pill.classList.add("nav-settle");
   }
-  function paintNavPill(animate = true) {
+  /* 胶囊是一枚真弹簧（M3E spatial：stiffness 600、damping 0.72，约 4% 回弹），不是定长的
+     缓动：每帧量一次当前格（它自己也在随 flex 伸展），按弹簧积分追过去。连点几格时
+     不从头再来，而是带着当前的速度转向——胶囊像被手推着走，不会一顿一顿。 */
+  const NAV_SPRING = { stiffness: 600, damping: 0.72 };
+  let navSpring = null;
+
+  function stepSpring(axis, target, dt) {
+    const w0 = Math.sqrt(NAV_SPRING.stiffness);
+    const force = -NAV_SPRING.stiffness * (axis.p - target) - 2 * NAV_SPRING.damping * w0 * axis.v;
+    axis.v += force * dt;
+    axis.p += axis.v * dt;
+  }
+
+  function paintNavPill(animate = true, glass = false) {
     const nav = $("#nav");
     const pill = nav?.querySelector(".nav-pill");
     const item = nav?.querySelector('.nav-item[aria-current="page"]');
     if (!nav || !pill || !item) return;
 
-    cancelAnimationFrame(navPillFrame);
-    const navRect = nav.getBoundingClientRect();
-    const pillRect = pill.getBoundingClientRect();
-    const from = {
-      x: pillRect.left - navRect.left - nav.clientLeft,
-      y: pillRect.top - navRect.top - nav.clientTop,
-      w: pillRect.width,
-      h: pillRect.height,
-    };
-    const first = !pill.dataset.painted;
-    const duration = animate && !first && !matchMedia("(prefers-reduced-motion: reduce)").matches
-      ? parseFloat(getComputedStyle(nav).getPropertyValue("--zw-nav-duration")) || 0
-      : 0;
-    const start = performance.now();
-    // 只有横向挪了格（手机底栏）才化成玻璃；导航轨上下换格照旧是实心滑块。
-    const glide = duration > 0 && compactNav.matches;
-    // 玻璃能画到的范围：导航坞的内容盒（坐标与胶囊一样，相对 padding box）。
-    const cs = getComputedStyle(nav);
-    const bounds = {
-      left: parseFloat(cs.paddingLeft) || 0,
-      right: nav.clientWidth - (parseFloat(cs.paddingRight) || 0),
-    };
-    let lastX = from.x;
-    let lastT = start;
-    if (!glide) {
-      // 被打断的那一次（缩放、断点切换）留下的玻璃一并收起。
-      delete nav.dataset.glass;
-    }
-
-    const step = (now) => {
-      const progress = duration > 0 ? Math.min(1, (now - start) / duration) : 1;
-      const ease = 1 - Math.pow(1 - progress, 4);
-      const rect = item.getBoundingClientRect();
-      const to = {
+    const measure = (element) => {
+      const navRect = nav.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
+      return {
         x: rect.left - navRect.left - nav.clientLeft,
         y: rect.top - navRect.top - nav.clientTop,
         w: rect.width,
         h: rect.height,
       };
-      const x = from.x + (to.x - from.x) * ease;
-      const box = {
-        x,
-        y: from.y + (to.y - from.y) * ease,
-        w: from.w + (to.w - from.w) * ease,
-        h: from.h + (to.h - from.h) * ease,
+    };
+    const first = !pill.dataset.painted;
+    pill.dataset.painted = "1";
+    const moving = animate && !first && !calm();
+    if (!moving) {
+      cancelAnimationFrame(navPillFrame);
+      navSpring = null;
+      delete nav.dataset.glass;
+      placePill(pill, measure(item));
+      return;
+    }
+
+    // 弹簧没在跑：从胶囊现在画着的位置出发（也可能是拖选松手的地方），速度归零。
+    if (!navSpring) {
+      const from = measure(pill);
+      navSpring = {
+        x: { p: from.x, v: 0 }, y: { p: from.y, v: 0 },
+        w: { p: from.w, v: 0 }, h: { p: from.h, v: 0 },
       };
+    }
+    // 只有手机底栏上换了格才化成玻璃；导航轨上下换格、底栏收起展开照旧是实心滑块。
+    const glide = glass && compactNav.matches && Math.abs(measure(item).x - navSpring.x.p) > 8;
+    // 格子的 flex 过渡要跑完 --zw-nav-duration，弹簧至少跟这么久，免得追到半路的目标就停。
+    const minimum = parseFloat(getComputedStyle(nav).getPropertyValue("--zw-nav-duration")) || 0;
+    const start = performance.now();
+    let last = start;
+    if (glide) nav.dataset.glass = "glide";
+    else delete nav.dataset.glass;
+    const cs = getComputedStyle(nav);
+    const bounds = {
+      left: parseFloat(cs.paddingLeft) || 0,
+      right: nav.clientWidth - (parseFloat(cs.paddingRight) || 0),
+    };
+
+    cancelAnimationFrame(navPillFrame);
+    const step = (now) => {
+      const target = measure(nav.querySelector('.nav-item[aria-current="page"]') || item);
+      let dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      // 半隐式欧拉，切成 4ms 一小步：低帧率时也稳，不会弹飞。
+      while (dt > 0) {
+        const h = Math.min(dt, 0.004);
+        for (const key of ["x", "y", "w", "h"]) stepSpring(navSpring[key], target[key], h);
+        dt -= h;
+      }
+      const s = navSpring;
+      const box = { x: s.x.p, y: s.y.p, w: s.w.p, h: s.h.p };
+      const settled = ["x", "y", "w", "h"].every((key) => Math.abs(s[key].p - target[key]) < 0.3 && Math.abs(s[key].v) < 8);
+      if (settled && now - start >= minimum) {
+        navSpring = null;
+        placePill(pill, target);
+        if (glide) settlePill(nav, pill);
+        return;
+      }
       if (glide) {
-        stretchPill(pill, box, (x - lastX) / Math.max(1, now - lastT), bounds);
-        pill.style.setProperty("--zw-glass-x", `${Math.round(50 + Math.sign(to.x - from.x) * 18)}%`);
-        lastX = x;
-        lastT = now;
+        stretchPill(pill, box, s.x.v / 1000, bounds);
+        pill.style.setProperty("--zw-glass-x", `${Math.round(50 + Math.sign(s.x.v) * 18)}%`);
       } else {
         placePill(pill, box);
       }
-      if (progress < 1) navPillFrame = requestAnimationFrame(step);
-      else if (glide) settlePill(nav, pill);
+      navPillFrame = requestAnimationFrame(step);
     };
-
-    pill.dataset.painted = "1";
-    if (glide) nav.dataset.glass = "glide";
-    if (duration > 0) navPillFrame = requestAnimationFrame(step);
-    else step(start);
+    navPillFrame = requestAnimationFrame(step);
   }
 
   /* 尺寸/断点变了才重新落位；换页动画进行中的偶发 observer 回调不打断它。 */
@@ -589,6 +612,7 @@
       drag.active = true;
       clearTimeout(drag.timer);
       cancelAnimationFrame(navPillFrame);
+      navSpring = null;
       nav.classList.add("nav-dragging");
       if (!calm()) nav.dataset.glass = "drag";
       paintFree(x);
@@ -628,10 +652,10 @@
       const rect = nav.getBoundingClientRect();
       if (event.clientY < rect.top - 48 || event.clientY > rect.bottom + 48) {
         setCurrent(state.original);
-        paintNavPill(true);
+        paintNavPill(true, true);
         return;
       }
-      paintNavPill(true);
+      paintNavPill(true, true);
       if (state.target !== state.original) location.hash = "#/" + state.target;
     };
 
@@ -642,7 +666,7 @@
       if (!state.active) return;
       nav.classList.remove("nav-dragging");
       setCurrent(state.original);
-      paintNavPill(true);
+      paintNavPill(true, true);
     };
 
     // Android 的长按菜单与 iOS 的链接预览都从 touchstart 的默认动作开始；
@@ -704,9 +728,48 @@
     for (const item of $$("#nav [data-nav]", nav)) {
       if (item === next) item.setAttribute("aria-current", "page");
       else item.removeAttribute("aria-current");
+      item.removeAttribute("data-pop");
     }
-    if (animate) paintNavPill(true);
-    else syncNavPill();
+    if (animate) {
+      // 新格的图标弹一下（app.css 的 nav-pop）；动画放完就摘掉，下次换回来还能再播。
+      next?.setAttribute("data-pop", "");
+      next?.querySelector(".nav-icon")?.addEventListener("animationend", () => next.removeAttribute("data-pop"), { once: true });
+      paintNavPill(true, true);
+    } else syncNavPill();
+  }
+
+  /* —— 滚动收起（compact） ——
+     往下读超过一屏顶部的 64px，并且这一下是往下滚了一截，底栏就收矮一点；往上滚、
+     回到页顶、或者焦点进了底栏，就恢复。坞的高度变化由 CSS 过渡，胶囊跟着重新量。 */
+  function bindNavMini() {
+    const nav = $("#nav");
+    if (!nav) return;
+    let lastY = scrollY;
+    let ticking = false;
+    const set = (mini) => {
+      if (nav.hasAttribute("data-mini") === mini) return;
+      nav.toggleAttribute("data-mini", mini);
+      paintNavPill(true);
+    };
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        ticking = false;
+        const y = scrollY;
+        const delta = y - lastY;
+        if (!compactNav.matches || nav.classList.contains("nav-dragging") || nav.matches(":focus-within")) {
+          lastY = y;
+          return set(false);
+        }
+        if (y < 64) set(false);
+        else if (delta > 12) set(true);
+        else if (delta < -12) set(false);
+        if (Math.abs(delta) > 12 || y < 64) lastY = y;
+      });
+    }, { passive: true });
+    nav.addEventListener("focusin", () => set(false));
+    compactNav.addEventListener("change", () => set(false));
   }
 
   function parseRoute() {
@@ -1072,27 +1135,28 @@
       ${pageHead("总览", "运行状态、消息动态和常用入口，一眼看清。")}
       <div class="overview">
         <div class="home-top">
-          <section class="hero home-runtime" aria-labelledby="hero-label" data-started="${data.app.started}">
-            <span class="hero-art" aria-hidden="true"></span>
-            <div class="hero-top"><span>${NAME} · v${data.app.version}</span><span class="status status-${health.tone}">${health.label}</span></div>
+          <section class="hero home-runtime" aria-labelledby="hero-label" data-started="${data.app.started}" data-tone="${health.tone}">
+            <div class="hero-top"><span class="hero-eyebrow">${NAME} · v${data.app.version}</span><span class="status status-${health.tone}">${health.label}</span></div>
             <div class="hero-main">
+              <span class="hero-signal" aria-hidden="true"><span class="hero-signal-shape"></span>${icon(health.glyph)}</span>
               <div class="hero-copy"><h2 class="hero-title" id="hero-label">${health.title}</h2><p class="hero-description">${health.note}</p></div>
-              <span class="hero-signal" aria-hidden="true">${icon(health.glyph)}</span>
             </div>
             <div class="hero-runtime-line">
               <div><span class="hero-label">连续运行</span><p class="hero-value" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</p></div>
               <p class="hero-note">启动于<br><time>${data.app.started}</time></p>
             </div>
-            <div class="actions">
+            <div class="actions hero-actions">
               <a class="btn btn-filled" href="${data.bots.length ? "#/plugins" : "#/settings/connections"}">${icon(data.bots.length ? "extension" : "hub")}${data.bots.length ? "管理插件" : "添加连接"}</a>
-              <a class="btn btn-outlined" href="#/logs">${icon("receipt_long")}查看日志</a>
-              <button class="btn btn-outlined" type="button" data-restart>${icon("restart_alt")}重启</button>
-              ${lifecycle.panel ? h`<button class="btn btn-outlined btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
+              <div class="btn-group" role="group" aria-label="运行">
+                <a class="btn btn-tonal" href="#/logs">${icon("receipt_long")}日志</a>
+                <button class="btn btn-tonal" type="button" data-restart>${icon("restart_alt")}重启</button>
+                ${lifecycle.panel ? h`<button class="btn btn-tonal btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
+              </div>
             </div>
           </section>
 
           <section class="quick-panel" aria-labelledby="quick-title">
-            <div class="home-panel-head"><div><span class="home-eyebrow">快捷入口</span><h2 id="quick-title">常用操作</h2></div></div>
+            <div class="home-panel-head"><div><h2 id="quick-title">常用操作</h2></div></div>
             <nav class="quick-grid" aria-label="快捷入口">
               ${quick("#/plugins", "extension", "插件管理", `${data.plugins.on} 个已启用`)}
               ${quick("#/ambient", "forum", "群聊搭话", "人格与房间")}
@@ -1216,7 +1280,7 @@
       const latest = this.latest();
       const html = latest
         ? h`<button class="update-chip state" type="button" data-update aria-label="更新到 ${latest.version}" title="有新版本 ${latest.version}">
-            ${icon("system_update_alt")}<span class="update-chip-label">更新</span></button>`
+            ${icon("system_update_alt")}<span class="update-chip-label">新版本</span></button>`
         : "";
       const digest = latest?.version ?? "";
       if (slot.dataset.digest === digest) return;
@@ -1374,7 +1438,6 @@
         ${pageHead("总览", "这台设备上知微的运行情况。")}
         <div class="overview">
           <section class="hero" data-offline aria-labelledby="hero-label">
-            <span class="hero-art" aria-hidden="true"></span>
             <div class="hero-top"><span>${NAME} v${status.version}</span><span class="status status-idle">${status.running ? "无响应" : "已停止"}</span></div>
             <h2 class="hero-label" id="hero-label">知微现在</h2>
             <p class="hero-value">${status.running ? "没有回应" : "没在运行"}</p>
@@ -1545,7 +1608,7 @@
             tabindex="${this.section === code ? "0" : "-1"}" title="${hint}"
             aria-label="${longName}：${total} 个插件，${on} 个已启用。${hint}">
           <span class="section-card-top">
-            <span class="section-card-icon" aria-hidden="true">${icon(glyph)}<span class="section-card-check">${icon("check")}</span></span>
+            <span class="section-card-icon" aria-hidden="true">${icon(glyph)}</span>
             <span class="section-card-count num" aria-hidden="true">${total}</span>
           </span>
           <span class="section-card-name">${label}</span>
@@ -6645,7 +6708,7 @@
     put(
       $("#view"),
       h`<div class="lock"><form class="lock-card" id="lock-form">
-        <span class="lock-mark" aria-hidden="true"></span>
+        <span class="brand-logo lock-logo" aria-hidden="true"><span class="brand-mark"></span><span class="brand-glimmer"></span></span>
         <h1 class="lock-title page-title" tabindex="-1">解锁知微控制台</h1>
         <p class="note">${reason || "需要访问口令才能查看这台设备的数据。"}
           启动日志里带 <code>?t=</code> 的地址可以直接打开；口令也保存在 <code>data/console/token</code>。</p>
@@ -7404,6 +7467,7 @@
     buildShell();
     bindEvents();
     bindNavDrag();
+    bindNavMini();
     bindTagDrag();
     token = readToken();
     if (!token) {
