@@ -201,6 +201,7 @@ fn capability(action: &Action) -> &'static str {
         Action::FileRename { .. } => "file_rename",
         Action::Bulletins => "bulletins",
         Action::Essences => "essences",
+        Action::Capability { .. } => "capability",
     }
 }
 
@@ -1066,6 +1067,12 @@ impl Session {
                 self.attempted.store(true, Ordering::SeqCst);
                 let action: Action = serde_json::from_value(request["request"].clone())?;
                 ensure!(self.enabled(), "{}的聊天功能已停用", self.place.label());
+                // 平台声明的扩展能力有它自己的额度与管理授权，走单独一条路：
+                // 参数不是类型化的，能与不能只能问实现端的目录。
+                if let Action::Capability { name, params } = &action {
+                    let (name, params) = (name.clone(), params.clone());
+                    return self.call_capability(&name, params).await;
+                }
                 // 群管理在私聊里没有对象，@ 也没有意义。在参数校验之前就挡下，
                 // 模型不用等一次注定失败的回执。
                 ensure!(
@@ -1491,6 +1498,89 @@ impl Session {
         }
     }
 
+    /// 调一条实现端声明的扩展能力。
+    ///
+    /// 目录就是合同：名字不在 `capabilities.catalog` 里，说明这个实现端没有这条能力
+    /// （或者早已移除），当场回绝强过一次注定失败的内核调用。`kind` 决定边界——
+    /// `read` 不占额度、不看时效；`write` 占一次动作额度，且必须还停在模型看过的那一版
+    /// 现场上；`manage` 还要求本群开放了管理、这一轮不是普通群友在吩咐。
+    async fn call_capability(&mut self, name: &str, params: Value) -> Result<Value> {
+        if self.capabilities.is_null() {
+            self.capabilities = self.describe_capabilities().await;
+        }
+        let entry = self
+            .capabilities
+            .get("catalog")
+            .and_then(Value::as_array)
+            .and_then(|list| {
+                list.iter()
+                    .find(|entry| entry.get("name").and_then(Value::as_str) == Some(name))
+            })
+            .cloned();
+        let Some(entry) = entry else {
+            if let Some(why) = self
+                .capabilities
+                .get("removed")
+                .and_then(|removed| removed.get(name))
+                .and_then(Value::as_str)
+            {
+                remember_platform_refusal(
+                    &self.refusal_scope(),
+                    "capability",
+                    &format!("实现端已移除 {name}（{why}）。这一轮换个法子回应更划算。"),
+                );
+                anyhow::bail!("实现端已移除这个能力：{name}（{why}）");
+            }
+            anyhow::bail!(
+                "实现端没有声明 {name} 这个能力。satori_context 的 capabilities.catalog 是可用的清单，照着里面的名字与参数来"
+            );
+        };
+        let kind = entry
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("write")
+            .to_string();
+        let note = entry
+            .get("note")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        if kind == "manage" {
+            ensure!(
+                self.place.is_group(),
+                "这是群管理能力，私聊里没有对象"
+            );
+            ensure!(
+                self.management_enabled(),
+                "本群没有开放管理动作：账号不是群主或管理员，或配置没放行（management_auto / management_groups / management_excluded）"
+            );
+            ensure!(
+                self.authority != Authority::Guest,
+                "这一轮是普通群友在吩咐：群管理只听号主和本群群主、管理员的"
+            );
+        }
+        if kind != "read" {
+            ensure!(
+                self.current(),
+                "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
+            );
+            ensure!(
+                self.writes < self.config.actions_budget.clamp(1, 12),
+                "本轮动作额度已用完"
+            );
+            self.writes += 1;
+        }
+        let params = if params.is_null() { json!({}) } else { params };
+        let result = self.rpc(&format!("internal/{name}"), params).await?;
+        self.record(
+            format!("[已调用平台能力 {name}] {note}"),
+            String::new(),
+            Message::new(),
+            false,
+        );
+        Ok(json!({"capability": name, "kind": kind, "note": note, "result": result}))
+    }
+
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
         ensure!(
             !method.starts_with("internal/") || self.ctx.bot.adapter == "satori-qq",
@@ -1601,6 +1691,13 @@ impl Session {
         // 群才有的动作已经在 execute 里挡掉了；这里取群号只是为了让参数拼得对。
         let guild = self.place.guild().unwrap_or_default().to_string();
         let (method, params, summary) = match action {
+            // 走到这里说明调用方绕过了 execute 的那条专用分支；扩展能力没有统一的
+            // 参数形状，只能在「统一动作」这一层之外单独转发。
+            Action::Capability { name, params } => (
+                "internal/capability",
+                params.clone(),
+                format!("[调用平台能力 {name}]"),
+            ),
             Action::Send { parts, reply_to } => {
                 // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
                 // 不是要说的话，而且必须在断句之前摘：JSON 里的逗号看着像换气处，

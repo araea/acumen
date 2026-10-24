@@ -1233,6 +1233,8 @@ pub(super) fn room_tools(config: &super::chat::ChatConfig) -> String {
             super::agent::schedule::NAME,
             super::agent::notes::NAME,
             super::agent::share::NAME,
+            // 代办 acumen 自己的插件指令（点歌、词云、统计、潜水……），见 agent::command。
+            super::agent::command::NAME,
         ]
         .map(str::to_string),
     );

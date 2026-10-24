@@ -407,6 +407,12 @@ pub fn handle(
             return Ok(Some(ctx));
         };
 
+        // 智能体代办的一条插件指令（见 oai::agent::command）：它要的是别的插件的功能，
+        // 不是再开一间房。自己只是路过，别把「/点歌 晴天」当成对这个房间说的话。
+        if ctx.agent_command {
+            return Ok(Some(ctx));
+        }
+
         // MJ 的放大交互只依赖被引用的机器人消息，不要求再次写房间名。
         // 因此必须先于普通文本/指令解析处理，也能兼容只发送数字的回复。
         if mj::try_handle_upscale_reply(&ctx, &writer, mgr).await {

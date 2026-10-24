@@ -175,6 +175,19 @@ pub(crate) enum Action {
     Bulletins,
     /// 读群精华列表（谁发的、谁加的精、正文按本机历史能补则补）。
     Essences,
+    /// 实现端在 `internal/capabilities` 里声明的扩展能力，原样转发。
+    ///
+    /// 这一支是「协议端多一个动作，智能体当天就能用」的那条路：名字、用途与参数
+    /// 说明都由实现端给（`capabilities.catalog`），不必每加一个 QQ 操作就改一遍这份
+    /// 枚举与工具 Schema。代价是没有编译期的参数检查，所以调用前照目录核一遍名字，
+    /// 额度、管理授权与「群聊有没有往前走」仍然由 [`super::Session`] 统一把关。
+    Capability {
+        /// 目录里的名字，如 `group_remark`、`group_file_list`。
+        name: String,
+        /// 原样交给实现端的参数对象。
+        #[serde(default)]
+        params: serde_json::Value,
+    },
 }
 /// 一个会被写进 QQ 的短名称：非空、不超长、不带控制字符。
 fn label(value: &str, max: usize) -> Result<()> {
@@ -479,6 +492,10 @@ impl Action {
                 label(name, 120)?;
             }
             Self::Bulletins | Self::Essences => {}
+            // 扩展能力的参数不是类型化的，实现端自己校验；名字在目录里核过。
+            Self::Capability { name, .. } => {
+                id(name)?;
+            }
         }
         Ok(())
     }

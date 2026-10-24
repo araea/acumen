@@ -178,6 +178,7 @@ pub async fn start(ctx: &Context, name: &str) -> Result<(), String> {
             platform: "internal".to_string(),
             login_user: Default::default(),
         }),
+        agent_command: false,
     };
     init(init_ctx).await.map_err(|error| error.to_string())?;
     started().lock().unwrap().insert(name.to_string());
@@ -311,6 +312,7 @@ pub async fn do_init(ctx: Context) -> Result<(), PluginError> {
                 matcher: Arc::new(Matcher::new()),
                 config_path: ctx.config_path.clone(),
                 bot: system_bot.clone(),
+                agent_command: false,
             };
 
             // 执行初始化

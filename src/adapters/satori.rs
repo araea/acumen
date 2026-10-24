@@ -31,6 +31,76 @@ const LOG_TARGET: &str = "Bot";
 pub type BotError = Box<dyn std::error::Error + Send + Sync>;
 pub type LockedWriter = Arc<SatoriClient>;
 
+/// 一条已经交到实现端手上的消息：发去哪儿、大致是什么。
+///
+/// 只用来回答「刚才那条指令到底说出去了什么」。智能体替人按指令（见
+/// [`crate::plugins::oai::agent::command`]）时，插件的回复是它自己发的，工具这一侧
+/// 拿不到返回值；于是把真实落地的每一条都记一份，工具再把这一段交回给模型。
+pub struct Outbound {
+    /// 全局递增序号，用作「从这一刻起」的标记。
+    pub seq: u64,
+    /// 落在哪个频道（群号，或 `private:<QQ号>`）。
+    pub channel: String,
+    /// 消息的文字形态（图片、文件这类元素写成占位符）。
+    pub text: String,
+    /// 发出的时刻（Unix 秒）。
+    pub at: i64,
+}
+
+/// 最近发出去的消息。环形保 256 条：只够核对刚才那一条指令发了几句话。
+fn outbound_log() -> &'static std::sync::Mutex<(u64, std::collections::VecDeque<Outbound>)> {
+    static LOG: std::sync::OnceLock<std::sync::Mutex<(u64, std::collections::VecDeque<Outbound>)>> =
+        std::sync::OnceLock::new();
+    LOG.get_or_init(Default::default)
+}
+
+/// 现在的序号。之后 [`outbound_since`] 传它，就只拿到这之后发出去的。
+pub fn outbound_mark() -> u64 {
+    outbound_log()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .0
+}
+
+/// 序号大于 `mark` 的那些发送，按时间顺序。
+pub fn outbound_since(mark: u64) -> Vec<Outbound> {
+    let log = outbound_log()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    log.1
+        .iter()
+        .filter(|sent| sent.seq > mark)
+        .map(|sent| Outbound {
+            seq: sent.seq,
+            channel: sent.channel.clone(),
+            text: sent.text.clone(),
+            at: sent.at,
+        })
+        .collect()
+}
+
+/// 记一条真发出去了的消息。`message` 为空（纯 BeforeSend 包）时只记目标。
+fn record_outbound(channel: &str, message: Option<&crate::message::Message>) {
+    let text = message
+        .map(plugins::oai::chat::plain_text)
+        .unwrap_or_default();
+    let text: String = text.chars().take(600).collect();
+    let mut log = outbound_log()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    log.0 += 1;
+    let seq = log.0;
+    log.1.push_back(Outbound {
+        seq,
+        channel: channel.to_string(),
+        text,
+        at: chrono::Local::now().timestamp(),
+    });
+    while log.1.len() > 256 {
+        log.1.pop_front();
+    }
+}
+
 /// QQ has accepted a send, but its final receipt is missing. Retrying may duplicate it.
 pub fn delivery_uncertain(error: &(dyn std::error::Error + 'static)) -> bool {
     if error.to_string().contains("send outcome unknown") {
@@ -1046,6 +1116,7 @@ async fn connect_and_listen(
         matcher: matcher.clone(),
         config_path: config_path.clone(),
         bot: bot_status.clone(),
+        agent_command: false,
     };
     let _heartbeat = AbortTask(tokio::spawn({
         let outbound = outbound.clone();
@@ -1352,6 +1423,7 @@ pub fn process_event(
         matcher,
         config_path,
         bot,
+        agent_command: false,
     };
     // Matcher dispatch only uses a synchronous mutex. Consume interactive input in
     // receive order as well, and let consumed messages interrupt pending repeats.
@@ -1513,6 +1585,7 @@ where
         matcher: ctx.matcher.clone(),
         config_path: ctx.config_path.clone(),
         bot: ctx.bot.clone(),
+        agent_command: ctx.agent_command,
     };
     plugins::run(next, writer).await?;
     Ok(receipt_message_ids
@@ -1576,6 +1649,12 @@ pub async fn dispatch_packet(
         });
     }
     let created: Vec<Value> = client.post(&bot, "message.create", params).await?;
+    // 消息真的落地了才记账：失手的那条不算「说出去了」，工具那边也就不该报告它。
+    // `message()` 交回来的是打包后的元素值；这里要看的是它落地的文字形态。
+    let summary = packet
+        .message()
+        .and_then(|value| simd_json::serde::from_owned_value::<crate::message::Message>(value.clone()).ok());
+    record_outbound(&channel_id, summary.as_ref());
     let ids: Vec<String> = created
         .iter()
         .map(|message| raw_id(message.get("id")))

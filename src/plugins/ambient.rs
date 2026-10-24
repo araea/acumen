@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 
 mod gate;
 mod habit;
+mod life;
 mod mood;
 mod peak;
 mod quick;
@@ -290,6 +291,12 @@ pub(crate) struct AmbientConfig {
     pub memory_enabled: bool,
     /// 按作息与互动起伏的内部状态：影响开口门槛、打字快慢和提示词里的一句状态。
     pub mood_enabled: bool,
+    /// 一条随钟点走的生活线：这会儿在通勤、在工位、在吃饭还是在打游戏。
+    ///
+    /// 与 `mood_enabled` 是两件事：那一条管精神头（醒着但累），这一条管处境
+    /// （人在不在、腾不腾得出手）。凌晨睡着时不主动开口，上班时间门槛抬高一点；
+    /// 提示词里会多一句「你这一会儿」。关掉就退回全天一个样子。
+    pub life_enabled: bool,
     /// 每轮最多写几条记忆；0 关闭 `satori_memo`。
     pub memo_budget: usize,
     /// 发言时是否联网：遇到不认识的梗、新版本、比赛战况这类训练知识够不着的事，
@@ -421,6 +428,7 @@ impl Default for AmbientConfig {
             summon_command: "/搭话".to_string(),
             memory_enabled: true,
             mood_enabled: true,
+            life_enabled: true,
             memo_budget: 3,
             search_enabled: true,
             search_budget: 3,
@@ -560,11 +568,21 @@ impl AmbientConfig {
         } else {
             0
         };
+        // 处在什么处境也算一笔：半夜睡着、上班腾不出手，都该更沉得住气。
+        let doing = if self.life_enabled {
+            life::threshold_shift()
+        } else {
+            0
+        };
         let crowding = (pressure.recent_turns as i16)
             .saturating_mul(i16::from(self.speech_penalty_per_turn))
             .min(i16::from(self.speech_penalty_cap));
-        let total =
-            base + shift + crowding + self.cooldown_charge(pressure) + self.budget_charge(pressure);
+        let total = base
+            + shift
+            + doing
+            + crowding
+            + self.cooldown_charge(pressure)
+            + self.budget_charge(pressure);
         total.clamp(1, 100) as u8
     }
 
@@ -623,11 +641,17 @@ impl AmbientConfig {
 
     /// 发言节奏。精神头好就敲得快、想得短，困了反过来。
     fn pace(&self, state: mood::Snapshot) -> pace::Pace {
-        let (typing, think) = if self.mood_enabled {
+        let (mut typing, mut think) = if self.mood_enabled {
             (state.typing_scale(), state.think_scale())
         } else {
             (1.0, 1.0)
         };
+        // 人在忙的时候想得久一点、敲得慢一点；闲着就快。这个倍率叠在精神头之上。
+        if self.life_enabled {
+            let doing = life::pace_scale();
+            typing /= doing;
+            think *= doing;
+        }
         pace::Pace {
             typing_cpm: ((self.typing_cpm as f32) * typing).round().max(20.0) as u32,
             voice_cpm: ((self.voice_cpm as f32) * typing).round().max(20.0) as u32,
@@ -776,9 +800,16 @@ pub(crate) fn chat_config(config: &AmbientConfig) -> ChatConfig {
 impl Persona for Ambient {
     fn scene(&self, group: &str, turns: &[Turn], _rhythm: &str) -> serde_json::Value {
         let snapshot = self.config.mood_enabled.then(|| mood::snapshot(group));
+        let mut state = snapshot.map(mood::Snapshot::describe).unwrap_or_default();
+        if self.config.life_enabled {
+            if !state.is_empty() {
+                state.push('\n');
+            }
+            state.push_str(&life::brief());
+        }
         serde_json::json!({
             "register": tone::register(turns),
-            "state": snapshot.map(mood::Snapshot::describe).unwrap_or_default(),
+            "state": state,
             "remember": if self.config.memory_enabled {
                 memory::with_group(group, |memory| {
                     memory.brief(turns, chrono::Local::now().timestamp())
@@ -1099,6 +1130,7 @@ pub(crate) async fn setup(base: &Path) -> std::io::Result<()> {
     // 记忆、表情包库与群身份归能力层（`data/oai/chat/`），这里只管人格自己的那份
     // 状态曲线。能力层的数据目录由 oai 插件挂上；它没启用时这里补一次。
     mood::attach(base);
+    life::attach(base);
     Ok(())
 }
 
@@ -1865,6 +1897,13 @@ async fn consider_batch(
     // 不必问模型。这是最便宜的一道闸——不花一分钱，也最常生效。
     if fresh == 0 && joined.is_none() && !mentioned && !summoned {
         debug!(target: LOG_TARGET, "群 {group} 这一眼没有新东西，不判定");
+        return Ok(());
+    }
+
+    // 这个点人在睡觉：没人点名、也没按搭话指令，就不必花钱判一次「想不想接」。
+    // 判定模型看不到生活线，它只会按话题热度给分，半夜三点照样能给出「想接」。
+    if config.life_enabled && !mentioned && !summoned && life::asleep() {
+        debug!(target: LOG_TARGET, "群 {group} 这个点人格在睡，这一眼不判定");
         return Ok(());
     }
 
@@ -2657,6 +2696,7 @@ pub const LABELS: &[(&str, &str)] = &[
     ("summon_command", "搭话指令"),
     ("memory_enabled", "记住群里的人和事"),
     ("mood_enabled", "按作息起伏"),
+    ("life_enabled", "按钟点过日子"),
     ("memo_budget", "每轮最多写几条记忆"),
     ("search_enabled", "允许联网"),
     ("search_budget", "每轮联网几次"),
@@ -2760,6 +2800,11 @@ pub fn handle(
         ) else {
             return Ok(Some(ctx));
         };
+        // 智能体代办的一条插件指令（见 oai::agent::command）：群里并没有人真的发出它。
+        // 让它进窗口，人格下一眼就会把它当成一句待接的话——那不是群友说的，不该由它接。
+        if ctx.agent_command {
+            return Ok(Some(ctx));
+        }
         observe(&ctx, &writer, &mgr, &base).await;
         Ok(Some(ctx))
     })

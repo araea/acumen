@@ -24,6 +24,7 @@
 //! 一轮就是一次请求，与从前的「普通房间」等价，只是历史、追加话、身份注记都是同一套。
 
 pub(crate) mod bash;
+pub(crate) mod command;
 pub(crate) mod compact;
 pub(crate) mod control;
 pub(crate) mod delegate;

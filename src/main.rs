@@ -203,6 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         matcher: Arc::new(Matcher::new()),
         config_path: shared_config_path.clone(),
         bot: system_bot.clone(),
+        agent_command: false,
     };
     plugins::do_init(init_ctx).await?;
     // ==========================================

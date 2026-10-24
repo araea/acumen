@@ -85,6 +85,13 @@ pub struct Context {
     pub matcher: Arc<Matcher>,
     pub config_path: Arc<str>,
     pub bot: Arc<BotStatus>,
+    /// 这条事件是智能体替人按下的一条指令，群里并没有人真的发出它。
+    ///
+    /// 执行链（[`crate::plugins::run`]）照原样跑一遍：权限、冷却、额度、回执都
+    /// 由各插件自己按「谁发的、在哪个群」判断——事件里带的是提要求那个人的号，
+    /// 所以管理指令仍然只对群主管理员生效。标上这一位是为了让会自己接话的插件
+    /// （`oai` / `ambient`）认出「这不是新的一条聊天消息」，别把代办变成一轮自问自答。
+    pub agent_command: bool,
 }
 
 impl Context {
