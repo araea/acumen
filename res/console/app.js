@@ -102,8 +102,8 @@
     misc: { icon: "extension", hint: "还没归类的插件", name: "其他" },
   };
   const sectionMeta = (code) => SECTION_META[code] || { icon: "extension", hint: "其它插件", name: "其他" };
-  /* 分类格只有一枚图标加一行字，四个字最稳；完整名字仍用在列表标题、详情与读屏里。 */
-  const SECTION_SHORT = { ai: "AI 资讯", system: "系统运维" };
+  /* 筛选芯片只有一枚图标加一行字，两三个字最稳；完整名字仍用在列表标题、详情与读屏里。 */
+  const SECTION_SHORT = { chat: "聊天", media: "媒体", ai: "AI", data: "数据", system: "系统" };
   const sectionLabel = (code, name) => SECTION_SHORT[code] || name;
   const SECTION_ICONS = Object.fromEntries(Object.entries(SECTION_META).map(([code, meta]) => [code, meta.icon]));
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
@@ -1573,22 +1573,34 @@
       return list;
     },
 
-    /** 分类筛选：一排单选芯片（名称 + 个数），窄屏横着滑，宽了换行。读屏走 radiogroup / radio。 */
-    sectionPicker() {
+    /** 筛选芯片：分类与「已停用」铺在同一张等宽网格里，整行对齐、末行补满。
+     *  分类图标平时在前面，选中时换成对勾；数量靠右，扫一眼就能比。
+     *  读屏是一组开关（aria-pressed），全部都能 Tab 到，方向键只在格子里移动焦点。 */
+    filters() {
       const counts = new Map();
       for (const plugin of this.data.plugins) counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
-      const chip = (code, label, longName, hint, total) =>
-        h`<button class="chip state" type="button" role="radio" data-section="${code}"
-            aria-checked="${bool(this.section === code)}" aria-controls="plugin-list"
-            tabindex="${this.section === code ? "0" : "-1"}" title="${hint}"
-            aria-label="${longName}：${total} 个插件。${hint}">
-          ${icon("check")}<span>${label}</span><span class="chip-count" aria-hidden="true">${total}</span>
+      const chip = (code, label, longName, hint, total, glyph) =>
+        h`<button class="chip state filter-chip" type="button" data-filter data-section="${code}"
+            aria-pressed="${bool(this.section === code)}" aria-controls="plugin-list"
+            title="${hint}" aria-label="${longName}：${total} 个插件。${hint}">
+          <span class="chip-mark" aria-hidden="true">${icon(glyph, "chip-icon")}${icon("check", "chip-check")}</span>
+          <span class="chip-label">${label}</span>
+          <span class="chip-count" aria-hidden="true">${total}</span>
         </button>`;
+      const off = this.data.plugins.filter((plugin) => !plugin.on).length;
       return [
-        chip("", "全部", "全部插件", "所有插件", this.data.plugins.length),
+        chip("", "全部", "全部", "显示所有插件", this.data.plugins.length, "grid_view"),
         ...this.categories().map((section) =>
-          chip(section.code, sectionLabel(section.code, section.name), section.name, sectionMeta(section.code).hint, counts.get(section.code))
+          chip(section.code, sectionLabel(section.code, section.name), section.name, sectionMeta(section.code).hint,
+            counts.get(section.code), sectionMeta(section.code).icon)
         ),
+        h`<button class="chip state filter-chip" type="button" data-filter data-status-filter="${this.status === "off" ? "" : "off"}"
+            aria-pressed="${bool(this.status === "off")}" aria-controls="plugin-list"
+            title="只看已停用的插件" aria-label="只看已停用，${off} 个插件">
+          <span class="chip-mark" aria-hidden="true">${icon("power_settings_new", "chip-icon")}${icon("check", "chip-check")}</span>
+          <span class="chip-label">已停用</span>
+          <span class="chip-count" aria-hidden="true">${off}</span>
+        </button>`,
       ];
     },
 
@@ -1632,14 +1644,6 @@
       chip?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     },
 
-    /** 状态只留一个开关芯片「已停用」：大多数插件都开着，要找的往往是关掉的那几个。 */
-    statusChips() {
-      const off = this.data.plugins.filter((p) => !p.on).length;
-      const pressed = this.status === "off";
-      return h`<button class="chip state" type="button" data-status-filter="${pressed ? "" : "off"}" aria-pressed="${bool(pressed)}"
-          aria-label="只看已停用，${off} 个">${icon("check")}<span>已停用</span><span class="chip-count" aria-hidden="true">${off}</span></button>`;
-    },
-
     /** 页头的一句话：此刻的状态，不是使用说明。 */
     headline() {
       const total = this.data.plugins.length;
@@ -1666,8 +1670,7 @@
     /** 只重画列表与计数：打一个字就整页重来会把输入法与光标一起冲掉。 */
     repaint() {
       put($("#plugin-list"), this.rows());
-      put($("#plugin-chips"), this.sectionPicker());
-      put($("#plugin-status"), this.statusChips());
+      put($("#plugin-filters"), this.filters());
       const head = $("#plugin-head-summary");
       if (head) head.textContent = this.headline();
       const status = $("#plugin-count");
@@ -1804,11 +1807,7 @@
                 aria-label="搜索插件、分类或指令" autocomplete="off" value="${plugins.query}">
               <kbd class="search-key" aria-hidden="true">/</kbd>
             </div>
-            <div class="filter-row">
-              <div class="filter-chips" id="plugin-chips" role="radiogroup" aria-label="按用途筛选插件">${plugins.sectionPicker()}</div>
-              <span class="filter-divider" aria-hidden="true"></span>
-              <div class="filter-chips" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
-            </div>
+            <div class="filter-grid" id="plugin-filters" role="group" aria-label="筛选插件">${plugins.filters()}</div>
           </div>
           <p class="section-meta plugin-count-line"${attr(!plugins.filtered(), "hidden")}>
             <span id="plugin-count" role="status">${plugins.summary()}</span>
@@ -3091,8 +3090,7 @@
       if (plugins.data) {
         const counter = $("#plugin-count");
         if (counter) counter.textContent = plugins.summary();
-        put($("#plugin-chips"), plugins.sectionPicker());
-        put($("#plugin-status"), plugins.statusChips());
+        put($("#plugin-filters"), plugins.filters());
         const head = $("#plugin-head-summary");
         if (head) head.textContent = plugins.headline();
         // 正在按状态筛时，刚翻过的行可能已经不该出现：重画列表，焦点跟着走。
@@ -7184,23 +7182,23 @@
       // 只在插件页生效，也不抢输入框里的按键。
       if ($("#plugin-search") && !document.querySelector("dialog[open]")) {
         const typing = target.matches?.("input, textarea, select, [contenteditable]");
-        // 分类网格是单选组：方向键按网格走，Home / End 接到两头，选中即筛选。
-        const rail = target.closest?.("#plugin-chips");
+        // 筛选矩阵：方向键只在格子里移动焦点（空格 / 回车才筛），Home / End 接到两头。
+        const rail = target.closest?.("#plugin-filters");
         if (rail && !typing && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
-          const cards = $$("[data-section]", rail);
-          const index = cards.indexOf(target.closest("[data-section]"));
-          // 用第一行实际摆了几格算列数：桌面 7/8 格随宽度自适应，读计算样式不可靠。
+          const cards = $$("[data-filter]", rail);
+          const index = cards.indexOf(target.closest("[data-filter]"));
+          // 用第一行实际摆了几格算列数：2 / 3 / 4 列随容器宽度变，读计算样式不可靠。
           const columns = Math.max(1, cards.filter((card) => card.offsetTop === cards[0]?.offsetTop).length);
           let next = -1;
           if (event.key === "ArrowRight") next = (index + 1) % cards.length;
           else if (event.key === "ArrowLeft") next = (index - 1 + cards.length) % cards.length;
-          else if (event.key === "ArrowDown") next = (index + columns) % cards.length;
-          else if (event.key === "ArrowUp") next = (index - columns + cards.length) % cards.length;
+          else if (event.key === "ArrowDown") next = Math.min(index + columns, cards.length - 1);
+          else if (event.key === "ArrowUp") next = Math.max(index - columns, 0);
           else if (event.key === "Home") next = 0;
           else if (event.key === "End") next = cards.length - 1;
-          if (index >= 0 && next >= 0) {
+          if (index >= 0 && next >= 0 && next !== index) {
             event.preventDefault();
-            plugins.chooseSection(cards[next].dataset.section);
+            cards[next].focus();
             return;
           }
         }

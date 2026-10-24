@@ -7156,12 +7156,14 @@ label.lk-hit {
   overflow-wrap: anywhere;
 }
 
-/* ==================== §3b 插件：搜索 + 一排筛选芯片 ====================
-   插件页的第一层只有两样东西：搜索框，和一排芯片（全部 / 各用途 | 已停用）。
-   芯片与全站一个样子：淡底、无边，选中换成次色容器并带一枚对勾（不只靠颜色）。
-   窄屏也一次铺开、自然换行：所有用途都在眼前，不必先左滑才知道还有哪些。 */
+/* ==================== §3b 插件：搜索 + 筛选矩阵 ====================
+   插件页的第一层只有两样东西：搜索框，和一屏筛选芯片（全部 / 各用途 | 已停用）。
+   芯片排成等宽网格，整行铺满：右边不再留下参差的白，2 / 3 / 4 列都对齐。
+   分类图标平时在前面，选中时换成对勾（不只靠颜色），数量一律靠右对齐。
+   所有用途都在眼前，不必先左滑才知道还有哪些；末行由最后一枚补满。 */
 
 .plugin-toolbar {
+  container: filters / inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--zw-space-04);
@@ -7171,33 +7173,105 @@ label.lk-hit {
   flex: none;
 }
 
-.filter-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--zw-space-02) var(--zw-space-03);
+.filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--zw-space-03);
 }
 
-.filter-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--zw-space-02) var(--zw-space-03);
+.filter-chip {
+  width: 100%;
   min-width: 0;
+  justify-content: flex-start;
+  padding-inline: var(--zw-space-03);
+  text-align: start;
 }
 
-/* 两组芯片在窄屏各自换行，竖线反而会把下一行截断；够宽时才用它分组。 */
-.filter-divider {
-  display: none;
+/* 图标与对勾叠在同一格里：切换时只淡入淡出，标签和数量都不跟着跳。 */
+.filter-chip .chip-mark {
+  display: grid;
   flex: none;
-  align-self: stretch;
-  width: var(--zw-border-width);
-  margin-block: var(--zw-space-03);
-  background: var(--md-sys-color-outline-variant);
+  place-items: center;
+  width: calc(var(--zw-size-icon-small) - var(--zw-space-01));
+  height: calc(var(--zw-size-icon-small) - var(--zw-space-01));
 }
 
-@media (min-width: 600px) {
-  .filter-divider {
-    display: block;
+.filter-chip .chip-mark svg {
+  display: block;
+  grid-area: 1 / 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.filter-chip .chip-check {
+  opacity: 0;
+}
+
+.filter-chip[aria-pressed="true"] .chip-icon {
+  opacity: 0;
+}
+
+.filter-chip[aria-pressed="true"] .chip-check {
+  opacity: 1;
+}
+
+.filter-chip .chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.filter-chip .chip-count {
+  margin-inline-start: auto;
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+}
+
+/* 断点用 rem 写：用户把字号调到 200% 时阈值跟着翻倍，列数自动变少，
+   分类名不会被挤成省略号。2 列时末行只剩一枚就让它补满。 */
+@container filters (min-width: 17rem) and (max-width: 20.499rem) {
+  .filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filter-chip:last-child:nth-child(2n + 1) {
+    grid-column: span 2;
+  }
+}
+
+/* 3 列：8 枚时最后一枚（已停用）横跨两格，正好收齐末行。 */
+@container filters (min-width: 20.5rem) and (max-width: 32.499rem) {
+  .filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .filter-chip:last-child:nth-child(3n + 1) {
+    grid-column: span 3;
+  }
+
+  .filter-chip:last-child:nth-child(3n + 2) {
+    grid-column: span 2;
+  }
+}
+
+/* 4 列：8 枚正好两行；七枚、九枚时由末格补齐最后一行。 */
+@container filters (min-width: 32.5rem) {
+  .filter-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .filter-chip:last-child:nth-child(4n + 1) {
+    grid-column: span 4;
+  }
+
+  .filter-chip:last-child:nth-child(4n + 2) {
+    grid-column: span 3;
+  }
+
+  .filter-chip:last-child:nth-child(4n + 3) {
+    grid-column: span 2;
   }
 }
 
