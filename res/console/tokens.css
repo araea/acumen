@@ -27,8 +27,9 @@
      3. 一种图标。Material Symbols 放进低彩的圆角方块（--zw-radius-tile）：
         同一用途同一色相，只在底色里透约 10%。不用形状蒙版、不用饱和色块。
      4. 一束光。品牌图标右上那粒暖色光点（--zw-glimmer）是全界面唯一的暖色，
-        只标「活的、新的、没保存的」。状态色只落在一粒点或一枚图标上，不整块
-        染底；选中一律是次色容器（--zw-selected-bg），阅读舒适是第一原则。
+        只标「新的、没保存的」；运行正常是一粒绿点，直觉上更安心。状态色只落在
+        一粒点或一枚图标上，不整块染底；选中一律是次色容器（--zw-selected-bg），
+        阅读舒适是第一原则。
      5. 一种手感。位移与尺寸全走 M3E 的阻尼弹簧（scripts/make-expressive.py
         采样成 linear()），导航胶囊在 app.js 里按同一组参数逐帧积分。
    ========================================================================== */
@@ -401,13 +402,15 @@
   /* 分段控件：一条凹下去的轨，选中的一段是一块浮在轨上的纸片。 */
   --zw-track: light-dark(var(--md-sys-color-surface-container-high), var(--md-sys-color-surface-container));
   --zw-track-on: light-dark(var(--md-sys-color-surface-container-lowest), var(--md-sys-color-surface-container-highest));
-  /* 唯一的一束光：品牌图标右上的那粒暖色光点。只给「在线、有新东西、有没保存的改动」
-     这类需要被注意到的活信号，别处不用暖色。 */
+  /* 唯一的一束光：品牌图标右上的那粒暖色光点。只给「有新东西、有没保存的改动」
+     这类需要被注意到的活信号；运行状态用绿点，别处不用暖色。 */
   --zw-glimmer: var(--zw-accent);
   /* 选中：次色容器。主色容器在 Fidelity 方案里是一块饱和的蓝，整行染上太抢眼。 */
   --zw-selected-bg: var(--md-sys-color-secondary-container);
   --zw-selected-ink: var(--md-sys-color-on-secondary-container);
   --zw-glimmer-halo: color-mix(in srgb, var(--zw-accent) 32%, transparent);
+  /* 运行正常那粒绿点的光晕；暖色光点只留给「有新的 / 还没保存」。 */
+  --zw-success-halo: color-mix(in srgb, var(--md-sys-color-success) 30%, transparent);
   --zw-glow: color-mix(in srgb, var(--md-sys-color-primary) 6%, transparent);
   --zw-glow-strong: color-mix(in srgb, var(--md-sys-color-primary) 9%, transparent);
   --zw-hairline: color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
@@ -432,6 +435,9 @@
 
   /* —— 外壳几何 —— */
   --zw-page-gutter: var(--zw-space-05);
+  /* 纸片的左右留白。页标题、小节标题与纸片里的正文都从这条线上起排，
+     纸片本身则贴到页面边距上：读的时候文字是一列，卡片是一层。 */
+  --zw-card-padding: var(--zw-space-05);
   --zw-topbar-height: 64px;
   --zw-dock-height: 68px;
   --zw-dock-inset: 12px;
@@ -521,6 +527,7 @@
 @media (min-width: 600px) {
   :root {
     --zw-page-gutter: var(--zw-space-06);
+    --zw-card-padding: var(--zw-space-06);
   }
 }
 

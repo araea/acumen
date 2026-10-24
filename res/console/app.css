@@ -992,7 +992,8 @@ body[data-state="locked"] .brand-name {
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--zw-space-04) var(--zw-space-06);
-  padding-top: var(--zw-space-04);
+  padding-block-start: var(--zw-space-04);
+  padding-inline: var(--zw-card-padding);
 }
 
 .page-head-text {
@@ -1038,7 +1039,9 @@ body[data-state="locked"] .brand-name {
 .page-actions {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--zw-space-03);
+  margin-inline-start: auto;
 }
 
 @media (min-width: 840px) {
@@ -1048,6 +1051,7 @@ body[data-state="locked"] .brand-name {
 
   .page-head {
     padding-block: var(--zw-space-05) var(--zw-space-02);
+    padding-inline: var(--zw-card-padding);
   }
 }
 
@@ -1065,6 +1069,7 @@ body[data-state="locked"] .brand-name {
   justify-content: space-between;
   gap: var(--zw-space-02) var(--zw-space-04);
   min-height: var(--zw-space-08);
+  padding-inline: var(--zw-card-padding);
 }
 
 .section-title {
@@ -1117,17 +1122,11 @@ body[data-state="locked"] .brand-name {
   flex-direction: column;
   gap: var(--zw-space-05);
   min-width: 0;
-  padding: var(--zw-space-05);
+  padding: var(--zw-card-padding);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--zw-radius-card);
   background: var(--zw-plate);
   box-shadow: var(--zw-card-shadow);
-}
-
-@media (min-width: 600px) {
-  .card {
-    padding: var(--zw-space-06);
-  }
 }
 
 /* 插件「现在的情况」：去处与这次运行的计数，几行字加一个试发按钮。 */
@@ -3343,10 +3342,10 @@ button.item:active::after {
   padding-top: var(--zw-space-04);
 }
 
-/* 在线的那粒点就是品牌那束光：只有「活着」时呼吸。 */
+/* 运行正常是一粒绿点：绿色才符合「可以放心」的直觉；暖色光只留给新版本与未保存。 */
 .hero .status-success::before {
-  background: var(--zw-glimmer);
-  box-shadow: 0 0 0 var(--zw-space-01) var(--zw-glimmer-halo);
+  background: var(--md-sys-color-success);
+  box-shadow: 0 0 0 var(--zw-space-01) var(--zw-success-halo);
   animation: breathe calc(var(--md-sys-motion-loop-duration) * 1.5) ease-in-out infinite;
 }
 
@@ -4098,9 +4097,13 @@ fieldset[data-off] > .config-off-note {
   gap: var(--zw-space-05);
 }
 
-/* —— 搭话 ——
+/* —— 搭话资料（并进 ambient 插件详情） ——
    人设像一页文档：标题与文件名一行，正文在一块浅一档的纸上，高度封顶、自己滚，
    不把整页撑成两屏长的灰块。 */
+.ambient-summary {
+  margin: 0 0 var(--zw-space-03);
+}
+
 .editor {
   display: flex;
   flex-direction: column;
@@ -4459,8 +4462,17 @@ fieldset[data-off] > .config-off-note {
 }
 
 .command-form .input {
-  flex: 1 1 8rem;
+  flex: 1 1 10rem;
   min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.command-hint {
+  margin: 0;
+}
+
+.command-hint code {
+  font-size: inherit;
 }
 
 /* —— 设置：分区导航、渐进披露与明确的保存反馈 —— */
@@ -7147,7 +7159,7 @@ label.lk-hit {
 /* ==================== §3b 插件：搜索 + 一排筛选芯片 ====================
    插件页的第一层只有两样东西：搜索框，和一排芯片（全部 / 各用途 | 已停用）。
    芯片与全站一个样子：淡底、无边，选中换成次色容器并带一枚对勾（不只靠颜色）。
-   窄屏一排横着滑，从页边滑出去；宽了自然换行。 */
+   窄屏也一次铺开、自然换行：所有用途都在眼前，不必先左滑才知道还有哪些。 */
 
 .plugin-toolbar {
   display: flex;
@@ -7161,27 +7173,21 @@ label.lk-hit {
 
 .filter-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--zw-space-03);
-  margin-inline: calc((var(--zw-page-gutter) + var(--zw-safe-left)) * -1) calc((var(--zw-page-gutter) + var(--zw-safe-right)) * -1);
-  padding-block: var(--zw-space-02);
-  padding-inline: calc(var(--zw-page-gutter) + var(--zw-safe-left)) calc(var(--zw-page-gutter) + var(--zw-safe-right));
-  overflow-x: auto;
-  scroll-padding-inline: calc(var(--zw-page-gutter) + var(--zw-safe-left));
-  scrollbar-width: none;
-}
-
-.filter-row::-webkit-scrollbar {
-  display: none;
+  gap: var(--zw-space-02) var(--zw-space-03);
 }
 
 .filter-chips {
   display: flex;
-  flex: none;
-  gap: var(--zw-space-03);
+  flex-wrap: wrap;
+  gap: var(--zw-space-02) var(--zw-space-03);
+  min-width: 0;
 }
 
+/* 两组芯片在窄屏各自换行，竖线反而会把下一行截断；够宽时才用它分组。 */
 .filter-divider {
+  display: none;
   flex: none;
   align-self: stretch;
   width: var(--zw-border-width);
@@ -7189,21 +7195,9 @@ label.lk-hit {
   background: var(--md-sys-color-outline-variant);
 }
 
-/* 宽屏列表栏只有 300–380px：芯片换行铺开，不再横滑。 */
-@media (min-width: 1000px) {
-  .filter-row {
-    flex-wrap: wrap;
-    margin-inline: 0;
-    padding: 0;
-    overflow: visible;
-  }
-
-  .filter-chips {
-    display: contents;
-  }
-
+@media (min-width: 600px) {
   .filter-divider {
-    display: none;
+    display: block;
   }
 }
 

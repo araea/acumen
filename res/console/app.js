@@ -12,7 +12,7 @@
    - 手机上要一直流畅：日志合批、后台断流、动画交给 CSS 与令牌。
 
    §1 模板 · §2 图标 · §3 格式 · §4 口令与接口 · §5 反馈 · §6 外壳与路由 ·
-   §7 总览 · §8 插件 · §8b 自动回复的规则面板 · §8c 潜水清理的名单面板 · §9 搭话 · §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
+   §7 总览 · §8 插件 · §8b 自动回复的规则面板 · §8c 潜水清理的名单面板 · §9 搭话资料（并进插件详情）· §10 日志 · §11 设置 · §11a 名单编辑器 · §11b 列表编辑器 · §11c 外观 · §12 解锁 · §13 事件 · §14 启动
    ========================================================================== */
 
 (() => {
@@ -349,10 +349,10 @@
 
   /* ==================== §6 外壳与路由 ==================== */
 
+  // 搭话（persona / 记忆 / 表情包）是 ambient 插件的一部分，收进插件详情，不再单独占一个导航入口。
   const PAGES = [
     { id: "overview", label: "总览", glyph: "dashboard" },
     { id: "plugins", label: "插件", glyph: "extension" },
-    { id: "ambient", label: "搭话", glyph: "forum" },
     { id: "logs", label: "日志", glyph: "receipt_long" },
     { id: "settings", label: "设置", glyph: "settings" },
   ];
@@ -774,6 +774,8 @@
 
   function parseRoute() {
     const [head = "", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
+    // 旧书签 / 旧链接：#/ambient 现在就是 ambient 插件的详情。
+    if (head === "ambient") return { page: "plugins", arg: "ambient", key: "plugins/ambient" };
     const page = PAGES.some((p) => p.id === head) ? head : "overview";
     let arg = null;
     if (page === "settings") {
@@ -826,13 +828,11 @@
   const PAINT = {
     overview: () => overviewPage(),
     plugins: (route) => pluginsPage(route),
-    ambient: () => ambientPage(),
     logs: () => logsPage(),
     settings: (route) => (route.arg === "appearance" ? appearancePage() : settingsPage(route)),
   };
 
   const MOUNT = {
-    ambient: () => paintGroupNames(),
     overview: () => overviewFeed.start(),
     logs: () => logs.mount(),
     settings: () => {
@@ -889,13 +889,19 @@
         const plugin = plugins.data?.plugins.find((item) => item.name === form.dataset.config);
         return `${plugin?.display || form.dataset.config} 的配置`;
       }),
+      ...Object.keys(ambient.drafts).filter((name) => dirty(name)).map((name) =>
+        `搭话${SOURCES.find((source) => source.name === name)?.title || name}（没保存）`
+      ),
       ...$$("[data-rule][data-unsaved]").map((entry) => `自动回复规则 #${entry.dataset.rule}（没存上）`),
     ];
   }
 
   /** 离开时要不要拦人。正在保存的控件不算未保存：提交会自己跑完，回执到了基线才更新，
    *  否则「点保存→立刻换页」会弹一个假的「离开未保存的编辑」。 */
-  const hasFormDrafts = () => $$(FORMS).some((form) => formDirty(form, false)) || !!$("[data-rule][data-unsaved]");
+  const hasFormDrafts = () =>
+    $$(FORMS).some((form) => formDirty(form, false))
+    || Object.keys(ambient.drafts).some((name) => dirty(name))
+    || !!$("[data-rule][data-unsaved]");
 
   /* 历史条目的单调编号：只用来判断「这一步是前进还是后退」，取消离开时好原路退回，
      而不是 replaceState 把后退栈改写成两个同样的条目（安卓手势返回会因此「按一下没反应」）。 */
@@ -936,6 +942,8 @@
       return;
     }
     const route = parseRoute();
+    // 旧的 #/ambient 换成插件详情自己的地址，刷新、复制与后退都落在同一页上。
+    if (/^#\/ambient\/?(?:[?#].*)?$/.test(location.hash)) history.replaceState(history.state, "", routeHash(route));
     const previous = shown;
     if (previous && previous.key !== route.key) {
       const unsaved = unsavedAreas();
@@ -1859,6 +1867,7 @@
       ${plugin.panel === "lurker" ? lurkerSection(sub) : ""}
       ${liveCard(plugin)}
       ${commands}
+      ${plugin.name === "ambient" ? ambientSection(sub) : ""}
 
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
@@ -4376,7 +4385,7 @@
     { name: "self", file: "self.md", title: "档案", note: "它对自己是谁的认识。" },
   ];
   const STICKER_PAGE = 60;
-  const ambient = { data: null, tab: "persona", drafts: {}, stickers: STICKER_PAGE };
+  const ambient = { data: null, tab: "persona", drafts: {}, stickers: STICKER_PAGE, mounting: 0 };
 
   const sourceText = (name) => ambient.drafts[name] ?? ambient.data?.[name] ?? "";
   const dirty = (name) => name in ambient.drafts && ambient.drafts[name] !== (ambient.data?.[name] ?? "");
@@ -4385,37 +4394,63 @@
     return `${num(count(sourceText(name)))} 字 · ${dirty(name) ? "有未保存的修改" : "已保存"}`;
   }
 
-  async function ambientPage() {
-    const data = await api("/ambient");
-    ambient.data = data;
+  /** 搭话资料是 ambient 插件详情里的一节：人格、记忆与表情包都在这里改，
+   *  不另开一页，也不占一个底部导航入口。先铺骨架，再异步把数据填进去。 */
+  function ambientSection(sub) {
+    clearTimeout(ambient.mounting);
+    ambient.mounting = setTimeout(() => void ambientMount(), 0);
+    return h`<section class="section ambient-section" id="ambient-panel" aria-labelledby="ambient-title" aria-busy="true">
+      <div class="section-head">
+        ${raw(`<${sub} class="section-title" id="ambient-title">搭话资料</${sub}>`)}
+        <span class="section-meta">人格、记忆与表情包</span>
+      </div>
+      <div id="ambient-body">${ambient.data ? ambientBody(ambient.data) : h`<div class="progress" role="progressbar" aria-label="正在读取搭话资料"></div>`}</div>
+    </section>`;
+  }
+
+  async function ambientMount() {
+    const panel = $("#ambient-panel");
+    if (!panel) return;
+    try {
+      const data = await api("/ambient");
+      if (!panel.isConnected) return;
+      ambient.data = data;
+      put($("#ambient-body"), ambientBody(data));
+      panel.removeAttribute("aria-busy");
+      paintGroupNames();
+    } catch (error) {
+      if (!panel.isConnected) return;
+      put($("#ambient-body"), h`<div class="card">${emptyState(error.message || "读不到搭话资料。", "error")}</div>`);
+      panel.removeAttribute("aria-busy");
+    }
+  }
+
+  function ambientBody(data) {
     if (!data.ready) {
-      return h`<div class="page">${pageHead("搭话")}
-        <div class="card">${emptyState("搭话插件的数据目录还没有建立。让它运行一轮之后再来。")}</div></div>`;
+      return h`<div class="card">${emptyState("搭话插件的数据目录还没有建立。让它运行一轮之后再来。")}</div>`;
     }
     const tabs = [
       { id: "persona", label: "人设" },
       { id: "memory", label: "记忆", count: data.memory.length },
       { id: "stickers", label: "表情包", count: data.stickers.length },
     ];
-    return h`<div class="page">
-      ${pageHead("搭话", `记得 ${data.memory.length} 个群里的人与事，收藏了 ${data.stickers.length} 张表情包。`)}
-      <div>
-        <div class="tabs" role="tablist" aria-label="搭话内容">
-          ${tabs.map(
-            (tab) => h`<button class="tab state" type="button" role="tab" id="tab-${tab.id}" data-tab="${tab.id}"
-              aria-controls="panel-${tab.id}" aria-selected="${bool(ambient.tab === tab.id)}" tabindex="${ambient.tab === tab.id ? 0 : -1}">
-              ${tab.label}${tab.count !== undefined ? h`<span class="tab-count">${tab.count}</span>` : ""}</button>`
-          )}
-        </div>
-        <div class="tabpanel" role="tabpanel" id="panel-persona" aria-labelledby="tab-persona"${attr(ambient.tab !== "persona", "hidden")}>
-          ${SOURCES.map(sourceEditor)}
-        </div>
-        <div class="tabpanel" role="tabpanel" id="panel-memory" aria-labelledby="tab-memory" tabindex="0"${attr(ambient.tab !== "memory", "hidden")}>
-          ${memoryPanel(data.memory)}
-        </div>
-        <div class="tabpanel" role="tabpanel" id="panel-stickers" aria-labelledby="tab-stickers" tabindex="0"${attr(ambient.tab !== "stickers", "hidden")}>
-          ${stickerPanel()}
-        </div>
+    return h`<div>
+      <p class="note ambient-summary">记得 ${data.memory.length} 个群里的人与事，收藏了 ${data.stickers.length} 张表情包。保存后下一轮对话生效。</p>
+      <div class="tabs" role="tablist" aria-label="搭话资料">
+        ${tabs.map(
+          (tab) => h`<button class="tab state" type="button" role="tab" id="tab-${tab.id}" data-tab="${tab.id}"
+            aria-controls="panel-${tab.id}" aria-selected="${bool(ambient.tab === tab.id)}" tabindex="${ambient.tab === tab.id ? 0 : -1}">
+            ${tab.label}${tab.count !== undefined ? h`<span class="tab-count">${tab.count}</span>` : ""}</button>`
+        )}
+      </div>
+      <div class="tabpanel" role="tabpanel" id="panel-persona" aria-labelledby="tab-persona"${attr(ambient.tab !== "persona", "hidden")}>
+        ${SOURCES.map(sourceEditor)}
+      </div>
+      <div class="tabpanel" role="tabpanel" id="panel-memory" aria-labelledby="tab-memory" tabindex="0"${attr(ambient.tab !== "memory", "hidden")}>
+        ${memoryPanel(data.memory)}
+      </div>
+      <div class="tabpanel" role="tabpanel" id="panel-stickers" aria-labelledby="tab-stickers" tabindex="0"${attr(ambient.tab !== "stickers", "hidden")}>
+        ${stickerPanel()}
       </div>
     </div>`;
   }
@@ -4927,9 +4962,10 @@
             <form class="command-form" id="command-form">
               <label class="visually-hidden" for="command-input">控制命令</label>
               <input class="input mono" id="command-input" autocomplete="off" spellcheck="false" autocapitalize="off"
-                enterkeyhint="go" placeholder="list · show ambient · set oai …">
+                enterkeyhint="go" placeholder="输入命令" aria-describedby="command-hint">
               <button class="btn btn-filled" type="submit">${icon("play_arrow")}执行</button>
             </form>
+            <p class="field-hint command-hint" id="command-hint">例如 <code>list</code>、<code>show ambient</code> 或 <code>diff oai</code>；也可以点下面的常用命令。</p>
             <div class="chips" role="group" aria-label="常用命令">
               ${[...new Set([...command.history, ...COMMANDS])].slice(0, 6).map(
                 (item) => h`<button class="chip state" type="button" data-run="${item}">${item}</button>`
