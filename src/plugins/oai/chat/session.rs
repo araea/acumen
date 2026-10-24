@@ -1691,13 +1691,11 @@ impl Session {
         // 群才有的动作已经在 execute 里挡掉了；这里取群号只是为了让参数拼得对。
         let guild = self.place.guild().unwrap_or_default().to_string();
         let (method, params, summary) = match action {
-            // 走到这里说明调用方绕过了 execute 的那条专用分支；扩展能力没有统一的
-            // 参数形状，只能在「统一动作」这一层之外单独转发。
-            Action::Capability { name, params } => (
-                "internal/capability",
-                params.clone(),
-                format!("[调用平台能力 {name}]"),
-            ),
+            // 扩展能力在 execute 里就走自己的分支了（参数形状不统一，还要按目录核名字与
+            // 分类）。走到这里说明有人绕过了那道闸，直接报错比乱转发一个动作稳妥。
+            Action::Capability { name, .. } => {
+                anyhow::bail!("扩展能力要走目录那条路：{name}");
+            }
             Action::Send { parts, reply_to } => {
                 // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
                 // 不是要说的话，而且必须在断句之前摘：JSON 里的逗号看着像换气处，
