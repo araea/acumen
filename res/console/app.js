@@ -82,14 +82,27 @@
   const PLUGIN_ICONS = {
     meta_filter: "filter_alt", ctl: "admin_panel_settings", console: "web", logger: "receipt_long",
     recorder: "database", media: "perm_media", sticker: "add_reaction", group_title: "workspace_premium",
-    recall: "undo", echo: "campaign", markdown: "markdown", repeater: "repeat", wordcloud: "cloud",
-    stats: "leaderboard", gif: "gif_box", image_split: "grid_view", qr_scan: "qr_code_scanner",
-    video_parse: "smart_display", song: "music_note", webshot: "screenshot_monitor", oai: "smart_toy",
-    ambient: "forum", ai_news: "newspaper", help: "help", restart: "restart_alt",
-    welcome: "waving_hand", anti_recall: "restore_page", nailong: "hide_image", autoreply: "quickreply",
-    lurker: "scuba_diving",
+    fake_title: "mood", recall: "undo", echo: "campaign", markdown: "markdown", repeater: "repeat",
+    wordcloud: "cloud", stats: "leaderboard", gif: "gif_box", image_split: "grid_view",
+    qr_scan: "qr_code_scanner", video_parse: "smart_display", song: "music_note",
+    webshot: "screenshot_monitor", oai: "smart_toy", ambient: "forum", ai_news: "newspaper",
+    help: "help", restart: "restart_alt", welcome: "waving_hand", anti_recall: "restore_page",
+    nailong: "hide_image", autoreply: "quickreply", lurker: "scuba_diving", essence: "hub",
   };
-  const SECTION_ICONS = { message: "chat", play: "extension", insight: "leaderboard", system: "tune", misc: "extension" };
+
+  /* 分类不只是一种筛选，它先回答「这个插件是管什么的」。
+     每个分类带一句人话说明；读屏与视觉读的是同一份，不在两处维护。 */
+  const SECTION_META = {
+    group: { icon: "groups", hint: "入群、潜水、精华与群规", name: "群管理" },
+    chat: { icon: "forum", hint: "头衔、复读、回显与接话", name: "聊天互动" },
+    media: { icon: "perm_media", hint: "图片、视频、点歌与截图", name: "媒体工具" },
+    ai: { icon: "smart_toy", hint: "模型对话与资讯推送", name: "AI · 资讯" },
+    data: { icon: "leaderboard", hint: "记录、统计与词云", name: "数据洞察" },
+    system: { icon: "tune", hint: "运行、控制台与维护", name: "系统 · 运维" },
+    misc: { icon: "extension", hint: "还没归类的插件", name: "其他" },
+  };
+  const sectionMeta = (code) => SECTION_META[code] || { icon: "extension", hint: "其它插件", name: "其他" };
+  const SECTION_ICONS = Object.fromEntries(Object.entries(SECTION_META).map(([code, meta]) => [code, meta.icon]));
   const pluginGlyph = (plugin) => PLUGIN_ICONS[plugin.name] || SECTION_ICONS[plugin.section] || "extension";
   const pluginTile = (plugin, extra = "") =>
     h`<span class="tile${extra}" data-tone="${plugin.section}" aria-hidden="true">${icon(pluginGlyph(plugin))}</span>`;
@@ -1412,7 +1425,10 @@
           (!text ||
             plugin.name.toLowerCase().includes(text) ||
             plugin.display.toLowerCase().includes(text) ||
-            plugin.summary.toLowerCase().includes(text))
+            plugin.summary.toLowerCase().includes(text) ||
+            plugin.commands.some((command) =>
+              `${command.cmd} ${command.note}`.toLowerCase().includes(text)
+            ))
       );
     },
 
@@ -1425,9 +1441,14 @@
       return order
         .map((code) => [code, list.filter((plugin) => plugin.section === code)])
         .filter(([, members]) => members.length)
-        .map(
-          ([code, members]) => h`<section class="plugin-block" aria-labelledby="block-${code}">
-            <h2 class="list-title" id="block-${code}">${nameOf(code)}<span class="num">${members.length}</span></h2>
+        .map(([code, members]) => {
+          const meta = sectionMeta(code);
+          return h`<section class="plugin-block" data-tone="${code}" aria-labelledby="block-${code}">
+            <h2 class="list-title" id="block-${code}">
+              <span class="list-title-icon" aria-hidden="true">${icon(meta.icon)}</span>
+              <span class="list-title-text">${nameOf(code)}<span class="list-title-hint">${meta.hint}</span></span>
+              <span class="num">${members.length}</span>
+            </h2>
             <ul class="group">${members.map(
               (plugin) => h`<li class="item" data-plugin="${plugin.name}">
                 ${pluginTile(plugin)}
@@ -1440,20 +1461,48 @@
                 <div class="item-trailing">${switchButton(plugin, { label: `启用 ${plugin.display}` })}</div>
               </li>`
             )}</ul>
-          </section>`
-        );
+          </section>`;
+        });
     },
 
-    chips() {
+    /** 分类导轨：每格一枚图标、一句人话和数量。比一排只有名字的芯片更好扫。
+     *  选中的那格用 tonal 填充并抬起，触屏上 48px 起步，横向可滑动。 */
+    sectionRail() {
       const counts = new Map();
       for (const plugin of this.data.plugins) counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
-      const chip = (code, label, total) =>
-        h`<button class="chip state" type="button" data-section="${code}" aria-pressed="${bool(this.section === code)}">
-          ${icon("check")}${label}<span class="chip-count">${total}</span></button>`;
+      const card = (code, label, hint, glyph, total) =>
+        h`<button class="section-card" type="button" data-section="${code}" data-tone="${code || "all"}"
+            aria-pressed="${bool(this.section === code)}" aria-controls="plugin-list">
+          <span class="section-card-icon" aria-hidden="true">${icon(glyph)}</span>
+          <span class="section-card-body">
+            <span class="section-card-name">${label}</span>
+            <span class="section-card-hint">${hint}</span>
+          </span>
+          <span class="section-card-count num" aria-hidden="true">${total}</span>
+        </button>`;
       return [
-        chip("", "全部", this.data.plugins.length),
-        ...this.data.sections.filter((s) => counts.get(s.code)).map((s) => chip(s.code, s.name, counts.get(s.code))),
+        card("", "全部", "所有插件一屏看全", "grid_view", this.data.plugins.length),
+        ...this.data.sections
+          .filter((section) => counts.get(section.code))
+          .map((section) => {
+            const meta = sectionMeta(section.code);
+            return card(section.code, section.name, meta.hint, meta.icon, counts.get(section.code));
+          }),
       ];
+    },
+
+    filtered() {
+      return !!(this.query.trim() || this.section || this.status);
+    },
+
+    clearFilters() {
+      this.query = "";
+      this.section = "";
+      this.status = "";
+      const input = $("#plugin-search");
+      if (input) input.value = "";
+      this.repaint();
+      input?.focus({ preventScroll: true });
     },
 
     /** 按启用状态筛：全部 / 已启用 / 已停用，带个数，一眼看清。 */
@@ -1476,10 +1525,12 @@
     /** 只重画列表与计数：打一个字就整页重来会把输入法与光标一起冲掉。 */
     repaint() {
       put($("#plugin-list"), this.rows());
-      put($("#plugin-chips"), this.chips());
+      put($("#plugin-chips"), this.sectionRail());
       put($("#plugin-status"), this.statusChips());
       const status = $("#plugin-count");
       if (status) status.textContent = this.summary();
+      const clear = $("#plugin-clear");
+      if (clear) clear.hidden = !this.filtered();
     },
 
     async swapDetail(name) {
@@ -1518,8 +1569,33 @@
         ${label ? h`aria-label="${label}"` : h`aria-labelledby="${labelledby}" aria-describedby="${describedby}"`}
         ${attr(plugin.name === "ctl", 'disabled title="控制插件不能停用"')}></button>`;
 
-  const detailPlaceholder = () =>
-    h`<div class="card">${emptyState("在左侧选择一个插件，这里会显示它的开关、配置与指令。", "extension")}</div>`;
+  /** 宽屏详情栏的空位。不放一张大空白：把当前分类里最该先看的几个插件摆出来，
+   *  鼠标不用在长列表里找，点一下就是详情。 */
+  const detailPlaceholder = () => {
+    const section = plugins.section ? sectionMeta(plugins.section) : null;
+    const list = (plugins.data ? plugins.visible() : []).slice(0, 4);
+    return h`<div class="card placeholder-card">
+      <div class="placeholder-head">
+        <span class="tile tile-large" data-tone="${plugins.section || "system"}" aria-hidden="true">${icon(section?.icon || "extension")}</span>
+        <div class="placeholder-copy">
+          <h2 class="placeholder-title">${section ? `从「${section.name}」开始` : "选一个插件"}</h2>
+          <p class="placeholder-sub">${section ? section.hint : "左侧按用途分了类；点一行看它的开关、配置与指令。"}</p>
+        </div>
+      </div>
+      ${list.length
+        ? h`<ul class="group">${list.map(
+            (plugin) => h`<li class="item" data-plugin="${plugin.name}">
+              ${pluginTile(plugin)}
+              <div class="item-content">
+                <a class="item-link item-title" href="#/plugins/${encodeURIComponent(plugin.name)}">${plugin.display}<span class="tag">${plugin.name}</span></a>
+                <span class="item-sub">${plugin.summary}</span>
+              </div>
+              ${switchButton(plugin, { label: `启用 ${plugin.display}` })}
+            </li>`
+          )}</ul>`
+        : emptyState("这个分类里没有符合条件的插件。换个分类或清除筛选。", "search")}
+    </div>`;
+  };
 
   async function pluginsPage(route) {
     const [list, detail] = await Promise.all([
@@ -1528,15 +1604,20 @@
     ]);
     plugins.data = list;
     plugins.selected = route.arg;
+    if (!route.arg && !plugins.section) {
+      const saved = localStorage.getItem("acumen.plugins.section");
+      if (saved !== null && list.sections.some((section) => section.code === saved)) plugins.section = saved;
+    }
     const dual = wide.matches;
     if (detail instanceof Error && detail.status === 401) throw detail;
 
     // 窄屏：详情单独成页，左上角是返回（HIG 的层级导航）。
     if (route.arg && !dual) {
       if (detail instanceof Error) throw detail;
+      const meta = sectionMeta(detail.section);
       return h`<div class="page">
         ${pageHead(detail.display, detail.summary, { back: { href: "#/plugins", label: "插件" }, lead: pluginTile(detail, " tile-large"),
-          meta: h`<span class="tag">${detail.name}</span>${statusTag(detail)}` })}
+          meta: h`<span class="section-chip" data-tone="${detail.section}">${icon(meta.icon)}${meta.name}</span><span class="tag">${detail.name}</span>${statusTag(detail)}` })}
         ${detailBody(detail, 1)}
       </div>`;
     }
@@ -1552,20 +1633,26 @@
         }</section>`;
 
     const title = detail && !(detail instanceof Error) ? detail.display : "";
-    return h`<div class="page"${title ? h` data-title="${title}"` : ""}>
-      ${pageHead("插件", "开关即时生效；配置修改后立即保存。")}
+    const section = plugins.section ? sectionMeta(plugins.section).name : "全部";
+    return h`<div class="page page-plugins"${title ? h` data-title="${title}"` : ""}>
+      ${pageHead("插件", "先按用途找分类，再搜名字或指令；开关即时生效，配置随改随存。")}
+      <div class="section-rail-wrap">
+        <div class="section-rail" id="plugin-chips" role="group" aria-label="按用途筛选插件">${plugins.sectionRail()}</div>
+      </div>
       <div class="split"${attr(dual, "data-dual")}>
         <div class="split-list">
-          <div class="toolbar">
+          <div class="plugin-toolbar">
             <div class="search">${icon("search")}
-              <input class="input" id="plugin-search" type="search" placeholder="搜索名称或说明"
-                aria-label="搜索插件" autocomplete="off" value="${plugins.query}">
+              <input class="input" id="plugin-search" type="search" placeholder="搜索插件、指令或说明"
+                aria-label="搜索插件、指令或说明" autocomplete="off" value="${plugins.query}">
+              <kbd class="search-key" aria-hidden="true">/</kbd>
             </div>
+            <div class="chips chips-scroll" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
           </div>
-          <div class="chips" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
-          <div class="chips" id="plugin-chips" role="group" aria-label="按分类筛选">${plugins.chips()}</div>
-          <p class="section-meta" id="plugin-count" role="status">${plugins.summary()}</p>
-          <div class="plugin-list" id="plugin-list">${plugins.rows()}</div>
+          <p class="section-meta plugin-count-line" id="plugin-count" role="status">${plugins.summary()}
+            <button class="btn btn-text btn-small" type="button" id="plugin-clear" data-clear-filters${attr(!plugins.filtered(), "hidden")}>清除筛选</button>
+          </p>
+          <div class="plugin-list" id="plugin-list" data-section-label="${section}">${plugins.rows()}</div>
         </div>
         ${pane}
       </div>
@@ -1602,6 +1689,7 @@
               ${raw(`<${top} class="detail-title" id="detail-title">`)}${plugin.display}<span class="tag">${plugin.name}</span>${statusTag(plugin)}${raw(`</${top}>`)}
             </div>
             <p class="note">${plugin.summary}</p>
+            <p class="detail-section">${icon(sectionMeta(plugin.section).icon)}<span>${sectionMeta(plugin.section).name}</span><span class="detail-section-hint">${sectionMeta(plugin.section).hint}</span></p>
           </div>`
         : ""}
       <div class="card">
@@ -6463,8 +6551,15 @@
       }
       if ((hit = on("[data-section]"))) {
         plugins.section = hit.dataset.section;
+        try {
+          localStorage.setItem("acumen.plugins.section", plugins.section);
+        } catch {}
         plugins.repaint();
         $(`[data-section="${CSS.escape(plugins.section)}"]`)?.focus();
+        return;
+      }
+      if ((hit = on("[data-clear-filters]"))) {
+        plugins.clearFilters();
         return;
       }
       if ((hit = on("[data-reset]"))) return resetPlugin(hit);
@@ -6696,6 +6791,44 @@
     document.addEventListener("keydown", (event) => {
       const target = event.target;
       if (event.isComposing) return;
+      // 插件页的键盘路径：/ 搜索、上下键在结果里走、Esc 退出搜索。
+      // 只在插件页生效，也不抢输入框里的按键。
+      if ($("#plugin-search") && !document.querySelector("dialog[open]")) {
+        const typing = target.matches?.("input, textarea, select, [contenteditable]");
+        if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === "/") {
+          event.preventDefault();
+          $("#plugin-search").focus({ preventScroll: true });
+          return;
+        }
+        if (event.key === "Escape" && target.id === "plugin-search") {
+          event.preventDefault();
+          if (plugins.query) {
+            plugins.query = "";
+            target.value = "";
+            plugins.repaint();
+          } else {
+            target.blur();
+          }
+          return;
+        }
+        if (!typing && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+          const links = $$("#plugin-list .item-link");
+          if (!links.length) return;
+          const index = links.indexOf(document.activeElement);
+          const next =
+            event.key === "ArrowDown"
+              ? index < 0
+                ? 0
+                : Math.min(index + 1, links.length - 1)
+              : index <= 0
+                ? links.length - 1
+                : index - 1;
+          event.preventDefault();
+          links[next].focus({ preventScroll: true });
+          links[next].scrollIntoView({ block: "nearest" });
+          return;
+        }
+      }
       if (target.matches?.(".tags-add input")) {
         const root = target.closest(".tags");
         if (event.key === "Enter") {

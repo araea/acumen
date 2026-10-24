@@ -67,14 +67,14 @@ register_plugins!(
         config: recorder::RecorderConfig,
         on_sent: Some(recorder::on_sent),
         display_name: "消息记录",
-        section: "insight",
+        section: "data",
         summary: "把消息记录到数据库，为词云、统计等插件提供数据源",
         on_init: Some(recorder::init)
     },
     lurker {
         config: lurker::Config,
         display_name: "潜水清理",
-        section: "system",
+        section: "group",
         summary: "找出长期不说话的群成员：名单出成长图（带序号、分节、头像），群主管理员按序号挑人、确认后低速分批移出，中途冒泡的留下；可先 @ 提醒；机器人离线过也不会冤枉人；自动清理默认关",
         on_init: Some(lurker::init),
         commands: cmds![
@@ -90,7 +90,7 @@ register_plugins!(
     welcome {
         config: welcome::Config,
         display_name: "入群欢迎",
-        section: "system",
+        section: "group",
         summary: "进群 @ 欢迎（多种说法随机、可配图配头像、可自动撤回）、退群送别；可选入群验证（口令、验证码或算术，倒计时提醒、答错提示，超时移出或禁言）与加群申请自动审批",
         on_connected: Some(welcome::on_connected),
         commands: cmds![
@@ -103,13 +103,13 @@ register_plugins!(
         config: anti_recall::Config,
         on_receive: Some(anti_recall::on_receive),
         display_name: "防撤回",
-        section: "message",
+        section: "group",
         summary: "有人撤回消息时把原文转存到指定私聊或群；群黑白名单可收窄范围，连撤多条合并成一条转发"
     },
     nailong {
         config: nailong::Config,
         display_name: "奶龙提醒",
-        section: "system",
+        section: "group",
         summary: "认出群里的奶龙、奶蛙图，把原图与来龙去脉发到私聊或指定群，由管理员确认后处理；可选在账号是管理员时顺手撤回、禁言（默认关）",
         on_init: Some(nailong::init),
         commands: cmds![
@@ -125,7 +125,7 @@ register_plugins!(
     media {
         config: media::Config,
         display_name: "媒体转换",
-        section: "message",
+        section: "media",
         summary: "媒体与链接互转：图片或视频 ↔ 直链",
         commands: cmds![
             (
@@ -139,7 +139,7 @@ register_plugins!(
     sticker {
         config: sticker::Config,
         display_name: "表情收藏",
-        section: "message",
+        section: "media",
         summary: "收藏对方发送的表情或图片（需引用原消息）",
         commands: cmds![
             ("收 / 偷 / 存表情", "引用表情或图片后收藏"),
@@ -149,14 +149,32 @@ register_plugins!(
     group_title {
         config: group_title::Config,
         display_name: "群头衔",
-        section: "play",
+        section: "chat",
         summary: "机器人为群主时，给申请者设置群专属头衔",
         commands: cmds![("我要头衔 <文字>", "给自己申请一个群专属头衔")]
+    },
+    fake_title {
+        config: fake_title::Config,
+        display_name: "假头衔",
+        section: "chat",
+        summary: "普通成员也能把「群主 / 管理员」戴到机器人头上：手动一次、自动续报、轮换或随机切换；撑不了多久，趣味为主",
+        on_init: Some(fake_title::init),
+        commands: cmds![
+            ("假头衔 [群主|管理员|等级]", "给自己的机器人戴一枚群身份头衔，默认群主"),
+            ("假头衔 文字 <头衔>", "自定义文字头衔，最多六字；机器人是群主/管理员时更稳"),
+            ("假头衔 摘", "把头衔摘掉"),
+            ("假头衔 列表", "本群有哪些身份头衔、当前戴着哪一枚"),
+            ("假头衔 自动 [分钟]", "每隔几分钟自动续报一次，默认 8 分钟；群主/管理员可开"),
+            ("假头衔 波动 [头衔…] [分钟]", "在群主、管理员、等级之间轮换，例：假头衔 波动 群主,管理员,等级 5"),
+            ("假头衔 随机 [分钟]", "每轮从候选里随机挑一枚"),
+            ("假头衔 状态", "自动计划、下一轮与上次结果"),
+            ("假头衔 停", "停掉自动续报并摘掉头衔"),
+        ]
     },
     essence {
         config: essence::Config,
         display_name: "群精华",
-        section: "play",
+        section: "group",
         summary: "群主或管理员引用一条消息发「加精」收进群精华，「取消加精」移出；机器人需要是群主或管理员",
         commands: cmds![
             ("加精 / 设精华", "群管理：引用一条消息，把它设为群精华"),
@@ -167,21 +185,21 @@ register_plugins!(
         config: recall::Config,
         on_sent: Some(recall::on_sent),
         display_name: "消息撤回",
-        section: "message",
+        section: "chat",
         summary: "引用后发送撤回指令；用户撤回触发消息时自动撤回对应回复（可关闭）",
         commands: cmds![("撤回", "引用要撤回的消息后发送")]
     },
     echo {
         config: echo::Config,
         display_name: "消息回显",
-        section: "message",
+        section: "chat",
         summary: "回显参数内容（支持图片等富文本）",
         commands: cmds![("echo <内容>", "原样回显参数")]
     },
     markdown {
         config: markdown::Config,
         display_name: "Markdown 转图",
-        section: "message",
+        section: "media",
         summary: "把 Markdown 渲染成排版精致的图片：指令后直接写，或引用一条消息再发指令；长文自动分页",
         commands: cmds![
             (
@@ -196,13 +214,13 @@ register_plugins!(
         on_consumed: Some(repeater::interrupt),
         on_sent: Some(repeater::on_sent),
         display_name: "复读机",
-        section: "play",
+        section: "chat",
         summary: "同一句话接力到阈值就跟读一次；可设冷却与跟读概率，也可以按概率主动打断这次接力"
     },
     wordcloud {
         config: wordcloud::WordCloudConfig,
         display_name: "词云",
-        section: "insight",
+        section: "data",
         summary: "根据消息记录生成词云图",
         commands: cmds![
             (
@@ -216,7 +234,7 @@ register_plugins!(
     stats {
         config: stats::StatsConfig,
         display_name: "统计图表",
-        section: "insight",
+        section: "data",
         summary: "群统计图表：发言、发言字数、文本消息、表情、消息类型排行榜与走势，本群禁言榜（被禁言的人、动手的管理员，按次数、累计时长、单次最长或灰条所写时长），被艾特与艾特别人榜，支持早中晚与周月的错峰定时推送",
         commands: cmds![
             (
@@ -264,7 +282,7 @@ register_plugins!(
     gif {
         config: gif::Config,
         display_name: "GIF 工具箱",
-        section: "message",
+        section: "media",
         summary: "GIF 合成、变速、倒放、缩放、拆分与拼图",
         commands: cmds![
             ("gif帮助 / gifhelp", "GIF 工具使用帮助"),
@@ -282,14 +300,14 @@ register_plugins!(
     image_split {
         config: image_split::Config,
         display_name: "图片切分",
-        section: "message",
+        section: "media",
         summary: "将一张图按行列切片",
         commands: cmds![("裁剪 <行>x<列> / 切图 / 分割", "如：裁剪 3x3")]
     },
     qr_scan {
         config: qr_scan::Config,
         display_name: "二维码",
-        section: "message",
+        section: "media",
         summary: "二维码识别与生成：图里的码转成文字与链接（多个码在原图上标序号），文字转成好扫的二维码图，引用一条消息即可",
         commands: cmds![
             (
@@ -309,13 +327,13 @@ register_plugins!(
     video_parse {
         config: video_parse::Config,
         display_name: "视频解析",
-        section: "message",
+        section: "media",
         summary: "视频站链接（正文、小程序卡、分享卡）就地取原片进群；同一条消息默认全解析，可限条数并随机间隔；平台可配（默认仅 B 站，抖音可选开）"
     },
     song {
         config: song::Config,
         display_name: "点歌",
-        section: "play",
+        section: "media",
         summary: "点歌 <关键词>：B 站搜歌并由模型挑选，只回成品视频一条消息，不报错不吭声",
         commands: cmds![
             ("点歌 <歌名或关键词>", "找一首歌发进群；没写歌手名优先原唱与官方 MV"),
@@ -324,7 +342,7 @@ register_plugins!(
     webshot {
         config: webshot::Config,
         display_name: "网页截图",
-        section: "message",
+        section: "media",
         summary: "给消息里的网页链接自动截图（视频站链接交给「视频解析」）；manual_channels 名单内的群不自动截，可用指令手动触发",
         commands: cmds![
             ("截图 <链接> / webshot", "手动截图：链接写在指令后面，或引用一条含链接的消息"),
@@ -333,7 +351,7 @@ register_plugins!(
     autoreply {
         config: autoreply::Config,
         display_name: "自动回复",
-        section: "message",
+        section: "chat",
         summary: "群里问到设好的关键词就自动回（可带图、表情，或一整条合并转发）；每群单独设置，防误触（精确 / 包含 / 开头 / 正则、字数上限、冷却与限流），群管理员用指令或在控制台增删",
         on_init: Some(autoreply::init),
         commands: cmds![
@@ -350,7 +368,7 @@ register_plugins!(
     oai {
         config: oai::OaiConfig,
         display_name: "智能对话",
-        section: "play",
+        section: "ai",
         summary: "多房间智能体对话：每间房按需开工具（无工具 / 联网 / 全量），模型、历史各自管理",
         commands: cmds![
             ("oai", "接入状态（默认模型、各家供应商、联网走哪儿）与完整指令；oai 开头的指令带不带前缀都认"),
@@ -377,14 +395,14 @@ register_plugins!(
     ambient {
         config: ambient::AmbientConfig,
         display_name: "群聊搭话",
-        section: "play",
+        section: "ai",
         summary: "内置智能体以固定人格参与群聊，只在 [ambient] groups 的群生效",
         on_init: Some(ambient::init)
     },
     ai_news {
         config: ai_news::AiNewsConfig,
         display_name: "AI 资讯推送",
-        section: "insight",
+        section: "ai",
         summary: "AI 资讯、热点、日报周报月报与模型榜（数据源 AIHOT），引用卡片后回复序号取链接",
         commands: cmds![
             (

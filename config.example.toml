@@ -692,6 +692,26 @@ black = []
 [group_title]
 enabled = true
 
+# 假头衔：普通成员也能把「群主 / 管理员」戴到机器人头上，服务器下一次同步通常会收回，
+# 所以既能手动来一次，也能自动续报、轮换或随机切换。自动计划按群保存在
+# data/fake_title/plans.json，默认只有群主/管理员能开。
+[fake_title]
+enabled = true
+# 手动指令给谁用：all（所有人）或 admin（群主/管理员）。
+permission = "all"
+# 同一个群两次手动上报的最小间隔（秒）。
+cooldown_secs = 30
+# 自动续报的默认间隔（分钟）与随机抖动（分钟）。
+default_interval_minutes = 8
+jitter_minutes = 3
+# 自动模式只让群主/管理员开。
+auto_admin_only = true
+# 自动续报时顺带说一句的概率（0~1）；不想刷屏就写 0。
+announce_chance = 0.3
+# 自定义文字头衔（假头衔 文字 …）与最长字数。
+allow_custom_text = true
+max_text_chars = 6
+
 # 群精华：群主或管理员引用一条消息发「加精」收进群精华，「取消加精」移出。
 # 机器人自己也得是群主或管理员，否则 QQ 会回绝。
 [essence]

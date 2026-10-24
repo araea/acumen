@@ -246,6 +246,31 @@ pub async fn set_group_essence(
     Ok(())
 }
 
+/// 读群身份目录：群头衔（群主、管理员、群等级）与当前戴着哪一枚。
+pub async fn title_list(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: &str,
+) -> Result<Value, ApiError> {
+    writer
+        .call(ctx, "internal/title_list", json!({"guild_id": group_id}))
+        .await
+}
+
+/// 佩戴 / 更换 / 摘下自己头上的群身份头衔。
+///
+/// `params` 直接交给实现端的 `title_wear`：`role`（群主、管理员、等级、off）、
+/// `title`（自定义文字，走名片兜底）、`title_id`（指定编号）、`strategy`
+/// （`wear` / `card` / `auto`）与 `verify`。
+pub async fn title_wear(
+    ctx: &Context,
+    writer: LockedWriter,
+    _group_id: &str,
+    params: Value,
+) -> Result<Value, ApiError> {
+    writer.call(ctx, "internal/title_wear", params).await
+}
+
 /// 只读群管理里「展示成员群头衔」开关的当前状态，不写。
 pub async fn get_group_title_display(
     ctx: &Context,

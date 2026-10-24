@@ -78,9 +78,11 @@ struct Group {
 /// 统一落到最后一个分区，不会从帮助里消失。分区内的顺序沿用注册表顺序，
 /// 因此新增插件不需要在这里登记第二遍。
 const SECTIONS: &[(&str, &str, &str)] = &[
-    ("message", "消息 · 媒体", "MESSAGE"),
-    ("play", "互动 · 娱乐", "PLAY"),
-    ("insight", "统计 · 资讯", "INSIGHT"),
+    ("group", "群管理", "GROUP"),
+    ("chat", "聊天互动", "CHAT"),
+    ("media", "媒体工具", "MEDIA"),
+    ("ai", "AI · 资讯", "AI"),
+    ("data", "数据洞察", "DATA"),
     ("system", "系统 · 运维", "SYSTEM"),
     ("misc", "其他", "MISC"),
 ];
