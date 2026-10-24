@@ -171,6 +171,10 @@ pub(crate) enum Action {
         file_id: String,
         name: String,
     },
+    /// 读群公告列表（标题、正文、发布者、是否置顶）。
+    Bulletins,
+    /// 读群精华列表（谁发的、谁加的精、正文按本机历史能补则补）。
+    Essences,
 }
 /// 一个会被写进 QQ 的短名称：非空、不超长、不带控制字符。
 fn label(value: &str, max: usize) -> Result<()> {
@@ -474,6 +478,7 @@ impl Action {
                 id(file_id)?;
                 label(name, 120)?;
             }
+            Self::Bulletins | Self::Essences => {}
         }
         Ok(())
     }
@@ -496,6 +501,8 @@ impl Action {
                 | Self::FileUpload { .. }
                 | Self::FileDelete { .. }
                 | Self::FileRename { .. }
+                | Self::Bulletins
+                | Self::Essences
         )
     }
 

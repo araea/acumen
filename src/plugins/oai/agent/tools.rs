@@ -1025,6 +1025,8 @@ pub(crate) fn satori_action_schema(direct: bool) -> Value {
             json!({"file_id":id("要改名的文件 ID；须开放管理"),"name":id("新文件名")}),
             vec!["file_id", "name"],
         ),
+        ("bulletins", json!({}), vec![]),
+        ("essences", json!({}), vec![]),
     ] {
         let mut properties = properties;
         properties["action"] = json!({"const":name});

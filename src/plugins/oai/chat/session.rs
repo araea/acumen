@@ -40,7 +40,7 @@ use std::{
 /// 加账号级的四件（发说说、改昵称 / 签名 / 头像）——它们不落在会话上，两边都可用。
 /// 资料卡点赞在 Android QQ 上没有内核入口（见 satori-qq 的 JNI_CAPABILITIES），
 /// 试一次就要白占一次额度，2026-10 从两端一并删掉。
-pub(crate) const GROUP_ACTIONS: [&str; 24] = [
+pub(crate) const GROUP_ACTIONS: [&str; 26] = [
     "send",
     "poke",
     "react",
@@ -65,6 +65,8 @@ pub(crate) const GROUP_ACTIONS: [&str; 24] = [
     "file_upload",
     "file_delete",
     "file_rename",
+    "bulletins",
+    "essences",
 ];
 
 /// 私聊里能做的：群管理那一批没有对象，@ 也没有意义。
@@ -197,6 +199,8 @@ fn capability(action: &Action) -> &'static str {
         Action::FileUpload { .. } => "file_upload",
         Action::FileDelete { .. } => "file_delete",
         Action::FileRename { .. } => "file_rename",
+        Action::Bulletins => "bulletins",
+        Action::Essences => "essences",
     }
 }
 
@@ -1939,6 +1943,16 @@ impl Session {
                 "internal/group_file_rename",
                 json!({"guild_id":guild,"file_id":file_id.trim(),"name":name.trim()}),
                 format!("[群文件 {file_id} 改名为 {name}]"),
+            ),
+            Action::Bulletins => (
+                "internal/group_bulletin_get",
+                json!({"guild_id":guild}),
+                "[读了群公告]".to_string(),
+            ),
+            Action::Essences => (
+                "internal/group_essence_list",
+                json!({"guild_id":guild,"page_limit":20}),
+                "[翻了群精华]".to_string(),
             ),
         };
         ensure!(
