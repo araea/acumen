@@ -1099,94 +1099,67 @@
   async function overviewPage() {
     const data = await api("/overview");
     const health = !data.bots.length
-      ? { label: "等待连接", title: "还差一步就能开始", note: "添加实现端连接并重启，知微就能开始处理消息。", glyph: "hub", tone: "warning" }
+      ? { label: "等待连接", title: "还差一步就能开始", note: "添加实现端连接并重启，知微就能开始处理消息。", tone: "warning" }
       : data.plugins.pending
-        ? { label: "需要重启", title: `${data.plugins.pending} 个插件等待重启`, note: "其余服务运行正常，重启后即可完成应用。", glyph: "schedule", tone: "warning" }
-        : { label: "运行良好", title: "一切正常", note: `${data.bots.length} 个账号在线，${data.plugins.on} 个插件已就绪。`, glyph: "check_circle-fill", tone: "success" };
-    const stat = (glyph, label, value, unit, note, tone = "primary") =>
-      h`<div class="stat" data-tone="${tone}">
-        <dt class="stat-label"><span class="stat-icon">${icon(glyph)}</span><span>${label}</span></dt>
-        <dd class="stat-value"><span class="num">${value}</span><span class="stat-unit">${unit}</span></dd>
-        <dd class="stat-note">${note}</dd>
+        ? { label: "需要重启", title: `${data.plugins.pending} 个插件等待重启`, note: "其余服务运行正常，重启后即可完成应用。", tone: "warning" }
+        : { label: "运行良好", title: "一切正常", note: `${data.bots.length} 个账号在线，${data.plugins.on} 个插件已就绪。`, tone: "success" };
+    // 只有要处理的时候才出现一枚实心按钮；平常的重启 / 停止退成描边，焦点留给状态本身。
+    const primary = !data.bots.length
+      ? h`<a class="btn btn-filled" href="#/settings/connections">${icon("add")}添加连接</a>`
+      : "";
+    const metric = (label, value, unit, note, attrs = "") =>
+      h`<div class="metric">
+        <dt class="metric-label">${label}</dt>
+        <dd class="metric-value"><span class="num"${raw(attrs)}>${value}</span>${unit ? h`<span class="metric-unit">${unit}</span>` : ""}</dd>
+        <dd class="metric-note">${note}</dd>
       </div>`;
-    const quick = (href, glyph, title, note) =>
-      h`<a class="quick-action state" href="${href}">
-        <span class="quick-icon" aria-hidden="true">${icon(glyph)}</span>
-        <span class="quick-copy"><strong>${title}</strong><span>${note}</span></span>
-        ${icon("arrow_forward", "quick-arrow")}
-      </a>`;
     const bots = data.bots.length
-      ? h`<ul class="group connection-list">${data.bots.map(
-          (bot) => h`<li class="item connection-item">
+      ? h`<ul class="stage-bots" aria-label="在线账号">${data.bots.map(
+          (bot) => h`<li class="stage-bot">
             ${botAvatar(bot)}
-            <div class="item-content">
-              <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag tag-platform" data-platform="${bot.platform}">${platformName(bot.platform)}</span></span>
-              <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "实现端已连接，等待账号信息"}</span>
-            </div>
-            <span class="connection-online">${icon("check_circle-fill")}<span>在线</span></span>
+            <span class="stage-bot-text">
+              <span class="stage-bot-name">${bot.name || bot.nick || "未识别的账号"}</span>
+              <span class="stage-bot-sub"><span class="stage-bot-state">在线</span> · ${platformName(bot.platform)}${bot.id ? ` ${bot.id}` : " · 等待账号信息"}</span>
+            </span>
           </li>`
         )}</ul>`
-      : h`<div class="empty home-empty">
-          <span class="empty-mark">${icon("hub")}</span><p>还没有在线账号。添加连接并重启后，就能在这里看到状态。</p>
-          <a class="btn btn-tonal" href="#/settings/connections">${icon("add")}添加连接</a>
-        </div>`;
+      : h`<p class="stage-empty">${icon("hub")}<span>还没有在线账号。添加连接并重启后，就能在这里看到状态。</span></p>`;
 
     return h`<div class="page home-page">
-      ${pageHead("总览", "运行状态、消息动态和常用入口，一眼看清。")}
+      ${pageHead("总览", h`${NAME} v${data.app.version} · 启动于 <time>${data.app.started}</time>`)}
       <div class="overview">
-        <div class="home-top">
-          <section class="hero home-runtime" aria-labelledby="hero-label" data-started="${data.app.started}" data-tone="${health.tone}">
-            <div class="hero-top"><span class="hero-eyebrow">${NAME} · v${data.app.version}</span><span class="status status-${health.tone}">${health.label}</span></div>
-            <div class="hero-main">
-              <span class="hero-signal" aria-hidden="true"><span class="hero-signal-shape"></span>${icon(health.glyph)}</span>
-              <div class="hero-copy"><h2 class="hero-title" id="hero-label">${health.title}</h2><p class="hero-description">${health.note}</p></div>
+        <section class="hero stage" aria-labelledby="hero-label" data-started="${data.app.started}" data-tone="${health.tone}">
+          <div class="stage-head">
+            <div class="stage-copy">
+              <span class="status status-${health.tone}">${health.label}</span>
+              <h2 class="stage-title" id="hero-label">${health.title}</h2>
+              <p class="stage-note">${health.note}</p>
             </div>
-            <div class="hero-runtime-line">
-              <div><span class="hero-label">连续运行</span><p class="hero-value" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</p></div>
-              <p class="hero-note">启动于<br><time>${data.app.started}</time></p>
+            <div class="actions stage-actions" role="group" aria-label="运行">
+              ${primary}
+              <button class="btn ${data.plugins.pending ? "btn-filled" : "btn-tonal"}" type="button" data-restart>${icon("restart_alt")}重启</button>
+              ${lifecycle.panel ? h`<button class="btn btn-text btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
             </div>
-            <div class="actions hero-actions">
-              <a class="btn btn-filled" href="${data.bots.length ? "#/plugins" : "#/settings/connections"}">${icon(data.bots.length ? "extension" : "hub")}${data.bots.length ? "管理插件" : "添加连接"}</a>
-              <div class="btn-group" role="group" aria-label="运行">
-                <a class="btn btn-tonal" href="#/logs">${icon("receipt_long")}日志</a>
-                <button class="btn btn-tonal" type="button" data-restart>${icon("restart_alt")}重启</button>
-                ${lifecycle.panel ? h`<button class="btn btn-tonal btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
-              </div>
-            </div>
-          </section>
-
-          <section class="quick-panel" aria-labelledby="quick-title">
-            <div class="home-panel-head"><div><h2 id="quick-title">常用操作</h2></div></div>
-            <nav class="quick-grid" aria-label="快捷入口">
-              ${quick("#/plugins", "extension", "插件管理", `${data.plugins.on} 个已启用`)}
-              ${quick("#/ambient", "forum", "群聊搭话", "人格与房间")}
-              ${quick("#/settings", "tune", "全局设置", "指令与群范围")}
-              ${quick("#/logs", "receipt_long", "实时日志", "运行详情")}
-            </nav>
-          </section>
-        </div>
-
-        <section class="home-stats" aria-label="消息与插件统计">
-          <dl class="stats">
-            ${stat("chat", "今日消息", num(data.messages.today), "条", "今天累计接收")}
-            ${stat("groups", "今日发言", num(data.messages.people), "人", "独立发言人", "secondary")}
-            ${stat("date_range", "近 7 天消息", num(data.messages.week), "条", `日均 ${num(Math.round(data.messages.week / 7))} 条`, "tertiary")}
-            ${stat("extension", "已启用插件", num(data.plugins.on), `/ ${data.plugins.total} 个`, data.plugins.pending ? `${data.plugins.pending} 个待重启` : "全部按当前配置运行", "success")}
+          </div>
+          <dl class="stage-metrics">
+            ${metric("连续运行", duration(data.app.uptime), "", "从上次启动算起", ` data-uptime="${data.app.uptime}"`)}
+            ${metric("今日消息", num(data.messages.today), "条", `近 7 天 ${num(data.messages.week)} 条`)}
+            ${metric("今日发言", num(data.messages.people), "人", "去重后的发言人")}
+            ${metric("插件", num(data.plugins.on), `/ ${data.plugins.total}`, data.plugins.pending ? `${data.plugins.pending} 个待重启` : "按当前配置运行")}
           </dl>
+          <div class="stage-foot">
+            ${bots}
+            <a class="btn btn-text stage-link" href="#/settings/connections">管理连接${icon("chevron_right", "i-end")}</a>
+          </div>
         </section>
 
-        <div class="home-lower section-wide">
-          <section class="card home-panel home-activity" aria-labelledby="recent-title">
-            <div class="home-panel-head"><div><span class="home-eyebrow">实时动态</span><h2 id="recent-title">最近日志</h2></div>
-              <a class="btn btn-text" href="#/logs">全部日志${icon("chevron_right", "i-end")}</a></div>
-            <div class="log log-short home-log" id="overview-log" aria-live="off"><p class="log-empty">正在读取最近日志…</p></div>
-          </section>
-          <section class="card home-panel home-connections" aria-labelledby="bots-title">
-            <div class="home-panel-head"><div><span class="home-eyebrow">Satori</span><h2 id="bots-title">在线连接</h2></div>
-              <a class="icon-btn state" href="#/settings/connections" aria-label="管理连接" title="管理连接">${icon("arrow_forward")}</a></div>
-            ${bots}
-          </section>
-        </div>
+        <section class="section home-activity" aria-labelledby="recent-title">
+          <div class="section-head">
+            <h2 class="section-title" id="recent-title">实时动态</h2>
+            <a class="btn btn-text" href="#/logs">全部日志${icon("chevron_right", "i-end")}</a>
+          </div>
+          <div class="log log-short home-log" id="overview-log" aria-live="off"><p class="log-empty">正在读取最近日志…</p></div>
+        </section>
       </div>
     </div>`;
   }
@@ -1554,18 +1527,17 @@
         .map(([code, members]) => {
           const meta = sectionMeta(code);
           const on = members.filter((plugin) => plugin.on).length;
-          return h`<section class="plugin-block" data-tone="${code}" aria-labelledby="block-${code}">
+          return h`<section class="plugin-block" aria-labelledby="block-${code}">
             <h2 class="list-title" id="block-${code}">
-              <span class="list-title-icon" aria-hidden="true">${icon(meta.icon)}</span>
-              <span class="list-title-text">${nameOf(code)}<span class="list-title-hint">${meta.hint}</span></span>
-              <span class="num" aria-label="共 ${members.length} 个插件，${on} 个已启用">${members.length}</span>
+              <span class="list-title-text">${nameOf(code)}</span>
+              <span class="num" aria-label="共 ${members.length} 个插件，${on} 个已启用">${on < members.length ? `${on} / ${members.length}` : members.length}</span>
             </h2>
-            <ul class="group">${members.map(
+            <ul class="group plate-list">${members.map(
               (plugin) => h`<li class="item" data-plugin="${plugin.name}">
                 ${pluginTile(plugin)}
                 <div class="item-content">
                   <a class="item-link item-title" href="#/plugins/${encodeURIComponent(plugin.name)}"${attr(plugin.name === this.selected, 'aria-current="page"')}>
-                    ${plugin.display}<span class="tag">${plugin.name}</span>${plugin.pending ? h`<span class="status status-warning">待重启</span>` : ""}
+                    ${plugin.display}${plugin.pending ? h`<span class="status status-warning">待重启</span>` : ""}
                   </a>
                   <span class="item-sub">${plugin.summary}</span>
                 </div>
@@ -1593,41 +1565,22 @@
       return list;
     },
 
-    /** 分类网格：手机与平板 4×2、宽屏一行，所有分类一屏都在，不必横向滑动。
-     *  每格是 tonal 容器 + 图标 + 名称 + 总数；选中时图标填色、圆角与阴影抬起。 */
+    /** 分类筛选：一排单选芯片（名称 + 个数），窄屏横着滑，宽了换行。读屏走 radiogroup / radio。 */
     sectionPicker() {
       const counts = new Map();
-      const enabled = new Map();
-      for (const plugin of this.data.plugins) {
-        counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
-        if (plugin.on) enabled.set(plugin.section, (enabled.get(plugin.section) || 0) + 1);
-      }
-      const card = (code, label, longName, hint, glyph, total, on) =>
-        h`<button class="section-card" type="button" role="radio" data-section="${code}" data-tone="${code || "all"}"
+      for (const plugin of this.data.plugins) counts.set(plugin.section, (counts.get(plugin.section) || 0) + 1);
+      const chip = (code, label, longName, hint, total) =>
+        h`<button class="chip state" type="button" role="radio" data-section="${code}"
             aria-checked="${bool(this.section === code)}" aria-controls="plugin-list"
             tabindex="${this.section === code ? "0" : "-1"}" title="${hint}"
-            aria-label="${longName}：${total} 个插件，${on} 个已启用。${hint}">
-          <span class="section-card-top">
-            <span class="section-card-icon" aria-hidden="true">${icon(glyph)}</span>
-            <span class="section-card-count num" aria-hidden="true">${total}</span>
-          </span>
-          <span class="section-card-name">${label}</span>
+            aria-label="${longName}：${total} 个插件。${hint}">
+          ${icon("check")}<span>${label}</span><span class="chip-count" aria-hidden="true">${total}</span>
         </button>`;
       return [
-        card("", "全部", "全部插件", "所有插件一屏看全", "grid_view", this.data.plugins.length,
-          this.data.plugins.filter((plugin) => plugin.on).length),
-        ...this.categories().map((section) => {
-          const meta = sectionMeta(section.code);
-          return card(
-            section.code,
-            sectionLabel(section.code, section.name),
-            section.name,
-            meta.hint,
-            meta.icon,
-            counts.get(section.code),
-            enabled.get(section.code) || 0
-          );
-        }),
+        chip("", "全部", "全部插件", "所有插件", this.data.plugins.length),
+        ...this.categories().map((section) =>
+          chip(section.code, sectionLabel(section.code, section.name), section.name, sectionMeta(section.code).hint, counts.get(section.code))
+        ),
       ];
     },
 
@@ -1660,43 +1613,31 @@
     /** 分类是单选：选中后立即筛列表，并把选择记在本机；焦点留在同一格上。 */
     chooseSection(code) {
       const next = code || "";
-      const changed = this.section !== next;
       this.section = next;
       try {
         if (next) localStorage.setItem("acumen.plugins.section", next);
         else localStorage.removeItem("acumen.plugins.section");
       } catch {}
       this.repaint();
-      $(`[data-section="${CSS.escape(next)}"]`)?.focus({ preventScroll: true });
-      if (changed) this.revealList();
+      const chip = $(`[data-section="${CSS.escape(next)}"]`);
+      chip?.focus({ preventScroll: true });
+      chip?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     },
 
-    /** 宽屏分类格吸顶时，从列表深处切分类后把工具条带回可见区；窄屏不抢滚动。 */
-    revealList() {
-      if (!wide.matches) return;
-      const toolbar = $(".plugin-toolbar");
-      const nav = $(".section-nav");
-      if (!toolbar || !nav) return;
-      // 不用 scrollIntoView：它算不到吸顶分类格占掉的高度，工具条会藏在格子后面。
-      // 等一帧再量：过滤后列表变短，浏览器的滚动锚定会先把 scrollY 收敛到新的上限。
-      requestAnimationFrame(() => {
-        const below = nav.getBoundingClientRect().bottom;
-        const top = toolbar.getBoundingClientRect().top;
-        if (top >= below) return;
-        // 直接落位：跨分类时列表高度会骤降，省得和滚动锚定打架。
-        scrollBy({ top: top - below - 8, behavior: "auto" });
-      });
-    },
-
-    /** 按启用状态筛：全部 / 已启用 / 已停用，带个数，一眼看清。 */
+    /** 状态只留一个开关芯片「已停用」：大多数插件都开着，要找的往往是关掉的那几个。 */
     statusChips() {
-      const on = this.data.plugins.filter((p) => p.on).length;
+      const off = this.data.plugins.filter((p) => !p.on).length;
+      const pressed = this.status === "off";
+      return h`<button class="chip state" type="button" data-status-filter="${pressed ? "" : "off"}" aria-pressed="${bool(pressed)}"
+          aria-label="只看已停用，${off} 个">${icon("check")}<span>已停用</span><span class="chip-count" aria-hidden="true">${off}</span></button>`;
+    },
+
+    /** 页头的一句话：此刻的状态，不是使用说明。 */
+    headline() {
       const total = this.data.plugins.length;
-      const chip = (code, label, count) =>
-        h`<button class="chip state" type="button" data-status-filter="${code}" aria-pressed="${bool(this.status === code)}"
-            aria-label="${label}，${count} 个">
-          <span>${label}</span><span class="chip-count" aria-hidden="true">${count}</span></button>`;
-      return [chip("", "全部", total), chip("on", "已启用", on), chip("off", "已停用", total - on)];
+      const on = this.data.plugins.filter((plugin) => plugin.on).length;
+      const pending = this.data.plugins.filter((plugin) => plugin.pending).length;
+      return `${total} 个插件，${on} 个在运行${pending ? `，${pending} 个等待重启` : total > on ? `，${total - on} 个停用` : ""}。`;
     },
 
     summary() {
@@ -1719,6 +1660,8 @@
       put($("#plugin-list"), this.rows());
       put($("#plugin-chips"), this.sectionPicker());
       put($("#plugin-status"), this.statusChips());
+      const head = $("#plugin-head-summary");
+      if (head) head.textContent = this.headline();
       const status = $("#plugin-count");
       if (status) status.textContent = this.summary();
       const clear = $("#plugin-clear");
@@ -1844,10 +1787,7 @@
 
     const title = detail && !(detail instanceof Error) ? detail.display : "";
     return h`<div class="page page-plugins"${title ? h` data-title="${title}"` : ""}>
-      ${pageHead("插件", "所有分类一屏摆开，点一下就能筛；开关即时生效，配置随改随存。")}
-      <div class="section-nav">
-        <div class="section-grid" id="plugin-chips" role="radiogroup" aria-label="按用途筛选插件">${plugins.sectionPicker()}</div>
-      </div>
+      ${pageHead("插件", h`<span id="plugin-head-summary">${plugins.headline()}</span>`)}
       <div class="split"${attr(dual, "data-dual")}>
         <div class="split-list">
           <div class="plugin-toolbar">
@@ -1856,7 +1796,11 @@
                 aria-label="搜索插件、分类或指令" autocomplete="off" value="${plugins.query}">
               <kbd class="search-key" aria-hidden="true">/</kbd>
             </div>
-            <div class="chips filter-segments" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
+            <div class="filter-row">
+              <div class="filter-chips" id="plugin-chips" role="radiogroup" aria-label="按用途筛选插件">${plugins.sectionPicker()}</div>
+              <span class="filter-divider" aria-hidden="true"></span>
+              <div class="filter-chips" id="plugin-status" role="group" aria-label="按状态筛选">${plugins.statusChips()}</div>
+            </div>
           </div>
           <p class="section-meta plugin-count-line"${attr(!plugins.filtered(), "hidden")}>
             <span id="plugin-count" role="status">${plugins.summary()}</span>
@@ -1882,7 +1826,7 @@
             ${heading(sub, "commands-title", "指令")}
             <span class="section-meta">${plugin.commands.length} 条 · 点按复制</span>
           </div>
-          <ul class="group">${plugin.commands.map(
+          <ul class="group plate-list">${plugin.commands.map(
             (command) => h`<li><button class="item" type="button" data-copy="${command.cmd}" aria-label="复制指令 ${command.cmd}">
               <span class="item-content"><span class="item-title"><code class="tag">${command.cmd}</code></span>
               <span class="item-sub">${command.note}</span></span>
@@ -2181,6 +2125,13 @@
   const fieldOrder = ([keyA, a], [keyB, b]) =>
     (keyB === "enabled" && typeof b === "boolean") - (keyA === "enabled" && typeof a === "boolean") || isTable(a) - isTable(b);
 
+  /** 说明文字。超过两行的先收起来，旁边一枚「展开」；读屏照样读全文（只是视觉上截断）。 */
+  const LONG_HINT = 64;
+  const hint = (id, text) =>
+    String(text).length > LONG_HINT
+      ? h`<span class="field-hint" id="${id}" data-clamp>${text}</span><button class="hint-more" type="button" data-hint-more="${id}" aria-expanded="false" aria-controls="${id}">展开</button>`
+      : h`<span class="field-hint" id="${id}">${text}</span>`;
+
   /** 一个配置项。子表展开成 fieldset，叶子就地成为能改的控件：
    *  名字（键）与说明各占一行，说明挂在控件的 aria-describedby 上，不混进控件的名字。 */
   function configField(path, key, value, ctx, { master = false } = {}) {
@@ -2191,7 +2142,7 @@
     const search = `${path} ${labelOf(ctx, path)} ${description}`.toLowerCase();
     const text = (label) => h`<div class="field-text">
         <div class="field-top">${label}${master ? h`<span class="tag">总开关</span>` : ""}<span class="mod-tag"${attr(!meta.modified, "hidden")}>已改</span>${meta.action}</div>
-        ${description ? h`<span class="field-hint" id="${desc}">${description}</span>` : ""}
+        ${description ? hint(desc, description) : ""}
         ${mootNote(ctx, path)}
       </div>`;
     const name = keyName(ctx, path, key);
@@ -3079,6 +3030,8 @@
     if (!form) return;
     const terms = input.value.normalize("NFKC").toLowerCase().split(/\s+/).filter(Boolean);
     const hit = (node) => terms.every((term) => (node.dataset.search || "").includes(term));
+    // 筛选时命中的行不再相邻，拼成一张纸的圆角接不上：各自成片。
+    form.toggleAttribute("data-filtering", terms.length > 0);
     // 由里往外：先判每一行，再判装着它们的项与小节——小节自己的名字命中时整节都留着。
     const groups = $$("fieldset[data-search], details.entry", form);
     for (const row of $$("[data-setting]", form)) {
@@ -3131,6 +3084,8 @@
         if (counter) counter.textContent = plugins.summary();
         put($("#plugin-chips"), plugins.sectionPicker());
         put($("#plugin-status"), plugins.statusChips());
+        const head = $("#plugin-head-summary");
+        if (head) head.textContent = plugins.headline();
         // 正在按状态筛时，刚翻过的行可能已经不该出现：重画列表，焦点跟着走。
         if (plugins.status) {
           const inList = document.activeElement?.closest?.("#plugin-list");
@@ -3138,7 +3093,7 @@
           if (inList) {
             const still = $(`#plugin-list [data-plugin="${CSS.escape(name)}"] [data-toggle]`);
             if (still) still.focus({ preventScroll: true });
-            else $(`[data-status-filter="${CSS.escape(plugins.status)}"]`)?.focus({ preventScroll: true });
+            else $("[data-status-filter]")?.focus({ preventScroll: true });
           }
         }
       }
@@ -4443,7 +4398,7 @@
       { id: "stickers", label: "表情包", count: data.stickers.length },
     ];
     return h`<div class="page">
-      ${pageHead("搭话", "人设、它记住的人与事，以及收藏的表情包。")}
+      ${pageHead("搭话", `记得 ${data.memory.length} 个群里的人与事，收藏了 ${data.stickers.length} 张表情包。`)}
       <div>
         <div class="tabs" role="tablist" aria-label="搭话内容">
           ${tabs.map(
@@ -4467,16 +4422,16 @@
 
   function sourceEditor(source) {
     return h`<section class="card editor" aria-labelledby="source-${source.name}-title">
-      <div class="section-head">
-        <h2 class="section-title" id="source-${source.name}-title">${source.title}</h2>
-        <code class="tag">${source.file}</code>
+      <div class="editor-head">
+        <h2 class="editor-title" id="source-${source.name}-title">${source.title}</h2>
+        <code class="editor-file">${source.file}</code>
       </div>
       <p class="note" id="source-${source.name}-note">${source.note}保存后下一轮对话生效，旧版本会备份在同一目录。</p>
-      <textarea class="textarea textarea-tall" id="source-${source.name}" data-source="${source.name}" spellcheck="false"
+      <textarea class="textarea editor-text" id="source-${source.name}" data-source="${source.name}" spellcheck="false"
         aria-labelledby="source-${source.name}-title" aria-describedby="source-${source.name}-note">${sourceText(source.name)}</textarea>
       <div class="editor-foot">
         <span class="editor-state" id="source-${source.name}-state"${attr(dirty(source.name), "data-dirty")}>${editorState(source.name)}</span>
-        <button class="btn btn-filled" type="button" data-save-source="${source.name}"${attr(!dirty(source.name), "disabled")}>保存${source.title}</button>
+        <button class="btn btn-filled" type="button" data-save-source="${source.name}" aria-label="保存${source.title}"${attr(!dirty(source.name), "disabled")}>保存</button>
       </div>
     </section>`;
   }
@@ -4852,7 +4807,7 @@
 
   function logsPage() {
     return h`<div class="page">
-      ${pageHead("日志", "实时运行记录。向上滚动会暂停跟随，滚回底部继续。")}
+      ${pageHead("日志", "实时运行记录；往上翻会暂停跟随，回到底部继续。")}
       <section class="logs" aria-label="日志工作区">
         <div class="toolbar">
           <div class="search">${icon("search")}
@@ -4936,9 +4891,9 @@
     const mode = flags.white ? "white" : flags.black ? "black" : "all";
     const summary = globalScopeSummary(mode, filter.blacklist, filter.whitelist);
     const titles = {
-      general: ["全局设置", "指令、群聊范围与外观。常用选项放在前面，高级项按需展开。"],
-      connections: ["连接管理", "管理知微与聊天平台之间的实现端连接。"],
-      system: ["系统维护", "执行维护命令，查看版本与本机信息。"],
+      general: ["全局设置", "指令前缀、群聊接收范围与外观。"],
+      connections: ["连接管理", "知微与聊天平台之间的实现端连接。"],
+      system: ["系统维护", "维护命令、版本与本机信息。"],
     };
     const [title, subtitle] = titles[active] || titles.general;
     const head = pageHead(title, subtitle, {
@@ -5441,9 +5396,9 @@
           </div>
           <button class="btn btn-outlined" type="button" data-picker-add disabled>添加</button>
         </div>
-        <button class="btn btn-tonal picker-choose" type="button" data-picker-open>${icon(text.icon)}${text.pick}</button>
+        <button class="btn btn-text picker-choose" type="button" data-picker-open>${icon(text.icon)}${text.pick}</button>
       </div>
-      <span class="field-hint" id="${id}-hint">可以整段粘贴：逗号、空格、换行、引号都行。</span>
+      <span class="field-hint picker-hint" id="${id}-hint">可以整段粘贴：逗号、空格、换行、引号都行。</span>
       <input class="picker-value" id="${id}" type="text" hidden tabindex="-1" autocomplete="off" value="${JSON.stringify(list)}"
         ${name ? h`name="${name}"` : ""} ${path ? h`data-path="${path}" data-kind="list"` : ""}>
       <span class="visually-hidden picker-live" role="status"></span>
@@ -6897,10 +6852,18 @@
         }
         return;
       }
+      if ((hit = on("[data-hint-more]"))) {
+        const target = document.getElementById(hit.dataset.hintMore);
+        const open = !target?.hasAttribute("data-open");
+        target?.toggleAttribute("data-open", open);
+        hit.setAttribute("aria-expanded", bool(open));
+        hit.textContent = open ? "收起" : "展开";
+        return;
+      }
       if ((hit = on("[data-status-filter]"))) {
         plugins.status = hit.dataset.statusFilter;
         plugins.repaint();
-        $(`[data-status-filter="${CSS.escape(plugins.status)}"]`)?.focus({ preventScroll: true });
+        $("[data-status-filter]")?.focus({ preventScroll: true });
         return;
       }
       if ((hit = on("[data-section]"))) {
