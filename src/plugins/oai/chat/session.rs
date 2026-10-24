@@ -36,10 +36,11 @@ use std::{
 /// 人格对「自己能做什么」的认知不该只靠 skill 里那张手写的表——文档会过期，
 /// 这份清单和代码一起走，`satori_context` 每次都照它报告。
 ///
-/// 私聊里只剩会真的落到这个会话上的五件：发消息、撤回、戳一戳、表态、合并转发。
+/// 私聊里只剩会真的落到这个会话上的九件：发消息、撤回、戳一戳、表态、合并转发，
+/// 加账号级的四件（发说说、改昵称 / 签名 / 头像）——它们不落在会话上，两边都可用。
 /// 资料卡点赞在 Android QQ 上没有内核入口（见 satori-qq 的 JNI_CAPABILITIES），
 /// 试一次就要白占一次额度，2026-10 从两端一并删掉。
-pub(crate) const GROUP_ACTIONS: [&str; 15] = [
+pub(crate) const GROUP_ACTIONS: [&str; 24] = [
     "send",
     "poke",
     "react",
@@ -55,10 +56,29 @@ pub(crate) const GROUP_ACTIONS: [&str; 15] = [
     "rename_group",
     "approve",
     "announce",
+    "feed",
+    "nick",
+    "signature",
+    "avatar",
+    "files_list",
+    "file_download",
+    "file_upload",
+    "file_delete",
+    "file_rename",
 ];
 
 /// 私聊里能做的：群管理那一批没有对象，@ 也没有意义。
-pub(crate) const DIRECT_ACTIONS: [&str; 5] = ["send", "poke", "react", "recall", "forward"];
+pub(crate) const DIRECT_ACTIONS: [&str; 9] = [
+    "send",
+    "poke",
+    "react",
+    "recall",
+    "forward",
+    "feed",
+    "nick",
+    "signature",
+    "avatar",
+];
 
 /// 这一轮这个会话接受的动作。
 pub(crate) fn action_kinds(place: &Place) -> &'static [&'static str] {
@@ -168,6 +188,15 @@ fn capability(action: &Action) -> &'static str {
         Action::RenameGroup { .. } => "rename_group",
         Action::Approve { .. } => "approve",
         Action::Announce { .. } => "announce",
+        Action::Feed { .. } => "feed",
+        Action::Nick { .. } => "nick",
+        Action::Signature { .. } => "signature",
+        Action::Avatar { .. } => "avatar",
+        Action::FilesList { .. } => "files_list",
+        Action::FileDownload { .. } => "file_download",
+        Action::FileUpload { .. } => "file_upload",
+        Action::FileDelete { .. } => "file_delete",
+        Action::FileRename { .. } => "file_rename",
     }
 }
 
@@ -1844,6 +1873,72 @@ impl Session {
                     Ok(turn) if !turn.from_me => format!("[撤回 {} 的消息 {message_id}]", turn.name),
                     _ => format!("[撤回自己的消息 {message_id}]"),
                 },
+            ),
+            Action::Feed { text } => (
+                "internal/feed_publish",
+                json!({"text":text.trim()}),
+                format!(
+                    "[发了条说说：{}]",
+                    crate::plugins::oai::utils::one_line(text).chars().take(40).collect::<String>()
+                ),
+            ),
+            Action::Nick { nick } => (
+                "internal/nick",
+                json!({"nick":nick.trim()}),
+                format!("[QQ 昵称改为 {nick}]"),
+            ),
+            Action::Signature { signature } => (
+                "internal/long_nick",
+                json!({"text":signature.trim()}),
+                format!("[个性签名改为 {signature}]"),
+            ),
+            Action::Avatar { image } => {
+                let source = self.source(image.trim(), "avatar.jpg").await?;
+                (
+                    "internal/avatar",
+                    json!({"image":source}),
+                    "[换了 QQ 头像]".to_string(),
+                )
+            }
+            Action::FilesList { folder_id } => {
+                let mut params = json!({"guild_id":guild,"limit":40});
+                if let Some(folder) = folder_id.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                    params["folder_id"] = json!(folder);
+                }
+                (
+                    "internal/group_file_list",
+                    params,
+                    "[列了群文件]".to_string(),
+                )
+            }
+            Action::FileDownload { file_id } => (
+                "internal/group_file_download",
+                json!({"guild_id":guild,"file_id":file_id.trim()}),
+                format!("[下载群文件 {file_id}]"),
+            ),
+            Action::FileUpload { source, name } => {
+                let target = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                let path = self
+                    .source(source.trim(), target.unwrap_or("file.bin"))
+                    .await?;
+                (
+                    "internal/group_file_upload",
+                    json!({"guild_id":guild,"path":path,"name":target}),
+                    format!(
+                        "[上传群文件：{}]",
+                        target.unwrap_or(source.trim()).chars().take(40).collect::<String>()
+                    ),
+                )
+            }
+            Action::FileDelete { file_id } => (
+                "internal/group_file_delete",
+                json!({"guild_id":guild,"files":[file_id.trim()]}),
+                format!("[删除群文件 {file_id}]"),
+            ),
+            Action::FileRename { file_id, name } => (
+                "internal/group_file_rename",
+                json!({"guild_id":guild,"file_id":file_id.trim(),"name":name.trim()}),
+                format!("[群文件 {file_id} 改名为 {name}]"),
             ),
         };
         ensure!(

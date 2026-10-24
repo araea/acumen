@@ -940,6 +940,19 @@ pub(crate) fn satori_action_schema(direct: bool) -> Value {
         ]
     });
     let choices = schema["oneOf"].as_array_mut().unwrap();
+    // 账号级动作：说说与自己的资料（昵称 / 签名 / 头像），群聊与私聊都可用。
+    for (name, properties, required) in [
+        ("feed", json!({"text":id("说说正文，1–2000 字，换行照写；发在 QQ 空间，群里看不见")}), vec!["text"]),
+        ("nick", json!({"nick":id("新的 QQ 昵称")}), vec!["nick"]),
+        ("signature", json!({"signature":id("新的个性签名")}), vec!["signature"]),
+        ("avatar", json!({"image":id("已核实的图片直链或本轮工作目录里的文件")}), vec!["image"]),
+    ] {
+        let mut properties = properties;
+        properties["action"] = json!({"const":name});
+        let mut required = required;
+        required.push("action");
+        choices.push(json!({"type":"object","properties":properties,"required":required,"additionalProperties":false}));
+    }
     // 私聊里没有群：群管理那一批连候选都不给，免得模型对着按不动的按钮想半天。
     if direct {
         return schema;
@@ -986,6 +999,31 @@ pub(crate) fn satori_action_schema(direct: bool) -> Value {
             "announce",
             json!({"text":id("公告正文，1–1000 字，换行照写"),"pinned":{"type":"boolean","description":"置顶，默认 false"},"image":id("可选配图：已核实的图片直链或本轮工作目录里的文件")}),
             vec!["text"],
+        ),
+        (
+            "files_list",
+            json!({"folder_id":id("要列的文件夹 ID，省略列根目录")}),
+            vec![],
+        ),
+        (
+            "file_download",
+            json!({"file_id":id("files_list 里拿到的文件 ID")}),
+            vec!["file_id"],
+        ),
+        (
+            "file_upload",
+            json!({"source":id("本轮工作目录里的文件路径，或已核实的直链"),"name":id("群里显示的文件名，省略沿用原名")}),
+            vec!["source"],
+        ),
+        (
+            "file_delete",
+            json!({"file_id":id("要删除的文件 ID；须开放管理")}),
+            vec!["file_id"],
+        ),
+        (
+            "file_rename",
+            json!({"file_id":id("要改名的文件 ID；须开放管理"),"name":id("新文件名")}),
+            vec!["file_id", "name"],
         ),
     ] {
         let mut properties = properties;

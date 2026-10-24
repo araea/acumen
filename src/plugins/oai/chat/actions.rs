@@ -136,6 +136,41 @@ pub(crate) enum Action {
         #[serde(default)]
         texts: Vec<String>,
     },
+    /// 发一条 QQ 空间说说（文本动态）。动态发在空间，不是本群。
+    Feed {
+        text: String,
+    },
+    /// 改自己的 QQ 昵称 / 个性签名 / 头像（账号级，跟群无关）。
+    Nick {
+        nick: String,
+    },
+    Signature {
+        signature: String,
+    },
+    Avatar {
+        /// 已核实的图片直链或本轮工作目录里的文件。
+        image: String,
+    },
+    /// 群文件：列出 / 下载 / 上传 / 删除 / 改名。
+    FilesList {
+        #[serde(default)]
+        folder_id: Option<String>,
+    },
+    FileDownload {
+        file_id: String,
+    },
+    FileUpload {
+        source: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    FileDelete {
+        file_id: String,
+    },
+    FileRename {
+        file_id: String,
+        name: String,
+    },
 }
 /// 一个会被写进 QQ 的短名称：非空、不超长、不带控制字符。
 fn label(value: &str, max: usize) -> Result<()> {
@@ -412,6 +447,33 @@ impl Action {
                     );
                 }
             }
+            Self::Feed { text } => {
+                let count = text.trim().chars().count();
+                ensure!((1..=2000).contains(&count), "说说正文 1–2000 字");
+                ensure!(
+                    !text.lines().any(super::attention::is_control),
+                    "关注指令写在最终输出里，不进说说"
+                );
+            }
+            Self::Nick { nick } => label(nick, 30)?,
+            Self::Signature { signature } => label(signature, 120)?,
+            Self::Avatar { image } => {
+                ensure!(!image.trim().is_empty(), "头像来源是空的");
+            }
+            Self::FilesList { .. } => {}
+            Self::FileDownload { file_id } | Self::FileDelete { file_id } => {
+                id(file_id)?;
+            }
+            Self::FileUpload { source, name } => {
+                ensure!(!source.trim().is_empty(), "上传来源是空的");
+                if let Some(name) = name {
+                    label(name, 180)?;
+                }
+            }
+            Self::FileRename { file_id, name } => {
+                id(file_id)?;
+                label(name, 120)?;
+            }
         }
         Ok(())
     }
@@ -426,9 +488,14 @@ impl Action {
                 | Self::Mute { .. }
                 | Self::Kick { .. }
                 | Self::MuteAll { .. }
-                | Self::RenameGroup { .. }
+                |             Self::RenameGroup { .. }
                 | Self::Approve { .. }
                 | Self::Announce { .. }
+                | Self::FilesList { .. }
+                | Self::FileDownload { .. }
+                | Self::FileUpload { .. }
+                | Self::FileDelete { .. }
+                | Self::FileRename { .. }
         )
     }
 
@@ -455,7 +522,10 @@ impl Action {
             | Self::MuteAll { .. }
             | Self::RenameGroup { .. }
             | Self::Approve { .. }
-            | Self::Announce { .. } => true,
+            | Self::Announce { .. }
+            // 删、改群文件落在别人传的东西上，算管理；列表、下载、上传不算。
+            | Self::FileDelete { .. }
+            | Self::FileRename { .. } => true,
             _ => false,
         }
     }
