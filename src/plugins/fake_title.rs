@@ -332,6 +332,15 @@ async fn reply(ctx: &Context, writer: LockedWriter, group_id: &str, text: impl I
     let _ = send_msg(ctx, writer, Some(group_id), None, text.into()).await;
 }
 
+/// 实现端还是旧版时，把 404 说成一句能照做的话，而不是一串 JSON。
+fn friendly_error(error: &(dyn std::error::Error + Send + Sync)) -> String {
+    let text = error.to_string();
+    if text.contains("title_wear") || text.contains("title_list") || text.contains("unsupported") || text.contains("not found") {
+        return "知弦还没加载头衔接口：把知弦模块更新到 0.44.0 或更高，然后重启手机（只重启 QQ 不算）。".into();
+    }
+    text
+}
+
 /// 戴一次头衔，并把结果说成人话。
 async fn wear(ctx: &Context, writer: LockedWriter, group_id: &str, role: &str, custom: &str) {
     let value = api::title_wear(
@@ -373,7 +382,7 @@ async fn wear(ctx: &Context, writer: LockedWriter, group_id: &str, role: &str, c
             reply(ctx, writer, group_id, message).await;
         }
         Err(error) => {
-            reply(ctx, writer, group_id, format!("没戴成：{error}")).await;
+            reply(ctx, writer, group_id, format!("没戴成：{}", friendly_error(error.as_ref()))).await;
         }
     }
 }
@@ -433,7 +442,7 @@ async fn custom_wear(
             reply(ctx, writer, group_id, message).await;
         }
         Err(error) => {
-            reply(ctx, writer, group_id, format!("没写成：{error}")).await;
+            reply(ctx, writer, group_id, format!("没写成：{}", friendly_error(error.as_ref()))).await;
         }
     }
 }
@@ -482,7 +491,7 @@ async fn list(ctx: &Context, writer: LockedWriter, group_id: &str) {
             lines.push("发「假头衔 群主 / 管理员 / 等级」直接换。".to_string());
             reply(ctx, writer, group_id, lines.join("\n")).await;
         }
-        Err(error) => reply(ctx, writer, group_id, format!("读不到头衔目录：{error}")).await,
+        Err(error) => reply(ctx, writer, group_id, format!("读不到头衔目录：{}", friendly_error(error.as_ref()))).await,
     }
 }
 
