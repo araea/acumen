@@ -5876,15 +5876,15 @@
 
   const THEME_KEY = "acumen.theme";
   /* 引擎的取色表改过就加一：旧版算好的缓存不再贴（index.html 首帧那段认同一个数），登录后按原来的选择重算。 */
-  const THEME_ENGINE = 2;
-  const THEME_DEFAULT = { seed: "#3f51b5", variant: "tonal", mode: "system", contrast: "system" };
+  const THEME_ENGINE = 3;
+  const THEME_DEFAULT = { seed: "#3f51b5", variant: "fidelity", mode: "system", contrast: "system" };
   const SEEDS = [
     ["#3f51b5", "靛青"], ["#0061a4", "海蓝"], ["#006a6a", "青碧"], ["#386a20", "松绿"],
     ["#8b5000", "琥珀"], ["#b3261e", "朱砂"], ["#b0275b", "海棠"], ["#6750a4", "紫藤"], ["#5f6368", "石墨"],
   ];
   const VARIANTS = [
-    ["tonal", "柔和", "默认。主色收一点、表面带一丝色调，久看不累眼"],
-    ["fidelity", "原色", "主色就是你选的那一个，彩度不打折"],
+    ["fidelity", "原色", "默认。主色贴近你选的那一个，表面仍保持柔和"],
+    ["tonal", "柔和", "主色收一点、表面带一丝色调，久看不累眼"],
     ["vibrant", "鲜明", "彩度拉满，按钮与选中更醒目"],
     ["expressive", "跳色", "主色与第三色拉开色相，更有个性"],
     ["neutral", "素雅", "几乎只剩灰，颜色只留给要紧的地方"],

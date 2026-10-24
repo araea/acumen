@@ -69,7 +69,7 @@ const hex = (argb) => hexFromArgb(argb);
 
 function normalize(prefs = {}) {
   const seed = /^#[0-9a-f]{6}$/i.test(prefs.seed || "") ? prefs.seed.toLowerCase() : DEFAULT_SEED;
-  const variant = SCHEMES[prefs.variant] ? prefs.variant : "tonal";
+  const variant = SCHEMES[prefs.variant] ? prefs.variant : "fidelity";
   const mode = ["light", "dark"].includes(prefs.mode) ? prefs.mode : "system";
   const contrast = CONTRAST[prefs.contrast] !== undefined ? prefs.contrast : "system";
   return { seed, variant, mode, contrast };
