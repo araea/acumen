@@ -137,7 +137,6 @@
     return new Date(stamp).toLocaleDateString("zh-CN");
   }
 
-  const clock = () => new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
   const count = (text) => [...String(text)].length;
 
   /* ==================== §4 口令与接口 ==================== */
@@ -714,7 +713,10 @@
     const [head = "", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
     const page = PAGES.some((p) => p.id === head) ? head : "overview";
     let arg = null;
-    if (page === "settings" && rest[0] === "appearance") return { page, arg: "appearance", key: "settings/appearance" };
+    if (page === "settings") {
+      const arg = ["appearance", "connections", "system"].includes(rest[0]) ? rest[0] : null;
+      return { page, arg, key: arg ? `settings/${arg}` : page };
+    }
     if (page === "plugins" && rest.length) {
       try {
         arg = decodeURIComponent(rest.join("/")) || null;
@@ -763,14 +765,17 @@
     plugins: (route) => pluginsPage(route),
     ambient: () => ambientPage(),
     logs: () => logsPage(),
-    settings: (route) => (route.arg === "appearance" ? appearancePage() : settingsPage()),
+    settings: (route) => (route.arg === "appearance" ? appearancePage() : settingsPage(route)),
   };
 
   const MOUNT = {
     ambient: () => paintGroupNames(),
     overview: () => overviewFeed.start(),
     logs: () => logs.mount(),
-    settings: () => appearance.mount(),
+    settings: () => {
+      appearance.mount();
+      syncGlobalDraft();
+    },
   };
 
 
@@ -1000,8 +1005,8 @@
       const hero = $("[data-uptime]");
       if (hero) hero.textContent = duration(this.base + (Date.now() - this.at) / 1000);
       try {
-        const data = await api("/logs?limit=5");
-        const html = part((data.lines || []).slice(-5).map(logRow)) || part(h`<p class="log-empty">还没有日志</p>`);
+        const data = await api("/logs?limit=4");
+        const html = part((data.lines || []).slice(-4).map(logRow)) || part(h`<p class="log-empty">还没有日志</p>`);
         if (box.dataset.digest !== html) {
           box.dataset.digest = html;
           box.innerHTML = html;
@@ -1030,70 +1035,94 @@
 
   async function overviewPage() {
     const data = await api("/overview");
-    const stat = (glyph, label, value, unit) =>
-      h`<div class="stat"><dt class="stat-label"><span class="stat-icon">${icon(glyph)}</span>${label}</dt>
-        <dd class="stat-value"><span class="num">${value}</span>${unit ? h`<span class="stat-unit">${unit}</span>` : ""}</dd></div>`;
+    const health = !data.bots.length
+      ? { label: "等待连接", title: "还差一步就能开始", note: "添加实现端连接并重启，知微就能开始处理消息。", glyph: "hub", tone: "warning" }
+      : data.plugins.pending
+        ? { label: "需要重启", title: `${data.plugins.pending} 个插件等待重启`, note: "其余服务运行正常，重启后即可完成应用。", glyph: "schedule", tone: "warning" }
+        : { label: "运行良好", title: "一切正常", note: `${data.bots.length} 个账号在线，${data.plugins.on} 个插件已就绪。`, glyph: "check_circle-fill", tone: "success" };
+    const stat = (glyph, label, value, unit, note, tone = "primary") =>
+      h`<div class="stat" data-tone="${tone}">
+        <dt class="stat-label"><span class="stat-icon">${icon(glyph)}</span><span>${label}</span></dt>
+        <dd class="stat-value"><span class="num">${value}</span><span class="stat-unit">${unit}</span></dd>
+        <dd class="stat-note">${note}</dd>
+      </div>`;
+    const quick = (href, glyph, title, note) =>
+      h`<a class="quick-action state" href="${href}">
+        <span class="quick-icon" aria-hidden="true">${icon(glyph)}</span>
+        <span class="quick-copy"><strong>${title}</strong><span>${note}</span></span>
+        ${icon("arrow_forward", "quick-arrow")}
+      </a>`;
     const bots = data.bots.length
-      ? h`<ul class="group">${data.bots.map(
-          (bot) => h`<li class="item">
+      ? h`<ul class="group connection-list">${data.bots.map(
+          (bot) => h`<li class="item connection-item">
             ${botAvatar(bot)}
             <div class="item-content">
               <span class="item-title">${bot.name || bot.nick || "未识别的账号"}<span class="tag tag-platform" data-platform="${bot.platform}">${platformName(bot.platform)}</span></span>
-              <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "已连接实现端，账号尚未识别"}</span>
+              <span class="item-sub">${bot.id ? `账号 ${bot.id}` : "实现端已连接，等待账号信息"}</span>
             </div>
-            <div class="item-trailing"><span class="status status-success">已连接</span></div>
+            <span class="connection-online">${icon("check_circle-fill")}<span>在线</span></span>
           </li>`
         )}</ul>`
-      : h`<div class="card">${emptyState("还没有连接到任何实现端。在「设置」里添加一条连接，重启后生效。")}</div>`;
-    const pending = data.plugins.pending ? `，${data.plugins.pending} 个待重启` : "";
+      : h`<div class="empty home-empty">
+          <span class="empty-mark">${icon("hub")}</span><p>还没有在线账号。添加连接并重启后，就能在这里看到状态。</p>
+          <a class="btn btn-tonal" href="#/settings/connections">${icon("add")}添加连接</a>
+        </div>`;
 
-    return h`<div class="page">
-      ${pageHead("总览", "这台设备上知微的运行情况。")}
+    return h`<div class="page home-page">
+      ${pageHead("总览", "运行状态、消息动态和常用入口，一眼看清。")}
       <div class="overview">
-        <section class="hero" aria-labelledby="hero-label" data-started="${data.app.started}">
-          <span class="hero-art" aria-hidden="true"></span>
-          <div class="hero-top"><span>${NAME} v${data.app.version}</span><span class="status status-success">运行中</span></div>
-          <h2 class="hero-label" id="hero-label">已连续运行</h2>
-          <p class="hero-value" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</p>
-          <p class="hero-note">启动于 <time>${data.app.started}</time></p>
-          <div class="actions">
-            <a class="btn btn-filled" href="#/logs">${icon("receipt_long")}查看日志</a>
-            <a class="btn btn-outlined" href="#/plugins">${icon("extension")}管理插件</a>
-            <button class="btn btn-outlined" type="button" data-restart>${icon("restart_alt")}重启</button>
-            ${lifecycle.panel ? h`<button class="btn btn-outlined btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
-          </div>
-        </section>
+        <div class="home-top">
+          <section class="hero home-runtime" aria-labelledby="hero-label" data-started="${data.app.started}">
+            <span class="hero-art" aria-hidden="true"></span>
+            <div class="hero-top"><span>${NAME} · v${data.app.version}</span><span class="status status-${health.tone}">${health.label}</span></div>
+            <div class="hero-main">
+              <div class="hero-copy"><h2 class="hero-title" id="hero-label">${health.title}</h2><p class="hero-description">${health.note}</p></div>
+              <span class="hero-signal" aria-hidden="true">${icon(health.glyph)}</span>
+            </div>
+            <div class="hero-runtime-line">
+              <div><span class="hero-label">连续运行</span><p class="hero-value" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</p></div>
+              <p class="hero-note">启动于<br><time>${data.app.started}</time></p>
+            </div>
+            <div class="actions">
+              <a class="btn btn-filled" href="${data.bots.length ? "#/plugins" : "#/settings/connections"}">${icon(data.bots.length ? "extension" : "hub")}${data.bots.length ? "管理插件" : "添加连接"}</a>
+              <a class="btn btn-outlined" href="#/logs">${icon("receipt_long")}查看日志</a>
+              <button class="btn btn-outlined" type="button" data-restart>${icon("restart_alt")}重启</button>
+              ${lifecycle.panel ? h`<button class="btn btn-outlined btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
+            </div>
+          </section>
 
-        <section class="section" aria-labelledby="bots-title">
-          <div class="section-head">
-            <h2 class="section-title" id="bots-title">连接</h2>
-            <a class="btn btn-text" href="#/settings">管理连接</a>
-          </div>
-          ${bots}
-        </section>
+          <section class="quick-panel" aria-labelledby="quick-title">
+            <div class="home-panel-head"><div><span class="home-eyebrow">快捷入口</span><h2 id="quick-title">常用操作</h2></div></div>
+            <nav class="quick-grid" aria-label="快捷入口">
+              ${quick("#/plugins", "extension", "插件管理", `${data.plugins.on} 个已启用`)}
+              ${quick("#/ambient", "forum", "群聊搭话", "人格与房间")}
+              ${quick("#/settings", "tune", "全局设置", "指令与群范围")}
+              ${quick("#/logs", "receipt_long", "实时日志", "运行详情")}
+            </nav>
+          </section>
+        </div>
 
-        <section class="section section-wide" aria-labelledby="stats-title">
-          <div class="section-head">
-            <h2 class="section-title" id="stats-title">消息与插件</h2>
-            <span class="section-meta">更新于 <time>${clock()}</time></span>
-          </div>
+        <section class="home-stats" aria-label="消息与插件统计">
           <dl class="stats">
-            ${stat("chat", "今日消息", num(data.messages.today), "条")}
-            ${stat("groups", "今日发言", num(data.messages.people), "人")}
-            ${stat("date_range", "近 7 天消息", num(data.messages.week), "条")}
-            <div class="stat stat-plugins"><dt class="stat-label"><span class="stat-icon">${icon("extension")}</span>已启用插件</dt>
-              <dd class="stat-value"><span class="num">${data.plugins.on} / ${data.plugins.total}</span>${pending ? h`<span class="stat-unit">${pending.slice(1)}</span>` : ""}</dd>
-              <meter class="meter" min="0" max="${data.plugins.total}" value="${data.plugins.on}" aria-label="已启用 ${data.plugins.on} 个，共 ${data.plugins.total} 个"></meter></div>
+            ${stat("chat", "今日消息", num(data.messages.today), "条", "今天累计接收")}
+            ${stat("groups", "今日发言", num(data.messages.people), "人", "独立发言人", "secondary")}
+            ${stat("date_range", "近 7 天消息", num(data.messages.week), "条", `日均 ${num(Math.round(data.messages.week / 7))} 条`, "tertiary")}
+            ${stat("extension", "已启用插件", num(data.plugins.on), `/ ${data.plugins.total} 个`, data.plugins.pending ? `${data.plugins.pending} 个待重启` : "全部按当前配置运行", "success")}
           </dl>
         </section>
 
-        <section class="section section-wide" aria-labelledby="recent-title">
-          <div class="section-head">
-            <h2 class="section-title" id="recent-title">最近日志</h2>
-            <a class="btn btn-text" href="#/logs">全部日志${icon("chevron_right", "i-end")}</a>
-          </div>
-          <div class="log log-short" id="overview-log"></div>
-        </section>
+        <div class="home-lower section-wide">
+          <section class="card home-panel home-activity" aria-labelledby="recent-title">
+            <div class="home-panel-head"><div><span class="home-eyebrow">实时动态</span><h2 id="recent-title">最近日志</h2></div>
+              <a class="btn btn-text" href="#/logs">全部日志${icon("chevron_right", "i-end")}</a></div>
+            <div class="log log-short home-log" id="overview-log" aria-live="off"><p class="log-empty">正在读取最近日志…</p></div>
+          </section>
+          <section class="card home-panel home-connections" aria-labelledby="bots-title">
+            <div class="home-panel-head"><div><span class="home-eyebrow">Satori</span><h2 id="bots-title">在线连接</h2></div>
+              <a class="icon-btn state" href="#/settings/connections" aria-label="管理连接" title="管理连接">${icon("arrow_forward")}</a></div>
+            ${bots}
+          </section>
+        </div>
       </div>
     </div>`;
   }
@@ -4794,99 +4823,216 @@
   const COMMANDS = ["list", "show ambient", "diff oai", "defaults stats"];
   const command = { output: "", history: [], busy: false };
 
-  async function settingsPage() {
+  const SETTINGS_TABS = [
+    { id: "general", href: "#/settings", label: "全局", glyph: "tune" },
+    { id: "connections", href: "#/settings/connections", label: "连接", glyph: "hub" },
+    { id: "system", href: "#/settings/system", label: "系统", glyph: "terminal" },
+  ];
+
+  function settingsTabs(active, connections = 0) {
+    return h`<nav class="settings-tabs" aria-label="设置分区">${SETTINGS_TABS.map(
+      (tab) => h`<a class="settings-tab state" href="${tab.href}"${attr(active === tab.id, 'aria-current="page"')}>
+        ${icon(tab.glyph)}<span>${tab.label}</span>${tab.id === "connections" && connections ? h`<span class="settings-tab-count num">${connections}</span>` : ""}
+      </a>`
+    )}</nav>`;
+  }
+
+  function appearanceCard() {
+    return h`<a class="appearance-card state" href="#/settings/appearance">
+      <span class="tile tile-large" aria-hidden="true">${icon("palette")}</span>
+      <span class="appearance-copy"><strong>外观与阅读习惯</strong><span>${appearance.summary()}</span></span>
+      <span class="appearance-swatches" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="appearance-action">自定义${icon("chevron_right")}</span>
+    </a>`;
+  }
+
+  /** 黑白名单在接口里是两个开关；对人则只是一种「接收范围」选择。
+     白名单始终优先，因此三种展示模式不会丢掉任何语义，也不会让人误开两个开关。 */
+  function globalScopeSummary(mode, blacklist, whitelist) {
+    if (mode === "white") {
+      return whitelist.length
+        ? { tone: "ok", glyph: "check_circle-fill", title: `仅接收 ${whitelist.length} 个群的消息`, note: "其他群的消息会被完全忽略。" }
+        : { tone: "warn", glyph: "warning-fill", title: "白名单为空，所有群都会被忽略", note: "请先添加至少一个群，再保存这个范围。" };
+    }
+    if (mode === "black") {
+      return blacklist.length
+        ? { tone: "ok", glyph: "check_circle-fill", title: `接收其他群的消息，排除 ${blacklist.length} 个群`, note: "黑名单里的群会被完全忽略。" }
+        : { tone: "info", glyph: "info-fill", title: "黑名单为空，目前不过滤任何群", note: "添加群号后，才会排除对应群聊。" };
+    }
+    return { tone: "info", glyph: "groups", title: "接收所有群聊消息", note: "不使用全局群名单；插件自己的群规则仍然有效。" };
+  }
+
+  const scopeSummaryContent = (summary) =>
+    h`${icon(summary.glyph)}<span class="scope-summary-copy"><strong>${summary.title}</strong><span>${summary.note}</span></span>`;
+
+  async function settingsPage(route) {
     const [data, overview] = await Promise.all([api("/settings"), api("/overview").catch(() => null)]);
+    const active = route.arg || "general";
     const filter = data.global_filter;
     const flags = { white: !!filter.enable_whitelist, black: !!filter.enable_blacklist };
-    return h`<div class="page">
-      ${pageHead("设置", "连接、全局行为与维护命令。这些项目不属于任何插件。")}
+    const mode = flags.white ? "white" : flags.black ? "black" : "all";
+    const summary = globalScopeSummary(mode, filter.blacklist, filter.whitelist);
+    const titles = {
+      general: ["全局设置", "指令、群聊范围与外观。常用选项放在前面，高级项按需展开。"],
+      connections: ["连接管理", "管理知微与聊天平台之间的实现端连接。"],
+      system: ["系统维护", "执行维护命令，查看版本与本机信息。"],
+    };
+    const [title, subtitle] = titles[active] || titles.general;
+    const head = pageHead(title, subtitle, {
+      actions: active === "connections" ? h`<button class="btn btn-filled" type="button" data-add-bot>${icon("add")}添加连接</button>` : "",
+    });
 
-      <section class="section" aria-label="外观">
-        <ul class="group"><li class="item">
-          <span class="tile" aria-hidden="true">${icon("palette")}</span>
-          <div class="item-content">
-            <a class="item-link item-title" href="#/settings/appearance">外观</a>
-            <span class="item-sub">${appearance.summary()}</span>
+    if (active === "connections") {
+      const online = overview?.bots.length || 0;
+      const enabled = data.bots.filter((bot) => bot.enabled).length;
+      const stopped = data.bots.length - enabled;
+      return h`<div class="page settings-page">${head}${settingsTabs(active, data.bots.length)}
+        <section class="section connections-section" aria-labelledby="bots-title">
+          <div class="connection-overview">
+            <span class="tile" aria-hidden="true">${icon("hub")}</span>
+            <div><h2 id="bots-title">实现端连接</h2><p>${online ? `${online} 个账号当前在线` : "当前没有在线账号"} · ${enabled} 条已启用${stopped ? ` · ${stopped} 条已停用` : ""}</p></div>
+            <span class="status status-${online ? "success" : "neutral"}">${online ? "已接入" : "待连接"}</span>
           </div>
-          <div class="item-trailing">${icon("chevron_right", "chevron")}</div>
-        </li></ul>
-      </section>
-
-      <section class="section" aria-labelledby="bots-title">
-        <div class="section-head">
-          <h2 class="section-title" id="bots-title">连接</h2>
-          <span class="section-meta">修改后重启生效</span>
-        </div>
-        <p class="note">知微通过实现端接入 QQ，例如本机的 <code>http://127.0.0.1:3001</code>。</p>
-        <div class="group" id="bot-list">
-          ${data.bots.length ? data.bots.map((bot, index) => botForm(bot, String(index))) : h`<p class="note" id="bot-empty">还没有连接。</p>`}
-        </div>
-        <div class="actions"><button class="btn btn-tonal" type="button" data-add-bot>${icon("add")}添加连接</button></div>
-      </section>
-
-      <section class="section" aria-labelledby="global-title">
-        <div class="section-head">
-          <h2 class="section-title" id="global-title">全局</h2>
-          <span class="section-meta">前缀与名单下一条消息生效</span>
-        </div>
-        <form id="global-form" class="section" autocomplete="off" novalidate>
-          <div class="config-group">
-            <div class="setting">${listEditor({
-              id: "g-prefix", type: "text", items: data.command_prefix, mode: "stage", name: "command_prefix", title: "指令前缀", describedby: "g-prefix-desc",
-              head: h`<div class="field-text"><span class="field-label" id="g-prefix-label">指令前缀</span>
-                <span class="field-hint" id="g-prefix-desc">群里的指令以其中任一个开头，例如 / 或 #；一个也不留就不用前缀。</span></div>`,
-            })}</div>
-            ${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；下次启动生效", "", true)}
-            <div class="setting">
-              <div class="toggle-row"><span class="field-label" id="g-black-label">启用群黑名单</span>
-                <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${bool(filter.enable_blacklist)}" aria-labelledby="g-black-label"></button></div>
-              ${picker({ id: "g-black", label: "黑名单群号", title: "黑名单", ids: filter.blacklist, mode: "stage", name: "blacklist", role: "global-black", flags })}
-            </div>
-            <div class="setting">
-              <div class="toggle-row"><span class="field-label" id="g-white-label">启用群白名单</span>
-                <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${bool(filter.enable_whitelist)}" aria-labelledby="g-white-label"></button></div>
-              ${picker({ id: "g-white", label: "白名单群号", title: "白名单", ids: filter.whitelist, mode: "stage", name: "whitelist", role: "global-white", flags })}
-            </div>
+          <p class="note">知微通过 Satori 实现端接入 QQ 或微信。地址通常在本机，例如 <code>http://127.0.0.1:3001</code>；修改连接后需要重启才能生效。</p>
+          <div class="group bot-list" id="bot-list">
+            ${data.bots.length ? data.bots.map((bot, index) => botForm(bot, String(index))) : h`<div class="card" id="bot-empty">${emptyState("还没有连接。点右上角的「添加连接」开始。", "hub")}</div>`}
           </div>
-          <p class="note">名单只认群号。启用白名单时只允许名单内的群，空白名单会禁止所有群；白名单开启期间不检查黑名单，关闭白名单后，启用的黑名单才生效。名单里的群，消息会被整个忽略。</p>
-          <div class="actions"><button class="btn btn-filled" type="submit">保存全局设置</button></div>
-        </form>
-      </section>
+        </section>
+      </div>`;
+    }
 
-      <section class="card" aria-labelledby="command-title">
-        <div class="section-head">
-          <h2 class="section-title" id="command-title">维护命令</h2>
-          <span class="section-meta">与群里的 /ctl 相同，以维护者身份执行</span>
-        </div>
-        <form class="command-form" id="command-form">
-          <label class="visually-hidden" for="command-input">控制命令</label>
-          <input class="input mono" id="command-input" autocomplete="off" spellcheck="false" autocapitalize="off"
-            enterkeyhint="go" placeholder="list · show ambient · set oai …">
-          <button class="btn btn-filled" type="submit">${icon("play_arrow")}执行</button>
-        </form>
-        <div class="chips" role="group" aria-label="常用命令">
-          ${[...new Set([...command.history, ...COMMANDS])].slice(0, 6).map(
-            (item) => h`<button class="chip state" type="button" data-run="${item}">${item}</button>`
-          )}
-        </div>
-        <pre class="code" id="command-output" role="status" tabindex="0" aria-label="命令回执">${command.output || "执行结果会显示在这里。"}</pre>
-      </section>
+    if (active === "system") {
+      return h`<div class="page settings-page">${head}${settingsTabs(active, data.bots.length)}
+        <div class="settings-system-grid">
+          <section class="card command-card" aria-labelledby="command-title">
+            <div class="settings-card-head"><span class="tile" aria-hidden="true">${icon("terminal")}</span><div><h2 id="command-title">维护命令</h2><p>与群里的 /ctl 相同，以维护者身份执行</p></div></div>
+            <form class="command-form" id="command-form">
+              <label class="visually-hidden" for="command-input">控制命令</label>
+              <input class="input mono" id="command-input" autocomplete="off" spellcheck="false" autocapitalize="off"
+                enterkeyhint="go" placeholder="list · show ambient · set oai …">
+              <button class="btn btn-filled" type="submit">${icon("play_arrow")}执行</button>
+            </form>
+            <div class="chips" role="group" aria-label="常用命令">
+              ${[...new Set([...command.history, ...COMMANDS])].slice(0, 6).map(
+                (item) => h`<button class="chip state" type="button" data-run="${item}">${item}</button>`
+              )}
+            </div>
+            <pre class="code" id="command-output" role="status" tabindex="0" aria-label="命令回执">${command.output || "执行结果会显示在这里。"}</pre>
+          </section>
 
-      <section class="card" aria-labelledby="about-title">
-        <div class="section-head"><h2 class="section-title" id="about-title">本机</h2></div>
-        <dl class="facts">
-          ${overview
-            ? h`<div class="fact"><dt>版本</dt><dd>${NAME} v${overview.app.version}</dd></div>
-                <div class="fact"><dt>控制台地址</dt><dd><code>${overview.console.address}</code></dd></div>
-                <div class="fact"><dt>本次启动</dt><dd><time>${overview.app.started}</time></dd></div>`
-            : ""}
-          <div class="fact"><dt>安装为应用</dt><dd>${installHint()}</dd></div>
-        </dl>
-        <div class="actions">
-          <button class="btn btn-outlined" type="button" data-logout>${icon("logout")}在这台设备上退出</button>
+          <section class="card about-card" aria-labelledby="about-title">
+            <div class="settings-card-head"><span class="tile" aria-hidden="true">${icon("devices")}</span><div><h2 id="about-title">这台设备</h2><p>安装、版本与访问信息</p></div></div>
+            <dl class="facts">
+              ${overview
+                ? h`<div class="fact"><dt>当前版本</dt><dd>${NAME} v${overview.app.version}</dd></div>
+                    <div class="fact"><dt>控制台地址</dt><dd class="about-address"><code>${overview.console.address}</code><button class="icon-btn state" type="button" data-copy="${overview.console.address}" aria-label="复制控制台地址">${icon("content_copy")}</button></dd></div>
+                    <div class="fact"><dt>本次启动</dt><dd><time>${overview.app.started}</time></dd></div>`
+                : ""}
+              <div class="fact"><dt>安装为应用</dt><dd>${installHint()}</dd></div>
+            </dl>
+            <div class="actions"><button class="btn btn-outlined" type="button" data-logout>${icon("logout")}在这台设备上退出</button></div>
+          </section>
         </div>
-      </section>
+      </div>`;
+    }
+
+    return h`<div class="page settings-page">${head}${settingsTabs(active, data.bots.length)}
+      <section aria-label="外观设置">${appearanceCard()}</section>
+      <form id="global-form" class="settings-form" autocomplete="off" novalidate>
+        <section class="card settings-block" aria-labelledby="prefix-title">
+          <div class="settings-card-head"><span class="tile" aria-hidden="true">${icon("quickreply")}</span><div><h2 id="prefix-title">指令与识别</h2><p>设置群里触发指令的方式，下一条消息起生效</p></div><span class="settings-effect">即时生效</span></div>
+          <div class="setting">${listEditor({
+            id: "g-prefix", type: "text", items: data.command_prefix, mode: "stage", name: "command_prefix", title: "指令前缀", describedby: "g-prefix-desc",
+            head: h`<div class="field-text"><span class="field-label" id="g-prefix-label">指令前缀</span>
+              <span class="field-hint" id="g-prefix-desc">例如 / 或 #。可以设置多个；全部移除后，指令无需前缀。</span></div>`,
+          })}</div>
+        </section>
+
+        <section class="card settings-block scope-card" aria-labelledby="scope-title">
+          <div class="settings-card-head"><span class="tile" aria-hidden="true">${icon("groups")}</span><div><h2 id="scope-title" tabindex="-1">群聊接收范围</h2><p>决定知微处理哪些群的消息，下一条消息起生效</p></div><span class="settings-effect">即时生效</span></div>
+          <fieldset class="scope-fieldset">
+            <legend class="field-label">接收范围</legend>
+            <div class="segmented scope-segmented">
+              ${[["all", "groups", "全部群聊"], ["black", "notifications_off", "排除名单"], ["white", "check_circle", "仅限名单"]].map(
+                ([value, glyph, label]) => h`<label class="segment scope-segment"><input type="radio" name="scope_mode" value="${value}"${attr(mode === value, "checked")}>${icon(glyph)}<span>${label}</span></label>`
+              )}
+            </div>
+          </fieldset>
+          <div class="scope-summary" id="scope-summary" data-tone="${summary.tone}" role="status">${scopeSummaryContent(summary)}</div>
+          <button class="switch" type="button" role="switch" data-form-switch name="enable_blacklist" aria-checked="${bool(filter.enable_blacklist)}" aria-label="启用群黑名单" hidden></button>
+          <button class="switch" type="button" role="switch" data-form-switch name="enable_whitelist" aria-checked="${bool(filter.enable_whitelist)}" aria-label="启用群白名单" hidden></button>
+          <div class="scope-picker" data-scope-panel="black"${attr(mode !== "black", "hidden")}>
+            ${picker({ id: "g-black", label: "要排除的群", title: "黑名单", ids: filter.blacklist, mode: "stage", name: "blacklist" })}
+          </div>
+          <div class="scope-picker" data-scope-panel="white"${attr(mode !== "white", "hidden")}>
+            ${picker({ id: "g-white", label: "允许处理的群", title: "白名单", ids: filter.whitelist, mode: "stage", name: "whitelist" })}
+          </div>
+          <p class="note">全局名单优先于插件处理。白名单模式下不检查黑名单；切换模式会保留另一张名单，之后可以随时切回。</p>
+        </section>
+
+        <details class="card settings-advanced">
+          <summary><span class="tile" aria-hidden="true">${icon("web")}</span><span class="settings-advanced-copy"><strong>高级设置</strong><span>自定义浏览器可执行文件路径</span></span>${icon("keyboard_arrow_down", "settings-advanced-chevron")}</summary>
+          <div class="settings-advanced-body">${textField("g-browser", "浏览器路径", "browser_path", data.browser_path, "留空时自动查找；修改后下次启动生效", "", true)}</div>
+        </details>
+
+        <div class="settings-savebar" id="global-savebar">
+          <span class="settings-save-state" id="global-save-state" role="status" tabindex="-1">${icon("check_circle-fill")}<span>所有更改已保存</span></span>
+          <div class="actions actions-end">
+            <button class="btn btn-text" id="global-reset" type="button" data-global-reset hidden>撤销更改</button>
+            <button class="btn btn-filled" type="submit" aria-keyshortcuts="Control+S Meta+S" disabled>${icon("check")}保存更改</button>
+          </div>
+        </div>
+      </form>
     </div>`;
+  }
+
+  function syncGlobalScope(form) {
+    if (!form) return;
+    const mode = $('input[name="scope_mode"]:checked', form)?.value || "all";
+    const white = $('[name="enable_whitelist"]', form);
+    const black = $('[name="enable_blacklist"]', form);
+    white?.setAttribute("aria-checked", bool(mode === "white"));
+    black?.setAttribute("aria-checked", bool(mode === "black"));
+    for (const panel of $$("[data-scope-panel]", form)) panel.hidden = panel.dataset.scopePanel !== mode;
+    const ids = (name) => {
+      const input = $(`.picker-value[name="${name}"]`, form);
+      return input ? readIds(input.closest(".picker")) : [];
+    };
+    const blacklist = ids("blacklist");
+    const whitelist = ids("whitelist");
+    const summary = globalScopeSummary(mode, blacklist, whitelist);
+    const node = $("#scope-summary", form);
+    if (node) {
+      node.dataset.tone = summary.tone;
+      put(node, scopeSummaryContent(summary));
+    }
+    refreshStatuses(form);
+  }
+
+  function syncGlobalDraft(form = $("#global-form")) {
+    if (!form) return;
+    const busy = form.getAttribute("aria-busy") === "true";
+    const dirty = formDirty(form, false);
+    form.toggleAttribute("data-dirty", dirty);
+    const submit = $('[type="submit"]', form);
+    if (submit) submit.disabled = busy || !dirty;
+    const reset = $("[data-global-reset]", form);
+    if (reset) reset.hidden = !dirty || busy;
+    const state = $("#global-save-state", form);
+    if (state) {
+      // 只在状态真的变了时重写这一格：每敲一个字都换一次 innerHTML，
+      // 读屏会把同一句「有未保存的更改」反复念出来。
+      const phase = busy ? "saving" : dirty ? "dirty" : "clean";
+      if (state.dataset.phase !== phase) {
+        state.dataset.phase = phase;
+        state.dataset.dirty = bool(dirty);
+        put(state, busy
+          ? h`${icon("schedule")}<span>正在保存更改…</span>`
+          : dirty
+            ? h`${icon("edit")}<span>有未保存的更改</span>`
+            : h`${icon("check_circle-fill")}<span>所有更改已保存</span>`);
+      }
+    }
   }
 
   function installHint() {
@@ -4907,48 +5053,56 @@
 
   function botForm(bot, index) {
     const id = `bot-${index === "" ? "new" : index}`;
+    const isNew = index === "";
     const known = ["satori", "console"];
     const protocols = known.includes(bot.protocol) ? known : [...known, bot.protocol];
     const follows = { satori_qq: "知弦（QQ）", satori_wx: "知言（微信）" }[bot.module] || bot.module;
-    const title = index === "" ? "新连接" : bot.module ? follows : `连接 ${Number(index) + 1}`;
-    return h`<form class="bot" data-bot="${index}" aria-labelledby="${id}-title" autocomplete="off" novalidate>
+    const title = isNew ? "新连接" : bot.module ? follows : `连接 ${Number(index) + 1}`;
+    const subtitle = bot.module ? `跟随${follows}模块` : bot.url || (bot.protocol === "console" ? "本地终端" : "尚未填写实现端地址");
+    return h`<form class="bot" data-bot="${index}"${attr(isNew, "data-open")}${attr(bot.module, "data-follow")} aria-labelledby="${id}-title" autocomplete="off" novalidate>
       <div class="bot-head">
-        <div class="bot-lead">
+        <button class="bot-summary" type="button" data-bot-toggle aria-expanded="${bool(isNew)}" aria-controls="${id}-body">
           <span class="tile" aria-hidden="true">${icon("hub")}</span>
-          <h3 class="bot-title" id="${id}-title">${title}${bot.has_token ? h`<span class="status">已设令牌</span>` : ""}</h3>
-        </div>
-        <div class="toggle-row">
+          <span class="bot-summary-copy"><span class="bot-title" id="${id}-title">${title}${bot.has_token ? h`<span class="status">已设令牌</span>` : ""}</span><span class="bot-subtitle">${subtitle}</span></span>
+        </button>
+        <div class="bot-enable">
           <span class="field-label" id="${id}-on">启用</span>
           <button class="switch" type="button" role="switch" data-form-switch name="enabled" aria-checked="${bool(bot.enabled)}" aria-labelledby="${id}-on"></button>
         </div>
+        <span class="bot-chevron" aria-hidden="true">${icon("keyboard_arrow_down")}</span>
       </div>
-      <div class="form-grid">
-        <div class="field">
-          <label class="field-label" for="${id}-protocol">协议</label>
-          <span class="select"><select id="${id}-protocol" name="protocol">
-            ${protocols.map((p) => h`<option value="${p}"${attr(p === bot.protocol, "selected")}>${p === "satori" ? "Satori" : p === "console" ? "本地终端（测试用）" : p}</option>`)}
-          </select>${icon("keyboard_arrow_down")}</span>
+      <div class="bot-body" id="${id}-body"${attr(!isNew, "hidden")}>
+        <div class="form-grid">
+          <div class="field">
+            <label class="field-label" for="${id}-protocol">协议</label>
+            <span class="select"><select id="${id}-protocol" name="protocol">
+              ${protocols.map((p) => h`<option value="${p}"${attr(p === bot.protocol, "selected")}>${p === "satori" ? "Satori" : p === "console" ? "本地终端（测试用）" : p}</option>`)}
+            </select>${icon("keyboard_arrow_down")}</span>
+          </div>
+          ${textField(`${id}-url`, "实现端地址", "url", bot.url,
+            bot.module ? `留空即跟随${follows}模块里设的端口与令牌` : "Satori 必填，例如 http://127.0.0.1:3001", ' inputmode="url"')}
+          <div class="field span-all">
+            <label class="field-label" for="${id}-token">访问令牌</label>
+            <div class="reveal"><input class="input mono" id="${id}-token" name="access_token" type="password" autocomplete="off" spellcheck="false"
+              data-1p-ignore data-lpignore="true" data-bwignore="true"
+              placeholder="${bot.has_token ? "已设置；留空保持不变" : bot.module ? "留空即用模块里的令牌" : "留空表示不鉴权"}">
+              <button class="icon-btn state" type="button" data-reveal="#${id}-token" aria-pressed="false" aria-label="显示访问令牌">${icon("visibility")}</button></div>
+            ${bot.has_token ? h`<span class="field-hint">留空会保留原令牌；需要更换时再输入新值。</span>` : ""}
+          </div>
+          ${bot.has_token
+            ? h`<div class="field span-all">
+                <div class="toggle-row"><span class="field-label" id="${id}-clear">清除已设的令牌</span>
+                  <button class="switch" type="button" role="switch" data-form-switch name="clear_token" aria-checked="false"
+                    aria-labelledby="${id}-clear" aria-describedby="${id}-clear-hint"></button></div>
+                <span class="field-hint" id="${id}-clear-hint">打开后保存，这条连接改为不鉴权。留空只是不改动。</span>
+              </div>`
+            : ""}
         </div>
-        ${textField(`${id}-url`, "实现端地址", "url", bot.url,
-          bot.module ? `留空即跟随${follows}模块里设的端口与令牌` : "Satori 必填，例如 http://127.0.0.1:3001", ' inputmode="url"')}
-        <div class="field span-all">
-          <label class="field-label" for="${id}-token">访问令牌</label>
-          <input class="input mono" id="${id}-token" name="access_token" type="password" autocomplete="off" spellcheck="false"
-            data-1p-ignore data-lpignore="true" data-bwignore="true"
-            placeholder="${bot.has_token ? "已设置；留空保持不变" : bot.module ? "留空即用模块里的令牌" : "留空表示不鉴权"}">
+        <div class="actions bot-actions">
+          <button class="btn btn-filled" type="submit">${icon("check")}保存连接</button>
+          <button class="btn btn-text btn-danger" type="button" data-drop-bot="${index}">${icon("delete")}${isNew ? "放弃" : "删除连接"}</button>
+          <span class="bot-effect">保存后，重启知微生效</span>
         </div>
-        ${bot.has_token
-          ? h`<div class="field span-all">
-              <div class="toggle-row"><span class="field-label" id="${id}-clear">清除已设的令牌</span>
-                <button class="switch" type="button" role="switch" data-form-switch name="clear_token" aria-checked="false"
-                  aria-labelledby="${id}-clear" aria-describedby="${id}-clear-hint"></button></div>
-              <span class="field-hint" id="${id}-clear-hint">打开后保存，这条连接改为不鉴权。留空只是不改动。</span>
-            </div>`
-          : ""}
-      </div>
-      <div class="actions">
-        <button class="btn btn-filled" type="submit">保存</button>
-        <button class="btn btn-text btn-danger" type="button" data-drop-bot="${index}">${icon("delete")}${index === "" ? "放弃" : "删除"}</button>
       </div>
     </form>`;
   }
@@ -5306,6 +5460,11 @@
       : null;
     if (root.dataset.picker === "save") return pickerSave(root, said, undo);
     if (root.dataset.picker === "emit") return void root.dispatchEvent(new CustomEvent("listchange", { bubbles: true, detail: { said, undo } }));
+    const draft = root.closest("#global-form");
+    if (draft) {
+      syncGlobalScope(draft);
+      syncGlobalDraft(draft);
+    }
     $(".picker-live", root).textContent = `${said}，现在共 ${next.length} 个。`;
     // 草稿里加一个群不必打扰；移除才值得留一条能撤销的提示。
     if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
@@ -5805,6 +5964,7 @@
     if (root.dataset.tags === "save") return saveList(root, input, tagsInput(root) ?? $("[data-weekday]", root), () => paintTags(root), said, undo);
     // emit：值交给外面的人去存（自动回复的规则随整条一起存）。
     if (root.dataset.tags === "emit") return void root.dispatchEvent(new CustomEvent("listchange", { bubbles: true, detail: { said, undo } }));
+    syncGlobalDraft(root.closest("#global-form"));
     $(".tags-live", root).textContent = `${said}，现在共 ${next.length} 项。`;
     if (next.length < prev.length || !undoable) snackbar(`${said}。`, "info", undo);
   }
@@ -6717,6 +6877,30 @@
         logs.paint();
         return;
       }
+      if ((hit = on("[data-bot-toggle]"))) {
+        const body = document.getElementById(hit.getAttribute("aria-controls"));
+        const expanded = hit.getAttribute("aria-expanded") !== "true";
+        hit.setAttribute("aria-expanded", bool(expanded));
+        if (body) body.hidden = !expanded;
+        hit.closest(".bot")?.toggleAttribute("data-open", expanded);
+        return;
+      }
+      if (on("[data-global-reset]")) {
+        const form = $("#global-form");
+        if (!form || !formDirty(form, false)) return;
+        const ok = await confirmAction({
+          title: "撤销未保存的更改？",
+          body: "指令前缀、群聊范围和高级设置会恢复到上次保存的内容。",
+          confirm: "撤销更改",
+          cancel: "继续编辑",
+        });
+        if (!ok) return;
+        form.dataset.refresh = "replace";
+        await render({ quiet: true });
+        $("#scope-title")?.focus({ preventScroll: true });
+        snackbar("已撤销未保存的更改。");
+        return;
+      }
       if (on("[data-add-bot]")) {
         if (!$('[data-bot=""]')) {
           $("#bot-empty")?.remove();
@@ -6751,7 +6935,7 @@
               const oldIndex = form.dataset.bot;
               form.dataset.bot = String(Number(oldIndex) - 1);
               for (const node of [form, ...$$("*", form)]) {
-                for (const key of ["id", "for", "aria-labelledby", "aria-describedby"]) {
+                for (const key of ["id", "for", "aria-controls", "aria-labelledby", "aria-describedby"]) {
                   if (node.hasAttribute(key)) node.setAttribute(key, node.getAttribute(key).replaceAll(`bot-${oldIndex}-`, `bot-${form.dataset.bot}-`));
                 }
               }
@@ -6785,6 +6969,12 @@
 
     document.addEventListener("change", (event) => {
       const target = event.target;
+      if (target.name === "scope_mode") {
+        const form = target.closest("#global-form");
+        syncGlobalScope(form);
+        syncGlobalDraft(form);
+        return;
+      }
       // 相册里选完图：立刻上传，再把这些文件名加进列表。选完就清空，同一张图还能再选一次。
       if (target.matches?.(".photo-file")) {
         const files = [...(target.files || [])];
@@ -6825,6 +7015,8 @@
     document.addEventListener("input", (event) => {
       const target = event.target;
       markTyped(event);
+      const global = target.closest?.("#global-form");
+      if (global) syncGlobalDraft(global);
       if (target.name === "access_token") scrubAutofill(target.form);
       if (target.matches?.("input[data-kind=\"number\"], [data-rule-cooldown]")) {
         const unit = $(`[data-unit-for="${CSS.escape(target.id)}"]`) || $(`[data-seconds-for="${CSS.escape(target.id)}"]`);
@@ -6917,6 +7109,15 @@
     document.addEventListener("keydown", (event) => {
       const target = event.target;
       if (event.isComposing) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        const form = target.closest?.("#global-form, [data-bot]") || $("#global-form");
+        if (form) {
+          event.preventDefault();
+          if (formDirty(form, false) && form.getAttribute("aria-busy") !== "true") form.requestSubmit();
+          else snackbar(form.getAttribute("aria-busy") === "true" ? "正在保存，请稍等。" : "没有需要保存的更改。");
+          return;
+        }
+      }
       // 插件页的键盘路径：/ 搜索、上下键在结果里走、Esc 退出搜索。
       // 只在插件页生效，也不抢输入框里的按键。
       if ($("#plugin-search") && !document.querySelector("dialog[open]")) {
@@ -7075,6 +7276,21 @@
             refocus = error.refocus ?? null;
             return;
           }
+          // 空白名单等于「什么都不处理」：它藏在一个看起来很安全的分段按钮后面，
+          // 所以至少在写下去之前用一句话把后果说清楚。
+          if (body.global_filter.enable_whitelist && !body.global_filter.whitelist.length) {
+            const ok = await confirmAction({
+              title: "白名单还是空的",
+              body: "保存后，知微将不处理任何群的消息，直到你添加群或切回其他范围。",
+              confirm: "仍然保存",
+              cancel: "回去添加",
+              danger: true,
+            });
+            if (!ok) {
+              refocus = pickerAdd($('.picker-value[name="whitelist"]', form).closest(".picker"));
+              return;
+            }
+          }
           try {
             const reply = await api("/settings/global", { method: "POST", body });
             for (const input of $$("input", form)) {
@@ -7087,16 +7303,29 @@
             report(error);
           }
         });
-        refocus?.focus();
+        syncGlobalDraft(form);
+        if (refocus) refocus.focus();
+        else if (!document.activeElement || document.activeElement === document.body) $("#global-save-state")?.focus({ preventScroll: true });
         return;
       }
       if (form.matches("[data-bot]")) {
+        // 跟随模块的连接可以不写地址；其余的 Satori 连接必须写，先在本地挡住，省一个来回。
+        const url = form.elements.url;
+        if (!form.hasAttribute("data-follow") && form.elements.protocol?.value === "satori" && !url.value.trim()) {
+          fieldError(url, "Satori 连接需要一个实现端地址。");
+          url.focus();
+          return;
+        }
         await submitWith(form, async () => {
           try {
             const reply = await api("/settings/bot", { method: "POST", body: botPayload(form) });
+            const index = form.dataset.bot;
             form.dataset.refresh = "replace";
             snackbar(reply.message);
             await render({ quiet: true });
+            // 表单收起之后，焦点回到这条连接上：键盘用户不必从头再找一遍。
+            const back = index === "" ? $$("[data-bot] [data-bot-toggle]").at(-1) : $(`[data-bot="${CSS.escape(index)}"] [data-bot-toggle]`);
+            (back ?? $("[data-add-bot]"))?.focus({ preventScroll: true });
           } catch (error) {
             report(error);
           }
