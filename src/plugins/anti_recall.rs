@@ -361,13 +361,15 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 );
             }
             let group_name = raw.get_str("group_name").unwrap_or("").to_string();
-            Some(Box::pin(async move {
+            // 这个钩子的 future 会在流水线之前被逐个 await：恢复要退避几秒，必须自己
+            // 起任务，不能把整个事件循环堵在这里。
+            tokio::spawn(async move {
                 recover(
                     ctx, writer, key, message_id, channel, group, group_name, user,
                 )
                 .await;
-                Ok(())
-            }))
+            });
+            None
         }
         _ => None,
     }
