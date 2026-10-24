@@ -234,7 +234,9 @@ fn store() -> &'static Mutex<Store> {
 }
 
 fn lock() -> MutexGuard<'static, Store> {
-    store().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    store()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 指定状态的落盘位置；启动时调用一次。
@@ -277,6 +279,15 @@ pub(crate) fn nudge(action: impl FnOnce(&mut Mood, i64)) {
     store.dirty = true;
 }
 
+impl Mood {
+    /// 私聊频道会一直累加，落盘前把已经凉透的丢掉。
+    fn prune(&mut self, now: i64) {
+        let half_life = WARMTH_HALF_LIFE;
+        self.warmth
+            .retain(|_, item| item.get(now, half_life).abs() > 0.01);
+    }
+}
+
 /// 把状态写出去；没有改动时不碰磁盘。
 pub(crate) async fn flush() {
     let payload = {
@@ -285,6 +296,7 @@ pub(crate) async fn flush() {
             return;
         }
         store.dirty = false;
+        store.mood.prune(chrono::Local::now().timestamp());
         store
             .path
             .clone()

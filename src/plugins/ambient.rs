@@ -27,9 +27,9 @@ use crate::plugins::{PluginConfig, PluginError, get_data_dir};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 mod gate;
@@ -136,8 +136,12 @@ impl Default for Assist {
 pub(crate) struct AmbientConfig {
     /// 总开关。
     pub enabled: bool,
-    /// 开启搭话的群号；空列表等于不开启。
+    /// 开启搭话的群号；空列表等于不开启群聊。
     pub groups: Vec<String>,
+    /// 是否在私聊里启用同一个人格。每个私聊频道有独立窗口、记忆和情绪状态。
+    pub private: bool,
+    /// 允许私聊的用户 ID；空列表表示不限制。只在 `private = true` 时生效。
+    pub private_users: Vec<String>,
     /// 不看账号身份、直接开放人格群管理的群；还须具备 QQ 对应权限。
     pub management_groups: Vec<String>,
     /// 账号在群里是群主或管理员时，人格自动以管理员身份管群（照 `rules.md` 与各群群规）。
@@ -385,6 +389,8 @@ impl Default for AmbientConfig {
         Self {
             enabled: false,
             groups: Vec::new(),
+            private: false,
+            private_users: Vec::new(),
             management_groups: Vec::new(),
             management_auto: true,
             management_excluded: Vec::new(),
@@ -458,6 +464,70 @@ impl Default for AmbientConfig {
             reply_timeout_seconds: 240,
         }
     }
+}
+
+/// 私聊会话登记：平台 channel id → 对方 QQ 号。
+///
+/// 直接拿平台 channel 当窗口键（不再另造 `direct:` 前缀），因为能力层那一侧的
+/// 常驻窗口就是按 channel 存消息的；两处用同一个键，搭话的窗口和工具看到的才是
+/// 同一段对话。群在 QQ 里是纯数字，私聊是 `private:<QQ号>`，不会互相撞上；
+/// 万一哪个实现端真的撞了，`config.groups` 优先（见 [`scope_enabled`]）。
+fn direct_sessions() -> &'static Mutex<HashMap<String, String>> {
+    static SESSIONS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    SESSIONS.get_or_init(Default::default)
+}
+
+fn remember_direct(channel: &str, user: &str) -> String {
+    direct_sessions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(channel.to_string(), user.to_string());
+    channel.to_string()
+}
+
+pub(super) fn direct_user(scope: &str) -> Option<String> {
+    direct_sessions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(scope)
+        .cloned()
+}
+
+pub(super) fn is_direct(scope: &str) -> bool {
+    direct_sessions()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(scope)
+}
+
+/// 窗口键就是平台 channel id；留这个函数是为了让调用处读起来仍是「换回平台的口径」。
+pub(super) fn scope_channel(scope: &str) -> &str {
+    scope
+}
+
+fn scope_enabled(config: &AmbientConfig, scope: &str) -> bool {
+    // 群优先：即使某个实现端的私聊频道号恰好等于群号，也不会把群当成私聊。
+    if config.groups.iter().any(|id| id == scope) {
+        return true;
+    }
+    if !config.private {
+        return false;
+    }
+    direct_user(scope)
+        .is_some_and(|user| config.private_users.is_empty() || config.private_users.contains(&user))
+}
+
+fn direct_name(scope: &str, turns: &[Turn]) -> String {
+    let Some(user) = direct_user(scope) else {
+        return String::new();
+    };
+    turns
+        .iter()
+        .rev()
+        .find(|turn| turn.user_id == user && !turn.from_me)
+        .map(|turn| turn.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(user)
 }
 
 /// 这一轮压在门槛上的分量。
@@ -895,23 +965,16 @@ impl Scene {
         config: &AmbientConfig,
         turns: &[Turn],
         rhythm: String,
+        me: (&str, &str),
     ) -> Self {
         // 状态算一次用两处：一句给模型看的「你现在的状态」，以及挑样本的调子。
         let snapshot = config.mood_enabled.then(|| mood::snapshot(group));
+        let state = snapshot.map(mood::Snapshot::describe).unwrap_or_default();
         Self {
-            identity: {
-                let mut brief = identity::brief(group);
-                let name = config.preferred_name.trim();
-                if !name.is_empty() {
-                    brief.push_str(&format!(
-                        "你平时叫「{name}」，介绍自己时用这个称呼；上面的群名片只是平台展示文字。\n"
-                    ));
-                }
-                brief
-            },
+            identity: scene_identity(group, config, turns, me),
             rhythm,
             register: tone::register(turns),
-            state: snapshot.map(mood::Snapshot::describe).unwrap_or_default(),
+            state: state.clone(),
             memory: if config.memory_enabled {
                 memory::with_group(group, |memory| {
                     memory.brief(turns, chrono::Local::now().timestamp())
@@ -929,14 +992,26 @@ impl Scene {
                 } else {
                     String::new()
                 },
-                recent::habit_brief(group),
+                if is_direct(group) {
+                    String::new()
+                } else {
+                    recent::habit_brief(group)
+                },
                 recent::recalled(group, turns),
                 voice::brief(turns, voice_register(config, group), group),
-                stickers::brief(turns, config.sticker_max)
+                stickers::brief(turns, config.sticker_max, &state)
             ),
             noticed: String::new(),
-            group_about: group_about(group),
-            duty: duty(group, config),
+            group_about: if is_direct(group) {
+                String::new()
+            } else {
+                group_about(group)
+            },
+            duty: if is_direct(group) {
+                String::new()
+            } else {
+                duty(group, config)
+            },
             careful: false,
         }
     }
@@ -961,6 +1036,35 @@ impl Scene {
         out.push_str(&self.memory);
         out
     }
+}
+
+fn scene_identity(scope: &str, config: &AmbientConfig, turns: &[Turn], me: (&str, &str)) -> String {
+    let mut brief = if is_direct(scope) {
+        let user = direct_user(scope).unwrap_or_default();
+        let name = direct_name(scope, turns);
+        let mut text = String::from("你自己：正在私聊，不是群聊。");
+        if !me.0.is_empty() {
+            text.push_str(&format!("你的 QQ 是 {}。", me.0));
+        }
+        if !me.1.is_empty() {
+            text.push_str(&format!("对方那边看到的你的名字是「{}」。", me.1));
+        }
+        text.push_str(&format!(
+            "对方是「{name}」（QQ {user}）。这里的话是直接说给你的，不必等 @；\
+             也当自己发消息、看历史和发表情即可，不需要群管理或群成员那一套。\
+             私聊内容不拿去别的群或别的私聊里转述。\n"
+        ));
+        text
+    } else {
+        identity::brief(scope)
+    };
+    let name = config.preferred_name.trim();
+    if !name.is_empty() {
+        brief.push_str(&format!(
+            "你平时叫「{name}」，介绍自己时用这个称呼；平台展示名只是资料上的文字。\n"
+        ));
+    }
+    brief
 }
 
 /// 这一刻说话的调子：精神头定松紧，挑样本与写日志用的都是它。
@@ -1144,25 +1248,42 @@ pub(crate) async fn observe(
     base: &Path,
 ) {
     let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
-    if !config.enabled || config.groups.is_empty() {
+    if !config.enabled || (config.groups.is_empty() && !config.private) {
         return;
     }
     let Some(event) = ctx.as_message() else {
         observe_notice(ctx, writer, mgr, base, &config).await;
         return;
     };
-    let Some(group) = event
+    let me = ctx.bot.self_id();
+    let scope = if let Some(group) = event
         .group_id()
-        .filter(|id| config.groups.iter().any(|group| group == id))
-        .map(str::to_owned)
-    else {
+        .filter(|id| config.groups.iter().any(|enabled| enabled == id))
+    {
+        group.to_string()
+    } else if !event.is_group() && config.private {
+        let channel = event.channel_id();
+        let peer = if event.user_id() == me {
+            channel.strip_prefix("private:").unwrap_or(channel)
+        } else {
+            event.user_id()
+        };
+        if channel.is_empty()
+            || peer.is_empty()
+            || (!config.private_users.is_empty()
+                && !config.private_users.iter().any(|allowed| allowed == peer))
+        {
+            return;
+        }
+        remember_direct(channel, peer)
+    } else {
         return;
     };
-    let group = group.as_str();
+    let group = scope.as_str();
 
     // 号主最近亲手打的话：隔几个钟头从聊天记录里重捞一次，给发言当最新的口吻标尺。
     recent::ensure_fresh(ctx);
-    let mut turn = window::turn_from(&event, &ctx.bot.self_id());
+    let mut turn = window::turn_from(&event, &me);
     // 引用在群里的样子是「原话摆在那儿」，模型也该看见被引的是哪一句、谁说的；
     // 引到自己那条的时候就等于点了名，与 @ 同等地把它叫醒。
     window::with_group(group, |state| {
@@ -1171,7 +1292,9 @@ pub(crate) async fn observe(
     // 被引的那条已经滚出窗口时窗口认不得它：向平台要原话，才看得见「引的是什么」，
     // 也才认得出「引的是我自己」。
     if !turn.call.reply_to.is_empty() && turn.call.quote.is_empty() {
-        let found = window::quote_from_platform(ctx, writer, group, &turn.call.reply_to).await;
+        let found =
+            window::quote_from_platform(ctx, writer, scope_channel(group), &turn.call.reply_to)
+                .await;
         debug!(
             target: LOG_TARGET,
             "群 {group} 引用的消息已滚出窗口，向平台要回原话：{}",
@@ -1193,10 +1316,18 @@ pub(crate) async fn observe(
     }
     // 群里叫人多数时候是直接打名字，不是 @。协议里没有这件事，只能自己认一遍；
     // 认出来只在记录上留个记号，不当作点名（见 [`identity::called_by_name`]）。
-    turn.call.named_me =
-        !turn.from_me && identity::called_by_name(group, &config.aliases, &turn.text);
+    turn.call.named_me = !is_direct(group)
+        && !turn.from_me
+        && identity::called_by_name(group, &config.aliases, &turn.text);
+    // 私聊没有 @ 这个步骤，对方发来的普通正文本身就是直接搭话。
+    if is_direct(group) && !turn.from_me {
+        turn.call.at_me = true;
+        turn.mentions_me = true;
+    }
     // 每条群消息都带着群名，而 `guild.get` 未必给得出——记下来当兜底。
-    identity::note_group_name(group, event.0.get_str("group_name").unwrap_or_default());
+    if !is_direct(group) {
+        identity::note_group_name(group, event.0.get_str("group_name").unwrap_or_default());
+    }
     // 剥掉指令后空无一物的那条消息没有内容可给模型看；它只是按了一次键。
     let empty = turn.text.is_empty() && turn.images.is_empty();
     if empty && !summoned {
@@ -1205,6 +1336,10 @@ pub(crate) async fn observe(
     if config.memory_enabled && !turn.from_me {
         let (id, name, at) = (turn.user_id.clone(), turn.name.clone(), turn.at);
         memory::edit(group, |memory| memory.see(&id, &name, at));
+    }
+    if config.memory_enabled && turn.call.mine() && !turn.from_me && !turn.user_id.is_empty() {
+        let (id, at) = (turn.user_id.clone(), turn.at);
+        memory::edit(group, |memory| memory.engage(&id, at));
     }
     if config.mood_enabled && turn.mentions_me && !turn.from_me {
         mood::nudge(|mood, now| mood.engaged(group, now));
@@ -1255,17 +1390,26 @@ async fn observe_notice(
     let crate::event::EventType::Satori(raw) = &ctx.event else {
         return;
     };
-    let Some(group) = raw
+    let scope = if let Some(group) = raw
         .get_str("group_id")
-        .filter(|id| config.groups.iter().any(|group| group == id))
-        .map(str::to_owned)
-    else {
+        .filter(|id| config.groups.iter().any(|enabled| enabled == id))
+    {
+        group.to_string()
+    } else {
+        let scope = raw.get_str("channel_id").unwrap_or_default().to_string();
+        if !scope_enabled(config, &scope) {
         return;
+        }
+        scope
     };
-    let group = group.as_str();
+    let group = scope.as_str();
     let Some((turn, recalled)) = notice_turn(raw, &ctx.bot.self_id()) else {
         return;
     };
+    if config.memory_enabled && turn.call.mine() && !turn.from_me && !turn.user_id.is_empty() {
+        let (id, at) = (turn.user_id.clone(), turn.at);
+        memory::edit(group, |memory| memory.engage(&id, at));
+    }
     if config.mood_enabled && turn.mentions_me {
         mood::nudge(|mood, now| mood.engaged(group, now));
     }
@@ -1465,34 +1609,37 @@ impl Drop for Worker {
 async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
     loop {
         let gap = Duration::from_secs(config.burst_min_gap_seconds.clamp(0, 300));
-        let (urgent, engaged, due, burst, question, joining, rate) = window::with_group(group, |state| {
-            let rate = state.rate(Duration::from_mins(5));
-            let interval = config.look_interval(rate);
-            let since = state.since_look();
-            let ready = since.is_none_or(|elapsed| elapsed >= gap);
-            let burst = config.burst_look > 0 && state.unseen() >= config.burst_look && ready;
-            let fresh = state.fresh();
-            let question = config.assist.questions
-                && ready
-                && fresh.iter().any(|turn| !turn.from_me && looks_like_question(&turn.text));
-            let now = chrono::Local::now().timestamp();
-            let joining = config.assist.newcomers
-                && ready
-                && fresh.iter().any(|turn| {
-                    !turn.from_me
-                        && is_join_notice(&turn.text)
-                        && now - turn.at <= config.assist.newcomer_within_seconds as i64
-                });
-            (
-                state.urgent(),
-                state.engaged(),
-                state.look_due(interval),
-                burst,
-                question,
-                joining,
-                rate,
-            )
-        });
+        let (urgent, engaged, due, burst, question, joining, rate) =
+            window::with_group(group, |state| {
+                let rate = state.rate(Duration::from_mins(5));
+                let interval = config.look_interval(rate);
+                let since = state.since_look();
+                let ready = since.is_none_or(|elapsed| elapsed >= gap);
+                let burst = config.burst_look > 0 && state.unseen() >= config.burst_look && ready;
+                let fresh = state.fresh();
+                let question = config.assist.questions
+                    && ready
+                    && fresh
+                        .iter()
+                        .any(|turn| !turn.from_me && looks_like_question(&turn.text));
+                let now = chrono::Local::now().timestamp();
+                let joining = config.assist.newcomers
+                    && ready
+                    && fresh.iter().any(|turn| {
+                        !turn.from_me
+                            && is_join_notice(&turn.text)
+                            && now - turn.at <= config.assist.newcomer_within_seconds as i64
+                    });
+                (
+                    state.urgent(),
+                    state.engaged(),
+                    state.look_due(interval),
+                    burst,
+                    question,
+                    joining,
+                    rate,
+                )
+            });
         if urgent || question || joining {
             // 看群越勤，被叫到也看得越快；间隔调成 0 就是随叫随到。
             if !engaged {
@@ -1517,7 +1664,7 @@ async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
             return;
         }
         let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
-        if !latest.enabled || !latest.groups.iter().any(|id| id == group) {
+        if !latest.enabled || !scope_enabled(&latest, group) {
             return;
         }
         tokio::time::sleep(due.min(Duration::from_secs(2))).await;
@@ -1531,6 +1678,9 @@ async fn wait_for_look(ctx: &Context, group: &str, config: &AmbientConfig) {
 /// [`window::GroupState::receive`]），机器人这一批什么都不用做；等满了他还没动静，
 /// 才由机器人接。搭话指令是人按下的键，不等。
 async fn wait_for_owner(ctx: &Context, group: &str, config: &AmbientConfig) {
+    if is_direct(group) {
+        return;
+    }
     let grace = config.owner_grace();
     let (present, summoned, baseline) = window::with_group(group, |state| {
         (
@@ -1547,7 +1697,7 @@ async fn wait_for_owner(ctx: &Context, group: &str, config: &AmbientConfig) {
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let latest = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
-        if !latest.enabled || !latest.groups.iter().any(|id| id == group) {
+        if !latest.enabled || !scope_enabled(&latest, group) {
             return;
         }
         if window::with_group(group, |state| state.owner_marks() != baseline) {
@@ -1578,7 +1728,7 @@ async fn hydrate(ctx: &Context, writer: &LockedWriter, group: &str) {
     let mut items: Vec<serde_json::Value> = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..PAGES {
-        let mut body = serde_json::json!({"channel_id": group.to_string()});
+        let mut body = serde_json::json!({"channel_id": scope_channel(group).to_string()});
         if let Some(next) = &cursor {
             body["next"] = serde_json::json!(next);
         }
@@ -1625,13 +1775,20 @@ async fn manual_ids(ctx: &Context, group: &str, since: i64) -> HashSet<String> {
     if me.is_empty() {
         return HashSet::new();
     }
+    let location = if is_direct(group) {
+        "channel_id"
+    } else {
+        "guild_id"
+    };
     let rows = ctx
         .db
         .query_all_raw(Statement::from_sql_and_values(
             ctx.db.get_database_backend(),
-            "select message_id from message_records \
-             where guild_id = ? and user_id = ? and member_role != 'self' and time >= ?",
-            [group.into(), me.into(), since.into()],
+            format!(
+                "select message_id from message_records \
+                 where {location} = ? and user_id = ? and member_role != 'self' and time >= ?"
+            ),
+            [scope_channel(group).into(), me.into(), since.into()],
         ))
         .await
         .unwrap_or_default();
@@ -1657,7 +1814,7 @@ async fn consider(
         if config.focus_max_seconds == 0 {
             window::with_group(group, |state| state.focus = None);
         }
-        if !config.enabled || !config.groups.iter().any(|id| id == group) {
+        if !config.enabled || !scope_enabled(&config, group) {
             return Ok(());
         }
         let deadline = Instant::now() + config.max_wait();
@@ -1676,12 +1833,13 @@ async fn consider(
         }
         wait_for_look(ctx, group, &config).await;
         let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
-        if !config.enabled || !config.groups.iter().any(|id| id == group) {
+        if !config.enabled || !scope_enabled(&config, group) {
             return Ok(());
         }
         let (mut seq, turns, mentioned, summoned, silent_for, rhythm, focused) =
             window::with_group(group, |state| {
-                let mentioned = state.take_mention() && config.reply_on_mention;
+                let mentioned =
+                    state.take_mention() && (config.reply_on_mention || is_direct(group));
                 let summoned = state.take_summon();
                 (
                     state.seq,
@@ -1866,7 +2024,7 @@ async fn consider_batch(
 
     // An opt-in visual one-liner for a direct bot accusation. The renderer only reads QQ's
     // same-group local history, and an unsuccessful render/send falls back to normal speech.
-    if screenshot::try_reply(ctx, writer, group, config, *seq, turns).await {
+    if !is_direct(group) && screenshot::try_reply(ctx, writer, group, config, *seq, turns).await {
         if config.mood_enabled {
             mood::nudge(|mood, now| mood.spoke(group, now));
         }
@@ -1909,7 +2067,8 @@ async fn consider_batch(
 
     // 号主本人在线：机器人不主动插话。这一眼算看过了（上面已经 mark_look），他看过的
     // 话题不会等他走了再被机器人翻出来接。被点名与搭话指令不在此列。
-    if !mentioned
+    if !is_direct(group)
+        && !mentioned
         && !summoned
         && window::with_group(group, |state| state.owner_active(config.owner_quiet()))
     {
@@ -1933,17 +2092,21 @@ async fn consider_batch(
     }
     // 「我在这个群里是谁」在判定之前就要在手上：判定要认出「有人在叫我」，而群里
     // 叫人用的是名片上那几个字。资料按小时缓存，所以这一句绝大多数时候不出网。
-    identity::refresh(
-        ctx,
-        writer,
-        avatar_endpoint(ctx, mgr, config).await.as_ref(),
-        group,
-    )
-    .await;
+    if !is_direct(group) {
+        identity::refresh(
+            ctx,
+            writer,
+            avatar_endpoint(ctx, mgr, config).await.as_ref(),
+            group,
+        )
+        .await;
+    }
     if !mentioned && !summoned && !current(ctx, group, *seq) {
         return Ok(());
     }
-    let scene = Scene::build(group, config, turns, rhythm.to_string());
+    let login = ctx.bot.login_user.get();
+    let me = (login.id.as_str(), login.name.as_deref().unwrap_or(""));
+    let scene = Scene::build(group, config, turns, rhythm.to_string(), me);
     let mut noticed = String::new();
     let mut careful = false;
     // 刚进群的人也在这一批里：不判定，直接让人格看着现场说一句。
@@ -2034,7 +2197,14 @@ async fn consider_batch(
     if !current(ctx, group, *seq) {
         return Ok(());
     }
-    let mut scene = Scene::build(group, config, &latest, rhythm);
+    let login = ctx.bot.login_user.get();
+    let mut scene = Scene::build(
+        group,
+        config,
+        &latest,
+        rhythm,
+        (login.id.as_str(), login.name.as_deref().unwrap_or("")),
+    );
     scene.noticed = noticed;
     scene.careful = careful;
     let adjusted;
@@ -2180,7 +2350,7 @@ fn asks_for_answer(text: &str) -> bool {
 fn current(ctx: &Context, group: &str, seq: u64) -> bool {
     let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
     config.enabled
-        && config.groups.iter().any(|id| id == group)
+        && scope_enabled(&config, group)
         && window::with_group(group, |state| state.seq == seq)
 }
 
@@ -2200,8 +2370,12 @@ const DRIFT_SLACK: u64 = 2;
 
 fn sendable(ctx: &Context, group: &str, seq: u64) -> Sendable {
     let config = crate::plugins::get_config_or_default::<AmbientConfig>(ctx);
-    if !config.enabled || !config.groups.iter().any(|id| id == group) {
+    if !config.enabled || !scope_enabled(&config, group) {
         return Sendable::Stale;
+    }
+    // 私聊里对方就在等这句：中间又补了一句，也不该把已经想好的话咽回去。
+    if is_direct(group) {
+        return Sendable::Fresh;
     }
     window::with_group(group, |state| match state.drift(seq) {
         0 => Sendable::Fresh,
@@ -2341,7 +2515,14 @@ async fn speak_up(
             return Ok(());
         }
         let (api_base, api_key, gate_model) = gate_endpoint(ctx, mgr, &config.gate_model).await?;
-        let fresh = Scene::build(group, config, &latest, rhythm);
+        let login = ctx.bot.login_user.get();
+        let fresh = Scene::build(
+            group,
+            config,
+            &latest,
+            rhythm,
+            (login.id.as_str(), login.name.as_deref().unwrap_or("")),
+        );
         let verdict = gate::judge(
             &api_base,
             &api_key,
@@ -2504,7 +2685,8 @@ async fn deliver(
                 info!(target: LOG_TARGET, "群 {group} 咽回一次戳一戳：{target} 不在眼前，或刚戳过人");
                 continue;
             }
-            if let Err(error) = crate::adapters::satori::qq::poke(ctx, writer, group, &target).await
+            if let Err(error) =
+                crate::adapters::satori::qq::poke(ctx, writer, scope_channel(group), &target).await
             {
                 warn!(target: LOG_TARGET, "群 {group} 戳一戳失败：{error}");
                 break;
@@ -2551,13 +2733,23 @@ async fn deliver(
             None => long_text::readable(message),
         };
         let spoken = plain_text(&utterance.message);
+        // 私聊走 user_id：拿内部窗口键当 channel 发，实现端会把它当成一个不存在的群。
+        let (target_group, target_user) = if is_direct(group) {
+            (None, direct_user(group).filter(|user| !user.is_empty()))
+        } else {
+            (Some(group), None)
+        };
+        if is_direct(group) && target_user.is_none() {
+            warn!(target: LOG_TARGET, "{group} 的对方身份已丢失，这句话没发出去");
+            break;
+        }
         let id = match send_fresh_msg_id(
             ctx,
             writer.clone(),
-            Some(group),
-            None,
+            target_group,
+            target_user.as_deref(),
             &message,
-            freshness_for(group, config.freshness_window()),
+            freshness_for(scope_channel(group), config.freshness_window()),
         )
         .await
         {
@@ -2650,6 +2842,8 @@ impl PluginConfig for AmbientConfig {
 pub const LABELS: &[(&str, &str)] = &[
     ("enabled", "总开关"),
     ("groups", "搭话的群"),
+    ("private", "私聊也用这个账号聊天"),
+    ("private_users", "只对这些好友开私聊"),
     ("management_groups", "直接开放管理的群"),
     ("management_auto", "账号是管理员时自动管群"),
     ("management_excluded", "永远不管的群"),
@@ -2755,8 +2949,6 @@ pub fn option_labels() -> serde_json::Value {
     })
 }
 
-
-
 /// 启动：铺开人设与 skill，并确保模型接口那一份共享配置已就绪。
 pub fn init(_ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
@@ -2858,5 +3050,26 @@ mod tests {
         assert!(!looks_like_question("怎么会这样"));
         assert!(!looks_like_question("[群成员 123 加入了群聊]"));
     }
-}
 
+    #[test]
+    fn private_scopes_are_gated_by_config() {
+        let mut config = config();
+        // 只开群：私聊频道不算开启。
+        config.groups = vec!["123".into()];
+        remember_direct("private:456", "456");
+        assert!(scope_enabled(&config, "123"));
+        assert!(!scope_enabled(&config, "private:456"));
+        // 打开私聊、不限定人：任何已登记的私聊都开启。
+        config.private = true;
+        assert!(scope_enabled(&config, "private:456"));
+        // 限定人之后只有名单上的那位。
+        config.private_users = vec!["789".into()];
+        assert!(!scope_enabled(&config, "private:456"));
+        config.private_users = vec!["456".into()];
+        assert!(scope_enabled(&config, "private:456"));
+        // 私聊发送要拿对方 QQ 号，而不是窗口键。
+        assert_eq!(direct_user("private:456").as_deref(), Some("456"));
+        // 没登记过的频道不会被当成私聊。
+        assert!(!is_direct("private:999"));
+    }
+}

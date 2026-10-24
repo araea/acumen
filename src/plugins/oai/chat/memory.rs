@@ -30,6 +30,8 @@ const THREADS_FRESH_SECONDS: i64 = 8 * 3_600;
 pub(crate) const MAX_THREADS: usize = 5;
 /// 一条印象或旧事的字数上限——记忆是提示，不是日记。
 pub(crate) const MAX_NOTE_CHARS: usize = 60;
+/// 一个人最多保留几条暂定观察；低证据、最久没印证的先淡忘。
+const MAX_OBSERVATIONS: usize = 3;
 /// 一次注入提示词的熟人卡片上限。
 const BRIEF_PEOPLE: usize = 6;
 /// 熟人卡片只给最近这些条消息里开过口的人：两小时前说过一句的人，今天这一茬早就不是他了，
@@ -46,6 +48,32 @@ const TOPIC_TURNS: usize = 12;
 /// 两次落盘之间至少隔多久。露面统计每条消息都在变，值不上一次写盘；
 /// 人格自己写下的印象走 [`flush_now`]，不受这个节流影响。
 const WRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// 一条根据有限聊天样本形成的暂定观察。
+/// 它与人格主动写下的长期印象分开保存：新证据可以强化它，也可能与它矛盾；
+/// 不会因为一次复盘就把旧印象整体替换掉。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Observation {
+    pub text: String,
+    pub at: i64,
+    /// 0–1，只表示证据强弱，不表示对这个人的好感或评价高低。
+    pub confidence: f32,
+    /// 形成这条观察时看到的消息样本数；多次复盘可以累积。
+    pub samples: u32,
+}
+
+impl Observation {
+    fn evidence(&self) -> String {
+        let level = if self.confidence < 0.45 {
+            "初步猜测"
+        } else if self.confidence < 0.75 {
+            "有些依据"
+        } else {
+            "多次印证"
+        };
+        format!("{level}，{} 条样本", self.samples)
+    }
+}
 
 /// 对一个人的记忆。
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +100,14 @@ pub(crate) struct Person {
     /// 自己回应过他多少次。
     #[serde(default)]
     pub exchanges: u32,
+    /// 复盘形成的暂定观察，最多保留几条；与上面的长期印象并列而非互相覆盖。
+    #[serde(default)]
+    pub observations: Vec<Observation>,
+    /// 最近真实互动积累的热度。只由点名、回应等互动增加，不从一句发言推断。
+    #[serde(default)]
+    warmth: f32,
+    #[serde(default)]
+    warmth_at: i64,
 }
 
 impl Person {
@@ -79,8 +115,23 @@ impl Person {
     fn stranger(&self, now: i64) -> bool {
         self.note.is_empty()
             && self.address.is_empty()
+            && self.observations.is_empty()
             && self.messages < 6
             && now - self.first_seen < 3 * 86_400
+    }
+
+    /// 互动热度的半衰期为三天。发言本身不加热度，避免把「话多」误读成「亲近」。
+    fn warmth(&self, now: i64) -> f32 {
+        if self.warmth_at == 0 {
+            return 0.0;
+        }
+        let days = (now - self.warmth_at).max(0) as f32 / 86_400.0;
+        self.warmth * 0.5_f32.powf(days / 3.0)
+    }
+
+    fn engage(&mut self, delta: f32, at: i64) {
+        self.warmth = (self.warmth(at) + delta).clamp(0.0, 1.0);
+        self.warmth_at = at;
     }
 }
 
@@ -155,7 +206,10 @@ impl GroupMemory {
         if user_id.is_empty() {
             return;
         }
-        let person = self.people.entry(user_id.to_string()).or_insert_with(|| Person {
+        let person = self
+            .people
+            .entry(user_id.to_string())
+            .or_insert_with(|| Person {
             first_seen: at,
             ..Person::default()
         });
@@ -174,6 +228,14 @@ impl GroupMemory {
         if let Some(person) = self.people.get_mut(user_id) {
             person.exchanges = person.exchanges.saturating_add(1);
             person.last_seen = person.last_seen.max(at);
+            person.engage(0.06, at);
+        }
+    }
+
+    /// 对方直接 @、引用或戳了自己。互动热度只来自这种真实往来，不从聊天内容猜。
+    pub(crate) fn engage(&mut self, user_id: &str, at: i64) {
+        if let Some(person) = self.people.get_mut(user_id) {
+            person.engage(0.14, at);
         }
     }
 
@@ -183,6 +245,75 @@ impl GroupMemory {
         let person = self.people.entry(user_id.to_string()).or_default();
         person.note = tidy(note);
         Ok(())
+    }
+
+    /// 增加一条有证据边界的观察。单次发言即使模型给了很高置信度，也只能
+    /// 形成「初步猜测」；同一观察在后续复盘中反复出现才逐渐增强。
+    pub(crate) fn observe(
+        &mut self,
+        user_id: &str,
+        text: &str,
+        confidence: f32,
+        samples: usize,
+        at: i64,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(!user_id.is_empty(), "用户 ID 是空的");
+        // 观察会原样回到提示词里，所以和旧事一样过一遍注入清洗。
+        let text = sanitize(text).ok_or_else(|| anyhow::anyhow!("观察是空的或不可用"))?;
+        let samples = samples.clamp(1, 99) as u32;
+        let sample_cap = (0.20 + 0.15 * samples as f32).min(0.85);
+        let confidence = if confidence.is_finite() {
+            confidence
+        } else {
+            0.2
+        }
+        .clamp(0.05, sample_cap);
+        let person = self.people.entry(user_id.to_string()).or_default();
+        if let Some(existing) = person
+            .observations
+            .iter_mut()
+            .find(|item| item.text == text)
+        {
+            let total = existing.samples.saturating_add(samples).max(1);
+            let old_weight = existing.samples as f32;
+            let new_weight = samples as f32;
+            existing.confidence = ((existing.confidence * old_weight + confidence * new_weight)
+                / total as f32)
+                .clamp(0.05, (0.20 + 0.15 * total as f32).min(0.95));
+            existing.samples = total;
+            existing.at = at;
+            return Ok(true);
+        }
+        let candidate = Observation {
+            text,
+            at,
+            confidence,
+            samples,
+        };
+        if person.observations.len() >= MAX_OBSERVATIONS {
+            let Some((index, weakest)) = person
+                .observations
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let score = |item: &Observation| {
+                        item.confidence * (1.0 + (item.samples as f32).ln_1p())
+                    };
+                    score(a).total_cmp(&score(b)).then(a.at.cmp(&b.at))
+                })
+                .map(|(index, item)| (index, item.clone()))
+            else {
+                return Ok(false);
+            };
+            let new_score = candidate.confidence * (1.0 + (candidate.samples as f32).ln_1p());
+            let old_score = weakest.confidence * (1.0 + (weakest.samples as f32).ln_1p());
+            if new_score <= old_score {
+                return Ok(false);
+            }
+            person.observations.remove(index);
+        }
+        person.observations.push(candidate);
+        Ok(true)
     }
 
     /// 写下（或改写）平时怎么称呼他；空字符串等于回到跟着群名片叫。
@@ -289,6 +420,9 @@ impl GroupMemory {
     pub(crate) fn prune(&mut self, now: i64) {
         let ttl = NOTE_TTL_DAYS * 86_400;
         self.notes.retain(|note| now - note.at < ttl);
+        for person in self.people.values_mut() {
+            person.observations.retain(|item| now - item.at < ttl);
+        }
         self.claims.retain(|claim| now - claim.at < CLAIM_TTL_DAYS * 86_400);
         if self.claims.len() > MAX_CLAIMS {
             self.claims.sort_by_key(|claim| claim.at);
@@ -304,7 +438,13 @@ impl GroupMemory {
             let mut ranked: Vec<(String, i64, bool)> = self
                 .people
                 .iter()
-                .map(|(id, person)| (id.clone(), person.last_seen, person.note.is_empty()))
+                .map(|(id, person)| {
+                    (
+                        id.clone(),
+                        person.last_seen,
+                        person.note.is_empty() && person.observations.is_empty(),
+                    )
+                })
                 .collect();
             // 先淘汰没有印象的，再按最久没露面淘汰。
             ranked.sort_by(|a, b| b.2.cmp(&a.2).then(a.1.cmp(&b.1)));
@@ -386,6 +526,24 @@ impl GroupMemory {
             if !person.address.is_empty() {
                 parts.push(format!("你平时叫他「{}」", person.address));
             }
+            let warmth = person.warmth(now);
+            if warmth >= 0.25 {
+                parts.push(if warmth >= 0.55 {
+                    "最近互动挺热络".to_string()
+                } else {
+                    "最近有过几回直接互动".to_string()
+                });
+            }
+            let mut observations: Vec<&Observation> = person.observations.iter().collect();
+            observations
+                .sort_by(|a, b| b.confidence.total_cmp(&a.confidence).then(b.at.cmp(&a.at)));
+            for observation in observations.into_iter().take(2) {
+                parts.push(format!(
+                    "暂定观察：{}（{}）",
+                    observation.text,
+                    observation.evidence()
+                ));
+            }
             // 没印象的熟脸不列：一串「眼熟，没什么具体印象」只会让人格觉得
             // 该跟每个人都搭一句，而人对说不出什么的人本来就想不起什么。
             if parts.is_empty() {
@@ -394,7 +552,10 @@ impl GroupMemory {
             cards.push(format!("- {name}：{}{tail}", parts.join("；")));
         }
         if !cards.is_empty() {
-            out.push_str("你记得的人（印象而已，拿来拿捏分寸；不是话题，别主动提起他们的事）：\n");
+            out.push_str(
+                "你记得的人（全是会过时的参考，不是事实或定论；以当前言行为准，人会变化，\
+                 玩笑、反串和一时情绪不代表稳定性格，别拿旧印象套人，更别主动提起他们的事）：\n",
+            );
             out.push_str(&cards.join("\n"));
             out.push('\n');
         }
@@ -415,7 +576,7 @@ impl GroupMemory {
             .map(|(_, note)| format!("- {}（{}）", note.text, ago((now - note.at).max(0))))
             .collect();
         if !notes.is_empty() {
-            out.push_str("这个群的旧事（背景；眼前的话没碰到它就别提）：\n");
+            out.push_str("这场聊天的旧事（背景；眼前的话没碰到它就别提）：\n");
             out.push_str(&notes.join("\n"));
             out.push('\n');
         }
@@ -424,7 +585,11 @@ impl GroupMemory {
 
     /// 给工具回执用的一句话概况。
     pub(crate) fn summary(&self) -> String {
-        let with_note = self.people.values().filter(|p| !p.note.is_empty()).count();
+        let with_note = self
+            .people
+            .values()
+            .filter(|p| !p.note.is_empty() || !p.observations.is_empty())
+            .count();
         format!(
             "记得 {} 个人（{} 个有印象），{} 条旧事",
             self.people.len(),
@@ -454,7 +619,8 @@ fn lock() -> MutexGuard<'static, Store> {
 
 /// 一个群一份文件，文件名就是群 ID。ID 由实现端给出，路径分隔符换掉，免得跑出目录。
 fn path_of(dir: &Path, group: &str) -> PathBuf {
-    dir.join(format!("{}.json", group.replace(['/', '\\'], "_")))
+    // 私聊的窗口键是 `private:<QQ号>`：冒号在 Windows 上是非法文件名，一并换掉。
+    dir.join(format!("{}.json", group.replace(['/', '\\', ':'], "_")))
 }
 
 /// 指定记忆的落盘位置；启动时调用一次。
@@ -566,5 +732,70 @@ async fn write(group: &str, force: bool) {
     }
     if let Err(error) = crate::storage::write_atomic_async(path, json.into_bytes()).await {
         warn!(target: super::LOG_TARGET, "写入群 {group} 的记忆失败：{error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_single_message_cannot_become_a_firm_judgement() {
+        let mut memory = GroupMemory::default();
+        assert!(memory.observe("42", "爱开玩笑", 0.98, 1, 1_000).unwrap());
+        let person = memory.people.get("42").unwrap();
+        // 模型给得多高都要按样本数压下来；一句玩梗不该变成定性。
+        assert_eq!(person.observations[0].samples, 1);
+        assert!(person.observations[0].confidence <= 0.36);
+    }
+
+    #[test]
+    fn repeated_evidence_strengthens_and_caps() {
+        let mut memory = GroupMemory::default();
+        for round in 0..6 {
+            memory
+                .observe("42", "常在深夜出现", 0.9, 8, 1_000 + round * 100)
+                .unwrap();
+        }
+        let person = memory.people.get("42").unwrap();
+        assert_eq!(person.observations.len(), 1);
+        assert_eq!(person.observations[0].samples, 48);
+        assert!(person.observations[0].confidence > 0.6);
+        assert!(person.observations[0].confidence <= 0.95);
+    }
+
+    #[test]
+    fn observations_are_bounded_and_forget_old_ones() {
+        let mut memory = GroupMemory::default();
+        for (index, text) in ["喜欢折腾手机", "常发老图", "爱用长句", "在准备考试"]
+            .iter()
+            .enumerate()
+        {
+            let _ = memory.observe("42", text, 0.5, 2 + index, 1_000);
+        }
+        assert!(memory.people["42"].observations.len() <= 3);
+        // 过期观察随 prune 淡忘，但人还在（长期印象不被观察挤掉）。
+        memory.remember("42", "聊得来").unwrap();
+        memory.prune(1_000 + NOTE_TTL_DAYS * 86_400 + 1);
+        let person = memory.people.get("42").unwrap();
+        assert!(person.observations.is_empty());
+        assert_eq!(person.note, "聊得来");
+    }
+
+    #[test]
+    fn warmth_comes_from_interaction_not_from_talking() {
+        let mut memory = GroupMemory::default();
+        let now = 10 * 86_400;
+        memory.see("42", "老张", now);
+        // 只是说话多：不加热度。
+        for step in 0..30 {
+            memory.see("42", "老张", now + step);
+        }
+        assert_eq!(memory.people["42"].warmth(now + 30), 0.0);
+        // 真实往来才加，而且会随时间衰减。
+        memory.engage("42", now + 30);
+        let warm = memory.people["42"].warmth(now + 30);
+        assert!(warm > 0.0);
+        assert!(memory.people["42"].warmth(now + 30 + 6 * 86_400) < warm / 3.0);
     }
 }

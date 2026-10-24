@@ -149,10 +149,66 @@ struct Quote {
 }
 
 const CACHE_LIMIT: usize = 6000;
+/// 撤回比原文事件先到时，留给事件乱序、数据库落库与平台回读的时间。
+/// 这是恢复窗口，不是给每次正常撤回增加的延迟：缓存命中仍会立刻转存。
+const RECOVER_DELAYS: [Duration; 6] = [
+    Duration::ZERO,
+    Duration::from_millis(150),
+    Duration::from_millis(400),
+    Duration::from_millis(900),
+    Duration::from_millis(1_800),
+    Duration::from_millis(3_000),
+];
+const PENDING_LIMIT: usize = 256;
 
 fn cache() -> &'static Mutex<VecDeque<Kept>> {
     static CACHE: OnceLock<Mutex<VecDeque<Kept>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
+}
+
+/// 一条已经收到、但暂时还没找到原文的撤回。
+/// 配置与操作者按撤回当时保存；随后配置改动不会把同一条转去另一个地方。
+#[derive(Clone)]
+struct PendingRecall {
+    config: Config,
+    operator: String,
+    recalled_at: i64,
+    inserted_at: std::time::Instant,
+}
+
+fn pending() -> &'static Mutex<HashMap<String, PendingRecall>> {
+    static PENDING: OnceLock<Mutex<HashMap<String, PendingRecall>>> = OnceLock::new();
+    PENDING.get_or_init(Default::default)
+}
+
+fn recall_key(self_id: &str, channel: &str, message_id: &str) -> String {
+    format!("{self_id}|{channel}|{message_id}")
+}
+
+fn cached(self_id: &str, channel: &str, message_id: &str) -> Option<Kept> {
+    cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .rev()
+        .find(|kept| {
+            kept.message_id == message_id && kept.channel_id == channel && kept.self_id == self_id
+        })
+        .cloned()
+}
+
+fn take_pending(key: &str) -> Option<PendingRecall> {
+    pending()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(key)
+}
+
+fn pending_exists(key: &str) -> bool {
+    pending()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .contains_key(key)
 }
 
 fn now() -> i64 {
@@ -210,10 +266,25 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 while cache.front().is_some_and(|old| old.at < horizon) || cache.len() >= CACHE_LIMIT {
                     expired.extend(cache.pop_front());
                 }
-                cache.push_back(kept);
+                cache.push_back(kept.clone());
             }
             for kept in &expired {
                 forget(kept);
+            }
+            // 快速撤回时，删除事件可能先一步到达。原文现在到了，直接唤醒那条
+            // 待恢复撤回；后台恢复任务随后会发现占位已被取走，不会重复转存。
+            let key = recall_key(&kept.self_id, &kept.channel_id, &kept.message_id);
+            if let Some(pending) = take_pending(&key) {
+                enqueue(
+                    ctx.clone(),
+                    writer.clone(),
+                    &pending.config,
+                    Recalled {
+                        kept,
+                        operator: pending.operator,
+                        recalled_at: pending.recalled_at,
+                    },
+                );
             }
             None
         }
@@ -234,30 +305,67 @@ pub fn on_receive(ctx: &mut Context, writer: &LockedWriter) -> Option<BoxFuture<
                 return None;
             }
             let channel = raw.get_str("channel_id").unwrap_or("").to_string();
-            let kept = cache()
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .iter()
-                .rev()
-                .find(|kept| kept.message_id == message_id && kept.channel_id == channel && kept.self_id == me)
-                .cloned();
+            let kept = cached(&me, &channel, &message_id);
             // 自己的消息只认缓存里那些亲手发的：机器人发的不进缓存，也不该去记录库里翻。
             if user == me && kept.is_none() {
                 return None;
             }
+            let operator = if by_other { operator } else { String::new() };
             let (ctx, writer) = (ctx.clone(), writer.clone());
+            if let Some(kept) = kept {
+                return Some(Box::pin(async move {
+                    enqueue(
+                        ctx,
+                        writer,
+                        &config,
+                        Recalled {
+                            kept,
+                            operator,
+                            recalled_at: now(),
+                        },
+                    );
+                    Ok(())
+                }));
+            }
+
+            // 撤回先到的占一个位，等原文事件、记录库或平台回读把它补上。
+            // 重复撤回共享同一个恢复任务，操作者与撤回时间以第一次为准。
+            let key = recall_key(&me, &channel, &message_id);
+            {
+                let mut all = pending()
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                all.retain(|_, item| item.inserted_at.elapsed() < Duration::from_secs(20));
+                if all.contains_key(&key) {
+                    return None;
+                }
+                if all.len() >= PENDING_LIMIT {
+                    warn!(target: LOG_TARGET, "待恢复撤回过多，丢弃最早无法恢复的一条");
+                    if let Some(oldest) = all
+                        .iter()
+                        .min_by_key(|(_, item)| item.inserted_at)
+                        .map(|(key, _)| key.clone())
+                    {
+                        all.remove(&oldest);
+                        tally().missed += 1;
+                    }
+                }
+                all.insert(
+                    key.clone(),
+                    PendingRecall {
+                        config,
+                        operator,
+                        recalled_at: now(),
+                        inserted_at: std::time::Instant::now(),
+                    },
+                );
+            }
+            let group_name = raw.get_str("group_name").unwrap_or("").to_string();
             Some(Box::pin(async move {
-                let kept = if let Some(kept) = kept {
-                    kept
-                } else if let Some(kept) = from_records(&ctx, &message_id, &channel).await {
-                    kept
-                } else {
-                    debug!(target: LOG_TARGET, "撤回的消息 {message_id} 没记着原文");
-                    tally().missed += 1;
-                    return Ok(());
-                };
-                let operator = if by_other { operator } else { String::new() };
-                enqueue(ctx, writer, &config, Recalled { kept, operator, recalled_at: now() });
+                recover(
+                    ctx, writer, key, message_id, channel, group, group_name, user,
+                )
+                .await;
                 Ok(())
             }))
         }
@@ -304,6 +412,163 @@ async fn from_records(ctx: &Context, message_id: &str, channel: &str) -> Option<
         name: if nick.is_empty() { name } else { nick },
         at: row.try_get("", "time").unwrap_or_default(),
         content: Message::new().text(format!("{text}（只留下了文字摘要）")),
+        extra: Extra::default(),
+    })
+}
+
+/// 恢复一条先于原文到达的撤回。原消息事件到达时会直接取走占位（见
+/// `message-created` 分支），这里同时用短退避查缓存、记录库和平台，覆盖
+/// 「实现端已经投递、框架记录还没落库」与「框架重启后只剩平台历史」两种情形。
+#[allow(clippy::too_many_arguments)]
+async fn recover(
+    ctx: Context,
+    writer: LockedWriter,
+    key: String,
+    message_id: String,
+    channel: String,
+    group: Option<String>,
+    group_name: String,
+    user: String,
+) {
+    for (attempt, delay) in RECOVER_DELAYS.iter().enumerate() {
+        tokio::time::sleep(*delay).await;
+        if !pending_exists(&key) {
+            return;
+        }
+        let me = ctx.bot.self_id();
+        let mut found = cached(&me, &channel, &message_id);
+        if found.is_none() {
+            found = from_records(&ctx, &message_id, &channel).await;
+        }
+        if found.is_none() && attempt % 2 == 0 {
+            found = from_platform(
+                &ctx,
+                &writer,
+                &message_id,
+                &channel,
+                group.as_deref(),
+                &group_name,
+                &user,
+            )
+            .await;
+            if let Some(kept) = &found {
+                // 平台回读不会经过 message-created 的接收钩子，媒体与引用要在
+                // 这里补做预取，否则快速撤回的图仍然可能只剩占位。
+                prefetch(&ctx, &writer, kept);
+            }
+        }
+        if let Some(kept) = found {
+            if let Some(pending) = take_pending(&key) {
+                debug!(target: LOG_TARGET, "撤回的消息 {message_id} 已在乱序宽限期内找回原文");
+                enqueue(
+                    ctx,
+                    writer,
+                    &pending.config,
+                    Recalled {
+                        kept,
+                        operator: pending.operator,
+                        recalled_at: pending.recalled_at,
+                    },
+                );
+            }
+            return;
+        }
+    }
+    if take_pending(&key).is_some() {
+        debug!(target: LOG_TARGET, "撤回的消息 {message_id} 在恢复窗口后仍没有原文");
+        tally().missed += 1;
+    }
+}
+
+/// 平台还留着原消息时，直接取完整内容，而不是只剩记录库的一行文字摘要。
+/// 对 satori-qq 来说，即使事件因进程重启没进本机缓存，实现端的 MsgStore
+/// 通常仍能给出原始元素；失败只代表这条恢复路径不可用，不影响后续重试。
+async fn from_platform(
+    ctx: &Context,
+    writer: &LockedWriter,
+    message_id: &str,
+    channel: &str,
+    group: Option<&str>,
+    group_name: &str,
+    fallback_user: &str,
+) -> Option<Kept> {
+    let raw: serde_json::Value = tokio::time::timeout(
+        Duration::from_secs(3),
+        writer.call(
+            ctx,
+            "message.get",
+            serde_json::json!({"channel_id": channel, "message_id": message_id}),
+        ),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let content = raw.get("content")?.as_str().unwrap_or("");
+    if content.is_empty() {
+        return None;
+    }
+    let content = message::from_content_with(content, &writer.resources());
+    if content.0.is_empty() {
+        return None;
+    }
+    let scalar = |value: Option<&serde_json::Value>| -> String {
+        match value {
+            Some(serde_json::Value::String(text)) => text.clone(),
+            Some(serde_json::Value::Number(number)) => number.to_string(),
+            _ => String::new(),
+        }
+    };
+    let user = raw.get("user").cloned().unwrap_or(serde_json::Value::Null);
+    let member = raw
+        .get("member")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let user_id = {
+        let id = scalar(user.get("id"));
+        if id.is_empty() {
+            fallback_user.to_string()
+        } else {
+            id
+        }
+    };
+    let name = [
+        member.get("nick"),
+        member.get("name"),
+        user.get("name"),
+        user.get("nick"),
+    ]
+    .into_iter()
+    .find_map(|value| value.and_then(serde_json::Value::as_str))
+    .filter(|name| !name.is_empty())
+    .unwrap_or("")
+    .to_string();
+    let at = raw
+        .get("created_at")
+        .and_then(serde_json::Value::as_i64)
+        .map(|time| {
+            if time > 10_000_000_000 {
+                time / 1000
+            } else {
+                time
+            }
+        })
+        .filter(|time| *time > 0)
+        .unwrap_or_else(now);
+    let recovered_id = scalar(raw.get("id"));
+    Some(Kept {
+        self_id: ctx.bot.self_id(),
+        message_id: if recovered_id.is_empty() {
+            message_id.to_string()
+        } else {
+            recovered_id
+        },
+        channel_id: channel.to_string(),
+        group: group.map(str::to_owned),
+        group_name: group_name.to_string(),
+        user_id,
+        name,
+        at,
+        content,
         extra: Extra::default(),
     })
 }

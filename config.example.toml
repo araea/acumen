@@ -950,8 +950,13 @@ results = 8
 # 人设在 data/ambient/persona.md。
 [ambient]
 enabled = false
-# 开启搭话的群号；空列表等于不开启。
+# 开启搭话的群号；空列表等于不开启群聊。
 groups = []
+# 私聊里也用同一个人格：每个私聊频道有独立的窗口、记忆和情绪状态，
+# 与群聊、与别人的私聊互不影响。默认关闭。
+private = false
+# 只对这些好友开私聊（QQ 号）；空列表表示 private = true 时不限人。
+private_users = []
 # 账号在群里是群主或管理员时，人格自动以管理员身份管群，照 data/ambient/rules.md 与
 # rules/<群号>.md 的群规。
 management_auto = true

@@ -258,12 +258,13 @@ pub(crate) fn sticker_style(mut segment: Segment) -> Segment {
 ///
 /// 两样东西摆在手边。一是库里的几张，按「离眼前的话有多近」挑：接梗、吐槽、被逗乐这些
 /// 场合用不用得上，看的就是它自己写的那个标签与此刻话题的重合度；一条都贴不上时也给
-/// 几张——那时挑出来的是还没怎么用过的，新偷进来的正好露一面。
+/// 几张——那时挑出来的是还没怎么用过的，新偷进来的正好露一面。心情也算进来一小份：
+/// 同一个梗高兴时发是接梗，低落时发就是没心没肺。
 ///
 /// 二是记录里刚有人发过的图与表情包，连着消息 ID 一起点出来。从前库空着时这一段整个
 /// 不出现，偷这件事只剩工具说明里的一句话，于是一次都没偷过，库也就一直空着——
 /// 先有货架才会去偷，先偷了才会有货架。点名眼前能偷的那几条，这个圈就解开了。
-pub(crate) fn brief(turns: &[Turn], max: usize) -> String {
+pub(crate) fn brief(turns: &[Turn], max: usize, mood: &str) -> String {
     if max == 0 {
         return String::new();
     }
@@ -273,11 +274,20 @@ pub(crate) fn brief(turns: &[Turn], max: usize) -> String {
     let mut out = String::new();
     if total > 0 {
         let topic = tone::grams(&recent(turns));
+        let feeling = tone::grams(mood);
         let mut ranked: Vec<(&Entry, f32)> = store
             .library
             .entries
             .iter()
-            .map(|entry| (entry, tone::affinity(&entry.label, &topic)))
+            .map(|entry| {
+                let fit = tone::affinity(&entry.label, &topic);
+                let temper = if feeling.is_empty() {
+                    0.0
+                } else {
+                    tone::affinity(&entry.label, &feeling) * 0.4
+                };
+                (entry, fit + temper)
+            })
             .collect();
         ranked.sort_by(|a, b| {
             b.1.total_cmp(&a.1)
