@@ -16,12 +16,24 @@ pub struct ChartDataPoint {
     pub value: i64,
 }
 
+/// 一条线读哪一边的刻度。
+///
+/// 默认都读左边。量级差得远的对比线（「本群」对「我」）读右边，否则个人的那条
+/// 会被全群的数压成贴着地面的一条直线，两样都看不出来。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Axis {
+    #[default]
+    Left,
+    Right,
+}
+
 // 多线数据结构
 #[derive(Clone)]
 pub struct SeriesData {
     pub name: String,
     pub color: RGBColor,
     pub points: Vec<ChartDataPoint>,
+    pub axis: Axis,
 }
 
 // 柱状图数据结构 (包含头像和主题色)
@@ -155,6 +167,7 @@ pub async fn fetch_line_data(
                 name,
                 color: get_palette_color(i),
                 points,
+                axis: Axis::Left,
             });
         }
 
@@ -202,6 +215,7 @@ pub async fn fetch_line_data(
                     name: name.to_string(),
                     color,
                     points,
+                    axis: Axis::Left,
                 });
             }
         }
@@ -261,6 +275,7 @@ pub async fn fetch_line_data(
         name: "消息量".to_string(),
         color: FALLBACK_THEME, // Primary Blue
         points: chart_data,
+        axis: Axis::Left,
     });
 
     Ok(series_list)

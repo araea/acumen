@@ -636,6 +636,13 @@ body[data-state="ready"] .brand-glimmer {
   color: var(--md-sys-color-on-secondary-container);
 }
 
+/* 翻页拖动中：胶囊离开当前格，那格的字跟着收。松手落格时回到常规规则，
+   带 180ms 延迟再出现，和从前一样。 */
+.nav[data-swipe] .nav-item[aria-current="page"] .nav-label {
+  opacity: clamp(0, calc(1 - var(--zw-swipe, 0) * 1.6), 1);
+  transition: none;
+}
+
 .nav-item[aria-current="page"] .nav-label {
   max-width: 6em;
   max-height: 1.2em;
@@ -674,6 +681,73 @@ body[data-state="ready"] .brand-glimmer {
   margin-inline: auto;
   padding: var(--zw-space-02) calc(var(--zw-page-gutter) + var(--zw-safe-right))
     var(--zw-space-08) calc(var(--zw-page-gutter) + var(--zw-safe-left));
+}
+
+/* —— 手势翻页（app.js §6c） ——
+   正文区把竖直滚动留给浏览器、横向留给翻页，pinch 缩放照旧（WCAG 1.4.4）。
+   会自己横滑的容器要把 touch-action 要回去，否则手指在芯片上横滑会被翻页吃掉。
+   横向不设 overflow，滑出去的页会撑出横向滚动条，裁掉；竖直保持 visible，
+   页面照旧跟着文档滚。 */
+.main {
+  overflow-x: clip;
+  overflow-y: visible;
+  touch-action: pan-y pinch-zoom;
+}
+
+.main .chips-scroll,
+.main .tabs,
+.main .tpl-holders,
+.main [data-swipe="off"] {
+  touch-action: auto;
+}
+
+/* 日志台是自己的滚动容器：竖直留给它，横向仍归翻页（日志行会折行，不需要横滑）。 */
+.main .log {
+  touch-action: pan-y pinch-zoom;
+}
+
+/* 拖动中别顺手选中了正文；松手就恢复。 */
+.view[data-swiping] {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* 「下一张纸」：一层固定在整个视口上的画布，顶边由 app.js 量出 .view 的位置。
+   夹在正文与顶栏之间，导航坞永远压在最上面。 */
+.swipe-layer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 15;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout paint;
+}
+
+.swipe-scrim {
+  position: absolute;
+  inset: 0;
+  background: var(--md-sys-color-scrim);
+  opacity: 0;
+  will-change: opacity;
+}
+
+.swipe-sheet {
+  position: absolute;
+  inset: 0;
+  background: var(--zw-canvas);
+  box-shadow: var(--zw-swipe-shadow);
+  will-change: transform;
+}
+
+.swipe-scroll {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  will-change: transform;
 }
 
 /* —— 收起（compact） ——

@@ -777,6 +777,73 @@ pub async fn get_user_metric_trend(
     granularity: TrendGranularity,
     metric: UserMetric,
 ) -> Result<Vec<DailyTrend>, DbErr> {
+    raw_metric_trend(db, guild_id, Some(user_id), start_time, end_time, granularity, metric).await
+}
+
+/// 一个群（或全部）的数值走势，口径与 [`get_user_metric_trend`] 相同，只是不含「谁」。
+///
+/// 「我的」报表拿它当对比线。整群的数据量比一个人大得多，所以按天、按月时整日部分
+/// 走聚合表（`message_user_stats_daily` 按日把所有人摞起来就是全群），只有边界那两天
+/// 回原始表；按小时只可能是一天之内，直接查原始表。
+pub async fn get_group_metric_trend(
+    db: &DatabaseConnection,
+    guild_id: Option<&str>,
+    start_time: i64,
+    end_time: i64,
+    granularity: TrendGranularity,
+    metric: UserMetric,
+) -> Result<Vec<DailyTrend>, DbErr> {
+    if granularity == TrendGranularity::Hour {
+        return raw_metric_trend(db, guild_id, None, start_time, end_time, granularity, metric).await;
+    }
+
+    let sr = stats::split_range(start_time, end_time);
+    let Some((from, to)) = sr.full_days else {
+        return raw_metric_trend(db, guild_id, None, start_time, end_time, granularity, metric).await;
+    };
+
+    let date_expr = if granularity == TrendGranularity::Month {
+        "substr(stat_date, 1, 7)"
+    } else {
+        "stat_date"
+    };
+    let mut params = Params::default();
+    let g = params.guild(guild_id);
+    let sql = format!(
+        "SELECT {date_expr} AS date, SUM({}) AS count FROM message_user_stats_daily WHERE stat_date >= '{from}' AND stat_date <= '{to}'{g} GROUP BY date ORDER BY date",
+        metric.agg_column()
+    );
+    let rows: Vec<DailyTrend> = DailyTrend::find_by_statement(params.statement(db, sql))
+        .all(db)
+        .await?;
+
+    // 边界片段回原始表；它们与整日部分不重叠，按日期键累加即可。
+    let mut merged: std::collections::BTreeMap<String, i64> =
+        rows.into_iter().map(|r| (r.date, r.count)).collect();
+    for (s, e) in &sr.partials {
+        for r in raw_metric_trend(db, guild_id, None, *s, *e, granularity, metric).await? {
+            *merged.entry(r.date).or_insert(0) += r.count;
+        }
+    }
+
+    Ok(merged
+        .into_iter()
+        .take(MAX_TREND_LIMIT as usize)
+        .map(|(date, count)| DailyTrend { date, count })
+        .collect())
+}
+
+/// 原始表上的数值走势：`user_id` 给了就只算这个人。按小时只用于单日，
+/// 按天/按月用于没有聚合表可用的时候。
+async fn raw_metric_trend(
+    db: &DatabaseConnection,
+    guild_id: Option<&str>,
+    user_id: Option<&str>,
+    start_time: i64,
+    end_time: i64,
+    granularity: TrendGranularity,
+    metric: UserMetric,
+) -> Result<Vec<DailyTrend>, DbErr> {
     let time_expr = Expr::cust(format!(
         "strftime('{}', datetime(time, 'unixepoch', 'localtime'))",
         granularity.sql_format()
@@ -787,11 +854,13 @@ pub async fn get_user_metric_trend(
         .column_as(time_expr.clone(), "date")
         .column_as(Expr::cust(metric.raw_expr()), "count")
         .filter(entity::Column::Time.gte(start_time))
-        .filter(entity::Column::Time.lt(end_time))
-        .filter(entity::Column::UserId.eq(user_id));
+        .filter(entity::Column::Time.lt(end_time));
 
     if let Some(gid) = guild_id {
         query = query.filter(entity::Column::GuildId.eq(gid));
+    }
+    if let Some(uid) = user_id {
+        query = query.filter(entity::Column::UserId.eq(uid));
     }
 
     query

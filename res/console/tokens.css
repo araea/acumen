@@ -427,6 +427,10 @@
   --zw-float-shadow:
     0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 8%, transparent),
     0 18px 40px -16px color-mix(in srgb, var(--md-sys-color-shadow) 26%, transparent);
+  /* 手势翻页时「下一张纸」的边：一圈很淡的浮影，只在它压上来的时候看得见。 */
+  --zw-swipe-shadow:
+    0 0 3px color-mix(in srgb, var(--md-sys-color-shadow) 12%, transparent),
+    0 0 56px -8px color-mix(in srgb, var(--md-sys-color-shadow) 42%, transparent);
 
   /* —— 阅读口径 —— */
   --zw-body-line: 1.625rem;

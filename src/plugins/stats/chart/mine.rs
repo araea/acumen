@@ -14,7 +14,7 @@
 
 use super::ChartError;
 use super::data_loader::{
-    ChartDataPoint, FALLBACK_THEME, SeriesData, message_type_style, user_metric,
+    Axis, ChartDataPoint, FALLBACK_THEME, SeriesData, message_type_style, user_metric,
 };
 use super::renderer::StatCell;
 use crate::db::queries::{self, MessageTypeTrend, TrendGranularity, UserMetric};
@@ -106,11 +106,36 @@ pub async fn build(
         .map_err(|e| e.to_string())?;
 
         let points = fill(&period.buckets, rows.into_iter().map(|r| (r.date, r.count)));
-        let series = vec![SeriesData {
+        let mut series = vec![SeriesData {
             name: metric_name(metric).to_string(),
             color: FALLBACK_THEME,
             points,
+            axis: Axis::Left,
         }];
+        // 本群这一条当对比：同一段时间里全群说了多少。量级差得远，所以读右轴，
+        // 不然个人的线会被压成贴着地面的一条直线。
+        if let Some(gid) = group_id {
+            let rows = queries::get_group_metric_trend(
+                db,
+                Some(gid),
+                period.start,
+                period.end,
+                period.unit.granularity(),
+                metric,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let points = fill(&period.buckets, rows.into_iter().map(|r| (r.date, r.count)));
+            if points.iter().any(|p| p.value > 0) {
+                series[0].name = "我".to_string();
+                series.push(SeriesData {
+                    name: "本群".to_string(),
+                    color: crate::render::tokens::OUTLINE,
+                    points,
+                    axis: Axis::Right,
+                });
+            }
+        }
         (series, metric_word(metric))
     };
 
@@ -229,14 +254,27 @@ pub async fn build(
         scope_cell,
     ];
 
+    // 对比线（右轴）的合计：写进副标题，读者不必在两个刻度之间猜。
+    let group_total: i64 = series
+        .iter()
+        .filter(|sr| sr.axis == Axis::Right)
+        .flat_map(|sr| sr.points.iter().map(|p| p.value))
+        .sum();
+    let compare = if group_total > 0 {
+        format!(" · 本群 {} {}", format_count(group_total), unit_word)
+    } else {
+        String::new()
+    };
+
     let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
     let meta = format!(
-        "{} · 共 {} {} · 合计 {} {} · {}",
+        "{} · 共 {} {} · 合计 {} {}{} · {}",
         scope_text,
         buckets.len(),
         period.unit.span_word(),
         format_count(total),
         unit_word,
+        compare,
         now_str
     );
 
@@ -526,6 +564,7 @@ async fn message_type_series(
                 name: name.to_string(),
                 color,
                 points,
+                axis: Axis::Left,
             });
         }
     }

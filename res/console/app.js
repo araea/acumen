@@ -841,6 +841,340 @@
     compactNav.addEventListener("change", () => set(false));
   }
 
+  /* ==================== §6c 手势翻页 ====================
+     左右滑整页：手指到哪儿，页面到哪儿，底部导航的胶囊同步走到下一格；松手时按
+     「过了小半屏」或「甩了一下」决定去还是回，落页走 M3E 的空间缓动。
+
+     三件事值得记下来：
+
+     - **下一张纸是画在固定层里的。** 目标页得在手指还没到之前就看得见，所以滑动开始时
+       把目标页画进一层 position: fixed 的纸里：横向跟手，纵向按它自己上次的滚动位置摆好。
+       落页时真正的页面已经画在下面，撤掉这一层就完成，不会闪一下白。
+     - **不碰 touch-action 的老规矩。** body 是 manipulation、导航坞是 none；这里只给
+       .main 设 pan-y：竖直留给浏览器滚动，横向留给我们，pinch 缩放也还在（WCAG 1.4.4）。
+       横滑的容器（芯片、选项卡、模板位）在 app.css 里各自把 touch-action 改回 auto。
+     - **拖动中不改 aria-current。** 只让胶囊跟手——它是视觉焦点；落页那一下才换选中格，
+       读屏不会因为手指抖一下就报一次「已选中」。 */
+
+  const SWIPE_GATE = 10;        // 横向走过这么多才算一次滑动，短按仍然是短按
+  const SWIPE_TILT = 1.15;      // 竖向超过横向的这个倍数，就当用户是在滚动
+  const swipe = {
+    drag: null,
+    layer: null,
+    sheet: null,
+    scrim: null,
+    scrollEl: null,
+    anims: [],
+    settling: false,
+    suppressClickUntil: 0,
+  };
+
+  const viewportW = () => document.documentElement.clientWidth || innerWidth;
+  const motionMs = (name, fallback) => {
+    const ms = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
+    return Number.isFinite(ms) ? ms : fallback;
+  };
+  const motionEase = (name, fallback) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+
+  const swipeNeighbor = (page, step) => {
+    const index = PAGES.findIndex((item) => item.id === page);
+    return index < 0 ? null : PAGES[index + step]?.id ?? null;
+  };
+
+  /** 边缘上的橡皮筋：越拉越沉，最多走两成屏宽。 */
+  const rubber = (dx, width) =>
+    Math.sign(dx) * width * 0.2 * (1 - Math.exp(-Math.abs(dx) / (width * 0.34)));
+
+  function swipeAvailable() {
+    if (!token || lifecycle.stopped || swipe.settling || swipe.drag || !shown) return false;
+    // 插件详情是「列表 → 详情」的下一层，横滑退出会和返回手势打架，不参与翻页。
+    if (shown.arg) return false;
+    if (!$("#view") || $("dialog[open]")) return false;
+    return true;
+  }
+
+  /** 手指底下的东西自己会横滑、会选中文字、会弹键盘：都让开。 */
+  const SWIPE_SKIP = 'input, textarea, select, [contenteditable], [data-swipe="off"], .chips-scroll, .tabs, .tpl-holders';
+
+  function swipeSurface() {
+    const layer = document.createElement("div");
+    layer.className = "swipe-layer";
+    layer.setAttribute("aria-hidden", "true");
+    layer.inert = true;
+    layer.innerHTML = '<div class="swipe-scrim"></div><div class="swipe-sheet"><div class="swipe-scroll"><div class="view"></div></div></div>';
+    document.body.appendChild(layer);
+    swipe.layer = layer;
+    swipe.sheet = layer.querySelector(".swipe-sheet");
+    swipe.scrim = layer.querySelector(".swipe-scrim");
+    swipe.scrollEl = layer.querySelector(".swipe-scroll");
+    return layer;
+  }
+
+  /** 把目标页画进那张纸。骨架先到位，数据回来再换——手指滑到一半时纸里已经有东西。 */
+  function swipePaint(target) {
+    if (!swipe.scrollEl) return;
+    const box = swipe.scrollEl.querySelector(".view");
+    const route = { page: target, arg: null, key: target };
+    const fill = (node) => {
+      if (box.isConnected) put(box, node);
+    };
+    put(box, skeleton());
+    PAINT[target](route).then(fill, (error) => {
+      if (error?.status === 401) return;
+      fill(h`<div class="page">${pageHead("没能打开这一页")}</div>`);
+    });
+  }
+
+  function swipeLock(d, dx) {
+    d.step = dx < 0 ? 1 : -1;
+    d.target = swipeNeighbor(shown.page, d.step);
+    d.locked = true;
+    d.keep = d.target ? scrolls.get(d.target) || 0 : 0;
+    d.view.style.willChange = "transform";
+    d.view.dataset.swiping = "";
+    if (!d.target) return;
+
+    // 下一张纸的纵向原点：.view 在文档里的位置。滚动到哪儿都不变，
+    // 所以纸里的内容按目标页自己的滚动位置（-keep）摆一次就够。
+    const rect = d.view.getBoundingClientRect();
+    const layer = swipeSurface();
+    layer.style.top = `${Math.max(0, rect.top + scrollY)}px`;
+    swipe.scrollEl.style.transform = `translate3d(0, ${-d.keep}px, 0)`;
+    swipe.sheet.style.transform = `translate3d(${d.step * viewportW()}px, 0, 0)`;
+    swipePaint(d.target);
+  }
+
+  /** 跟手的这一帧：正页、下一张纸、压暗层、导航胶囊，一起走。 */
+  function swipePaintFrame() {
+    const d = swipe.drag;
+    if (!d?.locked) return;
+    const width = viewportW();
+    const out = d.target ? d.offset : rubber(d.offset, width);
+    d.painted = out;
+    d.view.style.transform = `translate3d(${out.toFixed(2)}px, 0, 0)`;
+    if (!swipe.sheet) return;
+    swipe.sheet.style.transform = `translate3d(${(d.step * width + out).toFixed(2)}px, 0, 0)`;
+    swipe.scrim.style.opacity = (Math.min(1, Math.abs(out) / width) * 0.16).toFixed(3);
+    swipePill(Math.min(1, Math.abs(out) / width), d.target);
+  }
+
+  function navBox(element) {
+    const nav = $("#nav");
+    const navRect = nav.getBoundingClientRect();
+    const rect = element.getBoundingClientRect();
+    return {
+      x: rect.left - navRect.left - nav.clientLeft,
+      y: rect.top - navRect.top - nav.clientTop,
+      w: rect.width,
+      h: rect.height,
+    };
+  }
+
+  /** 胶囊在两格之间按进度插值。位与尺寸都插，宽窄不同也接得上。 */
+  function swipePill(t, targetId) {
+    const nav = $("#nav");
+    const pill = nav?.querySelector(".nav-pill");
+    const from = nav?.querySelector('.nav-item[aria-current="page"]');
+    const to = targetId ? nav?.querySelector(`[data-nav="${CSS.escape(targetId)}"]`) : null;
+    if (!nav || !pill || !from || !to) return;
+    const a = navBox(from);
+    const b = navBox(to);
+    const k = Math.min(1, Math.max(0, t));
+    const box = {
+      x: a.x + (b.x - a.x) * k,
+      y: a.y + (b.y - a.y) * k,
+      w: a.w + (b.w - a.w) * k,
+      h: a.h + (b.h - a.h) * k,
+    };
+    // 胶囊离开之后，原来那格的标签跟着收（app.css 的 .nav[data-swipe]）：
+    // 悬浮的药丸滑到一半时，字不该还探在丸子的左沿外面。
+    nav.dataset.swipe = "";
+    nav.style.setProperty("--zw-swipe", k.toFixed(3));
+    cancelAnimationFrame(navPillFrame);
+    navSpring = {
+      x: { p: box.x, v: 0 }, y: { p: box.y, v: 0 },
+      w: { p: box.w, v: 0 }, h: { p: box.h, v: 0 },
+    };
+    // 翻页时不化成液态玻璃：那是一枚跟着手指的「焦点」，不是被端起来的透镜。
+    // 实心药丸在两格之间走，压在哪一格上，那一格的图标就透出来，一眼看得出走到哪了。
+    placePill(pill, box);
+  }
+
+  /** 从手指停下的地方滑到终点。取消时把动效一起收掉，别让它压着下一次的位移。 */
+  async function swipePlay(d, viewTo, sheetTo) {
+    const duration = swipe.settling === "back"
+      ? motionMs("--md-sys-motion-effects-default-duration", 220)
+      : motionMs("--md-sys-motion-spatial-fast-duration", 350);
+    const easing = motionEase("--md-sys-motion-spatial-fast-easing", "cubic-bezier(0.2, 0, 0, 1)");
+    const reduce = calm();
+    const play = (element, from, to, prop = "transform") => {
+      if (!element) return;
+      try {
+        const anim = element.animate(
+          [{ [prop]: from }, { [prop]: to }],
+          { duration: reduce ? 0 : duration, easing, fill: "forwards" },
+        );
+        swipe.anims.push(anim);
+      } catch {
+        element.style[prop] = to;
+      }
+    };
+    const from = d.painted ?? 0;
+    play(d.view, `translate3d(${from}px, 0, 0)`, viewTo);
+    if (swipe.sheet) {
+      play(swipe.sheet, `translate3d(${d.step * viewportW() + from}px, 0, 0)`, sheetTo);
+    }
+    if (swipe.scrim) {
+      const opacity = getComputedStyle(swipe.scrim).opacity;
+      play(swipe.scrim, opacity, "0", "opacity");
+    }
+    await Promise.all(swipe.anims.map((anim) => anim.finished.catch(() => {})));
+  }
+
+  function swipeCleanup() {
+    for (const anim of swipe.anims) anim.cancel();
+    swipe.anims = [];
+    swipe.layer?.remove();
+    swipe.layer = null;
+    swipe.sheet = null;
+    swipe.scrim = null;
+    swipe.scrollEl = null;
+    const view = $("#view");
+    if (view) {
+      view.style.transform = "";
+      view.style.willChange = "";
+      delete view.dataset.swiping;
+    }
+    const nav = $("#nav");
+    if (nav) {
+      delete nav.dataset.swipe;
+      nav.style.removeProperty("--zw-swipe");
+    }
+  }
+
+  async function swipeCommit(d) {
+    swipe.settling = "go";
+    const route = { page: d.target, arg: null, key: d.target };
+    const keep = d.keep;
+    // 落格的这一下交给导航：选中格与胶囊从拖动中的位置接着走，不回弹也不重来。
+    markNav(d.target);
+    if (navigator.vibrate && !calm()) navigator.vibrate(6);
+    await swipePlay(d, `translate3d(${-d.step * viewportW()}px, 0, 0)`, "translate3d(0, 0, 0)");
+    history.pushState(null, "", routeHash(route));
+    try {
+      await render({ quiet: true, keepScroll: keep, enter: false });
+      // 整页换掉之后焦点跟着页走：读屏从新页标题开始读，和点导航进来一样。
+      $(".page-title")?.focus({ preventScroll: true });
+    } finally {
+      swipeCleanup();
+      swipe.settling = false;
+    }
+  }
+
+  async function swipeRevert(d) {
+    swipe.settling = "back";
+    // 胶囊和页面一起往回走：等页面回完了再让底栏动，会慢半拍。
+    paintNavPill(true, true);
+    await swipePlay(d, "translate3d(0, 0, 0)", `translate3d(${d.step * viewportW()}px, 0, 0)`);
+    swipeCleanup();
+    swipe.settling = false;
+  }
+
+  function bindSwipe() {
+    document.addEventListener("pointerdown", (event) => {
+      // 第二根手指按下来：这是缩放，不是翻页，把刚才那一下退回去让给浏览器。
+      if (swipe.drag && event.pointerId !== swipe.drag.id) {
+        const d = swipe.drag;
+        swipe.drag = null;
+        if (d.locked) void swipeRevert(d);
+        return;
+      }
+      if (event.pointerType === "mouse" || event.isPrimary === false) return;
+      if (!swipeAvailable() || !event.target.closest?.("#view")) return;
+      if (event.target.closest(SWIPE_SKIP)) return;
+      swipe.drag = {
+        id: event.pointerId,
+        x0: event.clientX,
+        y0: event.clientY,
+        lastX: event.clientX,
+        lastT: performance.now(),
+        velocity: 0,
+        offset: 0,
+        painted: 0,
+        locked: false,
+        step: 0,
+        target: null,
+        keep: 0,
+        view: $("#view"),
+      };
+    }, { passive: true });
+
+    document.addEventListener("pointermove", (event) => {
+      const d = swipe.drag;
+      if (!d || event.pointerId !== d.id) return;
+      const dx = event.clientX - d.x0;
+      const dy = event.clientY - d.y0;
+      if (!d.locked) {
+        // 明显是在上下滚：把这次手势还给浏览器，别拦着人读页面。
+        if (Math.abs(dy) > SWIPE_GATE && Math.abs(dy) > Math.abs(dx) * SWIPE_TILT) {
+          swipe.drag = null;
+          return;
+        }
+        if (Math.abs(dx) < SWIPE_GATE) return;
+        swipeLock(d, dx);
+      }
+      const now = performance.now();
+      const dt = Math.max(1, now - d.lastT);
+      // 速度取短时平均：手指一顿，落格的判断就跟着变温柔。
+      d.velocity = d.velocity * 0.65 + ((event.clientX - d.lastX) / dt) * 0.35;
+      d.lastX = event.clientX;
+      d.lastT = now;
+      d.offset = dx;
+      swipePaintFrame();
+    }, { passive: true });
+
+    document.addEventListener("pointerup", (event) => {
+      const d = swipe.drag;
+      if (!d || event.pointerId !== d.id) return;
+      swipe.drag = null;
+      if (!d.locked) return;
+      swipe.suppressClickUntil = performance.now() + 250;
+      const width = viewportW();
+      const far = Math.abs(d.offset) > Math.min(width * 0.28, 180);
+      const flick = Math.abs(d.velocity) > 0.45 && Math.sign(d.velocity) === Math.sign(d.offset);
+      const go = Boolean(d.target) && Math.abs(d.offset) > 24 && (far || flick);
+      if (go && hasFormDrafts()) {
+        snackbar("这一页还有没保存的修改，先保存或放弃再换页", "warning");
+        void swipeRevert(d);
+        return;
+      }
+      if (go) void swipeCommit(d);
+      else void swipeRevert(d);
+    }, { passive: true });
+
+    const abort = () => {
+      const d = swipe.drag;
+      if (!d?.locked) {
+        swipe.drag = null;
+        return;
+      }
+      swipe.drag = null;
+      void swipeRevert(d);
+    };
+    document.addEventListener("pointercancel", abort, { passive: true });
+    addEventListener("blur", abort);
+
+    // 滑完手指抬起时浏览器还会补一个 click：吃掉它，别顺手点开了卡片。
+    document.addEventListener("click", (event) => {
+      if (performance.now() < swipe.suppressClickUntil) {
+        event.preventDefault();
+        event.stopPropagation();
+        swipe.suppressClickUntil = 0;
+      }
+    }, true);
+  }
+
   function parseRoute() {
     const [head = "", ...rest] = location.hash.replace(/^#\/?/, "").split("/");
     // 旧书签 / 旧链接：#/ambient 现在就是 ambient 插件的详情。
@@ -1004,8 +1338,10 @@
   let shown = null;
   const scrolls = new Map();
 
-  /** 画当前路由。`quiet` 用于刷新：不出骨架、不挪焦点、保留滚动位置。 */
-  async function render({ quiet = false } = {}) {
+  /** 画当前路由。`quiet` 用于刷新：不出骨架、不挪焦点、保留滚动位置。
+   *  `keepScroll` / `enter` 只给手势翻页用：落页时按目标页上次的位置停下，
+   *  并且不再播一次「整页升起」——那一段在滑动里已经走完了。 */
+  async function render({ quiet = false, keepScroll = null, enter = true } = {}) {
     if (!token) {
       lock();
       return;
@@ -1101,7 +1437,7 @@
     const focusId = oldFocus?.id;
     const retainedForms = previous?.key === route.key
       ? $$("#global-form, [data-bot], [data-config]").filter(form => form.dataset.refresh !== "replace" && formDirty(form)) : [];
-    const keep = quiet ? scrollY : changed ? scrolls.get(route.key) || 0 : scrollY;
+    const keep = keepScroll ?? (quiet ? scrollY : changed ? scrolls.get(route.key) || 0 : scrollY);
     shown = route;
     claimEntry(route);
     busy(false);
@@ -1115,7 +1451,7 @@
       else if (form.dataset.bot === "") $("#bot-list")?.append(form);
     }
     const page = $("#view > .page");
-    if (changed && page) page.toggleAttribute("data-enter", true);
+    if (changed && enter && page) page.toggleAttribute("data-enter", true);
     const heading = $(".page-title");
     if (heading) setTitle(page?.dataset.title || heading.textContent.trim());
     scrollTo({ top: keep, behavior: "instant" });
@@ -7685,6 +8021,7 @@
     bindEvents();
     bindNavDrag();
     bindNavMini();
+    bindSwipe();
     bindTagDrag();
     token = readToken();
     if (!token) {

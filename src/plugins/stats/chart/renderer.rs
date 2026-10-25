@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use super::ChartError;
-use super::data_loader::{BarData, SeriesData};
+use super::data_loader::{Axis, BarData, SeriesData};
 use super::medal;
 use super::utils::{
     ColorScheme, deep_tone, draw_left_accent_bar, draw_rounded_rect, ensure_contrast,
@@ -1052,13 +1052,34 @@ pub fn draw_line_chart(
         .collect();
     let point_count = x_labels.len().max(1);
 
-    let max_val = series_list
+    // 右轴的对比线（「本群」对「我」）。没有左轴系列时，把右轴当成唯一的轴，
+    // 免得画出一张只有右边有刻度、线却按左边缩放的图。
+    let mut series_list = series_list;
+    if !series_list.iter().any(|sr| sr.axis == Axis::Left) {
+        for sr in &mut series_list {
+            sr.axis = Axis::Left;
+        }
+    }
+    let has_right = series_list.iter().any(|sr| sr.axis == Axis::Right);
+
+    let left_max = series_list
         .iter()
+        .filter(|sr| sr.axis == Axis::Left)
         .flat_map(|sr| sr.points.iter().map(|p| p.value))
         .max()
         .unwrap_or(0);
-    let (step, steps) = nice_axis(max_val);
+    let (step, steps) = nice_axis(left_max);
     let y_max = step * steps as f64;
+
+    // 右轴自己一套刻度：两条线的量级差几十倍，共用一套刻度等于把小的那条压平。
+    let right_max = series_list
+        .iter()
+        .filter(|sr| sr.axis == Axis::Right)
+        .flat_map(|sr| sr.points.iter().map(|p| p.value))
+        .max()
+        .unwrap_or(0);
+    let (rstep, rsteps) = nice_axis(right_max);
+    let r_y_max = rstep * rsteps as f64;
 
     // === 2. 布局 (与柱状图一致的字号与边距) ===
     let padding = 24 * s;
@@ -1094,6 +1115,7 @@ pub fn draw_line_chart(
     };
     let grand_total: i64 = series_list
         .iter()
+        .filter(|sr| sr.axis == Axis::Left)
         .flat_map(|sr| sr.points.iter().map(|p| p.value))
         .sum();
     let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
@@ -1107,6 +1129,16 @@ pub fn draw_line_chart(
         )
     });
 
+    // 图例文字：右轴的那条要写明自己读哪边，不然两个刻度会让人猜。
+    let legend_name = |idx: usize| {
+        let sr = &series_list[idx];
+        if sr.axis == Axis::Right {
+            format!("{} · {}（右轴）", idx + 1, sr.name)
+        } else {
+            format!("{} · {}", idx + 1, sr.name)
+        }
+    };
+
     // === 3. 图例布局 (多系列时)：圆点 + 名称，水平排列，超宽自动换行 ===
     let dot_r = 6 * s;
     let item_gap = 24 * s;
@@ -1119,9 +1151,9 @@ pub fn draw_line_chart(
         let mut row: Vec<(usize, u32)> = Vec::new();
         let mut row_w = 0u32;
 
-        for (idx, series) in series_list.iter().enumerate() {
+        for idx in 0..series_list.len() {
             let (tw, _) = legend_font
-                .box_size(&format!("{} · {}", idx + 1, series.name))
+                .box_size(&legend_name(idx))
                 .unwrap_or((0, 0));
             let item_w = 2 * dot_r + (8 * s) + tw;
             let new_w = if row.is_empty() {
@@ -1166,8 +1198,20 @@ pub fn draw_line_chart(
     let chart_bottom = height
         .saturating_sub(padding + x_label_area)
         .max(chart_top + 40 * s);
+    // 右轴刻度也要占一条边：先量出最宽的一位，再把绘图区左收这么多。
+    let mut y_label_w2 = 0u32;
+    if has_right {
+        for i in 0..=rsteps {
+            let text = format_y_label(rstep * i as f64);
+            let (w, _) = axis_font.box_size(&text).unwrap_or((0, 0));
+            y_label_w2 = y_label_w2.max(w);
+        }
+        y_label_w2 += 14 * s;
+    }
     let chart_left = padding + y_label_w + (14 * s);
-    let chart_right = width.saturating_sub(padding).max(chart_left + 40 * s);
+    let chart_right = width
+        .saturating_sub(padding + y_label_w2)
+        .max(chart_left + 40 * s);
 
     let chart_w = (chart_right - chart_left) as f64;
     let chart_h = (chart_bottom - chart_top) as f64;
@@ -1175,6 +1219,8 @@ pub fn draw_line_chart(
     // X/Y 坐标换算
     let x_pos = |i: usize| chart_left as f64 + chart_w * ((i as f64 + 0.5) / point_count as f64);
     let y_pos = |v: i64| chart_bottom as f64 - chart_h * (v as f64 / y_max).clamp(0.0, 1.0);
+    let y_pos_right =
+        |v: i64| chart_bottom as f64 - chart_h * (v as f64 / r_y_max).clamp(0.0, 1.0);
 
     // === 4. 绘制 ===
     let mut buffer = vec![0u8; (width * height * 3) as usize];
@@ -1228,7 +1274,7 @@ pub fn draw_line_chart(
                     get_font_with_color(config, legend_font_size, &colors.text_primary)
                         .pos(Pos::new(HPos::Left, VPos::Center));
                 root.draw_text(
-                    &format!("{} · {}", idx + 1, series_list[idx].name),
+                    &legend_name(idx),
                     &legend_style,
                     (
                         x + 2 * dot_r as i32 + (8 * s as i32),
@@ -1272,6 +1318,22 @@ pub fn draw_line_chart(
             .map_err(|e| e.to_string())?;
         }
 
+        // 4.3b 右轴刻度：只有画了对比线才有。网格线仍按左轴，右轴只标数。
+        if has_right {
+            let right_style = get_font_with_color(config, axis_font_size, &colors.text_secondary)
+                .pos(Pos::new(HPos::Left, VPos::Center));
+            for i in 0..=rsteps {
+                let v = rstep * i as f64;
+                let y = y_pos_right(v.round() as i64);
+                root.draw_text(
+                    &format_y_label(v),
+                    &right_style,
+                    ((chart_right + (10 * s)) as i32, y as i32),
+                )
+                .map_err(|e| e.to_string())?;
+            }
+        }
+
         // 4.4 X 轴标签 (过多时自动抽稀)
         let x_label_style = get_font_with_color(config, axis_font_size, &colors.text_secondary)
             .pos(Pos::new(HPos::Center, VPos::Top));
@@ -1299,9 +1361,14 @@ pub fn draw_line_chart(
                 .points
                 .iter()
                 .filter_map(|p| {
-                    label_index
-                        .get(p.label.as_str())
-                        .map(|&i| (x_pos(i), y_pos(p.value)))
+                    label_index.get(p.label.as_str()).map(|&i| {
+                        let y = if series.axis == Axis::Right {
+                            y_pos_right(p.value)
+                        } else {
+                            y_pos(p.value)
+                        };
+                        (x_pos(i), y)
+                    })
                 })
                 .collect();
             if pts.is_empty() {
@@ -1353,7 +1420,7 @@ pub fn draw_line_chart(
 
         // 4.6 峰值标注 (仅单系列：在最高点上方标注数值)
         if !multi
-            && max_val > 0
+            && left_max > 0
             && let Some(peak) = series_list[0].points.iter().max_by_key(|p| p.value)
             && let Some(&i) = label_index.get(peak.label.as_str())
         {
