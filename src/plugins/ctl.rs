@@ -885,6 +885,17 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_written_as_one_string_can_be_saved_as_variants() {
+        let plugin = resolve("keyword_guard").expect("keyword_guard 插件应已注册");
+        let before = (plugin.default_config)();
+        assert!(before["notice"].is_str(), "默认的单句提示是字符串");
+        let mut after = before.clone();
+        after["notice"] = Value::Array(vec![Value::String("别发广告。".into())]);
+        validate(plugin, Some(&before), &after)
+            .expect("控制台把单句提示存成多说法数组，插件接受就应保存");
+    }
+
+    #[test]
     fn relaxed_types_do_not_let_unknown_keys_through() {
         let (plugin, before) = welcome_with_string_template();
         let mut after = before.clone();
