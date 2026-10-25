@@ -519,8 +519,63 @@ impl PluginConfig for Config {
                 changed = true;
             }
         }
+        // 提示模板允许写成单个字符串，但配置统一落成「几种说法」的数组：形状校验、
+        // 控制台编辑与后续读写都只面对一种形式，免得一次合法的单字符串写法把保存拦住。
+        changed |= normalize_templates(table);
         changed
     }
+}
+
+/// 把写成单个字符串的提示模板改成只含一种说法的数组。
+fn normalize_templates(table: &mut toml::Table) -> bool {
+    fn array(value: &mut toml::Value) -> bool {
+        let toml::Value::String(text) = value else {
+            return false;
+        };
+        *value = toml::Value::Array(vec![toml::Value::String(std::mem::take(text))]);
+        true
+    }
+    fn in_table(table: &mut toml::Table, keys: &[&str]) -> bool {
+        let mut changed = false;
+        for key in keys {
+            if let Some(value) = table.get_mut(*key) {
+                changed |= array(value);
+            }
+        }
+        changed
+    }
+    fn templates(table: &mut toml::Table) -> bool {
+        table.iter_mut().map(|(_, value)| array(value)).fold(false, |changed, one| changed | one)
+    }
+
+    let mut changed = false;
+    for (section, keys) in [
+        ("join", &["text"][..]),
+        ("leave", &["text", "kicked_text"][..]),
+        ("verify", &["prompt_text", "remind_text", "wrong_text", "pass_text", "fail_text"][..]),
+    ] {
+        if let Some(toml::Value::Table(part)) = table.get_mut(section) {
+            changed |= in_table(part, keys);
+        }
+    }
+    if let Some(toml::Value::Table(phrases)) = table.get_mut("phrases") {
+        changed |= templates(phrases);
+    }
+    if let Some(toml::Value::Table(custom)) = table.get_mut("custom") {
+        changed |= templates(custom);
+    }
+    if let Some(toml::Value::Table(groups)) = table.get_mut("groups") {
+        for (_, group) in groups.iter_mut() {
+            let Some(group) = group.as_table_mut() else {
+                continue;
+            };
+            changed |= in_table(group, &["join_text", "leave_text", "kicked_text"]);
+            if let Some(toml::Value::Table(custom)) = group.get_mut("custom") {
+                changed |= templates(custom);
+            }
+        }
+    }
+    changed
 }
 
 /// 自定义占位符的名字：短、不带花括号与分隔符，也不能和内置的撞名（撞了就永远轮不到它）。
@@ -2685,6 +2740,10 @@ mod tests {
             kicked_text = ""
             [join]
             text = "自己写的欢迎"
+            [groups."123"]
+            kicked_text = "这个群有人走了"
+            [groups."123".custom]
+            "群规" = "不发广告"
             "#,
         )
         .unwrap();
@@ -2692,8 +2751,16 @@ mod tests {
         assert_eq!(table["verify"]["mode"].as_str(), Some("code"));
         assert!(table["verify"].get("code").is_none());
         assert_eq!(table["verify"]["pass_text"].as_array().unwrap()[0].as_str(), Some(PASS_TEXT));
-        assert_eq!(table["leave"]["kicked_text"].as_str(), Some("{name} 走了"));
-        assert_eq!(table["join"]["text"].as_str(), Some("自己写的欢迎"));
+        let root = toml::Value::Table(table.clone());
+        for (path, want) in [
+            ("leave.kicked_text", "{name} 走了"),
+            ("join.text", "自己写的欢迎"),
+            ("groups.\"123\".kicked_text", "这个群有人走了"),
+            ("groups.\"123\".custom.群规", "不发广告"),
+        ] {
+            let value = path.split('.').fold(&root, |node, key| &node[key.trim_matches('"')]);
+            assert_eq!(value.as_array().unwrap()[0].as_str(), Some(want), "{path} 应落成数组");
+        }
         assert!(!Config::migrate(&mut table), "第二次没有可改的");
     }
 

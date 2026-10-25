@@ -4171,15 +4171,19 @@ button.item:active::after {
   gap: var(--zw-space-03);
 }
 
+/* 配置里的分段单选比全站那枚紧凑的轨道再松一档：选中那块白纸与轨道之间
+   留出看得见的空隙，几段之间也不会像粘成一整块。 */
 .config-choice {
   display: flex;
   width: 100%;
+  padding: var(--zw-space-03);
+  gap: var(--zw-space-03);
 }
 
 .config-choice .segment {
   flex: 1 1 7rem;
   min-height: var(--zw-size-control);
-  padding: var(--zw-space-02) var(--zw-space-03);
+  padding: var(--zw-space-02) var(--zw-space-04);
   white-space: normal;
   text-align: center;
 }

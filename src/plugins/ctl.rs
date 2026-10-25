@@ -185,7 +185,17 @@ fn under(path: &str, key: &str) -> String {
 /// 现在拦的只剩这次新造出来的错键与丢键：那才是管理员此刻写坏、也此刻能改回来的东西。
 ///
 /// `before` 为 `None` 表示没有可比对的旧值（整段新写），此时两个方向都按严格处理。
-fn shape(default: &Value, before: Option<&Value>, value: &Value, path: &str) -> Result<(), String> {
+///
+/// `strict_types` 为假时只查键，不再对比标量类型。插件自己的反序列化可以比默认值宽松：
+/// 例如欢迎词 `Template` 既收数组也收单个字符串；既然插件已经接受，就不能再拿默认值
+/// 的数组形状把一次合法编辑挡回去。
+fn shape(
+    default: &Value,
+    before: Option<&Value>,
+    value: &Value,
+    path: &str,
+    strict_types: bool,
+) -> Result<(), String> {
     match (default, value) {
         (Value::Table(d), Value::Table(v)) => {
             if !d.is_empty() {
@@ -197,7 +207,7 @@ fn shape(default: &Value, before: Option<&Value>, value: &Value, path: &str) -> 
                     let child = under(path, key);
                     match d.get(key) {
                         Some(expected) => {
-                            shape(expected, old.and_then(|t| t.get(key)), val, &child)?;
+                            shape(expected, old.and_then(|t| t.get(key)), val, &child, strict_types)?;
                         }
                         // 注册表不认得的键，本来就躺在配置里的就放过：删不掉的东西拦人没道理。
                         None if known(key) => {}
@@ -220,6 +230,7 @@ fn shape(default: &Value, before: Option<&Value>, value: &Value, path: &str) -> 
                         old.and_then(|a| a.get(index)),
                         val,
                         &under(path, &index.to_string()),
+                        strict_types,
                     )?;
                 }
             }
@@ -229,6 +240,7 @@ fn shape(default: &Value, before: Option<&Value>, value: &Value, path: &str) -> 
         | (Value::Integer(_), Value::Integer(_))
         | (Value::String(_), Value::String(_))
         | (Value::Datetime(_), Value::Datetime(_)) => {}
+        _ if !strict_types => {}
         _ => {
             return Err(match path.is_empty() {
                 true => format!("配置类型错误，需要 {}", default.type_str()),
@@ -318,8 +330,15 @@ pub(crate) fn validate(p: &Plugin, before: Option<&Value>, value: &Value) -> Res
             }
         }
     }
-    shape(&expected, before, value, "")?;
-    (p.validate_config)(value)?;
+    // 类型以插件自己的反序列化为准：它收得下的写法就合法（如单条字符串的欢迎词）。
+    // 只有它拒收时才退回按默认值报出具体是哪一格、该是什么类型。
+    match (p.validate_config)(value) {
+        Ok(()) => shape(&expected, before, value, "", false)?,
+        Err(message) => {
+            shape(&expected, before, value, "", true)?;
+            return Err(message);
+        }
+    }
     constraints(value, "")?;
     for key in ["mode", "realtime_mode", "card_theme"] {
         let allowed = options(p.name, key);
@@ -835,4 +854,45 @@ pub fn handle(
         }
         Ok(None)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn welcome_with_string_template() -> (&'static Plugin, Value) {
+        let plugin = resolve("welcome").expect("welcome 插件应已注册");
+        let mut config = (plugin.default_config)();
+        config
+            .get_mut("leave")
+            .and_then(Value::as_table_mut)
+            .expect("welcome.leave 应是表")
+            .insert("kicked_text".into(), Value::String("{name} 被移出了群聊。".into()));
+        (plugin, config)
+    }
+
+    #[test]
+    fn a_template_written_as_one_string_can_be_edited() {
+        let (plugin, before) = welcome_with_string_template();
+        let mut after = before.clone();
+        after
+            .get_mut("leave")
+            .and_then(Value::as_table_mut)
+            .unwrap()
+            .insert("enabled".into(), Value::Boolean(true));
+        validate(plugin, Some(&before), &after)
+            .expect("单条字符串的欢迎词是插件接受的写法，不能拿默认值的数组形状拦住");
+    }
+
+    #[test]
+    fn relaxed_types_do_not_let_unknown_keys_through() {
+        let (plugin, before) = welcome_with_string_template();
+        let mut after = before.clone();
+        after
+            .get_mut("leave")
+            .and_then(Value::as_table_mut)
+            .unwrap()
+            .insert("bogus".into(), Value::Boolean(true));
+        assert!(validate(plugin, Some(&before), &after).is_err());
+    }
 }
