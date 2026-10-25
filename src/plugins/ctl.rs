@@ -277,7 +277,16 @@ fn constraints(value: &Value, path: &str) -> Result<(), String> {
 /// `validate` 拿它拦下写错的值，避免用户把一个固定选项改成循环外的值。
 pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
     match (plugin, path) {
-        ("ai_news", "mode" | "realtime_mode") => &["all", "selected"],
+        ("ai_news", "mode" | "realtime_mode") => &["selected", "all"],
+        ("ai_news", "window") => &["24h", "7d"],
+        ("ai_news", "category") => &["", "ai-models", "ai-products", "industry", "paper", "tip", "opinion"],
+        ("markdown", "theme") => &["light", "dark"],
+        ("nailong", "judge") => &["auto", "local", "hybrid", "ai"],
+        ("nailong", "targets") => &["nailong", "naiwa"],
+        ("video_parse", "send") => &["bubble", "file", "both"],
+        ("video_parse", "platforms") => &["bilibili", "douyin"],
+        ("oai", "music_send") => &["voice", "file", "both"],
+        ("oai", "video_send") => &["bubble", "file", "both"],
         ("welcome", "verify.action") => &["kick", "mute", "none"],
         ("welcome", "verify.mode") => &["any", "answer", "code", "math"],
         ("welcome", path) if path.starts_with("groups.") && path.ends_with(".verify_mode") => {

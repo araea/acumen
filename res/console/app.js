@@ -2521,9 +2521,21 @@
   const HIDDEN = "<已隐藏>";
   /** 与后端 ctl::sensitive 同一张词表：这些键的值不回显，输入框只收新值。 */
   const SECRET = /token|secret|password|api_?key|authorization|credential|cookie/i;
-  const TIME = /^\d{1,2}:\d{2}(:\d{2})?$/;
-  /** 0—1 的比例（概率类配置）：表单里换成百分数滑块，手机上不必敲「0.35」。 */
-  const RATIO = /(^|\.|_)(interrupt_)?probability$/;
+  const TIME = /^(?:[01]?\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/;
+  /** 0—1 的比例：表单里换成百分数滑块，手机上不必敲「0.35」。
+   *  有明确上下限的识别分数也走滑块，但轨道只开放合法区间。 */
+  const RATIO = /(^|\.|_)(interrupt_)?probability$|(^|\.)announce_chance$/;
+  const BOUNDED_RATIOS = {
+    "nailong.threshold": [30, 95],
+    "nailong.ask_floor": [5, 95],
+    "nailong.sure": [5, 100],
+    "nailong.manage.min_score": [50, 100],
+  };
+  function ratioRange(ctx, path, value) {
+    const bounded = BOUNDED_RATIOS[`${ctx.name}.${path}`];
+    if (bounded && value >= bounded[0] / 100 && value <= bounded[1] / 100) return { min: bounded[0], max: bounded[1] };
+    return RATIO.test(path) && value >= 0 && value <= 1 ? { min: 0, max: 100 } : null;
+  }
   const valueAt = (root, path) =>
     path.split(".").reduce((node, key) => (node !== null && typeof node === "object" ? node[key] : undefined), root);
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -2615,7 +2627,7 @@
     const reset = $(".field-top [data-reset-path]", row);
     if (reset) {
       // 焦点正落在要藏起来的按钮上：先交给这一行的控件，免得焦点掉回页首。
-      if (!modified && reset === document.activeElement) $("[data-path]:not([hidden]), .tags-add input, .switch", row)?.focus({ preventScroll: true });
+      if (!modified && reset === document.activeElement) $("[data-path]:not([data-choice-group]):not([hidden]), [data-choice]:checked, [data-choice], .tags-add input, .switch", row)?.focus({ preventScroll: true });
       reset.hidden = !modified;
     }
   }
@@ -2754,7 +2766,8 @@
     const description = templateOf(ctx, path)?.about || plainHelp(ctx, path, helpFor(ctx, path));
     const desc = description ? `${id}-desc` : "";
     const meta = rowMeta(ctx, path, value, key);
-    const search = `${path} ${labelOf(ctx, path)} ${description}`.toLowerCase();
+    const optionSearch = (ctx.options[path] || []).flatMap((option) => [option, optionLabel(ctx, path, option)]).join(" ");
+    const search = `${path} ${labelOf(ctx, path)} ${description} ${optionSearch}`.toLowerCase();
     const text = (label) => h`<div class="field-text">
         <div class="field-top">${label}${master ? h`<span class="tag">总开关</span>` : ""}<span class="mod-tag"${attr(!meta.modified, "hidden")}>已改</span>${meta.action}</div>
         ${description ? hint(desc, description) : ""}
@@ -2781,10 +2794,43 @@
         )}
       </fieldset>`;
     }
-    if (ctx.options[path]?.length) {
+    const options = ctx.options[path];
+    if (Array.isArray(value) && options?.length) {
+      // 固定集合的列表不必再逐条敲字：识别类型、平台、星期都用原生复选框。
+      const choices = [...new Set([...options, ...value])];
+      const numeric = choices.some((option) => typeof option === "number");
+      return row("field choice-field", h`${text(h`<span class="field-label" id="${id}-label">${name}</span>`)}
+        <fieldset class="chips config-multi" id="${id}-group" data-choice-group data-path="${path}"
+          data-kind="${numeric ? "multi-number" : "multi-string"}" data-value="${JSON.stringify(value)}"
+          aria-labelledby="${id}-label"${desc ? h` aria-describedby="${desc}"` : ""}>
+          ${choices.map((option) => h`<label class="chip" title="${option}">
+            <input type="checkbox" name="${id}-choice" value="${option}" data-choice${attr(value.some((item) => same(item, option)), "checked")}>
+            ${icon("check")}<span>${optionLabel(ctx, path, option) || option}</span>
+          </label>`)}
+        </fieldset>`);
+    }
+    if (!Array.isArray(value) && options?.length) {
+      // 选项顺序固定，当前值若是旧别名就追加在最后，不把已有配置误判成无效。
+      const choices = [...new Set([...options, value])];
+      const labels = choices.map((option) => optionLabel(ctx, path, option) || String(option));
+      const numeric = typeof value === "number";
+      const inline = choices.length >= 2 && choices.length <= 4 && labels.every((label) => [...label].length <= 8);
+      if (inline) {
+        // 2—4 个短选项直接点一下。原生 radio 自带方向键与读屏语义，选中对勾不只靠颜色。
+        return row("field choice-field", h`${text(h`<span class="field-label" id="${id}-label">${name}</span>`)}
+          <fieldset class="segmented config-choice" id="${id}-group" data-choice-group data-path="${path}"
+            data-kind="${numeric ? "number" : "string"}" data-value="${JSON.stringify(value)}" data-count="${choices.length}"
+            aria-labelledby="${id}-label"${desc ? h` aria-describedby="${desc}"` : ""}>
+            ${choices.map((option, index) => h`<label class="segment" title="${option}">
+              <input type="radio" name="${id}-choice" value="${option}" data-choice${attr(option === value, "checked")}>
+              ${icon("check", "choice-check")}<span>${labels[index]}</span>
+            </label>`)}
+          </fieldset>`);
+      }
+      // 长说明或五个以上的取值用系统下拉，避免把窄屏挤成一排难以点中的小按钮。
       return row("field", h`${text(named)}
-        <span class="select"><select id="${id}" data-path="${path}" data-kind="string" data-initial="${value}"${desc ? h` aria-describedby="${desc}"` : ""}>
-        ${[...new Set([value, ...ctx.options[path]])].map((option) => h`<option value="${option}"${attr(option === value, "selected")}>${optionLabel(ctx, path, option) || option}</option>`)}
+        <span class="select"><select id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}" data-initial="${value}"${desc ? h` aria-describedby="${desc}"` : ""}>
+        ${choices.map((option, index) => h`<option value="${option}"${attr(option === value, "selected")}>${labels[index]}</option>`)}
         </select>${icon("keyboard_arrow_down")}</span>`, ' data-row="short"');
     }
     if (Array.isArray(value)) {
@@ -2837,28 +2883,36 @@
       return row("field", h`${text(named)}
         <textarea class="textarea" id="${id}" data-path="${path}" data-kind="string" spellcheck="false"${desc ? h` aria-describedby="${desc}"` : ""}>${value}</textarea>`);
     }
-    // 概率：滑块 + 一个能敲的百分数框，两个入口改的是同一个值。
-    // 拖动时右边跟着变、松手落盘；敲进框里回车或离开也落盘，超出 0—100 收回来。
-    if (typeof value === "number" && RATIO.test(path) && value >= 0 && value <= 1) {
+    // 比例：滑块 + 一个能敲的百分数框，两个入口改的是同一个值。
+    // 拖动时右边跟着变、松手落盘；敲进框里回车或离开也落盘，超出合法区间收回来。
+    const ratio = typeof value === "number" ? ratioRange(ctx, path, value) : null;
+    if (ratio) {
       const pct = Math.round(value * 100);
+      const fill = ((pct - ratio.min) / (ratio.max - ratio.min)) * 100;
       const label = labelOf(ctx, path) || key;
       return row("field ratio-field", h`${text(h`<label class="field-label" for="${id}" id="${id}-label">${name}</label>`)}
         <div class="ratio">
-          <input class="slider" type="range" id="${id}" data-path="${path}" data-kind="ratio" min="0" max="100" step="1"
-            value="${pct}" style="--_fill:${pct}%" aria-valuetext="${pct}%" spellcheck="false"
+          <input class="slider" type="range" id="${id}" data-path="${path}" data-kind="ratio" min="${ratio.min}" max="${ratio.max}" step="1"
+            value="${pct}" style="--_fill:${fill}%" aria-valuetext="${pct}%" spellcheck="false"
             ${desc ? h` aria-describedby="${desc}"` : ""}>
           <label class="ratio-box">
-            <input class="ratio-input num" type="number" min="0" max="100" step="1" inputmode="numeric" spellcheck="false"
-              value="${pct}" aria-label="${label}（百分数，0 到 100）"${desc ? h` aria-describedby="${desc}"` : ""}>
+            <input class="ratio-input num" type="number" min="${ratio.min}" max="${ratio.max}" step="1" inputmode="numeric" spellcheck="false"
+              value="${pct}" aria-label="${label}（百分数，${ratio.min} 到 ${ratio.max}）"${desc ? h` aria-describedby="${desc}"` : ""}>
             <span class="ratio-unit" aria-hidden="true">%</span>
           </label>
         </div>`);
     }
     const numeric = typeof value === "number";
-    const clock = typeof value === "string" && TIME.test(value);
+    const clockKey = key === "time" || key.endsWith("_time") || /(^|_)quiet_(start|end)$/.test(key);
+    const clock = typeof value === "string" && (TIME.test(value) || (clockKey && value === ""));
+    const inputValue = clock ? value.replace(/^(\d):/, "0$1:") : (value ?? "");
     const unit = numeric && SECONDS.test(key) ? "s" : numeric && MILLIS.test(key) ? "ms" : "";
-    const input = h`<input class="input${numeric || clock ? " num" : " mono"}" id="${id}" data-path="${path}" data-kind="${numeric ? "number" : "string"}"
-        value="${value ?? ""}" spellcheck="false" autocapitalize="off"${[desc, unit ? `${id}-unit` : ""].some(Boolean) ? h` aria-describedby="${[desc, unit ? `${id}-unit` : ""].filter(Boolean).join(" ")}"` : ""}${attr(numeric, `inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}>`;
+    const scale = numeric && key === "image_scale";
+    const input = h`<input class="input${numeric || clock ? " num" : " mono"}" id="${id}" type="${numeric ? "number" : clock ? "time" : "text"}"
+        data-path="${path}" data-kind="${numeric ? "number" : "string"}" value="${inputValue}" spellcheck="false" autocapitalize="off"
+        ${attr(numeric, `step="any" inputmode="${Number.isInteger(value) ? "numeric" : "decimal"}"`)}
+        ${attr(scale, 'min="1" max="4"')}${attr(clock, `step="${String(value).includes(":") && String(value).split(":").length === 3 ? "1" : "60"}"`)}
+        ${[desc, unit ? `${id}-unit` : ""].some(Boolean) ? h` aria-describedby="${[desc, unit ? `${id}-unit` : ""].filter(Boolean).join(" ")}"` : ""}>`;
     return row("field", h`${text(named)}
       ${unit
         ? h`<span class="input-unit">${input}<span class="unit-text num" id="${id}-unit" data-unit-for="${id}" data-unit="${unit}">${unit === "ms" ? millisText(value) : secondsText(value)}</span></span>`
@@ -2955,11 +3009,15 @@
     }
   }
 
-  /** 概率的这一格：把百分数同时写到滑块、填充、读屏值与右边的数字框上。 */
+  /** 比例的这一格：把百分数同时写到滑块、填充、读屏值与右边的数字框上。 */
   function paintRatio(slider, pct) {
-    const pctText = String(pct);
+    const min = Number(slider.min) || 0;
+    const max = Number(slider.max) || 100;
+    const clamped = Math.min(max, Math.max(min, pct));
+    const pctText = String(clamped);
+    const fill = ((clamped - min) / (max - min)) * 100;
     slider.value = pctText;
-    slider.style.setProperty("--_fill", `${pctText}%`);
+    slider.style.setProperty("--_fill", `${fill}%`);
     slider.setAttribute("aria-valuetext", `${pctText}%`);
     const box = slider.closest(".ratio")?.querySelector(".ratio-input");
     if (box && box.value !== pctText) box.value = pctText;
@@ -2967,14 +3025,16 @@
 
   const syncRatio = (slider) => paintRatio(slider, Math.round(Number(slider.value)));
 
-  /** 在数字框里敲完：收进 0—100，两个控件对齐，再走一次正常的保存。 */
+  /** 在数字框里敲完：收进这一项的合法区间，两个控件对齐，再走一次正常的保存。 */
   async function commitRatio(box) {
     const slider = box.closest(".ratio")?.querySelector(".slider");
     if (!slider) return;
-    // 清空了就当没改：空框不等于 0（0 是「永不跟读」，不能靠删一刀误触）。
+    // 清空了就当没改：空框不等于 0（0 可能是「永不跟读」，不能靠删一刀误触）。
     const raw = box.value.trim();
     const typed = raw === "" ? Number.NaN : Math.round(Number(raw));
-    const pct = Number.isFinite(typed) ? Math.min(100, Math.max(0, typed)) : Math.round(Number(slider.value));
+    const min = Number(slider.min) || 0;
+    const max = Number(slider.max) || 100;
+    const pct = Number.isFinite(typed) ? Math.min(max, Math.max(min, typed)) : Math.round(Number(slider.value));
     paintRatio(slider, pct);
     await commitField(slider);
   }
@@ -3025,6 +3085,64 @@
     }
   }
 
+  /** 原生单选 / 复选组的当前值。配置里的数字选项从输入框的字符串还原成数字。 */
+  function readChoice(group) {
+    const selected = $$("[data-choice]:checked", group);
+    const numeric = group.dataset.kind.endsWith("number");
+    if (group.dataset.kind.startsWith("multi-")) {
+      return selected.map((input) => numeric ? Number(input.value) : input.value);
+    }
+    if (!selected.length) throw new Error("请选择一项。");
+    return parseValue(group.dataset.kind, selected[0].value);
+  }
+
+  function paintChoice(group, value) {
+    const values = Array.isArray(value) ? value : [];
+    for (const input of $$("[data-choice]", group)) {
+      input.checked = group.dataset.kind.startsWith("multi-")
+        ? values.some((item) => String(item) === input.value)
+        : String(value) === input.value;
+    }
+  }
+
+  /** 点选立即保存；连点时沿用最后一次选择，失败则整组回到服务端确认的旧值。 */
+  async function commitChoice(group) {
+    const form = group?.closest("[data-config]");
+    if (!form || group.getAttribute("aria-busy") === "true") return;
+    let value;
+    try {
+      value = readChoice(group);
+    } catch (error) {
+      fieldError(group, error.message);
+      return;
+    }
+    const submitted = JSON.stringify(value);
+    if (submitted === group.dataset.value) return;
+    clearFieldError(group);
+    group.setAttribute("aria-busy", "true");
+    let saved = false;
+    try {
+      const reply = await configPost(form, "config", { path: group.dataset.path, value });
+      group.dataset.value = submitted;
+      saved = true;
+      clearFieldError(group);
+      markModified(group.closest("[data-setting]"), value);
+      if (!group.dataset.kind.startsWith("multi-")) paintMoot(form, group.dataset.path, value);
+      snackbar(reply.message);
+      refreshDiff(form.dataset.config);
+    } catch (error) {
+      if (error.status === 401) return;
+      paintChoice(group, JSON.parse(group.dataset.value));
+      fieldError(group, error.message);
+    } finally {
+      group.removeAttribute("aria-busy");
+      if (saved && group.isConnected) {
+        const latest = readChoice(group);
+        if (JSON.stringify(latest) !== submitted) void commitChoice(group);
+      }
+    }
+  }
+
   /** 取一次插件详情，更新表单上下文（默认值、映射表模板会跟着当前配置变）。 */
   async function freshPlugin(name) {
     const plugin = await api(`/plugins/${encodeURIComponent(name)}`);
@@ -3066,7 +3184,7 @@
       const reply = await configPost(form, "reset", { path: row.dataset.setting });
       const plugin = await freshPlugin(form.dataset.config);
       const fresh = replaceRow(row, plugin, configs.get(form.dataset.config));
-      $("[data-path]:not([hidden]), [data-tpl-input], .tags-add input, .picker-add input", fresh)?.focus({ preventScroll: true });
+      $("[data-path]:not([data-choice-group]):not([hidden]), [data-choice]:checked, [data-choice], [data-tpl-input], .tags-add input, .picker-add input", fresh)?.focus({ preventScroll: true });
       snackbar(reply.message.replace(/^.*?(已|恢复)/, "$1"));
     } catch (error) {
       button.removeAttribute("aria-busy");
@@ -7658,6 +7776,7 @@
         if (files.length) void pickPhotos(target.closest(".photos"), files);
         return;
       }
+      if (target.matches?.("[data-choice]")) return void commitChoice(target.closest("[data-choice-group]"));
       if (target.matches?.(".ratio-input")) return void commitRatio(target);
       if (target.matches?.("input[data-path], textarea[data-path], select[data-path]")) return void commitField(target);
       if (target.matches?.(".tpl-image-file")) return void tplImage(target);
@@ -7704,7 +7823,9 @@
       if (target.matches?.(".ratio-input") && target.value.trim() !== "") {
         const slider = target.closest(".ratio")?.querySelector(".slider");
         const pct = Math.round(Number(target.value));
-        if (slider && Number.isFinite(pct) && pct >= 0 && pct <= 100) paintRatio(slider, pct);
+        const min = Number(slider?.min) || 0;
+        const max = Number(slider?.max) || 100;
+        if (slider && Number.isFinite(pct) && pct >= min && pct <= max) paintRatio(slider, pct);
       }
       if (target.id === "rules-try-input") return ruleTry();
       if (target.id === "rules-search") return rulesFilter(target);

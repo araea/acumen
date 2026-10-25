@@ -4165,6 +4165,85 @@ button.item:active::after {
   }
 }
 
+/* 固定选项：少量短值用 M3E 分段单选，一次点按即完成；空间不足时按整段换行，
+   不缩字、不截断。原生 radio / checkbox 保留方向键、读屏与系统高对比度语义。 */
+.choice-field {
+  gap: var(--zw-space-03);
+}
+
+.config-choice {
+  display: flex;
+  width: 100%;
+}
+
+.config-choice .segment {
+  flex: 1 1 7rem;
+  min-height: var(--zw-size-control);
+  padding: var(--zw-space-02) var(--zw-space-03);
+  white-space: normal;
+  text-align: center;
+}
+
+.config-choice .choice-check {
+  display: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+.config-choice .segment:has(input:checked) .choice-check {
+  display: block;
+}
+
+.config-multi {
+  width: 100%;
+}
+
+.config-multi .chip {
+  cursor: pointer;
+}
+
+.config-multi .chip input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.config-multi .chip:has(input:checked) {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+
+.config-multi .chip:has(input:checked) svg {
+  display: block;
+}
+
+.config-multi .chip:has(input:focus-visible) {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.config-choice[aria-busy="true"],
+.config-multi[aria-busy="true"],
+.config-choice[aria-busy="true"] .segment,
+.config-multi[aria-busy="true"] .chip {
+  cursor: progress;
+}
+
+.config-choice[aria-invalid="true"],
+.config-multi[aria-invalid="true"] {
+  outline: var(--zw-border-width-strong) solid var(--md-sys-color-error);
+  outline-offset: var(--zw-focus-offset);
+}
+
+@media (forced-colors: active) {
+  .config-choice .segment:has(input:checked),
+  .config-multi .chip:has(input:checked) {
+    outline: var(--zw-border-width-strong) solid Highlight;
+  }
+}
+
 .toggle-row {
   display: flex;
   align-items: center;

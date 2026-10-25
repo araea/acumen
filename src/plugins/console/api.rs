@@ -427,6 +427,28 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
         "repeater" => crate::plugins::repeater::LABELS,
         "ambient" => crate::plugins::ambient::LABELS,
         "keyword_guard" => crate::plugins::keyword_guard::LABELS,
+        "markdown" => &[("theme", "配色主题")],
+        "nailong" => &[
+            ("targets", "识别类型"),
+            ("threshold", "判定阈值"),
+            ("judge", "认图方式"),
+            ("sure", "直接提醒的分数"),
+            ("ask_floor", "请求复核的分数"),
+            ("manage.min_score", "自动管理的最低分"),
+        ],
+        "video_parse" => &[
+            ("prefer_quality", "最高画质"),
+            ("send", "发送方式"),
+            ("platforms", "支持平台"),
+        ],
+        "oai" => &[("music_send", "音乐发送方式"), ("video_send", "视频发送方式")],
+        "ai_news" => &[
+            ("mode", "资讯范围"),
+            ("window", "时间窗"),
+            ("category", "资讯分类"),
+            ("card_theme", "卡片主题"),
+            ("realtime_mode", "实时快报来源"),
+        ],
         _ => &[],
     }
 }
@@ -449,9 +471,9 @@ fn depends(name: &str) -> Value {
     }
 }
 
-/// 下拉框里每个取值的说法：`{ 路径: { 取值: 说法 } }`。
+/// 选项里每个取值的说法：`{ 路径: { 取值: 说法 } }`。
 fn option_labels(name: &str) -> Value {
-    match name {
+    let mut base = match name {
         "welcome" => crate::plugins::welcome::option_labels(),
         "autoreply" => crate::plugins::autoreply::option_labels(),
         "lurker" => crate::plugins::lurker::option_labels(),
@@ -459,7 +481,40 @@ fn option_labels(name: &str) -> Value {
         "repeater" => crate::plugins::repeater::option_labels(),
         "keyword_guard" => crate::plugins::keyword_guard::option_labels(),
         _ => json!({}),
+    };
+    let weekdays = json!({ "1": "周一", "2": "周二", "3": "周三", "4": "周四", "5": "周五", "6": "周六", "7": "周日" });
+    let extra = match name {
+        "markdown" => json!({ "theme": { "light": "浅色", "dark": "深色" } }),
+        "nailong" => json!({
+            "judge": { "auto": "自动", "local": "本地", "hybrid": "混合", "ai": "AI" },
+            "targets": { "nailong": "奶龙", "naiwa": "奶蛙" },
+        }),
+        "video_parse" => json!({
+            "prefer_quality": { "80": "1080P", "64": "720P", "32": "480P", "16": "360P" },
+            "send": { "bubble": "视频气泡", "file": "群文件", "both": "气泡 + 文件" },
+            "platforms": { "bilibili": "哔哩哔哩", "douyin": "抖音" },
+        }),
+        "oai" => json!({
+            "music_send": { "voice": "语音气泡", "file": "群文件", "both": "语音 + 文件" },
+            "video_send": { "bubble": "视频气泡", "file": "群文件", "both": "气泡 + 文件" },
+        }),
+        "ai_news" => json!({
+            "mode": { "selected": "精选", "all": "全部" },
+            "realtime_mode": { "selected": "精选", "all": "全部" },
+            "window": { "24h": "近 24 小时", "7d": "近 7 天" },
+            "category": { "": "全部类别", "ai-models": "模型", "ai-products": "产品", "industry": "行业", "paper": "论文", "tip": "教程", "opinion": "观点" },
+            "card_theme": { "auto": "自动", "light": "浅色", "dark": "深色" },
+        }),
+        "lurker" => json!({ "auto.weekdays": weekdays }),
+        "ambient" => json!({ "peak.weekdays": weekdays }),
+        _ => json!({}),
+    };
+    if let (Some(base), Some(extra)) = (base.as_object_mut(), extra.as_object()) {
+        for (path, choices) in extra {
+            base.insert(path.clone(), choices.clone());
+        }
     }
+    base
 }
 
 /// 哪些字段是带占位符的提示模板：界面换成文案编辑器（几种说法、插入占位符、预览）。
@@ -1616,12 +1671,13 @@ fn example_line(line: &str) -> bool {
             })
 }
 
-fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<String, Vec<String>> {
+/// 单选与多选共用的选项元数据。数字选项也走这里，前端不必按字段名猜画质或星期。
+fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<String, Vec<Value>> {
     fn visit(
         plugin: &str,
         value: &Toml,
         prefix: &str,
-        out: &mut std::collections::BTreeMap<String, Vec<String>>,
+        out: &mut std::collections::BTreeMap<String, Vec<Value>>,
     ) {
         if let Some(table) = value.as_table() {
             for (key, value) in table {
@@ -1630,12 +1686,22 @@ fn field_options(plugin: &str, value: &Toml) -> std::collections::BTreeMap<Strin
                 } else {
                     format!("{prefix}.{key}")
                 };
-                let options = crate::plugins::ctl::options(plugin, &path);
-                if !options.is_empty() {
-                    out.insert(
-                        path.clone(),
-                        options.iter().map(ToString::to_string).collect(),
-                    );
+                let mut choices: Vec<Value> = match (plugin, path.as_str()) {
+                    ("video_parse", "prefer_quality") => [80, 64, 32, 16].into_iter().map(Value::from).collect(),
+                    ("lurker", "auto.weekdays") | ("ambient", "peak.weekdays") => {
+                        (1..=7).map(Value::from).collect()
+                    }
+                    _ => crate::plugins::ctl::options(plugin, &path)
+                        .iter()
+                        .map(|option| Value::from(*option))
+                        .collect(),
+                };
+                // 卡片主题仍认得旧别名，但选择器只摆自动 / 浅色 / 深色三种含义不同的取值。
+                if (plugin, path.as_str()) == ("ai_news", "card_theme") {
+                    choices.retain(|choice| matches!(choice.as_str(), Some("auto" | "light" | "dark")));
+                }
+                if !choices.is_empty() {
+                    out.insert(path.clone(), choices);
                 }
                 visit(plugin, value, &path, out);
             }
