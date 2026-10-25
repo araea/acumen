@@ -83,7 +83,9 @@ fn try_load_family(family: &str) -> bool {
         families: &[fontdb::Family::Name(family)],
         ..Default::default()
     };
-    let Some(id) = db.query(&query) else { return false };
+    let Some(id) = db.query(&query) else {
+        return false;
+    };
     let bytes: Option<Vec<u8>> = db.with_face_data(id, |data, _idx| data.to_vec());
     match bytes {
         Some(b) => register_bytes(b),
@@ -677,11 +679,7 @@ pub fn save_rgba_to_base64(img: RgbaImage) -> Result<String, String> {
     Ok(format!("base64://{b64}"))
 }
 
-pub fn truncate_text_to_fit(
-    font: &FontDesc,
-    text: &str,
-    max_width: u32,
-) -> String {
+pub fn truncate_text_to_fit(font: &FontDesc, text: &str, max_width: u32) -> String {
     let (w, _) = font.box_size(text).unwrap_or((0, 0));
     if w <= max_width {
         return text.to_string();

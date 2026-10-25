@@ -81,7 +81,8 @@ impl Medal {
             let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
             let d = dx.hypot(dy);
             // 内外两条边各自一像素的线性过渡。
-            let coverage = ((d - inner + 0.5).clamp(0.0, 1.0)) * ((outer - d + 0.5).clamp(0.0, 1.0));
+            let coverage =
+                ((d - inner + 0.5).clamp(0.0, 1.0)) * ((outer - d + 0.5).clamp(0.0, 1.0));
             if coverage <= 0.0 {
                 return;
             }
@@ -93,14 +94,27 @@ impl Medal {
 
     /// 榜首的柔光：返回要写进画布的像素 `(x, y, 颜色)`，颜色已经与 `paper` 混好。
     /// 其余名次没有。要在画条与文字**之前**写——这样条会盖住它，它只染纸面。
-    pub fn glow(self, cx: f32, cy: f32, avatar_radius: f32, s: f32, paper: RGBColor) -> Vec<(i32, i32, RGBColor)> {
+    pub fn glow(
+        self,
+        cx: f32,
+        cy: f32,
+        avatar_radius: f32,
+        s: f32,
+        paper: RGBColor,
+    ) -> Vec<(i32, i32, RGBColor)> {
         if self.rank != 1 {
             return Vec::new();
         }
         let start = self.outer_radius(avatar_radius, s) - 0.5 * s;
         let reach = GLOW_REACH * s;
-        let (x0, x1) = ((cx - start - reach).floor() as i32, (cx + start + reach).ceil() as i32);
-        let (y0, y1) = ((cy - start - reach).floor() as i32, (cy + start + reach).ceil() as i32);
+        let (x0, x1) = (
+            (cx - start - reach).floor() as i32,
+            (cx + start + reach).ceil() as i32,
+        );
+        let (y0, y1) = (
+            (cy - start - reach).floor() as i32,
+            (cy + start + reach).ceil() as i32,
+        );
         let mut out = Vec::new();
         for y in y0..=y1 {
             for x in x0..=x1 {
@@ -149,7 +163,8 @@ impl Medal {
         const BAND: f32 = 2.2;
 
         // 取景框：把四个角变到世界坐标求包围盒。
-        let corners = [(-9.0, -1.0), (9.0, -1.0), (-9.0, 12.0), (9.0, 12.0)].map(|(x, y)| to_world(x, y));
+        let corners =
+            [(-9.0, -1.0), (9.0, -1.0), (-9.0, 12.0), (9.0, 12.0)].map(|(x, y)| to_world(x, y));
         let min_x = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min).floor() as i32;
         let max_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max).ceil() as i32;
         let min_y = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min).floor() as i32;
@@ -165,7 +180,10 @@ impl Medal {
                         let wx = x as f32 + (sx as f32 + 0.5) / GRID as f32;
                         let wy = y as f32 + (sy as f32 + 0.5) / GRID as f32;
                         let (lx, ly) = to_local(wx, wy);
-                        if TIPS.iter().any(|&(tx, ty)| (lx - tx).hypot(ly - ty) <= TIP_RADIUS) {
+                        if TIPS
+                            .iter()
+                            .any(|&(tx, ty)| (lx - tx).hypot(ly - ty) <= TIP_RADIUS)
+                        {
                             tips += 1;
                         } else if inside(&BODY, lx, ly) {
                             body += 1;
@@ -210,7 +228,13 @@ fn inside(polygon: &[(f32, f32)], x: f32, y: f32) -> bool {
 }
 
 /// 在以 `(cx, cy)` 为中心、`reach` 为半径的方框内逐像素调用 `paint`。
-fn for_each_pixel(img: &mut RgbaImage, cx: f32, cy: f32, reach: f32, mut paint: impl FnMut(&mut RgbaImage, u32, u32)) {
+fn for_each_pixel(
+    img: &mut RgbaImage,
+    cx: f32,
+    cy: f32,
+    reach: f32,
+    mut paint: impl FnMut(&mut RgbaImage, u32, u32),
+) {
     let (width, height) = img.dimensions();
     let x0 = ((cx - reach).floor().max(0.0)) as u32;
     let y0 = ((cy - reach).floor().max(0.0)) as u32;
@@ -230,15 +254,28 @@ fn blend(img: &mut RgbaImage, x: i32, y: i32, color: RGBColor, alpha: f32) {
         return;
     }
     let base = img.get_pixel(x as u32, y as u32);
-    let over = |back: u8, front: u8| (f32::from(back) * (1.0 - alpha) + f32::from(front) * alpha).round() as u8;
+    let over = |back: u8, front: u8| {
+        (f32::from(back) * (1.0 - alpha) + f32::from(front) * alpha).round() as u8
+    };
     img.put_pixel(
         x as u32,
         y as u32,
-        Rgba([over(base[0], color.0), over(base[1], color.1), over(base[2], color.2), 255]),
+        Rgba([
+            over(base[0], color.0),
+            over(base[1], color.1),
+            over(base[2], color.2),
+            255,
+        ]),
     );
 }
 
 fn mix(back: RGBColor, front: RGBColor, alpha: f32) -> RGBColor {
-    let over = |back: u8, front: u8| (f32::from(back) * (1.0 - alpha) + f32::from(front) * alpha).round() as u8;
-    RGBColor(over(back.0, front.0), over(back.1, front.1), over(back.2, front.2))
+    let over = |back: u8, front: u8| {
+        (f32::from(back) * (1.0 - alpha) + f32::from(front) * alpha).round() as u8
+    };
+    RGBColor(
+        over(back.0, front.0),
+        over(back.1, front.1),
+        over(back.2, front.2),
+    )
 }
