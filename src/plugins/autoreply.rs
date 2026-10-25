@@ -352,7 +352,7 @@ pub(crate) async fn trial(ctx: &Context, config: &Config, text: &str, group: Opt
         } else if let Some(why) = BOOK.read(|b| near_miss(&b.rules, &Asked::new(text, true, group).command(prefix), max)).await {
             why
         } else {
-            let folded = book::fold(text).chars().count();
+            let folded = crate::text::fold(text).chars().count();
             if max > 0 && folded > max as usize {
                 format!("没有规则会回这句：去掉空格标点有 {folded} 字，超过包含匹配的 {max} 字上限（精确、开头、正则不受这个限制）。")
             } else {

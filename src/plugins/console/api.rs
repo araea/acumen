@@ -412,6 +412,7 @@ fn live(name: &str, ctx: &crate::event::Context) -> Value {
         "welcome" => crate::plugins::welcome::live(ctx),
         "autoreply" => crate::plugins::autoreply::live(ctx),
         "lurker" => crate::plugins::lurker::live(ctx),
+        "keyword_guard" => crate::plugins::keyword_guard::live(ctx),
         _ => Value::Null,
     }
 }
@@ -425,6 +426,7 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
         "lurker" => crate::plugins::lurker::LABELS,
         "repeater" => crate::plugins::repeater::LABELS,
         "ambient" => crate::plugins::ambient::LABELS,
+        "keyword_guard" => crate::plugins::keyword_guard::LABELS,
         _ => &[],
     }
 }
@@ -455,6 +457,7 @@ fn option_labels(name: &str) -> Value {
         "lurker" => crate::plugins::lurker::option_labels(),
         "ambient" => crate::plugins::ambient::option_labels(),
         "repeater" => crate::plugins::repeater::option_labels(),
+        "keyword_guard" => crate::plugins::keyword_guard::option_labels(),
         _ => json!({}),
     }
 }
@@ -464,6 +467,7 @@ fn templates(name: &str, current: &Toml) -> Value {
     match name {
         "welcome" => crate::plugins::welcome::templates(current),
         "lurker" => crate::plugins::lurker::templates(),
+        "keyword_guard" => crate::plugins::keyword_guard::templates(),
         _ => Value::Null,
     }
 }

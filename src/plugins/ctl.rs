@@ -283,7 +283,8 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
         ("welcome", path) if path.starts_with("groups.") && path.ends_with(".verify_mode") => {
             &["any", "answer", "code", "math"]
         }
-        ("autoreply" | "lurker", "managers") => &["staff", "admin"],
+        ("autoreply" | "lurker" | "keyword_guard", "managers") => &["staff", "admin"],
+        ("keyword_guard", "default_action") => &["alert", "recall", "mute", "recall_mute"],
         ("lurker", "warn.mode") => &["mention", "digest", "private", "mention_private", "digest_private"],
         ("repeater", "delay.mode") => &["off", "fixed", "random"],
         ("ambient", "peak.mode") => &["normal", "swap", "sleep", "pause"],

@@ -7,6 +7,7 @@
 
 use super::LOG_TARGET;
 use crate::storage::JsonState;
+use crate::text::fold;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -382,27 +383,6 @@ pub fn best<'r>(rules: &'r [Rule], asked: &Asked, max_chars: u32) -> Option<(&'r
         .filter(|rule| rule.enabled && rule.covers(asked.group))
         .filter_map(|rule| rule.hit(asked, max_chars).map(|keyword| (rule, keyword.to_string())))
         .min_by_key(|(rule, keyword)| (rule.mode.rank(), !rule.scoped(), std::cmp::Reverse(keyword.chars().count()), rule.id))
-}
-
-/// 比对用的写法：全角转半角、不分大小写，去掉空白与标点（「怎么下载？」与「怎么 下载」是一句话）。
-pub fn fold(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\u{FF01}'..='\u{FF5E}' => char::from_u32(c as u32 - 0xFEE0).unwrap_or(c),
-            _ => c,
-        })
-        .filter(|c| !c.is_whitespace() && !punctuation(*c))
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn punctuation(c: char) -> bool {
-    c.is_ascii_punctuation()
-        || matches!(
-            c,
-            '，' | '。' | '、' | '；' | '：' | '？' | '！' | '“' | '”' | '‘' | '’' | '（' | '）' | '【' | '】' | '《' | '》'
-                | '〈' | '〉' | '「' | '」' | '『' | '』' | '…' | '—' | '～' | '·' | '〜' | '・' | '｡' | '､'
-        )
 }
 
 fn first_line(text: &str) -> String {

@@ -88,6 +88,7 @@
     webshot: "screenshot_monitor", oai: "smart_toy", ambient: "forum", ai_news: "newspaper",
     help: "help", restart: "restart_alt", welcome: "waving_hand", anti_recall: "restore_page",
     nailong: "hide_image", autoreply: "quickreply", lurker: "scuba_diving", essence: "hub",
+    keyword_guard: "shield_person",
   };
 
   /* 分类不只是一种筛选，它先回答「这个插件是管什么的」。

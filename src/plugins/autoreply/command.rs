@@ -448,13 +448,13 @@ impl Here<'_> {
             };
             if add {
                 for word in &words {
-                    if !rule.keywords.iter().any(|k| book::fold(k) == book::fold(word)) {
+                    if !rule.keywords.iter().any(|k| crate::text::fold(k) == crate::text::fold(word)) {
                         rule.keywords.push(word.clone());
                     }
                 }
             } else {
                 let before = rule.keywords.len();
-                rule.keywords.retain(|k| !words.iter().any(|w| book::fold(w) == book::fold(k)));
+                rule.keywords.retain(|k| !words.iter().any(|w| crate::text::fold(w) == crate::text::fold(k)));
                 if rule.keywords.len() == before {
                     return Err(format!("#{} 里没有这些触发词", rule.id));
                 }
