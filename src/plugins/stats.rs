@@ -1,5 +1,6 @@
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::command::strip_prefix;
+use crate::db::queries;
 use crate::db::utils::get_time_range;
 use crate::event::Context;
 use crate::message::Message;
@@ -13,6 +14,8 @@ use std::sync::OnceLock;
 
 mod chart;
 mod pusher;
+
+use self::chart::data_loader::user_metric;
 
 const LOG_TARGET: &str = "Plugin/Stats";
 
@@ -134,25 +137,126 @@ impl PluginConfig for StatsConfig {
     const NAME: &'static str = "stats";
 }
 
-
 // ================= 正则匹配 =================
 
 static REGEX_GLOBAL: OnceLock<Regex> = OnceLock::new();
 static REGEX_NORMAL: OnceLock<Regex> = OnceLock::new();
 
+/// 时间词统一成图里写的那几个说法：只认别名不改口径，后面的区间计算与标题都只用规范词。
+fn canonical_time(raw: &str) -> Option<&'static str> {
+    Some(match raw {
+        "今日" | "今天" => "今日",
+        "昨日" | "昨天" => "昨日",
+        "本周" => "本周",
+        "上周" => "上周",
+        "近7天" | "近七日" | "近七天" | "近7日" => "近7天",
+        "近30天" | "近三十日" | "近三十天" | "近30日" => "近30天",
+        "本月" => "本月",
+        "上月" => "上月",
+        "今年" => "今年",
+        "去年" => "去年",
+        "总" => "总",
+        _ => return None,
+    })
+}
+
 fn get_regex_global() -> &'static Regex {
     REGEX_GLOBAL.get_or_init(|| {
         Regex::new(
-            r"^所有群(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)发言(排行榜|走势)(?:\s*([0-9０-９]+))?$",
+            r"^所有群(?P<time>今日|昨天|昨日|今天|本周|上周|近7天|近七日|近七天|近7日|近30天|近三十日|近三十天|近30日|本月|上月|今年|去年|总)发言(?P<chart>排行榜|走势)(?:\s*(?P<count>[0-9０-９]+))?$",
         )
         .unwrap()
     })
 }
 
+/// 一般指令：可选的「本群我的 / 跨群我的 / 我的 / 本群 / 跨群」，然后是时间、数据类型、图型。
+///
+/// 「我的」写在最前，前面再挂本群/跨群表示范围：不写就是跨群（一个人的发言本来就散在
+/// 好几个群里），写「本群」才只看当前这个群。
 fn get_regex_normal() -> &'static Regex {
     REGEX_NORMAL.get_or_init(|| {
-        Regex::new(r"^(?:(本群|跨群|我的))?(今日|昨日|本周|上周|近7天|近30天|本月|上月|今年|去年|总)(被艾特|艾特别人|艾特|发言字数|文本字数|文本消息|纯文本|文本|字数|发言|表情包|消息类型|管理员灰条禁言时长|管理员标称禁言时长|管理员单次最长禁言|管理员最长禁言|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|灰条禁言时长|标称禁言时长|单次最长禁言|最长禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(排行榜|走势)(?:\s*([0-9０-９]+))?$")
+        Regex::new(r"^(?:(?<mine>本群我的|跨群我的|我的)|(?<plain>本群|跨群))?(?<time>今日|今天|昨日|昨天|本周|上周|近7天|近七日|近七天|近7日|近30天|近三十日|近三十天|近30日|本月|上月|今年|去年|总)(?<data>被艾特|艾特别人|艾特|发言字数|文本字数|文本消息|纯文本|文本|字数|发言|表情包|消息类型|管理员灰条禁言时长|管理员标称禁言时长|管理员单次最长禁言|管理员最长禁言|管理员累计禁言时长|管理员禁言总时长|管理员禁言时长|管理员禁言|灰条禁言时长|标称禁言时长|单次最长禁言|最长禁言|累计禁言时长|禁言总时长|禁言时长|禁言)(?<chart>排行榜|走势)(?:\s*(?P<count>[0-9０-９]+))?$")
             .unwrap()
+    })
+}
+
+// ================= 范围 =================
+
+/// 指令的四种范围。前两种是「大家的榜」，后两种是「我的」——后者默认跨群：
+/// 一个人的发言本来就散在好几个群里，只看当前群才需要在前面加「本群」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Group,
+    Cross,
+    MineGroup,
+    MineCross,
+}
+
+impl Scope {
+    fn is_mine(self) -> bool {
+        matches!(self, Self::MineGroup | Self::MineCross)
+    }
+
+    /// 需要当前群号的范围（「我的」也可以限定在本群）。
+    fn in_group(self) -> bool {
+        matches!(self, Self::Group | Self::MineGroup)
+    }
+
+    /// 写进标题的那一段。
+    fn label(self) -> &'static str {
+        match self {
+            Self::Group => "本群",
+            Self::Cross => "跨群",
+            Self::MineGroup => "本群我的",
+            Self::MineCross => "我的",
+        }
+    }
+}
+
+/// 拆好的一条指令。
+struct Request<'a> {
+    scope: Scope,
+    /// 规范化的时间词（近七日 → 近7天），后面所有区间计算与标题都只用它。
+    time: &'static str,
+    data_type: &'a str,
+    chart_type: &'a str,
+    /// 「所有群」那条窄规则：只认发言，范围是全部群。
+    all_groups: bool,
+    count: Option<&'a str>,
+}
+
+/// 一条指令拆成六个部分；认不出返回 None。
+///
+/// 范围写在最前：「我的」默认跨群，前面加「本群」才只看当前群；不带「我的」时只有
+/// 本群 / 跨群两种。所有群走另一条更窄的规则（只认发言）。
+fn parse_command(content: &str) -> Option<Request<'_>> {
+    if let Some(caps) = get_regex_global().captures(content) {
+        return Some(Request {
+            scope: Scope::Cross,
+            time: canonical_time(caps.name("time").map_or("", |m| m.as_str()))?,
+            data_type: "发言",
+            chart_type: caps.name("chart").map_or("", |m| m.as_str()),
+            all_groups: true,
+            count: caps.name("count").map(|m| m.as_str()),
+        });
+    }
+
+    let caps = get_regex_normal().captures(content)?;
+    let scope = match caps.name("mine").map_or("", |m| m.as_str()) {
+        "本群我的" => Scope::MineGroup,
+        "跨群我的" | "我的" => Scope::MineCross,
+        _ => match caps.name("plain").map_or("", |m| m.as_str()) {
+            "跨群" => Scope::Cross,
+            _ => Scope::Group,
+        },
+    };
+    Some(Request {
+        scope,
+        time: canonical_time(caps.name("time").map_or("", |m| m.as_str()))?,
+        data_type: caps.name("data").map_or("", |m| m.as_str()),
+        chart_type: caps.name("chart").map_or("", |m| m.as_str()),
+        all_groups: false,
+        count: caps.name("count").map(|m| m.as_str()),
     })
 }
 
@@ -163,8 +267,12 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        let Some(msg) = ctx.as_message() else { return Ok(Some(ctx)) };
-        let Some(content) = strip_prefix(&ctx, msg.text()) else { return Ok(Some(ctx)) };
+        let Some(msg) = ctx.as_message() else {
+            return Ok(Some(ctx));
+        };
+        let Some(content) = strip_prefix(&ctx, msg.text()) else {
+            return Ok(Some(ctx));
+        };
 
         // 群名单外的群不响应查询，与主动推送保持同一套生效范围
         let config: StatsConfig = get_config_or_default(&ctx);
@@ -172,28 +280,17 @@ pub fn handle(
             return Ok(Some(ctx));
         }
 
-        let (scope, time_str, data_type, chart_type, is_all_groups, count) =
-            if let Some(caps) = get_regex_global().captures(content) {
-                let t = caps.get(1).map_or("", |m| m.as_str());
-                let c_type = caps.get(2).map_or("", |m| m.as_str());
-                (
-                    "跨群",
-                    t,
-                    "发言",
-                    c_type,
-                    true,
-                    caps.get(3).map(|m| m.as_str()),
-                )
-            } else if let Some(caps) = get_regex_normal().captures(content) {
-                let s = caps.get(1).map_or("本群", |m| m.as_str());
-                let t = caps.get(2).map_or("", |m| m.as_str());
-                let d = caps.get(3).map_or("", |m| m.as_str());
-                let c = caps.get(4).map_or("", |m| m.as_str());
-                let final_scope = if s.is_empty() { "本群" } else { s };
-                (final_scope, t, d, c, false, caps.get(5).map(|m| m.as_str()))
-            } else {
-                return Ok(Some(ctx));
-            };
+        let Some(req) = parse_command(content) else {
+            return Ok(Some(ctx));
+        };
+        let Request {
+            scope,
+            time: time_str,
+            data_type,
+            chart_type,
+            all_groups: is_all_groups,
+            count,
+        } = req;
 
         // 名次数只对排行榜有意义；「走势 5」「排行榜 0」不是这个插件的指令，静默放过
         let limit = match count {
@@ -208,7 +305,7 @@ pub fn handle(
         let group_id = msg.group_id();
         let user_id = msg.user_id();
 
-        // 艾特榜只有排行榜：一天一天的 @ 次数折线还没人问过，真有人问再画。
+        // 艾特只有排行榜：一天一天的 @ 次数折线还没人问过，真有人问再画。
         if chart::is_mention_ranking(data_type) && chart_type != "排行榜" {
             send_msg(
                 &ctx,
@@ -217,7 +314,24 @@ pub fn handle(
                 Some(user_id),
                 "❌ 被艾特、艾特别人只有排行榜
 想看谁被 @ 得多，用「本群本月被艾特排行榜」
-想看谁最爱 @ 人，用「本群本月艾特别人排行榜」",
+想看谁最爱 @ 人，用「本群本月艾特别人排行榜」
+想看我自己在各群的情况，用「我的本月被艾特排行榜」",
+            )
+            .await?;
+            return Ok(None);
+        }
+
+        // 本群的艾特榜本来就是按人排的，再加「我的」只会让人以为是同一个人一行。
+        // 「我的」在艾特榜上的意义是「按群合计」，那只在跨群时成立。
+        if chart::is_mention_ranking(data_type) && scope == Scope::MineGroup {
+            send_msg(
+                &ctx,
+                writer,
+                group_id,
+                Some(user_id),
+                "❌ 本群的艾特榜直接按人排
+想看本群谁被 @ 得多，用「本群本月被艾特排行榜」
+想看我在各个群被 @ 的情况，用「我的本月被艾特排行榜」",
             )
             .await?;
             return Ok(None);
@@ -225,28 +339,35 @@ pub fn handle(
 
         // 禁言只有「本群」的排行榜：禁言是某个群里的事，跨群合计或个人名下都没有意思；
         // 走势没有（一个群一个月也没几次）。说清楚能用什么，别让人对着沉默猜。
-        if chart::is_ban_ranking(data_type) && (scope != "本群" || chart_type != "排行榜") {
+        if chart::is_ban_ranking(data_type) && (scope != Scope::Group || chart_type != "排行榜")
+        {
             send_msg(
                 &ctx,
                 writer,
                 group_id,
                 Some(user_id),
-                "❌ 禁言只有本群的排行榜\n试试：\n「本群本月禁言排行榜」谁被禁言次数最多\n「本群本月禁言时长排行榜」谁被禁言累计最久（实际禁言了多久）\n「本群本月单次最长禁言排行榜」谁被禁得最久的一次\n「本群本月灰条禁言时长排行榜」灰条上写的时长相加\n想看动手禁言的人，把「禁言」换成「管理员禁言」，如「本群本月管理员禁言排行榜」",
+                "❌ 禁言只有本群的排行榜
+试试：
+「本群本月禁言排行榜」谁被禁言次数最多
+「本群本月禁言时长排行榜」谁被禁言累计最久（实际禁言了多久）
+「本群本月单次最长禁言排行榜」谁被禁得最久的一次
+「本群本月灰条禁言时长排行榜」灰条上写的时长相加
+想看动手禁言的人，把「禁言」换成「管理员禁言」，如「本群本月管理员禁言排行榜」",
             )
             .await?;
             return Ok(None);
         }
 
-        // 文字类榜只有排行榜：一天一天的字数/条数折线还没做，与其画一张「发言条数」
-        // 走势冒充，不如直说，再给两条能用的指令。
-        if chart::is_text_ranking(data_type) && chart_type != "排行榜" {
+        // 文字类榜只有排行榜；「我的」是例外——一个人的字数/条数按天画出来是有意义的，
+        // 全群按天画多个人的字数则没有现成的口径，所以只放开「我的」。
+        if chart::is_text_ranking(data_type) && chart_type != "排行榜" && !scope.is_mine() {
             send_msg(
                 &ctx,
                 writer,
                 group_id,
                 Some(user_id),
-                "❌ 发言字数、文本消息只有排行榜
-想看趋势，用「本群本月发言走势」看发言条数的变化
+                "❌ 全群的发言字数、文本消息只有排行榜
+想看自己字数的变化，用「我的近7天发言字数走势」
 「本群本月发言字数排行榜」谁写的字最多
 「本群本月文本消息排行榜」谁发的纯文字消息最多（图片、表情包、语音、视频都不算）",
             )
@@ -254,13 +375,29 @@ pub fn handle(
             return Ok(None);
         }
 
-        if scope == "本群" && group_id.is_none() {
+        // 消息类型没有「我的排行榜」：一个人一条消息的类型构成是占比，不是名次。
+        if data_type == "消息类型" && scope == Scope::MineGroup && chart_type == "排行榜" {
+            send_msg(
+                &ctx,
+                writer,
+                group_id,
+                Some(user_id),
+                "❌ 消息类型没有「我的排行榜」
+想看自己的构成，用「我的今日消息类型走势」
+想看本群全体的构成，用「本群今日消息类型排行榜」",
+            )
+            .await?;
+            return Ok(None);
+        }
+
+        if scope.in_group() && group_id.is_none() {
             send_msg(
                 &ctx,
                 writer,
                 None,
                 Some(user_id),
-                "❌ 这个范围只在群里有效\n用「本群」查群里的统计，或用「我的」查个人的",
+                "❌ 这个范围只在群里有效
+用「本群」查群里的统计，或用「我的」查个人的",
             )
             .await?;
             return Ok(None);
@@ -269,41 +406,109 @@ pub fn handle(
         info!(
             target: LOG_TARGET,
             "Req: Scope={}, Time={}, Data={}, Chart={}, Global={}, Limit={}",
-            scope, time_str, data_type, chart_type, is_all_groups, limit
+            scope.label(), time_str, data_type, chart_type, is_all_groups, limit
         );
 
-        let (start_time, end_time) = get_time_range(time_str);
-
-        let (query_group, query_user) = match scope {
-            "本群" => (group_id, None),
-            "跨群" => (None, None),
-            "我的" => (None, Some(user_id)),
-            _ => (None, None),
+        // 「我的」用自己的区间：近 7 天这类按自然日对齐，并且要能算出「上一期」来比较。
+        let (start_time, end_time) = if scope.is_mine() {
+            match chart::mine_range(&ctx.db, user_id, time_str).await {
+                Ok(range) => range,
+                Err(e) => {
+                    send_msg(
+                        &ctx,
+                        writer,
+                        group_id,
+                        Some(user_id),
+                        format!("❌ 统计失败：{e}"),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+            }
+        } else {
+            get_time_range(time_str)
         };
 
         // 中文标题不靠空格断词：连写成一句「本群今日发言排行榜」像一行标题，
         // 用空格隔开则像四个并排的关键词。范围、总量、时间都在图里的元信息行上。
         let name = chart::ranking_name(data_type);
-        let title = if is_all_groups {
-            format!("所有群{time_str}{name}{chart_type}")
+        let subject = if is_all_groups {
+            format!("所有群{time_str}{name}")
         } else {
-            format!("{scope}{time_str}{name}{chart_type}")
+            format!("{}{time_str}{name}", scope.label())
+        };
+        let title = format!("{subject}{chart_type}");
+
+        // 「本群我的排行榜」问的不是一张榜，是一个名次：一句话答得清，就不必出长图。
+        if scope == Scope::MineGroup && chart_type == "排行榜" {
+            let metric = user_metric(data_type);
+            let total = queries::get_user_metric_total(
+                &ctx.db, group_id, user_id, start_time, end_time, metric,
+            )
+            .await
+            .unwrap_or(0);
+
+            let reply = if total <= 0 {
+                format!(
+                    "📭 {subject}：这段时间你还没在本群说过话
+换个时间范围试试"
+                )
+            } else {
+                let (rank, people, sum) = queries::get_user_rank_in_guild(
+                    &ctx.db,
+                    group_id.unwrap_or_default(),
+                    user_id,
+                    start_time,
+                    end_time,
+                    metric,
+                )
+                .await
+                .unwrap_or((0, 0, 0));
+                let word = if metric == queries::UserMetric::TextChars {
+                    "字"
+                } else {
+                    "条"
+                };
+                let share = if sum > 0 {
+                    format!("，占全群 {:.0}%", total as f64 / sum as f64 * 100.0)
+                } else {
+                    String::new()
+                };
+                format!(
+                    "📊 {subject}
+你排第 {rank} / {people}，{} {word}{share}",
+                    chart::utils::format_thousands(total)
+                )
+            };
+            send_msg(&ctx, writer, group_id, Some(user_id), reply).await?;
+            return Ok(None);
+        }
+
+        let (query_group, query_user) = match scope {
+            Scope::Group => (group_id, None),
+            Scope::Cross => (None, None),
+            Scope::MineGroup => (group_id, Some(user_id)),
+            Scope::MineCross => (None, Some(user_id)),
         };
 
-        let result_img = chart::generate(
-            &ctx,
-            is_all_groups,
-            data_type,
-            chart_type,
-            query_group,
-            query_user,
-            user_id,
-            start_time,
-            end_time,
-            limit,
-            &title,
-        )
-        .await;
+        let result_img = if scope.is_mine() && chart_type == "走势" {
+            chart::generate_mine(&ctx, query_group, user_id, data_type, time_str, &title).await
+        } else {
+            chart::generate(
+                &ctx,
+                is_all_groups,
+                data_type,
+                chart_type,
+                query_group,
+                query_user,
+                user_id,
+                start_time,
+                end_time,
+                limit,
+                &title,
+            )
+            .await
+        };
 
         match result_img {
             Ok(b64) => {
@@ -313,16 +518,21 @@ pub fn handle(
             }
             Err(chart::ChartError::NoData) => {
                 // 空态不是错误：说清为什么空，再给一条能立刻做的事。
-                let hint = if chart::is_ban_ranking(data_type) {
+                let hint = if scope.is_mine() {
+                    "这段时间你还没在这个范围里说过话
+换个时间范围试试，或先在群里聊几句"
+                } else if chart::is_ban_ranking(data_type) {
                     // 禁言只记机器人在线之后发生的；按时长排时，没读出时长的那些也上不了榜。
-                    "这段时间没有可统计的禁言（只记录机器人在线时发生的）\n换一个时间范围试试"
+                    "这段时间没有可统计的禁言（只记录机器人在线时发生的）
+换一个时间范围试试"
                 } else if chart::is_mention_ranking(data_type) {
                     // 艾特记录从本版才开始记，早些的日子确实是一片空白。
                     "这段时间没有艾特记录（本版起才开始记，早些的日子没有）
 换一个时间范围试试"
                 } else if chart::is_text_ranking(data_type) {
                     // 只有图片、表情包的那段日子，在这里确实是一片空白。
-                    "这段时间没有文字发言（图片、表情包、语音、视频都不算）\n换一个时间范围试试"
+                    "这段时间没有文字发言（图片、表情包、语音、视频都不算）
+换一个时间范围试试"
                 } else {
                     "换一个时间范围，或先让群里聊几句"
                 };
@@ -331,7 +541,10 @@ pub fn handle(
                     writer,
                     group_id,
                     Some(user_id),
-                    format!("📭 {title}没有数据\n{hint}"),
+                    format!(
+                        "📭 {title}没有数据
+{hint}"
+                    ),
                 )
                 .await?;
             }
@@ -476,3 +689,44 @@ type PushFn = fn(
     u64,
     bool,
 ) -> BoxFuture<'static, ()>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(cmd: &str, scope: Scope, time: &str, data: &str, chart: &str, all: bool) {
+        let got = parse_command(cmd).unwrap_or_else(|| panic!("没认出「{cmd}」"));
+        assert_eq!(
+            (got.scope, got.time, got.data_type, got.chart_type, got.all_groups),
+            (scope, time, data, chart, all),
+            "「{cmd}」"
+        );
+    }
+
+    #[test]
+    fn parses_scopes_and_periods() {
+        check("本群今日发言排行榜", Scope::Group, "今日", "发言", "排行榜", false);
+        check("今日发言排行榜", Scope::Group, "今日", "发言", "排行榜", false);
+        check("跨群本月发言走势", Scope::Cross, "本月", "发言", "走势", false);
+        check("所有群近7天发言走势", Scope::Cross, "近7天", "发言", "走势", true);
+        check("我的昨日发言走势", Scope::MineCross, "昨日", "发言", "走势", false);
+        check("跨群我的近30天发言字数走势", Scope::MineCross, "近30天", "发言字数", "走势", false);
+        check("本群我的今日消息类型走势", Scope::MineGroup, "今日", "消息类型", "走势", false);
+        check("本群我的上周被艾特排行榜", Scope::MineGroup, "上周", "被艾特", "排行榜", false);
+        // 口语里的近七日、昨天都归到同一段
+        check("我的近七日发言走势", Scope::MineCross, "近7天", "发言", "走势", false);
+        check("本群我的昨天消息类型走势", Scope::MineGroup, "昨日", "消息类型", "走势", false);
+    }
+
+    #[test]
+    fn keeps_names_and_rejects_others() {
+        assert_eq!(
+            parse_command("本群今日发言走势 5").unwrap().count,
+            Some("5")
+        );
+        assert!(parse_command("本群今日发言").is_none());
+        assert!(parse_command("我们今日发言排行榜").is_none());
+        assert!(parse_command("我的发言排行榜").is_none());
+    }
+}
+

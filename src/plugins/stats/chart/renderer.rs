@@ -15,6 +15,16 @@ use image::{Rgba, RgbaImage};
 use plotters::prelude::*;
 use plotters::style::text_anchor::{HPos, Pos, VPos};
 
+/// 走势图标题下面那几个数：标签在上、数在中间、说明在下。
+///
+/// 只给「我的」用——一张只画自己一条线的图，光看线读不出「一共说了多少」「在群里排第几」，
+/// 这几个数得单独摆在标题下面，眼睛扫一遍就够。
+pub struct StatCell {
+    pub label: String,
+    pub value: String,
+    pub note: String,
+}
+
 /// 条的数值是什么：次数，还是秒数（按「2天3小时」写）。
 pub enum BarUnit {
     Count,
@@ -1005,9 +1015,14 @@ fn timeline(series: &[SeriesData]) -> Vec<String> {
 /// 绘制折线图 (支持单线/多线)。
 /// 与排行榜柱状图共用同一套视觉规范：白底、灰阶时间戳/标题、统一字体字号与边距、
 /// 浅色网格线、白描边圆点数据点，配色取自系列颜色（消息类型与排行榜共用调色板）。
+#[allow(clippy::too_many_arguments)]
 pub fn draw_line_chart(
     config: &StatsConfig,
     title: &str,
+    // 副标题。给了就用给的（「我的」要把范围、合计、名次写进去），没给就按通用口径自动写一行。
+    meta_of: Option<&str>,
+    // 标题下的指标条。空数组时版式与从前逐像素相同。
+    cells: &[StatCell],
     series_list: Vec<SeriesData>,
 ) -> Result<String, ChartError> {
     if series_list.is_empty() {
@@ -1071,23 +1086,26 @@ pub fn draw_line_chart(
     let title_y = padding;
     let meta_y = title_y + title_font_size + gap;
 
-    // 时间粒度从标签写法认出来：`%H:%M` 是按小时聚的，`%Y-%m-%d` 是按天聚的
-    let hourly = x_labels
-        .first()
-        .is_some_and(|l| l.len() == 5 && l.contains(':'));
-    let span_unit = if hourly { "小时" } else { "天" };
+    // 时间粒度从标签写法认出来：`%H:%M` 按小时、`%Y-%m-%d` 按天、`%Y-%m` 按月
+    let span_unit = match x_labels.first().map(String::len) {
+        Some(5) if x_labels[0].contains(':') => "小时",
+        Some(7) => "个月",
+        _ => "天",
+    };
     let grand_total: i64 = series_list
         .iter()
         .flat_map(|sr| sr.points.iter().map(|p| p.value))
         .sum();
     let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
-    let meta = format!(
-        "共 {} {} · 合计 {} 次 · {}",
-        x_labels.len(),
-        span_unit,
-        format_thousands(grand_total),
-        now_str
-    );
+    let meta = meta_of.map(str::to_string).unwrap_or_else(|| {
+        format!(
+            "共 {} {} · 合计 {} 次 · {}",
+            x_labels.len(),
+            span_unit,
+            format_thousands(grand_total),
+            now_str
+        )
+    });
 
     // === 3. 图例布局 (多系列时)：圆点 + 名称，水平排列，超宽自动换行 ===
     let dot_r = 6 * s;
@@ -1125,14 +1143,24 @@ pub fn draw_line_chart(
         legend_h = legend_rows.len() as u32 * legend_row_h;
     }
 
-    let legend_y = meta_y + meta_font_size + gap;
+    // 指标条：紧贴副标题下面的一整条容器，几格等分。没有指标时不占任何位置。
+    let strip_h = if cells.is_empty() { 0 } else { 104 * s };
+    let strip_gap = if cells.is_empty() { 0 } else { 22 * s };
+    let strip_y = meta_y + meta_font_size + strip_gap;
+    let top_y = if cells.is_empty() {
+        meta_y + meta_font_size
+    } else {
+        strip_y + strip_h
+    };
+
+    let legend_y = top_y + gap;
     // 单系列会在最高点上方标一个数：纵轴收紧之后峰值常常顶到第一条网格线，
     // 这里按标注自己的高度先把位置留出来，免得它撞到副标题那一行。
     let peak_headroom = if multi { 0 } else { axis_font_size + 14 * s };
     let chart_top = if multi {
         legend_y + legend_h + (12 * s)
     } else {
-        meta_y + meta_font_size + (24 * s) + peak_headroom
+        top_y + (24 * s) + peak_headroom
     };
     let x_label_area = axis_font_size + 14 * s;
     let chart_bottom = height
@@ -1166,6 +1194,20 @@ pub fn draw_line_chart(
             .color(&colors.text_secondary);
         root.draw_text(&meta, &meta_style, (width as i32 / 2, meta_y as i32))
             .map_err(|e| e.to_string())?;
+
+        // 4.1b 指标条：「我的」的合计 / 活跃 / 高峰 / 名次
+        if !cells.is_empty() {
+            draw_stat_cells(
+                &root,
+                config,
+                cells,
+                padding,
+                width - padding,
+                strip_y,
+                strip_y + strip_h,
+                &colors,
+            )?;
+        }
 
         // 4.2 图例
         for (row_i, row) in legend_rows.iter().enumerate() {
@@ -1347,4 +1389,80 @@ pub fn draw_line_chart(
     }
 
     save_rgba_to_base64(rgba_image).map_err(ChartError::Failed)
+}
+
+/// 指标条：一条淡色容器，里面等分成几格（标签 / 数 / 说明）。
+///
+/// 等分而不是按内容宽度分：四格的字数差得很远，跟着内容分会让竖线落在不整齐的位置，
+/// 一歪整条就像没对齐。格与格之间一根发丝线，线两端各让开一点，不顶到容器的圆角。
+#[allow(clippy::too_many_arguments)]
+fn draw_stat_cells<DB: DrawingBackend>(
+    root: &DrawingArea<DB, plotters::coord::Shift>,
+    config: &StatsConfig,
+    cells: &[StatCell],
+    x0: u32,
+    x1: u32,
+    y0: u32,
+    y1: u32,
+    colors: &ColorScheme,
+) -> Result<(), String> {
+    let s = 2u32;
+    draw_rounded_rect(
+        root,
+        x0 as i32,
+        y0 as i32,
+        x1 as i32,
+        y1 as i32,
+        (18 * s) as i32,
+        colors.container,
+    )?;
+
+    let n = cells.len() as u32;
+    let cell_w = (x1 - x0) / n.max(1);
+    let inner = 22 * s;
+    let text_w = cell_w.saturating_sub(2 * inner);
+    let family = get_font_family(config);
+
+    let (label_size, value_size, note_size) = (16 * s, 27 * s, 15 * s);
+    let label_font = (family, label_size).into_font();
+    let value_font = (family, value_size).into_font();
+    let note_font = (family, note_size).into_font();
+
+    let label_style = get_font_with_color(config, label_size, &colors.text_secondary)
+        .pos(Pos::new(HPos::Left, VPos::Top));
+    let value_style = get_font_with_color(config, value_size, &colors.text_primary)
+        .pos(Pos::new(HPos::Left, VPos::Top));
+    let note_style = get_font_with_color(config, note_size, &colors.text_secondary)
+        .pos(Pos::new(HPos::Left, VPos::Top));
+
+    for (i, cell) in cells.iter().enumerate() {
+        let left = x0 + i as u32 * cell_w;
+
+        if i > 0 {
+            root.draw(&Rectangle::new(
+                [
+                    (left as i32, (y0 + 22 * s) as i32),
+                    (left as i32 + s as i32, (y1 - 22 * s) as i32),
+                ],
+                colors.grid_line.filled(),
+            ))
+            .map_err(|e| e.to_string())?;
+        }
+
+        let tx = (left + inner) as i32;
+        let label = truncate_text_to_fit(&label_font, &cell.label, text_w);
+        root.draw_text(&label, &label_style, (tx, (y0 + 18 * s) as i32))
+            .map_err(|e| e.to_string())?;
+
+        let value = truncate_text_to_fit(&value_font, &cell.value, text_w);
+        root.draw_text(&value, &value_style, (tx, (y0 + 40 * s) as i32))
+            .map_err(|e| e.to_string())?;
+
+        if !cell.note.is_empty() {
+            let note = truncate_text_to_fit(&note_font, &cell.note, text_w);
+            root.draw_text(&note, &note_style, (tx, (y0 + 74 * s) as i32))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }

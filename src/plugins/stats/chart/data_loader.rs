@@ -315,7 +315,9 @@ fn side_detail(metric: UserMetric, side: i64) -> Option<String> {
 }
 
 /// 某个数据类型按什么数排。
-fn user_metric(data_type: &str) -> UserMetric {
+///
+/// 「我的」报表也用这一份：走势图画的和榜单排的必须是同一个数。
+pub fn user_metric(data_type: &str) -> UserMetric {
     match TextBoard::parse(data_type) {
         Some(board) => board.metric(),
         None if data_type == "表情包" => UserMetric::AnimEmoji,

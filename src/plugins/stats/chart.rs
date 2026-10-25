@@ -1,6 +1,7 @@
 pub mod avatar;
 pub mod data_loader;
 pub mod medal;
+pub mod mine;
 pub mod renderer;
 pub mod utils;
 
@@ -15,6 +16,7 @@ use self::data_loader::{
 };
 use crate::db::mentions;
 use self::renderer::{BarUnit, draw_bar_chart, draw_line_chart, draw_message_type_ranking};
+use sea_orm::DatabaseConnection;
 
 /// 图表生成不出来的原因。分两类是因为对用户来说这是两件事：
 /// 「这段区间没数据」是空态（📭，谁也不怪），其余才是故障（❌）。
@@ -130,7 +132,9 @@ pub async fn generate(
         .await?;
 
         let image = crate::render::worker::run(move || {
-            draw_with_font_panic_guard(&config, || draw_line_chart(&config, &title, chart_data))
+            draw_with_font_panic_guard(&config, || {
+                draw_line_chart(&config, &title, None, &[], chart_data)
+            })
         })
         .await
         .map_err(|e| ChartError::Failed(format!("图表任务失败：{e}")))??;
@@ -199,6 +203,47 @@ pub async fn generate(
     .await
     .map_err(|e| format!("图表任务失败：{e}"))??;
     Ok(image)
+}
+
+/// 「我的」：一个人的发言报表。
+///
+/// 与榜单走不同的入口，是因为它要的东西不一样：榜单要一张排好序的名次表，它要一段
+/// 按自然日对齐、缺口补 0 的走势，外加合计 / 活跃 / 高峰 / 名次那几个数。数据侧的
+/// 区间与分桶都在 [`mine`] 里定，这里只负责画。
+pub async fn generate_mine(
+    ctx: &Context,
+    group_id: Option<&str>,
+    user_id: &str,
+    data_type: &str,
+    time_str: &str,
+    title: &str,
+) -> Result<String, ChartError> {
+    let config: StatsConfig = get_config_or_default(ctx);
+    let report = mine::build(&ctx.db, group_id, user_id, data_type, time_str).await?;
+    let title = title.to_owned();
+
+    crate::render::worker::run(move || {
+        draw_with_font_panic_guard(&config, || {
+            draw_line_chart(
+                &config,
+                &title,
+                Some(&report.meta),
+                &report.cells,
+                report.series,
+            )
+        })
+    })
+    .await
+    .map_err(|e| ChartError::Failed(format!("图表任务失败：{e}")))?
+}
+
+/// 我的日报区间：与「我的」走势图同一套自然日口径。
+pub async fn mine_range(
+    db: &DatabaseConnection,
+    user_id: &str,
+    time_str: &str,
+) -> Result<(i64, i64), ChartError> {
+    mine::range_for(db, user_id, time_str).await
 }
 
 /// 艾特榜：排被 @ 的人（被艾特），或动手 @ 的人（艾特别人）。

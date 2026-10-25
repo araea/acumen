@@ -745,6 +745,121 @@ pub async fn get_message_count(
     Ok(total)
 }
 
+/// 个人走势的时间粒度。按小时用于单日（今日/昨日），按月用于跨度很长的「总」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrendGranularity {
+    Hour,
+    Day,
+    Month,
+}
+
+impl TrendGranularity {
+    /// SQL 里日期键的写法；与图表侧生成桶标签的格式必须逐字相同。
+    fn sql_format(self) -> &'static str {
+        match self {
+            Self::Hour => "%H:%M",
+            Self::Day => "%Y-%m-%d",
+            Self::Month => "%Y-%m",
+        }
+    }
+}
+
+/// 某个人的数值走势：按小时 / 天 / 月聚合。
+///
+/// 单个人的消息量远小于全群，直接走原始表（idx_records_user_time），不必碰聚合表；
+/// 口径与排行榜共用 [`UserMetric`]，一张走势图和一个榜说的是同一件事。
+pub async fn get_user_metric_trend(
+    db: &DatabaseConnection,
+    guild_id: Option<&str>,
+    user_id: &str,
+    start_time: i64,
+    end_time: i64,
+    granularity: TrendGranularity,
+    metric: UserMetric,
+) -> Result<Vec<DailyTrend>, DbErr> {
+    let time_expr = Expr::cust(format!(
+        "strftime('{}', datetime(time, 'unixepoch', 'localtime'))",
+        granularity.sql_format()
+    ));
+
+    let mut query = MessageLogs::find()
+        .select_only()
+        .column_as(time_expr.clone(), "date")
+        .column_as(Expr::cust(metric.raw_expr()), "count")
+        .filter(entity::Column::Time.gte(start_time))
+        .filter(entity::Column::Time.lt(end_time))
+        .filter(entity::Column::UserId.eq(user_id));
+
+    if let Some(gid) = guild_id {
+        query = query.filter(entity::Column::GuildId.eq(gid));
+    }
+
+    query
+        .group_by(time_expr)
+        .order_by_asc(Expr::custom_keyword(Alias::new("date")))
+        .limit(MAX_TREND_LIMIT)
+        .into_model::<DailyTrend>()
+        .all(db)
+        .await
+}
+
+/// 我在一个群里的名次：返回（名次，同榜人数，全群合计）。
+///
+/// 名次用「比我多的人数 + 1」：数一样的并列，不做跳号；合计用来算「占全群多少」。
+/// 只数在区间里说过话的人——没说话的人没有名次，也不该被算进分母。
+pub async fn get_user_rank_in_guild(
+    db: &DatabaseConnection,
+    guild_id: &str,
+    user_id: &str,
+    start_time: i64,
+    end_time: i64,
+    metric: UserMetric,
+) -> Result<(i64, i64, i64), DbErr> {
+    let mine =
+        get_user_metric_total(db, Some(guild_id), user_id, start_time, end_time, metric).await?;
+
+    // 绑定顺序按 SQL 文本里占位符出现的先后：SELECT 里的比较值在前，WHERE 里的群号在后。
+    let mut params = Params::default();
+    params.0.push(mine.into());
+    let g = params.guild(Some(guild_id));
+    let sql = format!(
+        "SELECT COALESCE(SUM(CASE WHEN v > ? THEN 1 ELSE 0 END), 0) + 1 AS pos, \
+                COUNT(*) AS n, COALESCE(SUM(v), 0) AS total \
+         FROM (SELECT user_id, {} AS v FROM message_records \
+               WHERE time >= {start_time} AND time < {end_time}{g} \
+               GROUP BY user_id HAVING v > 0)",
+        metric.raw_expr()
+    );
+
+    let row = db.query_one_raw(params.statement(db, sql)).await?;
+    match row {
+        Some(r) => Ok((
+            r.try_get::<i64>("", "pos")?,
+            r.try_get::<i64>("", "n")?,
+            r.try_get::<i64>("", "total")?,
+        )),
+        None => Ok((1, 0, 0)),
+    }
+}
+
+/// 某个人第一条消息的时间；从没说过话返回 None。
+///
+/// 「我的总发言走势」按自然月分桶，起点得是这个人的第一条消息所在的月，
+/// 不能从库里第一行算起——那会把别人的历史算进我的横轴。
+pub async fn get_user_first_message_time(
+    db: &DatabaseConnection,
+    user_id: &str,
+) -> Result<Option<i64>, DbErr> {
+    let row: Option<(Option<i64>,)> = MessageLogs::find()
+        .select_only()
+        .column_as(Expr::cust("MIN(time)"), "first")
+        .filter(entity::Column::UserId.eq(user_id))
+        .into_tuple()
+        .one(db)
+        .await?;
+    Ok(row.and_then(|(first,)| first))
+}
+
 // ================= 原始表查询（回退路径 / 原有实现） =================
 
 async fn raw_text_corpus(
