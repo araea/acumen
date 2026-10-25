@@ -139,16 +139,76 @@ pub async fn build(
         .map(|(b, v)| (b, *v))
         .unwrap_or((&buckets[0], 0));
 
-    let scope_cell = scope_cell(
-        db,
-        group_id,
-        user_id,
-        data_type,
-        total,
-        period.start,
-        period.end,
-    )
-    .await?;
+    // 跨群时这一格与副标题都要知道「跨了几个群、最常说话的是哪个」，查一次就够。
+    let groups = if group_id.is_none() {
+        let rows = queries::get_user_guild_participation_ranking(
+            db,
+            user_id,
+            period.start,
+            period.end,
+            200,
+            rank_metric(data_type),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Some(rows.into_iter().filter(|r| r.count > 0).collect::<Vec<_>>())
+    } else {
+        None
+    };
+
+    let scope_cell = if let Some(guild) = group_id {
+        let (rank, people, sum) = queries::get_user_rank_in_guild(
+            db,
+            guild,
+            user_id,
+            period.start,
+            period.end,
+            rank_metric(data_type),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let note = if sum > 0 {
+            format!("占全群 {:.0}%", total as f64 / sum as f64 * 100.0)
+        } else {
+            String::new()
+        };
+        StatCell {
+            label: "本群排名".into(),
+            value: format!("第 {rank} / {people}"),
+            note,
+        }
+    } else {
+        let groups = groups.as_deref().unwrap_or_default();
+        let top = groups
+            .iter()
+            .max_by_key(|r| r.count)
+            .map(|r| {
+                if r.guild_name.is_empty() {
+                    r.guild_id.clone()
+                } else {
+                    r.guild_name.clone()
+                }
+            })
+            .unwrap_or_default();
+        StatCell {
+            label: "群覆盖".into(),
+            value: format!("{} 个群", groups.len()),
+            note: if top.is_empty() {
+                String::new()
+            } else {
+                format!("最多：{top}")
+            },
+        }
+    };
+
+    let scope_text = if group_id.is_some() {
+        "本群".to_string()
+    } else {
+        match groups.as_ref().map_or(0, Vec::len) {
+            0 => "跨群".to_string(),
+            n => format!("跨群 · {n} 个群"),
+        }
+    };
 
     let cells = vec![
         StatCell {
@@ -172,7 +232,7 @@ pub async fn build(
     let now_str = Local::now().format("%Y-%m-%d %H:%M").to_string();
     let meta = format!(
         "{} · 共 {} {} · 合计 {} {} · {}",
-        scope_text(db, group_id, user_id, data_type, period.start, period.end).await?,
+        scope_text,
         buckets.len(),
         period.unit.span_word(),
         format_count(total),
@@ -547,94 +607,4 @@ fn short_label(label: &str) -> String {
     } else {
         label.to_string()
     }
-}
-
-/// 跨群时这一格是「参与几个群、最常说话的是哪个」；本群时是名次。
-async fn scope_cell(
-    db: &DatabaseConnection,
-    group_id: Option<&str>,
-    user_id: &str,
-    data_type: &str,
-    total: i64,
-    start: i64,
-    end: i64,
-) -> Result<StatCell, ChartError> {
-    if let Some(guild) = group_id {
-        let (rank, people, sum) =
-            queries::get_user_rank_in_guild(db, guild, user_id, start, end, rank_metric(data_type))
-                .await
-                .map_err(|e| e.to_string())?;
-        let share = if sum > 0 {
-            format!("占全群 {:.0}%", total as f64 / sum as f64 * 100.0)
-        } else {
-            String::new()
-        };
-        return Ok(StatCell {
-            label: "本群排名".into(),
-            value: format!("第 {rank} / {people}"),
-            note: share,
-        });
-    }
-
-    let rows = queries::get_user_guild_participation_ranking(
-        db,
-        user_id,
-        start,
-        end,
-        200,
-        rank_metric(data_type),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    let rows: Vec<_> = rows.into_iter().filter(|r| r.count > 0).collect();
-    let top = rows
-        .iter()
-        .max_by_key(|r| r.count)
-        .map(|r| {
-            if r.guild_name.is_empty() {
-                r.guild_id.clone()
-            } else {
-                r.guild_name.clone()
-            }
-        })
-        .unwrap_or_default();
-    Ok(StatCell {
-        label: "群覆盖".into(),
-        value: format!("{} 个群", rows.len()),
-        note: if top.is_empty() {
-            String::new()
-        } else {
-            format!("最多：{top}")
-        },
-    })
-}
-
-/// 副标题开头那一段：本群就说本群，跨群说清跨了几个群。
-async fn scope_text(
-    db: &DatabaseConnection,
-    group_id: Option<&str>,
-    user_id: &str,
-    data_type: &str,
-    start: i64,
-    end: i64,
-) -> Result<String, ChartError> {
-    if group_id.is_some() {
-        return Ok("本群".to_string());
-    }
-    let rows = queries::get_user_guild_participation_ranking(
-        db,
-        user_id,
-        start,
-        end,
-        200,
-        rank_metric(data_type),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    let groups = rows.iter().filter(|r| r.count > 0).count();
-    Ok(if groups > 0 {
-        format!("跨群 · {groups} 个群")
-    } else {
-        "跨群".to_string()
-    })
 }
