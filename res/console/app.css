@@ -1922,7 +1922,7 @@ button.item:active::after {
 /* —— 连接按钮组 —— */
 /* 分段控件全站一个样子（这里、选项卡、插件状态筛选、设置分区）：一条凹下去的轨
    （--zw-track），选中的一段是浮在轨上的一块纸片（--zw-track-on），不投影、不换色相。
-   选中时纸片从中间长出来（spatial-fast 弹簧），按下时收成中圆角。 */
+   选中纸片只淡入淡出，按压用状态层反馈，胶囊形状始终不变。 */
 .segmented {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1959,27 +1959,29 @@ button.item:active::after {
 }
 
 .segment:has(input:checked) {
-  background: var(--zw-track-on);
   color: var(--md-sys-color-on-surface);
   font-weight: var(--md-sys-typescale-weight-emphasized);
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--md-sys-color-shadow) 10%, transparent);
-  animation: segment-on var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
 }
 
-@keyframes segment-on {
-  from {
-    scale: 0.9 0.8;
-  }
+/* 选中底板独立一层，只淡入淡出；文字不缩放，按压也不再改变胶囊形状。 */
+.segment::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--zw-track-on);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.segment:has(input:checked)::before {
+  opacity: 1;
 }
 
 .segment {
-  transition:
-    border-radius var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing),
-    color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
-}
-
-.segment:active {
-  border-radius: var(--md-sys-shape-corner-medium);
+  transition: color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
 }
 
 .segment:has(input:focus-visible) {
@@ -1996,12 +1998,17 @@ button.item:active::after {
   background: currentColor;
   opacity: 0;
   pointer-events: none;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
 }
 
 @media (hover: hover) {
   .segment:hover::after {
     opacity: var(--md-sys-state-hover-opacity);
   }
+}
+
+.segment:active::after {
+  opacity: var(--md-sys-state-pressed-opacity);
 }
 
 /* —— 概率滑块（M3E slider） ——
@@ -4059,32 +4066,36 @@ button.item:active::after {
   --_setting-bg: var(--zw-plate-hover);
 }
 
-/* 表单里连着的几项拼成一张纸：只有一串的头尾带圆角，中间用缩进的细线分开。
-   以前每项一张浮起来的卡，八十多项排下来像一面砖墙。 */
+/* 表单里连着的几项拼成一张纸：外框只画一圈，中间用缩进的细线分开。
+   首尾按这一层的设置项计数，提示或说明插进来也不会把接缝撑成两张卡。 */
 .config-group > .setting {
+  border-block-width: 0;
   border-radius: 0;
   background-color: var(--_setting-bg);
 }
 
-.config-group > .setting + .setting {
+.config-group > .setting:nth-child(1 of .setting) {
+  border-block-start-width: var(--zw-border-width);
+  border-start-start-radius: var(--zw-radius-card);
+  border-start-end-radius: var(--zw-radius-card);
+}
+
+.config-group > .setting:nth-last-child(1 of .setting) {
+  border-block-end-width: var(--zw-border-width);
+  border-end-start-radius: var(--zw-radius-card);
+  border-end-end-radius: var(--zw-radius-card);
+}
+
+.config-group > .setting:not(:nth-child(1 of .setting)) {
   background-image: linear-gradient(var(--zw-hairline), var(--zw-hairline));
   background-position: center top;
   background-size: calc(100% - var(--zw-space-05) * 2) var(--zw-border-width);
   background-repeat: no-repeat;
 }
 
-.config-group > .setting:not(.setting + .setting) {
-  border-start-start-radius: var(--zw-radius-card);
-  border-start-end-radius: var(--zw-radius-card);
-}
-
-.config-group > .setting:not(:has(+ .setting)) {
-  border-end-start-radius: var(--zw-radius-card);
-  border-end-end-radius: var(--zw-radius-card);
-}
-
 .config[data-filtering] .config-group > .setting {
   margin-bottom: var(--zw-space-02);
+  border-width: var(--zw-border-width);
   border-radius: var(--zw-radius-row);
   background-image: none;
 }
@@ -4172,12 +4183,14 @@ button.item:active::after {
 }
 
 /* 配置里的分段单选比全站那枚紧凑的轨道再松一档：选中那块白纸与轨道之间
-   留出看得见的空隙，几段之间也不会像粘成一整块。 */
+   留出看得见的空隙，几段之间也不会像粘成一整块。选项多时会折成两行，
+   轨道若继续用整圆半径就会被拉成一枚竖着的胶囊，所以这里改用卡片圆角。 */
 .config-choice {
   display: flex;
   width: 100%;
   padding: var(--zw-space-03);
   gap: var(--zw-space-03);
+  border-radius: var(--zw-radius-card);
 }
 
 .config-choice .segment {
@@ -4314,21 +4327,27 @@ button.item:active::after {
 }
 
 /* 一节的总开关：名字加重一档，不再整行染色——开没开由开关本身说明。 */
+.setting[data-master] {
+  flex-wrap: wrap;
+  row-gap: var(--zw-space-03);
+}
+
 .setting[data-master] .field-label {
   font-size: var(--md-sys-typescale-title-small-size);
 }
 
 .config-off-note {
   display: none;
+  flex: 1 0 100%;
   align-items: flex-start;
   gap: var(--zw-space-03);
-  padding: var(--zw-space-02) var(--zw-space-05) var(--zw-space-03);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
 }
 
-fieldset[data-off] > .config-off-note {
+fieldset[data-off] .config-off-note {
   display: flex;
 }
 
@@ -5654,7 +5673,6 @@ fieldset[data-off] > .config-off-note {
   .update-chip::before,
   .settings-save-state[data-dirty="true"]::before,
   .nav-item[data-pop] .nav-icon,
-  .segment:has(input:checked),
   .tab[aria-selected="true"],
   .settings-tab[aria-current="page"],
   .snackbar,
@@ -5668,6 +5686,11 @@ fieldset[data-off] > .config-off-note {
   .progress {
     animation: none;
     opacity: 0.6;
+  }
+
+  .segment::before,
+  .segment::after {
+    transition: none;
   }
 }
 
@@ -5691,6 +5714,7 @@ fieldset[data-off] > .config-off-note {
   .switch[aria-checked="true"]::before,
   .chip[aria-pressed="true"],
   .segment:has(input:checked),
+  .segment:has(input:checked)::before,
   .option:has(.check:checked),
   .nav-item[aria-current="page"],
   .tab[aria-selected="true"] {

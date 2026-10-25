@@ -2787,10 +2787,7 @@
         <legend class="config-legend">${legendName(ctx, path, key)}</legend>
         ${about ? h`<p class="config-about">${about}</p>` : ""}
         ${children.map(([child, item], index) =>
-          index === 0 && hasMaster
-            ? h`${configField(`${path}.${child}`, child, item, ctx, { master: true })}
-                <p class="config-off-note">${icon("info-fill")}<span>总开关关着，这一节的其余设置暂不生效；可以先改好再打开。</span></p>`
-            : configField(`${path}.${child}`, child, item, ctx)
+          configField(`${path}.${child}`, child, item, ctx, { master: index === 0 && hasMaster })
         )}
       </fieldset>`;
     }
@@ -2861,9 +2858,13 @@
         <span class="field-hint" id="${id}-hint">JSON 列表：保留引号以区分文本和数字，空列表写 []。离开输入框保存。</span>`);
     }
     if (typeof value === "boolean") {
+      // 提示属于这一行；放在行外会打断分组里相邻设置项的圆角与分隔线。
+      const offNote = master
+        ? h`<p class="config-off-note">${icon("info-fill")}<span>总开关关着，这一节的其余设置暂不生效；可以先改好再打开。</span></p>`
+        : "";
       return row("toggle-row", h`${text(h`<span class="field-label" id="${id}">${name}</span>`)}
         <button class="switch" type="button" role="switch" data-path="${path}" data-kind="bool"${attr(master, "data-master")}
-          aria-checked="${bool(value)}" aria-labelledby="${id}"${desc ? h` aria-describedby="${desc}"` : ""}></button>`, master ? ' data-master=""' : "");
+          aria-checked="${bool(value)}" aria-labelledby="${id}"${desc ? h` aria-describedby="${desc}"` : ""}></button>${offNote}`, master ? ' data-master=""' : "");
     }
     if (typeof value === "string" && SECRET.test(key)) {
       // 凭据不回显：框里永远是空的，占位说明有没有设过；只有亲手输入的新值才会提交。
