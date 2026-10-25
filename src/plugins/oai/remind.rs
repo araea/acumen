@@ -434,12 +434,14 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
         )),
         (None, false) => None,
     };
+    // 三类媒体工具挂不挂：解不出接口与密钥的那一类不挂（见 [oai.media]）。
+    let media = super::media::slots(&oai, &mgr).await;
     let chat = place.map(|place| super::agent::ChatContext {
         ctx: bot.ctx.clone(),
         writer: bot.writer.clone(),
         place,
         config: oai.chat.clone(),
-        tools: Some(super::logic::room_tools(&oai.chat)),
+        tools: Some(super::logic::room_tools(&oai.chat, media)),
         trigger: None,
         // 定时任务只替号主排（见 `agent::schedule`），客人排的提醒不走这里。
         authority: super::chat::Authority::of(job.owner, ""),

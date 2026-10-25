@@ -870,6 +870,21 @@ video_send = "both"
 # 所以另外给一个比 request_timeout_seconds 长的预算。
 media_timeout_seconds = 900
 
+# 图片、音乐、视频这三条独立模型调用走哪家。房间里的画图、写歌、拍片不看这张表——
+# 房间模型写成 `供应商/模型`，接口由那个前缀定；这张表管的是模型手上的三件工具
+# （搭话与全量档房间里的画一张、写首歌、拍段视频）。每项三种写法：
+#   - 留空：跟随默认接口（`oai 地址 密钥` 那一份，从前只有这一条路）；
+#   - `名字`：`[oai.providers]` 里的那家，模型按上面 image_models / music_models /
+#     video_models 的关键字在那家的列表里挑，挑不到用内置兜底 id；
+#   - `名字/模型`：连模型一起钉死，中转站的模型 id 与关键字对不上时用这个。
+# 解不出「有地址、有密钥」的那一类，对应的工具不挂给模型：只接了 DeepSeek 官方这类
+# 纯聊天供应商时，模型不会对着画图、写歌、拍片三件按不动的工具绕圈。
+# 中转站叫 relay（[oai.providers.relay] 里写了 api_base 与 api_key）时，三项可以分别写成
+# relay、relay/suno_music、relay/veo3.1-pro——一家出图、另一家出片也行。
+[oai.media]
+image = ""
+music = ""
+video = ""
 # 群聊那一层：房间开在群里时能做的事。搭话（[ambient]）走同一份能力，
 # 节奏与额度是它自己那一套（见下面的 [ambient]），这张表只管房间。
 [oai.chat]
@@ -926,6 +941,9 @@ media_deadline_seconds = 240
 # minimax、openrouter、openai、anthropic、gemini、xai、groq、ollama）只填 api_key 就行：
 # api_base 留空取官方地址，api_key 留空读环境变量（如 DEEPSEEK_API_KEY）。
 # 最省事的是号主发一句 `oai deepseek sk-…`：验过密钥再写进这里，并撤回那条消息。
+# 自己的中转站不在这份名单里也照用：名字随便起（字母、数字、下划线、连字符，32 字以内），
+# 写全 api_base 与 api_key 就是一段；号主发 `oai relay https://… sk-…` 一句话建好这一段。
+# 上表的 [oai.media] 填的就是这个名字。
 [oai.providers.deepseek]
 api_base = "https://api.deepseek.com/v1"
 api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

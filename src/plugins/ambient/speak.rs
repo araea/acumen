@@ -327,6 +327,7 @@ pub(crate) async fn compose(
     skills: &[PathBuf],
     persona: &str,
     config: &AmbientConfig,
+    media: crate::plugins::oai::media::Slots,
     search: &crate::plugins::oai::search::SearchConfig,
     stall: Option<std::time::Duration>,
     turns: &[Turn],
@@ -386,7 +387,7 @@ pub(crate) async fn compose(
         // 人格这一层由搭话自己给：口吻、状态、记忆与打字节奏都在它那一边。
         let chat = super::chat_config(config);
         tools.push(',');
-        tools.push_str(&crate::plugins::oai::chat::tool_names(&chat).join(","));
+        tools.push_str(&crate::plugins::oai::chat::tool_names(&chat, media).join(","));
         // 环境探查只给有常驻群聊窗口的搭话，房间不挂，私聊也没有群可查；view_image
         // 是看图的眼睛，取回的附件、画好的图都要靠它看（`[ambient].tools` 是手写
         // 白名单，默认值管不到已部署的实例，所以由这里补）。翻记录两边都有，已在

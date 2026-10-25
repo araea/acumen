@@ -805,13 +805,8 @@ impl Session {
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx,
                 );
-                let (api_base, api_key, model) = media_endpoint(
-                    crate::plugins::oai::images::is_images_model,
-                    &oai.image_models,
-                    crate::plugins::oai::images::FALLBACK_MODEL,
-                    "图像",
-                )
-                .await?;
+                let target = self.media_target(&oai, crate::plugins::oai::media::Kind::Image).await?;
+                let (api_base, api_key, model) = (target.base, target.key, target.model);
                 // 绘图是模型调用而不是平台写操作，不占用 writes/messages 额度；
                 // 单独设每轮张数上限，让语音/表情之外多一种表达不失控。
                 self.draws += 1;
@@ -853,13 +848,8 @@ impl Session {
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx,
                 );
-                let (api_base, api_key, model) = media_endpoint(
-                    crate::plugins::oai::music::is_music_model,
-                    &oai.music_models,
-                    crate::plugins::oai::music::FALLBACK_MODEL,
-                    "音乐",
-                )
-                .await?;
+                let target = self.media_target(&oai, crate::plugins::oai::media::Kind::Music).await?;
+                let (api_base, api_key, model) = (target.base, target.key, target.model);
                 let options = crate::plugins::oai::music::Options {
                     prompt,
                     title: request["title"].as_str().unwrap_or("").trim().to_string(),
@@ -939,13 +929,8 @@ impl Session {
                 let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(
                     &self.ctx,
                 );
-                let (api_base, api_key, model) = media_endpoint(
-                    crate::plugins::oai::video::is_video_model,
-                    &oai.video_models,
-                    crate::plugins::oai::video::FALLBACK_MODEL,
-                    "视频",
-                )
-                .await?;
+                let target = self.media_target(&oai, crate::plugins::oai::media::Kind::Video).await?;
+                let (api_base, api_key, model) = (target.base, target.key, target.model);
                 // 时长与画面比例都从枚举里挑，别让模型把任意字符串塞进接口。
                 let seconds = request["seconds"]
                     .as_u64()
@@ -2412,6 +2397,23 @@ impl Session {
         std::time::Duration::from_secs(self.config.media_deadline_seconds.clamp(30, 1_800))
     }
 
+    /// 画图、写歌、拍片打到哪儿：`[oai.media]` 说了算（留空走默认接口）。
+    ///
+    /// 工具挂不挂在这一层之前就判过（`chat::tool_names`），走到这里还失败，多半是
+    /// 中途换了配置或供应商的密钥被清掉——原样把原因回给模型，它会说给群友听。
+    async fn media_target(
+        &self,
+        oai: &crate::plugins::oai::OaiConfig,
+        kind: crate::plugins::oai::media::Kind,
+    ) -> Result<crate::plugins::oai::media::Target> {
+        let mgr = crate::plugins::oai::data::MANAGER
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("OAI 还没就绪，{}这会儿用不了", kind.label()))?;
+        crate::plugins::oai::media::resolve(oai, mgr, kind)
+            .await
+            .map_err(anyhow::Error::msg)
+    }
+
     /// 把成品写进 本轮的工作目录，返回本地路径。
     ///
     /// 远端的直链多半带签名、过一会儿就失效，QQ 那边也未必拉得到；先落本地，
@@ -2543,33 +2545,6 @@ async fn fetch_media(url: &str) -> Result<Vec<u8>> {
 /// 先在站点实际在售的列表（`config.models` 是过滤后的那份）里按关键字挑，挑不到就用
 /// 兜底 id——音乐与视频的模型不在 `[oai] model_filter.keep` 里，兜底是常态而不是异常，
 /// 所以兜底必须是真实在售的 id，不能拿关键字顶上。
-async fn media_endpoint(
-    pick: fn(&str, &[String]) -> bool,
-    keywords: &[String],
-    fallback: &str,
-    label: &str,
-) -> Result<(String, String, String)> {
-    ensure!(
-        keywords.iter().any(|keyword| !keyword.trim().is_empty()),
-        "未配置{label}模型，请在 [oai] 里指定"
-    );
-    let mgr = crate::plugins::oai::data::MANAGER
-        .get()
-        .ok_or_else(|| anyhow::anyhow!("OAI 还没就绪，{label}这会儿用不了"))?;
-    let config = mgr.config.read().await;
-    ensure!(
-        !config.api_base.trim().is_empty() && !config.api_key.trim().is_empty(),
-        "OAI 接口地址或密钥未配置"
-    );
-    let model = config
-        .models
-        .iter()
-        .find(|model| pick(model, keywords))
-        .cloned()
-        .unwrap_or_else(|| fallback.to_string());
-    Ok((config.api_base.clone(), config.api_key.clone(), model))
-}
-
 /// 正文行首的 `[reply]` 想引的那条 → `reply_to`。点名的消息号得真在眼前的记录里，
 /// 否则一个随口写的号会让整条消息引到不存在的地方；`[reply]` 引最新那条群友消息。
 fn quote_for(quote: super::protocol::Quote, turns: &[Turn]) -> Option<String> {

@@ -438,6 +438,8 @@ pub(crate) struct Overview {
     pub relay_key: bool,
     /// 各家供应商：（显示名，状态）。
     pub providers: Vec<(String, String)>,
+    /// 三类媒体各自打到哪儿：（类名，`供应商/模型` 或「没接」）。
+    pub media: Vec<(String, String)>,
     /// 其中已经接上（有密钥或本机免密钥）的几家。
     pub connected: usize,
     /// 联网后端链；`[oai.search] enabled` 关着时为 `None`。
@@ -487,6 +489,19 @@ pub(crate) async fn overview(oai: &super::OaiConfig, mgr: &Manager) -> Overview 
         connected += usize::from(key);
         providers.push((name.clone(), if key { "已接上" } else { "缺密钥" }.to_string()));
     }
+    // 三件媒体工具各打到哪儿：只接了聊天模型的实例在这里一眼看出为什么没有画图/写歌/拍片。
+    let mut media = Vec::new();
+    for kind in super::media::Kind::ALL {
+        let state = match super::media::resolve(oai, mgr, kind).await {
+            Ok(target) => format!(
+                "{}/{}",
+                target.provider.unwrap_or_else(|| "默认接口".to_string()),
+                target.model
+            ),
+            Err(_) => "没接".to_string(),
+        };
+        media.push((kind.label().to_string(), state));
+    }
     let search = oai.search_config();
     Overview {
         default_model,
@@ -495,6 +510,7 @@ pub(crate) async fn overview(oai: &super::OaiConfig, mgr: &Manager) -> Overview 
         relay,
         relay_key,
         providers,
+        media,
         connected,
         search: search.enabled.then(|| search.chain()),
     }

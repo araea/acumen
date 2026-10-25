@@ -2441,6 +2441,8 @@ async fn speak_up(
     let images = vision::usable_images(turns, config.context_images).await;
 
     let started = Instant::now();
+    // 三类媒体工具挂不挂：解不出接口与密钥的那一类不挂（见 [oai.media]）。
+    let media = crate::plugins::oai::media::slots(&oai, mgr).await;
     let (api_base, api_key, reply_model) = gate_endpoint(ctx, mgr, &config.reply_model).await?;
     debug!(target: LOG_TARGET, "群 {group} 发言模型：{}", config.reply_model);
     let first = speak::compose(
@@ -2451,6 +2453,7 @@ async fn speak_up(
         &skill_dirs(base),
         persona,
         config,
+        media,
         &search,
         speak_stall(oai.request_stall(), scene.careful),
         turns,
@@ -2478,6 +2481,7 @@ async fn speak_up(
                 &skill_dirs(base),
                 persona,
                 &retry,
+                media,
                 &search,
                 speak_stall(oai.request_stall(), false),
                 turns,

@@ -687,6 +687,9 @@ async fn chat(
     // 画图、写歌、拍片房间走各自的专用接口；其余房间都是智能体（工具多少看档位）。
     // 按剥掉供应商前缀后的名字判家族。
     let media = is_media_model(&chat_model, &oai);
+    // 媒体工具挂不挂看 [oai.media]：只接了 DeepSeek 官方、手上没有图像渠道时，
+    // 不给模型三个按不动的按钮（搭话那边同理，见 chat::tool_names）。
+    let media_slots = super::media::slots(&oai, mgr).await;
     if super::mj::is_mj_model(&chat_model) {
         // MJ 房间天生是无历史任务流；引用文字也不应混入绘图提示词。
         super::mj::handle_agent(&agent, &cmd.args, imgs, ctx, writer, mgr).await;
@@ -822,7 +825,7 @@ async fn chat(
                         writer: writer.clone(),
                         place,
                         config: oai.chat.clone(),
-                        tools: Some(room_tools(&oai.chat)),
+                        tools: Some(room_tools(&oai.chat, media_slots)),
                         authority: super::chat::Authority::of(asker.owner, &trigger.role),
                         trigger: Some(trigger),
                     }
@@ -1201,8 +1204,9 @@ pub(super) struct MediaMessage {
 ///
 /// 本机那几件按 `[oai.chat] tools` 来（留空就是全给）；群聊那一套按额度收敛，
 /// 与搭话用同一份清单（[`chat::tool_names`]），于是「模型看得到的工具」与
-/// 「它真按得动的按钮」在两边都永远对得上。
-pub(super) fn room_tools(config: &super::chat::ChatConfig) -> String {
+/// 「它真按得动的按钮」在两边都永远对得上。`media` 是三类媒体眼下能不能用
+/// （见 [`super::media::Slots`]）：解不出接口与密钥的那一类不挂。
+pub(super) fn room_tools(config: &super::chat::ChatConfig, media: super::media::Slots) -> String {
     let mut names: Vec<String> = if config.tools.trim().is_empty() {
         super::agent::tools::local_names()
             .into_iter()
@@ -1219,7 +1223,7 @@ pub(super) fn room_tools(config: &super::chat::ChatConfig) -> String {
     // 管理动作写在 `satori_action` 里，按群授权（`[oai.chat] management_groups`），
     // 白名单这一层不必再分；这里补的是「按额度该不该出现」。
     names.extend(
-        super::chat::tool_names(config)
+        super::chat::tool_names(config, media)
             .into_iter()
             .map(str::to_string),
     );

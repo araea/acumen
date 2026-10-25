@@ -323,25 +323,27 @@ pub(crate) struct Avatar {
 /// 这一轮该挂哪些聊天工具（群与私聊同一份；群管理写在 `satori_action` 里按会话收敛）。
 ///
 /// 一道道闸与能力层真正会拒绝的开关是同一份：记忆关着就不给 `satori_memo`，
-/// 画图、写歌、拍片额度为 0 连工具都不挂。调用方（房间与搭话）照它拼白名单，
-/// 于是「模型看得到的工具」和「它真按得动的按钮」永远对得上。
-pub(crate) fn tool_names(config: &ChatConfig) -> Vec<&'static str> {
+/// 画图、写歌、拍片额度为 0 连工具都不挂；额度开着但 `[oai.media]` 解不出接口
+/// 与密钥（例如只接了 DeepSeek 官方、手上没有图像渠道）也不挂，见 [`super::media::Slots`]。
+/// 调用方（房间与搭话）照它拼白名单，于是「模型看得到的工具」和「它真按得动的按钮」
+/// 永远对得上。
+pub(crate) fn tool_names(config: &ChatConfig, media: super::media::Slots) -> Vec<&'static str> {
     let mut names = vec![
         "satori_context",
         "satori_read",
         "satori_history",
         "satori_action",
     ];
-    if config.draw_budget > 0 {
+    if config.draw_budget > 0 && media.image {
         names.push("satori_draw");
     }
     if config.memory_enabled && config.memo_budget > 0 {
         names.push("satori_memo");
     }
-    if config.music_budget > 0 {
+    if config.music_budget > 0 && media.music {
         names.push("satori_music");
     }
-    if config.video_budget > 0 {
+    if config.video_budget > 0 && media.video {
         names.push("satori_video");
     }
     names

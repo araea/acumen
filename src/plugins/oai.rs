@@ -15,6 +15,7 @@ pub mod inbox;
 pub mod remind;
 pub(crate) mod lists;
 pub(crate) mod llm;
+pub(crate) mod media;
 pub mod logic;
 pub(crate) mod manual;
 pub mod mj;
@@ -47,6 +48,23 @@ pub(crate) struct ProviderConfig {
     pub api_base: String,
     /// 该供应商的 APIKEY。
     pub api_key: String,
+}
+
+/// 图片、音乐、视频这三条独立模型调用走哪家：`[oai.media]`。
+///
+/// 只管模型手里的三件工具（`satori_draw` / `satori_music` / `satori_video`）；
+/// 房间里的画图、写歌、拍片看房间模型自己的 `供应商/模型` 前缀。
+/// 每项写 `[oai.providers]` 里的名字，或 `名字/模型` 把模型也钉死；留空走默认接口。
+/// 解不出「有地址、有密钥」的那一类，对应的工具就不挂给模型（见 [`media::Slots`]）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub(crate) struct MediaConfig {
+    /// 画图（`satori_draw`）走哪家。
+    pub image: String,
+    /// 写歌（`satori_music`，Suno 那套接口）走哪家。
+    pub music: String,
+    /// 拍片（`satori_video`）走哪家。
+    pub video: String,
 }
 
 /// 解析一次请求要用的接口地址与密钥。
@@ -139,6 +157,8 @@ pub(crate) struct OaiConfig {
     /// 可选供应商表：模型写 `供应商/模型` 时按名字取这里的接口与密钥。
     /// 不配也不影响既有房间——不带前缀的仍走 `oai` 默认接口。
     pub(crate) providers: HashMap<String, ProviderConfig>,
+    /// 图片、音乐、视频这三条独立模型调用落在哪家；留空走默认接口。
+    pub(crate) media: MediaConfig,
     /// 联网搜索：联网、全量两档房间的 `web_search` / `web_fetch`；`enabled` 是房间这边的总闸。
     /// 默认开启（填了 DeepSeek 官方密钥就优先走它的搜索与抓取），群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
     pub(crate) search: search::SearchConfig,
@@ -190,6 +210,7 @@ impl Default for OaiConfig {
             // 摆一格 deepseek 进去，往后谁都加不了别的供应商。新用户靠控制台的建议名与
             // `oai deepseek 密钥` 一句话接入（见 `setup`）。
             providers: HashMap::new(),
+            media: MediaConfig::default(),
             search: search::SearchConfig::default(),
             chat: chat::ChatConfig::default(),
         }

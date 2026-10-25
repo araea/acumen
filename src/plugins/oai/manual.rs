@@ -84,7 +84,18 @@ const MEDIA: &[&str] = &[
     "建一间用图像模型的房间（##画画 gpt-image-2.5），之后「画画 {提示词}」就出图",
     "发图、引用图片，或在房间名后 @某人，那张图当垫图；可加 --size、--quality",
     "MJ 四宫格引用后回 1–4 放大；写歌、拍片同理，模型命中 [oai] 的关键字就行",
+    "模型手里的画一张、写首歌、拍段视频走 [oai.media] 指定的那家（留空走默认接口）；一类没接就不挂那件工具",
 ];
+
+/// 「图像 relay/gpt-image-2.5 · 音乐 没接」：三件媒体工具各打到哪儿，一句话说清。
+fn media_line(overview: &Overview) -> String {
+    overview
+        .media
+        .iter()
+        .map(|(kind, state)| format!("{kind} {state}"))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
 
 /// 档位名旁「谁能切」的说法。
 fn who(tools: Tools) -> &'static str {
@@ -161,6 +172,9 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms) -> Doc {
         facts.push(Fact { label: "联网".into(), command: chain.join(" → ") });
     }
     facts.push(Fact { label: "供应商".into(), command: providers_line(overview) });
+    if !overview.media.is_empty() {
+        facts.push(Fact { label: "媒体".into(), command: media_line(overview) });
+    }
     if !overview.relay.is_empty() {
         facts.push(Fact {
             label: "默认接口".into(),
@@ -265,6 +279,7 @@ pub(super) fn markdown(overview: &Overview, rooms: &Rooms) -> String {
         None => out.push_str("- 联网：已关闭\n"),
     }
     out.push_str(&format!("- 供应商：{}\n", providers_line(overview)));
+    out.push_str(&format!("- 媒体：{}\n", media_line(overview)));
     if !overview.relay.is_empty() {
         out.push_str(&format!("- 默认接口：{}{}\n", overview.relay, if overview.relay_key { "" } else { "（缺密钥）" }));
     }
@@ -314,6 +329,11 @@ mod tests {
             relay: "https://api.example.com/v1".into(),
             relay_key: true,
             providers: vec![("DeepSeek".into(), "已接上".into()), ("小米 MiMo".into(), "缺密钥".into())],
+            media: vec![
+                ("图像".into(), "relay/gpt-image-2.5".into()),
+                ("音乐".into(), "没接".into()),
+                ("视频".into(), "没接".into()),
+            ],
             connected: 1,
             search: Some(vec!["deepseek".into(), "bing".into(), "duckduckgo".into()]),
         }
