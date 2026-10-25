@@ -19,6 +19,7 @@
 //! 只填了小米密钥的新用户，不该还要再学一条指令才能让管家大人开口。
 //!
 //! 改接口只有号主与 `ctl.admins` 能做：换一个 `api_base` 就能把所有对话寄到别人的服务器上。
+//! 别人发来这类指令一律不回——它本来就不是聊天，回一句「不许」只会在群里多一条噪音。
 //! 存好之后试着撤回带密钥的那条消息（号主就在自己的账号上打字，打在哪个对话框里别人都看得见），
 //! 撤不回就明说该去重置。
 
@@ -96,7 +97,10 @@ pub fn parse(rest: &str) -> Option<Connect> {
 pub async fn connect(request: Connect, ctx: &Context, writer: &LockedWriter, mgr: &Arc<Manager>) {
     let Some(event) = ctx.as_message() else { return };
     if !crate::access::is_manager(ctx) {
-        reply_text(ctx, writer, &event, "❌ 只有号主和 ctl.admins 里的管理员能改模型接口").await;
+        // 不是号主也不是 [ctl] admins：静默。这一句只会改接口，回一句「不许」除了在群里
+        // 多一条噪音没有任何用处；真要改的人本来就该走本机控制台或找号主。
+        // 日志留一条（不带密钥、不带新地址），号主翻记录时看得出有人试过。
+        info!(target: LOG_TARGET, "非管理员的接口配置指令，已静默忽略（{}）", event.user_id());
         return;
     }
     let oai = crate::plugins::get_config_or_default::<super::OaiConfig>(ctx);
