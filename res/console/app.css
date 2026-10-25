@@ -3428,11 +3428,62 @@ button.item:active::after {
 
 /* —— 总览 ——
    一页一个焦点：状态台（.stage）把「现在怎么样」「量有多少」「谁在线」收进同一张纸，
-   下面只跟一条实时动态。不再摆一排和导航重复的快捷入口，也不把读数拆成四张散卡。 */
+   下面只跟一条实时动态。不再摆一排和导航重复的快捷入口，也不把读数拆成四张散卡。
+
+   焦点怎么落：页头只交代「你在哪儿」（一行小标题 + 一行运行信息），把整块屏幕让给
+   状态台里那句大字；读数退成次声部（标签在上、数字在下、单位跟基线），账号行再退
+   一档。进页面第一眼看到的是一句话，不是四个并排的数字。 */
+.home-page {
+  gap: var(--zw-space-06);
+}
+
+.home-page .page-head {
+  padding-block: var(--zw-space-02) 0;
+  padding-inline: var(--zw-card-padding);
+}
+
+.home-page .page-title {
+  font-size: var(--zw-type-section-title);
+  line-height: 1.4;
+  letter-spacing: 0;
+}
+
+.home-page .page-sub {
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 页头两行：第一行是小标题与版本号（版本是一句备注，退到右边），第二行才是运行信息。 */
+.home-page .page-head-text {
+  width: 100%;
+}
+
+.home-lead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--zw-space-04);
+}
+
+.home-page .page-version {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 一直在跳的那一格（连续运行）：颜色比同一行的说明文字重一档，读得出来它是活的。 */
+.page-uptime {
+  color: var(--md-sys-color-on-surface);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
 .overview {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--zw-space-07);
+  gap: var(--zw-space-06);
 }
 
 /* 状态台：纸片上的普通文字，没有色块撑场面。层次靠字阶与细线：
@@ -3516,18 +3567,24 @@ button.item:active::after {
   padding: 0;
 }
 
+/* 状态台的头：一句状态、一句大字、一行注脚，右边是两只随时可用的手。
+   窄屏上按钮自己占一行、靠右收边，别和标题抢同一条横线。 */
 .stage-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--zw-space-05) var(--zw-space-06);
-  padding: var(--zw-space-06) var(--zw-space-05) var(--zw-space-06);
+  display: grid;
+  gap: var(--zw-space-04);
+  padding: var(--zw-space-06) var(--zw-space-05) var(--zw-space-05);
+}
+
+@media (min-width: 600px) {
+  .stage-head {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--zw-space-06);
+  }
 }
 
 .stage-copy {
   display: flex;
-  flex: 1 1 18rem;
   flex-direction: column;
   align-items: flex-start;
   gap: var(--zw-space-03);
@@ -3552,13 +3609,20 @@ button.item:active::after {
 
 .stage-actions {
   flex: none;
+  justify-content: flex-end;
   gap: var(--zw-space-03);
 }
 
-/* 读数带：四格同一张纸，只用细线分开。数字是主角，标签与注脚退成次要色。 */
+/* 只有要处理的时候（没有账号、插件待重启）才给实心按钮让位；平常两颗都收着。 */
+.stage-actions .btn-text {
+  padding-inline: var(--zw-space-04);
+}
+
+/* 读数带：三格一张纸，只用细线分开。数字是次声部——比正文重一档，但明显让给
+   上面那句状态；单位退成小字，跟着数字的基线走，不另起一行。 */
 .stage-metrics {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   border-block: var(--zw-border-width) solid var(--zw-hairline);
 }
@@ -3568,58 +3632,77 @@ button.item:active::after {
   flex-direction: column;
   gap: var(--zw-space-01);
   min-width: 0;
-  padding: var(--zw-space-05);
+  padding: var(--zw-space-04);
 }
 
-.metric:nth-child(odd) {
-  border-inline-end: var(--zw-border-width) solid var(--zw-hairline);
-}
-
-.metric:nth-child(-n + 2) {
-  border-bottom: var(--zw-border-width) solid var(--zw-hairline);
+.metric + .metric {
+  border-inline-start: var(--zw-border-width) solid var(--zw-hairline);
 }
 
 .metric-label {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-label-large-size);
-  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
   font-weight: var(--md-sys-typescale-weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .metric-value {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: baseline;
-  gap: var(--zw-space-02);
+  gap: 3px;
   margin: 0;
-  font-size: var(--zw-type-stat);
-  line-height: 1.25;
-  font-weight: var(--zw-weight-heading);
-  letter-spacing: -0.02em;
+  /* 字号跟着屏宽走：三格并排时数字与单位挤在同一行，不许折行。 */
+  font-size: clamp(1rem, 5vw, 1.5rem);
+  line-height: 1.2;
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+  letter-spacing: -0.01em;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .metric-unit {
   color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-body-medium-size);
-  line-height: var(--zw-body-medium-line);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
   font-weight: var(--md-sys-typescale-weight-regular);
   letter-spacing: 0;
 }
 
+/* 注脚只在宽屏出现：窄屏三格本来就挤，两行注脚会把读数带撑成一堵墙。 */
 .metric-note {
   margin: 0;
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-small-size);
   line-height: var(--md-sys-typescale-body-small-line-height);
+  display: none;
 }
 
+@media (min-width: 600px) {
+  .metric-note {
+    display: block;
+  }
+}
+
+/* 账号行：一行一个账号，链接收在右下角——窄屏上两列并排会和账号名抢宽度。 */
 .stage-foot {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--zw-space-03) var(--zw-space-05);
-  padding: var(--zw-space-04) var(--zw-space-05);
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  padding: var(--zw-space-04) var(--zw-space-05) var(--zw-space-05);
+}
+
+@media (min-width: 600px) {
+  .stage-foot {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--zw-space-04) var(--zw-space-06);
+    padding-inline: var(--zw-space-06);
+  }
 }
 
 .stage-bots {
@@ -3705,7 +3788,15 @@ button.item:active::after {
 }
 
 .stage-link {
+  flex: none;
+  align-self: flex-end;
   margin-inline-end: calc(var(--zw-space-04) * -1);
+}
+
+@media (min-width: 600px) {
+  .stage-link {
+    align-self: center;
+  }
 }
 
 .home-activity .section-head .btn {
@@ -3770,32 +3861,37 @@ button.item:active::after {
   }
 
   .metric {
-    padding: var(--zw-space-05) var(--zw-space-07);
+    padding: var(--zw-space-05) var(--zw-space-06);
   }
 
   .stage-foot {
-    padding: var(--zw-space-04) var(--zw-space-07);
+    padding: var(--zw-space-04) var(--zw-space-07) var(--zw-space-06);
   }
 }
 
-/* 够宽时读数排成一行四格：一条完整的读数带。 */
-@media (min-width: 1000px) {
+/* 320px 这一类窄屏上三格并排只剩 70px 内容宽：读数带改成三行，
+   标签在左、数字在右，比硬挤成三列好读。 */
+@media (max-width: 379.98px) {
   .stage-metrics {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .metric:nth-child(-n + 2) {
-    border-bottom: 0;
-  }
-
-  .metric:not(:last-child) {
-    border-inline-end: var(--zw-border-width) solid var(--zw-hairline);
-  }
-}
-
-@media (max-width: 359.98px) {
   .metric {
-    padding: var(--zw-space-04);
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--zw-space-04);
+    padding-block: var(--zw-space-03);
+  }
+
+  .metric + .metric {
+    border-inline-start: 0;
+    border-top: var(--zw-border-width) solid var(--zw-hairline);
+  }
+
+  .metric-label {
+    overflow: visible;
+    white-space: normal;
   }
 }
 

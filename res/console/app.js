@@ -843,13 +843,16 @@
 
   /* ==================== §6c 手势翻页 ====================
      左右滑整页：手指到哪儿，页面到哪儿，底部导航的胶囊同步走到下一格；松手时按
-     「过了小半屏」或「甩了一下」决定去还是回，落页走 M3E 的空间缓动。
+     「过了小半屏」或「甩了一下」决定去还是回。落页不是一段定长缓动，而是一枚
+     接着松手那一刻速度走的弹簧（见 swipeSettle）：慢推慢收、快甩走完，中途没有
+     「停一下再走」的那一顿。
 
      三件事值得记下来：
 
      - **下一张纸是画在固定层里的。** 目标页得在手指还没到之前就看得见，所以滑动开始时
        把目标页画进一层 position: fixed 的纸里：横向跟手，纵向按它自己上次的滚动位置摆好。
-       落页时真正的页面已经画在下面，撤掉这一层就完成，不会闪一下白。
+       落页时真正的页面已经画在下面，撤掉这一层就完成，不会闪一下白。正页一边走一边
+       退后 3%（缩放），两张纸因此有前后；落页时它整张移出屏幕，这点缩放看不见。
      - **不碰 touch-action 的老规矩。** body 是 manipulation、导航坞是 none；这里只给
        .main 设 pan-y：竖直留给浏览器滚动，横向留给我们，pinch 缩放也还在（WCAG 1.4.4）。
        横滑的容器（芯片、选项卡、模板位）在 app.css 里各自把 touch-action 改回 auto。
@@ -864,18 +867,13 @@
     sheet: null,
     scrim: null,
     scrollEl: null,
-    anims: [],
+    frame: 0,
+    gen: 0,
     settling: false,
     suppressClickUntil: 0,
   };
 
   const viewportW = () => document.documentElement.clientWidth || innerWidth;
-  const motionMs = (name, fallback) => {
-    const ms = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(name));
-    return Number.isFinite(ms) ? ms : fallback;
-  };
-  const motionEase = (name, fallback) =>
-    getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 
   const swipeNeighbor = (page, step) => {
     const index = PAGES.findIndex((item) => item.id === page);
@@ -931,8 +929,10 @@
     d.target = swipeNeighbor(shown.page, d.step);
     d.locked = true;
     d.keep = d.target ? scrolls.get(d.target) || 0 : 0;
-    d.view.style.willChange = "transform";
+    d.view.style.willChange = "transform, scale";
     d.view.dataset.swiping = "";
+    // 起止两格的盒子一次量完：途中每帧再量一次，等于每帧强制重算一遍布局。
+    d.pill = d.target ? swipePillBoxes(shown.page, d.target) : null;
     if (!d.target) return;
 
     // 下一张纸的纵向原点：.view 在文档里的位置。滚动到哪儿都不变，
@@ -945,18 +945,32 @@
     swipePaint(d.target);
   }
 
-  /** 跟手的这一帧：正页、下一张纸、压暗层、导航胶囊，一起走。 */
+  /** 一帧的位移：正页、下一张纸、压暗层、导航胶囊，一起走。
+   *  这里只写 transform 与 opacity，量尺寸的事全在 swipeLock 里做过一次。 */
+  function swipePaintAt(d, out) {
+    if (!d?.locked) return;
+    const width = viewportW();
+    const k = Math.min(1, Math.abs(out) / width);
+    d.painted = out;
+    // 正页跟着手指走，同时往后退一点（最多 3%）：两张纸有了前后，滑动不再像搬一块板。
+    // 落页时正页整张移出屏幕，这点缩放看不见，所以收尾不会跳一下。
+    const depth = d.target ? 0.03 * k : 0;
+    d.view.style.transform = depth
+      ? `translate3d(${out.toFixed(2)}px, 0, 0) scale(${(1 - depth).toFixed(4)})`
+      : `translate3d(${out.toFixed(2)}px, 0, 0)`;
+    if (!swipe.sheet) {
+      if (swipe.scrim) swipe.scrim.style.opacity = (k * 0.12).toFixed(3);
+      return;
+    }
+    swipe.sheet.style.transform = `translate3d(${(d.step * width + out).toFixed(2)}px, 0, 0)`;
+    if (swipe.scrim) swipe.scrim.style.opacity = (k * 0.18).toFixed(3);
+    swipePill(k, d.pill);
+  }
+
   function swipePaintFrame() {
     const d = swipe.drag;
     if (!d?.locked) return;
-    const width = viewportW();
-    const out = d.target ? d.offset : rubber(d.offset, width);
-    d.painted = out;
-    d.view.style.transform = `translate3d(${out.toFixed(2)}px, 0, 0)`;
-    if (!swipe.sheet) return;
-    swipe.sheet.style.transform = `translate3d(${(d.step * width + out).toFixed(2)}px, 0, 0)`;
-    swipe.scrim.style.opacity = (Math.min(1, Math.abs(out) / width) * 0.16).toFixed(3);
-    swipePill(Math.min(1, Math.abs(out) / width), d.target);
+    swipePaintAt(d, d.target ? d.offset : rubber(d.offset, viewportW()));
   }
 
   function navBox(element) {
@@ -971,15 +985,21 @@
     };
   }
 
-  /** 胶囊在两格之间按进度插值。位与尺寸都插，宽窄不同也接得上。 */
-  function swipePill(t, targetId) {
+  /** 拖动开始就量好起止两格：途中每帧再量会把布局重算一遍，白掉一帧。 */
+  function swipePillBoxes(fromId, toId) {
     const nav = $("#nav");
-    const pill = nav?.querySelector(".nav-pill");
-    const from = nav?.querySelector('.nav-item[aria-current="page"]');
-    const to = targetId ? nav?.querySelector(`[data-nav="${CSS.escape(targetId)}"]`) : null;
-    if (!nav || !pill || !from || !to) return;
-    const a = navBox(from);
-    const b = navBox(to);
+    const from = nav?.querySelector(`[data-nav="${CSS.escape(fromId)}"]`);
+    const to = nav?.querySelector(`[data-nav="${CSS.escape(toId)}"]`);
+    if (!nav || !from || !to) return null;
+    return { nav, from: navBox(from), to: navBox(to) };
+  }
+
+  /** 胶囊在两格之间按进度插值。位与尺寸都插，宽窄不同也接得上。 */
+  function swipePill(t, boxes) {
+    if (!boxes) return;
+    const { nav, from: a, to: b } = boxes;
+    const pill = nav.querySelector(".nav-pill");
+    if (!pill) return;
     const k = Math.min(1, Math.max(0, t));
     const box = {
       x: a.x + (b.x - a.x) * k,
@@ -991,50 +1011,60 @@
     // 悬浮的药丸滑到一半时，字不该还探在丸子的左沿外面。
     nav.dataset.swipe = "";
     nav.style.setProperty("--zw-swipe", k.toFixed(3));
-    cancelAnimationFrame(navPillFrame);
-    navSpring = {
-      x: { p: box.x, v: 0 }, y: { p: box.y, v: 0 },
-      w: { p: box.w, v: 0 }, h: { p: box.h, v: 0 },
-    };
     // 翻页时不化成液态玻璃：那是一枚跟着手指的「焦点」，不是被端起来的透镜。
     // 实心药丸在两格之间走，压在哪一格上，那一格的图标就透出来，一眼看得出走到哪了。
     placePill(pill, box);
   }
 
-  /** 从手指停下的地方滑到终点。取消时把动效一起收掉，别让它压着下一次的位移。 */
-  async function swipePlay(d, viewTo, sheetTo) {
-    const duration = swipe.settling === "back"
-      ? motionMs("--md-sys-motion-effects-default-duration", 220)
-      : motionMs("--md-sys-motion-spatial-fast-duration", 350);
-    const easing = motionEase("--md-sys-motion-spatial-fast-easing", "cubic-bezier(0.2, 0, 0, 1)");
-    const reduce = calm();
-    const play = (element, from, to, prop = "transform") => {
-      if (!element) return;
-      try {
-        const anim = element.animate(
-          [{ [prop]: from }, { [prop]: to }],
-          { duration: reduce ? 0 : duration, easing, fill: "forwards" },
-        );
-        swipe.anims.push(anim);
-      } catch {
-        element.style[prop] = to;
-      }
-    };
+  /* 松手之后：一枚带初速的弹簧接着手指的速度走。
+     定长缓动会从零速重新起步——平移到最后那一下「顿住再走」就是它；
+     弹簧把松手那一刻的速度原样接上：慢慢拖到一半就轻轻收回去，甩一下则顺着劲落到位。
+     阻尼取 0.88（接近临界）：不越界，纸的边不会露出来；刚度 520 让整页的落位大约
+     300ms、七十几像素的回弹约 240ms——比 M3 的 350ms 空间缓动略紧，手感更「跟手」。 */
+  const SWIPE_SPRING = { stiffness: 520, damping: 0.88 };
+
+  function swipeSettle(d, to, velocity, gen) {
     const from = d.painted ?? 0;
-    play(d.view, `translate3d(${from}px, 0, 0)`, viewTo);
-    if (swipe.sheet) {
-      play(swipe.sheet, `translate3d(${d.step * viewportW() + from}px, 0, 0)`, sheetTo);
-    }
-    if (swipe.scrim) {
-      const opacity = getComputedStyle(swipe.scrim).opacity;
-      play(swipe.scrim, opacity, "0", "opacity");
-    }
-    await Promise.all(swipe.anims.map((anim) => anim.finished.catch(() => {})));
+    return new Promise((done) => {
+      const land = () => {
+        swipePaintAt(d, to);
+        done();
+      };
+      if (calm() || Math.abs(to - from) < 0.5) return land();
+      const w0 = Math.sqrt(SWIPE_SPRING.stiffness);
+      // 只夹住越过终点的那一边：回弹时别滑过 0（页边会露出底色），落页时别越过终点。
+      // 另一边留给初速——松手那一刻手指还在动，步子本来就该先冲出去一点。
+      const stop = (x) => (to < 0 ? Math.max(to, x) : Math.min(to, x));
+      let p = from;
+      let v = Number(velocity) || 0;
+      // 第一帧只用来对齐时间：从松手到第一帧之间隔了多久，不该一次性补进位移里，
+      // 那样就成了「一帧跳到终点」。掉帧时单帧最多补 32ms，宁可慢一点也不要跳。
+      let last = 0;
+      const step = (now) => {
+        // 被后来的手势接管了：这一趟就地收手，收尾交给接管者。
+        if (gen !== swipe.gen) return;
+        if (!last) { last = now; requestAnimationFrame(step); return; }
+        let dt = Math.min(0.032, Math.max(0, (now - last) / 1000));
+        last = now;
+        // 半隐式欧拉，切成 4ms 一小步：掉帧时也稳，不会弹飞。
+        while (dt > 0) {
+          const h = Math.min(dt, 0.004);
+          v += (-SWIPE_SPRING.stiffness * (p - to) - 2 * SWIPE_SPRING.damping * w0 * v) * h;
+          p += v * h;
+          dt -= h;
+        }
+        // 差不到一像素、也快停下来了，就直接落到终点：最后那几像素的尾巴最拖时间。
+        if (Math.abs(p - to) < 0.6 && Math.abs(v) < 40) return land();
+        swipePaintAt(d, stop(p));
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    });
   }
 
   function swipeCleanup() {
-    for (const anim of swipe.anims) anim.cancel();
-    swipe.anims = [];
+    if (swipe.frame) cancelAnimationFrame(swipe.frame);
+    swipe.frame = 0;
     swipe.layer?.remove();
     swipe.layer = null;
     swipe.sheet = null;
@@ -1054,13 +1084,16 @@
   }
 
   async function swipeCommit(d) {
+    const gen = ++swipe.gen;
     swipe.settling = "go";
     const route = { page: d.target, arg: null, key: d.target };
     const keep = d.keep;
-    // 落格的这一下交给导航：选中格与胶囊从拖动中的位置接着走，不回弹也不重来。
-    markNav(d.target);
+    // 先把页滑完，落页那一下才换选中格：手指还在走的时候，读屏不该先报「已选中」。
+    await swipeSettle(d, -d.step * viewportW(), d.release, gen);
+    if (gen !== swipe.gen) return;
     if (navigator.vibrate && !calm()) navigator.vibrate(6);
-    await swipePlay(d, `translate3d(${-d.step * viewportW()}px, 0, 0)`, "translate3d(0, 0, 0)");
+    // 选中格交给下面的 render：它自己也调 markNav。在这里先叫一次，同一个 tick 里
+    // render 又会把 data-pop 摘掉，图标那一下弹动就白设了。
     history.pushState(null, "", routeHash(route));
     try {
       await render({ quiet: true, keepScroll: keep, enter: false });
@@ -1073,12 +1106,14 @@
   }
 
   async function swipeRevert(d) {
+    const gen = ++swipe.gen;
     swipe.settling = "back";
-    // 胶囊和页面一起往回走：等页面回完了再让底栏动，会慢半拍。
-    paintNavPill(true, true);
-    await swipePlay(d, "translate3d(0, 0, 0)", `translate3d(${d.step * viewportW()}px, 0, 0)`);
+    // 页面与胶囊一起往回走：等页面回完了再让底栏动，会慢半拍。
+    await swipeSettle(d, 0, d.release, gen);
+    if (gen !== swipe.gen) return;
     swipeCleanup();
     swipe.settling = false;
+    paintNavPill(true, true);
   }
 
   function bindSwipe() {
@@ -1131,19 +1166,34 @@
       d.lastX = event.clientX;
       d.lastT = now;
       d.offset = dx;
-      swipePaintFrame();
+      // 一帧一次：指针事件的采样常比屏幕刷新密（部分安卓机到 240Hz），逐条重排只会白烧帧。
+      if (!swipe.frame) {
+        swipe.frame = requestAnimationFrame(() => {
+          swipe.frame = 0;
+          swipePaintFrame();
+        });
+      }
     }, { passive: true });
 
     document.addEventListener("pointerup", (event) => {
       const d = swipe.drag;
       if (!d || event.pointerId !== d.id) return;
+      // 先把上一帧补上，弹簧要接着手指最后停的地方起步，不能从半帧前的位置起步。
+      if (swipe.frame) {
+        cancelAnimationFrame(swipe.frame);
+        swipe.frame = 0;
+        swipePaintFrame();
+      }
       swipe.drag = null;
       if (!d.locked) return;
       swipe.suppressClickUntil = performance.now() + 250;
       const width = viewportW();
-      const far = Math.abs(d.offset) > Math.min(width * 0.28, 180);
-      const flick = Math.abs(d.velocity) > 0.45 && Math.sign(d.velocity) === Math.sign(d.offset);
-      const go = Boolean(d.target) && Math.abs(d.offset) > 24 && (far || flick);
+      // 松手那一刻的速度（px/s）原样交给弹簧：甩出去就顺着劲走完，慢慢推就慢慢收回。
+      d.release = Math.abs(d.offset) > 1 ? d.velocity * 1000 : 0;
+      const toward = Math.sign(d.offset) * d.release;
+      const far = Math.abs(d.offset) > Math.min(width * 0.3, 200);
+      const flick = toward > 320;
+      const go = Boolean(d.target) && Math.abs(d.offset) > 16 && (far || flick);
       if (go && hasFormDrafts()) {
         snackbar("这一页还有没保存的修改，先保存或放弃再换页", "warning");
         void swipeRevert(d);
@@ -1538,6 +1588,8 @@
     const primary = !data.bots.length
       ? h`<a class="btn btn-filled" href="#/settings/connections">${icon("add")}添加连接</a>`
       : "";
+    /* 读数带只有三格：标签在上、数字在下，注脚留在宽屏（窄屏挤成两行反而更乱）。
+       连续运行挪进了页头的副标题——它是「什么时候起的」，不是这一页要回答的事。 */
     const metric = (label, value, unit, note, attrs = "") =>
       h`<div class="metric">
         <dt class="metric-label">${label}</dt>
@@ -1557,7 +1609,15 @@
       : h`<p class="stage-empty">${icon("hub")}<span>还没有在线账号。添加连接并重启后，就能在这里看到状态。</span></p>`;
 
     return h`<div class="page home-page">
-      ${pageHead("总览", h`${NAME} v${data.app.version} · 启动于 <time>${data.app.started}</time>`)}
+      <header class="page-head">
+        <div class="page-head-text">
+          <div class="home-lead">
+            <h1 class="page-title" tabindex="-1">总览</h1>
+            <span class="page-version">v${data.app.version}</span>
+          </div>
+          <p class="page-sub">启动于 <time>${data.app.started}</time> · 已连续运行 <span class="page-uptime" data-uptime="${data.app.uptime}">${duration(data.app.uptime)}</span></p>
+        </div>
+      </header>
       <div class="overview">
         <section class="hero stage" aria-labelledby="hero-label" data-started="${data.app.started}" data-tone="${health.tone}">
           <div class="stage-head">
@@ -1573,7 +1633,6 @@
             </div>
           </div>
           <dl class="stage-metrics">
-            ${metric("连续运行", duration(data.app.uptime), "", "从上次启动算起", ` data-uptime="${data.app.uptime}"`)}
             ${metric("今日消息", num(data.messages.today), "条", `近 7 天 ${num(data.messages.week)} 条`)}
             ${metric("今日发言", num(data.messages.people), "人", "去重后的发言人")}
             ${metric("插件", num(data.plugins.on), `/ ${data.plugins.total}`, data.plugins.pending ? `${data.plugins.pending} 个待重启` : "按当前配置运行")}
