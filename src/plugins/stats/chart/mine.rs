@@ -86,11 +86,10 @@ pub async fn build(
         None
     };
     let period = period(time_str, first_seen);
-    let hourly = period.unit == Unit::Hour;
 
     // 消息类型是多条线，其余数据类型是一条线。
     let (series, unit_word) = if data_type == "消息类型" {
-        let series = message_type_series(db, group_id, user_id, &period, hourly).await?;
+        let series = message_type_series(db, group_id, user_id, &period).await?;
         (series, "条")
     } else {
         let metric = user_metric(data_type);
@@ -398,9 +397,15 @@ fn buckets(unit: Unit, start: i64, end: i64) -> Vec<Bucket> {
 
 // ================= 取值与文案 =================
 
-/// 把查询回来的（日期 → 数）铺到每一格上。没说话的格补 0。
+/// 把查询回来的（日期键 → 数）铺到每一格上。没说话的格补 0。
+///
+/// 用累加而不是直接落值：按月的报表拿的是按天的行，同一个月的几行要摞在一起；
+/// 按小时/按天的报表里键本来就唯一，累加与落值结果一样。
 fn fill(buckets: &[Bucket], rows: impl Iterator<Item = (String, i64)>) -> Vec<ChartDataPoint> {
-    let mut map: HashMap<String, i64> = rows.collect();
+    let mut map: HashMap<String, i64> = HashMap::new();
+    for (key, value) in rows {
+        *map.entry(key).or_insert(0) += value;
+    }
     buckets
         .iter()
         .map(|b| ChartDataPoint {
@@ -410,12 +415,16 @@ fn fill(buckets: &[Bucket], rows: impl Iterator<Item = (String, i64)>) -> Vec<Ch
         .collect()
 }
 
+/// 消息类型每天都查回来一行；按月的报表把这几行折成一个月。
+fn month_key(date: &str) -> String {
+    date.get(..7).unwrap_or(date).to_string()
+}
+
 async fn message_type_series(
     db: &DatabaseConnection,
     group_id: Option<&str>,
     user_id: &str,
     period: &Period,
-    hourly: bool,
 ) -> Result<Vec<SeriesData>, ChartError> {
     let rows = queries::get_message_type_trend(
         db,
@@ -423,7 +432,7 @@ async fn message_type_series(
         Some(user_id),
         period.start,
         period.end,
-        hourly,
+        period.unit == Unit::Hour,
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -440,11 +449,17 @@ async fn message_type_series(
 
     let mut list = Vec::new();
     for (name, get) in types {
-        let rows = rows
-            .iter()
-            .map(|r| (r.date.clone(), get(r)))
-            .filter(|(_, v)| *v > 0);
-        let points = fill(&period.buckets, rows);
+        let points = fill(
+            &period.buckets,
+            rows.iter().map(|r| {
+                let key = if period.unit == Unit::Month {
+                    month_key(&r.date)
+                } else {
+                    r.date.clone()
+                };
+                (key, get(r))
+            }),
+        );
         if points.iter().any(|p| p.value > 0) {
             let (color, _) = message_type_style(name);
             list.push(SeriesData {
