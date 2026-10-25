@@ -63,6 +63,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/logs/stream", get(log_stream))
         .route("/command", post(command))
         .route("/restart", post(restart))
+        .route("/power", post(power))
         .route("/update", get(update_info).post(update_apply));
     router.layer(axum::middleware::from_fn_with_state(
         console,
@@ -142,8 +143,30 @@ async fn overview(State(console): State<Arc<Console>>) -> Response {
         "plugins": { "total": total, "on": on, "pending": pending },
         "messages": { "today": today, "week": week, "people": today_people },
         "console": { "address": console.url.split("?t=").next().unwrap_or_default() },
+        "power": power_state(&console),
     }))
     .into_response()
+}
+
+/// 总览里「这一页能不能把知微停下来」那一格。
+///
+/// 只认装好的那一份：`cargo run` 出来的进程不归管理命令管，给按钮只会停错东西。
+/// 面板那一格带上完整地址（含口令）与「此刻答不答得出来」，页面据此决定停下来之后
+/// 还能不能从这里再启动。
+fn power_state(console: &Console) -> Value {
+    let available = super::power::available();
+    let panel = if available {
+        let config: super::Config = crate::plugins::get_config_or_default(console.ctx());
+        (config.panel_port > 0).then(|| {
+            json!({
+                "url": super::power::panel_url(&config.bind, config.panel_port, console.token()),
+                "ready": super::power::panel_ready(),
+            })
+        })
+    } else {
+        None
+    };
+    json!({ "available": available, "panel": panel })
 }
 
 /// 连接列表里的头像：实现端给了就用它，没给时 QQ 还能用号码拼出公开头像。
@@ -1392,6 +1415,47 @@ async fn restart(State(console): State<Arc<Console>>) -> Response {
         }))
         .into_response(),
         Err(message) => bad(message),
+    }
+}
+
+// ==================== 停止 ====================
+
+#[derive(Deserialize)]
+struct PowerRequest {
+    /// `bot` = 只停机器人；`all` = 连管理面板与开机守护一起停。
+    scope: String,
+}
+
+/// 总览页那颗「停止」。回执照写，动作交给管理命令（见 [`super::power`]）——它比回执
+/// 晚一步动手，停的就是机器人自己也不会把这句话截断。
+async fn power(Json(body): Json<PowerRequest>) -> Response {
+    let action = match body.scope.as_str() {
+        "bot" => super::power::Action::Stop,
+        "all" => super::power::Action::Halt,
+        _ => return bad("停法只有 bot（只停机器人）与 all（全面停止）两种"),
+    };
+    if !super::power::available() {
+        return super::server::fail(
+            StatusCode::CONFLICT,
+            "这个进程不归管理命令管（cargo run 起来的），停它请回终端按 Ctrl+C",
+        );
+    }
+    match super::power::spawn(action) {
+        Ok(()) => (
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "message": action.message(),
+                "scope": body.scope,
+                "delay": super::power::GRACE_SECONDS,
+            })),
+        )
+            .into_response(),
+        Err(super::power::SpawnError::Busy) => {
+            super::server::fail(StatusCode::CONFLICT, "上一个操作还没结束，稍等一下")
+        }
+        Err(super::power::SpawnError::Unavailable(why)) => {
+            super::server::fail(StatusCode::INTERNAL_SERVER_ERROR, &why)
+        }
     }
 }
 

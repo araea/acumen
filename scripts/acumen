@@ -120,8 +120,11 @@ n5" 644
     # 管理面板：同一个可执行文件的 --panel，很轻，常开；知微停了它还在。
     write_if_changed "$PANEL/run" "#!$PREFIX/bin/sh
 exec $PREFIX/bin/acumen panel 2>&1" 755
+    # 被信号收走（sv down / stop --all）是有人让它停的，立刻让位；只有异常退出才歇 10 秒。
     write_if_changed "$PANEL/finish" "#!$PREFIX/bin/sh
-[ \"\$1\" = 0 ] || sleep 10
+[ \"\$1\" = 0 ] && exit 0
+[ \"\$1\" = -1 ] && exit 0
+sleep 10
 exit 0" 755
     write_if_changed "$PANEL/log/run" "#!$PREFIX/bin/sh
 mkdir -p $PANEL_LOGDIR
@@ -171,12 +174,14 @@ cmd_start() {
     [[ ${1:-} == -q || ${ACUMEN_NO_UI:-0} == 1 ]] && quiet=1
     ensure_service
     rm -f "$SV/down" "$PANEL/down"
+    ensure_runsvdir || die "runit 没起来。先运行 acumen setup。"
+    # 面板被 `acumen stop --all` 停过时，光删 down 文件不够：runsv 要一记 up 才会再起。
+    [[ -e $PANEL/supervise/ok ]] && sv up acumen-panel >/dev/null 2>&1
     if bot_pid >/dev/null; then
         say "知微已在运行。"
         (( quiet )) || { url=$(console_url); [[ -n $url ]] && open_url "$url"; }
         return 0
     fi
-    ensure_runsvdir || die "runit 没起来。先运行 acumen setup。"
     ensure_keeper
     local since
     since=$(date +%s)
@@ -194,10 +199,22 @@ cmd_start() {
     fi
 }
 
+# 管理面板的 PID。它与机器人是同一个可执行文件，所以也按 runit 记下的 PID 认。
+panel_pid() {
+    local pid
+    pid=$(cat "$PANEL/supervise/pid" 2>/dev/null)
+    [[ -n $pid && $(readlink "/proc/$pid/exe" 2>/dev/null) == "$APP"/acumen* ]] && echo "$pid" && return 0
+    return 1
+}
+
+# 停止。默认只停机器人，管理面板留着——那是事后在网页上再启动它的那扇门；
+# --all 连面板与开机守护一起停，之后要到终端里 acumen start。
 cmd_stop() {
+    local all=0
+    [[ ${1:-} == --all || ${1:-} == -a ]] && all=1
     installed
-    touch "$SV/down" 2>/dev/null
     local pid i
+    touch "$SV/down" 2>/dev/null
     if [[ -e $SV/supervise/ok ]] && runsvdir_alive; then
         sv down acumen >/dev/null 2>&1
     elif pid=$(bot_pid); then
@@ -208,13 +225,36 @@ cmd_stop() {
         sleep 1
     done
     if bot_pid >/dev/null; then die "30 秒还没停下，看看 acumen log。"; fi
+
+    if ((all)); then
+        touch "$PANEL/down" 2>/dev/null
+        if [[ -e $PANEL/supervise/ok ]] && runsvdir_alive; then
+            sv down acumen-panel >/dev/null 2>&1
+        elif pid=$(panel_pid); then
+            kill -TERM "$pid" 2>/dev/null
+        fi
+        for ((i = 0; i < 20; i++)); do
+            panel_pid >/dev/null || break
+            sleep 1
+        done
+        # 开机守护：两个 down 标记在，它本来也不会再拉起什么；这里把这一轮的检查也停掉。
+        if has_root; then
+            su -c "[ -f $KEEPER ] && sh $KEEPER stop" </dev/null >/dev/null 2>&1
+        fi
+    fi
+
     termux-wake-unlock >/dev/null 2>&1
-    say "知微已停止。开机与守护都不会再拉起它，直到下次 acumen start（或在管理页上点启动）。"
+    if ((all)); then
+        say "知微与管理面板都已停止，开机守护也不再拉起它们。在终端运行 acumen start 重新开始。"
+    else
+        say "知微已停止。开机与守护都不会再拉起它，直到下次 acumen start（或在管理页上点启动）。"
+    fi
 }
 
 cmd_restart() {
     installed
-    if ! bot_pid >/dev/null; then cmd_start -q; return; fi
+    # 服务停着（down 标记在）时，sv restart 什么也不会做：那就照启动来。
+    if [[ -e $SV/down ]] || ! bot_pid >/dev/null; then cmd_start -q; return; fi
     local since
     since=$(date +%s)
     sv restart acumen >/dev/null 2>&1 || { cmd_stop >/dev/null; cmd_start -q; return; }
@@ -501,6 +541,7 @@ ${B}知微（acumen）$(version)${N}
 
   acumen            启动并打开控制台（已在运行就只打开控制台）
   acumen stop       停止；开机与守护都不会再拉起，直到下次启动
+  acumen stop --all 连管理面板与开机守护一起停（之后要在终端运行 acumen start）
   acumen restart    重启
   acumen status     运行状态、QQ 连接与保活情况
   acumen log        实时日志（Ctrl+C 退出）
@@ -519,7 +560,7 @@ EOF
 
 case "${1:-start}" in
     start | up) shift || true; cmd_start "$@" ;;
-    stop | down) cmd_stop ;;
+    stop | down) shift || true; cmd_stop "${1:-}" ;;
     restart) cmd_restart ;;
     status | s) cmd_status ;;
     log | logs) shift; cmd_log "$@" ;;

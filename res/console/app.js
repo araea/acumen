@@ -271,6 +271,13 @@
     snack.started = started;
   }
 
+  /** 页面本身已经把结果说清楚了（例如停机页），就别再留一条过时的「正在……」。 */
+  function dismissSnack() {
+    clearTimeout(snack.timer);
+    snack.left = 0;
+    put($("#snackbar"), "");
+  }
+
   function holdSnack(hold) {
     if (snack.hold === hold) return;
     snack.hold = hold;
@@ -311,6 +318,68 @@
       );
       dialog.returnValue = "";
       dialog.showModal();
+    });
+  }
+
+  /**
+   * 停止的两条路：只停机器人（管理面板还活着，随时能再启动），或者连面板与守护一起停。
+   * 默认选中轻的那一条；Esc 与「取消」都算没发生过。
+   */
+  function stopDialog() {
+    const dialog = $("#dialog");
+    const opener = document.activeElement;
+    const panel = lifecycle.panel ? { ready: true } : powerInfo.panel;
+    const safe = panel?.ready
+      ? "管理面板继续运行，随时能在那里再启动知微。"
+      : "管理面板没在运行；停止后要到 Termux 里运行 acumen start。";
+    put(
+      dialog,
+      h`<span class="dialog-icon danger">${icon("warning-fill")}</span>
+        <h2 class="dialog-title" id="dialog-title">停止知微？</h2>
+        <p class="dialog-body" id="dialog-body">消息处理、对话与定时推送都会停下。选一种停法：</p>
+        <fieldset class="choice-set">
+          <legend class="visually-hidden">停止范围</legend>
+          <label class="choice">
+            <input type="radio" name="stop-scope" value="bot" checked>
+            <span class="choice-text">
+              <span class="choice-title">仅停止机器人</span>
+              <span class="choice-note">${safe}</span>
+            </span>
+          </label>
+          <label class="choice">
+            <input type="radio" name="stop-scope" value="all">
+            <span class="choice-text">
+              <span class="choice-title">全面停止所有服务</span>
+              <span class="choice-note">机器人、管理面板与开机守护一起停，这个网页也会关掉。之后要在 Termux 里运行 acumen start。</span>
+            </span>
+          </label>
+        </fieldset>
+        <div class="actions actions-end">
+          <button class="btn btn-text" type="button" value="cancel">取消</button>
+          <button class="btn btn-filled btn-danger" type="button" value="confirm">停止</button>
+        </div>`
+    );
+    return new Promise((resolve) => {
+      const pick = (event) => {
+        const button = event.target.closest("button[value]");
+        if (button) dialog.close(button.value);
+      };
+      dialog.addEventListener("click", pick);
+      dialog.addEventListener(
+        "close",
+        () => {
+          dialog.removeEventListener("click", pick);
+          const chosen = dialog.returnValue === "confirm"
+            ? dialog.querySelector('input[name="stop-scope"]:checked')?.value || null
+            : null;
+          if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+          resolve(chosen);
+        },
+        { once: true }
+      );
+      dialog.returnValue = "";
+      dialog.showModal();
+      $('input[name="stop-scope"]:checked', dialog)?.focus();
     });
   }
 
@@ -963,6 +1032,18 @@
       }
     }
     const changed = !previous || previous.key !== route.key;
+    // 停着的那一屏：源站已经不在了，换哪一页都是同一张静态停机页。
+    if (lifecycle.stopped) {
+      if (route.page !== "overview") history.replaceState(null, "", "#/");
+      shown = { page: "overview", arg: null, key: "overview" };
+      markNav("overview");
+      setTitle("已停止");
+      busy(false);
+      put($("#view"), lifecycle.stoppedPage());
+      watchTitle();
+      if (!quiet) $(".page-title")?.focus({ preventScroll: true });
+      return;
+    }
     markNav(route.page);
     overviewFeed.stop();
     if (route.page !== "logs") logs.stop();
@@ -1052,6 +1133,9 @@
 
   /* ==================== §7 总览 ==================== */
 
+  /** 总览读到的起停能力：能不能停、管理面板在不在。只在「装好的那一份」上为真。 */
+  const powerInfo = { available: false, panel: null, version: "" };
+
   const overviewFeed = {
     timer: 0,
     base: 0,
@@ -1106,6 +1190,9 @@
 
   async function overviewPage() {
     const data = await api("/overview");
+    powerInfo.available = Boolean(data.power?.available);
+    powerInfo.panel = data.power?.panel ?? null;
+    powerInfo.version = data.app.version;
     const health = !data.bots.length
       ? { label: "等待连接", title: "还差一步就能开始", note: "添加实现端连接并重启，知微就能开始处理消息。", tone: "warning" }
       : data.plugins.pending
@@ -1146,7 +1233,7 @@
             <div class="actions stage-actions" role="group" aria-label="运行">
               ${primary}
               <button class="btn ${data.plugins.pending ? "btn-filled" : "btn-tonal"}" type="button" data-restart>${icon("restart_alt")}重启</button>
-              ${lifecycle.panel ? h`<button class="btn btn-text btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
+              ${powerInfo.available ? h`<button class="btn btn-text btn-danger btn-stop" type="button" data-lifecycle="stop">${icon("stop_circle")}停止</button>` : ""}
             </div>
           </div>
           <dl class="stage-metrics">
@@ -1322,7 +1409,7 @@
       : logRow({ at: "", level: "INFO", target: "", text: line });
   }
 
-  const JOB_NAMES = { start: "启动", stop: "停止", restart: "重启", update: "更新" };
+  const JOB_NAMES = { start: "启动", stop: "停止", halt: "全面停止", restart: "重启", update: "更新" };
 
   /**
    * 经管理面板（acumen --panel）打开时才有的一层：知微停着时的「已停止」页、启动 / 停止、
@@ -1331,7 +1418,12 @@
   const lifecycle = {
     panel: false,
     offline: false,
+    /** 本机停机页的模式：停到哪一步、面板还在不在。非空时所有页面都换成那一屏。 */
+    stopped: null,
     status: null,
+    /** 停机页上那一次画的是「没在运行」还是「没有回应」、按钮是不是被作业按住了。 */
+    runningShown: false,
+    jobShown: false,
     timer: 0,
     async probe() {
       try {
@@ -1382,6 +1474,16 @@
             /* 进程在、控制台还没起来 */
           }
         }
+        // 刚停下的那几秒里进程还在收尾、命令也还没退：这一屏要从「没有回应 / 重启」换成
+        // 「没在运行 / 启动」，按住的那枚按钮也要松开。
+        const jobRunning = Boolean(status.job?.running);
+        if (status.running !== this.runningShown || jobRunning !== this.jobShown) {
+          this.runningShown = status.running;
+          this.jobShown = jobRunning;
+          this.status = status;
+          render({ quiet: true });
+          return;
+        }
         this.timer = setTimeout(tick, status.job?.running ? 1500 : 4000);
       };
       this.timer = setTimeout(tick, 1500);
@@ -1406,10 +1508,13 @@
     },
     async page() {
       const status = this.status ?? (await this.refresh());
+      this.runningShown = status.running;
       updates.info = { current: status.version, managed: status.managed, latest: status.latest };
       updates.paint();
       const log = await panelApi("/log?lines=40").catch(() => ({ lines: [] }));
       const busyJob = status.job?.running;
+      this.runningShown = status.running;
+      this.jobShown = Boolean(busyJob);
       const reason = status.stopped
         ? "你上次让它停下了；开机与守护都不会自己拉起它，点「启动」就好。"
         : status.running
@@ -1439,17 +1544,9 @@
         </div>
       </div>`;
     },
-    /** 交给管理面板执行一个管理命令；停机页随后轮询它的进度。 */
+    /** 交管理命令做一件事；停机页随后轮询它的进度。 */
     async run(command, button) {
-      if (command === "stop") {
-        const ok = await confirmAction({
-          title: "停止知微？",
-          body: "所有插件、对话与定时推送都会停下；开机与守护不会再自动拉起它。之后在这一页点「启动」即可恢复。",
-          confirm: "停止",
-          danger: true,
-        });
-        if (!ok) return;
-      }
+      if (command === "stop") return this.shutdown(button);
       if (button) {
         button.disabled = true;
         button.setAttribute("aria-busy", "true");
@@ -1466,21 +1563,135 @@
         return;
       }
       this.status = null;
-      if (command === "stop") {
-        // 等它真的停下（控制台不再应答）再换成停机页；runit 收尾要几秒。
-        busy(true);
-        for (let i = 0; i < 40; i++) {
-          await new Promise((done) => setTimeout(done, 1000));
-          try {
-            await api("/overview");
-          } catch (error) {
-            if (error?.offline) break;
-          }
-        }
-        busy(false);
-      }
       this.offline = true;
       if (shown) render({ quiet: true });
+    },
+
+    /**
+     * 总览上那颗「停止」。先问一句停到哪一步，再把话交给管理命令：
+     * `bot` 只停机器人，`all` 连管理面板与开机守护一起停。
+     *
+     * 停下之后分两种去向：面板页且只停机器人 → 面板上的停机页（有启动与终端日志）；
+     * 其余情况 → 本机的一张静态停机页，因为这一页的源站已经不在了。
+     */
+    async shutdown(button) {
+      const scope = await stopDialog();
+      if (!scope) return;
+      const all = scope === "all";
+      const panel = this.panel ? { ready: true, url: null } : powerInfo.panel;
+      if (button) {
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+      }
+      busy(true);
+      try {
+        const reply = this.panel
+          ? await panelApi(all ? "/halt" : "/stop", { method: "POST" })
+          : await api("/power", { method: "POST", body: { scope } });
+        snackbar(reply.message);
+        holdSnack(true);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }
+        busy(false);
+        report(error);
+        return;
+      }
+      const gone = await this.waitDown();
+      busy(false);
+      holdSnack(false);
+      if (!gone) {
+        // 命令没把进程停掉（配置写坏了、管理命令报错）：留在这张页面上，说清看到的事。
+        if (button) {
+          button.disabled = false;
+          button.removeAttribute("aria-busy");
+        }
+        snackbar("停止命令还没有结果，稍后刷新看看。", "error");
+        return;
+      }
+      if (this.panel && !all) {
+        dismissSnack();
+        this.status = null;
+        this.offline = true;
+        if (shown) render({ quiet: true });
+        return;
+      }
+      this.stopped = {
+        scope,
+        panel: all ? null : panel,
+        version: this.status?.version || powerInfo.version || "",
+      };
+      dismissSnack();
+      // 服务已经停在下面了：顶栏那枚「有新版本」这时也点不动了。
+      updates.info = null;
+      updates.paint();
+      history.replaceState(null, "", "#/");
+      if (shown) render({ quiet: true });
+      this.watchLocal();
+    },
+
+    /** 等进程真的停下：控制台不再应答（面板转发的 503 也算）。最多约 17 秒。 */
+    async waitDown() {
+      for (let i = 0; i < 24; i++) {
+        await new Promise((done) => setTimeout(done, 700));
+        try {
+          await api("/overview");
+        } catch (error) {
+          if (error?.offline || !error?.status) return true;
+        }
+      }
+      return false;
+    },
+
+    /** 本机的一张静态停机页：服务已经不在了，这一屏不靠任何接口。 */
+    stoppedPage() {
+      const stopped = this.stopped || {};
+      const panel = stopped.panel;
+      const all = stopped.scope === "all";
+      const note = all
+        ? "机器人、管理面板与开机守护都已停下。在 Termux 里运行 acumen start 重新开始。"
+        : panel?.ready
+          ? "管理面板还在运行，可以从那里再启动它；终端里运行 acumen start 也一样。"
+          : "这台设备的管理面板没在运行。在 Termux 里运行 acumen start 重新开始。";
+      return h`<div class="page home-page" data-title="已停止">
+        ${pageHead("总览", "这台设备上知微的运行情况。")}
+        <div class="overview">
+          <section class="hero" data-offline aria-labelledby="hero-label">
+            <div class="hero-top"><span>${NAME}${stopped.version ? ` v${stopped.version}` : ""}</span><span class="status status-idle">已停止</span></div>
+            <h2 class="hero-label" id="hero-label">知微现在</h2>
+            <p class="hero-value">没在运行</p>
+            <p class="hero-note">${note}</p>
+            <div class="actions">
+              ${panel?.url ? h`<a class="btn btn-filled" href="${panel.url}">${icon("arrow_forward")}打开管理面板</a>` : ""}
+              <button class="btn btn-outlined" type="button" data-copy-start>${icon("content_copy")}复制启动命令</button>
+            </div>
+            <p class="hero-foot">知微回来后，这一页会自己刷新。</p>
+          </section>
+        </div>
+      </div>`;
+    },
+
+    /** 停着的时候隔几秒敲一下这一页的源站：回来了就整页刷新（不必知道口令）。 */
+    watchLocal() {
+      this.stop();
+      const tick = async () => {
+        if (!this.stopped) return;
+        if (document.hidden) {
+          this.timer = setTimeout(tick, 4000);
+          return;
+        }
+        try {
+          await fetch(`${location.origin}/manifest.webmanifest`, { mode: "no-cors", cache: "no-store" });
+          location.reload();
+          return;
+        } catch {
+          /* 源站还没回来 */
+        }
+        this.timer = setTimeout(tick, 4000);
+      };
+      this.timer = setTimeout(tick, 4000);
     },
   };
 
@@ -7006,6 +7217,15 @@
           await render({ quiet: true });
         } catch (error) {
           report(error);
+        }
+        return;
+      }
+      if (on("[data-copy-start]")) {
+        try {
+          await navigator.clipboard.writeText("acumen start");
+          snackbar("已复制：acumen start");
+        } catch {
+          snackbar("复制失败，命令是 acumen start", "error");
         }
         return;
       }

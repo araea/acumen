@@ -2992,6 +2992,80 @@ button.item:active::after {
   text-wrap: pretty;
 }
 
+/* —— 停止的两种停法 ——
+   两枚单选，各带一行后果说明。整行都是命中区（HIG 的 48px 起），键盘仍按原生
+   单选组走：Tab 进组、方向键换项。选中用次色容器，与页面里其他选中态同一套。 */
+.choice-set {
+  display: grid;
+  gap: var(--zw-space-02);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-04);
+  min-height: var(--zw-size-control);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border: var(--zw-border-width) solid var(--zw-card-line);
+  border-radius: var(--md-sys-shape-corner-large);
+  cursor: pointer;
+  transition:
+    background-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing),
+    border-color var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+.choice:hover {
+  background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
+}
+
+.choice:has(input:checked) {
+  /* 比纯 secondary-container 浅一档：12px 的说明文字压在上面时，4.5:1 才有余量。 */
+  border-color: transparent;
+  background: color-mix(in srgb, var(--md-sys-color-secondary-container) 70%, var(--md-sys-color-surface));
+  color: var(--zw-selected-ink);
+}
+
+.choice:has(input:checked) .choice-note {
+  color: inherit;
+}
+
+.choice input {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0.1rem 0 0;
+  accent-color: var(--md-sys-color-primary);
+}
+
+.choice:has(input:focus-visible) {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.choice-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.choice-title {
+  font-size: var(--md-sys-typescale-title-small-size);
+  line-height: var(--md-sys-typescale-title-small-line-height);
+  font-weight: var(--zw-weight-heading);
+}
+
+.choice-note {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
 @keyframes dialog-in {
   from {
     transform: translateY(var(--zw-space-04)) scale(0.94);
@@ -3340,6 +3414,14 @@ button.item:active::after {
 
 .hero .actions {
   padding-top: var(--zw-space-04);
+}
+
+/* 停机页最后那句小字：知微回来后这一页会自己刷新。 */
+.hero-foot {
+  margin-top: var(--zw-space-02);
+  color: var(--zw-hero-dim);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
 }
 
 /* 运行正常是一粒绿点：绿色才符合「可以放心」的直觉；暖色光只留给新版本与未保存。 */
