@@ -40,6 +40,7 @@ use futures_util::future::{BoxFuture, join_all};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
+use simd_json::prelude::ValueAsScalar;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -852,7 +853,35 @@ async fn compose(ctx: &Context, writer: &LockedWriter, template: &str, vars: &Va
         message = message.image(file);
         visible = true;
     }
+    trim_end(&mut message);
     visible.then_some(message)
+}
+
+/// 去掉一条渲染完成的消息末尾的空白文本。模板末尾的换行、删空文案后留下的空段，
+/// 都不该变成聊天里的空白尾巴；段落内部的换行与非文本消息段保持原样。
+fn trim_end(message: &mut Message) {
+    while let Some(index) = message.0.len().checked_sub(1) {
+        let trimmed = {
+            let segment = &message.0[index];
+            if segment.type_ != "text" {
+                break;
+            }
+            let Some(text) = segment.data.get("text").and_then(|text| text.as_str()) else {
+                break;
+            };
+            let trimmed = text.trim_end();
+            if trimmed.len() == text.len() {
+                break;
+            }
+            trimmed.to_owned()
+        };
+        if trimmed.is_empty() {
+            message.0.pop();
+        } else {
+            message.0[index].data.insert("text".into(), trimmed.into());
+            break;
+        }
+    }
 }
 
 /// 头像：事件里带了就用它；QQ 还能用号码拼出公开头像。
@@ -2959,6 +2988,23 @@ mod tests {
         append(&mut message, Message::new().text("请完成验证"));
         assert_eq!(message.0.len(), 3);
         assert_eq!(message.0[1].data.get("text").and_then(|text| text.as_str()), Some("\n"));
+    }
+
+    #[test]
+    fn rendered_messages_drop_trailing_blank_space() {
+        let mut message = Message::new().text("欢迎新人\n第二段\n\n ");
+        trim_end(&mut message);
+        assert_eq!(message.0.len(), 1);
+        assert_eq!(
+            message.0[0].data.get("text").and_then(|text| text.as_str()),
+            Some("欢迎新人\n第二段"),
+            "只去掉末尾空白，不动段落内部换行"
+        );
+
+        let mut message = Message::new().text("欢迎").at("42").text("\n\n");
+        trim_end(&mut message);
+        assert_eq!(message.0.len(), 2, "末尾空白段删除后保留文字与 @");
+        assert_eq!(message.0.last().map(|segment| segment.type_.as_str()), Some("at"));
     }
 
     #[test]
