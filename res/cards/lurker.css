@@ -205,6 +205,17 @@ span.av {
   background: var(--md-sys-color-secondary-container);
   color: var(--md-sys-color-on-secondary-container);
 }
+.tag.verify {
+  background: var(--md-sys-color-warning-container);
+  color: var(--md-sys-color-on-warning-container);
+}
+.caveat + .verification-note {
+  margin-top: var(--md-space-2);
+}
+.verification-note {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
 
 /* —— 脚 —— */
 .foot {

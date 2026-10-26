@@ -4739,6 +4739,7 @@
           <span class="lk-stamp">${ago(scan.at)}查的</span>
           <button class="btn btn-text" type="button" data-lk-rescan>${icon("refresh")}重新查</button></p>
         ${scan.note ? h`<p class="lk-note" role="note">${icon("info-fill")}<span>${scan.note}</span></p>` : ""}
+        ${scan.verification_records ? h`<p class="lk-note" role="note">${icon("info-fill")}<span>${scan.verification_records} 位当前成员有入群验证留档，其中 ${scan.entries.filter((entry) => entry.verify_failed).length} 人符合本次潜水口径，已在名单标注；未通过验证本身不作为清理依据。</span></p>` : ""}
         ${scan.can_kick ? "" : h`<p class="lk-note" role="note">${icon("warning-fill")}<span>机器人在这个群里不是管理员，只能看，移不出人。</span></p>`}
         ${kept.length ? h`<p class="field-hint">不在名单上的：${kept.join(" · ")}</p>` : ""}
       </div>
@@ -4775,7 +4776,7 @@
     const checked = lurk.chosen.has(entry.id);
     const sure = entry.no > 0 && scan.can_kick;
     const removed = lurk.job?.done?.find((outcome) => outcome.id === entry.id);
-    const tags = h`${entry.warned ? h`<span class="status">${ago(entry.warned)}提醒过</span>` : ""}${removed ? h`<span class="status ${removed.result === "removed" ? "status-success" : ""}">${{ removed: "已移出", spoke: "冒泡了，留下", left: "已不在群里", failed: "没移出去", skipped: "没轮到" }[removed.result]}</span>` : ""}`;
+    const tags = h`${entry.verify_failed ? h`<span class="status">验证未通过</span>` : ""}${entry.warned ? h`<span class="status">${ago(entry.warned)}提醒过</span>` : ""}${removed ? h`<span class="status ${removed.result === "removed" ? "status-success" : ""}">${{ removed: "已移出", spoke: "冒泡了，留下", left: "已不在群里", failed: "没移出去", skipped: "没轮到" }[removed.result]}</span>` : ""}`;
     const body = h`<span class="lk-no">${entry.no || "—"}</span>${face}
       <span class="lk-who"><span class="lk-name">${entry.name}${tags}</span><span class="lk-meta">${meta}</span></span>
       <span class="lk-when"><span class="lk-gone">${gone}</span><span class="lk-last">${last}</span></span>`;

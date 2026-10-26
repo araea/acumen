@@ -94,6 +94,9 @@ fn meta(entry: &Entry) -> String {
 /// 右栏第二行：最后说话那天，或「没有记录」。
 fn last_line(entry: &Entry, now: i64) -> String {
     let mut out = String::new();
+    if entry.verify_failed > 0 {
+        out.push_str(r#"<span class="tag verify">验证未通过</span>"#);
+    }
     if entry.warned > 0 {
         let _ = write!(out, r#"<span class="tag warned">{}提醒过</span>"#, ago(now, entry.warned));
     }
@@ -156,11 +159,20 @@ fn header(scan: &Scan) -> String {
     let caveat = super::roster::source_note(scan)
         .map(|note| format!(r#"<div class="caveat"><b>注意</b><span>{}</span></div>"#, esc(&note)))
         .unwrap_or_default();
+    let verification = if scan.verification_records > 0 {
+        let overlap = scan.entries.iter().filter(|entry| entry.verify_failed > 0).count();
+        format!(
+            r#"<div class="caveat verification-note"><b>验证留档</b><span>当前成员有 {} 条入群验证留档，其中 {} 人符合本次潜水口径，已标「验证未通过」。未通过验证不等于潜水，其余留档不会进入清理队列。</span></div>"#,
+            scan.verification_records, overlap,
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"<div class="md-eyebrow"><div class="md-kicker"><span class="md-dot"></span>潜水名单<span class="md-kicker-en">INACTIVE</span></div><span class="md-stamp">{stamp}</span></div>
 <h1 class="sheet-title md-type-headline-small md-balance">{name}</h1>
 <div class="sheet-sub">全群 <b>{total}</b> 人，按「{rule}」查到 <b>{count}</b> 人{extra}</div>
-<div class="tally">{tally}</div>{caveat}"#,
+<div class="tally">{tally}</div>{caveat}{verification}"#,
         stamp = stamp(scan.at),
         name = esc(&scan.group_name),
         total = scan.total,
@@ -300,7 +312,8 @@ pub fn text(scan: &Scan, per_chunk: usize) -> Vec<String> {
                 _ if entry.last > 0 => format!("{days} 天没说话（最后 {}）", date(entry.last)),
                 _ => format!("至少 {days} 天没说话"),
             };
-            lines.push(format!("{no} {}（{}）{gone}", entry.name, entry.id));
+            let verification = if entry.verify_failed > 0 { "｜验证未通过（仅作复核标签）" } else { "" };
+            lines.push(format!("{no} {}（{}）{gone}{verification}", entry.name, entry.id));
         }
     }
     lines.chunks(per_chunk.max(10)).map(|chunk| chunk.join("\n")).collect()
@@ -398,6 +411,7 @@ mod tests {
             kind,
             said: 0,
             warned: 0,
+            verify_failed: 0,
         }
     }
 
@@ -415,6 +429,7 @@ mod tests {
             source: "trusted".into(),
             heard_from: 0,
             can_kick: true,
+            verification_records: 0,
         }
     }
 

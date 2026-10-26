@@ -30,6 +30,7 @@ mod watch;
 
 pub(crate) use panel::{exempt as panel_exempt, job as panel_job, kick as panel_kick, live, overview as panel_overview};
 pub(crate) use panel::{scan as panel_scan, stop as panel_stop, warn as panel_warn};
+pub(crate) use roster::Scan;
 
 use crate::adapters::satori::LockedWriter;
 use crate::event::{Context, EventType};
@@ -361,6 +362,16 @@ async fn background(ctx: Context, mut interrupted: Vec<(String, usize)>) {
         auto::tick(&ctx, &writer).await;
         warn::tick(&ctx, &writer).await;
     }
+}
+
+/// 给入群验证留档做一次实时核对。关闭或不对本群生效时不强行查询；
+/// 返回的名单仍走唯一的潜水判定，验证标签不会额外选中任何人。
+pub(crate) async fn review_scan(ctx: &Context, writer: &LockedWriter, group: &str) -> Result<Option<Scan>, String> {
+    let config = get_config_or_default::<Config>(ctx);
+    if !config.enabled || !config.channel.allows_group(group) {
+        return Ok(None);
+    }
+    roster::scan(ctx, writer, &config, group, None).await.map(Some)
 }
 
 /// 私聊告诉号主与机器人管理员（除了机器人自己）。

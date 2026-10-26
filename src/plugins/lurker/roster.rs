@@ -43,6 +43,9 @@ pub struct Entry {
     /// 被提醒过的时刻。
     #[serde(default)]
     pub warned: i64,
+    /// 入群验证未通过的留档时刻；0 = 没有。仅作复核标签，不参与潜水判定。
+    #[serde(default)]
+    pub verify_failed: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -87,6 +90,9 @@ pub struct Scan {
     pub heard_from: i64,
     /// 机器人在这个群里是群主或管理员（能不能移出人）。
     pub can_kick: bool,
+    /// 当前群成员里有多少条验证留档（包括活跃、受保护、证据不足而不在本名单里的人）。
+    #[serde(default)]
+    pub verification_records: usize,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -245,6 +251,8 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
     let exempt = exempt_for(config, group);
     let basis = Basis { now, rule: &rule, trust, heard_from, me: &me, keepers: &keepers, exempt: &exempt };
     let warned = super::warn::warned(group).await;
+    let verification = crate::plugins::welcome::records::verification_marks(ctx, group).await;
+    let verification_records = members.iter().filter(|member| verification.contains_key(&member.id)).count();
 
     let mut entries = Vec::new();
     let mut unsure = Vec::new();
@@ -266,6 +274,7 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
             kind,
             said: seen.map_or(0, |s| s.recent),
             warned: warned.get(&member.id).copied().unwrap_or(0),
+            verify_failed: verification.get(&member.id).copied().unwrap_or(0),
         };
         match judge::judge(member, seen, &basis) {
             Verdict::Active => {}
@@ -307,6 +316,7 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
         .into(),
         heard_from,
         can_kick: mine.is_some_and(|m| m.role != Role::Member),
+        verification_records,
     };
     info!(
         target: LOG_TARGET,

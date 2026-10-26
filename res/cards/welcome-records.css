@@ -1,0 +1,62 @@
+/* 入群验证留档沿用潜水名单的排版骨架，再用更安静的青色与琥珀色区分「事实」和「待复核」。
+   一页固定 24 人，不做无限长图；右侧先给留档时间，再给独立的潜水核对结论。 */
+.records .md-dot {
+  background: var(--md-sys-color-tertiary);
+}
+.records .record-distinction {
+  background: var(--md-sys-color-secondary-container);
+  color: var(--md-sys-color-on-secondary-container);
+}
+.records .record-distinction + .caveat {
+  margin-top: var(--md-space-2);
+}
+.records .record-row {
+  min-height: 62px;
+  padding-top: var(--md-space-2);
+  padding-bottom: var(--md-space-2);
+}
+.records .record-row .av {
+  width: 40px;
+  height: 40px;
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+.records .record-row .who {
+  padding-right: var(--md-space-2);
+}
+.records .record-row .when {
+  max-width: 46%;
+}
+.records .record-row .gone {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-type-body-medium-size);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+.records .tag.review {
+  margin-right: var(--md-space-1);
+  margin-bottom: 2px;
+  white-space: normal;
+  line-height: 1.25rem;
+  vertical-align: baseline;
+}
+.records .tag.review.needs-review {
+  background: var(--md-sys-color-warning-container);
+  color: var(--md-sys-color-on-warning-container);
+}
+.records .tag.review.watch {
+  background: var(--md-sys-color-tertiary-container);
+  color: var(--md-sys-color-on-tertiary-container);
+}
+.records .tag.review.not-listed {
+  background: var(--md-sys-color-surface-container-high);
+  color: var(--md-sys-color-on-surface-variant);
+}
+.records .foot {
+  line-height: 1.65;
+}
+.records .foot p + p {
+  margin-top: var(--md-space-2);
+}
+.records .foot .cmd {
+  overflow-wrap: anywhere;
+}

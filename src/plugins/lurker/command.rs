@@ -483,6 +483,10 @@ fn headline(scan: &Scan, prefix: &str) -> String {
             scan.entries.len()
         )
     };
+    if scan.verification_records > 0 {
+        let overlap = scan.entries.iter().filter(|entry| entry.verify_failed > 0).count();
+        text.push_str(&format!("\n{} 位当前成员有入群验证留档，其中 {overlap} 人符合本次潜水口径，名单里已标注；未通过验证本身不作为清理依据。", scan.verification_records));
+    }
     if let Some(note) = roster::source_note(scan) {
         text.push('\n');
         text.push_str(&note);

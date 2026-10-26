@@ -2,7 +2,7 @@ use super::data::Manager;
 use super::parser::{Action, Command, Scope};
 use super::types::{Agent, ChatMessage, Tools};
 use super::utils::{escape_markdown_special, format_export_txt, format_history};
-use crate::adapters::satori::{LockedWriter, api, send_msg};
+use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
 use crate::event::{Context, MessageEvent};
 use crate::message::Message;
 use regex::Regex;
@@ -1380,18 +1380,44 @@ pub async fn execute(
         } else {
             usize::from(config.agents.iter().any(|agent| agent.name == *name))
         };
-        if !confirm_destructive(key, fingerprint) {
-            let scope = match cmd.action {
-                Action::Delete => "删除智能体及其全部历史",
-                Action::ClearEverything => "清空所有智能体的公开和私有历史（保留智能体）",
-                Action::ClearAllPublic => "清空所有智能体的公开历史（保留智能体）",
-                Action::ClearHistory(Scope::Private) | Action::DeleteAt(Scope::Private) => {
-                    "删除你在该智能体中的私有历史"
+        match confirm_destructive(&key, &fingerprint) {
+            DestructiveConfirmation::Approved(message_id) => {
+                // 二次确认已经完成任务，先把自己的提示收走，再执行破坏性操作。
+                // 撤不掉不影响确认本身，也不为这件小事再往群里补一条错误。
+                recall_destructive_notice(ctx, writer, message_id).await;
+            }
+            DestructiveConfirmation::Ask => {
+                let scope = match cmd.action {
+                    Action::Delete => "删除智能体及其全部历史",
+                    Action::ClearEverything => "清空所有智能体的公开和私有历史（保留智能体）",
+                    Action::ClearAllPublic => "清空所有智能体的公开历史（保留智能体）",
+                    Action::ClearHistory(Scope::Private) | Action::DeleteAt(Scope::Private) => {
+                        "删除你在该智能体中的私有历史"
+                    }
+                    _ => "删除该智能体的公开历史",
+                };
+                let text = format!("即将{scope}，涉及 {count} 个智能体。此操作不可撤销。请在 60 秒内再次发送同一条指令确认；不再发送即可取消。数据有变化时需重新确认。");
+                let sent = send_msg_id(ctx, writer.clone(), msg_event.group_id(), Some(msg_event.user_id()), Message::new().text(text)).await;
+                match sent {
+                    Ok(message_id) => {
+                        let (stale, armed_at) = arm_destructive(key.clone(), fingerprint, message_id);
+                        // 数据变化或并发重复发来时只保留最新一条确认提示。
+                        recall_destructive_notice(ctx, writer, stale).await;
+                        let (ctx, writer) = (ctx.clone(), writer.clone());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(DESTRUCTIVE_CONFIRM_WITHIN).await;
+                            if let Some(message_id) = expire_destructive(&key, armed_at) {
+                                recall_destructive_notice(&ctx, &writer, Some(message_id)).await;
+                            }
+                        });
+                    }
+                    Err(error) => {
+                        // 没把确认要求送达就不能暗中进入「再发一次就执行」的状态。
+                        warn!(target: LOG_TARGET, "破坏性操作的确认提示发送失败：{error}");
+                    }
                 }
-                _ => "删除该智能体的公开历史",
-            };
-            reply_text(ctx, writer, &msg_event, format!("即将{scope}，涉及 {count} 个智能体。此操作不可撤销。请在 60 秒内再次发送同一条指令确认；不再发送即可取消。数据有变化时需重新确认。")).await;
-            return;
+                return;
+            }
         }
     }
 
@@ -2488,29 +2514,90 @@ pub async fn handle_create(
     }
 }
 
-fn confirm_destructive(key: String, fingerprint: String) -> bool {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::{Duration, Instant};
-    static PENDING: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
-    let now = Instant::now();
-    let mut pending = PENDING.get_or_init(Default::default).lock().unwrap();
-    pending.retain(|_, (_, at)| now.duration_since(*at) < Duration::from_secs(60));
-    if let Some((previous, _)) = pending.remove(&key)
-        && previous == fingerprint
-    {
-        return true;
+const DESTRUCTIVE_CONFIRM_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
+
+struct PendingDestructive {
+    fingerprint: String,
+    message_id: Option<String>,
+    armed_at: std::time::Instant,
+}
+
+enum DestructiveConfirmation {
+    Ask,
+    Approved(Option<String>),
+}
+
+fn destructive_pending() -> &'static std::sync::Mutex<std::collections::HashMap<String, PendingDestructive>> {
+    static PENDING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PendingDestructive>>> = std::sync::OnceLock::new();
+    PENDING.get_or_init(Default::default)
+}
+
+/// 第二次发来同一条指令才确认。第一次只查、不登记：登记要等提示真正发出之后，
+/// 避免两条并发指令在提示尚未送达时就把彼此当成确认。
+fn confirm_destructive(key: &str, fingerprint: &str) -> DestructiveConfirmation {
+    let mut pending = destructive_pending().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let approved = pending.get(key).is_some_and(|old| old.armed_at.elapsed() < DESTRUCTIVE_CONFIRM_WITHIN && old.fingerprint == fingerprint);
+    if approved {
+        let old = pending.remove(key).expect("刚查过的确认仍在表中");
+        DestructiveConfirmation::Approved(old.message_id)
+    } else {
+        DestructiveConfirmation::Ask
     }
-    if pending.len() >= 256 {
-        pending.clear();
+}
+
+/// 提示发出后再 armed。返回被新提示顶替的旧消息，以及这次登记的身份（定时撤回用）。
+fn arm_destructive(key: String, fingerprint: String, message_id: Option<String>) -> (Option<String>, std::time::Instant) {
+    let armed_at = std::time::Instant::now();
+    let mut pending = destructive_pending().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pending.len() >= 256 && !pending.contains_key(&key) {
+        // 正常情况一分钟的定时清理远早于此；这里只给异常高频指令一个硬上限。
+        if let Some(oldest) = pending.iter().min_by_key(|(_, old)| old.armed_at).map(|(key, _)| key.clone()) {
+            pending.remove(&oldest);
+        }
     }
-    pending.insert(key, (fingerprint, now));
-    false
+    let stale = pending.insert(key, PendingDestructive { fingerprint, message_id, armed_at }).and_then(|old| old.message_id);
+    (stale, armed_at)
+}
+
+/// 到点只撤自己那一次提示；同 key 已换成新提示或已经确认时不动。
+fn expire_destructive(key: &str, armed_at: std::time::Instant) -> Option<String> {
+    let mut pending = destructive_pending().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !pending.get(key).is_some_and(|old| old.armed_at == armed_at) {
+        return None;
+    }
+    pending.remove(key).and_then(|old| old.message_id)
+}
+
+async fn recall_destructive_notice(ctx: &Context, writer: &LockedWriter, message_id: Option<String>) {
+    let Some(message_id) = message_id.filter(|id| !id.is_empty()) else {
+        return;
+    };
+    if let Err(error) = api::delete_msg(ctx, writer.clone(), &message_id).await {
+        debug!(target: LOG_TARGET, "确认提示 {message_id} 没撤掉：{error}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_public_url;
+    use super::{DestructiveConfirmation, arm_destructive, confirm_destructive, expire_destructive, is_public_url};
+
+    #[test]
+    fn destructive_notice_is_returned_on_confirm_replace_and_expiry() {
+        let key = "tests/destructive-confirmation".to_string();
+        assert!(matches!(confirm_destructive(&key, "one"), DestructiveConfirmation::Ask));
+        let (stale, _) = arm_destructive(key.clone(), "one".into(), Some("notice-1".into()));
+        assert_eq!(stale, None);
+        assert!(matches!(confirm_destructive(&key, "two"), DestructiveConfirmation::Ask));
+        let (stale, _) = arm_destructive(key.clone(), "two".into(), Some("notice-2".into()));
+        assert_eq!(stale.as_deref(), Some("notice-1"));
+        match confirm_destructive(&key, "two") {
+            DestructiveConfirmation::Approved(id) => assert_eq!(id.as_deref(), Some("notice-2")),
+            DestructiveConfirmation::Ask => panic!("相同指纹的第二次指令应通过确认"),
+        }
+        let (_, armed_at) = arm_destructive(key.clone(), "three".into(), Some("notice-3".into()));
+        assert_eq!(expire_destructive(&key, armed_at).as_deref(), Some("notice-3"));
+        assert!(matches!(confirm_destructive(&key, "three"), DestructiveConfirmation::Ask));
+    }
 
     #[test]
     fn local_resource_links_are_never_handed_to_the_provider() {

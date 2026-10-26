@@ -14,15 +14,19 @@
 //!   加法（`verify.mode`）；倒计时从验证说明实际发出起算，期间按 `remind_seconds` 提醒。
 //!   同群提醒可用 `remind_merge_seconds` 合并，新提醒发出后撤掉旧提醒；答错有提示、
 //!   可以限次数；超时按 `action` 移出或禁言。账号不是群主或管理员时罚不了人，验证整个跳过、
-//!   只发欢迎。待验证名单落盘，重启后接着计时。
+//!   只发欢迎。待验证名单落盘，重启后接着计时；超时选「只记一笔」时另存有界留档，
+//!   「欢迎 记录」可分页查看，并核对其中谁真正符合潜水清理的口径（未通过验证本身不算潜水）。
 //! - **申请审批**：附言里含关键词的自动同意；对不上的看 `reject` 决定拒绝还是留给人
 //!   （智能体的管理栏也看得到，见 [`crate::requests`]）。
 //! - **群管理指令**：群主、管理员发「欢迎」看本群的设置与待验证名单，「欢迎 预览」把提示
-//!   对自己发一遍，「欢迎 放行 @某人」手动放行。
+//!   对自己发一遍，「欢迎 放行 @某人」手动放行；「欢迎 记录 [页码]」查看验证留档，
+//!   「欢迎 记录 清除 @某人」移除已经复核的留档。
 //!
 //! 默认文案的取舍：一句欢迎、一句规矩、一句后果，短到在手机上一屏读完；口吻是「有人
 //! 管、但不凶」——后果写明白（多久、会怎样），不加感叹号堆砌与「警告」字样。欢迎词给了
 //! 三种说法轮着用，群里天天进人也不像复读机。
+
+pub(crate) mod records;
 
 use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
 use crate::clock::duration_text;
@@ -152,6 +156,10 @@ struct VerifyConfig {
     remind_merge_seconds: u64,
     /// 超时怎么办：kick（移出）、mute（禁言）、none（只记一笔）。
     action: String,
+    /// action = none 的留档保留多少天；没有「永久保留」选项，目录不会无限增长。
+    record_days: u32,
+    /// 每个账号、每个群最多保留多少人的留档；超额先移除最旧的。
+    record_limit: u32,
     /// action = mute 时禁言多久（秒）。
     mute_seconds: u64,
     /// 移出时拒绝再次申请。
@@ -240,6 +248,8 @@ impl Default for VerifyConfig {
             remind_seconds: vec![60],
             remind_merge_seconds: 5,
             action: "kick".into(),
+            record_days: 90,
+            record_limit: 200,
             mute_seconds: 86400,
             kick_permanent: false,
             recall_unverified: false,
@@ -450,6 +460,12 @@ impl PluginConfig for Config {
         }
         if verify.action == "mute" && !(60..=30 * 86400).contains(&verify.mute_seconds) {
             return Err("verify.mute_seconds 须在 60 秒到 30 天之间".into());
+        }
+        if !(1..=3650).contains(&verify.record_days) {
+            return Err("verify.record_days 须在 1–3650 天之间".into());
+        }
+        if !(10..=1000).contains(&verify.record_limit) {
+            return Err("verify.record_limit 须在 10–1000 人之间".into());
         }
         if verify.attempts > 20 {
             return Err("verify.attempts 最多 20 次（0 = 不限）".into());
@@ -912,6 +928,9 @@ struct Pending {
     group: String,
     user_id: String,
     name: String,
+    /// 本次进群时刻，留档展示用。
+    #[serde(default)]
+    joined_at: i64,
     /// 到期时刻（Unix 秒）。欢迎尚未发出时只是等待上限，正式开始后会按发送时刻重写。
     deadline: i64,
     /// 验证说明已经随欢迎发出，倒计时正式开始。旧名单没有这个字段时按已经开始处理。
@@ -954,6 +973,7 @@ impl Pending {
             group: String::new(),
             user_id: String::new(),
             name: String::new(),
+            joined_at: 0,
             deadline: 0,
             started: true,
             answers,
@@ -1277,6 +1297,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             group: group.to_string(),
             user_id: user.to_string(),
             name: event_name(ctx, user).unwrap_or_else(|| user.to_string()),
+            joined_at: now(),
             deadline: now() + i64::try_from(wait).unwrap_or(300),
             started: false,
             answers,
@@ -1578,6 +1599,7 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
         .get_mut(&(me.clone(), group.to_string()))
         .map(|batch| batch.people.retain(|person| person.user != user));
     let gone = take(&me, group, user).await;
+    records::forget(&me, group, user).await;
     if let Some(p) = gone {
         settle(ctx, writer, config, &p).await;
         info!(target: LOG_TARGET, "群 {group} 待验证的 {user} 已离开，验证作废");
@@ -1692,7 +1714,7 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
         }
         Outcome::OutOfChances(p) => {
             info!(target: LOG_TARGET, "群 {group} 的 {}（{user}）答错 {limit} 次", p.name);
-            expire(ctx, writer, config, p).await;
+            expire(ctx, writer, config, p, "attempts").await;
         }
         Outcome::Waiting(Some(p)) => wrong_hint(ctx, writer, config, &p).await,
         Outcome::Waiting(None) => {}
@@ -1815,6 +1837,7 @@ async fn settle(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pendi
 
 async fn pass(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pending) -> Result<(), PluginError> {
     info!(target: LOG_TARGET, "群 {} 的 {}（{}）通过入群验证", p.group, p.name, p.user_id);
+    records::forget(&p.self_id, &p.group, &p.user_id).await;
     settle(ctx, writer, config, p).await;
     if let Some(text) = config.verify.pass_text.pick() {
         let info = group_info(ctx, writer, &p.group).await;
@@ -1877,7 +1900,9 @@ async fn notice(ctx: &Context, writer: &LockedWriter, p: &Pending, message: Mess
 fn usage() -> String {
     "「欢迎」看本群的欢迎与验证设置、待验证名单\n\
      「欢迎 预览」把欢迎对自己发一遍；也可以预览 送别、移出、验证、提醒、答错、通过、超时\n\
-     「欢迎 放行 @某人」让待验证的新人直接通过"
+     「欢迎 放行 @某人」让待验证的新人直接通过\n\
+     「欢迎 记录 [页码]」查看未通过验证的留档，并核对真正的潜水状态\n\
+     「欢迎 记录 清除 @某人」移除已经复核的留档（未通过验证不等于潜水）"
         .into()
 }
 
@@ -1898,16 +1923,50 @@ async fn run_command(ctx: &Context, writer: &LockedWriter, config: &Config, grou
                 reply(text).await?;
             }
         }
+        "记录" | "留档" => {
+            let clear = rest.split_whitespace().next().is_some_and(|word| matches!(word, "清除" | "移除" | "删除"));
+            if clear {
+                let ids = command_ids(&matched, rest, &ctx.bot.self_id());
+                if ids.is_empty() {
+                    reply("要清除谁的留档？发「欢迎 记录 清除 @某人」（也可以写号码）".into()).await?;
+                    return Ok(true);
+                }
+                let me = ctx.bot.self_id();
+                let mut removed = Vec::new();
+                let mut missed = Vec::new();
+                for id in ids {
+                    match records::take(&me, group, &id).await {
+                        Some(record) => removed.push(record.name),
+                        None => missed.push(id),
+                    }
+                }
+                let mut text = if removed.is_empty() {
+                    "没有找到要清除的验证留档。".to_string()
+                } else {
+                    let names = removed.iter().take(6).cloned().collect::<Vec<_>>().join("、");
+                    format!(
+                        "已清除 {} 人的验证留档：{}{}。",
+                        removed.len(),
+                        names,
+                        if removed.len() > 6 { format!(" 等 {} 人", removed.len()) } else { String::new() },
+                    )
+                };
+                if !missed.is_empty() {
+                    let ids = missed.iter().take(6).cloned().collect::<Vec<_>>().join("、");
+                    text.push_str(&format!(
+                        "\n{}{} 不在本群留档里。",
+                        ids,
+                        if missed.len() > 6 { format!(" 等 {} 人", missed.len()) } else { String::new() },
+                    ));
+                }
+                reply(text).await?;
+            } else {
+                let page = if rest.is_empty() { 1 } else { rest.parse::<usize>().unwrap_or(0) };
+                records::show(ctx, writer, config, group, page, &message_id).await?;
+            }
+        }
         "放行" | "通过" => {
-            // 指令后面的 @ 留在参数里，指令前面的（引用回复自带的那个）在 at_ids 里；也认直接写号码。
-            let mut ids = matched.at_ids.clone();
-            ids.extend(matched.args.iter().filter(|seg| seg.get_str("type") == Some("at")).filter_map(|seg| {
-                let data = seg.get("data")?;
-                data.get_str("qq").map(str::to_owned).or_else(|| data.get_i64("qq").map(|n| n.to_string()))
-            }));
-            ids.extend(rest.split_whitespace().filter(|w| w.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned));
-            ids.retain(|id| id != &ctx.bot.self_id());
-            ids.dedup();
+            let ids = command_ids(&matched, rest, &ctx.bot.self_id());
             if ids.is_empty() {
                 reply("要放行谁？发「欢迎 放行 @某人」".into()).await?;
                 return Ok(true);
@@ -1930,6 +1989,19 @@ async fn run_command(ctx: &Context, writer: &LockedWriter, config: &Config, grou
         _ => reply(format!("不认识「{word}」\n{}", usage())).await?,
     }
     Ok(true)
+}
+
+/// 指令里的 @ 与直接写出的号码。去掉机器人自己并去重；返回顺序保持管理员点名的顺序。
+fn command_ids(matched: &CommandMatch, text: &str, self_id: &str) -> Vec<String> {
+    let mut ids = matched.at_ids.clone();
+    ids.extend(matched.args.iter().filter(|seg| seg.get_str("type") == Some("at")).filter_map(|seg| {
+        let data = seg.get("data")?;
+        data.get_str("qq").map(str::to_owned).or_else(|| data.get_i64("qq").map(|n| n.to_string()))
+    }));
+    ids.extend(text.split_whitespace().filter(|word| word.bytes().all(|b| b.is_ascii_digit())).map(str::to_owned));
+    let mut seen = std::collections::HashSet::new();
+    ids.retain(|id| id != self_id && id != crate::message::AT_ALL && seen.insert(id.clone()));
+    ids
 }
 
 /// 本群现在是什么样：每一项开没开、开了是怎么个做法，验证差在哪，谁还在等。
@@ -1993,6 +2065,10 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             })
             .collect();
         lines.push(format!("· 待验证 {} 人：{}", pending.len(), names.join("、")));
+    }
+    let archived = records::list(config, &me, group).await;
+    if !archived.is_empty() {
+        lines.push(format!("· 验证留档 {} 人：发「欢迎 记录」分页查看；未通过验证不等于潜水", archived.len()));
     }
     lines.push("发「欢迎 预览」看看新人会收到什么。".into());
     lines.join("\n")
@@ -2067,6 +2143,7 @@ async fn preview(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
 pub fn on_connected(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
         STATE.preload().await;
+        records::preload(&ctx).await;
         let (tick_ctx, tick_writer) = (ctx.clone(), writer.clone());
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(5));
@@ -2291,7 +2368,7 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
     for item in due {
         match item {
             Due::Remind(p) => queue_reminder(ctx, writer, &config, p).await,
-            Due::Expire(p) => expire(ctx, writer, &config, p).await,
+            Due::Expire(p) => expire(ctx, writer, &config, p, "timeout").await,
             Due::Drop(p) => settle(ctx, writer, &config, &p).await,
         }
     }
@@ -2312,7 +2389,7 @@ fn tidy(ctx: &Context, writer: &LockedWriter, group: &str, notices: Vec<String>)
     });
 }
 
-async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pending) {
+async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pending, reason: &str) {
     let verify = &config.verify;
     settle(ctx, writer, config, &p).await;
     let result = match verify.action.as_str() {
@@ -2342,6 +2419,11 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
         return;
     }
     info!(target: LOG_TARGET, "群 {} 的 {}（{}）验证未通过，已按 {} 处理", p.group, p.name, p.user_id, verify.action);
+    if verify.action == "none" {
+        records::remember(&p, reason, verify).await;
+    } else {
+        records::forget(&p.self_id, &p.group, &p.user_id).await;
+    }
     let Some(text) = verify.fail_text.pick() else {
         return;
     };
@@ -2622,6 +2704,8 @@ pub(crate) const LABELS: &[(&str, &str)] = &[
     ("verify.remind_seconds", "剩这些秒时提醒"),
     ("verify.remind_merge_seconds", "合并提醒（秒）"),
     ("verify.action", "超时怎么办"),
+    ("verify.record_days", "验证留档保留天数"),
+    ("verify.record_limit", "每群最多留档人数"),
     ("verify.mute_seconds", "禁言多久（秒）"),
     ("verify.kick_permanent", "移出后不许再申请"),
     ("verify.recall_unverified", "撤回验证前的发言"),
@@ -2676,6 +2760,8 @@ pub(crate) fn depends() -> Value {
         "verify.attempts": { "on": "verify.mode", "in": checks },
         "verify.wrong_text": { "on": "verify.mode", "in": checks },
         "verify.mute_seconds": { "on": "verify.action", "in": ["mute"] },
+        "verify.record_days": { "on": "verify.action", "in": ["none"] },
+        "verify.record_limit": { "on": "verify.action", "in": ["none"] },
         "phrases.punish_kick": { "on": "verify.action", "in": ["kick"] },
         "phrases.punish_mute": { "on": "verify.action", "in": ["mute"] },
         "phrases.punish_none": { "on": "verify.action", "in": ["none"] },
@@ -2768,6 +2854,7 @@ mod tests {
             group: String::new(),
             user_id: String::new(),
             name: String::new(),
+            joined_at: 0,
             deadline: 0,
             started: true,
             answers: vec![answer.into()],
@@ -2832,6 +2919,7 @@ mod tests {
             group: String::new(),
             user_id: String::new(),
             name: String::new(),
+            joined_at: 0,
             deadline: 0,
             started: true,
             answers: if mode == "any" { Vec::new() } else { vec![answer.into()] },
