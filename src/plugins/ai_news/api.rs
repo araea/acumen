@@ -12,7 +12,9 @@
 //! 1.x 的写法原样可用——与 `llms.txt`）：
 //!   - Base URL `https://aihot.news`（2026-09 从 `aihot.virxact.com` 迁来，旧域名整站 301，
 //!     2026-10-31 起只做跳转），匿名只读，不带 cookie；网页前面的 EdgeOne 校验层不拦 `/api/v1`；
-//!   - 时间窗仅承诺 `24h` 与 `7d`；
+//!   - 时间窗仅承诺 `24h` 与 `7d`；首页变化后，实时线按同一查询的 `nextCursor`
+//!     向前翻页，直到覆盖所有目标仍需的历史（见 [`follow_items`]）；
+//!   - HTTP 客户端启用 gzip 自动解压，减少全量页与网页排行的传输量；
 //!   - 分类 slug 现有六个：`ai-models` / `ai-products` / `industry` / `paper` / `tip`（教程）/
 //!     `opinion`（观点）。2.0 之前观点并在 `tip` 里，现在与官网六类一一对应；
 //!   - 轮询间隔以响应 `Cache-Control` 的 `s-maxage` 为下限：
@@ -36,7 +38,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -173,6 +175,15 @@ fn etag_key(scope: &str, url: &str) -> String {
     format!("{scope}\u{1}{url}")
 }
 
+/// 多页跟进没有完成时，不能让下一轮被首页 304 短路。
+fn forget_etag(path_and_query: &str, poll: Poll) {
+    if let Some(scope) = poll.scope()
+        && let Ok(mut guard) = etags().lock()
+    {
+        guard.remove(&etag_key(scope, &format!("{BASE_URL}{path_and_query}")));
+    }
+}
+
 /// 发起一次 GET 请求并解析 JSON。
 ///
 /// [`Poll::Cached`] 会携带上次的 `If-None-Match`；服务端回 304 表示内容未变化，
@@ -230,18 +241,18 @@ async fn get_json(
         .into());
     }
 
-    if let Some(scope) = poll.scope()
-        && let Some(tag) = resp
-            .headers()
-            .get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
+    // 只有正文也成功解析后才接受这个 ETag；坏 JSON 不能在下一轮变成 304。
+    let etag = resp
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let value = resp.json::<JsonValue>().await?;
+    if let (Some(scope), Some(tag)) = (poll.scope(), etag)
         && let Ok(mut guard) = etags().lock()
     {
         guard.insert(etag_key(scope, &url), tag);
     }
-
-    let value = resp.json::<JsonValue>().await?;
     note_notice(&value);
     Ok(Some(value))
 }
@@ -249,7 +260,7 @@ async fn get_json(
 /// 响应里的 `notice` 是给运维者的提醒（域名迁移、旧接口停服、Skill 升级），
 /// 不是资讯内容。记一条日志让人看得见，同一条只记一次，免得每分钟刷一遍。
 fn note_notice(value: &JsonValue) {
-    static SEEN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let Some(notice) = value.get("notice") else {
         return;
     };
@@ -364,8 +375,18 @@ pub struct Source {
     pub name: Option<String>,
 }
 
+/// AIHOT 随条目给出的机器可读来源信息。
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attribution {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 /// 一条资讯。文档承诺 `id` / `title` / `links` / `discoveredAt` 非空，
-/// 但客户端仍全部按可空处理，避免服务端演进时整批解析失败。
+/// 但客户端仍按缺省值处理，避免服务端演进时整批解析失败。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Item {
@@ -373,6 +394,9 @@ pub struct Item {
     pub id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// 未翻译的原始标题；展示仍优先使用官方给读者的 `title`。
+    #[serde(default)]
+    pub original_title: Option<String>,
     #[serde(default)]
     pub summary: Option<String>,
     /// 网页「推荐理由」，未精选或无理由时为 null
@@ -393,6 +417,12 @@ pub struct Item {
     /// AIHOT 的 AI 评分（0—100），官网卡片上的「AI 评分」
     #[serde(default)]
     pub score: Option<f64>,
+    /// 是否进入编辑精选。`mode=all` 时也可据此识别精选条目。
+    #[serde(default)]
+    pub selected: bool,
+    /// 官方机器可读来源信息；文字与卡片也始终保留固定的 AIHOT 署名。
+    #[serde(default)]
+    pub attribution: Option<Attribution>,
 }
 
 impl Item {
@@ -490,6 +520,22 @@ pub fn clean_source_name(raw: &str) -> String {
 pub struct ItemsResponse {
     #[serde(default)]
     pub items: Vec<Item>,
+    #[serde(default)]
+    pub page: Page,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Page {
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+/// `/items` 的一页。游标只在完全相同的查询条件下使用，不能跨分类或时间窗复用。
+#[derive(Debug)]
+struct ItemPage {
+    items: Vec<Item>,
+    next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -851,8 +897,31 @@ pub async fn fetch_items(
     timeout_secs: u64,
     poll: Poll,
 ) -> Result<Option<Vec<Item>>, ApiError> {
+    Ok(fetch_items_page(
+        mode,
+        window,
+        category,
+        query,
+        limit,
+        None,
+        timeout_secs,
+        poll,
+    )
+    .await?
+    .map(|page| page.items))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn items_path(
+    mode: &str,
+    window: &str,
+    category: Option<&str>,
+    query: Option<&str>,
+    limit: u32,
+    cursor: Option<&str>,
+) -> String {
     let mut path = format!(
-        "/api/v1/items?mode={}&window={}&limit={}",
+        "/api/v1/items?mode={}&window={}&by=timeline&limit={}",
         encode(mode),
         encode(window),
         limit.clamp(1, 100)
@@ -863,18 +932,133 @@ pub async fn fetch_items(
     if let Some(q) = query.filter(|q| !q.is_empty()) {
         path.push_str(&format!("&q={}", encode(q)));
     }
+    if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
+        path.push_str(&format!("&cursor={}", encode(cursor)));
+    }
+    path
+}
 
+#[allow(clippy::too_many_arguments)]
+async fn fetch_items_page(
+    mode: &str,
+    window: &str,
+    category: Option<&str>,
+    query: Option<&str>,
+    limit: u32,
+    cursor: Option<&str>,
+    timeout_secs: u64,
+    poll: Poll,
+) -> Result<Option<ItemPage>, ApiError> {
+    let path = items_path(mode, window, category, query, limit, cursor);
     let Some(value) = get_json(&path, timeout_secs, poll).await? else {
         return Ok(None);
     };
     let parsed: ItemsResponse = serde_json::from_value(value)?;
-    Ok(Some(
-        parsed
+    Ok(Some(ItemPage {
+        items: parsed
             .items
             .into_iter()
             .filter(Item::is_displayable)
             .collect(),
-    ))
+        next_cursor: parsed
+            .page
+            .next_cursor
+            .filter(|cursor| !cursor.trim().is_empty()),
+    }))
+}
+
+/// 跟进实时线：首页仍走 ETag；有变化时才按 `nextCursor` 顺序向前翻页。
+///
+/// 一直翻到时间顺序上已经早于 `oldest_needed`（没有任何目标还需要这些条目）
+/// 或没有下一页为止。后续页用 Fresh：它们是不同资源，而且一次跟进必须读完
+/// 同一条游标链。20 页 / 2000 条是异常流量护栏；正常精选线只需首页。
+#[allow(clippy::too_many_arguments)]
+pub async fn follow_items(
+    mode: &str,
+    window: &str,
+    category: Option<&str>,
+    limit: u32,
+    oldest_needed: i64,
+    timeout_secs: u64,
+    poll: Poll,
+) -> Result<Option<Vec<Item>>, ApiError> {
+    const MAX_PAGES: usize = 20;
+    let mut cursor = None;
+    let mut items = Vec::new();
+    let mut keys = HashSet::new();
+    let first_path = items_path(mode, window, category, None, limit, None);
+
+    for page_index in 0..MAX_PAGES {
+        let page = match fetch_items_page(
+            mode,
+            window,
+            category,
+            None,
+            limit,
+            cursor.as_deref(),
+            timeout_secs,
+            if page_index == 0 { poll } else { Poll::Fresh },
+        )
+        .await
+        {
+            Ok(page) => page,
+            Err(error) if page_index > 0 && !items.is_empty() => {
+                // 首页 ETag 已更新，但整条游标链尚未读完。清掉它，下一轮重取；
+                // 已拿到的页先入队，重试时按条目 id 去重即可。
+                forget_etag(&first_path, poll);
+                warn!(
+                    target: super::LOG_TARGET,
+                    "实时线第 {} 个游标页失败：{}；先处理已取回的 {} 条，下轮重试完整链。",
+                    page_index + 1,
+                    error,
+                    items.len()
+                );
+                return Ok(Some(items));
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(page) = page else {
+            // 只有首页允许 304；游标页使用 Fresh，不会走到这个分支。
+            return Ok((page_index > 0).then_some(items));
+        };
+
+        let oldest = page
+            .items
+            .iter()
+            .filter_map(Item::timeline_ts)
+            .min();
+        for item in page.items {
+            if item.dedupe_key().is_none_or(|key| keys.insert(key)) {
+                items.push(item);
+            }
+        }
+
+        let reached_history = oldest.is_some_and(|ts| ts <= oldest_needed);
+        if reached_history || page.next_cursor.is_none() {
+            return Ok(Some(items));
+        }
+        let next = page.next_cursor.unwrap_or_default();
+        if cursor.as_deref() == Some(next.as_str()) {
+            forget_etag(&first_path, poll);
+            warn!(
+                target: super::LOG_TARGET,
+                "实时线游标重复，停止本轮并保留 {} 条；下轮重新建立游标链。",
+                items.len()
+            );
+            return Ok(Some(items));
+        }
+        cursor = Some(next);
+        if page_index + 1 == MAX_PAGES {
+            forget_etag(&first_path, poll);
+            warn!(
+                target: super::LOG_TARGET,
+                "实时线游标跟进达到 {} 页护栏，仍有下一页；先处理 {} 条并清掉首页 ETag，下轮继续重试。",
+                MAX_PAGES,
+                items.len()
+            );
+        }
+    }
+    Ok(Some(items))
 }
 
 /// 当前热点榜：`GET /api/v1/hot-topics`（最多 Top 10，按 rank 升序展示）
@@ -915,6 +1099,14 @@ pub struct StoryReport {
     pub first_party: bool,
 }
 
+/// 故事线或相关事件中的一个相邻事件。
+#[derive(Debug, Clone, Default)]
+pub struct StoryNeighbor {
+    pub title: String,
+    pub relation: String,
+    pub link: Option<String>,
+}
+
 /// 一个事件的完整详情：`/api/v1/stories/{publicId}`
 #[derive(Debug, Clone, Default)]
 pub struct Story {
@@ -933,6 +1125,9 @@ pub struct Story {
     pub link: Option<String>,
     /// 报道时间线，接口给的是新的在前
     pub reports: Vec<StoryReport>,
+    /// 同一故事的前情与后续，以及官方关联的其它事件。
+    pub storyline: Vec<StoryNeighbor>,
+    pub related: Vec<StoryNeighbor>,
 }
 
 impl Story {
@@ -958,6 +1153,28 @@ impl Story {
         }
         ordered
     }
+}
+
+fn parse_story_neighbors(story: &JsonValue, key: &str) -> Vec<StoryNeighbor> {
+    story
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .map(|neighbors| {
+            neighbors
+                .iter()
+                .filter_map(|neighbor| {
+                    let title = pick_str(neighbor, &["title"])?;
+                    Some(StoryNeighbor {
+                        title,
+                        relation: pick_str(neighbor, &["relation"]).unwrap_or_default(),
+                        link: neighbor
+                            .get("links")
+                            .and_then(|links| pick_str(links, &["aihot"])),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 事件详情：`GET /api/v1/stories/{publicId}`
@@ -1002,6 +1219,8 @@ pub async fn fetch_story(public_id: &str, timeout_secs: u64) -> Result<Story, Ap
                     .collect()
             })
             .unwrap_or_default(),
+        storyline: parse_story_neighbors(story, "storyline"),
+        related: parse_story_neighbors(story, "related"),
     })
 }
 

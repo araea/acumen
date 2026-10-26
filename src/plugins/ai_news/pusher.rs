@@ -15,36 +15,6 @@ use crate::message::Message;
 use rand::RngExt;
 use std::time::Duration;
 
-/// 两条推送线的数据源是产品语义，不跟随手动查询的通用 `mode` 配置：
-/// 定时线固定精选；实时线默认精选，也可显式切到全量。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PushFeed {
-    Realtime,
-    Curated,
-}
-
-impl PushFeed {
-    fn mode(self) -> &'static str {
-        match self {
-            Self::Realtime => "all",
-            Self::Curated => "selected",
-        }
-    }
-
-    fn request_limit(self, cfg: &AiNewsConfig, has_group_override: bool, realtime: bool) -> u32 {
-        if realtime {
-            // 实时抓取固定取接口上限，再交给持久队列分批发送。这里若沿用展示
-            // 条数，突发时排在 limit 之后的条目会因下一轮 304 而永久漏掉。
-            return 100;
-        }
-        match self {
-            Self::Realtime => 100,
-            Self::Curated if has_group_override => cfg.limit.saturating_mul(5).clamp(1, 100),
-            Self::Curated => cfg.limit.clamp(1, 100),
-        }
-    }
-}
-
 pub fn render_options(cfg: &AiNewsConfig) -> RenderOptions {
     RenderOptions {
         summary_max_chars: cfg.summary_max_chars.clamp(20, 400),
@@ -345,22 +315,24 @@ pub async fn fetch_brief(
     .await
 }
 
-/// 主动推送需要兼顾按目标分类覆盖：只要有目标设置了独立分类，就抓取未筛选的
-/// 动态池，再在本地按目标过滤；仍然只发起一次请求，不随目标数放大流量。
-async fn fetch_feed_for_push(
+/// 定时速递固定读取精选池；通用 `mode` 配置只影响手动查询。
+/// 有目标设置独立分类时抓未筛选池，再在本地按目标过滤，请求数不随目标数增长。
+pub async fn fetch_brief_for_push(
     cfg: &AiNewsConfig,
     poll: api::Poll,
-    feed: PushFeed,
-    realtime: bool,
 ) -> Result<Option<Vec<Item>>, api::ApiError> {
     let has_group_override = cfg
         .group_preferences
         .values()
         .any(|preference| preference.category.is_some());
     let category = cfg.category.trim();
-
+    let limit = if has_group_override {
+        cfg.limit.saturating_mul(5).clamp(1, 100)
+    } else {
+        cfg.limit.clamp(1, 100)
+    };
     api::fetch_items(
-        feed.mode(),
+        "selected",
         &cfg.window,
         if has_group_override || category.is_empty() {
             None
@@ -368,33 +340,40 @@ async fn fetch_feed_for_push(
             Some(category)
         },
         None,
-        feed.request_limit(cfg, has_group_override, realtime),
+        limit,
         cfg.request_timeout_seconds,
         poll,
     )
     .await
 }
 
-/// 定时速递固定读取精选池；通用 `mode` 配置只影响手动查询。
-pub async fn fetch_brief_for_push(
-    cfg: &AiNewsConfig,
-    poll: api::Poll,
-) -> Result<Option<Vec<Item>>, api::ApiError> {
-    fetch_feed_for_push(cfg, poll, PushFeed::Curated, false).await
-}
-
 /// 实时快报默认读取精选动态；显式配置为 `all` 时读取全部公开动态。
-/// 两种模式都以接口上限抓取，避免突发资讯遗漏。
+/// 首页变化后继续按官方游标翻到 `oldest_needed`，避免突发资讯被单页上限截断。
 pub async fn fetch_realtime_for_push(
     cfg: &AiNewsConfig,
     poll: api::Poll,
+    oldest_needed: i64,
 ) -> Result<Option<Vec<Item>>, api::ApiError> {
-    let feed = if cfg.realtime_uses_all() {
-        PushFeed::Realtime
-    } else {
-        PushFeed::Curated
-    };
-    fetch_feed_for_push(cfg, poll, feed, true).await
+    let mode = if cfg.realtime_uses_all() { "all" } else { "selected" };
+    let has_group_override = cfg
+        .group_preferences
+        .values()
+        .any(|preference| preference.category.is_some());
+    let category = cfg.category.trim();
+    api::follow_items(
+        mode,
+        &cfg.window,
+        if has_group_override || category.is_empty() {
+            None
+        } else {
+            Some(category)
+        },
+        100,
+        oldest_needed,
+        cfg.request_timeout_seconds,
+        poll,
+    )
+    .await
 }
 
 pub(super) fn item_matches_target(cfg: &AiNewsConfig, target: &PushTarget, item: &Item) -> bool {
@@ -404,11 +383,16 @@ pub(super) fn item_matches_target(cfg: &AiNewsConfig, target: &PushTarget, item:
 
 /// 关键词搜索：精选池查不到时，用完全相同的参数再查一次全量池。
 /// 返回 (条目, 是否来自全量池)。
-pub async fn search(cfg: &AiNewsConfig, query: &str) -> Result<(Vec<Item>, bool), api::ApiError> {
+pub async fn search(
+    cfg: &AiNewsConfig,
+    query: &str,
+    window: &str,
+    category: Option<&str>,
+) -> Result<(Vec<Item>, bool), api::ApiError> {
     let selected = api::fetch_items(
         "selected",
-        "7d",
-        None,
+        window,
+        category,
         Some(query),
         cfg.limit,
         cfg.request_timeout_seconds,
@@ -423,8 +407,8 @@ pub async fn search(cfg: &AiNewsConfig, query: &str) -> Result<(Vec<Item>, bool)
 
     let all = api::fetch_items(
         "all",
-        "7d",
-        None,
+        window,
+        category,
         Some(query),
         cfg.limit,
         cfg.request_timeout_seconds,

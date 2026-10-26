@@ -335,7 +335,10 @@ pub fn parse_board(html: &str) -> Result<Board, ApiError> {
 
     let entries: Vec<ModelEntry> = row_re()
         .captures_iter(table)
-        .map(|row| parse_row(&row[1], &row[2], &columns))
+        .filter_map(|row| {
+            let slug = capture(slug_re(), &row[1])?;
+            Some(parse_row(&slug, &row[2], &columns))
+        })
         .collect();
     if entries.is_empty() {
         return Err("AIHOT 模型榜当前没有条目".into());
@@ -346,7 +349,7 @@ pub fn parse_board(html: &str) -> Result<Board, ApiError> {
         ..Default::default()
     };
 
-    // 榜名：「综合榜 30 个模型」里「个模型」前面的那截——标题 h2 的第一段文字
+    // 榜名由服务端直接写进带 id 的标题，不依赖它是 h1 还是 h2。
     board.title = capture(title_re(), html);
 
     // 「35 项评测 · 7 家机构 · 10/18 20:06 更新」
@@ -441,7 +444,8 @@ macro_rules! lazy_re {
 
 lazy_re!(table_re, r"(?s)<table\b.*?</table>");
 lazy_re!(th_re, r"(?s)<th\b[^>]*>(.*?)</th>");
-lazy_re!(row_re, r#"(?s)<tr data-slug="([^"]*)"[^>]*>(.*?)</tr>"#);
+lazy_re!(row_re, r"(?is)<tr\b([^>]*)>(.*?)</tr>");
+lazy_re!(slug_re, r#"(?i)\bdata-slug\s*=\s*["']([^"']+)["']"#);
 lazy_re!(cell_re, r"(?s)<td\b[^>]*>(.*?)</td>");
 lazy_re!(tag_re, r"(?s)<[^>]*>");
 lazy_re!(strong_re, r"(?s)<strong\b[^>]*>(.*?)</strong>");
@@ -460,4 +464,44 @@ fn capture(re: &Regex, source: &str) -> Option<String> {
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_current_server_rendered_columns() {
+        let html = r##"
+            <h1 id="lb-board-title">综合榜</h1>
+            <p class="num">35 项评测 · 7 家机构 · 2026-10-18 20:06 更新</p>
+            <table><thead><tr>
+                <th>名次</th><th>模型</th><th>AIHOT 评分</th><th>评测覆盖</th>
+                <th>上线日期</th><th>缓存价格</th><th>输入价格</th><th>输出价格</th>
+            </tr></thead><tbody>
+                <tr class="model" data-slug='gpt-x'>
+                    <td>01</td><td><strong>GPT X</strong><small>OpenAI</small></td>
+                    <td><strong>96.5</strong><small>综合</small></td>
+                    <td>35 项评测 · 覆盖 96%</td>
+                    <td><time dateTime="2026-10-01">10/01</time></td>
+                    <td>$0.10 / M tokens</td><td>$1.00 / M tokens</td><td>$8.00 / M tokens</td>
+                </tr>
+            </tbody></table>
+            <h2 id="lb-pending-title">待排名 <span>4</span></h2>
+        "##;
+        let board = parse_board(html).unwrap();
+        assert_eq!(board.title.as_deref(), Some("综合榜"));
+        assert_eq!(board.evaluation_count, Some(35));
+        assert_eq!(board.pending, Some(4));
+        assert_eq!(board.entries.len(), 1);
+        let entry = &board.entries[0];
+        assert_eq!(entry.slug.as_deref(), Some("gpt-x"));
+        assert_eq!(entry.name.as_deref(), Some("GPT X"));
+        assert_eq!(entry.provider.as_deref(), Some("OpenAI"));
+        assert_eq!(entry.score, Some(96.5));
+        assert_eq!(entry.evaluations, Some(35));
+        assert_eq!(entry.coverage, Some(96));
+        assert_eq!(entry.released_at.as_deref(), Some("2026-10-01"));
+        assert_eq!(entry.cache_price.as_deref(), Some("$0.10 / M tokens"));
+    }
 }

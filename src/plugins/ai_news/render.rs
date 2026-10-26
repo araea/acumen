@@ -717,6 +717,8 @@ pub fn render_report(report: &Report, budget: usize, opts: &RenderOptions) -> Re
 
 /// 事件详情的时间线最多放几篇
 pub(super) const STORY_TIMELINE: usize = 10;
+/// 故事线、相关事件各展示三条，避免事件详情反而压过本篇报道。
+pub(super) const STORY_NEIGHBORS: usize = 3;
 
 /// 事件的概况一行：`17 家信源 · 19 篇报道 · 进行中 · 首报 10-17`
 pub(super) fn story_meta(story: &Story) -> String {
@@ -790,6 +792,27 @@ pub fn render_story(story: &Story, rank: Option<u32>, opts: &RenderOptions) -> R
         }
         entries.push(out);
         links.push(entry_links);
+    }
+    for (label, neighbors) in [("故事线", &story.storyline), ("相关事件", &story.related)] {
+        for neighbor in neighbors.iter().take(STORY_NEIGHBORS) {
+            let mut out = format!("{}. 【{}】{}", entries.len() + 1, label, neighbor.title);
+            if !neighbor.relation.trim().is_empty() {
+                out.push_str(&format!("\n   关联：{}", clip(neighbor.relation.trim(), 80)));
+            }
+            let mut entry_links = EntryLinks {
+                title: neighbor.title.clone(),
+                links: Vec::new(),
+            };
+            if let Some(url) = neighbor.link.as_deref() {
+                out.push_str(&format!("\n   🔗 {url}"));
+                entry_links.links.push(EntryLink {
+                    label: "事件页".to_string(),
+                    url: url.to_string(),
+                });
+            }
+            entries.push(out);
+            links.push(entry_links);
+        }
     }
     if let Some(url) = story.link.as_deref() {
         entries.push(format!("{}. 阅读事件页\n   🔗 {url}", entries.len() + 1));

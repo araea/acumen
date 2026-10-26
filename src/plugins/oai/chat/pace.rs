@@ -142,7 +142,7 @@ enum Draft {
 pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speech {
     // 伪工具调用要在这里摘掉，不能等分完行、切完句：JSON 里的逗号是换气处，
     // 先断句会把 `[satori_action:…]` 或 `[send]parts:…` 切成两半，后半截照样漏进群。
-    let raw = protocol::strip(raw);
+    let raw = protocol::clean(raw);
     let raw: &str = &raw;
     let mut drafts: Vec<(Draft, f32)> = Vec::new();
     let mut pending_wait = 0.0_f32;
@@ -154,6 +154,10 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
         }
         if line.eq_ignore_ascii_case("[silent]") {
             return Speech::Silent;
+        }
+        // 协议残片不占发送额度，更不能成为一条群消息。
+        if protocol::is_reply_fragment(line) {
+            continue;
         }
         if let Some(caps) = poke_note().captures(line) {
             if drafts.len() < max_messages
@@ -186,7 +190,13 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
         if drafts.len() >= max_messages {
             continue;
         }
-        let (reply, reply_to, body) = reply_prefix(line);
+        let (body, quote) = protocol::take_reply_markers(line);
+        let reply = quote.is_some();
+        let reply_to = match quote {
+            Some(protocol::Quote::Message(id)) => Some(id),
+            _ => None,
+        };
+        let body = body.trim();
         if body.is_empty() {
             continue;
         }
@@ -258,26 +268,6 @@ pub(crate) fn parse(raw: &str, max_messages: usize, split_chars: usize) -> Speec
     }
 }
 
-/// 行首的引用前缀：`[reply]` 引本批默认目标，`[reply:消息号]` 点名引某一条。
-///
-/// 返回「是否引用、点名的消息号、剩下要发的正文」。号码写得不合法时整行原样当文字
-/// 处理——群友本来就会打方括号，认不出来的那种留着比吞掉好。
-fn reply_prefix(line: &str) -> (bool, Option<String>, &str) {
-    let Some(rest) = line.strip_prefix("[reply") else {
-        return (false, None, line);
-    };
-    if let Some(rest) = rest.strip_prefix(']') {
-        return (true, None, rest.trim_start());
-    }
-    if let Some(rest) = rest.strip_prefix(':')
-        && let Some((id, rest)) = rest.split_once(']')
-        && !id.trim().is_empty()
-    {
-        return (true, Some(id.trim().to_string()), rest.trim_start());
-    }
-    (false, None, line)
-}
-
 /// 去掉模型偶尔带上的代码围栏、列表符号与首尾空白。
 fn strip_decoration(line: &str) -> &str {
     let line = line.trim();
@@ -298,16 +288,18 @@ fn strip_decoration(line: &str) -> &str {
 /// id 79077 的 `[face:277]` 就是这么漏的。这里复用文字路径的翻译：只认合法
 /// 标记，`[笑]` 这类不认识的方括号仍旧是文字。
 pub(crate) fn text_segments(text: &str) -> Message {
-    // 工具路径的 text 也可能混进伪调用；能在这里摘就先摘，`split_send` 那条
-    // 提前断句的路径另有处理。
-    let text = protocol::strip(text);
-    build_message(&text).0
+    build_message(text).0
 }
 
 /// 一行文本 → 消息段 + 正文字数。
 fn build_message(body: &str) -> (Message, usize) {
+    // 最后一道出站护栏：即使未来新增了拆分路径，也不能把协议残片交给 Satori。
+    let body = protocol::clean(body);
+    if protocol::is_reply_fragment(&body) {
+        return (Message::new(), 0);
+    }
     // 字面的 `\n` 在这儿就还原成真换行，后面按标记定位的字节下标才对得上。
-    let body = super::literal_newlines(body);
+    let body = super::literal_newlines(&body);
     let body = mark_bare_ats(&body);
     let body: &str = &body;
     let mut message = Message::new();
@@ -419,4 +411,62 @@ fn jitter(value: f32, spread: f32) -> f32 {
 
 fn seconds(value: f32) -> Duration {
     Duration::from_secs_f32(value.clamp(0.0, 120.0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use simd_json::prelude::ValueAsScalar;
+
+    fn text(message: &Message) -> String {
+        message
+            .0
+            .iter()
+            .filter(|segment| segment.type_ == "text")
+            .filter_map(|segment| segment.data.get("text"))
+            .filter_map(|text| text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn broken_reply_never_becomes_messages() {
+        assert!(matches!(
+            parse("[reply\n:77008028764738974", 3, 120),
+            Speech::Silent
+        ));
+    }
+
+    #[test]
+    fn broken_reply_keeps_body_and_real_quote() {
+        let Speech::Say(rows) = parse(
+            "[reply\n:77008028764738974\n这句话才是正文",
+            3,
+            120,
+        ) else {
+            panic!("应该保留正文");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reply_to.as_deref(), Some("77008028764738974"));
+        assert_eq!(text(&rows[0].message), "这句话才是正文");
+    }
+
+    #[test]
+    fn context_blockquote_is_not_spoken() {
+        let Speech::Say(rows) = parse("怎么啦，这表情看着挺有故事啊（</blockquote>", 1, 120)
+        else {
+            panic!("标签前的正文应该保留");
+        };
+        assert_eq!(rows.len(), 1);
+        assert_eq!(text(&rows[0].message), "怎么啦，这表情看着挺有故事啊");
+        assert!(matches!(parse("（</blockquote>", 1, 120), Speech::Silent));
+    }
+
+    #[test]
+    fn split_tool_reply_pair_is_recognized() {
+        assert!(protocol::is_split_reply_pair(
+            "[reply",
+            ":77008028764738974"
+        ));
+        assert!(!protocol::is_split_reply_pair("[reply", "普通正文"));
+    }
 }

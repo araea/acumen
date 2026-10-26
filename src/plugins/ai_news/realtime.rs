@@ -12,6 +12,8 @@
 //!   - 带 `If-None-Match` 时，没有新内容的那些轮次服务端只回一个 304 空响应，
 //!     这正是官方推荐频繁轮询的原因——绝大多数轮次几乎不产生流量；
 //!   - ETag 分区独立（见 [`api::Poll`]），实时轮询不会把定时档的 304 也一并「吃掉」。
+//!   - 首页变化后按 `page.nextCursor` 继续取同一查询的后续页，直到早于所有目标
+//!      仍需要的时间点；突发超过 100 条时不再被单页上限截断（见 [`api::follow_items`]）。
 //!
 //! 官方另有 `/api/v1/selected/snapshot` + `/changes` 增量账本，语义比窗口查询更准，
 //! 但它是给「在本地保留一份完整精选副本」的镜像客户端用的：要先分页拉完几千条做基线，
@@ -202,12 +204,31 @@ async fn poll_once(ctx: Context, writer: LockedWriter, cfg: AiNewsConfig) {
 
     let now = Utc::now().timestamp();
     let max_age = cfg.realtime_max_age_minutes.max(1) * 60;
+    let freshness_floor = now - max_age;
+    // 取所有目标所需历史的并集：最老的那个下限决定游标翻到哪儿。
+    // 刚开启的目标基线就是此刻，因此不会为了它翻取窗口里的旧闻。
+    let oldest_needed = statuses
+        .iter()
+        .map(|(target, status)| {
+            status
+                .since
+                .max(floors.get(target).copied().unwrap_or(0))
+                .max(freshness_floor)
+        })
+        .min()
+        .unwrap_or(freshness_floor);
     // 退避或 304 只跳过抓取，不跳过队列投递；此前积压的资讯仍可继续发送。
     let stamped: Vec<Stamped> = if api::backoff_seconds_left() > 0 {
         info!(target: LOG_TARGET, "实时推送：AIHOT 正在退避，先处理本地待发队列。");
         Vec::new()
     } else {
-        match pusher::fetch_realtime_for_push(&cfg, api::Poll::Cached(ETAG_SCOPE)).await {
+        match pusher::fetch_realtime_for_push(
+            &cfg,
+            api::Poll::Cached(ETAG_SCOPE),
+            oldest_needed,
+        )
+        .await
+        {
             Ok(Some(items)) => items
                 .into_iter()
                 .filter_map(|item| {

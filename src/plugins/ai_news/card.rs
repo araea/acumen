@@ -27,8 +27,8 @@ use super::cluster::{Cluster, overlap};
 use super::leaderboard::Board;
 use super::render::models_meta;
 use super::render::{
-    Digest, RenderOptions, STORY_TIMELINE, clip, digest, fmt_time, report_item_meta, story_meta,
-    story_report_meta,
+    Digest, RenderOptions, STORY_NEIGHBORS, STORY_TIMELINE, clip, digest, fmt_time,
+    report_item_meta, story_meta, story_report_meta,
 };
 use crate::render::web::esc;
 use anyhow::Result;
@@ -619,6 +619,31 @@ pub fn story_card(story: &Story, rank: Option<u32>, theme: CardTheme) -> String 
         body.push_str("</div>");
     }
     body.push_str("</div>");
+
+    for (label, neighbors) in [("故事线", &story.storyline), ("相关事件", &story.related)] {
+        let shown: Vec<_> = neighbors.iter().take(STORY_NEIGHBORS).collect();
+        if shown.is_empty() {
+            continue;
+        }
+        body.push_str(&format!(
+            r#"<div class="sec"><div class="sec-h"><span class="bar"></span>{label}</div>"#
+        ));
+        for neighbor in shown {
+            number += 1;
+            body.push_str(&format!(
+                r#"<div class="li"><span class="n">{number}</span><div class="lt">{}</div>"#,
+                phrase(neighbor.title.trim())
+            ));
+            if !neighbor.relation.trim().is_empty() {
+                body.push_str(&format!(
+                    r#"<div class="m">关联：{}</div>"#,
+                    esc(&clip(neighbor.relation.trim(), 80))
+                ));
+            }
+            body.push_str("</div>");
+        }
+        body.push_str("</div>");
+    }
 
     if story.link.is_some() {
         number += 1;

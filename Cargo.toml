@@ -1,6 +1,6 @@
 [package]
 name = "acumen"
-version = "1.57.3"
+version = "1.58.0"
 edition = "2024"
 rust-version = "1.99"
 description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"
@@ -48,7 +48,7 @@ flate2 = "1"          # 自动更新：发布包是 gzip
 base64 = "0.23"
 
 # 网络与 HTTP
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "system-proxy", "http2", "charset", "json", "multipart"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "system-proxy", "http2", "charset", "json", "multipart", "gzip"] }
 http = "1.5"
 url = "2.5"
 tokio-tungstenite = "0.30"  # WebSocket

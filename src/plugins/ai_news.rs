@@ -1132,6 +1132,30 @@ fn parse_brief_args(arg: &str) -> Result<BriefArgs, String> {
     Ok(parsed)
 }
 
+/// `/ai搜索 关键词 -- 论文 24小时`：`--` 之前全部属于关键词，避免「模型」
+/// 这类正常关键词被误当分类；不写分隔符时仍是近 7 天全分类。
+struct SearchArgs<'a> {
+    query: &'a str,
+    category: Option<String>,
+    window: &'static str,
+}
+
+fn parse_search_args(arg: &str) -> Result<SearchArgs<'_>, String> {
+    let (query, filters) = arg
+        .split_once("--")
+        .map_or((arg, ""), |(query, filters)| (query, filters));
+    let query = query.trim();
+    if query.is_empty() {
+        return Err("缺少关键词".to_string());
+    }
+    let parsed = parse_brief_args(filters)?;
+    Ok(SearchArgs {
+        query,
+        category: parsed.category,
+        window: parsed.window.unwrap_or("7d"),
+    })
+}
+
 /// 最近精选。参数可以挑分类与时间窗（`/ai资讯 论文`、`/ai资讯 观点 7天`），
 /// 不带则沿用当前目标设好的分类与配置里的时间窗。
 async fn query_brief(
@@ -1347,8 +1371,16 @@ async fn query_models(config: &AiNewsConfig, arg: &str, prefix: &str) -> Payload
     }
 }
 
-async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Payload {
-    let keyword = keyword.trim();
+async fn query_search(config: &AiNewsConfig, arg: &str, prefix: &str) -> Payload {
+    let parsed = match parse_search_args(arg) {
+        Ok(parsed) => parsed,
+        Err(word) => {
+            return notice(format!(
+                "❌ 搜索参数不对：{word}\n用法：{prefix}ai搜索 <关键词> [-- 分类 24小时|7天]\n例如：{prefix}ai搜索 OpenAI -- 论文 24小时"
+            ));
+        }
+    };
+    let keyword = parsed.query;
     if keyword.chars().count() < 2 {
         return notice(format!("❌ 关键词太短\n用法：{prefix}ai搜索 <关键词>，至少 2 个字"));
     }
@@ -1356,22 +1388,25 @@ async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Pay
         return notice("❌ 关键词太长\n控制在 200 字以内");
     }
 
-    match pusher::search(config, keyword).await {
+    let window = pusher::window_label(parsed.window);
+    let scope = parsed
+        .category
+        .as_deref()
+        .filter(|category| !category.is_empty())
+        .map(|category| format!("{} · ", api::category_label(category)))
+        .unwrap_or_default();
+    let category = parsed.category.as_deref().filter(|category| !category.is_empty());
+    match pusher::search(config, keyword, parsed.window, category).await {
         Ok((items, from_all_pool)) if !items.is_empty() => {
             let opts = pusher::render_options(config);
-            let (header, subtitle) = if from_all_pool {
-                (
-                    format!("「{keyword}」近 7 天相关动态（未进入精选）"),
-                    format!("「{keyword}」· 近 7 天 · 未进入精选"),
-                )
+            let pool = if from_all_pool {
+                "相关动态（未进入精选）"
             } else {
-                (
-                    format!("「{keyword}」近 7 天精选"),
-                    format!("「{keyword}」· 近 7 天精选"),
-                )
+                "精选"
             };
+            let subtitle = format!("「{keyword}」· {scope}{window} · {pool}");
             let clusters = cluster::fold_if(config.fold_same_event, items);
-            let rendered = render::render_items(&header, &clusters, &opts);
+            let rendered = render::render_items(&subtitle, &clusters, &opts);
             let html = card::items_card(
                 "关键词检索",
                 &subtitle,
@@ -1381,7 +1416,9 @@ async fn query_search(config: &AiNewsConfig, keyword: &str, prefix: &str) -> Pay
             );
             Payload::build(config, rendered, Some(html)).await
         }
-        Ok(_) => notice(format!("📭 近 7 天没有找到与「{keyword}」相关的 AI 资讯")),
+        Ok(_) => notice(format!(
+            "📭 {window}内没有找到与「{keyword}」相关的 {scope}AI 资讯"
+        )),
         Err(e) => {
             warn!(target: LOG_TARGET, "搜索 [{}] 失败: {}", keyword, e);
             notice(format!("❌ 搜索失败：{e}"))

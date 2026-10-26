@@ -16,6 +16,113 @@
 //! 会把标记切成两半，后半截没有 `[satori_action:` 这个前缀，照样当正文漏进群。
 
 use std::borrow::Cow;
+use std::sync::OnceLock;
+
+/// 清理一段完整逻辑消息。必须早于按行、按标点或按 `parts` 拆分。
+///
+/// 三种泄漏共用这一道：伪工具调用、聊天上下文里抄出来的 HTML 引用标签、
+/// 以及被模型写成两行的 `[reply` / `:消息号`。各发送路径只调用这里，
+/// 不再各自记得清其中一部分。
+pub(crate) fn clean(raw: &str) -> Cow<'_, str> {
+    let cleaned = strip(raw);
+    let cleaned = match cleaned {
+        Cow::Borrowed(text) => strip_context_html(text),
+        Cow::Owned(text) => Cow::Owned(strip_context_html(&text).into_owned()),
+    };
+    match cleaned {
+        Cow::Borrowed(text) => repair_reply_markers(text),
+        Cow::Owned(text) => Cow::Owned(repair_reply_markers(&text).into_owned()),
+    }
+}
+
+/// 入站引用与 Markdown 渲染里会出现 `blockquote`，模型有时会把它当聊天格式
+/// 原样抄回来。QQ 纯文本并不需要这个标签；尤其 `（</blockquote>` 要连前面
+/// 那个为标签准备的左括号一起去掉，否则只是从标签泄漏变成标点泄漏。
+fn strip_context_html(raw: &str) -> Cow<'_, str> {
+    static CLOSE_WITH_PAREN: OnceLock<regex::Regex> = OnceLock::new();
+    static TAG: OnceLock<regex::Regex> = OnceLock::new();
+    let close = CLOSE_WITH_PAREN.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)[（(]\s*(?:<\s*/\s*blockquote\b[^>]*>|&lt;\s*/\s*blockquote\b.*?&gt;)",
+        )
+        .unwrap()
+    });
+    let tag = TAG.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)(?:<\s*/?\s*blockquote\b[^>]*>?|&lt;\s*/?\s*blockquote\b.*?&gt;)",
+        )
+        .unwrap()
+    });
+    let without_close = close.replace_all(raw, "");
+    let without_tags = tag.replace_all(&without_close, "");
+    if without_tags.is_empty() && without_close.trim().is_empty() {
+        return Cow::Borrowed("");
+    }
+    match without_tags {
+        Cow::Borrowed(_) => without_close,
+        Cow::Owned(text) => Cow::Owned(text),
+    }
+}
+
+/// 把真实线上出现过的跨行、未闭合引用头修成一个完整标记：
+/// `[reply\n:770…` → `[reply:770…]`。没有正文时随后会按沉默处理；
+/// 后面还有正文时则只留下正文与真实引用，不再把协议两行分开发送。
+fn repair_reply_markers(raw: &str) -> Cow<'_, str> {
+    static BROKEN: OnceLock<regex::Regex> = OnceLock::new();
+    static WITHOUT_ID: OnceLock<regex::Regex> = OnceLock::new();
+    static UNCLOSED: OnceLock<regex::Regex> = OnceLock::new();
+    let broken = BROKEN.get_or_init(|| {
+        regex::Regex::new(
+            r"(?mi)^([ \t]*)[\[［][ \t]*reply[ \t]*\r?\n[ \t]*[:：][ \t]*([0-9A-Za-z_-]+)(?:[ \t]*[\]］])?[ \t]*(?:\r?\n[ \t]*)?",
+        )
+        .unwrap()
+    });
+    let without_id = WITHOUT_ID.get_or_init(|| {
+        regex::Regex::new(
+            r"(?mi)^([ \t]*)[\[［][ \t]*reply[ \t]*\r?\n[ \t]*[\]］][ \t]*(?:\r?\n[ \t]*)?",
+        )
+        .unwrap()
+    });
+    let unclosed = UNCLOSED.get_or_init(|| {
+        regex::Regex::new(
+            r"(?mi)^([ \t]*)[\[［][ \t]*reply[ \t]*[:：][ \t]*([0-9A-Za-z_-]+)(?:[ \t]*[\]］])?",
+        )
+        .unwrap()
+    });
+    let repaired = broken.replace_all(raw, "${1}[reply:${2}] ");
+    let repaired = match without_id.replace_all(&repaired, "${1}[reply] ") {
+        Cow::Borrowed(_) => repaired,
+        Cow::Owned(text) => Cow::Owned(text),
+    };
+    match unclosed.replace_all(&repaired, "${1}[reply:${2}] ") {
+        Cow::Borrowed(_) => repaired,
+        Cow::Owned(text) => Cow::Owned(text),
+    }
+}
+
+/// 分断后仍像孤立引用协议的残片。正常句子里的 `[笑]`、英文 reply 不受影响。
+pub(crate) fn is_reply_fragment(text: &str) -> bool {
+    static ORPHAN: OnceLock<regex::Regex> = OnceLock::new();
+    let orphan = ORPHAN.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)^(?:[\[［]\s*reply(?:\s*[:：]\s*[0-9A-Za-z_-]+)?\s*[\]］]?|[:：]\s*[0-9A-Za-z_-]{5,128}\s*[\]］]?)$",
+        )
+        .unwrap()
+    });
+    orphan.is_match(text.trim())
+}
+
+/// 两个相邻工具文本段是否把一个引用头切成了 `[reply` + `:消息号`。
+/// 只有这种确定形状才合并，不能改变模型主动创建多个 text 段的消息边界。
+pub(crate) fn is_split_reply_pair(first: &str, second: &str) -> bool {
+    static CONTINUATION: OnceLock<regex::Regex> = OnceLock::new();
+    let continuation = CONTINUATION.get_or_init(|| {
+        regex::Regex::new(r"^[:：]\s*[0-9A-Za-z_-]{5,128}\s*[\]］]?$").unwrap()
+    });
+    let first = first.trim();
+    (first.eq_ignore_ascii_case("[reply") || first.eq_ignore_ascii_case("［reply"))
+        && continuation.is_match(second.trim())
+}
 
 /// 伪工具调用的开头。真工具调用走的是结构化 `tool_calls`，不会带这些标记。
 const ACTION_MARKER: &str = "[satori_action:";
@@ -48,7 +155,7 @@ pub(crate) enum Quote {
 /// 12:55「[reply] 布丁你这是以貌取片」）。只认行首：句子中间出现的方括号
 /// 多半是群友原话，不动。全角括号一并认，模型两种都写过。
 pub(crate) fn take_reply_markers(text: &str) -> (Cow<'_, str>, Option<Quote>) {
-    static MARKER: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static MARKER: OnceLock<regex::Regex> = OnceLock::new();
     let marker = MARKER.get_or_init(|| {
         regex::Regex::new(r"(?mi)^([ \t]*)[\[［]\s*reply\s*(?:[:：]\s*([^\]］\s]+)\s*)?[\]］][ \t]*")
             .unwrap()

@@ -1682,6 +1682,8 @@ impl Session {
                 anyhow::bail!("扩展能力要走目录那条路：{name}");
             }
             Action::Send { parts, reply_to } => {
+                // 先接回被拆在两个 text 段里的引用头，再清洗完整逻辑消息。
+                let parts = join_split_reply_parts(parts);
                 // 模型偶尔把工具调用当正文写出来（`[satori_action:{…}]`）。那是协议，
                 // 不是要说的话，而且必须在断句之前摘：JSON 里的逗号看着像换气处，
                 // 先切会把标记切成两半，后半截没有名字，照样漏进群。
@@ -1698,7 +1700,7 @@ impl Session {
                     .iter()
                     .map(|part| match part {
                         Part::Text { text } => {
-                            let text = super::protocol::strip(text);
+                            let text = super::protocol::clean(text);
                             let (text, quote) = super::protocol::take_reply_markers(&text);
                             marked = marked.take().or(quote);
                             Part::Text {
@@ -2573,6 +2575,23 @@ fn at_needs_gap(parts: &[Part], index: usize) -> bool {
             Some(Part::Text { text })
                 if !text.is_empty() && !text.starts_with(char::is_whitespace)
         )
+}
+
+/// 只合并确定属于同一个残缺 `[reply` 协议的相邻文本段；正常的多段发言保持原边界。
+fn join_split_reply_parts(parts: &[Part]) -> Vec<Part> {
+    let mut joined: Vec<Part> = Vec::with_capacity(parts.len());
+    for part in parts {
+        if let Part::Text { text } = part
+            && let Some(Part::Text { text: previous }) = joined.last_mut()
+            && super::protocol::is_split_reply_pair(previous, text)
+        {
+            previous.push('\n');
+            previous.push_str(text);
+            continue;
+        }
+        joined.push(part.clone());
+    }
+    joined
 }
 
 /// 一条 `send` 要不要按换气切成几条；要切就给出每一条的元素表。
