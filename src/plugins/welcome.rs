@@ -1139,25 +1139,64 @@ struct GroupInfo {
     members: Option<i32>,
 }
 
-/// 群名与人数：一次 `guild.get` 都有。读不到就是群号、人数为空。
+/// 事件里带的群名，`guild.name` 优先、退到 `channel.name`。
+///
+/// 实现端推事件时就知道群名（消息事件一直带着），入群事件也带着的话，渲染 `{group}`
+/// 就不必再问一次 `guild.get`。
+fn event_group_name(ctx: &Context) -> Option<String> {
+    let EventType::Satori(raw) = &ctx.event else {
+        return None;
+    };
+    let satori = raw.get("_satori")?;
+    ["guild", "channel"]
+        .iter()
+        .filter_map(|key| satori.get(*key).and_then(|value| value.get_str("name")))
+        .find(|name| !name.trim().is_empty())
+        .map(|name| name.trim().to_string())
+}
+
+/// 群名与人数：一次 `guild.get` 都有。群名事件里带了就用事件里的（更新，也省一次往返），
+/// 读不到就是群号、人数为空。
 async fn group_info(ctx: &Context, writer: &LockedWriter, group: &str) -> GroupInfo {
     let info = api::get_guild_info(ctx, writer.clone(), group).await.ok();
-    let event_name = match &ctx.event {
-        EventType::Satori(raw) => raw
-            .get("_satori")
-            .and_then(|v| v.get("guild"))
-            .and_then(|v| v.get_str("name"))
-            .filter(|name| !name.is_empty())
-            .map(str::to_owned),
-        _ => None,
-    };
-    let name = info
-        .as_ref()
-        .map(|i| i.group_name.clone())
-        .filter(|name| !name.is_empty())
-        .or(event_name)
-        .unwrap_or_else(|| group.to_string());
+    let live_name = info.as_ref().map(|i| i.group_name.clone()).filter(|name| !name.is_empty());
+    let name = event_group_name(ctx).or(live_name).unwrap_or_else(|| group.to_string());
     GroupInfo { id: group.to_string(), name, members: info.and_then(|i| i.member_count) }
+}
+
+/// 昵称、群名、群人数都只是欢迎词里的装饰。给它们这么久，到点还没回来就先发欢迎，
+/// 用号码与群号顶上——进群那一刻群里还有人看着，欢迎晚两秒就已经没人在意了。
+const ENRICH_WAIT: Duration = Duration::from_millis(1200);
+
+/// 名字：事件里带就用它；没带就问一次平台，最多等 `wait`，等不到用号码。
+async fn display_name_soon(ctx: &Context, writer: &LockedWriter, group: &str, user: &str, wait: Duration) -> String {
+    if let Some(name) = event_name(ctx, user) {
+        return name;
+    }
+    if let Ok(name) = tokio::time::timeout(wait, display_name(ctx, writer, group, user)).await {
+        return name;
+    }
+    warn!(target: LOG_TARGET, "群 {group} 的新成员 {user} 昵称没查回来，先用号码顶上");
+    user.to_string()
+}
+
+/// 群资料：同样只等 `wait`；没等回来就照事件里的群名（再没有就是群号），人数留空。
+async fn group_info_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> GroupInfo {
+    if let Ok(info) = tokio::time::timeout(wait, group_info(ctx, writer, group)).await {
+        return info;
+    }
+    GroupInfo { id: group.to_string(), name: event_group_name(ctx).unwrap_or_else(|| group.to_string()), members: None }
+}
+
+/// 账号在本群是不是群主或管理员：查过一次会记十分钟，通常直接命中。
+/// 没查回来就按普通成员算——这一次只发欢迎、不做验证（配置里本来就约定罚不动人就跳过）。
+async fn own_role_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> String {
+    if let Ok(role) = tokio::time::timeout(wait, api::own_role(ctx, writer.clone(), group)).await {
+        role
+    } else {
+        debug!(target: LOG_TARGET, "群 {group} 的账号身份没查回来，这一次不做验证");
+        String::new()
+    }
 }
 
 /// 合并欢迎按账号与群分缓冲。昵称与群资料用 OnceCell 在等待窗口里预取；
@@ -1216,7 +1255,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     let mut verify = None;
     if effective.verify {
         let exempt = crate::access::admin_ids(ctx).iter().any(|id| id == user);
-        if !exempt && api::is_staff(&api::own_role(ctx, writer.clone(), group).await) {
+        if !exempt && api::is_staff(&own_role_soon(ctx, writer, group, ENRICH_WAIT).await) {
             verify = Some(challenge(&effective.mode, &effective.answers));
         } else if !exempt {
             debug!(target: LOG_TARGET, "群 {group} 账号不是管理员，入群验证跳过");
@@ -1285,8 +1324,11 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         return Ok(());
     }
 
-    // 不合并时两项资料互不相干，并行查；合并时这些查询全部挪到等待窗口里。
-    let (name, info) = tokio::join!(display_name(ctx, writer, group, user), group_info(ctx, writer, group));
+    // 不合并时两项资料互不相干，并行查，但都只等到 ENRICH_WAIT；合并时这些查询全部挪到等待窗口里。
+    let (name, info) = tokio::join!(
+        display_name_soon(ctx, writer, group, user, ENRICH_WAIT),
+        group_info_soon(ctx, writer, group, ENRICH_WAIT),
+    );
     let at = [user.to_string()];
     let mut message = Message::new();
     if welcome
@@ -1374,12 +1416,31 @@ async fn send_join_batch(ctx: &Context, writer: &LockedWriter, config: &Config, 
     let names = join_all(people.into_iter().map(|person| {
         let group = group.clone();
         async move {
-            let name = person.name.get_or_init(|| display_name(ctx, writer, &group, &person.user)).await.clone();
+            let name = if let Some(name) = person.name.get() {
+                name.clone()
+            } else if let Ok(name) = tokio::time::timeout(
+                // 窗口里已经在查同一个名字了：等它一下（复用那次请求），超时就先用号码顶上。
+                ENRICH_WAIT,
+                person.name.get_or_init(|| display_name(ctx, writer, &group, &person.user)),
+            )
+            .await
+            {
+                name.clone()
+            } else {
+                warn!(target: LOG_TARGET, "群 {group} 的新成员 {} 昵称没查回来，先用号码顶上", person.user);
+                person.user.clone()
+            };
             (person.user, name)
         }
     }));
-    let (people, info) = tokio::join!(names, info.get_or_init(|| group_info(ctx, writer, &group)));
-    let info = info.clone();
+    // 窗口里预取到的直接用；没预取完也别拿整份名单的耐心等（窗口已经等过了）。
+    let info_soon = async {
+        match info.get() {
+            Some(info) => info.clone(),
+            None => group_info_soon(ctx, writer, &group, ENRICH_WAIT).await,
+        }
+    };
+    let (people, info) = tokio::join!(names, info_soon);
     let pending: HashMap<String, Pending> = STATE
         .read(|state| {
             state
