@@ -137,6 +137,9 @@ const WALLED_DOMAINS: &[&str] = &[
     // 酷安：帖子页（`/feed/…`）未登录只给一张「请用酷安手机APP扫码查看详情」的壳页，
     // 2026-10-07 实测，换 UA 也一样。整站按 APP 优先设计，所以点名域名而不是路径。
     "coolapk.com",
+    // AniBase 的注册页被 Cloudflare 人机验证拦住（403，cf-mitigated: challenge），
+    // 浏览器只能截到「Just a moment…」，没有可发的注册正文。2026-10-26 实测。
+    "anibase.net",
     // 风控墙：从本机（Termux，出口走代理）打开只有验证页或 block 页。
     // 跟登录无关，换出口 IP 后可能又能开，届时把这两条摘掉即可。
     "reddit.com",
@@ -1356,6 +1359,8 @@ mod tests {
             "https://coolapk.com/t/摄影",
             "https://www.reddit.com/r/rust/",
             "https://www.quora.com/What-is-rust",
+            // AniBase 注册页只有 Cloudflare 人机验证，邀请参数不影响准入判断。
+            "https://anibase.net/zh-hans/#/register?invite=test",
             // 1688 分享短链与它跳转的移动站落点，都停在滑块验证页。
             "https://qr.1688.com/s/7HOhG7uS",
             "https://m.1688.com/offer/1046051827096.html",
