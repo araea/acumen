@@ -1854,18 +1854,25 @@ impl Session {
                 message_id,
                 emoji_id,
                 remove,
-            } => (
-                if *remove {
-                    "reaction.delete"
-                } else {
-                    "reaction.create"
-                },
-                json!({"channel_id":channel,"message_id":message_id,"emoji_id":emoji_id}),
-                format!(
-                    "[{}消息 {message_id} 的表态 {emoji_id}]",
-                    if *remove { "取消" } else { "添加" }
-                ),
-            ),
+            } => {
+                // 号主在客户端手发的消息贴不上表情：实现端对不回原消息，表情会落到更早的
+                // 一条上。窗口里认得出来的就直接挡掉，别让它赞错人。
+                if actions::message(turns, message_id).is_ok_and(|turn| turn.manual) {
+                    anyhow::bail!("这条是号主自己在客户端手发的消息，贴表情会落到别的消息上");
+                }
+                (
+                    if *remove {
+                        "reaction.delete"
+                    } else {
+                        "reaction.create"
+                    },
+                    json!({"channel_id":channel,"message_id":message_id,"emoji_id":emoji_id}),
+                    format!(
+                        "[{}消息 {message_id} 的表态 {emoji_id}]",
+                        if *remove { "取消" } else { "添加" }
+                    ),
+                )
+            }
             Action::Sign => (
                 "internal/sign",
                 json!({"guild_id":guild}),

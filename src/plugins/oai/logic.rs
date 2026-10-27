@@ -23,16 +23,19 @@ const ACK_EMOJI: &str = "76";
 /// 回执表情露脸多久。够发令的人看见「收到了」，又短到不占住群聊。
 const ACK_REACTION_SHOWN: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// 表情回应只在群里做得成：QQ 私聊没有这个按钮，贴上去只会换来一次注定失败的回执。
+/// 这条消息能不能贴表情：群里才贴得上，号主在客户端手发的消息不能贴。
+///
+/// QQ 私聊没有这个按钮，贴上去只会换来一次注定失败的回执。客户端手发的消息由实现端
+/// 补发成一个虚拟作者的事件，它的消息号在 reaction 那边对不回原消息，会落到群里更早的
+/// 一条上——1.63.0 放开这道闸之后，给「刚手打的那句」贴表情，赞的是上一条群友的消息。
+/// 所以这类消息一律不贴表情：指令照常执行，只是没有表情回执。
 fn reactable(event: &MessageEvent<'_>) -> bool {
-    event.group_id().is_some()
+    event.group_id().is_some() && !event.is_manual_self()
 }
 
 /// 给触发消息贴上或揭掉「正在处理」表情。
 ///
-/// 群里谁的消息都贴——群友的、自己在客户端手打的都算。从前跳过手打的自消息，
-/// 于是「自己跟机器人说话」这一路看不到任何回执；表情本来就只是账号级的轻动作，
-/// 没有理由按作者分人。贴不上不影响处理，只记一行调试日志。
+/// 贴在哪条、贴不贴得上都不影响处理；失败只记一行调试日志。
 pub(crate) async fn mark_working(
     ctx: &Context,
     writer: &LockedWriter,
@@ -53,7 +56,8 @@ pub(crate) async fn mark_working(
 ///
 /// 这是原来那套「再发一次确认」的替代。指令一路执行到底，反馈只剩这一次短暂的表态：
 /// 发令的人知道消息被收到、事情也做完了，群里不留一条正文，上下文不被刷屏；
-/// 旁人就算看见，也只是账号给一条消息点了赞。
+/// 旁人就算看见，也只是账号给一条消息点了赞。号主在客户端手发的指令没有这一下——
+/// 那种消息贴不上表情（见 `reactable`），只能等执行结果。
 async fn ack_reaction(ctx: &Context, writer: &LockedWriter, event: &MessageEvent<'_>) {
     if !reactable(event) {
         return;
@@ -753,8 +757,9 @@ async fn chat(
                 && !prompt.is_empty()
                 && mgr.steer(name, is_priv_ctx, &uid, prompt.to_string())
             {
-                if let Err(error) =
-                    api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), STEERED_EMOJI, true).await
+                if reactable(&event)
+                    && let Err(error) =
+                        api::set_msg_emoji_like(ctx, writer.clone(), event.message_id(), STEERED_EMOJI, true).await
                 {
                     debug!(target: LOG_TARGET, "「已追加」表情贴不上：{error}");
                 }
@@ -2482,7 +2487,20 @@ pub async fn handle_create(
 
 #[cfg(test)]
 mod tests {
-    use super::is_public_url;
+    use super::{is_public_url, reactable};
+    use crate::event::MessageEvent;
+
+    #[test]
+    fn reactions_stay_off_client_typed_messages() {
+        use simd_json::json;
+        let event = |value: simd_json::OwnedValue| reactable(&MessageEvent(&value));
+        // 群友的消息：贴得上。
+        assert!(event(json!({"group_id": "1", "user_id": "2", "message_id": "3"})));
+        // 号主在客户端手发的那条：消息号对不回原消息，贴上去会落到别人的消息上。
+        assert!(!event(json!({"group_id": "1", "user_id": "2", "message_id": "3", "manual_self": true})));
+        // 私聊没有表情按钮。
+        assert!(!event(json!({"user_id": "2", "message_id": "3"})));
+    }
 
     #[test]
     fn local_resource_links_are_never_handed_to_the_provider() {
