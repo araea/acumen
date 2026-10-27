@@ -73,6 +73,17 @@ pub(super) fn clean(raw: &str) -> Option<String> {
     Some(line.to_string())
 }
 
+/// 这句是不是只在给别人点头：「确实」「有道理」「备份确实不靠谱」。
+///
+/// 随口一句的价值在于它是**自己的**反应（「？」「好怪」「这也行」）；附和对方的那几个
+/// 说法谁都能接，接多了就是凑数的捧哏（线上 2026-10-27：「备份确实不靠谱」接的是一句
+/// 没在问它的吐槽）。正常发言里同意就说同意，不受这一条管；这里只拦随口吭的那一声。
+pub(super) fn nods(text: &str) -> bool {
+    const NODS: [&str; 8] = ["确实", "有道理", "没毛病", "说得对", "你说得对", "是的", "对的", "同意"];
+    let text = text.trim();
+    NODS.iter().any(|nod| text.starts_with(nod)) || (text.chars().count() > 4 && text.contains("确实"))
+}
+
 /// 不跟自己最近说过的话重样：同一句「笑死」十分钟内说两遍，是机器人的节奏。
 pub(super) fn repeats(text: &str, turns: &[Turn]) -> bool {
     turns
@@ -81,4 +92,17 @@ pub(super) fn repeats(text: &str, turns: &[Turn]) -> bool {
         .filter(|turn| turn.from_me)
         .take(6)
         .any(|turn| turn.text.trim() == text)
+}
+
+#[cfg(test)]
+mod nod_tests {
+    #[test]
+    fn nodding_quips_are_told_apart_from_reactions() {
+        for nod in ["确实", "有道理", "备份确实不靠谱", "说得对"] {
+            assert!(super::nods(nod), "{nod}");
+        }
+        for own in ["？", "好怪", "这也行", "有点东西", "扎手不", "物理抠图还行"] {
+            assert!(!super::nods(own), "{own}");
+        }
+    }
 }

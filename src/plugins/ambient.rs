@@ -37,6 +37,7 @@ mod habit;
 mod learning;
 mod life;
 mod mood;
+mod news;
 mod peak;
 mod quick;
 mod quote;
@@ -1017,7 +1018,7 @@ impl Scene {
                 String::new()
             },
             own: format!(
-                "{}{}{}{}{}{}{}",
+                "{}{}{}{}{}{}{}{}",
                 self_facts(),
                 if config.memory_enabled {
                     memory::with_group(group, |memory| {
@@ -1032,6 +1033,7 @@ impl Scene {
                     recent::habit_brief(group)
                 },
                 recent::recalled(group, turns),
+                news::brief(turns),
                 if config.learning.enabled {
                     learning::brief()
                 } else {
@@ -2309,6 +2311,10 @@ async fn quick_word(
     let Some(text) = quick::clean(&verdict.quip) else {
         return;
     };
+    if quick::nods(&text) {
+        debug!(target: LOG_TARGET, "群 {group} 随口一句只是附和，不发：{text}");
+        return;
+    }
     let turns = window::with_group(group, |state| {
         state.recent(config.context_turns.clamp(1, 80))
     });
