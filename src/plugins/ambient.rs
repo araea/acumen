@@ -165,6 +165,12 @@ pub(crate) struct AmbientConfig {
     pub enabled: bool,
     /// 开启搭话的群号；空列表等于不开启群聊。
     pub groups: Vec<String>,
+    /// 话量：`quiet`（安静）/ `normal`（适中）/ `lively`（活跃）。
+    ///
+    /// 想让它整体话多一点或少一点，从前要同时调门槛、每小时目标、冷却和随口一句四五个数，
+    /// 还得知道它们怎么互相抵。这一项在那几个数之上整体换算（见 [`Self::talk_scale`]），
+    /// 不改写它们：细调照旧，平常只动这一项。
+    pub talk: String,
     /// 是否在私聊里启用同一个人格。每个私聊频道有独立窗口、记忆和情绪状态。
     pub private: bool,
     /// 允许私聊的用户 ID；空列表表示不限制。只在 `private = true` 时生效。
@@ -417,6 +423,7 @@ impl Default for AmbientConfig {
         Self {
             enabled: false,
             groups: Vec::new(),
+            talk: "normal".to_string(),
             private: false,
             private_users: Vec::new(),
             management_groups: Vec::new(),
@@ -614,8 +621,30 @@ impl AmbientConfig {
         base.mul_f32(scale).clamp(Duration::from_secs(15), max)
     }
 
+    /// 话量换算成的两笔：门槛加减几分，以及每小时目标、随口一句次数要乘的倍数（冷却按它除）。
+    fn talk_scale(&self) -> (i16, f32) {
+        match self.talk.trim() {
+            "quiet" => (8, 0.6),
+            "lively" => (-6, 1.5),
+            _ => (0, 1.0),
+        }
+    }
+
+    /// 按话量换算后的次数上限；本来写 0（关闭）的仍是 0。
+    fn scaled(&self, count: usize) -> usize {
+        if count == 0 {
+            return 0;
+        }
+        ((count as f32 * self.talk_scale().1).round() as usize).max(1)
+    }
+
+    /// 每群每小时最多随口吭几声（按话量换算）。
+    pub(super) fn quick_hourly(&self) -> usize {
+        self.scaled(self.quick_per_hour)
+    }
+
     fn cooldown(&self) -> Duration {
-        Duration::from_secs(self.cooldown_seconds)
+        Duration::from_secs(self.cooldown_seconds).div_f32(self.talk_scale().1)
     }
 
     fn owner_quiet(&self) -> Duration {
@@ -661,7 +690,7 @@ impl AmbientConfig {
     /// 顺着它的话接下去时，分数够高就照样过得去；只有一直没人理它（分数上不去）
     /// 才会被一路抬高的门槛挡在外面——那正是「更安静一点」该有的样子。
     fn threshold(&self, state: mood::Snapshot, pressure: Pressure) -> u8 {
-        let base = i16::from(self.effective_threshold(pressure.since_last_spoke));
+        let base = i16::from(self.effective_threshold(pressure.since_last_spoke)) + self.talk_scale().0;
         let shift = if self.mood_enabled {
             state.threshold_shift()
         } else {
@@ -707,7 +736,7 @@ impl AmbientConfig {
             return 0;
         }
         let target = self
-            .max_per_hour
+            .scaled(self.max_per_hour)
             .min(pressure.hourly_target.unwrap_or(usize::MAX));
         let over = pressure.hourly_turns.saturating_sub(target);
         (over as i16).saturating_mul(i16::from(self.budget_penalty))
@@ -1241,17 +1270,72 @@ pub(crate) fn skill_dirs(base: &Path) -> Vec<PathBuf> {
     SKILLS.iter().map(|(name, _)| root.join(name)).collect()
 }
 
+/// 历来内置过的人设原文（md5）。磁盘上那份与其中某一版逐字相同，说明没人改过，
+/// 启动时换成这一版；改过一个字的都不碰。
+///
+/// 从前只在缺失时写入，于是老实例永远停在第一次启动时那一版：线上 2026-10-28 还在用
+/// 1.62.0 的人设，1.67.0 补上的口癖与记忆说法一句都没到。
+const RETIRED_PERSONAS: &[&str] = &[
+    "09c27237a69809cbdf812d5cf516c095",
+    "0ca8ad31f3abfeed5b11744697f2f057",
+    "0f3bdbc042f824780edb6c706409222a",
+    "1a560430c53fde7190a2472a2c482041",
+    "26fb0c46b4004725a8995d4ac718f826",
+    "423835a47031973f066ccb9969c26321",
+    "4fefb6e59a5750c39eeb756f6a7f77a9",
+    "600460da70f5e846d6e1b2fdf6055e1a",
+    "608f390b69724bbe9b1e490ca76e307d",
+    "65f9fdf9c28563b11a1271772bd2802a",
+    "68d205414eb00a0f7f400224f26c2d7d",
+    "6e8928f9a36866e8d79b602495931398",
+    "6f249090f93778dfbd71ee0ab2fc9100",
+    "71bc2086302f76d9092d9ef4d045b2e8",
+    "7a93c4c9d2910b4590240ed84dc72d66",
+    "81d04f7af64b631ed979b7a1e02ba001",
+    "8ebdd9bd64efc95cfb96f59a68be68bd",
+    "90ad484c3514eaef57689ad057e77731",
+    "9303fa8c4ca29c7f302526307e3b08ad",
+    "939216f11049e6b7feeb64a6e987b7bc",
+    "96ab330816b127c3f37bbc1080d664a6",
+    "9d60364fea7e48f9eed62313d0efebea",
+    "aab2de18a2338a5e007421c0eac7e98b",
+    "ab54e62a2b79bc55dfd87c8298d61313",
+    "b0bf29f2fca6989962051c4c65a0ad75",
+    "b17f099d4c838c3c6fe2782f9a744ef2",
+    "b6ced190adf45337909c29dac5cc797e",
+    "be00dc98e35ce7844d4c9b09cf923865",
+    "c31c14233a62163176d4668952178c25",
+    "cfd2a783abb0b8235014805f7851411a",
+    "d129ba6d764fe60912a868dd336b2288",
+    "d91d91b4aba61a251350eb1ad9def84e",
+    "db724ce9e3c31e5098f89087e3d06e42",
+    "de0a89ae8d16552d0facfd984cf5a5ff",
+    "e009fc7ff5a1294a1ae622ef3dd86bf9",
+    "e10beedc044f7eb2fbe1cb3d1f2022b9",
+    "e1fe6eaf0f5a564a65328277809a2678",
+    "e3cacb7b5f5161c8476bc59b95dc2dfd",
+];
+
 /// 铺开人设与 skill。
 ///
-/// 人设只在缺失时写入——它是给人改的，覆盖等于把管理员的打磨扔掉；
-/// skill 描述的是本仓库实现的消息元素，属于代码的一部分，每次启动都对齐。
+/// 人设只在缺失、或还是某一版旧内置原文时写入——它是给人改的，覆盖改过的那份等于把
+/// 管理员的打磨扔掉；skill 描述的是本仓库实现的消息元素，属于代码的一部分，每次启动都对齐。
 pub(crate) async fn setup(base: &Path) -> std::io::Result<()> {
     let persona = persona_path(base);
     if let Some(parent) = persona.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    if !persona.exists() {
-        tokio::fs::write(&persona, PERSONA).await?;
+    match tokio::fs::read(&persona).await {
+        Err(_) => tokio::fs::write(&persona, PERSONA).await?,
+        Ok(current) => {
+            let digest = format!("{:x}", md5::compute(&current));
+            if current != PERSONA.as_bytes() && RETIRED_PERSONAS.contains(&digest.as_str()) {
+                let backup = persona.with_extension(format!("md.before-{}", env!("CARGO_PKG_VERSION")));
+                tokio::fs::write(&backup, &current).await?;
+                tokio::fs::write(&persona, PERSONA).await?;
+                info!(target: LOG_TARGET, "人设还是旧版内置原文，换成这一版（旧的留在 {}）", backup.display());
+            }
+        }
     }
     // 档案跟人设一样只在缺失时写：它写的是这个人自己的事，覆盖等于把攒下来的
     // 那点前后一致性抹掉。模板里只有格式说明，实际内容由管理员填。
@@ -2300,7 +2384,7 @@ async fn quick_word(
         since_last_spoke: silent_for,
         quick_last_hour: state.quick_last_hour(),
         quick_limit: config
-            .quick_per_hour
+            .quick_hourly()
             .min(recent::hourly_target(group).map_or(usize::MAX, |target| target * 2)),
         owner_present: state.owner_active(config.owner_quiet()),
         dozing: doze,
@@ -2845,6 +2929,9 @@ impl PluginConfig for AmbientConfig {
     const NAME: &'static str = "ambient";
 
     fn check(&self) -> Result<(), String> {
+        if !matches!(self.talk.trim(), "quiet" | "normal" | "lively") {
+            return Err("talk 只能是 quiet（安静）、normal（适中）或 lively（活跃）".into());
+        }
         if !(1..=6).contains(&self.busy_factor) {
             return Err("busy_factor 要在 1 到 6 之间".into());
         }
@@ -2882,6 +2969,7 @@ impl PluginConfig for AmbientConfig {
 pub const LABELS: &[(&str, &str)] = &[
     ("enabled", "总开关"),
     ("groups", "搭话的群"),
+    ("talk", "话量"),
     ("private", "私聊也用这个账号聊天"),
     ("private_users", "只对这些好友开私聊"),
     ("management_groups", "直接开放管理的群"),
@@ -2984,6 +3072,11 @@ pub fn option_labels() -> serde_json::Value {
         "high": "高",
     });
     serde_json::json!({
+        "talk": {
+            "quiet": "安静：少开口，随口一句也少",
+            "normal": "适中",
+            "lively": "活跃：门槛低一点，每小时多聊几轮",
+        },
         "thinking": thinking,
         "help_thinking": thinking,
         "peak.mode": {
@@ -3051,6 +3144,21 @@ pub fn handle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn talk_scales_the_counts_without_touching_zeroes() {
+        let mut config = AmbientConfig::default();
+        assert_eq!(config.quick_hourly(), config.quick_per_hour);
+        config.talk = "quiet".into();
+        assert!(config.quick_hourly() < config.quick_per_hour.max(2));
+        assert!(config.cooldown() > Duration::from_secs(config.cooldown_seconds));
+        config.talk = "lively".into();
+        assert!(config.scaled(config.max_per_hour) > config.max_per_hour);
+        config.quick_per_hour = 0;
+        assert_eq!(config.quick_hourly(), 0);
+        config.talk = "loud".into();
+        assert!(config.check().is_err());
+    }
 
     fn config() -> AmbientConfig {
         let mut config = AmbientConfig::default();

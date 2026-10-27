@@ -43,7 +43,7 @@ pub(super) struct Facts {
 
 /// 要不要随口回一句。`roll` 取 `[0, 1)`。
 pub(super) fn wants(config: &AmbientConfig, facts: Facts, roll: f32) -> bool {
-    if config.quick_per_hour == 0 || facts.owner_present || facts.dozing {
+    if config.quick_hourly() == 0 || facts.owner_present || facts.dozing {
         return false;
     }
     if facts.score < config.quick_floor || facts.score >= facts.threshold {
