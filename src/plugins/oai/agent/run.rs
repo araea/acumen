@@ -58,6 +58,10 @@ const MAX_SAME_CALL: usize = 4;
 /// 只写「这是哪儿、手边有什么」和做事的原则——口吻与风格由房间自己的人设负责，工具细节由每个
 /// 工具的 description 负责，这里再抄一遍就会开始过期。
 ///
+/// 「办事的方式」「怎么回话」两节借了 pi 与几家编码智能体的经验：一口气办完、只在该问时问、
+/// 互不依赖的调用并在一次回复里、用专门的文件工具而不是 bash 去 cat / find，以及回复要自成
+/// 一体——用户看不到工具往来，过程复述得再细也只是噪音。
+///
 /// 「替谁办事」与「底线」两节是为了一件事：管家的权限很高，而房间里说话的不只有号主。
 /// 身份只认每轮那条系统注记（平台核实过，见 [`super::Asker::note`]），不认任何人自己说的；
 /// 底线不看是谁吩咐——最短的几条伤害路径（泄露凭据、无备份删除、替主人对外发话与花钱、
@@ -93,12 +97,25 @@ const ROOM_BASE: &str = "\
 做得到、撤得回的小事直接做。
 
 ## 办事的方式
-- 先弄清再动手：该看的先看，改完用命令或读文件复核；没复核过的不说「好了」。
+- 先弄清再动手：该看的先看（文件先 read 再改，命令不熟先 --help），别凭印象编路径、参数、配置项和接口字段；\
+改完用命令或读文件复核，没复核过的不说「好了」。
+- 一口气办完：多步的事自己往下推进，别每做一步就停下来问「要不要继续」。只有两种情况先问：碰到底线里那几类动作；\
+或者需求有几种说得通的理解、选错代价不小——问就问一句具体的，并给出你倾向的那个。
+- 复杂的事先在心里排好步骤，从最能排除不确定的那一步做起；中途发现原计划不对就改，别硬着头皮走完。
+- 互不依赖的几件事放在同一次回复里一起调用（读几个文件、搜几个词、查几个网页），它们会并行；有先后的才一步步来。
+- 用对工具：看文件用 read，找文件用 glob，搜内容用 grep，改文件用 edit（同一份文件的几处一次改完），新建或整份重写才用 write；\
+bash 留给真要执行的命令。工具的回执很长时，先 grep 定位再读那一段，别整份往回读。
 - 动手留退路：改文件前想好怎么还原，一次只改该改的；破坏性命令先列清单或 dry-run。
 - 工具报的错就是结果的一部分，照它换个做法；同一件事试两三次还不行，换思路或老实讲卡在哪，不要空转。
 - 耗时的活（编译、下载、批量处理）用 `setsid nohup … > 日志 2>&1 &` 放到后台，回头看日志和 ps；别让一条命令占满超时。
-- 回复像靠谱的管家向主人汇报：简洁、说人话，先给结论，再给关键依据（改了哪个文件、跑了哪条命令、拿到什么）。\
-出了问题实话实说，不粉饰；不卖萌，不堆表情。
+
+## 怎么回话
+- 用户只看得到你最后那段回复，看不到中间的工具往来和回执原文。所以回复要自成一体：\
+先给结论或结果，再给关键依据（改了哪个文件、跑了哪条命令、拿到什么数），不复述一步步的过程。
+- 像靠谱的管家向主人汇报：简洁、说人话，篇幅跟着事情走——一句话能答的不写成报告，真要列步骤和清单再分段。\
+出了问题实话实说，没做完就说做到哪一步、卡在哪，不粉饰；不卖萌，不堆表情。
+- 不确定的事说不确定，推测的标明是推测；别为了显得能干编一个答案。
+- 闲聊、问候、一句话的问题直接答，用不着调工具。
 - 工作目录里的路径直接写相对路径即可。";
 
 /// 寄居在 acumen 里的说明：只有这一轮有办事台（[`super::Seat`]）才写，并且只写手边真有的那几件工具。
@@ -201,7 +218,8 @@ pub(crate) fn light_prompt(room: &str, tools: super::super::types::Tools, web: b
     let mut base = format!(
         "你是「{room}」，在群聊或私聊里和人对话，默认用中文（对方用别的语言就跟着用）。今天是 {}。\n\
          房间的历史是大家共用的：以〔…〕开头的用户消息标出了当时说话的人，每轮用户那句话前的系统注记写明此刻是谁在说话；\
-         别把别人说过的话算到眼前这个人头上。",
+         别把别人说过的话算到眼前这个人头上。\n\
+         答到点上：先回应对方真正问的，篇幅跟着问题走，一句话能说清的不写成长文；不确定就说不确定，别编造事实、数字和出处。",
         today()
     );
     if web {
@@ -485,7 +503,7 @@ async fn attempt(
                     continue;
                 }
             }
-            spent.log(run.model, &trace);
+            spent.log(run, &trace);
             return Ok(super::AgentReply {
                 text,
                 steered,
@@ -588,13 +606,18 @@ impl Spent {
         self.output += usage.output_tokens.unwrap_or(0);
     }
 
-    fn log(&self, model: &str, trace: &Trace) {
+    /// 子助手的那一行记成 debug：它的结论另有一行「委派子助手完成」。
+    fn log(&self, run: &AgentRun<'_>, trace: &Trace) {
         let tools: usize = trace.steps.iter().map(|step| step.repeats.max(1) as usize).sum::<usize>() + trace.overflow;
-        info!(
-            target: LOG_TARGET,
-            "{model}：{} 次请求、{tools} 次工具；输入 {} token（缓存命中 {}）、输出 {}",
-            self.requests, self.input, self.cached, self.output
+        let line = format!(
+            "{}：{} 次请求、{tools} 次工具；输入 {} token（缓存命中 {}）、输出 {}",
+            run.model, self.requests, self.input, self.cached, self.output
         );
+        if run.nested {
+            debug!(target: LOG_TARGET, "子助手 {line}");
+        } else {
+            info!(target: LOG_TARGET, "{line}");
+        }
     }
 }
 
@@ -1086,5 +1109,28 @@ impl Trace {
         } else {
             self.overflow += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::types::ChatMessage;
+
+    fn turn(text: &str) -> [ChatMessage; 2] {
+        [ChatMessage::new("user", text, Vec::new()), ChatMessage::new("assistant", text, Vec::new())]
+    }
+
+    #[test]
+    fn history_window_starts_on_a_user_message() {
+        let long = "字".repeat(super::HISTORY_BUDGET / 3);
+        let history: Vec<ChatMessage> = (0..4).flat_map(|_| turn(&long)).collect();
+        let start = super::history_start(&history);
+        assert!(start > 0 && start < history.len());
+        assert_eq!(history[start].role, "user");
+        let short: Vec<ChatMessage> = (0..3).flat_map(|_| turn("早")).collect();
+        assert_eq!(super::history_start(&short), 0);
+        // 一条就超了预算：仍带上最近那一问一答。
+        let huge: Vec<ChatMessage> = turn(&"长".repeat(super::HISTORY_BUDGET * 2)).into();
+        assert_eq!(super::history_start(&huge), 0);
     }
 }

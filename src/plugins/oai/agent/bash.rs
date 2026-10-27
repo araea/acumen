@@ -266,3 +266,16 @@ async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, kept: &mut V
         kept.extend_from_slice(&chunk[..read.min(remaining)]);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn elide_keeps_whole_lines_and_counts_the_gap() {
+        let text: String = (1..=2000).map(|n| format!("line {n}\n")).collect();
+        let short = super::elide(text.trim_end(), 3000);
+        assert!(short.starts_with("line 1\n"));
+        assert!(short.ends_with("line 2000"));
+        assert!(short.contains("（中间省略 "));
+        assert!(short.chars().count() < 3200);
+    }
+}
