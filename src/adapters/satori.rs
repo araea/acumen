@@ -25,6 +25,7 @@ pub mod message;
 mod module;
 #[allow(dead_code)]
 pub mod qq;
+pub mod roles;
 
 const LOG_TARGET: &str = "Bot";
 
@@ -1842,13 +1843,12 @@ fn normalize_event(
         out["message_id"] = json!(raw_id(message.get("id")));
         out["raw_message"] = json!(raw_message);
         out["message"] = serde_json::to_value(chain)?;
-        let role = member
-            .get("roles")
-            .and_then(Value::as_array)
-            .and_then(|roles| roles.first())
-            .and_then(|role| role.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or("member");
+        let role = roles::role_of(member).unwrap_or("member");
+        // 发言者明说是群主或管理员就记下：成员表没拉下来时实现端会把身份写成普通成员，
+        // 所以反过来的「member」不拿来覆盖查到的结果。
+        if group && api::is_staff(role) {
+            roles::learn(&self_id, &group_id, &user_id, role);
+        }
         out["sender"] = json!({
             "user_id": user_id,
             "nickname": account_name(user).unwrap_or_default(),
@@ -1907,6 +1907,12 @@ fn normalize_event(
             out["duration"] = json!(duration);
         }
         out["operator_id"] = json!(raw_id(body.pointer("/operator/id")));
+        // 身份变了（设为或取消管理员）：实现端在成员资源里带着新身份，直接换掉记着的。
+        if event_type == "guild-member-updated"
+            && let Some(role) = body.get("member").and_then(roles::role_of)
+        {
+            roles::learn(&self_id, &group_id, &user_id, role);
+        }
         if let Some(data) = body.get("_data") {
             out["satori_data"] = data.clone();
         }

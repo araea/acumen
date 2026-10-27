@@ -329,31 +329,26 @@ pub fn is_staff(role: &str) -> bool {
     matches!(role, "owner" | "admin" | "administrator")
 }
 
-/// 账号自己在这个群里的身份，查一次记十分钟：要罚人、撤别人的消息，先得罚得动。
-/// 查不到时给空串（按普通成员算）。
+/// 账号自己在这个群里的身份；查不到时给空串（按普通成员算）。
+///
+/// 要分清「不是管理员」与「这次没查到」的（入群验证），用 [`own_role_known`]。
 pub async fn own_role(ctx: &Context, writer: LockedWriter, group_id: &str) -> String {
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-    use std::time::{Duration, Instant};
-    static ROLES: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
-    let roles = || {
-        ROLES
-            .get_or_init(Default::default)
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    };
-    let key = format!("{}/{group_id}", ctx.bot.self_id());
-    if let Some((role, at)) = roles().get(&key)
-        && at.elapsed() < Duration::from_mins(10)
-    {
-        return role.clone();
-    }
-    let role = get_group_member_info(ctx, writer, group_id, &ctx.bot.self_id(), false)
-        .await
-        .map(|info| info.role)
-        .unwrap_or_default();
-    roles().insert(key, (role.clone(), Instant::now()));
-    role
+    own_role_known(ctx, writer, group_id).await.unwrap_or_default()
+}
+
+/// 账号自己在这个群里的身份；`None` 是这次没查到。缓存与降级见 [`super::roles`]。
+pub async fn own_role_known(ctx: &Context, writer: LockedWriter, group_id: &str) -> Option<String> {
+    super::roles::role(ctx, &writer, group_id, &ctx.bot.self_id()).await
+}
+
+/// 某个成员在群里的身份；`None` 是这次没查到。
+pub async fn member_role(ctx: &Context, writer: LockedWriter, group_id: &str, user_id: &str) -> Option<String> {
+    super::roles::role(ctx, &writer, group_id, user_id).await
+}
+
+/// 后台把账号在这个群的身份备好（没记着或记旧了才问），不等结果。
+pub fn warm_own_role(ctx: &Context, writer: &LockedWriter, group_id: &str) {
+    super::roles::warm(ctx, writer, group_id, &ctx.bot.self_id());
 }
 
 pub async fn get_group_member_info(
@@ -371,14 +366,9 @@ pub async fn get_group_member_info(
         )
         .await?;
     let user = value.get("user").unwrap_or(&Value::Null);
-    let role = value
-        .get("roles")
-        .and_then(Value::as_array)
-        .and_then(|roles| roles.first())
-        .and_then(|role| role.get("id"))
-        .and_then(Value::as_str)
-        .unwrap_or("member")
-        .to_string();
+    let role = super::roles::role_of(&value).unwrap_or("member").to_string();
+    // 查名字时顺带拿到的身份也记下，下一次问身份就不必再跑一趟。
+    super::roles::learn(&ctx.bot.self_id(), group_id, user_id, &role);
     Ok(GroupMemberInfo {
         group_id: group_id.to_string(),
         user_id: user_id.to_string(),

@@ -14,7 +14,7 @@
 //!   加法（`verify.mode`）；倒计时从验证说明实际发出起算，期间按 `remind_seconds` 提醒。
 //!   同群提醒可用 `remind_merge_seconds` 合并，新提醒发出后撤掉旧提醒；答错有提示、
 //!   可以限次数；超时按 `action` 移出或禁言。账号不是群主或管理员时罚不了人，验证整个跳过、
-//!   只发欢迎。待验证名单落盘，重启后接着计时；超时选「只记一笔」时另存有界留档，
+//!   只发欢迎；身份一时没查到不算「不是」，照常验证、处罚前再核一次。待验证名单落盘，重启后接着计时；超时选「只记一笔」时另存有界留档，
 //!   「欢迎 记录」可分页查看，并核对其中谁真正符合潜水清理的口径（未通过验证本身不算潜水）。
 //! - **申请审批**：附言里含关键词的自动同意；对不上的看 `reject` 决定拒绝还是留给人
 //!   （智能体的管理栏也看得到，见 [`crate::requests`]）。
@@ -1105,7 +1105,13 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         }
         let user = raw.get_str("user_id").unwrap_or("").to_string();
         let me = ctx.bot.self_id();
-        let consumed = match raw.get_str("satori_type").unwrap_or("") {
+        let kind = raw.get_str("satori_type").unwrap_or("");
+        // 开着验证的群有动静（有人说话、有人申请）就顺手把账号身份备好：等真有人进群时
+        // 直接命中缓存，不必让新人在门口等一次现查。记着且没过期时这里只是查一下表。
+        if matches!(kind, "message-created" | "guild-member-request") && config.for_group(&group).verify {
+            api::warm_own_role(&ctx, &writer, &group);
+        }
+        let consumed = match kind {
             "guild-member-added" if user != me => {
                 joined(&ctx, &writer, &config, &group, &user).await?;
                 false
@@ -1120,7 +1126,7 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
             }
             "message-created" if !user.is_empty() && user != me => {
                 if let Some(matched) = command::match_word_command(&ctx, "欢迎")
-                    && staff(&ctx)
+                    && staff(&ctx, &writer, &group).await
                     && run_command(&ctx, &writer, &config, &group, matched).await?
                 {
                     true
@@ -1135,8 +1141,20 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
 }
 
 /// 群主、群管理员与机器人管理员：能看设置、预览、手动放行。
-fn staff(ctx: &Context) -> bool {
-    crate::access::is_manager(ctx) || ctx.as_message().and_then(|m| m.sender_role()).is_some_and(api::is_staff)
+///
+/// 消息里的身份是实现端顺手带的，成员表还没拉下来时会写成普通成员；对不上就正经问一次
+/// （有缓存，同一个人十分钟内只问一回）。
+async fn staff(ctx: &Context, writer: &LockedWriter, group: &str) -> bool {
+    if crate::access::is_manager(ctx) {
+        return true;
+    }
+    let Some(message) = ctx.as_message() else {
+        return false;
+    };
+    if message.sender_role().is_some_and(api::is_staff) {
+        return true;
+    }
+    api::member_role(ctx, writer.clone(), group, message.user_id()).await.is_some_and(|role| api::is_staff(&role))
 }
 
 /// 事件里带的名字（群名片优先）；没有就是 `None`。
@@ -1252,14 +1270,29 @@ async fn group_info_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait
     GroupInfo { id: group.to_string(), name: event_group_name(ctx).unwrap_or_else(|| group.to_string()), members: None }
 }
 
-/// 账号在本群是不是群主或管理员：查过一次会记十分钟，通常直接命中。
-/// 没查回来就按普通成员算——这一次只发欢迎、不做验证（配置里本来就约定罚不动人就跳过）。
-async fn own_role_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> String {
-    if let Ok(role) = tokio::time::timeout(wait, api::own_role(ctx, writer.clone(), group)).await {
-        role
-    } else {
-        debug!(target: LOG_TARGET, "群 {group} 的账号身份没查回来，这一次不做验证");
-        String::new()
+/// 账号身份最多等这么久。身份有缓存（还落盘），通常直接命中；等这么久还没有，多半是
+/// 实现端正在现拉成员表，查询会在后台接着跑完、记下，验证这边先照常发（见 [`verify_allowed`]）。
+const ROLE_WAIT: Duration = Duration::from_millis(2500);
+
+/// 账号在本群的身份；`None` 是这次没等到（超时或接口报错），不是「普通成员」。
+async fn own_role_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> Option<String> {
+    tokio::time::timeout(wait, api::own_role_known(ctx, writer.clone(), group)).await.ok().flatten()
+}
+
+/// 这次要不要发验证。查到不是群主或管理员才跳过（罚不动人，发了也是空话）；没查到不跳过——
+/// 原先没查到就当普通成员，接口一卡，验证就悄悄漏掉一个人。没查到时照常发，到点处罚前
+/// 再核一次身份（[`expire`]），真不是管理员就只作废名单、不出声。
+fn verify_allowed(group: &str, role: Option<&str>) -> bool {
+    match role {
+        Some(role) if api::is_staff(role) => true,
+        Some(_) => {
+            info!(target: LOG_TARGET, "群 {group} 账号不是群主或管理员，入群验证跳过（只发欢迎）");
+            false
+        }
+        None => {
+            warn!(target: LOG_TARGET, "群 {group} 的账号身份这次没查到，照常发验证；处罚前会再核一次");
+            true
+        }
     }
 }
 
@@ -1333,7 +1366,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     // 合并模式下昵称与群资料由批量发送时统一取，这里只等身份。
     let (role, (name, info)) = tokio::join!(
         async {
-            if check { own_role_soon(ctx, writer, group, ENRICH_WAIT).await } else { String::new() }
+            if check { own_role_soon(ctx, writer, group, ROLE_WAIT).await } else { None }
         },
         async {
             if merged {
@@ -1353,12 +1386,8 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         }
     );
     let mut verify = None;
-    if check {
-        if api::is_staff(&role) {
-            verify = Some(challenge(&effective.mode, &effective.answers));
-        } else {
-            debug!(target: LOG_TARGET, "群 {group} 账号不是管理员，入群验证跳过");
-        }
+    if check && verify_allowed(group, role.as_deref()) {
+        verify = Some(challenge(&effective.mode, &effective.answers));
     }
     if !welcome && verify.is_none() {
         return Ok(());
@@ -1692,9 +1721,14 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
     let Some(text) = template.pick() else {
         return Ok(());
     };
-    let name = display_name(ctx, writer, group, user).await;
-    let operator_name = if kicked { display_name(ctx, writer, group, &operator).await } else { String::new() };
-    let info = group_info(ctx, writer, group).await;
+    // 同欢迎一样：名字与群名只是装饰，一起问、限时等，接口慢时不让送别拖上一分钟。
+    let (name, operator_name, info) = tokio::join!(
+        display_name_soon(ctx, writer, group, user, ENRICH_WAIT),
+        async {
+            if kicked { display_name_soon(ctx, writer, group, &operator, ENRICH_WAIT).await } else { String::new() }
+        },
+        group_info_soon(ctx, writer, group, ENRICH_WAIT),
+    );
     let vars = config.vars(group).group(&info).person(user, &name).set("operator", operator_name);
     let at = [user.to_string()];
     if let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &[] }).await {
@@ -1731,7 +1765,12 @@ async fn request(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
         return Ok(());
     }
     let params = json!({"message_id": flag, "approve": matched, "comment": if matched { "" } else { config.approve.reject_message.as_str() }});
-    match writer.call::<_, Value>(ctx, "guild.member.approve", params).await {
+    let mut result = writer.call::<_, Value>(ctx, "guild.member.approve", params.clone()).await;
+    if result.is_err() {
+        tokio::time::sleep(PUNISH_RETRY).await;
+        result = writer.call::<_, Value>(ctx, "guild.member.approve", params).await;
+    }
+    match result {
         Ok(_) => {
             crate::requests::resolve(&flag);
             info!(target: LOG_TARGET, "群 {group} 的加群申请（{user}）已自动{}", if matched { "同意" } else { "拒绝" });
@@ -1928,7 +1967,7 @@ async fn wrong_hint(ctx: &Context, writer: &LockedWriter, config: &Config, p: &P
     };
     let limit = config.verify.attempts;
     let chances = config.phrases.chances((limit > 0).then(|| limit.saturating_sub(p.wrong)));
-    let info = group_info(ctx, writer, &p.group).await;
+    let info = group_info_soon(ctx, writer, &p.group, ENRICH_WAIT).await;
     let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)
@@ -2104,12 +2143,16 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             "answer" => format!("发口令「{}」", e.answers.join("」或「")),
             _ => "说任意一句话".to_string(),
         };
-        let staff = api::is_staff(&api::own_role(ctx, writer.clone(), group).await);
+        let role = api::own_role_known(ctx, writer.clone(), group).await;
         lines.push(format!(
             "· 入群验证：{mode}，{}内完成，超时{}{}",
             duration_text(config.verify.timeout_seconds),
             config.phrases.punish(&config.verify),
-            if staff { "" } else { "\n  ⚠ 账号不是本群管理员，验证暂不生效（只发欢迎）" }
+            match role.as_deref() {
+                Some(role) if api::is_staff(role) => "",
+                Some(_) => "\n  ⚠ 账号不是本群管理员，验证暂不生效（只发欢迎）",
+                None => "\n  ⚠ 账号身份暂时没查到；验证照常发，处罚前会再核一次",
+            }
         ));
     } else {
         lines.push("· 入群验证：关".into());
@@ -2460,34 +2503,39 @@ fn tidy(ctx: &Context, writer: &LockedWriter, group: &str, notices: Vec<String>)
     });
 }
 
+/// 处罚失败后隔多久再试一次：接口超时、内核刚好在忙，过一会儿通常就过了。
+const PUNISH_RETRY: Duration = Duration::from_secs(3);
+
 async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pending, reason: &str) {
     let verify = &config.verify;
     settle(ctx, writer, config, &p).await;
-    let result = match verify.action.as_str() {
-        "kick" => {
-            crate::departures::expect(&p.group, &p.user_id);
-            writer
-                .call::<_, Value>(
-                    ctx,
-                    "guild.member.kick",
-                    json!({"guild_id": p.group, "user_id": p.user_id, "permanent": verify.kick_permanent}),
-                )
-                .await
-                .map(|_| ())
-        }
-        "mute" => writer
-            .call::<_, Value>(
-                ctx,
-                "guild.member.mute",
-                json!({"guild_id": p.group, "user_id": p.user_id, "duration": verify.mute_seconds * 1000}),
-            )
-            .await
-            .map(|_| ()),
-        _ => Ok(()),
+    let action = match verify.action.as_str() {
+        "kick" => Some(("guild.member.kick", json!({"guild_id": p.group, "user_id": p.user_id, "permanent": verify.kick_permanent}))),
+        "mute" => Some(("guild.member.mute", json!({"guild_id": p.group, "user_id": p.user_id, "duration": verify.mute_seconds * 1000}))),
+        _ => None,
     };
-    if let Err(error) = result {
-        warn!(target: LOG_TARGET, "群 {} 的 {}（{}）验证超时，处理失败：{error}", p.group, p.name, p.user_id);
-        return;
+    if let Some((method, params)) = action {
+        // 进群时身份可能没查到、照常发了验证（见 verify_allowed）；动手前再核一次。
+        // 这次查到确实不是管理员就作废，不去碰一个注定被拒的接口，也不在群里说「已移出」。
+        if let Some(role) = api::own_role_known(ctx, writer.clone(), &p.group).await
+            && !api::is_staff(&role)
+        {
+            info!(target: LOG_TARGET, "群 {} 的 {}（{}）验证超时，但账号不是群主或管理员，不处罚", p.group, p.name, p.user_id);
+            return;
+        }
+        if method == "guild.member.kick" {
+            crate::departures::expect(&p.group, &p.user_id);
+        }
+        let mut result = writer.call::<_, Value>(ctx, method, params.clone()).await.map(|_| ());
+        if let Err(error) = &result {
+            debug!(target: LOG_TARGET, "群 {} 处罚 {} 没成，{} 秒后再试：{error}", p.group, p.user_id, PUNISH_RETRY.as_secs());
+            tokio::time::sleep(PUNISH_RETRY).await;
+            result = writer.call::<_, Value>(ctx, method, params).await.map(|_| ());
+        }
+        if let Err(error) = result {
+            warn!(target: LOG_TARGET, "群 {} 的 {}（{}）验证超时，处理失败：{error}", p.group, p.name, p.user_id);
+            return;
+        }
     }
     info!(target: LOG_TARGET, "群 {} 的 {}（{}）验证未通过，已按 {} 处理", p.group, p.name, p.user_id, verify.action);
     if verify.action == "none" {
@@ -2498,7 +2546,7 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
     let Some(text) = verify.fail_text.pick() else {
         return;
     };
-    let info = group_info(ctx, writer, &p.group).await;
+    let info = group_info_soon(ctx, writer, &p.group, ENRICH_WAIT).await;
     let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)
