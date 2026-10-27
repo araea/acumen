@@ -53,7 +53,10 @@ struct Book {
 
 fn book() -> MutexGuard<'static, Book> {
     static BOOK: OnceLock<Mutex<Book>> = OnceLock::new();
-    let mut book = BOOK.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut book = BOOK
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if !book.loaded {
         book.loaded = true;
         if let Some(saved) = load() {
@@ -108,7 +111,13 @@ pub fn learn(self_id: &str, group: &str, user: &str, role: &str) {
     let mut book = book();
     book.failed.remove(&key);
     let changed = book.known.get(&key).is_none_or(|known| known.role != role);
-    book.known.insert(key.clone(), Known { role: role.to_string(), at: now() });
+    book.known.insert(
+        key.clone(),
+        Known {
+            role: role.to_string(),
+            at: now(),
+        },
+    );
     if changed && is_own(&key) {
         save(&book);
     }
@@ -127,11 +136,16 @@ pub async fn role(ctx: &Context, writer: &LockedWriter, group: &str, user: &str)
             }
             if age < STALE_LIMIT {
                 let role = known.role.clone();
-                let _ = take_off(&mut book, &key, ctx, writer, group, user);
+                drop(take_off(&mut book, &key, ctx, writer, group, user));
                 return Some(role);
             }
         }
-        if !book.flying.contains_key(&key) && book.failed.get(&key).is_some_and(|failed| at - failed < FAILURE_PAUSE) {
+        if !book.flying.contains_key(&key)
+            && book
+                .failed
+                .get(&key)
+                .is_some_and(|failed| at - failed < FAILURE_PAUSE)
+        {
             return None;
         }
         take_off(&mut book, &key, ctx, writer, group, user)
@@ -144,41 +158,66 @@ pub fn warm(ctx: &Context, writer: &LockedWriter, group: &str, user: &str) {
     let key = key(&ctx.bot.self_id(), group, user);
     let mut book = book();
     let at = now();
-    if book.known.get(&key).is_some_and(|known| at - known.at < FRESH)
+    if book
+        .known
+        .get(&key)
+        .is_some_and(|known| at - known.at < FRESH)
         || book.flying.contains_key(&key)
-        || book.failed.get(&key).is_some_and(|failed| at - failed < FAILURE_PAUSE)
+        || book
+            .failed
+            .get(&key)
+            .is_some_and(|failed| at - failed < FAILURE_PAUSE)
     {
         return;
     }
-    let _ = take_off(&mut book, &key, ctx, writer, group, user);
+    drop(take_off(&mut book, &key, ctx, writer, group, user));
 }
 
 /// 发出（或接上已经在飞的）一次查询。查询本身交给后台任务驱动：等的人超时走开了，
 /// 结果照样记下，下一个人就能直接用。
-fn take_off(book: &mut Book, key: &str, ctx: &Context, writer: &LockedWriter, group: &str, user: &str) -> Flight {
+fn take_off(
+    book: &mut Book,
+    key: &str,
+    ctx: &Context,
+    writer: &LockedWriter,
+    group: &str,
+    user: &str,
+) -> Flight {
     if let Some(flight) = book.flying.get(key) {
         return flight.clone();
     }
-    let (ctx, writer, group, user, key_owned) = (ctx.clone(), writer.clone(), group.to_string(), user.to_string(), key.to_string());
+    let (ctx, writer, group, user, key_owned) = (
+        ctx.clone(),
+        writer.clone(),
+        group.to_string(),
+        user.to_string(),
+        key.to_string(),
+    );
     let flight = async move {
         let role = query(&ctx, &writer, &group, &user).await;
         let mut book = self::book();
         book.flying.remove(&key_owned);
-        match &role {
-            Some(role) => {
-                book.failed.remove(&key_owned);
-                let changed = book.known.get(&key_owned).is_none_or(|known| &known.role != role);
-                book.known.insert(key_owned.clone(), Known { role: role.clone(), at: now() });
-                if changed && is_own(&key_owned) {
-                    save(&book);
-                }
+        if let Some(role) = &role {
+            book.failed.remove(&key_owned);
+            let changed = book
+                .known
+                .get(&key_owned)
+                .is_none_or(|known| &known.role != role);
+            book.known.insert(
+                key_owned.clone(),
+                Known {
+                    role: role.clone(),
+                    at: now(),
+                },
+            );
+            if changed && is_own(&key_owned) {
+                save(&book);
             }
-            None => {
-                book.failed.insert(key_owned.clone(), now());
-                if let Some(known) = book.known.get(&key_owned) {
-                    // 有旧结果就接着用旧的，只是这次没换成新的。
-                    return Some(known.role.clone());
-                }
+        } else {
+            book.failed.insert(key_owned.clone(), now());
+            if let Some(known) = book.known.get(&key_owned) {
+                // 有旧结果就接着用旧的，只是这次没换成新的。
+                return Some(known.role.clone());
             }
         }
         role
@@ -199,7 +238,10 @@ async fn query(ctx: &Context, writer: &LockedWriter, group: &str, user: &str) ->
         if attempt > 0 {
             tokio::time::sleep(RETRY_AFTER).await;
         }
-        match writer.call::<_, Value>(ctx, "guild.member.get", params.clone()).await {
+        match writer
+            .call::<_, Value>(ctx, "guild.member.get", params.clone())
+            .await
+        {
             Ok(value) => return Some(role_of(&value).unwrap_or("member").to_string()),
             Err(error) => last = error.to_string(),
         }
@@ -231,7 +273,12 @@ mod tests {
 
     #[test]
     fn learned_role_is_cached_and_replaced() {
-        let role = |user| book().known.get(&key("t1", "g", user)).map(|known| known.role.clone());
+        let role = |user| {
+            book()
+                .known
+                .get(&key("t1", "g", user))
+                .map(|known| known.role.clone())
+        };
         learn("t1", "g", "u", "admin");
         assert_eq!(role("u").as_deref(), Some("admin"));
         learn("t1", "g", "u", "member");

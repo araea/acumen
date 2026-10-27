@@ -804,7 +804,16 @@ pub async fn get_user_metric_trend(
     granularity: TrendGranularity,
     metric: UserMetric,
 ) -> Result<Vec<DailyTrend>, DbErr> {
-    raw_metric_trend(db, guild_id, Some(user_id), start_time, end_time, granularity, metric).await
+    raw_metric_trend(
+        db,
+        guild_id,
+        Some(user_id),
+        start_time,
+        end_time,
+        granularity,
+        metric,
+    )
+    .await
 }
 
 /// 一个群（或全部）的数值走势，口径与 [`get_user_metric_trend`] 相同，只是不含「谁」。
@@ -821,12 +830,30 @@ pub async fn get_group_metric_trend(
     metric: UserMetric,
 ) -> Result<Vec<DailyTrend>, DbErr> {
     if granularity == TrendGranularity::Hour {
-        return raw_metric_trend(db, guild_id, None, start_time, end_time, granularity, metric).await;
+        return raw_metric_trend(
+            db,
+            guild_id,
+            None,
+            start_time,
+            end_time,
+            granularity,
+            metric,
+        )
+        .await;
     }
 
     let sr = stats::split_range(start_time, end_time);
     let Some((from, to)) = sr.full_days else {
-        return raw_metric_trend(db, guild_id, None, start_time, end_time, granularity, metric).await;
+        return raw_metric_trend(
+            db,
+            guild_id,
+            None,
+            start_time,
+            end_time,
+            granularity,
+            metric,
+        )
+        .await;
     };
 
     let date_expr = if granularity == TrendGranularity::Month {

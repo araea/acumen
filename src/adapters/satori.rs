@@ -1652,9 +1652,9 @@ pub async fn dispatch_packet(
     let created: Vec<Value> = client.post(&bot, "message.create", params).await?;
     // 消息真的落地了才记账：失手的那条不算「说出去了」，工具那边也就不该报告它。
     // `message()` 交回来的是打包后的元素值；这里要看的是它落地的文字形态。
-    let summary = packet
-        .message()
-        .and_then(|value| simd_json::serde::from_owned_value::<crate::message::Message>(value.clone()).ok());
+    let summary = packet.message().and_then(|value| {
+        simd_json::serde::from_owned_value::<crate::message::Message>(value.clone()).ok()
+    });
     record_outbound(&channel_id, summary.as_ref());
     let ids: Vec<String> = created
         .iter()

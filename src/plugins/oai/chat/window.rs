@@ -1093,8 +1093,10 @@ mod tests {
 
     #[test]
     fn manual_owner_message_yields_without_erasing_the_handoff() {
-        let mut state = GroupState::default();
-        state.unread_mention = true;
+        let mut state = GroupState {
+            unread_mention: true,
+            ..Default::default()
+        };
         let start = state.receive(Turn {
             user_id: "me".into(),
             text: "这个我来答".into(),

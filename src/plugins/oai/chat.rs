@@ -517,7 +517,9 @@ mod tests {
     fn direct_actions_have_no_group_management() {
         let kinds = session::action_kinds(&Place::direct("private:1", "1", ""));
         assert!(kinds.contains(&"send"));
-        for group_only in ["mute", "kick", "mute_all", "announce", "approve", "essence"] {
+        // approve 两边都在：群里批加群申请，私聊里批好友申请。
+        assert!(kinds.contains(&"approve"));
+        for group_only in ["mute", "kick", "mute_all", "announce", "essence"] {
             assert!(!kinds.contains(&group_only), "{group_only} 不该出现在私聊");
         }
         let group = session::action_kinds(&Place::group("1"));

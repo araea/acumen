@@ -488,7 +488,7 @@ async fn anchor(db: &DatabaseConnection, scope: Scope<'_>, message_id: &str) -> 
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
-            &format!(
+            format!(
                 "select time, id from message_records where {} and message_id = ?",
                 scope.clause()
             ),
@@ -505,7 +505,7 @@ async fn coverage(db: &DatabaseConnection, scope: Scope<'_>, now: i64) -> Result
     let row = db
         .query_one_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
-            &format!(
+            format!(
                 "select min(time) as first, count(*) as n from message_records where {}",
                 scope.clause()
             ),
@@ -572,7 +572,7 @@ async fn resolve_user(db: &DatabaseConnection, scope: Scope<'_>, request: &Value
     let rows = db
         .query_all_raw(Statement::from_sql_and_values(
             db.get_database_backend(),
-            &format!(
+            format!(
                 "select user_id, user_name, member_nick, count(*) as n, max(id) as last \
                  from message_records where {} \
                  and (member_nick like ? escape '\\' or user_name like ? escape '\\') \

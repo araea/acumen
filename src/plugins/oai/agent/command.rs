@@ -174,11 +174,10 @@ pub(crate) async fn run(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<Stri
     // 交互式指令（「潜水 踢 1-20」之后回「确认」、欢迎放行之类）靠 matcher 接下一句。
     // 正常事件在适配器那一侧先过 matcher，这里自己派一次，代办的这句才进得了同一个等待。
     let mut ctx = ctx;
-    if let EventType::Satori(event) = &ctx.event {
-        if let Some(next) = ctx.matcher.dispatch(event.clone()) {
+    if let EventType::Satori(event) = &ctx.event
+        && let Some(next) = ctx.matcher.dispatch(event.clone()) {
             ctx.event = EventType::Satori(next);
         }
-    }
     let mark = outbound_mark();
     crate::plugins::run(ctx, seat.writer.clone())
         .await

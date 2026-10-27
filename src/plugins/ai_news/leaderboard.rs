@@ -472,7 +472,7 @@ mod tests {
 
     #[test]
     fn parses_current_server_rendered_columns() {
-        let html = r##"
+        let html = r#"
             <h1 id="lb-board-title">综合榜</h1>
             <p class="num">35 项评测 · 7 家机构 · 2026-10-18 20:06 更新</p>
             <table><thead><tr>
@@ -488,7 +488,7 @@ mod tests {
                 </tr>
             </tbody></table>
             <h2 id="lb-pending-title">待排名 <span>4</span></h2>
-        "##;
+        "#;
         let board = parse_board(html).unwrap();
         assert_eq!(board.title.as_deref(), Some("综合榜"));
         assert_eq!(board.evaluation_count, Some(35));

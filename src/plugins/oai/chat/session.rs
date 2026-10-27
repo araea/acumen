@@ -41,7 +41,7 @@ use std::{
 /// 表态按平台能力收在群里：QQ 私聊客户端里点不出表情回应，这条路给模型只会换来失败回执。
 /// 资料卡点赞在 Android QQ 上没有内核入口（见 satori-qq 的 JNI_CAPABILITIES），
 /// 试一次就要白占一次额度，2026-10 从两端一并删掉。
-pub(crate) const GROUP_ACTIONS: [&str; 22] = [
+pub(crate) const GROUP_ACTIONS: [&str; 30] = [
     "send",
     "poke",
     "react",
@@ -57,9 +57,17 @@ pub(crate) const GROUP_ACTIONS: [&str; 22] = [
     "rename_group",
     "approve",
     "announce",
+    "invite",
+    "settings",
+    "transfer",
+    "destroy",
+    "msg_mask",
+    "session_top",
+    "forward_to",
+    "like",
     "feed",
-    "nick",
-    "signature",
+    "profile",
+    "status",
     "avatar",
     "file_upload",
     "file_delete",
@@ -67,15 +75,20 @@ pub(crate) const GROUP_ACTIONS: [&str; 22] = [
 ];
 
 /// 私聊里能做的：群管理那一批没有对象，@ 与表情回应也没有意义。
-pub(crate) const DIRECT_ACTIONS: [&str; 8] = [
+/// 账号自己的那几件（资料、在线状态、头像、说说）两边都在；转发到别的会话也在。
+pub(crate) const DIRECT_ACTIONS: [&str; 12] = [
     "send",
     "poke",
     "recall",
     "forward",
+    "forward_to",
+    "session_top",
+    "like",
     "feed",
-    "nick",
-    "signature",
+    "profile",
+    "status",
     "avatar",
+    "approve",
 ];
 
 /// 这一轮这个会话接受的动作。
@@ -187,12 +200,20 @@ fn capability(action: &Action) -> &'static str {
         Action::Approve { .. } => "approve",
         Action::Announce { .. } => "announce",
         Action::Feed { .. } => "feed",
-        Action::Nick { .. } => "nick",
-        Action::Signature { .. } => "signature",
+        Action::Profile { .. } => "profile",
+        Action::Status { .. } => "status",
         Action::Avatar { .. } => "avatar",
         Action::FileUpload { .. } => "file_upload",
         Action::FileDelete { .. } => "file_delete",
         Action::FileRename { .. } => "file_rename",
+        Action::Settings { .. } => "settings",
+        Action::Transfer { .. } => "transfer",
+        Action::Destroy { .. } => "destroy",
+        Action::MsgMask { .. } => "msg_mask",
+        Action::SessionTop { .. } => "session_top",
+        Action::Invite { .. } => "invite",
+        Action::ForwardTo { .. } => "forward_to",
+        Action::Like { .. } => "like",
         Action::Capability { .. } => "capability",
     }
 }
@@ -808,7 +829,12 @@ impl Session {
                 self.group_reads += 1;
                 let (method, params) = query.rpc(&guild);
                 let data = self.rpc(method, params).await.map_err(|error| group_info::explain(&error))?;
-                query.render(&data)
+                // 看某个成员时要再问一句资料；问不到就只给名册那一份，不让整次查询失败。
+                let extra = match query.extra() {
+                    Some((method, params)) => self.rpc(method, params).await.ok(),
+                    None => None,
+                };
+                query.render(&data, extra.as_ref())
             }
             "draw" => {
                 ensure!(self.enabled(), "这个会话的聊天功能已停用");
@@ -1084,6 +1110,14 @@ impl Session {
                     let (name, params) = (name.clone(), params.clone());
                     return self.call_capability(&name, params).await;
                 }
+                // 转发到别的会话是替这个号对外发话：群友不能借它把东西推到别处去。
+                // 它不要求本群开管理（转发本身不需要管理员权限），只要求吩咐的人够格。
+                if matches!(action, Action::ForwardTo { .. }) {
+                    ensure!(
+                        self.authority != Authority::Guest,
+                        "这一轮是普通群友在吩咐：把消息转发到别的会话这种事只替号主和本群群主、管理员办"
+                    );
+                }
                 // 一旦选择会落到群里的动作，就不再把最终解释当作第二份消息发送。
                 self.attempted.store(true, Ordering::SeqCst);
                 // 群管理在私聊里没有对象，@ 也没有意义。在参数校验之前就挡下，
@@ -1123,14 +1157,10 @@ impl Session {
                     managing || matches!(action, Action::Recall { .. }) || self.current(),
                     "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
                 );
-                let target = if managing {
-                    ensure!(
-                        self.place.is_group(),
-                        "私聊里只能撤回自己发的消息；要处理别人的话，回一句就行"
-                    );
+                let targets = if managing {
                     self.check_management(&action, &mut turns, &me).await?
                 } else {
-                    Target::default()
+                    Vec::new()
                 };
                 action.validate(&turns)?;
                 if let Action::Send { parts, .. } = &action
@@ -1192,7 +1222,7 @@ impl Session {
                     self.sent_stickers += stickers;
                 }
                 if managing && result.is_ok() {
-                    self.log_management(&action, target).await;
+                    self.log_management(&action, &targets).await;
                 }
                 if let Err(ref error) = result {
                     // 失败进入下一轮上下文；网络超时可能已经成功，不自动重放。
@@ -1387,7 +1417,16 @@ impl Session {
         action: &Action,
         turns: &mut Vec<Turn>,
         me: &str,
-    ) -> Result<Target> {
+    ) -> Result<Vec<Target>> {
+        // 私聊里没有群可管。还剩下的「管理」只有替这个号对外发话（跨会话转发），
+        // 那件事也只替号主与客人本人做，不听陌生群友的吩咐。
+        if !self.place.is_group() {
+            ensure!(
+                self.authority != Authority::Guest,
+                "这一轮是普通群友在吩咐：跨会话转发与改账号这种事只替号主办"
+            );
+            return Ok(Vec::new());
+        }
         if self.capabilities.is_null() {
             self.capabilities = self.describe_capabilities().await;
         }
@@ -1407,20 +1446,60 @@ impl Session {
                 "本群今天的管理动作已到上限（{daily} 次）。真要紧就在群里喊号主或别的管理员"
             );
         }
-        let uid = match action {
-            Action::Recall { message_id, .. } => actions::message(turns, message_id)?.user_id.clone(),
-            // 申请人还不是群成员，名册里查不到；账上有这条申请就够了。
-            Action::Approve { request_id, .. } => {
-                let request = crate::requests::find(&self.channel, request_id).ok_or_else(|| {
-                    anyhow::anyhow!("本群没有这条待处理的加群申请（可能已被别的管理员处理）；看 satori_context 的 management.requests")
-                })?;
-                return Ok(Target { user_id: request.user_id, name: String::new() });
+        // 申请人还不是群成员，名册里查不到；账上有这条申请就够了。
+        if let Action::Approve { request_id, .. } = action {
+            // 本群待处理的加群申请有账可查；查不到可能是好友申请（request_id 来自
+            // satori_group 的 requests），那一条没有群成员可对，交给执行那一步走好友审批。
+            return Ok(crate::requests::find(&self.channel, request_id)
+                .map(|request| {
+                    vec![Target {
+                        user_id: request.user_id,
+                        name: String::new(),
+                    }]
+                })
+                .unwrap_or_default());
+        }
+        // 撤回的对象从消息里认；其余按动作点到的名字认（可能是好几个）。
+        let mut raw: Vec<String> = match action {
+            Action::Recall { message_id, .. } => {
+                vec![actions::message(turns, message_id)?.user_id.clone()]
             }
-            _ => match action.management_target() {
-                Some(raw) => actions::id(raw)?,
-                None => return Ok(Target::default()),
-            },
+            _ => action
+                .management_targets()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
         };
+        raw.retain(|id| !id.trim().is_empty());
+        raw.sort_unstable();
+        raw.dedup();
+        // 名册核实之前先做纯参数校验：格式错的不该白跑一次内核查询。窗口里没有的人
+        // 先放一条空记录进去，校验只认「这个号在不在名单上」。
+        for uid in &raw {
+            if !turns.iter().any(|turn| turn.user_id == *uid) {
+                turns.push(Turn {
+                    user_id: uid.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        action.validate(turns)?;
+        let mut out = Vec::new();
+        for uid in raw {
+            out.push(self.check_target(action, turns, me, &uid).await?);
+        }
+        Ok(out)
+    }
+
+    /// 一个对象过闸：不罚自己人、不在名册里的按平台核实。
+    async fn check_target(
+        &mut self,
+        action: &Action,
+        turns: &[Turn],
+        me: &str,
+        uid: &str,
+    ) -> Result<Target> {
+        let uid = actions::id(uid)?;
         let mut target = Target {
             name: turns
                 .iter()
@@ -1439,14 +1518,6 @@ impl Session {
         let seen = turns.iter().any(|turn| turn.user_id == uid);
         if seen && !action.punishes() {
             return Ok(target);
-        }
-        if !seen {
-            // 先做纯参数校验，格式错误不消耗查询。
-            turns.push(Turn {
-                user_id: uid.clone(),
-                ..Default::default()
-            });
-            action.validate(turns)?;
         }
         let member = self
             .rpc(
@@ -1476,7 +1547,7 @@ impl Session {
         Ok(target)
     }
     /// 管理动作成了：记进管理记录（下次看前科、算每天的次数），日志里也留一行给号主查。
-    async fn log_management(&self, action: &Action, target: Target) {
+    async fn log_management(&self, action: &Action, targets: &[Target]) {
         let by = match (&self.trigger, self.authority) {
             (_, Authority::Own) => "搭话".to_string(),
             (Some(trigger), _) => format!("{}（{}）", trigger.name, trigger.user_id),
@@ -1489,25 +1560,44 @@ impl Session {
             }
             _ => 0,
         };
-        info!(
-            target: super::LOG_TARGET,
-            "群 {} 管理动作 {kind} {}（{}）{}秒，经手：{by}，理由：{}",
-            self.channel, target.name, target.user_id, seconds, action.reason()
-        );
-        moderation::record(
-            &self.channel,
-            moderation::Entry {
-                at: chrono::Utc::now().timestamp(),
-                action: kind.to_string(),
-                user_id: target.user_id,
-                name: target.name,
-                seconds,
-                reason: action.reason().to_string(),
-                by,
-                counted: !action.lifts(),
-            },
-        )
-        .await;
+        // 整群动作（群设置、解散、转让）没有对象，记一条空对象的账，照样算进今天的次数。
+        let rows: Vec<(String, String)> = if targets.is_empty() {
+            vec![(String::new(), String::new())]
+        } else {
+            targets
+                .iter()
+                .map(|target| (target.user_id.clone(), target.name.clone()))
+                .collect()
+        };
+        for (user_id, name) in rows {
+            if user_id.is_empty() {
+                info!(
+                    target: super::LOG_TARGET,
+                    "群 {} 管理动作 {kind}（整群），经手：{by}，理由：{}",
+                    self.channel, action.reason()
+                );
+            } else {
+                info!(
+                    target: super::LOG_TARGET,
+                    "群 {} 管理动作 {kind} {name}（{user_id}）{seconds}秒，经手：{by}，理由：{}",
+                    self.channel, action.reason()
+                );
+            }
+            moderation::record(
+                &self.channel,
+                moderation::Entry {
+                    at: chrono::Utc::now().timestamp(),
+                    action: kind.to_string(),
+                    user_id,
+                    name,
+                    seconds,
+                    reason: action.reason().to_string(),
+                    by: by.clone(),
+                    counted: !action.lifts(),
+                },
+            )
+            .await;
+        }
     }
     /// 执行一个动作。撤回有「刚发出去还撤不了」的空窗（见 api::recall_retryable），
     /// 隔一会儿重试两次；别的动作一次定输赢，不替它们吞掉错误。
@@ -1575,6 +1665,12 @@ impl Session {
                 "实现端没有声明 {name} 这个能力。satori_context 的 capabilities.catalog 是可用的清单，照着里面的名字与参数来"
             );
         };
+        // 运维动作不从聊天里做：一句「重启 QQ 试试」不该由模型按下真实的开关，
+        // 它会把整个账号上的会话一起打断。号主在知微控制台（/ctl）或知弦模块里动手。
+        ensure!(
+            !matches!(name, "restart" | "clean_cache"),
+            "重启与清缓存这类运维动作不走聊天：号主在知微控制台或知弦模块里做"
+        );
         let kind = entry
             .get("kind")
             .and_then(Value::as_str)
@@ -1934,6 +2030,13 @@ impl Session {
                                 .extend(self.sticker(turns, *id, message_id, *index, note).await?.0);
                             msg
                         }
+                        Part::Contact { kind, id } => {
+                            if kind.trim() == "group" {
+                                msg.contact_group(id.trim())
+                            } else {
+                                msg.contact_user(id.trim())
+                            }
+                        }
                         Part::Dice => msg.dice(),
                         Part::Rps => msg.rps(),
                     };
@@ -2008,20 +2111,20 @@ impl Session {
                 ),
             ),
             Action::Mute {
-                user_id,
+                user_ids,
                 duration_seconds,
                 ..
             } => (
-                "guild.member.mute",
-                json!({"guild_id":guild,"user_id":user_id,"duration":u64::from(*duration_seconds)*1000}),
-                format!("[禁言 {user_id} {duration_seconds} 秒；0 为解除]"),
+                "internal/group_mute",
+                json!({"guild_id":guild,"user_ids":user_ids,"duration":u64::from(*duration_seconds)*1000}),
+                format!("[禁言 {} {duration_seconds} 秒；0 为解除]", user_ids.join("、")),
             ),
             Action::Kick {
-                user_id, permanent, ..
+                user_ids, permanent, ..
             } => (
-                "guild.member.kick",
-                json!({"guild_id":guild,"user_id":user_id,"permanent":permanent}),
-                format!("[移出群成员 {user_id}]"),
+                "internal/group_kick",
+                json!({"guild_id":guild,"user_ids":user_ids,"permanent":permanent}),
+                format!("[移出群成员 {}]", user_ids.join("、")),
             ),
             Action::MuteAll {
                 duration_seconds, ..
@@ -2036,8 +2139,20 @@ impl Session {
                 message,
                 ..
             } => {
-                let request = crate::requests::find(&guild, request_id)
-                    .ok_or_else(|| anyhow::anyhow!("这条加群申请已经不在了"))?;
+                // 不是本群待处理的加群申请，就是一条好友申请：走标准的好友审批，
+                // 成败都照实现端的回执说（QQ 对好友审批有它自己的风控）。
+                let Some(request) = crate::requests::find(&guild, request_id) else {
+                    let params = json!({"message_id":request_id,"approve":approve,"comment":message});
+                    let result = self.rpc("friend.approve", params).await?;
+                    let verdict = if *approve { "同意" } else { "拒绝" };
+                    self.record(
+                        format!("[{verdict}了好友申请 {request_id}]"),
+                        String::new(),
+                        Message::new(),
+                        true,
+                    );
+                    return Ok(json!({"status":"confirmed","data":result}));
+                };
                 let params = json!({"message_id":request.flag,"approve":approve,"comment":message});
                 let verdict = if *approve { "同意" } else { "拒绝" };
                 let result = self.rpc("guild.member.approve", params).await?;
@@ -2070,6 +2185,86 @@ impl Session {
                 json!({"channel_id":channel,"data":{"name":name}}),
                 format!("[群名改为 {name}]"),
             ),
+            Action::Settings {
+                join,
+                question,
+                answer,
+                allow_invite,
+                searchable,
+                msg_limit,
+                intro,
+            } => {
+                let mut params = json!({"guild_id":guild});
+                let mut changed = Vec::new();
+                if let Some(join) = join {
+                    params["join"] = json!(join.trim());
+                    changed.push("入群方式");
+                }
+                if let Some(question) = question {
+                    params["question"] = json!(question.trim());
+                    changed.push("入群问题");
+                }
+                if let Some(answer) = answer {
+                    params["answer"] = json!(answer.trim());
+                }
+                if let Some(value) = allow_invite {
+                    params["allow_invite"] = json!(value);
+                    changed.push("允许邀请");
+                }
+                if let Some(value) = searchable {
+                    params["searchable"] = json!(value);
+                    changed.push("可被搜索");
+                }
+                if let Some(value) = msg_limit {
+                    params["msg_limit"] = json!(value);
+                    changed.push("发言频率");
+                }
+                if let Some(intro) = intro {
+                    params["intro"] = json!(intro.trim());
+                    changed.push("群介绍");
+                }
+                (
+                    "internal/group_settings",
+                    params,
+                    format!("[改了群设置：{}]", changed.join("、")),
+                )
+            }
+            Action::Transfer { user_id, .. } => (
+                "internal/group_transfer",
+                json!({"guild_id":guild,"user_id":user_id}),
+                format!("[把群主转让给 {user_id}]"),
+            ),
+            Action::Destroy {
+                confirm,
+                delete_local_msg,
+            } => (
+                "internal/group_destroy",
+                json!({"guild_id":guild,"confirm":confirm.trim(),"delete_local_msg":delete_local_msg}),
+                "[解散这个群]".to_string(),
+            ),
+            Action::MsgMask { mode } => (
+                "internal/group_msg_mask",
+                json!({"guild_id":guild,"mode":mode.trim()}),
+                format!("[本群消息接收方式改为 {}]", mode.trim()),
+            ),
+            Action::SessionTop { top } => (
+                "internal/session_top",
+                json!({"channel_id":channel,"top":top}),
+                format!("[{}置顶这个会话]", if *top {"已"} else {"取消"}),
+            ),
+            Action::Invite { user_id } => (
+                "internal/invite",
+                json!({"guild_id":guild,"user_id":user_id}),
+                format!("[邀请 {user_id} 加入本群]"),
+            ),
+            Action::ForwardTo {
+                message_ids,
+                target,
+            } => (
+                "internal/message_forward",
+                json!({"channel_id":channel,"message_ids":message_ids,"target":target.trim()}),
+                format!("[转发 {} 条消息到 {}]", message_ids.len(), target.trim()),
+            ),
             Action::Recall { message_id, .. } => (
                 "message.delete",
                 json!({"channel_id":channel,"message_id":message_id}),
@@ -2086,15 +2281,51 @@ impl Session {
                     crate::plugins::oai::utils::one_line(text).chars().take(40).collect::<String>()
                 ),
             ),
-            Action::Nick { nick } => (
-                "internal/nick",
-                json!({"nick":nick.trim()}),
-                format!("[QQ 昵称改为 {nick}]"),
-            ),
-            Action::Signature { signature } => (
-                "internal/long_nick",
-                json!({"text":signature.trim()}),
-                format!("[个性签名改为 {signature}]"),
+            Action::Profile {
+                nick,
+                signature,
+                gender,
+                birthday,
+            } => {
+                let mut params = json!({});
+                let mut changed = Vec::new();
+                if let Some(nick) = nick {
+                    params["nick"] = json!(nick.trim());
+                    changed.push(format!("昵称 {nick}"));
+                }
+                if let Some(signature) = signature {
+                    params["long_nick"] = json!(signature.trim());
+                    changed.push(format!("签名 {signature}"));
+                }
+                if let Some(gender) = gender {
+                    params["gender"] = json!(gender.trim());
+                    changed.push(format!("性别 {gender}"));
+                }
+                if let Some(birthday) = birthday {
+                    params["birthday"] = json!(birthday.trim());
+                    changed.push(format!("生日 {birthday}"));
+                }
+                (
+                    "internal/profile_set",
+                    params,
+                    format!("[改了账号资料：{}]", changed.join("、")),
+                )
+            }
+            Action::Status { status, ext_status } => {
+                let mut params = json!({"status":status.trim()});
+                if let Some(ext) = ext_status {
+                    params["ext_status"] = json!(ext);
+                }
+                (
+                    "internal/online_status",
+                    params,
+                    format!("[在线状态改为 {}]", status.trim()),
+                )
+            }
+            Action::Like { user_id, times } => (
+                "internal/like",
+                json!({"user_id":user_id,"times":times}),
+                format!("[给 {user_id} 的资料卡点了 {times} 个赞]"),
             ),
             Action::Avatar { image } => {
                 let source = self.source(image.trim(), "avatar.jpg").await?;

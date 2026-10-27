@@ -825,12 +825,12 @@ async fn ambient_switch(ctx: &Context) -> Option<String> {
     if !on && !manager && !group_admin {
         return Some("这个得号主或群管理来关".to_string());
     }
-    let already = enabled(&ctx.config.read().unwrap(), "ambient") && ambient.groups.iter().any(|g| *g == group);
+    let already = enabled(&ctx.config.read().unwrap(), "ambient") && ambient.groups.contains(&group);
     if on && already {
         let prefix = get_prefixes(ctx).first().cloned().unwrap_or_default();
         return Some(format!("这个群已经开着了；想让我话少点或多点，号主发「{prefix}ctl set ambient talk quiet」（或 lively）"));
     }
-    if !on && !ambient.groups.iter().any(|g| *g == group) {
+    if !on && !ambient.groups.contains(&group) {
         return Some("这个群本来就没开".to_string());
     }
     let target = group.clone();

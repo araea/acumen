@@ -81,7 +81,12 @@ fn fold(c: char) -> char {
 }
 
 /// 宽容写法：逐字折叠，并去掉每行行尾的空白。返回折叠后的字符，以及每个字符在原文里的字节区间。
-fn normalize(text: &str) -> (Vec<char>, Vec<(usize, usize)>) {
+/// 折好的正文：逐字符，以及每个字符回到原文的字节区间。
+///
+/// 宽容定位只在这份折好的写法上找；命中之后再按映射换回原文的偏移。
+type Folded = (Vec<char>, Vec<(usize, usize)>);
+
+fn normalize(text: &str) -> Folded {
     let mut chars = Vec::with_capacity(text.len());
     let mut spans = Vec::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
@@ -148,7 +153,7 @@ pub(crate) fn apply(content: &str, edits: &[Replace]) -> anyhow::Result<Outcome>
     };
     let mut hits: Vec<Hit> = Vec::new();
     let mut fuzzy = 0;
-    let mut folded: Option<(Vec<char>, Vec<(usize, usize)>)> = None;
+    let mut folded: Option<Folded> = None;
     for (index, edit) in edits.iter().enumerate() {
         let old = edit.old.replace("\r\n", "\n");
         let new = edit.new.replace("\r\n", "\n");

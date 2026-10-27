@@ -1488,8 +1488,8 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     let message = (!message.0.is_empty()).then_some(message);
     // 有验证时欢迎先不定时撤：上面写着验证码，撤早了新人就没处看了。
     let recall = if pending.is_some() { 0 } else { config.join.recall_seconds };
-    let sent = match message {
-        Some(message) => match say(ctx, writer, group, message, recall).await {
+    let sent = if let Some(message) = message {
+        match say(ctx, writer, group, message, recall).await {
             Ok(sent) => sent,
             Err(error) => {
                 if pending.is_some() {
@@ -1497,14 +1497,13 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
                 }
                 return Err(error);
             }
-        },
-        None => {
-            // 没有任何内容可发就等于验证说明没送到，不能留一份到点罚人的名单。
-            if pending.is_some() {
-                forget(&ctx.bot.self_id(), group, user).await;
-            }
-            None
         }
+    } else {
+        // 没有任何内容可发就等于验证说明没送到，不能留一份到点罚人的名单。
+        if pending.is_some() {
+            forget(&ctx.bot.self_id(), group, user).await;
+        }
+        None
     };
     let sent_at = now();
     if pending.is_some() {
@@ -1693,11 +1692,13 @@ async fn take(me: &str, group: &str, user: &str) -> Option<Pending> {
 
 async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, user: &str) -> Result<(), PluginError> {
     let me = ctx.bot.self_id();
-    batch()
+    if let Some(batch) = batch()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get_mut(&(me.clone(), group.to_string()))
-        .map(|batch| batch.people.retain(|person| person.user != user));
+    {
+        batch.people.retain(|person| person.user != user);
+    }
     let gone = take(&me, group, user).await;
     records::forget(&me, group, user).await;
     if let Some(p) = gone {
@@ -1776,7 +1777,7 @@ async fn request(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
             info!(target: LOG_TARGET, "群 {group} 的加群申请（{user}）已自动{}", if matched { "同意" } else { "拒绝" });
         }
         Err(error) => {
-            warn!(target: LOG_TARGET, "群 {group} 的加群申请（{user}）没能自动处理：{error}")
+            warn!(target: LOG_TARGET, "群 {group} 的加群申请（{user}）没能自动处理：{error}");
         }
     }
     Ok(())

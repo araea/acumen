@@ -24,6 +24,8 @@ const ESSENCE_PAGE: i64 = 20;
 const BULLETINS: i64 = 10;
 /// 群荣誉每一类列前几名。
 const HONOR_ROWS: i64 = 5;
+/// 群成员名册一页几条。
+const MEMBER_PAGE: i64 = 50;
 /// 单条精华 / 公告正文截到多少字。
 const TEXT_CHARS: usize = 800;
 
@@ -39,6 +41,14 @@ pub(crate) enum Query {
     Bulletins,
     /// 群荣誉榜：龙王、群聊之火、群聊炽焰、冒尖小春笋、快乐源泉（知弦 0.52.0 起）。
     Honors,
+    /// 群本身的样子：人数、群主、建群时间、我的身份与群设置（知弦 0.53.0 起）。
+    Detail,
+    /// 成员名册第 start 条起的一页。
+    Members { start: i64 },
+    /// 单个成员：名册里的身份，再接一份资料。
+    Member { user_id: String },
+    /// 还没处理的好友申请、入群申请与群邀请。
+    Requests,
 }
 
 impl Query {
@@ -62,7 +72,13 @@ impl Query {
             "essences" | "essence" => Self::Essences { page: next },
             "bulletins" | "bulletin" => Self::Bulletins,
             "honors" | "honor" => Self::Honors,
-            other => bail!("what 只认 files / essences / bulletins / honors，收到「{other}」"),
+            "detail" | "group" | "info" => Self::Detail,
+            "members" | "roster" => Self::Members { start: next },
+            "member" => Self::Member {
+                user_id: text("user_id").ok_or_else(|| anyhow::anyhow!("what=member 要带 user_id（QQ 号）"))?,
+            },
+            "requests" | "request" => Self::Requests,
+            other => bail!("what 只认 files / essences / bulletins / honors / detail / members / member / requests，收到「{other}」"),
         })
     }
 
@@ -92,17 +108,41 @@ impl Query {
                 "internal/group_honor",
                 json!({"guild_id":guild,"kind":"all","limit":HONOR_ROWS}),
             ),
+            Self::Detail => ("internal/group_detail", json!({"guild_id":guild})),
+            Self::Members { start } => (
+                "guild.member.list",
+                json!({"guild_id":guild,"next":start,"limit":MEMBER_PAGE}),
+            ),
+            Self::Member { user_id } => (
+                "guild.member.get",
+                json!({"guild_id":guild,"user_id":user_id}),
+            ),
+            Self::Requests => ("internal/request_list", json!({})),
+        }
+    }
+
+    /// 看单个成员时顺带问的第二个接口：名册里只有身份，资料在内核那一边。
+    ///
+    /// 取不到不影响名册那一份：这个人的名字、身份、进群时间、最后发言仍然是准的。
+    pub(crate) fn extra(&self) -> Option<(&'static str, Value)> {
+        match self {
+            Self::Member { user_id } => Some(("internal/user_info", json!({"user_id": user_id}))),
+            _ => None,
         }
     }
 
     /// 实现端的回包 → 给模型读的回执。
-    pub(crate) fn render(&self, data: &Value) -> Result<Value> {
+    pub(crate) fn render(&self, data: &Value, extra: Option<&Value>) -> Result<Value> {
         match self {
             Self::Files { folder, start } => files(data, folder, *start),
             Self::Search { keyword } => search(data, keyword),
             Self::Essences { page } => essences(data, *page),
             Self::Bulletins => bulletins(data),
             Self::Honors => honors(data),
+            Self::Detail => detail(data),
+            Self::Members { start } => members(data, *start),
+            Self::Member { user_id } => member(data, user_id, extra),
+            Self::Requests => requests(data),
         }
     }
 }
@@ -392,6 +432,221 @@ fn size(bytes: i64) -> String {
     }
 }
 
+/// 毫秒时间戳 → 北京时间「2026-10-12 08:30」；0 或负数是没有。
+fn stamp(ms: i64) -> String {
+    if ms <= 0 {
+        return String::new();
+    }
+    when(if ms > 1_500_000_000_000 { ms / 1000 } else { ms })
+}
+
+fn role_name(raw: &str) -> &str {
+    match raw {
+        "owner" => "群主",
+        "admin" => "管理员",
+        "member" => "普通成员",
+        other => other,
+    }
+}
+
+/// 群详情：人数、群主、建群时间、我在这个群里的身份、群设置。
+fn detail(data: &Value) -> Result<Value> {
+    let text = |key: &str| data[key].as_str().unwrap_or("").trim().to_string();
+    let int = |value: &Value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+            .unwrap_or(0)
+    };
+    let name = text("name");
+    ensure!(
+        !name.is_empty() || !text("guild_id").is_empty(),
+        "QQ 端没回这个群的详情（内核缓存里没有，过一会儿再试）"
+    );
+    let settings = &data["settings"];
+    let join = match int(&settings["join"]) {
+        1 => "允许任何人加入",
+        2 => "需要验证",
+        3 => "不允许加入",
+        4 => "回答问题，管理员审核",
+        5 => "答对问题即可加入",
+        _ => "未知",
+    };
+    let me = &data["self"];
+    let receive = match me["msg_mask"].as_str().unwrap_or("") {
+        "NOTIFY" | "notify" => "接收并提醒",
+        "RECEIVE" | "receive" => "接收不提醒",
+        "ASSISTANT" | "assistant" => "收进群助手",
+        "SHIELD" | "shield" => "屏蔽",
+        other => other,
+    };
+    Ok(json!({
+        "what": "detail",
+        "group_id": text("guild_id"),
+        "name": name,
+        "remark": text("remark"),
+        "owner_id": text("owner_id"),
+        "created": stamp(int(&data["created_at"])),
+        "members": {
+            "count": int(&data["member_count"]),
+            "max": int(&data["max_member_count"]),
+            "active": int(&data["active_member_count"]),
+            "admins_max": int(&data["admin_max"]),
+        },
+        "intro": clip(&text("intro"), TEXT_CHARS),
+        "frozen": data["frozen"].as_bool().unwrap_or(false),
+        "mute_all_until": stamp(int(&data["mute_all_until"])),
+        "me": {
+            "role": role_name(me["role"].as_str().unwrap_or("")),
+            "joined": stamp(int(&me["joined_at"])),
+            "muted_until": stamp(int(&me["muted_until"])),
+            "receive": receive,
+            "pinned": me["pinned"].as_bool().unwrap_or(false),
+        },
+        "settings": {
+            "join": join,
+            "question": settings["question"],
+            "searchable_by_name": settings["searchable_by_name"],
+            "searchable_by_code": settings["searchable_by_code"],
+            "msg_limit": settings["msg_limit"],
+            "allow_recall": settings["allow_recall"],
+        },
+        "note": "时间都是北京时间；mute_all_until 与 me.muted_until 为空表示没在禁言。改这些用 satori_action 的 settings。",
+    }))
+}
+
+/// 名册里的一行。
+fn row_of(member: &Value) -> Value {
+    let user = &member["user"];
+    // 号码有时是字符串、有时是数字：两种都要，别让一个人因为类型不同变成空号。
+    let id = match &user["id"] {
+        Value::String(text) => text.trim().to_string(),
+        Value::Number(number) => number.to_string(),
+        _ => String::new(),
+    };
+    let name = user["nick"]
+        .as_str()
+        .or_else(|| user["name"].as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let card = member["nick"].as_str().unwrap_or("").trim().to_string();
+    let role = role_name(member["roles"][0]["id"].as_str().unwrap_or(""));
+    let sent = member["last_sent_at"].as_i64().unwrap_or(0);
+    let mut row = json!({
+        "user_id": id,
+        "name": name,
+        "card": if card == name { String::new() } else { card },
+        "role": role,
+        "joined": stamp(member["joined_at"].as_i64().unwrap_or(0)),
+        "last_sent": stamp(sent),
+        "never_spoke": sent <= 0,
+    });
+    if let Some(level) = member["level"].as_i64() {
+        row["level"] = json!(level);
+    }
+    if let Some(title) = member["title"].as_str().filter(|title| !title.trim().is_empty()) {
+        row["title"] = json!(title.trim());
+    }
+    row
+}
+
+fn members(data: &Value, start: i64) -> Result<Value> {
+    let rows = data["data"].as_array().cloned().unwrap_or_default();
+    let items: Vec<Value> = rows.iter().map(row_of).collect();
+    let mut out = json!({
+        "what": "members",
+        "count": items.len(),
+        "items": items,
+        "note": "last_sent 是 QQ 服务器记的最后发言时刻（机器人离线期间的也算）；never_spoke 为 true 表示进群后没说过话。",
+    });
+    if let Some(next) = data["next"].as_i64().filter(|next| *next > start) {
+        out["next"] = json!(next);
+    }
+    if out["count"] == 0 && start == 0 {
+        out["note"] = json!("名册里没有成员；QQ 端可能还没同步，过一会儿再看");
+    }
+    Ok(out)
+}
+
+/// 单个成员：名册里的身份，再接一份账号资料（取不到就只给名册那一份）。
+fn member(data: &Value, user_id: &str, extra: Option<&Value>) -> Result<Value> {
+    ensure!(
+        data.get("user").is_some(),
+        "QQ 端没回 {user_id} 在本群的资料"
+    );
+    let mut out = row_of(data);
+    out["what"] = json!("member");
+    if let Some(profile) = extra {
+        for (from, to) in [
+            ("nick", "nick"),
+            ("remark", "remark"),
+            ("long_nick", "signature"),
+            ("gender", "gender"),
+            ("age", "age"),
+            ("birthday", "birthday"),
+            ("qid", "qid"),
+            ("college", "college"),
+            ("vip", "vip"),
+            ("svip", "svip"),
+            ("vip_level", "vip_level"),
+            ("blocked", "blocked"),
+        ] {
+            if let Some(value) = profile.get(from) {
+                out[to] = value.clone();
+            }
+        }
+        if let Some(level) = profile.get("level") {
+            out["qq_level"] = level.clone();
+        }
+        out["registered"] = json!(stamp(profile["registered_at"].as_i64().unwrap_or(0)));
+        let place = [
+            profile["province"].as_str(),
+            profile["city"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+        out["place"] = json!(place);
+    } else {
+        out["note"] = json!("QQ 端没回这个人的资料，只有名册里的身份");
+    }
+    Ok(out)
+}
+
+/// 还没处理的好友申请、入群申请与群邀请。
+fn requests(data: &Value) -> Result<Value> {
+    let rows = data.as_array().cloned().unwrap_or_default();
+    let items: Vec<Value> = rows
+        .iter()
+        .map(|event| {
+            let kind = match event["type"].as_str().unwrap_or("") {
+                "friend-request" => "好友申请",
+                "guild-member-request" => "入群申请",
+                "guild-request" => "群邀请",
+                other => other,
+            };
+            json!({
+                "kind": kind,
+                "request_id": event["message"]["id"].as_str().or_else(|| event["flag"].as_str()).unwrap_or(""),
+                "user_id": event["user"]["id"].as_str().or_else(|| event["user_id"].as_str()).unwrap_or(""),
+                "name": event["user"]["name"].as_str().or_else(|| event["user"]["nick"].as_str()).unwrap_or(""),
+                "group_id": event["guild"]["id"].as_str().or_else(|| event["group_id"].as_str()).unwrap_or(""),
+                "comment": clip(event["comment"].as_str().unwrap_or(""), 160),
+                "time": when(event["time"].as_i64().unwrap_or(0)),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "what": "requests",
+        "count": items.len(),
+        "items": items,
+        "note": "入群申请与群邀请用 satori_action 的 approve（request_id 照抄）处理；好友申请同理，实现端会走好友那条审批。",
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,7 +660,7 @@ mod tests {
             ],
             "is_end": false, "next_index": 60, "all_file_count": -1, "source": "oidb"
         });
-        let out = Query::Files { folder: String::new(), start: 0 }.render(&data).unwrap();
+        let out = Query::Files { folder: String::new(), start: 0 }.render(&data, None).unwrap();
         assert_eq!(out["items"][0]["folder_id"], "/abc");
         assert_eq!(out["items"][0]["files"], 3);
         assert_eq!(out["items"][1]["size"], "3.6 MB");
@@ -418,13 +673,13 @@ mod tests {
     #[test]
     fn old_empty_list_is_an_error_not_an_empty_group() {
         let data = json!({"group":1,"folder_id":"","all_file_count":-1,"is_end":true,"next_index":0,"items":[]});
-        assert!(Query::Files { folder: String::new(), start: 0 }.render(&data).is_err());
+        assert!(Query::Files { folder: String::new(), start: 0 }.render(&data, None).is_err());
     }
 
     #[test]
     fn search_reads_kernel_payload() {
         let data = json!({"ok":true,"code":0,"data":{"item":[{"fileId":"/f","fileName":"a.zip","fileSize":1000,"uploaderName":"丙","uploaderUin":3,"uploadTime":0}],"totalMatchCount":9}});
-        let out = Query::Search { keyword: "a".into() }.render(&data).unwrap();
+        let out = Query::Search { keyword: "a".into() }.render(&data, None).unwrap();
         assert_eq!(out["items"][0]["type"], "file");
         assert_eq!(out["items"][0]["size"], "1000 B");
         assert_eq!(out["matched"], 9);
@@ -433,16 +688,16 @@ mod tests {
     #[test]
     fn essences_and_bulletins() {
         let data = json!({"ok":true,"is_end":false,"essences":[{"sender_id":"1","sender_name":"丁","sent_at":1700000000,"operator_id":"2","operator_name":"戊","added_at":1700000100,"text":"名言","images":["u"]}]});
-        let out = Query::Essences { page: 0 }.render(&data).unwrap();
+        let out = Query::Essences { page: 0 }.render(&data, None).unwrap();
         assert_eq!(out["items"][0]["sender"], "丁（1）");
         assert_eq!(out["items"][0]["images"], 1);
         assert_eq!(out["next"], 1);
         let data = json!({"ok":true,"bulletins":[{"sender_id":"9","published_at":1700000000,"title":"","text":"群规","pinned":true,"read_count":0}]});
-        let out = Query::Bulletins.render(&data).unwrap();
+        let out = Query::Bulletins.render(&data, None).unwrap();
         assert_eq!(out["items"][0]["pinned"], true);
         assert!(out["items"][0].get("title").is_none());
         let failed = json!({"ok":false,"error":"http=200 code=4"});
-        assert!(Query::Bulletins.render(&failed).is_err());
+        assert!(Query::Bulletins.render(&failed, None).is_err());
     }
 
     #[test]
@@ -452,12 +707,75 @@ mod tests {
                 "list":[{"user_id":"7","name":"台风","days":6,"total_days":193}]},
             "performer":{"title":"群聊之火","list":[{"user_id":"8","name":"橘子","days":27}]},
             "emotion":{"title":"快乐源泉","error":"http=200 code=1001"}}});
-        let out = Query::Honors.render(&data).unwrap();
+        let out = Query::Honors.render(&data, None).unwrap();
         assert_eq!(out["items"].as_array().unwrap().len(), 2, "出错的类别不列");
         assert_eq!(out["items"][0]["current"], "台风（7）");
         assert_eq!(out["items"][0]["people"][0]["total_days"], 193);
         assert_eq!(out["items"][1]["honor"], "群聊之火");
         assert_eq!(Query::parse(&json!({"what":"honors"})).unwrap(), Query::Honors);
+    }
+
+
+    #[test]
+    fn detail_speaks_in_people_terms() {
+        let data = json!({
+            "guild_id":"818965288","name":"摸鱼","owner_id":"9",
+            "created_at":1_600_000_000_000_i64,"member_count":120,"max_member_count":200,
+            "active_member_count":37,"admin_max":10,"intro":"只聊技术","frozen":false,
+            "mute_all_until":0_i64,
+            "self":{"role":"admin","joined_at":1_700_000_000_000_i64,"muted_until":0_i64,"msg_mask":"NOTIFY","pinned":true},
+            "settings":{"join":2,"question":"口令","answer":"摸鱼","searchable_by_name":true,"searchable_by_code":false,"msg_limit":0,"allow_recall":true}
+        });
+        let out = Query::Detail.render(&data, None).unwrap();
+        assert_eq!(out["members"]["count"], 120);
+        assert_eq!(out["me"]["role"], "管理员");
+        assert_eq!(out["me"]["receive"], "接收并提醒");
+        assert_eq!(out["settings"]["join"], "需要验证");
+        assert_eq!(out["mute_all_until"], "");
+        assert!(out["created"].as_str().unwrap().starts_with("2020-09-13"));
+    }
+
+    #[test]
+    fn roster_marks_the_quiet_ones() {
+        let data = json!({"data":[
+            {"user":{"id":"7","nick":"台风"},"roles":[{"id":"owner"}],"joined_at":1_700_000_000_000_i64,"last_sent_at":1_780_000_000_000_i64,"level":42},
+            {"user":{"id":"8","nick":"橘子"},"nick":"小橘","roles":[{"id":"member"}],"joined_at":0,"last_sent_at":0}
+        ],"next":50});
+        let out = Query::Members { start: 0 }.render(&data, None).unwrap();
+        assert_eq!(out["count"], 2);
+        assert_eq!(out["items"][0]["role"], "群主");
+        assert_eq!(out["items"][0]["level"], 42);
+        assert_eq!(out["items"][1]["card"], "小橘");
+        assert_eq!(out["items"][1]["never_spoke"], true);
+        assert_eq!(out["next"], 50);
+    }
+
+    #[test]
+    fn member_merges_roster_and_profile() {
+        let data = json!({"user":{"id":"7","nick":"台风"},"roles":[{"id":"admin"}],"joined_at":0,"last_sent_at":0});
+        let profile = json!({"nick":"台风","long_nick":"随便聊聊","gender":"male","age":30,
+            "birthday":"1996-03-02","province":"浙江","city":"宁波","vip":true,"registered_at":0_i64});
+        let out = Query::Member { user_id: "7".into() }.render(&data, Some(&profile)).unwrap();
+        assert_eq!(out["signature"], "随便聊聊");
+        assert_eq!(out["place"], "浙江 宁波");
+        assert_eq!(out["role"], "管理员");
+        let bare = Query::Member { user_id: "7".into() }.render(&data, None).unwrap();
+        assert!(bare.get("note").is_some());
+    }
+
+    #[test]
+    fn requests_list_keeps_the_flag() {
+        let data = json!([
+            {"type":"guild-member-request","time":1_780_000_000,"user":{"id":"8","name":"橘子"},
+             "guild":{"id":"1"},"comment":"想进来看看","message":{"id":"flag-1"}},
+            {"type":"friend-request","time":1_780_000_100,"user":{"id":"9","name":"阿蓝"},"message":{"id":"flag-2"}}
+        ]);
+        let out = Query::Requests.render(&data, None).unwrap();
+        assert_eq!(out["count"], 2);
+        assert_eq!(out["items"][0]["kind"], "入群申请");
+        assert_eq!(out["items"][0]["request_id"], "flag-1");
+        assert_eq!(out["items"][1]["kind"], "好友申请");
+        assert_eq!(out["items"][1]["group_id"], "");
     }
 
     #[test]
@@ -466,6 +784,13 @@ mod tests {
         assert_eq!(query, Query::Search { keyword: "手册".into() });
         let query = Query::parse(&json!({"what":"essences","next":2})).unwrap();
         assert_eq!(query, Query::Essences { page: 2 });
-        assert!(Query::parse(&json!({"what":"members"})).is_err());
+        let query = Query::parse(&json!({"what":"members","next":50})).unwrap();
+        assert_eq!(query, Query::Members { start: 50 });
+        assert_eq!(Query::parse(&json!({"what":"detail"})).unwrap(), Query::Detail);
+        assert_eq!(Query::parse(&json!({"what":"requests"})).unwrap(), Query::Requests);
+        let query = Query::parse(&json!({"what":"member","user_id":" 42 "})).unwrap();
+        assert_eq!(query, Query::Member { user_id: "42".into() });
+        assert!(Query::parse(&json!({"what":"member"})).is_err());
+        assert!(Query::parse(&json!({"what":"nope"})).is_err());
     }
 }

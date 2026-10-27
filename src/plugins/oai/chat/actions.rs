@@ -45,6 +45,11 @@ pub(crate) enum Part {
         #[serde(default)]
         note: String,
     },
+    /// 名片卡：把一个群或一个人推荐到聊天里（QQ 的「推荐给好友」那张卡）。
+    Contact {
+        kind: String,
+        id: String,
+    },
     Dice,
     Rps,
 }
@@ -89,15 +94,17 @@ pub(crate) enum Action {
         #[serde(default)]
         remove: bool,
     },
+    /// 禁言：一次可以点名好几个人（刷屏、开团的时候不用一条条来）。
     Mute {
-        user_id: String,
+        user_ids: Vec<String>,
         duration_seconds: u32,
         /// 为什么动手：记进管理记录，下次看前科用；群里看不到。
         #[serde(default)]
         reason: String,
     },
+    /// 移出群成员，同样可以一次点名好几个。
     Kick {
-        user_id: String,
+        user_ids: Vec<String>,
         #[serde(default)]
         permanent: bool,
         #[serde(default)]
@@ -110,6 +117,66 @@ pub(crate) enum Action {
     },
     RenameGroup {
         name: String,
+    },
+    /// 群设置：入群方式、入群问题、群介绍、发言频率、能不能被搜到、能不能被邀请。
+    ///
+    /// 只写带了的项，其余不动；一项都不带时读当前值（与 satori_group 的 what=detail 同一份）。
+    Settings {
+        /// any / verify / deny / question_review / question_answer（或 1–5）。
+        #[serde(default)]
+        join: Option<String>,
+        /// 与 answer 成对写。
+        #[serde(default)]
+        question: Option<String>,
+        #[serde(default)]
+        answer: Option<String>,
+        #[serde(default)]
+        allow_invite: Option<bool>,
+        /// 能不能靠群号 / 群名搜到。
+        #[serde(default)]
+        searchable: Option<bool>,
+        /// 每人每分钟能发几条。
+        #[serde(default)]
+        msg_limit: Option<u32>,
+        #[serde(default)]
+        intro: Option<String>,
+    },
+    /// 转让群主：只有群主能做，confirm 必须为 true（会真的换人，不是开玩笑）。
+    Transfer {
+        user_id: String,
+        #[serde(default)]
+        confirm: bool,
+    },
+    /// 解散群：不可撤销，confirm 要再写一遍群号。
+    Destroy {
+        /// 群号，与当前群一致才会执行。
+        confirm: String,
+        #[serde(default)]
+        delete_local_msg: bool,
+    },
+    /// 本号对这个群的接收方式：notify / receive / assistant / shield。
+    MsgMask {
+        mode: String,
+    },
+    /// 置顶或取消置顶这个会话。
+    SessionTop {
+        #[serde(default = "yes")]
+        top: bool,
+    },
+    /// 邀请某人入群（须管理）。
+    Invite {
+        user_id: String,
+    },
+    /// 把已有消息原样转发到别的群或私聊（target 是群号或 private:QQ号）。
+    ForwardTo {
+        message_ids: Vec<String>,
+        target: String,
+    },
+    /// 资料卡点赞：QQ 的「赞」。
+    Like {
+        user_id: String,
+        #[serde(default = "one")]
+        times: u32,
     },
     /// 处理一条加群申请（`request_id` 是管理栏里列出的申请号，也认申请人 QQ 号）。
     Approve {
@@ -142,16 +209,28 @@ pub(crate) enum Action {
     Feed {
         text: String,
     },
-    /// 改自己的 QQ 昵称 / 个性签名 / 头像（账号级，跟群无关）。
-    Nick {
-        nick: String,
-    },
-    Signature {
-        signature: String,
+    /// 账号资料：昵称、个性签名、性别、生日，一次改几项（账号级，跟群无关）。
+    Profile {
+        #[serde(default)]
+        nick: Option<String>,
+        #[serde(default)]
+        signature: Option<String>,
+        /// male / female（或 1 / 2）。
+        #[serde(default)]
+        gender: Option<String>,
+        /// YYYY-MM-DD。
+        #[serde(default)]
+        birthday: Option<String>,
     },
     Avatar {
         /// 已核实的图片直链或本轮工作目录里的文件。
         image: String,
+    },
+    /// QQ 在线状态：online / away / invisible / busy / qme / dnd，可带扩展状态。
+    Status {
+        status: String,
+        #[serde(default)]
+        ext_status: Option<i64>,
     },
     /// 群文件：上传 / 删除 / 改名。读（列目录、按名搜）在 `satori_group`。
     FileUpload {
@@ -193,6 +272,25 @@ fn label(value: &str, max: usize) -> Result<()> {
 
 fn yes() -> bool {
     true
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// 一次最多点名几个人：再多就是群发操作，该由管理端脚本做。
+const MAX_TARGETS: usize = 20;
+
+/// 一批群成员：每个都得是当前窗口里出现过的人，一次不超过 MAX_TARGETS 个。
+fn targets(turns: &[Turn], user_ids: &[String]) -> Result<()> {
+    ensure!(
+        (1..=MAX_TARGETS).contains(&user_ids.len()),
+        "一次只能点名 1–{MAX_TARGETS} 个人"
+    );
+    for user_id in user_ids {
+        user(turns, user_id)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn id(raw: &str) -> Result<String> {
@@ -325,6 +423,13 @@ impl Action {
                                 sticker(message(turns, message_id)?, *index)?;
                             }
                         }
+                        Part::Contact { kind, id: target } => {
+                            ensure!(
+                                matches!(kind.trim(), "group" | "user"),
+                                "名片卡只认 group / user"
+                            );
+                            id(target)?;
+                        }
                         Part::File { name, .. } => {
                             ensure!(
                                 !name.is_empty()
@@ -390,15 +495,15 @@ impl Action {
                 message(turns, message_id)?;
             }
             Self::Mute {
-                user_id,
+                user_ids,
                 duration_seconds,
                 ..
             } => {
-                user(turns, user_id)?;
+                targets(turns, user_ids)?;
                 ensure!(*duration_seconds <= 30 * 86400, "禁言最多 30 天；0 解除");
             }
-            Self::Kick { user_id, .. } => {
-                user(turns, user_id)?;
+            Self::Kick { user_ids, .. } => {
+                targets(turns, user_ids)?;
             }
             Self::MuteAll {
                 duration_seconds, ..
@@ -409,6 +514,113 @@ impl Action {
                 );
             }
             Self::RenameGroup { name } => label(name, 60)?,
+            Self::Settings {
+                join,
+                question,
+                answer,
+                allow_invite,
+                searchable,
+                msg_limit,
+                intro,
+            } => {
+                ensure!(
+                    join.is_some()
+                        || question.is_some()
+                        || answer.is_some()
+                        || allow_invite.is_some()
+                        || searchable.is_some()
+                        || msg_limit.is_some()
+                        || intro.is_some(),
+                    "什么都不改就别调这个动作；要看当前设置用 satori_group 的 what=detail"
+                );
+                if let Some(join) = join {
+                    ensure!(
+                        matches!(
+                            join.trim(),
+                            "any"
+                                | "verify"
+                                | "deny"
+                                | "question_review"
+                                | "question_answer"
+                                | "1"
+                                | "2"
+                                | "3"
+                                | "4"
+                                | "5"
+                        ),
+                        "join 写 any / verify / deny / question_review / question_answer"
+                    );
+                }
+                ensure!(
+                    question.is_none() == answer.is_none(),
+                    "入群问题与答案要成对写"
+                );
+                for text in [question.as_deref(), answer.as_deref()].into_iter().flatten() {
+                    ensure!(
+                        text.chars().count() <= 200 && !text.chars().any(char::is_control),
+                        "入群问题与答案各不超过 200 字"
+                    );
+                }
+                if let Some(limit) = msg_limit {
+                    ensure!(*limit <= 600, "发言频率上限写得太大（秒数，0 为不限）");
+                }
+                if let Some(intro) = intro {
+                    ensure!(
+                        intro.chars().count() <= 1000 && !intro.chars().any(char::is_control),
+                        "群介绍不超过 1000 字"
+                    );
+                }
+            }
+            Self::Transfer { user_id, confirm } => {
+                user(turns, user_id)?;
+                ensure!(
+                    *confirm,
+                    "转让群主不可撤回：确认要转让就把 confirm 写成 true"
+                );
+            }
+            Self::Destroy { confirm, .. } => {
+                ensure!(
+                    !confirm.trim().is_empty(),
+                    "解散群不可撤销：confirm 要再写一遍群号"
+                );
+            }
+            Self::MsgMask { mode } => {
+                ensure!(
+                    matches!(
+                        mode.trim(),
+                        "notify" | "receive" | "assistant" | "shield"
+                    ),
+                    "mode 写 notify / receive / assistant / shield"
+                );
+            }
+            Self::SessionTop { .. } => {}
+            Self::Invite { user_id } => {
+                user(turns, user_id)?;
+            }
+            Self::ForwardTo {
+                message_ids,
+                target,
+            } => {
+                ensure!(
+                    (1..=20).contains(&message_ids.len()),
+                    "一次转发 1–20 条消息"
+                );
+                for id in message_ids {
+                    let turn = message(turns, id)?;
+                    ensure!(!turn.elements.0.is_empty(), "该条记录没有可转发的原始内容");
+                }
+                let target = target.trim();
+                let digits = |text: &str| {
+                    !text.is_empty() && text.chars().all(|c| c.is_ascii_digit())
+                };
+                ensure!(
+                    digits(target)
+                        || target
+                            .strip_prefix("private:")
+                            .is_some_and(digits),
+                    "target 写群号或 private:QQ号"
+                );
+            }
             Self::Approve { request_id, message, .. } => {
                 id(request_id)?;
                 ensure!(
@@ -463,8 +675,52 @@ impl Action {
                     "关注指令写在最终输出里，不进说说"
                 );
             }
-            Self::Nick { nick } => label(nick, 30)?,
-            Self::Signature { signature } => label(signature, 120)?,
+            Self::Profile {
+                nick,
+                signature,
+                gender,
+                birthday,
+            } => {
+                ensure!(
+                    nick.is_some() || signature.is_some() || gender.is_some() || birthday.is_some(),
+                    "profile 至少给一项：nick / signature / gender / birthday"
+                );
+                if let Some(nick) = nick {
+                    label(nick, 30)?;
+                }
+                if let Some(signature) = signature {
+                    label(signature, 120)?;
+                }
+                if let Some(gender) = gender {
+                    ensure!(
+                        matches!(gender.trim(), "male" | "female" | "1" | "2" | "男" | "女"),
+                        "gender 写 male / female"
+                    );
+                }
+                if let Some(birthday) = birthday {
+                    let birthday = birthday.trim();
+                    let ok = birthday.len() == 10
+                        && birthday.as_bytes()[4] == b'-'
+                        && birthday.as_bytes()[7] == b'-'
+                        && birthday
+                            .split('-')
+                            .all(|part| part.chars().all(|c| c.is_ascii_digit()));
+                    ensure!(ok, "birthday 写成 YYYY-MM-DD");
+                }
+            }
+            Self::Status { status, .. } => {
+                ensure!(
+                    matches!(
+                        status.trim(),
+                        "online" | "away" | "invisible" | "busy" | "qme" | "dnd"
+                    ),
+                    "status 写 online / away / invisible / busy / qme / dnd"
+                );
+            }
+            Self::Like { user_id, times } => {
+                user(turns, user_id)?;
+                ensure!((1..=20).contains(times), "点赞 1–20 次");
+            }
             Self::Avatar { image } => {
                 ensure!(!image.trim().is_empty(), "头像来源是空的");
             }
@@ -502,21 +758,27 @@ impl Action {
                 | Self::Kick { .. }
                 | Self::MuteAll { .. }
                 | Self::RenameGroup { .. }
-                | Self::Approve { .. }
                 | Self::Announce { .. }
                 | Self::FileUpload { .. }
                 | Self::FileDelete { .. }
                 | Self::FileRename { .. }
+                | Self::Settings { .. }
+                | Self::Transfer { .. }
+                | Self::Destroy { .. }
+                | Self::MsgMask { .. }
+                | Self::Invite { .. }
         )
     }
 
-    pub(crate) fn management_target(&self) -> Option<&str> {
+    /// 这个动作落在谁头上（可能不止一个）。整群动作与改自己的动作是空的。
+    pub(crate) fn management_targets(&self) -> Vec<&str> {
         match self {
-            Self::Card { user_id, .. } => user_id.as_deref(),
-            Self::Title { user_id, .. }
-            | Self::Mute { user_id, .. }
-            | Self::Kick { user_id, .. } => Some(user_id),
-            _ => None,
+            Self::Card { user_id, .. } => user_id.as_deref().into_iter().collect(),
+            Self::Title { user_id, .. } | Self::Transfer { user_id, .. } => vec![user_id.as_str()],
+            Self::Mute { user_ids, .. } | Self::Kick { user_ids, .. } => {
+                user_ids.iter().map(String::as_str).collect()
+            }
+            _ => Vec::new(),
         }
     }
     /// 这一下算不算群管理：会被全群看见、落在别人头上的写操作。
@@ -536,7 +798,11 @@ impl Action {
             | Self::Announce { .. }
             // 删、改群文件落在别人传的东西上，算管理；列表、下载、上传不算。
             | Self::FileDelete { .. }
-            | Self::FileRename { .. } => true,
+            | Self::FileRename { .. }
+            | Self::Settings { .. }
+            | Self::Transfer { .. }
+            | Self::Destroy { .. }
+            | Self::Invite { .. } => true,
             _ => false,
         }
     }
@@ -578,8 +844,7 @@ impl Action {
     pub(crate) fn is_message(&self) -> bool {
         matches!(
             self,
-            Self::Send { .. }
-                | Self::Forward { .. }
+            Self::Send { .. } | Self::Forward { .. } | Self::ForwardTo { .. }
         )
     }
 }
@@ -605,4 +870,86 @@ pub(crate) fn image_source(segment: &Segment) -> Option<&str> {
         .or_else(|| segment.data.get("file"))
         .and_then(|value| value.as_str())
         .filter(|url| url.starts_with("http"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn parse(value: serde_json::Value) -> Action {
+        serde_json::from_value(value).expect("动作解析")
+    }
+
+    #[test]
+    fn batch_management_parses_and_counts_as_management() {
+        let action = parse(json!({"action":"kick","user_ids":["7","8"],"reason":"广告"}));
+        assert!(action.needs_group());
+        assert!(action.punishes());
+        assert!(action.requires_management("1", &[]));
+        assert_eq!(action.management_targets(), vec!["7", "8"]);
+        assert_eq!(action.reason(), "广告");
+
+        let mute = parse(json!({"action":"mute","user_ids":["7"],"duration_seconds":0}));
+        assert!(mute.lifts(), "0 秒是解禁，不算管理次数");
+        assert!(!mute.punishes());
+    }
+
+    #[test]
+    fn account_profile_needs_at_least_one_field() {
+        assert!(parse(json!({"action":"profile"})).validate(&[]).is_err());
+        assert!(parse(json!({"action":"profile","gender":"male","birthday":"1996-03-02"})).validate(&[]).is_ok());
+        assert!(parse(json!({"action":"profile","birthday":"1996/03/02"})).validate(&[]).is_err());
+        assert!(parse(json!({"action":"status","status":"隐身"})).validate(&[]).is_err());
+        assert!(parse(json!({"action":"status","status":"invisible"})).validate(&[]).is_ok());
+    }
+
+    #[test]
+    fn forward_to_wants_a_real_target() {
+        let turns = vec![Turn {
+            message_id: "m1".into(),
+            elements: crate::message::Message::new().text("原文"),
+            ..Turn::default()
+        }];
+        let ok = parse(json!({"action":"forward_to","message_ids":["m1"],"target":"private:42"}));
+        assert!(ok.validate(&turns).is_ok());
+        assert!(ok.is_message());
+        let bad = parse(json!({"action":"forward_to","message_ids":["m1"],"target":"abc"}));
+        assert!(bad.validate(&turns).is_err());
+        let empty = parse(json!({"action":"forward_to","message_ids":[],"target":"42"}));
+        assert!(empty.validate(&turns).is_err());
+    }
+
+    #[test]
+    fn settings_must_change_something() {
+        assert!(parse(json!({"action":"settings"})).validate(&[]).is_err());
+        assert!(parse(json!({"action":"settings","join":"随便"})).validate(&[]).is_err());
+        assert!(parse(json!({"action":"settings","question":"口令"})).validate(&[]).is_err(), "问题与答案要成对");
+        let ok = parse(json!({"action":"settings","join":"verify","intro":"只聊技术"}));
+        assert!(ok.validate(&[]).is_ok());
+        assert!(ok.requires_management("1", &[]));
+    }
+
+    #[test]
+    fn contact_card_is_a_part_not_a_guess() {
+        let action = parse(json!({"action":"send","parts":[{"type":"contact","kind":"group","id":"818965288"}]}));
+        match action {
+            Action::Send { parts, .. } => assert!(matches!(parts[0], Part::Contact { .. })),
+            other => panic!("应解析成 send：{other:?}"),
+        }
+        let bad = parse(json!({"action":"send","parts":[{"type":"contact","kind":"robot","id":"1"}]}));
+        assert!(bad.validate(&[]).is_err());
+    }
+
+    #[test]
+    fn destroy_and_transfer_ask_before_they_act() {
+        let turns = vec![Turn { user_id: "7".into(), ..Turn::default() }];
+        assert!(parse(json!({"action":"transfer","user_id":"7","confirm":true})).validate(&turns).is_ok());
+        let no = parse(json!({"action":"transfer","user_id":"7"}));
+        assert!(no.validate(&turns).is_err(), "没写 confirm 不转让");
+        let destroy = parse(json!({"action":"destroy","confirm":"818965288"}));
+        assert!(destroy.validate(&[]).is_ok());
+        assert!(destroy.requires_management("1", &[]));
+        assert!(destroy.needs_group());
+    }
 }

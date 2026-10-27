@@ -182,16 +182,18 @@ impl<'a> MessageEvent<'a> {
         let Some(segments) = self.0.get_array("message") else {
             return !self.text().trim().is_empty();
         };
-        segments.iter().any(|segment| match segment.get_str("type").unwrap_or("") {
-            // 引用本身不是说的话。
-            "reply" => false,
-            // 空白的文字段也不算（有的实现端会补一个换行或空格）。
-            "text" => segment
-                .get("data")
-                .and_then(|data| data.get_str("text"))
-                .is_some_and(|text| !text.trim().is_empty()),
-            _ => true,
-        })
+        segments
+            .iter()
+            .any(|segment| match segment.get_str("type").unwrap_or("") {
+                // 引用本身不是说的话。
+                "reply" => false,
+                // 空白的文字段也不算（有的实现端会补一个换行或空格）。
+                "text" => segment
+                    .get("data")
+                    .and_then(|data| data.get_str("text"))
+                    .is_some_and(|text| !text.trim().is_empty()),
+                _ => true,
+            })
     }
 
     /// 这条消息 @ 了谁，以及有没有 @全体成员。
@@ -339,12 +341,22 @@ mod tests {
     fn face_only_messages_still_count_as_saying_something() {
         use simd_json::json;
         // QQ 狗头：消息里只有一个表情段，正文 raw_message 是空的。
-        assert!(body(json!({"post_type": "message", "raw_message": "", "message": [{"type": "face", "data": {"id": "14"}}]})));
-        assert!(body(json!({"post_type": "message", "raw_message": "", "message": [{"type": "image", "data": {"file": "a.png"}}]})));
-        assert!(body(json!({"post_type": "message", "raw_message": "在的", "message": [{"type": "text", "data": {"text": "在的"}}]})));
+        assert!(body(
+            json!({"post_type": "message", "raw_message": "", "message": [{"type": "face", "data": {"id": "14"}}]})
+        ));
+        assert!(body(
+            json!({"post_type": "message", "raw_message": "", "message": [{"type": "image", "data": {"file": "a.png"}}]})
+        ));
+        assert!(body(
+            json!({"post_type": "message", "raw_message": "在的", "message": [{"type": "text", "data": {"text": "在的"}}]})
+        ));
         // 引用、空白文字不算说了话。
-        assert!(!body(json!({"post_type": "message", "raw_message": "", "message": [{"type": "reply", "data": {"id": "1"}}]})));
-        assert!(!body(json!({"post_type": "message", "raw_message": " ", "message": [{"type": "text", "data": {"text": " "}}]})));
+        assert!(!body(
+            json!({"post_type": "message", "raw_message": "", "message": [{"type": "reply", "data": {"id": "1"}}]})
+        ));
+        assert!(!body(
+            json!({"post_type": "message", "raw_message": " ", "message": [{"type": "text", "data": {"text": " "}}]})
+        ));
         // 没有消息段时退回正文。
         assert!(body(json!({"post_type": "message", "raw_message": "你好"})));
         assert!(!body(json!({"post_type": "message", "raw_message": "  "})));

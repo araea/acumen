@@ -333,7 +333,9 @@ pub fn is_staff(role: &str) -> bool {
 ///
 /// 要分清「不是管理员」与「这次没查到」的（入群验证），用 [`own_role_known`]。
 pub async fn own_role(ctx: &Context, writer: LockedWriter, group_id: &str) -> String {
-    own_role_known(ctx, writer, group_id).await.unwrap_or_default()
+    own_role_known(ctx, writer, group_id)
+        .await
+        .unwrap_or_default()
 }
 
 /// 账号自己在这个群里的身份；`None` 是这次没查到。缓存与降级见 [`super::roles`]。
@@ -342,7 +344,12 @@ pub async fn own_role_known(ctx: &Context, writer: LockedWriter, group_id: &str)
 }
 
 /// 某个成员在群里的身份；`None` 是这次没查到。
-pub async fn member_role(ctx: &Context, writer: LockedWriter, group_id: &str, user_id: &str) -> Option<String> {
+pub async fn member_role(
+    ctx: &Context,
+    writer: LockedWriter,
+    group_id: &str,
+    user_id: &str,
+) -> Option<String> {
     super::roles::role(ctx, &writer, group_id, user_id).await
 }
 
@@ -366,7 +373,9 @@ pub async fn get_group_member_info(
         )
         .await?;
     let user = value.get("user").unwrap_or(&Value::Null);
-    let role = super::roles::role_of(&value).unwrap_or("member").to_string();
+    let role = super::roles::role_of(&value)
+        .unwrap_or("member")
+        .to_string();
     // 查名字时顺带拿到的身份也记下，下一次问身份就不必再跑一趟。
     super::roles::learn(&ctx.bot.self_id(), group_id, user_id, &role);
     Ok(GroupMemberInfo {
