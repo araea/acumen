@@ -119,15 +119,15 @@ impl Default for StatsConfig {
             push_text_enabled: false,
             push_group_gap_min_seconds: 20,
             push_group_gap_max_seconds: 75,
-            daily_push_enabled: true,
+            daily_push_enabled: false,
             daily_push_time: "23:30:00".to_string(),
-            morning_recap_enabled: true,
+            morning_recap_enabled: false,
             morning_recap_time: "09:00:00".to_string(),
-            noon_brief_enabled: true,
+            noon_brief_enabled: false,
             noon_brief_time: "12:30:00".to_string(),
-            weekly_recap_enabled: true,
+            weekly_recap_enabled: false,
             weekly_recap_time: "10:00:00".to_string(),
-            monthly_recap_enabled: true,
+            monthly_recap_enabled: false,
             monthly_recap_time: "10:20:00".to_string(),
         }
     }
@@ -643,9 +643,14 @@ pub fn on_connected(
             ),
         ];
 
-        for (index, (_enabled, label, time_str, freq, runner)) in
+        // 关闭的项不登记：日志里不会出现「已计划」，也不会留下一个到点才自我否决的定时器。
+        // 运行中关掉仍有下面那道二次判断兜底；运行中新开要重启一次才会排期。
+        for (index, (enabled, label, time_str, freq, runner)) in
             registrations.into_iter().enumerate()
         {
+            if !enabled {
+                continue;
+            }
             scheduler.schedule_periodic_push(
                 ctx.clone(),
                 writer.clone(),

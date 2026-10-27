@@ -1413,15 +1413,18 @@ push_group_gap_max_seconds = 75
 
 # —— 排期（按北京时间）——
 # 早报、午报、日报、周报、月报各一个开关与时间点。
-morning_recap_enabled = true
+# **默认全部关闭**：这几项会在到点后主动往【channel 名单里的所有群】发图；名单留空
+# 等于全部群。开着却忘了配名单，就是一次性给所有群刷一波排行榜。要开，先配好下面的
+# 群名单，再打开对应的一项。
+morning_recap_enabled = false
 morning_recap_time = "09:00:00"
-noon_brief_enabled = true
+noon_brief_enabled = false
 noon_brief_time = "12:30:00"
-daily_push_enabled = true
+daily_push_enabled = false
 daily_push_time = "23:30:00"
-weekly_recap_enabled = true
+weekly_recap_enabled = false
 weekly_recap_time = "10:00:00"
-monthly_recap_enabled = true
+monthly_recap_enabled = false
 monthly_recap_time = "10:20:00"
 
 # 群名单：查询指令与主动推送共用这一份，语义对所有带名单的插件一致——
