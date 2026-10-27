@@ -1229,6 +1229,21 @@ async fn display_name_soon(ctx: &Context, writer: &LockedWriter, group: &str, us
     user.to_string()
 }
 
+/// 群名照事件里带的来，人数留空：不问 `guild.get` 也能把欢迎词写完。
+fn group_info_from_event(ctx: &Context, group: &str) -> GroupInfo {
+    GroupInfo {
+        id: group.to_string(),
+        name: event_group_name(ctx).unwrap_or_else(|| group.to_string()),
+        members: None,
+    }
+}
+
+/// 这几段文案里有没有 `{member_count}`：只有真的要写群人数时才值得多问一次 `guild.get`。
+fn needs_member_count(texts: [Option<&str>; 2], custom: &Custom) -> bool {
+    texts.into_iter().flatten().any(|text| text.contains("{member_count}"))
+        || custom.values().any(|template| template.variants().any(|text| text.contains("{member_count}")))
+}
+
 /// 群资料：同样只等 `wait`；没等回来就照事件里的群名（再没有就是群号），人数留空。
 async fn group_info_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> GroupInfo {
     if let Ok(info) = tokio::time::timeout(wait, group_info(ctx, writer, group)).await {
@@ -1301,20 +1316,53 @@ fn append(target: &mut Message, part: Message) {
 
 async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, user: &str) -> Result<(), PluginError> {
     let effective = config.for_group(group);
-    let mut verify = None;
-    if effective.verify {
-        let exempt = crate::access::admin_ids(ctx).iter().any(|id| id == user);
-        if !exempt && api::is_staff(&own_role_soon(ctx, writer, group, ENRICH_WAIT).await) {
-            verify = Some(challenge(&effective.mode, &effective.answers));
-        } else if !exempt {
-            debug!(target: LOG_TARGET, "群 {group} 账号不是管理员，入群验证跳过");
-        }
-    }
     let welcome = effective.join && !effective.join_text.silent();
-    if !welcome && verify.is_none() {
+    let exempt = crate::access::admin_ids(ctx).iter().any(|id| id == user);
+    let check = effective.verify && !exempt;
+    if !welcome && !check {
         return Ok(());
     }
     let merged = welcome && config.join.merge_seconds > 0;
+
+    // 先把这次要发的文案挑出来：挑完才知道要不要为了群人数再问一次 guild.get。
+    let join_text = (!merged && welcome).then(|| effective.join_text.pick()).flatten();
+    let prompt_text = check.then(|| config.verify.prompt_text.pick()).flatten();
+    let wants_count = needs_member_count([join_text.as_deref(), prompt_text.as_deref()], &config.custom);
+
+    // 账号身份、昵称、群资料互不相干：人还在门口等着，三个问题一起问，只等最慢的那一个。
+    // 合并模式下昵称与群资料由批量发送时统一取，这里只等身份。
+    let (role, (name, info)) = tokio::join!(
+        async {
+            if check { own_role_soon(ctx, writer, group, ENRICH_WAIT).await } else { String::new() }
+        },
+        async {
+            if merged {
+                (String::new(), group_info_from_event(ctx, group))
+            } else {
+                tokio::join!(
+                    display_name_soon(ctx, writer, group, user, ENRICH_WAIT),
+                    async {
+                        if wants_count {
+                            group_info_soon(ctx, writer, group, ENRICH_WAIT).await
+                        } else {
+                            group_info_from_event(ctx, group)
+                        }
+                    }
+                )
+            }
+        }
+    );
+    let mut verify = None;
+    if check {
+        if api::is_staff(&role) {
+            verify = Some(challenge(&effective.mode, &effective.answers));
+        } else {
+            debug!(target: LOG_TARGET, "群 {group} 账号不是管理员，入群验证跳过");
+        }
+    }
+    if !welcome && verify.is_none() {
+        return Ok(());
+    }
 
     // 先把待验证登记上，再发欢迎：新人在欢迎抵达前就回话也能被认出。started = false
     // 时计时器不会提醒或处罚；只有包含验证说明的消息真正发出后才开始倒计时。
@@ -1325,7 +1373,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             self_id: ctx.bot.self_id(),
             group: group.to_string(),
             user_id: user.to_string(),
-            name: event_name(ctx, user).unwrap_or_else(|| user.to_string()),
+            name: if name.is_empty() { event_name(ctx, user).unwrap_or_else(|| user.to_string()) } else { name.clone() },
             joined_at: now(),
             deadline: now() + i64::try_from(wait).unwrap_or(300),
             started: false,
@@ -1374,19 +1422,13 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         return Ok(());
     }
 
-    // 不合并时两项资料互不相干，并行查，但都只等到 ENRICH_WAIT；合并时这些查询全部挪到等待窗口里。
-    let (name, info) = tokio::join!(
-        display_name_soon(ctx, writer, group, user, ENRICH_WAIT),
-        group_info_soon(ctx, writer, group, ENRICH_WAIT),
-    );
     let at = [user.to_string()];
     let mut message = Message::new();
-    if welcome
-        && let Some(text) = effective.join_text.pick()
+    if let Some(text) = &join_text
         && let Some(part) = compose(
             ctx,
             writer,
-            &text,
+            text,
             &config.vars(group).group(&info).person(user, &name),
             &Draft {
                 at: &at,
@@ -1398,10 +1440,10 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         append(&mut message, part);
     }
     if let Some(entry) = &pending
-        && let Some(prompt) = config.verify.prompt_text.pick()
+        && let Some(prompt) = &prompt_text
     {
         // 分开渲染再拼接：说明被删空、或只含一个展开后为空的占位符时，不留下孤零零的换行。
-        let prompt = if !welcome && !prompt.contains("{at}") { format!("{{at}} {prompt}") } else { prompt };
+        let prompt = if !welcome && !prompt.contains("{at}") { format!("{{at}} {prompt}") } else { prompt.clone() };
         let vars = config
             .vars(group)
             .group(&info)
