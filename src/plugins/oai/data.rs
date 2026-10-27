@@ -136,7 +136,7 @@ impl Manager {
                 .iter()
                 .any(|agent| agent.name.eq_ignore_ascii_case(BUILTIN_ROOM))
             {
-                // 模型留空 = 跟随 `[oai] agent_default_model`（默认 deepseek/deepseek-flash）：
+                // 模型留空 = 跟随 `[oai] agent_default_model`（默认 deepseek/deepseek-v4-pro）：
                 // 填了 DeepSeek 密钥就能用，换默认模型时也不必逐间房去改。
                 // 管家大人是来办事的：别的房间建出来不挂工具，它一建好就是全量。
                 let mut room = super::types::Agent::new(

@@ -59,7 +59,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: true,
-            model: "mimo/mimo-v2.6-flash".to_string(),
+            model: "deepseek/deepseek-flash".to_string(),
             candidates: 10,
             max_seconds: 600,
             timeout_seconds: 30,

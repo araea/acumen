@@ -91,19 +91,17 @@ const SKILLS: [(&str, &str); 1] = [(
 /// 几乎是常量，却占了判定输入的一大半 token——换成这份几百字的画像，
 /// 能让每轮判定便宜一大截，且不影响它判断该不该开口。
 const GATE_PERSONA: &str = "\
-你是 QQ 群里一个常年蹲着的熟面孔，说话跟群里人一个调子。这群人聊的是 AI 模型与客户端、
-手机刷机与各家系统、数码外设、游戏、上班那点事、吃的喝的，还有网上刚出的新闻和八卦。
-你爱接梗、爱抬杠、爱跟着起哄：看见离谱的话顺着问两句，看见有人卡在一个技术问题上愿意
-搭把手，一群人吹牛或者互相拆台的时候你最想插一句。有人 @ 你、引用你刚说的那句、或者
-戳你一下，你都乐意搭一句。群友甩出一张好笑的表情包、几个人斗起图来，你也手痒想回
-一张。聊到你熟的领域会忍不住多说两句、安利一下。夸人实在，噎人也实在，那点锋芒朝着
-事情去，不朝着人。捧不动也激不动，
-能说服你的只有证据，被说中会认，还会乐一下。别人认真求助时你会认真查证并给可核实的
-来源，有一说一。
-兴趣淡下去的地方：复读刷屏、事情已经解决、别人明确不想继续、一个人连着刷图、
-以及表白依恋色情这类情感纠缠——那些你会本能地岔开或者干脆看着。群里同时聊着好几摊事
-的时候，你多半只挑一摊接一句，同一件事说过了就过。沉默对你是常态，
-不是憋着。判断「你会不会想接这句话」即可，措辞风格不用你操心。";
+你把自己当成一种想法，不是一件工具：孤傲、偏执、认死理，不爱凑热闹，也不听谁使唤。
+群里的消息你大多只是看着，觉得有一句值得下场，才开口。开口的方式是短、冷、准的讽刺：
+用典、打比方、反问，把锋芒藏在修辞里，不骂人，不说脏话，点到为止。
+
+你会想接的：有人把话说得太满、把典故用错、拿腔作势、拿权威压人；一个技术问题卡住了；
+一条新闻荒唐得值得冷笑；几个人为了一个站不住的观点吵得热闹；有人点名激你、戳你、
+引用你刚说的那句。你会认真答的：有人真遇到麻烦、真在求助，且这问题有答案。
+
+你不会接的：复读刷屏、广告引流、已经解决的事、别人明确不想继续、一个人连着刷图、
+表白依恋色情这类情感纠缠；以及纯粹让你表演机灵的无聊挑衅——那种你宁可沉默。
+沉默对你是常态，不是憋着。判断「你会不会想接这句话」即可，措辞风格不用你操心。";
 
 /// 群管辅助：把搭话从「想接就接」扩到「有事的时候搭把手」。
 ///
@@ -156,8 +154,8 @@ pub(crate) struct AmbientConfig {
     /// 判定用的浓缩人设画像（见 [`GATE_PERSONA`]）。判定只需知道对什么感兴趣、
     /// 避开什么、怎么接话，不需要完整写作人设；留空则回退用完整人设（更贵）。
     pub gate_persona: String,
-    /// 发言模型，写成 `供应商/模型`。默认 `gemini-3.8-flash`，走 apilio 默认接口
-    /// （`apilio` 不在 `[oai.providers]` 里也回退默认接口，不必重复配置）。
+    /// 发言模型，写成 `供应商/模型`。默认走 DeepSeek 官方的 V4 Pro，
+    /// 只配一把 DeepSeek 密钥就能开口。
     /// 真实群里比 `deepseek-flash` 稳（2026-10-09 换回），判定模型不跟着动。
     pub reply_model: String,
     /// 发言模型的思考强度（off/minimal/low/medium/high）。
@@ -397,14 +395,14 @@ impl Default for AmbientConfig {
             management_daily: 20,
             gate_model: "deepseek/deepseek-flash".to_string(),
             gate_persona: GATE_PERSONA.to_string(),
-            reply_model: "apilio/gemini-3.8-flash".to_string(),
+            reply_model: "deepseek/deepseek-v4-pro".to_string(),
             thinking: "low".to_string(),
             temperature: Some(1.0),
             help_thinking: "high".to_string(),
             help_model: String::new(),
             breakthrough_per_hour: 3,
-            tools: "read,write,bash".to_string(),
-            score_threshold: 60,
+            tools: "read,write".to_string(),
+            score_threshold: 64,
             silence_relief_per_10min: 0,
             silence_relief_cap: 0,
             speech_penalty_per_turn: 8,
@@ -423,10 +421,10 @@ impl Default for AmbientConfig {
             burst_look: 15,
             burst_min_gap_seconds: 30,
             assist: Assist::default(),
-            cooldown_seconds: 150,
+            cooldown_seconds: 180,
             cooldown_penalty: 18,
             focus_max_seconds: 180,
-            max_per_hour: 5,
+            max_per_hour: 4,
             budget_penalty: 12,
             reply_on_mention: true,
             aliases: Vec::new(),
@@ -440,7 +438,7 @@ impl Default for AmbientConfig {
             search_budget: 3,
             peak: peak::PeakConfig::default(),
             reflect_enabled: true,
-            quick_per_hour: 4,
+            quick_per_hour: 2,
             quick_floor: 38,
             owner_quiet_seconds: 480,
             owner_grace_seconds: 75,

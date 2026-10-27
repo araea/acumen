@@ -665,7 +665,7 @@ black = [
 enabled = true
 # 挑结果用的模型，写 `供应商/模型`（接口取自 [oai.providers]）。
 # 判断只看标题、UP 主与时长，便宜档足够。
-model = "mimo/mimo-v2.6-flash"
+model = "deepseek/deepseek-flash"
 # 交给模型的候选上限，取相关度靠前的几条。
 candidates = 10
 # 成品时长上限（秒）：超长的直接从候选里去掉，不让几个小时的视频进群。
@@ -806,7 +806,7 @@ black = []
 enabled = true
 # 默认模型：没单独写模型的房间（管家大人、`##研究` 建的）都用它；`oai 用 <模型>` 改的就是这一项。
 # 写成 `供应商/模型` 时按下面的 [oai.providers] 取接口；留空则退到 oai 的默认模型。
-agent_default_model = "deepseek/deepseek-flash"
+agent_default_model = "deepseek/deepseek-v4-pro"
 # 全量档的房间（管家大人，以及 `房间?全量` 打开的）只给号主与机器人管理员（[ctl] admins）用。
 # 全量档能读写文件、跑命令、发消息、管群；开了以后别人叫它只回一句说明，联网、无工具两档不受影响。
 agent_owner_only = false
@@ -953,11 +953,8 @@ media_deadline_seconds = 240
 # 上表的 [oai.media] 填的就是这个名字。
 [oai.providers.deepseek]
 api_base = "https://api.deepseek.com/v1"
-api_key = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+api_key = ""
 
-# 高峰使用 peak.model = "mimo/mimo-v2.6-flash" 时还需配置 MiMo 官方接口。
-# [oai.providers.mimo]
-# api_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 # 房间模型与判定模型都支持 `:强度` 后缀，强度取 off/minimal/low/medium/high。
 # 也可建房后单独改：`房间%deepseek-flash:high`。
@@ -1030,7 +1027,8 @@ results = 8
 
 # 群聊搭话：独立插件，复用 [oai] 的模型接入层（接口、密钥、供应商、联网、绘图）。
 # 让内置 agent 以固定人格在指定群里旁听，绝大多数时候沉默。
-# 人设在 data/ambient/persona.md。
+# 人设与口癖编译在程序里（res/ambient/），首次启动写一份到 data/ambient/ 供本地改；
+# 想改口吻改那一份，不必重新编译。
 [ambient]
 enabled = false
 # 开启搭话的群号；空列表等于不开启群聊。
@@ -1057,8 +1055,8 @@ gate_model = "deepseek/deepseek-flash"
 # 想退回用完整写作人设（最贵，不推荐）就把它设为空字符串。
 # gate_persona = ""
 # 发言模型，同样写 `供应商/模型`；思考强度 off/minimal/low/medium/high。
-# 默认 `gemini-3.8-flash`，走 apilio 默认接口（不必在 [oai.providers] 里再配）。
-reply_model = "apilio/gemini-3.8-flash"
+# 默认走 DeepSeek 官方的 V4 Pro：只配一把 DeepSeek 密钥就能开箱说话。
+reply_model = "deepseek/deepseek-v4-pro"
 thinking = "low"
 # 答疑那一轮（判定认出有人认真求助，或有人 @ 它问事）的思考强度与模型。
 # 平常接话 low 就够；答疑要先想清楚再开口。help_model 留空沿用 reply_model。
@@ -1071,10 +1069,10 @@ breakthrough_per_hour = 3
 # 口气的变化交给样本和人设。判定模型不跟着动。
 temperature = 1.0
 # 发言时额外开放的本地工具白名单（逗号分隔，可写 bash/read/write/edit/glob/grep）。
-# read/write/bash 让它能在本轮工作目录里整理材料再当文件发出去。
+# 默认只给读写：够在本轮工作目录里整理材料再当文件发出去，也不必把整台机器的 shell
+# 交给一个在群里说话的人格。确实需要它跑命令，再把 bash 加进来。
 # 聊天界面的 satori_* 工具由代码按下面的开关自动加上，不用写在这里。
-# 不想让它跑命令就把 bash 去掉。
-tools = "read,write,bash"
+tools = "read,write"
 # 搭话指令：群里发一条以它打头的消息就跳过判定，直接把最近这段群聊交给人格。
 # 指令本身不进上下文（人格只看到群友聊了什么），后面跟着的话照常算群聊内容。
 # 它是一串普通文本，要带当前指令前缀写——改了上面的 command_prefix 就得一起改。
@@ -1091,7 +1089,7 @@ preferred_name = ""
 # （每轮 +8，最多 +24），随关注中的续聊下调 5 分。
 # 续聊折扣给得小是有意的：群里长期只聊一个话题时，「还在聊那个话题」会一直
 # 为真，折扣一大就等于常年半价放行。
-score_threshold = 60
+score_threshold = 64
 speech_penalty_per_turn = 8
 speech_penalty_cap = 24
 focus_relief = 5
@@ -1153,7 +1151,7 @@ reflect_enabled = true
 # 随口一句：判定分数落在 quick_floor 与开口门槛之间（想吭一声、可不吭）、现场够新、
 # 两分钟没开过口、本人不在时，按 45% 几率只回一两个字（不调用发言模型）。
 # quick_per_hour 是每群每小时上限，0 关闭。
-quick_per_hour = 4
+quick_per_hour = 2
 quick_floor = 38
 # 号主本人在线时机器人让位（同一个号，不抢话）：他在这个群亲手打字之后
 # owner_quiet_seconds 秒内不主动接话；这期间有人点名，先等 owner_grace_seconds 秒让他
@@ -1169,9 +1167,9 @@ silence_relief_cap = 0
 # （`cooldown_penalty`、`budget_penalty`），一路加上去；群里真有人顺着它的话问下去时
 # 分数自然高，抬高的门槛挡不住那一句。被 @ 与搭话指令走的是另一条路，不受这两个影响。
 # 真嫌吵就把窗口拉长、罚款加重、目标调小；想要完全由人格自主控制节奏，写 0。
-cooldown_seconds = 150
+cooldown_seconds = 180
 cooldown_penalty = 18
-max_per_hour = 5
+max_per_hour = 4
 budget_penalty = 12
 # 人格可选择短期跟进某位群友或话题，并在互动中续期。
 # 关注意味着续聊判定为真、门槛打折（软钉子照旧），给太久会让一个不变的话题一直挂着。
@@ -1239,8 +1237,8 @@ weekdays = [1, 2, 3, 4, 5]
 # 高峰这回事，账单不再翻倍。需要 [oai.providers] 里有这个供应商。
 # mode = "swap"：节奏、联网、看图、绘图都跟平时一样，只把判定与发言两个模型换成它。
 # mode = "sleep"：睡着醒来那一轮也用它，并连上下文一起省（不看图、不联网、不绘图）。
-# 留空（默认）表示不换，仍用上面的 gate_model / reply_model。例如小米 MiMo：
-# model = "mimo/mimo-v2.6-flash"
+# 留空（默认）表示不换，仍用上面的 gate_model / reply_model。
+# 要换一家，先在 [oai.providers] 里接上那家，再把这里写成 `供应商/模型`。
 model = ""
 # 睡着时两次主动判定之间的最短间隔（秒），把判定压成「隔一会儿看一眼」。
 # 写 0 表示完全睡着、只有被点名才醒；其余夹到 30-3600 秒。

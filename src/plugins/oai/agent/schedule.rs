@@ -57,6 +57,9 @@ pub(crate) async fn execute(args: &Value, run: &AgentRun<'_>) -> anyhow::Result<
                 (true, true) => anyhow::bail!("参数错误：text（提醒）和 task（任务）要写一个"),
                 (false, false) => anyhow::bail!("参数错误：text 和 task 只能写一个"),
             };
+            if kind == Kind::Task && !seat.tasks {
+                anyhow::bail!("这里只能排提醒（text）；定时任务到点要回到一个房间里办，群聊搭话没有房间。要排任务请到私聊房间找管家");
+            }
             if kind == Kind::Task && !owner {
                 anyhow::bail!("定时任务只替号主安排；可以帮你排一条提醒（text），到点我把话发给你");
             }

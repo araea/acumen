@@ -41,6 +41,7 @@ const SEAT: &[&str] = &[
     super::control::NAME,
     super::schedule::NAME,
     super::command::NAME,
+    super::toolbox::NAME,
 ];
 
 /// 私聊里的房间没有群聊那一套工具，发不出文件：补上这一件。群里有 `satori_action`，不重复挂。
@@ -193,6 +194,7 @@ pub(crate) async fn execute(
         super::notes::NAME => Some(super::notes::execute(args, run).await),
         super::share::NAME => Some(super::share::execute(args, run).await),
         super::command::NAME => Some(super::command::run(args, run).await),
+        super::toolbox::NAME => Some(super::toolbox::execute(args, run).await),
         _ => None,
     };
     if let Some(result) = seat_tool {
@@ -655,6 +657,7 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
         super::notes::NAME => return Some(super::notes::spec()),
         super::share::NAME => return Some(super::share::spec()),
         super::command::NAME => return Some(super::command::spec()),
+        super::toolbox::NAME => return Some(super::toolbox::spec()),
         _ => {}
     }
     let (description, parameters) = match name {
@@ -789,9 +792,9 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
         ),
         "satori_action" => (
             if direct {
-                "立即执行一次真实 QQ 私聊动作并返回回执。先看一眼上下文；satori_context 的 capabilities.catalog 是实现端声明的扩展能力（账号资料、群文件、条说说……），名字与参数照它抄，用 action=capability 转发。send.parts 的 text 原样保留空格与换行，想怎么排都行。要讲的是一整篇（步骤、清单、长说明）就写进一条 text：超过两百多字会自动排成一页 Markdown 图，不必自己拆成几条。私聊里没有 @、群管理，也没有资料卡点赞。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，对面会看到两次）。做完最终输出 [silent] 即可，对方已经看见了。"
+                "立即执行一次真实 QQ 私聊动作并返回回执。先看一眼上下文；satori_context 的 capabilities.catalog 是实现端声明的扩展能力（账号资料、群文件、条说说……），名字与参数照它抄，用 action=capability 转发（message_search 可按关键词翻实现端这几小时见过的消息，message_context 取某条消息的前后文）。send.parts 的 text 原样保留空格与换行，想怎么排都行。要讲的是一整篇（步骤、清单、长说明）就写进一条 text：超过两百多字会自动排成一页 Markdown 图，不必自己拆成几条。私聊里没有 @、群管理，也没有资料卡点赞。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，对面会看到两次）。做完最终输出 [silent] 即可，对方已经看见了。"
             } else {
-                "立即执行一次真实 QQ 动作并返回回执。先看一眼上下文；satori_context 的 capabilities.catalog 是实现端声明的扩展能力（群备注、群文件、群公告读取、账号资料、特殊头衔……），名字与参数照它抄，用 action=capability 转发。send.parts 的 text 原样保留空格与换行，想怎么排都行。要讲的是一整篇（步骤、清单、长说明）就写进一条 text：超过两百多字会自动排成一页 Markdown 图，不必自己拆成几条，也别发完长文再补一句「在上面」。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，群里会看到两次）。做完最终输出 [silent] 即可，群友已经看见了。"
+                "立即执行一次真实 QQ 动作并返回回执。先看一眼上下文；satori_context 的 capabilities.catalog 是实现端声明的扩展能力（群备注、群文件、群公告读取、账号资料、特殊头衔……），名字与参数照它抄，用 action=capability 转发（message_search 可按关键词翻实现端这几小时见过的消息，message_context 取某条消息的前后文）。send.parts 的 text 原样保留空格与换行，想怎么排都行。要讲的是一整篇（步骤、清单、长说明）就写进一条 text：超过两百多字会自动排成一页 Markdown 图，不必自己拆成几条，也别发完长文再补一句「在上面」。回执才算数：失败就按错误换个做法，超时表示结果未知（可能已送达，同一个动作再来一遍，群里会看到两次）。做完最终输出 [silent] 即可，群友已经看见了。"
             },
             json!({
                 "type": "object",

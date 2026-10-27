@@ -34,6 +34,7 @@ pub(crate) mod run;
 pub(crate) mod schedule;
 pub(crate) mod share;
 pub(crate) mod tools;
+pub(crate) mod toolbox;
 
 pub(crate) use run::run;
 
@@ -116,6 +117,11 @@ pub(crate) struct Seat {
     pub origin: Origin,
     /// 公开场合（群聊搭话）：房间外的人也能叫到它，客人一律不能让它改机器人的设置。
     pub public: bool,
+    /// 这一轮能不能把「到点办一件事」排成定时任务。
+    ///
+    /// 任务到点要回到一个真实房间、用那间房的人设办；群聊搭话没有房间，到点无处落地，
+    /// 所以只能排提醒（到点原样发一句话），不能排任务。房间与私聊里的办事台都为真。
+    pub tasks: bool,
 }
 
 impl Seat {

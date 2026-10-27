@@ -780,6 +780,7 @@ async fn chat(
         private: is_priv_ctx,
         origin: super::agent::Origin::Asked,
         public: false,
+        tasks: true,
     });
     // 这一轮进行当中，发起人又发来的话排在这个信箱里（临时对话不占会话，不开）。
     let steering = (!media && !temp_mode).then(|| mgr.open_steering(name, is_priv_ctx, &uid));
@@ -1239,6 +1240,8 @@ pub(super) fn room_tools(config: &super::chat::ChatConfig, media: super::media::
             super::agent::share::NAME,
             // 代办 acumen 自己的插件指令（点歌、词云、统计、潜水……），见 agent::command。
             super::agent::command::NAME,
+            // 能力矩阵：插件、指令与这一轮工具的一张总表，跨插件办事前先看。
+            super::agent::toolbox::NAME,
         ]
         .map(str::to_string),
     );

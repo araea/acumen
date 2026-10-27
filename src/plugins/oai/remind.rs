@@ -422,6 +422,7 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
         group: job.group.clone(),
         private: job.private,
         origin: super::agent::Origin::Scheduled,
+        tasks: true,
         public: false,
     };
     // 到点办事的地方就是它要说话的地方：群里是那个群，私聊是这个人。
