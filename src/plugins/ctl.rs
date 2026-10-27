@@ -795,11 +795,108 @@ pub(crate) fn differences(default: &Value, current: &Value, path: &str, out: &mu
     }
 }
 
+/// 群里一句话开关搭话：`/搭话 开`、`/搭话 关`（指令词跟着 `[ambient] summon_command`）。
+///
+/// 搭话会主动在群里说话，默认关着；从前要打开它，得去配置或控制台里打开总开关、再手填
+/// 群号——新装的机器人只接了一把 DeepSeek 密钥，这一步就成了门槛。现在在想要的群里说一句就行。
+/// 放在这里而不是搭话插件里，是因为插件关着时收不到消息；这里永远在。
+///
+/// 打开要号主（会顺手打开总开关）；关掉本群号主、群主和管理员都可以——关是收手，谁管这个群谁说了算。
+/// 返回 `None` 表示这句不是开关，照常往下走（`/搭话 帮我看看` 仍是叫它说话）。
+async fn ambient_switch(ctx: &Context) -> Option<String> {
+    let msg = ctx.as_message()?;
+    let ambient = get_config_or_default::<crate::plugins::ambient::AmbientConfig>(ctx);
+    let command = ambient.summon_command.trim();
+    let command = if command.is_empty() { "/搭话" } else { command };
+    let rest = msg.text().trim().strip_prefix(command)?.trim();
+    let on = match rest {
+        "开" | "开启" | "打开" | "on" => true,
+        "关" | "关闭" | "off" => false,
+        _ => return None,
+    };
+    let Some(group) = msg.group_id().map(str::to_string) else {
+        return Some(format!("在想让我搭话的群里发「{command} 开」就行"));
+    };
+    let manager = is_manager(ctx);
+    let group_admin = matches!(msg.sender_role(), Some("owner" | "admin"));
+    if on && !manager {
+        return Some("这个得号主来开".to_string());
+    }
+    if !on && !manager && !group_admin {
+        return Some("这个得号主或群管理来关".to_string());
+    }
+    let already = enabled(&ctx.config.read().unwrap(), "ambient") && ambient.groups.iter().any(|g| *g == group);
+    if on && already {
+        let prefix = get_prefixes(ctx).first().cloned().unwrap_or_default();
+        return Some(format!("这个群已经开着了；想让我话少点或多点，号主发「{prefix}ctl set ambient talk quiet」（或 lively）"));
+    }
+    if !on && !ambient.groups.iter().any(|g| *g == group) {
+        return Some("这个群本来就没开".to_string());
+    }
+    let target = group.clone();
+    // 群管理关自己的群也要能落盘：权限上面已经核过，这里换成控制台身份去写。
+    let writer = maintainer(ctx);
+    let result = change(&writer, move |cfg| {
+        if on {
+            let table = cfg
+                .plugins
+                .entry("ambient".to_string())
+                .or_insert_with(|| Value::Table(Default::default()))
+                .as_table_mut()
+                .ok_or("ambient 配置不是表")?;
+            table.insert("enabled".into(), Value::Boolean(true));
+            let groups = table
+                .entry("groups")
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or("ambient.groups 不是列表")?;
+            if !groups.iter().any(|g| g.as_str() == Some(target.as_str())) {
+                groups.push(Value::String(target.clone()));
+            }
+        } else if let Some(groups) = cfg
+            .plugins
+            .get_mut("ambient")
+            .and_then(|table| table.get_mut("groups"))
+            .and_then(Value::as_array_mut)
+        {
+            groups.retain(|g| g.as_str() != Some(target.as_str()));
+        }
+        Ok(String::new())
+    })
+    .await;
+    Some(match result {
+        Ok(_) if on => {
+            info!(target: LOG_TARGET, "群 {group} 打开了搭话");
+            // 第一次打开：初始化还没跑过，就地补跑，不必重启。
+            let late = if pending_startup("ambient") {
+                match crate::plugins::start(ctx, "ambient").await {
+                    Ok(()) => String::new(),
+                    Err(error) => format!("（初始化没跑成：{error}；重启一次就好）"),
+                }
+            } else {
+                String::new()
+            };
+            format!("好，这个群开了{late}。平时我大多看着，有意思的才接一句；叫我就发「{command} 说点什么」，不想要了发「{command} 关」")
+        }
+        Ok(_) => {
+            info!(target: LOG_TARGET, "群 {group} 关掉了搭话");
+            "好，这个群不搭话了".to_string()
+        }
+        Err(error) => format!("❌ {error}"),
+    })
+}
+
 pub fn handle(
     ctx: Context,
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
+        if let Some(reply) = ambient_switch(&ctx).await {
+            if let Some(msg) = ctx.as_message() {
+                send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), Message::new().text(reply)).await?;
+            }
+            return Ok(None);
+        }
         let Some(matched) = ["ctl", "控制", "插件"]
             .iter()
             .find_map(|name| match_word_command(&ctx, name))

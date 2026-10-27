@@ -400,7 +400,12 @@ register_plugins!(
         config: ambient::AmbientConfig,
         display_name: "群聊搭话",
         section: "ai",
-        summary: "内置智能体以固定人格参与群聊，只在 [ambient] groups 的群生效；可从号主手发的新消息里空闲学习口吻与接法",
+        summary: "内置智能体以固定人格参与群聊；号主在群里发「搭话 开」就在这个群打开，只接一把 DeepSeek 密钥即可；可从号主手发的新消息里空闲学习口吻与接法",
+        commands: cmds![
+            ("搭话 开", "在本群打开搭话（号主）；第一次开会顺手打开总开关"),
+            ("搭话 关", "在本群关掉搭话（号主、群主或管理员）"),
+            ("搭话 <想说的>", "跳过判定，直接叫它接一句"),
+        ],
         on_init: Some(ambient::init)
     },
     ai_news {
