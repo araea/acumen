@@ -7766,3 +7766,189 @@ label.lk-hit {
   -webkit-line-clamp: 2;
   line-clamp: 2;
 }
+
+/* ==================== §3c 智能对话：供应商与模型 ====================
+   插件页上是一张摘要卡，弹窗里是一串能展开的条目。条目沿用 .memory 的折叠行
+   （summary 64px、chevron 转 90 度），底色比弹窗的纸面深一档，两者才分得开。
+   状态只落在一粒点上：绿 = 接上了、黄 = 缺密钥、灰 = 还没有地址。 */
+
+.oai-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--zw-space-04);
+}
+
+.oai-fact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.oai-fact-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+}
+
+.oai-fact-value {
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.oai-dot {
+  flex: none;
+  width: 0.625rem;
+  height: 0.625rem;
+  margin-inline: var(--zw-space-02) 0;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-outline-variant);
+}
+
+.oai-dot[data-state="ok"] {
+  background: var(--md-sys-color-success);
+  box-shadow: 0 0 0 4px var(--zw-success-halo);
+}
+
+.oai-dot[data-state="warn"] {
+  background: var(--md-sys-color-warning);
+}
+
+.oai-block {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+}
+
+.oai-block > .section-head {
+  min-height: 0;
+  padding-inline: 0;
+}
+
+.oai-card {
+  gap: var(--zw-space-03);
+}
+
+.oai-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-02) var(--zw-space-04);
+}
+
+.oai-card-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-02);
+  font-size: var(--zw-type-section-title);
+  font-weight: var(--zw-weight-heading);
+}
+
+.oai-card-title .i {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  color: var(--md-sys-color-primary);
+}
+
+.oai-select {
+  display: flex;
+  width: 100%;
+}
+
+.oai-entry {
+  background: var(--zw-plate-inset);
+}
+
+.oai-entry > summary {
+  padding-inline: var(--zw-space-04);
+}
+
+.oai-entry-body {
+  padding-inline: var(--zw-space-04);
+}
+
+.oai-models-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+}
+
+.oai-models-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--zw-space-02) var(--zw-space-04);
+  min-height: var(--zw-size-control);
+}
+
+.oai-models-head .field-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--zw-space-02);
+}
+
+.oai-models {
+  max-height: 20rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.oai-models > .item {
+  min-height: var(--zw-size-control);
+  padding-block: var(--zw-space-02);
+}
+
+.oai-models .item-title {
+  overflow-wrap: anywhere;
+}
+
+.oai-extra {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-02);
+}
+
+.oai-extra .chips {
+  max-height: 10rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.oai-addmodel {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-03);
+}
+
+.oai-addmodel .input {
+  flex: 1;
+  min-width: 0;
+}
+
+.oai-entry-actions {
+  justify-content: flex-end;
+}
+
+.oai-add {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-04);
+}
+
+.oai-custom {
+  justify-content: center;
+}
+
+.oai-catalog .item-title {
+  gap: var(--zw-space-02);
+}
+
+@media (forced-colors: active) {
+  .oai-dot {
+    border: 1px solid CanvasText;
+    background: CanvasText;
+  }
+}

@@ -224,7 +224,7 @@ mod tests {
     }
 
     fn provider(base: &str, key: &str) -> super::super::ProviderConfig {
-        super::super::ProviderConfig { api_base: base.into(), api_key: key.into() }
+        super::super::ProviderConfig { api_base: base.into(), api_key: key.into(), models: Vec::new() }
     }
 
     #[test]

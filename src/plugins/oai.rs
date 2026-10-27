@@ -19,6 +19,7 @@ pub(crate) mod media;
 pub mod logic;
 pub(crate) mod manual;
 pub mod mj;
+pub(crate) mod panel;
 pub mod music;
 pub mod parser;
 pub(crate) mod agent;
@@ -48,6 +49,10 @@ pub(crate) struct ProviderConfig {
     pub api_base: String,
     /// 该供应商的 APIKEY。
     pub api_key: String,
+    /// 这家供应商要用的模型（裸模型 id）。留空表示跟随接口拉回的那份；
+    /// 写了就只认这几个——控制台的「供应商与模型」弹窗改的就是它，`/%` 也按它列。
+    #[serde(default)]
+    pub models: Vec<String>,
 }
 
 /// 图片、音乐、视频这三条独立模型调用走哪家：`[oai.media]`。

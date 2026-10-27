@@ -50,6 +50,13 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/lurker/job", get(lurker_job))
         .route("/lurker/stop", post(lurker_stop))
         .route("/lurker/exempt", post(lurker_exempt))
+        // 智能对话的供应商与模型：弹窗里一次改完，写入仍走 ctl。
+        .route("/oai", get(oai_panel))
+        .route("/oai/provider", post(oai_save_provider))
+        .route("/oai/provider/remove", post(oai_remove_provider))
+        .route("/oai/models", post(oai_fetch_models))
+        .route("/oai/default", post(oai_set_default))
+        .route("/oai/endpoint", post(oai_save_endpoint))
         .route("/ambient", get(ambient))
         .route("/ambient/sticker/{id}", get(sticker_image))
         .route("/ambient/source", post(write_ambient_source))
@@ -279,7 +286,72 @@ fn panel(name: &str) -> Value {
     match name {
         "autoreply" => json!("autoreply"),
         "lurker" => json!("lurker"),
+        "oai" => json!("oai"),
         _ => Value::Null,
+    }
+}
+
+// ---------- 智能对话的供应商与模型：一个弹窗里改完接入 ----------
+//
+// 读的是 `[oai.providers]` 与 `data/oai/config.json`，写的一律走 ctl；
+// 唯一会出网的是「拉取模型列表」（只读 `/models`，不计费、不消耗对话额度）。
+
+async fn oai_panel(State(console): State<Arc<Console>>) -> Response {
+    Json(crate::plugins::oai::panel::overview(console.ctx()).await).into_response()
+}
+
+async fn oai_save_provider(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<crate::plugins::oai::panel::SaveProvider>,
+) -> Response {
+    match crate::plugins::oai::panel::save(&console.local(), body).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct OaiName {
+    name: String,
+}
+
+async fn oai_remove_provider(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<OaiName>,
+) -> Response {
+    match crate::plugins::oai::panel::remove(&console.local(), &body.name).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+async fn oai_fetch_models(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<crate::plugins::oai::panel::FetchModels>,
+) -> Response {
+    match crate::plugins::oai::panel::fetch(console.ctx(), body.provider.as_deref()).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+async fn oai_set_default(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<crate::plugins::oai::panel::DefaultModel>,
+) -> Response {
+    match crate::plugins::oai::panel::set_default(&console.local(), &body.model).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+async fn oai_save_endpoint(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<crate::plugins::oai::panel::Endpoint>,
+) -> Response {
+    match crate::plugins::oai::panel::save_endpoint(&console.local(), body).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(message) => bad(message),
     }
 }
 
@@ -441,7 +513,13 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
             ("send", "发送方式"),
             ("platforms", "支持平台"),
         ],
-        "oai" => &[("music_send", "音乐发送方式"), ("video_send", "视频发送方式")],
+        "oai" => &[
+            ("music_send", "音乐发送方式"),
+            ("video_send", "视频发送方式"),
+            ("providers.*.api_base", "接口地址"),
+            ("providers.*.api_key", "密钥"),
+            ("providers.*.models", "模型"),
+        ],
         "ai_news" => &[
             ("mode", "资讯范围"),
             ("window", "时间窗"),
@@ -767,10 +845,11 @@ fn maps(plugin: &str, current: &Toml) -> serde_json::Map<String, Value> {
                 "empty": "还没有供应商。填一把 DeepSeek 密钥管家大人就能用：点下面的 deepseek 加上，只填 api_key（地址留空用官方）；也可以由号主发「oai deepseek 密钥」。房间模型写成「供应商/模型」时按这里的名字找接口与密钥。",
                 "suggest": crate::plugins::oai::catalog::KNOWN.iter().map(|known| known.id).collect::<Vec<_>>(),
                 "optional": false,
-                "template": { "api_base": "", "api_key": "" },
+                "template": { "api_base": "", "api_key": "", "models": [] },
                 "help": {
                     "api_base": "OpenAI 兼容接口的基址。认得的供应商（建议名里那些）留空就用官方地址；中转站必填。",
                     "api_key": "这个供应商的密钥；认得的供应商留空时读环境变量（如 DEEPSEEK_API_KEY）。也可以私聊机器人发「oai 名字 密钥」，验过再存。",
+                    "models": "这家要用的模型（裸 id）。留空跟随接口拉回的那份；写了就只认这几个。平时用上面的「供应商与模型」弹窗改。",
                 },
             }));
             out.insert("search.backends".into(), json!({

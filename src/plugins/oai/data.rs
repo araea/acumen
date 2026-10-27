@@ -241,6 +241,18 @@ impl Manager {
         }
     }
 
+    /// 把一家供应商的模型列表写成「手选」的那份缓存（控制台改完模型后调用）。
+    /// 传空表表示不再手选，缓存也一并清掉，等下一次刷新重新拉。
+    pub async fn set_provider_models(&self, provider: &str, models: Vec<String>) -> anyhow::Result<()> {
+        let mut c = self.config.write().await;
+        if models.is_empty() {
+            c.provider_models.remove(provider);
+        } else {
+            c.provider_models.insert(provider.to_string(), models);
+        }
+        self.save(&mut c)
+    }
+
     pub fn save_mj_cache(&self, cache: &MjCache) {
         if let Ok(s) = serde_json::to_string_pretty(cache)
             && let Err(error) = crate::storage::write_atomic(&self.mj_cache_path, s.as_bytes())
@@ -310,11 +322,18 @@ impl Manager {
         // 撤掉了的供应商连同它的列表一起收走，免得 `/%` 里挂着用不了的模型。
         c.provider_models.retain(|name, _| ready.iter().any(|(ready, _)| ready == name));
         for (name, listed) in official.into_iter().flatten() {
+            // 手选过模型的供应商以手选为准：刷新是去发现新模型的，不该把它挑剩的那几枚冲掉。
+            let curated = providers.get(&name).map(|entry| entry.models.clone()).filter(|list| !list.is_empty());
             match listed {
                 Ok(models) => {
-                    c.provider_models.insert(name, models);
+                    c.provider_models.insert(name, curated.unwrap_or(models));
                 }
-                Err(error) => errors.push(format!("{name}：{error}")),
+                Err(error) => {
+                    if let Some(models) = curated {
+                        c.provider_models.insert(name.clone(), models);
+                    }
+                    errors.push(format!("{name}：{error}"));
+                }
             }
         }
         let all = Self::all_models(&c);
@@ -428,7 +447,7 @@ pub(crate) async fn list_models(base: &str, key: &str) -> anyhow::Result<Vec<Str
 
 /// 供应商官方列表里只留聊天模型：语音、向量、重排这些挂进房间也说不了话。
 /// 列表太长（OpenRouter 有几百个）时再套一遍 `[oai] model_filter`。
-fn chat_models_only(models: Vec<String>, filter: &super::utils::ModelFilterConfig) -> Vec<String> {
+pub(crate) fn chat_models_only(models: Vec<String>, filter: &super::utils::ModelFilterConfig) -> Vec<String> {
     const NOT_CHAT: &[&str] = &[
         "tts", "asr", "embed", "whisper", "rerank", "moderation", "transcribe", "speech", "audio", "voice", "dall-e",
     ];

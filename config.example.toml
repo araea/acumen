@@ -951,6 +951,9 @@ media_deadline_seconds = 240
 # 自己的中转站不在这份名单里也照用：名字随便起（字母、数字、下划线、连字符，32 字以内），
 # 写全 api_base 与 api_key 就是一段；号主发 `oai relay https://… sk-…` 一句话建好这一段。
 # 上表的 [oai.media] 填的就是这个名字。
+# 每家还可以加一行 models = ["deepseek-flash"]：这家要用的模型（裸 id）。留空跟随接口拉回的那份，
+# 写了就只认这几个（/% 与画图、写歌、挑片的模型匹配都按它）。平时用控制台「插件 → 智能对话 →
+# 配置供应商与模型」那个弹窗改，不必手写这一段。
 [oai.providers.deepseek]
 api_base = "https://api.deepseek.com/v1"
 api_key = ""
