@@ -5413,7 +5413,9 @@
     }
     const first = view.kind === "draft" ? $("[data-oai-autofocus]", body) : null;
     (first || $("#oai-sheet-title", dialog)).focus({ preventScroll: true });
-    if (view.kind === "default") $("[data-oai-default]:checked", body)?.closest(".item")?.scrollIntoView({ block: "center" });
+    // 现在选着的那一项滚到中间。只滚弹窗自己：scrollIntoView 在手机上会连可视区一起挪，弹窗底边就悬空了。
+    const row = view.kind === "default" ? $("[data-oai-default]:checked", body)?.closest(".item") : null;
+    if (row) body.scrollTop += row.getBoundingClientRect().top - body.getBoundingClientRect().top - (body.clientHeight - row.offsetHeight) / 2;
   }
 
   /* —— 总览 —— */

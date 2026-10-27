@@ -473,36 +473,27 @@ pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, Str
     let typed_key = body.api_key.as_deref().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string);
     let draft = typed_base.is_some() || typed_key.is_some();
 
-    // 先按配置解出这一家现在的地址与密钥，再拿页面上敲的覆盖。
-    let (base, key, curated, label, display) = if let Some(name) = name {
-        match catalog::configured(&oai.providers, name) {
-            Some((configured, entry)) => {
-                let found = catalog::resolve(&oai.providers, configured);
-                let display = catalog::find(configured).map_or(configured, |known| known.name).to_string();
-                (
-                    found.as_ref().map(|found| found.base.clone()).unwrap_or_default(),
-                    found.map(|found| found.key).unwrap_or_default(),
-                    entry.models.clone(),
-                    configured.to_string(),
-                    display,
-                )
-            }
-            // 还没加进配置的一家（添加页上先试一试）：认得的补官方地址，不认得的只能靠页面上的。
-            None if draft => {
-                let known = catalog::find(name);
-                (
-                    known.map(|known| known.base.to_string()).unwrap_or_default(),
-                    String::new(),
-                    Vec::new(),
-                    name.to_string(),
-                    known.map_or(name, |known| known.name).to_string(),
-                )
-            }
-            None => return Err(format!("没有供应商「{name}」。")),
+    // 先按配置解出这一家现在的地址与密钥，再拿页面上敲的覆盖。还没加进配置的一家
+    // （添加页上先试一试）：认得的补官方地址、读环境变量里的密钥，不认得的只能靠页面上的。
+    let (base, key, curated, label, display, configured) = if let Some(name) = name {
+        let entry = catalog::configured(&oai.providers, name);
+        let known = catalog::find(name);
+        if entry.is_none() && known.is_none() && !draft {
+            return Err(format!("没有供应商「{name}」。"));
         }
+        let label = entry.map_or(name, |(configured, _)| configured).to_string();
+        let found = catalog::resolve(&oai.providers, &label);
+        (
+            found.as_ref().map(|found| found.base.clone()).unwrap_or_default(),
+            found.map(|found| found.key).unwrap_or_default(),
+            entry.map(|(_, entry)| entry.models.clone()).unwrap_or_default(),
+            label.clone(),
+            known.map_or(label.as_str(), |known| known.name).to_string(),
+            entry.is_some(),
+        )
     } else {
         let c = mgr.config.read().await;
-        (c.api_base.clone(), c.api_key.clone(), Vec::new(), String::new(), "默认接口".to_string())
+        (c.api_base.clone(), c.api_key.clone(), Vec::new(), String::new(), "默认接口".to_string(), true)
     };
     let base = typed_base.unwrap_or(base);
     let key = typed_key.unwrap_or(key);
@@ -522,7 +513,7 @@ pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, Str
     let kept = data::chat_models_only(raw, &oai.model_filter);
 
     // 页面上的草稿只试不存；手选过模型的这一家也不动缓存（那份就是它的列表）。
-    let stored = if draft {
+    let stored = if draft || !configured {
         false
     } else {
         remember(&label, &kept);
@@ -543,7 +534,7 @@ pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, Str
         "models": kept,
         "total": total,
         "stored": stored,
-        "draft": draft,
+        "draft": draft || !configured,
     }))
 }
 
