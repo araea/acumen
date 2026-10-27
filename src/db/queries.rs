@@ -709,6 +709,31 @@ pub async fn get_active_user_count(
     raw_active_user_count(db, guild_id, start_time, end_time).await
 }
 
+/// 「我在所有群」的某个数：与 get_user_metric_total 同一口径，只是不含私聊
+/// （guild_id 为空字符串的那些行）。「我的」走势与它旁边的「群覆盖」说的是同一批群。
+pub async fn get_user_metric_total_in_groups(
+    db: &DatabaseConnection,
+    user_id: &str,
+    start_time: i64,
+    end_time: i64,
+    metric: UserMetric,
+) -> Result<i64, DbErr> {
+    let row: Option<i64> = MessageLogs::find()
+        .select_only()
+        .column_as(
+            Expr::cust(format!("COALESCE({}, 0)", metric.raw_expr())),
+            "count",
+        )
+        .filter(entity::Column::Time.gte(start_time))
+        .filter(entity::Column::Time.lt(end_time))
+        .filter(entity::Column::UserId.eq(user_id))
+        .filter(entity::Column::GuildId.ne(""))
+        .into_tuple()
+        .one(db)
+        .await?;
+    Ok(row.unwrap_or(0))
+}
+
 /// 获取指定条件下的消息数量
 ///
 /// 用户维度走原始表（覆盖索引计数）；群/全局维度整日部分走聚合表
@@ -757,7 +782,9 @@ impl TrendGranularity {
     /// SQL 里日期键的写法；与图表侧生成桶标签的格式必须逐字相同。
     fn sql_format(self) -> &'static str {
         match self {
-            Self::Hour => "%H:%M",
+            // 按小时分桶：分钟恒为 00。写成 %H:%M 会按分钟分组，图上一个点
+            // 一小时，落格只剩整点那一条，其余全被当成「没说话」。
+            Self::Hour => "%H:00",
             Self::Day => "%Y-%m-%d",
             Self::Month => "%Y-%m",
         }
@@ -862,6 +889,11 @@ async fn raw_metric_trend(
     if let Some(uid) = user_id {
         query = query.filter(entity::Column::UserId.eq(uid));
     }
+    // 「我的」跨群走势只数群里的发言：私聊记录也在这个表里（guild_id 为空），
+    // 混进来会让「跨群」的合计比旁边「群覆盖」里那几个群的和还大。
+    if user_id.is_some() && guild_id.is_none() {
+        query = query.filter(entity::Column::GuildId.ne(""));
+    }
 
     query
         .group_by(time_expr)
@@ -915,17 +947,22 @@ pub async fn get_user_rank_in_guild(
 ///
 /// 「我的总发言走势」按自然月分桶，起点得是这个人的第一条消息所在的月，
 /// 不能从库里第一行算起——那会把别人的历史算进我的横轴。
+///
+/// 给了群号就只在这个群里找（本群我的总），没给则看所有群、不含私聊。
 pub async fn get_user_first_message_time(
     db: &DatabaseConnection,
+    guild_id: Option<&str>,
     user_id: &str,
 ) -> Result<Option<i64>, DbErr> {
-    let row: Option<(Option<i64>,)> = MessageLogs::find()
+    let mut query = MessageLogs::find()
         .select_only()
         .column_as(Expr::cust("MIN(time)"), "first")
-        .filter(entity::Column::UserId.eq(user_id))
-        .into_tuple()
-        .one(db)
-        .await?;
+        .filter(entity::Column::UserId.eq(user_id));
+    query = match guild_id {
+        Some(gid) => query.filter(entity::Column::GuildId.eq(gid)),
+        None => query.filter(entity::Column::GuildId.ne("")),
+    };
+    let row: Option<(Option<i64>,)> = query.into_tuple().one(db).await?;
     Ok(row.and_then(|(first,)| first))
 }
 
@@ -1104,7 +1141,7 @@ async fn raw_daily_trend_by_guild(
     by_hour: bool,
 ) -> Result<Vec<GuildTrend>, DbErr> {
     let time_expr = if by_hour {
-        Expr::cust("strftime('%H:%M', datetime(time, 'unixepoch', 'localtime'))")
+        Expr::cust("strftime('%H:00', datetime(time, 'unixepoch', 'localtime'))")
     } else {
         Expr::cust("strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime'))")
     };
@@ -1139,7 +1176,7 @@ async fn raw_message_type_trend(
 ) -> Result<Vec<MessageTypeTrend>, DbErr> {
     // 聚合时间键 (按小时 或 按天)
     let time_expr = if by_hour {
-        Expr::cust("strftime('%H:%M', datetime(time, 'unixepoch', 'localtime'))")
+        Expr::cust("strftime('%H:00', datetime(time, 'unixepoch', 'localtime'))")
     } else {
         Expr::cust("strftime('%Y-%m-%d', datetime(time, 'unixepoch', 'localtime'))")
     };

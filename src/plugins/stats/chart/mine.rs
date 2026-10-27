@@ -78,8 +78,10 @@ pub async fn build(
     data_type: &str,
     time_str: &str,
 ) -> Result<MineReport, ChartError> {
+    // 「总」的横轴从我的第一条消息算起；本群只看这个群，别把别的群的历史
+    // 铺成一长串零。
     let first_seen = if time_str == "总" {
-        queries::get_user_first_message_time(db, user_id)
+        queries::get_user_first_message_time(db, group_id, user_id)
             .await
             .map_err(|e| e.to_string())?
     } else {
@@ -88,9 +90,26 @@ pub async fn build(
     let period = period(time_str, first_seen);
 
     // 消息类型是多条线，其余数据类型是一条线。
-    let (series, unit_word) = if data_type == "消息类型" {
+    //
+    // 三样东西一起产出：要画的线、单位、以及**我自己**每格的数——标题下那几个
+    // 统计只看最后一样。消息类型的六条线是互有重叠的属性（一条「带图的话」
+    // 同时进「文本」和「图片」），把它们摞起来既不等于发言条数，也不该拿来
+    // 算合计与高峰；所以那种报表另查一条「发言条数」的走势当口径。
+    let (series, unit_word, mine_points) = if data_type == "消息类型" {
         let series = message_type_series(db, group_id, user_id, &period).await?;
-        (series, "条")
+        let rows = queries::get_user_metric_trend(
+            db,
+            group_id,
+            user_id,
+            period.start,
+            period.end,
+            period.unit.granularity(),
+            UserMetric::Messages,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let points = fill(&period.buckets, rows.into_iter().map(|r| (r.date, r.count)));
+        (series, "条", points)
     } else {
         let metric = user_metric(data_type);
         let rows = queries::get_user_metric_trend(
@@ -109,7 +128,7 @@ pub async fn build(
         let mut series = vec![SeriesData {
             name: metric_name(metric).to_string(),
             color: FALLBACK_THEME,
-            points,
+            points: points.clone(),
             axis: Axis::Left,
         }];
         // 本群这一条当对比：同一段时间里全群说了多少。量级差得远，所以读右轴，
@@ -136,22 +155,30 @@ pub async fn build(
                 });
             }
         }
-        (series, metric_word(metric))
+        (series, metric_word(metric), points)
     };
 
-    let per_bucket = total_per_bucket(&period.buckets, &series);
+    // 统计只从「我」那一份取：本群对比线读的是全群，混进来会把合计算成
+    // 我加全群、把我没说话的格子也算成活跃、高峰还会落在全群的尖峰上。
+    let per_bucket: Vec<i64> = mine_points.iter().map(|p| p.value).collect();
     let total: i64 = per_bucket.iter().sum();
     if total <= 0 {
         return Err(ChartError::NoData);
     }
 
-    // 上一期：同样的长度、同样的口径。跨群时是「我在所有群」的合计。
+    // 上一期：同样的长度、同样的口径。跨群时是「我在所有群」的合计，同样不含私聊。
     let prev_total = match period.prev {
-        Some((s, e)) => Some(
-            queries::get_user_metric_total(db, group_id, user_id, s, e, rank_metric(data_type))
-                .await
-                .map_err(|e| e.to_string())?,
-        ),
+        Some((s, e)) => {
+            let metric = rank_metric(data_type);
+            let value = match group_id {
+                Some(gid) => {
+                    queries::get_user_metric_total(db, Some(gid), user_id, s, e, metric).await
+                }
+                None => queries::get_user_metric_total_in_groups(db, user_id, s, e, metric).await,
+            }
+            .map_err(|e| e.to_string())?;
+            Some(value)
+        }
         None => None,
     };
 
@@ -292,7 +319,7 @@ pub async fn range_for(
     time_str: &str,
 ) -> Result<(i64, i64), ChartError> {
     let first_seen = if time_str == "总" {
-        queries::get_user_first_message_time(db, user_id)
+        queries::get_user_first_message_time(db, None, user_id)
             .await
             .map_err(|e| e.to_string())?
     } else {
@@ -388,11 +415,14 @@ fn period(time_str: &str, first_seen: Option<i64>) -> Period {
             )
         }
         "本月" => {
+            // 上月比本月短时（3 月 31 日对 2 月），「同期」会溢出到本月，
+            // 把已经算进合计的那几天再数一遍；截到月末为止。
             let elapsed = now.timestamp() - month_start.timestamp();
+            let prev_end = (prev_month.timestamp() + elapsed).min(month_start.timestamp());
             (
                 month_start.timestamp(),
                 now.timestamp(),
-                Some((prev_month.timestamp(), prev_month.timestamp() + elapsed)),
+                Some((prev_month.timestamp(), prev_end)),
                 "较上月同期",
                 Unit::Day,
             )
@@ -408,11 +438,13 @@ fn period(time_str: &str, first_seen: Option<i64>) -> Period {
             )
         }
         "今年" => {
+            // 闰年多一天，溢出会落到今年 1 月；同「本月」，截到去年年末。
             let elapsed = now.timestamp() - year_start.timestamp();
+            let prev_end = (last_year.timestamp() + elapsed).min(year_start.timestamp());
             (
                 year_start.timestamp(),
                 now.timestamp(),
-                Some((last_year.timestamp(), last_year.timestamp() + elapsed)),
+                Some((last_year.timestamp(), prev_end)),
                 "较去年同期",
                 Unit::Month,
             )
@@ -428,13 +460,17 @@ fn period(time_str: &str, first_seen: Option<i64>) -> Period {
             )
         }
         "总" => {
-            // 起点是我的第一条消息所在的月，不是库里第一行——别人的历史不该进我的横轴。
-            let from = first_seen
-                .and_then(|t| Local.timestamp_opt(t, 0).single())
-                .map(start_of_month)
-                .unwrap_or(month_start);
-            let days = (now.timestamp() - from.timestamp()) as f64 / day as f64;
-            let unit = if days > 120.0 { Unit::Month } else { Unit::Day };
+            // 起点是我的第一条消息（本群时是这个群里的第一条），不是库里第一行——
+            // 别人的历史不该进我的横轴。按天画时就从那天开始，不必先空出大半个月；
+            // 跨度太长才折成按月，横轴塞不下几百格。
+            let first = first_seen.and_then(|t| Local.timestamp_opt(t, 0).single());
+            let first_day = first.map(start_of_day).unwrap_or(today);
+            let days = (now.timestamp() - first_day.timestamp()) as f64 / day as f64;
+            let (from, unit) = if days > 120.0 {
+                (first.map(start_of_month).unwrap_or(month_start), Unit::Month)
+            } else {
+                (first_day, Unit::Day)
+            };
             (from.timestamp(), now.timestamp(), None, "", unit)
         }
         _ => (
@@ -572,17 +608,6 @@ async fn message_type_series(
         return Err(ChartError::NoData);
     }
     Ok(list)
-}
-
-fn total_per_bucket(buckets: &[Bucket], series: &[SeriesData]) -> Vec<i64> {
-    let mut totals = vec![0i64; buckets.len()];
-    for sr in series {
-        // 每条线都按同一份桶生成，索引天然对齐；不依赖标签再去查一遍。
-        for (i, point) in sr.points.iter().enumerate().take(totals.len()) {
-            totals[i] += point.value;
-        }
-    }
-    totals
 }
 
 fn metric_name(metric: UserMetric) -> &'static str {
