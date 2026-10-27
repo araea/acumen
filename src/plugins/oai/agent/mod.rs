@@ -5,11 +5,12 @@
 //! 手里。现在整条链路就在进程内：一轮对话 = 若干个 Chat Completions 请求，
 //! 模型要工具就调用本模块里的实现，把结果作为 tool 消息回填，直到它不再要工具。
 //!
-//! 九块内容分工：
+//! 各块分工：
 //! - [`tools`]：工具表（名字、说明、JSON Schema）与本地实现（bash / read / write /
 //!   edit / glob / grep），以及转发进 [`ChatBridge`] 的 `satori_*`；
 //! - [`run`]：消息组装、工具循环、轨迹整理、skill 索引；
 //! - [`bash`]：子进程与进程组终止——取消一轮对话必须连带杀掉工具派生出来的进程；
+//! - [`edit`]：`edit` 的多处替换与宽容匹配；
 //! - [`figures`]：回复里 `![说明](地址)` 的图片，在本轮临时目录被清掉之前取好；
 //! - [`compact`]：循环里较早的工具回执与旧图压缩，长任务不被自己的上下文拖垮；
 //! - [`delegate`]：把独立的子任务交给一个干净上下文的子助手，可并行；
@@ -28,6 +29,7 @@ pub(crate) mod command;
 pub(crate) mod compact;
 pub(crate) mod control;
 pub(crate) mod delegate;
+pub(crate) mod edit;
 pub(crate) mod figures;
 pub(crate) mod notes;
 pub(crate) mod run;

@@ -189,6 +189,7 @@ pub(crate) async fn execute(
 ) -> ToolOutput {
     match name {
         "view_image" => return view_image(args, run).await,
+        "read" => return read(args, run).await,
         "delegate" => return super::delegate::execute(args, run).await,
         _ => {}
     }
@@ -241,10 +242,10 @@ async fn run_text(
                 args["timeout_seconds"].as_u64(),
                 run.cwd.or(Some(run.dir)),
                 run.env,
+                Some(run.dir),
             )
             .await
         }
-        "read" => read(args, run).await,
         "write" => write(args, run).await,
         "edit" => edit(args, run).await,
         "glob" => glob(args, run).await,
@@ -252,7 +253,13 @@ async fn run_text(
         "web_search" => web_search(args, run).await,
         "web_fetch" => web_fetch(args, run).await,
         _ if CHAT.contains(&name) => chat(name, args, run, call_id).await,
-        other => return format!("未知工具：{other}"),
+        other => {
+            let names: Vec<String> = definitions(run.tools, run.kit())
+                .into_iter()
+                .map(|tool| tool.name.as_str().to_owned())
+                .collect();
+            return format!("没有 {other} 这个工具。这一轮能用的是：{}", names.join("、"));
+        }
     };
     match result {
         Ok(text) => text,
@@ -383,12 +390,12 @@ async fn resolve(path: &str, run: &super::AgentRun<'_>) -> anyhow::Result<std::p
     }
 }
 
-/// 按扩展名认图片：只用来把「读不了」换成一句指路的话，不做任何放行判断。
+/// 按扩展名认图片：`read` 读到图片就改走看图那条路，不做任何放行判断。
 fn is_image_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| {
-            ["png", "jpg", "jpeg", "gif", "webp", "bmp"]
+            ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"]
                 .iter()
                 .any(|known| ext.eq_ignore_ascii_case(known))
         })
@@ -397,50 +404,90 @@ fn is_image_path(path: &std::path::Path) -> bool {
 /// 单次读入的字符上限。
 const MAX_READ: usize = 60_000;
 
-async fn read(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String> {
-    let path = resolve(args["path"].as_str().unwrap_or(""), run).await?;
-    let image_hint = || {
-        anyhow::anyhow!(
-            "{} 是图片，read 只读文本；想看图用 view_image",
-            path.display()
-        )
+/// 单行最多交出这么多字符：压缩过的 JS、一整行的 JSON 能有几 MB，一行就撑满上限。
+const MAX_LINE: usize = 2_000;
+
+/// 读文本文件；读到的是图片就直接把图附上（与 `view_image` 同一条路），不必让模型再换个工具。
+async fn read(args: &Value, run: &super::AgentRun<'_>) -> ToolOutput {
+    let path = match resolve(args["path"].as_str().unwrap_or(""), run).await {
+        Ok(path) => path,
+        Err(error) => return format!("{error:#}").into(),
     };
-    let content = match tokio::fs::read_to_string(&path).await {
+    if is_image_path(&path) {
+        let roots = [root(run), run.dir];
+        return match super::figures::load_one(&path.display().to_string(), &roots).await {
+            Ok(data_url) => ToolOutput {
+                text: format!("{} 是图片，图在下一条消息里，直接看。", path.display()),
+                images: vec![data_url],
+            },
+            Err(error) => format!("{error:#}").into(),
+        };
+    }
+    read_text(&path, args).await.unwrap_or_else(|error| format!("{error:#}")).into()
+}
+
+async fn read_text(path: &std::path::Path, args: &Value) -> anyhow::Result<String> {
+    let content = match tokio::fs::read_to_string(path).await {
         Ok(content) => content,
-        Err(_) if is_image_path(&path) => return Err(image_hint()),
+        Err(_) if path.is_dir() => {
+            anyhow::bail!("{} 是目录；看目录里有什么用 glob（如 `*`）或 bash 的 ls", path.display())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            anyhow::bail!("{} 不是 UTF-8 文本（可能是二进制文件），读不了；需要的话用 bash 的 file / xxd / strings 看", path.display())
+        }
         Err(error) => anyhow::bail!("读取 {} 失败：{error}", path.display()),
     };
     if content.contains('\0') {
-        if is_image_path(&path) {
-            return Err(image_hint());
-        }
-        anyhow::bail!("{} 像是一份二进制文件，读不了", path.display());
+        anyhow::bail!("{} 像是一份二进制文件，读不了；需要的话用 bash 的 file / xxd / strings 看", path.display());
     }
     let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
     let limit = args["limit"].as_u64().map(|value| value as usize);
     let lines: Vec<&str> = content.lines().collect();
-    let start = (offset - 1).min(lines.len());
+    let total = lines.len();
+    if total == 0 {
+        return Ok(format!("（{} 是空文件）", path.display()));
+    }
+    if offset > total {
+        anyhow::bail!("{} 只有 {total} 行，offset={offset} 超出了范围", path.display());
+    }
+    let start = offset - 1;
     let end = match limit {
-        Some(limit) => (start + limit.max(1)).min(lines.len()),
-        None => lines.len(),
+        Some(limit) => (start + limit.max(1)).min(total),
+        None => total,
     };
-
     let mut out = String::new();
-    let mut cut = false;
+    let mut next = None;
+    let mut long_lines = 0;
     for (index, line) in lines[start..end].iter().enumerate() {
-        let numbered = format!("{:>6}\t{line}\n", start + index + 1);
-        if out.len() + numbered.len() > MAX_READ {
+        let number = start + index + 1;
+        let shown = if line.chars().count() > MAX_LINE {
+            long_lines += 1;
+            let head: String = line.chars().take(MAX_LINE).collect();
+            format!("{head}…（这一行共 {} 字，后面省略）", line.chars().count())
+        } else {
+            (*line).to_string()
+        };
+        let numbered = format!("{number:>6}\t{shown}\n");
+        if out.len() + numbered.len() > MAX_READ && !out.is_empty() {
             // 按行截断，别把最后一行切一半；剩下的用 offset 接着读。
-            cut = true;
+            next = Some(number);
             break;
         }
         out.push_str(&numbered);
     }
-    if cut {
-        out.push_str("…（文件过长，已截断；用 offset/limit 读剩下的部分）\n");
+    let shown_end = next.map_or(end, |next| next - 1);
+    match next {
+        Some(next) => out.push_str(&format!(
+            "…（共 {total} 行，这次读到第 {shown_end} 行；接着读用 offset={next}）\n"
+        )),
+        None if shown_end < total => out.push_str(&format!(
+            "…（共 {total} 行，这次读到第 {shown_end} 行；接着读用 offset={}）\n",
+            shown_end + 1
+        )),
+        None => {}
     }
-    if out.is_empty() {
-        return Ok(format!("（{} 在指定范围内没有内容）", path.display()));
+    if long_lines > 0 {
+        out.push_str(&format!("（有 {long_lines} 行太长只给了开头；要看全用 bash 的 cut / jq 之类按需取）\n"));
     }
     Ok(out)
 }
@@ -451,45 +498,44 @@ async fn write(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    let existed = tokio::fs::try_exists(&path).await.unwrap_or(false);
     tokio::fs::write(&path, content)
         .await
         .map_err(|error| anyhow::anyhow!("写入 {} 失败：{error}", path.display()))?;
     Ok(format!(
-        "已写入 {}（{} 字节）",
+        "已{} {}（{} 行，{} 字节）",
+        if existed { "覆盖" } else { "新建" },
         path.display(),
+        content.lines().count(),
         content.len()
     ))
 }
 
 async fn edit(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String> {
-    let old = args["old"].as_str().unwrap_or("");
-    if old.is_empty() {
-        anyhow::bail!("参数错误：old 不能为空；要整份覆盖请用 write。");
-    }
+    let edits = super::edit::parse(args)?;
     let path = resolve(args["path"].as_str().unwrap_or(""), run).await?;
-    let content = tokio::fs::read_to_string(&path)
+    let raw = tokio::fs::read_to_string(&path)
         .await
         .map_err(|error| anyhow::anyhow!("读取 {} 失败：{error}", path.display()))?;
-    // 只做精确替换：命中多处时宁可让模型把上下文写长一点，也不要它猜错了地方；
-    // 确实要全改（改名、换一个常量）时由 replace_all 明说。
-    let hits = content.matches(old).count();
-    let all = args["replace_all"].as_bool().unwrap_or(false);
-    match hits {
-        0 => anyhow::bail!("{} 里没有找到要替换的原文（空白、缩进、换行都要逐字一致，先 read 看一眼原样）", path.display()),
-        1 => {}
-        _ if all => {}
-        _ => anyhow::bail!(
-            "要替换的原文在 {} 里出现了 {hits} 次，请连同上下文写得更具体一些；要全部替换就加 replace_all=true",
-            path.display()
-        ),
+    // 换行与 BOM 照原样保留：匹配在统一成 LF 的文本上做，写回时再换回去。
+    let (bom, body) = match raw.strip_prefix('\u{feff}') {
+        Some(rest) => ("\u{feff}", rest),
+        None => ("", raw.as_str()),
+    };
+    let crlf = body.find('\n').is_some_and(|at| at > 0 && body.as_bytes()[at - 1] == b'\r');
+    let content = if crlf { body.replace("\r\n", "\n") } else { body.to_string() };
+    let done = super::edit::apply(&content, &edits).map_err(|error| anyhow::anyhow!("{} 没改：{error}", path.display()))?;
+    let written = if crlf { done.content.replace('\n', "\r\n") } else { done.content.clone() };
+    tokio::fs::write(&path, format!("{bom}{written}"))
+        .await
+        .map_err(|error| anyhow::anyhow!("写入 {} 失败：{error}", path.display()))?;
+    let mut out = format!("已修改 {}（{} 处）", path.display(), done.replaced);
+    if done.fuzzy > 0 {
+        out.push_str(&format!("；其中 {} 处原文与文件差在空白或标点写法上，按宽容匹配定位", done.fuzzy));
     }
-    let new = args["new"].as_str().unwrap_or("");
-    tokio::fs::write(&path, content.replace(old, new)).await?;
-    Ok(if hits > 1 {
-        format!("已修改 {}（替换了 {hits} 处）", path.display())
-    } else {
-        format!("已修改 {}", path.display())
-    })
+    out.push_str("。改后的样子：\n");
+    out.push_str(&super::edit::preview(&done.content, &done.touched));
+    Ok(out)
 }
 
 /// 匹配结果条数上限。
@@ -511,6 +557,7 @@ async fn glob(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
         None => root(run).to_path_buf(),
     };
     let full = root.join(pattern).to_string_lossy().into_owned();
+    let base = root.clone();
     // 文件系统遍历是同步的：放到阻塞线程池，别占着异步工作线程。
     let (mut hits, timed_out) = tokio::task::spawn_blocking(move || {
         let started = std::time::Instant::now();
@@ -524,7 +571,8 @@ async fn glob(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
             if path.is_dir() {
                 continue;
             }
-            hits.push(path.display().to_string());
+            // 相对搜索目录写：两百条绝对路径里九成字符是同一串前缀。
+            hits.push(path.strip_prefix(&base).unwrap_or(&path).display().to_string());
             if hits.len() >= MAX_MATCHES {
                 break;
             }
@@ -541,16 +589,39 @@ async fn glob(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
         ));
     }
     hits.sort();
+    let full = hits.len() >= MAX_MATCHES;
+    let mut out = format!("（在 {} 下，路径相对这个目录）\n{}", root.display(), hits.join("\n"));
     if timed_out {
-        hits.push("…（查找超时，结果不全；换个更小的目录再试）".to_string());
+        out.push_str("\n…（查找超时，结果不全；换个更小的目录再试）");
+    } else if full {
+        out.push_str(&format!("\n…（只列了前 {MAX_MATCHES} 个；把模式写具体些）"));
     }
-    Ok(hits.join("\n"))
+    Ok(out)
+}
+
+/// grep 每条命中行最多交出的字符：一行几万字的压缩文件命中一次就占满回执。
+const MAX_GREP_LINE: usize = 300;
+
+/// grep 的选项。
+struct GrepOptions {
+    re: regex::Regex,
+    filter: Option<glob::Pattern>,
+    /// 命中行前后各带几行。
+    context: usize,
+    limit: usize,
 }
 
 async fn grep(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String> {
     let pattern = args["pattern"].as_str().unwrap_or("");
-    let re = regex::Regex::new(pattern)
-        .map_err(|error| anyhow::anyhow!("正则无效（{error}）：{pattern}"))?;
+    if pattern.is_empty() {
+        anyhow::bail!("参数错误：pattern 不能为空。");
+    }
+    let literal = args["literal"].as_bool().unwrap_or(false);
+    let source = if literal { regex::escape(pattern) } else { pattern.to_string() };
+    let re = regex::RegexBuilder::new(&source)
+        .case_insensitive(args["ignore_case"].as_bool().unwrap_or(false))
+        .build()
+        .map_err(|error| anyhow::anyhow!("正则无效（{error}）：{pattern}；只想找这串字就加 literal=true"))?;
     let root = match args["path"].as_str().filter(|path| !path.is_empty()) {
         Some(base) => resolve(base, run).await?,
         None => root(run).to_path_buf(),
@@ -564,36 +635,57 @@ async fn grep(args: &Value, run: &super::AgentRun<'_>) -> anyhow::Result<String>
                 .map_err(|error| anyhow::anyhow!("glob 无效（{error}）：{only}"))?,
         )
     };
+    let options = GrepOptions {
+        re,
+        filter,
+        context: args["context"].as_u64().unwrap_or(0).min(10) as usize,
+        limit: args["limit"].as_u64().map_or(MAX_MATCHES, |limit| (limit as usize).clamp(1, MAX_MATCHES)),
+    };
 
     let walk_root = root.clone();
-    let (mut hits, timed_out) = tokio::task::spawn_blocking(move || {
-        grep_walk(&re, &walk_root, filter.as_ref())
-    })
-    .await
-    .map_err(|error| anyhow::anyhow!("搜索中断：{error}"))?;
+    let (hits, matched, files, stop) = tokio::task::spawn_blocking(move || grep_walk(&options, &walk_root))
+        .await
+        .map_err(|error| anyhow::anyhow!("搜索中断：{error}"))?;
     if hits.is_empty() {
-        let note = if timed_out { "；搜索超时，换个更小的目录再试" } else { "" };
+        let note = match stop {
+            Stop::Timeout => "；搜索超时，换个更小的目录再试",
+            _ => "",
+        };
         return Ok(format!(
             "（{} 下没有匹配 {pattern} 的内容{note}）",
             root.display()
         ));
     }
-    if timed_out {
-        hits.push("…（搜索超时，结果不全；换个更小的目录再试）".to_string());
-    }
-    Ok(hits.join("\n"))
+    let mut out = hits.join("\n");
+    out.push_str(&format!("\n（{matched} 处命中，分布在 {files} 个文件里"));
+    out.push_str(match stop {
+        Stop::Done => "）",
+        Stop::Limit => "；到了条数上限，后面还有——缩小目录、加 glob 或把正则写具体些）",
+        Stop::Timeout => "；搜索超时，结果不全，换个更小的目录再试）",
+    });
+    Ok(out)
 }
 
-/// grep 的阻塞部分：遍历目录、逐文件逐行匹配；返回命中行与是否因超时提前收手。
-fn grep_walk(
-    re: &regex::Regex,
-    root: &std::path::Path,
-    filter: Option<&glob::Pattern>,
-) -> (Vec<String>, bool) {
+/// grep 为什么停下。
+enum Stop {
+    Done,
+    Limit,
+    Timeout,
+}
+
+/// grep 的阻塞部分：遍历目录、逐文件逐行匹配。
+///
+/// 返回交给模型的行（路径相对搜索目录，省得每行都背一长串绝对路径）、命中处数、
+/// 命中的文件数与停下的原因。
+fn grep_walk(options: &GrepOptions, root: &std::path::Path) -> (Vec<String>, usize, usize, Stop) {
     let started = std::time::Instant::now();
-    let mut hits = Vec::new();
+    let mut out = Vec::new();
+    let mut matched = 0;
+    let mut files = 0;
+    let base = if root.is_file() { root.parent().unwrap_or(root) } else { root };
     let walk = walkdir::WalkDir::new(root)
         .max_depth(12)
+        .sort_by_file_name()
         .into_iter()
         .filter_entry(|entry| {
             // 版本库与构建产物的体积远大于信息量，且几乎不可能是要找的东西。
@@ -603,18 +695,28 @@ fn grep_walk(
                 || !(entry.file_type().is_dir()
                     && (name.starts_with('.') || matches!(&*name, "target" | "node_modules")))
         });
+    let clip = |line: &str| -> String {
+        let line = line.trim_end();
+        if line.chars().count() > MAX_GREP_LINE {
+            let head: String = line.chars().take(MAX_GREP_LINE).collect();
+            format!("{head}…")
+        } else {
+            line.to_string()
+        }
+    };
     for entry in walk {
         if started.elapsed() > WALK_BUDGET {
-            return (hits, true);
+            return (out, matched, files, Stop::Timeout);
         }
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_file() {
             continue;
         }
         let path = entry.path();
-        if let Some(filter) = filter {
+        if let Some(filter) = &options.filter {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if !filter.matches(&name) {
+            let relative = path.strip_prefix(base).unwrap_or(path).to_string_lossy();
+            if !filter.matches(&name) && !filter.matches(&relative) {
                 continue;
             }
         }
@@ -625,16 +727,50 @@ fn grep_walk(
         let Ok(content) = std::fs::read_to_string(path) else {
             continue;
         };
-        for (index, line) in content.lines().enumerate() {
-            if re.is_match(line) {
-                hits.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
-                if hits.len() >= MAX_MATCHES {
-                    return (hits, false);
-                }
+        if content.contains('\0') {
+            continue;
+        }
+        let shown = path.strip_prefix(base).unwrap_or(path).display().to_string();
+        let shown = if shown.is_empty() { path.display().to_string() } else { shown };
+        let lines: Vec<&str> = content.lines().collect();
+        let mut hits = Vec::new();
+        for (index, line) in lines.iter().enumerate() {
+            if matched + hits.len() >= options.limit {
+                break;
+            }
+            if options.re.is_match(line) {
+                hits.push(index);
             }
         }
+        if hits.is_empty() {
+            continue;
+        }
+        files += 1;
+        matched += hits.len();
+        if options.context == 0 {
+            out.extend(hits.iter().map(|&at| format!("{shown}:{}: {}", at + 1, clip(lines[at]))));
+        } else {
+            // 带上下文时相邻的命中连成一段，段与段之间用 -- 隔开；命中行用 `:`、上下文用 `-`（与 grep -C 一样）。
+            let mut printed_to = 0;
+            for &index in &hits {
+                let from = index.saturating_sub(options.context).max(printed_to);
+                if printed_to > 0 && from > printed_to {
+                    out.push("--".to_string());
+                }
+                let to = (index + options.context + 1).min(lines.len());
+                for at in from..to {
+                    let mark = if hits.binary_search(&at).is_ok() { ':' } else { '-' };
+                    out.push(format!("{shown}{mark}{}{mark} {}", at + 1, clip(lines[at])));
+                }
+                printed_to = printed_to.max(to);
+            }
+            out.push("--".to_string());
+        }
+        if matched >= options.limit {
+            return (out, matched, files, Stop::Limit);
+        }
     }
-    (hits, false)
+    (out, matched, files, Stop::Done)
 }
 
 /// 把一次 `satori_*` 调用转发给聊天界面那一侧。
@@ -667,7 +803,7 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
     }
     let (description, parameters) = match name {
         "bash" => (
-            "在本机执行一条 bash 命令，返回合并后的 stdout 与 stderr。命令在你当前的工作目录里运行，环境变量已带好。有超时（默认 120 秒，可用 timeout_seconds 指定，最多 600 秒），输出过长会从中间省略。非零退出会把状态码和输出一起告诉你。",
+            "在本机执行一条 bash 命令，返回合并后的 stdout 与 stderr。命令在你当前的工作目录里运行，环境变量已带好，没有交互输入（要确认的命令加 -y 之类）。有超时（默认 120 秒，可用 timeout_seconds 指定，最多 600 秒）；更久的活用 `setsid nohup … > 日志 2>&1 &` 放后台。输出过长会留头尾、省略中间，完整输出另存成文件并给出路径。非零退出会把状态码和输出一起告诉你。看文件内容用 read、找文件用 glob、搜内容用 grep，比 cat / find / grep 命令更省事。",
             json!({
                 "type": "object",
                 "properties": {
@@ -678,7 +814,7 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
             }),
         ),
         "read" => (
-            "读取一个文本文件，返回带行号的正文。路径可以是绝对的，也可以是相对当前工作目录的。文件不存在或像是二进制文件会明确报错；文件很长时按行截断，用 offset / limit 接着读。",
+            "读取一个文件，返回带行号的正文；读的是图片（PNG / JPEG / GIF / WebP / SVG）就直接把图给你看。路径可以是绝对的，也可以是相对当前工作目录的。文件很长时按行截断，回执末尾会写明接着读的 offset；大文件先 grep 找到位置，再用 offset / limit 读那一段。",
             json!({
                 "type": "object",
                 "properties": {
@@ -690,7 +826,7 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
             }),
         ),
         "write" => (
-            "把内容整份写入文件（覆盖原有内容），父目录不存在会自动建。只在确实要新建或整份重写时用；改几行用 edit 更稳。",
+            "把内容整份写入文件（覆盖原有内容），父目录不存在会自动建。只在新建或整份重写时用；改已有文件的几处用 edit——整份重写既费输出，也容易把没打算动的地方一起改掉。",
             json!({
                 "type": "object",
                 "properties": {
@@ -701,20 +837,32 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
             }),
         ),
         "edit" => (
-            "把文件里的一段原文精确替换成新内容。old 必须在文件里只出现一次，否则会报错——连同上下文一起写清楚再改，比猜位置可靠；确实要把每一处都换掉（改名、换常量）就加 replace_all=true。",
+            "按原文替换来改一份文件，一次可以改好几处：edits 里每一项的 old 都对着**原文件**匹配（不是改完一处再找下一处），必须在文件里唯一、彼此不重叠；挨得很近的两处并成一项。old 尽量短，够唯一就行，别为了连起两处改动抄一大段没变的原文。行尾空白、弯直引号、破折号写法对不上时会宽容地定位，但还是照 read 的原样抄最稳。回执里给出改后的那几行，照着核对即可，不必再 read 一遍。改之前先 read 过这份文件；新建或整份重写用 write。确实要把某段原文每一处都换掉（改名、换常量），用 old / new / replace_all=true 这组旧写法。",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "文件路径"},
-                    "old": {"type": "string", "description": "要被替换的原文，必须唯一"},
-                    "new": {"type": "string", "description": "替换成什么"},
-                    "replace_all": {"type": "boolean", "description": "old 出现多次时全部替换，默认只允许唯一命中"}
+                    "edits": {
+                        "type": "array",
+                        "description": "一处或几处替换，都对着原文件匹配",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "old": {"type": "string", "description": "要被替换的原文，在文件里唯一"},
+                                "new": {"type": "string", "description": "替换成什么（空串就是删掉）"}
+                            },
+                            "required": ["old", "new"]
+                        }
+                    },
+                    "old": {"type": "string", "description": "旧写法：单处替换的原文（与 replace_all 配合）"},
+                    "new": {"type": "string", "description": "旧写法：替换成什么"},
+                    "replace_all": {"type": "boolean", "description": "旧写法：old 出现多次时全部替换"}
                 },
-                "required": ["path", "old", "new"]
+                "required": ["path"]
             }),
         ),
         "glob" => (
-            "按通配符找文件，例如 `**/*.rs`、`src/*.toml`。返回排序后的路径列表，最多 200 条。",
+            "按通配符找文件，例如 `**/*.rs`、`src/*.toml`、`*`（列一个目录）。返回相对搜索目录、排好序的路径，最多 200 条。",
             json!({
                 "type": "object",
                 "properties": {
@@ -725,13 +873,17 @@ fn spec(name: &str, direct: bool) -> Option<ToolDefinition> {
             }),
         ),
         "grep" => (
-            "在目录里按正则搜索文件内容，返回 `路径:行号: 内容`，最多 200 条。可以用 glob 限定文件名，例如 `*.md`。",
+            "在目录（或单个文件）里按正则搜索文件内容，返回 `路径:行号: 内容`（路径相对搜索目录），最多 200 处，末尾写明共几处、几个文件。跳过二进制文件、隐藏目录、target 与 node_modules。glob 限定文件名（如 `*.md`），context 带上前后几行，免得再 read 一遍。",
             json!({
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "正则表达式"},
-                    "path": {"type": "string", "description": "在哪个目录下搜，默认当前工作目录"},
-                    "glob": {"type": "string", "description": "只搜文件名匹配这个通配符的文件"}
+                    "pattern": {"type": "string", "description": "正则表达式（Rust regex 语法）；只找字面的一串字就配 literal=true"},
+                    "path": {"type": "string", "description": "在哪个目录或文件里搜，默认当前工作目录"},
+                    "glob": {"type": "string", "description": "只搜文件名匹配这个通配符的文件"},
+                    "ignore_case": {"type": "boolean", "description": "不分大小写"},
+                    "literal": {"type": "boolean", "description": "pattern 按字面匹配，不当正则"},
+                    "context": {"type": "integer", "minimum": 0, "maximum": 10, "description": "每处命中前后各带几行"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "最多返回几处，默认 200"}
                 },
                 "required": ["pattern"]
             }),

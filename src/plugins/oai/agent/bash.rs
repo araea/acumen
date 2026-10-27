@@ -22,13 +22,22 @@ const MAX_COLLECT: usize = 1024 * 1024;
 const DEFAULT_TIMEOUT: u64 = 120;
 const MAX_TIMEOUT: u64 = 600;
 
+/// 跑得比这久的命令在回执里写上用时：模型据此知道下次该不该放到后台。
+const SLOW: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// 跑一条命令；返回合并后的 stdout + stderr。
+///
+/// `spill` 是本轮的临时目录：输出超过交付上限时，完整输出（读取上限以内）落一份到那里，
+/// 回执末尾写明路径——模型要看被省略的那一段就 `grep` / `read` 那个文件，而不是把命令
+/// 再跑一遍（耗时的编译、下载再跑一遍可不止多花几秒）。
 pub(crate) async fn run(
     command: &str,
     timeout_seconds: Option<u64>,
     cwd: Option<&std::path::Path>,
     env: &[(String, String)],
+    spill: Option<&std::path::Path>,
 ) -> anyhow::Result<String> {
+    let started = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(
         timeout_seconds
             .unwrap_or(DEFAULT_TIMEOUT)
@@ -84,7 +93,7 @@ pub(crate) async fn run(
     };
     let Ok(status) = finished else {
         // 超时即放弃这一轮：进程组连同 bash 派生的独立进程一起收掉（`group` 在返回时 drop）。
-        let partial = merged(&out, &err);
+        let partial = merged(&out, &err, spill);
         return Err(anyhow::anyhow!(
             "命令超过 {} 秒未结束，已终止{}",
             timeout.as_secs(),
@@ -101,7 +110,12 @@ pub(crate) async fn run(
         group.armed = false;
     }
 
-    let text = merged(&out, &err);
+    let mut text = merged(&out, &err, spill);
+    let elapsed = started.elapsed();
+    if elapsed >= SLOW {
+        let note = format!("（用时 {} 秒）", elapsed.as_secs());
+        text = if text.is_empty() { note } else { format!("{text}\n{note}") };
+    }
     if !status.success() {
         // 非零退出把状态写清楚再交回去：命令失败本身也是有用的结果，模型据此改做法。
         anyhow::bail!(
@@ -179,7 +193,9 @@ fn kill_descendants(pid: i32) {
 }
 
 /// 把 stdout 与 stderr 合成交给模型的文本：stderr 另起一行接在后面，整体超限时从中间省略。
-fn merged(out: &[u8], err: &[u8]) -> String {
+///
+/// 省略了东西且有 `spill` 目录时，完整输出另存一份，回执末尾写明路径。
+fn merged(out: &[u8], err: &[u8], spill: Option<&std::path::Path>) -> String {
     let mut text = String::from_utf8_lossy(out).into_owned();
     let err = String::from_utf8_lossy(err);
     if !err.trim().is_empty() {
@@ -188,7 +204,55 @@ fn merged(out: &[u8], err: &[u8]) -> String {
         }
         text.push_str(&err);
     }
-    super::super::utils::truncate_middle(text.trim_end(), MAX_OUTPUT)
+    let text = text.trim_end();
+    if text.chars().count() <= MAX_OUTPUT {
+        return text.to_string();
+    }
+    let short = elide(text, MAX_OUTPUT);
+    let capped = out.len() >= MAX_COLLECT || err.len() >= MAX_COLLECT;
+    let Some(dir) = spill else { return short };
+    let file = dir.join(format!("bash-{:08x}.log", rand::random::<u32>()));
+    match std::fs::write(&file, text) {
+        Ok(()) => format!(
+            "{short}\n（输出共 {} 行，中间有省略；完整输出{}已存到 {}，要看哪一段用 grep 或 read 的 offset 去读，别把命令重跑一遍）",
+            text.lines().count(),
+            if capped { "（前 1 MiB）" } else { "" },
+            file.display()
+        ),
+        Err(_) => short,
+    }
+}
+
+/// 超长输出留头尾、按整行切，中间写明省了多少行。
+///
+/// 尾巴多留：命令的结论（报错的最后一行、测试汇总、最终状态）几乎总在末尾；开头留的是
+/// 命令最早的报错与上下文。只用一个「…」，模型不知道中间丢了多少，常把残缺的输出当全部。
+fn elide(text: &str, max_chars: usize) -> String {
+    let head_budget = max_chars / 3;
+    let tail_budget = max_chars - head_budget;
+    let lines: Vec<&str> = text.lines().collect();
+    let mut head = 0;
+    let mut used = 0;
+    while head < lines.len() && used + lines[head].chars().count() < head_budget {
+        used += lines[head].chars().count() + 1;
+        head += 1;
+    }
+    let mut tail = lines.len();
+    used = 0;
+    while tail > head && used + lines[tail - 1].chars().count() < tail_budget {
+        used += lines[tail - 1].chars().count() + 1;
+        tail -= 1;
+    }
+    if head == 0 && tail == lines.len() {
+        // 一两行就撑爆上限（压缩过的 JSON、进度条）：按字符从中间省。
+        return super::super::utils::truncate_middle(text, max_chars);
+    }
+    format!(
+        "{}\n…（中间省略 {} 行）…\n{}",
+        lines[..head].join("\n"),
+        tail - head,
+        lines[tail..].join("\n")
+    )
 }
 
 async fn read_capped(mut reader: impl tokio::io::AsyncRead + Unpin, kept: &mut Vec<u8>, max_bytes: usize) {

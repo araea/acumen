@@ -15,7 +15,7 @@ use super::super::llm;
 use super::super::retry::{self, Transient};
 use super::{AgentRun, compact, figures};
 use rig_core::completion::message::{DocumentSourceKind, Image, Text, ToolCall, ToolChoice, ToolResultContent, UserContent};
-use rig_core::completion::{AssistantContent, CompletionResponse, Message};
+use rig_core::completion::{AssistantContent, CompletionResponse, FinishReason, Message, Usage};
 use rig_core::error::ProviderError;
 use std::collections::HashMap;
 
@@ -26,6 +26,23 @@ const MAX_VIEWS: usize = 6;
 
 /// 历史里最近几条回复带上「用过哪些工具」的过程记录。
 const DIGESTS: usize = 3;
+
+/// 房间历史展开进请求的字数上限（图按 [`compact`] 的折算计）。
+///
+/// 房间历史本身不删（编辑、删除、重新生成都按序号指着它），但每一轮都整份重发它是最
+/// 贵的浪费：聊了一个月的房间，一句「早」也要背着几十万字上路，慢、费额度，迟早撞上
+/// 模型的上下文上限。所以只展开最近的一截——够接上话头，更早的由一句注记交代。
+const HISTORY_BUDGET: usize = 60_000;
+
+/// 展开的历史最多这么多条消息：短消息多的房间，条数比字数先到顶。
+const HISTORY_MESSAGES: usize = 80;
+
+/// 历史里只有最近这几条带图的用户消息重新附图：每张旧图每一轮都要重新下载、转码、
+/// 上传一遍，模型当时看过的结论已经在它自己的回复里了。
+const HISTORY_IMAGES: usize = 2;
+
+/// 回复写到输出上限被截断时，最多接着写几次。
+const CONTINUATIONS: usize = 2;
 
 /// 页脚保留的工具调用条数上限；再多只记次数。
 const TRACE_LIMIT: usize = 12;
@@ -330,6 +347,11 @@ async fn attempt(
 
     // 并入这一轮的追加话（按到达顺序），房间历史要把它们记在回复之前。
     let mut steered: Vec<String> = Vec::new();
+    // 被输出上限截断、已经写出来的那几段回复（接着写完时拼在前面）。
+    let mut carried = String::new();
+    let mut continued = 0;
+    // 这一轮花了多少：请求次数与 token，收尾时记一行日志，额度花在哪儿一目了然。
+    let mut spent = Spent::default();
 
     for step in 0..steps {
         // 用户在管家忙的时候又说了话：在步与步之间并进来，一轮之内就能改方向。
@@ -393,6 +415,7 @@ async fn attempt(
         // 接口回了一条什么都没有的消息（连思考块都没有）不算出错：choice 是空的，
         // 和「只想不说」一样落到下面的催一次。
         let response = response?;
+        spent.add(&response.usage);
 
         let calls: Vec<_> = response
             .choice
@@ -403,6 +426,22 @@ async fn attempt(
             })
             .collect();
         let text = llm::text_of(&response.choice);
+
+        // 回复写到一半撞上输出上限：把写出来的留下，让它从断处接着写，而不是交出半截话。
+        if calls.is_empty()
+            && run.rescue
+            && continued < CONTINUATIONS
+            && step + 1 < steps
+            && !text.trim().is_empty()
+            && response.finish_reason() == Some(FinishReason::Length)
+        {
+            continued += 1;
+            carried.push_str(&text);
+            messages.push(echo(&response));
+            messages.push(user_note(CONTINUE_REPLY));
+            continue;
+        }
+        let text = if carried.is_empty() { text } else { format!("{carried}{text}") };
 
         // 最后一次请求里模型仍坚持调工具：只要它同时写了话，就当这是最终回复。
         if calls.is_empty() || (last && !text.trim().is_empty()) {
@@ -446,6 +485,7 @@ async fn attempt(
                     continue;
                 }
             }
+            spent.log(run.model, &trace);
             return Ok(super::AgentReply {
                 text,
                 steered,
@@ -511,6 +551,10 @@ const RUNNING_OUT: &str = "（系统提醒，用户看不到：工具调用的�
 const LAST_REPLY: &str = "（系统提醒，用户看不到：这是最后一次回复，不能再调用工具。直接用已有的结果给出最终回复，\
 没做完的部分如实说明；回复里不要提这条提醒。）";
 
+/// 回复被输出上限截断后，让模型接着写。
+const CONTINUE_REPLY: &str = "（系统提醒，用户看不到：你上面那段回复写到输出上限被截断了。从断开的那个字接着往下写，\
+不要重复已经写过的内容，也不要提这条提醒。）";
+
 /// 模型什么都没说时催它。
 const EMPTY_REPLY: &str = "（系统提醒，用户看不到：你刚才没有给出任何回复。请直接给出最终回复。）";
 
@@ -524,6 +568,33 @@ fn steer_note(text: &str) -> String {
 fn user_note(text: &str) -> Message {
     Message::User {
         content: vec![UserContent::Text(Text::new(text))],
+    }
+}
+
+/// 一轮里各次请求的用量合计。
+#[derive(Default)]
+struct Spent {
+    requests: usize,
+    input: u64,
+    cached: u64,
+    output: u64,
+}
+
+impl Spent {
+    fn add(&mut self, usage: &Usage) {
+        self.requests += 1;
+        self.input += usage.input_tokens.unwrap_or(0);
+        self.cached += usage.cached_input_tokens.unwrap_or(0);
+        self.output += usage.output_tokens.unwrap_or(0);
+    }
+
+    fn log(&self, model: &str, trace: &Trace) {
+        let tools: usize = trace.steps.iter().map(|step| step.repeats.max(1) as usize).sum::<usize>() + trace.overflow;
+        info!(
+            target: LOG_TARGET,
+            "{model}：{} 次请求、{tools} 次工具；输入 {} token（缓存命中 {}）、输出 {}",
+            self.requests, self.input, self.cached, self.output
+        );
     }
 }
 
@@ -565,7 +636,20 @@ async fn execute_batch(
     calls: &[ToolCall],
     repeats: &mut Repeats,
 ) -> Vec<super::tools::ToolOutput> {
-    let refused: Vec<Option<String>> = calls.iter().map(|call| repeats.check(call)).collect();
+    // 参数不是一个完整的 JSON 对象（多半是输出被截断、或引号没转义）：照常执行只会换来
+    // 「command 不能为空」这种驴唇不对马嘴的报错，模型会以为是自己漏了字段。直接说清楚。
+    let refused: Vec<Option<String>> = calls
+        .iter()
+        .map(|call| match &call.function.invalid_arguments {
+            Some(raw) => Some(format!(
+                "这次调用 {} 的参数不是合法的 JSON 对象，没有执行：{}。常见原因是字符串里的引号或换行没转义、或参数太长被截断了；\
+                 改好重新调用（内容很长就分几次写）。",
+                call.function.name.as_str(),
+                super::super::utils::truncate_middle(raw, 200)
+            )),
+            None => repeats.check(call),
+        })
+        .collect();
     let args: Vec<serde_json::Value> = calls.iter().map(|call| call.function.arguments_value()).collect();
     let ids: Vec<String> = calls.iter().map(|call| call.id.to_string()).collect();
     let mut outputs: Vec<super::tools::ToolOutput> =
@@ -727,6 +811,25 @@ impl Context {
         if !system.trim().is_empty() {
             messages.push(Message::System { content: system });
         }
+        // 只展开最近的一截历史（见 [`HISTORY_BUDGET`]），更早的交代一句。
+        let skip = history_start(history);
+        if skip > 0 {
+            messages.push(user_note(&format!(
+                "（系统记录，用户看不到：这个房间更早的 {skip} 条消息没有放进来。用户提到你这里看不到的事，\
+                 别装作记得，请他把要点再说一遍{}；回复里不要提这条记录。）",
+                if run.bridge.is_some() { "，或者用 satori_history 翻聊天记录" } else { "" }
+            )));
+        }
+        let history = &history[skip..];
+        // 只有最近几条带图的消息重新附图。
+        let images_from = history
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| message.role == "user" && !message.images.is_empty())
+            .map(|(index, _)| index)
+            .rev()
+            .nth(HISTORY_IMAGES - 1)
+            .unwrap_or(0);
         // 只给最近几条回复配上过程记录：更早的早就过时，带着只是占上下文。
         let digest_from = history
             .iter()
@@ -746,7 +849,14 @@ impl Context {
                     } else {
                         std::borrow::Cow::Owned(format!("〔{}〕{}", message.from, message.content))
                     };
-                    let content = user_content(&text, &message.images).await;
+                    let content = if index >= images_from {
+                        user_content(&text, &message.images).await
+                    } else if message.images.is_empty() {
+                        user_content(&text, &[]).await
+                    } else {
+                        let note = format!("{text}\n（当时随附了 {} 张图，现已不在上下文里）", message.images.len());
+                        user_content(&note, &[]).await
+                    };
                     if !content.is_empty() {
                         messages.push(Message::User { content });
                     }
@@ -784,6 +894,32 @@ impl Context {
 
         Ok(Self { messages })
     }
+}
+
+/// 历史从第几条开始展开：从最新往回累计，到 [`HISTORY_BUDGET`] 字或 [`HISTORY_MESSAGES`] 条为止，
+/// 并且落在一条用户消息上——从回复开头，模型会看到一句没有来由的答话。
+fn history_start(history: &[super::super::types::ChatMessage]) -> usize {
+    let mut used = 0;
+    let mut start = history.len();
+    for (index, message) in history.iter().enumerate().rev() {
+        let cost = message.content.chars().count()
+            + message.from.chars().count()
+            + message.work.chars().count()
+            + message.images.len() * 1_000;
+        if history.len() - index > HISTORY_MESSAGES || used + cost > HISTORY_BUDGET {
+            break;
+        }
+        used += cost;
+        start = index;
+    }
+    // 一条消息就超了预算（贴进来的长文）：至少带上最近那一问一答，别让模型对着空历史。
+    if start == history.len() {
+        start = history.len().saturating_sub(2);
+    }
+    while start < history.len() && history[start].role != "user" {
+        start += 1;
+    }
+    start
 }
 
 /// 正文 + 图片 → 一条用户消息的内容块。
