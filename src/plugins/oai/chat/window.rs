@@ -831,6 +831,53 @@ pub(crate) async fn quote_from_platform(
     })
 }
 
+/// 窗口里语音的占位写法；[`voice_text`] 听写成功后换成「[语音：…]」。
+pub(crate) const VOICE: &str = "[语音]";
+
+/// 实现端不认 `voice_to_text`（老知弦、satori-wx）时记一笔，别每条语音都白问一次。
+static VOICE_UNSUPPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 借 QQ 自带的「语音转文字」听写一条语音（知弦 0.52.0 起的 `internal/voice_to_text`）。
+///
+/// 只问一次、最多等 15 秒；听不出、超时或实现端不支持都返回 `None`，窗口里照旧是「[语音]」。
+/// 听写结果是群友说的话，与文字消息同样当作群聊内容，不是指令。
+pub(crate) async fn voice_text(
+    ctx: &crate::event::Context,
+    writer: &crate::adapters::satori::LockedWriter,
+    channel: &str,
+    message_id: &str,
+) -> Option<String> {
+    use std::sync::atomic::Ordering;
+    if ctx.bot.adapter != "satori-qq" || VOICE_UNSUPPORTED.load(Ordering::Relaxed) {
+        return None;
+    }
+    let reply: Result<Result<serde_json::Value, _>, _> = tokio::time::timeout(
+        Duration::from_secs(15),
+        writer.call(
+            ctx,
+            "internal/voice_to_text",
+            serde_json::json!({"channel_id": channel, "message_id": message_id, "wait": 12}),
+        ),
+    )
+    .await;
+    match reply {
+        Ok(Ok(value)) => value["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| summarize(text, 300)),
+        Ok(Err(error)) => {
+            let text = error.to_string();
+            if text.contains("unsupported") || text.contains("404") {
+                VOICE_UNSUPPORTED.store(true, Ordering::Relaxed);
+            }
+            debug!(target: super::LOG_TARGET, "语音转文字没成：{text}");
+            None
+        }
+        Err(_) => None,
+    }
+}
+
 /// 事件 → 窗口里的一条消息。
 ///
 /// 能力层与搭话都从这里进窗口，所以它只做「现场」那一层：谁在什么时候说了什么。

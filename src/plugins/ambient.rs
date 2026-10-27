@@ -1431,6 +1431,15 @@ pub(crate) async fn observe(
             window::resolve_quote(&mut turn, |_| Some((found.from_me, found.summary)));
         }
     }
+    // 语音在窗口里原来只是「[语音]」两个字：群友发语音问话，人格只知道有人说了句什么。
+    // 知弦 0.52.0 起能借 QQ 自己的「转文字」，听写出来就照文字读。
+    if turn.text.contains(window::VOICE) && !turn.message_id.is_empty() {
+        if let Some(heard) =
+            window::voice_text(ctx, writer, scope_channel(group), &turn.message_id).await
+        {
+            turn.text = turn.text.replacen(window::VOICE, &format!("[语音：{heard}]"), 1);
+        }
+    }
     // 搭话指令是被剥掉的那两个词，不是群聊内容：它不进窗口，只让这一批跳过判定。
     let summoned = strip_summon(&mut turn.text, &config.summon_command);
     // 其余指令是说给机器人听的，不是群聊内容；记下来只会让人格模型学着复述指令。

@@ -1,4 +1,4 @@
-//! 群里人人看得到的三样东西：群文件、群精华、群公告。只读，供 `satori_group` 用。
+//! 群里人人看得到的几样东西：群文件、群精华、群公告、群荣誉榜。只读，供 `satori_group` 用。
 //!
 //! 从前它们是 `satori_action` 里的四个动作（files_list / file_download / bulletins / essences），
 //! 三处不对：读一下要占一次动作额度；群聊往前走一句就被「先读 satori_context」挡回去；
@@ -22,6 +22,8 @@ const SEARCH_ROWS: i64 = 40;
 const ESSENCE_PAGE: i64 = 20;
 /// 群公告一次读几条。
 const BULLETINS: i64 = 10;
+/// 群荣誉每一类列前几名。
+const HONOR_ROWS: i64 = 5;
 /// 单条精华 / 公告正文截到多少字。
 const TEXT_CHARS: usize = 800;
 
@@ -35,6 +37,8 @@ pub(crate) enum Query {
     /// 群精华第 `page` 页（从 0 起）。
     Essences { page: i64 },
     Bulletins,
+    /// 群荣誉榜：龙王、群聊之火、群聊炽焰、冒尖小春笋、快乐源泉（知弦 0.52.0 起）。
+    Honors,
 }
 
 impl Query {
@@ -57,7 +61,8 @@ impl Query {
             },
             "essences" | "essence" => Self::Essences { page: next },
             "bulletins" | "bulletin" => Self::Bulletins,
-            other => bail!("what 只认 files / essences / bulletins，收到「{other}」"),
+            "honors" | "honor" => Self::Honors,
+            other => bail!("what 只认 files / essences / bulletins / honors，收到「{other}」"),
         })
     }
 
@@ -83,6 +88,10 @@ impl Query {
                 "internal/group_bulletin_get",
                 json!({"guild_id":guild,"count":BULLETINS}),
             ),
+            Self::Honors => (
+                "internal/group_honor",
+                json!({"guild_id":guild,"kind":"all","limit":HONOR_ROWS}),
+            ),
         }
     }
 
@@ -93,6 +102,7 @@ impl Query {
             Self::Search { keyword } => search(data, keyword),
             Self::Essences { page } => essences(data, *page),
             Self::Bulletins => bulletins(data),
+            Self::Honors => honors(data),
         }
     }
 }
@@ -284,6 +294,57 @@ fn bulletins(data: &Value) -> Result<Value> {
     Ok(out)
 }
 
+/// 实现端按类别给（龙王、群聊之火……），这里压成「哪一类、谁、几天」。
+fn honors(data: &Value) -> Result<Value> {
+    if data.get("honors").is_none() {
+        // 老知弦没有这个动作：实现端回 404 时走不到这里，这一句兜的是回包形状不对。
+        bail!("QQ 端没给群荣誉榜（要知弦 0.52.0 起）");
+    }
+    ensure!(
+        data["ok"].as_bool() != Some(false),
+        "读群荣誉失败：{}",
+        data["honors"]["talkative"]["error"].as_str().unwrap_or("QQ 端没说原因")
+    );
+    let mut items = Vec::new();
+    for kind in ["talkative", "performer", "legend", "newbie", "emotion"] {
+        let honor = &data["honors"][kind];
+        if honor.is_null() || honor.get("error").is_some() {
+            continue;
+        }
+        let people: Vec<Value> = honor["list"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| {
+                let mut person = json!({
+                    "who": named(row["name"].as_str(), row["user_id"].as_str()),
+                    "days": row["days"].as_i64().unwrap_or(0),
+                });
+                if let Some(total) = row["total_days"].as_i64() {
+                    person["total_days"] = json!(total);
+                }
+                person
+            })
+            .collect();
+        let mut item = json!({"honor": honor["title"].as_str().unwrap_or(kind), "people": people});
+        if let Some(current) = honor.get("current").filter(|current| current.is_object()) {
+            item["current"] = json!(named(current["name"].as_str(), current["user_id"].as_str()));
+        }
+        items.push(item);
+    }
+    let mut out = json!({"what":"honors","items":items});
+    if items_empty(&out) {
+        out["note"] = json!("本群眼下没人上榜");
+    }
+    Ok(out)
+}
+
+fn items_empty(out: &Value) -> bool {
+    out["items"]
+        .as_array()
+        .is_none_or(|items| items.iter().all(|item| item["people"].as_array().is_none_or(Vec::is_empty)))
+}
+
 fn named(name: Option<&str>, id: Option<&str>) -> String {
     match (name.map(str::trim).unwrap_or(""), id.map(str::trim).unwrap_or("")) {
         ("", id) => id.to_string(),
@@ -382,6 +443,21 @@ mod tests {
         assert!(out["items"][0].get("title").is_none());
         let failed = json!({"ok":false,"error":"http=200 code=4"});
         assert!(Query::Bulletins.render(&failed).is_err());
+    }
+
+    #[test]
+    fn honors_flatten_by_category() {
+        let data = json!({"ok":true,"group":1,"honors":{
+            "talkative":{"title":"龙王","current":{"user_id":"7","name":"台风","days":6},
+                "list":[{"user_id":"7","name":"台风","days":6,"total_days":193}]},
+            "performer":{"title":"群聊之火","list":[{"user_id":"8","name":"橘子","days":27}]},
+            "emotion":{"title":"快乐源泉","error":"http=200 code=1001"}}});
+        let out = Query::Honors.render(&data).unwrap();
+        assert_eq!(out["items"].as_array().unwrap().len(), 2, "出错的类别不列");
+        assert_eq!(out["items"][0]["current"], "台风（7）");
+        assert_eq!(out["items"][0]["people"][0]["total_days"], 193);
+        assert_eq!(out["items"][1]["honor"], "群聊之火");
+        assert_eq!(Query::parse(&json!({"what":"honors"})).unwrap(), Query::Honors);
     }
 
     #[test]
