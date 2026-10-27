@@ -342,7 +342,7 @@ const COMMAND_HEADS: [&str; 12] = [
 fn strip_placeholders(raw: &str) -> String {
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        regex::Regex::new(r"\[(图片|视频|语音|表情|动画表情|转发|文件|音乐|合并转发|回复|@\d+)\]").unwrap()
+        regex::Regex::new(r"\[(图片|视频|语音|表情|表情包|动画表情|转发|文件|音乐|合并转发|回复|@\d+|at:[^\]]+|引用:[^\]]+|表情:\d+)\]").unwrap()
     })
     .replace_all(raw, "")
     .trim()
@@ -401,7 +401,7 @@ fn speech_like(text: &str) -> bool {
 
 /// 看着像凭据或私人信息的：连着的长数字、密钥前缀、验证码与密码字样。
 /// 这些话会原样进模型提示词，宁可错杀。
-fn sensitive(text: &str) -> bool {
+pub(super) fn sensitive(text: &str) -> bool {
     let lowered = text.to_lowercase();
     if ["sk-", "token", "密码", "验证码", "cookie", "bearer"].iter().any(|needle| lowered.contains(needle)) {
         return true;
@@ -440,14 +440,24 @@ fn guesses(rows: &[(String, i64, String)]) -> HashSet<usize> {
 
 /// 一条原始记录能不能当他的原话：去指令、占位符，太长、不像人话、疑似凭据的都不要。
 fn usable(raw: &str) -> Option<String> {
+    usable_within(raw, MAX_CHARS)
+}
+
+/// 语义学习允许稍长一点的日常话，仍走同一套指令、媒体、链接与凭据过滤。
+/// 只处理实时消息，不会被用来回填历史。
+pub(super) fn study_text(raw: &str) -> Option<String> {
+    usable_within(raw, 120)
+}
+
+fn usable_within(raw: &str, max_chars: usize) -> Option<String> {
     if is_command(raw) {
         return None;
     }
     let text = strip_placeholders(raw);
     (!text.is_empty()
         && !is_command(&text)
-        && text.chars().count() <= MAX_CHARS
-        && width(&text) <= MAX_CHARS * 2
+        && text.chars().count() <= max_chars
+        && width(&text) <= max_chars * 2
         && speech_like(&text)
         && !sensitive(&text))
     .then_some(text)

@@ -1015,3 +1015,15 @@ pub(crate) fn with_group<T>(group_id: &str, action: impl FnOnce(&mut GroupState)
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     action(guard.entry(group_id.to_string()).or_default())
 }
+
+/// 整个搭话插件是否没有判定、发言或发送任务在跑。
+///
+/// worker 从消息进窗口一直标到本批收场，涵盖模型调用与打字发送；后台复盘另由
+/// `ambient::reflect` 自己报告。自动学习用这道全局闸门给正常回复让路。
+pub(crate) fn all_idle() -> bool {
+    states()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+        .all(|state| !state.running)
+}

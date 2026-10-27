@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 
 mod gate;
 mod habit;
+mod learning;
 mod life;
 mod mood;
 mod peak;
@@ -125,6 +126,34 @@ pub(crate) struct Assist {
 impl Default for Assist {
     fn default() -> Self {
         Self { questions: true, newcomers: false, newcomer_within_seconds: 180 }
+    }
+}
+
+/// 从号主亲手发的新消息里学习说话方式（见 [`learning`]）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct LearningConfig {
+    /// 总开关；关闭后不再学习，已学画像也不进后续提示词。
+    pub enabled: bool,
+    /// 归纳模型；留空沿用便宜的判定模型。
+    pub model: String,
+    /// 至少攒够多少条有效新消息才考虑调用一次。
+    pub min_messages: usize,
+    /// 两次学习尝试（含失败）至少隔多少分钟，跨重启也生效。
+    pub interval_minutes: u32,
+    /// 新消息触发后先等多久，再确认整个搭话插件仍然空闲（秒）。
+    pub idle_seconds: u64,
+}
+
+impl Default for LearningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            model: String::new(),
+            min_messages: 16,
+            interval_minutes: 360,
+            idle_seconds: 90,
+        }
     }
 }
 
@@ -313,6 +342,8 @@ pub(crate) struct AmbientConfig {
     /// 隔一阵子复盘一次群聊（见 [`reflect`]）：整理几摊事、对人的新印象、新梗与自己说过的话，
     /// 写进群记忆。一次便宜的调用，计价高峰不做。需要 `memory_enabled`。
     pub reflect_enabled: bool,
+    /// 从号主手发的新消息里增量归纳风格、常用表述与接话偏好。
+    pub learning: LearningConfig,
     /// 每群每小时最多随口吭几声（见 [`quick`]）；0 关闭。
     ///
     /// 判定打分落在 `quick_floor` 与开口门槛之间时，按几率不调用发言模型、只随口回一两个字。
@@ -436,6 +467,7 @@ impl Default for AmbientConfig {
             search_budget: 3,
             peak: peak::PeakConfig::default(),
             reflect_enabled: true,
+            learning: LearningConfig::default(),
             quick_per_hour: 2,
             quick_floor: 38,
             owner_quiet_seconds: 480,
@@ -979,7 +1011,7 @@ impl Scene {
                 String::new()
             },
             own: format!(
-                "{}{}{}{}{}{}",
+                "{}{}{}{}{}{}{}",
                 self_facts(),
                 if config.memory_enabled {
                     memory::with_group(group, |memory| {
@@ -994,6 +1026,11 @@ impl Scene {
                     recent::habit_brief(group)
                 },
                 recent::recalled(group, turns),
+                if config.learning.enabled {
+                    learning::brief()
+                } else {
+                    String::new()
+                },
                 voice::brief(turns, voice_register(config, group), group),
                 stickers::brief(turns, config.sticker_max, &state)
             ),
@@ -1231,6 +1268,7 @@ pub(crate) async fn setup(base: &Path) -> std::io::Result<()> {
     // 状态曲线。能力层的数据目录由 oai 插件挂上；它没启用时这里补一次。
     mood::attach(base);
     life::attach(base);
+    learning::attach(base);
     Ok(())
 }
 
@@ -1328,6 +1366,10 @@ pub(crate) async fn observe(
     let empty = turn.text.is_empty() && turn.images.is_empty();
     if empty && !summoned {
         return;
+    }
+    // 只学号主亲手发的日常话，不学搭话指令；学习模块内部再做文本清洗、入队与空闲调度。
+    if !summoned {
+        learning::note(ctx, mgr, base, &config, group, &turn);
     }
     if config.memory_enabled && !turn.from_me {
         let (id, name, at) = (turn.user_id.clone(), turn.name.clone(), turn.at);
@@ -2835,6 +2877,15 @@ impl PluginConfig for AmbientConfig {
         if self.assist.newcomer_within_seconds > 3_600 {
             return Err("assist.newcomer_within_seconds 最多 3600".into());
         }
+        if !(4..=64).contains(&self.learning.min_messages) {
+            return Err("learning.min_messages 要在 4 到 64 条之间".into());
+        }
+        if !(60..=10_080).contains(&self.learning.interval_minutes) {
+            return Err("learning.interval_minutes 要在 60 到 10080 分钟之间".into());
+        }
+        if !(15..=900).contains(&self.learning.idle_seconds) {
+            return Err("learning.idle_seconds 要在 15 到 900 秒之间".into());
+        }
         Ok(())
     }
 }
@@ -2904,6 +2955,12 @@ pub const LABELS: &[(&str, &str)] = &[
     ("peak.doze_gate_seconds", "睡着时隔多久看一眼"),
     ("peak.doze_reply_limit", "睡着时每小时最多开口"),
     ("reflect_enabled", "定期复盘群聊"),
+    ("learning", "学习号主的说话方式"),
+    ("learning.enabled", "自动学习说话方式"),
+    ("learning.model", "归纳用的模型"),
+    ("learning.min_messages", "攒够几条才学习"),
+    ("learning.interval_minutes", "两次学习至少隔多久"),
+    ("learning.idle_seconds", "空闲多久后才学习"),
     ("quick_per_hour", "每小时随口几句"),
     ("quick_floor", "随口一句的分数下限"),
     ("owner_quiet_seconds", "号主说话后安静多久"),

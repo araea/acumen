@@ -64,6 +64,15 @@ fn with_tracker<T>(group: &str, action: impl FnOnce(&mut Tracker) -> T) -> T {
     action(all.entry(group.to_string()).or_default())
 }
 
+/// 是否还有任何一群在复盘。自动学习据此避开另一次后台模型调用。
+pub(super) fn is_running() -> bool {
+    trackers()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .values()
+        .any(|tracker| tracker.running)
+}
+
 /// 群里来了一条别人的消息。
 pub(super) fn note(group: &str) {
     with_tracker(group, |tracker| tracker.fresh = tracker.fresh.saturating_add(1));

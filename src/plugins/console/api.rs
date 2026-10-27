@@ -852,6 +852,8 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
     let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
     let persona = read("persona.md");
     let self_portrait = read("self.md");
+    // 自动学习只落归纳后的短画像，没有原始聊天；这里原样交给控制台看一眼。
+    let learning: Value = serde_json::from_str(&read("learning.json")).unwrap_or(Value::Null);
 
     let memory: Vec<Value> = crate::plugins::oai::chat::memory::snapshot()
         .into_iter()
@@ -907,6 +909,7 @@ async fn ambient(State(console): State<Arc<Console>>) -> Response {
         "ready": true,
         "persona": persona,
         "self": self_portrait,
+        "learning": learning,
         "memory": memory,
         "stickers": stickers,
         "config": console

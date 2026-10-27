@@ -400,7 +400,7 @@ register_plugins!(
         config: ambient::AmbientConfig,
         display_name: "群聊搭话",
         section: "ai",
-        summary: "内置智能体以固定人格参与群聊，只在 [ambient] groups 的群生效",
+        summary: "内置智能体以固定人格参与群聊，只在 [ambient] groups 的群生效；可从号主手发的新消息里空闲学习口吻与接法",
         on_init: Some(ambient::init)
     },
     ai_news {

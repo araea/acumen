@@ -5156,6 +5156,7 @@
     }
     const tabs = [
       { id: "persona", label: "人设" },
+      { id: "learning", label: "学习" },
       { id: "memory", label: "记忆", count: data.memory.length },
       { id: "stickers", label: "表情包", count: data.stickers.length },
     ];
@@ -5170,6 +5171,9 @@
       </div>
       <div class="tabpanel" role="tabpanel" id="panel-persona" aria-labelledby="tab-persona"${attr(ambient.tab !== "persona", "hidden")}>
         ${SOURCES.map(sourceEditor)}
+      </div>
+      <div class="tabpanel" role="tabpanel" id="panel-learning" aria-labelledby="tab-learning" tabindex="0"${attr(ambient.tab !== "learning", "hidden")}>
+        ${learningPanel(data.learning)}
       </div>
       <div class="tabpanel" role="tabpanel" id="panel-memory" aria-labelledby="tab-memory" tabindex="0"${attr(ambient.tab !== "memory", "hidden")}>
         ${memoryPanel(data.memory)}
@@ -5194,6 +5198,37 @@
         <button class="btn btn-filled" type="button" data-save-source="${source.name}" aria-label="保存${source.title}"${attr(!dirty(source.name), "disabled")}>保存</button>
       </div>
     </section>`;
+  }
+
+  /** 自动学习只读一页：看它从号主新消息里归纳出了什么，不直接改。
+   *  画像每轮随发言提示词生效，删掉 learning.json 就是重新开始。 */
+  function learningPanel(learning) {
+    const profile = learning?.profile || {};
+    const style = Array.isArray(profile.style) ? profile.style : [];
+    const expressions = Array.isArray(profile.expressions) ? profile.expressions : [];
+    const replies = Array.isArray(profile.replies) ? profile.replies : [];
+    const enabled = ambient.data?.config?.learning?.enabled !== false;
+    if (!style.length && !expressions.length && !replies.length) {
+      return h`<div class="card">${emptyState("还没有学到东西。号主在群里亲手发够一批日常消息、又赶上空闲时，这里才会出现画像。")}</div>`;
+    }
+    return h`<div class="group">
+      <p class="note">从号主亲手发的日常消息里归纳，只借口吻与接法，不改写人设。${enabled ? "每轮发言都会带上它。" : "学习已关闭，这一份不再进提示词。"}已归纳 ${num(learning.learned_messages || 0)} 条新消息${learning.last_success ? `，最近一次 ${ago(learning.last_success)}` : ""}。删除 data/ambient/learning.json 可以重新开始。</p>
+      ${style.length
+        ? h`<section class="card"><h3 class="subhead">风格</h3><ul class="group">${style.map(
+            (item) => h`<li class="item"><div class="item-content"><span class="item-sub">${item}</span></div></li>`
+          )}</ul></section>`
+        : ""}
+      ${expressions.length
+        ? h`<section class="card"><h3 class="subhead">常用表述</h3><div class="actions">${expressions.map(
+            (item) => h`<span class="tag">${item}</span>`
+          )}</div></section>`
+        : ""}
+      ${replies.length
+        ? h`<section class="card"><h3 class="subhead">接话偏好</h3><ul class="group">${replies.map(
+            (item) => h`<li class="item"><div class="item-content"><span class="item-title">${item?.when || ""}</span><span class="item-sub">${item?.prefer || ""}</span></div></li>`
+          )}</ul></section>`
+        : ""}
+    </div>`;
   }
 
   function memoryPanel(groups) {
