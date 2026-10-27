@@ -32,7 +32,7 @@ const DIGESTS: usize = 3;
 /// 房间历史本身不删（编辑、删除、重新生成都按序号指着它），但每一轮都整份重发它是最
 /// 贵的浪费：聊了一个月的房间，一句「早」也要背着几十万字上路，慢、费额度，迟早撞上
 /// 模型的上下文上限。所以只展开最近的一截——够接上话头，更早的由一句注记交代。
-const HISTORY_BUDGET: usize = 60_000;
+pub(crate) const HISTORY_BUDGET: usize = 60_000;
 
 /// 展开的历史最多这么多条消息：短消息多的房间，条数比字数先到顶。
 const HISTORY_MESSAGES: usize = 80;
@@ -834,9 +834,19 @@ impl Context {
         if !system.trim().is_empty() {
             messages.push(Message::System { content: system });
         }
-        // 只展开最近的一截历史（见 [`HISTORY_BUDGET`]），更早的交代一句。
-        let skip = history_start(history);
-        if skip > 0 {
+        // 只展开最近的一截历史（见 [`HISTORY_BUDGET`]）。更早的有交接摘要（见 [`super::recap`]）
+        // 就放摘要，没有就交代一句。
+        let skip = match run.recap {
+            Some(recap) => recap.start.min(history.len()),
+            None => history_start(history),
+        };
+        if let Some(recap) = run.recap.filter(|_| skip > 0) {
+            messages.push(user_note(&format!(
+                "（系统记录，用户看不到：这个房间更早的 {skip} 条消息不在下面，这是它们的交接摘要。接着办事以它为线索；\
+                 摘要里没写的细节别装作记得，需要就请用户再说一遍；回复里不要提这条记录。）\n\n{}",
+                recap.text
+            )));
+        } else if skip > 0 {
             messages.push(user_note(&format!(
                 "（系统记录，用户看不到：这个房间更早的 {skip} 条消息没有放进来。用户提到你这里看不到的事，\
                  别装作记得，请他把要点再说一遍{}；回复里不要提这条记录。）",
@@ -921,7 +931,7 @@ impl Context {
 
 /// 历史从第几条开始展开：从最新往回累计，到 [`HISTORY_BUDGET`] 字或 [`HISTORY_MESSAGES`] 条为止，
 /// 并且落在一条用户消息上——从回复开头，模型会看到一句没有来由的答话。
-fn history_start(history: &[super::super::types::ChatMessage]) -> usize {
+pub(crate) fn history_start(history: &[super::super::types::ChatMessage]) -> usize {
     let mut used = 0;
     let mut start = history.len();
     for (index, message) in history.iter().enumerate().rev() {

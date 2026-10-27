@@ -16,6 +16,7 @@
 //! - [`delegate`]：把独立的子任务交给一个干净上下文的子助手，可并行；
 //! - [`control`]：`acumen_plugins`，管机器人自己的插件开关、配置与重启；
 //! - [`notes`]：`note`，号主的手记，跨房间、跨清空历史；
+//! - [`recap`]：房间历史装不进窗口时的交接摘要，算一次、反复用；
 //! - [`schedule`]：`schedule`，提醒与定时任务的工具面（存储与到点执行在 [`super::remind`]）。
 //!
 //! 与从前那套外部 CLI 最大的行为差别是**没有会话文件**：房间历史始终由 acumen 侧持有，
@@ -32,6 +33,7 @@ pub(crate) mod delegate;
 pub(crate) mod edit;
 pub(crate) mod figures;
 pub(crate) mod notes;
+pub(crate) mod recap;
 pub(crate) mod run;
 pub(crate) mod schedule;
 pub(crate) mod share;
@@ -306,6 +308,8 @@ pub(crate) struct AgentRun<'a> {
     pub seat: Option<&'a Seat>,
     /// 用户在这一轮进行当中追加的话。
     pub steer: Option<&'a Steering>,
+    /// 历史窗口外那部分的交接摘要；`None` 时只带最近一截（见 [`recap`]）。
+    pub recap: Option<&'a recap::Window>,
     /// 工具白名单（逗号分隔）；`None` 用全部本地工具。
     pub tools: Option<&'a str>,
     /// 追加给工具子进程的环境变量，例如本轮对话的控制凭据。
@@ -370,6 +374,7 @@ impl<'a> AgentRun<'a> {
             room: "",
             seat: None,
             steer: None,
+            recap: None,
             tools: None,
             env: &[],
             stall: None,
@@ -507,6 +512,14 @@ pub(crate) async fn conversation(
     let web = (search.enabled && tools.web()).then(|| super::search::Search::new(search.clone()));
     let room = seat.as_ref().map_or("", |seat| seat.room.as_str());
     let light = (!full).then(|| run::light_prompt(room, tools, web.is_some(), persona));
+    // 历史长到窗口装不下：窗口外的部分换成交接摘要（有现成的就直接用，不调用）。
+    let recap = match &seat {
+        Some(seat) => {
+            let key = recap::key(&seat.room, seat.private.then_some(seat.asker.id.as_str()));
+            recap::window(&key, previous, run::history_start(previous), api_base, api_key, model).await
+        }
+        None => None,
+    };
     // 房间的工作目录沿用 bot 自身：与从前一致，bash 与文件工具都在这里活动。
     let cwd = std::env::current_dir().ok();
     run::run_with_history(
@@ -522,6 +535,7 @@ pub(crate) async fn conversation(
             room,
             seat: seat.as_ref(),
             steer,
+            recap: recap.as_ref(),
             tools: whitelist,
             bridge,
             stall,
