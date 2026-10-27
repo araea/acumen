@@ -1027,7 +1027,7 @@ results = 8
 
 # 群聊搭话：独立插件，复用 [oai] 的模型接入层（接口、密钥、供应商、联网、绘图）。
 # 让内置 agent 以固定人格在指定群里旁听，绝大多数时候沉默。
-# 人设与口癖编译在程序里（res/ambient/），首次启动写一份到 data/ambient/ 供本地改；
+# 人设与口气样本编译在程序里（res/ambient/），首次启动写一份到 data/ambient/ 供本地改；
 # 想改口吻改那一份，不必重新编译。
 [ambient]
 enabled = false
