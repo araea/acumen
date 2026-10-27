@@ -180,7 +180,7 @@ impl Default for OaiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            agent_default_model: "deepseek/deepseek-v4-pro".to_string(),
+            agent_default_model: "deepseek/deepseek-flash".to_string(),
             agent_owner_only: false,
             request_timeout_seconds: 300,
             request_stall_seconds: 180,

@@ -806,7 +806,7 @@ black = []
 enabled = true
 # 默认模型：没单独写模型的房间（管家大人、`##研究` 建的）都用它；`oai 用 <模型>` 改的就是这一项。
 # 写成 `供应商/模型` 时按下面的 [oai.providers] 取接口；留空则退到 oai 的默认模型。
-agent_default_model = "deepseek/deepseek-v4-pro"
+agent_default_model = "deepseek/deepseek-flash"
 # 全量档的房间（管家大人，以及 `房间?全量` 打开的）只给号主与机器人管理员（[ctl] admins）用。
 # 全量档能读写文件、跑命令、发消息、管群；开了以后别人叫它只回一句说明，联网、无工具两档不受影响。
 agent_owner_only = false
@@ -1055,8 +1055,8 @@ gate_model = "deepseek/deepseek-flash"
 # 想退回用完整写作人设（最贵，不推荐）就把它设为空字符串。
 # gate_persona = ""
 # 发言模型，同样写 `供应商/模型`；思考强度 off/minimal/low/medium/high。
-# 默认走 DeepSeek 官方的 V4 Pro：只配一把 DeepSeek 密钥就能开箱说话。
-reply_model = "deepseek/deepseek-v4-pro"
+# 默认走 DeepSeek 官方的 V4.1 Flash：与判定同一个模型，只配一把 DeepSeek 密钥就能开箱说话。
+reply_model = "deepseek/deepseek-flash"
 thinking = "low"
 # 答疑那一轮（判定认出有人认真求助，或有人 @ 它问事）的思考强度与模型。
 # 平常接话 low 就够；答疑要先想清楚再开口。help_model 留空沿用 reply_model。
