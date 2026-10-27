@@ -32,6 +32,32 @@ pub(crate) struct Known {
     pub aliases: &'static [&'static str],
     /// 本机服务，不要密钥。
     pub keyless: bool,
+    /// 添加供应商时归在哪一组（Magpie 的分法：厂商、聚合平台、本机服务）。
+    pub kind: Kind,
+}
+
+/// 供应商的类别，只用来给「添加供应商」分组。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// 国内厂商，直连。
+    Domestic,
+    /// 海外厂商，国内多半要代理。
+    Global,
+    /// 一把密钥用多家模型的聚合平台。
+    Relay,
+    /// 跑在本机的服务。
+    Local,
+}
+
+impl Kind {
+    pub(crate) fn id(self) -> &'static str {
+        match self {
+            Kind::Domestic => "domestic",
+            Kind::Global => "global",
+            Kind::Relay => "relay",
+            Kind::Local => "local",
+        }
+    }
 }
 
 const fn known(
@@ -42,8 +68,9 @@ const fn known(
     keys_url: &'static str,
     model: &'static str,
     aliases: &'static [&'static str],
+    kind: Kind,
 ) -> Known {
-    Known { id, name, base, env, keys_url, model, aliases, keyless: false }
+    Known { id, name, base, env, keys_url, model, aliases, keyless: false, kind }
 }
 
 /// 排列顺序就是 `oai` 状态卡与「换一家」提示里的顺序：国内直连的在前。
@@ -56,6 +83,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://platform.deepseek.com/api_keys",
         "deepseek-flash",
         &[],
+        Kind::Domestic,
     ),
     known(
         "mimo",
@@ -65,6 +93,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://platform.xiaomimimo.com",
         "mimo-v2.6-flash",
         &["xiaomi"],
+        Kind::Domestic,
     ),
     known(
         "siliconflow",
@@ -74,6 +103,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://cloud.siliconflow.cn/account/ak",
         "",
         &["silicon"],
+        Kind::Relay,
     ),
     known(
         "moonshot",
@@ -84,6 +114,7 @@ pub(crate) const KNOWN: &[Known] = &[
         // k2 系列与 kimi-latest 已于 2026 年下线，官方指名用 kimi-k3。
         "kimi-k3",
         &["kimi"],
+        Kind::Domestic,
     ),
     known(
         "zhipu",
@@ -93,6 +124,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://open.bigmodel.cn/usercenter/apikeys",
         "",
         &["glm", "bigmodel"],
+        Kind::Domestic,
     ),
     known(
         "dashscope",
@@ -102,6 +134,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://bailian.console.aliyun.com",
         "",
         &["qwen", "bailian", "aliyun"],
+        Kind::Domestic,
     ),
     known(
         "volcengine",
@@ -111,6 +144,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://console.volcengine.com/ark",
         "",
         &["ark", "doubao"],
+        Kind::Domestic,
     ),
     known(
         "minimax",
@@ -120,6 +154,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://platform.minimaxi.com",
         "",
         &[],
+        Kind::Domestic,
     ),
     known(
         "openrouter",
@@ -129,6 +164,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://openrouter.ai/keys",
         "",
         &[],
+        Kind::Relay,
     ),
     known(
         "openai",
@@ -138,6 +174,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://platform.openai.com/api-keys",
         "",
         &["gpt"],
+        Kind::Global,
     ),
     known(
         "anthropic",
@@ -147,6 +184,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://console.anthropic.com/settings/keys",
         "",
         &["claude"],
+        Kind::Global,
     ),
     known(
         "gemini",
@@ -156,8 +194,9 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://aistudio.google.com/apikey",
         "",
         &["google"],
+        Kind::Global,
     ),
-    known("xai", "xAI", "https://api.x.ai/v1", "XAI_API_KEY", "https://console.x.ai", "", &["grok"]),
+    known("xai", "xAI", "https://api.x.ai/v1", "XAI_API_KEY", "https://console.x.ai", "", &["grok"], Kind::Global),
     known(
         "groq",
         "Groq",
@@ -166,6 +205,7 @@ pub(crate) const KNOWN: &[Known] = &[
         "https://console.groq.com/keys",
         "",
         &[],
+        Kind::Global,
     ),
     Known {
         id: "ollama",
@@ -176,6 +216,7 @@ pub(crate) const KNOWN: &[Known] = &[
         model: "",
         aliases: &[],
         keyless: true,
+        kind: Kind::Local,
     },
 ];
 

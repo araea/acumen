@@ -329,7 +329,7 @@ async fn oai_fetch_models(
     State(console): State<Arc<Console>>,
     Json(body): Json<crate::plugins::oai::panel::FetchModels>,
 ) -> Response {
-    match crate::plugins::oai::panel::fetch(console.ctx(), body.provider.as_deref()).await {
+    match crate::plugins::oai::panel::fetch(console.ctx(), body).await {
         Ok(payload) => Json(payload).into_response(),
         Err(message) => bad(message),
     }

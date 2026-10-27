@@ -5105,14 +5105,34 @@
   }
 
   /* ==================== §8d 智能对话的供应商与模型 ====================
-     群里那条「oai 供应商 密钥」管一句话接上第一家；这个弹窗管剩下的：同时看全每一家、
-     补密钥、挑这家要用哪几个模型、换默认模型、配中转站。唯一会出网的是「拉取模型列表」，
-     它只读 /models，不计费、不消耗对话额度。密钥永远不回显：页面只知道设没设，写是单向的。 */
+     群里那条「oai 供应商 密钥」管一句话接上第一家；这个弹窗管剩下的。
+     学的是 Magpie：供应商是一张表，点进一家看全它的连接、模型与「谁在用它」；添加时按
+     厂商 / 聚合平台 / 本机分组，挑一家只要贴一把密钥，按「添加」之前什么都不存。
+     弹窗里是一叠页面（HIG 的推入式导航）：总览 → 一家 → 返回，Esc 先退一层再关。
+     唯一会出网的是 GET /models（测试连接、刷新列表、存新密钥时顺手验）：不计费、不消耗
+     对话额度。密钥永远不回显：页面只知道设没设，写是单向的。 */
 
   const oai = {
-    data: null, open: "", adding: false, query: "", draft: null,
-    fetched: new Map(), mounting: 0, opener: null, bound: false,
+    data: null, stack: [], mounting: 0, opener: null, bound: false,
+    query: "", modelQuery: "", defaultQuery: "",
+    /** 每家最近一次测试的结果：{ ok, text }。 */
+    tests: new Map(),
+    /** 模型勾选还没保存的那份：名字 → Set。 */
+    picks: new Map(),
+    /** 手打进来、接口列表里没有的模型 id：名字 → 数组。 */
+    extras: new Map(),
+    /** 已经替用户自动拉过列表的那几家，一次会话只拉一次。 */
+    probed: new Set(),
+    /** 中转站草稿的名字是不是用户亲手改过（改过就不再跟着地址自动起名）。 */
+    namedByHand: false,
   };
+
+  const OAI_KINDS = [
+    ["domestic", "国内厂商", "直连，不用代理"],
+    ["relay", "聚合平台", "一把密钥用好几家的模型"],
+    ["global", "海外厂商", "国内通常要代理"],
+    ["local", "本机服务", "跑在这台设备上，不要密钥"],
+  ];
 
   /** 地址压成一行能读的「主机/路径」：太长的整段贴过来会撑破一行。 */
   function oaiHost(base) {
@@ -5126,27 +5146,68 @@
     }
   }
 
-  /** 一家的状态，一句话说完：接没接上、缺什么、有几枚模型。 */
-  function oaiStateText(p) {
-    if (!p.base) return "缺接口地址";
-    const where = p.base_own ? oaiHost(p.base) : p.known ? p.label + " 官方接口" : oaiHost(p.base);
-    if (p.key_from === "missing") return where + " · 缺密钥";
-    if (p.key_from === "env") return where + " · 密钥读环境变量 " + p.key_env;
-    const models = p.models.length ? p.models.length + " 个模型" : "还没有模型";
-    return where + " · " + models + (p.models_source === "curated" ? "（手选）" : "");
+  /** 首字方块：认得的写名字的第一个字，色相按名字散到五档低彩里，同一家永远同一个色。 */
+  function oaiMono(label, name, large = false) {
+    const first = [...String(label || name).replace(/^[\s(（]+/, "")][0] || "?";
+    let hash = 0;
+    for (const c of String(name)) hash = (hash * 31 + c.codePointAt(0)) >>> 0;
+    return h`<span class="tile oai-mono${large ? " tile-large" : ""}" data-hue="${hash % 5}" aria-hidden="true">${first.toUpperCase()}</span>`;
   }
 
-  const oaiDot = (ready, warn) =>
-    h`<span class="oai-dot" data-state="${ready ? "ok" : warn ? "warn" : "off"}" aria-hidden="true"></span>`;
+  /** 一家的状态：状态点之外一定配字（不只靠颜色，WCAG 1.4.1）。 */
+  function oaiState(p) {
+    if (!p.base) return { tone: "off", label: "缺地址" };
+    if (p.key_from === "missing") return { tone: "warn", label: "缺密钥" };
+    return { tone: "ok", label: "就绪" };
+  }
 
-  /** 插件页上的那块摘要：默认模型、默认接口、每一家接得怎么样，一个按钮进弹窗。 */
+  const oaiStatus = (state) =>
+    h`<span class="status oai-status${state.tone === "ok" ? " status-success" : state.tone === "warn" ? " status-warning" : ""}">${state.label}</span>`;
+
+  /** 「谁在用它」，一行说完；没人用就返回空串。 */
+  function oaiUsesText(uses) {
+    if (!uses) return "";
+    const parts = [];
+    if (uses.default) parts.push(uses.follow ? `默认模型（${uses.follow} 间房跟着）` : "默认模型");
+    if (uses.rooms?.length) {
+      const names = uses.rooms.slice(0, 3).join("、");
+      parts.push(uses.rooms.length > 3 ? `${names} 等 ${uses.rooms.length} 间房` : names);
+    }
+    if (uses.media?.length) parts.push(uses.media.join("、"));
+    return parts.join(" · ");
+  }
+
+  /** 一家的副标题：连到哪、几个模型。状态单独放在行尾的药丸里，这里不重复。 */
+  function oaiSub(p) {
+    if (!p.base) return "填上接口地址才能用";
+    const where = p.base_own ? oaiHost(p.base) : p.known ? "官方接口" : oaiHost(p.base);
+    if (p.key_from === "missing") return where + " · 还差一把密钥";
+    const count = p.models.length ? `${p.models.length} 个模型${p.models_source === "curated" ? "（手选）" : ""}` : "还没有模型";
+    return [where, count, p.key_from === "env" ? "密钥读环境变量" : ""].filter(Boolean).join(" · ");
+  }
+
+  const oaiProvider = (name) => (oai.data?.providers || []).find((p) => p.name === name);
+  const oaiKnown = (id) => (oai.data?.catalog || []).find((item) => item.id === id);
+
+  /** 默认模型落在哪一家：带前缀的按前缀找，裸 id 落在默认接口。 */
+  function oaiDefaultOwner(data) {
+    const model = data.default_model || "";
+    const slash = model.indexOf("/");
+    if (slash <= 0) return { label: data.endpoint.base ? "默认接口" : "", name: "" };
+    const prefix = model.slice(0, slash).toLowerCase();
+    const p = data.providers.find((item) => item.name.toLowerCase() === prefix);
+    return { label: p ? p.label : prefix, name: p ? p.name : prefix, missing: !p || !p.ready };
+  }
+
+  /* —— 插件页上的摘要 —— */
+
   function providersSection(sub) {
     clearTimeout(oai.mounting);
     oai.mounting = setTimeout(() => void oaiMount(), 0);
     return h`<section class="section oai" id="oai-panel" aria-labelledby="oai-title" aria-busy="true">
       <div class="section-head">
         ${raw(`<${sub} class="section-title" id="oai-title">供应商与模型</${sub}>`)}
-        <button class="btn btn-tonal" type="button" data-oai-open>${icon("tune")}配置供应商与模型</button>
+        <button class="btn btn-tonal" type="button" data-oai-open>${icon("tune")}管理</button>
       </div>
       <div id="oai-body"><div class="progress" role="progressbar" aria-label="正在读取"></div></div>
     </section>`;
@@ -5158,10 +5219,8 @@
     if (!panel.dataset.bound) {
       panel.dataset.bound = "";
       panel.addEventListener("click", (event) => {
-        const open = event.target.closest("[data-oai-open]");
-        const edit = event.target.closest("[data-oai-edit]");
-        if (open) void openOaiSheet();
-        else if (edit) void openOaiSheet(edit.dataset.oaiEdit);
+        const hit = event.target.closest("[data-oai-open]");
+        if (hit) void openOaiSheet(hit.dataset.oaiOpen || "");
       });
     }
     try {
@@ -5180,47 +5239,55 @@
     const body = $("#oai-body");
     if (!body || !oai.data) return;
     const data = oai.data;
-    const ready = data.providers.filter((p) => p.ready).length;
-    put(body, h`<div class="card oai-summary">
-      <div class="oai-facts">
-        <div class="oai-fact"><span class="oai-fact-label">默认模型</span><span class="oai-fact-value mono">${data.default_model || "跟随内置默认"}</span></div>
-        <div class="oai-fact"><span class="oai-fact-label">默认接口</span><span class="oai-fact-value">${data.endpoint.base ? oaiHost(data.endpoint.base) : "未配置"}</span></div>
-        <div class="oai-fact"><span class="oai-fact-label">供应商</span><span class="oai-fact-value num">${ready} / ${data.providers.length} 就绪</span></div>
-      </div>
+    const owner = oaiDefaultOwner(data);
+    put(body, h`<div class="oai-summary">
+      <button class="oai-hero" type="button" data-oai-open="@default">
+        <span class="oai-hero-label">默认模型</span>
+        <span class="oai-hero-value mono">${data.default_model || "未设置"}</span>
+        <span class="oai-hero-sub">${owner.missing ? "这家还没接好，房间会报错" : owner.label ? "走 " + owner.label + " · 没单独写模型的房间都用它" : "没单独写模型的房间都用它"}</span>
+        ${icon("chevron_right", "chevron")}
+      </button>
       ${data.providers.length
-        ? h`<ul class="group plate-list oai-rows">${data.providers.map((p) => h`<li class="item">
-            ${oaiDot(p.ready, p.base && p.key_from === "missing")}
-            <div class="item-content">
-              <span class="item-title">${p.label}<span class="tag">${p.name}</span></span>
-              <span class="item-sub">${oaiStateText(p)}</span>
-            </div>
-            <div class="item-trailing"><button class="btn btn-text btn-small" type="button" data-oai-edit="${p.name}" aria-label="配置 ${p.label}">配置</button></div>
-          </li>`)}</ul>`
-        : h`<p class="note">还没有接任何供应商。点上面的按钮加一家：DeepSeek 只要一把密钥。</p>`}
-      <p class="field-hint">密钥只存在本机，页面不回显；「拉取模型列表」只读接口，不消耗对话额度。</p>
+        ? h`<ul class="group plate-list oai-list">${data.providers.map((p) => h`<li>${oaiRow(p, "data-oai-open")}</li>`)}</ul>`
+        : h`<p class="note">还没有接任何供应商。点「管理」加一家：DeepSeek 只要一把密钥。</p>`}
     </div>`);
   }
 
-  function openOaiSheet(name = "") {
+  /** 列表里的一家：首字方块、名字、副标题、行尾状态。整行就是按钮。 */
+  function oaiRow(p, hook = "data-oai-go") {
+    const state = oaiState(p);
+    const target = hook === "data-oai-go" ? "provider:" + p.name : p.name;
+    return h`<button class="item oai-row" type="button" ${raw(hook)}="${target}">
+      ${oaiMono(p.label, p.name)}
+      <span class="item-content">
+        <span class="item-title">${p.label}${p.uses?.default ? h`<span class="oai-badge">默认</span>` : ""}</span>
+        <span class="item-sub">${oaiSub(p)}</span>
+      </span>
+      <span class="item-trailing">${oaiStatus(state)}${icon("chevron_right", "chevron")}</span>
+    </button>`;
+  }
+
+  /* —— 弹窗外壳与导航 —— */
+
+  const oaiView = () => oai.stack[oai.stack.length - 1] || { kind: "home" };
+
+  function openOaiSheet(target = "") {
     const dialog = $("#oai-sheet");
     if (!dialog) return;
-    oai.open = name || "";
-    oai.adding = false;
-    oai.query = "";
-    oai.draft = null;
-    oai.fetched = new Map();
+    oai.stack = [];
+    oai.query = oai.modelQuery = oai.defaultQuery = "";
+    oai.picks.clear();
+    oai.extras.clear();
+    oai.tests.clear();
+    if (target === "@default") oai.stack.push({ kind: "default" });
+    else if (target) oai.stack.push({ kind: "provider", name: target });
     oai.opener = document.activeElement;
-    put(dialog, h`<div class="sheet-head">
+    put(dialog, h`<div class="sheet-head oai-head">
+        <button class="icon-btn state oai-back" type="button" data-oai-back aria-label="返回" hidden>${icon("arrow_back")}</button>
         <h2 class="dialog-title" id="oai-sheet-title" tabindex="-1">供应商与模型</h2>
         <button class="icon-btn state" type="button" data-oai-close aria-label="关闭">${icon("close")}</button>
       </div>
-      <div class="sheet-tools">
-        <p class="sheet-note">${icon("info-fill")}<span>密钥存在本机配置里，页面不回显。拉取模型列表只读 <code>/models</code>，不计费、不消耗对话额度。</span></p>
-      </div>
-      <div class="sheet-body" id="oai-sheet-body" tabindex="-1"><div class="progress" role="progressbar" aria-label="正在读取"></div></div>
-      <div class="actions actions-end sheet-foot">
-        <button class="btn btn-filled" type="button" data-oai-close>完成</button>
-      </div>`);
+      <div class="sheet-body oai-sheet-body" id="oai-sheet-body" tabindex="-1"><div class="progress" role="progressbar" aria-label="正在读取"></div></div>`);
     if (!oai.bound) {
       oai.bound = true;
       bindOaiSheet(dialog);
@@ -5228,7 +5295,7 @@
     dialog.returnValue = "";
     if (!dialog.open) dialog.showModal();
     $("#oai-sheet-title", dialog).focus({ preventScroll: true });
-    void refreshOai(true);
+    void refreshOai();
   }
 
   function bindOaiSheet(dialog) {
@@ -5236,13 +5303,19 @@
     dialog.addEventListener("change", (event) => void oaiChange(event));
     dialog.addEventListener("input", oaiInput);
     dialog.addEventListener("keydown", oaiKey);
+    // Esc 与安卓返回键：在子页面里先退一层，回到总览再关。
+    dialog.addEventListener("cancel", (event) => {
+      if (!oai.stack.length) return;
+      event.preventDefault();
+      void oaiBack();
+    });
     dialog.addEventListener("close", () => {
       if (oai.opener instanceof HTMLElement && oai.opener.isConnected) oai.opener.focus({ preventScroll: true });
       oai.opener = null;
     });
   }
 
-  async function refreshOai(focusEntry = false) {
+  async function refreshOai() {
     try {
       oai.data = await api("/oai");
     } catch (error) {
@@ -5251,220 +5324,164 @@
       if (body) put(body, emptyState("没读出来：" + error.message, "error"));
       return;
     }
-    paintOaiSheet(false);
+    paintOaiSheet();
     paintOaiSummary();
-    if (focusEntry && oai.open) {
-      const entry = $(`#oai-sheet [data-oai-entry="${CSS.escape(oai.open)}"]`);
-      $("summary", entry)?.focus({ preventScroll: true });
-    }
-  }
-  /** 弹窗里的一次重画。文本输入里已经敲了还没保存的内容先记下来，
-   *  重画完再放回去：换一枚模型不该把旁边刚敲的密钥冲掉。 */
-  function oaiDrafts() {
-    const drafts = new Map();
-    for (const entry of $$("#oai-sheet [data-oai-entry]")) {
-      const base = $("[data-oai-base]", entry);
-      const key = $("[data-oai-key]", entry);
-      if (!base && !key) continue;
-      drafts.set(entry.dataset.oaiEntry, { base: base ? base.value : "", key: key ? key.value : "" });
-    }
-    const endpointBase = $("#oai-endpoint-base");
-    const endpointKey = $("#oai-endpoint-key");
-    if (endpointBase || endpointKey) {
-      drafts.set("", { base: endpointBase ? endpointBase.value : "", key: endpointKey ? endpointKey.value : "" });
-    }
-    return drafts;
   }
 
-  function oaiRestore(drafts) {
-    for (const [name, draft] of drafts) {
-      const scope = name
-        ? $(`#oai-sheet [data-oai-entry="${CSS.escape(name)}"]`)
-        : $("#oai-sheet [data-oai-endpoint-section]");
-      if (!scope) continue;
-      const base = $(name ? "[data-oai-base]" : "[data-oai-endpoint-base]", scope);
-      const key = $(name ? "[data-oai-key]" : "[data-oai-endpoint-key]", scope);
-      if (base && draft.base) base.value = draft.base;
-      if (key && draft.key) key.value = draft.key;
-    }
+  /** 推入一页。`replace` 用于「添加完成后变成这一家的详情」：返回时不该再回到添加表单。 */
+  function oaiGo(view, replace = false) {
+    if (replace) oai.stack.pop();
+    oai.stack.push(view);
+    oai.modelQuery = "";
+    paintOaiSheet("push");
   }
 
-  function paintOaiSheet(keep = true) {
+  async function oaiBack() {
+    if (!oai.stack.length) return;
+    if (oaiDirty() && !(await confirmAction({
+      title: "放弃没保存的改动？",
+      body: "这一页上填的地址、密钥或勾选的模型还没保存，返回就丢掉了。",
+      confirm: "放弃",
+      cancel: "继续编辑",
+      danger: true,
+    }))) return;
+    const left = oai.stack.pop();
+    if (left.kind === "provider") {
+      oai.picks.delete(left.name);
+      oai.extras.delete(left.name);
+    }
+    paintOaiSheet("pop", left);
+  }
+
+  /** 这一页有没有没保存的东西：敲了密钥、改了地址、动了勾选。 */
+  function oaiDirty() {
+    const view = oaiView();
     const body = $("#oai-sheet-body");
-    if (!body || !oai.data) return;
-    const drafts = keep ? oaiDrafts() : new Map();
-    const top = body.scrollTop;
-    if (oai.adding) {
-      put(body, oaiAddView());
-      body.scrollTop = 0;
-      return;
+    if (!body) return false;
+    if (view.kind === "provider" && oai.picks.has(view.name) && oaiPickDiff(oaiProvider(view.name)) > 0) return true;
+    return $$("[data-oai-field]", body).some((input) => input.value.trim() !== (input.dataset.initial || ""));
+  }
+
+  const OAI_TITLES = {
+    home: () => "供应商与模型",
+    add: () => "添加供应商",
+    default: () => "默认模型",
+    endpoint: () => "中转站（默认接口）",
+    provider: (view) => oaiProvider(view.name)?.label || view.name,
+    draft: (view) => (view.id ? "添加 " + (oaiKnown(view.id)?.name || view.id) : "接自己的中转站"),
+  };
+
+  /**
+   * 画当前这一页。`dir` 是进场方向（push / pop），只有换页时带；
+   * 同一页重画（存完、测完）时把输入框里还没存的值与滚动位置原样放回去。
+   */
+  function paintOaiSheet(dir = "", left = null) {
+    const dialog = $("#oai-sheet");
+    const body = $("#oai-sheet-body");
+    if (!dialog || !body || !oai.data) return;
+    const view = oaiView();
+    const same = !dir;
+    const kept = same ? new Map($$("[data-oai-field]", body).map((input) => [input.id, input.value])) : new Map();
+    const top = same ? body.scrollTop : 0;
+    const content = {
+      home: oaiHomeView,
+      add: oaiAddView,
+      default: oaiDefaultView,
+      endpoint: oaiEndpointView,
+      provider: oaiProviderView,
+      draft: oaiDraftView,
+    }[view.kind](view);
+
+    $("#oai-sheet-title", dialog).textContent = OAI_TITLES[view.kind](view);
+    $("[data-oai-back]", dialog).hidden = !oai.stack.length;
+    put(body, h`<div class="oai-view"${dir ? raw(` data-dir="${dir}"`) : ""}>${content}</div>`);
+    for (const [id, value] of kept) {
+      const input = document.getElementById(id);
+      if (input && value) input.value = value;
     }
-    const data = oai.data;
-    put(body, h`${oaiDefaultCard(data)}${oaiEndpointCard(data)}
-      <section class="oai-block" aria-labelledby="oai-providers-title">
-        <div class="section-head">
-          <h3 class="section-title" id="oai-providers-title">供应商<span class="num">${data.providers.length}</span></h3>
-          <button class="btn btn-tonal btn-small" type="button" data-oai-add>${icon("add")}添加供应商</button>
-        </div>
-        ${oai.draft ? oaiDraftEntry() : ""}
-        ${data.providers.length
-          ? data.providers.map(oaiEntry)
-          : h`<p class="note">还没有供应商。先加一家：认得的只要一把密钥，中转站填地址与密钥。</p>`}
-      </section>`);
+    oaiSyncSave();
     body.scrollTop = top;
-    if (keep) oaiRestore(drafts);
+    if (view.kind === "provider") oaiAutoProbe(view.name);
+    if (!dir) return;
+
+    // 换了页：焦点落在新页的标题上（读屏会念出来）；添加表单直接落在第一个要填的框里；
+    // 退回来时落回刚才点进去的那一行。
+    if (dir === "pop" && left) {
+      const back = left.kind === "provider" ? `[data-oai-go="provider:${CSS.escape(left.name)}"]` : `[data-oai-go="${left.kind}"]`;
+      const row = $(back, body);
+      if (row) return void row.focus({ preventScroll: false });
+    }
+    const first = view.kind === "draft" ? $("[data-oai-autofocus]", body) : null;
+    (first || $("#oai-sheet-title", dialog)).focus({ preventScroll: true });
+    if (view.kind === "default") $("[data-oai-default]:checked", body)?.closest(".item")?.scrollIntoView({ block: "center" });
   }
 
-  /** 默认模型：按供应商分组的下拉，选完立刻写进 [oai] agent_default_model。 */
-  function oaiDefaultCard(data) {
-    const current = data.default_model || "";
-    const groups = data.groups || [];
-    const listed = groups.some((group) => group.models.includes(current));
-    return h`<div class="card oai-card">
-      <div class="oai-card-head">
-        <span class="oai-card-title">${icon("tune")}默认模型</span>
-        <span class="section-meta">没单独写模型的房间跟着它</span>
-      </div>
-      ${groups.length
-        ? h`<span class="select oai-select"><select id="oai-default" aria-label="默认模型" data-oai-default>
-            ${!listed && current ? h`<option value="${current}" selected disabled>${current}（现在，不可用）</option>` : ""}
-            ${groups.map((group) => h`<optgroup label="${group.label}">${group.models.map((model) =>
-              h`<option value="${model}"${attr(model === current, "selected")}>${model}</option>`)}</optgroup>`)}
-          </select>${icon("keyboard_arrow_down")}</span>`
-        : h`<p class="field-hint">还没有能用的模型：先在下面接一家，或者配好中转站。</p>`}
-      ${data.agents_follow ? "" : h`<p class="field-hint">这一项现在是空的，房间退到内置默认；选一个就写回来。</p>`}
-    </div>`;
-  }
+  /* —— 总览 —— */
 
-  /** 默认接口（中转站）：不带供应商前缀的模型走这里。没配的时候直接展开。 */
-  function oaiEndpointCard(data) {
+  function oaiHomeView() {
+    const data = oai.data;
+    const ready = data.providers.filter((p) => p.ready).length;
+    const owner = oaiDefaultOwner(data);
     const endpoint = data.endpoint || {};
-    const models = endpoint.models || [];
-    return h`<details class="memory oai-entry oai-endpoint" data-oai-endpoint-section${attr(!endpoint.base, " open")}>
-      <summary class="state">
-        ${oaiDot(endpoint.base && endpoint.key_set, endpoint.base && !endpoint.key_set)}
-        <span class="item-content">
-          <span class="item-title">默认接口<span class="tag">中转站</span></span>
-          <span class="item-sub">${endpoint.base ? oaiHost(endpoint.base) + (models.length ? " · " + models.length + " 个模型" : "") : "没配：不带供应商前缀的模型走这里"}</span>
-        </span>
-        ${icon("chevron_right", "chevron")}
-      </summary>
-      <div class="memory-body oai-entry-body">
-        <div class="field">
-          <label class="field-label" for="oai-endpoint-base">接口地址</label>
-          <input class="input mono" id="oai-endpoint-base" data-oai-endpoint-base value="${endpoint.base || ""}" placeholder="https://…/v1" autocomplete="off" spellcheck="false" autocapitalize="off" inputmode="url">
-          <span class="field-hint">OpenAI 兼容，通常以 /v1 结尾。</span>
-        </div>
-        <div class="field">
-          <label class="field-label" for="oai-endpoint-key">密钥</label>
-          <div class="reveal">
-            <input class="input mono" id="oai-endpoint-key" type="password" data-oai-endpoint-key value="" placeholder="${endpoint.key_set ? "已设置（不显示）；输入新值即替换" : "未设置"}" autocomplete="new-password" spellcheck="false" autocapitalize="off">
-            <button class="icon-btn state" type="button" data-reveal="#oai-endpoint-key" aria-pressed="false" aria-label="显示密钥">${icon("visibility")}</button>
-          </div>
-          <span class="field-hint">只存在本机。保存时会先拉一次模型列表验一验，不消耗对话额度。</span>
-        </div>
-        <div class="actions oai-entry-actions">
-          <button class="btn btn-tonal" type="button" data-oai-endpoint-save>保存</button>
-          <button class="btn btn-text" type="button" data-oai-endpoint-fetch>${icon("download")}拉取模型列表</button>
-        </div>
-      </div>
-    </details>`;
-  }
-
-  function oaiEntry(p) {
-    return h`<details class="memory oai-entry" data-oai-entry="${p.name}"${attr(oai.open === p.name, " open")}>
-      <summary class="state">
-        ${oaiDot(p.ready, p.base && p.key_from === "missing")}
-        <span class="item-content">
-          <span class="item-title">${p.label}<span class="tag">${p.name}</span>${p.models_source === "curated" ? h`<span class="status">手选 ${p.models.length}</span>` : ""}</span>
-          <span class="item-sub">${oaiStateText(p)}</span>
-        </span>
-        ${icon("chevron_right", "chevron")}
-      </summary>
-      <div class="memory-body oai-entry-body">${oaiEntryBody(p)}</div>
-    </details>`;
-  }
-
-  /** 还没存进配置的一家（自己起名的中转站）：先在页面上填，保存才落盘。 */
-  function oaiDraftEntry() {
-    const name = oai.draft.name;
-    const p = {
-      name, label: name, known: false, base: "", base_own: true, key_from: "missing", key_env: "",
-      ready: false, keys_url: "", recommended: "", models: [], models_source: "none",
-    };
-    return h`<details class="memory oai-entry" data-oai-entry="${name}" open>
-      <summary class="state">
-        ${oaiDot(false, false)}
-        <span class="item-content">
-          <span class="item-title">${name}<span class="status status-warning">还没保存</span></span>
-          <span class="item-sub">填地址与密钥，点保存</span>
-        </span>
-        ${icon("chevron_right", "chevron")}
-      </summary>
-      <div class="memory-body oai-entry-body">${oaiEntryBody(p, true)}</div>
-    </details>`;
-  }
-
-  function oaiEntryBody(p, draft = false) {
-    const name = p.name;
-    const fetched = (oai.fetched.get(name) || []).filter((model) => !p.models.includes(model));
-    const extras = fetched.slice(0, 60);
+    const endpointState = endpoint.base ? (endpoint.key_set ? { tone: "ok", label: "就绪" } : { tone: "warn", label: "缺密钥" }) : { tone: "off", label: "没配" };
+    const deepseek = !data.providers.some((p) => p.name === "deepseek") && oaiKnown("deepseek");
     return h`
-      <div class="field">
-        <label class="field-label" for="oai-base-${name}">接口地址</label>
-        <input class="input mono" id="oai-base-${name}" data-oai-base value="${p.base_own ? p.base : ""}" placeholder="${p.known ? "留空用官方地址" : "https://…/v1"}" autocomplete="off" spellcheck="false" autocapitalize="off" inputmode="url">
-        <span class="field-hint">${p.known ? "官方接口 " + p.base + "；自己的中转站就把地址写在这里。" : "OpenAI 兼容接口，通常以 /v1 结尾。"}</span>
-      </div>
-      <div class="field">
-        <label class="field-label" for="oai-key-${name}">密钥</label>
-        <div class="reveal">
-          <input class="input mono" id="oai-key-${name}" type="password" data-oai-key value="" placeholder="${p.key_from === "missing" ? "未设置" : "已设置（不显示）；输入新值即替换"}" autocomplete="new-password" spellcheck="false" autocapitalize="off">
-          <button class="icon-btn state" type="button" data-reveal="#oai-key-${name}" aria-pressed="false" aria-label="显示密钥">${icon("visibility")}</button>
+      <button class="oai-hero" type="button" data-oai-go="default">
+        <span class="oai-hero-label">默认模型</span>
+        <span class="oai-hero-value mono">${data.default_model || "未设置"}</span>
+        <span class="oai-hero-sub">${owner.missing ? "这家还没接好，先补上密钥或换一个" : owner.label ? "走 " + owner.label + " · 没单独写模型的房间都用它" : "没单独写模型的房间都用它"}</span>
+        ${icon("chevron_right", "chevron")}
+      </button>
+
+      ${!data.providers.length && deepseek
+        ? h`<div class="oai-welcome">
+            ${oaiMono("DeepSeek", "deepseek", true)}
+            <div class="oai-welcome-text">
+              <p class="oai-welcome-title">先接上 DeepSeek</p>
+              <p class="oai-welcome-body">只要一把密钥，管家大人、搭话与联网搜索就都能用。</p>
+            </div>
+            <button class="btn btn-filled" type="button" data-oai-go="draft:deepseek">${icon("key")}填密钥</button>
+          </div>`
+        : ""}
+
+      <section class="oai-block" aria-labelledby="oai-providers-title">
+        <div class="oai-block-head">
+          <h3 class="oai-block-title" id="oai-providers-title">供应商</h3>
+          ${data.providers.length ? h`<span class="oai-block-meta">${ready} / ${data.providers.length} 就绪</span>` : ""}
+          <button class="btn btn-tonal btn-small oai-block-action" type="button" data-oai-go="add">${icon("add")}添加</button>
         </div>
-        <span class="field-hint">${p.key_from === "env" ? "现在读环境变量 " + p.key_env + "；在这里填一把会优先用它。" : p.keys_url ? "在 " + p.keys_url + " 申请。" : "只存在本机配置里。"}</span>
-      </div>
-      ${draft ? "" : h`<div class="oai-models-field">
-        <div class="oai-models-head">
-          <span class="field-label" id="oai-models-${name}">模型<span class="num">${p.models.length}</span></span>
-          <button class="btn btn-text btn-small" type="button" data-oai-fetch="${name}">${icon("download")}拉取模型列表</button>
+        ${data.providers.length
+          ? h`<ul class="group plate-list oai-list">${data.providers.map((p) => h`<li>${oaiRow(p)}</li>`)}</ul>`
+          : h`<p class="oai-empty">还没有供应商。认得的十几家只要一把密钥；自己的中转站填地址与密钥。</p>`}
+      </section>
+
+      <section class="oai-block" aria-labelledby="oai-endpoint-title">
+        <div class="oai-block-head">
+          <h3 class="oai-block-title" id="oai-endpoint-title">默认接口</h3>
+          <span class="oai-block-meta">不带「供应商/」前缀的模型走这里</span>
         </div>
-        ${p.models.length
-          ? h`<ul class="group plate-list oai-models" aria-labelledby="oai-models-${name}">${p.models.map((model) => h`<li class="item">
-              <span class="item-content"><span class="item-title mono">${model}</span>${model === p.recommended ? h`<span class="status status-success">推荐</span>` : ""}</span>
-              <span class="item-trailing"><button class="icon-btn state" type="button" data-oai-model-del="${model}" aria-label="移除模型 ${model}">${icon("close")}</button></span>
-            </li>`)}</ul>`
-          : h`<p class="map-empty">${icon("info")}<span>还没有模型。拉一份，或者手动加一个。</span></p>`}
-        ${extras.length
-          ? h`<div class="oai-extra">
-              <p class="field-hint">接口还有 ${fetched.length} 个，点一下加上：</p>
-              <div class="chips oai-extra-chips">${extras.map((model) => h`<button class="chip state" type="button" data-oai-model-add="${model}"><span class="mono">${model}</span></button>`)}</div>
-            </div>`
-          : ""}
-        <div class="oai-addmodel">
-          <input class="input mono" data-oai-model-input="${name}" placeholder="模型 id，回车添加" aria-label="手动添加模型" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="done">
-          <button class="btn btn-outlined" type="button" data-oai-model-commit="${name}" disabled>添加</button>
-        </div>
-        <p class="field-hint">${p.models_source === "curated" ? "现在只认这几枚（手选），拉取不会改动它；移除一枚就少一枚。" : "现在跟随接口拉回的列表；改动一枚之后就只认你挑的。"}</p>
-        ${p.models_source === "curated" ? h`<button class="btn btn-text btn-small" type="button" data-oai-model-reset="${name}">恢复跟随接口列表</button>` : ""}
-      </div>`}
-      <div class="actions oai-entry-actions">
-        ${draft
-          ? h`<button class="btn btn-filled" type="button" data-oai-save="${name}">保存</button>
-             <button class="btn btn-text" type="button" data-oai-draft-cancel>取消</button>`
-          : h`<button class="btn btn-filled" type="button" data-oai-save="${name}">保存地址与密钥</button>
-             <button class="btn btn-text btn-danger" type="button" data-oai-remove="${name}">删除供应商</button>`}
-      </div>`;
+        <ul class="group plate-list oai-list"><li>
+          <button class="item oai-row" type="button" data-oai-go="endpoint">
+            <span class="tile oai-mono" data-hue="neutral" aria-hidden="true">${icon("dns")}</span>
+            <span class="item-content">
+              <span class="item-title">中转站${endpoint.uses?.default ? h`<span class="oai-badge">默认</span>` : ""}</span>
+              <span class="item-sub">${endpoint.base ? oaiHost(endpoint.base) + (endpoint.models?.length ? ` · ${endpoint.models.length} 个模型` : "") : "可选：用一个 OpenAI 兼容的中转站"}</span>
+            </span>
+            <span class="item-trailing">${oaiStatus(endpointState)}${icon("chevron_right", "chevron")}</span>
+          </button>
+        </li></ul>
+      </section>
+
+      <p class="oai-fine">${icon("lock")}<span>密钥只存在本机配置里，页面不回显。测试连接与刷新列表只读 <code>/models</code>，不计费、不消耗对话额度。</span></p>`;
   }
-  /** 添加供应商：认得的那些列出来，另一个出口是自己起名的中转站。 */
+
+  /* —— 添加：按类别分组的一张表，另一个出口是自己的中转站 —— */
+
   function oaiAddView() {
-    return h`<div class="oai-add">
-      <div class="search">${icon("search")}
+    return h`<div class="search oai-search">${icon("search")}
         <input class="input" id="oai-add-search" type="search" value="${oai.query}" placeholder="搜索供应商" aria-label="搜索供应商" autocomplete="off" spellcheck="false">
       </div>
-      <div id="oai-catalog">${oaiCatalog()}</div>
-      <button class="btn btn-outlined oai-custom" type="button" data-oai-custom>${icon("cloud")}自己的中转站</button>
-      <div class="actions actions-end"><button class="btn btn-text" type="button" data-oai-add-back>返回</button></div>
-    </div>`;
+      <div id="oai-catalog" class="oai-catalog-groups">${oaiCatalog()}</div>`;
   }
 
   function oaiCatalog() {
@@ -5472,160 +5489,585 @@
     const rows = (oai.data.catalog || []).filter(
       (item) => !query || (item.name + " " + item.id + " " + item.base).toLowerCase().includes(query)
     );
-    if (!rows.length) return emptyState("没有对得上的供应商。也可以自己起个名字接中转站。", "search");
-    return h`<ul class="group plate-list oai-catalog">${rows.map((item) => h`<li class="item">
-      <span class="item-leading" aria-hidden="true">${icon("key")}</span>
-      <div class="item-content">
-        <span class="item-title">${item.name}<span class="tag">${item.id}</span>${item.keyless ? h`<span class="status">本机</span>` : ""}</span>
-        <span class="item-sub">${oaiHost(item.base)}${item.configured ? " · 已添加" : ""}</span>
-      </div>
-      <div class="item-trailing">${item.configured
-        ? h`<button class="btn btn-text btn-small" type="button" data-oai-edit="${item.entry || item.id}">配置</button>`
-        : h`<button class="btn btn-tonal btn-small" type="button" data-oai-pick="${item.id}">${icon("add")}添加</button>`}</div>
-    </li>`)}</ul>`;
+    const custom = h`<section class="oai-block" aria-labelledby="oai-kind-custom">
+      <div class="oai-block-head"><h3 class="oai-block-title" id="oai-kind-custom">其他</h3><span class="oai-block-meta">任何 OpenAI 兼容的地址</span></div>
+      <ul class="group plate-list oai-list"><li>
+        <button class="item oai-row" type="button" data-oai-go="draft:">
+          <span class="tile oai-mono" data-hue="neutral" aria-hidden="true">${icon("cloud")}</span>
+          <span class="item-content"><span class="item-title">自己的中转站</span><span class="item-sub">填地址与密钥，名字自动起</span></span>
+          <span class="item-trailing">${icon("chevron_right", "chevron")}</span>
+        </button>
+      </li></ul>
+    </section>`;
+    if (!rows.length) return h`${emptyState("没有对得上的供应商。下面可以接自己的中转站。", "search")}${custom}`;
+    return h`${OAI_KINDS.map(([kind, title, note]) => {
+      const list = rows.filter((item) => item.kind === kind);
+      if (!list.length) return "";
+      return h`<section class="oai-block" aria-labelledby="oai-kind-${kind}">
+        <div class="oai-block-head"><h3 class="oai-block-title" id="oai-kind-${kind}">${title}</h3><span class="oai-block-meta">${note}</span></div>
+        <ul class="group plate-list oai-list">${list.map((item) => h`<li>
+          <button class="item oai-row" type="button" data-oai-go="${item.configured ? "provider:" + (item.entry || item.id) : "draft:" + item.id}">
+            ${oaiMono(item.name, item.id)}
+            <span class="item-content">
+              <span class="item-title">${item.name}</span>
+              <span class="item-sub">${oaiHost(item.base)}</span>
+            </span>
+            <span class="item-trailing">${item.configured ? h`<span class="status status-success oai-status">已添加</span>` : ""}${icon("chevron_right", "chevron")}</span>
+          </button>
+        </li>`)}</ul>
+      </section>`;
+    })}${custom}`;
   }
 
-  /** 写完之后统一收口：新数据来自回执（后端每次改动都回一份整表），页面照它重画。 */
-  async function oaiApply(reply, focus = "", said = "") {
+  /* —— 表单零件 —— */
+
+  /** 一个要保存的文本框。`data-initial` 记着存过的值，用来判断「改没改」。 */
+  function oaiField({ id, label, value = "", placeholder = "", hint = "", url = false, autofocus = false }) {
+    return h`<div class="field">
+      <label class="field-label" for="${id}">${label}</label>
+      <input class="input mono" id="${id}" data-oai-field data-initial="${value}" value="${value}" placeholder="${placeholder}"
+        autocomplete="off" spellcheck="false" autocapitalize="off"${url ? raw(' inputmode="url" type="url"') : ""}${attr(autofocus, "data-oai-autofocus")}>
+      ${hint ? h`<span class="field-hint">${hint}</span>` : ""}
+    </div>`;
+  }
+
+  /** 密钥框：只写不读。已设置时占位文字说清楚「留空不动」。 */
+  function oaiKeyField({ id, set, hint = "", link = "", autofocus = false }) {
+    return h`<div class="field">
+      <label class="field-label" for="${id}">密钥</label>
+      <div class="reveal">
+        <input class="input mono" id="${id}" type="password" data-oai-field data-oai-key data-initial="" value="" placeholder="${set ? "已设置 · 留空不改" : "粘贴密钥"}"
+          autocomplete="new-password" spellcheck="false" autocapitalize="off"${attr(autofocus, "data-oai-autofocus")}>
+        <button class="icon-btn state" type="button" data-reveal="#${id}" aria-pressed="false" aria-label="显示密钥">${icon("visibility")}</button>
+      </div>
+      ${hint || link
+        ? h`<span class="field-hint">${hint}${link ? h`${hint ? " " : ""}<a class="oai-link" href="${link}" target="_blank" rel="noopener noreferrer">去申请${icon("open_in_new")}<span class="visually-hidden">（新窗口）</span></a>` : ""}</span>`
+        : ""}
+    </div>`;
+  }
+
+  /** 测试结果那一行：成功写延迟与模型数，失败写原因。读屏用 status 播报。 */
+  function oaiTestLine(name) {
+    const test = oai.tests.get(name);
+    return h`<p class="oai-test" id="oai-test" role="status" aria-live="polite"${test ? raw(` data-ok="${test.ok ? "true" : "false"}"`) : ""}>${test
+      ? h`${icon(test.pending ? "speed" : test.ok ? "check_circle-fill" : "error-fill")}<span>${test.text}</span>`
+      : ""}</p>`;
+  }
+
+  /** 保存按钮只在真的改了什么时可点：没改就按不下去，用户一眼知道「已经是存好的」。 */
+  function oaiSyncSave() {
+    const body = $("#oai-sheet-body");
+    const save = body && $("[data-oai-save]", body);
+    if (!save || save.dataset.always !== undefined) return;
+    const changed = $$("[data-oai-field]", body).some((input) => input.value.trim() !== (input.dataset.initial || ""));
+    save.disabled = !changed;
+  }
+
+  /* —— 一家的详情 —— */
+
+  function oaiProviderView(view) {
+    const p = oaiProvider(view.name);
+    if (!p) return emptyState("这家已经不在配置里了。", "inbox");
+    const state = oaiState(p);
+    const uses = oaiUsesText(p.uses);
+    return h`
+      <div class="oai-ident">
+        ${oaiMono(p.label, p.name, true)}
+        <div class="oai-ident-text">
+          <p class="oai-ident-name mono">${p.name}</p>
+          <p class="oai-ident-sub">${p.base ? oaiHost(p.base) : "还没有接口地址"}</p>
+        </div>
+        ${oaiStatus(state)}
+      </div>
+      <p class="oai-uses">${icon("hub")}<span>${uses ? "在用：" + uses : h`还没有房间用它。设成默认模型，或在房间里写「房间%<span class="mono">${p.name}/模型</span>」。`}</span></p>
+
+      <section class="oai-block" aria-labelledby="oai-conn-title">
+        <div class="oai-block-head"><h3 class="oai-block-title" id="oai-conn-title">连接</h3></div>
+        <div class="oai-card">
+          ${oaiField({
+            id: "oai-f-base",
+            label: "接口地址",
+            value: p.base_own ? p.base : "",
+            placeholder: p.known ? p.base : "https://…/v1",
+            hint: p.known ? "留空用官方地址；要走自己的中转就填在这里。" : "OpenAI 兼容，通常以 /v1 结尾。",
+            url: true,
+          })}
+          ${oaiKeyField({
+            id: "oai-f-key",
+            set: p.key_from !== "missing",
+            hint: p.key_from === "env" ? `现在读环境变量 ${p.key_env}；这里填一把会优先用它。` : p.key_from === "keyless" ? "本机服务不要密钥。" : "",
+            link: p.keys_url,
+          })}
+          <div class="oai-actions">
+            <button class="btn btn-outlined" type="button" data-oai-test="${p.name}">${icon("speed")}测试连接</button>
+            <button class="btn btn-filled" type="button" data-oai-save="${p.name}" disabled>保存</button>
+          </div>
+          ${oaiTestLine(p.name)}
+        </div>
+      </section>
+
+      ${p.base && p.key_from !== "missing" ? oaiModelsBlock(p) : ""}
+
+      <section class="oai-block oai-danger" aria-label="删除">
+        <button class="btn btn-text btn-danger" type="button" data-oai-remove="${p.name}">${icon("delete")}删除这家供应商</button>
+      </section>`;
+  }
+
+  /* —— 模型勾选清单 —— */
+
+  /** 这家能勾的全集：接口给的 ∪ 手选的 ∪ 手打的，保持接口给的顺序。 */
+  function oaiModelUniverse(p) {
+    const all = [...(p.available || [])];
+    for (const model of [...(p.curated || []), ...(oai.extras.get(p.name) || [])]) if (!all.includes(model)) all.push(model);
+    return all;
+  }
+
+  /** 存着的那份选择：手选就是手选的，跟随接口就是全集。 */
+  const oaiSaved = (p) => new Set(p.models_source === "curated" ? p.curated : oaiModelUniverse(p));
+  const oaiPicked = (p) => oai.picks.get(p.name) || oaiSaved(p);
+
+  function oaiPickDiff(p) {
+    if (!p || !oai.picks.has(p.name)) return 0;
+    const saved = oaiSaved(p);
+    const picked = oai.picks.get(p.name);
+    let diff = 0;
+    for (const model of picked) if (!saved.has(model)) diff++;
+    for (const model of saved) if (!picked.has(model)) diff++;
+    return diff;
+  }
+
+  function oaiModelsBlock(p) {
+    const all = oaiModelUniverse(p);
+    const curated = p.models_source === "curated";
+    return h`<section class="oai-block" aria-labelledby="oai-models-title">
+      <div class="oai-block-head">
+        <h3 class="oai-block-title" id="oai-models-title">模型</h3>
+        <span class="oai-block-meta num" id="oai-model-count"></span>
+        <button class="btn btn-text btn-small oai-block-action" type="button" data-oai-refresh="${p.name}">${icon("refresh")}刷新列表</button>
+      </div>
+      <p class="oai-mode">${curated
+        ? h`<span class="oai-mode-tag">手选</span><span>只有勾上的会给房间与 <code>/%</code> 用；接口新出的模型不会自动加进来。</span>`
+        : h`<span class="oai-mode-tag">全部</span><span>跟随接口列表，新出的模型自动出现。勾掉哪个，就只用剩下的。</span>`}</p>
+      ${all.length > 8
+        ? h`<div class="search oai-search">${icon("search")}
+            <input class="input" id="oai-model-search" type="search" value="${oai.modelQuery}" placeholder="筛选模型" aria-label="筛选模型" aria-controls="oai-model-list" autocomplete="off" spellcheck="false">
+          </div>`
+        : ""}
+      <div class="oai-model-tools">
+        <button class="btn btn-text btn-small" type="button" data-oai-pick-all>全选</button>
+        <button class="btn btn-text btn-small" type="button" data-oai-pick-none>全不选</button>
+        ${curated ? h`<button class="btn btn-text btn-small" type="button" data-oai-follow="${p.name}">恢复跟随接口</button>` : ""}
+      </div>
+      <div id="oai-model-list">${oaiModelList(p)}</div>
+      <div class="oai-addmodel">
+        <input class="input mono" id="oai-model-input" placeholder="接口里没列的模型 id" aria-label="手动添加模型 id" autocomplete="off" spellcheck="false" autocapitalize="off" enterkeyhint="done">
+        <button class="btn btn-outlined" type="button" data-oai-model-commit disabled>${icon("add")}加上</button>
+      </div>
+      <div class="oai-savebar" id="oai-savebar" hidden></div>
+    </section>`;
+  }
+
+  function oaiModelList(p) {
+    const all = oaiModelUniverse(p);
+    const picked = oaiPicked(p);
+    const available = new Set(p.available || []);
+    const query = oai.modelQuery.trim().toLowerCase();
+    const shown = query ? all.filter((model) => model.toLowerCase().includes(query)) : all;
+    const defaultModel = (oai.data.default_model || "").toLowerCase();
+    if (!all.length) {
+      return h`<p class="oai-empty">${p.fetched ? "接口没给可聊的模型。可以在下面手动加一个 id。" : "还没拉过这家的模型列表，点「刷新列表」。"}</p>`;
+    }
+    if (!shown.length) return h`<p class="oai-empty">没有对得上「${oai.modelQuery.trim()}」的模型。</p>`;
+    return h`<div class="group plate-list oai-models" role="group" aria-labelledby="oai-models-title">${shown.map((model) => {
+      const full = (p.name + "/" + model).toLowerCase();
+      const stale = p.fetched && !available.has(model);
+      return h`<label class="item option oai-model">
+        <input class="check" type="checkbox" value="${model}" data-oai-model${attr(picked.has(model), "checked")}>
+        <span class="item-content">
+          <span class="item-title mono">${model}</span>
+          ${model === p.recommended || full === defaultModel || stale
+            ? h`<span class="oai-model-tags">${full === defaultModel ? h`<span class="oai-badge">默认</span>` : ""}${model === p.recommended ? h`<span class="oai-badge oai-badge-soft">推荐</span>` : ""}${stale ? h`<span class="oai-badge oai-badge-warn">接口里已经没有</span>` : ""}</span>`
+            : ""}
+        </span>
+      </label>`;
+    })}</div>`;
+  }
+
+  /** 勾选变化后只更新计数与保存条，不重画清单：焦点与滚动都留在原处。 */
+  function oaiPaintPickBits(p) {
+    const count = $("#oai-model-count");
+    const bar = $("#oai-savebar");
+    if (!p) return;
+    const all = oaiModelUniverse(p);
+    const picked = oaiPicked(p);
+    if (count) count.textContent = `已选 ${[...picked].filter((m) => all.includes(m)).length} / ${all.length}`;
+    if (!bar) return;
+    const diff = oaiPickDiff(p);
+    bar.hidden = diff === 0;
+    if (diff) {
+      put(bar, h`<span class="oai-savebar-text">改了 ${diff} 处，还没保存</span>
+        <button class="btn btn-text" type="button" data-oai-pick-reset>还原</button>
+        <button class="btn btn-filled" type="button" data-oai-pick-save="${p.name}"${attr(picked.size === 0, "disabled")}>保存选择</button>`);
+    }
+  }
+
+  /** 第一次打开一家时自动拉一次列表（只读、不计费），勾选清单才有东西可勾。 */
+  function oaiAutoProbe(name) {
+    const p = oaiProvider(name);
+    oaiPaintPickBits(p);
+    if (!p || p.fetched || !p.ready || oai.probed.has(name)) return;
+    oai.probed.add(name);
+    void oaiTest(name, null, true);
+  }
+
+  /* —— 添加表单（还没存进配置） —— */
+
+  function oaiDraftView(view) {
+    const known = view.id ? oaiKnown(view.id) : null;
+    if (known) {
+      return h`
+        <div class="oai-ident">
+          ${oaiMono(known.name, known.id, true)}
+          <div class="oai-ident-text">
+            <p class="oai-ident-name mono">${known.id}</p>
+            <p class="oai-ident-sub">${oaiHost(known.base)}</p>
+          </div>
+        </div>
+        <div class="oai-card">
+          ${known.keyless
+            ? h`<p class="oai-lede">本机服务不要密钥。确认它在这台设备上跑着，点添加就行。</p>`
+            : oaiKeyField({ id: "oai-f-key", set: false, hint: "只要这一把，地址与推荐模型都由程序补上。", link: known.keys_url, autofocus: true })}
+          <details class="oai-more"${attr(known.keyless, "open")}>
+            <summary class="state">${icon("chevron_right", "chevron")}用自己的地址</summary>
+            ${oaiField({ id: "oai-f-base", label: "接口地址", placeholder: known.base, hint: "留空用官方地址。", url: true, autofocus: known.keyless })}
+          </details>
+          <div class="oai-actions">
+            ${known.keyless ? "" : h`<button class="btn btn-outlined" type="button" data-oai-test="${known.id}" data-draft>${icon("speed")}先测一下</button>`}
+            <button class="btn btn-filled" type="button" data-oai-save="${known.id}" data-draft data-always>${icon("add")}添加</button>
+          </div>
+          ${oaiTestLine(known.id)}
+        </div>
+        <p class="oai-fine">${icon("lock")}<span>添加时会用这把密钥读一次模型列表验一验：被拒就不存，不消耗对话额度。</span></p>`;
+    }
+    const taken = (oai.data.providers || []).map((p) => p.name.toLowerCase());
+    return h`
+      <p class="oai-lede">任何 OpenAI 兼容的接口都行（<code>/chat/completions</code> 与 <code>/models</code>）。房间里写「名字/模型」就走这里。</p>
+      <div class="oai-card">
+        ${oaiField({ id: "oai-f-base", label: "接口地址", placeholder: "https://api.example.com/v1", hint: "通常以 /v1 结尾；只写域名也行，会自动补上。", url: true, autofocus: true })}
+        ${oaiKeyField({ id: "oai-f-key", set: false })}
+        <div class="field">
+          <label class="field-label" for="oai-f-name">名字</label>
+          <input class="input mono" id="oai-f-name" data-oai-field data-oai-name data-initial="" value="" placeholder="按地址自动起" autocomplete="off" spellcheck="false" autocapitalize="off" aria-describedby="oai-f-name-hint" data-taken="${taken.join(" ")}">
+          <span class="field-hint" id="oai-f-name-hint">字母、数字、下划线和连字符。房间模型写「名字/模型」时按它找。</span>
+        </div>
+        <div class="oai-actions">
+          <button class="btn btn-outlined" type="button" data-oai-test="" data-draft>${icon("speed")}先测一下</button>
+          <button class="btn btn-filled" type="button" data-oai-save="" data-draft data-always>${icon("add")}添加</button>
+        </div>
+        ${oaiTestLine("")}
+      </div>`;
+  }
+
+  /** 地址 → 一个像样的名字：api.foo-ai.com → foo-ai；IP 或本机写 local。 */
+  function oaiNameFromBase(base) {
+    try {
+      const host = new URL(/^https?:\/\//.test(base) ? base : "https://" + base).hostname;
+      if (/^[\d.]+$/.test(host) || host === "localhost") return "local";
+      const parts = host.split(".").filter((part) => !["api", "www", "openai", "v1", "gateway"].includes(part));
+      const core = parts.length > 1 ? parts[parts.length - 2] : parts[0] || "";
+      return core.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 32);
+    } catch {
+      return "";
+    }
+  }
+
+  /* —— 默认接口 —— */
+
+  function oaiEndpointView() {
+    const endpoint = oai.data.endpoint || {};
+    const models = endpoint.models || [];
+    const uses = oaiUsesText(endpoint.uses);
+    const state = endpoint.base ? (endpoint.key_set ? { tone: "ok", label: "就绪" } : { tone: "warn", label: "缺密钥" }) : { tone: "off", label: "没配" };
+    return h`
+      <div class="oai-ident">
+        <span class="tile tile-large oai-mono" data-hue="neutral" aria-hidden="true">${icon("dns")}</span>
+        <div class="oai-ident-text">
+          <p class="oai-ident-name">${endpoint.base ? oaiHost(endpoint.base) : "还没配"}</p>
+          <p class="oai-ident-sub">没写「供应商/」前缀的模型都打到这里</p>
+        </div>
+        ${oaiStatus(state)}
+      </div>
+      ${uses ? h`<p class="oai-uses">${icon("hub")}<span>在用：${uses}</span></p>` : ""}
+      <section class="oai-block" aria-labelledby="oai-conn-title">
+        <div class="oai-block-head"><h3 class="oai-block-title" id="oai-conn-title">连接</h3></div>
+        <div class="oai-card">
+          ${oaiField({ id: "oai-f-base", label: "接口地址", value: endpoint.base || "", placeholder: "https://…/v1", hint: "OpenAI 兼容，通常以 /v1 结尾。和群里「oai 地址 密钥」是同一份。", url: true })}
+          ${oaiKeyField({ id: "oai-f-key", set: !!endpoint.key_set, hint: "保存时先读一次模型列表验一验，被拒就不存。" })}
+          <div class="oai-actions">
+            <button class="btn btn-outlined" type="button" data-oai-test="@endpoint"${attr(!endpoint.base, "disabled")}>${icon("speed")}测试连接</button>
+            <button class="btn btn-filled" type="button" data-oai-save="@endpoint" disabled>保存</button>
+          </div>
+          ${oaiTestLine("@endpoint")}
+        </div>
+      </section>
+      ${models.length
+        ? h`<section class="oai-block" aria-labelledby="oai-ep-models">
+            <div class="oai-block-head"><h3 class="oai-block-title" id="oai-ep-models">模型</h3><span class="oai-block-meta num">${models.length} 个</span></div>
+            <p class="oai-mode"><span>按 <code>[oai] model_filter</code> 留下的可聊模型；房间里写裸 id 就用这里的。</span></p>
+            <div class="oai-chips">${models.map((model) => h`<span class="tag">${model}</span>`)}</div>
+          </section>`
+        : ""}`;
+  }
+
+  /* —— 默认模型：可搜的一张单选表，按供应商分组 —— */
+
+  function oaiDefaultView() {
+    return h`
+      <p class="oai-lede">没单独写模型的房间用它。选中立刻生效，房间下一句就跟着换。</p>
+      <div class="search oai-search">${icon("search")}
+        <input class="input" id="oai-default-search" type="search" value="${oai.defaultQuery}" placeholder="搜索模型，例如 flash" aria-label="搜索模型" aria-controls="oai-default-list" autocomplete="off" spellcheck="false">
+      </div>
+      <div id="oai-default-list">${oaiDefaultList()}</div>`;
+  }
+
+  function oaiDefaultList() {
+    const data = oai.data;
+    const current = data.default_model || "";
+    const query = oai.defaultQuery.trim().toLowerCase();
+    // 现在用着的那一家排最前，中转站排最后：几十个裸 id 不该把各家供应商挤到屏幕外。
+    const rank = (group) => (group.models.includes(current) ? 0 : group.name ? 1 : 2);
+    const groups = [...(data.groups || [])]
+      .sort((a, b) => rank(a) - rank(b))
+      .map((group) => ({ ...group, models: query ? group.models.filter((m) => m.toLowerCase().includes(query)) : group.models }))
+      .filter((group) => group.models.length);
+    const listed = (data.groups || []).some((group) => group.models.includes(current));
+    if (!(data.groups || []).length) {
+      return h`<div class="oai-empty-block">${emptyState("还没有能选的模型：先接上一家供应商，或配好中转站。", "smart_toy")}
+        <button class="btn btn-tonal" type="button" data-oai-go="add">${icon("add")}添加供应商</button></div>`;
+    }
+    const provider = (name) => data.providers.find((p) => p.name === name);
+    return h`
+      ${!listed && current && !query
+        ? h`<p class="oai-warn">${icon("warning-fill")}<span>现在的 <span class="mono">${current}</span> 不在任何一家的模型里，房间可能会报错。挑一个换掉吧。</span></p>`
+        : ""}
+      ${groups.length ? "" : h`<p class="oai-empty">没有对得上「${oai.defaultQuery.trim()}」的模型。</p>`}
+      ${groups.map((group) => {
+        const p = provider(group.name);
+        const strip = group.name ? group.name.length + 1 : 0;
+        return h`<section class="oai-block" aria-labelledby="oai-dg-${group.name || "relay"}">
+          <div class="oai-block-head">
+            ${group.name ? oaiMono(group.label, group.name) : h`<span class="tile oai-mono" data-hue="neutral" aria-hidden="true">${icon("dns")}</span>`}
+            <h3 class="oai-block-title" id="oai-dg-${group.name || "relay"}">${group.label}</h3>
+            <span class="oai-block-meta num">${group.models.length}</span>
+          </div>
+          <div class="group plate-list oai-models" role="radiogroup" aria-labelledby="oai-dg-${group.name || "relay"}">${group.models.map((model) => h`
+            <label class="item option oai-model">
+              <input class="check oai-radio" type="radio" name="oai-default" value="${model}" data-oai-default${attr(model === current, "checked")}>
+              <span class="item-content">
+                <span class="item-title mono">${model.slice(strip)}</span>
+                ${p && model.slice(strip) === p.recommended ? h`<span class="oai-model-tags"><span class="oai-badge oai-badge-soft">推荐</span></span>` : ""}
+              </span>
+            </label>`)}</div>
+        </section>`;
+      })}
+      ${data.agents_follow && !query
+        ? h`<button class="btn btn-text oai-reset-default" type="button" data-oai-default-clear>${icon("restart_alt")}改回内置默认</button>`
+        : ""}`;
+  }
+
+  /* —— 写入 —— */
+
+  /** 写完之后统一收口：后端每次改动都回一份整表，页面照它重画。 */
+  async function oaiApply(reply, said = "") {
     if (reply && reply.overview) oai.data = reply.overview;
-    else await refreshOai();
+    else {
+      try {
+        oai.data = await api("/oai");
+      } catch {
+        /* 读不到就先用旧的，下一次操作再说 */
+      }
+    }
     const message = said || (reply && reply.message) || "";
     if (message) snackbar(message);
-    paintOaiSheet();
     paintOaiSummary();
-    if (focus) $(focus)?.focus({ preventScroll: true });
   }
 
-  async function oaiSaveEntry(name, button) {
-    const entry = $(`#oai-sheet [data-oai-entry="${CSS.escape(name)}"]`);
-    if (!entry) return;
-    const base = ($("[data-oai-base]", entry)?.value || "").trim();
-    const key = ($("[data-oai-key]", entry)?.value || "").trim();
-    const body = { name, api_base: base };
-    if (key) body.api_key = key;
-    button.setAttribute("aria-busy", "true");
+  const oaiBusy = (button, on) => button && (on ? button.setAttribute("aria-busy", "true") : button.removeAttribute("aria-busy"));
+  const oaiIsBusy = (button) => button?.getAttribute("aria-busy") === "true";
+  const oaiValue = (id) => ($("#" + id)?.value || "").trim();
+
+  async function oaiSave(button) {
+    if (oaiIsBusy(button)) return;
+    const view = oaiView();
+    const target = button.dataset.oaiSave;
+    const base = oaiValue("oai-f-base");
+    const key = oaiValue("oai-f-key");
+    oaiBusy(button, true);
     try {
+      if (target === "@endpoint") {
+        if (!base) throw new Error("填中转站的接口地址（OpenAI 兼容，通常以 /v1 结尾）。");
+        const body = { api_base: base };
+        if (key) body.api_key = key;
+        const reply = await api("/oai/endpoint", { method: "POST", body });
+        await oaiApply(reply);
+        paintOaiSheet();
+        return;
+      }
+      let name = target;
+      if (view.kind === "draft" && !view.id) {
+        if (!base) throw new Error("先填接口地址。");
+        name = oaiValue("oai-f-name") || oaiNameFromBase(base);
+        if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) throw new Error("名字只能用字母、数字、下划线和连字符，1–32 个字符。");
+        const taken = ($("#oai-f-name")?.dataset.taken || "").split(" ");
+        if (taken.includes(name.toLowerCase())) throw new Error(`已经有一家叫 ${name} 了，换个名字。`);
+      }
+      const body = { name };
+      // 已有的一家：地址框原样带上（空串 = 回到官方地址）。添加时没填就不带。
+      if (view.kind === "provider" || base) body.api_base = base;
+      if (key) body.api_key = key;
       const reply = await api("/oai/provider", { method: "POST", body });
-      const saved = reply.overview.providers.find((p) => p.name.toLowerCase() === name.toLowerCase());
-      oai.draft = null;
-      oai.open = saved ? saved.name : name;
-      // 存进去的密钥不再留在框里：重画后就该显示「已设置（不显示）」。
-      const keyField = $("[data-oai-key]", entry);
-      if (keyField) keyField.value = "";
-      await oaiApply(reply, `[data-oai-key="${CSS.escape(oai.open)}"]`);
+      oai.tests.delete(target);
+      await oaiApply(reply);
+      if (view.kind === "draft") {
+        const saved = reply.name || name;
+        oai.probed.add(saved); // 添加时已经验过、拉过了
+        oaiGo({ kind: "provider", name: saved }, true);
+      } else {
+        paintOaiSheet();
+        // 存好的密钥不再留在框里：占位文字会变成「已设置 · 留空不改」。
+        const field = $("#oai-f-key");
+        if (field) field.value = "";
+        const fieldBase = $("#oai-f-base");
+        if (fieldBase) fieldBase.dataset.initial = fieldBase.value.trim();
+        oaiSyncSave();
+      }
     } catch (error) {
       if (error.status !== 401) snackbar(error.message, "error");
-      button.removeAttribute("aria-busy");
+    } finally {
+      if (button.isConnected) oaiBusy(button, false);
     }
   }
 
-  async function oaiAddKnown(id, button) {
-    if (button.getAttribute("aria-busy") === "true") return;
-    button.setAttribute("aria-busy", "true");
-    const before = new Set((oai.data?.providers || []).map((p) => p.name));
+  /** 测试连接：只读 GET /models，报延迟与模型数。`quiet` 是打开页面时的自动探测，不弹提示。 */
+  async function oaiTest(target, button, quiet = false) {
+    if (oaiIsBusy(button)) return;
+    const view = oaiView();
+    const draft = view.kind === "draft" || !!button?.hasAttribute("data-draft");
+    const body = target === "@endpoint" ? {} : { provider: target || "custom" };
+    const base = oaiValue("oai-f-base");
+    const key = oaiValue("oai-f-key");
+    // 页面上改了还没存的地址、密钥，拿它们试；什么都没改就试存着的那份。
+    if (base && (draft || base !== ($("#oai-f-base")?.dataset.initial || ""))) body.api_base = base;
+    if (key) body.api_key = key;
+    if (draft && !view.id && !base) return void snackbar("先填接口地址。", "error");
+    oaiBusy(button, true);
+    oai.tests.set(target, { ok: true, pending: true, text: "正在连接…" });
+    oaiRepaintTest(target);
     try {
-      const reply = await api("/oai/provider", { method: "POST", body: { name: id } });
-      const added = reply.overview.providers.find((p) => !before.has(p.name));
-      oai.adding = false;
-      oai.open = added ? added.name : id;
-      await oaiApply(reply, `[data-oai-key="${CSS.escape(oai.open)}"]`);
+      const reply = await api("/oai/models", { method: "POST", body });
+      oai.tests.set(target, { ok: true, text: reply.message });
+      if (!reply.draft) {
+        oai.probed.add(target);
+        await oaiApply(null);
+        if (oaiView().kind === view.kind) paintOaiSheet();
+      } else oaiRepaintTest(target);
     } catch (error) {
-      if (error.status !== 401) snackbar(error.message, "error");
-      button.removeAttribute("aria-busy");
+      if (error.status === 401) return;
+      oai.tests.set(target, { ok: false, text: error.message });
+      oaiRepaintTest(target);
+      if (!quiet) $("#oai-test")?.focus?.();
+    } finally {
+      if (button?.isConnected) oaiBusy(button, false);
     }
   }
 
-  async function oaiAddCustom() {
-    const taken = (oai.data?.providers || []).map((p) => p.name);
-    const name = await promptName({
-      title: "接自己的中转站",
-      label: "供应商名字",
-      hint: "只用字母、数字、下划线和连字符；房间模型写「名字/模型」时就按它找。",
-      taken,
-    });
-    if (!name) return;
-    oai.draft = { name: name.trim().toLowerCase() };
-    oai.adding = false;
-    oai.query = "";
-    paintOaiSheet(false);
-    $(`[data-oai-base="${CSS.escape(oai.draft.name)}"]`)?.focus({ preventScroll: true });
+  function oaiRepaintTest(target) {
+    const line = $("#oai-test");
+    if (!line) return;
+    const wrap = document.createElement("div");
+    put(wrap, oaiTestLine(target));
+    line.replaceWith(wrap.firstElementChild);
   }
 
   async function oaiRemove(name, button) {
-    const provider = (oai.data?.providers || []).find((p) => p.name === name);
-    const label = provider ? provider.label : name;
+    const p = oaiProvider(name);
+    const label = p ? p.label : name;
+    const uses = oaiUsesText(p?.uses);
     const ok = await confirmAction({
-      title: `删除供应商「${label}」？`,
-      body: "接口、密钥与模型列表都会从配置里删掉。房间模型里写着它的那些会报错，直到换掉。",
+      title: `删除「${label}」？`,
+      body: uses
+        ? `它现在用在：${uses}。删掉后这些地方会报错，直到换成别家。接口、密钥与模型选择都会从配置里删掉。`
+        : "接口、密钥与模型选择都会从配置里删掉。",
       confirm: "删除",
       danger: true,
     });
     if (!ok) return;
-    button.setAttribute("aria-busy", "true");
+    oaiBusy(button, true);
     try {
       const reply = await api("/oai/provider/remove", { method: "POST", body: { name } });
-      if (oai.open === name) oai.open = "";
-      await oaiApply(reply, "[data-oai-add]");
+      oai.picks.delete(name);
+      oai.extras.delete(name);
+      await oaiApply(reply);
+      oai.stack = oai.stack.filter((view) => !(view.kind === "provider" && view.name === name));
+      paintOaiSheet("pop");
     } catch (error) {
       if (error.status !== 401) snackbar(error.message, "error");
-      button.removeAttribute("aria-busy");
+      oaiBusy(button, false);
     }
   }
 
-  /** 改这一家的模型：写了就是手选，传空表就回到跟随接口列表。 */
-  async function oaiSetModels(name, models, said = "") {
-    oai.open = name;
+  /** 存模型选择：勾满了全集就回到「跟随接口」，否则就是手选。 */
+  async function oaiSaveModels(name, button, follow = false) {
+    const p = oaiProvider(name);
+    if (!p || oaiIsBusy(button)) return;
+    const all = oaiModelUniverse(p);
+    const picked = oaiPicked(p);
+    const everything = p.fetched && (p.available || []).every((model) => picked.has(model)) && [...picked].every((model) => (p.available || []).includes(model));
+    const models = follow || everything ? [] : all.filter((model) => picked.has(model));
+    oaiBusy(button, true);
     try {
       const reply = await api("/oai/provider", { method: "POST", body: { name, models } });
-      await oaiApply(reply, `[data-oai-model-input="${CSS.escape(name)}"]`, said);
+      oai.picks.delete(name);
+      oai.extras.delete(name);
+      const said = models.length ? `${p.label} 现在只用勾上的 ${models.length} 个模型。` : `${p.label} 回到跟随接口列表，${all.length ? "全部模型都可用" : "新模型会自动出现"}。`;
+      await oaiApply(reply, said);
+      paintOaiSheet();
     } catch (error) {
       if (error.status !== 401) snackbar(error.message, "error");
+      oaiBusy(button, false);
     }
   }
 
-  /** 拉模型列表：只读 GET /models，不计费。名字为空表示默认接口。 */
-  async function oaiFetch(name, button) {
-    if (button.getAttribute("aria-busy") === "true") return;
-    button.setAttribute("aria-busy", "true");
+  async function oaiSetDefault(model, control) {
+    oaiBusy(control, true);
     try {
-      const reply = await api("/oai/models", { method: "POST", body: { provider: name } });
-      if (name) oai.fetched.set(name, reply.models || []);
-      const fresh = await api("/oai");
-      await oaiApply(
-        { overview: fresh, message: reply.message },
-        name ? `[data-oai-fetch="${CSS.escape(name)}"]` : "[data-oai-endpoint-fetch]"
-      );
+      const reply = await api("/oai/default", { method: "POST", body: { model } });
+      await oaiApply(reply);
+      // 选完就回去：HIG 的选择列表点一下即完成，不另设「确定」。
+      if (oaiView().kind === "default") {
+        const left = oai.stack.pop();
+        paintOaiSheet("pop", left);
+      }
     } catch (error) {
       if (error.status !== 401) snackbar(error.message, "error");
-      button.removeAttribute("aria-busy");
+      paintOaiSheet();
     }
   }
 
-  async function oaiSaveEndpoint(button) {
-    const base = ($("#oai-endpoint-base")?.value || "").trim();
-    const key = ($("#oai-endpoint-key")?.value || "").trim();
-    const body = { api_base: base };
-    if (key) body.api_key = key;
-    button.setAttribute("aria-busy", "true");
-    try {
-      const reply = await api("/oai/endpoint", { method: "POST", body });
-      await oaiApply(reply, "[data-oai-endpoint-save]");
-    } catch (error) {
-      if (error.status !== 401) snackbar(error.message, "error");
-      button.removeAttribute("aria-busy");
-    }
-  }
+  /* —— 事件 —— */
 
   async function oaiChange(event) {
-    const select = event.target;
-    if (!select.matches("[data-oai-default]")) return;
-    select.setAttribute("aria-busy", "true");
-    try {
-      const reply = await api("/oai/default", { method: "POST", body: { model: select.value } });
-      await oaiApply(reply, "#oai-default");
-    } catch (error) {
-      if (error.status !== 401) snackbar(error.message, "error");
-      paintOaiSheet(false);
+    const target = event.target;
+    if (target.matches("[data-oai-default]")) return void (await oaiSetDefault(target.value, target));
+    if (target.matches("[data-oai-model]")) {
+      const view = oaiView();
+      const p = oaiProvider(view.name);
+      if (!p) return;
+      const picked = new Set(oaiPicked(p));
+      if (target.checked) picked.add(target.value);
+      else picked.delete(target.value);
+      oai.picks.set(p.name, picked);
+      oaiPaintPickBits(p);
     }
   }
 
@@ -5633,102 +6075,136 @@
     const target = event.target;
     if (target.id === "oai-add-search") {
       oai.query = target.value;
-      const catalog = $("#oai-catalog");
-      if (catalog) put(catalog, oaiCatalog());
+      put($("#oai-catalog"), oaiCatalog());
       return;
     }
-    if (target.matches("[data-oai-model-input]")) {
-      const button = $(`[data-oai-model-commit="${CSS.escape(target.dataset.oaiModelInput)}"]`);
-      if (button) button.disabled = !target.value.trim();
+    if (target.id === "oai-default-search") {
+      oai.defaultQuery = target.value;
+      put($("#oai-default-list"), oaiDefaultList());
+      return;
     }
+    if (target.id === "oai-model-search") {
+      oai.modelQuery = target.value;
+      const p = oaiProvider(oaiView().name);
+      if (p) put($("#oai-model-list"), oaiModelList(p));
+      return;
+    }
+    if (target.id === "oai-model-input") {
+      const commit = $("[data-oai-model-commit]");
+      if (commit) commit.disabled = !target.value.trim();
+      return;
+    }
+    if (target.matches("[data-oai-name]")) oai.namedByHand = !!target.value.trim();
+    if (target.id === "oai-f-base" && oaiView().kind === "draft" && !oaiView().id && !oai.namedByHand) {
+      const name = $("#oai-f-name");
+      if (name) name.value = oaiNameFromBase(target.value.trim());
+    }
+    if (target.matches("[data-oai-field]")) oaiSyncSave();
   }
 
   function oaiKey(event) {
+    if (event.key !== "Enter" || event.isComposing) return;
     const input = event.target;
-    if (event.key !== "Enter") return;
-    if (input.matches("[data-oai-model-input]")) {
+    if (input.id === "oai-model-input") {
       event.preventDefault();
-      $(`[data-oai-model-commit="${CSS.escape(input.dataset.oaiModelInput)}"]`)?.click();
-    } else if (input.matches("[data-oai-base], [data-oai-key]")) {
+      $("[data-oai-model-commit]")?.click();
+    } else if (input.matches("[data-oai-field]")) {
       event.preventDefault();
-      $("[data-oai-save]", input.closest("[data-oai-entry]"))?.click();
-    } else if (input.matches("[data-oai-endpoint-base], [data-oai-endpoint-key]")) {
-      event.preventDefault();
-      $("[data-oai-endpoint-save]")?.click();
-    } else if (input.id === "oai-add-search") {
+      const save = $("#oai-sheet-body [data-oai-save]");
+      if (save && !save.disabled) save.click();
+    } else if (input.type === "search") {
       event.preventDefault();
     }
   }
 
   async function oaiClick(event) {
     const dialog = $("#oai-sheet");
-    if (!dialog) return;
     const hit = event.target.closest(
-      "[data-oai-close], [data-oai-add], [data-oai-add-back], [data-oai-edit], [data-oai-pick], [data-oai-custom], " +
-      "[data-oai-draft-cancel], [data-oai-save], [data-oai-remove], [data-oai-fetch], [data-oai-model-del], " +
-      "[data-oai-model-add], [data-oai-model-commit], [data-oai-model-reset], [data-oai-endpoint-save], [data-oai-endpoint-fetch]"
+      "[data-oai-close], [data-oai-back], [data-oai-go], [data-oai-save], [data-oai-test], [data-oai-remove], [data-oai-refresh], " +
+      "[data-oai-pick-all], [data-oai-pick-none], [data-oai-pick-reset], [data-oai-pick-save], [data-oai-follow], " +
+      "[data-oai-model-commit], [data-oai-default-clear]"
     );
-    if (!hit) return;
+    if (!dialog || !hit || hit.disabled) return;
     event.preventDefault();
+    const data = hit.dataset;
 
-    if (hit.hasAttribute("data-oai-close")) return void dialog.close("done");
-    if (hit.hasAttribute("data-oai-add")) {
-      oai.adding = true;
-      oai.draft = null;
-      oai.query = "";
-      paintOaiSheet(false);
-      $("#oai-add-search")?.focus({ preventScroll: true });
-      return;
+    if ("oaiClose" in data) {
+      if (oaiDirty() && !(await confirmAction({
+        title: "放弃没保存的改动？",
+        body: "这一页上填的地址、密钥或勾选的模型还没保存。",
+        confirm: "放弃并关闭",
+        cancel: "继续编辑",
+        danger: true,
+      }))) return;
+      return void dialog.close("done");
     }
-    if (hit.hasAttribute("data-oai-add-back")) {
-      oai.adding = false;
-      paintOaiSheet();
-      return;
+    if ("oaiBack" in data) return void (await oaiBack());
+    if ("oaiGo" in data) {
+      const [kind, arg = ""] = data.oaiGo.split(/:(.*)/s);
+      if (kind === "provider") return oaiGo({ kind, name: arg });
+      if (kind === "draft") {
+        oai.namedByHand = false;
+        oai.tests.delete(arg);
+        return oaiGo({ kind, id: arg });
+      }
+      if (kind === "add") oai.query = "";
+      if (kind === "default") oai.defaultQuery = "";
+      return oaiGo({ kind });
     }
-    if (hit.hasAttribute("data-oai-draft-cancel")) {
-      oai.draft = null;
-      paintOaiSheet(false);
-      return;
-    }
-    if (hit.hasAttribute("data-oai-edit")) {
-      oai.open = hit.dataset.oaiEdit;
-      oai.adding = false;
-      oai.draft = null;
-      paintOaiSheet();
-      return;
-    }
-    if (hit.hasAttribute("data-oai-pick")) return void (await oaiAddKnown(hit.dataset.oaiPick, hit));
-    if (hit.hasAttribute("data-oai-custom")) return void (await oaiAddCustom());
-    if (hit.hasAttribute("data-oai-endpoint-save")) return void (await oaiSaveEndpoint(hit));
-    if (hit.hasAttribute("data-oai-endpoint-fetch")) return void (await oaiFetch("", hit));
+    if ("oaiSave" in data) return void (await oaiSave(hit));
+    if ("oaiTest" in data) return void (await oaiTest(data.oaiTest, hit));
+    if ("oaiRefresh" in data) return void (await oaiTest(data.oaiRefresh, hit));
+    if ("oaiRemove" in data) return void (await oaiRemove(data.oaiRemove, hit));
+    if ("oaiDefaultClear" in data) return void (await oaiSetDefault("", hit));
 
-    const entry = hit.closest("[data-oai-entry]");
-    if (!entry) return;
-    const name = entry.dataset.oaiEntry;
-    oai.open = name;
-    if (hit.hasAttribute("data-oai-save")) return void (await oaiSaveEntry(name, hit));
-    if (hit.hasAttribute("data-oai-remove")) return void (await oaiRemove(name, hit));
-    if (hit.hasAttribute("data-oai-fetch")) return void (await oaiFetch(name, hit));
-
-    const provider = (oai.data?.providers || []).find((p) => p.name === name);
-    if (!provider) return;
-    if (hit.hasAttribute("data-oai-model-add")) {
-      return void (await oaiSetModels(name, [...provider.models, hit.dataset.oaiModelAdd]));
+    const p = oaiProvider(oaiView().name);
+    if (!p) return;
+    if ("oaiPickSave" in data) return void (await oaiSaveModels(p.name, hit));
+    if ("oaiFollow" in data) {
+      const ok = await confirmAction({
+        title: "恢复跟随接口列表？",
+        body: "手选的那份会清掉，这家接口给的模型全部可用，以后新出的也会自动出现。",
+        confirm: "恢复",
+      });
+      if (ok) await oaiSaveModels(p.name, hit, true);
+      return;
     }
-    if (hit.hasAttribute("data-oai-model-del")) {
-      const left = provider.models.filter((model) => model !== hit.dataset.oaiModelDel);
-      return void (await oaiSetModels(name, left, left.length ? "" : "模型清空了，这家回到跟随接口列表。"));
+    if ("oaiPickReset" in data) {
+      oai.picks.delete(p.name);
+      oai.extras.delete(p.name);
+      put($("#oai-model-list"), oaiModelList(p));
+      return oaiPaintPickBits(p);
     }
-    if (hit.hasAttribute("data-oai-model-reset")) {
-      return void (await oaiSetModels(name, [], "这家回到跟随接口列表。"));
+    if ("oaiPickAll" in data || "oaiPickNone" in data) {
+      // 只动筛选出来的那几个：先搜「flash」再全选，是「把 flash 的都勾上」。
+      const picked = new Set(oaiPicked(p));
+      for (const box of $$("#oai-model-list [data-oai-model]")) {
+        if ("oaiPickAll" in data) picked.add(box.value);
+        else picked.delete(box.value);
+        box.checked = "oaiPickAll" in data;
+      }
+      oai.picks.set(p.name, picked);
+      return oaiPaintPickBits(p);
     }
-    if (hit.hasAttribute("data-oai-model-commit")) {
-      const input = $(`[data-oai-model-input="${CSS.escape(name)}"]`);
+    if ("oaiModelCommit" in data) {
+      const input = $("#oai-model-input");
       const model = (input?.value || "").trim();
       if (!model) return;
-      if (model.includes(" ")) return snackbar("模型 id 里不能有空格。", "error");
-      if (provider.models.includes(model)) return snackbar("这个模型已经在列表里了。", "error");
-      return void (await oaiSetModels(name, [...provider.models, model]));
+      if (/\s/.test(model)) return snackbar("模型 id 里不能有空白。", "error");
+      if (oaiModelUniverse(p).includes(model)) {
+        oai.modelQuery = model;
+        put($("#oai-model-list"), oaiModelList(p));
+        return snackbar("这个模型已经在清单里了。");
+      }
+      oai.extras.set(p.name, [...(oai.extras.get(p.name) || []), model]);
+      const picked = new Set(oaiPicked(p));
+      picked.add(model);
+      oai.picks.set(p.name, picked);
+      input.value = "";
+      hit.disabled = true;
+      put($("#oai-model-list"), oaiModelList(p));
+      oaiPaintPickBits(p);
+      input.focus();
     }
   }
 

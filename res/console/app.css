@@ -7768,153 +7768,541 @@ label.lk-hit {
 }
 
 /* ==================== §3c 智能对话：供应商与模型 ====================
-   插件页上是一张摘要卡，弹窗里是一串能展开的条目。条目沿用 .memory 的折叠行
-   （summary 64px、chevron 转 90 度），底色比弹窗的纸面深一档，两者才分得开。
-   状态只落在一粒点上：绿 = 接上了、黄 = 缺密钥、灰 = 还没有地址。 */
+   弹窗里是一叠页面（HIG 的推入式导航）：总览 → 一家 → 返回。每页一个焦点——
+   总览是「默认模型」那一块，一家的详情是它的首字方块与状态。其余都是一张纸里细线分行。
+   状态一律「点 + 字」：绿 = 就绪、黄 = 缺密钥、灰 = 缺地址；颜色只是辅助，不单独传意思。
+   色调守「微光」的规矩：首字方块只透 10% 色相，焦点块只比纸面深一点点，不放大块彩色面。 */
 
-.oai-facts {
+.oai-sheet {
+  width: min(calc(100vw - var(--zw-space-07)), 40rem);
+}
+
+.oai-head {
+  gap: var(--zw-space-02);
+}
+
+.oai-head .dialog-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oai-back[hidden] {
+  display: none;
+}
+
+/* 返回键出现时，标题左边距让给它，标题不再跳来跳去。 */
+.oai-head:has(.oai-back:not([hidden])) {
+  padding-inline-start: var(--zw-space-03);
+}
+
+.oai-sheet-body {
+  gap: 0;
+  padding-bottom: var(--zw-space-06);
+}
+
+.oai-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-06);
+}
+
+/* 换页：推入从右边滑进来，退回从左边。只用 backwards 填充，动画完不在块上留 transform。 */
+.oai-view[data-dir="push"] {
+  animation:
+    oai-push var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing) backwards,
+    page-fade var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing) backwards;
+}
+
+.oai-view[data-dir="pop"] {
+  animation:
+    oai-pop var(--md-sys-motion-spatial-default-duration) var(--md-sys-motion-spatial-default-easing) backwards,
+    page-fade var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing) backwards;
+}
+
+@keyframes oai-push {
+  from {
+    transform: translateX(var(--zw-space-07));
+  }
+}
+
+@keyframes oai-pop {
+  from {
+    transform: translateX(calc(-1 * var(--zw-space-07)));
+  }
+}
+
+/* —— 焦点块：默认模型 —— */
+.oai-hero {
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--zw-space-01) var(--zw-space-04);
+  width: 100%;
+  padding: var(--zw-space-05) var(--zw-space-05) var(--zw-space-05) var(--zw-space-06);
+  border: var(--zw-border-width) solid var(--zw-card-line);
+  border-radius: var(--zw-radius-card);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 5%, var(--zw-plate-inset));
+  color: var(--md-sys-color-on-surface);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  isolation: isolate;
+}
+
+.oai-hero > * {
+  grid-column: 1;
+}
+
+.oai-hero > .chevron {
+  grid-row: 1 / span 3;
+  grid-column: 2;
+}
+
+.oai-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--md-sys-color-on-surface);
+  opacity: 0;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+@media (hover: hover) {
+  .oai-hero:hover::after {
+    opacity: var(--md-sys-state-hover-opacity);
+  }
+}
+
+.oai-hero:active::after {
+  opacity: var(--md-sys-state-pressed-opacity);
+}
+
+.oai-hero:focus-visible {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+}
+
+.oai-hero-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.oai-hero-value {
+  font-size: var(--md-sys-typescale-title-large-size);
+  line-height: 1.35;
+  font-weight: var(--zw-weight-heading);
+  overflow-wrap: anywhere;
+}
+
+.oai-hero-sub {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+.oai-summary {
+  display: flex;
+  flex-direction: column;
   gap: var(--zw-space-04);
 }
 
-.oai-fact {
+/* —— 分块：小标题 + 一行说明 + 行尾一个动作 —— */
+.oai-block {
   display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  min-width: 0;
+}
+
+.oai-block-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-01) var(--zw-space-03);
+  min-height: var(--zw-size-control);
+  padding-inline: var(--zw-space-02) 0;
+}
+
+.oai-block-head > .tile {
+  --zw-size-tile: 28px;
+  font-size: var(--md-sys-typescale-label-large-size);
+}
+
+.oai-block-head > .tile .i {
+  width: 18px;
+  height: 18px;
+}
+
+.oai-block-title {
+  margin: 0;
+  font-size: var(--md-sys-typescale-title-small-size);
+  line-height: var(--md-sys-typescale-title-small-line-height);
+  font-weight: var(--zw-weight-heading);
+}
+
+.oai-block-meta {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+}
+
+.oai-block-action {
+  margin-inline-start: auto;
+}
+
+.oai-catalog-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-06);
+}
+
+/* —— 列表行 —— */
+/* 弹窗本身就是一张纸（--zw-plate），里面的成组列表压深一档才分得出边界。 */
+.oai-sheet .plate-list {
+  background: var(--zw-plate-inset);
+}
+
+.oai-row {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.plate-list.oai-list > li + li > .item::before {
+  inset-inline-start: calc(var(--zw-space-04) * 2 + var(--zw-size-tile));
+}
+
+.oai-row::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--md-sys-color-on-surface);
+  opacity: 0;
+  transition: opacity var(--md-sys-motion-effects-fast-duration) var(--md-sys-motion-effects-fast-easing);
+}
+
+@media (hover: hover) {
+  .oai-row:hover::after {
+    opacity: var(--md-sys-state-hover-opacity);
+  }
+}
+
+.oai-row:active::after {
+  opacity: var(--md-sys-state-pressed-opacity);
+}
+
+.oai-row:focus-visible {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: calc(-1 * var(--zw-focus-width));
+}
+
+.oai-row .item-sub {
+  overflow-wrap: anywhere;
+}
+
+/* 首字方块：五档低彩色相，同一家永远同一个色。字号压到图标的视觉重量。 */
+.oai-mono {
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: 1;
+  font-weight: var(--zw-weight-heading);
+}
+
+.oai-mono.tile-large {
+  font-size: var(--md-sys-typescale-title-large-size);
+}
+
+.oai-mono[data-hue="0"] { --_tone: var(--md-sys-color-primary); }
+.oai-mono[data-hue="1"] { --_tone: var(--md-sys-color-tertiary); }
+.oai-mono[data-hue="2"] { --_tone: var(--md-sys-color-secondary); }
+.oai-mono[data-hue="3"] { --_tone: var(--md-sys-color-success); }
+.oai-mono[data-hue="4"],
+.oai-mono[data-hue="neutral"] { --_tone: var(--md-sys-color-on-surface-variant); }
+
+.oai-status {
+  flex: none;
+}
+
+/* 小标签：默认、推荐、接口里已经没有。描边不垫底色，次色容器上也稳过 4.5:1。 */
+.oai-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--zw-space-03);
+  border: var(--zw-border-width) solid currentColor;
+  border-radius: var(--md-sys-shape-corner-full);
+  color: var(--md-sys-color-primary);
+  font-family: var(--md-ref-typeface-plain, inherit);
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-medium-line-height);
+  font-weight: var(--md-sys-typescale-weight-medium);
+  white-space: nowrap;
+}
+
+.oai-badge-soft {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.oai-badge-warn {
+  color: var(--md-sys-color-on-surface-variant);
+  border-style: dashed;
+}
+
+/* —— 一家的详情 —— */
+.oai-ident {
+  display: flex;
+  align-items: center;
+  gap: var(--zw-space-04);
+  padding-inline: var(--zw-space-02);
+}
+
+.oai-ident-text {
+  display: flex;
+  flex: 1;
   flex-direction: column;
   gap: var(--zw-space-01);
   min-width: 0;
 }
 
-.oai-fact-label {
-  color: var(--md-sys-color-on-surface-variant);
-  font-size: var(--md-sys-typescale-label-large-size);
-  line-height: var(--md-sys-typescale-label-large-line-height);
+.oai-ident-name {
+  margin: 0;
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  font-weight: var(--zw-weight-heading);
+  overflow-wrap: anywhere;
 }
 
-.oai-fact-value {
+.oai-ident-sub {
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-medium-size);
   line-height: var(--zw-body-medium-line);
   overflow-wrap: anywhere;
 }
 
-.oai-dot {
-  flex: none;
-  width: 0.625rem;
-  height: 0.625rem;
-  margin-inline: var(--zw-space-02) 0;
-  border-radius: var(--md-sys-shape-corner-full);
-  background: var(--md-sys-color-outline-variant);
-}
-
-.oai-dot[data-state="ok"] {
-  background: var(--md-sys-color-success);
-  box-shadow: 0 0 0 4px var(--zw-success-halo);
-}
-
-.oai-dot[data-state="warn"] {
-  background: var(--md-sys-color-warning);
-}
-
-.oai-block {
+.oai-uses,
+.oai-fine,
+.oai-warn {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
   gap: var(--zw-space-03);
+  margin: calc(-1 * var(--zw-space-03)) 0 0;
+  padding-inline: var(--zw-space-02);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
 }
 
-.oai-block > .section-head {
-  min-height: 0;
-  padding-inline: 0;
+.oai-fine {
+  margin: 0;
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: 1.6;
+}
+
+.oai-warn {
+  margin: 0 0 var(--zw-space-04);
+  padding: var(--zw-space-03) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--zw-plate-inset);
+  color: var(--md-sys-color-on-surface);
+}
+
+.oai-warn svg {
+  color: var(--md-sys-color-warning);
+}
+
+.oai-uses svg,
+.oai-fine svg,
+.oai-warn svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: 0.1rem;
+}
+
+.oai-lede {
+  margin: 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
 }
 
 .oai-card {
-  gap: var(--zw-space-03);
-}
-
-.oai-card-head {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--zw-space-02) var(--zw-space-04);
-}
-
-.oai-card-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--zw-space-02);
-  font-size: var(--zw-type-section-title);
-  font-weight: var(--zw-weight-heading);
-}
-
-.oai-card-title .i {
-  width: var(--zw-size-icon-small);
-  height: var(--zw-size-icon-small);
-  color: var(--md-sys-color-primary);
-}
-
-.oai-select {
-  display: flex;
-  width: 100%;
-}
-
-.oai-entry {
+  flex-direction: column;
+  gap: var(--zw-space-05);
+  padding: var(--zw-space-05);
+  border: var(--zw-border-width) solid var(--zw-card-line);
+  border-radius: var(--zw-radius-card);
   background: var(--zw-plate-inset);
 }
 
-.oai-entry > summary {
-  padding-inline: var(--zw-space-04);
+.oai-card .input {
+  background: var(--zw-plate);
 }
 
-.oai-entry-body {
-  padding-inline: var(--zw-space-04);
-}
-
-.oai-models-field {
+.oai-actions {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--zw-space-03);
 }
 
-.oai-models-head {
+.oai-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-01);
+  color: var(--md-sys-color-primary);
+  font-weight: var(--md-sys-typescale-weight-medium);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.oai-link svg {
+  width: 1em;
+  height: 1em;
+}
+
+/* 测试结果：成功与失败都写成一句话，前面一枚图标。空着的时候不占高度。 */
+.oai-test {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+  margin: 0;
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+.oai-test:empty {
+  display: none;
+}
+
+.oai-test svg {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: 0.1rem;
+  color: var(--md-sys-color-success);
+}
+
+.oai-test[data-ok="false"] {
+  color: var(--md-sys-color-error);
+}
+
+.oai-test[data-ok="false"] svg {
+  color: inherit;
+}
+
+.oai-more > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-02);
+  min-height: var(--zw-size-control);
+  color: var(--md-sys-color-primary);
+  font-size: var(--md-sys-typescale-label-large-size);
+  font-weight: var(--md-sys-typescale-weight-medium);
+  list-style: none;
+  cursor: pointer;
+}
+
+.oai-more > summary::-webkit-details-marker {
+  display: none;
+}
+
+.oai-more > summary .chevron {
+  color: inherit;
+  transition: transform var(--md-sys-motion-spatial-fast-duration) var(--md-sys-motion-spatial-fast-easing);
+}
+
+.oai-more[open] > summary .chevron {
+  transform: rotate(90deg);
+}
+
+.oai-more > summary:focus-visible {
+  outline: var(--zw-focus-width) solid var(--zw-focus-color);
+  outline-offset: var(--zw-focus-offset);
+  border-radius: var(--md-sys-shape-corner-small);
+}
+
+.oai-danger {
+  align-items: flex-start;
+  padding-top: var(--zw-space-03);
+  border-top: var(--zw-border-width) solid var(--zw-hairline);
+}
+
+/* —— 模型清单 —— */
+.oai-mode {
+  display: flex;
+  align-items: baseline;
+  gap: var(--zw-space-03);
+  margin: 0;
+  padding-inline: var(--zw-space-02);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+.oai-mode-tag {
+  flex: none;
+  padding: 0 var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--zw-selected-bg);
+  color: var(--zw-selected-ink);
+  font-size: var(--md-sys-typescale-label-medium-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.oai-search {
+  flex: none;
+}
+
+.oai-model-tools {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--zw-space-02) var(--zw-space-04);
-  min-height: var(--zw-size-control);
-}
-
-.oai-models-head .field-label {
-  display: inline-flex;
-  align-items: baseline;
   gap: var(--zw-space-02);
+  margin-block: calc(-1 * var(--zw-space-02));
 }
 
-.oai-models {
-  max-height: 20rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-
-.oai-models > .item {
+.oai-models > .oai-model {
   min-height: var(--zw-size-control);
-  padding-block: var(--zw-space-02);
+  padding-block: var(--zw-space-03);
+}
+
+.oai-models .item-content {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
 }
 
 .oai-models .item-title {
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  font-weight: var(--md-sys-typescale-weight-regular);
   overflow-wrap: anywhere;
 }
 
-.oai-extra {
-  display: flex;
-  flex-direction: column;
+.oai-model-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
   gap: var(--zw-space-02);
 }
 
-.oai-extra .chips {
-  max-height: 10rem;
-  overflow-y: auto;
-  overscroll-behavior: contain;
+.oai-radio {
+  border-radius: var(--md-sys-shape-corner-full);
 }
 
 .oai-addmodel {
@@ -7928,27 +8316,120 @@ label.lk-hit {
   min-width: 0;
 }
 
-.oai-entry-actions {
-  justify-content: flex-end;
+/* 没保存的勾选：一条贴在弹窗底边的条，滚到哪都看得见。 */
+.oai-savebar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
+  margin-top: var(--zw-space-02);
+  padding: var(--zw-space-03) var(--zw-space-03) var(--zw-space-03) var(--zw-space-05);
+  border: var(--zw-border-width) solid var(--zw-card-line);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--zw-plate);
+  box-shadow: var(--zw-float-shadow);
+  animation: page-fade var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing) backwards;
 }
 
-.oai-add {
+.oai-savebar[hidden] {
+  display: none;
+}
+
+.oai-savebar-text {
+  flex: 1 1 8rem;
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.oai-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-02);
+  max-height: 14rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.oai-empty {
+  margin: 0;
+  padding: var(--zw-space-05);
+  border-radius: var(--zw-radius-card);
+  background: var(--zw-plate-inset);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+.oai-empty-block {
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: var(--zw-space-04);
 }
 
-.oai-custom {
-  justify-content: center;
+.oai-reset-default {
+  align-self: flex-start;
 }
 
-.oai-catalog .item-title {
-  gap: var(--zw-space-02);
+/* —— 一家都没有时的欢迎块：DeepSeek 一把密钥 —— */
+.oai-welcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-04);
+  padding: var(--zw-space-05);
+  border: var(--zw-border-width) solid var(--zw-card-line);
+  border-radius: var(--zw-radius-card);
+  background: var(--zw-plate-inset);
+}
+
+.oai-welcome-text {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.oai-welcome-title {
+  margin: 0;
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  font-weight: var(--zw-weight-heading);
+}
+
+.oai-welcome-body {
+  margin: var(--zw-space-01) 0 0;
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+}
+
+@media (max-width: 599.98px) {
+  .oai-sheet {
+    width: 100vw;
+  }
+
+  .oai-hero {
+    padding-inline-start: var(--zw-space-05);
+  }
+
+  .oai-actions > .btn {
+    flex: 1 1 auto;
+  }
 }
 
 @media (forced-colors: active) {
-  .oai-dot {
+  .oai-hero,
+  .oai-card,
+  .oai-savebar {
     border: 1px solid CanvasText;
-    background: CanvasText;
+  }
+
+  .oai-badge,
+  .oai-mode-tag {
+    border: 1px solid CanvasText;
   }
 }

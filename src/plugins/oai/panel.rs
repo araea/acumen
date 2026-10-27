@@ -2,15 +2,18 @@
 //!
 //! 群里那条 `oai <供应商> <密钥>` 负责「一句话接上第一家」；这个面板补它办不到的那几件事：
 //! 同时摆出全部供应商、看明白每一家缺的是什么、亲手挑这家要用哪几个模型、换默认模型。
-//! 参考了 Magpie 的做法——供应商是一张表，密钥、地址、模型各自一格，改了立刻生效。
+//! 参考了 Magpie 的做法——供应商是一张表，密钥、地址、模型各自一格，改了立刻生效；
+//! 添加时按厂商 / 聚合平台 / 本机分组，挑一家只要贴一把密钥；每家看得到「谁在用它」，
+//! 「测试连接」报延迟与模型数；模型是一张勾选清单，默认全选，勾掉哪个就不再给房间用。
 //!
 //! 三条边界：
 //!
 //! 1. **密钥不回传。** 页面只拿到「设没设」「来自配置还是环境变量」，永远拿不到值本身；
 //!    改密钥是单向写入，输入框里留空表示不动它。群里 `oai` 指令要把带密钥的消息撤回，
 //!    网页没有这个问题——它本来就只在本机回环地址上。
-//! 2. **不拿对话试连通。** 唯一会出网的动作是「拉取模型列表」（`GET /models`）：
-//!    只读、不计费、不消耗对话额度。保存、删除、换默认模型都是本机改配置，立即生效。
+//! 2. **不拿对话试连通。** 唯一会出网的动作是 `GET /models`（测试连接、刷新列表、
+//!    保存新密钥时顺手验一次）：只读、不计费、不消耗对话额度。Magpie 的测试会真发一句话，
+//!    这里刻意不学——额度是用来回群友的。保存、删除、换默认模型都是本机改配置，立即生效。
 //! 3. **写配置只走 [`crate::plugins::ctl::change`]。** 与 `/ctl`、群里的 `oai` 是同一条事务：
 //!    校验、串行化、失败不改内存、原子替换都在那里，面板不另开一条路。
 
@@ -21,7 +24,79 @@ use crate::plugins::get_config_or_default;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 use toml::Value as Toml;
+
+/// 每家最近一次从接口拉到的完整列表（键是小写的供应商名，默认接口是空串）。
+///
+/// 手选过模型的那一家，配置与缓存里都只剩手选的那几个；勾选清单要摆出「还能勾哪些」，
+/// 得另记一份接口原样给的。只放内存：重启后第一次打开那一家时页面会自己再拉一次。
+static AVAILABLE: LazyLock<Mutex<HashMap<String, Vec<String>>>> = LazyLock::new(Default::default);
+
+fn remember(name: &str, models: &[String]) {
+    if let Ok(mut map) = AVAILABLE.lock() {
+        map.insert(name.to_ascii_lowercase(), models.to_vec());
+    }
+}
+
+fn recalled(name: &str) -> Option<Vec<String>> {
+    AVAILABLE.lock().ok()?.get(&name.to_ascii_lowercase()).cloned()
+}
+
+fn forget(name: &str) {
+    if let Ok(mut map) = AVAILABLE.lock() {
+        map.remove(&name.to_ascii_lowercase());
+    }
+}
+
+/// 一条模型写法落在哪一家：`供应商/模型` 按配置里的写法认（别名、大小写都算同一家），
+/// 裸模型 id 落在默认接口（空串）。认不出来的供应商原样返回，页面上就对不上任何一家。
+fn owner(providers: &HashMap<String, ProviderConfig>, spec: &str) -> String {
+    match utils::split_provider(spec) {
+        (Some(prefix), _) => catalog::configured(providers, &prefix)
+            .map_or(prefix.to_ascii_lowercase(), |(name, _)| name.to_ascii_lowercase()),
+        (None, _) => String::new(),
+    }
+}
+
+/// 谁在用这一家：默认模型、写死了它的房间、跟随默认的房间、画图 / 写歌 / 拍片。
+#[derive(Default)]
+struct Usage {
+    default: bool,
+    rooms: Vec<String>,
+    follow: usize,
+    media: Vec<&'static str>,
+}
+
+impl Usage {
+    fn json(&self) -> Value {
+        json!({ "default": self.default, "rooms": self.rooms, "follow": self.follow, "media": self.media })
+    }
+}
+
+fn usage(oai: &OaiConfig, default_model: &str, agents: &[(String, String)]) -> HashMap<String, Usage> {
+    let mut map: HashMap<String, Usage> = HashMap::new();
+    let default_owner = owner(&oai.providers, default_model);
+    map.entry(default_owner.clone()).or_default().default = true;
+    for (room, model) in agents {
+        if model.trim().is_empty() {
+            map.entry(default_owner.clone()).or_default().follow += 1;
+        } else {
+            map.entry(owner(&oai.providers, model)).or_default().rooms.push(room.clone());
+        }
+    }
+    for (label, spec) in [("画图", &oai.media.image), ("写歌", &oai.media.music), ("拍片", &oai.media.video)] {
+        let spec = spec.trim();
+        if spec.is_empty() {
+            continue;
+        }
+        // 媒体那几项可以只写供应商名，不带模型。
+        let who = if spec.contains('/') { owner(&oai.providers, spec) } else { owner(&oai.providers, &format!("{spec}/_")) };
+        map.entry(who).or_default().media.push(label);
+    }
+    map
+}
 
 /// 一家最多挂多少个模型。几百个的站点本来就该先在 `[oai] model_filter` 里收一遍，
 /// 手选一份超过这个数的多半是误操作。
@@ -86,7 +161,7 @@ fn key_state(resolved: Option<&catalog::Resolved>) -> (&'static str, &'static st
 /// 面板的整份数据：默认模型、默认接口、全部供应商、认得的供应商表。
 pub(crate) async fn overview(ctx: &Context) -> Value {
     let oai: OaiConfig = get_config_or_default(ctx);
-    let (relay_base, relay_key, relay_models, cached, fallback) = match ensure_manager().await {
+    let (relay_base, relay_key, relay_models, cached, fallback, agents) = match ensure_manager().await {
         Ok(mgr) => {
             let c = mgr.config.read().await;
             (
@@ -95,10 +170,14 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
                 c.models.clone(),
                 c.provider_models.clone(),
                 c.default_model.clone(),
+                c.agents.iter().map(|agent| (agent.name.clone(), agent.model.clone())).collect::<Vec<_>>(),
             )
         }
-        Err(_) => (String::new(), false, Vec::new(), BTreeMap::new(), String::new()),
+        Err(_) => (String::new(), false, Vec::new(), BTreeMap::new(), String::new(), Vec::new()),
     };
+    let current = oai.agent_default_model().unwrap_or(fallback.as_str()).to_string();
+    let uses = usage(&oai, &current, &agents);
+    let used = |name: &str| uses.get(&name.to_ascii_lowercase()).map_or_else(|| Usage::default().json(), Usage::json);
 
     let mut names: Vec<&String> = oai.providers.keys().collect();
     names.sort_by_key(|name| {
@@ -118,6 +197,8 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
             let (from, env) = key_state(resolved.as_ref());
             let base = resolved.as_ref().map(|found| found.base.clone()).unwrap_or_default();
             let ready = !base.is_empty() && from != "missing";
+            // 勾选清单的全集：接口最近一次给的那份；没拉过就拿现在能用的凑合（手选时只有手选的）。
+            let available = recalled(name).unwrap_or_else(|| models.to_vec());
             json!({
                 "name": name,
                 "label": known.map_or(name.as_str(), |known| known.name),
@@ -133,6 +214,9 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
                 "models": models,
                 "models_source": source,
                 "curated": entry.models,
+                "available": available,
+                "fetched": recalled(name).is_some(),
+                "uses": used(name),
             })
         })
         .collect();
@@ -148,6 +232,7 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
                 "keys_url": known.keys_url,
                 "model": known.model,
                 "keyless": known.keyless,
+                "kind": known.kind.id(),
                 // 配过的这家在配置里的写法（可能是别名、也可能大小写不同），页面按它找得到那一项。
                 "entry": catalog::configured(&oai.providers, known.id).map(|(name, _)| name),
                 "configured": catalog::configured(&oai.providers, known.id).is_some(),
@@ -179,7 +264,6 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
         }
     }
 
-    let current = oai.agent_default_model().unwrap_or(fallback.as_str()).to_string();
     json!({
         "default_model": current,
         "agents_follow": !oai.agent_default_model.is_empty(),
@@ -187,6 +271,7 @@ pub(crate) async fn overview(ctx: &Context) -> Value {
             "base": relay_base,
             "key_set": relay_key,
             "models": relay_models,
+            "uses": used(""),
         },
         "providers": providers,
         "catalog": catalog,
@@ -237,6 +322,30 @@ pub(crate) async fn save(ctx: &Context, body: SaveProvider) -> Result<Value, Str
         .unwrap_or_default();
     // 密钥允许稍后再补：页面会把它标成「缺密钥」；认得的供应商还可能已经在本机环境变量里。
 
+    // 换了密钥或地址就顺手验一次：只读 /models，不计费。被拒（401/403）不存，
+    // 网络抽风照存——本机连不上不代表这把钥匙不对。拉到的列表顺便给勾选清单用。
+    let probe_base = if stored_base.is_empty() { known.map(|known| known.base.to_string()).unwrap_or_default() } else { stored_base.clone() };
+    let base_changed = body.api_base.is_some() && stored_base != existing_base;
+    let mut probed: Option<Vec<String>> = None;
+    let mut note = String::new();
+    if !key.trim().is_empty() && (typed_key.is_some() || base_changed || created) {
+        let started = Instant::now();
+        match data::list_models(&probe_base, &key).await {
+            Ok(list) => {
+                let kept = data::chat_models_only(list, &oai.model_filter);
+                note = format!("连接正常，{} ms，{} 个可聊的模型。", started.elapsed().as_millis(), kept.len());
+                probed = Some(kept);
+            }
+            Err(error) => {
+                let text = error.to_string();
+                if text.starts_with("密钥无效") {
+                    return Err(format!("这家拒绝了这把密钥（{text}），没有保存。核对一下有没有多复制空格或少了几位。"));
+                }
+                note = format!("暂时没连上（{text}），先存下了。");
+            }
+        }
+    }
+
     // 页面带没带模型：带了才是「以我挑的为准」，没带就沿用原来的手选清单。
     let wants_models = body.models.is_some();
     let models = match body.models {
@@ -267,16 +376,30 @@ pub(crate) async fn save(ctx: &Context, body: SaveProvider) -> Result<Value, Str
 
     // 保存后把「手选」这份同步进 `/%` 用的缓存：换了模型不必等下一次刷新。
     let oai: OaiConfig = get_config_or_default(ctx);
+    if let Some(list) = &probed {
+        remember(&name, list);
+    }
+    if let Ok(mgr) = ensure_manager().await
+        && !wants_models
+        && models.is_empty()
+        && let Some(list) = probed.clone()
+    {
+        // 跟随接口的这一家：验密钥时拉到的就是它的列表，不必再等一次刷新。
+        let _ = mgr.set_provider_models(&name, list).await;
+    }
     if let Ok(mgr) = ensure_manager().await
         && wants_models
     {
         if models.is_empty() {
             // 回到跟随接口：立刻拉一次，拉不到就把旧的手选缓存清掉，别让两处对不上。
             let fresh = match catalog::resolve(&oai.providers, &name) {
-                Some(found) => data::list_models(&found.base, &found.key)
-                    .await
-                    .map(|list| data::chat_models_only(list, &oai.model_filter))
-                    .unwrap_or_default(),
+                Some(found) => match recalled(&name) {
+                    Some(list) => list,
+                    None => data::list_models(&found.base, &found.key)
+                        .await
+                        .map(|list| data::chat_models_only(list, &oai.model_filter))
+                        .unwrap_or_default(),
+                },
                 None => Vec::new(),
             };
             let _ = mgr.set_provider_models(&name, fresh).await;
@@ -287,8 +410,10 @@ pub(crate) async fn save(ctx: &Context, body: SaveProvider) -> Result<Value, Str
 
     let label = known.map_or(name.as_str(), |known| known.name);
     let verb = if created { "已添加" } else { "已保存" };
+    let message = if note.is_empty() { format!("{verb} {label}。") } else { format!("{verb} {label}：{note}") };
     Ok(json!({
-        "message": format!("{verb}供应商 {label}。"),
+        "name": name,
+        "message": message,
         "overview": overview(ctx).await,
     }))
 }
@@ -319,61 +444,106 @@ pub(crate) async fn remove(ctx: &Context, raw: &str) -> Result<Value, String> {
     if let Ok(mgr) = ensure_manager().await {
         let _ = mgr.set_provider_models(&name, Vec::new()).await;
     }
+    forget(&name);
     Ok(json!({
         "message": format!("已删除供应商 {name}。{note}"),
         "overview": overview(ctx).await,
     }))
 }
 
-/// `POST /oai/models`：拉一次这家的模型列表。只读 `GET /models`，不计费。
+/// `POST /oai/models`：测试连接并拉一次这家的模型列表。只读 `GET /models`，不计费。
+///
+/// 带了 `api_base` / `api_key` 就拿页面上还没保存的那一份试（添加之前先试一试），
+/// 这时什么都不存；不带就用配置里的，拉到的顺便写进缓存。
 #[derive(Deserialize)]
 pub(crate) struct FetchModels {
     #[serde(default)]
     pub provider: Option<String>,
+    #[serde(default)]
+    pub api_base: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
 }
 
-pub(crate) async fn fetch(ctx: &Context, provider: Option<&str>) -> Result<Value, String> {
+pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, String> {
     let oai: OaiConfig = get_config_or_default(ctx);
     let mgr = ensure_manager().await.map_err(|error| error.to_string())?;
-    let name = provider.map(str::trim).filter(|name| !name.is_empty());
-    let (base, key, curated, label) = if let Some(name) = name {
-        let (configured, entry) = catalog::configured(&oai.providers, name)
-            .ok_or_else(|| format!("没有供应商「{name}」。"))?;
-        let found = catalog::resolve(&oai.providers, configured).ok_or("这家的接口地址解不出来")?;
-        (found.base, found.key, entry.models.clone(), configured.to_string())
+    let name = body.provider.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let typed_base = body.api_base.as_deref().map(str::trim).filter(|base| !base.is_empty()).map(utils::openai_api_base);
+    let typed_key = body.api_key.as_deref().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string);
+    let draft = typed_base.is_some() || typed_key.is_some();
+
+    // 先按配置解出这一家现在的地址与密钥，再拿页面上敲的覆盖。
+    let (base, key, curated, label, display) = if let Some(name) = name {
+        match catalog::configured(&oai.providers, name) {
+            Some((configured, entry)) => {
+                let found = catalog::resolve(&oai.providers, configured);
+                let display = catalog::find(configured).map_or(configured, |known| known.name).to_string();
+                (
+                    found.as_ref().map(|found| found.base.clone()).unwrap_or_default(),
+                    found.map(|found| found.key).unwrap_or_default(),
+                    entry.models.clone(),
+                    configured.to_string(),
+                    display,
+                )
+            }
+            // 还没加进配置的一家（添加页上先试一试）：认得的补官方地址，不认得的只能靠页面上的。
+            None if draft => {
+                let known = catalog::find(name);
+                (
+                    known.map(|known| known.base.to_string()).unwrap_or_default(),
+                    String::new(),
+                    Vec::new(),
+                    name.to_string(),
+                    known.map_or(name, |known| known.name).to_string(),
+                )
+            }
+            None => return Err(format!("没有供应商「{name}」。")),
+        }
     } else {
         let c = mgr.config.read().await;
-        (c.api_base.clone(), c.api_key.clone(), Vec::new(), String::new())
+        (c.api_base.clone(), c.api_key.clone(), Vec::new(), String::new(), "默认接口".to_string())
     };
-    let what = if label.is_empty() { "默认接口".to_string() } else { label.clone() };
-    if base.is_empty() || key.trim().is_empty() {
-        return Err(format!("{what} 还没有接口地址或密钥，先补上再拉。"));
+    let base = typed_base.unwrap_or(base);
+    let key = typed_key.unwrap_or(key);
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err(format!("{display} 还没有能用的接口地址（要以 http:// 或 https:// 开头）。"));
     }
+    if key.trim().is_empty() {
+        return Err(format!("{display} 还没有密钥，先填上再试。"));
+    }
+
+    let started = Instant::now();
     let raw = data::list_models(&base, &key)
         .await
-        .map_err(|error| format!("{what} 拉不到模型列表：{error}"))?;
+        .map_err(|error| format!("{display} 连不上：{error}"))?;
+    let ms = started.elapsed().as_millis() as u64;
     let total = raw.len();
     let kept = data::chat_models_only(raw, &oai.model_filter);
 
-    // 手选过模型的这一家不动缓存（那份就是它的列表），只把拉到的交给页面当「还能加」。
-    let stored = if !curated.is_empty() {
+    // 页面上的草稿只试不存；手选过模型的这一家也不动缓存（那份就是它的列表）。
+    let stored = if draft {
         false
-    } else if name.is_some() {
-        mgr.set_provider_models(&label, kept.clone()).await.is_ok()
     } else {
-        let mut c = mgr.config.write().await;
-        c.models = kept.clone();
-        mgr.save(&mut c).is_ok()
-    };
-    Ok(json!({
-        "message": if stored {
-            format!("{what} 拉到 {total} 个模型，留下 {} 个可聊的。", kept.len())
+        remember(&label, &kept);
+        if !curated.is_empty() {
+            false
+        } else if name.is_some() {
+            mgr.set_provider_models(&label, kept.clone()).await.is_ok()
         } else {
-            format!("{what} 拉到 {total} 个模型；这家用的是手选的那份，缓存没有动。")
-        },
+            let mut c = mgr.config.write().await;
+            c.models = kept.clone();
+            mgr.save(&mut c).is_ok()
+        }
+    };
+    let filtered = if total > kept.len() { format!("，按模型过滤留下 {} 个可聊的", kept.len()) } else { String::new() };
+    Ok(json!({
+        "message": format!("{display} 连接正常：{ms} ms，接口给了 {total} 个模型{filtered}。"),
+        "ms": ms,
         "models": kept,
         "total": total,
         "stored": stored,
+        "draft": draft,
     }))
 }
 
@@ -499,6 +669,27 @@ mod tests {
         let list = tidy_models(vec![" a ".into(), "a".into(), "".into(), "b".into()]).unwrap();
         assert_eq!(list, ["a", "b"]);
         assert!(tidy_models(vec!["a b".into()]).is_err());
+    }
+
+    #[test]
+    fn usage_finds_who_relies_on_each_provider() {
+        let mut oai = OaiConfig::default();
+        oai.providers.insert("deepseek".into(), ProviderConfig::default());
+        oai.providers.insert("moonshot".into(), ProviderConfig::default());
+        oai.media.image = "kimi".into();
+        let agents = vec![
+            ("管家大人".to_string(), String::new()),
+            ("翻译".to_string(), "Kimi/kimi-k3".to_string()),
+            ("老房间".to_string(), "gpt-4o".to_string()),
+        ];
+        let map = usage(&oai, "deepseek/deepseek-flash", &agents);
+        let deepseek = &map["deepseek"];
+        assert!(deepseek.default);
+        assert_eq!(deepseek.follow, 1);
+        let moonshot = &map["moonshot"];
+        assert_eq!(moonshot.rooms, ["翻译"]);
+        assert_eq!(moonshot.media, ["画图"]);
+        assert_eq!(map[""].rooms, ["老房间"]);
     }
 
     #[test]
