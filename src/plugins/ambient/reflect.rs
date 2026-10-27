@@ -111,6 +111,8 @@ pub(super) struct PersonNote {
     pub address: Option<String>,
     /// 模型自评的证据强弱；保存时还会按真实样本数封顶。
     pub confidence: Option<f32>,
+    /// 这条新观察明确取代了哪条已有观察（原文）。空表示只是新增或再次印证。
+    pub supersedes: Option<String>,
 }
 
 /// 模型整理出来的东西。
@@ -151,11 +153,12 @@ const RUBRIC: &str = "\
 - threads：这阵子在聊的几摊事（最多 5 条，每条 30 字内）。写清谁在跟谁聊什么、聊到哪了。\
 只写别人之间聊的事，不写「我」说了什么、做了什么；一句话带过的闲话、早就聊完的不写。\
 这一份整体替换上一份：上一份里还在聊的保留，聊完的去掉。
-- people：对哪几个人有了新的暂定观察（最多 4 个，只写有新发现的）：{\"id\":\"QQ号\",\"note\":\"25 字内\",\"address\":\"\",\"confidence\":0.35}。\
+- people：对哪几个人有了新的暂定观察（最多 4 个，只写有新发现的）：{\"id\":\"QQ号\",\"note\":\"25 字内\",\"address\":\"\",\"confidence\":0.35,\"supersedes\":\"\"}。\
 id 必须来自记录；confidence 是 0 到 1 的证据强弱，不是好感度。note 只写反复出现的行为、明确自述、正在忙的具体事情，\
 或多次相处中显示出的沟通偏好。不要凭一句话评价人格，不要写「内向」「幼稚」「人很好」这类标签。\
 一句玩梗、反串、跳脱或情绪上头的发言不能说明性格；只有一句样本时 confidence 不得高于 0.35，没证据就宁缺毋滥。\
-address 只在大家明显有固定叫法时才写，已有印象没变就别重写。
+新证据若明确推翻了上方某条「已有暂定观察」，supersedes 填那条观察的原文，用新观察替换它；只是补充或再次印证就留空，\
+不要仅凭一句话宣布推翻。address 只在大家明显有固定叫法时才写，已有印象没变就别重写。
 - lore：新冒出来的共同梗、约定、大事（最多 2 条，30 字内），已经在旧事里的别重复。
 - claims：记录里标着「我」的那些行里，他新说出口的关于自己的事实、经历、立场鲜明的看法或明确的计划（最多 3 条，30 字内，\
 改写成陈述句，如「国庆明天才开始休」「酒馆里一直用 flash」）。只记以后被问起、说反了会穿帮的事。\
@@ -281,6 +284,7 @@ pub(super) fn parse(raw: &str) -> Option<Reflection> {
                         note: field("note"),
                         address: field("address"),
                         confidence,
+                        supersedes: field("supersedes"),
                     })
                 })
                 .collect()
@@ -311,6 +315,7 @@ pub(super) fn apply(
         note,
         address,
         confidence,
+        supersedes,
     } in reflection.people.iter().take(MAX_PEOPLE)
     {
         // 只认这一阵出现过的人：id 是模型从记录里抄的，抄错了就是记到了别人头上。
@@ -325,6 +330,17 @@ pub(super) fn apply(
                 .unwrap_or(false)
         {
             wrote = true;
+        }
+        // 只有新观察真的达到写入标准后才撤掉旧观察；模型一句「他变了」
+        // 不能顺手清空原有记忆。推翻与再次印证是两条不同的路径。
+        if wrote
+            && let Some(previous) = supersedes.as_deref().and_then(memory::sanitize)
+            && note
+                .as_deref()
+                .and_then(memory::sanitize)
+                .is_some_and(|new| new != previous)
+        {
+            memory.drop_observation(id, &previous);
         }
         // 已有的称呼不动：那是人格自己或号主定下的叫法。
         if let Some(address) = address.as_deref().and_then(memory::sanitize)
@@ -371,7 +387,11 @@ pub(super) async fn run(
 ) -> anyhow::Result<String> {
     let turns = window::with_group(group, |state| state.recent(MAX_TURNS));
     let now = chrono::Local::now().timestamp();
-    let existing = memory::with_group(group, |memory| memory.clone());
+    let existing = memory::with_group(group, |memory| {
+        // 过期印象不该先递回模型、再被它当作仍有效的证据续上一遍。
+        memory.prune(now);
+        memory.clone()
+    });
     let (system, user) = prompt(&turns, &existing);
     let (api_base, api_key, model) = super::gate_endpoint(ctx, mgr, &config.gate_model).await?;
     let messages = vec![
@@ -398,4 +418,41 @@ pub(super) async fn run(
         memory::edit(group, |memory| apply(memory, &reflection, &authors, now));
     memory::flush_now(group).await;
     Ok(format!("{threads} 摊事、{people} 个人、{lore} 条旧事、{claims} 条自述"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_supported_observation_can_supersede_an_old_one() {
+        let mut memory = GroupMemory::default();
+        memory.observe("42", "在准备考试", 0.5, 3, 0).unwrap();
+        let reflection = Reflection {
+            people: vec![PersonNote {
+                id: "42".into(),
+                note: Some("考试已经结束".into()),
+                address: None,
+                confidence: Some(0.6),
+                supersedes: Some("在准备考试".into()),
+            }],
+            ..Reflection::default()
+        };
+        let authors = HashMap::from([("42".to_string(), 4)]);
+        apply(&mut memory, &reflection, &authors, 100);
+        let observations = &memory.people["42"].observations;
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].text, "考试已经结束");
+    }
+
+    #[test]
+    fn parses_the_observation_being_replaced() {
+        let reflection =
+            parse(r#"{"people":[{"id":"42","note":"已经放假","supersedes":"在准备考试"}]}"#)
+                .unwrap();
+        assert_eq!(
+            reflection.people[0].supersedes.as_deref(),
+            Some("在准备考试")
+        );
+    }
 }

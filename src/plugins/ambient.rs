@@ -937,6 +937,12 @@ impl Persona for Ambient {
     }
 
     fn vet_text(&self, _group: &str, text: &str, turns: &[Turn]) -> Option<String> {
+        if tone::echoes(text, turns) {
+            return Some(
+                "这句和你最近刚说过的话几乎一样。别换个标点再发一遍；有新的信息才说，否则沉默"
+                    .to_string(),
+            );
+        }
         stray::is_ungrounded_callback(text, turns).then(|| {
             "这句在翻旧账：眼前几条里没人提起过去，你说的「上次/之前说过」也跟眼前聊的碰不上，\
              多半是从记忆里搬出来的，群友一看就是自说自话。接眼前正在聊的事，或者干脆先放着"
@@ -1720,14 +1726,22 @@ async fn wait_for_owner(ctx: &Context, group: &str, config: &AmbientConfig) {
         return;
     }
     let grace = config.owner_grace();
-    let (present, summoned, baseline) = window::with_group(group, |state| {
+    let (present, summoned, baseline, called) = window::with_group(group, |state| {
+        let called = state.has_unread_mention()
+            || state
+                .fresh()
+                .iter()
+                .any(|turn| !turn.from_me && turn.call.named_me);
         (
             state.owner_active(config.owner_quiet()),
             state.has_unread_summon(),
             state.owner_marks(),
+            called,
         )
     });
-    if grace.is_zero() || !present || summoned {
+    // 普通提问、紧急信号和新人入群只是提前看一眼，最终还有号主让位那道闸；
+    // 这里只给真正冲这个账号来的 @、引用、戳或称呼留本人先答的时间。
+    if grace.is_zero() || !present || summoned || !called {
         return;
     }
     info!(target: LOG_TARGET, "群 {group} 有人叫，但本人刚在群里说过话，先等他自己答（最多 {} 秒）", grace.as_secs());
@@ -2187,17 +2201,7 @@ async fn consider_batch(
         if !ordinary && !breakthrough {
             debug!(target: LOG_TARGET, "群 {group} 保持沉默（{}/{}，{}）", verdict.score, threshold, verdict.reason);
             quick_word(
-                ctx,
-                writer,
-                group,
-                config,
-                (&api_base, &api_key, &gate_model),
-                &persona,
-                &verdict,
-                threshold,
-                silent_for,
-                doze,
-                seq,
+                ctx, writer, group, config, &verdict, threshold, silent_for, doze, seq,
             )
             .await;
             return Ok(());
@@ -2271,18 +2275,15 @@ async fn consider_batch(
     .await
 }
 
-/// 判定没过线、但落在「想吭一声」区间里时：按几率随口回一两个字（见 [`quick`]）。
+/// 判定没过线、但落在「想吭一声」区间里时：按几率使用判定顺带写下的第一反应。
 ///
-/// 不调用发言模型、不碰工具，失败一律当没发生——这一步是锦上添花，不该让任何一次
-/// 出错变成日志里的警告。
+/// 不再为这一两个字另问一次模型；本地清洗、去重与现场检查不过就安静放弃。
 #[allow(clippy::too_many_arguments)]
 async fn quick_word(
     ctx: &Context,
     writer: &LockedWriter,
     group: &str,
     config: &AmbientConfig,
-    (api_base, api_key, model): (&str, &str, &str),
-    persona: &str,
     verdict: &gate::Verdict,
     threshold: u8,
     silent_for: Option<Duration>,
@@ -2305,34 +2306,16 @@ async fn quick_word(
     if !quick::wants(config, facts, rand::random::<f32>()) || !current(ctx, group, *seq) {
         return;
     }
+    let Some(text) = quick::clean(&verdict.quip) else {
+        return;
+    };
     let turns = window::with_group(group, |state| {
         state.recent(config.context_turns.clamp(1, 80))
     });
-    let voice = voice::short_lines(&turns, voice_register(config, group), 5, group);
-    let started = Instant::now();
-    let text = match quick::react(
-        api_base,
-        api_key,
-        model,
-        config,
-        persona,
-        &turns,
-        &verdict.reason,
-        &voice,
-    )
-    .await
-    {
-        Ok(Some(text)) if !quick::repeats(&text, &turns) => text,
-        Ok(_) => return,
-        Err(error) => {
-            debug!(target: LOG_TARGET, "群 {group} 随口一句没成：{error:#}");
-            return;
-        }
-    };
-    // 问模型的这几秒里群里又动了：这一声就不吭了。
-    if !current(ctx, group, *seq) {
+    if quick::repeats(&text, &turns) || !current(ctx, group, *seq) {
         return;
     }
+    let started = Instant::now();
     let pace::Speech::Say(mut utterances) = pace::parse(&text, 1, 0) else {
         return;
     };

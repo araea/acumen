@@ -276,6 +276,8 @@ struct Session {
     attempted: Arc<AtomicBool>,
     writes: usize,
     messages: usize,
+    /// 人格这一轮已经发出的表情包；贴纸是回应本身，不该成为每句话的尾缀。
+    sent_stickers: usize,
     draws: usize,
     music: usize,
     videos: usize,
@@ -355,6 +357,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         attempted: attempted.clone(),
         writes: 0,
         messages: 0,
+        sent_stickers: 0,
         draws: 0,
         music: 0,
         videos: 0,
@@ -1031,7 +1034,7 @@ impl Session {
                                 memory.address(&id, address)?;
                             }
                             if let Some(note) = note {
-                                memory.remember(&id, note)?;
+                                memory.remember(&id, note, now)?;
                             }
                             Ok::<_, anyhow::Error>(())
                         })?;
@@ -1169,11 +1172,25 @@ impl Session {
                     !action.is_message() || self.messages < self.config.messages_budget.clamp(1, 5),
                     "本轮消息额度已用完"
                 );
+                let stickers = match (&action, self.persona.is_some()) {
+                    (Action::Send { parts, .. }, true) => parts
+                        .iter()
+                        .filter(|part| matches!(part, Part::Sticker { .. }))
+                        .count(),
+                    _ => 0,
+                };
+                ensure!(
+                    self.sent_stickers + stickers <= 1,
+                    "一轮最多发一张表情包；这次先用文字回应，或把多余的表情包去掉"
+                );
                 self.writes += 1;
                 if action.is_message() {
                     self.messages += 1;
                 }
                 let result = self.perform(&action, &turns).await;
+                if result.is_ok() {
+                    self.sent_stickers += stickers;
+                }
                 if managing && result.is_ok() {
                     self.log_management(&action, target).await;
                 }

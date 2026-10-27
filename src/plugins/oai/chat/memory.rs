@@ -21,6 +21,10 @@ const MAX_PEOPLE: usize = 120;
 const MAX_NOTES: usize = 24;
 /// 旧事的保鲜期；过了就自然淡忘，免得半年前的梗还挂在嘴边。
 const NOTE_TTL_DAYS: i64 = 45;
+/// 人格亲手写下的对人的印象也会淡：不改写并不等于永远正确。
+const PERSON_NOTE_TTL_DAYS: i64 = 60;
+/// 暂定观察的证据半衰期。再次出现会刷新并增强，没再出现就慢慢退场。
+const OBSERVATION_HALF_LIFE_DAYS: f32 = 21.0;
 /// 自己说过的关于自己的话，最多留几条、留多久：说过一阵的「明天开始休」不该一直当真。
 const MAX_CLAIMS: usize = 12;
 const CLAIM_TTL_DAYS: i64 = 10;
@@ -63,10 +67,18 @@ pub(crate) struct Observation {
 }
 
 impl Observation {
-    fn evidence(&self) -> String {
-        let level = if self.confidence < 0.45 {
+    /// 此刻还剩多少证据强度。样本数不会随时间缩水，但旧样本对「他现在怎样」
+    /// 的证明力会下降；新的同类观察会在合并时先取这个衰减值，再继续累积。
+    fn strength(&self, now: i64) -> f32 {
+        let days = (now - self.at).max(0) as f32 / 86_400.0;
+        self.confidence * 0.5_f32.powf(days / OBSERVATION_HALF_LIFE_DAYS)
+    }
+
+    fn evidence(&self, now: i64) -> String {
+        let strength = self.strength(now);
+        let level = if strength < 0.45 {
             "初步猜测"
-        } else if self.confidence < 0.75 {
+        } else if strength < 0.75 {
             "有些依据"
         } else {
             "多次印证"
@@ -84,6 +96,9 @@ pub(crate) struct Person {
     /// 人格自己写的一句印象；空表示见过但没什么印象。
     #[serde(default)]
     pub note: String,
+    /// 这句印象最后由人格重新确认的时刻。重写会刷新，长期没确认会淡忘。
+    #[serde(default)]
+    pub note_at: i64,
     /// 平时怎么称呼他；空表示跟着群名片叫。
     ///
     /// 群里一个人的名片、昵称和「你俩之间怎么叫」是三回事：号主会管某个群友叫
@@ -240,10 +255,12 @@ impl GroupMemory {
     }
 
     /// 写下（或改写）对一个人的印象；空字符串等于把印象抹掉但仍认得这个人。
-    pub(crate) fn remember(&mut self, user_id: &str, note: &str) -> anyhow::Result<()> {
+    /// 每次明确改写都算一次重新确认，不会因为内容没变就永远沿用最初的时间。
+    pub(crate) fn remember(&mut self, user_id: &str, note: &str, at: i64) -> anyhow::Result<()> {
         anyhow::ensure!(!user_id.is_empty(), "用户 ID 是空的");
         let person = self.people.entry(user_id.to_string()).or_default();
         person.note = tidy(note);
+        person.note_at = if person.note.is_empty() { 0 } else { at };
         Ok(())
     }
 
@@ -277,7 +294,8 @@ impl GroupMemory {
             let total = existing.samples.saturating_add(samples).max(1);
             let old_weight = existing.samples as f32;
             let new_weight = samples as f32;
-            existing.confidence = ((existing.confidence * old_weight + confidence * new_weight)
+            // 旧证据先淡到此刻，再与这次的新样本合并；反复出现会重新变清晰。
+            existing.confidence = ((existing.strength(at) * old_weight + confidence * new_weight)
                 / total as f32)
                 .clamp(0.05, (0.20 + 0.15 * total as f32).min(0.95));
             existing.samples = total;
@@ -297,7 +315,7 @@ impl GroupMemory {
                 .enumerate()
                 .min_by(|(_, a), (_, b)| {
                     let score = |item: &Observation| {
-                        item.confidence * (1.0 + (item.samples as f32).ln_1p())
+                        item.strength(at) * (1.0 + (item.samples as f32).ln_1p())
                     };
                     score(a).total_cmp(&score(b)).then(a.at.cmp(&b.at))
                 })
@@ -305,8 +323,8 @@ impl GroupMemory {
             else {
                 return Ok(false);
             };
-            let new_score = candidate.confidence * (1.0 + (candidate.samples as f32).ln_1p());
-            let old_score = weakest.confidence * (1.0 + (weakest.samples as f32).ln_1p());
+            let new_score = candidate.strength(at) * (1.0 + (candidate.samples as f32).ln_1p());
+            let old_score = weakest.strength(at) * (1.0 + (weakest.samples as f32).ln_1p());
             if new_score <= old_score {
                 return Ok(false);
             }
@@ -314,6 +332,18 @@ impl GroupMemory {
         }
         person.observations.push(candidate);
         Ok(true)
+    }
+
+    /// 新证据推翻了哪条旧观察，就把那一条拿掉。复盘给出的是已有观察的原文，
+    /// 精确匹配而不是模糊删一串，避免一次修正把别的印象也带走。
+    pub(crate) fn drop_observation(&mut self, user_id: &str, previous: &str) -> bool {
+        let previous = tidy(previous);
+        let Some(person) = self.people.get_mut(user_id) else {
+            return false;
+        };
+        let before = person.observations.len();
+        person.observations.retain(|item| item.text != previous);
+        person.observations.len() != before
     }
 
     /// 写下（或改写）平时怎么称呼他；空字符串等于回到跟着群名片叫。
@@ -422,6 +452,12 @@ impl GroupMemory {
         self.notes.retain(|note| now - note.at < ttl);
         for person in self.people.values_mut() {
             person.observations.retain(|item| now - item.at < ttl);
+            if !person.note.is_empty()
+                && now - person.note_at >= PERSON_NOTE_TTL_DAYS * 86_400
+            {
+                person.note.clear();
+                person.note_at = 0;
+            }
         }
         self.claims.retain(|claim| now - claim.at < CLAIM_TTL_DAYS * 86_400);
         if self.claims.len() > MAX_CLAIMS {
@@ -519,7 +555,9 @@ impl GroupMemory {
                 format!("（{}）", facts.join("，"))
             };
             let mut parts = Vec::new();
-            if !person.note.is_empty() {
+            if !person.note.is_empty()
+                && now - person.note_at < PERSON_NOTE_TTL_DAYS * 86_400
+            {
                 parts.push(person.note.clone());
             }
             // 称呼是「你俩之间怎么叫」，跟名片上的名字不一样，得单独说清楚。
@@ -534,14 +572,21 @@ impl GroupMemory {
                     "最近有过几回直接互动".to_string()
                 });
             }
-            let mut observations: Vec<&Observation> = person.observations.iter().collect();
-            observations
-                .sort_by(|a, b| b.confidence.total_cmp(&a.confidence).then(b.at.cmp(&a.at)));
+            let mut observations: Vec<&Observation> = person
+                .observations
+                .iter()
+                .filter(|item| item.strength(now) >= 0.08)
+                .collect();
+            observations.sort_by(|a, b| {
+                b.strength(now)
+                    .total_cmp(&a.strength(now))
+                    .then(b.at.cmp(&a.at))
+            });
             for observation in observations.into_iter().take(2) {
                 parts.push(format!(
                     "暂定观察：{}（{}）",
                     observation.text,
-                    observation.evidence()
+                    observation.evidence(now)
                 ));
             }
             // 没印象的熟脸不列：一串「眼熟，没什么具体印象」只会让人格觉得
@@ -566,6 +611,7 @@ impl GroupMemory {
         let mut notes: Vec<(f32, &Note)> = self
             .notes
             .iter()
+            .filter(|note| now - note.at < NOTE_TTL_DAYS * 86_400)
             .map(|note| (super::tone::affinity(&note.text, &topic), note))
             .filter(|(score, note)| *score >= 0.6 || now - note.at < FRESH_NOTE_SECONDS)
             .collect();
@@ -775,11 +821,36 @@ mod tests {
         }
         assert!(memory.people["42"].observations.len() <= 3);
         // 过期观察随 prune 淡忘，但人还在（长期印象不被观察挤掉）。
-        memory.remember("42", "聊得来").unwrap();
+        memory.remember("42", "聊得来", 1_000).unwrap();
         memory.prune(1_000 + NOTE_TTL_DAYS * 86_400 + 1);
         let person = memory.people.get("42").unwrap();
         assert!(person.observations.is_empty());
         assert_eq!(person.note, "聊得来");
+    }
+
+    #[test]
+    fn old_evidence_fades_and_new_evidence_can_replace_it() {
+        let mut memory = GroupMemory::default();
+        memory.observe("42", "最近在准备考试", 0.8, 4, 0).unwrap();
+        let half_life = OBSERVATION_HALF_LIFE_DAYS as i64 * 86_400;
+        let faded = memory.people["42"].observations[0].strength(half_life);
+        assert!((faded - 0.4).abs() < 0.001);
+        assert!(memory.drop_observation("42", "最近在准备考试"));
+        assert!(memory.people["42"].observations.is_empty());
+        memory
+            .observe("42", "考试已经结束", 0.8, 4, half_life)
+            .unwrap();
+        assert_eq!(memory.people["42"].observations[0].text, "考试已经结束");
+    }
+
+    #[test]
+    fn handwritten_impressions_also_need_refreshing() {
+        let mut memory = GroupMemory::default();
+        memory.remember("42", "聊得来", 1_000).unwrap();
+        memory.prune(1_000 + PERSON_NOTE_TTL_DAYS * 86_400 - 1);
+        assert_eq!(memory.people["42"].note, "聊得来");
+        memory.prune(1_000 + PERSON_NOTE_TTL_DAYS * 86_400);
+        assert!(memory.people["42"].note.is_empty());
     }
 
     #[test]

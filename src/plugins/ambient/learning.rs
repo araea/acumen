@@ -39,6 +39,9 @@ const CONTEXT_CHARS: usize = 80;
 const MAX_STYLE: usize = 6;
 const MAX_EXPRESSIONS: usize = 10;
 const MAX_REPLIES: usize = 6;
+/// 风格与接法保留得久一些，短口癖退得更快；长期没有新样本时不让旧画像永久支配人设。
+const PROFILE_TTL_SECONDS: i64 = 90 * 86_400;
+const EXPRESSION_TTL_SECONDS: i64 = 30 * 86_400;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -120,12 +123,23 @@ pub(super) fn attach(base: &Path) {
 
 /// 已经归纳出的画像 → 发言提示词的一段。判定不读它：风格不影响「要不要开口」。
 pub(super) fn brief() -> String {
-    let profile = lock().stored.profile.clone();
-    render_brief(&profile)
+    let stored = lock().stored.clone();
+    render_brief(
+        &stored.profile,
+        stored.last_success,
+        chrono::Local::now().timestamp(),
+    )
 }
 
-fn render_brief(profile: &Profile) -> String {
-    if profile.style.is_empty() && profile.expressions.is_empty() && profile.replies.is_empty() {
+fn render_brief(profile: &Profile, learned_at: i64, now: i64) -> String {
+    let age = now.saturating_sub(learned_at);
+    if learned_at <= 0 || age >= PROFILE_TTL_SECONDS {
+        return String::new();
+    }
+    let expressions = (age < EXPRESSION_TTL_SECONDS)
+        .then_some(&profile.expressions)
+        .filter(|items| !items.is_empty());
+    if profile.style.is_empty() && profile.replies.is_empty() && expressions.is_none() {
         return String::new();
     }
     let mut out = String::from(
@@ -135,11 +149,10 @@ fn render_brief(profile: &Profile) -> String {
     for item in profile.style.iter().take(3) {
         out.push_str(&format!("- 风格：{item}\n"));
     }
-    if !profile.expressions.is_empty() {
+    if let Some(expressions) = expressions {
         out.push_str(&format!(
             "- 最近常用的短表述：{}。按场合自然使用，别逐句照搬或连着复读\n",
-            profile
-                .expressions
+            expressions
                 .iter()
                 .take(6)
                 .map(|text| format!("「{text}」"))
@@ -407,6 +420,7 @@ const RUBRIC: &str = "\
 
 规则：
 - 根据新样本修订旧画像，保留仍有依据的稳定习惯；只有多条消息共同支持时才新增或改变一项，单次玩梗、情绪、复读不代表习惯。
+- 旧画像不是永久人设：新样本反复出现相反写法就删改旧项。expressions 尤其是近期口癖，本批不再出现的旧项通常应淘汰，不要为了「保持稳定」原样续命；style 与 replies 也只保留仍有依据的。
 - style 最多 6 条，每条 40 字内；expressions 最多 10 条，每条 2–16 字且必须是号主原话里的短表述，不要完整句子；replies 最多 6 条，when/prefer 各 30 字内。
 - 写可操作的偏好，例如「被认真提问时直接答关键步骤」，不要写「幽默」「内向」「人很好」这类人格标签，也不要评价私生活。
 - 不写人名、昵称、QQ 号、群号、具体地点、联系方式、链接、凭据或其他隐私；不记观点立场和临时事实，不保存原句上下文。
@@ -542,7 +556,8 @@ mod tests {
         assert_eq!(profile.style, ["短句，少打句号"]);
         assert_eq!(profile.expressions, ["确实"]);
         assert_eq!(profile.replies.len(), 1);
-        assert!(render_brief(&profile).contains("有人认真提问"));
+        assert!(render_brief(&profile, 1_000, 2_000).contains("有人认真提问"));
+        assert!(render_brief(&profile, 1_000, 1_000 + PROFILE_TTL_SECONDS).is_empty());
     }
 
     #[test]

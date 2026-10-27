@@ -27,6 +27,9 @@ pub(crate) struct Verdict {
     pub help: bool,
     /// 真出事了、晚了就来不及：够分的话连冷却与每小时那几笔一起越过去。
     pub urgent: bool,
+    /// 判定顺带留下的第一反应。只在它确实有一句很短、很贴现场的话时出现；
+    /// 这样「随口一句」不必再花一次模型调用。
+    pub quip: String,
 }
 
 impl Verdict {
@@ -100,6 +103,10 @@ const RUBRIC: &str = "\
 最新一句如果是群友之间的追问、已经有人接住的问题，按旁观来估；就算他会答，
 也不必抢别人的话。隔了好几分钟的梗也不必补一句，分数跟着现场的新鲜程度走。
 
+记录里的「你自己（亲手打的）」是号主刚在 QQ 客户端亲自发的，不是机器人替他说的。
+本人已经回答或接住的话不要重复给高分；他停手以后，群友若还顺着那一摊聊，可以按新消息
+正常估分，能自然续上，但不要因为旧事仍在窗口里就补答一遍。
+
 「你自己」写着群友这会儿看到的他：名片上那个名字、头衔、进群多久，还有他的头像。
 群里叫人用的是那个名字，不是 QQ 号——记录上的〔叫了你的名字〕就是有人直接喊了他，
 和 @ 一样算冲着他来的；但那是猜出来的，也可能只是撞了词，看上下文是不是真在叫他。
@@ -126,7 +133,12 @@ urgent 留给真要紧、晚了就来不及的事：有人求救或说出了事�
 reason 写让他想开口（或不想开口）的那一件事本身，具体到人和话题，比如「阿杰问怎么
 卸预装管家，还没人答」。
 
-只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false, \"urgent\": false}";
+quip 是顺带留下的第一反应，只在 score 为 38–64、最新那句话确实让他有个一到八字的自然
+反应时写，例如「有点东西」「我看看」。必须贴住最新那句，不复述、不回答完整问题、不 @ 人、
+不抖机灵，也不为了凑口头禅硬写。需要组织语言、没把握接得上、或分数不在这个区间时给空串。
+有了它，后续若想随口吭一声就直接用，不再另问一次模型。
+
+只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false, \"urgent\": false, \"quip\": \"\"}";
 
 const GATE_TURNS: usize = 12;
 /// 求助时门槛在基础值上再让的分。
@@ -304,6 +316,34 @@ fn parse_verdict(raw: &str) -> anyhow::Result<Verdict> {
             .unwrap_or_default()
             .trim()
             .to_string(),
+        quip: value["quip"]
+            .as_str()
+            .and_then(super::quick::clean)
+            .unwrap_or_default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quip_rides_on_the_same_verdict() {
+        let verdict = parse_verdict(
+            r#"{"score":52,"reason":"新玩法挺巧","continuation":false,"quip":"有点东西。"}"#,
+        )
+        .unwrap();
+        assert_eq!(verdict.quip, "有点东西");
+        assert_eq!(verdict.score, 52);
+    }
+
+    #[test]
+    fn unusable_quips_fall_back_to_silence() {
+        for quip in ["[silent]", "这句话长得已经完全不像随口反应了", "@123 哈哈"] {
+            let raw = serde_json::json!({"score":50,"quip":quip}).to_string();
+            assert!(parse_verdict(&raw).unwrap().quip.is_empty());
+        }
+        assert!(parse_verdict(r#"{"score":50}"#).unwrap().quip.is_empty());
+    }
 }
 

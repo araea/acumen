@@ -30,6 +30,10 @@ const BRIEF_LIMIT: usize = 4;
 const TOPIC_TURNS: usize = 12;
 /// 记录里能偷的最多点名几条。刷图的时候一屏全是图，点名最近这几条就够。
 const LOOT_LIMIT: usize = 3;
+/// 刚发过的同一张先收一收，避免每轮都拿同一张当标点。
+const REUSE_QUIET_SECONDS: i64 = 15 * 60;
+/// 至少与眼前的话题或状态有一点字面关联才上架；没有合适的就一张都不摆。
+const MIN_FIT: f32 = 0.45;
 
 /// 收进来的是哪一种。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -257,9 +261,9 @@ pub(crate) fn sticker_style(mut segment: Segment) -> Segment {
 /// 发言轮贴进提示词的那一段；库是关的、或者库空着而眼前也没什么可偷时返回空串。
 ///
 /// 两样东西摆在手边。一是库里的几张，按「离眼前的话有多近」挑：接梗、吐槽、被逗乐这些
-/// 场合用不用得上，看的就是它自己写的那个标签与此刻话题的重合度；一条都贴不上时也给
-/// 几张——那时挑出来的是还没怎么用过的，新偷进来的正好露一面。心情也算进来一小份：
-/// 同一个梗高兴时发是接梗，低落时发就是没心没肺。
+/// 场合用不用得上，看的就是它自己写的那个标签与此刻话题的重合度。心情也算进来一小份：
+/// 同一个梗高兴时发是接梗，低落时发就是没心没肺。没有贴题的就不摆货架，
+/// 免得模型为了「像个真人」随手塞一张；刚用过的也歇十五分钟。
 ///
 /// 二是记录里刚有人发过的图与表情包，连着消息 ID 一起点出来。从前库空着时这一段整个
 /// 不出现，偷这件事只剩工具说明里的一句话，于是一次都没偷过，库也就一直空着——
@@ -273,12 +277,14 @@ pub(crate) fn brief(turns: &[Turn], max: usize, mood: &str) -> String {
     let total = store.library.entries.len();
     let mut out = String::new();
     if total > 0 {
+        let now = chrono::Local::now().timestamp();
         let topic = tone::grams(&recent(turns));
         let feeling = tone::grams(mood);
         let mut ranked: Vec<(&Entry, f32)> = store
             .library
             .entries
             .iter()
+            .filter(|entry| entry.last_used == 0 || now - entry.last_used >= REUSE_QUIET_SECONDS)
             .map(|entry| {
                 let fit = tone::affinity(&entry.label, &topic);
                 let temper = if feeling.is_empty() {
@@ -298,14 +304,17 @@ pub(crate) fn brief(turns: &[Turn], max: usize, mood: &str) -> String {
         });
         let lines: Vec<String> = ranked
             .iter()
+            .filter(|(_, score)| *score >= MIN_FIT)
             .take(BRIEF_LIMIT)
             .map(|(entry, _)| format!("- {}", entry.line()))
             .collect();
-        out.push_str(&format!(
-            "偷来的表情包（一共 {total} 张，这几张离眼前的话最近）：\n{}\n\
-             要发就用 send 里的 sticker 配 id。\n",
-            lines.join("\n")
-        ));
+        if !lines.is_empty() {
+            out.push_str(&format!(
+                "偷来的表情包（这几张贴得上眼前的话题或状态）：\n{}\n\
+                 真要发就用 send 里的 sticker 配 id；一轮最多一张，不贴题就不发。\n",
+                lines.join("\n")
+            ));
+        }
     } else if !loot.is_empty() {
         out.push_str("你的表情包库还空着，库里没有编号可取。\n");
     }

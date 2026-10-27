@@ -63,10 +63,9 @@ const PRESENCE_HIGH: f32 = 0.272;
 /// 一条原始记录：群号、时刻、正文。
 pub(super) type Row = (String, i64, String);
 
-/// 近期原话里的一句：说在哪个群，以及原话。
+/// 近期原话里的一句。属于哪个群由 `Loaded::by_group` 的键表达，不在每条里重复存。
 #[derive(Debug, Clone)]
 pub(super) struct Line {
-    pub group: String,
     pub text: String,
 }
 
@@ -482,10 +481,7 @@ pub(super) fn pick(
         if known.contains(&text) || !seen.insert(text.clone()) {
             continue;
         }
-        let line = Line {
-            group: group.clone(),
-            text,
-        };
+        let line = Line { text };
         let mine = by_group.entry(group.clone()).or_default();
         if mine.len() < GROUP_KEEP {
             mine.push(line.clone());

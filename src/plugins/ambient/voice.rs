@@ -14,9 +14,9 @@
 
 use super::mood::Register;
 use super::recent;
+use super::window::Turn;
 pub(super) use crate::plugins::oai::chat::tone::content_words;
 use crate::plugins::oai::chat::tone::{affinity, grams};
-use super::window::Turn;
 
 /// 编译进来的样本库。加一条就是加一个标尺，改风格先改它。
 const VOICE: &str = include_str!("../../../res/ambient/voice.md");
@@ -185,63 +185,6 @@ fn pick_recent(turns: &[Turn], recent: &[recent::Line], here: &[recent::Line]) -
         chosen.push(line.text.clone());
     }
     chosen
-}
-
-/// 「随口一句」要的调子：几条最短的原话（六个字以内），跟眼前话题无关。
-///
-/// 号主手打的消息有四分之一在四到六个字以内，短到只剩一个反应（「？」「笑死」
-/// 「好可爱啊」）；机器人每次开口都带着内容，这一档几乎是空的。随口一句的提示词里只
-/// 摆这几条，模型才写得出那么短的话。样本库里挑三条，再从他最近几天亲手打的短句里补
-/// 两条（见 [`recent`]）：这几天挂在嘴边的「（」「绷不住了」，样本库里没有。
-pub(crate) fn short_lines(
-    turns: &[Turn],
-    register: Register,
-    count: usize,
-    group: &str,
-) -> Vec<String> {
-    use rand::seq::SliceRandom;
-    let samples = parse(VOICE);
-    let recent_text: String = turns
-        .iter()
-        .rev()
-        .take(TOPIC_TURNS)
-        .map(|turn| turn.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let words = content_words(&recent_text);
-    let short = |text: &str| (1..=6).contains(&text.chars().count());
-    let mut shorts: Vec<&'static str> = samples
-        .iter()
-        .filter(|sample| fits(sample, register))
-        .filter(|sample| short(sample.text))
-        .filter(|sample| !recent_text.contains(sample.text))
-        .filter(|sample| content_words(sample.text).is_disjoint(&words))
-        .map(|sample| sample.text)
-        .collect();
-    shorts.shuffle(&mut rand::rng());
-    let here = recent::lines_in(group);
-    let mut fresh: Vec<recent::Line> = recent::lines()
-        .into_iter()
-        .chain(here)
-        .filter(|line| short(&line.text))
-        .filter(|line| !recent_text.contains(line.text.as_str()))
-        .filter(|line| content_words(&line.text).is_disjoint(&words))
-        .collect();
-    fresh.sort_by(|a, b| a.text.cmp(&b.text));
-    fresh.dedup_by(|a, b| a.text == b.text);
-    fresh.shuffle(&mut rand::rng());
-    // 这个群里说的先上。
-    fresh.sort_by_key(|line| line.group != group);
-    let fresh: Vec<String> = fresh.into_iter().map(|line| line.text).take(2).collect();
-    let mut out: Vec<String> = fresh;
-    out.extend(
-        shorts
-            .into_iter()
-            .map(str::to_string)
-            .take(count.saturating_sub(out.len())),
-    );
-    out.shuffle(&mut rand::rng());
-    out
 }
 
 /// 收下一条样本，前提是它还没把这一轮的字数用光。

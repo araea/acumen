@@ -346,9 +346,21 @@ impl GroupState {
             1 => "刚接过一轮，这一轮交给别人也正好。",
             _ => "最近这十分钟已经由你说了好几轮，这会儿看着就好。",
         };
+        // 手发与自动回复共用一个账号，却是两个说话时刻。只在近期提示这层交接：
+        // 本人在场时不抢；他停手以后，群友的新回应仍可把原来那摊自然续下去。
+        let owner = self
+            .owner_at
+            .filter(|at| at.elapsed() < Duration::from_mins(30))
+            .map_or(String::new(), |at| {
+                format!(
+                    "号主本人 {} 秒前在客户端亲手说过话；那不是你的自动回复。他已经接过的别重复，\
+                     他停手后群友若还顺着这摊聊，可以接新回应自然续上。",
+                    at.elapsed().as_secs()
+                )
+            });
         format!(
             "你{since}，最近十分钟发言 {recent} 轮，近一小时 {count} 轮。{crowding}\
-             当前关注：{focus}。关注是给自己留个念想，接不接随你；有新意又还在继续的对话最值得接。"
+             当前关注：{focus}。关注是给自己留个念想，接不接随你；有新意又还在继续的对话最值得接。{owner}"
         )
     }
 
@@ -1026,4 +1038,29 @@ pub(crate) fn all_idle() -> bool {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .values()
         .all(|state| !state.running)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_owner_message_yields_without_erasing_the_handoff() {
+        let mut state = GroupState::default();
+        state.unread_mention = true;
+        let start = state.receive(Turn {
+            user_id: "me".into(),
+            text: "这个我来答".into(),
+            message_id: "owner".into(),
+            from_me: true,
+            manual: true,
+            at: chrono::Local::now().timestamp(),
+            ..Turn::default()
+        });
+        assert!(!start, "号主手发本身不该唤醒自动回复");
+        assert!(!state.unread_mention);
+        assert!(state.owner_active(Duration::from_secs(480)));
+        assert_eq!(state.owner_marks(), 1);
+        assert!(state.rhythm().contains("他停手后群友若还顺着这摊聊"));
+    }
 }

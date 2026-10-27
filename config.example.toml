@@ -1131,6 +1131,8 @@ screenshot_on_suspicion = false
 # 同一群至少间隔六小时，配置再小也会限制为一小时一次。
 screenshot_cooldown_seconds = 21600
 # 熟人记忆：落盘记住群里的人与旧事（data/ambient/memory/），并开放 satori_memo。
+# 对人的手写印象 60 天未重新确认会淡去；复盘观察按 21 天半衰期减弱、45 天淡忘，
+# 新证据可以明确替换旧观察。记忆只按当前话题少量注入，不做全量人设档案。
 memory_enabled = true
 # 每轮最多写几条记忆；0 关闭 satori_memo。
 memo_budget = 3
@@ -1149,13 +1151,15 @@ life_enabled = true
 # 需要 memory_enabled。
 reflect_enabled = true
 # 随口一句：判定分数落在 quick_floor 与开口门槛之间（想吭一声、可不吭）、现场够新、
-# 两分钟没开过口、本人不在时，按 45% 几率只回一两个字（不调用发言模型）。
+# 两分钟没开过口、本人不在时，按 45% 几率使用判定顺带留下的短反应。
+# 短反应与判定共用同一次模型调用，本地做长度、内容与复读检查，不再额外请求模型。
 # quick_per_hour 是每群每小时上限，0 关闭。
 quick_per_hour = 2
 quick_floor = 38
 # 号主本人在线时机器人让位（同一个号，不抢话）：他在这个群亲手打字之后
 # owner_quiet_seconds 秒内不主动接话；这期间有人点名，先等 owner_grace_seconds 秒让他
-# 自己答，他开口了这条点名就归他。0 分别关闭这两层。
+# 自己答，他开口了这条点名就归他。他停手后，群友顺着原话题的新回应仍可自然续聊，
+# 但不会把本人已经答过的话再补答一遍。0 分别关闭这两层。
 owner_quiet_seconds = 480
 owner_grace_seconds = 75
 
@@ -1213,7 +1217,8 @@ reply_on_mention = true
 
 # 从号主亲手发的日常消息里学习说话方式：句式与长短、最近常用的短表述、什么情形
 # 习惯怎么接。学到的画像单独存为 data/ambient/learning.json，每轮只拼进发言提示词，
-# 不改写人工维护的 persona.md，也不影响「要不要开口」的判定。
+# 不改写人工维护的 persona.md，也不影响「要不要开口」的判定。画像会随新样本修订，
+# 近期口癖 30 天后退出提示词，其余学习画像 90 天没有新学习也会停用，不把旧习惯固化成人设。
 # 只学实时到达的号主手发群消息：不扫历史、不采私聊、不靠定时器凭空唤醒。攒够
 # min_messages 条后先等 idle_seconds，再确认整个搭话插件没有判定、发言或复盘在跑，
 # 才调用一次；一次最多 40 条，成功或失败都受 interval_minutes 限制。
