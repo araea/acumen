@@ -153,14 +153,7 @@ pub(crate) enum Action {
         /// 已核实的图片直链或本轮工作目录里的文件。
         image: String,
     },
-    /// 群文件：列出 / 下载 / 上传 / 删除 / 改名。
-    FilesList {
-        #[serde(default)]
-        folder_id: Option<String>,
-    },
-    FileDownload {
-        file_id: String,
-    },
+    /// 群文件：上传 / 删除 / 改名。读（列目录、按名搜）在 `satori_group`。
     FileUpload {
         source: String,
         #[serde(default)]
@@ -173,10 +166,6 @@ pub(crate) enum Action {
         file_id: String,
         name: String,
     },
-    /// 读群公告列表（标题、正文、发布者、是否置顶）。
-    Bulletins,
-    /// 读群精华列表（谁发的、谁加的精、正文按本机历史能补则补）。
-    Essences,
     /// 实现端在 `internal/capabilities` 里声明的扩展能力，原样转发。
     ///
     /// 这一支是「协议端多一个动作，智能体当天就能用」的那条路：名字、用途与参数
@@ -479,8 +468,7 @@ impl Action {
             Self::Avatar { image } => {
                 ensure!(!image.trim().is_empty(), "头像来源是空的");
             }
-            Self::FilesList { .. } => {}
-            Self::FileDownload { file_id } | Self::FileDelete { file_id } => {
+            Self::FileDelete { file_id } => {
                 id(file_id)?;
             }
             Self::FileUpload { source, name } => {
@@ -493,7 +481,6 @@ impl Action {
                 id(file_id)?;
                 label(name, 120)?;
             }
-            Self::Bulletins | Self::Essences => {}
             // 扩展能力的参数不是类型化的，实现端自己校验；名字在目录里核过。
             Self::Capability { name, .. } => {
                 id(name)?;
@@ -514,16 +501,12 @@ impl Action {
                 | Self::Mute { .. }
                 | Self::Kick { .. }
                 | Self::MuteAll { .. }
-                |             Self::RenameGroup { .. }
+                | Self::RenameGroup { .. }
                 | Self::Approve { .. }
                 | Self::Announce { .. }
-                | Self::FilesList { .. }
-                | Self::FileDownload { .. }
                 | Self::FileUpload { .. }
                 | Self::FileDelete { .. }
                 | Self::FileRename { .. }
-                | Self::Bulletins
-                | Self::Essences
         )
     }
 

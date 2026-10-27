@@ -31,6 +31,7 @@
 pub(crate) mod actions;
 pub(crate) mod attention;
 pub(crate) mod breath;
+pub(crate) mod group_info;
 pub(crate) mod history;
 pub(crate) mod identity;
 pub(crate) mod long_text;
@@ -333,6 +334,7 @@ pub(crate) fn tool_names(config: &ChatConfig, media: super::media::Slots) -> Vec
         "satori_context",
         "satori_read",
         "satori_history",
+        "satori_group",
         "satori_action",
     ];
     if config.draw_budget > 0 && media.image {

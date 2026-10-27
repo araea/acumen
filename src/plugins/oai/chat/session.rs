@@ -9,7 +9,7 @@
 use super::{
     Authority, ChatConfig, ChatEnv, Persona, Place,
     actions::{self, Action, Part},
-    history, identity, memory, moderation, stickers,
+    group_info, history, identity, memory, moderation, stickers,
     trigger::Trigger,
     window::{self, Turn, turn_from_platform},
 };
@@ -41,7 +41,7 @@ use std::{
 /// 表态按平台能力收在群里：QQ 私聊客户端里点不出表情回应，这条路给模型只会换来失败回执。
 /// 资料卡点赞在 Android QQ 上没有内核入口（见 satori-qq 的 JNI_CAPABILITIES），
 /// 试一次就要白占一次额度，2026-10 从两端一并删掉。
-pub(crate) const GROUP_ACTIONS: [&str; 26] = [
+pub(crate) const GROUP_ACTIONS: [&str; 22] = [
     "send",
     "poke",
     "react",
@@ -61,13 +61,9 @@ pub(crate) const GROUP_ACTIONS: [&str; 26] = [
     "nick",
     "signature",
     "avatar",
-    "files_list",
-    "file_download",
     "file_upload",
     "file_delete",
     "file_rename",
-    "bulletins",
-    "essences",
 ];
 
 /// 私聊里能做的：群管理那一批没有对象，@ 与表情回应也没有意义。
@@ -194,13 +190,9 @@ fn capability(action: &Action) -> &'static str {
         Action::Nick { .. } => "nick",
         Action::Signature { .. } => "signature",
         Action::Avatar { .. } => "avatar",
-        Action::FilesList { .. } => "files_list",
-        Action::FileDownload { .. } => "file_download",
         Action::FileUpload { .. } => "file_upload",
         Action::FileDelete { .. } => "file_delete",
         Action::FileRename { .. } => "file_rename",
-        Action::Bulletins => "bulletins",
-        Action::Essences => "essences",
         Action::Capability { .. } => "capability",
     }
 }
@@ -291,6 +283,8 @@ struct Session {
     observations: usize,
     /// 这一轮翻过几次群记录（上限见 [`history::Limits`]）。
     histories: usize,
+    /// 这一轮读过几次群文件 / 群精华 / 群公告（上限见 [`group_info::READS`]）。
+    group_reads: usize,
     /// 翻记录翻到的原文：之后说话要核对「眼前有没有这个来头」时，这些也算眼前。
     consulted: Vec<String>,
     /// 这一轮取回的附件：消息号 → 取回结果；同一条再要就原样给，不重复下载。
@@ -367,6 +361,7 @@ pub(crate) async fn start(env: ChatEnv<'_>) -> Result<Bridge> {
         memos: 0,
         observations: 0,
         histories: 0,
+        group_reads: 0,
         consulted: Vec::new(),
         saved: HashMap::new(),
         saved_bytes: 0,
@@ -581,6 +576,10 @@ impl Session {
                 // 平台级拒绝会跨轮留着（见 [`REFUSAL_TTL`]），每次报告都要重算，
                 // 免得人格把一个已知按不动的按钮当成还没试过的。
                 let mut capabilities = self.capabilities.clone();
+                if let Some(map) = capabilities.as_object_mut() {
+                    map.remove("catalog");
+                    map.remove("removed");
+                }
                 capabilities["management_enabled"] = json!(self.management_enabled());
                 let unavailable: serde_json::Map<String, Value> = action_kinds(&self.place)
                     .iter()
@@ -782,6 +781,31 @@ impl Session {
                         .filter_map(|message| message["text"].as_str().map(str::to_string)),
                 );
                 Ok(found)
+            }
+            "group" => {
+                ensure!(self.enabled(), "这个会话的聊天功能已停用");
+                // 读的是群里人人看得到的东西：不占动作额度、不看群聊走没走、也不算开过口
+                // （见 [`group_info`] 开头那段从前的三处不对）。
+                let guild = self
+                    .place
+                    .guild()
+                    .ok_or_else(|| anyhow::anyhow!("私聊里没有群文件、群精华和群公告"))?
+                    .to_string();
+                ensure!(
+                    self.ctx.bot.adapter == "satori-qq",
+                    "群文件、群精华、群公告只有 QQ（知弦）读得到"
+                );
+                ensure!(
+                    self.group_reads < group_info::READS,
+                    "本轮读群资料的次数用完了（{} 次），拿手上的结果作答",
+                    group_info::READS
+                );
+                let query = group_info::Query::parse(request)?;
+                // 失败也计入：实现端读不出来时反复重试没有意义。
+                self.group_reads += 1;
+                let (method, params) = query.rpc(&guild);
+                let data = self.rpc(method, params).await.map_err(|error| group_info::explain(&error))?;
+                query.render(&data)
             }
             "draw" => {
                 ensure!(self.enabled(), "这个会话的聊天功能已停用");
@@ -1048,16 +1072,17 @@ impl Session {
                 }))
             }
             "action" => {
-                // 一旦选择工具动作，就不再把最终解释当作第二份消息发送。
-                self.attempted.store(true, Ordering::SeqCst);
                 let action: Action = serde_json::from_value(request["request"].clone())?;
                 ensure!(self.enabled(), "{}的聊天功能已停用", self.place.label());
                 // 平台声明的扩展能力有它自己的额度与管理授权，走单独一条路：
-                // 参数不是类型化的，能与不能只能问实现端的目录。
+                // 参数不是类型化的，能与不能只能问实现端的目录。只读的能力不算开过口，
+                // 由那条路自己决定要不要置 `attempted`。
                 if let Action::Capability { name, params } = &action {
                     let (name, params) = (name.clone(), params.clone());
                     return self.call_capability(&name, params).await;
                 }
+                // 一旦选择会落到群里的动作，就不再把最终解释当作第二份消息发送。
+                self.attempted.store(true, Ordering::SeqCst);
                 // 群管理在私聊里没有对象，@ 也没有意义。在参数校验之前就挡下，
                 // 模型不用等一次注定失败的回执。
                 ensure!(
@@ -1243,6 +1268,13 @@ impl Session {
         });
         if !qq {
             out["note"] = json!("当前适配器未声明 QQ 扩展：戳一戳不可用，其余以回执为准。");
+        }
+        // 目录与移除表留在会话里给 `action=capability` 核名字、查参数；它们近两万字，
+        // `satori_context` 交给模型之前会摘掉（见那里）。
+        for key in ["catalog", "removed"] {
+            if let Some(value) = extensions.as_ref().and_then(|value| value.get(key)) {
+                out[key] = value.clone();
+            }
         }
         out
     }
@@ -1493,6 +1525,12 @@ impl Session {
         if self.capabilities.is_null() {
             self.capabilities = self.describe_capabilities().await;
         }
+        // 查目录：`name` 写「?」。目录有一百多条、近两万字，不进 satori_context，
+        // 要用时按关键词捞几条——从前工具说明让模型「照 capabilities.catalog 抄」，
+        // 可现场里根本没有这一栏，模型只能凭印象编能力名。
+        if matches!(name.trim(), "?" | "？" | "list" | "catalog") {
+            return Ok(self.capability_catalog(params["keyword"].as_str().unwrap_or("")));
+        }
         let entry = self
             .capabilities
             .get("catalog")
@@ -1545,6 +1583,7 @@ impl Session {
             );
         }
         if kind != "read" {
+            self.attempted.store(true, Ordering::SeqCst);
             ensure!(
                 self.current(),
                 "群聊已更新或停用。先读 satori_context 再决定，旧动作照现在聊的重新想一遍更稳"
@@ -1564,6 +1603,61 @@ impl Session {
             false,
         );
         Ok(json!({"capability": name, "kind": kind, "note": note, "result": result}))
+    }
+
+    /// 实现端扩展能力目录的一份摘录。没给关键词只列名字（按 read / write / manage 分），
+    /// 给了就把命中的几条连参数说明一起给出来。私聊里不列群管理那一类。
+    fn capability_catalog(&self, keyword: &str) -> Value {
+        const ROWS: usize = 30;
+        let group = self.place.is_group();
+        let words: Vec<String> = keyword
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
+        let catalog: Vec<&Value> = self
+            .capabilities
+            .get("catalog")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|entry| group || entry["kind"].as_str() != Some("manage"))
+            .collect();
+        if catalog.is_empty() {
+            return json!({"catalog": [], "note": "实现端没有声明扩展能力目录"});
+        }
+        if words.is_empty() {
+            let mut names = serde_json::Map::new();
+            for entry in &catalog {
+                let kind = entry["kind"].as_str().unwrap_or("write").to_string();
+                let list = names.entry(kind).or_insert_with(|| json!([]));
+                if let (Some(list), Some(name)) = (list.as_array_mut(), entry["name"].as_str()) {
+                    list.push(json!(name));
+                }
+            }
+            return json!({
+                "names": names,
+                "note": "params.keyword 写一两个词（如 remark、title、群文件）再查一次，就给出参数说明",
+            });
+        }
+        let hits: Vec<Value> = catalog
+            .iter()
+            .filter(|entry| {
+                let hay = entry.to_string().to_lowercase();
+                words.iter().any(|word| hay.contains(word.as_str()))
+            })
+            .map(|entry| {
+                json!({
+                    "name": entry["name"], "kind": entry["kind"],
+                    "params": entry["params"], "note": entry["note"],
+                })
+            })
+            .collect();
+        let matched = hits.len();
+        json!({
+            "catalog": hits.into_iter().take(ROWS).collect::<Vec<_>>(),
+            "matched": matched,
+            "note": "照 name 与 params 写 action=capability 调用；read 不占额度，write / manage 占一次动作额度，manage 还要本群开放管理",
+        })
     }
 
     async fn rpc(&self, method: &str, params: Value) -> Result<Value> {
@@ -1993,22 +2087,6 @@ impl Session {
                     "[换了 QQ 头像]".to_string(),
                 )
             }
-            Action::FilesList { folder_id } => {
-                let mut params = json!({"guild_id":guild,"limit":40});
-                if let Some(folder) = folder_id.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
-                    params["folder_id"] = json!(folder);
-                }
-                (
-                    "internal/group_file_list",
-                    params,
-                    "[列了群文件]".to_string(),
-                )
-            }
-            Action::FileDownload { file_id } => (
-                "internal/group_file_download",
-                json!({"guild_id":guild,"file_id":file_id.trim()}),
-                format!("[下载群文件 {file_id}]"),
-            ),
             Action::FileUpload { source, name } => {
                 let target = name.as_deref().map(str::trim).filter(|n| !n.is_empty());
                 let path = self
@@ -2032,16 +2110,6 @@ impl Session {
                 "internal/group_file_rename",
                 json!({"guild_id":guild,"file_id":file_id.trim(),"name":name.trim()}),
                 format!("[群文件 {file_id} 改名为 {name}]"),
-            ),
-            Action::Bulletins => (
-                "internal/group_bulletin_get",
-                json!({"guild_id":guild}),
-                "[读了群公告]".to_string(),
-            ),
-            Action::Essences => (
-                "internal/group_essence_list",
-                json!({"guild_id":guild,"page_limit":20}),
-                "[翻了群精华]".to_string(),
             ),
         };
         ensure!(
