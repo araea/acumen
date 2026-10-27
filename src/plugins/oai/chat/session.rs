@@ -36,8 +36,9 @@ use std::{
 /// 人格对「自己能做什么」的认知不该只靠 skill 里那张手写的表——文档会过期，
 /// 这份清单和代码一起走，`satori_context` 每次都照它报告。
 ///
-/// 私聊里只剩会真的落到这个会话上的九件：发消息、撤回、戳一戳、表态、合并转发，
+/// 私聊里只剩会真的落到这个会话上的八件：发消息、撤回、戳一戳、合并转发，
 /// 加账号级的四件（发说说、改昵称 / 签名 / 头像）——它们不落在会话上，两边都可用。
+/// 表态按平台能力收在群里：QQ 私聊客户端里点不出表情回应，这条路给模型只会换来失败回执。
 /// 资料卡点赞在 Android QQ 上没有内核入口（见 satori-qq 的 JNI_CAPABILITIES），
 /// 试一次就要白占一次额度，2026-10 从两端一并删掉。
 pub(crate) const GROUP_ACTIONS: [&str; 26] = [
@@ -69,11 +70,10 @@ pub(crate) const GROUP_ACTIONS: [&str; 26] = [
     "essences",
 ];
 
-/// 私聊里能做的：群管理那一批没有对象，@ 也没有意义。
-pub(crate) const DIRECT_ACTIONS: [&str; 9] = [
+/// 私聊里能做的：群管理那一批没有对象，@ 与表情回应也没有意义。
+pub(crate) const DIRECT_ACTIONS: [&str; 8] = [
     "send",
     "poke",
-    "react",
     "recall",
     "forward",
     "feed",
@@ -1062,7 +1062,7 @@ impl Session {
                 // 模型不用等一次注定失败的回执。
                 ensure!(
                     self.place.is_group() || !action.needs_group(),
-                    "私聊里没有群管理动作；能做的只有发消息、撤回、戳一戳、表态和合并转发"
+                    "私聊里没有群管理动作；能做的只有发消息、撤回、戳一戳和合并转发"
                 );
                 if !self.place.is_group() {
                     if let Action::Send { parts, .. } = &action {

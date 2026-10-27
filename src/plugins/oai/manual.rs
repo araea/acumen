@@ -249,7 +249,7 @@ pub(super) fn doc(overview: &Overview, rooms: &Rooms) -> Doc {
     blocks.push(Block::Notes(MEDIA.iter().map(|line| (*line).to_string()).collect()));
     blocks.push(Block::Callout {
         tone: Tone::Info,
-        text: "慎用：-* 清空所有房间的公有历史，-*! 连私有历史一起清（都要再发一次确认）".into(),
+        text: "慎用：-* 清空所有房间的公有历史，-*! 连私有历史一起清；发了就算数，不可撤销".into(),
     });
 
     Doc {

@@ -404,8 +404,9 @@ pub(crate) struct AgentReply {
 
 /// 房间接进能力层时的那一份现场。
 ///
-/// 群和私聊都有：发消息、读消息、翻记录、戳一戳、表态、撤回、转发两边一样；
-/// 群多出来的是群资料、群成员与群管理，由 [`Place`] 分辨。
+/// 群和私聊都有：发消息、读消息、翻记录、戳一戳、撤回、转发两边一样；
+/// 群多出来的是群资料、群成员、群管理，以及表情回应（私聊没有这个入口），
+/// 由 [`Place`] 分辨。
 pub(crate) struct ChatContext {
     pub ctx: crate::event::Context,
     pub writer: crate::adapters::satori::LockedWriter,

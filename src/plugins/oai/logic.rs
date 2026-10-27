@@ -2,7 +2,7 @@ use super::data::Manager;
 use super::parser::{Action, Command, Scope};
 use super::types::{Agent, ChatMessage, Tools};
 use super::utils::{escape_markdown_special, format_export_txt, format_history};
-use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
+use crate::adapters::satori::{LockedWriter, api, send_msg};
 use crate::event::{Context, MessageEvent};
 use crate::message::Message;
 use regex::Regex;
@@ -18,15 +18,28 @@ const WORKING_EMOJI: &str = "124";
 /// 「已并入正在进行的这一轮」的回执表情（赞）：贴上就不揭，让人知道这句话没被丢掉。
 const STEERED_EMOJI: &str = "76";
 
-/// 给触发消息贴上或揭掉「正在处理」表情。机器人自己手动发的指令不贴；
-/// 贴不上不影响处理，只记一行调试日志。
+/// 破坏性指令的回执表情（赞）：贴上三秒就揭掉。
+const ACK_EMOJI: &str = "76";
+/// 回执表情露脸多久。够发令的人看见「收到了」，又短到不占住群聊。
+const ACK_REACTION_SHOWN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// 表情回应只在群里做得成：QQ 私聊没有这个按钮，贴上去只会换来一次注定失败的回执。
+fn reactable(event: &MessageEvent<'_>) -> bool {
+    event.group_id().is_some()
+}
+
+/// 给触发消息贴上或揭掉「正在处理」表情。
+///
+/// 群里谁的消息都贴——群友的、自己在客户端手打的都算。从前跳过手打的自消息，
+/// 于是「自己跟机器人说话」这一路看不到任何回执；表情本来就只是账号级的轻动作，
+/// 没有理由按作者分人。贴不上不影响处理，只记一行调试日志。
 pub(crate) async fn mark_working(
     ctx: &Context,
     writer: &LockedWriter,
     event: &MessageEvent<'_>,
     on: bool,
 ) {
-    if event.is_manual_self() {
+    if !reactable(event) {
         return;
     }
     if let Err(error) =
@@ -34,6 +47,29 @@ pub(crate) async fn mark_working(
     {
         debug!(target: LOG_TARGET, "「正在处理」表情{}失败：{error}", if on { "贴上" } else { "揭掉" });
     }
+}
+
+/// 破坏性指令的回执：贴一下赞，三秒后揭掉。
+///
+/// 这是原来那套「再发一次确认」的替代。指令一路执行到底，反馈只剩这一次短暂的表态：
+/// 发令的人知道消息被收到、事情也做完了，群里不留一条正文，上下文不被刷屏；
+/// 旁人就算看见，也只是账号给一条消息点了赞。
+async fn ack_reaction(ctx: &Context, writer: &LockedWriter, event: &MessageEvent<'_>) {
+    if !reactable(event) {
+        return;
+    }
+    let (ctx, writer) = (ctx.clone(), writer.clone());
+    let message_id = event.message_id().to_string();
+    tokio::spawn(async move {
+        if let Err(error) = api::set_msg_emoji_like(&ctx, writer.clone(), &message_id, ACK_EMOJI, true).await {
+            debug!(target: LOG_TARGET, "回执表情贴不上：{error}");
+            return;
+        }
+        tokio::time::sleep(ACK_REACTION_SHOWN).await;
+        if let Err(error) = api::set_msg_emoji_like(&ctx, writer, &message_id, ACK_EMOJI, false).await {
+            debug!(target: LOG_TARGET, "回执表情没揭掉：{error}");
+        }
+    });
 }
 
 /// 「还在生成」：这句话带信息（你这句没被接住），但同一个人这一轮里只说一次。
@@ -1364,6 +1400,8 @@ pub async fn execute(
     let name = &cmd.agent;
     let uid = msg_event.user_id().to_string();
 
+    // 破坏性指令不再要第二次确认：收到就执行，只在触发消息上贴一个很短的回执表情，
+    // 三秒后自动揭掉。不往群里补正文——发令的人看得到「收到了、做完了」，旁人几乎来不及看见。
     if matches!(
         cmd.action,
         Action::Delete
@@ -1372,56 +1410,7 @@ pub async fn execute(
             | Action::ClearAllPublic
             | Action::ClearEverything
     ) {
-        let config = mgr.config.read().await;
-        let fingerprint = format!(
-            "{:x}",
-            md5::compute(serde_json::to_vec(&*config).unwrap_or_default())
-        );
-        let key = format!("{:?}:{}:{:?}", msg_event.group_id(), uid, cmd);
-        let count = if name.is_empty() {
-            config.agents.len()
-        } else {
-            usize::from(config.agents.iter().any(|agent| agent.name == *name))
-        };
-        match confirm_destructive(&key, &fingerprint) {
-            DestructiveConfirmation::Approved(message_id) => {
-                // 二次确认已经完成任务，先把自己的提示收走，再执行破坏性操作。
-                // 撤不掉不影响确认本身，也不为这件小事再往群里补一条错误。
-                recall_destructive_notice(ctx, writer, message_id).await;
-            }
-            DestructiveConfirmation::Ask => {
-                let scope = match cmd.action {
-                    Action::Delete => "删除智能体及其全部历史",
-                    Action::ClearEverything => "清空所有智能体的公开和私有历史（保留智能体）",
-                    Action::ClearAllPublic => "清空所有智能体的公开历史（保留智能体）",
-                    Action::ClearHistory(Scope::Private) | Action::DeleteAt(Scope::Private) => {
-                        "删除你在该智能体中的私有历史"
-                    }
-                    _ => "删除该智能体的公开历史",
-                };
-                let text = format!("即将{scope}，涉及 {count} 个智能体。此操作不可撤销。请在 60 秒内再次发送同一条指令确认；不再发送即可取消。数据有变化时需重新确认。");
-                let sent = send_msg_id(ctx, writer.clone(), msg_event.group_id(), Some(msg_event.user_id()), Message::new().text(text)).await;
-                match sent {
-                    Ok(message_id) => {
-                        let (stale, armed_at) = arm_destructive(key.clone(), fingerprint, message_id);
-                        // 数据变化或并发重复发来时只保留最新一条确认提示。
-                        recall_destructive_notice(ctx, writer, stale).await;
-                        let (ctx, writer) = (ctx.clone(), writer.clone());
-                        tokio::spawn(async move {
-                            tokio::time::sleep(DESTRUCTIVE_CONFIRM_WITHIN).await;
-                            if let Some(message_id) = expire_destructive(&key, armed_at) {
-                                recall_destructive_notice(&ctx, &writer, Some(message_id)).await;
-                            }
-                        });
-                    }
-                    Err(error) => {
-                        // 没把确认要求送达就不能暗中进入「再发一次就执行」的状态。
-                        warn!(target: LOG_TARGET, "破坏性操作的确认提示发送失败：{error}");
-                    }
-                }
-                return;
-            }
-        }
+        ack_reaction(ctx, writer, &msg_event).await;
     }
 
     match cmd.action {
@@ -1852,7 +1841,7 @@ pub async fn execute(
                     .await;
                     return;
                 }
-                reply_text(ctx, writer, &msg_event, format!("已删除 {name}")).await;
+                // 成功不再回一句话：发令的人已经从触发消息上的回执表情看到了结果。
             } else {
                 reply_text(
                     ctx,
@@ -2181,18 +2170,7 @@ pub async fn execute(
                         .await;
                         return;
                     }
-                    let s = deleted
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    reply_text(
-                        ctx,
-                        writer,
-                        &msg_event,
-                        format!("已删除第 {} 条（共 {} 条）", s, deleted.len()),
-                    )
-                    .await;
+                    // 同上：删掉哪几条不再单独回一条。
                 }
             } else {
                 reply_text(
@@ -2215,7 +2193,6 @@ pub async fn execute(
             let mut c = mgr.config.write().await;
             if let Some(a) = c.agents.iter_mut().find(|a| a.name == *name) {
                 let priv_scope = matches!(scope, Scope::Private);
-                let s = if priv_scope { "私有" } else { "公有" };
                 a.clear_history(priv_scope, &uid);
                 a.generation_id += 1;
                 if let Err(error) = mgr.save(&mut c) {
@@ -2228,7 +2205,7 @@ pub async fn execute(
                     .await;
                     return;
                 }
-                reply_text(ctx, writer, &msg_event, format!("{name} {s}历史已清空")).await;
+                // 清空是瞬时动作，不再补一条「已清空」。
             } else {
                 reply_text(
                     ctx,
@@ -2244,7 +2221,6 @@ pub async fn execute(
                 mgr.generating.write().await.public.clear();
             }
             let mut c = mgr.config.write().await;
-            let cnt = c.agents.len();
             for a in &mut c.agents {
                 a.public_history.clear();
                 a.generation_id += 1;
@@ -2259,13 +2235,7 @@ pub async fn execute(
                 .await;
                 return;
             }
-            reply_text(
-                ctx,
-                writer,
-                &msg_event,
-                format!("已清空 {cnt} 个智能体的公有历史"),
-            )
-            .await;
+            // 成功不回复：触发消息上的回执表情已经说明「收到并做完了」。
         }
         Action::ClearEverything => {
             {
@@ -2274,7 +2244,6 @@ pub async fn execute(
                 g.private.clear();
             }
             let mut c = mgr.config.write().await;
-            let cnt = c.agents.len();
             for a in &mut c.agents {
                 a.public_history.clear();
                 a.private_histories.clear();
@@ -2290,13 +2259,7 @@ pub async fn execute(
                 .await;
                 return;
             }
-            reply_text(
-                ctx,
-                writer,
-                &msg_event,
-                format!("✅ 已清空 {cnt} 个智能体的所有历史"),
-            )
-            .await;
+            // 同上：不再补一句「已清空」。
         }
         Action::Help => {
             // 先说接入状态（能不能用、缺什么），再是工具三档与按场景分组的指令（见 [`super::manual`]）。
@@ -2517,90 +2480,9 @@ pub async fn handle_create(
     }
 }
 
-const DESTRUCTIVE_CONFIRM_WITHIN: std::time::Duration = std::time::Duration::from_secs(60);
-
-struct PendingDestructive {
-    fingerprint: String,
-    message_id: Option<String>,
-    armed_at: std::time::Instant,
-}
-
-enum DestructiveConfirmation {
-    Ask,
-    Approved(Option<String>),
-}
-
-fn destructive_pending() -> &'static std::sync::Mutex<std::collections::HashMap<String, PendingDestructive>> {
-    static PENDING: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, PendingDestructive>>> = std::sync::OnceLock::new();
-    PENDING.get_or_init(Default::default)
-}
-
-/// 第二次发来同一条指令才确认。第一次只查、不登记：登记要等提示真正发出之后，
-/// 避免两条并发指令在提示尚未送达时就把彼此当成确认。
-fn confirm_destructive(key: &str, fingerprint: &str) -> DestructiveConfirmation {
-    let mut pending = destructive_pending().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let approved = pending.get(key).is_some_and(|old| old.armed_at.elapsed() < DESTRUCTIVE_CONFIRM_WITHIN && old.fingerprint == fingerprint);
-    if approved {
-        let old = pending.remove(key).expect("刚查过的确认仍在表中");
-        DestructiveConfirmation::Approved(old.message_id)
-    } else {
-        DestructiveConfirmation::Ask
-    }
-}
-
-/// 提示发出后再 armed。返回被新提示顶替的旧消息，以及这次登记的身份（定时撤回用）。
-fn arm_destructive(key: String, fingerprint: String, message_id: Option<String>) -> (Option<String>, std::time::Instant) {
-    let armed_at = std::time::Instant::now();
-    let mut pending = destructive_pending().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pending.len() >= 256 && !pending.contains_key(&key) {
-        // 正常情况一分钟的定时清理远早于此；这里只给异常高频指令一个硬上限。
-        if let Some(oldest) = pending.iter().min_by_key(|(_, old)| old.armed_at).map(|(key, _)| key.clone()) {
-            pending.remove(&oldest);
-        }
-    }
-    let stale = pending.insert(key, PendingDestructive { fingerprint, message_id, armed_at }).and_then(|old| old.message_id);
-    (stale, armed_at)
-}
-
-/// 到点只撤自己那一次提示；同 key 已换成新提示或已经确认时不动。
-fn expire_destructive(key: &str, armed_at: std::time::Instant) -> Option<String> {
-    let mut pending = destructive_pending().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if !pending.get(key).is_some_and(|old| old.armed_at == armed_at) {
-        return None;
-    }
-    pending.remove(key).and_then(|old| old.message_id)
-}
-
-async fn recall_destructive_notice(ctx: &Context, writer: &LockedWriter, message_id: Option<String>) {
-    let Some(message_id) = message_id.filter(|id| !id.is_empty()) else {
-        return;
-    };
-    if let Err(error) = api::delete_msg(ctx, writer.clone(), &message_id).await {
-        debug!(target: LOG_TARGET, "确认提示 {message_id} 没撤掉：{error}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{DestructiveConfirmation, arm_destructive, confirm_destructive, expire_destructive, is_public_url};
-
-    #[test]
-    fn destructive_notice_is_returned_on_confirm_replace_and_expiry() {
-        let key = "tests/destructive-confirmation".to_string();
-        assert!(matches!(confirm_destructive(&key, "one"), DestructiveConfirmation::Ask));
-        let (stale, _) = arm_destructive(key.clone(), "one".into(), Some("notice-1".into()));
-        assert_eq!(stale, None);
-        assert!(matches!(confirm_destructive(&key, "two"), DestructiveConfirmation::Ask));
-        let (stale, _) = arm_destructive(key.clone(), "two".into(), Some("notice-2".into()));
-        assert_eq!(stale.as_deref(), Some("notice-1"));
-        match confirm_destructive(&key, "two") {
-            DestructiveConfirmation::Approved(id) => assert_eq!(id.as_deref(), Some("notice-2")),
-            DestructiveConfirmation::Ask => panic!("相同指纹的第二次指令应通过确认"),
-        }
-        let (_, armed_at) = arm_destructive(key.clone(), "three".into(), Some("notice-3".into()));
-        assert_eq!(expire_destructive(&key, armed_at).as_deref(), Some("notice-3"));
-        assert!(matches!(confirm_destructive(&key, "three"), DestructiveConfirmation::Ask));
-    }
+    use super::is_public_url;
 
     #[test]
     fn local_resource_links_are_never_handed_to_the_provider() {

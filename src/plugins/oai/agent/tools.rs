@@ -944,12 +944,15 @@ pub(crate) fn satori_action_schema(direct: bool) -> Value {
                 "reply_to": id("精确引用的消息 ID")
             }, "required": ["action", "parts"]},
             {"type": "object", "properties": {"action": {"const": "poke"}, "user_id": id("戳一戳的 QQ 号")}, "required": ["action", "user_id"]},
-            {"type": "object", "properties": {"action": {"const": "react"}, "message_id": id("消息 ID"), "emoji_id": id("QQ 表态 ID"), "remove": {"type": "boolean"}}, "required": ["action", "message_id", "emoji_id"]},
             {"type": "object", "properties": {"action": {"const": "recall"}, "message_id": id("要撤回的消息：自己的随时可撤；别人的要本群开放管理"), "reason": id("撤别人的消息时写一句为什么，记进管理记录")}, "required": ["action", "message_id"]},
             {"type": "object", "properties": {"action": {"const": "forward"}, "message_ids": {"type": "array", "maxItems": 12, "items": {"type": "string"}}, "texts": {"type": "array", "maxItems": 12, "items": {"type": "string"}}}, "required": ["action"]}
         ]
     });
     let choices = schema["oneOf"].as_array_mut().unwrap();
+    // 表态只在群里给：QQ 私聊里没有表情回应这个入口。
+    if !direct {
+        choices.push(json!({"type": "object", "properties": {"action": {"const": "react"}, "message_id": id("消息 ID，自己的与群友的都可以"), "emoji_id": id("QQ 表态 ID"), "remove": {"type": "boolean", "description": "true 取消自己加的那一种，默认添加"}}, "required": ["action", "message_id", "emoji_id"]}));
+    }
     // 账号级动作：说说与自己的资料（昵称 / 签名 / 头像），群聊与私聊都可用。
     for (name, properties, required) in [
         ("feed", json!({"text":id("说说正文，1–2000 字，换行照写；发在 QQ 空间，群里看不见")}), vec!["text"]),

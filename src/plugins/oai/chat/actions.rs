@@ -60,6 +60,8 @@ pub(crate) enum Action {
     Poke {
         user_id: String,
     },
+    /// 给一条消息添加或取消自己的表态。群里的任何消息都行——群友的、自己发的、
+    /// 自己在客户端手打的都一样：QQ 的表态只落在账号上，与消息作者无关。
     React {
         message_id: String,
         emoji_id: String,
@@ -503,7 +505,9 @@ impl Action {
     pub(crate) fn needs_group(&self) -> bool {
         matches!(
             self,
-            Self::Sign
+            // 表态只有群里有：QQ 私聊没有表情回应。
+            Self::React { .. }
+                | Self::Sign
                 | Self::Card { .. }
                 | Self::Title { .. }
                 | Self::Essence { .. }
