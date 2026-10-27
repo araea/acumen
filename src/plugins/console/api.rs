@@ -55,6 +55,7 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/oai/provider", post(oai_save_provider))
         .route("/oai/provider/remove", post(oai_remove_provider))
         .route("/oai/models", post(oai_fetch_models))
+        .route("/oai/ping", post(oai_ping))
         .route("/oai/default", post(oai_set_default))
         .route("/oai/endpoint", post(oai_save_endpoint))
         .route("/ambient", get(ambient))
@@ -330,6 +331,16 @@ async fn oai_fetch_models(
     Json(body): Json<crate::plugins::oai::panel::FetchModels>,
 ) -> Response {
     match crate::plugins::oai::panel::fetch(console.ctx(), body).await {
+        Ok(payload) => Json(payload).into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+async fn oai_ping(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<crate::plugins::oai::panel::Ping>,
+) -> Response {
+    match crate::plugins::oai::panel::ping(console.ctx(), body).await {
         Ok(payload) => Json(payload).into_response(),
         Err(message) => bad(message),
     }

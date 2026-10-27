@@ -5117,6 +5117,9 @@
     query: "", modelQuery: "", defaultQuery: "",
     /** 每家最近一次测试的结果：{ ok, text }。 */
     tests: new Map(),
+    /** 「真发一句」的结果与选中的模型：名字 → { ok, text } / 模型 id。 */
+    pings: new Map(),
+    pingModel: new Map(),
     /** 模型勾选还没保存的那份：名字 → Set。 */
     picks: new Map(),
     /** 手打进来、接口列表里没有的模型 id：名字 → 数组。 */
@@ -5279,6 +5282,7 @@
     oai.picks.clear();
     oai.extras.clear();
     oai.tests.clear();
+    oai.pings.clear();
     if (target === "@default") oai.stack.push({ kind: "default" });
     else if (target) oai.stack.push({ kind: "provider", name: target });
     oai.opener = document.activeElement;
@@ -5565,6 +5569,33 @@
     save.disabled = !changed;
   }
 
+  /**
+   * 「真发一句」：Magpie 的那种测试。测试连接只证明钥匙打得开门；这一下证明这个模型
+   * 真能聊（额度没用完、模型名没写错、没被下线）。会花一点点额度，所以只在亲手点的时候发，
+   * 页面从不自动调它，按钮旁边也照实写着。
+   */
+  function oaiPingBlock(target, models, preferred) {
+    if (!models.length) return "";
+    const chosen = oai.pingModel.get(target);
+    const pick = models.includes(chosen) ? chosen : models.includes(preferred) ? preferred : models[0];
+    const result = oai.pings.get(target);
+    return h`<div class="oai-ping">
+      <div class="oai-ping-head">
+        <label class="field-label" for="oai-ping-model">真发一句试试</label>
+        <span class="field-hint" id="oai-ping-hint">用选中的模型发一句「你好」，最多回 ${16} 个 token，会花一点点额度。换了模型想确认它真能聊时再点。</span>
+      </div>
+      <div class="oai-ping-row">
+        <span class="select oai-ping-select"><select id="oai-ping-model" data-oai-ping-model="${target}" aria-describedby="oai-ping-hint">
+          ${models.map((model) => h`<option value="${model}"${attr(model === pick, "selected")}>${model}</option>`)}
+        </select>${icon("keyboard_arrow_down")}</span>
+        <button class="btn btn-tonal" type="button" data-oai-ping="${target}">${icon("send")}发一句</button>
+      </div>
+      <p class="oai-test" id="oai-ping-result" role="status" aria-live="polite"${result ? raw(` data-ok="${result.ok ? "true" : "false"}"`) : ""}>${result
+        ? h`${icon(result.pending ? "send" : result.ok ? "check_circle-fill" : "error-fill")}<span>${result.text}</span>`
+        : ""}</p>
+    </div>`;
+  }
+
   /* —— 一家的详情 —— */
 
   function oaiProviderView(view) {
@@ -5605,6 +5636,7 @@
             <button class="btn btn-filled" type="button" data-oai-save="${p.name}" disabled>保存</button>
           </div>
           ${oaiTestLine(p.name)}
+          ${p.ready ? oaiPingBlock(p.name, p.models, (oai.data.default_model || "").startsWith(p.name + "/") ? oai.data.default_model.slice(p.name.length + 1) : p.recommended) : ""}
         </div>
       </section>
 
@@ -5810,6 +5842,7 @@
             <button class="btn btn-filled" type="button" data-oai-save="@endpoint" disabled>保存</button>
           </div>
           ${oaiTestLine("@endpoint")}
+          ${endpoint.base && endpoint.key_set ? oaiPingBlock("@endpoint", models, (oai.data.default_model || "").includes("/") ? "" : oai.data.default_model) : ""}
         </div>
       </section>
       ${models.length
@@ -5991,6 +6024,44 @@
     line.replaceWith(wrap.firstElementChild);
   }
 
+  async function oaiPing(target, button) {
+    if (oaiIsBusy(button)) return;
+    const model = $("#oai-ping-model")?.value || "";
+    const body = { model };
+    if (target !== "@endpoint") body.provider = target;
+    // 和测试连接一样：页面上改了还没存的地址、密钥，拿它们试。
+    const base = oaiValue("oai-f-base");
+    const key = oaiValue("oai-f-key");
+    if (base && base !== ($("#oai-f-base")?.dataset.initial || "")) body.api_base = base;
+    if (key) body.api_key = key;
+    oaiBusy(button, true);
+    oai.pings.set(target, { ok: true, pending: true, text: `正在问 ${model}…` });
+    oaiRepaintPing(target);
+    try {
+      const reply = await api("/oai/ping", { method: "POST", body });
+      oai.pings.set(target, { ok: true, text: reply.message });
+    } catch (error) {
+      if (error.status === 401) return;
+      oai.pings.set(target, { ok: false, text: error.message });
+    } finally {
+      oaiRepaintPing(target);
+      if (button.isConnected) oaiBusy(button, false);
+    }
+  }
+
+  function oaiRepaintPing(target) {
+    const block = $("#oai-ping-result")?.closest(".oai-ping");
+    if (!block) return;
+    const select = $("#oai-ping-model", block);
+    const models = select ? [...select.options].map((option) => option.value) : [];
+    const focused = document.activeElement;
+    const wrap = document.createElement("div");
+    put(wrap, oaiPingBlock(target, models, ""));
+    const fresh = wrap.firstElementChild;
+    $("#oai-ping-result", block).replaceWith($("#oai-ping-result", fresh));
+    if (focused?.isConnected) focused.focus({ preventScroll: true });
+  }
+
   async function oaiRemove(name, button) {
     const p = oaiProvider(name);
     const label = p ? p.label : name;
@@ -6061,6 +6132,10 @@
   async function oaiChange(event) {
     const target = event.target;
     if (target.matches("[data-oai-default]")) return void (await oaiSetDefault(target.value, target));
+    if (target.matches("[data-oai-ping-model]")) {
+      oai.pingModel.set(target.dataset.oaiPingModel, target.value);
+      return;
+    }
     if (target.matches("[data-oai-model]")) {
       const view = oaiView();
       const p = oaiProvider(view.name);
@@ -6124,7 +6199,7 @@
     const hit = event.target.closest(
       "[data-oai-close], [data-oai-back], [data-oai-go], [data-oai-save], [data-oai-test], [data-oai-remove], [data-oai-refresh], " +
       "[data-oai-pick-all], [data-oai-pick-none], [data-oai-pick-reset], [data-oai-pick-save], [data-oai-follow], " +
-      "[data-oai-model-commit], [data-oai-default-clear]"
+      "[data-oai-model-commit], [data-oai-default-clear], [data-oai-ping]"
     );
     if (!dialog || !hit || hit.disabled) return;
     event.preventDefault();
@@ -6155,6 +6230,7 @@
     }
     if ("oaiSave" in data) return void (await oaiSave(hit));
     if ("oaiTest" in data) return void (await oaiTest(data.oaiTest, hit));
+    if ("oaiPing" in data) return void (await oaiPing(data.oaiPing, hit));
     if ("oaiRefresh" in data) return void (await oaiTest(data.oaiRefresh, hit));
     if ("oaiRemove" in data) return void (await oaiRemove(data.oaiRemove, hit));
     if ("oaiDefaultClear" in data) return void (await oaiSetDefault("", hit));

@@ -8241,6 +8241,38 @@ label.lk-hit {
   border-top: var(--zw-border-width) solid var(--zw-hairline);
 }
 
+/* 「真发一句」：连接卡片里细线隔开的一小段，次一级的动作，按钮用 tonal 不抢「保存」。 */
+.oai-ping {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  padding-top: var(--zw-space-05);
+  border-top: var(--zw-border-width) solid var(--zw-hairline);
+}
+
+.oai-ping-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+}
+
+.oai-ping-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-03);
+}
+
+.oai-ping-select {
+  display: flex;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.oai-ping-select select {
+  font-family: var(--md-ref-typeface-mono);
+}
+
 /* —— 模型清单 —— */
 .oai-mode {
   display: flex;

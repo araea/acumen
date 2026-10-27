@@ -465,17 +465,31 @@ pub(crate) struct FetchModels {
     pub api_key: Option<String>,
 }
 
-pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, String> {
-    let oai: OaiConfig = get_config_or_default(ctx);
-    let mgr = ensure_manager().await.map_err(|error| error.to_string())?;
-    let name = body.provider.as_deref().map(str::trim).filter(|name| !name.is_empty());
-    let typed_base = body.api_base.as_deref().map(str::trim).filter(|base| !base.is_empty()).map(utils::openai_api_base);
-    let typed_key = body.api_key.as_deref().map(str::trim).filter(|key| !key.is_empty()).map(str::to_string);
-    let draft = typed_base.is_some() || typed_key.is_some();
+/// 一次出网要用的那一家：地址、密钥、手选的模型、配置里的名字、给人看的名字、在不在配置里。
+struct Target {
+    base: String,
+    key: String,
+    curated: Vec<String>,
+    label: String,
+    display: String,
+    configured: bool,
+    draft: bool,
+}
 
-    // 先按配置解出这一家现在的地址与密钥，再拿页面上敲的覆盖。还没加进配置的一家
-    // （添加页上先试一试）：认得的补官方地址、读环境变量里的密钥，不认得的只能靠页面上的。
-    let (base, key, curated, label, display, configured) = if let Some(name) = name {
+/// 先按配置解出这一家现在的地址与密钥，再拿页面上敲的覆盖。还没加进配置的一家
+/// （添加页上先试一试）：认得的补官方地址、读环境变量里的密钥，不认得的只能靠页面上的。
+async fn locate(
+    oai: &OaiConfig,
+    mgr: &data::Manager,
+    provider: Option<&str>,
+    api_base: Option<&str>,
+    api_key: Option<&str>,
+) -> Result<Target, String> {
+    let name = provider.map(str::trim).filter(|name| !name.is_empty());
+    let typed_base = api_base.map(str::trim).filter(|base| !base.is_empty()).map(utils::openai_api_base);
+    let typed_key = api_key.map(str::trim).filter(|key| !key.is_empty()).map(str::to_string);
+    let draft = typed_base.is_some() || typed_key.is_some();
+    let mut target = if let Some(name) = name {
         let entry = catalog::configured(&oai.providers, name);
         let known = catalog::find(name);
         if entry.is_none() && known.is_none() && !draft {
@@ -483,26 +497,48 @@ pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, Str
         }
         let label = entry.map_or(name, |(configured, _)| configured).to_string();
         let found = catalog::resolve(&oai.providers, &label);
-        (
-            found.as_ref().map(|found| found.base.clone()).unwrap_or_default(),
-            found.map(|found| found.key).unwrap_or_default(),
-            entry.map(|(_, entry)| entry.models.clone()).unwrap_or_default(),
-            label.clone(),
-            known.map_or(label.as_str(), |known| known.name).to_string(),
-            entry.is_some(),
-        )
+        Target {
+            base: found.as_ref().map(|found| found.base.clone()).unwrap_or_default(),
+            key: found.map(|found| found.key).unwrap_or_default(),
+            curated: entry.map(|(_, entry)| entry.models.clone()).unwrap_or_default(),
+            display: known.map_or(label.as_str(), |known| known.name).to_string(),
+            label,
+            configured: entry.is_some(),
+            draft,
+        }
     } else {
         let c = mgr.config.read().await;
-        (c.api_base.clone(), c.api_key.clone(), Vec::new(), String::new(), "默认接口".to_string(), true)
+        Target {
+            base: c.api_base.clone(),
+            key: c.api_key.clone(),
+            curated: Vec::new(),
+            label: String::new(),
+            display: "默认接口".to_string(),
+            configured: true,
+            draft,
+        }
     };
-    let base = typed_base.unwrap_or(base);
-    let key = typed_key.unwrap_or(key);
-    if !(base.starts_with("http://") || base.starts_with("https://")) {
-        return Err(format!("{display} 还没有能用的接口地址（要以 http:// 或 https:// 开头）。"));
+    if let Some(base) = typed_base {
+        target.base = base;
     }
-    if key.trim().is_empty() {
-        return Err(format!("{display} 还没有密钥，先填上再试。"));
+    if let Some(key) = typed_key {
+        target.key = key;
     }
+    if !(target.base.starts_with("http://") || target.base.starts_with("https://")) {
+        return Err(format!("{} 还没有能用的接口地址（要以 http:// 或 https:// 开头）。", target.display));
+    }
+    if target.key.trim().is_empty() {
+        return Err(format!("{} 还没有密钥，先填上再试。", target.display));
+    }
+    Ok(target)
+}
+
+pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, String> {
+    let oai: OaiConfig = get_config_or_default(ctx);
+    let mgr = ensure_manager().await.map_err(|error| error.to_string())?;
+    let name = body.provider.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let Target { base, key, curated, label, display, configured, draft } =
+        locate(&oai, &mgr, name, body.api_base.as_deref(), body.api_key.as_deref()).await?;
 
     let started = Instant::now();
     let raw = data::list_models(&base, &key)
@@ -535,6 +571,102 @@ pub(crate) async fn fetch(ctx: &Context, body: FetchModels) -> Result<Value, Str
         "total": total,
         "stored": stored,
         "draft": draft || !configured,
+    }))
+}
+
+/// `POST /oai/ping`：用一个模型真发一句话，看它回不回、多快回。
+///
+/// 这是 Magpie 的那种测试：比「测试连接」多证明一件事——这个模型这把钥匙真能聊
+/// （额度没用完、模型名没写错、没被下线）。代价是一次真实请求：一句「你好」、最多回
+/// 16 个 token，几乎不花钱，但不是零。所以它只在号主亲手点的时候发，页面从不自动调它。
+#[derive(Deserialize)]
+pub(crate) struct Ping {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_base: Option<String>,
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+/// 一次最多回这么多 token：够模型说一两个字，思考型模型想多了就截断，照样算接通。
+const PING_TOKENS: u32 = 16;
+
+pub(crate) async fn ping(ctx: &Context, body: Ping) -> Result<Value, String> {
+    let oai: OaiConfig = get_config_or_default(ctx);
+    let mgr = ensure_manager().await.map_err(|error| error.to_string())?;
+    let name = body.provider.as_deref().map(str::trim).filter(|name| !name.is_empty());
+    let target = locate(&oai, &mgr, name, body.api_base.as_deref(), body.api_key.as_deref()).await?;
+    // 页面上可能把 `供应商/模型` 整串传过来，这里只要模型那段。
+    let model = body.model.trim();
+    let model = match (name, utils::split_provider(model)) {
+        (Some(_), (Some(_), bare)) => bare,
+        _ => model.to_string(),
+    };
+    if model.is_empty() || model.chars().any(char::is_whitespace) {
+        return Err("先挑一个模型。".into());
+    }
+
+    let url = format!("{}/chat/completions", target.base.trim_end_matches('/'));
+    let started = Instant::now();
+    let response = crate::http::client()
+        .post(&url)
+        .bearer_auth(target.key.trim())
+        .timeout(std::time::Duration::from_secs(60))
+        .json(&json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "你好，回一个字就行。" }],
+            "max_tokens": PING_TOKENS,
+            "stream": false,
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("{model} 没发出去：{error}"))?;
+    let status = response.status();
+    // 非流式：整段回复收完才算这一句的耗时。
+    let text = response.text().await.unwrap_or_default();
+    let ms = started.elapsed().as_millis() as u64;
+    let parsed: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if !status.is_success() {
+        // 各家把原因写在 error.message 里（额度用完、模型不存在、没开通……），原样带回去最有用。
+        let reason = parsed
+            .pointer("/error/message")
+            .or_else(|| parsed.get("message"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| text.chars().take(160).collect());
+        return Err(format!("{model} 回了 HTTP {}：{}", status.as_u16(), reason.trim()));
+    }
+    let message = parsed.pointer("/choices/0/message");
+    let said: String = message
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(40)
+        .collect();
+    let thought = message
+        .and_then(|message| message.get("reasoning_content").or_else(|| message.get("reasoning")))
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty());
+    let tokens = parsed.pointer("/usage/total_tokens").and_then(Value::as_u64);
+    let cost = tokens.map(|tokens| format!("，用了 {tokens} 个 token")).unwrap_or_default();
+    let reply = if !said.is_empty() {
+        format!("回了「{said}」")
+    } else if thought {
+        format!("接通了（它先思考，{PING_TOKENS} 个 token 都花在思考上，没轮到正文）")
+    } else {
+        "接通了，但回复是空的".to_string()
+    };
+    Ok(json!({
+        "message": format!("{model} {reply}：{ms} ms{cost}。"),
+        "ms": ms,
+        "model": model,
+        "reply": said,
+        "tokens": tokens,
     }))
 }
 
