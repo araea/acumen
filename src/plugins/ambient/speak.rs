@@ -142,19 +142,21 @@ pub(super) fn system_prompt(
     manage: bool,
     direct: bool,
     schedule: bool,
+    mind: bool,
 ) -> String {
     // 写歌与拍片是按额度开关的可选工具，用额度当条件；其余几段由调用方算好的
     // 布尔值决定，它们还与联网、记忆这些开关联动。
     let music = live && config.music_budget > 0;
     let video = live && config.video_budget > 0;
     format!(
-        "{}\n\n---\n\n{}{}{}{}{}{}{}{}{}{}{}",
+        "{}\n\n---\n\n{}{}{}{}{}{}{}{}{}{}{}{}",
         persona.trim(),
         house_rules(
             config.messages_budget.clamp(1, 5),
             config.focus_max_seconds.min(600),
             direct
         ),
+        if mind { super::mind::RULES } else { "" },
         if live && !direct { TOOL_RULES } else { "" },
         if live && direct {
             DIRECT_TOOL_RULES
@@ -203,12 +205,13 @@ pub(super) fn user_prompt(
         String::new()
     };
     format!(
-        "{}{}最近的{}记录：\n{}\n{}{}{}{}{}\n{}",
+        "{}{}最近的{}记录：\n{}\n{}{}{}{}{}{}\n{}",
         scene.own,
         scene.brief(),
         if direct { "聊天" } else { "群聊" },
         transcript(turns),
         noticed,
+        scene.mind,
         if scene.careful { ANSWER_RULES } else { "" },
         said_lately(turns),
         anchor(turns, called),
@@ -511,6 +514,7 @@ pub(crate) async fn compose(
         !scene.duty.is_empty(),
         direct,
         seat.as_ref().is_some_and(|seat| seat.asker.owner),
+        config.mind_enabled,
     );
     // 办事台接通时补一句：acumen_plugins 只听号主的，别人叫它开关插件当闲聊接过去。
     let system = if seat.is_some() { format!("{system}{CONTROL_RULES}") } else { system };
@@ -579,9 +583,22 @@ pub(crate) async fn compose(
             ));
         }
     };
+    // 心思那几行先剥掉：它们只落盘给下一轮自己看，不进群，也不算正文。
+    // 剥不剥得成都要剥——宁可这一轮没记上，也不能让它原样发出去。
+    let (text, mind) = if config.mind_enabled {
+        super::mind::extract(&reply.text)
+    } else {
+        (reply.text, None)
+    };
+    if let Some(entry) = mind {
+        debug!(
+            target: super::LOG_TARGET,
+            "群 {group_label} 心思：{}｜{}", entry.act, entry.thought
+        );
+        super::mind::record(&group_label, entry);
+    }
     if spoke {
-        let focus = reply
-            .text
+        let focus = text
             .lines()
             .filter(|line| crate::plugins::oai::chat::attention::is_control(line))
             .collect::<Vec<_>>()
@@ -591,9 +608,22 @@ pub(crate) async fn compose(
             acted: true,
         })
     } else {
-        Ok(Composed {
-            text: reply.text,
-            acted: false,
-        })
+        Ok(Composed { text, acted: false })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 开着心思时提示词里要有那行记号，关着时一个字都不能剩——关掉之后模型仍
+    /// 照旧写 [心] 的话，这一段就成了「提示词没说、模型却照做」的怪事。
+    #[test]
+    fn mind_rules_follow_the_switch() {
+        let config = AmbientConfig::default();
+        let open = system_prompt("", &config, false, false, false, false, false, false, true);
+        assert!(open.contains("[心]{"));
+        let shut = system_prompt("", &config, false, false, false, false, false, false, false);
+        assert!(!shut.contains("[心]"));
     }
 }

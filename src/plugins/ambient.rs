@@ -36,6 +36,7 @@ mod gate;
 mod habit;
 mod learning;
 mod life;
+mod mind;
 mod mood;
 mod news;
 mod peak;
@@ -327,6 +328,12 @@ pub(crate) struct AmbientConfig {
     pub memory_enabled: bool,
     /// 按作息与互动起伏的内部状态：影响开口门槛、打字快慢和提示词里的一句状态。
     pub mood_enabled: bool,
+    /// 每轮开口前先给自己写一行心思（见 [`mind`]）：眼前的场面、在做什么、心情、
+    /// 心里那句想法。只落盘不发送，下一轮摆在记录旁边，前后才接得上。
+    ///
+    /// 与 `mood_enabled` 分工不同：那一条是算出来的精神头，这一条是它自己写的
+    /// 「此刻在想什么」。关掉之后提示词里不再要求写，也不再摆出上一轮的。
+    pub mind_enabled: bool,
     /// 一条随钟点走的生活线：这会儿在通勤、在工位、在吃饭还是在打游戏。
     ///
     /// 与 `mood_enabled` 是两件事：那一条管精神头（醒着但累），这一条管处境
@@ -469,6 +476,7 @@ impl Default for AmbientConfig {
             summon_command: "/搭话".to_string(),
             memory_enabled: true,
             mood_enabled: true,
+            mind_enabled: true,
             life_enabled: true,
             memo_budget: 3,
             search_enabled: true,
@@ -929,6 +937,17 @@ impl Persona for Ambient {
     fn scene(&self, group: &str, turns: &[Turn], _rhythm: &str) -> serde_json::Value {
         let snapshot = self.config.mood_enabled.then(|| mood::snapshot(group));
         let mut state = snapshot.map(mood::Snapshot::describe).unwrap_or_default();
+        // 心思与精神头是两回事：那一条是算出来的，这一条是它自己上一轮写的。
+        // 只挂在给模型的现场里，判定那边看不到（见 [Scene::mind]）。
+        if self.config.mind_enabled {
+            let mind = mind::brief(group);
+            if !mind.is_empty() {
+                if !state.is_empty() {
+                    state.push('\n');
+                }
+                state.push_str(&mind);
+            }
+        }
         if self.config.life_enabled {
             if !state.is_empty() {
                 state.push('\n');
@@ -973,6 +992,12 @@ impl Persona for Ambient {
                     .to_string(),
             );
         }
+        if mind::contains_control(text) {
+            return Some(
+                "「[心]」那一行是你给自己记的心思，不是要说出去的话。把它去掉，只发你真正想发的那句"
+                    .to_string(),
+            );
+        }
         stray::is_ungrounded_callback(text, turns).then(|| {
             "这句在翻旧账：眼前几条里没人提起过去，你说的「上次/之前说过」也跟眼前聊的碰不上，\
              多半是从记忆里搬出来的，群友一看就是自说自话。接眼前正在聊的事，或者干脆先放着"
@@ -997,6 +1022,11 @@ pub(crate) struct Scene {
     pub register: String,
     /// 精神头与兴致；关闭状态时为空。
     pub state: String,
+    /// 上一轮它自己留下的心思（场景、动作、心情、想法）；只有发言侧看得到。
+    ///
+    /// 不跟着 [Scene::brief] 递给判定：判定只看「要不要接这句话」，不该被上一轮
+    /// 的念头带着走；它摆给发言侧，是让这一轮的话接得上自己。
+    pub mind: String,
     /// 记得的人与旧事；关闭记忆时为空。
     pub memory: String,
     /// 这个号后面那个人自己的事，以及他平时说话的原话样本。
@@ -1039,6 +1069,11 @@ impl Scene {
             rhythm,
             register: tone::register(turns),
             state: state.clone(),
+            mind: if config.mind_enabled {
+                mind::brief(group)
+            } else {
+                String::new()
+            },
             memory: if config.memory_enabled {
                 memory::with_group(group, |memory| {
                     memory.brief(turns, chrono::Local::now().timestamp())
@@ -1359,6 +1394,7 @@ pub(crate) async fn setup(base: &Path) -> std::io::Result<()> {
     // 记忆、表情包库与群身份归能力层（`data/oai/chat/`），这里只管人格自己的那份
     // 状态曲线。能力层的数据目录由 oai 插件挂上；它没启用时这里补一次。
     mood::attach(base);
+    mind::attach(base);
     life::attach(base);
     learning::attach(base);
     Ok(())
@@ -2008,6 +2044,7 @@ async fn consider(
         // 记性和状态每批都落盘：绝大多数批次以沉默收场，只在开口时保存等于几乎不保存。
         memory::flush(group).await;
         mood::flush().await;
+        mind::flush().await;
         review_if_due(ctx, mgr, group, &config);
         if !window::with_group(group, |state| state.finish_batch(seq)) {
             worker.armed = false;
@@ -3026,6 +3063,7 @@ pub const LABELS: &[(&str, &str)] = &[
     ("summon_command", "搭话指令"),
     ("memory_enabled", "记住群里的人和事"),
     ("mood_enabled", "按作息起伏"),
+    ("mind_enabled", "每轮写自己的心思"),
     ("life_enabled", "按钟点过日子"),
     ("memo_budget", "每轮最多写几条记忆"),
     ("search_enabled", "允许联网"),
