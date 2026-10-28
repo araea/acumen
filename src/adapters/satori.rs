@@ -20,6 +20,7 @@ use tokio_tungstenite::{
 
 pub mod api;
 pub mod forward;
+pub mod guilds;
 pub mod inline;
 pub mod message;
 mod module;
@@ -547,9 +548,12 @@ fn route_for(current: &SatoriClient, params: &Value) -> Option<Route> {
         .cloned()
 }
 
-/// 把连接上的群登记进目录。`guild.list` 按 `next` 翻页；失败只记一笔，入站事件照样会补。
+/// 把连接上的群登记进路由目录与群目录（[`guilds`]）。`guild.list` 按 `next` 翻页；
+/// 失败只记一笔，入站事件照样会补。翻到底了才算整份名单，群目录据此删掉已经退了的群。
 async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
     let mut next: Option<String> = None;
+    let mut all: Vec<Value> = Vec::new();
+    let mut complete = false;
     for _ in 0..50 {
         let params = match &next {
             Some(next) => json!({ "next": next }),
@@ -559,7 +563,7 @@ async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
             Ok(page) => page,
             Err(error) => {
                 debug!(target: LOG_TARGET, "guild.list 失败，目录只能靠入站事件补：{error}");
-                return;
+                break;
             }
         };
         let guilds = page.get("data").and_then(Value::as_array);
@@ -570,15 +574,18 @@ async fn learn_guilds(client: Arc<SatoriClient>, bot: Arc<BotStatus>) {
                 .flatten()
                 .filter_map(|guild| guild.get("id")?.as_str()),
         );
+        all.extend(guilds.into_iter().flatten().cloned());
         next = page
             .get("next")
             .and_then(Value::as_str)
             .filter(|next| !next.is_empty())
             .map(str::to_owned);
         if next.is_none() {
-            return;
+            complete = true;
+            break;
         }
     }
+    guilds::learn_list(&bot.self_id(), &all, complete);
 }
 
 /// 控制台名单编辑器要挑选的名册：已加入的群，或好友（私聊对象）。
@@ -1798,6 +1805,7 @@ fn normalize_event(
     let self_id = Some(raw_id(body.pointer("/login/user/id")))
         .filter(|id| !id.is_empty())
         .unwrap_or_else(|| bot.self_id());
+    guilds::observe(&self_id, &group_id, event_type, body);
     let mut out = json!({
         "time": timestamp,
         "self_id": self_id,

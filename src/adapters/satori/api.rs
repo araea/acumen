@@ -465,6 +465,7 @@ pub async fn get_guild_info(
     let value: Value = writer
         .call(ctx, "guild.get", json!({"guild_id": group_id}))
         .await?;
+    super::guilds::learn_resource(&ctx.bot.self_id(), group_id, &value);
     Ok(GroupInfo {
         group_id: group_id.to_string(),
         group_name: value
@@ -481,6 +482,16 @@ pub async fn get_guild_info(
             .and_then(Value::as_i64)
             .map(|n| n as i32),
     })
+}
+
+/// 群名：先查群目录（见 [`super::guilds`]），记着就直接用；没记着才问一次 `guild.get`，
+/// 最多等几秒。都没有就是群号。
+pub async fn group_name(ctx: &Context, writer: &LockedWriter, group_id: &str) -> String {
+    super::guilds::lookup(ctx, writer, group_id, false, Duration::from_secs(3))
+        .await
+        .map(|guild| guild.name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| group_id.to_string())
 }
 
 /// `guild.list` 是标准分页列表：跟着 `next` 令牌翻到底，否则群多时会漏群。

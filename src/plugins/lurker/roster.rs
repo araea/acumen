@@ -292,12 +292,7 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
     // 拿不准的按「最后一次见他说话」排，没见过的在前、早进群的在前。
     unsure.sort_by(|a, b| (a.last, a.joined, &a.id).cmp(&(b.last, b.joined, &b.id)));
 
-    let group_name = api::get_guild_info(ctx, writer.clone(), group)
-        .await
-        .ok()
-        .map(|info| info.group_name)
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| group.to_string());
+    let group_name = api::group_name(ctx, writer, group).await;
     let scan = Scan {
         group: group.to_string(),
         group_name,

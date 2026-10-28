@@ -29,7 +29,7 @@
 
 pub(crate) mod records;
 
-use crate::adapters::satori::{LockedWriter, api, send_msg, send_msg_id};
+use crate::adapters::satori::{LockedWriter, api, guilds, send_msg, send_msg_id};
 use crate::clock::duration_text;
 use crate::command::{self, CommandMatch};
 use crate::event::{Context, EventType};
@@ -722,7 +722,7 @@ const PLACEHOLDERS: &[Placeholder] = &[
     Placeholder { key: "at", label: "@ 新人", hint: "真的 @ 他；合并提醒时一次 @ 好几个", kinds: PRESENT },
     Placeholder { key: "name", label: "昵称", hint: "群名片，没有就用昵称；合并提醒时是「小林、阿杰」这样的一串", kinds: EVERY },
     Placeholder { key: "user_id", label: "账号", hint: "QQ 号 / 微信号", kinds: EVERY },
-    Placeholder { key: "group", label: "群名", hint: "", kinds: EVERY },
+    Placeholder { key: "group", label: "群名", hint: "账号记着的群名，群改名后跟着换；从没见过的群一时问不到时是群号", kinds: EVERY },
     Placeholder { key: "group_id", label: "群号", hint: "", kinds: EVERY },
     Placeholder { key: "member_count", label: "群人数", hint: "群里现在有多少人；读不到时为空", kinds: EVERY },
     Placeholder { key: "greeting", label: "问候", hint: "按北京时间：早上好、上午好、中午好、下午好、晚上好、夜深了", kinds: EVERY },
@@ -1207,29 +1207,21 @@ struct GroupInfo {
     members: Option<i32>,
 }
 
-/// 事件里带的群名，`guild.name` 优先、退到 `channel.name`。
-///
-/// 实现端推事件时就知道群名（消息事件一直带着），入群事件也带着的话，渲染 `{group}`
-/// 就不必再问一次 `guild.get`。
-fn event_group_name(ctx: &Context) -> Option<String> {
-    let EventType::Satori(raw) = &ctx.event else {
-        return None;
-    };
-    let satori = raw.get("_satori")?;
-    ["guild", "channel"]
-        .iter()
-        .filter_map(|key| satori.get(*key).and_then(|value| value.get_str("name")))
-        .find(|name| !name.trim().is_empty())
-        .map(|name| name.trim().to_string())
+/// 群名与人数，查群目录（[`guilds`]）：适配层连上时记全了群名，之后跟着消息、改名、进退群事件
+/// 更新，所以这里通常一个请求都不发、直接拿到。目录里没有这个群（刚进的新群），或要人数而人数
+/// 还不知道，才限时问一次 `guild.get`；等不到用群号顶上、人数留空。
+async fn group_info_soon(ctx: &Context, writer: &LockedWriter, group: &str, want_members: bool, wait: Duration) -> GroupInfo {
+    let guild = guilds::lookup(ctx, writer, group, want_members, wait).await;
+    GroupInfo {
+        id: group.to_string(),
+        name: guild.as_ref().map(|g| g.name.clone()).filter(|name| !name.is_empty()).unwrap_or_else(|| group.to_string()),
+        members: guild.and_then(|g| g.members),
+    }
 }
 
-/// 群名与人数：一次 `guild.get` 都有。群名事件里带了就用事件里的（更新，也省一次往返），
-/// 读不到就是群号、人数为空。
+/// 不急着发的地方（预览、留档页）：多等一会儿，把名字等回来。
 async fn group_info(ctx: &Context, writer: &LockedWriter, group: &str) -> GroupInfo {
-    let info = api::get_guild_info(ctx, writer.clone(), group).await.ok();
-    let live_name = info.as_ref().map(|i| i.group_name.clone()).filter(|name| !name.is_empty());
-    let name = event_group_name(ctx).or(live_name).unwrap_or_else(|| group.to_string());
-    GroupInfo { id: group.to_string(), name, members: info.and_then(|i| i.member_count) }
+    group_info_soon(ctx, writer, group, true, Duration::from_secs(10)).await
 }
 
 /// 昵称、群名、群人数都只是欢迎词里的装饰。给它们这么久，到点还没回来就先发欢迎，
@@ -1248,15 +1240,6 @@ async fn display_name_soon(ctx: &Context, writer: &LockedWriter, group: &str, us
     user.to_string()
 }
 
-/// 群名照事件里带的来，人数留空：不问 `guild.get` 也能把欢迎词写完。
-fn group_info_from_event(ctx: &Context, group: &str) -> GroupInfo {
-    GroupInfo {
-        id: group.to_string(),
-        name: event_group_name(ctx).unwrap_or_else(|| group.to_string()),
-        members: None,
-    }
-}
-
 /// 这几段文案（连同自定义占位符）里有没有用到 `{key}`。欢迎的口径是按需取：只写了 `{at}`
 /// 的话有号码就能发，昵称、群人数一样都不问；真用到了才去问，问也只等一小会儿。
 fn uses(key: &str, texts: [Option<&str>; 2], custom: &Custom) -> bool {
@@ -1265,22 +1248,9 @@ fn uses(key: &str, texts: [Option<&str>; 2], custom: &Custom) -> bool {
         || custom.values().any(|template| template.variants().any(|text| text.contains(&token)))
 }
 
-/// 一条提示要的群资料，按需取：用到 `{member_count}`、或事件里没带群名（定时器发的提醒）时
-/// 才限时问一次 `guild.get`；否则照事件里的群名，不发请求。
+/// 一条提示要的群资料：用到 `{member_count}` 才要人数。
 async fn group_info_for(ctx: &Context, writer: &LockedWriter, group: &str, text: &str, custom: &Custom) -> GroupInfo {
-    if uses("member_count", [Some(text), None], custom) || event_group_name(ctx).is_none() {
-        group_info_soon(ctx, writer, group, ENRICH_WAIT).await
-    } else {
-        group_info_from_event(ctx, group)
-    }
-}
-
-/// 群资料：同样只等 `wait`；没等回来就照事件里的群名（再没有就是群号），人数留空。
-async fn group_info_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> GroupInfo {
-    if let Ok(info) = tokio::time::timeout(wait, group_info(ctx, writer, group)).await {
-        return info;
-    }
-    GroupInfo { id: group.to_string(), name: event_group_name(ctx).unwrap_or_else(|| group.to_string()), members: None }
+    group_info_soon(ctx, writer, group, uses("member_count", [Some(text), None], custom), ENRICH_WAIT).await
 }
 
 /// 账号身份最多等这么久。身份有缓存（还落盘、群里有人说话就顺手备好），通常直接命中、不等；
@@ -1393,13 +1363,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
                 event_name(ctx, user).unwrap_or_else(|| user.to_string())
             }
         },
-        async {
-            if wants_count {
-                group_info_soon(ctx, writer, group, ENRICH_WAIT).await
-            } else {
-                group_info_from_event(ctx, group)
-            }
-        }
+        group_info_soon(ctx, writer, group, wants_count, ENRICH_WAIT)
     );
     let verify = (check && verify_allowed(group, role.as_deref())).then(|| challenge(&effective.mode, &effective.answers));
     if !welcome && verify.is_none() {
@@ -2256,7 +2220,7 @@ async fn send_reminders(ctx: &Context, writer: &LockedWriter, config: &Config, k
     if pending.is_empty() {
         return;
     }
-    let info = group_info_soon(ctx, writer, &key.1, ENRICH_WAIT).await;
+    let info = group_info_soon(ctx, writer, &key.1, true, ENRICH_WAIT).await;
     let tick_at = now();
     let punish = config.phrases.punish(&config.verify);
     let mut sections: BTreeMap<(String, String, String, String), Vec<Pending>> = BTreeMap::new();
@@ -2456,7 +2420,7 @@ async fn expire(ctx: &Context, writer: &LockedWriter, config: &Config, p: Pendin
     let Some(text) = verify.fail_text.pick() else {
         return;
     };
-    let info = group_info_soon(ctx, writer, &p.group, ENRICH_WAIT).await;
+    let info = group_info_soon(ctx, writer, &p.group, true, ENRICH_WAIT).await;
     let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)

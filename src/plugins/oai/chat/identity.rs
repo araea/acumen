@@ -345,8 +345,9 @@ pub(super) async fn probe(
             identity.role = member.role;
             identity.joined_at = member.join_time;
         }
-        if let Ok(guild) = api::get_guild_info(ctx, writer.clone(), group).await {
-            identity.group_name = guild.group_name;
+        let name = api::group_name(ctx, writer, group).await;
+        if name != group {
+            identity.group_name = name;
         }
     };
     if tokio::time::timeout(FETCH_TIMEOUT, ask).await.is_err() {

@@ -59,15 +59,10 @@ pub async fn compose(ctx: &Context, writer: &LockedWriter, text: &str, asker: &A
         ("date", moment.date),
         ("weekday", moment.weekday),
     ]);
-    // 群名要问一次平台：用到了才问。
+    // 群名查群目录，通常不用问平台；用到了才查。
     if text.contains("{group}") {
         let name = match asker.group {
-            Some(group) => api::get_guild_info(ctx, writer.clone(), group)
-                .await
-                .ok()
-                .map(|info| info.group_name)
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| group.to_string()),
+            Some(group) => api::group_name(ctx, writer, group).await,
             None => String::new(),
         };
         values.insert("group", name);
