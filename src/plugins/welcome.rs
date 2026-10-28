@@ -1401,13 +1401,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             }
         }
     );
-    // 「说任意一句话」：入群事件到之前、或上面等资料的工夫里他已经开口了，就算过。不再让他
-    // 补一句，也不发「验证通过」——欢迎都还没到，先冒出一句通过只会让人摸不着头脑。
-    let early = check && effective.mode == "any" && spoke_since(&me, group, user, arrived - SPOKE_WINDOW);
-    if early {
-        info!(target: LOG_TARGET, "群 {group} 的 {name}（{user}）进群就说了话，任意消息验证直接算过");
-    }
-    let verify = (check && !early && verify_allowed(group, role.as_deref())).then(|| challenge(&effective.mode, &effective.answers));
+    let verify = (check && verify_allowed(group, role.as_deref())).then(|| challenge(&effective.mode, &effective.answers));
     if !welcome && verify.is_none() {
         return Ok(());
     }
@@ -1441,6 +1435,17 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             .await;
         info!(target: LOG_TARGET, "群 {group} 新成员 {}（{user}）开始入群验证（{}）", entry.name, entry.mode);
         pending = Some(entry);
+    }
+    // 「说任意一句话」：入群事件到之前、或上面等资料的工夫里他已经开口了，就算过。不再让他补一句，
+    // 也不发「验证通过」——欢迎都还没到，先冒出一句通过只会让人摸不着头脑。必须在登记之后看：
+    // 消息那边是先记发言、再查名单，两边都「先写后读」，他的话落在哪个时刻都不会两头漏掉。
+    if pending.as_ref().is_some_and(|p| p.mode == "any") && spoke_since(&me, group, user, arrived - SPOKE_WINDOW) {
+        info!(target: LOG_TARGET, "群 {group} 的 {name}（{user}）进群就说了话，任意消息验证直接算过");
+        forget(&me, group, user).await;
+        pending = None;
+        if !welcome {
+            return Ok(());
+        }
     }
 
     let at = [user.to_string()];
@@ -1506,19 +1511,27 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     };
     let sent_at = now();
     if pending.is_some() {
-        STATE
+        let id = sent.clone();
+        let started = STATE
             .update(|state| {
                 let Some(p) = state.pending.iter_mut().find(|p| p.self_id == me && p.group == group && p.user_id == user) else {
-                    return ((), false);
+                    return (false, false);
                 };
                 p.name = name.clone();
                 p.started = true;
                 p.deadline = sent_at + i64::try_from(config.verify.timeout_seconds).unwrap_or(300);
-                p.welcome = sent.map(|id| (id, sent_at));
-                ((), true)
+                p.welcome = id.map(|id| (id, sent_at));
+                (true, true)
             })
             .await;
-        if name == user {
+        // 发送的工夫里他已经算过了：没人再负责撤这条欢迎，照欢迎自己的撤回设置来。
+        if !started
+            && config.join.recall_seconds > 0
+            && let Some(id) = sent
+        {
+            recall_later(ctx, writer, group, id, config.join.recall_seconds);
+        }
+        if started && name == user {
             // 欢迎没用到昵称就没问：发完了再在后台补上，提醒、通过、超时的提示与留档还要用。
             let (ctx, writer, group, user) = (ctx.clone(), writer.clone(), group.to_string(), user.to_string());
             tokio::spawn(async move {
