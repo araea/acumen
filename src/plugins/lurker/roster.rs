@@ -227,8 +227,17 @@ pub fn exempt_for(config: &Config, group: &str) -> Vec<String> {
     ids
 }
 
-/// 查一遍这个群。`days`：只这一次换个天数看（「潜水 60」）。
+/// 查一遍这个群并记作本群的名单。`days`：只这一次换个天数看（「潜水 60」）。
+///
+/// 「潜水 踢 1-20」按的就是记下的这份序号，所以只有管得着的人（与自动清理、控制台）走这里。
 pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, days: Option<u32>) -> Result<Scan, String> {
+    let scan = look(ctx, writer, config, group, days).await?;
+    remember(&scan).await;
+    Ok(scan)
+}
+
+/// 查一遍、只看不记：群友查的名单不能顶掉管理员正要按序号移出的那一份。
+pub async fn look(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, days: Option<u32>) -> Result<Scan, String> {
     let now = chrono::Utc::now().timestamp();
     let mut rule = rule_for(config, group);
     if let Some(days) = days {
@@ -322,7 +331,6 @@ pub async fn scan(ctx: &Context, writer: &LockedWriter, config: &Config, group: 
         scan.rule.text,
         scan.source
     );
-    remember(&scan).await;
     Ok(scan)
 }
 

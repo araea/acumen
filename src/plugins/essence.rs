@@ -72,8 +72,7 @@ pub fn handle(
         };
 
         // 按的人：机器人管理员，或本群群主、管理员。
-        let allowed = crate::access::is_manager(&ctx)
-            || msg.sender_role().is_some_and(api::is_staff);
+        let allowed = crate::access::is_group_staff(&ctx, &writer, group_id).await;
         if !allowed {
             send_msg(
                 &ctx,

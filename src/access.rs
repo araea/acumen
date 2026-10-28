@@ -4,6 +4,7 @@
 //! 「是不是管理员」是框架级的问题，配置键只是它当前的落点，因此放在这里；ctl 仍负责
 //! 改配置与插件开关，不再兼任身份判定。
 
+use crate::adapters::satori::{LockedWriter, api};
 use crate::event::Context;
 use toml::Value;
 
@@ -49,4 +50,30 @@ pub fn is_manager(ctx: &Context) -> bool {
     }
     ctx.as_message()
         .is_some_and(|msg| is_owner(ctx, msg.user_id(), msg.is_manual_self()))
+}
+
+/// 这条群消息的发送者在本群管不管事：[`is_manager`]，或本群群主、管理员。
+///
+/// 消息上带的身份是实现端顺手给的，说不准时写成普通成员（知弦 0.50 起干脆不带，
+/// 适配器补成 member）——只认它，真管理员会被当成群友，管理指令静默不理。所以消息上
+/// 没说是管理时按成员身份正经问一次（有缓存，同一个人十分钟内只问一回，见 `roles`）。
+/// 机器人自己发出去的回声不算；号主在账号上亲手发的已经由 [`is_manager`] 认下。
+pub async fn is_group_staff(ctx: &Context, writer: &LockedWriter, group: &str) -> bool {
+    if is_manager(ctx) {
+        return true;
+    }
+    let Some(message) = ctx.as_message() else {
+        return false;
+    };
+    // 机器人自己的回声带着账号的真实身份（往往就是管理员），先挡掉，免得谁都能借它的嘴下指令。
+    let user = message.user_id();
+    if user.is_empty() || group.is_empty() || user == ctx.bot.self_id() {
+        return false;
+    }
+    if message.sender_role().is_some_and(api::is_staff) {
+        return true;
+    }
+    api::member_role(ctx, writer.clone(), group, user)
+        .await
+        .is_some_and(|role| api::is_staff(&role))
 }

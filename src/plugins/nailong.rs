@@ -1884,9 +1884,10 @@ where
     }
     let by = message.user_id();
     // 私聊进得来的只有号主与 ctl 管理员。
-    let allowed = ask.place.group.is_none()
-        || crate::access::is_manager(ctx)
-        || message.sender_role().is_some_and(api::is_staff);
+    let allowed = match &ask.place.group {
+        None => true,
+        Some(group) => crate::access::is_group_staff(ctx, writer, group).await,
+    };
     if !allowed {
         return say("❌ 只有群主、管理员能纠正\n想看分数可以发「奶龙 测」".into()).await;
     }

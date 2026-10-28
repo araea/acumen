@@ -7,12 +7,13 @@ use super::purge::{self, Fate, Job, State, Target};
 use super::roster::{self, Category, Scan};
 use super::sheet;
 use super::{Config, GroupRule, LOG_TARGET};
-use crate::adapters::satori::{LockedWriter, api, delivery_uncertain, send_msg};
+use crate::adapters::satori::{LockedWriter, delivery_uncertain, send_msg};
 use crate::command::{self, CommandMatch};
 use crate::event::Context;
 use crate::message::Message;
 use crate::plugins::{PluginError, update_config};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,7 @@ const CONFIRM_WITHIN: Duration = Duration::from_mins(2);
 
 fn usage(prefix: &str) -> String {
     [
-        "潜水清理的用法（只有群主、管理员能用）：".to_string(),
+        "潜水清理的用法（查看谁都能用；移出、提醒、改设置只有群主、管理员能用）：".to_string(),
         format!("· {prefix}潜水：查一遍本群谁在潜水，名单带序号；{prefix}潜水 60：这次按 60 天看"),
         format!("· {prefix}潜水 踢 1-20 25：移出这些序号的人，回「确认」才动手；也可以写「全部」「全部 除 3 7」"),
         format!("· {prefix}潜水 提醒：把名单上的人一次性提醒一遍；{prefix}潜水 提醒 1-20 私聊：只提醒这几个，并且私聊"),
@@ -57,10 +58,11 @@ fn take_plan(group: &str, operator: &str) -> Option<Plan> {
     Some(plans.remove(index))
 }
 
-/// 谁能用：机器人管理员；`staff` 时再加上群主、群管理员。
-pub fn allowed(ctx: &Context, config: &Config) -> bool {
+/// 谁能动手（移出、提醒、改设置）：机器人管理员；`staff` 时再加上群主、群管理员。
+/// 只是看的（名单、进度、记录、豁免名单、用法）谁都能用，见 [`viewing`]。
+pub async fn allowed(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str) -> bool {
     crate::access::is_manager(ctx)
-        || (config.managers == "staff" && ctx.as_message().and_then(|m| m.sender_role()).is_some_and(api::is_staff))
+        || (config.managers == "staff" && crate::access::is_group_staff(ctx, writer, group).await)
 }
 
 /// 不带前缀的「确认」「取消」：只在这个人有一件待确认的事时接。返回 true 表示接了。
@@ -92,13 +94,26 @@ pub async fn answer(ctx: &Context, writer: &LockedWriter, config: &Config, group
 
 /// 「潜水 …」。返回 false 表示这条不归这里管（照常往下传）。
 pub async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, matched: CommandMatch) -> Result<bool, PluginError> {
-    if !allowed(ctx, config) {
-        return Ok(false);
-    }
-    let here = Here::of(ctx, writer, config, group);
     let arg = command::extract_text_arg(&matched.args);
     let arg = arg.trim();
     let (word, rest) = arg.split_once(char::is_whitespace).map_or((arg, ""), |(w, r)| (w, r.trim()));
+    let staff = allowed(ctx, writer, config, group).await;
+    let mut here = Here::of(ctx, writer, config, group);
+    if !staff {
+        if !viewing(&matched, word, rest) {
+            // 带了前缀的明确指令说一声；没有前缀时这只是在聊天，照常往下传。
+            if command::get_prefixes(ctx).iter().all(String::is_empty) {
+                return Ok(false);
+            }
+            here.say("移出、提醒和改设置要群主或管理员来；名单、进度和记录谁都能看。").await?;
+            return Ok(true);
+        }
+        if let Some(wait) = member_cooldown(group, word) {
+            here.say(format!("刚有人查过，{wait} 秒后再来；想看上次的结果翻一翻上面就行。")).await?;
+            return Ok(true);
+        }
+        here.keep = false;
+    }
     let said = match word {
         "" | "名单" | "列表" | "查" => here.list(None).await?,
         days if days.parse::<u32>().is_ok() => match days.parse::<u32>().ok().filter(|d| (1..=3650).contains(d)) {
@@ -134,6 +149,35 @@ pub async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: &
     Ok(true)
 }
 
+/// 群友也能用的：只看、不动手的那几样。查名单要重拉全群成员，另有冷却，见 [`member_cooldown`]。
+fn viewing(matched: &CommandMatch, word: &str, rest: &str) -> bool {
+    let names = matches!(word, "豁免" | "白名单")
+        && rest.is_empty()
+        && matched.at_ids.is_empty()
+        && !matched.args.iter().any(|seg| seg.get_str("type") == Some("at"));
+    names
+        || matches!(word, "" | "名单" | "列表" | "查" | "进度" | "状态" | "记录" | "历史" | "帮助" | "-h" | "help" | "用法")
+        || word.parse::<u32>().is_ok()
+}
+
+/// 群友查名单的冷却：同一个群三分钟一次，要等就返回还差几秒。只拦查名单，别的看一眼不费事。
+fn member_cooldown(group: &str, word: &str) -> Option<u64> {
+    const GAP: Duration = Duration::from_secs(180);
+    if !(matches!(word, "" | "名单" | "列表" | "查") || word.parse::<u32>().is_ok()) {
+        return None;
+    }
+    static LAST: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let last = last.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    last.retain(|_, at| now.duration_since(*at) < GAP);
+    if let Some(at) = last.get(group) {
+        return Some((GAP - now.duration_since(*at)).as_secs().max(1));
+    }
+    last.insert(group.to_string(), now);
+    None
+}
+
 struct Here<'a> {
     ctx: &'a Context,
     writer: &'a LockedWriter,
@@ -143,6 +187,8 @@ struct Here<'a> {
     user_name: String,
     message_id: String,
     prefix: String,
+    /// 查到的名单记不记作本群的名单（序号给「潜水 踢」用）；群友查的不记。
+    keep: bool,
 }
 
 impl<'a> Here<'a> {
@@ -157,6 +203,7 @@ impl<'a> Here<'a> {
             user_name: message.as_ref().map(|m| m.sender_name().to_string()).unwrap_or_default(),
             message_id: message.as_ref().map(|m| m.message_id().to_string()).unwrap_or_default(),
             prefix: command::get_prefixes(ctx).into_iter().next().unwrap_or_default(),
+            keep: true,
         }
     }
 
@@ -168,7 +215,12 @@ impl<'a> Here<'a> {
 
     /// 查一遍并发名单。
     async fn list(&self, days: Option<u32>) -> Result<String, PluginError> {
-        let scan = match roster::scan(self.ctx, self.writer, self.config, self.group, days).await {
+        let scan = if self.keep {
+            roster::scan(self.ctx, self.writer, self.config, self.group, days).await
+        } else {
+            roster::look(self.ctx, self.writer, self.config, self.group, days).await
+        };
+        let scan = match scan {
             Ok(scan) => scan,
             Err(error) => return Ok(format!("没查成：{error}")),
         };

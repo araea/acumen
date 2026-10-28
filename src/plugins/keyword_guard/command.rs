@@ -45,7 +45,7 @@ pub(super) async fn run(
     // 权限：先挡人，再谈内容。
     let allowed = match scope {
         Scope::Global => crate::access::is_manager(ctx),
-        Scope::Local => group.is_some() && may_manage(ctx, config),
+        Scope::Local => group.is_some() && may_manage(ctx, writer, config, group).await,
     };
     if !allowed {
         let why = match scope {
@@ -96,14 +96,14 @@ pub(super) async fn run(
     }
 }
 
-fn may_manage(ctx: &Context, config: &Config) -> bool {
+async fn may_manage(ctx: &Context, writer: &LockedWriter, config: &Config, group: Option<&str>) -> bool {
     if crate::access::is_manager(ctx) {
         return true;
     }
-    config.managers == "staff"
-        && ctx
-            .as_message()
-            .is_some_and(|message| message.sender_role().is_some_and(api::is_staff))
+    match group {
+        Some(group) if config.managers == "staff" => crate::access::is_group_staff(ctx, writer, group).await,
+        _ => false,
+    }
 }
 
 /// 第一个词是「全局」或「本群」时就切范围；「全局添加」这种连写也认。
@@ -961,7 +961,7 @@ async fn trial(
         };
         lines.push(format!("提示：{preview}（{}）", notice_lifetime(config)));
     }
-    if config.exempt_staff && may_manage(ctx, config) && group.is_some() {
+    if config.exempt_staff && group.is_some() && may_manage(ctx, writer, config, group).await {
         lines.push("你是本群的管理，这句话真发出来不会被处理。".into());
     }
     if (rule.action.recalls() || rule.action.mutes())

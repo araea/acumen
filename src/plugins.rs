@@ -503,7 +503,7 @@ pub async fn run(mut ctx: Context, writer: LockedWriter) -> Result<(), PluginErr
 
     // 注意：ctx.event 现在是 EventType，可以直接 match 引用
     match &ctx.event {
-        EventType::Satori(_) => {}
+        EventType::Satori(_) => remind_switched_off(&ctx, &writer).await,
         EventType::BeforeSend(packet) => {
             dispatch_packet(&ctx, writer, packet).await?;
         }
@@ -511,6 +511,71 @@ pub async fn run(mut ctx: Context, writer: LockedWriter) -> Result<(), PluginErr
     }
 
     Ok(())
+}
+
+/// 号主发了一条关着的插件的指令：流水线里没人接，从前就此石沉大海，看上去像是坏了。
+///
+/// 只回号主与全局管理员（插件开关本来就归他们管），只认带了指令前缀的整词，且没有开着的
+/// 插件也认这个词——开着的插件不接，是它自己的取舍（不是管理员、只是在聊天），不在这里多嘴。
+fn remind_switched_off<'a>(ctx: &'a Context, writer: &'a LockedWriter) -> BoxFuture<'a, ()> {
+    // 发送会再走一遍流水线（发送前钩子），装箱断开 async 递归，与插件处理函数同理。
+    Box::pin(async move {
+        let Some(message) = ctx.as_message() else {
+            return;
+        };
+        if !crate::access::is_manager(ctx) {
+            return;
+        }
+        let prefixes = crate::command::get_prefixes(ctx);
+        let Some((prefix, word)) = crate::command::spoken_bodies(message.text())
+            .into_iter()
+            .find_map(|body| {
+                prefixes.iter().filter(|prefix| !prefix.is_empty()).find_map(|prefix| {
+                    let word = body.strip_prefix(prefix.as_str())?.split_whitespace().next()?;
+                    Some((prefix.clone(), word))
+                })
+            })
+        else {
+            return;
+        };
+        let Some(plugin) = switched_off_owner(&ctx.config.read().unwrap(), word) else {
+            return;
+        };
+        let text = format!(
+            "「{}」没开，所以「{prefix}{word}」没人接。发「{prefix}ctl on {}」打开，或到控制台里开。",
+            plugin.display_name, plugin.name
+        );
+        let reply = crate::message::Message::new().reply(message.message_id()).text(text);
+        if let Err(error) = crate::adapters::satori::send_msg(ctx, writer.clone(), message.group_id(), Some(message.user_id()), reply).await {
+            warn!(target: LOG_TARGET, "提醒「{}」没开时发送失败：{error}", plugin.name);
+        }
+    })
+}
+
+/// 注册表里一条指令写法的指令词：每个别名的第一个词。参数占位符与 `/#`、`~名` 这类
+/// 自带写法的符号指令不算。
+fn command_heads(cmd: &'static str) -> impl Iterator<Item = &'static str> {
+    cmd.split(" / ")
+        .filter_map(|alias| alias.split_whitespace().next())
+        .filter(|head| head.chars().next().is_some_and(char::is_alphanumeric))
+}
+
+/// 认 `word` 这个指令词、却关着的插件；有开着的插件也认它就是 `None`。
+fn switched_off_owner(config: &crate::config::AppConfig, word: &str) -> Option<&'static Plugin> {
+    let claims = |plugin: &Plugin| {
+        plugin
+            .commands
+            .iter()
+            .any(|cmd| command_heads(cmd.cmd).any(|head| head == word))
+    };
+    let mut off = None;
+    for plugin in get_plugins().iter().filter(|plugin| claims(plugin)) {
+        if enabled(config, plugin.name) {
+            return None;
+        }
+        off.get_or_insert(plugin);
+    }
+    off
 }
 
 // ================= 群名单 =================
@@ -647,6 +712,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 关着的插件的指令词认得出来；开着的插件也认这个词时不多嘴；占位符与符号指令不算词。
+    #[test]
+    fn switched_off_owner_names_the_plugin_that_is_off() {
+        let mut config = crate::config::AppConfig::default();
+        assert_eq!(switched_off_owner(&config, "欢迎").map(|p| p.name), Some("welcome"));
+        assert_eq!(switched_off_owner(&config, "潜水").map(|p| p.name), Some("lurker"));
+        assert!(switched_off_owner(&config, "随便聊聊").is_none());
+        let on: Value = toml::from_str("enabled = true").unwrap();
+        config.plugins.insert("welcome".into(), on);
+        assert!(switched_off_owner(&config, "欢迎").is_none());
+        assert!(command_heads("ctl list [on|off|关键词]").eq(["ctl"]));
+        assert!(command_heads("<链接> / /# [文字]").next().is_none());
+    }
 
     /// 注册表里每个插件的元数据与配置都得自洽：
     /// 默认配置能通过自己的校验且带 `enabled`，摘要写了（配置键与模块名一致在编译期核对）。

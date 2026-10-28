@@ -1125,37 +1125,25 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
                 request(&ctx, &writer, &config, &group).await?;
                 false
             }
-            "message-created" if !user.is_empty() && user != me => {
-                if let Some(matched) = command::match_word_command(&ctx, "欢迎")
-                    && staff(&ctx, &writer, &group).await
+            // 号主与机器人共用一个号：他在账号上亲手发的「欢迎 …」也是指令，只跳过机器人
+            // 自己发出去的回声。从前整条以 `user != me` 挡在门外，号主怎么发都没反应。
+            "message-created" if !user.is_empty() => {
+                let echo = user == me && !ctx.as_message().is_some_and(|m| m.is_manual_self());
+                if !echo
+                    && let Some(matched) = command::match_word_command(&ctx, "欢迎")
                     && run_command(&ctx, &writer, &config, &group, matched).await?
                 {
                     true
-                } else {
+                } else if user != me {
                     verify_message(&ctx, &writer, &config, &group, &user).await?
+                } else {
+                    false
                 }
             }
             _ => false,
         };
         Ok((!consumed).then_some(ctx))
     })
-}
-
-/// 群主、群管理员与机器人管理员：能看设置、预览、手动放行。
-///
-/// 消息里的身份是实现端顺手带的，成员表还没拉下来时会写成普通成员；对不上就正经问一次
-/// （有缓存，同一个人十分钟内只问一回）。
-async fn staff(ctx: &Context, writer: &LockedWriter, group: &str) -> bool {
-    if crate::access::is_manager(ctx) {
-        return true;
-    }
-    let Some(message) = ctx.as_message() else {
-        return false;
-    };
-    if message.sender_role().is_some_and(api::is_staff) {
-        return true;
-    }
-    api::member_role(ctx, writer.clone(), group, message.user_id()).await.is_some_and(|role| api::is_staff(&role))
 }
 
 /// 事件里带的名字（群名片优先）；没有就是 `None`。
@@ -1900,8 +1888,23 @@ async fn run_command(ctx: &Context, writer: &LockedWriter, config: &Config, grou
     let arg = command::extract_text_arg(&matched.args);
     let word = arg.split_whitespace().next().unwrap_or("");
     let rest = arg[word.len()..].trim();
+    let prefixed = !command::get_prefixes(ctx).iter().all(String::is_empty);
+    // 只是看的（设置、留档、用法）谁都能用；预览会在群里发提示，放行、清除留档是动手，
+    // 这几样要群主、管理员与号主。
+    let viewing = matches!(word, "" | "状态" | "设置" | "帮助" | "-h" | "help")
+        || (matches!(word, "记录" | "留档")
+            && !rest.split_whitespace().next().is_some_and(|word| matches!(word, "清除" | "移除" | "删除")));
+    let staff = crate::access::is_group_staff(ctx, writer, group).await;
+    if !staff && !viewing {
+        // 没有指令前缀时「欢迎 新朋友」只是在聊天，不接话。
+        if !prefixed || !matches!(word, "预览" | "试试" | "测试" | "记录" | "留档" | "放行" | "通过") {
+            return Ok(false);
+        }
+        reply("预览、放行和清除留档要群主或管理员来；设置和留档谁都能看。".into()).await?;
+        return Ok(true);
+    }
     match word {
-        "" | "状态" | "设置" => reply(status(ctx, writer, config, group).await).await?,
+        "" | "状态" | "设置" => reply(status(ctx, writer, config, group, staff).await).await?,
         "预览" | "试试" | "测试" => {
             let me = message.user_id().to_string();
             if let Err(text) = preview(ctx, writer, config, group, &me, rest).await {
@@ -1970,7 +1973,7 @@ async fn run_command(ctx: &Context, writer: &LockedWriter, config: &Config, grou
         }
         "帮助" | "-h" | "help" => reply(usage()).await?,
         // 没有指令前缀时「欢迎 新朋友」只是在聊天，不接话。
-        _ if command::get_prefixes(ctx).iter().all(String::is_empty) => return Ok(false),
+        _ if !prefixed => return Ok(false),
         _ => reply(format!("不认识「{word}」\n{}", usage())).await?,
     }
     Ok(true)
@@ -1990,7 +1993,9 @@ fn command_ids(matched: &CommandMatch, text: &str, self_id: &str) -> Vec<String>
 }
 
 /// 本群现在是什么样：每一项开没开、开了是怎么个做法，验证差在哪，谁还在等。
-async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str) -> String {
+///
+/// `staff`：问的人管不管事。群友也能看，只是口令不给看——口令得从公告、群规里找到。
+async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, staff: bool) -> String {
     let e = config.for_group(group);
     let onoff = |on: bool| if on { "开" } else { "关" };
     let mut lines = vec!["本群的入群欢迎".to_string()];
@@ -2012,7 +2017,8 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         let mode = match challenge(&e.mode, &e.answers).0.as_str() {
             "code" => "回验证码".to_string(),
             "math" => "算一道加法".to_string(),
-            "answer" => format!("发口令「{}」", e.answers.join("」或「")),
+            "answer" if staff => format!("发口令「{}」", e.answers.join("」或「")),
+            "answer" => "发口令（口令只给管理员看）".to_string(),
             _ => "说任意一句话".to_string(),
         };
         let role = api::own_role_known(ctx, writer.clone(), group).await;

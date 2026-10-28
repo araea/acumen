@@ -803,7 +803,7 @@ pub(crate) fn differences(default: &Value, current: &Value, path: &str, out: &mu
 ///
 /// 打开要号主（会顺手打开总开关）；关掉本群号主、群主和管理员都可以——关是收手，谁管这个群谁说了算。
 /// 返回 `None` 表示这句不是开关，照常往下走（`/搭话 帮我看看` 仍是叫它说话）。
-async fn ambient_switch(ctx: &Context) -> Option<String> {
+async fn ambient_switch(ctx: &Context, writer: &LockedWriter) -> Option<String> {
     let msg = ctx.as_message()?;
     let ambient = get_config_or_default::<crate::plugins::ambient::AmbientConfig>(ctx);
     let command = ambient.summon_command.trim();
@@ -818,11 +818,10 @@ async fn ambient_switch(ctx: &Context) -> Option<String> {
         return Some(format!("在想让我搭话的群里发「{command} 开」就行"));
     };
     let manager = is_manager(ctx);
-    let group_admin = matches!(msg.sender_role(), Some("owner" | "admin"));
     if on && !manager {
         return Some("这个得号主来开".to_string());
     }
-    if !on && !manager && !group_admin {
+    if !on && !manager && !crate::access::is_group_staff(ctx, writer, &group).await {
         return Some("这个得号主或群管理来关".to_string());
     }
     let already = enabled(&ctx.config.read().unwrap(), "ambient") && ambient.groups.contains(&group);
@@ -891,7 +890,7 @@ pub fn handle(
     writer: LockedWriter,
 ) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
     Box::pin(async move {
-        if let Some(reply) = ambient_switch(&ctx).await {
+        if let Some(reply) = ambient_switch(&ctx, &writer).await {
             if let Some(msg) = ctx.as_message() {
                 send_msg(&ctx, writer, msg.group_id(), Some(msg.user_id()), Message::new().text(reply)).await?;
             }

@@ -1,4 +1,5 @@
-//! 群里管规则：「自动回复 …」。群主、群管理员（`managers = "staff"` 时）与机器人管理员能用。
+//! 群里管规则：「自动回复 …」。群主、群管理员（`managers = "staff"` 时）与机器人管理员能用；
+//! 只是看的（列表、详情、试一句、用法）群里谁都能用。
 //!
 //! 在群里加的规则只管这个群；所有群共用的规则只有机器人管理员能加、改、删，群管理员
 //! 可以在自己群里把它停用。号主私聊机器人用同一套指令，管的就是所有群共用的那些。
@@ -40,8 +41,19 @@ pub async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: O
         return Ok(false);
     };
     let manager = crate::access::is_manager(ctx);
-    let staff = manager || (config.managers == "staff" && group.is_some() && message.sender_role().is_some_and(api::is_staff));
-    if !staff {
+    let staff = manager
+        || (config.managers == "staff"
+            && match group {
+                Some(group) => crate::access::is_group_staff(ctx, writer, group).await,
+                None => false,
+            });
+    let arg = command::extract_text_arg(&matched.args);
+    let words: Vec<&str> = arg.split_whitespace().collect();
+    let word = words.first().copied().unwrap_or("");
+    let rest: Vec<&str> = words.iter().skip(1).copied().collect();
+    // 只是看的（列表、详情、试一句、用法）群里谁都能用；增删改要管得着的人。
+    let viewing = matches!(word, "" | "列表" | "list" | "看" | "详情" | "查看" | "试" | "测试" | "帮助" | "-h" | "help");
+    if !staff && !(viewing && group.is_some()) {
         return Ok(false);
     }
     let here = Here {
@@ -53,10 +65,6 @@ pub async fn run(ctx: &Context, writer: &LockedWriter, config: &Config, group: O
         user: message.user_id().to_string(),
         message_id: message.message_id().to_string(),
     };
-    let arg = command::extract_text_arg(&matched.args);
-    let words: Vec<&str> = arg.split_whitespace().collect();
-    let word = words.first().copied().unwrap_or("");
-    let rest: Vec<&str> = words.iter().skip(1).copied().collect();
     let outcome = match word {
         "" | "列表" | "list" => Ok(here.list(&rest).await),
         "看" | "详情" | "查看" => here.detail(&rest).await,
