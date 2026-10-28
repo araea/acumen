@@ -209,9 +209,6 @@ text = [
 ]
 # 配图：图片直链，或 data/welcome/ 下的文件名（也可写绝对路径）；多张时每次随机一张。欢迎词里没写 {image} 时接在最后。
 images = []
-# 这么多秒内进群的人合并成一条欢迎（不刷屏），{name} 变成「小林、阿杰」这样的一串、{count} 是人数；0 = 来一个欢迎一个。最多 120。
-# 窗口从第一个新人入群就开始，昵称与群资料在等待期间补齐，不额外拖延；验证说明也随这条合并欢迎发出。
-merge_seconds = 0
 # 欢迎发出这么多秒后自己撤回，群里不留一长串欢迎；0 = 不撤。要验证的新人等验证有了结果再撤。
 recall_seconds = 0
 
@@ -311,7 +308,7 @@ greeting_noon = ["中午好"]
 greeting_afternoon = ["下午好"]
 greeting_evening = ["晚上好"]
 greeting_night = ["夜深了"]
-# 合并欢迎超过三个人时 {name} 的说法；{names} 是前三个名字、{count} 是总人数。三个以内直接列全。
+# 合并提醒超过三个人时 {name} 的说法；{names} 是前三个名字、{count} 是总人数。三个以内直接列全。
 crowd = ["{names} 等 {count} 人"]
 
 [welcome.channel]

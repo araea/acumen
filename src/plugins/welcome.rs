@@ -8,10 +8,11 @@
 //!   占位符**（`custom`，每群还能各写一份），各条提示里写 `{群规}` 就插进去，改一处处处跟着变。
 //!   内置占位符里由插件来写的那几句（`{task}` 要做的事、`{punish}` 后果、`{chances}`、`{greeting}`
 //!   问候、人多时的 `{name}`）也能换成自己的说法（[`Phrases`]）。
-//!   同一时间涌进来好几个人时可以合并成一条（`join.merge_seconds`），
-//!   发出去的欢迎可以过一会儿自己撤掉（`recall_seconds`），不占群聊。
+//!   来一个欢迎一个，人一到就说；发出去的欢迎可以过一会儿自己撤掉（`recall_seconds`），不占群聊。
 //! - **入群验证**：新人要在时限内完成一件小事——说任意一句话、发出指定口令、回验证码或算一道
 //!   加法（`verify.mode`）；倒计时从验证说明实际发出起算，期间按 `remind_seconds` 提醒。
+//!   说明发出前他说的话不算答错；「说任意一句话」时进群就开口（哪怕入群事件比他的话还晚到）
+//!   直接算过，欢迎里不再附验证说明，也不先冒出一句「验证通过」。
 //!   同群提醒可用 `remind_merge_seconds` 合并，新提醒发出后撤掉旧提醒；答错有提示、
 //!   可以限次数；超时按 `action` 移出或禁言。账号不是群主或管理员时罚不了人，验证整个跳过、
 //!   只发欢迎；身份一时没查到不算「不是」，照常验证、处罚前再核一次。待验证名单落盘，重启后接着计时；超时选「只记一笔」时另存有界留档，
@@ -36,7 +37,7 @@ use crate::message::Message;
 use crate::plugins::{ChannelConfig, PluginConfig, PluginError, get_config_or_default};
 use crate::storage::JsonState;
 use crate::template::Piece;
-use futures_util::future::{BoxFuture, join_all};
+use futures_util::future::BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use simd_json::derived::{ValueObjectAccess, ValueObjectAccessAsScalar};
@@ -122,8 +123,6 @@ struct JoinConfig {
     text: Template,
     /// 配图：图片直链，或数据目录 data/welcome/ 下的文件名（也可写绝对路径）。多张时每次随机一张。
     images: Vec<String>,
-    /// 这么多秒内进群的人合并成一条欢迎；0 = 来一个欢迎一个。
-    merge_seconds: u64,
     /// 欢迎发出这么多秒后撤回；0 = 不撤。要验证的人等验证有了结果再撤。
     recall_seconds: u64,
 }
@@ -223,7 +222,7 @@ const REJECT_MESSAGE: &str = "附言没有对上入群问题，看清问题再�
 
 impl Default for JoinConfig {
     fn default() -> Self {
-        Self { enabled: true, text: Template::of(JOIN_TEXT), images: Vec::new(), merge_seconds: 0, recall_seconds: 0 }
+        Self { enabled: true, text: Template::of(JOIN_TEXT), images: Vec::new(), recall_seconds: 0 }
     }
 }
 
@@ -272,7 +271,7 @@ impl Default for ApproveConfig {
 
 // ==================== 占位符的说法 ====================
 
-/// 内置占位符里由插件来写的那几句话：`{task}` `{punish}` `{chances}` `{greeting}`，以及合并欢迎人多时的
+/// 内置占位符里由插件来写的那几句话：`{task}` `{punish}` `{chances}` `{greeting}`，以及合并提醒人多时的
 /// `{name}`。各句都能写几种说法随机一种，里面有自己的几个小占位符（验证码、禁言多久……）与 `{甲|乙}`；
 /// 全部删掉就换成空的。它们是插在别的提示中间的一句话，所以只认文字，不认 @、图片与表情。
 ///
@@ -298,7 +297,7 @@ struct Phrases {
     greeting_afternoon: Template,
     greeting_evening: Template,
     greeting_night: Template,
-    /// 合并欢迎超过三个人时 `{name}` 的说法：`{names}` 前三个名字、`{count}` 总人数。
+    /// 合并提醒超过三个人时 `{name}` 的说法：`{names}` 前三个名字、`{count}` 总人数。
     crowd: Template,
 }
 
@@ -392,7 +391,7 @@ impl Phrases {
         phrase(template, &[])
     }
 
-    /// 合并欢迎时 `{name}` 的说法：三个以内全写出来，再多就照 `crowd`。
+    /// 合并提醒时 `{name}` 的说法：三个以内全写出来，再多就照 `crowd`。
     fn crowd(&self, names: &[String]) -> String {
         match names.len() {
             0..=3 => names.join("、"),
@@ -471,9 +470,6 @@ impl PluginConfig for Config {
         if verify.attempts > 20 {
             return Err("verify.attempts 最多 20 次（0 = 不限）".into());
         }
-        if self.join.merge_seconds > 120 {
-            return Err("join.merge_seconds 最多 120 秒".into());
-        }
         if verify.remind_merge_seconds > 120 {
             return Err("verify.remind_merge_seconds 最多 120 秒".into());
         }
@@ -506,6 +502,10 @@ impl PluginConfig for Config {
 
     fn migrate(table: &mut toml::Table) -> bool {
         let mut changed = false;
+        // 合并欢迎（1.76.0 起没有了）：新人得在窗口里干等，等的工夫里说话还会先收到「验证通过」。
+        if let Some(toml::Value::Table(join)) = table.get_mut("join") {
+            changed |= join.remove("merge_seconds").is_some();
+        }
         // 旧版的 `verify.code = true` 是一种验证方式，现在并进 mode。
         if let Some(toml::Value::Table(verify)) = table.get_mut("verify")
             && !verify.contains_key("mode")
@@ -719,13 +719,12 @@ const PRESENT: &[Kind] = &[Join, Prompt, Remind, Wrong, Pass, Fail];
 const CHECKS: &[Kind] = &[Prompt, Remind, Wrong];
 
 const PLACEHOLDERS: &[Placeholder] = &[
-    Placeholder { key: "at", label: "@ 新人", hint: "真的 @ 他；合并欢迎时一次 @ 好几个", kinds: PRESENT },
-    Placeholder { key: "name", label: "昵称", hint: "群名片，没有就用昵称；合并欢迎时是「小林、阿杰」这样的一串", kinds: EVERY },
+    Placeholder { key: "at", label: "@ 新人", hint: "真的 @ 他；合并提醒时一次 @ 好几个", kinds: PRESENT },
+    Placeholder { key: "name", label: "昵称", hint: "群名片，没有就用昵称；合并提醒时是「小林、阿杰」这样的一串", kinds: EVERY },
     Placeholder { key: "user_id", label: "账号", hint: "QQ 号 / 微信号", kinds: EVERY },
     Placeholder { key: "group", label: "群名", hint: "", kinds: EVERY },
     Placeholder { key: "group_id", label: "群号", hint: "", kinds: EVERY },
     Placeholder { key: "member_count", label: "群人数", hint: "群里现在有多少人；读不到时为空", kinds: EVERY },
-    Placeholder { key: "count", label: "这批人数", hint: "合并欢迎时这一条欢迎了几个人，平时是 1", kinds: &[Join] },
     Placeholder { key: "greeting", label: "问候", hint: "按北京时间：早上好、上午好、中午好、下午好、晚上好、夜深了", kinds: EVERY },
     Placeholder { key: "time", label: "时刻", hint: "如 21:05", kinds: EVERY },
     Placeholder { key: "date", label: "日期", hint: "如 10 月 22 日", kinds: EVERY },
@@ -757,7 +756,6 @@ impl Vars {
         map.insert("time", moment.time);
         map.insert("date", moment.date);
         map.insert("weekday", moment.weekday);
-        map.insert("count", "1".into());
         Self { values: map, custom: Custom::new() }
     }
 
@@ -1110,6 +1108,9 @@ pub fn handle(ctx: Context, writer: LockedWriter) -> BoxFuture<'static, Result<O
         // 直接命中缓存，不必让新人在门口等一次现查。记着且没过期时这里只是查一下表。
         if matches!(kind, "message-created" | "guild-member-request") && config.for_group(&group).verify {
             api::warm_own_role(&ctx, &writer, &group);
+            if kind == "message-created" && !user.is_empty() && user != me {
+                spoke(&me, &group, &user);
+            }
         }
         let consumed = match kind {
             "guild-member-added" if user != me => {
@@ -1256,10 +1257,22 @@ fn group_info_from_event(ctx: &Context, group: &str) -> GroupInfo {
     }
 }
 
-/// 这几段文案里有没有 `{member_count}`：只有真的要写群人数时才值得多问一次 `guild.get`。
-fn needs_member_count(texts: [Option<&str>; 2], custom: &Custom) -> bool {
-    texts.into_iter().flatten().any(|text| text.contains("{member_count}"))
-        || custom.values().any(|template| template.variants().any(|text| text.contains("{member_count}")))
+/// 这几段文案（连同自定义占位符）里有没有用到 `{key}`。欢迎的口径是按需取：只写了 `{at}`
+/// 的话有号码就能发，昵称、群人数一样都不问；真用到了才去问，问也只等一小会儿。
+fn uses(key: &str, texts: [Option<&str>; 2], custom: &Custom) -> bool {
+    let token = format!("{{{key}}}");
+    texts.into_iter().flatten().any(|text| text.contains(&token))
+        || custom.values().any(|template| template.variants().any(|text| text.contains(&token)))
+}
+
+/// 一条提示要的群资料，按需取：用到 `{member_count}`、或事件里没带群名（定时器发的提醒）时
+/// 才限时问一次 `guild.get`；否则照事件里的群名，不发请求。
+async fn group_info_for(ctx: &Context, writer: &LockedWriter, group: &str, text: &str, custom: &Custom) -> GroupInfo {
+    if uses("member_count", [Some(text), None], custom) || event_group_name(ctx).is_none() {
+        group_info_soon(ctx, writer, group, ENRICH_WAIT).await
+    } else {
+        group_info_from_event(ctx, group)
+    }
 }
 
 /// 群资料：同样只等 `wait`；没等回来就照事件里的群名（再没有就是群号），人数留空。
@@ -1270,9 +1283,10 @@ async fn group_info_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait
     GroupInfo { id: group.to_string(), name: event_group_name(ctx).unwrap_or_else(|| group.to_string()), members: None }
 }
 
-/// 账号身份最多等这么久。身份有缓存（还落盘），通常直接命中；等这么久还没有，多半是
-/// 实现端正在现拉成员表，查询会在后台接着跑完、记下，验证这边先照常发（见 [`verify_allowed`]）。
-const ROLE_WAIT: Duration = Duration::from_millis(2500);
+/// 账号身份最多等这么久。身份有缓存（还落盘、群里有人说话就顺手备好），通常直接命中、不等；
+/// 没记着时才现查，查询会在后台接着跑完、记下，欢迎与验证这边先照常发（见 [`verify_allowed`]）。
+/// 新人就在门口，宁可偶尔多发一句罚不动人的验证说明，也不让欢迎为它慢上两秒。
+const ROLE_WAIT: Duration = Duration::from_millis(600);
 
 /// 账号在本群的身份；`None` 是这次没等到（超时或接口报错），不是「普通成员」。
 async fn own_role_soon(ctx: &Context, writer: &LockedWriter, group: &str, wait: Duration) -> Option<String> {
@@ -1296,44 +1310,45 @@ fn verify_allowed(group: &str, role: Option<&str>) -> bool {
     }
 }
 
-/// 合并欢迎按账号与群分缓冲。昵称与群资料用 OnceCell 在等待窗口里预取；
-/// 到点若查询还没完成就等同一个 future，不会重复请求，也不会把查询时间白白加在窗口后面。
-#[derive(Clone)]
-struct Joiner {
-    user: String,
-    name: Arc<tokio::sync::OnceCell<String>>,
+/// 进群事件之前、或欢迎还在拼的时候，他在群里说过话没有。实现端认人慢一拍时入群事件会比
+/// 新人的头几句话晚到；「说任意一句话」的验证认这个，免得他已经说了五句还要再补一句。
+/// 只记开着验证的群，退群就忘掉；条目超过一定数量时顺手清掉过期的。
+const SPOKE_WINDOW: i64 = 300;
+
+fn spoken() -> &'static Mutex<HashMap<(String, String, String), i64>> {
+    static SPOKEN: OnceLock<Mutex<HashMap<(String, String, String), i64>>> = OnceLock::new();
+    SPOKEN.get_or_init(Default::default)
 }
 
-struct JoinBatch {
-    people: Vec<Joiner>,
-    info: Arc<tokio::sync::OnceCell<GroupInfo>>,
-}
-
-impl JoinBatch {
-    fn new() -> Self {
-        Self { people: Vec::new(), info: Arc::new(tokio::sync::OnceCell::new()) }
+fn spoke(me: &str, group: &str, user: &str) {
+    let mut map = spoken().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let at = now();
+    if map.len() > 512 {
+        map.retain(|_, time| *time > at - SPOKE_WINDOW);
     }
+    map.insert((me.to_string(), group.to_string(), user.to_string()), at);
 }
 
-type BatchKey = (String, String);
-type Batch = HashMap<BatchKey, JoinBatch>;
-
-fn prefetch_name(ctx: &Context, writer: &LockedWriter, group: &str, user: &str) -> Arc<tokio::sync::OnceCell<String>> {
-    let cell = Arc::new(tokio::sync::OnceCell::new());
-    if let Some(name) = event_name(ctx, user).filter(|name| !name.trim().is_empty()) {
-        let _ = cell.set(name);
-        return cell;
-    }
-    let (ctx, writer, group, user, cached) = (ctx.clone(), writer.clone(), group.to_string(), user.to_string(), cell.clone());
-    tokio::spawn(async move {
-        cached.get_or_init(|| display_name(&ctx, &writer, &group, &user)).await;
-    });
-    cell
+fn spoke_since(me: &str, group: &str, user: &str, since: i64) -> bool {
+    spoken()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(me.to_string(), group.to_string(), user.to_string()))
+        .is_some_and(|time| *time >= since)
 }
 
-fn batch() -> &'static Mutex<Batch> {
-    static BATCH: OnceLock<Mutex<Batch>> = OnceLock::new();
-    BATCH.get_or_init(Default::default)
+fn forget_spoken(me: &str, group: &str, user: &str) {
+    spoken()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(&(me.to_string(), group.to_string(), user.to_string()));
+}
+
+/// 他还在待验证名单里吗。
+async fn still_pending(me: &str, group: &str, user: &str) -> bool {
+    STATE
+        .read(|state| state.pending.iter().any(|p| p.self_id == me && p.group == group && p.user_id == user))
+        .await
 }
 
 /// 把一段拼进同一条消息；欢迎与验证说明、多人合并提醒都从这里过。
@@ -1355,56 +1370,59 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     if !welcome && !check {
         return Ok(());
     }
-    let merged = welcome && config.join.merge_seconds > 0;
+    let me = ctx.bot.self_id();
+    let arrived = now();
 
     // 先把这次要发的文案挑出来：挑完才知道要不要为了群人数再问一次 guild.get。
-    let join_text = (!merged && welcome).then(|| effective.join_text.pick()).flatten();
+    let join_text = welcome.then(|| effective.join_text.pick()).flatten();
     let prompt_text = check.then(|| config.verify.prompt_text.pick()).flatten();
-    let wants_count = needs_member_count([join_text.as_deref(), prompt_text.as_deref()], &config.custom);
+    let texts = [join_text.as_deref(), prompt_text.as_deref()];
+    let wants_count = uses("member_count", texts, &effective.custom);
+    let wants_name = uses("name", texts, &effective.custom);
 
-    // 账号身份、昵称、群资料互不相干：人还在门口等着，三个问题一起问，只等最慢的那一个。
-    // 合并模式下昵称与群资料由批量发送时统一取，这里只等身份。
-    let (role, (name, info)) = tokio::join!(
+    // 账号身份、昵称、群资料互不相干：没用到的不问，用到的一起问，只等最慢的那一个。
+    // 只写了 {at} 的欢迎有号码就能发，这里一个请求都不发；身份通常直接命中缓存。
+    let (role, name, info) = tokio::join!(
         async {
             if check { own_role_soon(ctx, writer, group, ROLE_WAIT).await } else { None }
         },
         async {
-            if merged {
-                (String::new(), group_info_from_event(ctx, group))
+            if wants_name {
+                display_name_soon(ctx, writer, group, user, ENRICH_WAIT).await
             } else {
-                tokio::join!(
-                    display_name_soon(ctx, writer, group, user, ENRICH_WAIT),
-                    async {
-                        if wants_count {
-                            group_info_soon(ctx, writer, group, ENRICH_WAIT).await
-                        } else {
-                            group_info_from_event(ctx, group)
-                        }
-                    }
-                )
+                event_name(ctx, user).unwrap_or_else(|| user.to_string())
+            }
+        },
+        async {
+            if wants_count {
+                group_info_soon(ctx, writer, group, ENRICH_WAIT).await
+            } else {
+                group_info_from_event(ctx, group)
             }
         }
     );
-    let mut verify = None;
-    if check && verify_allowed(group, role.as_deref()) {
-        verify = Some(challenge(&effective.mode, &effective.answers));
+    // 「说任意一句话」：入群事件到之前、或上面等资料的工夫里他已经开口了，就算过。不再让他
+    // 补一句，也不发「验证通过」——欢迎都还没到，先冒出一句通过只会让人摸不着头脑。
+    let early = check && effective.mode == "any" && spoke_since(&me, group, user, arrived - SPOKE_WINDOW);
+    if early {
+        info!(target: LOG_TARGET, "群 {group} 的 {name}（{user}）进群就说了话，任意消息验证直接算过");
     }
+    let verify = (check && !early && verify_allowed(group, role.as_deref())).then(|| challenge(&effective.mode, &effective.answers));
     if !welcome && verify.is_none() {
         return Ok(());
     }
 
     // 先把待验证登记上，再发欢迎：新人在欢迎抵达前就回话也能被认出。started = false
-    // 时计时器不会提醒或处罚；只有包含验证说明的消息真正发出后才开始倒计时。
+    // 时计时器不会提醒或处罚，他说的话也不算答错；只有包含验证说明的消息真正发出后才开始倒计时。
     let mut pending = None;
-    if let Some((mode, answers, question)) = verify.take() {
-        let wait = config.verify.timeout_seconds + if merged { config.join.merge_seconds } else { 0 };
+    if let Some((mode, answers, question)) = verify {
         let entry = Pending {
-            self_id: ctx.bot.self_id(),
+            self_id: me.clone(),
             group: group.to_string(),
             user_id: user.to_string(),
-            name: if name.is_empty() { event_name(ctx, user).unwrap_or_else(|| user.to_string()) } else { name.clone() },
-            joined_at: now(),
-            deadline: now() + i64::try_from(wait).unwrap_or(300),
+            name: name.clone(),
+            joined_at: arrived,
+            deadline: now() + i64::try_from(config.verify.timeout_seconds).unwrap_or(300),
             started: false,
             answers,
             mode,
@@ -1425,32 +1443,6 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         pending = Some(entry);
     }
 
-    if merged {
-        let key = (ctx.bot.self_id(), group.to_string());
-        let (first, info) = {
-            let mut batches = batch().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            // first 表示新开的窗口，不是当前恰好有一个人：队列里的人可能已提前退群。
-            let first = !batches.contains_key(&key);
-            let batch = batches.entry(key.clone()).or_insert_with(JoinBatch::new);
-            if !batch.people.iter().any(|old| old.user == user) {
-                batch.people.push(Joiner { user: user.to_string(), name: prefetch_name(ctx, writer, group, user) });
-            }
-            (first, batch.info.clone())
-        };
-        if first {
-            let (info_ctx, info_writer, info_group) = (ctx.clone(), writer.clone(), group.to_string());
-            tokio::spawn(async move {
-                info.get_or_init(|| group_info(&info_ctx, &info_writer, &info_group)).await;
-            });
-            let (ctx, writer, config) = (ctx.clone(), writer.clone(), config.clone());
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(config.join.merge_seconds)).await;
-                send_join_batch(&ctx, &writer, &config, key).await;
-            });
-        }
-        return Ok(());
-    }
-
     let at = [user.to_string()];
     let mut message = Message::new();
     if let Some(text) = &join_text
@@ -1467,6 +1459,13 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         .await
     {
         append(&mut message, part);
+    }
+    // 欢迎还在拼的时候他已经过了（任意消息说了一句、口令早就知道）：不再附验证说明。
+    if pending.is_some() && !still_pending(&me, group, user).await {
+        pending = None;
+        if !welcome {
+            return Ok(());
+        }
     }
     if let Some(entry) = &pending
         && let Some(prompt) = &prompt_text
@@ -1493,7 +1492,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
             Ok(sent) => sent,
             Err(error) => {
                 if pending.is_some() {
-                    forget(&ctx.bot.self_id(), group, user).await;
+                    forget(&me, group, user).await;
                 }
                 return Err(error);
             }
@@ -1501,7 +1500,7 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     } else {
         // 没有任何内容可发就等于验证说明没送到，不能留一份到点罚人的名单。
         if pending.is_some() {
-            forget(&ctx.bot.self_id(), group, user).await;
+            forget(&me, group, user).await;
         }
         None
     };
@@ -1509,162 +1508,38 @@ async fn joined(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
     if pending.is_some() {
         STATE
             .update(|state| {
-                let Some(p) = state.pending.iter_mut().find(|p| p.self_id == ctx.bot.self_id() && p.group == group && p.user_id == user) else {
+                let Some(p) = state.pending.iter_mut().find(|p| p.self_id == me && p.group == group && p.user_id == user) else {
                     return ((), false);
                 };
-                p.name = name;
+                p.name = name.clone();
                 p.started = true;
                 p.deadline = sent_at + i64::try_from(config.verify.timeout_seconds).unwrap_or(300);
                 p.welcome = sent.map(|id| (id, sent_at));
                 ((), true)
             })
             .await;
+        if name == user {
+            // 欢迎没用到昵称就没问：发完了再在后台补上，提醒、通过、超时的提示与留档还要用。
+            let (ctx, writer, group, user) = (ctx.clone(), writer.clone(), group.to_string(), user.to_string());
+            tokio::spawn(async move {
+                let name = display_name(&ctx, &writer, &group, &user).await;
+                if name == user {
+                    return;
+                }
+                let me = ctx.bot.self_id();
+                STATE
+                    .update(|state| {
+                        let Some(p) = state.pending.iter_mut().find(|p| p.self_id == me && p.group == group && p.user_id == user) else {
+                            return ((), false);
+                        };
+                        p.name = name;
+                        ((), true)
+                    })
+                    .await;
+            });
+        }
     }
     Ok(())
-}
-
-/// 等待窗口从第一个入群事件开始；昵称与群资料同时预取，到点通常只需渲染并发送。
-async fn send_join_batch(ctx: &Context, writer: &LockedWriter, config: &Config, key: BatchKey) {
-    let Some(batch) = batch().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&key) else {
-        return;
-    };
-    let JoinBatch { people, info } = batch;
-    if people.is_empty() {
-        return;
-    }
-    let (me, group) = key;
-    let names = join_all(people.into_iter().map(|person| {
-        let group = group.clone();
-        async move {
-            let name = if let Some(name) = person.name.get() {
-                name.clone()
-            } else if let Ok(name) = tokio::time::timeout(
-                // 窗口里已经在查同一个名字了：等它一下（复用那次请求），超时就先用号码顶上。
-                ENRICH_WAIT,
-                person.name.get_or_init(|| display_name(ctx, writer, &group, &person.user)),
-            )
-            .await
-            {
-                name.clone()
-            } else {
-                warn!(target: LOG_TARGET, "群 {group} 的新成员 {} 昵称没查回来，先用号码顶上", person.user);
-                person.user.clone()
-            };
-            (person.user, name)
-        }
-    }));
-    // 窗口里预取到的直接用；没预取完也别拿整份名单的耐心等（窗口已经等过了）。
-    let info_soon = async {
-        match info.get() {
-            Some(info) => info.clone(),
-            None => group_info_soon(ctx, writer, &group, ENRICH_WAIT).await,
-        }
-    };
-    let (people, info) = tokio::join!(names, info_soon);
-    let pending: HashMap<String, Pending> = STATE
-        .read(|state| {
-            state
-                .pending
-                .iter()
-                .filter(|p| p.self_id == me && p.group == group && people.iter().any(|(user, _)| user == &p.user_id))
-                .cloned()
-                .map(|p| (p.user_id.clone(), p))
-                .collect()
-        })
-        .await;
-    let (users, names): (Vec<String>, Vec<String>) = people.iter().cloned().unzip();
-    let effective = config.for_group(&group);
-    let vars = Vars::now(&config.phrases)
-        .custom(effective.custom.clone())
-        .group(&info)
-        .person(&users.join("、"), &config.phrases.crowd(&names))
-        .set("count", users.len().to_string());
-    let mut message = Message::new();
-    if let Some(text) = effective.join_text.pick()
-        && let Some(part) = compose(
-            ctx,
-            writer,
-            &text,
-            &vars,
-            &Draft {
-                at: &users,
-                images: &effective.images,
-            },
-        )
-        .await
-    {
-        append(&mut message, part);
-    }
-
-    // 同题、同答案的人共用一段；验证码与算术题各自不同，就各占一段并明确 @ 到本人。
-    let mut prompts: BTreeMap<(String, String, String), Vec<(String, String)>> = BTreeMap::new();
-    for (user, name) in &people {
-        if let Some(p) = pending.get(user) {
-            let key = (config.phrases.task(p), p.answer(), config.phrases.punish(&config.verify));
-            prompts.entry(key).or_default().push((user.clone(), name.clone()));
-        }
-    }
-    if !prompts.is_empty()
-        && let Some(prompt) = config.verify.prompt_text.pick()
-    {
-        let prompt = if prompt.contains("{at}") { prompt } else { format!("{{at}} {prompt}") };
-        for ((task, answer, punish), people) in prompts {
-            let (users, names): (Vec<String>, Vec<String>) = people.into_iter().unzip();
-            let vars = Vars::now(&config.phrases)
-                .custom(effective.custom.clone())
-                .group(&info)
-                .person(&users.join("、"), &config.phrases.crowd(&names))
-                .set("timeout", duration_text(config.verify.timeout_seconds))
-                .set("task", task)
-                .set("answer", answer)
-                .set("punish", punish);
-            if let Some(part) = compose(ctx, writer, &prompt, &vars, &Draft { at: &users, images: &[] }).await {
-                append(&mut message, part);
-            }
-        }
-    }
-    if message.0.is_empty() {
-        for user in pending.keys() {
-            forget(&me, &group, user).await;
-        }
-        return;
-    }
-    let sent = match say(ctx, writer, &group, message, 0).await {
-        Ok(sent) => sent,
-        Err(error) => {
-            for user in pending.keys() {
-                forget(&me, &group, user).await;
-            }
-            warn!(target: LOG_TARGET, "群 {group} 合并欢迎没发出去：{error}");
-            return;
-        }
-    };
-    let sent_at = now();
-    let started = STATE
-        .update(|state| {
-            let mut started = false;
-            let mut changed = false;
-            for (user, name) in &people {
-                let Some(p) = state.pending.iter_mut().find(|p| p.self_id == me && p.group == group && &p.user_id == user) else {
-                    continue;
-                };
-                p.name = name.clone();
-                p.started = true;
-                p.deadline = sent_at + i64::try_from(config.verify.timeout_seconds).unwrap_or(300);
-                p.welcome = sent.clone().map(|id| (id, sent_at));
-                started = true;
-                changed = true;
-            }
-            (started, changed)
-        })
-        .await;
-    // 没有待验证的人引用这条欢迎时直接定时撤；否则等最后一个验证有结果的人撤。
-    if !started
-        && config.join.recall_seconds > 0
-        && let Some(id) = sent
-    {
-        recall_later(ctx, writer, &group, id, config.join.recall_seconds);
-    }
 }
 
 /// 撤销某个人的待验证记录（欢迎没发出去时用）。
@@ -1692,13 +1567,7 @@ async fn take(me: &str, group: &str, user: &str) -> Option<Pending> {
 
 async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str, user: &str) -> Result<(), PluginError> {
     let me = ctx.bot.self_id();
-    if let Some(batch) = batch()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get_mut(&(me.clone(), group.to_string()))
-    {
-        batch.people.retain(|person| person.user != user);
-    }
+    forget_spoken(&me, group, user);
     let gone = take(&me, group, user).await;
     records::forget(&me, group, user).await;
     if let Some(p) = gone {
@@ -1722,13 +1591,24 @@ async fn left(ctx: &Context, writer: &LockedWriter, config: &Config, group: &str
     let Some(text) = template.pick() else {
         return Ok(());
     };
-    // 同欢迎一样：名字与群名只是装饰，一起问、限时等，接口慢时不让送别拖上一分钟。
+    // 同欢迎一样按需取：名字与群资料只是装饰，用到了才问、一起问、限时等。
+    let texts = [Some(text.as_str()), None];
     let (name, operator_name, info) = tokio::join!(
-        display_name_soon(ctx, writer, group, user, ENRICH_WAIT),
         async {
-            if kicked { display_name_soon(ctx, writer, group, &operator, ENRICH_WAIT).await } else { String::new() }
+            if uses("name", texts, &effective.custom) {
+                display_name_soon(ctx, writer, group, user, ENRICH_WAIT).await
+            } else {
+                user.to_string()
+            }
         },
-        group_info_soon(ctx, writer, group, ENRICH_WAIT),
+        async {
+            if kicked && uses("operator", texts, &effective.custom) {
+                display_name_soon(ctx, writer, group, &operator, ENRICH_WAIT).await
+            } else {
+                String::new()
+            }
+        },
+        group_info_for(ctx, writer, group, &text, &effective.custom),
     );
     let vars = config.vars(group).group(&info).person(user, &name).set("operator", operator_name);
     let at = [user.to_string()];
@@ -1799,6 +1679,16 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
             let Some(index) = state.pending.iter().position(|p| p.self_id == me && p.group == group && p.user_id == user) else {
                 return (None, false);
             };
+            if !state.pending[index].started {
+                // 验证说明还没发出去，他还不知道要做什么：说对了（任意消息、早就知道的口令）悄悄
+                // 放行，正在拼的欢迎会去掉验证说明；不对也不算答错、不回提示。
+                let p = &state.pending[index];
+                return if p.mode == "any" || passes(p, &text) {
+                    (Some(Outcome::Early(state.pending.remove(index))), true)
+                } else {
+                    (Some(Outcome::Waiting(None)), false)
+                };
+            }
             let (wrong, hinted_at) = (state.pending[index].wrong, state.pending[index].hinted_at);
             let step = judge(&mut state.pending[index], &text, body, limit, now());
             // 「这次不回提示」也可能记了一笔答错，得照实落盘。
@@ -1819,6 +1709,11 @@ async fn verify_message(ctx: &Context, writer: &LockedWriter, config: &Config, g
     };
     let recall = config.verify.recall_unverified && !message_id.is_empty();
     match outcome {
+        Outcome::Early(p) => {
+            info!(target: LOG_TARGET, "群 {group} 的 {}（{user}）欢迎发出前就完成了入群验证", p.name);
+            records::forget(&p.self_id, &p.group, &p.user_id).await;
+            return Ok(false);
+        }
         Outcome::Passed(p) => {
             pass(ctx, writer, config, &p).await?;
             return Ok(false);
@@ -1886,6 +1781,8 @@ fn hint(p: &mut Pending, at: i64) -> Step {
 }
 
 enum Outcome {
+    /// 验证说明发出前就过了：不说「验证通过」，欢迎里也不再附说明。
+    Early(Pending),
     Passed(Pending),
     OutOfChances(Pending),
     /// 还在等；带着人的话要回一句答错提示。
@@ -1905,7 +1802,7 @@ fn notice_lock(key: String) -> Arc<tokio::sync::Mutex<()>> {
 }
 
 /// 验证一有结果：撤掉答错提示、从共享倒计时里去掉本人；最后一个人结束时再撤掉那条提醒。
-/// 合并欢迎也由最后一个仍在验证的人负责定时撤回，不能因一个人先通过就撤掉别人的验证码。
+/// 欢迎带着验证说明时由本人负责定时撤回。
 async fn settle(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pending) {
     tidy(ctx, writer, &p.group, p.notices.clone());
     let (stale, shared_welcome) = STATE
@@ -1951,7 +1848,7 @@ async fn pass(ctx: &Context, writer: &LockedWriter, config: &Config, p: &Pending
     records::forget(&p.self_id, &p.group, &p.user_id).await;
     settle(ctx, writer, config, p).await;
     if let Some(text) = config.verify.pass_text.pick() {
-        let info = group_info(ctx, writer, &p.group).await;
+        let info = group_info_for(ctx, writer, &p.group, &text, &config.for_group(&p.group).custom).await;
         let vars = config.vars(&p.group).group(&info).person(&p.user_id, &p.name);
         let at = [p.user_id.clone()];
         if let Some(message) = compose(ctx, writer, &text, &vars, &Draft { at: &at, images: &[] }).await {
@@ -1968,7 +1865,7 @@ async fn wrong_hint(ctx: &Context, writer: &LockedWriter, config: &Config, p: &P
     };
     let limit = config.verify.attempts;
     let chances = config.phrases.chances((limit > 0).then(|| limit.saturating_sub(p.wrong)));
-    let info = group_info_soon(ctx, writer, &p.group, ENRICH_WAIT).await;
+    let info = group_info_for(ctx, writer, &p.group, &text, &config.for_group(&p.group).custom).await;
     let vars = config.vars(&p.group)
         .group(&info)
         .person(&p.user_id, &p.name)
@@ -2127,9 +2024,6 @@ async fn status(ctx: &Context, writer: &LockedWriter, config: &Config, group: &s
         if !e.images.is_empty() {
             bits.push(format!("配图 {} 张", e.images.len()));
         }
-        if config.join.merge_seconds > 0 {
-            bits.push(format!("{} 秒内进群的合成一条", config.join.merge_seconds));
-        }
         if config.join.recall_seconds > 0 {
             bits.push(format!("{}后撤回", duration_text(config.join.recall_seconds)));
         }
@@ -2278,6 +2172,8 @@ enum Due {
     Drop(Pending),
 }
 
+/// 合并提醒按账号与群分缓冲。
+type BatchKey = (String, String);
 type ReminderBatch = HashMap<BatchKey, Vec<Pending>>;
 
 fn reminder_batch() -> &'static Mutex<ReminderBatch> {
@@ -2347,7 +2243,7 @@ async fn send_reminders(ctx: &Context, writer: &LockedWriter, config: &Config, k
     if pending.is_empty() {
         return;
     }
-    let info = group_info(ctx, writer, &key.1).await;
+    let info = group_info_soon(ctx, writer, &key.1, ENRICH_WAIT).await;
     let tick_at = now();
     let punish = config.phrases.punish(&config.verify);
     let mut sections: BTreeMap<(String, String, String, String), Vec<Pending>> = BTreeMap::new();
@@ -2444,7 +2340,7 @@ async fn tick(ctx: &Context, writer: &LockedWriter) {
                     return false;
                 }
                 if !p.started {
-                    // 合并任务若因重启丢失，等待上限后安全作废，绝不处罚没收到说明的人。
+                    // 欢迎没来得及发就重启了：等待上限后安全作废，绝不处罚没收到说明的人。
                     if p.deadline <= now {
                         due.push(Due::Drop(p.clone()));
                         changed = true;
@@ -2787,7 +2683,7 @@ const PHRASE_FIELDS: &[(&str, &str, &str)] = &[
     ("greeting_afternoon", "{greeting} · 下午", "13–17 点的问候。"),
     ("greeting_evening", "{greeting} · 晚上", "18–22 点的问候。"),
     ("greeting_night", "{greeting} · 深夜", "23 点到凌晨 4 点的问候。"),
-    ("crowd", "{name} · 人多时", "合并欢迎超过三个人时 {name} 换成这句；{names} 是前三个名字，{count} 是总人数。三个以内直接列全。"),
+    ("crowd", "{name} · 人多时", "合并提醒超过三个人时 {name} 换成这句；{names} 是前三个名字，{count} 是总人数。三个以内直接列全。"),
 ];
 
 /// 说法里自己的小占位符：键、芯片上的名字、说明、能出现在哪几句（`phrases.` 之后的键）。
@@ -2808,7 +2704,6 @@ pub(crate) const LABELS: &[(&str, &str)] = &[
     ("join.enabled", "进群时欢迎"),
     ("join.text", "欢迎词"),
     ("join.images", "配图"),
-    ("join.merge_seconds", "合并欢迎（秒）"),
     ("join.recall_seconds", "欢迎自动撤回（秒）"),
     ("leave", "送别"),
     ("leave.enabled", "退群时说一声"),
