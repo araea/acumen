@@ -21,6 +21,7 @@ pub(crate) mod manual;
 pub mod mj;
 pub(crate) mod panel;
 pub mod music;
+pub(crate) mod native;
 pub mod parser;
 pub(crate) mod agent;
 pub(crate) mod chat;
@@ -167,6 +168,9 @@ pub(crate) struct OaiConfig {
     /// 联网搜索：联网、全量两档房间的 `web_search` / `web_fetch`；`enabled` 是房间这边的总闸。
     /// 默认开启（填了 DeepSeek 官方密钥就优先走它的搜索与抓取），群聊搭话另有 `[ambient] search_enabled`，两者互不影响。
     pub(crate) search: search::SearchConfig,
+    /// DeepSeek 官方接口的原生 Chatbot 能力：服务端联网工具、深度思考、内容安全、
+    /// 会话标题与用户元信息。只对官方地址 + `deepseek-flash` 生效，见 [`native`]。
+    pub(crate) deepseek: native::DeepSeekConfig,
     /// 群聊那一层：房间里能发的消息条数、能查几次资料、能画几张图，以及
     /// 哪些群允许管理动作。搭话有自己的一份节奏（见 `[ambient]`），这张表只管房间。
     pub(crate) chat: chat::ChatConfig,
@@ -217,6 +221,7 @@ impl Default for OaiConfig {
             providers: HashMap::new(),
             media: MediaConfig::default(),
             search: search::SearchConfig::default(),
+            deepseek: native::DeepSeekConfig::default(),
             chat: chat::ChatConfig::default(),
         }
     }

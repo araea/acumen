@@ -243,6 +243,7 @@ pub(super) async fn generate_reply(
         media: media_messages(&generated.video_url, &caption, send),
         figures: Default::default(),
         steered: Vec::new(),
+        title: None,
     })
 }
 

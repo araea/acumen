@@ -199,6 +199,7 @@ pub(super) async fn generate_reply(
         media: Vec::new(),
         figures: Default::default(),
         steered: Vec::new(),
+        title: None,
     })
 }
 

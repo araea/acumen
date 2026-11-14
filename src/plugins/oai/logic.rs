@@ -921,6 +921,13 @@ async fn chat(
             generating.set_generating(name, is_priv_ctx, &uid, false);
             if let Some(Ok(Some(reply))) = &outcome {
                 if let Some(agent) = config.agents.iter_mut().find(|a| a.name == name) {
+                    // 服务端顺带给了会话标题：新建房间还空着描述时拿它补上，
+                    // 房间列表里就有了一句认得出来的话，不必再多跑一次生成。
+                    if agent.description.trim().is_empty()
+                        && let Some(title) = reply.title.as_deref()
+                    {
+                        agent.description = title.chars().take(20).collect();
+                    }
                     let history = agent.history_mut(is_priv_ctx, &uid);
                     // 并进这一轮的追加话先记，再是回复：历史里的先后就是对话实际的先后。
                     for extra in &reply.steered {
@@ -1205,6 +1212,8 @@ pub(super) struct Reply {
     pub(super) figures: super::agent::figures::Figures,
     /// 这一轮进行当中并进来的追加话（智能体房间才有），历史里要记在回复之前。
     pub(super) steered: Vec<String>,
+    /// 服务端顺带生成的会话标题；新建房间第一次对话时拿它补一句描述。
+    pub(super) title: Option<String>,
 }
 
 /// 房间在等一句补充时回的那条。
@@ -1222,6 +1231,7 @@ pub(super) fn guidance(text: impl Into<String>) -> Reply {
         media: Vec::new(),
         figures: super::agent::figures::Figures::default(),
         steered: Vec::new(),
+        title: None,
     }
 }
 
@@ -1322,6 +1332,16 @@ pub(super) async fn respond(
         // 联网工具只是挂上去，搜不搜由模型按需决定，没有任何一轮是强制的；
         // `[oai.search] enabled` 是总闸，关了哪一档都不联网。
         let search = oai.search_config();
+        // 官方接口 + deepseek-flash 时改用服务端的联网能力：搜索、读链接、多步求证
+        // 都在一次请求里完成，客户端那两件工具不再挂。判定、反思这些单轮请求不在此列。
+        let native = super::native::Native::resolve(
+            &oai.deepseek,
+            api_base,
+            chat_model,
+            thinking.as_deref(),
+            search.enabled && agent.tools.web(),
+            hist.len() <= 1,
+        );
         let result = super::agent::conversation(
             api_base,
             api_key,
@@ -1335,6 +1355,7 @@ pub(super) async fn respond(
             seat,
             steering,
             &search,
+            native,
             chat,
             oai.request_timeout(),
         )
@@ -1354,6 +1375,7 @@ pub(super) async fn respond(
             media: Vec::new(),
             figures: result.figures,
             steered: result.steered,
+            title: result.title,
         })
     }
 }

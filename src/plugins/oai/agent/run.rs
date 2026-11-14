@@ -215,7 +215,13 @@ const VIEW_HINT: &str = "画好图之后可以先用 view_image 自己看一眼�
 ///
 /// 手边缺的能力写明怎么打开（`房间?联网`、`房间?全量`）：用户问到实时信息、要它动手时，
 /// 模型能把这句转告用户，而不是编一个答案或者干巴巴地说做不到。
-pub(crate) fn light_prompt(room: &str, tools: super::super::types::Tools, web: bool, persona: &str) -> String {
+pub(crate) fn light_prompt(
+    room: &str,
+    tools: super::super::types::Tools,
+    web: bool,
+    native: bool,
+    persona: &str,
+) -> String {
     use super::super::types::Tools;
     let room = if room.is_empty() { "助手" } else { room };
     let mut base = format!(
@@ -227,7 +233,11 @@ pub(crate) fn light_prompt(room: &str, tools: super::super::types::Tools, web: b
     );
     if web {
         base.push_str("\n\n");
-        base.push_str(SEARCH_HINT);
+        base.push_str(if native {
+            super::super::native::ROOM_HINT
+        } else {
+            SEARCH_HINT
+        });
     }
     base.push_str("\n\n");
     base.push_str(match (tools, web) {
@@ -349,10 +359,17 @@ async fn attempt(
 ) -> Result<super::AgentReply, Failure> {
     let context = Context::prepare(run, history).await?;
     let definitions = super::tools::definitions(run.tools, run.kit());
-    let model = llm::model(run.api_base, run.api_key, run.model);
+    // 原生档打官方根路径；其余一律走 OpenAI 兼容地址。
+    let model = if run.native.is_some() {
+        llm::native_model(run.api_base, run.api_key, run.model)
+    } else {
+        llm::model(run.api_base, run.api_key, run.model)
+    };
 
     let mut messages = context.messages;
     let mut trace = Trace::default();
+    // 原生档从响应扩展字段里攒下来的来源、研究步骤、标题与拒答标记。
+    let mut observed = super::super::native::Observed::default();
     let mut used_tools = false;
     // 图没取到时只提醒模型改一次：再不行就让占位说话，别在这上面来回磨。
     let mut corrected = false;
@@ -406,8 +423,14 @@ async fn attempt(
             definitions.clone(),
             run.thinking,
             run.temperature,
+            run.native.as_ref(),
         );
-        if last && !definitions.is_empty() {
+        // 最后一步连服务端工具一起关掉：tool_choice: none 对它们是全局开关，
+        // 关了模型才会老老实实把已有的结果写成回复。
+        if last
+            && (!definitions.is_empty()
+                || run.native.as_ref().is_some_and(super::super::native::Native::has_tools))
+        {
             request.tool_choice = Some(ToolChoice::None);
         }
         let stall = run.stall;
@@ -437,6 +460,15 @@ async fn attempt(
         // 和「只想不说」一样落到下面的催一次。
         let response = response?;
         spent.add(&response.usage);
+        // 原生档的扩展字段不进 rig 的规范化类型，从原始响应里读：引用、研究步骤、
+        // 会话标题、拒答标记与计费次数，一步步攒到这一轮收尾。
+        if run.native.is_some() {
+            let seen = super::super::native::parse(&response.raw);
+            for step in &seen.steps {
+                trace.push(&step.name, step.detail.clone());
+            }
+            observed.merge(seen);
+        }
 
         let calls: Vec<_> = response
             .choice
@@ -458,7 +490,7 @@ async fn attempt(
         {
             continued += 1;
             carried.push_str(&text);
-            messages.push(echo(&response));
+            messages.push(echo(&response, run));
             messages.push(user_note(CONTINUE_REPLY));
             continue;
         }
@@ -467,6 +499,19 @@ async fn attempt(
         // 最后一次请求里模型仍坚持调工具：只要它同时写了话，就当这是最终回复。
         if calls.is_empty() || (last && !text.trim().is_empty()) {
             if text.trim().is_empty() {
+                // 内容审核拒答：接口把正文清空了。这是答复，不是失败，别催也别重试。
+                if observed.refused {
+                    spent.log(run, &trace);
+                    return Ok(super::AgentReply {
+                        text: super::super::native::REFUSAL.to_string(),
+                        steered,
+                        trace: trace.steps,
+                        trace_overflow: trace.overflow,
+                        sources: Vec::new(),
+                        figures: figures::Figures::default(),
+                        title: None,
+                    });
+                }
                 // 思考完了却什么都没说：催一次，而不是整轮报错。
                 if run.rescue && !nudged && step + 1 < steps {
                     nudged = true;
@@ -488,7 +533,7 @@ async fn attempt(
             };
             if !figures.failures().is_empty() && !corrected && step + 1 < steps {
                 corrected = true;
-                messages.push(echo(&response));
+                messages.push(echo(&response, run));
                 messages.push(user_note(&complaint(&figures)));
                 continue;
             }
@@ -498,7 +543,7 @@ async fn attempt(
             {
                 let more = steer.settle();
                 if !more.is_empty() {
-                    messages.push(echo(&response));
+                    messages.push(echo(&response, run));
                     for text in more {
                         messages.push(user_note(&steer_note(&text)));
                         steered.push(text);
@@ -507,19 +552,37 @@ async fn attempt(
                 }
             }
             spent.log(run, &trace);
+            if observed.searches + observed.fetches + observed.image_searches > 0 {
+                info!(
+                    target: LOG_TARGET,
+                    "原生联网：搜索 {} 次、抓取 {} 次、按图搜 {} 次",
+                    observed.searches, observed.fetches, observed.image_searches
+                );
+            }
+            // 客户端搜索与原生引用两条路都可能留下来源，按 URL 去重后合进页脚。
+            let mut sources = run
+                .web
+                .map(super::super::search::Search::sources)
+                .unwrap_or_default();
+            for source in &observed.sources {
+                if sources.len() < 8 && !sources.iter().any(|seen| seen.url == source.url) {
+                    sources.push(source.clone());
+                }
+            }
             return Ok(super::AgentReply {
                 text,
                 steered,
                 // 实际应答的模型名由调用方补全（它才知道 `供应商/` 前缀）。
                 trace: trace.steps,
                 trace_overflow: trace.overflow,
-                sources: run.web.map(super::super::search::Search::sources).unwrap_or_default(),
+                sources,
                 figures,
+                title: observed.title,
             });
         }
 
         // 原样回填模型的这一份回复：工具调用、思考块与签名都要跟着走。
-        messages.push(echo(&response));
+        messages.push(echo(&response, run));
 
         for call in &calls {
             trace.push(call.function.name.as_str(), super::tools::label(&call.function.arguments_value()));
@@ -710,8 +773,27 @@ async fn execute_batch(
 }
 
 /// 模型这一份回复原样作为历史里的一条：工具调用、思考块与来源都跟着走，重放时上游才认得出。
-fn echo(response: &CompletionResponse) -> Message {
-    Message::Assistant(response.head().with_content(response.choice.clone()))
+///
+/// 原生档额外把 `server_tool_calls` 挂回 assistant 消息：DeepSeek 靠它把上一轮读过的
+/// 网页拼回上下文。rig 的规范化类型没有这个字段，借第一个正文块的 provider item
+/// 带过去——编码时它会作为消息级字段原样回传，正文仍是字符串。
+fn echo(response: &CompletionResponse, run: &AgentRun<'_>) -> Message {
+    let mut choice = response.choice.clone();
+    if run.native.is_some()
+        && let Some(calls) = response
+            .raw
+            .pointer("/choices/0/message/server_tool_calls")
+            .filter(|calls| calls.is_array())
+    {
+        let item = serde_json::json!({ "server_tool_calls": calls.clone() });
+        if let Some(block) = choice
+            .iter_mut()
+            .find(|block| matches!(block, AssistantContent::Text(_)))
+        {
+            *block = block.clone().with_native(item);
+        }
+    }
+    Message::Assistant(response.head().with_content(choice))
 }
 
 /// 回复里有图没取到：把原因告诉模型，让它改好再给最终回复。
@@ -770,7 +852,11 @@ impl Context {
                 }
                 None => {}
             }
-            if run.web.is_some() {
+            // 原生档的服务端工具不发客户端调用，提示词换成「系统自己会查」那一套。
+            if run.native.is_some() {
+                base.push_str("\n\n");
+                base.push_str(super::super::native::ROOM_HINT);
+            } else if run.web.is_some() {
                 base.push_str("\n\n");
                 base.push_str(SEARCH_HINT);
             }
@@ -820,6 +906,12 @@ impl Context {
                 persona => format!("{base}\n\n---\n\n{persona}"),
             }
         };
+        // 接口把日期、所在地、平台与语言放在 latest_reminder 消息里；rig 没有这个角色，
+        // 等价信息写进系统提示词。只到日，前缀缓存不会每轮作废。
+        if let Some(native) = &run.native {
+            system.push_str("\n\n");
+            system.push_str(&native.meta_line());
+        }
         if !index.is_empty() {
             system.push_str("\n\n---\n\n");
             system.push_str(&index);
@@ -1145,5 +1237,96 @@ mod tests {
         // 一条就超了预算：仍带上最近那一问一答。
         let huge: Vec<ChatMessage> = turn(&"长".repeat(super::HISTORY_BUDGET * 2)).into();
         assert_eq!(super::history_start(&huge), 0);
+    }
+
+    /// 不发请求，把一份 DeepSeek 原生响应喂给 rig 解码，再原样回填、重新编码：
+    /// 扩展字段留在 `raw` 里，回传时 `server_tool_calls` 挂在消息上而正文仍是字符串。
+    #[test]
+    fn native_response_replays_server_tool_calls() {
+        use rig_core::completion::Message;
+        use rig_core::completion::message::{Text, UserContent};
+        use rig_core::wire::{Body, Mode, Wire, WireFrame, decode_reply};
+        use serde_json::{Value, json};
+
+        let cfg = super::super::super::native::DeepSeekConfig::default();
+        let native = super::super::super::native::Native::resolve(
+            &cfg,
+            "https://api.deepseek.com/v1",
+            "deepseek-flash",
+            None,
+            true,
+            false,
+        )
+        .unwrap();
+        let history = vec![Message::User {
+            content: vec![UserContent::Text(Text::new("总结 https://e.com/a"))],
+        }];
+        let request =
+            super::super::super::llm::request(history, Vec::new(), None, None, Some(&native));
+        let wire = super::super::super::llm::native_model(
+            "https://api.deepseek.com/v1",
+            "sk-test",
+            "deepseek-flash",
+        )
+        .wire;
+        let raw = json!({
+            "id": "x", "object": "chat.completion", "model": "deepseek-flash",
+            "choices": [{
+                "index": 0, "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "这篇文章讲了……",
+                    "annotations": [{"type": "url_citation", "url_citation": {"url": "https://e.com/a", "title": "A"}}],
+                    "server_tool_calls": [{
+                        "index": 0, "reasoning_content": "",
+                        "calls": [{
+                            "index": 0, "id": "srvtoolu_1", "type": "deepseek_read_url",
+                            "kind": "read_link", "action": {"type": "read_link", "url": "https://e.com/a"},
+                            "status": "completed",
+                            "page": {"url": "https://e.com/a", "title": "A", "published_at": null},
+                            "signature": "sig"
+                        }]
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        });
+        let response = decode_reply(
+            &wire,
+            &request,
+            Mode::Unary,
+            [WireFrame::Text(raw.to_string())],
+        )
+        .unwrap();
+        assert!(
+            response
+                .raw
+                .pointer("/choices/0/message/server_tool_calls")
+                .is_some()
+        );
+        assert_eq!(
+            super::super::super::llm::text_of(&response.choice),
+            "这篇文章讲了……"
+        );
+
+        let mut run = super::AgentRun::new();
+        run.native = Some(native.clone());
+        let echoed = super::echo(&response, &run);
+        let replay =
+            super::super::super::llm::request(vec![echoed], Vec::new(), None, None, Some(&native));
+        let encoded = wire.encode(replay, Mode::Unary).unwrap();
+        let Body::Bytes(bytes) = encoded.request.body() else {
+            panic!("请求体应是 JSON 字节");
+        };
+        let body: Value = serde_json::from_slice(bytes).unwrap();
+        let message = &body["messages"][0];
+        assert!(
+            message["content"].is_string(),
+            "正文应保持字符串：{message}"
+        );
+        assert_eq!(
+            message["server_tool_calls"][0]["calls"][0]["signature"],
+            json!("sig")
+        );
     }
 }

@@ -296,6 +296,9 @@ pub(crate) struct AgentRun<'a> {
     pub append_system_prompt: &'a str,
     /// 要发给接口的模型 id（已剥掉 `供应商/` 前缀）。
     pub model: &'a str,
+    /// DeepSeek 官方接口的原生 Chatbot 能力；`None` 照旧走客户端搜索与补全。
+    /// 有值时这一轮的工具请求改带服务端工具、思考、内容安全与标题。
+    pub native: Option<super::native::Native>,
     /// 思考强度（off/minimal/low/…）。
     pub thinking: Option<&'a str>,
     /// 采样温度；`None` 交给接口默认值。群聊那边调高，判定与房间不动。
@@ -368,6 +371,7 @@ impl<'a> AgentRun<'a> {
             system_prompt: None,
             append_system_prompt: "",
             model: "",
+            native: None,
             thinking: None,
             temperature: None,
             skills: &[],
@@ -407,6 +411,8 @@ pub(crate) struct AgentReply {
     pub figures: figures::Figures,
     /// 这一轮里并入的追加话（按到达顺序），房间历史要把它们记在回复之前。
     pub steered: Vec<String>,
+    /// 服务端顺带生成的会话标题；房间第一次对话时拿它补一句描述。
+    pub title: Option<String>,
 }
 
 /// 房间接进能力层时的那一份现场。
@@ -465,6 +471,7 @@ pub(crate) async fn conversation(
     seat: Option<Seat>,
     steer: Option<&Steering>,
     search: &super::search::SearchConfig,
+    native: Option<super::native::Native>,
     chat: Option<ChatContext>,
     budget: std::time::Duration,
 ) -> anyhow::Result<AgentReply> {
@@ -508,10 +515,14 @@ pub(crate) async fn conversation(
         super::types::Tools::Web => Some(LIGHT_WEB_TOOLS),
         super::types::Tools::Off => Some(""),
     };
-    // 搜索状态一轮一份：预算、客户端与引用来源都随这一轮生灭。
-    let web = (search.enabled && tools.web()).then(|| super::search::Search::new(search.clone()));
+    // 原生档由服务端自己搜，客户端那套 `web_search` / `web_fetch` 不再挂出来，
+    // 免得模型眼前摆着两套搜索。搜索状态一轮一份，只有走客户端时才建。
+    let web = (native.is_none() && search.enabled && tools.web())
+        .then(|| super::search::Search::new(search.clone()));
+    let networking =
+        web.is_some() || native.as_ref().is_some_and(super::native::Native::has_tools);
     let room = seat.as_ref().map_or("", |seat| seat.room.as_str());
-    let light = (!full).then(|| run::light_prompt(room, tools, web.is_some(), persona));
+    let light = (!full).then(|| run::light_prompt(room, tools, networking, native.is_some(), persona));
     // 历史长到窗口装不下：窗口外的部分换成交接摘要（有现成的就直接用，不调用）。
     let recap = match &seat {
         Some(seat) => {
@@ -531,6 +542,7 @@ pub(crate) async fn conversation(
             system_prompt: light.as_deref(),
             append_system_prompt: persona,
             model,
+            native,
             thinking: thinking.filter(|value| !value.trim().is_empty()),
             room,
             seat: seat.as_ref(),

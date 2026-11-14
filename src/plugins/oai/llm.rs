@@ -26,8 +26,17 @@ pub(crate) type ChatModel = Model<Chat>;
 /// 复用进程级的 `crate::http::client()`：它与其它出网请求共用连接池与代理设置，
 /// 在手机上少开一套 TLS 栈。
 pub(crate) fn model(api_base: &str, api_key: &str, model: &str) -> ChatModel {
+    endpoint(super::utils::openai_api_base(api_base), api_key, model)
+}
+
+/// 原生档走官方根路径（`/chat/completions`），不带 OpenAI 兼容地址里那一截 `/v1`。
+pub(crate) fn native_model(api_base: &str, api_key: &str, model: &str) -> ChatModel {
+    endpoint(super::native::official_root(api_base), api_key, model)
+}
+
+fn endpoint(base: String, api_key: &str, model: &str) -> ChatModel {
     OpenAIConfig::with_key(&COMPATIBLE, api_key)
-        .with_base_url(super::utils::openai_api_base(api_base))
+        .with_base_url(base)
         .connect(rig_reqwest::ReqwestClient::from(crate::http::client()))
         .chat(model)
 }
@@ -52,19 +61,27 @@ fn reasoning_effort(level: &str) -> Option<&'static str> {
 /// `tools` 为空就是单轮问答的形态——请求里连 tools 字段都不会有意义；
 /// 思考强度走 `additional_params.reasoning_effort`，由 provider 扁平进顶层。
 /// `temperature` 为 `None` 时连这个字段都不发，交给接口自己的默认值。
+///
+/// `native` 有值时改走 DeepSeek 官方的 Chatbot 扩展字段：服务端工具、思考、
+/// 内容安全与标题都在 `additional_params` 里（其中 `tools` 由 rig 追加在自己
+/// 那批函数工具之后）。这类请求里的采样参数由服务端定，发了也被忽略，索性不发。
 pub(crate) fn request(
     history: Vec<Message>,
     tools: Vec<ToolDefinition>,
     thinking: Option<&str>,
     temperature: Option<f64>,
+    native: Option<&super::native::Native>,
 ) -> CompletionRequest {
     let mut request = CompletionRequest::from(history).tools(tools);
-    request.temperature = temperature;
+    request.temperature = if native.is_some() { None } else { temperature };
     // 中转站常回些规范外的结束原因：照常收下，别把整轮当失败。
     request.accept_unknown_finish_reasons = true;
-    request.additional_params = thinking
-        .and_then(reasoning_effort)
-        .map(|effort| serde_json::json!({ "reasoning_effort": effort }));
+    request.additional_params = match native {
+        Some(native) => Some(native.params()),
+        None => thinking
+            .and_then(reasoning_effort)
+            .map(|effort| serde_json::json!({ "reasoning_effort": effort })),
+    };
     request
 }
 
@@ -90,7 +107,8 @@ pub(crate) async fn complete(
     thinking: Option<&str>,
 ) -> anyhow::Result<String> {
     let endpoint = self::model(api_base, api_key, model);
-    let request = request(history, Vec::new(), thinking, None);
+    // 判定、反思、描述生成这类单轮请求一律不挂原生工具：额度留给真正要答的话。
+    let request = request(history, Vec::new(), thinking, None, None);
     // 传输层偶尔断在半路（响应体没收全），换条连接就成；见 [`super::retry`]。
     let response = super::retry::call("补全请求", || endpoint.call(request.clone()))
         .await

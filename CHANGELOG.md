@@ -1,5 +1,15 @@
 # 更新记录
 
+## 1.79.0
+
+联网档的房间与搭话改用 DeepSeek 官方的原生 Chatbot 能力。搜索、读链接、多步求证在服务端一次请求里完成，回答带引用。
+
+- 请求声明 `deepseek_web_search` 与 `deepseek_read_url`，模型自己判断要不要查。客户端的 `web_search` / `web_fetch` 不再挂。思考按房间档位开关，带工具时 `reasoning_content` 原样回传。
+- 回答的 `annotations` 收成页脚来源，`server_tool_calls` 收成工具轨迹。会话标题只在房间第一次对话时开，补进还空着描述的房间。内容审核拒答回一句短话，不重试。
+- 日期、星期、所在地、平台、语言写进系统提示词。接口把这些放在 `latest_reminder` 消息里，rig 没有这个角色。判定、反思这类单轮请求不带原生工具。
+
+新配置 `[oai.deepseek]` 只对 `api.deepseek.com` + `deepseek-flash` 生效，中转站与别的模型照旧。把 `enabled` 改成 `false` 即退回客户端搜索。本轮没有调用真实接口，跑了单元测试与 release 构建。
+
 ## 1.78.0
 
 群管理指令修好了：群主、管理员、号主发的指令不再没反应；只是看看的，群友也能用。

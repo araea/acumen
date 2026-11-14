@@ -231,6 +231,7 @@ pub(super) async fn generate_reply(
         media: media_messages(&generated.clips, &title, send),
         figures: Default::default(),
         steered: Vec::new(),
+        title: None,
     })
 }
 

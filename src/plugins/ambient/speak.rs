@@ -182,7 +182,7 @@ pub(super) fn system_prompt(
 pub(super) const ANSWER_RULES: &str = "\
 这一轮有人在认真问事，答之前先想清楚：
 - 他问的到底是什么？放在这个群的语境里读（「这个群」那段背景、前面几条在聊什么）。关键信息缺了（型号、版本、报错原文），就只问那一句。
-- 只说你有把握的。拿不准的事实、版本、步骤先 web_search 查；查不到就说不确定，给他一个能自己核实的方向。
+- 只说你有把握的。拿不准的事实、版本、步骤先查证；查不到就说不确定，给他一个能自己核实的方向。
 - 没亲手做过的事不说做过，没见过的界面不描述细节。
 - 答案一句一步，说到能用就停。宁可少说一句，也不说一句错的。
 ";
@@ -495,7 +495,21 @@ pub(crate) async fn compose(
         None
     };
     // 联网与聊天界面无关：没接通真实界面时也能查资料，只是没法把结果发出去。
-    let web = (config.search_enabled && config.search_budget > 0).then(|| {
+    let networking = config.search_enabled && config.search_budget > 0;
+    // 官方 DeepSeek 接口上改用服务端工具：搜索、读链接、多步求证都在一次请求里完成，
+    // 客户端那两件工具不再挂。搭话没有「第一轮」，标题交给房间那一侧用。
+    let native = live.as_ref().and_then(|(ctx, ..)| {
+        let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx);
+        crate::plugins::oai::native::Native::resolve(
+            &oai.deepseek,
+            api_base,
+            model,
+            Some(&config.thinking),
+            networking,
+            false,
+        )
+    });
+    let web = (native.is_none() && networking).then(|| {
         crate::plugins::oai::search::Search::new(crate::plugins::oai::search::SearchConfig {
             max_uses: config.search_budget,
             ..search.clone()
@@ -518,6 +532,11 @@ pub(crate) async fn compose(
     );
     // 办事台接通时补一句：acumen_plugins 只听号主的，别人叫它开关插件当闲聊接过去。
     let system = if seat.is_some() { format!("{system}{CONTROL_RULES}") } else { system };
+    // 原生档换一段按群友口气写的用法说明；日期与所在地的元信息行由执行层统一加。
+    let system = match &native {
+        Some(_) => format!("{system}\n{}", crate::plugins::oai::native::AMBIENT_HINT),
+        None => system,
+    };
     let prompt = user_prompt(scene, turns, called, images, direct);
     // 图块紧跟在正文后面，先后与出处那一行一一对应；这里只取模型收得下的部分。
     let urls: Vec<String> = images
@@ -533,6 +552,7 @@ pub(crate) async fn compose(
             cwd: Some(dir.path()),
             system_prompt: Some(&system),
             model,
+            native,
             thinking: Some(&config.thinking),
             temperature: config.temperature,
             skills,
