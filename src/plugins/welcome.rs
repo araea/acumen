@@ -1273,8 +1273,11 @@ fn verify_allowed(group: &str, role: Option<&str>) -> bool {
 /// 只记开着验证的群，退群就忘掉；条目超过一定数量时顺手清掉过期的。
 const SPOKE_WINDOW: i64 = 300;
 
-fn spoken() -> &'static Mutex<HashMap<(String, String, String), i64>> {
-    static SPOKEN: OnceLock<Mutex<HashMap<(String, String, String), i64>>> = OnceLock::new();
+/// 说话记录的键：账号、群号、QQ 号。
+type SpokeKey = (String, String, String);
+
+fn spoken() -> &'static Mutex<HashMap<SpokeKey, i64>> {
+    static SPOKEN: OnceLock<Mutex<HashMap<SpokeKey, i64>>> = OnceLock::new();
     SPOKEN.get_or_init(Default::default)
 }
 

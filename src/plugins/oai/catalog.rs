@@ -60,6 +60,9 @@ impl Kind {
     }
 }
 
+/// KNOWN 是编译期常量表：八列一一对应 [`Known`] 的字段。改成结构体字面量会让十四个
+/// 条目每个都重写一遍字段名和 `keyless`，表反而更难读；这条规则针对的是运行时签名。
+#[allow(clippy::too_many_arguments)]
 const fn known(
     id: &'static str,
     name: &'static str,
