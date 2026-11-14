@@ -363,7 +363,7 @@ fn step_of(call: &Value) -> TraceStep {
 }
 
 fn source_of(value: &Value) -> Option<Source> {
-    let url = value.get("url").and_then(Value::as_str)?.trim();
+    let url = super::search::clean_url(value.get("url").and_then(Value::as_str)?.trim());
     if url.is_empty() {
         return None;
     }
@@ -374,11 +374,11 @@ fn source_of(value: &Value) -> Option<Source> {
         .trim();
     Some(Source {
         title: if title.is_empty() {
-            url.to_string()
+            url.clone()
         } else {
             title.to_string()
         },
-        url: url.to_string(),
+        url,
     })
 }
 
@@ -620,5 +620,103 @@ mod tests {
         let refused =
             json!({"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]});
         assert!(parse(&refused).refused);
+    }
+
+    /// 把真实 /chat/completions 响应里观察到的形状固化下来：追踪参数、同一网址的
+    /// 两种写法、open_page 的 page、read_link 的 signature、usage 字段缺失。
+    #[test]
+    fn parse_handles_real_chat_completions_shape() {
+        let dirty = "https://www.sohu.com/a/1101274628_100106801?scm=10001.7746&spm=smpc.channel#1";
+        let raw = json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "页面说明……",
+                    "reasoning_content": "……",
+                    "title": "DeepSeek发布V4.1-Flash",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "url_citation": {
+                            "url": dirty,
+                            "title": "DeepSeek 发布全家桶应用 API",
+                            "start_index": 0, "end_index": 79
+                        }
+                    }],
+                    "server_tool_calls": [{
+                        "index": 0, "reasoning_content": "",
+                        "calls": [
+                            {
+                                "index": 0, "id": "srvtoolu_ds_00_x", "type": "deepseek_web_search",
+                                "kind": "deep_search",
+                                "action": {"type": "search", "queries": ["DeepSeek 新模型", "DeepSeek release"]},
+                                "status": "completed",
+                                "sources": [
+                                    {"type": "url", "url": "https://www.eet-china.com/mp/a539178.html", "title": "突发"},
+                                    {"type": "url", "url": dirty, "title": "同一条带追踪参数"}
+                                ]
+                            },
+                            {
+                                "index": 1, "id": "srvtoolu_ds_01_y", "type": "deepseek_web_search",
+                                "kind": "deep_search",
+                                "action": {"type": "open_page", "url": "https://api-docs.deepseek.com/zh-cn/guides/build_a_chatbot"},
+                                "status": "completed",
+                                "page": {"url": "https://api-docs.deepseek.com/zh-cn/guides/build_a_chatbot", "title": "构建 Chatbot", "published_at": null}
+                            },
+                            {
+                                "index": 2, "id": "srvtoolu_rl_00_z", "type": "deepseek_read_url",
+                                "kind": "read_link",
+                                "action": {"type": "read_link", "url": "https://api-docs.deepseek.com/zh-cn/guides/conversation_title"},
+                                "status": "completed",
+                                "page": {"url": "https://api-docs.deepseek.com/zh-cn/guides/conversation_title", "title": "会话标题", "published_at": null},
+                                "signature": "q3J0b1RmZ1c4cE1x"
+                            }
+                        ]
+                    }]
+                }
+            }],
+            "usage": {"server_tool_use": {"tool_search": 3, "tool_fetch": 1, "tool_image_search": 0}}
+        });
+        let observed = parse(&raw);
+        assert!(
+            observed.sources.iter().all(|s| !s.url.contains("scm=")
+                && !s.url.contains("spm=")
+                && !s.url.contains('#'))
+        );
+        assert_eq!(
+            observed
+                .sources
+                .iter()
+                .filter(|s| s.url.contains("sohu.com"))
+                .count(),
+            1
+        );
+        assert_eq!(observed.sources[0].title, "DeepSeek 发布全家桶应用 API");
+        assert_eq!(observed.steps.len(), 3);
+        assert_eq!(observed.steps[0].name, "联网搜索");
+        assert_eq!(
+            observed.steps[0].detail,
+            "DeepSeek 新模型、DeepSeek release"
+        );
+        assert_eq!(observed.steps[1].name, "打开网页");
+        assert_eq!(observed.steps[2].name, "阅读链接");
+        assert_eq!(observed.title.as_deref(), Some("DeepSeek发布V4.1-Flash"));
+        assert_eq!(
+            (observed.searches, observed.fetches, observed.image_searches),
+            (3, 1, 0)
+        );
+        assert!(!observed.refused);
+
+        // tool_choice: none 收尾那一轮：usage 里没有 server_tool_use，扩展字段也都不在。
+        let plain = json!({
+            "choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "你好"}}],
+            "usage": {}
+        });
+        let plain = parse(&plain);
+        assert_eq!(
+            (plain.searches, plain.fetches, plain.image_searches),
+            (0, 0, 0)
+        );
+        assert!(plain.title.is_none() && plain.sources.is_empty() && plain.steps.is_empty());
     }
 }

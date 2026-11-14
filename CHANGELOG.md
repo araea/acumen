@@ -8,7 +8,9 @@
 - 回答的 `annotations` 收成页脚来源，`server_tool_calls` 收成工具轨迹。会话标题只在房间第一次对话时开，补进还空着描述的房间。内容审核拒答回一句短话，不重试。
 - 日期、星期、所在地、平台、语言写进系统提示词。接口把这些放在 `latest_reminder` 消息里，rig 没有这个角色。判定、反思这类单轮请求不带原生工具。
 
-新配置 `[oai.deepseek]` 只对 `api.deepseek.com` + `deepseek-flash` 生效，中转站与别的模型照旧。把 `enabled` 改成 `false` 即退回客户端搜索。本轮没有调用真实接口，跑了单元测试与 release 构建。
+新配置 `[oai.deepseek]` 只对 `api.deepseek.com` + `deepseek-flash` 生效，中转站与别的模型照旧。把 `enabled` 改成 `false` 即退回客户端搜索。
+
+用真实接口验过 5 次有目的的请求：完整请求、多轮回传、收尾关工具、读链接与 `signature` 回传，全部 200。来源链接带 `scm` / `spm` 追踪参数，已复用搜索后端那份 URL 清理。真实响应的字段形状固化成了单元测试。
 
 ## 1.78.0
 

@@ -268,7 +268,7 @@ fn beijing_date(raw: &str) -> String {
 /// 整理结果链接：去掉后端自己追加的 `#1`、`#1#1` 占位片段，以及只用来统计来源的追踪参数
 /// （`utm_*`、`spm`、`scm`、`fbclid`……动辄两三百字符，白占 token，也让来源页脚难看）。
 /// 真正的锚点与功能性参数原样保留。
-fn clean_url(raw: &str) -> String {
+pub(crate) fn clean_url(raw: &str) -> String {
     let url = match raw.find('#') {
         Some(position) if raw[position..].chars().all(|c| c.is_ascii_digit() || c == '#') => &raw[..position],
         _ => raw,

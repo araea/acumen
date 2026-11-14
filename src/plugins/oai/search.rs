@@ -26,6 +26,8 @@
 mod deepseek;
 mod filters;
 
+/// 原生联网档也用这一份 URL 整理：来源链接常带 `scm` / `spm` / `#1` 占位片段。
+pub(crate) use deepseek::clean_url;
 pub(crate) use filters::SearchRequest;
 
 use super::types::Source;
