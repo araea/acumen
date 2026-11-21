@@ -30,6 +30,12 @@ pub(crate) struct Verdict {
     /// 判定顺带留下的第一反应。只在它确实有一句很短、很贴现场的话时出现；
     /// 这样「随口一句」不必再花一次模型调用。
     pub quip: String,
+    /// 让这一眼想开口的那条消息号（记录里 `id=` 后面的那一串）。
+    ///
+    /// 开口时引用要落回这一条，而不是窗口里最后一条。插话常常是接几分钟前
+    /// 的某一句，等它写完，群已经往前走了几条；只认「最后一条」必然引错人。
+    /// 模型偶尔给不出、或给了一个窗口里没有的号，由发言侧退回窗口末尾。
+    pub target: String,
 }
 
 impl Verdict {
@@ -141,7 +147,9 @@ quip 是顺带留下的第一反应，只在 score 为 38–64、最新那句话
 需要组织语言、没把握接得上、或分数不在这个区间时给空串。
 有了它，后续若想随口吭一声就直接用，不再另问一次模型。
 
-只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false, \"urgent\": false, \"quip\": \"\"}";
+target 写「让这一眼想开口的那条」的编号，照记录里 id= 后面的那串原样抄。它是这句
+回话真正对着的那条，后面引用要落在它身上。没有明确哪一条时就给空串。
+只输出 JSON：{\"score\": 0-100, \"reason\": \"二十字以内\", \"continuation\": false, \"help\": false, \"urgent\": false, \"quip\": \"\", \"target\": \"\"}";
 
 const GATE_TURNS: usize = 12;
 /// 求助时门槛在基础值上再让的分。
@@ -323,6 +331,11 @@ fn parse_verdict(raw: &str) -> anyhow::Result<Verdict> {
             .as_str()
             .and_then(super::quick::clean)
             .unwrap_or_default(),
+        target: value["target"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     })
 }
 
@@ -338,6 +351,17 @@ mod tests {
         .unwrap();
         assert_eq!(verdict.quip, "有点东西");
         assert_eq!(verdict.score, 52);
+    }
+
+    #[test]
+    fn the_noticed_message_id_rides_on_the_verdict() {
+        let verdict = parse_verdict(
+            r#"{"score":72,"reason":"阿杰问怎么卸预装管家","continuation":false,"quip":"","target":"7709853676765809659"}"#,
+        )
+        .unwrap();
+        assert_eq!(verdict.target, "7709853676765809659");
+        // 没给号就是空串，发言侧自己退回窗口末尾。
+        assert!(parse_verdict(r#"{"score":50}"#).unwrap().target.is_empty());
     }
 
     #[test]

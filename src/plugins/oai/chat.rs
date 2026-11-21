@@ -307,6 +307,14 @@ pub(crate) trait Persona: Send + Sync {
         true
     }
 
+    /// 模型只写 `[reply]`（或工具 `send` 没填 `reply_to`）时该引哪条。
+    ///
+    /// 房间没有人格，交回能力层按窗口末尾兜底；搭话那一侧把这一轮算好的目标递进来，
+    /// 免得插话接的是几分钟前那一句、引用却落到刚冒出来的最后一条上。
+    fn reply_target(&self) -> Option<String> {
+        None
+    }
+
     /// 一条正文发出去之前最后看一眼：返回 `Some(原因)` 就拦下，原因原样回给模型，
     /// 让它换个说法或者干脆不说。房间不拦。
     fn vet_text(&self, _group: &str, _text: &str, _turns: &[window::Turn]) -> Option<String> {

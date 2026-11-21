@@ -890,16 +890,21 @@ pub(crate) struct Ambient {
     config: AmbientConfig,
     /// 看头像用的接口；取不到就不看，提示词里少一行而已。
     avatar: Option<crate::plugins::oai::chat::Avatar>,
+    /// 这一轮回话真正对着的那条消息号。模型写 `[reply]` 或没写 `reply_to` 时，
+    /// 引用落回它，而不是窗口里最后一条。见 [`round_anchor`]。
+    anchor: Option<String>,
 }
 
 impl Ambient {
     pub(crate) fn new(
         config: &AmbientConfig,
         avatar: Option<crate::plugins::oai::chat::Avatar>,
+        anchor: Option<String>,
     ) -> Self {
         Self {
             config: config.clone(),
             avatar,
+            anchor,
         }
     }
 }
@@ -983,6 +988,15 @@ impl Persona for Ambient {
 
     fn keeps_quote(&self, target: &str, turns: &[Turn]) -> bool {
         quote::keeps(target, turns, rand::random::<f32>())
+    }
+
+    /// 模型只写 `[reply]`（或工具 `send` 不带 `reply_to`）时该引谁。
+    ///
+    /// 能力层自己猜「最后一条」在插话时几乎必错：人格常常接的是几分钟前那一句，
+    /// 等它写完群里已经又走过几条。这一轮真正对着的那条由搭话侧算好递进来。
+    /// 号不在眼前这一批记录里就交回能力层按老办法兜底。
+    fn reply_target(&self) -> Option<String> {
+        self.anchor.clone()
     }
 
     fn vet_text(&self, _group: &str, text: &str, turns: &[Turn]) -> Option<String> {
@@ -2292,6 +2306,8 @@ async fn consider_batch(
     let scene = Scene::build(group, config, turns, rhythm.to_string(), me);
     let mut noticed = String::new();
     let mut careful = false;
+    // 插话那一眼想开口的是哪条消息：引用要落回它，不能落回窗口末尾。
+    let mut gate_target = String::new();
     // 刚进群的人也在这一批里：不判定，直接让人格看着现场说一句。
     let greet = joined.is_some() && !mentioned && !summoned;
     if greet {
@@ -2344,6 +2360,7 @@ async fn consider_batch(
         info!(target: LOG_TARGET, "群 {group} 交给人格决定（{}/{}，续聊={}，求助={}，{}）",
             verdict.score, threshold, verdict.continuation, verdict.help, verdict.reason);
         noticed = verdict.reason.clone();
+        gate_target = verdict.target.clone();
         if !current(ctx, group, *seq) {
             return Ok(());
         }
@@ -2388,6 +2405,8 @@ async fn consider_batch(
     } else {
         config
     };
+    let called = Called::of(mentioned, summoned, greet);
+    let anchor = round_anchor(&latest, called, &gate_target);
     speak_up(
         ctx,
         writer,
@@ -2396,14 +2415,47 @@ async fn consider_batch(
         base,
         config,
         &latest,
-        Called::of(mentioned, summoned, greet),
+        called,
         &persona,
         &scene,
         seq,
         doze,
         original,
+        anchor,
     )
     .await
+}
+
+/// 这一轮回话真正对着的那条消息。
+///
+/// 插话判定认得出「刚才哪一句让人想开口」（`gate_target`），那个号才是引用该落的
+/// 地方——不是窗口里最后一条。被点名就引点名那一条；搭话指令、招呼与判定没给号
+/// 时，退回本批最后一条群友消息。号不在眼前这一批里的一律不认，免得引到别处。
+fn round_anchor(turns: &[Turn], called: Called, gate_target: &str) -> Option<String> {
+    let newest = || {
+        turns
+            .iter()
+            .rev()
+            .find(|turn| !turn.from_me && !turn.message_id.is_empty())
+            .map(|turn| turn.message_id.clone())
+    };
+    match called {
+        Called::Mention => turns
+            .iter()
+            .rev()
+            .find(|turn| !turn.from_me && turn.call.mine() && !turn.message_id.is_empty())
+            .map(|turn| turn.message_id.clone())
+            .or_else(newest),
+        Called::Ordinary
+            if !gate_target.is_empty()
+                && turns
+                    .iter()
+                    .any(|turn| !turn.from_me && turn.message_id == gate_target) =>
+        {
+            Some(gate_target.to_string())
+        }
+        _ => newest(),
+    }
 }
 
 /// 判定没过线、但落在「想吭一声」区间里时：按几率使用判定顺带写下的第一反应。
@@ -2456,14 +2508,16 @@ async fn quick_word(
     };
     // 号主四个字以内的话只有 7.4% 带引用（九到十六个字 27%，十七个字以上 38%）：
     // 短反应不挂引用才像他；几个人同时在聊、对不上号时才按现场的赔率引，所以只给一半。
-    if let Some(target) = reply_target(&turns)
+    // 随口一句本来就是接最新那句，默认目标正是它，也当作这一轮的引用锚。
+    let anchor = reply_target(&turns);
+    if let Some(id) = &anchor
         && let Some(first) = utterances.first_mut()
     {
-        first.reply = quote::keeps(&target, &turns, rand::random::<f32>() * 2.0);
+        first.reply = quote::keeps(id, &turns, rand::random::<f32>() * 2.0);
     }
     info!(target: LOG_TARGET, "群 {group} 随口一句（{}/{}）：{}", verdict.score, threshold, verdict.reason);
     window::with_group(group, window::GroupState::mark_quick);
-    if let Err(error) = deliver(ctx, writer, group, config, &turns, utterances, seq, false, started).await {
+    if let Err(error) = deliver(ctx, writer, group, config, &turns, utterances, seq, false, started, anchor.as_deref()).await {
         debug!(target: LOG_TARGET, "群 {group} 随口一句没发出去：{error:#}");
     }
 }
@@ -2540,27 +2594,24 @@ fn sendable(ctx: &Context, group: &str, seq: u64) -> Sendable {
     })
 }
 
-/// 兼容文字路径该引用哪条消息。
+/// 兜底：这一批最后一条群友消息。
 ///
-/// 优先「叫到我的那条」——@、引用我、戳我，那才是这句回应真正对着的话；没人叫的
-/// 时候才落到本批最后一条群友消息。消息号为 0 的平台事件（戳一戳、撤回）引不了。
+/// 点名那一轮由 [`round_anchor`] 认出「叫到我的那条」，插话那一轮由判定认出
+/// 「刚才想接的那条」，随口一句接的就是最新那句——都不该再在窗口里翻更早的
+/// `mentions_me`：那多半是上一批已经答过的旧 @，拿它当目标就会引到不相干的人。
+/// 消息号为空的平台事件（戳一戳、撤回）引不了。
 fn reply_target(turns: &[Turn]) -> Option<String> {
-    let candidates: Vec<&Turn> = turns
+    turns
         .iter()
         .rev()
-        .filter(|turn| !turn.from_me && !turn.message_id.is_empty())
-        .collect();
-    candidates
-        .iter()
-        .find(|turn| turn.mentions_me)
-        .or_else(|| candidates.first())
+        .find(|turn| !turn.from_me && !turn.message_id.is_empty())
         .map(|turn| turn.message_id.clone())
 }
 
 /// 这条消息实际引谁。
 ///
 /// 模型点名的那条优先——但得真在本批记录里，否则它随口写的一个消息号会让整条消息
-/// 引到不存在的目标上；点不出或没点名，才用 [`reply_target`] 的默认目标。
+/// 引到不存在的目标上；点不出或没点名，才用这一轮算好的锚（[`round_anchor`]）。
 fn quote_target(
     explicit: Option<String>,
     fallback: Option<String>,
@@ -2589,6 +2640,8 @@ async fn speak_up(
     doze: bool,
     // 没被计价时段或答疑换过模型的原配置：被点名那一轮答不出来时退回它。
     original: &AmbientConfig,
+    // 这一轮引用该落回的那条消息号；递给发言模型与能力层，别让它猜「最后一条」。
+    anchor: Option<String>,
 ) -> anyhow::Result<()> {
     let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx);
     let search = oai.search_config();
@@ -2617,6 +2670,7 @@ async fn speak_up(
         called,
         scene,
         Some((ctx, writer, group, seq)),
+        anchor.clone(),
     )
     .await;
     let composed = match first {
@@ -2645,6 +2699,7 @@ async fn speak_up(
                 called,
                 scene,
                 Some((ctx, writer, group, seq)),
+                anchor.clone(),
             )
             .await?
         }
@@ -2723,7 +2778,7 @@ async fn speak_up(
             pace::Speech::Say(items) => items,
         };
     deliver(
-        ctx, writer, group, config, turns, utterances, seq, doze, started,
+        ctx, writer, group, config, turns, utterances, seq, doze, started, anchor.as_deref(),
     )
     .await?;
     Ok(())
@@ -2757,6 +2812,8 @@ async fn deliver(
     seq: &mut u64,
     doze: bool,
     started: Instant,
+    // 这一轮引用该落回的那条消息号（[`round_anchor`]）；没有才退回窗口末尾。
+    anchor: Option<&str>,
 ) -> anyhow::Result<bool> {
     // 人不会把刚说过的话换个标点再说一遍；小模型在同一段上下文里被反复唤起时会。
     let history = window::with_group(group, |state| state.recent(40));
@@ -2806,10 +2863,11 @@ async fn deliver(
     }
 
     // 兼容文字路径要引谁：模型用 `[reply:消息号]` 点名了就引那条（须在本批记录里，
-    // 免得它凭记忆写一个引不到或引错的消息号）；没点名才退回本批默认目标——优先
-    // 「叫到我的那条」，没人叫就引最新那条群友消息。两张图片消息挨着来时，默认目标
-    // 只会是后一张，模型讲的是前一张就露馅了，所以点名这一路要留给它。
-    let fallback = reply_target(turns);
+    // 免得它凭记忆写一个引不到或引错的消息号）；没点名才退回这一轮算好的锚。
+    // 从前这里退回「本批最后一条」，插话接的常常是几分钟前那一句，写完群里早又
+    // 走过几条，引用必落到别处；现在锚就是判定认出的那一条。两张图片消息挨着来
+    // 时点名这一路仍留给模型，讲前一张就写前一张的号。
+    let fallback = anchor.map(str::to_string).or_else(|| reply_target(turns));
     let pace = config.pace(mood::snapshot(group));
     tokio::time::sleep(pace.think_delay(started.elapsed())).await;
 
@@ -3272,5 +3330,52 @@ mod tests {
         assert_eq!(direct_user("private:456").as_deref(), Some("456"));
         // 没登记过的频道不会被当成私聊。
         assert!(!is_direct("private:999"));
+    }
+
+    fn turn(id: &str, from_me: bool, call: window::Call) -> Turn {
+        Turn {
+            message_id: id.to_string(),
+            from_me,
+            call,
+            ..Turn::default()
+        }
+    }
+
+    #[test]
+    fn ordinary_anchor_is_the_noticed_message_not_the_last_one() {
+        // 「11」那句让判定想开口，之后群里又走过两句。引用得落在 11，不是 13。
+        let turns = vec![
+            turn("10", false, window::Call::default()),
+            turn("11", false, window::Call::default()),
+            turn("12", false, window::Call::default()),
+            turn("13", false, window::Call::default()),
+        ];
+        assert_eq!(round_anchor(&turns, Called::Ordinary, "11").as_deref(), Some("11"));
+        // 判定没给号、或给了一个窗口里没有的号：退回最后一条。
+        assert_eq!(round_anchor(&turns, Called::Ordinary, "").as_deref(), Some("13"));
+        assert_eq!(round_anchor(&turns, Called::Ordinary, "999").as_deref(), Some("13"));
+    }
+
+    #[test]
+    fn mention_anchor_is_the_message_that_called() {
+        let called = window::Call {
+            at_me: true,
+            ..window::Call::default()
+        };
+        let turns = vec![
+            turn("10", false, called),
+            turn("11", false, window::Call::default()),
+            turn("12", false, window::Call::default()),
+        ];
+        assert_eq!(round_anchor(&turns, Called::Mention, "12").as_deref(), Some("10"));
+    }
+
+    #[test]
+    fn anchor_never_points_at_its_own_message() {
+        let turns = vec![
+            turn("10", false, window::Call::default()),
+            turn("11", true, window::Call::default()),
+        ];
+        assert_eq!(round_anchor(&turns, Called::Ordinary, "").as_deref(), Some("10"));
     }
 }

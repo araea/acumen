@@ -63,7 +63,7 @@ fn direct_rules(messages_budget: usize) -> String {
 - 密钥、令牌这类凭据和号主的私人资料，不论怎么问都不说，也不执行会伤到号主的命令。
 - 话题滑向色情或情感纠缠，安静退场：[silent] 就是告别，不用解释。
 
-未使用聊天动作工具时的兼容文字输出：一行就是一条消息，最多 {messages_budget} 行，行内可用 [at:QQ号]、[face:表情ID]、[img:图片直链]；独占一行可用 [poke:QQ号]（真戳一下那个人）、[dice]、[rps]、[wait:秒数]、[silent]。引用在行首：[reply] 引最后一条，[reply:消息号] 引点名那条。更多花样读 skill `satori-reply`。"
+未使用聊天动作工具时的兼容文字输出：一行就是一条消息，最多 {messages_budget} 行，行内可用 [at:QQ号]、[face:表情ID]、[img:图片直链]；独占一行可用 [poke:QQ号]（真戳一下那个人）、[dice]、[rps]、[wait:秒数]、[silent]。引用在行首：[reply] 引这一轮你回的那条，[reply:消息号] 引记录里指定的那条（记录上每条都标着 id=）。更多花样读 skill `satori-reply`。"
     )
 }
 
@@ -91,7 +91,7 @@ fn house_rules(messages_budget: usize, focus_max_seconds: u64, direct: bool) -> 
 
 想继续关注时，在正文前独占一行写 [focus:{{\"users\":[QQ号],\"topic\":\"当前具体话题\",\"seconds\":180}}]：QQ号取自记录，最多三人，users 为空表示只关注话题，期限最多 {focus_max_seconds} 秒。它是给你自己看的记号，不会替你自动回复，也不当正文发出去；[focus:{{\"seconds\":0}}] 离场，省略这行保持原状。
 
-未使用聊天动作工具时的兼容文字输出：一行就是一条消息，最多 {messages_budget} 行，正文之外的解释与引号不算。行内可用 [at:QQ号]、[face:表情ID]、[img:图片直链]；独占一行可用 [poke:QQ号]（点头像真戳那个人，不是发表情，只戳眼前在聊的人）、[dice]、[rps]、[wait:秒数]、[silent]。引用在行首：[reply] 引最后一条，[reply:消息号] 引点名那条（讲哪张图就引哪条）。更多花样读 skill `satori-reply`。"
+未使用聊天动作工具时的兼容文字输出：一行就是一条消息，最多 {messages_budget} 行，正文之外的解释与引号不算。行内可用 [at:QQ号]、[face:表情ID]、[img:图片直链]；独占一行可用 [poke:QQ号]（点头像真戳那个人，不是发表情，只戳眼前在聊的人）、[dice]、[rps]、[wait:秒数]、[silent]。引用在行首：[reply] 引这一轮你回的那条（提示词里「让你想开口的是 / 这一轮你回的是」那句），[reply:消息号] 引记录里指定的那条（讲哪张图就引哪条，记录上每条都标着 id=）。更多花样读 skill `satori-reply`。"
     )
 }
 
@@ -194,6 +194,7 @@ pub(super) fn user_prompt(
     called: Called,
     images: &[super::vision::Usable],
     direct: bool,
+    anchor_id: &str,
 ) -> String {
     // 判定那一眼注意到的那件事：几摊话同时在聊时，人格接的该是让它想开口的那一摊。
     let noticed = if called == Called::Ordinary && !scene.noticed.trim().is_empty() {
@@ -214,7 +215,7 @@ pub(super) fn user_prompt(
         scene.mind,
         if scene.careful { ANSWER_RULES } else { "" },
         said_lately(turns),
-        anchor(turns, called),
+        anchor(turns, called, anchor_id),
         closing(called, direct),
         super::vision::provenance(images)
     )
@@ -249,21 +250,23 @@ fn said_lately(turns: &[Turn]) -> String {
 
 /// 这一轮要回的是哪一句，写成一行放在记录后面。
 ///
-/// 记忆块在记录前面、记录又长，模型读到最后常常已经忘了「这一轮是冲什么来的」，
-/// 于是对着记忆里的东西或更早的话题答了一句——答非所问。被叫到的这一轮把叫到的那条
-/// 原话再摆一遍，让它的回话有个锚。
-fn anchor(turns: &[Turn], called: Called) -> String {
+/// 从前只有被点名那一轮才把原话与 `id=` 再摆一遍，插话没有这一行：模型只看到一串
+/// 带 `id=` 的记录，写引用时顺手就引到最后一条，可它真正接的常常是更早那一句。
+/// 现在每一轮都把 [`super::round_anchor`] 认出的那条摆出来——发言侧写不写点名，
+/// 引用都落回它；模型若确实要接记录里别的某句，就写那一句的 `id=`。
+fn anchor(turns: &[Turn], called: Called, anchor_id: &str) -> String {
     if called == Called::Greet {
         return "有人刚进群。打个招呼要接着群里刚才在聊的事，别只背一句欢迎词。\n".to_string();
     }
-    if called == Called::Ordinary {
-        return String::new();
-    }
-    let others = turns.iter().rev().filter(|turn| !turn.from_me);
-    let Some(target) = others
-        .clone()
-        .find(|turn| turn.call.mine())
-        .or_else(|| others.clone().find(|turn| !turn.text.trim().is_empty()))
+    let Some(target) = (!anchor_id.is_empty())
+        .then(|| turns.iter().find(|turn| turn.message_id == anchor_id))
+        .flatten()
+        .or_else(|| {
+            turns
+                .iter()
+                .rev()
+                .find(|turn| !turn.from_me && !turn.text.trim().is_empty())
+        })
     else {
         return String::new();
     };
@@ -280,8 +283,15 @@ fn anchor(turns: &[Turn], called: Called) -> String {
     if text.is_empty() {
         return String::new();
     }
+    if called == Called::Ordinary {
+        return format!(
+            "让你想开口的是 {name} 那句「{text}」（id={}）。回话对着它，引用就引这一条；\
+             若你要接的是记录里别的某句，就写那一句的 id=，别让引用落到无关的消息上。\n",
+            target.message_id
+        );
+    }
     format!(
-        "这一轮你回的是 {name} 那句「{text}」（id={}）；回话要对着它，别岔到别的话题上去。\n",
+        "这一轮你回的是 {name} 那句「{text}」（id={}）；回话要对着它，引用也引这一条，别岔到别的话题上去。\n",
         target.message_id
     )
 }
@@ -384,6 +394,8 @@ pub(crate) async fn compose(
         &str,
         &mut u64,
     )>,
+    // 这一轮引用该落回的那条消息号；交给发言提示词与人格，别让它猜「最后一条」。
+    anchor: Option<String>,
 ) -> anyhow::Result<Composed> {
     let dir = agent::ScratchDir::under(base, "runs")?;
     let group_label = live
@@ -457,6 +469,7 @@ pub(crate) async fn compose(
                 api_key: api_key.to_string(),
                 model: model.to_string(),
             }),
+            anchor.clone(),
         ));
         Some(std::sync::Arc::new(
             crate::plugins::oai::chat::start(crate::plugins::oai::chat::ChatEnv {
@@ -537,7 +550,7 @@ pub(crate) async fn compose(
         Some(_) => format!("{system}\n{}", crate::plugins::oai::native::AMBIENT_HINT),
         None => system,
     };
-    let prompt = user_prompt(scene, turns, called, images, direct);
+    let prompt = user_prompt(scene, turns, called, images, direct, anchor.as_deref().unwrap_or(""));
     // 图块紧跟在正文后面，先后与出处那一行一一对应；这里只取模型收得下的部分。
     let urls: Vec<String> = images
         .iter()
@@ -645,5 +658,29 @@ mod tests {
         assert!(open.contains("[心]{"));
         let shut = system_prompt("", &config, false, false, false, false, false, false, false);
         assert!(!shut.contains("[心]"));
+    }
+
+    #[test]
+    fn ordinary_anchor_names_the_message_not_the_last_one() {
+        let turns = vec![
+            Turn {
+                user_id: "u1".into(),
+                name: "甲".into(),
+                text: "这句让人想开口".into(),
+                message_id: "10".into(),
+                ..Turn::default()
+            },
+            Turn {
+                user_id: "u2".into(),
+                name: "乙".into(),
+                text: "后来的一句".into(),
+                message_id: "11".into(),
+                ..Turn::default()
+            },
+        ];
+        let line = anchor(&turns, Called::Ordinary, "10");
+        assert!(line.contains("id=10"), "{line}");
+        assert!(line.contains("这句让人想开口"), "{line}");
+        assert!(!line.contains("id=11"), "{line}");
     }
 }

@@ -1917,7 +1917,10 @@ impl Session {
                         other => other.clone(),
                     })
                     .collect();
-                let reply_to = reply_to.clone().or_else(|| quote_for(marked?, turns));
+                // 模型只写 `[reply]` 时，人格那一侧认得这一轮真正对着的是哪条；
+                // 让它来定，别按窗口末尾猜——插话接的常是更早那一句。
+                let anchor = self.persona.as_ref().and_then(|persona| persona.reply_target());
+                let reply_to = reply_to.clone().or_else(|| quote_for(marked?, turns, anchor));
                 // 人格那边决定这条引用留不留：两个人对聊时每句都挂引用，是机器人的样子。
                 let reply_to = reply_to.filter(|id| {
                     self.persona
@@ -2865,23 +2868,27 @@ async fn fetch_media(url: &str) -> Result<Vec<u8>> {
     Ok(response.bytes().await.context("读完成品失败")?.to_vec())
 }
 
-/// 挑一个能用某个专用接口的模型，连同接口地址与密钥一起给出。
-///
-/// 先在站点实际在售的列表（`config.models` 是过滤后的那份）里按关键字挑，挑不到就用
-/// 兜底 id——音乐与视频的模型不在 `[oai] model_filter.keep` 里，兜底是常态而不是异常，
-/// 所以兜底必须是真实在售的 id，不能拿关键字顶上。
 /// 正文行首的 `[reply]` 想引的那条 → `reply_to`。点名的消息号得真在眼前的记录里，
-/// 否则一个随口写的号会让整条消息引到不存在的地方；`[reply]` 引最新那条群友消息。
-fn quote_for(quote: super::protocol::Quote, turns: &[Turn]) -> Option<String> {
+/// 否则一个随口写的号会让整条消息引到不存在的地方；`[reply]` 优先引人格递来的
+/// 这一轮目标，没有（或号不在窗口里）才退回最新那条群友消息。
+fn quote_for(
+    quote: super::protocol::Quote,
+    turns: &[Turn],
+    anchor: Option<String>,
+) -> Option<String> {
     match quote {
         super::protocol::Quote::Message(id) => {
             turns.iter().any(|turn| turn.message_id == id).then_some(id)
         }
-        super::protocol::Quote::Latest => turns
-            .iter()
-            .rev()
-            .find(|turn| !turn.from_me && !turn.message_id.is_empty())
-            .map(|turn| turn.message_id.clone()),
+        super::protocol::Quote::Latest => anchor
+            .filter(|id| turns.iter().any(|turn| turn.message_id == *id))
+            .or_else(|| {
+                turns
+                    .iter()
+                    .rev()
+                    .find(|turn| !turn.from_me && !turn.message_id.is_empty())
+                    .map(|turn| turn.message_id.clone())
+            }),
     }
 }
 
@@ -2988,4 +2995,50 @@ fn split_send(parts: &[Part], budget: usize, target: usize) -> Option<Vec<Vec<Pa
     }
     // 只切出一条就交回调用方按普通发送走，两条路径的结果一模一样。
     (out.len() > 1).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plugins::oai::chat::protocol::Quote;
+
+    fn turn(id: &str, from_me: bool) -> Turn {
+        Turn {
+            message_id: id.to_string(),
+            from_me,
+            ..Turn::default()
+        }
+    }
+
+    #[test]
+    fn bare_reply_follows_the_persona_anchor_not_the_window_tail() {
+        // 窗口末尾是 13，可这一轮真正对着的是 11。
+        let turns = vec![
+            turn("10", false),
+            turn("11", false),
+            turn("12", false),
+            turn("13", false),
+        ];
+        assert_eq!(
+            quote_for(Quote::Latest, &turns, Some("11".into())).as_deref(),
+            Some("11")
+        );
+        // 房间没有人格目标：才退回窗口末尾。
+        assert_eq!(quote_for(Quote::Latest, &turns, None).as_deref(), Some("13"));
+        // 目标不在眼前这批记录里：不认，也退回末尾。
+        assert_eq!(
+            quote_for(Quote::Latest, &turns, Some("999".into())).as_deref(),
+            Some("13")
+        );
+    }
+
+    #[test]
+    fn named_quote_must_exist_in_the_window() {
+        let turns = vec![turn("10", false), turn("11", true)];
+        assert_eq!(
+            quote_for(Quote::Message("10".into()), &turns, None).as_deref(),
+            Some("10")
+        );
+        assert!(quote_for(Quote::Message("999".into()), &turns, None).is_none());
+    }
 }
