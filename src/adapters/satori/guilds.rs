@@ -126,7 +126,11 @@ pub fn learn_name(self_id: &str, group: &str, name: &str) {
 
 /// 把实现端给的一份资料（`guild.get`、`guild.list` 的一项）记进去；名字或人数变了返回 `true`。
 fn apply(guild: &mut Guild, resource: &Value) -> bool {
-    let name = resource.get("name").and_then(Value::as_str).unwrap_or("").trim();
+    let name = resource
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let members = resource
         .get("member_count")
         .and_then(Value::as_i64)
@@ -155,7 +159,11 @@ pub(super) fn learn_resource(self_id: &str, group: &str, resource: &Value) -> Gu
 
 /// 有人进群（`+1`）或退群（`-1`）。人数不知道就不猜，等下次核对。
 pub fn adjust_members(self_id: &str, group: &str, delta: i32) {
-    if book().known.get(&key(self_id, group)).is_none_or(|guild| guild.members.is_none()) {
+    if book()
+        .known
+        .get(&key(self_id, group))
+        .is_none_or(|guild| guild.members.is_none())
+    {
         return;
     }
     edit(self_id, group, |guild| {
@@ -178,7 +186,11 @@ pub fn learn_list(self_id: &str, guilds: &[Value], complete: bool) {
     let mut changed = false;
     let mut seen = std::collections::HashSet::new();
     for resource in guilds {
-        let Some(id) = resource.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) else {
+        let Some(id) = resource
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
             continue;
         };
         let key = key(self_id, id);
@@ -188,7 +200,8 @@ pub fn learn_list(self_id: &str, guilds: &[Value], complete: bool) {
     if complete && !seen.is_empty() {
         let prefix = key(self_id, "");
         let before = book.known.len();
-        book.known.retain(|key, _| !key.starts_with(&prefix) || seen.contains(key));
+        book.known
+            .retain(|key, _| !key.starts_with(&prefix) || seen.contains(key));
         changed |= book.known.len() != before;
     }
     if changed {
@@ -199,7 +212,11 @@ pub fn learn_list(self_id: &str, guilds: &[Value], complete: bool) {
 /// 不发请求，只看记着的。
 #[cfg(test)]
 fn cached(self_id: &str, group: &str) -> Option<Guild> {
-    book().known.get(&key(self_id, group)).filter(|guild| !guild.name.is_empty()).cloned()
+    book()
+        .known
+        .get(&key(self_id, group))
+        .filter(|guild| !guild.name.is_empty())
+        .cloned()
 }
 
 /// 群资料，按需等。
@@ -219,16 +236,23 @@ pub async fn lookup(
         let mut book = book();
         let at = now();
         let known = book.known.get(&key).cloned();
-        let stale = known.as_ref().is_none_or(|guild| at - guild.checked >= FRESH);
-        let paused = book.failed.get(&key).is_some_and(|failed| at - failed < FAILURE_PAUSE);
+        let stale = known
+            .as_ref()
+            .is_none_or(|guild| at - guild.checked >= FRESH);
+        let paused = book
+            .failed
+            .get(&key)
+            .is_some_and(|failed| at - failed < FAILURE_PAUSE);
         let flight = match book.flying.get(&key) {
             Some(flight) => Some(flight.clone()),
-            None if stale && !paused => Some(take_off(&mut book, &key, ctx, writer, &self_id, group)),
+            None if stale && !paused => {
+                Some(take_off(&mut book, &key, ctx, writer, &self_id, group))
+            }
             None => None,
         };
-        let enough = known
-            .as_ref()
-            .is_some_and(|guild| !guild.name.is_empty() && (!want_members || guild.members.is_some()));
+        let enough = known.as_ref().is_some_and(|guild| {
+            !guild.name.is_empty() && (!want_members || guild.members.is_some())
+        });
         if enough {
             return known;
         }
@@ -238,7 +262,9 @@ pub async fn lookup(
         Some(flight) => tokio::time::timeout(wait, flight).await.ok().flatten(),
         None => None,
     };
-    fetched.or(known).filter(|guild| !guild.name.is_empty() || guild.members.is_some())
+    fetched
+        .or(known)
+        .filter(|guild| !guild.name.is_empty() || guild.members.is_some())
 }
 
 /// 发出（或接上已经在飞的）一次 `guild.get`。交给后台任务驱动：等的人走了，结果照样记下。
@@ -314,26 +340,65 @@ mod tests {
 
     #[test]
     fn names_follow_events_and_blank_names_are_ignored() {
-        observe("t1", "g1", "message-created", &json!({"guild": {"id": "g1", "name": "旧名"}}));
+        observe(
+            "t1",
+            "g1",
+            "message-created",
+            &json!({"guild": {"id": "g1", "name": "旧名"}}),
+        );
         assert_eq!(cached("t1", "g1").map(|g| g.name).as_deref(), Some("旧名"));
-        observe("t1", "g1", "guild-member-added", &json!({"guild": {"id": "g1", "name": ""}}));
+        observe(
+            "t1",
+            "g1",
+            "guild-member-added",
+            &json!({"guild": {"id": "g1", "name": ""}}),
+        );
         assert_eq!(cached("t1", "g1").map(|g| g.name).as_deref(), Some("旧名"));
-        observe("t1", "g1", "guild-updated", &json!({"guild": {"id": "g1", "name": "新名"}}));
+        observe(
+            "t1",
+            "g1",
+            "guild-updated",
+            &json!({"guild": {"id": "g1", "name": "新名"}}),
+        );
         assert_eq!(cached("t1", "g1").map(|g| g.name).as_deref(), Some("新名"));
-        observe("t1", "g1", "guild-removed", &json!({"guild": {"id": "g1", "name": "新名"}}));
+        observe(
+            "t1",
+            "g1",
+            "guild-removed",
+            &json!({"guild": {"id": "g1", "name": "新名"}}),
+        );
         assert_eq!(cached("t1", "g1"), None);
     }
 
     #[test]
     fn member_counts_move_only_once_known() {
-        observe("t2", "g", "guild-member-added", &json!({"guild": {"id": "g", "name": "群"}}));
+        observe(
+            "t2",
+            "g",
+            "guild-member-added",
+            &json!({"guild": {"id": "g", "name": "群"}}),
+        );
         assert_eq!(cached("t2", "g").and_then(|g| g.members), None);
-        learn_list("t2", &[json!({"id": "g", "name": "群", "member_count": 10})], false);
+        learn_list(
+            "t2",
+            &[json!({"id": "g", "name": "群", "member_count": 10})],
+            false,
+        );
         observe("t2", "g", "guild-member-added", &json!({}));
         observe("t2", "g", "guild-member-added", &json!({}));
-        observe("t2", "g", "guild-member-removed", &json!({"user": {"id": "u"}}));
+        observe(
+            "t2",
+            "g",
+            "guild-member-removed",
+            &json!({"user": {"id": "u"}}),
+        );
         assert_eq!(cached("t2", "g").and_then(|g| g.members), Some(11));
-        observe("t2", "g", "guild-member-removed", &json!({"user": {"id": "t2"}}));
+        observe(
+            "t2",
+            "g",
+            "guild-member-removed",
+            &json!({"user": {"id": "t2"}}),
+        );
         assert_eq!(cached("t2", "g"), None);
     }
 

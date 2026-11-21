@@ -530,10 +530,16 @@ fn remind_switched_off<'a>(ctx: &'a Context, writer: &'a LockedWriter) -> BoxFut
         let Some((prefix, word)) = crate::command::spoken_bodies(message.text())
             .into_iter()
             .find_map(|body| {
-                prefixes.iter().filter(|prefix| !prefix.is_empty()).find_map(|prefix| {
-                    let word = body.strip_prefix(prefix.as_str())?.split_whitespace().next()?;
-                    Some((prefix.clone(), word))
-                })
+                prefixes
+                    .iter()
+                    .filter(|prefix| !prefix.is_empty())
+                    .find_map(|prefix| {
+                        let word = body
+                            .strip_prefix(prefix.as_str())?
+                            .split_whitespace()
+                            .next()?;
+                        Some((prefix.clone(), word))
+                    })
             })
         else {
             return;
@@ -545,8 +551,18 @@ fn remind_switched_off<'a>(ctx: &'a Context, writer: &'a LockedWriter) -> BoxFut
             "「{}」没开，所以「{prefix}{word}」没人接。发「{prefix}ctl on {}」打开，或到控制台里开。",
             plugin.display_name, plugin.name
         );
-        let reply = crate::message::Message::new().reply(message.message_id()).text(text);
-        if let Err(error) = crate::adapters::satori::send_msg(ctx, writer.clone(), message.group_id(), Some(message.user_id()), reply).await {
+        let reply = crate::message::Message::new()
+            .reply(message.message_id())
+            .text(text);
+        if let Err(error) = crate::adapters::satori::send_msg(
+            ctx,
+            writer.clone(),
+            message.group_id(),
+            Some(message.user_id()),
+            reply,
+        )
+        .await
+        {
             warn!(target: LOG_TARGET, "提醒「{}」没开时发送失败：{error}", plugin.name);
         }
     })
@@ -717,8 +733,14 @@ mod tests {
     #[test]
     fn switched_off_owner_names_the_plugin_that_is_off() {
         let mut config = crate::config::AppConfig::default();
-        assert_eq!(switched_off_owner(&config, "欢迎").map(|p| p.name), Some("welcome"));
-        assert_eq!(switched_off_owner(&config, "潜水").map(|p| p.name), Some("lurker"));
+        assert_eq!(
+            switched_off_owner(&config, "欢迎").map(|p| p.name),
+            Some("welcome")
+        );
+        assert_eq!(
+            switched_off_owner(&config, "潜水").map(|p| p.name),
+            Some("lurker")
+        );
         assert!(switched_off_owner(&config, "随便聊聊").is_none());
         let on: Value = toml::from_str("enabled = true").unwrap();
         config.plugins.insert("welcome".into(), on);
