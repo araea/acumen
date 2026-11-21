@@ -329,6 +329,8 @@ pub(crate) struct AgentRun<'a> {
     pub prompt: &'a str,
     /// 随正文送入的图片地址。
     pub images: &'a [String],
+    /// 已上传到官方 Files API 的 `file_id`：注入请求后模型直接读这些文档。
+    pub documents: &'a [String],
     /// 最多几轮工具调用。
     pub max_steps: usize,
     /// 回复会渲染成卡片：把正文里的 `![说明](地址)` 逐张取好，取不到的让模型改一次。
@@ -387,6 +389,7 @@ impl<'a> AgentRun<'a> {
             web: None,
             prompt: "",
             images: &[],
+            documents: &[],
             max_steps: 24,
             figures: false,
             rescue: false,
@@ -472,6 +475,7 @@ pub(crate) async fn conversation(
     steer: Option<&Steering>,
     search: &super::search::SearchConfig,
     native: Option<super::native::Native>,
+    documents: &[String],
     chat: Option<ChatContext>,
     budget: std::time::Duration,
 ) -> anyhow::Result<AgentReply> {
@@ -554,6 +558,7 @@ pub(crate) async fn conversation(
             web: web.as_ref(),
             prompt: &current.content,
             images: &current.images,
+            documents,
             figures: true,
             rescue: true,
             deadline: Some(soft_deadline(budget)),

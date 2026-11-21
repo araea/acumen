@@ -698,6 +698,7 @@ async fn chat(
     name: &str,
     prompt: &str,
     imgs: Vec<String>,
+    files: Vec<super::inbox::Attachment>,
     regen: bool,
     cmd: &Command,
     ctx: &Context,
@@ -723,6 +724,17 @@ async fn chat(
             reply_text(ctx, writer, &event, message).await;
             return;
         }
+    };
+    // 联网/无工具档没有读本地文件的工具：文件改传官方 Files API，拿到的 file_id 由
+    // 执行层拼进请求，模型直接读文档。全量档有 bash/文件工具，`inbox` 已经把文件取回
+    // 本机，就不必再花一份解析的钱；非官方接口/别的模型照旧只走本地那一套。
+    let documents = if agent.tools != Tools::Full
+        && !files.is_empty()
+        && super::native::eligible(&api_base, &chat_model)
+    {
+        super::files::upload_all(&oai, &files).await
+    } else {
+        Vec::new()
     };
     // 画图、写歌、拍片房间走各自的专用接口；其余房间都是智能体（工具多少看档位）。
     // 按剥掉供应商前缀后的名字判家族。
@@ -882,6 +894,7 @@ async fn chat(
                     mgr.path.parent().unwrap_or(&mgr.path),
                     seat,
                     steering.as_deref(),
+                    &documents,
                     chat,
                 )
                 .await
@@ -1127,6 +1140,23 @@ async fn chat(
                     warn!(target: LOG_TARGET, "媒体消息发送失败: {error}");
                 }
             }
+
+            // 朗读：按配置或用户那句里的「念出来」把答复读成一条语音气泡。正文已经
+            // 发出去了，朗读失败只记一行，不补发、不把这条答复重来一遍。
+            if !prose.trim().is_empty()
+                && super::speech::wants_tts(&oai.deepseek, prompt)
+                && let Err(error) = super::speech::speak(
+                    ctx,
+                    writer,
+                    event.group_id(),
+                    Some(event.user_id()),
+                    &prose,
+                    &oai,
+                )
+                .await
+            {
+                warn!(target: LOG_TARGET, "朗读失败：{error}");
+            }
         }
     }
 
@@ -1324,6 +1354,7 @@ pub(super) async fn respond(
     data_dir: &std::path::Path,
     seat: Option<super::agent::Seat>,
     steering: Option<&super::agent::Steering>,
+    documents: &[String],
     // 群聊那一路的接口与额度；私聊里的房间没有这一份（没有群也就没有群动作）。
     chat: Option<super::agent::ChatContext>,
 ) -> anyhow::Result<Reply> {
@@ -1356,6 +1387,7 @@ pub(super) async fn respond(
             steering,
             &search,
             native,
+            documents,
             chat,
             oai.request_timeout(),
         )
@@ -1422,6 +1454,7 @@ pub async fn execute(
     cmd: Command,
     prompt: String,
     imgs: Vec<String>,
+    files: Vec<super::inbox::Attachment>,
     ctx: &Context,
     writer: &LockedWriter,
     mgr: &Arc<Manager>,
@@ -1448,10 +1481,10 @@ pub async fn execute(
             super::setup::connect(request, ctx, writer, mgr).await;
         }
         Action::Chat => {
-            chat(name, &prompt, imgs, false, &cmd, ctx, writer, mgr).await;
+            chat(name, &prompt, imgs, files, false, &cmd, ctx, writer, mgr).await;
         }
         Action::Regenerate => {
-            chat(name, &cmd.args, imgs, true, &cmd, ctx, writer, mgr).await;
+            chat(name, &cmd.args, imgs, Vec::new(), true, &cmd, ctx, writer, mgr).await;
         }
         Action::Stop => {
             let is_priv_ctx = cmd.private_reply;

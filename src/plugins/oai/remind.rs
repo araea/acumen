@@ -460,6 +460,7 @@ async fn run_task(job: &Job, bot: &Bot, tardy: &str) -> anyhow::Result<()> {
             mgr.path.parent().unwrap_or(&mgr.path),
             Some(seat),
             None,
+            &[],
             chat,
         ),
     )

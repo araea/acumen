@@ -1,5 +1,20 @@
 # 更新记录
 
+## 1.81.0
+
+按 DeepSeek 新出的 Chatbot API 把 oai 房间与搭话的 agent 能力补齐：语音识别、语音合成（整段 + 流式）、文件输入、正规的 `latest_reminder`，以及内容审核拒答的收口。房间与搭话共用同一层实现。
+
+- **语音识别（ASR）**：群里发来的语音先借 QQ 自带的「转文字」，听不出或实现端不支持时用官方 `/v1/tools/asr` 兜底；非 WAV/Opus 的音频经 ffmpeg 转成 16k 单声道 WAV。转写按消息号缓存——房间与搭话看同一条语音只识别一次。文字 + 语音同发给房间时，转写文字一并进提示词。
+- **语音合成（TTS）**：回复按配置读成一条语音气泡。`tts = keyword`（说了「念出来 / 读一下 / 用语音回」才读）是默认，`off` / `always` 可选；音色 `stella` / `tide`。整段走 `/v1/tools/tts`；`tts_stream = true` 改走 WebSocket 流式，长文本分段发送更早出第一声。朗读前先清掉 Markdown、代码块与裸网址。WAV 经 ffmpeg 转 MP3 再发——与点歌的语音气泡同一口径。
+- **文件输入（Files API）**：联网 / 无工具档的房间收到 PDF、Word、PPT、图片、纯文本时，上传到官方 `/files` 拿 `file_id`，模型在对话里直接读文档。纯文本、表格、电子书走免费的 `user_data`，其余按 `file_purpose` 做文字或版面解析；全量档房间有本地文件工具，不重复花这份解析钱。
+- **正规的 `latest_reminder`**：日期、星期、所在地、语言改用接口认得的 `{"role":"latest_reminder"}` 消息，紧贴它所属的用户消息之前，比塞进系统提示词更贴文档、也利于上下文缓存。rig 编不出这个角色和扁平的 `file` 内容块，由 `llm::inject_extras` 把编码好的 `messages` 取出来改好再盖回去；关掉 `latest_reminder` 仍可退回系统提示词那一套。
+- **内容安全**：拒答不再只认 `content_filter`，`refusal` / `message.refusal` / `stop_details` 都算；开启 `safety_check` 时输入命中风险返回的整条 400（`Content Exists Risk`）按一句拒答复话收口，不当故障重试、也不刷错误日志。
+- 房间历史里的文档块每一步都重新盖上，模型在整个工具循环里都读得到；`latest_reminder` 只在末尾确为 `user` 消息时插入，绝不夹进 tool_use 与 tool_result 之间。
+
+新配置在 `[oai.deepseek]`：`asr` / `tts` / `voice_id` / `tts_stream` / `files` / `file_purpose` / `latest_reminder`，都只对 `api.deepseek.com` + `deepseek-flash` 生效。ASR、TTS 的工具端点与 Files API 都用 `config.toml` 里那把官方密钥，不另配。
+
+用真实接口收口（一个 `#[ignore]` 的单测，密钥走环境变量）：整段合成、WebSocket 流式合成、合成结果回环识别、Files 上传 + 按 `file_id` 问答、以及 `latest_reminder` + 文档块 + 服务端联网工具 + 思考 + 标题一起发的完整原生请求，全部 200。实测修到两处：官方整段 TTS 回的是 `RIFF`/`data` 长度都写 `0xFFFFFFFF` 的流式 WAV，完整性校验按「未知长度」处理；tungstenite 的 rustls 连接器需要显式装一个进程级 `CryptoProvider`。请求与响应的字段形状都固化成了单元测试。
+
 ## 1.80.0
 
 搭话插话时的引用回复改了目标。以前引窗口里最后一条，现在引这一轮真正对着的那条。

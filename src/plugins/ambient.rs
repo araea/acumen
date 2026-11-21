@@ -1482,13 +1482,19 @@ pub(crate) async fn observe(
         }
     }
     // 语音在窗口里原来只是「[语音]」两个字：群友发语音问话，人格只知道有人说了句什么。
-    // 知弦 0.52.0 起能借 QQ 自己的「转文字」，听写出来就照文字读。
-    if turn.text.contains(window::VOICE) && !turn.message_id.is_empty()
-        && let Some(heard) =
-            window::voice_text(ctx, writer, scope_channel(group), &turn.message_id).await
-        {
+    // 先借 QQ 自带的「转文字」；实现端不支持或听不出时，再用 DeepSeek 官方 ASR 兜底。
+    // 转写结果按消息号缓存（见 speech），房间与搭话看同一条语音也只识别一次。
+    if turn.text.contains(window::VOICE) && !turn.message_id.is_empty() {
+        let mut heard =
+            window::voice_text(ctx, writer, scope_channel(group), &turn.message_id).await;
+        if heard.is_none() {
+            let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx);
+            heard = crate::plugins::oai::speech::transcribe_message(ctx, &oai).await;
+        }
+        if let Some(heard) = heard {
             turn.text = turn.text.replacen(window::VOICE, &format!("[语音：{heard}]"), 1);
         }
+    }
     // 搭话指令是被剥掉的那两个词，不是群聊内容：它不进窗口，只让这一批跳过判定。
     let summoned = strip_summon(&mut turn.text, &config.summon_command);
     // 其余指令是说给机器人听的，不是群聊内容；记下来只会让人格模型学着复述指令。
@@ -2874,6 +2880,8 @@ async fn deliver(
     let me = ctx.bot.self_id();
     let mut sent = false;
     let mut nudged = false;
+    // 这一轮真正发出去的几句话：朗读时并成一段，别把一个意思拆成好几条语音。
+    let mut spoken_all: Vec<String> = Vec::new();
     for (index, utterance) in utterances.into_iter().enumerate() {
         if index > 0 {
             tokio::time::sleep(pace.gap()).await;
@@ -2971,7 +2979,10 @@ async fn deliver(
         )
         .await
         {
-            Ok(Some(id)) => id,
+            Ok(Some(id)) => {
+                spoken_all.push(spoken.clone());
+                id
+            }
             Ok(None) => {
                 info!(target: LOG_TARGET, "群 {group} 这句话没发出去：交给 QQ 之前群里又说了话");
                 break;
@@ -3015,6 +3026,36 @@ async fn deliver(
         sent = true;
     }
     if sent {
+        // 朗读：群友这一轮说了「念出来」之类，才把刚说的几句话读成一条语音气泡。
+        // 触发词只看群友的话，不看自己说的；没触发就一个字节都不合成（群聊默认安静）。
+        let oai = crate::plugins::get_config_or_default::<crate::plugins::oai::OaiConfig>(ctx);
+        let trigger: String = turns
+            .iter()
+            .filter(|turn| !turn.from_me)
+            .map(|turn| turn.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !spoken_all.is_empty()
+            && crate::plugins::oai::speech::wants_tts(&oai.deepseek, &trigger)
+        {
+            let (target_group, target_user) = if is_direct(group) {
+                (None, direct_user(group).filter(|user| !user.is_empty()))
+            } else {
+                (Some(group), None)
+            };
+            if let Err(error) = crate::plugins::oai::speech::speak(
+                ctx,
+                writer,
+                target_group,
+                target_user.as_deref(),
+                &spoken_all.join(" "),
+                &oai,
+            )
+            .await
+            {
+                warn!(target: LOG_TARGET, "群 {group} 朗读失败：{error}");
+            }
+        }
         if config.mood_enabled {
             mood::nudge(|mood, now| mood.spoke(group, now));
         }

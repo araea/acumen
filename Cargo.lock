@@ -20,7 +20,7 @@ checksum = "366ffbaa4442f4684d91e2cd7c5ea7c4ed8add41959a31447066e279e432b618"
 
 [[package]]
 name = "acumen"
-version = "1.80.0"
+version = "1.81.0"
 dependencies = [
  "ab_glyph",
  "anyhow",
@@ -51,6 +51,7 @@ dependencies = [
  "rig-core",
  "rig-reqwest",
  "ring",
+ "rustls",
  "rxing",
  "sea-orm",
  "serde",
@@ -5247,8 +5248,12 @@ checksum = "17a073bfed563fa236697a068031408a93cd9522e08abf9933ead3e73411bd71"
 dependencies = [
  "futures-util",
  "log",
+ "rustls",
+ "rustls-pki-types",
  "tokio",
+ "tokio-rustls",
  "tungstenite 0.30.0",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -5622,6 +5627,8 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.4",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror",
 ]

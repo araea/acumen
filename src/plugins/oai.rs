@@ -22,6 +22,8 @@ pub mod mj;
 pub(crate) mod panel;
 pub mod music;
 pub(crate) mod native;
+pub(crate) mod speech;
+pub(crate) mod files;
 pub mod parser;
 pub(crate) mod agent;
 pub(crate) mod chat;
@@ -456,7 +458,7 @@ pub fn handle(
 
         // 1. 全局指令解析
         if let Some(cmd) = parser::parse_global(&raw_text, &crate::command::get_prefixes(&ctx)) {
-            logic::execute(cmd, String::new(), vec![], &ctx, &writer, mgr).await;
+            logic::execute(cmd, String::new(), vec![], vec![], &ctx, &writer, mgr).await;
             return Ok(None); // 指令被消费，不再传递
         }
 
@@ -470,7 +472,7 @@ pub fn handle(
         let agents = mgr.agent_names().await;
         if let Some(name) = parser::parse_delete_agent(&raw_text, &agents) {
             let cmd = parser::Command::new(&name, parser::Action::Delete);
-            logic::execute(cmd, String::new(), vec![], &ctx, &writer, mgr).await;
+            logic::execute(cmd, String::new(), vec![], vec![], &ctx, &writer, mgr).await;
             return Ok(None);
         }
 
@@ -491,7 +493,8 @@ pub fn handle(
                 cmd.args.clone()
             };
             // 发给全量档房间的文件先取回本机，路径写进提示词，管家自己读（见 [`inbox`]）。
-            // 别的档没有读文件的工具，收下来也只是一串它打不开的路径。
+            // 别的档没有读文件的工具，收下来也只是一串它打不开的路径；原生档则改走
+            // 官方 Files API（见 [`files`]），文件本身不落到本机。
             if !files.is_empty()
                 && matches!(cmd.action, parser::Action::Chat)
                 && mgr
@@ -504,8 +507,15 @@ pub fn handle(
             {
                 prompt.push_str(&inbox::receive(&files).await);
             }
+            // 文字 + 语音同发：把语音转写成文字一并给房间。纯语音消息没有正文，不进这里，
+            // 由搭话那边的 `[语音]` 兜底转写（见 [`speech::transcribe_message`]）。
+            if matches!(cmd.action, parser::Action::Chat)
+                && let Some(heard) = speech::transcribe_message(&ctx, &get_config_or_default::<OaiConfig>(&ctx)).await
+            {
+                prompt.push_str(&format!("\n[语音：{heard}]"));
+            }
 
-            logic::execute(cmd, prompt, imgs, &ctx, &writer, mgr).await;
+            logic::execute(cmd, prompt, imgs, files, &ctx, &writer, mgr).await;
             return Ok(None);
         }
 

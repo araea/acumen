@@ -1,6 +1,6 @@
 [package]
 name = "acumen"
-version = "1.80.0"
+version = "1.81.0"
 edition = "2024"
 rust-version = "1.99"
 description = "群聊机器人：经 Satori 协议接入多个聊天平台，以可插拔插件提供 AI 对话、群管与媒体处理能力。"
@@ -44,6 +44,7 @@ md5 = "0.8"
 sha2 = "0.11"         # 自动更新：校验下载的可执行文件
 hex = "0.4"
 ring = "0.17"         # 自动更新：验发布清单的签名
+rustls = { version = "0.23", default-features = false, features = ["ring"] }  # WebSocket 流式合成：给 tungstenite 的 rustls 装进程级 CryptoProvider
 flate2 = "1"          # 自动更新：发布包是 gzip
 base64 = "0.23"
 
@@ -51,7 +52,7 @@ base64 = "0.23"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "system-proxy", "http2", "charset", "json", "multipart", "gzip"] }
 http = "1.5"
 url = "2.5"
-tokio-tungstenite = "0.30"  # WebSocket
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }  # WebSocket（含 wss，语音流式合成用）
 quick-xml = "0.42"           # Satori 消息元素解析
 rig-core = { version = "0.45", default-features = false, features = ["reqwest", "rustls"] }  # OpenAI 兼容补全
 rig-reqwest = { version = "0.45", default-features = false, features = ["rustls"] }  # 让 rig 走进程共用的 reqwest 客户端

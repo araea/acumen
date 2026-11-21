@@ -1050,6 +1050,26 @@ location = ""
 language = "中文"
 # 一轮里每一步推理的输出上限；0 交给服务端。
 max_tokens = 0
+# 用接口正规的 latest_reminder 消息传日期/星期/所在地/语言（命中上下文缓存更好）。
+# 关掉则把同一份写进系统提示词。
+latest_reminder = true
+# 语音识别（ASR）：群里发来的语音消息转写成文字再交给模型，房间与搭话共用。
+# 搭话那边先借 QQ 自带的「转文字」，听不出时才用官方 ASR 兜底；同一条语音只识别一次。
+asr = true
+# 语音合成（TTS）：把回复读成一条语音气泡。
+#   off    不朗读
+#   keyword 用户说了「念出来 / 读一下 / 用语音回」等才朗读（默认，群聊里不吵）
+#   always 每条回复都附上语音
+tts = "keyword"
+# 音色：stella（海星，女声，默认）/ tide（暗潮，男声）。
+voice_id = "stella"
+# 走 WebSocket 流式合成：长回复更早出第一声；关掉用整段 HTTP（更稳）。
+tts_stream = false
+# 文件输入：把 PDF / Word / PPT / 图片等传官方 Files API，模型直接读（联网/无工具档的房间）。
+# 纯文本、表格、电子书走免费的 user_data，不解析。全量档房间有本地文件工具，不走这条。
+files = true
+# 解析方式：text_recognition（只取文字）/ rich_layout_recognition（连文档里的图一起看）。
+file_purpose = "text_recognition"
 
 # 群聊搭话：独立插件，复用 [oai] 的模型接入层（接口、密钥、供应商、联网、绘图）。
 # 让内置 agent 以固定人格在指定群里旁听，绝大多数时候沉默。

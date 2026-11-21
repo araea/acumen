@@ -433,8 +433,15 @@ async fn attempt(
         {
             request.tool_choice = Some(ToolChoice::None);
         }
+        // rig 编不出 latest_reminder 与扁平的文档 file 块：编码后把 messages 改好再盖回去。
+        let reminder = run
+            .native
+            .as_ref()
+            .filter(|native| native.latest_reminder)
+            .map(super::super::native::Native::reminder);
+        llm::inject_extras(&model, &mut request, run.documents, reminder.as_deref());
         let stall = run.stall;
-        let response = retry::call("模型请求", || {
+        let response = match retry::call("模型请求", || {
             let model = model.clone();
             let request = request.clone();
             async move {
@@ -451,14 +458,35 @@ async fn attempt(
             }
         })
         .await
-        .map_err(|error| Failure {
-            message: anyhow::anyhow!("{error}"),
-            stalled: matches!(error, SendError::Stalled(_)),
-            used_tools,
-        });
+        {
+            Ok(response) => response,
+            Err(error) => {
+                // 内容安全：输入命中风险时接口整条 400（`Content Exists Risk`），正文其实
+                // 没生成。这是答复不是故障——别重试、也别把 400 当失败刷错误日志，按拒答收口。
+                let detail = format!("{error}");
+                if run.native.as_ref().is_some_and(|n| n.safety_check)
+                    && detail.contains("Content Exists Risk")
+                {
+                    spent.log(run, &trace);
+                    return Ok(super::AgentReply {
+                        text: super::super::native::REFUSAL.to_string(),
+                        steered,
+                        trace: trace.steps,
+                        trace_overflow: trace.overflow,
+                        sources: Vec::new(),
+                        figures: figures::Figures::default(),
+                        title: None,
+                    });
+                }
+                return Err(Failure {
+                    message: anyhow::anyhow!("{error}"),
+                    stalled: matches!(error, SendError::Stalled(_)),
+                    used_tools,
+                });
+            }
+        };
         // 接口回了一条什么都没有的消息（连思考块都没有）不算出错：choice 是空的，
         // 和「只想不说」一样落到下面的催一次。
-        let response = response?;
         spent.add(&response.usage);
         // 原生档的扩展字段不进 rig 的规范化类型，从原始响应里读：引用、研究步骤、
         // 会话标题、拒答标记与计费次数，一步步攒到这一轮收尾。
@@ -908,7 +936,9 @@ impl Context {
         };
         // 接口把日期、所在地、平台与语言放在 latest_reminder 消息里；rig 没有这个角色，
         // 等价信息写进系统提示词。只到日，前缀缓存不会每轮作废。
-        if let Some(native) = &run.native {
+        // 开了 latest_reminder 就由执行层注入正规消息，这里别再写一遍；关着时
+        // 等价的日期/所在地/语言写进系统提示词（见 native::Native::meta_line）。
+        if let Some(native) = run.native.as_ref().filter(|native| !native.latest_reminder) {
             system.push_str("\n\n");
             system.push_str(&native.meta_line());
         }
