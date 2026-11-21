@@ -1270,7 +1270,7 @@ async fn query_story(config: &AiNewsConfig, topics: &[api::HotTopic], n: usize) 
     let Some(topic) = topics.get(n - 1) else {
         return notice(format!("❌ 榜上没有第 {n} 名，当前只有 {} 个热点", topics.len()));
     };
-    let Some(id) = topic.links.story_id() else {
+    let Some(id) = topic.story_public_id() else {
         return notice(format!("📭 第 {n} 名没有事件页，没有更多资料可看"));
     };
     match api::fetch_story(id, config.request_timeout_seconds).await {

@@ -1,5 +1,14 @@
 # 更新记录
 
+## 1.82.0
+
+ainews 插件对齐 AIHOT 2.0.0 的两处数据源变化。功能与卡片版式不变。
+
+- 热点事件改用官方 `storyPublicId`。`/api/v1/hot-topics` 的条目现在直接给这个字段，官方要求用它调 `/api/v1/stories/{publicId}`。`links.story` 降级为给人读的可选 HTML 页，官方要求不要当接口用，也不要从 URL 推断 ID。此前从 URL 末段抠 ID，字段撤掉后 `/ai热点 <名次>` 的事件详情和榜单综述会一起失效。现在优先用官方字段，老响应才回退到 URL
+- 模型榜改读官方 Markdown 版。2.0.0 给综合榜 `/leaderboard.md` 和分类榜 `/leaderboard/category/<slug>.md` 都出了 Markdown 版，`llms.txt` 与 `/api/v1/agent` 列为给 Agent 的地址。网页路径对非白名单 UA 返回 403。此前抓 HTML 靠表头文字和十余个正则认列，校验页回来还要开无头 Chromium。现在解析纯文本表格，去掉浏览器兜底和全部正则。给用户点的链接仍是网页版
+- 模型榜的评测项数、覆盖度、缓存价三列 Markdown 版不提供。卡片上这三行小字自动省去。名次、模型、厂商、评分、上线日期、输入输出价与榜级评测信息照旧
+- 两处适配用真实响应钉成单测。热点榜 `storyPublicId` 的优先与回退，综合榜 94 条 Markdown 快照
+
 ## 1.81.0
 
 按 DeepSeek 新出的 Chatbot API 把 oai 房间与搭话的 agent 能力补齐：语音识别、语音合成（整段 + 流式）、文件输入、正规的 `latest_reminder`，以及内容审核拒答的收口。房间与搭话共用同一层实现。

@@ -22,8 +22,10 @@
 //!     更密只会拿到同一份缓存副本；
 //!   - 错误统一是 Problem JSON（`title` / `detail` / `code` / `requestId`），
 //!     报错时把这几项带进日志，反馈时凭 `requestId` 就能定位；
-//!   - 热点榜条目不带摘要，事件的最新进展与 AI 综述要凭 `links.story` 末段的
-//!     publicId 去 `/api/v1/stories/{publicId}` 取（见 [`enrich_hot_topics`]）；
+//!   - 热点榜条目不带摘要，事件的最新进展与 AI 综述要凭条目的 `storyPublicId`
+//!     去 `/api/v1/stories/{publicId}` 取（见 [`enrich_hot_topics`]）。2.0.0 起
+//!     `links.story` 只是给人读的可选 HTML 页，官方明确要求不要拿它当接口、
+//!     也不要从它的 URL 推断 publicId；
 //!   - 日报每天 08:00（北京时间）、周报每周一 10:00、月报每月 1 日 10:30 之后出新一期，
 //!     取最新一期走 `/dailies/latest` `/weeklies/latest` `/monthlies/latest`，
 //!     指定期号走 `/dailies/{YYYY-MM-DD}` `/weeklies/{YYYY-Www}` `/monthlies/{YYYY-MM}`
@@ -347,7 +349,9 @@ impl Links {
             .filter(|s| !s.is_empty())
     }
 
-    /// 事件页的 publicId：`links.story` 的最后一段路径。官方要求只从这里取，不要自己拼
+    /// 兜底用：`links.story` 末段的 publicId。2.0.0 起条目直接给 `storyPublicId`，
+    /// `links.story` 只是给人读的可选 HTML 页；正常路径走 [`HotTopic::story_public_id`]，
+    /// 仅当响应里确实没有该字段时才退到这里。
     pub fn story_id(&self) -> Option<&str> {
         let url = self.story.as_deref()?.trim();
         let path = url.split(['?', '#']).next().unwrap_or(url);
@@ -559,6 +563,10 @@ pub struct HotTopic {
     pub source_names: Vec<String>,
     #[serde(default)]
     pub latest_at: Option<String>,
+    /// 官方 2.0.0 起的事件 publicId：调 `/api/v1/stories/{publicId}` 只认它。
+    /// 老响应没有该字段时才回退到 `links.story` 末段（见 [`Links::story_id`]）。
+    #[serde(default)]
+    pub story_public_id: Option<String>,
     #[serde(default)]
     pub links: Links,
     /// 事件的最新进展（事件详情里的 `latest`），与标题、综述不同时才展示
@@ -567,6 +575,16 @@ pub struct HotTopic {
 }
 
 impl HotTopic {
+    /// 事件详情用的 publicId：优先响应里的 `storyPublicId`（官方明确要求），
+    /// 仅当老响应没有该字段时才回退到 `links.story` 末段。
+    pub fn story_public_id(&self) -> Option<&str> {
+        self.story_public_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .or_else(|| self.links.story_id())
+    }
+
     /// 综述的开头一段。事件综述是随演化改写的多段长文，榜单上只放得下头一段——
     /// 它总是先把最要紧的结论说完。
     pub fn digest_lead(&self) -> Option<&str> {
@@ -1264,13 +1282,13 @@ async fn story_brief(public_id: &str, timeout_secs: u64) -> Option<StoryBrief> {
 /// 给热点榜补上事件的 AI 综述与最新进展。
 ///
 /// 热点榜本身已不带摘要，只剩标题和计数，读起来不知道「这件事现在怎样了」。
-/// 这里按 `links.story` 并发查事件详情，单条失败只少一行说明，不影响整榜。
+/// 这里按 `storyPublicId` 并发查事件详情，单条失败只少一行说明，不影响整榜。
 /// 请求数最多等于榜单条数（Top 10），且有 10 分钟缓存。
 pub async fn enrich_hot_topics(topics: &mut [HotTopic], timeout_secs: u64) {
     // 事件详情只是锦上添花，超时收紧一些，别让整张榜等它
     let timeout_secs = timeout_secs.clamp(3, 8);
     let briefs = futures_util::future::join_all(topics.iter().map(|topic| async move {
-        match topic.links.story_id() {
+        match topic.story_public_id() {
             Some(id) => story_brief(id, timeout_secs).await,
             None => None,
         }
@@ -1334,4 +1352,35 @@ fn encode(input: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 2.0.0 起热点榜直接给 `storyPublicId`，取事件详情必须优先用它与 `links.story` 无关。
+    #[test]
+    fn hot_topic_prefers_story_public_id() {
+        let value: JsonValue = serde_json::json!({
+            "rank": 1,
+            "title": "某事件",
+            "storyPublicId": "82c796c0-3bf1-4c3a-8368-56913b4bf85d",
+            "links": { "story": "https://aihot.news/story/00000000-0000-0000-0000-000000000000" }
+        });
+        let topic: HotTopic = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            topic.story_public_id(),
+            Some("82c796c0-3bf1-4c3a-8368-56913b4bf85d")
+        );
+    }
+
+    /// 老响应没有该字段时才回退到 `links.story` 末段
+    #[test]
+    fn hot_topic_falls_back_to_story_url_when_no_public_id() {
+        let value: JsonValue = serde_json::json!({
+            "links": { "story": "https://aihot.news/story/legacy-id-123" }
+        });
+        let topic: HotTopic = serde_json::from_value(value).unwrap();
+        assert_eq!(topic.story_public_id(), Some("legacy-id-123"));
+    }
 }

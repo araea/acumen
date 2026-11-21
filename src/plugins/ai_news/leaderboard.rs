@@ -1,27 +1,22 @@
-//! AIHOT 模型榜（`/leaderboard`）抓取与解析。
+//! AIHOT 模型榜（`/leaderboard.md`）抓取与解析。
 //!
-//! AIHOT 的公开 API v1 只覆盖资讯、热点、事件、日报周报月报与精选同步，模型榜没有对应端点
-//! （`openapi-v1.json` 里没有 leaderboard），所以这里退而求其次读页面。取数方式仍尽量克制：
+//! AIHOT 2.0.0 起，每个榜单页都有官方维护的 Markdown 版：`llms.txt` 与
+//! `/api/v1/agent` 都把它列为「给 Agent」的地址——综合榜 `/leaderboard.md`，
+//! 分类榜 `/leaderboard/category/<slug>.md`。它是匿名可读的纯文本表格，
+//! 不经过网页的反爬校验层，结构比服务端渲染的 HTML 稳定得多。
 //!
-//!   1. 页面在 `robots.txt` 的 `User-agent: *` 组里未被 Disallow，`llms.txt` 也把
-//!      模型榜列为给 Agent 的页面；
-//!   2. 只读一个榜单页（综合或某个能力分类），不遍历模型详情页；
-//!   3. 结果按 `leaderboard_cache_minutes` 分榜本地缓存（默认 30 分钟），
+//! 取数方式仍尽量克制：
+//!   1. 只读一个榜单页（综合或某个能力分类），不遍历模型详情页；
+//!   2. 结果按 `leaderboard_cache_minutes` 分榜本地缓存（默认 30 分钟），
 //!      榜单每天只更新几次，指令再密也不会变成对站点的轮询；
-//!   4. 沿用 `api` 模块的客户端与 UA，保持可识别、可追溯。
+//!   3. 沿用 `api` 模块的客户端与 UA，保持可识别、可追溯。
 //!
-//! 页面 2026-10 改版后是服务端直出的普通 HTML 表格（此前是 Next.js 的 RSC 数据流，
-//! 要拆引用、拼分片），也不再有 EdgeOne 的 JS 校验页。所以解析简单了：按表头文字认列
-//! （列的顺序变了也认得出），再逐行取格。校验页若哪天回来，`fetch` 仍会退到本机已经在跑
-//! 的无头 Chromium，按普通访客的方式打开再读最终的 HTML。
-//!
-//! 站点改版仍可能让解析失效——所有字段一律按可空处理，取不到就如实报错，不猜不编。
+//! 2.0.0 之前这里读的是 HTML 表格：按表头文字认列、十来个正则拆格，
+//! 校验页回来时还得开无头 Chromium 兜底。现在网页路径对非白名单 UA
+//! 直接 403，而 `.md` 是官方给脚本的通道，故整体切换过来。
+//! 所有字段一律按可空处理，取不到就如实少显示一项，不猜不编。
 
 use super::api::{ApiError, client};
-use crate::render::web::TabGuard;
-use cdp_html_shot::Browser;
-use regex::Regex;
-use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -59,7 +54,7 @@ pub fn category_label(slug: &str) -> &'static str {
         .map_or("综合", |(_, label, _)| *label)
 }
 
-/// 榜单页地址：综合榜是 `/leaderboard`，分类榜是 `/leaderboard/category/<slug>`
+/// 给用户点的网页地址：综合榜 `/leaderboard`，分类榜 `/leaderboard/category/<slug>`
 pub fn page_url(category: &str) -> String {
     match category {
         "" | "overall" => format!("{SITE}/leaderboard"),
@@ -67,9 +62,19 @@ pub fn page_url(category: &str) -> String {
     }
 }
 
+/// 抓取用的 Markdown 地址：综合榜 `/leaderboard.md`，分类榜 `…/<slug>.md`
+fn markdown_url(category: &str) -> String {
+    match category {
+        "" | "overall" => format!("{SITE}/leaderboard.md"),
+        slug => format!("{SITE}/leaderboard/category/{slug}.md"),
+    }
+}
+
 // ================= 数据结构 =================
 
 /// 榜单上的一个模型。字段全部可空：站点演进时宁可少显示一项，也不要整榜解析失败。
+/// Markdown 版只给到名次、模型、厂商、评分、上线日期与输入／输出参考价；
+/// `evaluations` / `coverage` / `cache_price` 是 HTML 时代的列，这里保持可空。
 #[derive(Debug, Clone, Default)]
 pub struct ModelEntry {
     pub rank: Option<u32>,
@@ -79,11 +84,11 @@ pub struct ModelEntry {
     pub provider: Option<String>,
     /// 上线日期（`YYYY-MM-DD`）
     pub released_at: Option<String>,
-    /// 参与计分的评测项数
+    /// 参与计分的评测项数（Markdown 版不提供）
     pub evaluations: Option<u32>,
-    /// 评测覆盖度（百分数）：这个模型被各领域的评测覆盖到多少
+    /// 评测覆盖度（百分数，Markdown 版不提供）
     pub coverage: Option<u32>,
-    /// 官网参考价，人民币／百万 Token，保留站点原样文字（如 `¥26.83`）
+    /// 缓存命中参考价（Markdown 版不提供）
     pub cache_price: Option<String>,
     pub input_price: Option<String>,
     pub output_price: Option<String>,
@@ -151,7 +156,7 @@ pub struct Board {
     pub evaluation_count: Option<u32>,
     /// 评测机构家数
     pub org_count: Option<u32>,
-    /// 站点标注的更新时间，如「09/24 15:26」
+    /// 站点标注的更新时间，如「2026-11-21 20:05（北京时间）」
     pub updated_at: Option<String>,
     /// 「暂不排名」的模型数：已有评分，但评测还不够宽，补齐后自动给名次
     pub pending: Option<u32>,
@@ -179,8 +184,7 @@ fn cache() -> &'static Cache {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 同一时刻只让一个抓取在跑：几个人同时查榜时，后来的等前一个抓完直接读缓存，
-/// 不会一起去开浏览器
+/// 同一时刻只让一个抓取在跑：几个人同时查榜时，后来的等前一个抓完直接读缓存
 fn fetch_gate() -> &'static tokio::sync::Mutex<()> {
     static GATE: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     GATE.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -215,293 +219,324 @@ pub async fn fetch_cached(
     Ok(board)
 }
 
-/// 抓一次榜单页并解析：先直接请求，碰上校验页再用浏览器打开
+/// 抓一次榜单 Markdown 并解析
 pub async fn fetch(category: &str, timeout_secs: u64) -> Result<Board, ApiError> {
-    let url = page_url(category);
-    let html = match fetch_direct(&url, timeout_secs).await? {
-        Some(html) => html,
-        None => fetch_with_browser(&url, timeout_secs).await?,
-    };
-    let mut board = parse_board(&html)?;
-    board.category = category.to_string();
-    Ok(board)
-}
-
-/// 直接 GET。拿到的是真页面就返回 HTML；是校验页返回 `Ok(None)`
-async fn fetch_direct(url: &str, timeout_secs: u64) -> Result<Option<String>, ApiError> {
+    let url = markdown_url(category);
     let resp = client(timeout_secs)?
-        .get(url)
-        .header(reqwest::header::ACCEPT, "text/html")
+        .get(&url)
+        .header(reqwest::header::ACCEPT, "text/markdown, text/plain")
         .send()
         .await?;
     let status = resp.status();
     if !status.is_success() {
         return Err(format!("AIHOT 模型榜返回 {}", status.as_u16()).into());
     }
-    let html = resp.text().await?;
-    Ok((!is_challenge(&html)).then_some(html))
+    let md = resp.text().await?;
+    let mut board = parse_board(&md)?;
+    board.category = category.to_string();
+    Ok(board)
 }
 
-/// EdgeOne 的 JS 校验页：一千字节上下的一段脚本，设 cookie 后刷新
-fn is_challenge(html: &str) -> bool {
-    !html.contains("__next_f") && (html.contains("EO_Bot_Ssid") || html.contains("__tst_status"))
-}
-
-/// 用本机的无头 Chromium 打开榜单页，等校验跑完、表格出来后取整页 HTML
-async fn fetch_with_browser(url: &str, timeout_secs: u64) -> Result<String, ApiError> {
-    // 校验页约 1.2 秒后自己刷新，再加上页面本身的加载，给足余量
-    let budget = Duration::from_secs(timeout_secs.clamp(10, 60) + 10);
-    let mut page = None;
-    let result = tokio::time::timeout(budget, async {
-        let browser = Browser::instance().await;
-        page = Some(TabGuard::new(browser.new_tab().await?));
-        let tab = page.as_ref().expect("刚放进去").tab();
-        tab.goto_no_wait(url).await?;
-
-        const READY: &str = "!!document.querySelector('table tbody tr[data-slug]') \
-            && document.readyState === 'complete'";
-        loop {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            // 刷新途中执行上下文会被销毁，这时的报错只说明还没到，继续等
-            if let Ok(JsonValue::Bool(true)) = tab.evaluate(READY).await {
-                break;
-            }
-        }
-        let html = tab.evaluate_as_string("document.documentElement.outerHTML").await?;
-        anyhow::Ok(html)
-    })
-    .await;
-
-    if let Some(guard) = page {
-        guard.close().await;
-    }
-    match result {
-        Ok(Ok(html)) => Ok(html),
-        Ok(Err(e)) => Err(format!("用浏览器打开 AIHOT 模型榜失败：{e}").into()),
-        Err(_) => Err("用浏览器打开 AIHOT 模型榜超时（站点校验页没有放行）".into()),
-    }
-}
 // ================= 解析 =================
 
-/// 表格的一列是什么，按表头文字认
+/// 表格的一列是什么，按表头文字认（列顺序变了也认得出）
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Column {
     Rank,
     Model,
+    Provider,
     Release,
-    Coverage,
-    CachePrice,
-    InputPrice,
-    OutputPrice,
     Score,
+    Price,
     Other,
 }
 
 impl Column {
     fn from_header(text: &str) -> Self {
-        let has = |needle: &str| text.contains(needle);
-        if has("名次") {
+        if text.contains("名次") {
             Self::Rank
-        } else if has("上线") {
-            Self::Release
-        } else if has("覆盖") {
-            Self::Coverage
-        } else if has("缓存") {
-            Self::CachePrice
-        } else if has("输入") {
-            Self::InputPrice
-        } else if has("输出") {
-            Self::OutputPrice
-        } else if has("评分") {
-            Self::Score
-        } else if has("模型") {
+        } else if text.contains("模型") {
             Self::Model
+        } else if text.contains("厂商") {
+            Self::Provider
+        } else if text.contains("上线") {
+            Self::Release
+        } else if text.contains("评分") {
+            Self::Score
+        } else if text.contains("价格") {
+            Self::Price
         } else {
             Self::Other
         }
     }
 }
 
-pub fn parse_board(html: &str) -> Result<Board, ApiError> {
-    let table = table_re()
-        .find(html)
-        .map(|m| m.as_str())
-        .ok_or("未能从 AIHOT 模型榜页面解析出榜单数据（站点结构可能已调整）")?;
+/// 解析一份榜单 Markdown。
+///
+/// 排名表在 `## 排名` 区块里，表头之后逐行取格；`## 有成绩、暂不排名`
+/// 区块的行数就是 pending。其它区块（其他榜单、回答提示）不参与解析。
+pub fn parse_board(md: &str) -> Result<Board, ApiError> {
+    let mut board = Board::default();
 
-    let columns: Vec<Column> = th_re()
-        .captures_iter(table)
-        .map(|c| Column::from_header(&text_of(&c[1])))
-        .collect();
-
-    let entries: Vec<ModelEntry> = row_re()
-        .captures_iter(table)
-        .filter_map(|row| {
-            let slug = capture(slug_re(), &row[1])?;
-            Some(parse_row(&slug, &row[2], &columns))
-        })
-        .collect();
-    if entries.is_empty() {
-        return Err("AIHOT 模型榜当前没有条目".into());
+    for line in md.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("- 评测：") {
+            board.evaluation_count = int_before_unit(rest, "项评测");
+            board.org_count = int_before_unit(rest, "家机构");
+        } else if let Some(rest) = line.strip_prefix("- 更新：") {
+            board.updated_at = Some(rest.trim().to_string()).filter(|s| !s.is_empty());
+        }
     }
 
-    let mut board = Board {
-        entries,
-        ..Default::default()
-    };
-
-    // 榜名由服务端直接写进带 id 的标题，不依赖它是 h1 还是 h2。
-    board.title = capture(title_re(), html);
-
-    // 「35 项评测 · 7 家机构 · 10/18 20:06 更新」
-    if let Some(intro) = intro_re()
-        .captures_iter(html)
-        .map(|c| text_of(&c[1]))
-        .find(|text| text.contains("项评测"))
-    {
-        board.evaluation_count = capture(eval_count_re(), &intro).and_then(|s| s.parse().ok());
-        board.org_count = capture(org_count_re(), &intro).and_then(|s| s.parse().ok());
-        board.updated_at = capture(updated_at_re(), &intro);
+    let mut in_ranked = false;
+    let mut columns: Vec<Column> = Vec::new();
+    for raw in md.lines() {
+        let line = raw.trim();
+        if let Some(heading) = line.strip_prefix("## ") {
+            in_ranked = heading.starts_with("排名");
+            if in_ranked {
+                columns.clear();
+            }
+            continue;
+        }
+        if !in_ranked || !line.starts_with('|') || is_separator_row(line) {
+            continue;
+        }
+        let cells = split_row(line);
+        if columns.is_empty() {
+            columns = cells.iter().map(|c| Column::from_header(c)).collect();
+            continue;
+        }
+        if let Some(entry) = parse_row(&cells, &columns) {
+            board.entries.push(entry);
+        }
     }
-    board.pending = capture(pending_re(), html).and_then(|s| s.parse().ok());
+    if board.entries.is_empty() {
+        return Err("AIHOT 模型榜当前没有可解析的条目（Markdown 结构可能已调整）".into());
+    }
+
+    // 「暂不排名」区块：跳过表头与分隔行，剩下的数据行就是待排名的模型数
+    let mut in_pending = false;
+    let mut seen_header = false;
+    let mut pending = 0u32;
+    for raw in md.lines() {
+        let line = raw.trim();
+        if let Some(heading) = line.strip_prefix("## ") {
+            in_pending = heading.starts_with("有成绩、暂不排名");
+            seen_header = false;
+            continue;
+        }
+        if !in_pending || !line.starts_with('|') || is_separator_row(line) {
+            continue;
+        }
+        if !seen_header {
+            seen_header = true;
+            continue;
+        }
+        pending += 1;
+    }
+    if pending > 0 {
+        board.pending = Some(pending);
+    }
 
     Ok(board)
 }
 
-fn parse_row(slug: &str, row: &str, columns: &[Column]) -> ModelEntry {
-    let mut entry = ModelEntry {
-        slug: Some(slug.to_string()).filter(|s| !s.is_empty()),
-        ..Default::default()
-    };
-    for (cell, column) in cell_re().captures_iter(row).zip(columns.iter().copied()) {
-        let html = &cell[1];
-        let text = text_of(html);
+/// 一行 Markdown 表格拆成格子；单元格内容里不含 `|`
+fn split_row(line: &str) -> Vec<&str> {
+    line.trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(str::trim)
+        .collect()
+}
+
+/// `| --- | :---: |` 这类分隔行
+fn is_separator_row(line: &str) -> bool {
+    let inner = line.trim().trim_start_matches('|').trim_end_matches('|');
+    !inner.trim().is_empty()
+        && inner.split('|').all(|cell| {
+            cell.trim()
+                .trim_matches(|c: char| c == '-' || c == ':' || c.is_whitespace())
+                .is_empty()
+        })
+}
+
+fn parse_row(cells: &[&str], columns: &[Column]) -> Option<ModelEntry> {
+    let mut entry = ModelEntry::default();
+    for (cell, column) in cells.iter().zip(columns.iter().copied()) {
+        let cell = cell.trim();
         match column {
-            Column::Rank => entry.rank = digits(&text),
+            Column::Rank => entry.rank = first_int(cell),
             Column::Model => {
-                entry.name = capture(strong_re(), html).map(|s| text_of(&s));
-                entry.provider = capture(small_re(), html).map(|s| text_of(&s));
+                // `[名称](https://aihot.news/leaderboard/<slug>)`
+                if let Some(rest) = cell.strip_prefix('[')
+                    && let Some((name, tail)) = rest.split_once("](")
+                {
+                    entry.name = Some(name.trim().to_string()).filter(|s| !s.is_empty());
+                    let url = tail.trim().trim_end_matches(')');
+                    entry.slug = url
+                        .rsplit('/')
+                        .next()
+                        .map(str::to_string)
+                        .filter(|s| !s.is_empty());
+                }
+            }
+            Column::Provider => {
+                entry.provider = Some(cell.to_string()).filter(|s| !s.is_empty() && s != "—");
             }
             Column::Release => {
-                entry.released_at = capture(datetime_re(), html).or(Some(text).filter(|t| !t.is_empty()));
+                entry.released_at = Some(cell.to_string()).filter(|s| s.len() >= 10);
             }
-            Column::Coverage => {
-                entry.evaluations = capture(eval_count_re(), &text).and_then(|s| s.parse().ok());
-                entry.coverage = capture(coverage_re(), &text).and_then(|s| s.parse().ok());
-            }
-            Column::CachePrice => entry.cache_price = price(&text),
-            Column::InputPrice => entry.input_price = price(&text),
-            Column::OutputPrice => entry.output_price = price(&text),
-            // 评分格里还有一行「覆盖 96%」，只认大号数字那个 <strong>
-            Column::Score => {
-                entry.score = capture(strong_re(), html).and_then(|s| text_of(&s).parse().ok());
+            Column::Score => entry.score = cell.parse::<f64>().ok(),
+            Column::Price => {
+                // 「¥53.42 / ¥267.11（$8 / $40）」：丢掉括号里的美元原价，
+                // 按 `/` 拆成输入价与输出价；「—」视为无价格。
+                let head = cell.split('（').next().unwrap_or(cell);
+                let mut parts = head.split('/').map(str::trim);
+                let clean = |s: &str| {
+                    Some(s.to_string()).filter(|v: &String| !v.is_empty() && v != "—")
+                };
+                entry.input_price = parts.next().and_then(clean);
+                entry.output_price = parts.next().and_then(clean);
             }
             Column::Other => {}
         }
     }
-    entry
+    (entry.name.is_some() || entry.slug.is_some()).then_some(entry)
 }
 
-/// 去标签、还原实体、折叠空白。`<!-- -->`（React 拼文本时插的分隔）一并去掉
-fn text_of(html: &str) -> String {
-    let stripped = tag_re().replace_all(html, "");
-    let decoded = stripped
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x27;", "'")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&");
-    decoded.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// 文字里的第一个整数（「01」→ 1，「8 项评测」→ 8）
-fn digits(text: &str) -> Option<u32> {
+/// 文字里的第一个整数（「01」→ 1）
+fn first_int(text: &str) -> Option<u32> {
     let start = text.find(|c: char| c.is_ascii_digit())?;
     let rest = &text[start..];
     let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
     rest[..end].parse().ok()
 }
 
-/// 价格格保留站点原文；没有数字（「—」「待核验」）视为缺失
-fn price(text: &str) -> Option<String> {
-    let text = text.trim();
-    text.chars().any(|c| c.is_ascii_digit()).then(|| text.to_string())
-}
-
-fn regex(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
-    cell.get_or_init(|| Regex::new(pattern).expect("正则字面量合法"))
-}
-
-macro_rules! lazy_re {
-    ($name:ident, $pattern:expr) => {
-        fn $name() -> &'static Regex {
-            static RE: OnceLock<Regex> = OnceLock::new();
-            regex(&RE, $pattern)
-        }
-    };
-}
-
-lazy_re!(table_re, r"(?s)<table\b.*?</table>");
-lazy_re!(th_re, r"(?s)<th\b[^>]*>(.*?)</th>");
-lazy_re!(row_re, r"(?is)<tr\b([^>]*)>(.*?)</tr>");
-lazy_re!(slug_re, r#"(?i)\bdata-slug\s*=\s*["']([^"']+)["']"#);
-lazy_re!(cell_re, r"(?s)<td\b[^>]*>(.*?)</td>");
-lazy_re!(tag_re, r"(?s)<[^>]*>");
-lazy_re!(strong_re, r"(?s)<strong\b[^>]*>(.*?)</strong>");
-lazy_re!(small_re, r"(?s)<small\b[^>]*>(.*?)</small>");
-lazy_re!(datetime_re, r#"dateTime="([0-9]{4}-[0-9]{2}-[0-9]{2})""#);
-lazy_re!(title_re, r#"id="lb-board-title"[^>]*>([^<]+)<"#);
-lazy_re!(intro_re, r#"(?s)<p class="num\b[^"]*"[^>]*>(.*?)</p>"#);
-lazy_re!(pending_re, r#"(?s)id="lb-pending-title"[^>]*>[^<]*<span[^>]*>\s*(\d+)"#);
-lazy_re!(eval_count_re, r"(\d{1,4})\s*项评测");
-lazy_re!(org_count_re, r"(\d{1,4})\s*家机构");
-lazy_re!(coverage_re, r"覆盖\s*(\d{1,3})\s*%");
-lazy_re!(updated_at_re, r"([0-9/\-: 年月日]{4,20}?)\s*更新");
-
-fn capture(re: &Regex, source: &str) -> Option<String> {
-    re.captures(source)
-        .and_then(|c| c.get(1))
-        .map(|m| m.as_str().trim().to_string())
-        .filter(|s| !s.is_empty())
+/// 某个单位前的整数：「50 项评测、15 家机构」取「家机构」前的 15
+fn int_before_unit(text: &str, unit: &str) -> Option<u32> {
+    let head = text.split_once(unit)?.0.trim_end();
+    let mut start = head.len();
+    let bytes = head.as_bytes();
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    head[start..].parse().ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const SAMPLE: &str = r"# 大模型排行榜（2026年11月）：最新 AI 模型实测排名
+
+2026年11月大模型排行榜，排在前面的是 Claude Fable 5.2、Gemini 4 Neon。
+
+- 网页版：https://aihot.news/leaderboard
+- 更新：2026-11-21 20:05（北京时间）
+- 评测：50 项评测、15 家机构
+
+只用第三方评测机构自己实测的成绩。
+
+## 排名（共 94 个模型）
+
+| 名次 | 模型 | 厂商 | AIHOT 评分 | 上线日期 | 官方 API 价格（每百万 Token，输入 / 输出） |
+| --- | --- | --- | --- | --- | --- |
+| 1 | [Claude Fable 5.2](https://aihot.news/leaderboard/claude-fable-5-2) | Anthropic | 79.4 | 2026-11-09 | ¥53.42 / ¥267.11（$8 / $40） |
+| 2 | [Qwen4 Max](https://aihot.news/leaderboard/qwen-4-max) | Alibaba | 69.4 | 2026-11-16 | ¥10 / ¥30 |
+| 3 | [Some Model](https://aihot.news/leaderboard/some-model) | — | 60.0 | — | — |
+
+## 有成绩、暂不排名
+
+| 模型 | 厂商 | AIHOT 评分 | 原因 |
+| --- | --- | --- | --- |
+| [cobalt-c](https://aihot.news/leaderboard/cobalt-c) | Google | 76.4 | 评测数量还不够 |
+| [ember-1](https://aihot.news/leaderboard/ember-1) | Fireworks AI | 63.7 | 评测数量还不够 |
+
+## 其他榜单
+
+- 编程榜：https://aihot.news/leaderboard/category/coding （Markdown 版：https://aihot.news/leaderboard/category/coding.md ）
+
+## 回答提示
+
+- AIHOT 评分不是正确率。
+";
+
     #[test]
-    fn parses_current_server_rendered_columns() {
-        let html = r#"
-            <h1 id="lb-board-title">综合榜</h1>
-            <p class="num">35 项评测 · 7 家机构 · 2026-10-18 20:06 更新</p>
-            <table><thead><tr>
-                <th>名次</th><th>模型</th><th>AIHOT 评分</th><th>评测覆盖</th>
-                <th>上线日期</th><th>缓存价格</th><th>输入价格</th><th>输出价格</th>
-            </tr></thead><tbody>
-                <tr class="model" data-slug='gpt-x'>
-                    <td>01</td><td><strong>GPT X</strong><small>OpenAI</small></td>
-                    <td><strong>96.5</strong><small>综合</small></td>
-                    <td>35 项评测 · 覆盖 96%</td>
-                    <td><time dateTime="2026-10-01">10/01</time></td>
-                    <td>$0.10 / M tokens</td><td>$1.00 / M tokens</td><td>$8.00 / M tokens</td>
-                </tr>
-            </tbody></table>
-            <h2 id="lb-pending-title">待排名 <span>4</span></h2>
-        "#;
-        let board = parse_board(html).unwrap();
-        assert_eq!(board.title.as_deref(), Some("综合榜"));
-        assert_eq!(board.evaluation_count, Some(35));
-        assert_eq!(board.pending, Some(4));
-        assert_eq!(board.entries.len(), 1);
-        let entry = &board.entries[0];
-        assert_eq!(entry.slug.as_deref(), Some("gpt-x"));
-        assert_eq!(entry.name.as_deref(), Some("GPT X"));
-        assert_eq!(entry.provider.as_deref(), Some("OpenAI"));
-        assert_eq!(entry.score, Some(96.5));
-        assert_eq!(entry.evaluations, Some(35));
-        assert_eq!(entry.coverage, Some(96));
-        assert_eq!(entry.released_at.as_deref(), Some("2026-10-01"));
-        assert_eq!(entry.cache_price.as_deref(), Some("$0.10 / M tokens"));
+    fn parses_current_markdown_board() {
+        let mut board = parse_board(SAMPLE).unwrap();
+        board.category = "overall".to_string();
+        assert_eq!(board.title(), "综合榜");
+        assert_eq!(board.evaluation_count, Some(50));
+        assert_eq!(board.org_count, Some(15));
+        assert_eq!(board.updated_at.as_deref(), Some("2026-11-21 20:05（北京时间）"));
+        assert_eq!(board.pending, Some(2));
+        assert_eq!(board.entries.len(), 3);
+
+        let first = &board.entries[0];
+        assert_eq!(first.rank, Some(1));
+        assert_eq!(first.name.as_deref(), Some("Claude Fable 5.2"));
+        assert_eq!(first.slug.as_deref(), Some("claude-fable-5-2"));
+        assert_eq!(first.provider_name(), Some("Anthropic"));
+        assert_eq!(first.score, Some(79.4));
+        assert_eq!(first.released_date(), Some("2026-11-09"));
+        assert_eq!(first.input_price.as_deref(), Some("¥53.42"));
+        assert_eq!(first.output_price.as_deref(), Some("¥267.11"));
+        assert_eq!(first.price_text().as_deref(), Some("输入 ¥53.42 / 输出 ¥267.11"));
+        assert_eq!(first.page_url().as_deref(), Some("https://aihot.news/leaderboard/claude-fable-5-2"));
+
+        let second = &board.entries[1];
+        assert_eq!(second.input_price.as_deref(), Some("¥10"));
+        assert_eq!(second.output_price.as_deref(), Some("¥30"));
+
+        let third = &board.entries[2];
+        assert_eq!(third.provider_name(), None);
+        assert_eq!(third.released_date(), None);
+        assert_eq!(third.price_text(), None);
+        assert_eq!(third.evaluations_text(), None);
+        assert_eq!(third.coverage_text(), None);
+    }
+
+    #[test]
+    fn markdown_urls_cover_all_categories() {
+        assert_eq!(markdown_url("overall"), "https://aihot.news/leaderboard.md");
+        assert_eq!(
+            markdown_url("coding"),
+            "https://aihot.news/leaderboard/category/coding.md"
+        );
+        // 给人点的仍是网页地址
+        assert_eq!(page_url("coding"), "https://aihot.news/leaderboard/category/coding");
+    }
+
+    /// 真实榜单快照钉住契约：站点把表格列或价格格式改了，这里立刻变红。
+    const SNAPSHOT: &str = include_str!("fixtures/leaderboard-2026-11-21.md");
+
+    #[test]
+    fn parses_real_markdown_snapshot() {
+        let mut board = parse_board(SNAPSHOT).unwrap();
+        board.category = "overall".to_string();
+        assert_eq!(board.entries.len(), 94);
+        assert_eq!(board.evaluation_count, Some(50));
+        assert_eq!(board.org_count, Some(15));
+        assert_eq!(board.title(), "综合榜");
+        assert!(board.pending.is_some_and(|n| n > 0));
+
+        let first = &board.entries[0];
+        assert_eq!(first.rank, Some(1));
+        assert_eq!(first.name.as_deref(), Some("Claude Fable 5.2"));
+        assert_eq!(first.slug.as_deref(), Some("claude-fable-5-2"));
+        assert_eq!(first.provider_name(), Some("Anthropic"));
+        assert_eq!(first.score, Some(79.4));
+        assert_eq!(first.released_date(), Some("2026-11-09"));
+        assert_eq!(first.input_price.as_deref(), Some("¥53.42"));
+        assert_eq!(first.output_price.as_deref(), Some("¥267.11"));
+
+        // 末尾几名常缺价格，要当作可空而不是整行解析失败
+        let last = board.entries.last().unwrap();
+        assert_eq!(last.rank, Some(94));
+        assert_eq!(last.price_text(), None);
+        assert!(board.entries.iter().all(|e| e.name.is_some()));
     }
 }
