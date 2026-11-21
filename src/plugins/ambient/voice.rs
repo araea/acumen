@@ -7,22 +7,26 @@
 //! 样本库随 [`crate::plugins::ambient`] 一起编译进来，改它就等于改风格；文件里的
 //! 分节、调子标记与来源说明见 `res/ambient/voice.md`。
 //!
-//! 挑选看两件事。一是此刻的精神头（[`Register`]）：活跃的时候语气词多，冷静克制
+//! 挑选看三件事。一是此刻的精神头（[`Register`]）：活跃的时候语气词多，冷静克制
 //! 的时候短而利落，同一个人这两个样子都有原话，挑错档就不像他了。二是**避开**
-//! 眼前的话题：样本教的是口气，不是立场，贴题的样本会被模型当成此刻要表的态
-//! （见 [`pick`]）。
+//! 眼前的话题：样本教的是口气，不是立场，贴题的样本会被模型当成此刻要表的态。
+//! 三是**避开刚摆过的**：同一批标尺连着几轮出现，模型会把它当口头禅复读，
+//! 所以记下最近几轮用过的，换一批再上（见 [`pick_within`]）。
 
 use super::mood::Register;
 use super::recent;
 use super::window::Turn;
 pub(super) use crate::plugins::oai::chat::tone::content_words;
 use crate::plugins::oai::chat::tone::{affinity, grams};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// 编译进来的样本库。加一条就是加一个标尺，改风格先改它。
 const VOICE: &str = include_str!("../../../res/ambient/voice.md");
 
-/// 一次最多贴几条。样本是标尺不是范文，三五条足够定调。
-const MAX_LINES: usize = 5;
+/// 一次最多贴几条。样本是标尺不是范文，多摆一条就多一分换口气的余地。
+const MAX_LINES: usize = 6;
+/// 最近几轮摆过的样本先不摆：连着用同一批，说出来的话就成了复读机。
+const RECENT_USED: usize = 12;
 /// 其中最多几条取自「近期原话」（见 [`recent`]）：样本库管他一贯怎么说，这几条管他最近怎么说。
 const RECENT_SLOTS: usize = 2;
 /// 贴出来的样本一共占多少字上限。它们跟着每轮的账单走。
@@ -39,6 +43,16 @@ const OFF_TOPIC: f32 = 0.5;
 struct Sample<'a> {
     text: &'a str,
     register: Option<Register>,
+}
+
+/// 最近几轮摆过的样本。进程内一份就够，重启从头来过无所谓。
+fn lately() -> &'static Mutex<Vec<String>> {
+    static LATELY: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    LATELY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn lock_lately() -> MutexGuard<'static, Vec<String>> {
+    lately().lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// `## 组名（活）` 里那个标记。`（静）` 是冷静那档，认不出的（含 `（通用）`）
@@ -80,13 +94,14 @@ fn fits(sample: &Sample<'_>, register: Register) -> bool {
     }
 }
 
-/// 同 [`pick`]，只是条数与字数上限由调用方给（近期原话先占了几个位置）。
+/// 按调子、话题与新鲜度挑样本，条数与字数上限由调用方给（近期原话先占了几个位置）。
 fn pick_within<'a>(
     turns: &[Turn],
     samples: &[Sample<'a>],
     register: Register,
     slots: usize,
     budget: usize,
+    lately: &[String],
 ) -> Vec<&'a str> {
     use rand::seq::SliceRandom;
     let recent: String = turns
@@ -108,6 +123,15 @@ fn pick_within<'a>(
         .filter(|sample| fits(sample, register) && !recent.contains(sample.text))
         .filter(|sample| !on_topic(sample.text))
         .collect();
+    // 刚摆过的先撤下来，换别的标尺上；剩下的不够占满位置才把它们放回来。
+    let fresh: Vec<&Sample<'a>> = eligible
+        .iter()
+        .copied()
+        .filter(|sample| !lately.iter().any(|used| used == sample.text))
+        .collect();
+    if fresh.len() >= slots {
+        eligible = fresh;
+    }
     eligible.shuffle(&mut rand::rng());
     // 短句先占两个位置：他近一半的话在八个字以内，一屋子长句样本会把输出养胖。
     let (short, long): (Vec<&Sample<'a>>, Vec<&Sample<'a>>) = eligible
@@ -224,13 +248,25 @@ pub(crate) fn brief(turns: &[Turn], register: Register, group: &str) -> String {
     }
     let recent = pick_recent(turns, &recent::lines(), &recent::lines_in(group));
     let used: usize = recent.iter().map(|line| line.chars().count()).sum();
+    let snapshot: Vec<String> = lock_lately().clone();
     let picked = pick_within(
         turns,
         &samples,
         register,
         MAX_LINES - recent.len(),
         MAX_CHARS.saturating_sub(used),
+        &snapshot,
     );
+    // 这一轮摆过的记下来，往后几轮避开。近期原话不算：它们本就随窗口更新。
+    {
+        let mut memory = lock_lately();
+        for text in &picked {
+            memory.push((*text).to_string());
+        }
+        while memory.len() > RECENT_USED {
+            memory.remove(0);
+        }
+    }
     // 两处来的原话混在一起摆：哪几条是新的，对模型没有意义。
     let mut lines: Vec<String> = picked.iter().map(ToString::to_string).chain(recent).collect();
     if lines.is_empty() {

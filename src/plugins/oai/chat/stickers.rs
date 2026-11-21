@@ -24,16 +24,21 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 /// 标签最多几个字。它跟着每轮的账单走，长了就是花钱买废话。
 const LABEL_CHARS: usize = 24;
-/// 发言轮最多贴几张给模型挑。库是货架不是清单，看得见手边这几张就够。
-const BRIEF_LIMIT: usize = 4;
+/// 发言轮最多贴几张给模型挑。库是货架不是清单，摆得开一点才挑得出顺手的那张。
+const BRIEF_LIMIT: usize = 6;
 /// 只看最近的这些条消息来猜话题，与口吻样本同一条口径。
 const TOPIC_TURNS: usize = 12;
 /// 记录里能偷的最多点名几条。刷图的时候一屏全是图，点名最近这几条就够。
 const LOOT_LIMIT: usize = 3;
-/// 刚发过的同一张先收一收，避免每轮都拿同一张当标点。
-const REUSE_QUIET_SECONDS: i64 = 15 * 60;
-/// 至少与眼前的话题或状态有一点字面关联才上架；没有合适的就一张都不摆。
-const MIN_FIT: f32 = 0.45;
+/// 刚发过的同一张先收一收，避免每轮都拿同一张当标点。八分钟足够让一轮热闹翻篇，
+/// 又不会把好用的那张锁到群友都忘了它。
+const REUSE_QUIET_SECONDS: i64 = 8 * 60;
+/// 至少与眼前的话题或状态沾一点字面关联才排到前面。门槛放低是为了让攒下来的图真能用上——
+/// 表情包本来就是「有点意思就发」，不是非得逐字对上话题才发得出去。一张都不沾的也留两张
+/// 兜底（见 [`brief`]），由人格自己看着眼前的气氛挑。
+const MIN_FIT: f32 = 0.2;
+/// 贴题的一张都没有时，兜底摆几张最近新偷进来的。
+const FALLBACK_LIMIT: usize = 2;
 
 /// 收进来的是哪一种。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -261,9 +266,10 @@ pub(crate) fn sticker_style(mut segment: Segment) -> Segment {
 /// 发言轮贴进提示词的那一段；库是关的、或者库空着而眼前也没什么可偷时返回空串。
 ///
 /// 两样东西摆在手边。一是库里的几张，按「离眼前的话有多近」挑：接梗、吐槽、被逗乐这些
-/// 场合用不用得上，看的就是它自己写的那个标签与此刻话题的重合度。心情也算进来一小份：
-/// 同一个梗高兴时发是接梗，低落时发就是没心没肺。没有贴题的就不摆货架，
-/// 免得模型为了「像个真人」随手塞一张；刚用过的也歇十五分钟。
+/// 场合用不用得上，看的就是它自己写的那个标签与此刻话题的重合度。心情也算进来一小份，
+/// 新偷进来还没用过的再抬一点——不然它们会一直压在库底，攒了等于没攒。门槛放得低，
+/// 一张都不沾题时还兜底摆两张最近的：群友斗图常常就是「没为什么」，货架不该空着等人。
+/// 刚用过的歇八分钟就放回架上。
 ///
 /// 二是记录里刚有人发过的图与表情包，连着消息 ID 一起点出来。从前库空着时这一段整个
 /// 不出现，偷这件事只剩工具说明里的一句话，于是一次都没偷过，库也就一直空着——
@@ -292,7 +298,13 @@ pub(crate) fn brief(turns: &[Turn], max: usize, mood: &str) -> String {
                 } else {
                     tone::affinity(&entry.label, &feeling) * 0.4
                 };
-                (entry, fit + temper)
+                // 新偷进来、还没用过的先抬一把：不推它一下，就会一直压在库底落灰。
+                let fresh = if entry.uses == 0 && now - entry.added_at < 24 * 60 * 60 {
+                    0.08
+                } else {
+                    0.0
+                };
+                (entry, fit + temper + fresh)
             })
             .collect();
         ranked.sort_by(|a, b| {
@@ -302,16 +314,28 @@ pub(crate) fn brief(turns: &[Turn], max: usize, mood: &str) -> String {
                 // 同一秒里偷进来的几张按编号倒着排：刚偷的先露一面。
                 .then(b.0.id.cmp(&a.0.id))
         });
-        let lines: Vec<String> = ranked
+        let mut picked: Vec<&Entry> = ranked
             .iter()
             .filter(|(_, score)| *score >= MIN_FIT)
             .take(BRIEF_LIMIT)
-            .map(|(entry, _)| format!("- {}", entry.line()))
+            .map(|(entry, _)| *entry)
             .collect();
-        if !lines.is_empty() {
+        // 一张都不沾题也别把货架空着：斗图常常就是「没为什么」，摆两张最近的由人格定夺。
+        if picked.is_empty() {
+            picked = ranked
+                .iter()
+                .take(FALLBACK_LIMIT)
+                .map(|(entry, _)| *entry)
+                .collect();
+        }
+        if !picked.is_empty() {
+            let lines: Vec<String> = picked
+                .iter()
+                .map(|entry| format!("- {}", entry.line()))
+                .collect();
             out.push_str(&format!(
-                "偷来的表情包（这几张贴得上眼前的话题或状态）：\n{}\n\
-                 真要发就用 send 里的 sticker 配 id；一轮最多一张，不贴题就不发。\n",
+                "你攒的表情包（这几张现在顺手，挑一张发出去比干巴巴回一句更像群友）：\n{}\n\
+                 想发就用 send 里的 sticker 配 id；一张图本身就能当回复，不必再配一句，一轮最多一张。\n",
                 lines.join("\n")
             ));
         }
@@ -320,9 +344,9 @@ pub(crate) fn brief(turns: &[Turn], max: usize, mood: &str) -> String {
     }
     if !loot.is_empty() {
         out.push_str(&format!(
-            "记录里刚有人发了图或表情包，好玩的可以偷来回一张（sticker 配 message_id，\
-             一条里有好几张就用 index 从 0 数），顺手写一句 note 说清它是什么、什么场合发，\
-             往后才挑得出来：\n{}\n",
+            "记录里刚有人发了图或表情包，觉得好玩就偷来回一张（sticker 配 message_id，\
+             一条里有好几张就用 index 从 0 数）。顺手写句 note 说清它长什么样、什么场合发——\
+             写清楚了往后才找得出来，不然攒了也是白攒：\n{}\n",
             loot.join("\n")
         ));
     }
@@ -460,4 +484,41 @@ fn persist(store: &Store) {
         return;
     };
     let _ = crate::storage::write_atomic(&root.join("index.json"), json.as_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 攒了图却一张都不贴题时，货架也得摆出来：斗图常常就是「没为什么」，
+    /// 全靠字面贴合上架会让整库图永远见不到光，这正是从前偷了不用的根因。
+    #[test]
+    fn brief_keeps_a_shelf_when_nothing_matches_the_topic() {
+        let now = chrono::Local::now().timestamp();
+        {
+            let mut store = lock();
+            store.root = None;
+            store.library = Library {
+                next_id: 3,
+                entries: (1..=3)
+                    .map(|id| Entry {
+                        id,
+                        label: format!("第{id}张跟眼下的话不相干的图"),
+                        kind: Kind::Image {
+                            file: format!("{id}.jpg"),
+                        },
+                        from: String::new(),
+                        group: String::new(),
+                        added_at: now,
+                        uses: 0,
+                        last_used: 0,
+                    })
+                    .collect(),
+            };
+        }
+        let text = brief(&[], 120, "话头松、语气词多");
+        assert!(text.contains("你攒的表情包"), "{text}");
+        assert!(text.matches("- #").count() >= FALLBACK_LIMIT, "{text}");
+        assert!(!text.contains("不贴题就不发"), "{text}");
+    }
 }
