@@ -11,12 +11,22 @@
 //!
 //! 文案只有 `{name}` 一个占位符，默认就是「开播了 / 下播了」一句，纯提醒、不 @ 人、
 //! 不刷屏；两个群盯同一个主播时各自按自己的文案发，状态只查一次。
+//!
+//! 轮询任务注册在 `on_init`：这个钩子在插件「运行时被启用」时会被框架补跑一次
+//! （`ctl on` / 控制台开关都走这条路），所以开着开关改完配置、或半路才打开插件都能立刻
+//! 轮询，不必重启。发送不靠连接建立时抓来的 writer，而是在要发时从已连上的账号里现取
+//! 一条线路（与潜水清理后台任务同法），于是运行时启用的插件也发得出去。
+//!
+//! 控制台有一块专用面板（`GET /api/live_remind` 等），按群管理主播、看开播状态、试发、
+//! 改文案都在那里；本模块导出 [`panel_data`]、[`probe_room`]、[`snapshot`]、[`send_to`]
+//! 供它调用。
 
 use crate::adapters::satori::{LockedWriter, send_msg};
 use crate::event::Context;
 use crate::plugins::{PluginConfig, PluginError, get_config_or_default};
 use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -100,7 +110,7 @@ impl PluginConfig for Config {
     fn check(&self) -> Result<(), String> {
         for target in &self.targets {
             if target.group.trim().is_empty() {
-                return Err("开播提醒：targets 里的群号不能留空".into());
+                return Err("开播提醒：每个推送目标都要填群号".into());
             }
             for streamer in &target.streamers {
                 if streamer.rid.trim().is_empty() {
@@ -126,7 +136,7 @@ fn render(template: &str, name: &str) -> String {
     template.replace("{name}", name)
 }
 
-/// 后台插件，没有群指令；开关走 `ctl on/off live_remind`。
+/// 后台插件，没有群指令；开关走 `ctl on/off live_remind` 或控制台开关。
 pub fn handle(
     ctx: Context,
     _writer: LockedWriter,
@@ -175,14 +185,21 @@ async fn current_ttwid() -> Result<String, PluginError> {
     Ok(value)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Live {
-    Yes,
-    No,
+/// 一次房间查询拿到的全部信息：在播状态、主播昵称、直播标题。
+/// 控制台「检查开播状态 / 识别主播」用得到，轮询只取 `live`。
+#[derive(Debug, Clone)]
+pub struct RoomInfo {
+    /// 是否正在直播。
+    pub live: bool,
+    /// 抖音上的主播昵称（用来自动填写提醒里的名字）。
+    pub nickname: Option<String>,
+    /// 当前直播标题。
+    pub title: Option<String>,
 }
 
 /// 查一个直播间。`browser_*` 那几个参数不能少，少了抖音会回一个 200 空串。
-async fn query_live(rid: &str) -> Result<Live, PluginError> {
+/// 失败（风控 / 空响应 / 坏 JSON）时清掉 ttwid 重取，最多两次。
+pub async fn probe_room(rid: &str) -> Result<RoomInfo, PluginError> {
     for _ in 0..2 {
         let cookie = current_ttwid().await?;
         let url = format!(
@@ -200,7 +217,7 @@ async fn query_live(rid: &str) -> Result<Live, PluginError> {
             clear_ttwid();
             continue;
         }
-        let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        let Ok(json) = serde_json::from_slice::<Value>(&bytes) else {
             clear_ttwid();
             continue;
         };
@@ -215,10 +232,36 @@ async fn query_live(rid: &str) -> Result<Live, PluginError> {
         else {
             return Err(format!("直播间 {rid} 没有返回房间数据").into());
         };
-        let status = room.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
-        return Ok(if status == 2 { Live::Yes } else { Live::No });
+        let live = room.get("status").and_then(|v| v.as_i64()) == Some(2);
+        let nickname = json
+            .pointer("/data/user/nickname")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let title = room
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        return Ok(RoomInfo {
+            live,
+            nickname,
+            title,
+        });
     }
     Err(format!("直播间 {rid} 的状态查询连续两次失败").into())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Live {
+    Yes,
+    No,
+}
+
+async fn query_live(rid: &str) -> Result<Live, PluginError> {
+    Ok(if probe_room(rid).await?.live {
+        Live::Yes
+    } else {
+        Live::No
+    })
 }
 
 // ==================== 状态与轮询 ====================
@@ -242,13 +285,29 @@ impl Drop for RunGuard {
     }
 }
 
-pub fn on_connected(
-    ctx: Context,
-    writer: LockedWriter,
-) -> BoxFuture<'static, Result<Option<Context>, PluginError>> {
+/// 后台任务没有事件可回，借现成的一条登录线路发消息（与潜水清理同法）。
+fn link(ctx: &Context) -> Option<(Context, LockedWriter)> {
+    let (bot, writer) = crate::adapters::satori::logins().into_iter().next()?;
+    let mut send_ctx = ctx.clone();
+    send_ctx.bot = bot;
+    Some((send_ctx, writer))
+}
+
+/// 往指定群发一条提醒。轮询与控制台「试发」共用，出去前统一过发送流水线与路由。
+pub async fn send_to(ctx: &Context, group: &str, text: String) -> Result<(), PluginError> {
+    let Some((send_ctx, writer)) = link(ctx) else {
+        return Err("还没有连上的账号，提醒暂时发不出去".into());
+    };
+    send_msg(&send_ctx, writer, Some(group), None, text).await
+}
+
+/// 在 `on_init` 注册轮询任务，而不是 `on_connected`：
+/// 后者只在连接建立时对「当时已启用」的插件触发一次，运行时才打开的插件不会补跑；
+/// 前者由框架在运行时启用时（`ctl on` / 控制台开关）补跑，改配置或半路启用都能立即生效。
+pub fn on_init(ctx: Context) -> BoxFuture<'static, Result<(), PluginError>> {
     Box::pin(async move {
         if SCHEDULED.swap(true, Ordering::SeqCst) {
-            return Ok(Some(ctx));
+            return Ok(());
         }
         let config = load_config(&ctx);
         info!(
@@ -259,19 +318,17 @@ pub fn on_connected(
         );
 
         let poll_ctx = ctx.clone();
-        let poll_writer = writer.clone();
         ctx.scheduler
             .clone()
             .add_interval(Duration::from_secs(TICK_SECONDS), move || {
                 let ctx = poll_ctx.clone();
-                let writer = poll_writer.clone();
-                async move { tick(ctx, writer).await }
+                async move { tick(ctx).await }
             });
-        Ok(Some(ctx))
+        Ok(())
     })
 }
 
-async fn tick(ctx: Context, writer: LockedWriter) {
+async fn tick(ctx: Context) {
     let config = load_config(&ctx);
     if !config.enabled || config.targets.is_empty() {
         return;
@@ -312,58 +369,113 @@ async fn tick(ctx: Context, writer: LockedWriter) {
         return;
     }
 
+    // 先按「旧状态」算出提醒，再统一写回新状态。绝不能边遍历边写：两个群盯同一个
+    // 主播时，第二个群会读到刚写进去的新状态，以为没变化，于是漏掉它那一份。
+    let previous = {
+        let mut state = states().lock().unwrap();
+        let snapshot = state.clone();
+        for (rid, &live) in &results {
+            state.insert(rid.clone(), live);
+        }
+        snapshot
+    };
+    let notices = build_notices(&config, &results, &previous);
+
+    for (group, text, name) in notices {
+        if let Err(error) = send_to(&ctx, &group, text).await {
+            warn!(
+                target: LOG_TARGET,
+                "向群 {} 推送「{}」失败：{}",
+                group, name, error
+            );
+        }
+    }
+}
+
+/// 依据「上次状态」与「本次结果」算出每个群该发的提醒。纯函数，便于单测：
+/// 多个群盯同一个主播时，每个群都要拿到自己那份，状态只查一次就够了。
+fn build_notices(
+    config: &Config,
+    results: &HashMap<String, Live>,
+    previous: &HashMap<String, Live>,
+) -> Vec<(String, String, String)> {
     struct Notice {
         group: String,
         text: String,
         name: String,
     }
     let mut notices = Vec::new();
-    {
-        let mut state = states().lock().unwrap();
-        for target in &config.targets {
-            for streamer in &target.streamers {
-                let Some(&live) = results.get(&streamer.rid) else {
-                    continue;
-                };
-                let previous = state.insert(streamer.rid.clone(), live);
-                // 第一次看到只记基线：刚上线时已经在播的不算「刚开播」。
-                if previous.is_none() || previous == Some(live) {
-                    continue;
-                }
-                let template = if live == Live::Yes {
-                    &config.start_text
-                } else {
-                    &config.end_text
-                };
-                let text = render(template, &streamer.name);
-                if !text.trim().is_empty() {
-                    notices.push(Notice {
-                        group: target.group.clone(),
-                        text,
-                        name: streamer.name.clone(),
-                    });
-                }
+    for target in &config.targets {
+        for streamer in &target.streamers {
+            let Some(&live) = results.get(&streamer.rid) else {
+                continue;
+            };
+            let prev = previous.get(&streamer.rid).copied();
+            // 第一次看到只记基线：刚上线时已经在播的不算「刚开播」。
+            if prev.is_none() || prev == Some(live) {
+                continue;
+            }
+            let template = if live == Live::Yes {
+                &config.start_text
+            } else {
+                &config.end_text
+            };
+            let text = render(template, &streamer.name);
+            if !text.trim().is_empty() {
+                notices.push(Notice {
+                    group: target.group.clone(),
+                    text,
+                    name: streamer.name.clone(),
+                });
             }
         }
     }
+    notices
+        .into_iter()
+        .map(|n| (n.group, n.text, n.name))
+        .collect()
+}
 
-    for notice in notices {
-        if let Err(error) = send_msg(
-            &ctx,
-            writer.clone(),
-            Some(&notice.group),
-            None,
-            notice.text,
-        )
-        .await
-        {
-            warn!(
-                target: LOG_TARGET,
-                "向群 {} 推送「{}」失败：{}",
-                notice.group, notice.name, error
-            );
-        }
-    }
+// ==================== 控制台接口 ====================
+
+/// 控制台面板的读数：当前配置、默认值、上次轮询时间与各直播间上次查到的状态。
+pub fn panel_data(ctx: &Context) -> Value {
+    let config = load_config(ctx);
+    let (last_poll, states) = snapshot();
+    let defaults = Config::default();
+    json!({
+        "enabled": config.enabled,
+        "poll_seconds": config.poll_seconds,
+        "start_text": config.start_text,
+        "end_text": config.end_text,
+        "targets": config.targets,
+        "min_poll_seconds": MIN_POLL_SECONDS,
+        "tick_seconds": TICK_SECONDS,
+        "defaults": {
+            "poll_seconds": defaults.poll_seconds,
+            "start_text": defaults.start_text,
+            "end_text": defaults.end_text,
+        },
+        "sample_name": "大司马解说",
+        "states": states,
+        "last_poll": last_poll,
+        "now": chrono::Utc::now().timestamp(),
+    })
+}
+
+/// 每个直播间上次查到的状态，以及上次轮询时间。给面板画「现在的情况」用，不额外联网。
+pub fn snapshot() -> (i64, Value) {
+    let states = states().lock().unwrap();
+    let map: serde_json::Map<String, Value> = states
+        .iter()
+        .map(|(rid, live)| {
+            (
+                rid.clone(),
+                Value::from(if *live == Live::Yes { "live" } else { "off" }),
+            )
+        })
+        .collect();
+    (LAST_POLL.load(Ordering::Relaxed), Value::Object(map))
 }
 
 #[cfg(test)]
@@ -392,11 +504,61 @@ mod tests {
         assert!(config.check().is_err());
     }
 
+    /// 回归：两个群盯同一个主播，状态翻转时两个群都要拿到提醒（旧实现只发第一个群）。
     #[test]
-    fn status_code_two_means_live() {
-        let json = serde_json::json!({ "data": { "data": [{ "status": 2 }] } });
-        let room = json["data"]["data"][0].as_object().unwrap();
-        assert_eq!(room["status"].as_i64(), Some(2));
+    fn every_group_gets_its_own_notice_for_a_shared_streamer() {
+        let streamer = Streamer {
+            name: "大司马".into(),
+            rid: "627".into(),
+        };
+        let config = Config {
+            enabled: true,
+            targets: vec![
+                Target {
+                    group: "群A".into(),
+                    streamers: vec![streamer.clone()],
+                },
+                Target {
+                    group: "群B".into(),
+                    streamers: vec![streamer.clone()],
+                },
+            ],
+            ..Config::default()
+        };
+        let mut previous = HashMap::new();
+        previous.insert("627".to_string(), Live::No);
+        let mut results = HashMap::new();
+        results.insert("627".to_string(), Live::Yes);
+
+        let notices = build_notices(&config, &results, &previous);
+        let groups: Vec<&str> = notices.iter().map(|(group, _, _)| group.as_str()).collect();
+        assert_eq!(groups, vec!["群A", "群B"]);
+        assert!(notices
+            .iter()
+            .all(|(_, text, _)| text.contains("大司马") && text.contains("开播")));
+    }
+
+    /// 首次看到只记基线，不推送；状态没变也不推送。
+    #[test]
+    fn baseline_and_no_change_send_nothing() {
+        let config = Config {
+            enabled: true,
+            targets: vec![Target {
+                group: "群A".into(),
+                streamers: vec![Streamer {
+                    name: "大司马".into(),
+                    rid: "627".into(),
+                }],
+            }],
+            ..Config::default()
+        };
+        let mut results = HashMap::new();
+        results.insert("627".to_string(), Live::Yes);
+        assert!(build_notices(&config, &results, &HashMap::new()).is_empty());
+
+        let mut previous = HashMap::new();
+        previous.insert("627".to_string(), Live::Yes);
+        assert!(build_notices(&config, &results, &previous).is_empty());
     }
 
     /// 真接口冒烟：默认不跑，`cargo test plugins::live_remind::tests::real_douyin_status -- --ignored --nocapture`。
@@ -404,8 +566,8 @@ mod tests {
     #[ignore = "需要访问抖音，手工跑"]
     async fn real_douyin_status() {
         for rid in ["627858614", "39719844720"] {
-            let live = query_live(rid).await.expect("查抖音直播状态失败");
-            println!("直播间 {rid} 状态：{live:?}");
+            let info = probe_room(rid).await.expect("查抖音直播状态失败");
+            println!("直播间 {rid}：在播={} 主播={:?} 标题={:?}", info.live, info.nickname, info.title);
         }
     }
 }

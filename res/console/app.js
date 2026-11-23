@@ -88,7 +88,7 @@
     webshot: "screenshot_monitor", oai: "smart_toy", ambient: "forum", ai_news: "newspaper",
     help: "help", restart: "restart_alt", welcome: "waving_hand", anti_recall: "restore_page",
     nailong: "hide_image", autoreply: "quickreply", lurker: "scuba_diving", essence: "hub",
-    keyword_guard: "shield_person",
+    keyword_guard: "shield_person", live_remind: "notifications_active",
   };
 
   /* 分类不只是一种筛选，它先回答「这个插件是管什么的」。
@@ -1334,6 +1334,27 @@
 
   const FORMS = "#global-form, [data-bot], [data-config]";
 
+  /* 开播提醒专用面板的草稿态。整份配置一次编辑、一次保存：名单是嵌套结构，
+     逐字段即时存会留下半份配置，也不好表达「改错了，放弃」。data 是已存的那份，
+     draft 是手上改的，checked 是手动查回来的状态，addForm 是各群「加主播」输入框的临时值。 */
+  const lr = {
+    data: null,
+    draft: null,
+    checked: {},
+    addForm: {},
+    mounting: 0,
+    saving: false,
+    checking: false,
+    error: "",
+  };
+  function lrDirty() {
+    if (!lr.data || !lr.draft) return false;
+    return Number(lr.draft.poll_seconds) !== Number(lr.data.poll_seconds)
+      || lr.draft.start_text !== lr.data.start_text
+      || lr.draft.end_text !== lr.data.end_text
+      || JSON.stringify(lr.draft.targets) !== JSON.stringify(lr.data.targets);
+  }
+
   /** 带着没保存改动的表单，用人话命名，给离开确认列出来。 */
   function unsavedAreas() {
     return [
@@ -1347,6 +1368,7 @@
         `搭话${SOURCES.find((source) => source.name === name)?.title || name}（没保存）`
       ),
       ...$$("[data-rule][data-unsaved]").map((entry) => `自动回复规则 #${entry.dataset.rule}（没存上）`),
+      ...(lrDirty() ? ["开播提醒的配置（没保存）"] : []),
     ];
   }
 
@@ -1355,7 +1377,8 @@
   const hasFormDrafts = () =>
     $$(FORMS).some((form) => formDirty(form, false))
     || Object.keys(ambient.drafts).some((name) => dirty(name))
-    || !!$("[data-rule][data-unsaved]");
+    || !!$("[data-rule][data-unsaved]")
+    || lrDirty();
 
   /* 历史条目的单调编号：只用来判断「这一步是前进还是后退」，取消离开时好原路退回，
      而不是 replaceState 把后退栈改写成两个同样的条目（安卓手势返回会因此「按一下没反应」）。 */
@@ -2432,7 +2455,8 @@
     const top = `h${level}`;
     const sub = `h${Math.min(level + 1, 6)}`;
     const heading = (tag, id, text, cls = "section-title") => raw(`<${tag} class="${cls}" id="${id}">${esc(text)}</${tag}>`);
-    const form = configForm(plugin);
+    // 开播提醒整份配置交给专用面板管，通用表单在这儿不再画一份（嵌套名单用通用件很别扭）。
+    const form = plugin.name === "live_remind" ? { count: 0, leaves: 0, html: "" } : configForm(plugin);
     // 指令放在配置之前：配置一多，末尾的指令要滚很久才看得到。
     const commands = plugin.commands.length
       ? h`<section class="section" aria-labelledby="commands-title">
@@ -2472,10 +2496,12 @@
       ${plugin.panel === "oai" ? providersSection(sub) : ""}
       ${plugin.panel === "autoreply" ? rulesSection(sub) : ""}
       ${plugin.panel === "lurker" ? lurkerSection(sub) : ""}
+      ${plugin.panel === "live_remind" ? liveRemindSection(sub) : ""}
       ${liveCard(plugin)}
       ${commands}
       ${plugin.name === "ambient" ? ambientSection(sub) : ""}
 
+      ${plugin.name === "live_remind" ? "" : h`
       <section class="section" aria-labelledby="config-title">
         <div class="section-head">
           ${heading(sub, "config-title", "配置")}
@@ -2501,7 +2527,7 @@
       <section class="section" aria-labelledby="diff-title">
         <div class="section-head">${heading(sub, "diff-title", "与默认值的差异")}</div>
         <div id="plugin-diff">${diffBlock(plugin.diff)}</div>
-      </section>`;
+      </section>`}`;
   }
 
   const diffBlock = (diff) =>
@@ -3802,6 +3828,7 @@
       snackbar(reply.message);
       refreshLive(name);
       if (name === "autoreply") rulesSwitched(next);
+      if (name === "live_remind") void lrMount();
       // 以后端为准：重新取一次列表，就地改开关与状态，不整页重画。
       const fresh = await api("/plugins").catch(() => null);
       if (fresh) plugins.data = fresh;
@@ -3866,6 +3893,561 @@
     } catch {
       snackbar("浏览器没有给剪贴板权限；可以长按或拖选文字复制。", "error");
     }
+  }
+
+  /* ==================== §8a 开播提醒的专用面板 ====================
+     名单是「群 → 主播」两层嵌套，通用表单画出来一长串折叠框，太难用。这里整份配置
+     一次编辑、一次保存：贴直播间链接自动取号、一键查开播状态并认昵称、按群试发。
+     所有写操作都落到 /live_remind/save（整份 ctl::change），不会留下半份配置。 */
+
+  function liveRemindSection(sub) {
+    clearTimeout(lr.mounting);
+    lr.mounting = setTimeout(() => void lrMount(), 0);
+    return h`<section class="section lr" id="lr-panel" aria-labelledby="lr-title" aria-busy="true">
+      <div class="section-head">
+        ${raw(`<${sub} class="section-title" id="lr-title">开播提醒配置</${sub}>`)}
+        <span class="section-meta">按群盯主播 · 开关在页面最上面</span>
+      </div>
+      <div id="lr-body"><div class="progress" role="progressbar" aria-label="正在读取开播提醒配置"></div></div>
+    </section>`;
+  }
+
+  function lrFreshDraft(data) {
+    return {
+      poll_seconds: data.poll_seconds,
+      start_text: data.start_text,
+      end_text: data.end_text,
+      targets: JSON.parse(JSON.stringify(data.targets || [])),
+    };
+  }
+
+  async function lrMount() {
+    const panel = $("#lr-panel");
+    if (!panel) return;
+    if (!panel.dataset.bound) {
+      panel.dataset.bound = "";
+      panel.addEventListener("click", lrClick);
+      panel.addEventListener("input", lrInput);
+      panel.addEventListener("change", lrChange);
+      panel.addEventListener("keydown", lrKeydown);
+    }
+    try {
+      const data = await api("/live_remind");
+      if (!panel.isConnected) return;
+      lr.data = data;
+      // 整页重画会回到这里：有未保存的草稿就别用回执盖掉它。
+      if (!lr.draft) lr.draft = lrFreshDraft(data);
+      // 状态快照先垫上，别覆盖手动查回来的更详细结果。
+      for (const [rid, state] of Object.entries(data.states || {})) {
+        if (!lr.checked[rid]) lr.checked[rid] = { state };
+      }
+      lrPaint();
+      // 群名册到位后补上群名与下拉建议，不动用户正在敲的输入。
+      void KINDS.group.roster.load().then(() => {
+        if ($("#lr-panel")?.isConnected) lrPaintGroupNames();
+      });
+    } catch (error) {
+      if (error.status === 401) return;
+      put($("#lr-body"), emptyState(`开播提醒配置没读出来：${error.message}`, "error"));
+    } finally {
+      panel.removeAttribute("aria-busy");
+    }
+  }
+
+  function lrPollEcho(seconds, min) {
+    const n = Math.max(min, Number(seconds) || min);
+    return n % 60 === 0 ? `即 ${n / 60} 分钟查一次` : `即每 ${n} 秒查一次`;
+  }
+
+  function lrPreviewInner(template, sample) {
+    const text = String(template ?? "").replace(/\{name\}/g, sample);
+    return text.trim()
+      ? h`<span class="lr-preview-label">预览</span> ${text}`
+      : h`<span class="lr-preview-label">预览</span> <span class="lr-preview-empty">留空，不会发</span>`;
+  }
+
+  function lrOverview(data, groups, streamers) {
+    const on = data.enabled;
+    const last = data.last_poll ? ago(data.last_poll) : "还没查过";
+    return h`<div class="card lr-overview" role="note">
+      <div class="lr-overview-row">
+        <span class="tile" data-tone="group" aria-hidden="true">${icon("smart_display")}</span>
+        <div class="lr-overview-text">
+          <p class="lr-overview-lead">
+            <span class="lr-dot ${on ? "lr-dot-on" : "lr-dot-off"}"></span>${on ? "已启用" : "未启用"}
+            <span class="lr-overview-sep">·</span>每 ${data.poll_seconds} 秒查一次
+            <span class="lr-overview-sep">·</span>${groups.length} 个群、${streamers} 位主播
+          </p>
+          <p class="note">${on
+            ? `上次查询：${last}。主播开播或下播时，会往各自盯着的群发一条短提醒。`
+            : "总开关关着，暂时不查也不发。配置可以先改好，去页面最上面打开「启用」即可，立即生效、不必重启。"}</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-tonal" type="button" data-lr-check-all>${icon("sync_alt")}检查全部状态</button>
+        <span class="section-meta" id="lr-check-note">认一下房间号对不对、现在在不在线</span>
+      </div>
+    </div>`;
+  }
+
+  function lrTextField(key, label, value, sample, about) {
+    const id = `lr-text-${key}`;
+    return h`<div class="lr-text">
+      <div class="field-text">
+        <label class="field-label" for="${id}">${label}</label>
+        <span class="field-hint">${about}</span>
+      </div>
+      <input class="input" id="${id}" type="text" value="${value}" data-lr-text="${key}"
+        autocomplete="off" spellcheck="false" placeholder="留空就不发送">
+      <div class="lr-text-tools">
+        <button class="chip" type="button" data-lr-insert="${key}" aria-label="在${label}的光标处插入 {name}">${icon("add")}{name} 主播名</button>
+        <span class="lr-preview" id="lr-preview-${key}" aria-live="polite">${lrPreviewInner(value, sample)}</span>
+      </div>
+    </div>`;
+  }
+
+  function lrSettings(d, data) {
+    return h`<div class="card lr-settings">
+      <div class="field lr-poll">
+        <label class="field-label" for="lr-poll-input">查询间隔</label>
+        <span class="field-hint" id="lr-poll-hint">每隔多少秒查一次；最小 ${data.min_poll_seconds} 秒，再密也没意义。改了立即生效，不必重启。</span>
+        <div class="lr-poll-row">
+          <input class="input num" id="lr-poll-input" type="number" min="${data.min_poll_seconds}" step="5" inputmode="numeric"
+            value="${d.poll_seconds}" data-lr-poll aria-describedby="lr-poll-hint lr-poll-echo" autocomplete="off">
+          <span class="lr-unit">秒</span>
+          <span class="section-meta" id="lr-poll-echo">${lrPollEcho(d.poll_seconds, data.min_poll_seconds)}</span>
+        </div>
+      </div>
+      <div class="lr-text-grid">
+        ${lrTextField("start_text", "开播文案", d.start_text, data.sample_name, "开播时发的话")}
+        ${lrTextField("end_text", "下播文案", d.end_text, data.sample_name, "下播时发的话")}
+      </div>
+      <p class="note">文案里写 <code class="tag">{name}</code> 会换成主播名，点上面那枚标签就能插到光标处；留空的那条不发送。纯提醒，不 @ 人、不刷屏。</p>
+    </div>`;
+  }
+
+  function lrStreamer(s, gi, si) {
+    const st = lr.checked[s.rid] || {};
+    const tone = st.state === "live" ? "live" : st.state === "off" ? "off" : st.state === "error" ? "error" : "";
+    const label = st.state === "live" ? "正在直播" : st.state === "off" ? "未开播" : st.state === "error" ? "没查到" : "还没查";
+    const extra = st.title ? ` · ${st.title}` : "";
+    const dot = tone === "live" ? "lr-dot-on" : tone === "off" ? "lr-dot-off" : tone === "error" ? "lr-dot-error" : "lr-dot-idle";
+    return h`<div class="lr-streamer">
+      <div class="lr-streamer-fields">
+        <input class="input" data-lr-name="${gi}:${si}" type="text" value="${s.name}" placeholder="主播显示名" aria-label="主播显示名" autocomplete="off" spellcheck="false">
+        <input class="input mono" data-lr-room="${gi}:${si}" type="text" value="${s.rid}" placeholder="房间号" aria-label="直播间号（数字）" autocomplete="off" spellcheck="false" inputmode="numeric">
+      </div>
+      <div class="lr-streamer-status" data-tone="${tone}">
+        <span class="lr-dot ${dot}"></span><span class="lr-status-text">${label}${extra}</span>
+      </div>
+      <div class="lr-streamer-actions">
+        <button class="btn btn-text btn-small" type="button" data-lr-check-one="${gi}:${si}" title="查开播状态，并用抖音昵称补上还没填的显示名">${icon("sync_alt")}识别</button>
+        <button class="icon-btn" type="button" data-lr-del-streamer="${gi}:${si}" aria-label="移除主播 ${s.name || s.rid}" title="移除这位主播">${icon("close")}</button>
+      </div>
+    </div>`;
+  }
+
+  function lrGroup(g, gi) {
+    const name = entryName("group", g.group);
+    const title = name || (g.group ? `群 ${g.group}` : "新群");
+    const add = lr.addForm[gi] || { name: "", room: "" };
+    return h`<div class="card lr-group" data-lr-gi="${gi}">
+      <div class="lr-group-head">
+        <span class="tile" data-tone="group" aria-hidden="true">${icon("groups")}</span>
+        <div class="lr-group-title">
+          <span class="item-title">${title}</span>
+          ${g.group ? h`<span class="item-sub mono">${g.group}</span>` : h`<span class="item-sub">还没填群号</span>`}
+        </div>
+        <div class="lr-group-actions">
+          <button class="btn btn-text btn-small" type="button" data-lr-test="${gi}" title="往本群发一条测试提醒">${icon("send")}试发</button>
+          <button class="btn btn-text btn-small btn-danger" type="button" data-lr-del-group="${gi}" title="删除这个群">${icon("delete")}删除群</button>
+        </div>
+      </div>
+      <div class="field lr-group-field">
+        <label class="field-label" for="lr-group-${gi}">群号</label>
+        <input class="input mono" id="lr-group-${gi}" type="text" list="lr-group-datalist" value="${g.group}"
+          data-lr-group="${gi}" placeholder="群号，或从已加入的群里选" autocomplete="off" spellcheck="false" inputmode="numeric">
+        <span class="field-hint">提醒发到这个群；可以从下拉里按群名挑，也直接填群号。</span>
+      </div>
+      <div class="lr-streamers">
+        ${(g.streamers || []).length
+          ? (g.streamers || []).map((s, si) => lrStreamer(s, gi, si))
+          : h`<p class="note lr-no-streamer">这个群还没加主播。在下面贴一个直播间链接就能开始盯。</p>`}
+      </div>
+      <div class="lr-add-row">
+        <input class="input" data-lr-add-name="${gi}" type="text" value="${add.name}" placeholder="显示名（可留空，识别后自动填）" aria-label="主播显示名" autocomplete="off" spellcheck="false">
+        <input class="input mono" data-lr-add-room="${gi}" type="text" value="${add.room}" placeholder="live.douyin.com/123456 或 123456" aria-label="直播间链接或房间号" autocomplete="off" spellcheck="false">
+        <button class="btn btn-tonal" type="button" data-lr-add-streamer="${gi}">${icon("add")}添加主播</button>
+      </div>
+    </div>`;
+  }
+
+  function lrGroups(d, data) {
+    const groups = d.targets;
+    const total = groups.reduce((n, g) => n + (g.streamers || []).length, 0);
+    return h`<section class="section lr-groups" aria-labelledby="lr-groups-title">
+      <div class="section-head">
+        ${raw(`<h4 class="section-title" id="lr-groups-title">盯哪些群、哪些主播</h4>`)}
+        <span class="section-meta">${groups.length} 个群 · 合计 ${total} 位主播</span>
+      </div>
+      <datalist id="lr-group-datalist"></datalist>
+      ${groups.length
+        ? h`<div class="lr-group-list">${groups.map((g, gi) => lrGroup(g, gi))}</div>`
+        : emptyState("还没有盯任何群。点「添加一个群」，填群号，再把要盯的主播贴进来（直播间链接或直接写房间号都行）。", "groups")}
+      <div class="actions">
+        <button class="btn btn-filled" type="button" data-lr-add-group>${icon("add")}添加一个群</button>
+      </div>
+    </section>`;
+  }
+
+  function lrFooter() {
+    return h`<div class="lr-footer">
+      <div class="lr-savebar" id="lr-savebar" role="status"${attr(!lrDirty(), "hidden")}>
+        <span class="lr-savebar-text" id="lr-savebar-text">${icon("edit")}${lrDirty() ? "有改动还没保存" : "全部已保存"}</span>
+        <span class="lr-savebar-error" id="lr-savebar-error" role="alert">${lr.error}</span>
+        <span class="actions">
+          <button class="btn btn-text" type="button" data-lr-discard>放弃修改</button>
+          <button class="btn btn-filled" type="button" data-lr-save>${icon("check")}保存</button>
+        </span>
+      </div>
+      <div class="lr-footer-row">
+        <p class="note">开关在页面最上面的「启用」；这里改完记得点保存。恢复默认只还原参数与名单，不会动开关。</p>
+        <button class="btn btn-outlined btn-small" type="button" data-lr-reset>${icon("settings_backup_restore")}恢复默认设置</button>
+      </div>
+    </div>`;
+  }
+
+  function lrPaint(focus = "") {
+    const d = lr.draft, data = lr.data;
+    if (!d || !data) return;
+    const groups = d.targets;
+    const streamers = groups.reduce((n, g) => n + (g.streamers || []).length, 0);
+    put($("#lr-body"), h`
+      ${lrOverview(data, groups, streamers)}
+      ${lrSettings(d, data)}
+      ${lrGroups(d, data)}
+      ${lrFooter()}
+    `);
+    lrFillDatalist();
+    lrRepaintDirty();
+    if (focus) $(focus)?.focus({ preventScroll: false });
+  }
+
+  /** 名册到位后只补群名与下拉建议，不整块重画（免得打断正在输入的内容）。 */
+  function lrPaintGroupNames() {
+    for (const card of $$(".lr-group")) {
+      const gi = Number(card.dataset.lrGi);
+      const g = lr.draft?.targets?.[gi];
+      if (!g) continue;
+      const name = entryName("group", g.group);
+      const titleEl = $(".lr-group-title .item-title", card);
+      if (titleEl) titleEl.textContent = name || (g.group ? `群 ${g.group}` : "新群");
+    }
+    lrFillDatalist();
+  }
+
+  function lrFillDatalist() {
+    const list = $("#lr-group-datalist");
+    if (!list) return;
+    put(list, KINDS.group.roster.list.map((entry) => {
+      const label = entry.alias && entry.alias !== entry.name
+        ? `${entry.name}（${entry.alias}）` : (entry.name || entry.id);
+      return h`<option value="${entry.id}" label="${label}"></option>`;
+    }));
+  }
+
+  function lrRepaintDirty() {
+    const bar = $("#lr-savebar");
+    if (!bar) return;
+    bar.hidden = !lrDirty();
+    const text = $("#lr-savebar-text");
+    if (text) put(text, h`${icon("edit")}${lrDirty() ? "有改动还没保存" : "全部已保存"}`);
+  }
+
+  function lrRepaintPreview(key) {
+    const el = $(`#lr-preview-${key}`);
+    if (el && lr.draft && lr.data) put(el, lrPreviewInner(lr.draft[key], lr.data.sample_name));
+  }
+
+  function lrSetError(message) {
+    lr.error = message;
+    const el = $("#lr-savebar-error");
+    if (el) el.textContent = message;
+  }
+
+  /** 直播间号：纯数字，或 live.douyin.com/<数字> 这样的链接；别从别的数字里乱抠。 */
+  function lrExtractRid(text) {
+    const t = String(text || "").trim();
+    if (/^\d+$/.test(t)) return t;
+    const m = t.match(/(?:https?:\/\/)?(?:www\.)?live\.douyin\.com\/(\d+)/i);
+    return m ? m[1] : "";
+  }
+
+  function lrNormalizedDraft() {
+    const d = lr.draft;
+    const min = lr.data.min_poll_seconds;
+    return {
+      poll_seconds: Math.max(min, Math.round(Number(d.poll_seconds) || min)),
+      start_text: String(d.start_text ?? ""),
+      end_text: String(d.end_text ?? ""),
+      targets: (d.targets || []).map((g) => ({
+        group: String(g.group ?? "").trim(),
+        streamers: (g.streamers || []).map((s) => ({
+          name: String(s.name ?? "").trim(),
+          rid: String(s.rid ?? "").trim(),
+        })),
+      })),
+    };
+  }
+
+  function lrValidate(draft) {
+    for (const g of draft.targets) {
+      if (!g.group) return "每个群都要填群号（或从下拉里按群名选）。";
+      for (const s of g.streamers) {
+        if (!/^\d+$/.test(s.rid)) return `直播间号「${s.rid || "（空）"}」只能是数字；贴直播间链接会自动取号。`;
+      }
+    }
+    return "";
+  }
+
+  function lrAddGroup() {
+    lr.draft.targets.push({ group: "", streamers: [] });
+    lr.addForm = {};
+    lrSetError("");
+    lrPaint(`#lr-group-${lr.draft.targets.length - 1}`);
+  }
+
+  function lrDelGroup(gi) {
+    lr.draft.targets.splice(gi, 1);
+    lr.addForm = {};
+    lrSetError("");
+    lrPaint("[data-lr-add-group]");
+  }
+
+  function lrAddStreamer(gi) {
+    const form = lr.addForm[gi] || {};
+    const rid = lrExtractRid(form.room);
+    if (!rid) {
+      lrSetError("直播间号要填一串数字，或直接贴 live.douyin.com/123456 这样的链接。");
+      return;
+    }
+    lr.draft.targets[gi].streamers.push({ name: (form.name || "").trim(), rid });
+    lr.addForm[gi] = { name: "", room: "" };
+    lrSetError("");
+    lrPaint(`[data-lr-add-room="${gi}"]`);
+  }
+
+  function lrDelStreamer(key) {
+    const [gi, si] = key.split(":").map(Number);
+    lr.draft.targets[gi].streamers.splice(si, 1);
+    lr.addForm = {};
+    lrSetError("");
+    lrPaint(`[data-lr-add-room="${gi}"]`);
+  }
+
+  function lrInsert(key) {
+    const input = $(`#lr-text-${key}`);
+    if (!input) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? input.value.length;
+    const value = input.value.slice(0, start) + "{name}" + input.value.slice(end);
+    input.value = value;
+    lr.draft[key] = value;
+    const caret = start + "{name}".length;
+    input.focus({ preventScroll: true });
+    input.setSelectionRange(caret, caret);
+    lrRepaintPreview(key);
+    lrRepaintDirty();
+  }
+
+  async function lrRunCheck(rids, btn) {
+    if (lr.checking) return;
+    lr.checking = true;
+    const note = $("#lr-check-note");
+    btn?.setAttribute("aria-busy", "true");
+    if (note) note.textContent = "正在查抖音…";
+    try {
+      const reply = await api("/live_remind/check", { method: "POST", body: { rids } });
+      for (const [rid, info] of Object.entries(reply.results || {})) {
+        lr.checked[rid] = info;
+        // 抖音带回了昵称：名字还空着、或仍写着房间号的，顺手补上。
+        if (info.nickname) {
+          for (const g of lr.draft.targets) {
+            for (const s of g.streamers) {
+              if (s.rid === rid && (!s.name.trim() || s.name.trim() === rid)) s.name = info.nickname;
+            }
+          }
+        }
+      }
+      lrPaint();
+      // 整块重画过，note 已被换掉，重新取一次再写回执。
+      const fresh = $("#lr-check-note");
+      if (fresh) fresh.textContent = `查了 ${Object.keys(reply.results || {}).length} 个直播间`;
+    } catch (error) {
+      report(error);
+      const fresh = $("#lr-check-note");
+      if (fresh) fresh.textContent = "没查成，稍后再试";
+    } finally {
+      lr.checking = false;
+      btn?.removeAttribute("aria-busy");
+    }
+  }
+
+  async function lrCheckAll(btn) {
+    const rids = [];
+    for (const g of lr.draft.targets) {
+      for (const s of g.streamers) if (s.rid && !rids.includes(s.rid)) rids.push(s.rid);
+    }
+    if (!rids.length) { snackbar("还没有主播可查，先加一个吧"); return; }
+    await lrRunCheck(rids, btn);
+  }
+
+  async function lrCheckOne(key, btn) {
+    const [gi, si] = key.split(":").map(Number);
+    const rid = lr.draft.targets[gi]?.streamers[si]?.rid;
+    if (!rid) return;
+    await lrRunCheck([rid], btn);
+  }
+
+  async function lrTest(gi, btn) {
+    const g = lr.draft.targets[gi];
+    if (!g || !g.group.trim()) { snackbar("先给这个群填上群号再试发", "error"); return; }
+    let text = String(lr.draft.start_text ?? "").replace(/\{name\}/g, lr.data.sample_name);
+    if (!text.trim()) text = `🔴 ${lr.data.sample_name} 开播了（测试）`;
+    btn?.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api("/live_remind/test", { method: "POST", body: { group: g.group.trim(), text } });
+      snackbar(reply.message || "已发一条测试提醒");
+    } catch (error) {
+      report(error);
+    } finally {
+      btn?.removeAttribute("aria-busy");
+    }
+  }
+
+  async function lrSave(btn) {
+    if (lr.saving) return;
+    const draft = lrNormalizedDraft();
+    const problem = lrValidate(draft);
+    if (problem) { lrSetError(problem); snackbar(problem, "error"); return; }
+    lr.saving = true;
+    btn?.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api("/live_remind/save", { method: "POST", body: draft });
+      lr.data = reply.data;
+      lr.draft = lrFreshDraft(reply.data);
+      lr.addForm = {};
+      lrSetError("");
+      lrPaint();
+      snackbar(reply.message || "已保存");
+    } catch (error) {
+      lrSetError(error.message || "保存失败");
+      report(error);
+    } finally {
+      lr.saving = false;
+      btn?.removeAttribute("aria-busy");
+    }
+  }
+
+  function lrDiscard() {
+    lr.draft = lrFreshDraft(lr.data);
+    lr.addForm = {};
+    lrSetError("");
+    lrPaint();
+  }
+
+  async function lrReset(btn) {
+    const ok = await confirmAction({
+      title: "恢复开播提醒的默认设置？",
+      body: "会把查询间隔、两条文案和盯的主播名单都还原成默认（名单清空）。总开关保持现在的样子。",
+      confirm: "恢复默认",
+      cancel: "再想想",
+      danger: true,
+    });
+    if (!ok) return;
+    btn?.setAttribute("aria-busy", "true");
+    try {
+      const reply = await api("/plugins/live_remind/reset", { method: "POST", body: {} });
+      snackbar(reply.message || "已恢复默认");
+      lr.draft = null;
+      lr.checked = {};
+      lr.addForm = {};
+      lrSetError("");
+      await lrMount();
+    } catch (error) {
+      report(error);
+    } finally {
+      btn?.removeAttribute("aria-busy");
+    }
+  }
+
+  function lrInput(event) {
+    const t = event.target, d = lr.draft;
+    if (!d) return;
+    if (t.dataset.lrPoll !== undefined) {
+      d.poll_seconds = t.value;
+      const echo = $("#lr-poll-echo");
+      if (echo) echo.textContent = lrPollEcho(t.value, lr.data.min_poll_seconds);
+      lrRepaintDirty();
+    } else if (t.dataset.lrText) {
+      d[t.dataset.lrText] = t.value;
+      lrRepaintPreview(t.dataset.lrText);
+      lrRepaintDirty();
+    } else if (t.dataset.lrName) {
+      const [gi, si] = t.dataset.lrName.split(":").map(Number);
+      d.targets[gi].streamers[si].name = t.value;
+      lrRepaintDirty();
+    } else if (t.dataset.lrRoom) {
+      const [gi, si] = t.dataset.lrRoom.split(":").map(Number);
+      d.targets[gi].streamers[si].rid = t.value;
+      lrRepaintDirty();
+    } else if (t.dataset.lrGroup !== undefined) {
+      d.targets[Number(t.dataset.lrGroup)].group = t.value;
+      lrRepaintDirty();
+    } else if (t.dataset.lrAddName !== undefined) {
+      (lr.addForm[Number(t.dataset.lrAddName)] ||= {}).name = t.value;
+    } else if (t.dataset.lrAddRoom !== undefined) {
+      (lr.addForm[Number(t.dataset.lrAddRoom)] ||= {}).room = t.value;
+    }
+  }
+
+  function lrChange(event) {
+    const t = event.target;
+    if (t.dataset.lrPoll !== undefined && lr.draft) {
+      const min = lr.data.min_poll_seconds;
+      const n = Math.max(min, Math.round(Number(t.value) || min));
+      t.value = String(n);
+      lr.draft.poll_seconds = n;
+      const echo = $("#lr-poll-echo");
+      if (echo) echo.textContent = lrPollEcho(n, min);
+      lrRepaintDirty();
+    }
+  }
+
+  function lrKeydown(event) {
+    if (event.key !== "Enter") return;
+    const t = event.target;
+    if (t.dataset.lrAddRoom !== undefined || t.dataset.lrAddName !== undefined) {
+      event.preventDefault();
+      lrAddStreamer(Number(t.dataset.lrAddRoom ?? t.dataset.lrAddName));
+    }
+  }
+
+  function lrClick(event) {
+    const btn = event.target.closest("button");
+    if (!btn || btn.disabled) return;
+    const ds = btn.dataset;
+    if (ds.lrAddGroup !== undefined) lrAddGroup();
+    else if (ds.lrDelGroup !== undefined) lrDelGroup(Number(ds.lrDelGroup));
+    else if (ds.lrAddStreamer !== undefined) lrAddStreamer(Number(ds.lrAddStreamer));
+    else if (ds.lrDelStreamer !== undefined) lrDelStreamer(ds.lrDelStreamer);
+    else if (ds.lrCheckOne !== undefined) void lrCheckOne(ds.lrCheckOne, btn);
+    else if (ds.lrCheckAll !== undefined) void lrCheckAll(btn);
+    else if (ds.lrInsert !== undefined) lrInsert(ds.lrInsert);
+    else if (ds.lrTest !== undefined) void lrTest(Number(ds.lrTest), btn);
+    else if (ds.lrSave !== undefined) void lrSave(btn);
+    else if (ds.lrDiscard !== undefined) lrDiscard();
+    else if (ds.lrReset !== undefined) void lrReset(btn);
   }
 
   /* ==================== §8b 自动回复的规则面板 ====================

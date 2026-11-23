@@ -132,8 +132,8 @@ register_plugins!(
         config: live_remind::Config,
         display_name: "开播提醒",
         section: "group",
-        summary: "盯着配置好的抖音主播：开播、下播时各往指定群发一条短提醒；不取流、不登录，按群配置主播与文案，可独立开关",
-        on_connected: Some(live_remind::on_connected)
+        summary: "盯着配置好的抖音主播：开播、下播时各往指定群发一条短提醒；不取流、不登录。控制台里按群加主播、贴直播间链接自动取号、一键查开播状态与试发，开关与配置即改即生效",
+        on_init: Some(live_remind::on_init)
     },
     media {
         config: media::Config,

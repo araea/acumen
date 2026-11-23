@@ -8465,3 +8465,99 @@ label.lk-hit {
     border: 1px solid CanvasText;
   }
 }
+
+/* ==================== §8a 开播提醒的专用面板 ====================
+   复用 .card/.field/.input/.chip/.btn 等通用件，这里只补「群 → 主播」两层名单的排布。 */
+
+.lr-overview { gap: var(--zw-space-04); }
+.lr-overview-row { display: flex; align-items: flex-start; gap: var(--zw-space-04); }
+.lr-overview-text { display: flex; flex-direction: column; gap: var(--zw-space-02); min-width: 0; }
+.lr-overview-lead {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-02);
+  font-weight: var(--zw-weight-heading);
+}
+.lr-overview-sep { color: var(--md-sys-color-outline); }
+
+/* 状态只落在这一粒点上：在播/启用是绿，出错是红，没查到是中性灰，不整块上色。 */
+.lr-dot {
+  width: var(--zw-space-03); height: var(--zw-space-03); flex: none;
+  border-radius: var(--md-sys-shape-corner-full);
+  background: var(--md-sys-color-outline-variant);
+}
+.lr-dot-on { background: var(--md-sys-color-success); }
+.lr-dot-off { background: var(--md-sys-color-outline); }
+.lr-dot-error { background: var(--md-sys-color-error); }
+.lr-dot-idle { background: var(--md-sys-color-outline-variant); }
+
+.lr-settings { gap: var(--zw-space-05); }
+.lr-poll-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-03); }
+.lr-poll-row .input { width: calc(var(--zw-space-08) * 2); }
+.lr-unit { color: var(--md-sys-color-on-surface-variant); }
+
+.lr-text-grid {
+  display: grid; gap: var(--zw-space-05);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+}
+.lr-text { display: flex; flex-direction: column; gap: var(--zw-space-03); }
+.lr-text-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-03); }
+.lr-preview {
+  display: inline-flex; align-items: baseline; gap: var(--zw-space-02); min-width: 0;
+  padding: var(--zw-space-02) var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-small);
+  background: var(--zw-plate-inset); color: var(--md-sys-color-on-surface);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+}
+.lr-preview-label { color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-small-size); }
+.lr-preview-empty { color: var(--md-sys-color-on-surface-variant); font-style: italic; }
+
+.lr-group-list { display: flex; flex-direction: column; gap: var(--zw-space-05); }
+.lr-group { gap: var(--zw-space-04); }
+.lr-group-head { display: flex; align-items: center; gap: var(--zw-space-03); }
+.lr-group-title { display: flex; flex: 1; flex-direction: column; gap: var(--zw-space-01); min-width: 0; }
+.lr-group-actions { display: flex; align-items: center; gap: var(--zw-space-02); margin-inline-start: auto; }
+.lr-group-field { display: flex; flex-direction: column; gap: var(--zw-space-02); }
+.lr-streamers { display: flex; flex-direction: column; gap: var(--zw-space-03); }
+.lr-no-streamer { margin: 0; }
+.lr-streamer {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-03);
+  padding: var(--zw-space-03);
+  border-radius: var(--md-sys-shape-corner-medium);
+  background: var(--zw-plate-inset);
+}
+.lr-streamer-fields { display: flex; flex: 1 1 16rem; gap: var(--zw-space-03); min-width: 0; }
+.lr-streamer-fields .input { flex: 1; min-width: 0; }
+.lr-streamer-status {
+  display: inline-flex; align-items: center; gap: var(--zw-space-02);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-small-size);
+}
+.lr-streamer-status[data-tone="live"] .lr-status-text { color: var(--md-sys-color-success); }
+.lr-streamer-status[data-tone="error"] .lr-status-text { color: var(--md-sys-color-error); }
+.lr-streamer-actions { display: flex; align-items: center; gap: var(--zw-space-02); margin-inline-start: auto; }
+.lr-add-row { display: flex; flex-wrap: wrap; gap: var(--zw-space-03); }
+.lr-add-row .input { flex: 1 1 10rem; min-width: 0; }
+
+.lr-footer { display: flex; flex-direction: column; gap: var(--zw-space-04); }
+.lr-savebar {
+  position: sticky; bottom: 0; z-index: 2;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-02) var(--zw-space-03);
+  margin-top: var(--zw-space-02);
+  padding: var(--zw-space-03) var(--zw-space-03) var(--zw-space-03) var(--zw-space-05);
+  border: var(--zw-border-width) solid var(--zw-card-line);
+  border-radius: var(--md-sys-shape-corner-extra-large);
+  background: var(--zw-plate);
+  box-shadow: var(--zw-float-shadow);
+  animation: page-fade var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing) backwards;
+}
+.lr-savebar[hidden] { display: none; }
+.lr-savebar-text { display: inline-flex; align-items: center; gap: var(--zw-space-02); font-weight: var(--zw-weight-heading); }
+.lr-savebar-text .i { color: var(--md-sys-color-primary); }
+.lr-savebar-error { flex: 1 1 100%; color: var(--md-sys-color-error); font-size: var(--md-sys-typescale-body-small-size); }
+.lr-savebar-error:empty { display: none; }
+.lr-savebar .actions { margin-inline-start: auto; }
+.lr-footer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--zw-space-03); }
+
+@media (forced-colors: active) {
+  .lr-savebar { border: 1px solid CanvasText; }
+}

@@ -15,7 +15,7 @@ use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use toml::Value as Toml;
@@ -50,6 +50,11 @@ pub(crate) fn routes(console: Arc<Console>) -> Router<Arc<Console>> {
         .route("/lurker/job", get(lurker_job))
         .route("/lurker/stop", post(lurker_stop))
         .route("/lurker/exempt", post(lurker_exempt))
+        // 开播提醒：按群管理主播、查开播状态、试发，整份配置一次保存。
+        .route("/live_remind", get(live_remind_panel))
+        .route("/live_remind/save", post(live_remind_save))
+        .route("/live_remind/check", post(live_remind_check))
+        .route("/live_remind/test", post(live_remind_test))
         // 智能对话的供应商与模型：弹窗里一次改完，写入仍走 ctl。
         .route("/oai", get(oai_panel))
         .route("/oai/provider", post(oai_save_provider))
@@ -288,6 +293,7 @@ fn panel(name: &str) -> Value {
         "autoreply" => json!("autoreply"),
         "lurker" => json!("lurker"),
         "oai" => json!("oai"),
+        "live_remind" => json!("live_remind"),
         _ => Value::Null,
     }
 }
@@ -919,6 +925,139 @@ fn to_toml(value: &Value) -> Result<Toml, String> {
         }
         Value::Null => return Err("这一项不能是空值；字符串写 \"\"，清空数组写 []".into()),
     })
+}
+
+// ==================== 开播提醒 ====================
+
+/// 专用面板的读数：直接复用插件里那份配置与状态快照，不在控制台另存一份口径。
+async fn live_remind_panel(State(console): State<Arc<Console>>) -> Response {
+    Json(crate::plugins::live_remind::panel_data(console.ctx())).into_response()
+}
+
+#[derive(Deserialize)]
+struct LrSave {
+    poll_seconds: u64,
+    start_text: String,
+    end_text: String,
+    #[serde(default)]
+    targets: Vec<LrTarget>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LrTarget {
+    group: String,
+    #[serde(default)]
+    streamers: Vec<LrStreamer>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LrStreamer {
+    name: String,
+    rid: String,
+}
+
+/// 整份草稿一次保存：轮询间隔、两条文案、按群的名单一起写，走 ctl::change 校验与落盘。
+/// 之所以不复用逐字段的 set_config：一堆小改动各自存一次，中途有一条不合法就会留下半份配置。
+async fn live_remind_save(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<LrSave>,
+) -> Response {
+    let poll = match to_toml(&json!(body.poll_seconds)) {
+        Ok(value) => value,
+        Err(message) => return bad(message),
+    };
+    let start = match to_toml(&json!(body.start_text)) {
+        Ok(value) => value,
+        Err(message) => return bad(message),
+    };
+    let end = match to_toml(&json!(body.end_text)) {
+        Ok(value) => value,
+        Err(message) => return bad(message),
+    };
+    let targets_value = serde_json::to_value(&body.targets).unwrap_or(json!([]));
+    let targets = match to_toml(&targets_value) {
+        Ok(value) => value,
+        Err(message) => return bad(message),
+    };
+    let local = console.local();
+    let result = crate::plugins::ctl::change(&local, |cfg| {
+        let table = cfg
+            .plugins
+            .get_mut("live_remind")
+            .and_then(|v| v.as_table_mut())
+            .ok_or("开播提醒配置不存在")?;
+        table.insert("poll_seconds".into(), poll);
+        table.insert("start_text".into(), start);
+        table.insert("end_text".into(), end);
+        table.insert("targets".into(), targets);
+        Ok("开播提醒已保存".to_string())
+    })
+    .await;
+    match result {
+        Ok(message) => Json(json!({
+            "message": message,
+            "data": crate::plugins::live_remind::panel_data(console.ctx()),
+        }))
+        .into_response(),
+        Err(message) => bad(message),
+    }
+}
+
+#[derive(Deserialize)]
+struct LrCheck {
+    #[serde(default)]
+    rids: Vec<String>,
+}
+
+/// 真查一次抖音：给面板画每个直播间的在播状态，顺便带回主播昵称用于自动填名。
+/// 只认数字直播间号，单次最多 24 个，免得一次点太多给抖音添麻烦。
+async fn live_remind_check(
+    State(_console): State<Arc<Console>>,
+    Json(body): Json<LrCheck>,
+) -> Response {
+    let mut results = serde_json::Map::new();
+    for rid in body.rids.into_iter().take(24) {
+        let rid = rid.trim().to_string();
+        if rid.is_empty() || !rid.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let entry = match crate::plugins::live_remind::probe_room(&rid).await {
+            Ok(info) => json!({
+                "state": if info.live { "live" } else { "off" },
+                "nickname": info.nickname,
+                "title": info.title,
+            }),
+            Err(error) => json!({ "state": "error", "error": error.to_string() }),
+        };
+        results.insert(rid, entry);
+    }
+    Json(json!({ "results": results })).into_response()
+}
+
+#[derive(Deserialize)]
+struct LrTest {
+    group: String,
+    text: String,
+}
+
+/// 「发条测试到本群」：往指定群真发一条，确认线路与文案都通。
+async fn live_remind_test(
+    State(console): State<Arc<Console>>,
+    Json(body): Json<LrTest>,
+) -> Response {
+    let group = body.group.trim().to_string();
+    if group.is_empty() {
+        return bad("先选一个要试发的群");
+    }
+    if body.text.trim().is_empty() {
+        return bad("测试内容不能是空的");
+    }
+    match crate::plugins::live_remind::send_to(console.ctx(), &group, body.text).await {
+        Ok(()) => {
+            Json(json!({ "message": format!("已往群 {group} 发了一条测试提醒") })).into_response()
+        }
+        Err(error) => super::server::fail(StatusCode::BAD_GATEWAY, &error.to_string()),
+    }
 }
 
 // ==================== 搭话 ====================
