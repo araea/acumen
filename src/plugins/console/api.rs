@@ -511,14 +511,6 @@ fn label_list(name: &str) -> &'static [(&'static str, &'static str)] {
         "ambient" => crate::plugins::ambient::LABELS,
         "keyword_guard" => crate::plugins::keyword_guard::LABELS,
         "markdown" => &[("theme", "配色主题")],
-        "nailong" => &[
-            ("targets", "识别类型"),
-            ("threshold", "判定阈值"),
-            ("judge", "认图方式"),
-            ("sure", "直接提醒的分数"),
-            ("ask_floor", "请求复核的分数"),
-            ("manage.min_score", "自动管理的最低分"),
-        ],
         "video_parse" => &[
             ("prefer_quality", "最高画质"),
             ("send", "发送方式"),
@@ -574,10 +566,6 @@ fn option_labels(name: &str) -> Value {
     let weekdays = json!({ "1": "周一", "2": "周二", "3": "周三", "4": "周四", "5": "周五", "6": "周六", "7": "周日" });
     let extra = match name {
         "markdown" => json!({ "theme": { "light": "浅色", "dark": "深色" } }),
-        "nailong" => json!({
-            "judge": { "auto": "自动", "local": "本地", "hybrid": "混合", "ai": "AI" },
-            "targets": { "nailong": "奶龙", "naiwa": "奶蛙" },
-        }),
         "video_parse" => json!({
             "prefer_quality": { "80": "1080P", "64": "720P", "32": "480P", "16": "360P" },
             "send": { "bubble": "视频气泡", "file": "群文件", "both": "气泡 + 文件" },

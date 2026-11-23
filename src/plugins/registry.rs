@@ -108,22 +108,6 @@ register_plugins!(
         section: "group",
         summary: "有人撤回消息时把原文转存到指定私聊或群；群黑白名单可收窄范围，连撤多条合并成一条转发"
     },
-    nailong {
-        config: nailong::Config,
-        display_name: "奶龙提醒",
-        section: "group",
-        summary: "认出群里的奶龙、奶蛙图，把原图与来龙去脉发到私聊或指定群，由管理员确认后处理；可选在账号是管理员时顺手撤回、禁言（默认关）",
-        on_init: Some(nailong::init),
-        commands: cmds![
-            ("奶龙 / 奶蛙", "本群的识别状态与今天发现几张"),
-            ("奶龙 测", "引用一张图（或附图）看奶龙、奶蛙的分数"),
-            ("奶龙 是 [奶龙|奶蛙]", "管理员：引用漏掉的图，往后同类图也提醒"),
-            ("奶龙 不是", "管理员：引用误报的图或私聊里的提醒，记住不提醒；禁过言的一并解除"),
-            ("奶龙 忘了", "管理员：引用教过的图，撤销那次纠正"),
-            ("奶龙 记录", "近几天发现的，带编号"),
-            ("奶龙 看 <编号>", "私聊里再看一遍那张图"),
-        ]
-    },
     keyword_guard {
         config: keyword_guard::Config,
         display_name: "违禁词",
@@ -143,6 +127,13 @@ register_plugins!(
             ("违禁词 试 <一句话>", "群管理：不发出去，看会不会触发、由哪条处理"),
             ("违禁词 全局 …", "号主：维护所有群共用的规则，用法同上"),
         ]
+    },
+    live_remind {
+        config: live_remind::Config,
+        display_name: "开播提醒",
+        section: "group",
+        summary: "盯着配置好的抖音主播：开播、下播时各往指定群发一条短提醒；不取流、不登录，按群配置主播与文案，可独立开关",
+        on_connected: Some(live_remind::on_connected)
     },
     media {
         config: media::Config,

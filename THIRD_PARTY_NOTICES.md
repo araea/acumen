@@ -12,14 +12,6 @@ OAI harness 的设计改编自 MIT 许可的 [oh-my-pi](https://github.com/can13
 [Material Color Utilities](https://github.com/material-foundation/material-color-utilities) 0.4.0（Google），
 由 `scripts/make-theme.sh` 用 esbuild 构建，源码未改动。
 
-奶龙提醒的识图模型 [MobileCLIP-S0](https://huggingface.co/apple/MobileCLIP-S0)（Apple，ONNX 版由
-[Xenova](https://huggingface.co/Xenova/mobileclip_s0) 转换）**不随本软件分发**：插件第一次用到时从 Hugging Face
-下载到本机，使用受 Apple 的 Machine Learning Research Model 许可证约束。编进可执行文件的分类头
-（`src/plugins/nailong/head.bin`）是本仓库在下列公开图片集上训练的权重，不含图片本身：
-[XiC1/nailong-dataset](https://huggingface.co/datasets/XiC1/nailong-dataset)、
-[Logxk/nailong](https://github.com/Logxk/nailong)、[whxoperator/nailongnaiwa](https://github.com/whxoperator/nailongnaiwa)、
-[Nailong-Studio/wallpaper](https://github.com/Nailong-Studio/wallpaper)、[GeorgeNaNN/nailong-memes](https://github.com/GeorgeNaNN/nailong-memes)。
-
 卡片里的公式由 MIT 许可的 [math-core](https://github.com/tmke8/math-core)（Hiromu Sugiura、Thomas MK）转成 MathML，
 `res/cards/math.css` 的修补段落抄自它的 `css/mathmlfixes.css`。内嵌的数学字体 `res/fonts/newcm-math.woff2`
 是 [New Computer Modern Math Book](https://ctan.org/pkg/newcomputermodern)（Antonis Tsolomitis，GUST Font License）

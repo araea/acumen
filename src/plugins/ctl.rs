@@ -293,8 +293,6 @@ pub(crate) fn options(plugin: &str, path: &str) -> &'static [&'static str] {
         ("ai_news", "window") => &["24h", "7d"],
         ("ai_news", "category") => &["", "ai-models", "ai-products", "industry", "paper", "tip", "opinion"],
         ("markdown", "theme") => &["light", "dark"],
-        ("nailong", "judge") => &["auto", "local", "hybrid", "ai"],
-        ("nailong", "targets") => &["nailong", "naiwa"],
         ("video_parse", "send") => &["bubble", "file", "both"],
         ("video_parse", "platforms") => &["bilibili", "douyin"],
         ("oai", "music_send") => &["voice", "file", "both"],
