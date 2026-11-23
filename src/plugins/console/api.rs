@@ -221,7 +221,16 @@ async fn plugins(State(console): State<Arc<Console>>) -> Response {
     let config = console.ctx().config.read().unwrap();
     let sections: Vec<Value> = crate::plugins::help::sections()
         .iter()
-        .map(|(code, cn, en)| json!({ "code": code, "name": cn, "en": en }))
+        .map(|section| {
+            json!({
+                "code": section.code,
+                "name": section.name,
+                "short": section.short,
+                "en": section.en,
+                "icon": section.icon,
+                "hint": section.hint,
+            })
+        })
         .collect();
     let prefix = config.command_prefix.first().map_or("", String::as_str);
     let list: Vec<Value> = get_plugins()
@@ -233,6 +242,7 @@ async fn plugins(State(console): State<Arc<Console>>) -> Response {
                 "display": plugin.display_name,
                 "section": plugin.section,
                 "summary": plugin.summary,
+                "rank": plugin.rank,
                 "on": on,
                 "pending": on && pending_startup(plugin.name),
                 "commands": command_entries(plugin, prefix),

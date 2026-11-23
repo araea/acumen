@@ -104,6 +104,9 @@ pub struct Plugin {
     pub section: &'static str,
     /// 一句话说明：这个插件到底做什么
     pub summary: &'static str,
+    /// 同一分区内的先后：数小的排前面（帮助总览与控制台共用）。缺省 50，
+    /// 只有「它该排第一」这类个别情况才在注册表里点一下。
+    pub rank: u8,
     /// 完整指令清单；后台自动工作的插件留空
     pub commands: &'static [Cmd],
 }
@@ -254,6 +257,7 @@ macro_rules! register_plugins {
                                 migrate_config: <$config as PluginConfig>::migrate,
                                 section: "misc",
                                 summary: "",
+                                rank: 50,
                                 commands: &[],
                             };
                             // 应用自定义覆盖 (如果有)

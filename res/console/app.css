@@ -668,7 +668,8 @@ body[data-state="ready"] .brand-glimmer {
 .main {
   grid-area: main;
   min-width: 0;
-  padding-bottom: calc(var(--zw-navbar-height) + var(--zw-safe-bottom));
+  /* 浮动导航坞盖住的是视口底边：内容末尾多留一点，滚到底时最后一行不会被压在坞下面。 */
+  padding-bottom: calc(var(--zw-navbar-height) + var(--zw-safe-bottom) + var(--zw-space-06));
 }
 
 .main:focus {
@@ -1517,8 +1518,13 @@ button.item:active::after {
   --_tone: var(--md-sys-color-success);
 }
 
+.tile[data-tone="image"],
 .tile[data-tone="media"] {
   --_tone: var(--md-sys-color-secondary);
+}
+
+.tile[data-tone="feed"] {
+  --_tone: var(--md-sys-color-tertiary);
 }
 
 .tile[data-tone="system"],
@@ -3946,11 +3952,17 @@ button.item:active::after {
   gap: var(--zw-space-03);
 }
 
+.list-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  padding-inline: var(--zw-space-04);
+}
+
 .list-title {
   display: flex;
   align-items: center;
-  gap: var(--zw-space-03);
-  padding-inline: var(--zw-space-04);
+  gap: var(--zw-space-02);
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-title-small-size);
   line-height: var(--md-sys-typescale-title-small-line-height);
@@ -3958,8 +3970,25 @@ button.item:active::after {
   letter-spacing: var(--md-sys-typescale-tracking-label);
 }
 
+.list-title-icon {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  color: var(--md-sys-color-primary);
+}
+
 .list-title .num {
+  margin-inline-start: auto;
   font-weight: var(--md-sys-typescale-weight-regular);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 分区的一句人话：说清这一栏按什么分组，扫读时不用先点进去猜。 */
+.list-hint {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
+  text-wrap: pretty;
 }
 
 .split-list .item-sub {
@@ -7677,11 +7706,6 @@ label.lk-hit {
   font-size: var(--md-sys-typescale-label-large-size);
 }
 
-.list-title .num {
-  margin-inline-start: auto;
-  font-variant-numeric: tabular-nums;
-}
-
 @media (forced-colors: active) {
   .chip[aria-checked="true"] {
     outline: var(--zw-border-width-strong) solid Highlight;
@@ -8467,82 +8491,419 @@ label.lk-hit {
 }
 
 /* ==================== §8a 开播提醒的专用面板 ====================
-   复用 .card/.field/.input/.chip/.btn 等通用件，这里只补「群 → 主播」两层名单的排布。 */
+   一块状态带收住「在不在盯、上次查过没有、先查一遍」；每个群一张纸，群名与群号在上，
+   主播是纸里的一列行；查询与文案收在最后。复用 .card/.field/.input/.chip/.btn，
+   只补「群 → 主播」两层名单的排布与那条贴顶的保存条。 */
 
-.lr-overview { gap: var(--zw-space-04); }
-.lr-overview-row { display: flex; align-items: flex-start; gap: var(--zw-space-04); }
-.lr-overview-text { display: flex; flex-direction: column; gap: var(--zw-space-02); min-width: 0; }
-.lr-overview-lead {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-02);
-  font-weight: var(--zw-weight-heading);
+.lr-block-head {
+  padding-inline: var(--zw-card-padding);
 }
-.lr-overview-sep { color: var(--md-sys-color-outline); }
 
-/* 状态只落在这一粒点上：在播/启用是绿，出错是红，没查到是中性灰，不整块上色。 */
+/* —— 状态带：一眼看清此刻 —— */
+.lr-hero {
+  gap: var(--zw-space-04);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 5%, var(--zw-plate));
+}
+
+.lr-hero-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-04);
+}
+
+.lr-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.lr-hero-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-large-size);
+  line-height: var(--md-sys-typescale-label-large-line-height);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.lr-hero-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02);
+  font-size: var(--md-sys-typescale-title-large-size);
+  line-height: 1.35;
+  font-weight: var(--zw-weight-heading);
+  overflow-wrap: anywhere;
+}
+
+.lr-hero-sep {
+  color: var(--md-sys-color-outline);
+  font-weight: var(--md-sys-typescale-weight-regular);
+}
+
+.lr-hero-sub {
+  max-width: var(--zw-reading-max);
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  text-wrap: pretty;
+}
+
+.lr-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-03);
+}
+
+/* 状态只落在这一粒点上：在播/启用是绿，没查是中性灰，出错是红，不整块上色。 */
 .lr-dot {
-  width: var(--zw-space-03); height: var(--zw-space-03); flex: none;
+  width: var(--zw-space-03);
+  height: var(--zw-space-03);
+  flex: none;
   border-radius: var(--md-sys-shape-corner-full);
   background: var(--md-sys-color-outline-variant);
 }
+
 .lr-dot-on { background: var(--md-sys-color-success); }
 .lr-dot-off { background: var(--md-sys-color-outline); }
 .lr-dot-error { background: var(--md-sys-color-error); }
 .lr-dot-idle { background: var(--md-sys-color-outline-variant); }
 
-.lr-settings { gap: var(--zw-space-05); }
-.lr-poll-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-03); }
-.lr-poll-row .input { width: calc(var(--zw-space-08) * 2); }
-.lr-unit { color: var(--md-sys-color-on-surface-variant); }
+/* —— 查询与文案 —— */
+.lr-settings {
+  gap: var(--zw-space-05);
+}
 
-.lr-text-grid {
-  display: grid; gap: var(--zw-space-05);
+.lr-poll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+}
+
+.lr-poll-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-03);
+}
+
+.lr-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--zw-space-02);
+}
+
+/* 档位是一枚能点的芯片：选中时是次色容器 + 对勾，未选只是灰底，和筛选芯片同一套手势。 */
+.lr-preset {
+  min-height: var(--zw-size-chip);
+  background: var(--md-sys-color-surface-container-high);
+  font-weight: var(--md-sys-typescale-weight-medium);
+}
+
+.lr-poll-custom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02);
+  margin-inline-start: auto;
+}
+
+.lr-poll-custom .input {
+  width: 6rem;
+}
+
+.lr-unit {
+  color: var(--md-sys-color-on-surface-variant);
+}
+
+.lr-template-grid {
+  display: grid;
+  gap: var(--zw-space-05);
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
 }
-.lr-text { display: flex; flex-direction: column; gap: var(--zw-space-03); }
-.lr-text-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-03); }
+
+.lr-template {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-03);
+  min-width: 0;
+}
+
+.lr-template-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--zw-space-03);
+}
+
+/* 插入占位符是「动作」，不是筛选状态：图标跟着一起显示（.chip 默认只在选中时露图标）。 */
+.lr-template-tools .chip svg {
+  display: block;
+  margin-inline-start: calc(var(--zw-space-02) * -1);
+}
+
 .lr-preview {
-  display: inline-flex; align-items: baseline; gap: var(--zw-space-02); min-width: 0;
-  padding: var(--zw-space-02) var(--zw-space-03);
-  border-radius: var(--md-sys-shape-corner-small);
-  background: var(--zw-plate-inset); color: var(--md-sys-color-on-surface);
+  display: flex;
+  flex: 1 1 12rem;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.lr-preview-label {
+  color: var(--md-sys-color-on-surface-variant);
+  font-size: var(--md-sys-typescale-label-small-size);
+  line-height: var(--md-sys-typescale-label-small-line-height);
+}
+
+.lr-bubble {
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  padding: var(--zw-space-02) var(--zw-space-04);
+  border-radius: var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-large)
+    var(--md-sys-shape-corner-large) var(--md-sys-shape-corner-small);
+  background: var(--md-sys-color-primary-container);
+  color: var(--md-sys-color-on-primary-container);
+  font-size: var(--md-sys-typescale-body-medium-size);
+  line-height: var(--zw-body-medium-line);
+  overflow-wrap: anywhere;
+}
+
+.lr-bubble-empty {
+  background: var(--zw-plate-inset);
+  color: var(--md-sys-color-on-surface-variant);
+  font-style: italic;
+}
+
+/* —— 群与主播 —— */
+.lr-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-05);
+}
+
+.lr-group {
+  gap: var(--zw-space-04);
+}
+
+.lr-group-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-03);
+}
+
+.lr-group-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--zw-space-01);
+  min-width: 0;
+}
+
+.lr-group-name {
+  margin: 0;
+  font-size: var(--md-sys-typescale-title-medium-size);
+  line-height: var(--md-sys-typescale-title-medium-line-height);
+  font-weight: var(--zw-weight-heading);
+  overflow-wrap: anywhere;
+}
+
+.lr-group-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02);
+  margin: 0;
+}
+
+.lr-group-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--zw-space-01);
+  margin-inline-start: auto;
+}
+
+.lr-warn-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-01);
+  color: var(--md-sys-color-warning);
   font-size: var(--md-sys-typescale-body-small-size);
   line-height: var(--md-sys-typescale-body-small-line-height);
 }
-.lr-preview-label { color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-small-size); }
-.lr-preview-empty { color: var(--md-sys-color-on-surface-variant); font-style: italic; }
 
-.lr-group-list { display: flex; flex-direction: column; gap: var(--zw-space-05); }
-.lr-group { gap: var(--zw-space-04); }
-.lr-group-head { display: flex; align-items: center; gap: var(--zw-space-03); }
-.lr-group-title { display: flex; flex: 1; flex-direction: column; gap: var(--zw-space-01); min-width: 0; }
-.lr-group-actions { display: flex; align-items: center; gap: var(--zw-space-02); margin-inline-start: auto; }
-.lr-group-field { display: flex; flex-direction: column; gap: var(--zw-space-02); }
-.lr-streamers { display: flex; flex-direction: column; gap: var(--zw-space-03); }
-.lr-no-streamer { margin: 0; }
-.lr-streamer {
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-03);
-  padding: var(--zw-space-03);
-  border-radius: var(--md-sys-shape-corner-medium);
+.lr-warn-text[hidden] {
+  display: none;
+}
+
+.lr-warn-text .i {
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+}
+
+/* 群号：一条窄行，标签在前、输入框在中、说明占满余下；窄屏说明换到下一行。 */
+.lr-target {
+  display: grid;
+  grid-template-columns: auto minmax(0, 11rem) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
+}
+
+.lr-target .input {
   background: var(--zw-plate-inset);
 }
-.lr-streamer-fields { display: flex; flex: 1 1 16rem; gap: var(--zw-space-03); min-width: 0; }
-.lr-streamer-fields .input { flex: 1; min-width: 0; }
+
+.lr-target .field-hint {
+  margin: 0;
+}
+
+.lr-streamer-list {
+  border-color: transparent;
+  background: var(--zw-plate-inset);
+}
+
+/* 一列行，不是一行一张小卡：行与行之间一根从文字起点画起的细线（M3 列表 / HIG 分组列表）。 */
+.lr-streamer,
+.lr-add {
+  position: relative;
+  padding: var(--zw-space-03) var(--zw-space-04);
+}
+
+/* 主播行：名字与房间号在上，状态在下（标题只在 title 里说全）；动作在右侧跨两行。 */
+.lr-streamer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "avatar fields actions"
+    "avatar status actions";
+  align-items: center;
+  gap: var(--zw-space-01) var(--zw-space-03);
+}
+
+.lr-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
+}
+
+.lr-add .lr-streamer-fields {
+  flex: 1 1 15rem;
+}
+
+.lr-streamer + .lr-streamer::before,
+.lr-streamer + .lr-add::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline: calc(var(--zw-space-04) + var(--zw-size-tile) + var(--zw-space-03)) var(--zw-space-04);
+  border-top: var(--zw-border-width) solid var(--zw-hairline);
+}
+
+.lr-avatar {
+  grid-area: avatar;
+  align-self: start;
+  font-size: var(--md-sys-typescale-title-small-size);
+  line-height: 1;
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.lr-streamer-fields {
+  display: grid;
+  grid-area: fields;
+  grid-template-columns: minmax(0, 1.4fr) minmax(7rem, 1fr);
+  gap: var(--zw-space-02);
+  min-width: 0;
+}
+
+.lr-streamer-fields .input {
+  min-width: 0;
+}
+
 .lr-streamer-status {
-  display: inline-flex; align-items: center; gap: var(--zw-space-02);
+  display: inline-flex;
+  grid-area: status;
+  align-items: center;
+  gap: var(--zw-space-02);
+  min-width: 0;
   color: var(--md-sys-color-on-surface-variant);
   font-size: var(--md-sys-typescale-body-small-size);
+  line-height: var(--md-sys-typescale-body-small-line-height);
 }
-.lr-streamer-status[data-tone="live"] .lr-status-text { color: var(--md-sys-color-success); }
-.lr-streamer-status[data-tone="error"] .lr-status-text { color: var(--md-sys-color-error); }
-.lr-streamer-actions { display: flex; align-items: center; gap: var(--zw-space-02); margin-inline-start: auto; }
-.lr-add-row { display: flex; flex-wrap: wrap; gap: var(--zw-space-03); }
-.lr-add-row .input { flex: 1 1 10rem; min-width: 0; }
 
-.lr-footer { display: flex; flex-direction: column; gap: var(--zw-space-04); }
+.lr-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lr-streamer-status[data-tone="live"] .lr-status-text {
+  color: var(--md-sys-color-success);
+  font-weight: var(--md-sys-typescale-weight-emphasized);
+}
+
+.lr-streamer-status[data-tone="error"] .lr-status-text {
+  color: var(--md-sys-color-error);
+}
+
+.lr-streamer-actions {
+  display: flex;
+  grid-area: actions;
+  align-items: center;
+  gap: var(--zw-space-01);
+}
+
+/* 加主播就是列表的最后一行：和上面几行同一张纸，不再另起一块表单。 */
+.lr-add {
+  border-radius: 0 0 var(--zw-radius-card) var(--zw-radius-card);
+  background: color-mix(in srgb, var(--md-sys-color-primary) 4%, transparent);
+}
+
+.lr-add .input {
+  background: var(--zw-plate);
+}
+
+/* —— 贴底的保存条：和供应商弹窗里那条同一种做法，滚到哪都看得见 —— */
+.lr-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--zw-space-04);
+}
+
+.lr-footer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--zw-space-03);
+}
+
+.lr-footer-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--zw-space-02);
+  margin: 0;
+}
+
+.lr-footer-note .i {
+  flex: none;
+  width: var(--zw-size-icon-small);
+  height: var(--zw-size-icon-small);
+  margin-block: 0.15rem;
+  color: var(--md-sys-color-on-surface-variant);
+}
+
 .lr-savebar {
-  position: sticky; bottom: 0; z-index: 2;
-  display: flex; flex-wrap: wrap; align-items: center; gap: var(--zw-space-02) var(--zw-space-03);
-  margin-top: var(--zw-space-02);
+  position: sticky;
+  top: calc(var(--zw-topbar-height) + var(--zw-safe-top) + var(--zw-space-02));
+  z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--zw-space-02) var(--zw-space-03);
   padding: var(--zw-space-03) var(--zw-space-03) var(--zw-space-03) var(--zw-space-05);
   border: var(--zw-border-width) solid var(--zw-card-line);
   border-radius: var(--md-sys-shape-corner-extra-large);
@@ -8550,14 +8911,80 @@ label.lk-hit {
   box-shadow: var(--zw-float-shadow);
   animation: page-fade var(--md-sys-motion-effects-default-duration) var(--md-sys-motion-effects-default-easing) backwards;
 }
-.lr-savebar[hidden] { display: none; }
-.lr-savebar-text { display: inline-flex; align-items: center; gap: var(--zw-space-02); font-weight: var(--zw-weight-heading); }
-.lr-savebar-text .i { color: var(--md-sys-color-primary); }
-.lr-savebar-error { flex: 1 1 100%; color: var(--md-sys-color-error); font-size: var(--md-sys-typescale-body-small-size); }
-.lr-savebar-error:empty { display: none; }
-.lr-savebar .actions { margin-inline-start: auto; }
-.lr-footer-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--zw-space-03); }
+
+.lr-savebar[hidden] {
+  display: none;
+}
+
+.lr-savebar-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--zw-space-02);
+  font-weight: var(--zw-weight-heading);
+}
+
+.lr-savebar-text .i {
+  color: var(--md-sys-color-primary);
+}
+
+.lr-savebar-error {
+  flex: 1 1 100%;
+  color: var(--md-sys-color-error);
+  font-size: var(--md-sys-typescale-body-small-size);
+}
+
+.lr-savebar-error:empty {
+  display: none;
+}
+
+.lr-savebar .actions {
+  margin-inline-start: auto;
+}
+
+@media (max-width: 599.98px) {
+  .lr-target {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .lr-target .field-hint {
+    grid-column: 1 / -1;
+  }
+
+  .lr-poll-custom {
+    margin-inline-start: 0;
+  }
+
+  /* 窄屏：状态与动作收在第二行，名字与房间号仍并排（360px 起放得下）。 */
+  .lr-streamer {
+    grid-template-areas:
+      "avatar fields fields"
+      "avatar status actions";
+  }
+
+  .lr-add .lr-streamer-fields {
+    flex-basis: 100%;
+  }
+
+  .lr-add .btn {
+    margin-inline-start: auto;
+  }
+}
+
+@media (max-width: 359.98px) {
+  .lr-streamer-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .lr-add .lr-streamer-fields {
+    flex-basis: 100%;
+  }
+}
+
 
 @media (forced-colors: active) {
-  .lr-savebar { border: 1px solid CanvasText; }
+  .lr-savebar,
+  .lr-streamer-list,
+  .lr-bubble {
+    border: 1px solid CanvasText;
+  }
 }

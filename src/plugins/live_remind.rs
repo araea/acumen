@@ -57,7 +57,7 @@ pub struct Config {
     end_text: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct Target {
     /// 群号。
@@ -65,7 +65,7 @@ pub struct Target {
     streamers: Vec<Streamer>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(default)]
 pub struct Streamer {
     /// 提醒里显示的名字，随便写，比如「大司马解说」。
@@ -82,24 +82,6 @@ impl Default for Config {
             targets: Vec::new(),
             start_text: "🔴 {name} 开播了".into(),
             end_text: "⚪ {name} 下播了".into(),
-        }
-    }
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Self {
-            group: String::new(),
-            streamers: Vec::new(),
-        }
-    }
-}
-
-impl Default for Streamer {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            rid: String::new(),
         }
     }
 }
@@ -157,7 +139,7 @@ async fn refresh_ttwid() -> Result<String, PluginError> {
         .send()
         .await?;
     let mut found = None;
-    for value in resp.headers().get_all(reqwest::header::SET_COOKIE).iter() {
+    for value in &resp.headers().get_all(reqwest::header::SET_COOKIE) {
         let Ok(header) = value.to_str() else {
             continue;
         };
@@ -221,7 +203,7 @@ pub async fn probe_room(rid: &str) -> Result<RoomInfo, PluginError> {
             clear_ttwid();
             continue;
         };
-        if json.get("status_code").and_then(|v| v.as_i64()) != Some(0) {
+        if json.get("status_code").and_then(Value::as_i64) != Some(0) {
             clear_ttwid();
             continue;
         }
@@ -232,7 +214,7 @@ pub async fn probe_room(rid: &str) -> Result<RoomInfo, PluginError> {
         else {
             return Err(format!("直播间 {rid} 没有返回房间数据").into());
         };
-        let live = room.get("status").and_then(|v| v.as_i64()) == Some(2);
+        let live = room.get("status").and_then(Value::as_i64) == Some(2);
         let nickname = json
             .pointer("/data/user/nickname")
             .and_then(|v| v.as_str())

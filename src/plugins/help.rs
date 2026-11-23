@@ -72,26 +72,114 @@ struct Group {
     items: Vec<Entry>,
 }
 
+/// 一个分区：中文名、短名、代号与一句人话说明。
+///
+/// 控制台直接读这几项来画筛选芯片、分区标题与搜索热词；`/help` 的文本与卡片图
+/// 也读同一份。分类的「这个插件为什么在这一栏」写在 `hint` 里，不在界面另编。
+pub(crate) struct Section {
+    /// 分区代号：注册表里 `section:` 认领的就是它。
+    pub code: &'static str,
+    /// 完整名字：列表标题、详情面包屑、`/help` 分区标题。
+    pub name: &'static str,
+    /// 两三个字的短名：筛选芯片位置窄，长名会被省略号吃掉。
+    pub short: &'static str,
+    /// 英文代号，只作版式上的次要标识。
+    pub en: &'static str,
+    /// Material Symbols 名字，与控制台图标精灵同一套。
+    pub icon: &'static str,
+    /// 一句人话：这一栏放什么、不放什么。
+    pub hint: &'static str,
+}
+
 /// 分区表：决定总览的分组与顺序。
 ///
+/// 按「用户在做什么」分，不按实现分：聊天互动（说话）、群务管理（管人）、
+/// AI 对话（模型）、图片与表情 / 影音与网页（处理内容）、数据与统计（回看）、
+/// 资讯与提醒（把外面的新鲜事搬进来）、系统与运维（让机器人跑好）。
+///
 /// 插件在注册表里用 `section` 认领分区代号；代号对不上的（或没填的）
-/// 统一落到最后一个分区，不会从帮助里消失。分区内的顺序沿用注册表顺序，
-/// 因此新增插件不需要在这里登记第二遍。
-const SECTIONS: &[(&str, &str, &str)] = &[
-    ("group", "群管理", "GROUP"),
-    ("chat", "聊天互动", "CHAT"),
-    ("media", "媒体工具", "MEDIA"),
-    ("ai", "AI · 资讯", "AI"),
-    ("data", "数据洞察", "DATA"),
-    ("system", "系统 · 运维", "SYSTEM"),
-    ("misc", "其他", "MISC"),
+/// 统一落到最后一个分区，不会从帮助里消失。同一分区内先按 `rank` 排，
+/// 再沿用注册表顺序，因此新增插件不需要在这里登记第二遍。
+const SECTIONS: &[Section] = &[
+    Section {
+        code: "chat",
+        name: "聊天互动",
+        short: "聊天",
+        en: "CHAT",
+        icon: "forum",
+        hint: "接话、复读、回显与撤回：让机器人像群友一样说话",
+    },
+    Section {
+        code: "group",
+        name: "群务管理",
+        short: "群务",
+        en: "GROUP",
+        icon: "groups",
+        hint: "进群、留证、立规矩：欢迎、潜水、违禁词与群精华",
+    },
+    Section {
+        code: "ai",
+        name: "AI 对话",
+        short: "AI",
+        en: "AI",
+        icon: "smart_toy",
+        hint: "模型对话与群聊搭话：要先配好一把模型钥匙",
+    },
+    Section {
+        code: "image",
+        name: "图片与表情",
+        short: "图片",
+        en: "IMAGE",
+        icon: "image",
+        hint: "收表情、切图、做码与排版出图：最后都得到一张图",
+    },
+    Section {
+        code: "media",
+        name: "影音与网页",
+        short: "影音",
+        en: "MEDIA",
+        icon: "smart_display",
+        hint: "取视频、点歌、网页截图与直链互转：进出的是音视频和网页",
+    },
+    Section {
+        code: "data",
+        name: "数据与统计",
+        short: "数据",
+        en: "DATA",
+        icon: "leaderboard",
+        hint: "记录、统计与词云：先有记录，才有排行榜",
+    },
+    Section {
+        code: "feed",
+        name: "资讯与提醒",
+        short: "资讯",
+        en: "FEED",
+        icon: "campaign",
+        hint: "AI 资讯与主播开播：外面有新鲜事就主动搬进群",
+    },
+    Section {
+        code: "system",
+        name: "系统与运维",
+        short: "系统",
+        en: "SYSTEM",
+        icon: "tune",
+        hint: "运行、配置、日志与升级：机器人本身的事",
+    },
+    Section {
+        code: "misc",
+        name: "其他",
+        short: "其他",
+        en: "MISC",
+        icon: "extension",
+        hint: "还没归类的插件：新插件的临时落脚处",
+    },
 ];
 
-/// 分区表（代号、中文名、英文名），顺序即展示顺序。
+/// 分区表，顺序即展示顺序。
 ///
 /// 帮助总览与控制台的插件页读的是同一份：控制台里那几栏筛选项与 `/help` 上
 /// 那几栏是同一件事，分成两份迟早对不上。
-pub(crate) fn sections() -> &'static [(&'static str, &'static str, &'static str)] {
+pub(crate) fn sections() -> &'static [Section] {
     SECTIONS
 }
 
@@ -119,15 +207,13 @@ fn prefix_of(ctx: &Context) -> String {
 
 /// 按 [`SECTIONS`] 把已注册插件分组；代号对不上的落到最后一个分区，不会消失。
 fn grouped(ctx: &Context) -> Vec<Group> {
-    let known: Vec<&str> = SECTIONS.iter().map(|(code, _, _)| *code).collect();
+    let known: Vec<&str> = SECTIONS.iter().map(|section| section.code).collect();
     let fallback = known.last().copied().unwrap_or("misc");
 
     SECTIONS
         .iter()
-        .map(|(code, title, en)| Group {
-            title,
-            en,
-            items: get_plugins()
+        .map(|section| {
+            let mut items: Vec<(u8, Entry)> = get_plugins()
                 .iter()
                 .filter(|p| {
                     let sec = if known.contains(&p.section) {
@@ -135,15 +221,27 @@ fn grouped(ctx: &Context) -> Vec<Group> {
                     } else {
                         fallback
                     };
-                    sec == *code
+                    sec == section.code
                 })
-                .map(|p| Entry {
-                    display: p.display_name,
-                    name: p.name,
-                    desc: p.summary,
-                    enabled: is_enabled(ctx, p.name),
+                .map(|p| {
+                    (
+                        p.rank,
+                        Entry {
+                            display: p.display_name,
+                            name: p.name,
+                            desc: p.summary,
+                            enabled: is_enabled(ctx, p.name),
+                        },
+                    )
                 })
-                .collect(),
+                .collect();
+            // 稳定排序：同 rank 的保持注册表顺序，新增插件不用回来调顺序。
+            items.sort_by_key(|(rank, _)| *rank);
+            Group {
+                title: section.name,
+                en: section.en,
+                items: items.into_iter().map(|(_, entry)| entry).collect(),
+            }
         })
         .filter(|g| !g.items.is_empty())
         .collect()
@@ -350,3 +448,35 @@ pub fn handle(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 分区表本身要自洽：代号不重复、名字与说明都不空；注册表里每个插件都能在
+    /// 分区表里找到自己的那一栏（写错代号会悄悄落到「其他」，控制台上看着就像丢了）。
+    #[test]
+    fn sections_cover_every_registered_plugin() {
+        let mut seen = std::collections::HashSet::new();
+        for section in SECTIONS {
+            assert!(seen.insert(section.code), "分区代号重复：{}", section.code);
+            for (what, value) in [
+                ("name", section.name),
+                ("short", section.short),
+                ("en", section.en),
+                ("icon", section.icon),
+                ("hint", section.hint),
+            ] {
+                assert!(!value.trim().is_empty(), "分区 {} 缺 {what}", section.code);
+            }
+        }
+        for plugin in get_plugins() {
+            assert!(
+                seen.contains(plugin.section),
+                "{} 的 section「{}」不在 help::SECTIONS 里",
+                plugin.name,
+                plugin.section
+            );
+            assert!(plugin.rank > 0, "{} 的 rank 要大于 0", plugin.name);
+        }
+    }
+}
