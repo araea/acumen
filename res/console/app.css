@@ -8873,14 +8873,6 @@ label.lk-hit {
   gap: var(--zw-space-04);
 }
 
-.lr-footer-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--zw-space-03);
-}
-
 .lr-footer-note {
   display: flex;
   align-items: flex-start;

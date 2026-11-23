@@ -4206,9 +4206,9 @@
 
   function lrFooter() {
     return h`<div class="lr-footer">
-      <div class="lr-footer-row">
-        <p class="note lr-footer-note">${icon("info")}<span>只在开播、下播的状态真翻转时发一条；刚启用时已经在播的不算「刚开播」。总开关在页面最上面。</span></p>
-        <button class="btn btn-outlined btn-small" type="button" data-lr-reset>${icon("settings_backup_restore")}恢复默认设置</button>
+      <p class="note lr-footer-note">${icon("info")}<span>只在开播、下播的状态真翻转时发一条；刚启用时已经在播的不算「刚开播」。总开关在页面最上面。</span></p>
+      <div class="actions">
+        <button class="btn btn-outlined btn-danger" type="button" data-lr-reset>恢复默认参数</button>
       </div>
     </div>`;
   }
@@ -4500,10 +4500,9 @@
 
   async function lrReset(btn) {
     const ok = await confirmAction({
-      title: "恢复开播提醒的默认设置？",
-      body: "会把查询间隔、两条文案和盯的主播名单都还原成默认（名单清空）。总开关保持现在的样子。",
+      title: "恢复「开播提醒」的默认参数？",
+      body: "查询间隔、两条文案和盯的主播名单都会还原成默认（名单清空），插件的启用状态保持不变。这一步无法撤销。",
       confirm: "恢复默认",
-      cancel: "再想想",
       danger: true,
     });
     if (!ok) return;
